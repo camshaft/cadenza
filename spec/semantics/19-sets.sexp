@@ -3157,8 +3157,8 @@
            (150512886 vs 59555794) hash EQUAL (0x9457bd5f) while the second child is the same `z`, so the two
            tuples share the whole 32-bit hash → one collision node, disambiguated by the NESTED `champ_eq`
            walk (not the scalar leaf compare). Both tuples are distinct Set elements (len 2), each found by
-           its whole-tuple identity, and a tuple with a DIFFERENT first element (`(tuple (+ a 1) z)`, whose
-           hash almost surely does not collide) is absent. Result: 1000·2 + 100·1 + 10·1 + 0 = 2110. A
+           its whole-tuple identity, and a tuple with a DIFFERENT first element (`(tuple (+ 150512887 z) z)`,
+           whose hash almost surely does not collide) is absent. Result: 1000·2 + 100·1 + 10·1 + 0 = 2110. A
            nested-eq that bottomed out comparing only the shared second child would wrongly fuse the two.")
   (input  (do
             (def (main (: z Int64))
@@ -3169,3 +3169,84 @@
                          (if (Set.contains s (tuple (+ 150512887 z) z)) 1 0))))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 2110 Int64)))
+
+; ── THREE-way CHAMP collision node ───────────────────────────────────────────────────────
+; The 2-key cases above build a collision node of arity 2. A THREE-way collision exercises faces a pair
+; cannot reach: the `collision_insert` APPEND onto an EXISTING collision node (2 entries → 3), remove that
+; COLLAPSES a 3-entry node back toward canonical, and set-algebra that must split/rebuild a >2-entry node.
+; The keys 1, 162287981, 530337573 are three fixnum-range Int64s that ALL share FNV-1a hash 0x3e801244
+; (brute-forced against `champ_node_raw_hash` over the decoded fixnum's 8 LE bytes; breaker-probed 2026-08-03).
+; A runtime `z` added to each keeps them off the const-fold path so the collision node is built at RUN time.
+
+(case "three keys sharing one 32-bit hash build a 3-entry CHAMP collision node (collision_insert append)"
+  (doc    "`collision_insert` APPEND: inserting a third key that shares the collision node's hash extends the
+           node to arity 3 rather than overwriting or mis-slotting — 1, 162287981, 530337573 all hash to
+           0x3e801244, so a Set holding all three has `Set.len` 3 and finds EACH by its `champ_eq` identity,
+           while a non-colliding neighbor (`a+1`) is absent. Result: 10000·len + 1000·(a∈s) + 100·(b∈s) +
+           10·(c∈s) + (a+1∈s) = 10000·3 + 1000 + 100 + 10 + 0 = 31110. An append that clobbered an existing
+           entry would drop len to 2; one that mis-scanned would miss a key.")
+  (input  (do
+            (def (main (: z Int64))
+              (let ((a (+ 1 z)) (b (+ 162287981 z)) (c (+ 530337573 z))
+                    (s (Set.of (list (+ 1 z) (+ 162287981 z) (+ 530337573 z)))))
+                (+ (* 10000 (Set.len s))
+                   (+ (* 1000 (if (Set.contains s a) 1 0))
+                      (+ (* 100 (if (Set.contains s b) 1 0))
+                         (+ (* 10 (if (Set.contains s c) 1 0))
+                            (if (Set.contains s (+ a 1)) 1 0)))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 31110 Int64)))
+
+(case "removing from a 3-entry collision node leaves a live 2-entry node; removing to 1 collapses to canonical"
+  (doc    "The remove faces of a 3-way collision node. `Set.remove` of the middle colliding key from
+           {1,162287981,530337573} (all hash 0x3e801244) must leave a LIVE 2-entry collision node with the
+           other two still found by identity (not corrupt the node) — tens+hundreds digits. Then removing a
+           second colliding key COLLAPSES the node back to a canonical single-key set, which must be
+           byte-equal to the directly-built `(Set.of (list a))` — ones digit. Result: 100·(b∉ ∧ a∈ ∧ c∈ after
+           1 remove) + 10·(len 2 after 1 remove) + (collapsed == direct single) = 100·1 + 10·1 + 1 = 111. A
+           remove that left residual collision structure would flip the collapse-equality leg.")
+  (input  (do
+            (def (main (: z Int64))
+              (let ((a (+ 1 z)) (b (+ 162287981 z)) (c (+ 530337573 z))
+                    (s3 (Set.of (list (+ 1 z) (+ 162287981 z) (+ 530337573 z)))))
+                (let ((s2 (Set.remove s3 b)))
+                  (+ (* 100 (if (and (not (Set.contains s2 b)) (and (Set.contains s2 a) (Set.contains s2 c))) 1 0))
+                     (+ (* 10 (if (= (Set.len s2) 2) 1 0))
+                        (if (= (Set.remove s2 c) (Set.of (list a))) 1 0))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 111 Int64)))
+
+(case "a Map over three full-hash-colliding keys retrieves each value; removing one keeps siblings' values"
+  (doc    "The Map face of the 3-way collision node: keys 1->10, 162287981->20, 530337573->30 (all hash
+           0x3e801244) share one collision node; each lookup returns its OWN value (thousands+hundreds+tens
+           digits: 1+2+3 packed). Then `Map.remove` of the middle key must keep BOTH siblings' values
+           retrievable (a remove that corrupted the node would lose one) — ones digit checks a's value still
+           reads 10. Result: 1000·(m[a]/10) + 100·(m[b]/10) + 10·(m[c]/10) + (m2[a]==10) =
+           1000·1 + 100·2 + 10·3 + 1 = 1231. A collision remove that rebuilt the node wrong would drop a
+           sibling value.")
+  (input  (do
+            (def (main (: z Int64))
+              (let ((a (+ 1 z)) (b (+ 162287981 z)) (c (+ 530337573 z))
+                    (m (Map.insert (Map.insert (Map.insert Map.empty (+ 1 z) 10) (+ 162287981 z) 20) (+ 530337573 z) 30)))
+                (let ((m2 (Map.remove m b)))
+                  (+ (* 1000 (/ (Option.expect (Map.lookup m a) "a") 10))
+                     (+ (* 100 (/ (Option.expect (Map.lookup m b) "b") 10))
+                        (+ (* 10 (/ (Option.expect (Map.lookup m c) "c") 10))
+                           (if (= (Option.expect (Map.lookup m2 a) "a2") 10) 1 0)))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 1231 Int64)))
+
+(case "set algebra over a 3-entry collision node splits and rebuilds the colliding keys by content"
+  (doc    "Set difference/union must split + rebuild a collision node of arity 3 correctly. With the three
+           colliding keys a=1,b=162287981,c=530337573 (hash 0x3e801244): `{a,b,c} ∖ {b}` = {a,c} (a live
+           2-entry collision node, len 2 — tens digit), and `{a,b} ∪ {c}` = {a,b,c} rebuilt to the full
+           3-entry node byte-equal to the direct `(Set.of (list a b c))` (ones digit). Result:
+           10·(len {a,b,c}∖{b} == 2) + ({a,b}∪{c} == {a,b,c}) = 10·1 + 1 = 11. Algebra that mishandled the
+           collision node during the split/merge would give a wrong length or a non-canonical rebuild.")
+  (input  (do
+            (def (main (: z Int64))
+              (let ((a (+ 1 z)) (b (+ 162287981 z)) (c (+ 530337573 z)))
+                (+ (* 10 (if (= (Set.len (Set.difference (Set.of (list a b c)) (Set.of (list b)))) 2) 1 0))
+                   (if (= (Set.union (Set.of (list a b)) (Set.of (list c))) (Set.of (list a b c))) 1 0))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 11 Int64)))
