@@ -5529,6 +5529,17 @@ fn collect_type_params(ast: &Arenas, occ: StructId, params: &mut Vec<String>) {
         Struct::Atom(_) => {
             if let Some(n) = ast.as_name(occ)
                 && n.starts_with(|c: char| c.is_ascii_lowercase())
+                // `unit` is the prelude UNIT value/type (the empty product), NOT a type PARAMETER. Without
+                // this, a variant payload `(None unit)` / `(Nil unit)` harvested `unit` as a spurious type
+                // param, so `(type (Box a) (Full a) (Nil unit))` read as 2-parameter `[a, unit]` → `(Full 1)`
+                // typed `Sum{Box, args:[Int64, <free Var>]}` (the unfilled phantom); the stray free Var left
+                // the sum non-Eq/non-Ord → a Set/Map of it DECLINED on the rust backend (wasm erased the open
+                // arg + tolerated it). `unit` in a type position instead reduces to `Ty::Unit` (a concrete
+                // type — see `typeval_of`'s unit arm), so the pervasive nullary-variant idiom `(None unit)`
+                // (prelude.rs §"the pervasive nullary-variant idiom"; guide PatternMatching) keeps resolving
+                // unchanged — it is NOT a param. The bare-atom analogue of the lowercase compound-type
+                // ALIASES (`tuple`/`record`/`list`/`map`) skipped in the List arms below.
+                && n != "unit"
                 && !params.iter().any(|p| p == n)
             {
                 params.push(n.to_string());

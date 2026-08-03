@@ -3038,6 +3038,15 @@ fn typeval_of_uncached(db: &mut Db, id: StructId) -> Option<crate::ty::Ty> {
         }
         // A native ground type prim (`Bool`/`Unit`) held in a `(meta t)` field.
         Resolved::Prim(p) => p.ground_type(),
+        // The prelude UNIT value (the empty product) used in a TYPE position → `Ty::Unit`. The pervasive
+        // nullary-variant idiom writes a unit-typed payload as lowercase `(None unit)` / `(Nil unit)` /
+        // `(Red unit)` (prelude.rs §"the pervasive nullary-variant idiom"; guide PatternMatching), where the
+        // bare `unit` follows a `Ref` to `Resolved::Unit`. `unit` is NOT a type parameter (excluded in
+        // `collect_type_params`), so a variant payload `unit` reduces here to the concrete `Ty::Unit` — the
+        // type-position lenient-alias for the capital `Unit` (concierge ruling A, 2026-08-03), so
+        // `(type (Box a) (Full a) (Nil unit))` has EXACTLY one param `a` (no spurious `unit` param + stray
+        // Var → fixes the rust Set/Map non-Ord decline) while the taught `(None unit)` idiom keeps resolving.
+        Resolved::Unit => Some(crate::ty::Ty::Unit),
         // A built `(typeval …)` node carries the type directly.
         Resolved::TypeVal(t) => Some(t),
         // A `let` whose BODY is a type expression — `(let ((t Int64)) t)` evaluates to the body's value,
