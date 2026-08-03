@@ -124,12 +124,12 @@ impl<T: ModelTransport> Executor for ModelExecutor<T> {
 /// [`cdz_kernel::executor::CompositeExecutor`], a reducer's `Model` effect reaches Bedrock and the
 /// completion folds back — an agent loops against a real model.
 ///
-/// **Credentials come from the ENVIRONMENT** (operator directive): environment variables
-/// (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN`) plus region from the environment,
-/// via the SDK's default credential provider. Note the profile / SSO / IMDS credential SOURCES are
-/// `aws-config` feature-gated (`sso` / `credentials-process`) and are NOT enabled here — env-var creds are
-/// the supported source; a deployment needing profile/IMDS enables those features. No broker, no
-/// credential wiring, no Membrain in this repo.
+/// **Credentials come from the ENVIRONMENT** (operator directive): via the SDK's default credential
+/// provider chain — environment variables (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` /
+/// `AWS_SESSION_TOKEN` + region), the shared config/credentials profile, and IMDS, all part of the DEFAULT
+/// chain (not feature-gated). Only SSO and `credentials-process` are `aws-config` feature-gated (`sso` /
+/// `credentials-process`) and we don't enable them. No broker, no credential wiring, no Membrain in this
+/// repo.
 ///
 /// **Request/response shape.** `invoke`'s `body` is the OPAQUE `InvokeModel` request body (a userspace
 /// agreement — the model's native JSON, e.g. the Anthropic Messages schema); `model_id` is the effect

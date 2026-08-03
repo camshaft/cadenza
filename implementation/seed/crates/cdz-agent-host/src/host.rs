@@ -85,6 +85,26 @@ impl HostedSession {
         }
     }
 
+    /// Attach a §4c mutable-name [`NameStore`](cdz_kernel::name_store::NameStore) so this hosted agent's
+    /// `store/set` / `store/resolve` effects work — a builder over [`genesis`](Self::genesis). ADDITIVE:
+    /// plain `genesis` leaves the session store-less, so a `store/*` effect there folds an observable `Err`
+    /// (never a panic); only an agent that needs the name store calls this.
+    ///
+    /// v0.2 lifecycle is PER-SESSION: each `HostedSession` owns its own `NameStore` (the kernel seam,
+    /// `Session::attach_name_store`, takes it by value — a plain `&mut`-mutated store, not a shared handle).
+    /// A shared/federated GLOBAL store (the §4c end-state, "the store is itself a session") is a later
+    /// durable-backend slice; it introduces sharing at the persistence layer, not via a host-side lock here.
+    ///
+    /// The `store/*` effects are still AUTHORIZED by this session's authorizer — grant them with
+    /// [`Capability::for_family`](cdz_kernel::effect::Capability::for_family) over
+    /// [`STORE_SET`](cdz_kernel::effect::effect_ct::STORE_SET) /
+    /// [`STORE_RESOLVE`](cdz_kernel::effect::effect_ct::STORE_RESOLVE) scoped to a name prefix; attaching a
+    /// store does NOT grant access.
+    pub fn with_name_store(mut self, name_store: cdz_kernel::name_store::NameStore) -> Self {
+        self.session.attach_name_store(name_store);
+        self
+    }
+
     /// SEED the capability manifest so this agent is "born knowing" its capabilities — call ONCE right
     /// after [`HostedSession::genesis`], before the first [`deliver`](Self::deliver) (host-capability-
     /// discovery I5). The kernel folds a synthetic `control/capabilities` EffectResult (byte-identical to
@@ -302,12 +322,14 @@ impl AgentHost {
 /// loops against Bedrock + fetches URLs, not stubs.
 ///
 /// Async because the Bedrock transport loads AWS config from the ambient environment (the SDK default
-/// provider). Credentials + region come from the ENVIRONMENT — environment variables
-/// (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` + region); the profile/SSO/IMDS
-/// sources are `aws-config` feature-gated and not enabled here (operator directive: env creds, no broker).
-/// Nothing is wired in code. Returns `Err` if the HTTP client can't be built (e.g. no TLS backend) — a
-/// permanent host misconfiguration surfaced at assembly, not per-effect. `Now` stays hermetic (no
-/// network); it's included because a real agent reads the clock.
+/// provider chain). Credentials + region come from the ENVIRONMENT: environment variables
+/// (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` + region), the shared config/
+/// credentials profile, and IMDS — all part of aws-config's DEFAULT chain (not feature-gated). The only
+/// credential sources NOT compiled in are SSO and `credentials-process`, which ARE `aws-config`
+/// feature-gated (`sso` / `credentials-process`) and we don't enable them. No broker, no credential wiring
+/// in code (operator directive: creds from the environment, no Membrain). Returns `Err` if the HTTP client
+/// can't be built (e.g. no TLS backend) — a permanent host misconfiguration surfaced at assembly, not
+/// per-effect. `Now` stays hermetic (no network); it's included because a real agent reads the clock.
 ///
 /// # Wiring an agent that loops against the real world
 ///
