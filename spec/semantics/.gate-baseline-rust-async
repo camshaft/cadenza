@@ -1770,6 +1770,7 @@ pass	a hoisted trapping invariant loop-bound still traps when it overflows, even
 pass	a homogeneous nested Option distinguishes its outer and inner None
 pass	a host delegating a value definition rather than an effect is rejected
 pass	a host delegating the same effect twice is rejected
+todo	a host-block scrutinee folding to a multi-arm sum switch fires the host op once (adv-62 switch face)
 pass	a host-called closure applied to a different argument tracks the input
 pass	a host-called closure with a different body dispatches the right code
 pass	a host-crossing closure captures a CHAMP map and set and reads both per call
@@ -5506,6 +5507,7 @@ todo	a host op whose result is a QUANTITY crosses the boundary as its inner scal
 todo	a host op with a Bytes arg AND a scalar arg crosses both parameters (list<u8> beside a scalar)
 todo	a host op with a String parameter composes with the value-heap runtime
 todo	a host response SIZES a guest-built collection which is then folded and keyed
+todo	a host result captured by closures in a NESTED tuple fires the host op once (adv-62 nested face)
 todo	a host result captured by two closures stored in a RECORD fires the host op once (adv-62b)
 todo	a host-delegated result SEEDS an in-program handler's initial state
 todo	a host-op argument COMPUTED by guest arithmetic crosses the boundary evaluated
