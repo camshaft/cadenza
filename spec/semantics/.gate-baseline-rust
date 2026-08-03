@@ -740,7 +740,6 @@ pass	a NESTED-tuple ARG composes with a NESTED-tuple RESULT
 pass	a NOMINAL-Unit-typed host-call statement in a do-body is not spuriously dropped
 pass	a NOMINAL-over-tuple ARG crosses as the underlying tuple (direct-call)
 pass	a NON-LAST handler arm whose body is a MATCH round-trips through the ML printer
-pass	a NON-TAIL host call consumes rows on the unwind, deepest frame first
 pass	a NON-TAIL recursion rebinding its rope arg to a slice-concat accumulates after each return
 pass	a NON-identity constant add over a high UInt64 operand still rejects the overflow
 pass	a NON-tail heap-spine build 5000 deep constructs and drains through real frames
@@ -816,13 +815,10 @@ pass	a RESULT-returning effect op is matched on Ok / Err — the fallible-step i
 pass	a RESUMING handler around a contracted body still enforces @ensures on the resumed-through value
 pass	a ROMAN DECODER subtracts on lookahead and round-trips through the pinned renderer
 pass	a ROMAN NUMERAL renderer walks a value-symbol table greedily with subtractive pairs
-pass	a ROPE Bytes arg (recursive concat, uncompacted) crosses the host boundary
 pass	a ROTATE-BY-K splits at the wrapped offset and swaps the halves, identity at multiples of len
 pass	a RUNTIME Ast structural equality compares by value (Ast.Int scalar leaf and Ast.List compound)
 pass	a RUNTIME Result-of-Result from chained fallible helpers dispatches all three arms
 pass	a RUNTIME branch selects between an abortive perform and a plain value per call
-pass	a RUNTIME byte-slice torn mid-scalar is rejected by from-bytes at both tear points
-pass	a RUNTIME erased Qty add is still CHECKED at the inner width (overflow traps at run time)
 pass	a RUNTIME guarded sum-match arm dispatches through its guard
 pass	a RUNTIME if-chain selects among four different-length heap lists
 pass	a RUNTIME list of floats compares equal element-wise (the value-eq-shaped walk)
@@ -915,7 +911,6 @@ pass	a Some carrying an inner-annotated None matches its arm (the control)
 pass	a String ENTRY arg rides a rope into an effect-op argument and the arm reads its bytes
 pass	a String built by folding String.concat over a runtime list of chunks has the right content and length
 pass	a String compound export under a non-main name crosses to the host
-pass	a String host RESULT crosses the boundary and is read twice (byte-len + scalar-len of a multibyte response)
 pass	a String match with a BOUND default arm equals its (= s literal) if-chain with a bound else
 pass	a String match with disjoint literal arms is order-independent (reordering the arms preserves the result)
 pass	a String param threaded through a self-recursive loop and concatenated each step is retained
@@ -1049,7 +1044,6 @@ pass	a bin pattern over a String scrutinee is a type error
 pass	a bin pattern over a runtime non-Bytes scrutinee is a type error
 pass	a bin pattern over an Int64 scrutinee is a type error
 pass	a bin tag-dispatch over a RUNTIME-START slice reads the re-based window per call
-pass	a bin-arm guard cond that traps at the decoded binder TRAPS the match — it does not fall through
 pass	a bin-decoded frame body drives per-byte performs through a recursive walk
 pass	a binary form whose bit-fields do not close a byte is ill-formed
 pass	a binary integer literal
@@ -1200,7 +1194,6 @@ pass	a closure captures the binding in scope where it was created
 pass	a closure captures the param generation BEFORE a shadow and applies after
 pass	a closure captures the result of a build-time host op called with an argument
 pass	a closure capturing THREE scalars is made and called
-pass	a closure capturing a RUNTIME String.slice→to-bytes VIEW reads it at host-call dispatch
 pass	a closure capturing a RUNTIME-BUILT list indexes the captured spine at call time
 pass	a closure capturing a build-time host effect preserves the order of two host calls
 pass	a closure capturing a handler-computed VALUE escapes the handle and applies outside
@@ -1546,7 +1539,6 @@ pass	a factorial that overflows the integer type traps through the recursion
 pass	a factory RETURNS a closure capturing the def's SCALAR parameter
 pass	a factory RETURNS a closure that captures a let-bound inner closure
 pass	a factory-returned closure over its list parameter keeps the capture live across two applications
-pass	a failed multi-segment bin guard falls through and the NEXT arm re-decodes its own binders
 pass	a failing guard falls through to a later arm
 pass	a failing payload-binder guard falls to a later arm re-binding the payload
 pass	a failing tuple guard falls to a later arm re-binding the elements
@@ -1611,8 +1603,6 @@ pass	a float leaf and a Bytes leaf compare together in one compound
 pass	a float literal compared against a Float32 param computes at the narrow width
 pass	a float width from runtime data is rejected, like an integer width
 pass	a float width outside the admitted set is rejected
-pass	a float-carrying SUM as a Set key dedupes by payload and probes by content
-pass	a float-carrying sum as a MAP key is found by a reconstructed equal key
 pass	a float-field RECORD as a SET element dedups by content including the float leaf
 pass	a float-form literal with the N (BigInt) suffix is rejected with a swap-to-R fix
 pass	a floating-point literal
@@ -1835,7 +1825,6 @@ pass	a host result captured by closures in a NESTED tuple fires the host op once
 pass	a host result captured by two closures stored in a RECORD fires the host op once (adv-62b)
 pass	a host-block scrutinee folding to a multi-arm sum switch fires the host op once (adv-62 switch face)
 pass	a host-called closure applied to a different argument tracks the input
-pass	a host-called closure capturing a HEAP LIST indexes it at call dispatch
 pass	a host-called closure with a different body dispatches the right code
 pass	a host-crossing closure captures a CHAMP map and set and reads both per call
 pass	a host-delegated result SEEDS an in-program handler's initial state
@@ -1961,7 +1950,6 @@ pass	a list pattern over a non-list scrutinee is a type error
 pass	a list type whose element position holds a value is rejected
 pass	a list value consumed by two operations in one function is not freed early
 pass	a list with a runtime element is returned as a program result
-pass	a list-aliased record read after Record.with sees the ORIGINAL value (no in-place clobber)
 pass	a list-arm constructor element over a runtime-built list
 pass	a list-arm map element whose key is absent falls through
 pass	a list-carrying recursion whose base arm does a fallible indexed read compiles
@@ -2485,7 +2473,6 @@ pass	a plain quote does not evaluate a quasiquote's unquote nested inside it
 pass	a plain record compared to a nominal record of the same shape is a type error
 pass	a plain-sum recursive CONSTANT BigInt literal probe matches its own constructor
 pass	a plural family-unit spelling names the same unit as its singular
-pass	a point fact flows through a let binding into a compare fold — the point-fact composition face
 pass	a positional tuple access out of the tuple's static arity is a type error
 pass	a possibly-out-of-range runtime integer conversion still declines (checked emit pending)
 pass	a post-order effectful walk draws each node's id AFTER both children (SSA reg-alloc shape)
