@@ -259,6 +259,29 @@
             (export main)))
   (call   main (: 3 Int64)) (trap "unreachable"))
 
+; The CONST-FOLD companion of the runtime narrowing trap above: when the overflowing rational is a
+; COMPILE-TIME CONSTANT, the rounding-op fold must REJECT with CDZ0304 (constant-op-traps) at the fold,
+; carrying the op's span — NOT materialize an out-of-width Int64 literal that trips a downstream,
+; span-less CDZ0302 "integer literal does not fit its width" (adv-60: the fold re-injected the
+; manufactured 3·Int64.max BigInt integer part as an Int64 ConstInt; fixed in rcdzc, trunk c38bc6ce2).
+; No literal in these programs is itself out of width — Int64.max fits exactly; the overflow is produced
+; BY the fold, so the diagnostic must be the const-op-traps class (the code (+ Int64.max 1) already gets),
+; not the literal-width class. The fix covers ALL FOUR rounding ops (truncate/floor/ceil/round — each had
+; the identical divmod→ConstInt-without-fit-check shape); these pin all four. Const-fold reject is
+; backend-agnostic → uniform across wasm/rust/rust-async.
+(case "a CONST rational truncate whose integer part exceeds Int64 rejects CDZ0304 at the fold, not a span-less CDZ0302"
+  (input  (Rational.truncate (* (Rational.of 9223372036854775807 1) (Rational.of 3 1))))
+  (error  CDZ0304))
+(case "a CONST rational floor whose integer part exceeds Int64 rejects CDZ0304 at the fold, not a span-less CDZ0302"
+  (input  (Rational.floor (* (Rational.of 9223372036854775807 1) (Rational.of 3 1))))
+  (error  CDZ0304))
+(case "a CONST rational ceil whose integer part exceeds Int64 rejects CDZ0304 at the fold, not a span-less CDZ0302"
+  (input  (Rational.ceil (* (Rational.of 9223372036854775807 1) (Rational.of 3 1))))
+  (error  CDZ0304))
+(case "a CONST rational round whose integer part exceeds Int64 rejects CDZ0304 at the fold, not a span-less CDZ0302"
+  (input  (Rational.round (* (Rational.of 9223372036854775807 1) (Rational.of 3 1))))
+  (error  CDZ0304))
+
 ; --- List.len fold must preserve a TRAPPING element construction (trap-preservation) --------------------
 ; The List.len constant-arity fold computes length from the list SPINE without reading element VALUES, so it
 ; could drop a trapping element construction. It must NOT: a Rational.of with a RUNTIME zero denominator

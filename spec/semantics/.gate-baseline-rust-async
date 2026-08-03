@@ -5556,3 +5556,7 @@ pass	a runtime Int16 wrapping-add overflow wraps with sign-extension (32767 + 1 
 pass	chained runtime UInt8 wrapping ops each re-normalize to width (250+10 then *2 = 8)
 todo	a discarded pure trapping item in a host do-body is elided beside a host call (dead-init ruling)
 pass	to-bytes of a sliced multibyte string is read twice and both reads see the right bytes
+pass	a CONST rational truncate whose integer part exceeds Int64 rejects CDZ0304 at the fold, not a span-less CDZ0302
+pass	a CONST rational floor whose integer part exceeds Int64 rejects CDZ0304 at the fold, not a span-less CDZ0302
+pass	a CONST rational ceil whose integer part exceeds Int64 rejects CDZ0304 at the fold, not a span-less CDZ0302
+pass	a CONST rational round whose integer part exceeds Int64 rejects CDZ0304 at the fold, not a span-less CDZ0302
