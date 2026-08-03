@@ -3639,8 +3639,10 @@ pass	a wildcard-exported variant whose name shadows a prelude type is constructi
 pass	a without-extend re-wrap inside a sum payload keeps the map-borne record's new field value
 pass	a wrap-narrowed MULTI-BYTE segment decodes the truncated value back
 pass	a wrapped byte's zero equality tests the masked value, not the wide slot
+pass	a wrong-arity built-in generic in a variant payload is rejected at the declaration
 pass	a wrong-arity tuple binding pattern is a shape error
 pass	a wrong-arity tuple pattern nested under a constructor pattern is a type error
+pass	a wrong-arity user generic in a variant payload is rejected at the declaration
 pass	a wrong-width value in a multi-byte bit-field is a compile-time type error
 pass	a zero rational canonicalizes to zero over one however it was constructed
 pass	a zero rational produced by arithmetic is the same canonical zero
