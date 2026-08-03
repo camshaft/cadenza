@@ -393,11 +393,19 @@ jobs:
   nix-flake:
     name: nix flake check (advisory)
     runs-on: ubuntu-24.04-arm
+    # ADVISORY is enforced HERE, not only in branch protection: `continue-on-error` makes a red
+    # `nix flake check` NOT fail the workflow, so a flake hiccup on this deliberately-uncached slow
+    # job can't red every candidate (github-liaison #1805). Non-required in branch protection is the
+    # belt; this is the suspenders — the job stays truly advisory regardless of protection config.
+    # Drop this (and add to required checks) in the deliberate promote-to-required follow-up.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v7
       # DeterminateSystems installer = the standard multi-user nix on a GHA runner (flakes on by
-      # default). Pinned to the current major once confirmed; @main is the documented quickstart ref.
-      - uses: DeterminateSystems/nix-installer-action@main
+      # default). Pinned to the latest RELEASE tag (v22) — not `@main` — since a moving ref on a
+      # third-party action that installs Nix is a supply-chain surface (github-liaison #1805, operator
+      # supply-chain caution). Matches the repo's tag-pinning convention for third-party actions.
+      - uses: DeterminateSystems/nix-installer-action@v22
       - name: nix flake check
         run: nix flake check --print-build-logs
 
