@@ -10079,12 +10079,11 @@ fn check_application(
         // rust E0308 (breaker's Set face of the sibling-unification skip). The `Set.of` path walks its
         // elements HERE, bypassing the list-literal fault arm, so the check must live at this seam too. The
         // settled type is the JOIN of the element types (takes the fixed width regardless of position).
-        if let Some((first, first_ty)) = first_pair {
+        if let Some((_, first_ty)) = first_pair {
             let settled = elems
                 .iter()
                 .skip(1)
                 .fold(first_ty, |acc, &e| acc.join(&type_of(db, e)));
-            let _ = first;
             if let Some(reject) = elems
                 .iter()
                 .find_map(|&e| width_fault_against_ty(db, e, &settled))
