@@ -728,13 +728,16 @@ pub enum FleetCmd {
         #[arg(long, default_value_t = 8)]
         cap: usize,
     },
-    /// RUN one I4 SCHEDULER pass (operator-greenlit executor): (1) REAP each in-flight candidate PR —
-    /// merged → FF local `trunk` from origin/main (CAS) + `ack merged` + resolve the record; CI-red or
-    /// closed-unmerged → `ack reject` + resolve; else leave in flight — then (2) TOP-UP dispatch from the
-    /// queue via `publish-candidate --execute`, honoring the cap + per-lane serialization. This is
-    /// PR-SYNC'S loop as one command (replaces its manual gh + local gate). DRY by default (same preview
-    /// as `schedule-plan`, no side-effects); pass `--execute` to actually reap + dispatch. Because it
-    /// WRITES `trunk`, only pr-sync should `--execute` it. See `fleet/CI-GATED-LANES-DESIGN.md`.
+    /// RUN one I4 SCHEDULER pass (operator-greenlit executor). REAP phase: for each in-flight candidate
+    /// PR, a merge advances `trunk` by cherry-picking the PR's OWN `mergeCommit.oid` (in the trunk
+    /// worktree, NOT a FF from origin/main: trunk & origin/main are tree-equal but commit-distinct) plus
+    /// `ack merged` plus retiring the record; a merge-REQUIRED CI-red or a closed-unmerged PR gets `ack
+    /// reject` plus retire; anything else stays in flight. Then it prunes stale cand refs. DISPATCH
+    /// phase: top up from the queue via `publish-candidate --execute`, honoring the cap plus per-lane
+    /// serialization. This is PR-SYNC'S loop as one command (replaces its manual gh plus local gate).
+    /// DRY by default (same preview as `schedule-plan`, no side-effects); pass `--execute` to actually
+    /// reap plus dispatch. Because it WRITES `trunk`, only pr-sync should `--execute` it. See
+    /// `fleet/CI-GATED-LANES-DESIGN.md`.
     SchedulePass {
         /// Max in-flight candidate PRs. Default 8.
         #[arg(long, default_value_t = 8)]
@@ -7762,10 +7765,12 @@ fn schedule_dispatch(
 /// unit-tested without gh. See `fleet/CI-GATED-LANES-DESIGN.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ReapAction {
-    /// PR merged on GitHub → FF local `trunk` from `origin/main` + `fleet ack merged`, then drop the
-    /// `ci-dispatch` record.
+    /// PR merged on GitHub → advance local `trunk` by cherry-picking the PR's OWN `mergeCommit.oid`
+    /// (in the trunk worktree; NOT a FF from `origin/main` — they're tree-equal but commit-distinct) +
+    /// `fleet ack merged`, then retire the `ci-dispatch` record.
     LandMerged,
-    /// CI went red → `fleet ack reject` (failing job + run URL), close the PR, drop the record.
+    /// A merge-REQUIRED CI job went red (or the PR was closed unmerged) → `fleet ack reject` (failing
+    /// job + run URL), then retire the record.
     Reject,
     /// CI still pending / not concluded and not yet merged → leave in flight, poll again next pass.
     KeepWaiting,
