@@ -192,13 +192,25 @@ pub fn encode_http_request_with_headers(
     codec::encode(&b.finish(root))
 }
 
-/// Decode an HTTP effect request payload → `(method, headers, body)`. Total: non-conforming bytes are an
-/// `Err` (never a panic). Method is a `String` (the caller maps it to its own enum, with a catch-all — the
-/// Name-headed open-sum contract). BACKWARD-COMPAT: accepts BOTH the 3-field
-/// `(http-request (method) (headers) (body))` AND the legacy 2-field `(http-request (method) (body))`
-/// (which decodes with empty headers), so a payload from the no-headers encoder still decodes.
+/// Decode an HTTP effect request payload → `(method, body)`, DROPPING headers — the ergonomic path that
+/// mirrors the 2-arg [`encode_http_request`]. KEPT as a 2-tuple (didn't widen to `(method, headers, body)`)
+/// so existing decode callers destructure unchanged — additive-for-DECODERS, the dual of the encoder's
+/// additive-for-callers. A caller that needs headers uses [`decode_http_request_with_headers`]. Total:
+/// non-conforming bytes are an `Err` (never a panic).
+pub fn decode_http_request(bytes: &[u8]) -> Result<(String, Option<Vec<u8>>), EventAstError> {
+    let (method, _headers, body) = decode_http_request_with_headers(bytes)?;
+    Ok((method, body))
+}
+
+/// Decode an HTTP effect request payload → `(method, headers, body)` — the full decoder. Total:
+/// non-conforming bytes are an `Err` (never a panic). Method is a `String` (the caller maps it to its own
+/// enum, with a catch-all — the Name-headed open-sum contract). Accepts BOTH shapes the encoders emit: the
+/// 3-field `(http-request (method) (headers) (body))` (both [`encode_http_request`] and
+/// [`encode_http_request_with_headers`] emit this — the no-headers encoder writes an empty headers list)
+/// AND the legacy 2-field `(http-request (method) (body))` (decodes with empty headers), so a payload from
+/// any historical no-headers encoder still decodes.
 #[allow(clippy::type_complexity)]
-pub fn decode_http_request(
+pub fn decode_http_request_with_headers(
     bytes: &[u8],
 ) -> Result<(String, Vec<(String, String)>, Option<Vec<u8>>), EventAstError> {
     let a = codec::decode_detailed(bytes).map_err(EventAstError::Codec)?;
@@ -1147,33 +1159,49 @@ mod tests {
     #[test]
     fn http_request_payload_round_trips_body_and_bodyless() {
         // The HTTP effect payload codec (shared with cdz-agent-host's HttpExecutor decode, §9b). The 2-arg
-        // encoder (no headers) round-trips method + body; decode returns empty headers.
-        let (m, h, b) = decode_http_request(&encode_http_request("post", Some(b"{\"k\":1}")))
+        // encoder (no headers) round-trips method + body; the 2-tuple `decode_http_request` drops headers.
+        let (m, b) = decode_http_request(&encode_http_request("post", Some(b"{\"k\":1}")))
             .expect("post round-trips");
         assert_eq!(m, "post");
-        assert!(h.is_empty(), "2-arg encoder → empty headers");
         assert_eq!(b.as_deref(), Some(&b"{\"k\":1}"[..]));
 
-        let (m, h, b) =
+        let (m, b) =
             decode_http_request(&encode_http_request("get", None)).expect("get round-trips");
         assert_eq!(m, "get");
-        assert!(h.is_empty());
         assert_eq!(b, None);
 
         // An extension method name survives verbatim (Name-headed open sum).
-        let (m, _, _) = decode_http_request(&encode_http_request("propfind", None)).unwrap();
+        let (m, _) = decode_http_request(&encode_http_request("propfind", None)).unwrap();
         assert_eq!(m, "propfind");
+    }
+
+    #[test]
+    fn decode_http_request_drops_headers_the_with_headers_variant_keeps_them() {
+        // The additive-decoder split: the 2-tuple `decode_http_request` returns (method, body) and DROPS
+        // headers; `decode_http_request_with_headers` returns the full (method, headers, body). Both decode
+        // the SAME payload — the 2-tuple is just the ergonomic projection.
+        let hdrs = vec![("x-trace".to_string(), "abc".to_string())];
+        let payload = encode_http_request_with_headers("post", &hdrs, Some(b"{\"k\":1}"));
+
+        let (m, b) = decode_http_request(&payload).expect("2-tuple decode");
+        assert_eq!(m, "post");
+        assert_eq!(b.as_deref(), Some(&b"{\"k\":1}"[..]));
+
+        let (m2, h2, b2) = decode_http_request_with_headers(&payload).expect("3-tuple decode");
+        assert_eq!(m2, "post");
+        assert_eq!(h2, hdrs, "the with-headers variant keeps headers");
+        assert_eq!(b2.as_deref(), Some(&b"{\"k\":1}"[..]));
     }
 
     #[test]
     fn http_request_with_headers_round_trips_ordered_pairs() {
         // The 3-arg with-headers encoder: method + ordered headers + body all round-trip; both the 2-arg
-        // and 3-arg forms produce the SAME wire shape (a 2-arg payload decodes with empty headers, above).
+        // and 3-arg forms produce the SAME wire shape (a 2-arg payload decodes with empty headers).
         let hdrs = vec![
             ("content-type".to_string(), "application/json".to_string()),
             ("x-trace".to_string(), "abc".to_string()),
         ];
-        let (m, h, b) = decode_http_request(&encode_http_request_with_headers(
+        let (m, h, b) = decode_http_request_with_headers(&encode_http_request_with_headers(
             "post",
             &hdrs,
             Some(b"{\"k\":1}"),
@@ -1182,6 +1210,11 @@ mod tests {
         assert_eq!(m, "post");
         assert_eq!(h, hdrs, "headers round-trip in order");
         assert_eq!(b.as_deref(), Some(&b"{\"k\":1}"[..]));
+
+        // The 2-arg encoder → empty headers via the with-headers decoder.
+        let (_, h, _) =
+            decode_http_request_with_headers(&encode_http_request("get", None)).unwrap();
+        assert!(h.is_empty(), "2-arg encoder → empty headers");
     }
 
     #[test]
