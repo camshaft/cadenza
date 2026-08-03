@@ -177,6 +177,21 @@
                 (fn ((: x Int64)) (+ x (ask.ask))))) (export main)))
   (error  CDZ0406))
 
+(case "a closure NESTED IN A TUPLE that performs a delegated effect cannot cross the host boundary"
+  (doc    "The compound-nested face of the escaping-closure fence above: the performing closure is not the
+           bare export value but is WRAPPED IN A TUPLE — `(host (ask) (tuple 1 (fn (x) (+ x (ask.ask)))))`.
+           The tuple crosses the host boundary carrying the closure, whose body still performs the delegated
+           `ask.ask` outside the delegation's dynamic extent → rejected CDZ0406, exactly as the bare closure
+           is. Pins that the escaping-closure scan reaches a closure nested in a compound, not just a
+           top-level one. Was a generic 'not in the host-import set' decline on wasm before es1 (#1792 hoisted
+           the CDZ0406 scan to the emit dispatch); now wasm rejects CDZ0406 matching rust + rust-async.")
+  (input  (do
+            (effect ask (op ask (-> Unit Int64)))
+            (def (main)
+              (host (ask)
+                (tuple 1 (fn ((: x Int64)) (+ x (ask.ask)))))) (export main)))
+  (error  CDZ0406))
+
 ; --- An exported closure's BODY is type-checked, like an ordinary def / an in-guest-applied lambda ------
 ; A `(def (a) (fn …))` exported as a host closure crosses the boundary and is NEVER applied in-guest, so
 ; its body is never β-reduced. An ill-typed body must still be a compile-time rejection — the same CDZ0203

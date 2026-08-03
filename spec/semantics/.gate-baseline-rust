@@ -1183,6 +1183,7 @@ pass	a checked integer conversion of an out-of-range CONSTANT is rejected at com
 pass	a checked integer conversion that fits succeeds
 pass	a checked result is consumed by matching its Option at run time
 pass	a checked-add over a RUNTIME operand declines pending the Core::CheckedArith runtime emit
+pass	a closure NESTED IN A TUPLE that performs a delegated effect cannot cross the host boundary
 pass	a closure RETURNS its captured map and the alias plus the original both read after
 pass	a closure applied through an unbuilt sibling variant compiles and runs
 pass	a closure argument is another closure's result
