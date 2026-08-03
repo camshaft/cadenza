@@ -2476,6 +2476,7 @@ pass	a performing closure called TWICE observes the state advance between its ca
 pass	a performing closure duplicated through a generic tuple applies twice with stepping state
 pass	a performing closure homed TRANSITIVELY through a pass-through function is not falsely rejected
 pass	a performing closure passed to a function that applies it UNDER a handler is homed at the apply site
+pass	a performing closure stored in a TUPLE and applied IN-GUEST fires normally
 pass	a performing do-def feeding a bin-construction operand under a handler stays bound (F2)
 pass	a performing match SCRUTINEE threads its state into a performing arm body
 pass	a performing match-arm guard folds with WILDCARD patterns (no binder to let-bind)

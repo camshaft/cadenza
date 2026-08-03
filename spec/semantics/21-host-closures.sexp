@@ -5180,3 +5180,24 @@
   (call   main (: 10 Int64) (: 1 Int64))  (output (: 300 Int64))
   (call   main (: 10 Int64) (: 10 Int64)) (output (: -99 Int64))
   (call   main (: 10 Int64) (: 5 Int64))  (output (: -100 Int64)))
+
+(case "a performing closure stored in a TUPLE and applied IN-GUEST fires normally"
+  (doc    "The legal-side contrast of the CDZ0406 escape family (whose reject witnesses cover the bare,
+           tuple-nested, and let-bound ESCAPING shapes above/nearby): the SAME tuple-stored performing
+           closure, extracted with `(. pair 1)` and applied entirely IN-GUEST, is not an escape — the
+           application sits inside the delegation's dynamic extent, so the effect homes and fires exactly
+           once (10+3=13, one host call). Pins the in-guest/escape LINE from the working side: compound
+           storage of an effectful closure is legal; only crossing the host boundary is fenced. A scan
+           that keyed on 'effectful closure inside a compound' rather than on ESCAPE would false-reject
+           this.")
+  (input  (do
+            (effect io (op get (-> Unit Int64)))
+            (def (main (: k Int64))
+              (host (io)
+                (let ((pair (tuple 99 (fn ((: x Int64)) (+ x (io.get))))))
+                  ((. pair 1) k))))
+            (export main)))
+  (host-responses (respond io.get (: 3 Int64)))
+  (host-calls (call io.get))
+  (call   main (: 10 Int64))
+  (output (: 13 Int64)))
