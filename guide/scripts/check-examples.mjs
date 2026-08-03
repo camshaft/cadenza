@@ -130,12 +130,30 @@ async function loadComponent(componentBytes, name) {
 // list/map/record/tuple-returning example looks like a run failure when it actually works in-app.
 const HEAP_IMPORT = "cadenza:runtime/heap";
 const runtimePath = join(guideRoot, "src/wasm/runtime.wasm");
+
+// FINDING#23: the value-heap runtime now IMPORTS `cadenza:nfc/normalize` — a separate component that
+// NFC-normalizes a String's UTF-8 bytes (the heavy Unicode tables live there, not in the runtime). In
+// the native/CI path cdz-run composes the real cdz-nfc component into the runtime's linker; here the jco
+// harness supplies the import directly as a JS shim. `nfc: list<u8> -> list<u8>` crosses as
+// (Uint8Array) => Uint8Array; NFC of well-formed UTF-8 is exactly JS's String.prototype.normalize('NFC')
+// (round-tripped through UTF-8). Without this, every runtime-instantiating example throws
+// "Cannot destructure property 'nfc' of imports['cadenza:nfc/normalize']". The browser runner
+// (runWorker.ts) wires the same shim.
+const NFC_IMPORT = "cadenza:nfc/normalize";
+const nfcHostImport = {
+  nfc: (bytes) => {
+    const s = new TextDecoder("utf-8").decode(bytes);
+    return new TextEncoder().encode(s.normalize("NFC"));
+  },
+};
+
 let heapPromise = null;
 async function getHeap() {
   if (!heapPromise) {
     heapPromise = (async () => {
       const rt = await loadComponent(readFileSync(runtimePath), "heap");
-      const root = await rt.instantiate(rt.getCore, {});
+      // The runtime imports the NFC normalization component — supply the JS shim so it instantiates.
+      const root = await rt.instantiate(rt.getCore, { [NFC_IMPORT]: nfcHostImport });
       return root[HEAP_IMPORT] ?? root["heap"];
     })();
   }

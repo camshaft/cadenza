@@ -5998,10 +5998,29 @@ fn run_one_trial_with_pool(
             value: n.to_string(),
         })
         .collect();
+    // The runtime's NFC dependency (FINDING#23): when a runtime is composed, resolve its NFC component from
+    // the store manifest's `nfc = "<hash>"` line so `instantiate_runtime` can compose it into the runtime
+    // (the transitive compose). `None` when there's no runtime / no manifest entry.
+    let nfc = if runtime.is_some() {
+        std::fs::read_to_string(store.join("runtime.toml"))
+            .ok()
+            .and_then(|m| {
+                m.lines().find_map(|l| {
+                    l.trim()
+                        .strip_prefix("nfc")
+                        .and_then(|r| r.trim_start().strip_prefix('='))
+                        .map(|v| v.trim().trim_matches('"').to_string())
+                })
+            })
+            .and_then(|hash| std::fs::read(store.join(format!("{hash}.wasm"))).ok())
+    } else {
+        None
+    };
     let opts = cdz_run::RunOpts {
         export: Some(kebab.to_string()),
         args: arg_vals.to_vec(),
         runtime: runtime.map(<[u8]>::to_vec),
+        nfc,
         runtime_cache_dir: Some(store.to_path_buf()),
         host_responses,
     };
