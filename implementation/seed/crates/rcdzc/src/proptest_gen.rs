@@ -1195,7 +1195,7 @@ fn name_resolves_to_user_type(ast: &Arenas, ty: StructId, items: &[StructId]) ->
     items.iter().copied().any(|it| {
         type_decl_form(ast, it).is_some_and(|tail| {
             tail.first()
-                .is_some_and(|&n| ast.as_name(n) == Some(type_name))
+                .is_some_and(|&n| ast.type_decl_head_name(n) == Some(type_name))
         })
     })
 }
@@ -1209,7 +1209,7 @@ fn classify_sum(ast: &Arenas, type_name: &str, items: &[StructId], depth: usize)
     let decl_item = items.iter().copied().find(|&it| {
         type_decl_form(ast, it).is_some_and(|tail| {
             tail.first()
-                .is_some_and(|&n| ast.as_name(n) == Some(type_name))
+                .is_some_and(|&n| ast.type_decl_head_name(n) == Some(type_name))
         })
     })?;
     let decl_tail = type_decl_form(ast, decl_item)?;

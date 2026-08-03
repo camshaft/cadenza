@@ -5445,31 +5445,31 @@ pub(crate) fn scan_type_decl(ast: &Arenas, item: StructId) -> Option<TypeDecl> {
     // NAME in a TYPE-EXPRESSION position — `(: b (Box Int64))` / `(: b Box)` / a `(Wrap (Box Int64))`
     // payload reported CDZ0101 "unknown type `Box`", while the built-in `(Option Int64)` (prelude) worked.
     let head = tail.first().copied();
-    let (name, head_params) = match head.map(|s| ast.get(s)) {
-        // Bare-atom name: `(type Box …)`.
-        Some(Struct::Atom(_)) => (
-            head.and_then(|s| ast.as_name(s)).unwrap_or("").to_string(),
-            Vec::new(),
-        ),
-        // Parenthesized `(Name params…)` head: the list's head atom is the name; its lowercase tail atoms
-        // are the declared type params (collected in first-appearance order alongside the payload-implied
-        // ones below, so a HEAD-ONLY param — a phantom `(type (P a) (Mk Int64))` — is not lost).
+    // The type NAME via the shared decoder (bare atom `(type Box …)` OR parenthesized `(type (Box a) …)`
+    // head), so every raw `(type …)`-tail name-reader agrees (see `Arenas::type_decl_head_name`).
+    let name = head
+        .and_then(|s| ast.type_decl_head_name(s))
+        .unwrap_or("")
+        .to_string();
+    // Explicit HEAD params from a parenthesized `(Name params…)` head — the lowercase tail atoms, in
+    // first-appearance order, DE-DUPED (a `(type (Box a a) …)` names `a` once — mirrors `collect_type_params`
+    // below, so `decl.params.len()` is the true arity, not an overcount). `unit` is the value/type, never a
+    // param. Empty for a bare-atom head. Payload-implied params are appended (also de-duped) below.
+    let head_params: Vec<String> = match head.map(|s| ast.get(s)) {
         Some(Struct::List(kids)) => {
-            let nm = kids
-                .first()
-                .and_then(|&h| ast.as_name(h))
-                .unwrap_or("")
-                .to_string();
-            let ps: Vec<String> = kids
-                .iter()
-                .skip(1)
-                .filter_map(|&p| ast.as_name(p))
-                .filter(|p| p.starts_with(|c: char| c.is_ascii_lowercase()) && *p != "unit")
-                .map(str::to_string)
-                .collect();
-            (nm, ps)
+            let mut ps: Vec<String> = Vec::new();
+            for &p in kids.iter().skip(1) {
+                if let Some(n) = ast.as_name(p)
+                    && n.starts_with(|c: char| c.is_ascii_lowercase())
+                    && n != "unit"
+                    && !ps.iter().any(|q| q == n)
+                {
+                    ps.push(n.to_string());
+                }
+            }
+            ps
         }
-        None => (String::new(), Vec::new()),
+        _ => Vec::new(),
     };
     // An OPEN sum ends in a trailing `.. r` row-variable marker (`type-system.md §204/§208`): `(type T
     // (Known Int64) .. r)`. The `..` token already lexes (list-rest); here it marks the sum OPEN and `r`
