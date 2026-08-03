@@ -175,12 +175,14 @@ mod tests {
     impl Reducer for MarkAgent {
         async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
-                EventBody::Inbound { .. } => FoldOutput::with(vec![EffectRequest::new_with_family(
-                    effect_ct::NOW,
-                    String::new(),
-                    None,
-                    Timeliness::Interactive,
-                )]),
+                EventBody::Inbound { .. } => {
+                    FoldOutput::with(vec![EffectRequest::new_with_family(
+                        effect_ct::NOW,
+                        String::new(),
+                        None,
+                        Timeliness::Interactive,
+                    )])
+                }
                 EventBody::EffectResult {
                     result: EffectOutcome::Ok(_),
                     ..
@@ -290,12 +292,14 @@ mod tests {
     impl Reducer for TimerAgent {
         async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
-                EventBody::Inbound { .. } => FoldOutput::with(vec![EffectRequest::new_with_family(
-                    effect_ct::TIMER,
-                    self.deadline_ms.to_string(),
-                    None,
-                    Timeliness::Interactive,
-                )]),
+                EventBody::Inbound { .. } => {
+                    FoldOutput::with(vec![EffectRequest::new_with_family(
+                        effect_ct::TIMER,
+                        self.deadline_ms.to_string(),
+                        None,
+                        Timeliness::Interactive,
+                    )])
+                }
                 EventBody::TimerFired { .. } => {
                     kv.put(b"woke".to_vec(), b"1".to_vec());
                     FoldOutput::none()

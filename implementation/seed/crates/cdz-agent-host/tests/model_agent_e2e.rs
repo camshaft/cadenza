@@ -119,7 +119,7 @@ async fn agent_loop_runs_end_to_end_through_the_model_executor() {
 
     // Replay-equivalence: the completion is recorded, so replay reconstructs the identical KV without
     // ever calling the transport again (a paid model call happens once; replay is free).
-    let replayed = Session::replay_async(session.log().to_vec(), &reducer)
+    let replayed = Session::replay(session.log().to_vec(), &reducer)
         .await
         .unwrap();
     assert_eq!(replayed.kv().get(b"phase"), Some(&b"answered"[..]));
