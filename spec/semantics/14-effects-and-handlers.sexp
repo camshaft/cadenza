@@ -7106,3 +7106,68 @@
   (host-responses (respond io.get (: 7 Int64)))
   (host-calls (call io.get))
   (output (: 70 Int64)))
+
+; --- Host-row consumption under CONTROL FLOW: the (host-responses …) fixture is consumed in the
+; ORDER calls are made, and only calls on the taken path consume rows. The pins above fix the
+; straight-line order (two calls in one +) and the abandoned-path elision; these pin the
+; consumption order when the CALL SEQUENCE is produced by recursion (tail and non-tail) and when
+; a runtime branch selects WHICH op fires first. ---
+
+(case "a recursion-driven host-call sequence consumes one response row per iteration in order"
+  (doc    "The recursive-walk composition of the two-calls-in-order pin: `walk` performs `(io.get)` once
+           per iteration in TAIL position, so n=3 consumes the rows [3,7,5] first-to-last as the digits
+           accumulate left-to-right → 375. A runner that re-read row 0 per iteration gives 333; one that
+           consumed from the tail gives 573. The host-calls fixture asserts exactly three calls.")
+  (input  (do
+            (effect io (op get (-> Unit Int64)))
+            (def (walk (: n Int64) (: acc Int64))
+              (if (> n 0) (walk (- n 1) (+ (* 10 acc) (io.get))) acc))
+            (def (main (: n Int64))
+              (host (io) (walk n 0)))
+            (export main)))
+  (host-responses (respond io.get (: 3 Int64))
+                  (respond io.get (: 7 Int64))
+                  (respond io.get (: 5 Int64)))
+  (host-calls (call io.get) (call io.get) (call io.get))
+  (call   main (: 3 Int64))
+  (output (: 375 Int64)))
+
+(case "a NON-TAIL host call consumes rows on the unwind, deepest frame first"
+  (doc    "The unwind-order face: `(+ (* 10 (walk (- n 1))) (io.get))` recurses BEFORE performing, so the
+           deepest frame's `(io.get)` fires first — rows [3,7,5] bind deepest-to-shallowest and the digits
+           accumulate 3 → 37 → 375. The same rows in a TAIL-position walk (the pin above) yield the same
+           375 by a DIFFERENT path (there, row order = iteration order; here, row order = unwind order) —
+           a runner that issued calls at frame-ENTRY rather than at the perform's evaluation point would
+           flip the two shapes apart (573 here).")
+  (input  (do
+            (effect io (op get (-> Unit Int64)))
+            (def (walk (: n Int64))
+              (if (> n 0) (+ (* 10 (walk (- n 1))) (io.get)) 0))
+            (def (main (: n Int64))
+              (host (io) (walk n)))
+            (export main)))
+  (host-responses (respond io.get (: 3 Int64))
+                  (respond io.get (: 7 Int64))
+                  (respond io.get (: 5 Int64)))
+  (host-calls (call io.get) (call io.get) (call io.get))
+  (call   main (: 3 Int64))
+  (output (: 375 Int64)))
+
+(case "a runtime branch selects WHICH host op consumes the first response row"
+  (doc    "The branch-selected companion of the abandoned-path elision pin: `(if (> n 5) (io.get) (io.alt))`
+           at n=3 takes the alt branch, so the FIRST row consumed is `io.alt`'s 100, and the following
+           unconditional `(io.get)` consumes the second row 7 → 107. The host-calls fixture asserts the
+           taken-path sequence [alt, get] — a runner that consumed rows by op-declaration order (get
+           first) or issued the untaken branch's call would mis-bind both rows.")
+  (input  (do
+            (effect io (op get (-> Unit Int64)) (op alt (-> Unit Int64)))
+            (def (main (: n Int64))
+              (host (io)
+                (+ (if (> n 5) (io.get) (io.alt))
+                   (io.get))))
+            (export main)))
+  (host-responses (respond io.alt (: 100 Int64))
+                  (respond io.get (: 7 Int64)))
+  (host-calls (call io.alt) (call io.get))
+  (call   main (: 3 Int64))
+  (output (: 107 Int64)))
