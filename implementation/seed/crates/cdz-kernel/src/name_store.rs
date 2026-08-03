@@ -93,12 +93,21 @@ pub struct NameStore {
     /// name → its value-over-time log (append-only; last = current). A name with an empty/absent log has
     /// never been set (`resolve` → `NoSuchName`).
     names: HashMap<String, Vec<SetEntry>>,
+    /// Idempotency keys of `store/set`s already applied to this store — the crash/re-drive dedup (§16c-S1/D).
+    /// The kernel's recovery re-drives an open (dispatched-but-unsettled) store effect by its stable
+    /// idempotency key; without dedup a `store/set` re-applied after a crash appends a DUPLICATE entry
+    /// (`history` divergence). A key seen here means "already applied" → a re-drive is a no-op returning the
+    /// same outcome. NOTE (durability boundary): this set is IN-MEMORY, so it dedups re-drives against a
+    /// LIVE store (in-session replay, a re-emitted set); a durable backend (§4c "the store is itself a
+    /// session") must persist these keys to dedup across a PROCESS crash — tracked as the durable-store slice.
+    applied_set_keys: std::collections::HashSet<Hash>,
 }
 
 impl NameStore {
     pub fn new() -> Self {
         NameStore {
             names: HashMap::new(),
+            applied_set_keys: std::collections::HashSet::new(),
         }
     }
 
@@ -165,9 +174,13 @@ impl NameStore {
     ///
     /// - `store/set`: `hash` MUST be `Some` (the value to point `name` at) — append it as an
     ///   [`SetEntry::unsigned`] (producer/signature ride the event envelope, deferred). Returns the set
-    ///   hash on success. `None` hash is a `MalformedStoreEffect` (a set needs a value).
+    ///   hash on success. `None` hash is a `MalformedStoreEffect` (a set needs a value). IDEMPOTENT by
+    ///   `idempotency_key` (§16c-S1/D): a set whose key was already applied is a NO-OP returning the same
+    ///   `Set(hash)` — so the kernel's crash-recovery re-drive of an open store dispatch does NOT append a
+    ///   duplicate entry.
     /// - `store/resolve`: `hash` MUST be `None` (a resolve carries no value) — returns the name's CURRENT
-    ///   hash (§4c-pt3: the caller freezes it into its log). A `Some` hash is `MalformedStoreEffect`.
+    ///   hash (§4c-pt3: the caller freezes it into its log). A `Some` hash is `MalformedStoreEffect`. A
+    ///   resolve is a pure READ, so `idempotency_key` doesn't matter (re-driving it is naturally idempotent).
     /// - any other family: `MalformedStoreEffect` (not a store verb — the drive loop only routes `store/*`
     ///   here, so this is a defensive total-ness backstop).
     pub fn apply_effect(
@@ -175,12 +188,22 @@ impl NameStore {
         family: &str,
         name: &str,
         hash: Option<Hash>,
+        idempotency_key: Hash,
     ) -> Result<StoreOutcome, NameStoreError> {
         use crate::effect::effect_ct;
         match family {
             effect_ct::STORE_SET => {
                 let h = hash.ok_or(NameStoreError::MalformedStoreEffect)?;
-                self.set(name, SetEntry::unsigned(h))?;
+                // Dedup by idempotency key: a re-driven set (crash recovery, §16c-S1/D) is a NO-OP — it must
+                // not append a duplicate entry. Validate the name FIRST (so a malformed/Unscoped set still
+                // Errs on re-drive rather than silently "succeeding" as already-applied).
+                if Self::authority_prefix_of(name) == NameAuthority::Unscoped {
+                    return Err(NameStoreError::UnscopedNameUnwritable);
+                }
+                if self.applied_set_keys.insert(idempotency_key) {
+                    // First time this key is applied → append.
+                    self.set(name, SetEntry::unsigned(h))?;
+                }
                 Ok(StoreOutcome::Set(h))
             }
             effect_ct::STORE_RESOLVE => {
@@ -332,46 +355,104 @@ mod tests {
         use crate::effect::effect_ct;
         let mut s = NameStore::new();
         let h = Hash::of(b"compiler wasm");
+        let k = Hash::of(b"key-1");
 
         // store/set with a hash → appends + echoes the set hash.
         assert_eq!(
-            s.apply_effect(effect_ct::STORE_SET, "system/compiler/latest", Some(h)),
+            s.apply_effect(effect_ct::STORE_SET, "system/compiler/latest", Some(h), k),
             Ok(StoreOutcome::Set(h))
         );
         // store/resolve with no hash → the current (frozen) hash.
         assert_eq!(
-            s.apply_effect(effect_ct::STORE_RESOLVE, "system/compiler/latest", None),
+            s.apply_effect(
+                effect_ct::STORE_RESOLVE,
+                "system/compiler/latest",
+                None,
+                Hash::of(b"key-2")
+            ),
             Ok(StoreOutcome::Resolved(h))
         );
         // resolve of a never-set name surfaces NoSuchName (the drive loop folds it as an Err outcome).
         assert_eq!(
-            s.apply_effect(effect_ct::STORE_RESOLVE, "system/never", None),
+            s.apply_effect(
+                effect_ct::STORE_RESOLVE,
+                "system/never",
+                None,
+                Hash::of(b"key-3")
+            ),
             Err(NameStoreError::NoSuchName)
         );
+    }
+
+    #[test]
+    fn apply_effect_store_set_is_idempotent_by_key_no_duplicate_entry() {
+        // §16c-S1/D: re-driving the SAME store/set (same idempotency key) after a crash must NOT append a
+        // duplicate entry — the dedup makes the re-drive a no-op returning the same Set outcome.
+        use crate::effect::effect_ct;
+        let mut s = NameStore::new();
+        let h = Hash::of(b"compiler wasm v1");
+        let key = Hash::of(b"dispatch-key-A");
+        let name = "system/compiler/latest";
+
+        // First apply appends.
+        assert_eq!(
+            s.apply_effect(effect_ct::STORE_SET, name, Some(h), key),
+            Ok(StoreOutcome::Set(h))
+        );
+        assert_eq!(s.history(name).len(), 1);
+        // RE-DRIVE with the SAME key → no-op (same outcome), history unchanged (no duplicate).
+        assert_eq!(
+            s.apply_effect(effect_ct::STORE_SET, name, Some(h), key),
+            Ok(StoreOutcome::Set(h))
+        );
+        assert_eq!(
+            s.history(name).len(),
+            1,
+            "re-drive by same key must NOT duplicate"
+        );
+        // A genuinely NEW set (different key) DOES append (the value-over-time log advances).
+        let h2 = Hash::of(b"compiler wasm v2");
+        assert_eq!(
+            s.apply_effect(
+                effect_ct::STORE_SET,
+                name,
+                Some(h2),
+                Hash::of(b"dispatch-key-B")
+            ),
+            Ok(StoreOutcome::Set(h2))
+        );
+        assert_eq!(s.history(name).len(), 2);
+        assert_eq!(s.resolve(name).unwrap(), h2);
     }
 
     #[test]
     fn apply_effect_is_total_on_malformed_shapes() {
         use crate::effect::effect_ct;
         let mut s = NameStore::new();
+        let k = Hash::of(b"k");
         // store/set REQUIRES a hash (the value); None is malformed, not a panic.
         assert_eq!(
-            s.apply_effect(effect_ct::STORE_SET, "system/x", None),
+            s.apply_effect(effect_ct::STORE_SET, "system/x", None, k),
             Err(NameStoreError::MalformedStoreEffect)
         );
         // store/resolve must NOT carry a hash.
         assert_eq!(
-            s.apply_effect(effect_ct::STORE_RESOLVE, "system/x", Some(Hash::of(b"v"))),
+            s.apply_effect(
+                effect_ct::STORE_RESOLVE,
+                "system/x",
+                Some(Hash::of(b"v")),
+                k
+            ),
             Err(NameStoreError::MalformedStoreEffect)
         );
         // a non-store/* family is not a store verb (defensive backstop — the drive loop only routes store/*).
         assert_eq!(
-            s.apply_effect("http", "system/x", Some(Hash::of(b"v"))),
+            s.apply_effect("http", "system/x", Some(Hash::of(b"v")), k),
             Err(NameStoreError::MalformedStoreEffect)
         );
         // store/set to an Unscoped name still fails closed via the underlying set().
         assert_eq!(
-            s.apply_effect(effect_ct::STORE_SET, "bare-name", Some(Hash::of(b"v"))),
+            s.apply_effect(effect_ct::STORE_SET, "bare-name", Some(Hash::of(b"v")), k),
             Err(NameStoreError::UnscopedNameUnwritable)
         );
     }

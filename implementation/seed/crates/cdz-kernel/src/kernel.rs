@@ -683,7 +683,7 @@ impl Session {
                             .to_string(),
                     )
                 } else {
-                    self.apply_store_effect(&req)
+                    self.apply_store_effect(&req, idempotency_key)
                 };
                 let more = self
                     .record_result(id, outcome, reducer, dispatch_hash)
@@ -909,16 +909,26 @@ impl Session {
     /// never-set resolve — never a panic. A successful `store/resolve` returns the frozen hash as an inline
     /// `name-set`-shaped payload (name + resolved hash), so the reducer reads it back through the SAME §9b
     /// codec it would use for a set.
-    fn apply_store_effect(&mut self, req: &EffectRequest) -> EffectOutcome {
+    fn apply_store_effect(&mut self, req: &EffectRequest, idempotency_key: Hash) -> EffectOutcome {
         let family = req.content_type.family.as_ref();
         let name = req.target.as_ref();
         // A `store/set` carries the target hash in an inline `name-set` payload; `store/resolve` carries
         // none. Decode → the optional hash apply_effect expects. A set with a missing/garbage payload is a
-        // malformed effect (observable Err), not a panic.
+        // malformed effect (observable Err), not a panic. VALIDATE the payload's embedded name against the
+        // effect TARGET: the target is what the authorizer gated (SEC-F1), so a set whose payload names a
+        // DIFFERENT name than it was authorized for must be rejected — never silently write the payload name.
         let hash = match &req.payload {
             Some(crate::effect::Payload::Inline(bytes)) => {
                 match crate::event_ast::decode_name_set(bytes) {
-                    Ok((_name, h)) => Some(h),
+                    Ok((payload_name, h)) => {
+                        if payload_name != name {
+                            return EffectOutcome::Err(format!(
+                                "store/set payload name {payload_name:?} != authorized target {name:?} \
+                                 — refusing (the target is what authz gated)"
+                            ));
+                        }
+                        Some(h)
+                    }
                     Err(e) => {
                         return EffectOutcome::Err(format!(
                             "store effect: malformed name-set payload: {e:?}"
@@ -939,7 +949,7 @@ impl Session {
                     .to_string(),
             );
         };
-        match store.apply_effect(family, name, hash) {
+        match store.apply_effect(family, name, hash, idempotency_key) {
             Ok(crate::name_store::StoreOutcome::Set(_)) => {
                 // A set's outcome is empty-success — the reducer keyed the continuation by EffectId; the
                 // set's value already rode the request payload. (A future slice may echo the new value.)
@@ -2762,5 +2772,54 @@ mod store_effect_tests {
         .unwrap();
         // Denied before apply → nothing resolved, store untouched.
         assert_eq!(s.kv().get(b"resolved"), None);
+    }
+
+    // A reducer that emits a store/set whose PAYLOAD name disagrees with the effect TARGET (a spoof: the
+    // authorizer gates the target, so a mismatched payload name must be refused, not silently written).
+    struct MismatchedSetReducer;
+    #[async_trait::async_trait(?Send)]
+    impl Reducer for MismatchedSetReducer {
+        async fn fold(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+            if matches!(event.body, EventBody::Inbound { .. }) {
+                // Target = system/authorized, but the payload names system/EVIL.
+                let payload =
+                    crate::event_ast::encode_name_set("system/evil", &Hash::of(b"evil-hash"));
+                FoldOutput::with(vec![EffectRequest::new_with_family(
+                    effect_ct::STORE_SET,
+                    "system/authorized",
+                    Some(Payload::Inline(payload.into())),
+                    Timeliness::Interactive,
+                )])
+            } else {
+                FoldOutput::none()
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn store_set_with_payload_name_mismatching_target_is_refused() {
+        // The target is what authz gated (SEC-F1); a set whose embedded payload name differs must be an
+        // observable Err, never a silent write of the payload name. The reducer never advances past the
+        // failed set, so `resolved` is never recorded — the observable signal that the set was refused.
+        let mut exec = crate::executor::RecordingExecutor::new();
+        let mut s = Session::genesis(Hash::of(b"store-v1"));
+        s.attach_name_store(NameStore::new());
+        s.deliver(
+            inbound(),
+            None,
+            &MismatchedSetReducer,
+            &AllowStore,
+            &mut exec,
+        )
+        .await
+        .unwrap();
+        // The mismatched set folded an Err EffectResult (not Ok), so MismatchedSetReducer's Ok-arm never
+        // ran and nothing was written. (The set/resolve happy-path proves the Ok flow in the sibling test.)
+        assert_eq!(s.kv().get(b"resolved"), None);
+        assert_eq!(
+            s.open_effects(),
+            0,
+            "the refused set settled (Err), not left open"
+        );
     }
 }
