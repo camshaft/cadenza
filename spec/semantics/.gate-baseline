@@ -3609,6 +3609,7 @@ pass	an @ensures on a recursive def is re-checked at every EXIT including self-c
 pass	an @ensures over a MATCH-bodied def wraps the whole match — the postcondition checks the match's result
 pass	an @ensures predicate reading a top-level GLOBAL alongside ret resolves and enforces (resolution seam)
 pass	an @ensures predicate that itself traps keeps its own trap kind (not the @ensures-failed unreachable)
+pass	an @invariant newtype REBUILT through a chain of constructor calls re-establishes each time
 pass	an @invariant newtype constructed INSIDE a handler arm establishes per resume
 pass	an @param of a Bool type generates a Bool-typed accessor
 pass	an @param of a Float64 type generates a Float64-typed accessor
@@ -3935,6 +3936,7 @@ pass	an inlined helper matching a sum built FROM the fused binder plus an enclos
 pass	an inlined multi-use checked-arith argument is shared and computed directly into its slot
 pass	an inner arm resumes with the OUTER handler's result while both states advance
 pass	an inner binding shadows an outer one only within its scope
+pass	an inner handle of the SAME delegated effect discharges in-program inside the host block
 pass	an inner handle's SEED expression performs against the outer handler
 pass	an inner handler's INIT state is computed by performing an enclosing effect
 pass	an inner lambda captures an enclosing match-arm binder and is applied
@@ -4798,6 +4800,7 @@ pass	promoting a Float32 to Float64 is exact
 pass	pure guards on fused-match arms read the payload binder and an enclosing capture
 pass	pushing an element of a different type onto a list is a type error
 pass	pushing an element onto a list appends it
+pass	pushing through ONE alias of a doubly-held list leaves the sibling field intact
 pass	quasiquote constructs AST with selective evaluation
 pass	quasiquote makes AST construction readable
 pass	quasiquote nests with inner unquote evaluated
@@ -4979,6 +4982,7 @@ pass	set union is commutative on generated inputs (a grow-only-set CRDT merge co
 pass	set union is idempotent on generated inputs (re-delivering a set changes nothing)
 pass	sets reached via DIFFERENCE and INTERSECTION equal the directly-built set
 pass	shift-by-zero is a no-op on a runtime operand for both directions
+pass	shrinking an @invariant newtype to EMPTY traps at the rebuild — the invariant catches the crossing
 pass	shrinking reports the minimal failing input
 pass	sibling match arms each let-binding a DIFFERENT-WIDTH value get disjoint scratch slots, not an invalid component
 pass	sibling patterns over a two-sum tuple diverge on PER-POSITION literals
