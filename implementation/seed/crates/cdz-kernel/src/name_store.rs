@@ -406,8 +406,14 @@ mod tests {
             .map(|e| e.hash)
             .collect();
         assert_eq!(hist, vec![v1, v2]);
-        // applied_set_keys starts empty on recovery — replayed entries are historical, not in-flight.
-        rebuilt.resolve("system/compiler/latest").unwrap();
+        // applied_set_keys starts EMPTY on recovery — replayed entries are historical, not in-flight, so
+        // there's nothing to dedup against them. PIN it directly (child module → private field): a
+        // regression that left the dedup set populated after recovery would otherwise pass green and
+        // undercut the #1852 unbounded-set fix's guarantee (liaison #1865).
+        assert!(
+            rebuilt.applied_set_keys.is_empty(),
+            "recovery must NOT populate the dedup set — replayed entries are historical, not in-flight"
+        );
     }
 
     #[test]
