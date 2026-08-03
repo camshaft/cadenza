@@ -65,6 +65,31 @@ pub mod effect_ct {
     /// family; there is nothing to miss — see [`super::project_manifest`]). Keep in sync with the consts
     /// above (they're the single source; this just lists them for enumeration).
     pub const ALL: &[&str] = &[SHELL, HTTP, MODEL, NOW, TIMER, EMIT];
+
+    /// The DEFAULT resolved target to PROBE a family's policy with, when building a capability manifest
+    /// (host-capability-discovery I3). The manifest asks the authorizer `may this session use <family> at
+    /// <probe_target>` per family — so the probe needs *some* target. These defaults are chosen (with
+    /// v-agent-harness-host) to (a) read `Granted` for a BROAD grant (`permit(<family>, any-resource)`),
+    /// and (b) be HARMLESS if ever dispatched (they are authorize-ONLY — never routed to an executor).
+    ///
+    /// - `now`/`timer`/`emit`/`shell` → `""`: ambient/any-resource families; a broad grant admits `""`. A
+    ///   Prefix/exact-scoped `shell` grant reads `Denied` at `""` — honest (see the manifest semantics).
+    /// - `http` → `"https://probe.invalid/"`: the RFC-6761 `.invalid` TLD is guaranteed non-resolvable, so
+    ///   the probe is inert even if somehow dispatched; a broad `http` grant reads `Granted`, a `HostIn`-
+    ///   scoped grant reads `Denied` at this host — honest.
+    /// - `model` → `""`: there is NO session-agnostic model id (a scoped grant is `model == "<specific>"`),
+    ///   so the default reads `Denied` for a scoped model grant — the session that knows its granted id
+    ///   OVERRIDES the probe target (see [`super::project_manifest`]'s `probe_target` closure) for an
+    ///   accurate read. The kernel default can't know it.
+    ///
+    /// An UNKNOWN/extension family (not in [`ALL`]) also probes with `""`.
+    pub fn probe_target(family: &str) -> &'static str {
+        match family {
+            HTTP => "https://probe.invalid/",
+            // shell/model/now/timer/emit + any extension family: no meaningful session-agnostic target.
+            _ => "",
+        }
+    }
 }
 
 impl EffectKind {
@@ -299,17 +324,32 @@ pub struct CapabilityManifest {
 /// For each family in the canonical set (`families`, normally [`effect_ct::ALL`]): the mechanism dimension
 /// is `handles(family)` (does the host have an executor?), and the policy dimension is ONE `authorize`
 /// probe (the existing decide-only [`Authorize`] trait — no enumeration API). Complete BY CONSTRUCTION: the
-/// family set is finite + canonical, so nothing is missed. Pure: deterministic given `(families, handles,
-/// authorizer, probe_target)`; async only because the authorizer may `.await` a wasm policy eval.
+/// family set is finite + canonical, so nothing is missed. Pure: deterministic given the inputs; async only
+/// because the authorizer may `.await` a wasm policy eval.
 ///
-/// `probe_target` is the resolved target used to probe each family's policy (e.g. a session-scoped default);
-/// the concrete convention is coordinated with the host in I3. The probed request is built via
-/// [`EffectRequest::new`] so its `content_type.family` matches the family being probed.
+/// **`probe_target` is per-family** (`Fn(&str) -> &str`): the resolved target to probe each family's policy
+/// with — normally [`effect_ct::probe_target`] (the kernel default, one source of truth), which a
+/// host/session OVERRIDES for a family whose grant is target-scoped (esp. `model`, whose scoped grant is a
+/// specific id no generic probe matches). The probed request is built via [`EffectRequest::new`] so its
+/// `content_type.family` matches the family being probed.
+///
+/// **Grant-state semantics (decide-only, "grantable-at-probe-target"):** a decide-only authorizer
+/// fundamentally cannot report a SCOPED grant's admissibility without the real target — so the manifest is
+/// honest about what it probed:
+/// - [`GrantState::Absent`] — the host has NO executor for the family (`handles` false); unusable
+///   regardless of policy. This is the mechanism axis, distinct from a policy denial.
+/// - [`GrantState::Granted`] — mechanism present AND policy admits the probe target: usable at (at least)
+///   the probe target. A broad grant admits all targets; a scoped grant admits at least this one.
+/// - [`GrantState::Denied`] — mechanism present but policy denied the probe target. This does NOT mean
+///   "never usable": a scoped grant (e.g. `model == "<id>"`, a `HostIn` host, a `Prefix`) may well admit the
+///   session's REAL target — the reducer discovers the exact decision when it emits a concrete effect
+///   (override `probe_target` for that family to get an accurate read here). Absent (no executor) is the
+///   distinct, always-actionable signal; Denied-at-probe is "maybe, at your target — emit to find out."
 pub async fn project_manifest(
     families: &[&str],
     handles: impl Fn(&str) -> bool,
     authorizer: &dyn crate::authz::Authorize,
-    probe_target: &str,
+    probe_target: impl Fn(&str) -> &'static str,
 ) -> CapabilityManifest {
     let mut entries = Vec::with_capacity(families.len());
     for &family in families {
@@ -320,7 +360,8 @@ pub async fn project_manifest(
             // well-known kind when there is one (so kind + content_type.family agree); an extension family
             // with no `EffectKind` still probes by family once register-by-string lands.
             let kind = EffectKind::from_family(family).unwrap_or(EffectKind::Emit);
-            let mut probe = EffectRequest::new(kind, probe_target, None, Timeliness::Interactive);
+            let mut probe =
+                EffectRequest::new(kind, probe_target(family), None, Timeliness::Interactive);
             probe.content_type.family = family.to_string().into();
             match authorizer.authorize_async(&probe).await {
                 Ok(()) => GrantState::Granted,
@@ -405,7 +446,7 @@ mod tests {
             },
         };
         assert_eq!(via_new, via_literal);
-        // The `impl Into<String>` target arg accepts both &str and String uniformly.
+        // The `impl Into<Arc<str>>` target arg accepts both &str and String uniformly.
         assert_eq!(
             EffectRequest::new(
                 EffectKind::Now,
@@ -668,7 +709,7 @@ mod tests {
         let handles = |f: &str| f == effect_ct::HTTP || f == effect_ct::MODEL;
         let families = [effect_ct::HTTP, effect_ct::MODEL, effect_ct::SHELL];
 
-        let manifest = project_manifest(&families, handles, &authz, "probe://scope").await;
+        let manifest = project_manifest(&families, handles, &authz, |_| "probe://scope").await;
 
         assert_eq!(manifest.entries.len(), 3);
         let state = |fam: &str| {
@@ -691,7 +732,7 @@ mod tests {
         // missed (the crux: the family set is finite + canonical). With deny_all + no mechanism, every
         // family is Absent (handles=false short-circuits before the policy probe).
         let manifest =
-            project_manifest(effect_ct::ALL, |_| false, &Authorizer::deny_all(), "x").await;
+            project_manifest(effect_ct::ALL, |_| false, &Authorizer::deny_all(), |_| "x").await;
         assert_eq!(manifest.entries.len(), effect_ct::ALL.len());
         assert!(manifest
             .entries
@@ -719,8 +760,13 @@ mod tests {
             kind: EffectKind::Now,
             predicate: ResourcePredicate::Any,
         }]);
-        let manifest =
-            project_manifest(effect_ct::ALL, |f| exec.handles_family(f), &authz, "x").await;
+        let manifest = project_manifest(
+            effect_ct::ALL,
+            |f| exec.handles_family(f),
+            &authz,
+            effect_ct::probe_target,
+        )
+        .await;
 
         for entry in &manifest.entries {
             if entry.family == effect_ct::NOW {
@@ -734,5 +780,58 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn probe_target_default_reads_scoped_grants_as_denied_and_override_reads_them_granted() {
+        // I3: the "grantable-at-probe-target" semantics + the host-override path (v-ah-host decision (2)).
+        // A SCOPED model grant (model == "claude-x") — the host serves model, policy grants only that id.
+        use crate::authz::Authorizer;
+        use crate::executor::{CompositeExecutor, RecordingExecutor};
+        let exec =
+            CompositeExecutor::new().with(EffectKind::Model, Box::new(RecordingExecutor::new()));
+        let authz = Authorizer::new(vec![Capability {
+            kind: EffectKind::Model,
+            predicate: ResourcePredicate::Exact("claude-x".into()),
+        }]);
+        let model_state = |m: &CapabilityManifest| {
+            m.entries
+                .iter()
+                .find(|e| e.family == effect_ct::MODEL)
+                .unwrap()
+                .grant
+                .clone()
+        };
+
+        // Default probe_target(model) == "" ≠ "claude-x" → DENIED-at-probe (honest: mechanism present, but
+        // policy denies the generic probe target). NOT Absent — the executor IS registered.
+        let with_default = project_manifest(
+            effect_ct::ALL,
+            |f| exec.handles_family(f),
+            &authz,
+            effect_ct::probe_target,
+        )
+        .await;
+        assert_eq!(model_state(&with_default), GrantState::Denied);
+
+        // The session that KNOWS its granted id OVERRIDES the probe target for model → GRANTED (accurate).
+        let over = |family: &str| {
+            if family == effect_ct::MODEL {
+                "claude-x"
+            } else {
+                effect_ct::probe_target(family)
+            }
+        };
+        let with_override =
+            project_manifest(effect_ct::ALL, |f| exec.handles_family(f), &authz, over).await;
+        assert_eq!(model_state(&with_override), GrantState::Granted);
+
+        // effect_ct::probe_target defaults: http gets the .invalid probe, the rest empty.
+        assert_eq!(
+            effect_ct::probe_target(effect_ct::HTTP),
+            "https://probe.invalid/"
+        );
+        assert_eq!(effect_ct::probe_target(effect_ct::MODEL), "");
+        assert_eq!(effect_ct::probe_target("some-extension-family"), "");
     }
 }
