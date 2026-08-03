@@ -436,9 +436,8 @@ impl Session {
         })
     }
 
-    /// The ASYNC twin of [`Session::fire_due_timers`] — fire every armed timer past `now_ms`, driving the
-    /// [`Reducer`] for each. Same determinism (§9c): the FIRED time is the timer's own deadline, not
-    /// `now_ms`, so replay reconstructs identically. Additive alongside the sync `fire_due_timers`.
+    /// Fire every armed timer past `now_ms`, driving the [`Reducer`] for each. Determinism (§9c): the FIRED
+    /// time is the timer's own deadline, not `now_ms`, so replay reconstructs identically.
     pub async fn fire_due_timers_async(
         &mut self,
         now_ms: u64,
@@ -527,9 +526,8 @@ impl Session {
         hash
     }
 
-    /// The ASYNC twin of [`Session::drive`] — same fold→authorize→dispatch→fold-result loop, but the
-    /// reducer folds are `.await`ed (via [`Reducer`]) so a long wasm fold cooperatively yields. The
-    /// authorize/executor/append mechanics are IDENTICAL to the sync path — only the fold calls await.
+    /// Drive one fold→authorize→dispatch→fold-result turn: fold the tip, then work the resulting effects to
+    /// quiescence. Reducer folds + the executor call `.await` (so a long wasm fold cooperatively yields).
     async fn drive(
         &mut self,
         reducer: &dyn Reducer,
@@ -541,13 +539,9 @@ impl Session {
         self.drive_worklist(initial, reducer, authz, executor).await
     }
 
-    /// The ASYNC twin of [`Session::drive_worklist`] — structurally identical (authorize → durable
-    /// dispatch → execute → fold-result), but the reducer folds (`fold_tip`/`record_result`)
-    /// are `.await`ed. The executor call stays SYNC (only the reducer fold yields this slice); the
-    /// authorize/timer/append/S1-latch logic is byte-identical to the sync path. Kept as a parallel copy
-    /// because the fold-call interleaving (which mutates `to_process` mid-loop) can't be factored behind a
-    /// sync/async-agnostic helper without threading a closure per fold point — the duplication is the
-    /// never-red migration cost, removed with the sync path at step 6.
+    /// Work a queue of pending effects to quiescence: for each, apply the control-plane partition, then
+    /// authorize → durable dispatch → execute → fold-result (§16c-S1), pushing any effects the fold emits
+    /// back onto the queue. Reducer folds (`fold_tip`/`record_result`) + the executor call `.await`.
     async fn drive_worklist(
         &mut self,
         mut to_process: Vec<(Effect, Hash)>,
@@ -625,7 +619,7 @@ impl Session {
                 continue;
             }
 
-            // SEC-F1: authorize against the resolved target (same as sync path), awaiting the async gate.
+            // SEC-F1: authorize against the resolved target, awaiting the (possibly wasm) policy gate.
             if let Err(reason) = authz.authorize(&req).await {
                 let denial_hash =
                     self.append(EventBody::AuthzDenied { id, reason, token }, Some(cause));
@@ -635,8 +629,8 @@ impl Session {
                 continue;
             }
 
-            // Timers arm a kernel-fired deadline (§9c), not an executor call — same as sync path. Keyed on
-            // the content-type FAMILY (seq-39), not the legacy kind enum: the kernel routes by family.
+            // Timers arm a kernel-fired deadline (§9c), not an executor call. Keyed on the content-type
+            // FAMILY (seq-39), not the legacy kind enum: the kernel routes by family.
             if req
                 .content_type
                 .matches_family(crate::effect::effect_ct::TIMER)
@@ -671,7 +665,7 @@ impl Session {
 
             let idempotency_key = idempotency_key_for(id, &req);
 
-            // S1: durable dispatch record BEFORE routing (same as sync path).
+            // S1: durable dispatch record BEFORE routing.
             let dispatch_hash = self.append(
                 EventBody::Dispatched {
                     id,
@@ -685,7 +679,7 @@ impl Session {
                 Some(cause),
             );
 
-            // S1 latch-check BEFORE routing (tier B): an un-durable dispatch is NOT routed (same as sync).
+            // S1 latch-check BEFORE routing (tier B): an un-durable dispatch is NOT routed.
             if self.persist_error.is_some() {
                 let outcome = EffectOutcome::Err(
                     "dispatch not durably logged (persist failure) — effect NOT routed (S1)"
@@ -705,8 +699,8 @@ impl Session {
             // is preserved across the await.
             let outcome = executor.perform(&req, idempotency_key).await;
 
-            // MONOTONIC `now` clamp (operator ruling) — same as sync path; only `now` results are clamped.
-            // Keyed on the content-type FAMILY (seq-39), not the legacy kind enum.
+            // MONOTONIC `now` clamp (operator ruling): only `now` results are clamped. Keyed on the
+            // content-type FAMILY (seq-39), not the legacy kind enum.
             let outcome = if req
                 .content_type
                 .matches_family(crate::effect::effect_ct::NOW)
@@ -726,13 +720,12 @@ impl Session {
         control_out
     }
 
-    /// The ASYNC twin of [`Session::fold_tip`] — folds the tip through a [`Reducer`] (`.await`),
-    /// same FoldFailed capture + effect-reversal. This is the ONE place the reducer actually awaits.
+    /// Fold the tip through a [`Reducer`] (`.await`), with FoldFailed capture + effect-reversal. This is
+    /// the ONE place the reducer actually awaits.
     async fn fold_tip(&mut self, reducer: &dyn Reducer, cause: Hash) -> Vec<(Effect, Hash)> {
         let tip = self.log.last().expect("log always has genesis").clone();
         let out = reducer.fold(&tip, &mut self.kv).await;
-        // Error-resilience (§17): a failed fold is captured as a FoldFailed log event, not folded further
-        // — identical to the sync `fold_tip`.
+        // Error-resilience (§17): a failed fold is captured as a FoldFailed log event, not folded further.
         if let Some(reason) = out.failure {
             self.append(
                 EventBody::FoldFailed {
@@ -748,9 +741,8 @@ impl Session {
         v
     }
 
-    /// The ASYNC twin of [`Session::record_result`] — same timeout-cancels (drop a late result for a
-    /// settled id) + token-copy-from-Dispatched-frame invariant, but folds the result through an
-    /// [`Reducer`] (`.await`).
+    /// Record an effect's result + fold it through a [`Reducer`] (`.await`), with timeout-cancels (drop a
+    /// late result for an already-settled id) + the token-copy-from-Dispatched-frame invariant.
     async fn record_result(
         &mut self,
         id: EffectId,
@@ -886,14 +878,12 @@ impl Session {
         self.log.last().expect("log always has genesis").hash()
     }
 
-    /// The ASYNC twin of [`Session::replay`] (operator all-async directive) — reconstruct a session from a
-    /// persisted log, folding each observable event through a [`Reducer`] (`.await`). Identical
-    /// reconstruction of the obligation sets / armed-timer table / `next_effect_id` / `last_now` high-water
-    /// mark; only the re-fold awaits. Additive alongside the sync [`Session::replay`] during the migration;
-    /// the sync one is removed once every reducer is `Reducer` (the operator's "one async trait only").
+    /// Reconstruct a session from a persisted log, folding each observable event through a [`Reducer`]
+    /// (`.await`) and rebuilding the obligation sets / armed-timer table / `next_effect_id` / `last_now`
+    /// high-water mark.
     ///
     /// Effects emitted during replay are IGNORED (§17 "replay re-folds with no live effect" — the results
-    /// are already in the log), exactly as the sync path; so replayed-kv == live-kv (PR#990 finding #1).
+    /// are already in the log); so replayed-kv == live-kv (PR#990 finding #1).
     pub async fn replay(log: Vec<Event>, reducer: &dyn Reducer) -> Result<Session, KernelError> {
         match log.first().map(|e| &e.body) {
             Some(EventBody::Genesis { .. }) => {}
@@ -917,8 +907,7 @@ impl Session {
                     got: event.seq,
                 });
             }
-            // Reconstruct the obligation sets + armed-timer table + id counter from the log (§16c-S1/S5) —
-            // IDENTICAL to the sync `replay`; only the re-fold below awaits.
+            // Reconstruct the obligation sets + armed-timer table + id counter from the log (§16c-S1/S5).
             match &event.body {
                 EventBody::Dispatched { id, .. } => {
                     s.open.insert(id.0);
@@ -1475,8 +1464,8 @@ mod status_snapshot_tests {
     async fn fire_due_timers_async_wakes_the_reducer_and_settles_the_timer() {
         // fire_due_timers_async is a new public API; pin it: arm a timer via an inbound, then fire it and
         // assert (a) it returns 1 (one timer fired), (b) the reducer WOKE (its TimerFired fold ran, writing
-        // the marker), (c) the armed-timer + open-obligation sets drained (the timer settled). Same
-        // determinism as the sync path — recorded fired_ms is the deadline, so replay is stable.
+        // the marker), (c) the armed-timer + open-obligation sets drained (the timer settled). Determinism:
+        // the recorded fired_ms is the timer's deadline, so replay is stable.
         let reducer = TimerThenPublishReducer;
         let mut exec = RecordingExecutor::new();
         let mut s = Session::genesis(Hash::of(b"timer-v1"));
