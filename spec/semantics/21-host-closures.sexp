@@ -2213,8 +2213,9 @@
 
 (case "a closure capturing a RUNTIME String.slice→to-bytes VIEW reads it at host-call dispatch"
   (doc    "The consuming-op-family capture face (the adv-54 op family × the closure env): the factory
-           slices a RUNTIME rope (String.concat then String.slice — nothing folds), converts the slice
-           view with String.to-bytes, and the returned closure captures the resulting Bytes. The host's
+           slices a RUNTIME rope (the concat's second operand branches on the runtime k, so nothing
+           folds), converts the slice view with String.to-bytes, and the returned closure captures the
+           resulting Bytes. The host's
            `call(handle, 0)` reads byte 0 of \"cdefgh\" → 99 ('c'). Pins that a captured runtime
            slice/to-bytes result is evaluated ONCE into the capture cell and read back per call — the
            binding must be KEPT (adv-54's is_runtime_computation discipline) even when its single read
@@ -2222,7 +2223,7 @@
            and ropes; this is the borrowed-view-producing op family.")
   (input  (do
             (def (mk (: k Int64))
-              (let ((s (String.concat "abc" "defgh")))
+              (let ((s (String.concat "abc" (if (> k 1000) "zzz" "defgh"))))
                 (match (String.slice s k 6)
                   ((Some t)
                     (let ((b (String.to-bytes t)))
