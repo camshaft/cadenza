@@ -788,6 +788,7 @@ pass	a RECURSIVE-sum value of runtime depth rides a handler resume
 pass	a REFL tactic closes a reflexivity goal by driving the kernel, and cannot close a false goal
 pass	a RELATIONAL @requires over two parameters enforces their order at entry
 pass	a RESULT-returning effect op is matched on Ok / Err — the fallible-step idiom
+pass	a RESUMING handler around a contracted body still enforces @ensures on the resumed-through value
 pass	a ROMAN DECODER subtracts on lookahead and round-trips through the pinned renderer
 pass	a ROMAN NUMERAL renderer walks a value-symbol table greedily with subtractive pairs
 pass	a ROTATE-BY-K splits at the wrapped offset and swaps the halves, identity at multiples of len
@@ -3543,6 +3544,7 @@ pass	a variant-payload binder shadow is scoped to its arm, not the whole def
 pass	a variant-payload binder shadowing a param in a called def binds the payload
 pass	a velocity multiplied by a time recovers the distance dimension
 pass	a view-interned Symbol participates in Set.to-list content order
+pass	a violated @requires traps BEFORE the body's abortive perform can fire
 pass	a well-formed annotation still checks and accepts a matching type (the control)
 pass	a whole LIST of quantities renders every element scaled to reference in the value form
 pass	a whole MAP holding a quantity VALUE renders it scaled to reference in the value form
@@ -3677,6 +3679,7 @@ pass	an abortive perform in a STRICT OPERAND referencing a let-local binding sta
 pass	an abortive perform in a body tail referencing a do-local binding stays in scope
 pass	an abortive perform in a conditional let binding abandons the computation
 pass	an abortive perform in a connective that is an if-condition abandons the computation when the connective reaches it
+pass	an abortive perform in a contracted body skips the @ensures (an abandoned body has no result)
 pass	an abortive perform in a fused-match arm carries the payload binder out and abandons the rest
 pass	an abortive perform in a short-circuit connective's right operand abandons the computation
 pass	an abortive perform in an if condition abandons the computation before branching

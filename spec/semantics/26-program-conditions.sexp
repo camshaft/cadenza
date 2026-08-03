@@ -3664,3 +3664,58 @@
                       ((Option.None) false))))))
             (export main)))
   (output (: true Bool)))
+
+; --- Contract enforcement × ABORTIVE effects: the conditions surface pins effectful PREDICATES
+; (:2134) and perform-produced ARGUMENTS (:3554), but not the composition with an ABORTIVE
+; perform — a body that never produces a value has no postcondition to check, while the
+; precondition's entry check runs BEFORE anything in the body (including an abort) can fire. ---
+
+(case "an abortive perform in a contracted body skips the @ensures (an abandoned body has no result)"
+  (doc    "`f` carries `@ensures (< ret 10)`; its abort path performs `(Bail.bail 99)`, whose handler arm
+           returns 99 as the HANDLE's value — a value that would VIOLATE the postcondition if it were
+           checked. It must not be: the abort abandons `f`'s body, so there is no function result for
+           `@ensures` to check, and 99 flows out of the handle untrapped. The satisfying path (x=5 → 6)
+           still enforces normally. An implementation that attached the postcondition check to the
+           HANDLE's value (rather than the body's completion) would trap the abort path here.")
+  (input  (do
+            (effect Bail (op bail (-> Int64 Int64)))
+            (@ (ensures (< ret 10)) (def (f (: x Int64))
+              (if (< x 0) (Bail.bail 99) (+ x 1))))
+            (def (main (: x Int64))
+              (handle Bail 0 ((bail (n) s n)) (f x)))
+            (export main)))
+  (call   main (: -3 Int64)) (output (: 99 Int64))
+  (call   main (: 5 Int64)) (output (: 6 Int64)))
+
+(case "a violated @requires traps BEFORE the body's abortive perform can fire"
+  (doc    "Entry-check-first ordering under an abortive body: `f` carries `@requires (> x -100)` and its
+           body's first action on the negative path is the abortive `(Bail.bail 99)`. At x=-500 the
+           precondition is violated, so the entry check traps `unreachable` — the abort (which would have
+           produced a clean 99 through the handler) never fires. At x=-3 the precondition holds and the
+           abort proceeds normally (99). An emit that evaluated any of the body before the entry check
+           would abort instead of trapping at x=-500.")
+  (input  (do
+            (effect Bail (op bail (-> Int64 Int64)))
+            (@ (requires (> x -100)) (def (f (: x Int64))
+              (if (< x 0) (Bail.bail 99) (+ x 1))))
+            (def (main (: x Int64))
+              (handle Bail 0 ((bail (n) s n)) (f x)))
+            (export main)))
+  (call   main (: -500 Int64)) (trap "unreachable")
+  (call   main (: -3 Int64)) (output (: 99 Int64)))
+
+(case "a RESUMING handler around a contracted body still enforces @ensures on the resumed-through value"
+  (doc    "The resumptive companion of the abort-skips-@ensures pin: here the handler RESUMES 50 into the
+           body, so the body COMPLETES (with 50 + x) and its postcondition `(< ret 10)` checks the
+           completed value — x=1 → 51, violated → the canonical unreachable trap. x=-45 → 5 passes. Pins
+           that a resumptive perform does not detach the postcondition: only an ABORT (body never
+           completes) skips it; a body completed via resume is checked like any other.")
+  (input  (do
+            (effect Ask (op get (-> Unit Int64)))
+            (@ (ensures (< ret 10)) (def (f (: x Int64))
+              (+ x (Ask.get))))
+            (def (main (: x Int64))
+              (handle Ask 0 ((get (_u) s (resume 50 s))) (f x)))
+            (export main)))
+  (call   main (: 1 Int64)) (trap "unreachable")
+  (call   main (: -45 Int64)) (output (: 5 Int64)))

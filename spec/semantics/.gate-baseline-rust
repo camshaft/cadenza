@@ -711,6 +711,7 @@ pass	a NEGATIVE large-magnitude float renders its full expansion with its sign
 pass	a NEGATIVE prefixed quantity carries its sign through the reference scale-fold
 pass	a NEGATIVE-constant point fact folds an inner comparison with the correct SIGN — the negative-point twin
 pass	a NON-TAIL host call consumes rows on the unwind, deepest frame first
+pass	a RESUMING handler around a contracted body still enforces @ensures on the resumed-through value
 pass	a ROPE Bytes arg (recursive concat, uncompacted) crosses the host boundary
 pass	a RUNTIME byte-slice torn mid-scalar is rejected by from-bytes at both tear points
 pass	a RUNTIME erased Qty add is still CHECKED at the inner width (overflow traps at run time)
@@ -3604,6 +3605,7 @@ pass	a variant-payload binder shadow is scoped to its arm, not the whole def
 pass	a variant-payload binder shadowing a param in a called def binds the payload
 pass	a velocity multiplied by a time recovers the distance dimension
 pass	a view-interned Symbol participates in Set.to-list content order
+pass	a violated @requires traps BEFORE the body's abortive perform can fire
 pass	a well-formed annotation still checks and accepts a matching type (the control)
 pass	a whole LIST of quantities renders every element scaled to reference in the value form
 pass	a whole MAP holding a quantity VALUE renders it scaled to reference in the value form
@@ -3744,6 +3746,7 @@ pass	an abortive perform in a STRICT OPERAND referencing a let-local binding sta
 pass	an abortive perform in a body tail referencing a do-local binding stays in scope
 pass	an abortive perform in a conditional let binding abandons the computation
 pass	an abortive perform in a connective that is an if-condition abandons the computation when the connective reaches it
+pass	an abortive perform in a contracted body skips the @ensures (an abandoned body has no result)
 pass	an abortive perform in a fused-match arm carries the payload binder out and abandons the rest
 pass	an abortive perform in a short-circuit connective's right operand abandons the computation
 pass	an abortive perform in an if condition abandons the computation before branching
