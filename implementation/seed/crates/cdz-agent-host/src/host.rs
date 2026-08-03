@@ -18,6 +18,7 @@
 //! layer is a later slice that preserves this shape — a tokio task per session driving the same loop.
 
 use cdz_kernel::authz::Authorize;
+use cdz_kernel::effect::effect_ct;
 use cdz_kernel::event::EventBody;
 use cdz_kernel::executor::CompositeExecutor;
 use cdz_kernel::hash::Hash;
@@ -126,15 +127,23 @@ impl HostedSession {
     /// `Session::fork_for_query` clones this session's materialized KV + reducer-hash into a fresh
     /// EPHEMERAL session (clean id-space, no inherited obligations/timers/log, parent's `last_now` floor);
     /// this drives that fork with the caller-supplied collaborators, delivers a `report` event so a
-    /// report-aware reducer summarizes itself, runs to quiescence, and returns the summary from the fork's
-    /// `public/summary` KV — then DROPS the fork (never persisted). The parent is provably untouched (the
-    /// fork is a separate `Session`; this method takes `&self`).
+    /// report-aware reducer summarizes itself, runs to quiescence, and returns the summary the reducer
+    /// emitted as a `control/summary` effect — then DROPS the fork (never persisted). The parent is
+    /// provably untouched (the fork is a separate `Session`; this method takes `&self`).
+    ///
+    /// The summary rides the CONTROL-PLANE return channel (register-by-string beat 3): the reducer emits a
+    /// `control/summary` effect (family [`effect_ct::SUMMARY`]) whose `request.payload` carries the summary
+    /// bytes; `deliver_async_control` returns those authz-exempt, non-routed control effects. We scan the
+    /// returned `Vec<ControlEffect>` for the `control/summary` entry (FILTERING by family, not taking the
+    /// first — `control/capabilities` also rides this channel until it becomes kernel-answered inline) and
+    /// read its inline payload. This replaces the earlier `public/summary` KV convention.
     ///
     /// The caller supplies the fork's `reducer` (the same logic the session runs — a `Box<dyn Reducer>`
     /// can't be cloned out of this `HostedSession`, so the caller re-provides it as a `&dyn Reducer`),
     /// a MODEL-ONLY `authz` (a scoped capability so a summarize-fold can call the model but CANNOT take
     /// world-actions — SEC-F1), and an `executor` to serve that model call. Returns `Some(summary_bytes)`
-    /// if the reducer published `public/summary`, else `None` (it summarized elsewhere / didn't, or erred).
+    /// if the reducer emitted a `control/summary` effect with an inline payload, else `None` (it
+    /// summarized elsewhere / didn't, emitted a blob payload, or the fork erred).
     pub async fn fork_for_query(
         &self,
         reducer: &dyn Reducer,
@@ -143,16 +152,24 @@ impl HostedSession {
     ) -> Option<Vec<u8>> {
         let mut fork = self.session.fork_for_query();
         // Deliver a `report` inbound so a report-aware reducer (branching on ct.is_report()) summarizes
-        // itself from local KV. A KernelError here just means no summary (the fork is discarded regardless).
+        // itself. A KernelError here just means no summary (the fork is discarded regardless).
         let body = EventBody::Inbound {
             content_type: cdz_kernel::event::ContentType::report(),
             payload: cdz_kernel::effect::Payload::Inline(Vec::new().into()),
         };
-        fork.deliver_async(body, None, reducer, authz, executor)
+        let controls = fork
+            .deliver_async_control(body, None, reducer, authz, executor)
             .await
             .ok()?;
-        // The summary the reducer published for observers (§4b tier-1). Cloned out before the fork drops.
-        fork.kv().get(b"public/summary").map(|v| v.to_vec())
+        // The summary the reducer emitted for observers (§4b tier-1), read off the control-plane channel
+        // before the fork drops. Filter by family — `control/capabilities` may also be present.
+        controls
+            .into_iter()
+            .find(|ce| ce.request.content_type.family.as_ref() == effect_ct::SUMMARY)
+            .and_then(|ce| match ce.request.payload {
+                Some(cdz_kernel::effect::Payload::Inline(bytes)) => Some(bytes.to_vec()),
+                _ => None,
+            })
     }
 }
 
@@ -564,19 +581,28 @@ mod tests {
     }
 
     /// A report-aware agent: on a normal inbound it records live work in KV; on a `report` inbound it
-    /// summarizes itself from that local KV into `public/summary` (no model call — the cheap tier-1 path).
+    /// summarizes itself from that local KV and emits the summary as a `control/summary` effect (the
+    /// fork-for-query control-plane pattern, register-by-string beat 3 — no model call, the cheap tier-1
+    /// path). The summary bytes ride the effect's payload; the family drives it (kind is irrelevant for a
+    /// control family).
     struct ReportingAgent;
     #[async_trait::async_trait(?Send)]
     impl Reducer for ReportingAgent {
         async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { content_type, .. } if content_type.is_report() => {
-                    // Summarize from local KV — here, echo the recorded phase into the published summary.
+                    // Summarize from local KV — here, echo the recorded phase into the emitted summary.
                     let phase = kv.get(b"phase").map(|v| v.to_vec()).unwrap_or_default();
                     let mut summary = b"phase=".to_vec();
                     summary.extend_from_slice(&phase);
-                    kv.put(b"public/summary".to_vec(), summary);
-                    FoldOutput::none()
+                    let mut request = EffectRequest::new(
+                        EffectKind::Emit, // kind is irrelevant for a control family; the family drives it
+                        "self",
+                        Some(Payload::Inline(summary.into())),
+                        Timeliness::Interactive,
+                    );
+                    request.content_type.family = effect_ct::SUMMARY.into();
+                    FoldOutput::with(vec![request])
                 }
                 EventBody::Inbound { .. } => {
                     kv.put(b"phase".to_vec(), b"working".to_vec());
@@ -605,12 +631,11 @@ mod tests {
         host.deliver(&id, inbound_go(), None).await;
         let hosted = host.get(&id).unwrap();
         assert_eq!(hosted.session().kv().get(b"phase"), Some(&b"working"[..]));
-        // Precondition: no summary on the LIVE session yet.
-        assert_eq!(hosted.session().kv().get(b"public/summary"), None);
         let live_event_count = hosted.session().log().len();
 
         // Fork-for-query it: caller supplies the same (native Reducer) reducer + a model-only authz
-        // (deny_all here — the summarize fold takes no effects) + an executor. Returns the published summary.
+        // (deny_all here — the summarize fold takes no world-effects; the control/summary effect is
+        // authz-exempt) + an executor. Returns the summary carried on the control-plane channel.
         let mut exec = CompositeExecutor::new();
         let summary = hosted
             .fork_for_query(&ReportingAgent, &Authorizer::deny_all(), &mut exec)
@@ -618,13 +643,14 @@ mod tests {
         assert_eq!(
             summary.as_deref(),
             Some(&b"phase=working"[..]),
-            "the fork summarizes the copied KV state"
+            "the fork summarizes the copied KV state onto the control/summary channel"
         );
 
-        // NON-INTERFERENCE: the live session is byte-for-byte unchanged — no summary appeared on it, and
-        // its log didn't grow (the fork is a separate Session; fork_for_query took &self).
+        // NON-INTERFERENCE: the live session is byte-for-byte unchanged — the fork's report turn left no
+        // trace on it (no new phase write, no summary), and its log didn't grow (the fork is a separate
+        // Session; fork_for_query took &self).
         let hosted = host.get(&id).unwrap();
-        assert_eq!(hosted.session().kv().get(b"public/summary"), None);
+        assert_eq!(hosted.session().kv().get(b"phase"), Some(&b"working"[..]));
         assert_eq!(hosted.session().log().len(), live_event_count);
     }
 }
