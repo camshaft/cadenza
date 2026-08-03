@@ -3379,6 +3379,51 @@ fn rustc_roundtrip_shift_computes_and_traps() {
 }
 
 #[test]
+fn rustc_odd_width_left_shift_overflow_range_checks_the_declared_width_not_the_slot() {
+    // adv-67b (HIGH differential, same family as adv-67): an ODD-width `<<` overflow must trap — the result
+    // out of the DECLARED range escapes on rust while wasm traps. `UInt4 3<<3` = 24 > UInt4 max 15 → MUST
+    // trap. The bug: the overflow check was ONLY the round-trip `(r >> c) != v` done at the SLOT type (i32
+    // for UInt4); 24 fits i32 losslessly, `24>>3`==3==v round-trips clean → 24 escaped (poisoning a CHAMP
+    // Set in the wild). Fix: for an odd width, ALSO range-check `r` against the declared `[min_N, max_N]`.
+    let rs = compile_rust(
+        "(module m (def (go (: k Int64)) \
+           (Int64.of (<< ((. (UInt 4) wrap) 3) ((. (UInt 4) wrap) k)))) (export go))",
+    );
+    // The emit carries a declared-range check (against UInt4's max 15) in addition to the round-trip.
+    assert!(
+        rs.contains("as i128) > 15") && rs.contains("integer overflow in left shift"),
+        "an odd-width << range-checks the result against the declared max (15 for UInt4):\n{rs}"
+    );
+    // End-to-end: 3 << 3 = 24 is out of UInt4 range → must TRAP (was escaping as 24).
+    match rustc_run_traps(&rs, "go(3)") {
+        TrapRun::Trapped(msg) => assert!(
+            msg.contains("overflow"),
+            "UInt4 3<<3 (=24 > max 15) must trap overflow; panic was:\n{msg}"
+        ),
+        TrapRun::RanOk(out) => {
+            panic!("UInt4 3<<3 must TRAP (24 out of range), but ran → {out} (adv-67b)")
+        }
+        TrapRun::NoRustc => {}
+    }
+    // An IN-RANGE odd-width shift still computes: 3 << 2 = 12 (≤ 15). No trap.
+    if let Some(out) = rustc_run(&rs, "go(2)") {
+        assert_eq!(
+            out, "12",
+            "UInt4 3<<2 = 12 is in range (≤ 15), computes normally"
+        );
+    }
+    // CONTROL: an ALIASED width (UInt8) keeps ONLY the round-trip (slot==declared, no separate range check).
+    let aliased = compile_rust(
+        "(module m (def (go (: k Int64)) \
+           (Int64.of (<< ((. (UInt 8) wrap) 3) ((. (UInt 8) wrap) k)))) (export go))",
+    );
+    assert!(
+        aliased.contains("(r >> c) != v") && !aliased.contains("as i128) > 255"),
+        "an aliased UInt8 << uses only the round-trip (no separate declared-range check):\n{aliased}"
+    );
+}
+
+#[test]
 fn a_runtime_shift_count_that_is_a_multiple_of_2_pow_32_traps() {
     // REGRESSION (breaker 2026-07-17): the count guard must range-check the count at its FULL i64
     // width BEFORE narrowing to u32. The prior guard `let c = (count) as u32; if c >= 64` truncated

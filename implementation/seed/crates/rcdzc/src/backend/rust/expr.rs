@@ -4587,13 +4587,37 @@ fn emit_arith(
                     // every reachable input, exactly like the elided wasm path.
                     return Ok(format!("{{ let v: {vty} = {l}; v << ({count}) }}"));
                 }
-                // `<<`: guard the count, shift, then round-trip to detect an overflow (a dropped bit).
+                // `<<`: guard the count, shift, then detect an overflow. The round-trip `(r >> c) != v`
+                // catches a bit dropped at the SLOT width — CORRECT for an ALIASED width (8/16/32/64) where
+                // the slot IS the declared width. But for an ODD/unusual width (UInt4, Int24 — stored in a
+                // strictly-wider slot), an overflow of the DECLARED width fits the slot losslessly, so the
+                // round-trip passes and the out-of-range value ESCAPES (adv-67b, HIGH: `UInt4 3<<3` = 24 >
+                // max 15, `24>>3`==3 round-trips clean → 24 escaped, poisoning a CHAMP Set). So for an odd
+                // width ADD a DECLARED-RANGE check on `r` (the same `[min_N, max_N]` bound the checked +/-/*
+                // unusual-width path uses). An aliased width keeps ONLY the round-trip (slot==declared).
+                let odd_width = (1..=64).contains(&width) && !matches!(width, 8 | 16 | 32 | 64);
+                let range_check = if odd_width {
+                    let signed = it.ground_signed();
+                    let (min_n, max_n): (i128, i128) = if signed {
+                        let half = 1i128 << (width - 1);
+                        (-half, half - 1)
+                    } else {
+                        (0, (1i128 << width) - 1)
+                    };
+                    // `r` is the slot type `vty`; compare via i128 to avoid any slot-width truncation in the
+                    // literal bounds (an odd width is < 64 bits, so both bounds fit i128 comfortably).
+                    format!(
+                        "if ((r as i128) < {min_n} || (r as i128) > {max_n}) {{ panic!(\"integer overflow in left shift\") }} "
+                    )
+                } else {
+                    String::new()
+                };
                 Ok(format!(
                     "{{ let v: {vty} = {l}; let c64 = ({count}) as i64; \
                      if !(0..{width}).contains(&c64) {{ panic!(\"shift count out of range\") }} \
                      let c = c64 as u32; \
                      let r = v << c; \
-                     if (r >> c) != v {{ panic!(\"integer overflow in left shift\") }} r }}"
+                     if (r >> c) != v {{ panic!(\"integer overflow in left shift\") }} {range_check}r }}"
                 ))
             }
         }
