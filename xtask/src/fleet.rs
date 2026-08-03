@@ -8111,9 +8111,13 @@ fn publish_candidate(
     // candidate; the reap/audit (`ref_landed_on_trunk`) concludes an already-landed MR correctly.
     //
     // Only a SUCCESSFUL `rev-list` returning 0 is the empty-range no-op. A rev-list ERROR (bad ref,
-    // missing object, spawn failure) must NOT collapse to 0 — that would silently mask the failure as
-    // a no-op (PR #1719 review). On error → `None` → fall through to the cherry-pick, which surfaces
-    // the real conflict/error via the reject path rather than swallowing it.
+    // missing object, spawn failure) must NOT collapse to 0 (that would mask the failure as a no-op —
+    // PR #1719) AND must NOT fall through to the cherry-pick (whose failure emits the misleading
+    // "CONFLICTS → needs rebase → reject stale-base" message — the exact mislabel #1712 fixed, which
+    // would then HIDE the real rev-list error — PR #1725 review). Handle all three faces explicitly:
+    //   success + count==0  → empty-range no-op (already reachable from trunk)
+    //   success + count>0    → real range → proceed to cherry-pick below
+    //   error (bad ref / missing object / spawn) → surface stderr + bail (NOT a conflict)
     let range_count: Option<usize> = Command::new("git")
         .current_dir(&scratch)
         .args(["rev-list", "--count", &range])
@@ -8121,12 +8125,29 @@ fn publish_candidate(
         .ok()
         .filter(|o| o.status.success())
         .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok());
-    if range_count == Some(0) {
-        println!(
-            "publish-candidate: {ref} has NOTHING to land (trunk..{ref} is empty — already reachable from trunk). Not dispatching a no-op candidate; the audit/reap will ack it as already-landed."
-        );
-        cleanup(&fleet.repo, &scratch_s);
-        return false;
+    match range_count {
+        Some(0) => {
+            println!(
+                "publish-candidate: {ref} has NOTHING to land (trunk..{ref} is empty — already reachable from trunk). Not dispatching a no-op candidate; the audit/reap will ack it as already-landed."
+            );
+            cleanup(&fleet.repo, &scratch_s);
+            return false;
+        }
+        None => {
+            // rev-list itself FAILED — surface the real error, don't let it masquerade as a conflict.
+            let stderr = Command::new("git")
+                .current_dir(&scratch)
+                .args(["rev-list", "--count", &range])
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stderr).trim().to_string())
+                .unwrap_or_else(|e| format!("(could not spawn git: {e})"));
+            eprintln!(
+                "publish-candidate: `git rev-list --count {range}` FAILED — NOT dispatching (this is a rev-list error, e.g. an invalid/missing ref, NOT a stale-base conflict). git said: {stderr}"
+            );
+            cleanup(&fleet.repo, &scratch_s);
+            return false;
+        }
+        Some(_) => {} // real range with commits — proceed to the cherry-pick below.
     }
     let pick = Command::new("git")
         .current_dir(&scratch)
