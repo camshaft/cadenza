@@ -47,22 +47,28 @@ fn run(args: &[&str]) -> (bool, String, String) {
         }
     };
     // Read the piped handles directly — the child is already reaped, so `wait_with_output()` would be a
-    // double-wait. Both handles were piped at spawn, so `take()` yields them.
-    let mut stdout = String::new();
-    let mut stderr = String::new();
+    // double-wait. Read into bytes then `from_utf8_lossy` (NOT `read_to_string`, which PANICS on a single
+    // non-UTF8 byte) so non-UTF8 diagnostic output is captured LOSSILY — the same robustness the prior
+    // `wait_with_output()` + `from_utf8_lossy` had. Both handles were piped at spawn, so `take()` yields them.
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
     child
         .stdout
         .take()
         .expect("piped stdout")
-        .read_to_string(&mut stdout)
+        .read_to_end(&mut stdout)
         .expect("read stdout");
     child
         .stderr
         .take()
         .expect("piped stderr")
-        .read_to_string(&mut stderr)
+        .read_to_end(&mut stderr)
         .expect("read stderr");
-    (status.success(), stdout, stderr)
+    (
+        status.success(),
+        String::from_utf8_lossy(&stdout).into_owned(),
+        String::from_utf8_lossy(&stderr).into_owned(),
+    )
 }
 
 /// A fresh workspace root under a unique temp dir.
