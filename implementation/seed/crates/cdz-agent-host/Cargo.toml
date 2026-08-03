@@ -23,7 +23,11 @@ publish = false
 # OFF by default so the default build/tests never make a network call or need AWS credentials, exactly
 # like cdz-kernel's `live-exec` gates the one subprocess-spawning executor. CI lints AND tests
 # `--features live-net` where a runner has egress; the default gate stays hermetic.
-live-net = []
+#
+# It enables the real transports' network deps (reqwest for the HTTP client) — kept OPTIONAL so the
+# default build never compiles them (no reqwest/hyper/rustls tree, no network types). `dep:reqwest`
+# binds the optional dependency to this feature only.
+live-net = ["dep:reqwest"]
 
 [dependencies]
 # The kernel whose Executor/Authorize traits + effect/event types we implement. Path dep across the
@@ -48,3 +52,10 @@ tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
 # (all async, single trait each). My `ModelTransport`/`HttpTransport` sub-traits + my native `impl Executor`
 # for the executors use `#[async_trait(?Send)]` (single-threaded host, non-Send transport futures — §15b).
 async-trait = "0.1"
+# reqwest — the real async HTTP client behind the `HttpTransport` seam. OPTIONAL, enabled only by
+# `live-net` (default build never compiles it — keeps the hermetic gate free of the network/TLS tree).
+# `rustls-tls` (not the platform's OpenSSL) so it builds on any runner with no system SSL dep;
+# `default-features = false` drops the default native-tls + the blocking client we don't use. The
+# single-threaded host awaits reqwest's async client directly (no `Send` bound needed — `#[cfg]`-gated
+# `ReqwestHttpTransport` is constructed on the host task).
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"], optional = true }

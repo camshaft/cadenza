@@ -206,6 +206,104 @@ impl<T: HttpTransport> Executor for HttpExecutor<T> {
     }
 }
 
+/// The REAL HTTP client transport (behind `live-net`) — a thin adapter over [`reqwest`] filling the
+/// [`HttpTransport`] seam the [`HttpExecutor`] already routes to. Needs no credentials (an HTTP fetch),
+/// so this is the first live transport to land; the Bedrock model transport (SigV4 + creds) follows.
+///
+/// The kernel already gated the resolved URL's host (SEC-F1 SSRF/exfil guard) BEFORE dispatch, so this
+/// does NOT re-authorize — it just performs the request. It maps a completed request (any status) to
+/// `Ok(HttpResponse)` and a TRANSPORT failure to a retryability-classified `Err` (§9d/§17): a timeout or
+/// connect error is [`retry::retryable`], a builder/decode/redirect-policy failure is
+/// [`retry::permanent`]. Credentials come from the ambient environment where relevant (none needed here).
+#[cfg(feature = "live-net")]
+pub struct ReqwestHttpTransport {
+    client: reqwest::Client,
+}
+
+#[cfg(feature = "live-net")]
+impl ReqwestHttpTransport {
+    /// Build the transport with a default client. A client build failure (e.g. no TLS backend) is a
+    /// permanent host misconfiguration surfaced at construction, not per-request.
+    pub fn new() -> Result<Self, String> {
+        reqwest::Client::builder()
+            .build()
+            .map(|client| ReqwestHttpTransport { client })
+            .map_err(|e| retry::permanent(format!("failed to build the HTTP client: {e}")))
+    }
+}
+
+#[cfg(feature = "live-net")]
+#[async_trait::async_trait(?Send)]
+impl HttpTransport for ReqwestHttpTransport {
+    async fn request(
+        &self,
+        method: HttpMethod,
+        url: &str,
+        headers: &[(String, String)],
+        body: Option<&[u8]>,
+        _idempotency_key: Hash,
+    ) -> Result<HttpResponse, String> {
+        // Method + URL. reqwest parses the method string; an unparseable custom method (control chars,
+        // spaces) is a structural PERMANENT error (the request line can't be formed).
+        let reqwest_method =
+            reqwest::Method::from_bytes(method.as_str().as_bytes()).map_err(|e| {
+                retry::permanent(format!("invalid HTTP method {:?}: {e}", method.as_str()))
+            })?;
+        let mut builder = self.client.request(reqwest_method, url);
+        for (k, v) in headers {
+            builder = builder.header(k, v);
+        }
+        if let Some(b) = body {
+            builder = builder.body(b.to_vec());
+        }
+
+        // A transport-level failure (the request never completed) → classified Err. A COMPLETED request
+        // with any status (incl. 4xx/5xx) is Ok — the reducer decides what a status means, not us.
+        let resp =
+            self.client
+                .execute(builder.build().map_err(|e| {
+                    retry::permanent(format!("failed to build the HTTP request: {e}"))
+                })?)
+                .await
+                .map_err(classify_reqwest_error)?;
+
+        let status = resp.status().as_u16();
+        let resp_headers: Vec<(String, String)> = resp
+            .headers()
+            .iter()
+            .map(|(name, value)| {
+                // A header value that isn't valid UTF-8 is lossily rendered rather than dropped — a
+                // reducer reading headers gets every header, and non-text values are rare on the paths an
+                // agent fetches. (The status + body are unaffected.)
+                (
+                    name.as_str().to_string(),
+                    String::from_utf8_lossy(value.as_bytes()).into_owned(),
+                )
+            })
+            .collect();
+        // The body read can itself fail mid-stream (connection dropped) — a transport failure, classified.
+        let body = resp.bytes().await.map_err(classify_reqwest_error)?;
+
+        Ok(HttpResponse {
+            status,
+            headers: resp_headers,
+            body,
+        })
+    }
+}
+
+/// Classify a reqwest error into the supervision retryability token (§17). A timeout or a connect-level
+/// failure is transient (the endpoint may recover) → retryable; anything else (a redirect-policy or
+/// decode failure, a malformed URL that slipped the builder) is permanent by default (fail-closed).
+#[cfg(feature = "live-net")]
+fn classify_reqwest_error(e: reqwest::Error) -> String {
+    if e.is_timeout() || e.is_connect() {
+        retry::retryable(format!("HTTP transport failure: {e}"))
+    } else {
+        retry::permanent(format!("HTTP transport failure: {e}"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
