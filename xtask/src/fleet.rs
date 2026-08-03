@@ -2439,10 +2439,7 @@ fn find_stale_queued_mrs(fleet: &Fleet, now: u64) -> Vec<(String, String, String
         }
         // In flight if a live ci-dispatch record names this ref (prefix-tolerant, git shas). Cheap
         // (in-memory set), so checked before any git call.
-        let in_flight = in_flight_refs.iter().any(|r| {
-            let (a, b) = (r.to_ascii_lowercase(), mr.r#ref.to_ascii_lowercase());
-            a.starts_with(&b) || b.starts_with(&a)
-        });
+        let in_flight = in_flight_refs.iter().any(|r| refs_match(r, &mr.r#ref));
         if in_flight {
             continue;
         }
@@ -7649,6 +7646,18 @@ fn dispatch_is_in_flight(d: &CiDispatch) -> bool {
     d.status == "in-flight"
 }
 
+/// Do two git refs name the same commit, tolerant of abbreviation? Candidate refs are stored at
+/// varying widths (a 9-char abbrev in one place, a full 40-char sha in another), so an exact `==`
+/// misses a real match. Case-insensitive prefix match either direction (the git convention: `abc123`
+/// matches `abc123def…`). Empty on either side never matches (an unknown ref must not alias). Pure.
+fn refs_match(a: &str, b: &str) -> bool {
+    if a.is_empty() || b.is_empty() {
+        return false;
+    }
+    let (a, b) = (a.to_ascii_lowercase(), b.to_ascii_lowercase());
+    a.starts_with(&b) || b.starts_with(&a)
+}
+
 /// The `.claude/fleet/ci-dispatch/` directory holding the in-flight MR↔PR state records.
 fn ci_dispatch_dir(fleet: &Fleet) -> PathBuf {
     fleet.root.join("ci-dispatch")
@@ -7884,13 +7893,20 @@ fn write_ci_dispatch(fleet: &Fleet, d: &CiDispatch) -> std::io::Result<()> {
 ///
 /// Any step failing aborts + cleans up the scratch worktree; nothing partial is recorded.
 fn publish_candidate(fleet: &Fleet, r#ref: &str, agent: &str, mr_file: &str, execute: bool) {
-    // Idempotency: never re-dispatch a ref/agent already in flight (the reaper owns concluding it).
+    // Idempotency: never re-dispatch THIS ref while it is IN FLIGHT (the reaper owns concluding it).
+    // Two scoping rules matter (pr-sync executor nit, 2026-08-03):
+    //   - Filter to `dispatch_is_in_flight`: the reap marks a concluded record `merged`/`rejected` but
+    //     leaves the file, so a resolved record must NOT block anything.
+    //   - Match on the REF (prefix-tolerant), NOT the agent: matching agent-alone made a lingering
+    //     resolved record for agent X block a NEW, different-ref MR from X (blocked f2f69b7a2 behind a
+    //     reaped #1581 for 2 passes). One agent can legitimately have several distinct refs queued.
     if let Some(d) = read_ci_dispatches(fleet)
         .into_iter()
-        .find(|d| d.r#ref == r#ref || (d.agent == agent && !agent.is_empty() && agent != "unknown"))
+        .filter(dispatch_is_in_flight)
+        .find(|d| refs_match(&d.r#ref, r#ref))
     {
         eprintln!(
-            "publish-candidate: '{agent}' @ {ref} is ALREADY in flight as PR #{} (branch {}) — refusing to re-dispatch.",
+            "publish-candidate: {ref} is ALREADY in flight as PR #{} (branch {}) — refusing to re-dispatch.",
             d.pr_number, d.cand_branch
         );
         return;
@@ -8272,20 +8288,42 @@ fn schedule_plan(fleet: &Fleet, cap: usize) {
     }
 }
 
-/// Mark an in-flight `CiDispatch` record RESOLVED (status → `merged`/`rejected`) so a later
-/// `schedule-pass` reap skips it (idempotent — a re-run won't re-ack or re-FF). Rewrites the record in
-/// place (atomic tmp+rename via `write_ci_dispatch`). We resolve-in-place rather than delete so the
-/// record survives as an audit trail + so a crash mid-pass leaves a resolved (not vanished) record.
+/// RETIRE an in-flight `CiDispatch` record once its PR is reaped (merged/rejected) and the sender has
+/// been acked. Called only AFTER a successful `ack` (which archives the MR + delivers the reply — that
+/// is the durable audit trail), so the record's job is done: DELETE it.
+///
+/// We delete rather than leave a `status:"merged"`/`"rejected"` file (the old resolve-in-place) because
+/// a lingering resolved record was clutter pr-sync tidied by hand each tick, and — before the guard was
+/// scoped to in-flight + ref — even blocked a NEW different-ref MR from the same agent (executor nit,
+/// 2026-08-03). If deletion FAILS, fall back to resolving in-place (status → merged/rejected) so a
+/// leftover record is never re-reaped as in-flight: `dispatch_is_in_flight` filters a resolved record
+/// out, keeping the reap idempotent. The `status` arg feeds that fallback.
 fn mark_dispatch_resolved(fleet: &Fleet, d: &CiDispatch, status: &str) {
-    let resolved = CiDispatch {
-        status: status.to_string(),
-        ..d.clone()
+    let dir = ci_dispatch_dir(fleet);
+    let name = if d.mr_file.ends_with(".json") {
+        d.mr_file.clone()
+    } else {
+        format!("{}.json", d.mr_file)
     };
-    if let Err(e) = write_ci_dispatch(fleet, &resolved) {
-        eprintln!(
-            "schedule-pass: PR #{} reaped ({status}) but FAILED to resolve its ci-dispatch record ({e}) — a re-run may re-process it; resolve by hand: {}",
-            d.pr_number, d.mr_file
-        );
+    let path = dir.join(&name);
+    // Delete the retired record. Treat "already gone" (NotFound) as success — idempotent on re-run.
+    match std::fs::remove_file(&path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => {
+            // Deletion failed for a real reason — fall back to resolve-in-place so the reap still skips
+            // it (a leftover in-flight record would be re-reaped; a resolved one is filtered out).
+            let resolved = CiDispatch {
+                status: status.to_string(),
+                ..d.clone()
+            };
+            if let Err(e) = write_ci_dispatch(fleet, &resolved) {
+                eprintln!(
+                    "schedule-pass: PR #{} reaped ({status}) but FAILED to retire its ci-dispatch record ({e}) — a re-run may re-process it; delete by hand: {}",
+                    d.pr_number, d.mr_file
+                );
+            }
+        }
     }
 }
 
@@ -13490,6 +13528,30 @@ HEAD abc
 branch refs/heads/fleet/trunk-tools
 ";
         assert_eq!(parse_trunk_worktree(substring), None);
+    }
+
+    #[test]
+    fn refs_match_is_prefix_tolerant_case_insensitive_never_matches_empty() {
+        // A full sha and its abbreviation are the same ref (either direction).
+        assert!(refs_match(
+            "f2f69b7a2",
+            "f2f69b7a209c9416a2d1e007ad64235915e81c8a"
+        ));
+        assert!(refs_match(
+            "f2f69b7a209c9416a2d1e007ad64235915e81c8a",
+            "f2f69b7a2"
+        ));
+        // Case-insensitive (git shas are hex; callers may upper/lower them).
+        assert!(refs_match("ABC123", "abc123def"));
+        // Identical refs match.
+        assert!(refs_match("a6b4039ea", "a6b4039ea"));
+        // THE BUG THIS GUARDS: two DIFFERENT refs from the same agent must NOT alias (f2f69b7a2 was
+        // blocked behind a reaped a6b4039ea because the old guard matched agent-alone, not ref).
+        assert!(!refs_match("f2f69b7a2", "a6b4039ea"));
+        // Empty on either side never matches — an unknown/absent ref must not alias to anything.
+        assert!(!refs_match("", "abc123"));
+        assert!(!refs_match("abc123", ""));
+        assert!(!refs_match("", ""));
     }
 
     #[test]
