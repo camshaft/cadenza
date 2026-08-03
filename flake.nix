@@ -294,6 +294,7 @@
         # (A later increment has the runtime/harness RESOLVE from this store; that's a cross-territory
         # change coordinated with v-runtime + the harness — this increment only PRODUCES the store.)
         componentStore = pkgs.runCommand "cdz-component-store" { } ''
+          set -euo pipefail
           mkdir -p "$out"
           for c in ${runtime} ${runtimeDebug} ${reducerGuest} ${cedarGuest}; do
             h=$(${pkgs.coreutils}/bin/sha256sum "$c" | ${pkgs.coreutils}/bin/cut -d' ' -f1)

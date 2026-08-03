@@ -1,12 +1,13 @@
 # Scoping: move the build/test pipeline to a Nix flake
 
 > **⚡ CURRENT STATE (2026-08-03, owner `v-nix`) — READ THIS FIRST; the N0–N4 plan below is the
-> ORIGINAL scoping, since SUPERSEDED by an operator redesign.** Ownership moved from `v-fleet-tooling`
+> ORIGINAL scoping, now superseded by an operator redesign.** (The redesign's stages are labelled
+> **R1–R4** — the "R" scheme replaces the original N0–N4 below.) Ownership moved from `v-fleet-tooling`
 > to a dedicated **`v-nix`** vertical (2026-08-02). The operator then clarified the hash approach
-> (2026-08-03): the wasm content hash must be **DERIVED FROM THE BUILT BYTES** (it falls out of nix
+> (2026-08-03): the wasm content hash must be **DERIVED FROM THE BUILT BYTES** (it falls out of Nix
 > building the artifact), **never** a hand-pinned literal and **not** read from `runtime_abi.rs`. Target
-> architecture: **a derivation per wasm component** (rust or cadenza) → all in a **nix store** keyed by
-> derived hash → the **runtime + harness load by hash** → **nix builds the whole repo deterministically**.
+> architecture: **a derivation per wasm component** (rust or cadenza) → all in a **Nix store** keyed by
+> derived hash → the **runtime + harness load by hash** → **Nix builds the whole repo deterministically**.
 > Full north star + staging + coordination = the `nix-deterministic-build-north-star-hash-from-built-wasm`
 > memory. **LANDED on trunk:** N0 devShell; N1 runtime + debug-counters as NORMAL (input-addressed)
 > derivations with `packages.*-hash` derived from the built bytes + `checks.*-hash-parity` (parity vs the
@@ -16,7 +17,7 @@
 > cdz-run's `default_store()` (v-runtime owns it; kernel + host need ZERO change — both are
 > content-address-agnostic) + a flake hook exporting it; R3 = invert `xtask codegen` to CONSUME the
 > nix-built hash; consumer test-arms (reducer `REDUCER_GUEST_COMPONENT`, cedar `CEDAR_POLICY_COMPONENT`).
-> No cutover — the nix store is opt-in first, parallel-proven, before retiring `target/cadenza-store`.
+> No cutover — the Nix store is opt-in first, parallel-proven, before retiring `target/cadenza-store`.
 
 Status (ORIGINAL scoping, historical): COMMITTED DIRECTION — N0 DONE, N1+ held for CI-lanes cutover
 (v-fleet-tooling, 2026-08-02; see the Status section at the bottom for the resolved operator decisions).
