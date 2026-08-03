@@ -772,10 +772,18 @@ fn top_item_defined_name(ast: &Arenas, item: StructId) -> Option<String> {
             _ => None,
         };
     }
-    if let Some(tail) = ast
-        .as_form(item, "type")
-        .or_else(|| ast.as_form(item, "effect"))
-    {
+    // A `(type …)` decl's name is decoded via the shared helper: a bare atom `(type Box …)` OR a
+    // parenthesized generic head `(type (Box a) …)` (the head atom is the name). Without the helper, a bare
+    // `tail.first().as_name()` returned `None` for a `(List)` head, so a parenthesized-head generic type was
+    // INVISIBLE to export/import name resolution (link.rs:413) — treated un-exported/absent (Copilot #1683).
+    if let Some(tail) = ast.as_form(item, "type") {
+        return tail
+            .first()
+            .and_then(|&s| ast.type_decl_head_name(s))
+            .map(str::to_string);
+    }
+    // An `(effect E …)` name is always a bare atom (no parenthesized generic-effect form), so read it plain.
+    if let Some(tail) = ast.as_form(item, "effect") {
         return tail
             .first()
             .and_then(|&s| ast.as_name(s))

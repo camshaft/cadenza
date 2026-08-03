@@ -24219,6 +24219,46 @@ mod match_engine {
     }
 
     #[test]
+    fn a_parenthesized_head_type_decl_dedups_repeated_head_params() {
+        // #1683 review gap (1): the parenthesized-head param collect must DE-DUP. A `(type (Box a a) …)`
+        // (a repeated head param — degenerate but well-formed input) must yield ONE param `a`, not `[a, a]`,
+        // so `decl.params.len()` is the true arity (an overcount made the ctor scheme read higher-arity →
+        // mis-type/render). `(Mk k)` through `(Box Int64)` = k.
+        assert_eq!(
+            run_returns_with::<i64>(
+                &component(
+                    "(module m (type (Box a a) (Mk a)) \
+                       (def (u (: b (Box Int64))) (match b ((Mk v) v))) \
+                       (def (main (: k Int64)) (u (Mk k))) (export main))"
+                ),
+                "main",
+                &[wasmtime::component::Val::S64(5)],
+            ),
+            5
+        );
+    }
+
+    #[test]
+    fn a_parenthesized_head_generic_type_name_is_visible_to_the_export_reader() {
+        // #1683 review gap (2): sibling `(type …)`-tail name-readers (the linker's `top_item_defined_name`,
+        // used for export/import name resolution) must decode the parenthesized `(type (Box a) …)` head via
+        // the shared `Arenas::type_decl_head_name`, not a bare `tail.first().as_name()` (which returns None
+        // for the `(Box a)` list head → the type was invisible/un-exported). A bare `(export Box)` of the
+        // generic type NAME now RESOLVES the name (it reaches the abstract-type-handle export path, whose
+        // single-module message names `Box` as a TYPE — proving the name resolved — rather than an
+        // "unknown"/absent). The message naming `Box` is the witness that the export reader saw the name.
+        let msg = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (type (Box a) (Mk a)) (def (main) 0) (export main) (export Box))",
+        )))
+        .expect_err("a bare type-handle export in a single module reports the no-importer message")
+        .message;
+        assert!(
+            msg.contains("`Box` names a TYPE") || msg.contains("abstract-type"),
+            "the export reader resolved the parenthesized-head generic name `Box`, got: {msg}"
+        );
+    }
+
+    #[test]
     fn a_generic_same_name_newtype_constructs_and_matches() {
         // Generic + same-name compose: `(type Box (Box a))` constructs `(Box 42)` by the type name and
         // matches `(Box n)`, erasing to the raw payload. (The head-position rule fires on the USER node;

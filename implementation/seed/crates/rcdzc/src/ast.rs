@@ -1147,6 +1147,24 @@ impl Arenas {
         }
     }
 
+    /// The declared TYPE NAME from a `(type …)` decl's FIRST tail element `head_occ` (the element after the
+    /// `type` keyword). Two spellings: a BARE atom `(type Box …)` — the atom IS the name — OR a
+    /// PARENTHESIZED head `(type (Box a b…) …)` — a `(Name params…)` list whose HEAD atom is the name.
+    /// `None` if `head_occ` is neither (a malformed decl). The ONE place both spellings are decoded, so every
+    /// raw `(type …)`-tail name-reader (the linker's export/import `top_item_defined_name`, the
+    /// invariant-establish plan, the proptest `classify_sum`/`name_resolves_to_user_type`, and
+    /// `scan_type_decl` itself) agrees — a bare `head_occ.as_name()` returns `None` for a `(List)` head, so
+    /// without this a parenthesized-head generic type was INVISIBLE to those readers (un-exported / not a
+    /// known user type). See [`crate::db::scan_type_decl`].
+    pub fn type_decl_head_name(&self, head_occ: StructId) -> Option<&str> {
+        match self.get(head_occ) {
+            // Bare-atom name: `(type Box …)`.
+            Struct::Atom(_) => self.as_name(head_occ),
+            // Parenthesized `(Name params…)` head: the list's head atom is the name.
+            Struct::List(kids) => kids.first().and_then(|&h| self.as_name(h)),
+        }
+    }
+
     /// If `id` is a `List` headed by the STRING-LITERAL `head` (a primitive constructor spelling like
     /// `"tuple"`/`"record"`), the tail (the argument occurrences). The string-head twin of [`as_form`].
     pub fn as_ctor_form(&self, id: StructId, head: &str) -> Option<&[StructId]> {

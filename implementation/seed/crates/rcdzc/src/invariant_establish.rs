@@ -280,9 +280,11 @@ pub(crate) fn synthesize(ast: &mut Arenas) -> crate::fxhash::FxHashSet<StructId>
         let Some(type_tail) = ast.as_form(inner, "type").map(<[_]>::to_vec) else {
             continue;
         };
+        // Name via the shared decoder (bare atom OR parenthesized `(Name a)` generic head), so an
+        // `@invariant` on a generic type declared `(type (Box a) …)` is recognized, not skipped.
         let Some(type_name) = type_tail
             .first()
-            .and_then(|&n| ast.as_name(n))
+            .and_then(|&n| ast.type_decl_head_name(n))
             .map(str::to_string)
         else {
             continue;
