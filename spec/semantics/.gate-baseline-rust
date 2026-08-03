@@ -704,6 +704,7 @@ pass	a Map accumulator threaded through a non-tail double tree recursion accumul
 pass	a Map keyed by a (Bytes, Int64) tuple is looked up by content through the compound key descent
 pass	a Map keyed by a COMPOUND containing an abstract type is rejected (opacity — the key path compares the abstract leaf)
 pass	a Map keyed by a DEEPLY-nested compound containing an abstract type is rejected (opacity recurses to any depth)
+pass	a Map keyed by a record CONTAINING a Set hits through the triple-nested descent
 pass	a Map keyed by two full-hash-colliding keys stores + retrieves each value by identity
 pass	a Map over three full-hash-colliding keys retrieves each value; removing one keeps siblings' values
 pass	a Map rebuilt by folding Map.insert over its own Map.to-list equals the original
@@ -875,6 +876,7 @@ pass	a SCALAR do-def resumed in both slots stays in scope (scalar twin of the du
 pass	a SELECT-axiom theorem is unforgeable — its Thm cannot be fabricated outside the kernel
 pass	a SELF-RECURSIVE named def passed as a value is applied twice through the parameter
 pass	a SET as a Map key hits by ORDER-INDEPENDENT inner-set content
+pass	a SET as a Map key hits by canonical content and a different set misses
 pass	a SET as a set element hashes by content: three build orders, one element
 pass	a SET handler state grows per perform and dedupes a repeated event
 pass	a SET of SETS dedups elements by set CONTENT — insertion-order twins collapse
@@ -895,6 +897,7 @@ pass	a SYM tactic reduces a goal to a subgoal plus a kernel justification (backw
 pass	a SYMBOL compound = has DISCRIMINATING power (two runtime-selected interned names separate)
 pass	a SYMBOL-returning effect op interns through the handler and results compare by content
 pass	a Set of (Int64, Bytes) tuples orders by int then Bytes lexicographically and dedups by content
+pass	a Set of MAPS-OF-SETS dedupes by full-depth content
 pass	a Set of lists-of-quantities dedups equal members and keeps distinct ones
 pass	a Set of nested tuple-in-tuple float keys dedups equal members by content
 pass	a Set of nominal-over-quantity newtypes dedups equal members

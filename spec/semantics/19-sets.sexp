@@ -3305,3 +3305,53 @@
                 (_other -1)))
             (export main)))
   (call   main (: 1 Int64)) (output (: 111 Int64)))
+
+; ── CHAMP values as keys INSIDE other CHAMP values — the nesting-depth ladder ─────────────────────
+; The collision pins above cover intra-node identity; these pin the DESCENT: a Set as a Map key needs
+; the runtime to hash and order the nested CHAMP by canonical content; a record wrapping a Set nests
+; the descent through row layout; a Set OF maps-of-sets stacks it four deep. Every face contrasts a
+; content-equal hit against a decoy miss, so a depth-limited (or handle-identity) hash fails visibly.
+
+(case "a SET as a Map key hits by canonical content and a different set misses"
+  (doc    "A Map keyed by `(Set.of (list 1 2))` probed with the runtime-built `(Set.of (list k 1))`: at
+           k=2 the sets are content-equal (insertion order irrelevant — CHAMP canonicalizes) → 42; at
+           k=3 the probe is a different set → -1. The key path must hash + compare the NESTED CHAMP by
+           its canonical content — a key hash over the set's handle (or a truncated-depth walk) misses
+           the k=2 hit or false-hits the k=3 miss.")
+  (input  (do
+            (def (main (: k Int64))
+              (match (Map.lookup (Map.insert Map.empty (Set.of (list 1 2)) 42) (Set.of (list k 1)))
+                ((Some v) v) ((None _u) -1)))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 42 Int64))
+  (call   main (: 3 Int64)) (output (: -1 Int64)))
+
+(case "a Map keyed by a record CONTAINING a Set hits through the triple-nested descent"
+  (doc    "The record layer between the two CHAMPs: the key `(record (s (Set.of (list 1 2))) (id 7))`
+           nests map→record→set. The probe rebuilds the record with a runtime-element set — content-equal
+           at n=2 (42), a different inner set at n=3 (-1). The key walk must descend row layout INTO the
+           set's canonical content; a row hash that stopped at the set's slot handle splits the hit.")
+  (input  (do
+            (def (main (: n Int64))
+              (match (Map.lookup (Map.insert Map.empty (record (s (Set.of (list 1 2))) (id 7)) 42)
+                                 (record (s (Set.of (list n 1))) (id 7)))
+                ((Some v) v) ((None _u) -1)))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 42 Int64))
+  (call   main (: 3 Int64)) (output (: -1 Int64)))
+
+(case "a Set of MAPS-OF-SETS dedupes by full-depth content"
+  (doc    "Four CHAMP layers: the outer Set's elements are Maps whose keys are Sets. At n=2 the first two
+           elements are content-equal (their inner sets {1,2} and {2,1} canonicalize identically, same
+           value \"v\") and the third differs by VALUE only (\"w\") → 2 elements. At n=3 the first
+           element's inner set is {1,3} → all three distinct → 3. Dedupe must reach through map-entry →
+           set-key at full depth; a hash truncated at any layer collapses or splits an element.")
+  (input  (do
+            (def (main (: n Int64))
+              (Set.len (Set.of (list
+                (Map.insert Map.empty (Set.of (list 1 n)) "v")
+                (Map.insert Map.empty (Set.of (list 2 1)) "v")
+                (Map.insert Map.empty (Set.of (list 1 2)) "w")))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 2 Int64))
+  (call   main (: 3 Int64)) (output (: 3 Int64)))
