@@ -368,3 +368,58 @@ fn metadata_surfaces_manifest_warnings_so_null_malformed_is_distinguishable_from
     );
     let _ = std::fs::remove_dir_all(&dir2);
 }
+
+#[test]
+fn metadata_reports_the_dependency_graph_in_the_deps_array() {
+    // The metadata JSON documents a `"deps"` array = the project's `def deps` path-dependencies as their
+    // raw manifest refs ("so a consumer sees ... the project graph"), the machine-readable twin of `cdz
+    // tree`. Pin BOTH sides of the contract: a declared dep appears in the `deps` array, and a standalone
+    // project (no `def deps`) yields `[]` (not a missing member). Asserts on the `deps` array specifically
+    // (via `json_array`), not a whole-document substring, so a stray "../lib" elsewhere can't mask a
+    // regression. Was uncovered — the shared `temp_project` fixture declares no `def deps`, so neither the
+    // populated nor the empty case had an assertion.
+    let root = std::env::temp_dir().join(format!("cdz-metadata-deps-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    // A sibling `lib` project (need not build — metadata never compiles) …
+    std::fs::create_dir_all(root.join("lib")).unwrap();
+    std::fs::write(
+        root.join("lib/Project.cdz"),
+        "def name = \"lib\"\ndef entry = \"lib.cdz\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("lib/lib.cdz"),
+        "def h() -> Int64 = 1\nexport { h }\n",
+    )
+    .unwrap();
+    // … and an `app` that declares it as a path dependency.
+    std::fs::create_dir_all(root.join("app")).unwrap();
+    std::fs::write(
+        root.join("app/Project.cdz"),
+        "def name = \"app\"\ndef entry = \"app.cdz\"\ndef deps = [\"../lib\"]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("app/app.cdz"),
+        "def main() -> Int64 = 0\nexport { main }\n",
+    )
+    .unwrap();
+
+    let (ok, out, err) = run_in(&root.join("app"), &["metadata", "."]);
+    assert!(ok, "cdz metadata failed: {err}");
+    let deps = json_array(&out, "deps").expect("deps array present");
+    assert!(
+        deps.contains("../lib"),
+        "the declared `def deps` path appears in the deps array: {deps}"
+    );
+
+    // A standalone project (the sibling `lib` itself declares no deps) reports `[]`, not a missing member.
+    let (ok2, out2, err2) = run_in(&root.join("lib"), &["metadata", "."]);
+    assert!(ok2, "cdz metadata on a depless project failed: {err2}");
+    assert_eq!(
+        json_array(&out2, "deps").expect("deps array present"),
+        "[]",
+        "a standalone project reports an empty deps array: {out2}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
