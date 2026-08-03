@@ -42207,6 +42207,66 @@ mod match_engine {
     }
 
     #[test]
+    fn an_inferred_width_cdz0302_names_the_range_but_offers_no_value_rewriting_fix() {
+        // ADVICE-VALIDITY: an out-of-range literal whose width came from a SOLVED/INFERRED `Ty` (a nested
+        // compound payload, OR — since #1766 — a sibling list element's annotation) must NOT carry a retype
+        // fix. There is no written type-node on the literal to retype; the shared `int_out_of_range_reject`
+        // would attach `replace <literal> with <TypeName>`, rewriting the VALUE `-41` into a TYPE name
+        // (`(list (: 1 UInt64) Int8)` — a type in value position, and `Int8` for an UNSIGNED list): a
+        // machine-applicable fix that CORRUPTS the source. The message still names the valid range (the
+        // actionable fact); it just carries NO fix. A DIRECT annotation `(: v T)` DOES have a type-node and
+        // keeps its retype fix (asserted below), so the value-position sites lose the fix WITHOUT regressing
+        // the direct-annotation route.
+        let fixless = |src: &str| {
+            let diags = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+            let d = diags
+                .iter()
+                .find(|d| d.code.as_deref() == Some("CDZ0302"))
+                .unwrap_or_else(|| panic!("expected CDZ0302 for: {src}"));
+            assert!(
+                d.message.contains("the valid range is"),
+                "still names the actionable range: {}",
+                d.message
+            );
+            assert!(
+                d.fix.is_none(),
+                "an inferred-width CDZ0302 must NOT carry a source-corrupting value→type fix, got: {:?}",
+                d.fix
+            );
+        };
+        // Sibling-inferred element width (the #1766 path) — negative-in-unsigned, both orders, and over-max.
+        fixless("(module m (def (main) (list (: 1 UInt64) -41)) (export main))");
+        fixless("(module m (def (main) (list -41 (: 1 UInt64))) (export main))");
+        fixless("(module m (def (main) (list (: 1 UInt8) 300)) (export main))");
+        // Nested Sum payload — the pre-#1766 path through the same reject.
+        fixless("(module m (def (main) (: (Some -41) (Option UInt64))) (export main))");
+        // CONTRAST: a DIRECT value annotation retains its retype fix, and it targets the TYPE spelling
+        // (`UInt64`→`Int8` for the negative-in-unsigned sign-flip), NOT the value literal.
+        let (arenas, span) =
+            crate::testkit::parse_spanned("(module m (def (main) (: -41 UInt64)) (export main))");
+        let diags = crate::diagnostics(&mut crate::db::Db::load(arenas));
+        let d = diags
+            .iter()
+            .find(|d| d.code.as_deref() == Some("CDZ0302"))
+            .expect("direct annotation still reports CDZ0302");
+        let fix = d
+            .fix
+            .as_ref()
+            .expect("a direct value annotation keeps its retype fix");
+        assert_eq!(fix.kind, crate::abi::FixKind::Replace);
+        assert_eq!(
+            fix.replacement, "Int8",
+            "sign-flips a negative into the smallest signed width"
+        );
+        let (start, len) = span.spans[fix.node as usize];
+        assert_eq!(
+            &span.source[start as usize..(start + len) as usize],
+            "UInt64",
+            "the retype fix targets the annotation TYPE node, not the value literal"
+        );
+    }
+
+    #[test]
     fn an_annotated_accumulator_lets_a_mutually_recursive_decoder_emit_on_both_backends() {
         // PERIMETER pin for the (List Any) mutual-recursion freeze (v-rust-backend ask + breaker mx2):
         // the UNANNOTATED accumulator `acc` of `dac` freezes to `(List Any)` and DECLINES on rust — its
