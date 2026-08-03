@@ -215,6 +215,57 @@
             (export main)))
   (error  CDZ0203))
 
+; The single-param applied case above covers the flat one-argument face; the resolve path also handles
+; MULTI-parameter generics and NESTED type-arguments (a user generic inside a built-in generic, or inside
+; another user generic). Each was equally CDZ0101-unresolvable under the parenthesized-head `""`-name bug
+; (#1683/#1700) and now resolves like a built-in — the three faces below pin that the head-param collect
+; handles arity > 1 and the applied-ctor reduction recurses into a nested type-argument.
+
+(case "a MULTI-parameter user generic resolves by name in a type annotation applied with two arguments"
+  (doc    "The arity->1 face of the parenthesized-head resolve: a two-parameter generic `(type (Pair a b)
+           (Both a b))` applied with two concrete arguments in an annotation `(: p (Pair Int64 Bool))` must
+           resolve by name — the head-param collect harvests BOTH `a` and `b`, and the applied-ctor
+           reduction binds both type arguments (the single-param `(Container Int64)` case above exercised
+           only arity 1). `(fst (Both 9 true))` projects the first field `9`. Pins that a multi-parameter
+           user generic is resolvable and correctly instantiated in an annotation, not just a single-param one.")
+  (input  (do
+            (type (Pair a b) (Both a b))
+            (def (fst (: p (Pair Int64 Bool))) (match p ((Both x y) x)))
+            (def (main (: k Int64)) (fst (Both k true)))
+            (export main)))
+  (call   main (: 9 Int64))
+  (output (: 9 Int64)))
+
+(case "a user generic NESTED as the type argument of a built-in generic resolves in an annotation"
+  (doc    "The nested-in-built-in face: a user generic `(Box a)` appears as the type ARGUMENT of the
+           built-in `Option` in an annotation `(: b (Option (Box Int64)))`. The applied-ctor reduction must
+           recurse into the nested position and resolve the user generic by name there, exactly as it does
+           at top level — a nested user generic was equally unresolvable under the `\"\"`-name bug. `(unwrap
+           (Some (Mk 4)))` peels the `Option` then the `Box` to recover `4`. Pins that the resolve reaches a
+           user generic nested inside a built-in generic's argument.")
+  (input  (do
+            (type (Box a) (Mk a))
+            (def (unwrap (: b (Option (Box Int64)))) (match b ((Some x) (match x ((Mk v) v))) (None 0)))
+            (def (main (: k Int64)) (unwrap (Some (Mk k))))
+            (export main)))
+  (call   main (: 4 Int64))
+  (output (: 4 Int64)))
+
+(case "a user generic NESTED as the type argument of another user generic resolves in an annotation"
+  (doc    "The nested-in-user face: the user generic `(Box a)` is instantiated at `(Box Int64)` and that
+           itself is the type argument to `Box` again — `(: b (Box (Box Int64)))`. Both the outer and the
+           nested occurrence resolve the same user generic by name (the reduction recurses through a user
+           generic's own argument, not only a built-in's). `(unwrap (Mk (Mk 6)))` peels both `Box` layers to
+           `6`. Pins the doubly-nested user-generic annotation, the all-user-sum companion of the
+           user-in-built-in case above.")
+  (input  (do
+            (type (Box a) (Mk a))
+            (def (unwrap (: b (Box (Box Int64)))) (match b ((Mk x) (match x ((Mk v) v)))))
+            (def (main (: k Int64)) (unwrap (Mk (Mk k))))
+            (export main)))
+  (call   main (: 6 Int64))
+  (output (: 6 Int64)))
+
 ; The two cases above over-apply a NON-generic type to a TYPE argument (arity is wrong). The dual slip
 ; is a legitimately GENERIC type constructor — one that DOES take a type parameter — applied to a VALUE
 ; where a type belongs: `(Option 5)`, `(List 5)`. Here the arity is right (Option/List take one
