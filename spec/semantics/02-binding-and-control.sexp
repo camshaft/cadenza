@@ -19,6 +19,32 @@
   (input  (+ (let ((x 2)) x) (let ((x 1)) x)))
   (output (: 3 Int64)))
 
+; The intro case above shadows within one type. Shadowing is also well-defined across DIFFERENT types:
+; an inner `let` binder shadowing an outer `let` binder of a different type resolves each occurrence at its
+; own binding's type, and the outer binder survives after the inner scope closes (the differently-typed
+; shadow gets a FRESH slot — reusing the outer's slot would emit an invalid component). The two faces below
+; pin the let-vs-let different-type shadow at the VALUE level (the parameter-shadow comment below covers the
+; param face; these are the let-binder faces, exercised cross-backend).
+
+(case "a nested let shadows an outer let of a different type and both resolve, outer surviving"
+  (doc    "`(let ((x 5)) (let ((y (let ((x true)) (if x 1 0)))) (+ x y)))` — the innermost `x` is Bool
+           (used by `(if x 1 0)` → 1, bound to `y`), while the outer `x` stays Int64 (5) and survives the
+           inner Bool shadow's scope, so `(+ x y)` = 6. Pins that a let binder shadowing an outer let binder
+           of a DIFFERENT type resolves each `x` at its own binding's type and the outer survives — a fresh
+           slot for the Bool shadow, not the outer Int64's slot (which would emit an invalid component).")
+  (input  (do (def (main) (let ((x 5)) (let ((y (let ((x true)) (if x 1 0)))) (+ x y)))) (export main)))
+  (call   main)
+  (output (: 6 Int64)))
+
+(case "an outer Int64 let binder survives an inner String shadow of the same name"
+  (doc    "The THIRD-type face: `(let ((x 10)) (let ((z (let ((x \"hi\")) (String.byte-len x)))) (+ x z)))` —
+           the inner `x` is a String (`String.byte-len \"hi\"` = 2, bound to `z`), and the outer `x` stays
+           Int64 (10) and survives, so `(+ x z)` = 12. Pins the outer binder survives a shadow by a
+           heap-typed (String) value, not only a scalar Bool — the String companion of the case above.")
+  (input  (do (def (main) (let ((x 10)) (let ((z (let ((x "hi")) (String.byte-len x)))) (+ x z)))) (export main)))
+  (call   main)
+  (output (: 12 Int64)))
+
 ; A `let` may shadow a FUNCTION PARAMETER with a value of a DIFFERENT TYPE, and the inner binding's type
 ; governs its references (core-semantics.md #Shadowing Is Well-Defined: a shadowing binding takes effect
 ; for references in its scope). `(def (f x) (let ((x true)) x))` binds parameter `x` (used at type Int64
