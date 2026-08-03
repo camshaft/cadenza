@@ -310,6 +310,7 @@ pass	Set.to-list orders (Int,Bytes) tuples with the Bytes component as the tie-b
 pass	Set.to-list orders a multibyte string element AFTER ascii by unsigned byte order
 pass	Set.to-list orders a set of COMPOUND (tuple) elements lexicographically
 pass	Set.to-list orders a set of RECORD elements canonically
+pass	Set.to-list orders float-carrying sums discriminant-first then by float payload
 pass	Set.to-list orders runtime Bytes elements by unsigned-lexicographic byte order — 0x80 sorts LAST, not as signed -128
 pass	Set.to-list over Float32 elements enumerates by canonical byte order at f32 width
 pass	Set.to-list over Float64 elements enumerates by canonical byte order
@@ -687,6 +688,8 @@ todo	a String host RESULT crosses the boundary and is read twice (byte-len + sca
 pass	a bin-arm guard cond that traps at the decoded binder TRAPS the match — it does not fall through
 pass	a closure capturing a RUNTIME String.slice→to-bytes VIEW reads it at host-call dispatch
 pass	a failed multi-segment bin guard falls through and the NEXT arm re-decodes its own binders
+pass	a float-carrying SUM as a Set key dedupes by payload and probes by content
+pass	a float-carrying sum as a MAP key is found by a reconstructed equal key
 pass	a host-called closure capturing a HEAP LIST indexes it at call dispatch
 pass	a list-aliased record read after Record.with sees the ORIGINAL value (no in-place clobber)
 pass	a point fact flows through a let binding into a compare fold — the point-fact composition face
@@ -3813,6 +3816,7 @@ pass	an escaping tuple evaluates its trapping element
 pass	an eval match binder shadowing a HEAP-typed outer name leaves the heap value intact
 pass	an eval splice consumes a value extracted from a CHAMP map at run time
 pass	an eval-reconstructed BARE pattern on a withheld constructor is also rejected (encapsulation soundness, metaprogramming route)
+pass	an evaluated quasiquote builds a HEAP value the surrounding code consumes
 pass	an expect of a list index result is an integer usable in arithmetic
 pass	an explicit Bytes annotation on a runtime bin result compares the same
 pass	an explicit annotation overrides the default-fraction pragma
@@ -4922,6 +4926,7 @@ pass	sibling performs feeding a subtraction witness the advancing state non-comm
 pass	sibling recursive calls sequenced through let bindings thread state
 pass	sibling-recursive effect threading is left-to-right (order-observing)
 pass	signed 8-bit addition that overflows its width is rejected at compile time
+pass	signed zeros INSIDE a sum payload are DISTINCT Set keys (the ±0.0 edge survives the wrapper)
 pass	signed-zero Float32 tuple-key components stay distinct at binary32 width
 pass	signed-zero float components make DISTINCT tuple keys
 pass	signed-zero float fields make distinct record keys

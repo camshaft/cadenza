@@ -1515,6 +1515,65 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 1 Int64)))
 
+(case "a float-carrying SUM as a Set key dedupes by payload and probes by content"
+  (doc    "The custom-Ord landing's key face (a monomorphic float-carrying sum is BTree-keyable on the
+           rust backend; wasm keys via canonical bytes): {Temp x, Temp 1.5, Temp x, Missing} holds THREE
+           keys (the duplicate Temp x dedupes) and a reconstructed (Temp x) probe hits. Pins that the
+           sum's derived order/eq agree across backends on the discriminant + float-payload composite.")
+  (input  (do
+            (type Reading (Temp Float64) (Missing))
+            (def (main (: x Float64))
+              (let ((s (Set.of (list (Temp x) (Temp 1.5) (Temp x) (Missing)))))
+                (+ (Set.len s)
+                   (* 10 (if (Set.contains s (Temp x)) 1 0)))))
+            (export main)))
+  (call   main (: 2.5 Float64)) (output (: 13 Int64)))
+
+(case "signed zeros INSIDE a sum payload are DISTINCT Set keys (the ±0.0 edge survives the wrapper)"
+  (doc    "The sign-of-zero edge one level down: Temp(+0.0) and Temp(-0.0) are distinct keys — the
+           float-sum's order/eq must agree with the canonical-byte model (the box keeps a zero's sign
+           bit) INSIDE the variant payload, exactly as the bare-float pins hold at top level. A
+           float-sum Ord built on a partial_cmp that collapses ±0.0 would merge these to 2 keys.
+           {Temp +0.0, Temp -0.0, Missing} = 3.")
+  (input  (do
+            (type Reading (Temp Float64) (Missing))
+            (def (main (: x Float64))
+              (let ((s (Set.of (list (Temp (- x x)) (Temp (* (- x x) -1.0)) (Missing)))))
+                (Set.len s)))
+            (export main)))
+  (call   main (: 2.5 Float64)) (output (: 3 Int64)))
+
+(case "Set.to-list orders float-carrying sums discriminant-first then by float payload"
+  (doc    "The ORDER face of the float-sum key family: to-list of {Missing, Temp 2.5, Temp 1.5} yields
+           Temp(1.5), Temp(2.5), Missing — same-discriminant values order by their float payload's
+           canonical bytes, and the later-declared variant sorts after. (wasm: todo until its to-list
+           over a custom-Ord float-sum lands; rust + rust-async pin the pass.)")
+  (input  (do
+            (type Reading (Temp Float64) (Missing))
+            (def (rank (: r Reading))
+              (match r ((Temp f) (if (< f 2.0) 1 2)) ((Missing) 9)))
+            (def (main (: x Float64))
+              (let ((sorted (Set.to-list (Set.of (list (Missing) (Temp x) (Temp 1.5))))))
+                (match sorted
+                  ((list a b c) (+ (rank a) (+ (* 10 (rank b)) (* 100 (rank c)))))
+                  (_ -1))))
+            (export main)))
+  (call   main (: 2.5 Float64)) (output (: 921 Int64)))
+
+(case "a float-carrying sum as a MAP key is found by a reconstructed equal key"
+  (doc    "The Map twin of the float-sum Set-key pin: insert under (Temp x), look up with the
+           RECONSTRUCTED (Temp (* x 1.0)) — the multiply is identity on the value but rebuilds the
+           key, so the hit proves content-keying (not node identity) through the float-sum composite;
+           the nullary (Missing) key coexists.")
+  (input  (do
+            (type Reading (Temp Float64) (Missing))
+            (def (main (: x Float64))
+              (let ((m (Map.insert (Map.insert Map.empty (Temp x) 10) (Missing) 20)))
+                (+ (match (Map.lookup m (Temp (* x 1.0))) ((Some v) v) ((None _u) -1))
+                   (* 10 (match (Map.lookup m (Missing)) ((Some v) v) ((None _u) -1))))))
+            (export main)))
+  (call   main (: 2.5 Float64)) (output (: 210 Int64)))
+
 (case "Set.to-list over Float64 elements enumerates by canonical byte order"
   (doc    "The FLOAT sibling of the compound-element to-list case: a set of Float64 elements enumerates by
            CANONICAL BYTE order — the element's bit pattern as an UNSIGNED integer, NOT numeric order. A float
