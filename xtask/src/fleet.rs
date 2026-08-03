@@ -8229,11 +8229,13 @@ fn schedule_plan(fleet: &Fleet, cap: usize) {
         for d in &dispatched {
             let (state, all_verdict, req_verdict) = pr_state_and_verdict(d.pr_number);
             let action = match reap_action(state, req_verdict) {
-                ReapAction::LandMerged => "LAND (merged → FF trunk + ack merged)",
+                ReapAction::LandMerged => {
+                    "LAND (merged → cherry-pick mergeCommit onto trunk + ack merged)"
+                }
                 ReapAction::Reject if state == PrState::Closed => {
                     "REJECT (PR closed unmerged → ack reject + free slot)"
                 }
-                ReapAction::Reject => "REJECT (required check RED → ack reject + close)",
+                ReapAction::Reject => "REJECT (required check RED → ack reject + free slot)",
                 // Distinguish a non-required red (still auto-merging, we wait) from a genuine pending.
                 ReapAction::KeepWaiting if all_verdict == CiVerdict::Red => {
                     "wait (NON-required check red — still auto-merges; not a reject)"
@@ -8520,7 +8522,7 @@ fn schedule_pass_execute(fleet: &Fleet, cap: usize) {
                     Err(e) => {
                         // Don't ack/resolve if we couldn't advance trunk — leave in flight, retry next pass.
                         eprintln!(
-                            "  ! PR #{} merged on GitHub but trunk FF FAILED ({e}) — leaving in flight, will retry.",
+                            "  ! PR #{} merged on GitHub but trunk cherry-pick FAILED ({e}) — leaving in flight, will retry.",
                             d.pr_number
                         );
                     }
