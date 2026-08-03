@@ -2142,6 +2142,32 @@
   (call   main (: 1 Int64)) (output (: 1020 Int64))
   (call   main (: 2 Int64)) (output (: 2010 Int64)))
 
+(case "a recursive TLV frame walk over sliced runtime bytes decodes LE payloads per frame"
+  (doc    "The protocol-parser composition: a recursive walk `Bytes.slice`s a 3-byte frame per step from
+           one runtime byte sequence, bin-matches each frame `(bin (u8 tag) (u16 val le))`, accumulates
+           the little-endian payloads, and stops at the tag-0 sentinel frame. Composes three pinned
+           surfaces — slice-window re-basing per call, the LE u16 segment read over a SLICE-backed
+           frame (not a whole materialized bin), and recursion driving fresh decodes — none of whose
+           existing pins exercise slice-per-frame recursion. k = 5: frames (1, 5+256=261) then (1, 2)
+           then stop → 263; k = 200: (1, 456) then (1, 2) → 458.")
+  (input  (do
+            (def (walk (: b Bytes) (: off Int64) (: acc Int64))
+              (match (Bytes.slice b off 3)
+                ((Some frame)
+                  (match frame
+                    ((bin (u8 tag) (u16 val le))
+                      (if (= (Int64.of tag) 0) acc
+                          (walk b (+ off 3) (+ acc (Int64.of val)))))
+                    (_ (- 0 acc))))
+                ((None _u) acc)))
+            (def (main (: k UInt8))
+              (walk (Bytes.of (list (UInt8.wrap 1) k (UInt8.wrap 1)
+                                    (UInt8.wrap 1) (UInt8.wrap 2) (UInt8.wrap 0)
+                                    (UInt8.wrap 0) (UInt8.wrap 0) (UInt8.wrap 0))) 0 0))
+            (export main)))
+  (call   main (: 5 UInt8)) (output (: 263 Int64))
+  (call   main (: 200 UInt8)) (output (: 458 Int64)))
+
 (case "a bin-decoded frame body drives per-byte performs through a recursive walk"
   (doc    "Binary matching × effects: the dependent-size `(bytes body n)` binder feeds a RECURSIVE
            walk whose every step PERFORMS — the frame parser emitting events. Each `ev` scales its

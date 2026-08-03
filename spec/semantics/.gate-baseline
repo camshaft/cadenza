@@ -789,6 +789,7 @@ pass	a ROTATE-BY-K splits at the wrapped offset and swaps the halves, identity a
 pass	a RUNTIME Ast structural equality compares by value (Ast.Int scalar leaf and Ast.List compound)
 pass	a RUNTIME Result-of-Result from chained fallible helpers dispatches all three arms
 pass	a RUNTIME branch selects between an abortive perform and a plain value per call
+pass	a RUNTIME byte-slice torn mid-scalar is rejected by from-bytes at both tear points
 pass	a RUNTIME erased Qty add is still CHECKED at the inner width (overflow traps at run time)
 pass	a RUNTIME guarded sum-match arm dispatches through its guard
 pass	a RUNTIME if-chain selects among four different-length heap lists
@@ -2592,6 +2593,7 @@ pass	a recursive MERGE SORT splits alternately, sorts halves, and merges — dup
 pass	a recursive NEWTYPE traversal recurses on its projected recursive field
 pass	a recursive NEWTYPE-wrapped linked list folds to a scalar
 pass	a recursive RENAME pass rewrites every matching Name leaf at any depth and counts them
+pass	a recursive TLV frame walk over sliced runtime bytes decodes LE payloads per frame
 pass	a recursive byte fold calling two helpers emits valid wasm (disjoint scratch slots)
 pass	a recursive byte walk sums a runtime sequence via Bytes.at and match
 pass	a recursive byte walk threading a Bytes parameter through a helper infers without annotation
@@ -3571,6 +3573,7 @@ pass	a zero-length slice is the empty byte sequence
 pass	abstract theorems stored in a MAP stay unforgeable and usable — lookup returns a real Thm
 pass	abstract-type values live in an importer's map and round-trip through module ops
 pass	accessing through an empty-side split-at is usable, like the equivalent literal
+pass	accumulator introduction preserves the zero-iteration exit and the body's trap
 pass	accumulator introduction threads a transformed extra parameter through a multi-parameter recursion
 pass	adding a cubed length to a squared length is a dimension mismatch
 pass	adding a data-rate to a length is a compile-time dimension error over a composite dimension
