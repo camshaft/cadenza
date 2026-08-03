@@ -187,10 +187,22 @@ pub fn emit(
     // `(host (ask) (let ((v (ask.ask))) (fn (x) (+ x v))))`, discharged while the delegation is still in
     // dynamic scope, the closure capturing only the plain result) is NOT in a lifted body and is correctly
     // NOT flagged. (The per-path scans remain as-is — now redundant for the shapes reached here, harmless.)
+    // Only scan REACHED lifted slots: `layout.lifted` also holds UNREACHED lambdas (demanded during
+    // type-checking but built by no reachable `Core::Closure`), which `append_lifted_bodies` emits as inert
+    // never-called STUBS gated on `layout.lifted_reached` (:122). A HostCall in such a dead/stub body is
+    // provably unreachable — flagging it is a spurious CDZ0406 reject of a program where the effectful
+    // closure can never run (PR #1792 review, MED false-reject). Mirror the `:122` reached-gate so only a
+    // genuinely-reachable escaping closure is caught; stop at the first (a coded reject needs just one).
     {
         let mut escaping = Vec::new();
-        for l in &layout.lifted {
+        for (code, l) in layout.lifted.iter().enumerate() {
+            if !layout.lifted_reached.get(code).copied().unwrap_or(true) {
+                continue;
+            }
             host::collect_host_imports(db, l.body, &mut escaping);
+            if !escaping.is_empty() {
+                break;
+            }
         }
         if let Some(h) = escaping.first() {
             return Err(Reject::coded(

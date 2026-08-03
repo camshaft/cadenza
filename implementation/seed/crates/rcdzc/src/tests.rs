@@ -88772,6 +88772,34 @@ mod closure_host_resource {
         );
     }
 
+    /// PR #1792 review (MED false-reject): the hoisted CDZ0406 escaping-closure scan must skip UNREACHED
+    /// lifted lambdas. `layout.lifted` holds lambdas DEMANDED during type-checking but built by no reachable
+    /// `Core::Closure` — `append_lifted_bodies` emits those as inert never-called STUBS (gated on
+    /// `layout.lifted_reached`). A HostCall in such a dead stub is PROVABLY unreachable, so flagging it is a
+    /// spurious CDZ0406. Here a `Box` sum boxes two distinct-sig closures; `main` builds ONLY the plain `Un`,
+    /// so the `Bin` arm dispatches over a closure the program never constructs = a dead/unreached lift — and
+    /// that unbuilt `Bin` closure is EFFECTFUL (`ask.ask`). It can never run, so the program MUST COMPILE;
+    /// before the reached-gate fix the scan collected the unreached stub's HostCall and wrongly rejected
+    /// CDZ0406. Pins that a reachable escaping closure still rejects (the sibling test above) while an
+    /// unreachable one does not. `run (Un (fn (x) (+ x 1)))` → `g 9` = 10.
+    #[test]
+    fn an_unreached_effectful_lifted_closure_does_not_spuriously_reject_cdz0406() {
+        use crate::testkit::parse;
+        let src = "(do (effect ask (op ask (-> Unit Int64))) \
+            (type Box (Bin (-> Int64 Int64 Int64)) (Un (-> Int64 Int64))) \
+            (def (run (: b Box)) (match b ((Box.Bin f) (f 2 3)) ((Box.Un g) (g 9)))) \
+            (def (pick (: which Int64)) \
+              (if (> which 0) \
+                (Box.Bin (fn ((: a Int64) (: x Int64)) (+ a (ask.ask)))) \
+                (Box.Un (fn ((: x Int64)) (+ x 1))))) \
+            (def (main) (host (ask) (run (pick 0)))) \
+            (export main))";
+        // Must COMPILE — the effectful Bin closure is an unreached lift, never invoked by the host.
+        crate::compile::compile_component(&crate::codec::encode(&parse(src))).expect(
+            "an UNREACHED effectful lifted closure must not spuriously reject CDZ0406 (it can never run)",
+        );
+    }
+
     /// A closure export whose BUILD-TIME code delegates a host effect — `(host (ask) (let ((v (ask.ask)))
     /// (fn (x) (+ x v))))` — now COMPILES to a VALID component (brick d: the closure-resource emit composes
     /// the host interface via `multi_closure_resource_core_module_with_host` +
