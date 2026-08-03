@@ -29,6 +29,18 @@ pub trait Executor {
     /// Perform `req`. `idempotency_key` lets a side-effecting executor dedup a re-driven dispatch after a
     /// crash. Returns the outcome the kernel folds back as an `EffectResult`. May `.await` real I/O.
     async fn perform_async(&mut self, req: &EffectRequest, idempotency_key: Hash) -> EffectOutcome;
+
+    /// Does this executor serve effect `family`? The MECHANISM dimension the capability-manifest
+    /// projection ([`crate::effect::project_manifest`]) probes over the canonical family set — "does the
+    /// host serve family X" — to compute `Absent` vs granted/denied, so the kernel's inline
+    /// `control/capabilities` answer needs it reachable through `&dyn Executor`, not just the concrete
+    /// [`CompositeExecutor`]. Default `false` = FAIL-SAFE: an executor that doesn't override under-reports
+    /// (the family reads `Absent`), never falsely claims to serve one. The real drive path is always a
+    /// `CompositeExecutor` (which overrides to its `by_family` map); a single-kind leaf executor overrides
+    /// to its one family only if it's ever used bare as a `dyn Executor`.
+    fn handles_family(&self, _family: &str) -> bool {
+        false
+    }
 }
 
 /// The by-kind effect router (§2 "the kernel routes, doesn't distinguish"): holds `Box<dyn Executor>`
@@ -45,8 +57,7 @@ pub struct CompositeExecutor {
     /// Executors keyed by effect FAMILY STRING (seq-39), not the `EffectKind` enum — so a request routes
     /// by `req.content_type.family`, the same string authz/codec use. Registered via
     /// [`with_effect`](Self::with_effect) (register-by-string — a NEW family is served with no `EffectKind`
-    /// variant + no kernel edit; the sole registration API since the transitional `with(EffectKind,..)` was
-    /// dropped once all callers migrated).
+    /// variant + no kernel edit).
     by_family: HashMap<String, Box<dyn Executor>>,
 }
 
@@ -73,11 +84,10 @@ impl CompositeExecutor {
         self.handles_family(kind.family())
     }
 
-    /// Is an executor registered for this effect FAMILY string? The string-keyed sibling of [`handles`] —
-    /// the read-only mechanism accessor the capability-manifest projection ([`crate::effect::project_manifest`])
-    /// probes: it asks "does the host serve family X" over the canonical family set to compute the
-    /// `Absent` vs granted/denied grant-state, WITHOUT needing an `EffectKind` variant (so it also answers
-    /// for an extension family that has no built-in kind). One source of truth — [`handles`] routes here.
+    /// Is an executor registered for this effect FAMILY string? INHERENT method — the registration source
+    /// of truth (`by_family`), callable without the [`Executor`] trait in scope. The trait impl's
+    /// `handles_family` override delegates here, so `&dyn Executor` sees the same answer as a concrete
+    /// `CompositeExecutor` caller (one source of truth, two reach-paths).
     pub fn handles_family(&self, family: &str) -> bool {
         self.by_family.contains_key(family)
     }
@@ -95,6 +105,16 @@ impl Executor for CompositeExecutor {
                 req.content_type.family, req.target
             )),
         }
+    }
+
+    /// The composite serves exactly the families it has a registered executor for. Overrides the trait's
+    /// fail-safe `false` default by delegating to the inherent [`CompositeExecutor::handles_family`] (the
+    /// `by_family` registration source of truth) — so `&dyn Executor` (the drive loop's inline
+    /// capability-manifest projection) gets the accurate answer, matching a concrete caller. Since the
+    /// top-level drive-loop executor is always a `CompositeExecutor`, this is accurate without needing
+    /// every leaf executor to override.
+    fn handles_family(&self, family: &str) -> bool {
+        CompositeExecutor::handles_family(self, family)
     }
 }
 

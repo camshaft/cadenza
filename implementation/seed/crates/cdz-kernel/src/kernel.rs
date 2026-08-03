@@ -490,10 +490,58 @@ impl Session {
             self.next_effect_id += 1;
 
             // CONTROL-PLANE PARTITION (register-by-string): a `control/*` family is authz-EXEMPT and NEVER
-            // routed to an executor — it's host-answered. Surface it to the driver (via the returned Vec)
-            // and skip the authorize/route path entirely. (A future in-kernel handler — control/capabilities
-            // → project_manifest — will answer inline instead of surfacing; today all control/* surface.)
+            // routed to an executor — it's host-answered. `control/capabilities` is KERNEL-answered INLINE
+            // (host-capability-discovery I4): the kernel projects the capability manifest and folds it back
+            // as an EffectResult, so the guest gets its answer without a host round-trip. Every OTHER
+            // control/* family surfaces to the driver (via the returned Vec) — host-answered.
             if crate::effect::effect_ct::is_control_family(&req.content_type.family) {
+                if req.content_type.family.as_ref() == crate::effect::effect_ct::CAPABILITIES {
+                    // Durable Dispatched record BEFORE the answer (S1) — also what gives
+                    // record_result_async the continuation token to resume the guest. authz-exempt: no
+                    // authorize() call; the projection PROBES authz per family but the query itself is free.
+                    let idempotency_key = idempotency_key_for(id, &req);
+                    let dispatch_hash = self.append(
+                        EventBody::Dispatched {
+                            id,
+                            kind: req.kind.clone(),
+                            target: req.target.to_string(),
+                            idempotency_key,
+                            deadline_ms: None,
+                            token,
+                        },
+                        Some(cause),
+                    );
+                    // S1 latch: an un-durable dispatch folds an Err, never a phantom answer (same tier-B
+                    // rule the routed path applies before executing).
+                    let outcome = if self.persist_error.is_some() {
+                        EffectOutcome::Err(
+                            "dispatch not durably logged (persist failure) — capabilities NOT answered (S1)"
+                                .to_string(),
+                        )
+                    } else {
+                        // Project over the canonical family set: the MECHANISM dim is the executor's
+                        // handles_family (now on the Executor trait so it's reachable through
+                        // &dyn Executor), the POLICY dim probes authz per family. The manifest BYTES are
+                        // logged in the EffectResult, so replay reads the logged answer — deterministic, it
+                        // never re-probes live executor/authz state.
+                        let manifest = crate::effect::project_manifest(
+                            crate::effect::effect_ct::ALL,
+                            |f| executor.handles_family(f),
+                            authz,
+                            crate::effect::effect_ct::probe_target,
+                        )
+                        .await;
+                        let bytes = crate::event_ast::encode_capability_manifest(&manifest);
+                        EffectOutcome::Ok(Some(crate::effect::Payload::Inline(bytes.into())))
+                    };
+                    let more = self
+                        .record_result_async(id, outcome, reducer, dispatch_hash)
+                        .await;
+                    for pair in more {
+                        to_process.push(pair);
+                    }
+                    continue;
+                }
                 control_out.push(crate::effect::ControlEffect {
                     request: req,
                     token,
@@ -1848,6 +1896,106 @@ mod monotonic_now_tests {
                 .iter()
                 .any(|e| matches!(e.body, EventBody::AuthzDenied { .. })),
             "granted regular effect + exempt control → no AuthzDenied"
+        );
+    }
+
+    // A reducer that, on an inbound message, emits a `control/capabilities` QUERY (no payload) — the guest
+    // asking the kernel "what can I do?". I4: the kernel answers this INLINE (project + fold), not by
+    // surfacing it to the driver.
+    struct CapabilitiesQueryReducer;
+    #[async_trait::async_trait(?Send)]
+    impl Reducer for CapabilitiesQueryReducer {
+        async fn fold_async(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+            match &event.body {
+                EventBody::Inbound { .. } => {
+                    let mut request =
+                        EffectRequest::new(EffectKind::Emit, "self", None, Timeliness::Interactive);
+                    request.content_type.family = crate::effect::effect_ct::CAPABILITIES.into();
+                    FoldOutput::with_effects(vec![Effect {
+                        request,
+                        token: Some(b"cap-tok".to_vec()),
+                    }])
+                }
+                _ => FoldOutput::none(),
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn control_capabilities_is_answered_inline_with_a_manifest_effect_result() {
+        use crate::executor::CompositeExecutor;
+        // I4: control/capabilities is KERNEL-answered inline — the kernel projects the capability manifest
+        // and folds it back as an EffectResult, rather than surfacing it to the driver like other control/*.
+        // Wire a CompositeExecutor that serves ONLY the emit family (mechanism dim), under a grant that
+        // permits emit (policy dim) → the manifest must read emit=Granted and a NOT-served family=Absent.
+        let mut exec = CompositeExecutor::new().with_effect(
+            crate::effect::effect_ct::EMIT,
+            Box::new(RecordingExecutor::new()),
+        );
+        let authz = Authorizer::new(vec![Capability {
+            kind: EffectKind::Emit,
+            predicate: crate::effect::ResourcePredicate::Any,
+        }]);
+        let mut session = Session::genesis(Hash::of(b"caps-v1"));
+        let control = session
+            .deliver_async_control(
+                inbound(),
+                None,
+                &CapabilitiesQueryReducer,
+                &authz,
+                &mut exec,
+            )
+            .await
+            .expect("deliver");
+
+        // NOT surfaced to the driver (that's the whole point of inline-answer).
+        assert!(
+            control.is_empty(),
+            "control/capabilities is answered inline, not surfaced"
+        );
+
+        // The kernel folded an EffectResult carrying the manifest bytes. Find it + decode.
+        let payload = session
+            .log()
+            .iter()
+            .find_map(|e| match &e.body {
+                EventBody::EffectResult {
+                    result: EffectOutcome::Ok(Some(crate::effect::Payload::Inline(b))),
+                    ..
+                } => Some(b.clone()),
+                _ => None,
+            })
+            .expect("an inline capabilities EffectResult was folded");
+        let a = cadenza_ast::codec::decode_detailed(&payload).expect("manifest payload decodes");
+        let root = a
+            .as_form(a.root, "capabilities-manifest")
+            .expect("payload is a capabilities-manifest");
+        let entries = a.as_form(root[1], "entries").expect("entries");
+        // effect_ct::ALL families, one entry each; emit served+granted, a non-served one absent.
+        assert_eq!(entries.len(), crate::effect::effect_ct::ALL.len());
+        let grant_of = |fam: &str| {
+            for &eid in entries {
+                let e = a.as_form(eid, "entry").expect("entry");
+                if a.as_str(e[0]) == Some(fam) {
+                    // grant is the 2nd child: (granted)|(denied)|(absent) — return its head name.
+                    for tag in ["granted", "denied", "absent"] {
+                        if a.as_form(e[1], tag).is_some() {
+                            return tag;
+                        }
+                    }
+                }
+            }
+            "missing"
+        };
+        assert_eq!(
+            grant_of(crate::effect::effect_ct::EMIT),
+            "granted",
+            "emit is served (mechanism) + permitted (policy) → granted"
+        );
+        assert_eq!(
+            grant_of(crate::effect::effect_ct::SHELL),
+            "absent",
+            "shell is not served by this executor → absent (mechanism short-circuits)"
         );
     }
 }
