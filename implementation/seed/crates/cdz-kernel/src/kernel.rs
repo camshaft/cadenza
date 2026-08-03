@@ -1872,13 +1872,22 @@ mod monotonic_now_tests {
             .await
             .expect("deliver");
 
-        // Control half: exactly the summary effect surfaced, with its token + payload.
+        // Control half: exactly the summary effect surfaced, with its token + payload intact.
         assert_eq!(control.len(), 1, "only the control/* effect surfaces");
         assert_eq!(
             control[0].request.content_type.family.as_ref(),
             crate::effect::effect_ct::SUMMARY
         );
         assert_eq!(control[0].token.as_deref(), Some(&b"ctl"[..]));
+        // Payload bytes survive the partition intact — a drive-loop regression that drops/mutates the
+        // surfaced control effect's payload during a mixed turn must fail here, not pass green (PR #1660
+        // review: the comment claimed payload-intact but nothing asserted the bytes).
+        match &control[0].request.payload {
+            Some(crate::effect::Payload::Inline(b)) => assert_eq!(&b[..], b"summary"),
+            other => {
+                panic!("surfaced control effect should carry its payload bytes, got {other:?}")
+            }
+        }
 
         // Routed half: exactly the regular effect reached the executor (control never did).
         assert_eq!(exec.seen.len(), 1, "only the effect/* effect routes");
