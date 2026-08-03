@@ -1536,6 +1536,13 @@ pub struct Db {
     /// mid-solve returns without recomputing. Holds the def indices whose solve is on the stack.
     pub(crate) solving_params: crate::fxhash::FxHashSet<usize>,
 
+    /// Guard against infinite recursion when re-typing a MUTUAL-RECURSION PARTNER's call result from its
+    /// BODY (the SCC-freeze fix in `arg_ty_in_env`'s `SumPayload` arm): typing partner `dn`'s body demands
+    /// `dac`'s body (the mutual edge), whose `child`-off-`dn` payload would re-demand `dn`'s body — this
+    /// set holds the callee def indices whose body is being result-typed so the re-entry bottoms out at
+    /// `Any` (the same `Any` the deferred scheme gives) instead of looping. Cleared as the stack unwinds.
+    pub(crate) scc_result_typing: crate::fxhash::FxHashSet<usize>,
+
     /// The def indices whose SCHEME solve is currently on the stack — the re-entry backstop for
     /// `def_scheme` (a self-call demanding the scheme mid-compute reads `None`, typing as `Any`, the
     /// same behavior the base case absorbs). Distinct from a cached `None` in `def_schemes`: a genuine
@@ -2709,6 +2716,7 @@ impl Db {
             scheme_rigid_vars: None,
             arrow_lambdas_in_progress: crate::fxhash::FxHashSet::default(),
             solving_params: crate::fxhash::FxHashSet::default(),
+            scc_result_typing: crate::fxhash::FxHashSet::default(),
             solving_schemes: crate::fxhash::FxHashSet::default(),
             seed_transitive: crate::fxhash::FxHashSet::default(),
             reduction_root: None,
