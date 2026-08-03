@@ -5354,6 +5354,10 @@ pass	two adjacent modules declared inside a function body compose
 pass	two bare nullary variants reflect the same undetermined type
 pass	two capturing closures stored as runtime tuple elements keep distinct captures
 pass	two COMPOUND keys sharing a full hash collide via the nested champ_eq walk in one collision node
+pass	three keys sharing one 32-bit hash build a 3-entry CHAMP collision node (collision_insert append)
+pass	removing from a 3-entry collision node leaves a live 2-entry node; removing to 1 collapses to canonical
+pass	a Map over three full-hash-colliding keys retrieves each value; removing one keeps siblings' values
+pass	set algebra over a 3-entry collision node splits and rebuilds the colliding keys by content
 pass	two capturing closures stored in a LIST are selected at runtime and the capture reads after
 pass	two chars with different scalar values are unequal
 pass	two closure handles swap parameter slots through repeated tail calls
