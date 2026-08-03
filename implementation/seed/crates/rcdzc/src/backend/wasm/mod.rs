@@ -173,6 +173,37 @@ pub fn emit(
             )));
         }
     }
+    // ESCAPING-CLOSURE guard (CDZ0406) — hoisted BEFORE every emit path, so a closure that performs an
+    // effect and crosses the host boundary declines with the CODED CDZ0406 regardless of HOW it escapes
+    // (a bare closure result, or one NESTED in a returned tuple/record/sum/collection). The individual
+    // `emit_*_resource` emitters each run this same `layout.lifted` scan, but only for the shapes they
+    // handle — a closure nested in a COMPOUND result (`(host (ask) (tuple 1 (fn (x) (+ x (ask.ask)))))`,
+    // breaker es1) routes to a compound-escape path that lacked the scan, so it fell through to `select`'s
+    // generic "not in the host-import set" decline (code None) — a diagnostic-parity gap vs the rust
+    // backend, which rejects CDZ0406 for the same program. Scanning here covers all faces uniformly.
+    // The scan targets the LIFTED CLOSURE BODIES (`layout.lifted`) — the code that runs LATER, when the
+    // host invokes `call()`, OUTSIDE the delegation frame — so a `Core::HostCall` there is a genuine escape
+    // with no home. A make-time HostCall in the EXPORT body proper (the build-time-delegated case
+    // `(host (ask) (let ((v (ask.ask))) (fn (x) (+ x v))))`, discharged while the delegation is still in
+    // dynamic scope, the closure capturing only the plain result) is NOT in a lifted body and is correctly
+    // NOT flagged. (The per-path scans remain as-is — now redundant for the shapes reached here, harmless.)
+    {
+        let mut escaping = Vec::new();
+        for l in &layout.lifted {
+            host::collect_host_imports(db, l.body, &mut escaping);
+        }
+        if let Some(h) = escaping.first() {
+            return Err(Reject::coded(
+                crate::diag::Code::ClosureEscapesEffect,
+                format!(
+                    "a closure that performs an effect ({}.{}) cannot cross the host boundary — the \
+                     closure's handler context does not travel with it, so the effect would have no home \
+                     when the host invokes it (closures escaping effects are not supported)",
+                    h.effect, h.op
+                ),
+            ));
+        }
+    }
     // The RESOURCE ESCAPE path (`DESIGN-value-heap-rcdzc.md` §3a), detected BEFORE selection: a single
     // nullary export returning a COMPOUND crosses as a component-model resource whose `encode() ->
     // list<u8>` yields the canonical binary value form. For a fully-CONSTANT compound (R1) the value is
