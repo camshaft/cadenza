@@ -57,6 +57,13 @@ exclude = [
     # crate. It path-deps the member `rcdzc` (an excluded crate may depend on a member, as cdz-smith does). Has
     # its own `[workspace]` table; a dedicated CI job builds it to wasm + runs its host-side glue tests.
     "implementation/seed/crates/rcdzc-wasm",
+    # `cdz-nfc` (the Unicode NFC component, FINDING#23 — operator ruling d) is excluded because it ONLY
+    # builds for wasm32-unknown-unknown (a cadenza:nfc component the emitted program imports by hash),
+    # like cdz-runtime — the native seed `--workspace` build + corpus gate must never build a
+    # cdylib-for-wasm crate. It carries the heavy `unicode-normalization` composition tables so the core
+    # runtime does not. Leaf crate (nothing in the seed depends on it; the compiler emits an IMPORT on it,
+    # not a build dep), own `[workspace]` table, built to wasm + published to CAS on demand.
+    "implementation/seed/crates/cdz-nfc",
 ]
 
 [profile.dev]

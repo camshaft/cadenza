@@ -286,6 +286,13 @@ pub struct RunOpts {
     /// and a `deserialize` failure falls back to a fresh compile — so a version/config mismatch can
     /// never load an incompatible artifact.
     pub runtime_cache_dir: Option<std::path::PathBuf>,
+    /// The NFC component bytes (FINDING#23) the caller resolved BY CONTENT ADDRESS from the store. The
+    /// value-heap runtime is not a leaf: its world IMPORTS `cadenza:nfc/normalize` (NFC is the runtime's
+    /// dependency — the heavy Unicode tables live there, not in the runtime). So before instantiating the
+    /// runtime, the host must COMPOSE this NFC component into the runtime's linker (the leaves-first
+    /// transitive compose: nfc → runtime → program). Required only when the runtime declares that import;
+    /// `None` is fine for a runtime that imports nothing (older runtime, or a program needing no runtime).
+    pub nfc: Option<Vec<u8>>,
     /// The HOST-CALL RESPONSES (E2h) — the values the host returns to a program's delegated host calls,
     /// in call order. A program that delegates an effect to the host (`(host (E…) …)`) imports each
     /// operation as a boundary func; when it performs one, the bound host func returns the next response
@@ -1617,11 +1624,80 @@ fn instantiate_runtime(
     })?;
     let runtime = load_runtime_component(engine, runtime_bytes, &req.hash, opts)?;
     let heap_func_names = heap_interface_funcs(engine, &runtime)?;
-    let rt_linker: Linker<()> = Linker::new(engine);
+    let mut rt_linker: Linker<()> = Linker::new(engine);
+    // TRANSITIVE COMPOSE (FINDING#23, leaves-first): the runtime is NOT a leaf — its world imports
+    // `cadenza:nfc/normalize` (NFC is the runtime's dependency). So compose the NFC component INTO the
+    // runtime's linker BEFORE instantiating the runtime, exactly as we later compose the runtime into the
+    // program's linker (nfc → runtime → program). This mirrors the recursive dep-compose v-agent-harness's
+    // kernel host uses; here it is one known level (the runtime imports one dep), but the shape is the
+    // general leaves-first walk. A runtime that imports nothing (older runtime) skips this.
+    compose_nfc_into_runtime_linker(engine, store, &mut rt_linker, &runtime, opts)?;
     let rt_instance = rt_linker
         .instantiate(&mut *store, &runtime)
         .map_err(|e| anyhow!("instantiate runtime: {e}"))?;
     Ok((rt_instance, heap_func_names))
+}
+
+/// The NFC interface the runtime imports (FINDING#23). The runtime's world declares `import
+/// cadenza:nfc/normalize`; the host composes the stored NFC component (resolved by content hash) into the
+/// runtime's linker under this exact interface name.
+const NFC_IFACE: &str = "cadenza:nfc/normalize";
+
+/// If `runtime` imports `cadenza:nfc/normalize`, instantiate the NFC component (`opts.nfc`) and forward its
+/// `normalize` interface's funcs into `rt_linker` under the import name — the leaves-first transitive
+/// compose. The NFC component is itself a LEAF (imports nothing), so it instantiates against a fresh empty
+/// linker. If the runtime declares no such import (an older runtime), this is a no-op. Mirrors
+/// `bind_runtime_into` (extract the composed instance's interface exports, forward via `func_new`).
+fn compose_nfc_into_runtime_linker(
+    engine: &Engine,
+    store: &mut Store<()>,
+    rt_linker: &mut Linker<()>,
+    runtime: &Component,
+    opts: &RunOpts,
+) -> Result<()> {
+    // Does the runtime actually import the NFC interface? Read its component type's imports.
+    let imports_nfc = runtime
+        .component_type()
+        .imports(engine)
+        .any(|(name, _)| name == NFC_IFACE);
+    if !imports_nfc {
+        return Ok(()); // leaf runtime — nothing to compose
+    }
+    let nfc_bytes = opts.nfc.as_deref().ok_or_else(|| {
+        anyhow!(
+            "the value-heap runtime imports {NFC_IFACE} (its NFC dependency) but no NFC component was \
+             provided (the host resolves it by content address from the store; build it with `cargo xtask \
+             build`)"
+        )
+    })?;
+    let nfc = Component::new(engine, nfc_bytes).map_err(|e| anyhow!("load NFC component: {e}"))?;
+    // NFC is a leaf (imports nothing) → instantiate against a fresh empty linker.
+    let nfc_linker: Linker<()> = Linker::new(engine);
+    let nfc_instance = nfc_linker
+        .instantiate(&mut *store, &nfc)
+        .map_err(|e| anyhow!("instantiate NFC component: {e}"))?;
+    // Forward the NFC interface's funcs into the runtime's linker under the import name (verbatim).
+    let nfc_idx = nfc_instance
+        .get_export_index(&mut *store, None, NFC_IFACE)
+        .ok_or_else(|| anyhow!("NFC component does not export {NFC_IFACE}"))?;
+    let func_names = interface_func_names(engine, &nfc, NFC_IFACE)?;
+    let mut iface = rt_linker
+        .instance(NFC_IFACE)
+        .map_err(|e| anyhow!("runtime linker instance {NFC_IFACE}: {e}"))?;
+    for fname in &func_names {
+        let fidx = nfc_instance
+            .get_export_index(&mut *store, Some(&nfc_idx), fname)
+            .ok_or_else(|| anyhow!("NFC component missing `{fname}`"))?;
+        let f = nfc_instance
+            .get_func(&mut *store, fidx)
+            .ok_or_else(|| anyhow!("NFC export `{fname}` is not a func"))?;
+        iface.func_new(fname, move |mut ctx, params, results| {
+            f.call(&mut ctx, params, results)?;
+            f.post_return(&mut ctx)?;
+            Ok(())
+        })?;
+    }
+    Ok(())
 }
 
 /// Forward each already-extracted PEER interface into `linker`, so a component importing `cadenza:pkg/iface`
@@ -1954,8 +2030,19 @@ fn is_runtime_import_name(name: &str) -> bool {
 /// The names of the functions the runtime's `cadenza:runtime/heap` interface exports, read off the
 /// component type — the source of truth for what to forward, so nothing is hard-coded.
 fn heap_interface_funcs(engine: &Engine, runtime: &Component) -> Result<Vec<String>> {
-    for (name, item) in runtime.component_type().exports(engine) {
-        if name != RUNTIME_IFACE {
+    interface_func_names(engine, runtime, RUNTIME_IFACE)
+}
+
+/// The function names a component exports under `iface_name` (a component-instance export). Used to bind
+/// the runtime's `heap` funcs into a program's linker AND to bind the NFC component's `normalize` funcs into
+/// the runtime's linker (the transitive compose) — same shape, different interface.
+fn interface_func_names(
+    engine: &Engine,
+    component: &Component,
+    iface_name: &str,
+) -> Result<Vec<String>> {
+    for (name, item) in component.component_type().exports(engine) {
+        if name != iface_name {
             continue;
         }
         if let ComponentItem::ComponentInstance(inst) = item {
@@ -1968,7 +2055,7 @@ fn heap_interface_funcs(engine: &Engine, runtime: &Component) -> Result<Vec<Stri
         }
     }
     Err(anyhow!(
-        "runtime component does not export the {RUNTIME_IFACE} interface"
+        "component does not export the {iface_name} interface"
     ))
 }
 

@@ -92,14 +92,27 @@ pub const RUNTIME_IFACE: &str = "cadenza:runtime/heap";
 /// against — the runtime a program built with this compiler requires. Regenerated from the
 /// built runtime bytes, so it tracks a runtime-code change automatically.
 pub const REQUIRED_RUNTIME_HASH: &str =
-    "90f09723549a9658fa209ed6c3483032199ee31d965b515b21c51f6b7f7ebc7a";
+    "39358be448eac4e8afe25add5977767f814c0f9a6cad714cb778d223839ad739";
 /// The SHA-256 content address of the DEBUG-COUNTERS runtime build — the same runtime code
 /// with the `live-objects` leak counter compiled in (`--features debug-counters`). A shipped
 /// program pins `REQUIRED_RUNTIME_HASH` (the release build); a Perceus leak-check harness
 /// composes THIS build to assert `live-objects == 0` after a run. Recorded here so the harness
 /// locates the debug runtime by content address (from the store), never by rebuilding it.
 pub const DEBUG_RUNTIME_HASH: &str =
-    "9e999a12069f714dedec183b252977355392b281ee8b4a092cf52d80416247a0";
+    "d95a309394fadc2674cef990fbaeee850c27eb9c93771a368b2e76a6686bf889";
+/// The NFC-normalization interface a program imports for Unicode Normalization Form C —
+/// the ABI-identity prefix of the versioned `cadenza:nfc/normalize@…+<hash>` import name.
+/// FINDING#23 (operator ruling d): NFC lives in a SEPARATE imported component (the heavy
+/// `unicode-normalization` tables), so the tagless value-heap runtime carries none of it.
+pub const NFC_IFACE: &str = "cadenza:nfc/normalize";
+/// The SHA-256 content address of the NFC component (`cdz-nfc`) this compiler emits an import
+/// on. Regenerated from the built NFC-component bytes like `REQUIRED_RUNTIME_HASH`, so it tracks
+/// an NFC-code change automatically. The compiler pins it in the imported
+/// `cadenza:nfc/normalize@…+<hash>` name; the host resolves + composes the NFC component from CAS
+/// by this hash (v-agent-harness dep-compose). Adding this IMPORT changes only the emitted
+/// PROGRAM's hash, never `REQUIRED_RUNTIME_HASH` — the core runtime stays light + hash-stable.
+pub const REQUIRED_NFC_HASH: &str =
+    "3fcf8aba6abb3279e6da8a2604f1e13f8ff664d3b88b9957c6c9d5b93dd5d83c";
 /// The runtime's INLINE-UNIT handle — the value `arr-alloc(0)` returns (a compile-time-known
 /// handle carrying the empty tuple/unit, no heap node). DERIVED from the runtime's `cdz-abi`
 /// custom section (read at codegen, then stripped), so the compiler can push it as a constant
@@ -540,6 +553,12 @@ pub const RUNTIME_OPS: &[RtOp] = &[
         lowerable: false,
     },
     RtOp {
+        name: "str-nfc-normalize",
+        params: &[AbiValType::U32],
+        result: Some(AbiValType::U32),
+        lowerable: true,
+    },
+    RtOp {
         name: "sum-disc",
         params: &[AbiValType::U32],
         result: Some(AbiValType::U32),
@@ -723,6 +742,7 @@ pub struct RuntimeOps {
     pub str_from_bytes: &'static RtOp,
     pub str_get: &'static RtOp,
     pub str_new: &'static RtOp,
+    pub str_nfc_normalize: &'static RtOp,
     pub sum_disc: &'static RtOp,
     pub sum_new: &'static RtOp,
     pub sum_new_reuse: &'static RtOp,
@@ -815,22 +835,23 @@ pub const OPS: RuntimeOps = RuntimeOps {
     str_from_bytes: &RUNTIME_OPS[68],
     str_get: &RUNTIME_OPS[69],
     str_new: &RUNTIME_OPS[70],
-    sum_disc: &RUNTIME_OPS[71],
-    sum_new: &RUNTIME_OPS[72],
-    sum_new_reuse: &RUNTIME_OPS[73],
-    sum_payload: &RUNTIME_OPS[74],
-    value_canonicalize: &RUNTIME_OPS[75],
-    value_cmp: &RUNTIME_OPS[76],
-    value_encode: &RUNTIME_OPS[77],
-    value_eq: &RUNTIME_OPS[78],
-    value_eq_shaped: &RUNTIME_OPS[79],
-    vec_concat: &RUNTIME_OPS[80],
-    vec_drop: &RUNTIME_OPS[81],
-    vec_empty: &RUNTIME_OPS[82],
-    vec_get: &RUNTIME_OPS[83],
-    vec_len: &RUNTIME_OPS[84],
-    vec_of_arr: &RUNTIME_OPS[85],
-    vec_push: &RUNTIME_OPS[86],
-    vec_split: &RUNTIME_OPS[87],
-    vec_update: &RUNTIME_OPS[88],
+    str_nfc_normalize: &RUNTIME_OPS[71],
+    sum_disc: &RUNTIME_OPS[72],
+    sum_new: &RUNTIME_OPS[73],
+    sum_new_reuse: &RUNTIME_OPS[74],
+    sum_payload: &RUNTIME_OPS[75],
+    value_canonicalize: &RUNTIME_OPS[76],
+    value_cmp: &RUNTIME_OPS[77],
+    value_encode: &RUNTIME_OPS[78],
+    value_eq: &RUNTIME_OPS[79],
+    value_eq_shaped: &RUNTIME_OPS[80],
+    vec_concat: &RUNTIME_OPS[81],
+    vec_drop: &RUNTIME_OPS[82],
+    vec_empty: &RUNTIME_OPS[83],
+    vec_get: &RUNTIME_OPS[84],
+    vec_len: &RUNTIME_OPS[85],
+    vec_of_arr: &RUNTIME_OPS[86],
+    vec_push: &RUNTIME_OPS[87],
+    vec_split: &RUNTIME_OPS[88],
+    vec_update: &RUNTIME_OPS[89],
 };
