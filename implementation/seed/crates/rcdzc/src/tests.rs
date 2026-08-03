@@ -18341,11 +18341,13 @@ mod runtime_ops {
         // `f : UInt8 → …`. The literal's range is checked against the callee's parameter width at the call
         // site (the range-check reaches the param directly, not only through a runtime conditional).
         check_rejects("(module m (def (f (: x UInt8)) x) (def (main) (f 300)) (export main))");
-        // TRANSITIVE through a two-call chain: `(f 300)` where `f` passes its arg to `g`, both `UInt8`. The
-        // out-of-range literal is caught against the FIRST narrow param it reaches (the `callee_param_ty`
-        // seeding threads the width across the chain), so a literal too big for the chain's width rejects.
+        // TRANSITIVE through a two-call chain: `(f 300)` where `f` is UNANNOTATED and passes its arg to
+        // `g : UInt8` — so `g`'s param width is the SOLE narrowing source, threaded back through `f`'s
+        // inferred param to the literal at `main → f` (the `callee_param_ty` seeding). `f` MUST be
+        // unannotated: an explicit `(: x UInt8)` on `f` would narrow directly at `main → f`, so the test
+        // would pass even if the transitive threading failed — this genuinely exercises the chain (#1869 rev).
         check_rejects(
-            "(module m (def (g (: y UInt8)) y) (def (f (: x UInt8)) (g x)) (def (main) (f 300)) (export main))",
+            "(module m (def (g (: y UInt8)) y) (def (f x) (g x)) (def (main) (f 300)) (export main))",
         );
 
         // NO OVER-REJECTION: fitting branch literals, a constant-condition if (folds to its taken branch),
@@ -18372,7 +18374,7 @@ mod runtime_ops {
         // chain) must pass — the range check rejects only genuinely-out-of-range literals, not every arg.
         check_clean("(module m (def (f (: x UInt8)) x) (def (main) (f 200)) (export main))");
         check_clean(
-            "(module m (def (g (: y UInt8)) y) (def (f (: x UInt8)) (g x)) (def (main) (f 200)) (export main))",
+            "(module m (def (g (: y UInt8)) y) (def (f x) (g x)) (def (main) (f 200)) (export main))",
         );
     }
 
@@ -24396,6 +24398,19 @@ mod match_engine {
                 "main"
             ),
             5
+        );
+        // (2b) the OTHER arm — a `(Mk (None))` field value selects `((Mk (None)) 0)` → 0, so both arms of
+        // the nested-generic match are actually exercised (the Some input above + this None input) (#1864 rev).
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (type (Box a) (Mk a)) \
+                       (def (main) (match (. (record (b (Mk (None)))) b) \
+                          ((Mk (Some v)) v) ((Mk (None)) 0))) (export main))"
+                ),
+                "main"
+            ),
+            0
         );
     }
 
