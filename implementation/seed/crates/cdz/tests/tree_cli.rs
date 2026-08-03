@@ -6,6 +6,7 @@
 //! connectors, a DIAMOND/cycle dep is marked `(*)` and not re-expanded, an unresolvable dep is marked
 //! `*unresolved*` (partial tree, not an abort), and a project with no deps prints just its root line.
 
+use std::io::Read;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -16,6 +17,11 @@ use std::time::{Duration, Instant};
 /// deadline, and on timeout KILLS it and PANICS — so a non-terminating regression fails FAST with a clear
 /// message instead of hanging indefinitely. The bound is generous (`cdz tree` on these tiny fixtures is
 /// milliseconds) so it never flakes on a loaded host, only firing on a genuine infinite loop.
+///
+/// `try_wait()` REAPS the child when it returns `Some(status)`, so we capture that `ExitStatus` and read
+/// the piped stdout/stderr handles DIRECTLY — never a second `wait_with_output()`, which would double-wait
+/// on an already-reaped child and can fail (`No child processes`). `cdz tree`'s output is a handful of
+/// lines (far under the pipe buffer), so reading it after exit can't deadlock.
 fn run(args: &[&str]) -> (bool, String, String) {
     let exe = env!("CARGO_BIN_EXE_cdz");
     let mut child = Command::new(exe)
@@ -25,9 +31,9 @@ fn run(args: &[&str]) -> (bool, String, String) {
         .spawn()
         .expect("spawn cdz");
     let deadline = Instant::now() + Duration::from_secs(30);
-    loop {
+    let status = loop {
         match child.try_wait().expect("try_wait on cdz") {
-            Some(_status) => break,
+            Some(status) => break status,
             None if Instant::now() >= deadline => {
                 let _ = child.kill();
                 let _ = child.wait();
@@ -39,13 +45,24 @@ fn run(args: &[&str]) -> (bool, String, String) {
             }
             None => std::thread::sleep(Duration::from_millis(20)),
         }
-    }
-    let out = child.wait_with_output().expect("collect cdz output");
-    (
-        out.status.success(),
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-    )
+    };
+    // Read the piped handles directly — the child is already reaped, so `wait_with_output()` would be a
+    // double-wait. Both handles were piped at spawn, so `take()` yields them.
+    let mut stdout = String::new();
+    let mut stderr = String::new();
+    child
+        .stdout
+        .take()
+        .expect("piped stdout")
+        .read_to_string(&mut stdout)
+        .expect("read stdout");
+    child
+        .stderr
+        .take()
+        .expect("piped stderr")
+        .read_to_string(&mut stderr)
+        .expect("read stderr");
+    (status.success(), stdout, stderr)
 }
 
 /// A fresh workspace root under a unique temp dir.
