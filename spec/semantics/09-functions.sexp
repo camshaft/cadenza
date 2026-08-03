@@ -6905,8 +6905,8 @@
   (output (: 67 Int64)))
 
 (case "closures extracted from a list by RUNTIME index and applied dispatch correctly"
-  (doc    "The callback-REGISTRY idiom (the list-of-closures pins store + call directly; nothing
-           EXTRACTS by index and applies): three distinct closures in a list, one selected by a fixed
+  (doc    "The callback-REGISTRY idiom: the list-of-closures pins above store + call directly;
+           THIS case pins index-EXTRACTION + application — three distinct closures in a list, one selected by a fixed
            index and one by a runtime-computed index `(% k 3)`, each applied to a live argument. k=4 →
            fns[1](4)=40 ·100 + fns[1](7)=70 → 4070; k=3 → 30·100 + fns[0](7)=8 → 3008. A registry whose
            boxed-fn slots decayed to one shared code pointer (or whose index resolution mis-mapped the
@@ -6939,3 +6939,23 @@
                 (|> (|> k stage1) stage2)))
             (export main)))
   (call   main (: 5 Int64)) (output (: 20105 Int64)))
+
+(case "a fold whose accumulator applies each list closure IN SEQUENCE (apply-all chain)"
+  (doc    "The registry pins above extract ONE closure per read; this folds over the WHOLE list applying
+           each closure to a threaded value — apply-all, the middleware-chain shape. [+1, *10, -5] over
+           k: ((k+1)*10)-5 at k=5 → 55; at k=0 → 5. Each step reads its closure from the list spine and
+           applies it to the previous step's result — a wrong fold order (or a re-read of closure 0) is
+           immediately visible in the composed value.")
+  (input  (do
+            (def (apply-all (: fs (List (-> Int64 Int64))) (: v Int64))
+              (match fs
+                ((list) v)
+                ((list h .. t) (apply-all t (h v)))))
+            (def (main (: k Int64))
+              (apply-all (list (fn ((: x Int64)) (+ x 1))
+                               (fn ((: x Int64)) (* x 10))
+                               (fn ((: x Int64)) (- x 5)))
+                         k))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 55 Int64))
+  (call   main (: 0 Int64)) (output (: 5 Int64)))
