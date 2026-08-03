@@ -294,6 +294,31 @@ impl AgentHost {
     }
 }
 
+/// Assemble the REAL executor set a deployed host runs an agent against (behind `live-net`): the
+/// hermetic [`ClockExecutor`] for `Now` plus the two network transports — [`ReqwestHttpTransport`] for
+/// `Http` and [`BedrockModelTransport`] for `Model` — wired into a by-family [`CompositeExecutor`]. This
+/// is the one-call "give me the live executors" a driver hands to [`HostedSession::genesis`] so a
+/// reducer's `Model`/`Http` effects reach the real world — the capstone of the live-net arc: an agent
+/// loops against Bedrock + fetches URLs, not stubs.
+///
+/// Async because the Bedrock transport loads AWS config from the ambient environment (the SDK default
+/// credential chain — env/profile/IMDS, no broker). Credentials + region come from the ENVIRONMENT
+/// (operator directive); nothing is wired in code. Returns `Err` if the HTTP client can't be built (e.g.
+/// no TLS backend) — a permanent host misconfiguration surfaced at assembly, not per-effect. `Now` stays
+/// hermetic (no network); it's included because a real agent reads the clock.
+#[cfg(feature = "live-net")]
+pub async fn live_executor_set() -> Result<CompositeExecutor, String> {
+    use crate::{
+        BedrockModelTransport, ClockExecutor, HttpExecutor, ModelExecutor, ReqwestHttpTransport,
+    };
+    let http = ReqwestHttpTransport::new()?;
+    let model = BedrockModelTransport::new().await;
+    Ok(CompositeExecutor::new()
+        .with_effect(effect_ct::NOW, Box::new(ClockExecutor::new()))
+        .with_effect(effect_ct::HTTP, Box::new(HttpExecutor::new(http)))
+        .with_effect(effect_ct::MODEL, Box::new(ModelExecutor::new(model))))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
