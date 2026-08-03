@@ -239,10 +239,11 @@ jobs:
       - name: Rebuild the reducer-guest fixture from source + verify it's a valid, current component
         working-directory: implementation/seed/crates/cdz-kernel
         run: |
-          # The E2E test (component_reducer_e2e) loads a COMMITTED wasm-COMPONENT fixture built from
-          # tests/fixtures/reducer-guest (a wit-bindgen guest). This step guards against a STALE fixture
-          # (WIT or guest source changed but the committed .wasm wasn't regenerated) by rebuilding from
-          # source and verifying the fresh build is a VALID component (wasm-tools validate).
+          # The E2E test (component_reducer_e2e) loads the reducer-guest wasm COMPONENT built from
+          # tests/fixtures/reducer-guest (a wit-bindgen guest) — via the REDUCER_GUEST_COMPONENT env path
+          # this step writes below (the committed .wasm binary was removed — v-nix N2). This step builds the
+          # guest from source, verifies it's a VALID component (wasm-tools validate), and hands its path to
+          # the test step so the e2e tests exercise a FRESH build (no stale committed fixture to drift).
           #
           # NOT a byte-diff against the committed .wasm (was `cmp`): that assumed reproducible bytes, but
           # the guest's transitive dep versions aren't lock-pinned (repo .gitignore ignores Cargo.lock)
@@ -267,6 +268,12 @@ jobs:
           # wit/reducer.wit) — wasmtime is the kernel's core engine, no longer feature-gated — so the
           # plain test/clippy below cover it (incl. WIT/binding drift: the generated Host trait must
           # match the ReducerHost impl, AND the E2E test runs the guest fixture through apply).
+          #
+          # The component-reducer e2e tests read the guest component from REDUCER_GUEST_COMPONENT (no
+          # longer a committed include_bytes! binary — v-nix N2). The rebuild step above wrote it to
+          # /tmp/reducer_guest.component.wasm; export that so the e2e tests RUN. (Unset → they optional-
+          # skip, which is only for a bare local `cargo test` without the wasm build; CI always sets it.)
+          export REDUCER_GUEST_COMPONENT=/tmp/reducer_guest.component.wasm
           cargo test
           cargo clippy --all-targets -- -D warnings
           cargo fmt --check
