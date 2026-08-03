@@ -1,0 +1,50 @@
+# cdz-nfc — the Cadenza NFC (Unicode Normalization Form C) component (FINDING#23, operator ruling d).
+#
+# A self-contained wasm component the emitted PROGRAM imports BY HASH (a second content-addressed import
+# beside cadenza:runtime/heap). It carries the heavy Unicode composition tables (unicode-normalization)
+# so the tagless value-heap runtime does NOT — keeping the core light + hash-stable (the whole point of
+# the operator's "import an NFC component, don't bake the dep into every instance" ruling).
+#
+# PURE value transform: `normalize.nfc(list<u8>) -> list<u8>` over UTF-8 bytes. It knows nothing about the
+# value-heap handle ABI (fork B, decided with v-agent-harness), so it composes independently.
+#
+# Built separately for wasm32-unknown-unknown (like cdz-runtime); NOT in the native workspace. Standalone
+# (own `[workspace]`) so the native seed `cargo build` ignores it. The built component bytes are published
+# to CAS; the rcdzc emit declares the import name `cadenza:nfc/normalize@<ver>+<hash-of-these-bytes>`.
+[workspace]
+
+[package]
+name = "cdz-nfc"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen-rt = { version = "0.44", features = ["bitflags"] }
+# The Unicode NFC composition tables. This is the heavy dep the operator ruling keeps OUT of the core
+# runtime — it lives HERE, in the one shared NFC component, imported by the program rather than embedded.
+# `default-features = false` drops its `std` feature → alloc-only, matching this crate's no_std + the
+# `.cargo/config.toml` build-std = [core, alloc] deterministic build (cdz-runtime discipline).
+unicode-normalization = { version = "0.1", default-features = false }
+
+# The embedded wasm allocator (see src/allocator.rs) — a no_std wasm component ships its own allocator,
+# same as cdz-runtime. Gated to wasm only.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+talc = "5"
+
+[package.metadata.component]
+package = "cadenza:nfc"
+
+[package.metadata.component.target]
+path = "wit"
+world = "nfc"
+
+[profile.release]
+# Small, deterministic output — same discipline as cdz-runtime (a stable content hash for CAS).
+panic = "abort"
+opt-level = "s"
+lto = true
+codegen-units = 1

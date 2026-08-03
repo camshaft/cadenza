@@ -27,6 +27,14 @@ const { toMixed } = await import(join(here, "..", "src", "calculator", "mixed.ts
 
 const runtimeBytes = readFileSync(join(here, "..", "src", "wasm", "runtime.wasm"));
 
+// FINDING#23: the value-heap runtime imports `cadenza:nfc/normalize` (a separate NFC component; the Unicode
+// tables live there, not in the runtime). Supply it as a JS shim so the runtime instantiates — NFC of
+// well-formed UTF-8 is String.prototype.normalize('NFC') over the `list<u8>` (Uint8Array) boundary.
+const NFC_IMPORT = "cadenza:nfc/normalize";
+const nfcHostImport = {
+  nfc: (bytes) => new TextEncoder().encode(new TextDecoder("utf-8").decode(bytes).normalize("NFC")),
+};
+
 /// Load a transpiled component from a temp dir, writing ONLY the runtime files jco needs (`.wasm`/`.js`)
 /// — NOT the `interfaces/*.d.ts` TypeScript declarations, which the entry `.js` imports for types only
 /// and which crash a Node `import()` if absent-but-referenced. This mirrors the real run worker
@@ -56,7 +64,7 @@ async function runComponent(componentBytes) {
   // result escapes via the heap). A scalar program imports nothing → the empty import object is fine.
   let imports = {};
   const rt = await loadComponent(runtimeBytes, "heap");
-  const rroot = await rt.mod.instantiate(rt.getCore, {});
+  const rroot = await rt.mod.instantiate(rt.getCore, { [NFC_IMPORT]: nfcHostImport });
   const heapIface = rroot["cadenza:runtime/heap"] ?? rroot["heap"];
 
   const prog = await loadComponent(componentBytes, "prog");
