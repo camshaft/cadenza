@@ -44,9 +44,9 @@ pub trait Executor {
 pub struct CompositeExecutor {
     /// Executors keyed by effect FAMILY STRING (seq-39), not the `EffectKind` enum — so a request routes
     /// by `req.content_type.family`, the same string authz/codec use. Registered via
-    /// [`with_effect`](Self::with_effect) (family-string; register-by-string — a NEW family is served with
-    /// no `EffectKind` variant + no kernel edit) or the transitional [`with`](Self::with) (`EffectKind`,
-    /// delegates to `with_effect(kind.family(), ..)`).
+    /// [`with_effect`](Self::with_effect) (register-by-string — a NEW family is served with no `EffectKind`
+    /// variant + no kernel edit; the sole registration API since the transitional `with(EffectKind,..)` was
+    /// dropped once all callers migrated).
     by_family: HashMap<String, Box<dyn Executor>>,
 }
 
@@ -55,18 +55,6 @@ impl CompositeExecutor {
         CompositeExecutor {
             by_family: HashMap::new(),
         }
-    }
-
-    /// Register the async executor for one effect kind (builder-style; last registration wins — a
-    /// deliberate override, e.g. swapping a recording executor for a live one in a test). Keyed by the
-    /// kind's canonical family string ([`EffectKind::family`]).
-    ///
-    /// Prefer [`with_effect`](Self::with_effect) — the family-string registration API. This
-    /// `EffectKind`-typed form is the pre-register-by-string spelling, kept during the migration so
-    /// existing callers stay green; it delegates to `with_effect`. (Removed once callers migrate — the
-    /// register-by-string bridge, beat 3.)
-    pub fn with(self, kind: EffectKind, executor: Box<dyn Executor>) -> Self {
-        self.with_effect(kind.family(), executor)
     }
 
     /// Register an effect executor for a FAMILY STRING (register-by-string): a new effect type is served
@@ -240,8 +228,14 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn composite_routes_each_kind_to_its_executor() {
         let mut exec = CompositeExecutor::new()
-            .with(EffectKind::Http, Box::new(TagExecutor(b"http-ran")))
-            .with(EffectKind::Shell, Box::new(TagExecutor(b"shell-ran")));
+            .with_effect(
+                crate::effect::effect_ct::HTTP,
+                Box::new(TagExecutor(b"http-ran")),
+            )
+            .with_effect(
+                crate::effect::effect_ct::SHELL,
+                Box::new(TagExecutor(b"shell-ran")),
+            );
         assert!(exec.handles(&EffectKind::Http));
         assert!(exec.handles(&EffectKind::Shell));
 
@@ -262,7 +256,8 @@ mod tests {
     async fn composite_unroutable_kind_is_an_observable_err_not_a_drop() {
         // A kind with no registered executor → Err (an observable outcome the reducer folds, §9d), never
         // a silent drop or panic.
-        let mut exec = CompositeExecutor::new().with(EffectKind::Http, Box::new(TagExecutor(b"h")));
+        let mut exec = CompositeExecutor::new()
+            .with_effect(crate::effect::effect_ct::HTTP, Box::new(TagExecutor(b"h")));
         assert!(!exec.handles(&EffectKind::Model));
         match exec
             .perform_async(&req(EffectKind::Model, "gpt"), Hash::of(b"k"))
@@ -301,8 +296,8 @@ mod tests {
             EffectOutcome::Ok(Some(Payload::Inline(b"embed-e".to_vec().into())))
         );
         // with(EffectKind) delegates to with_effect(kind.family(), ..) — same registration.
-        let mut viaenum =
-            CompositeExecutor::new().with(EffectKind::Http, Box::new(TagExecutor(b"h")));
+        let mut viaenum = CompositeExecutor::new()
+            .with_effect(crate::effect::effect_ct::HTTP, Box::new(TagExecutor(b"h")));
         assert!(viaenum.handles_family(crate::effect::effect_ct::HTTP));
         assert_eq!(
             viaenum
@@ -316,8 +311,14 @@ mod tests {
     async fn composite_last_registration_wins() {
         // Registering a kind twice replaces the prior executor (deliberate override).
         let mut exec = CompositeExecutor::new()
-            .with(EffectKind::Http, Box::new(TagExecutor(b"first")))
-            .with(EffectKind::Http, Box::new(TagExecutor(b"second")));
+            .with_effect(
+                crate::effect::effect_ct::HTTP,
+                Box::new(TagExecutor(b"first")),
+            )
+            .with_effect(
+                crate::effect::effect_ct::HTTP,
+                Box::new(TagExecutor(b"second")),
+            );
         assert_eq!(
             exec.perform_async(&req(EffectKind::Http, "x"), Hash::of(b"k"))
                 .await,
@@ -336,7 +337,8 @@ mod tests {
                 EffectOutcome::Ok(Some(Payload::Inline(key.as_bytes().to_vec().into())))
             }
         }
-        let mut exec = CompositeExecutor::new().with(EffectKind::Http, Box::new(KeyEcho));
+        let mut exec =
+            CompositeExecutor::new().with_effect(crate::effect::effect_ct::HTTP, Box::new(KeyEcho));
         let key = Hash::of(b"the-key");
         assert_eq!(
             exec.perform_async(&req(EffectKind::Http, "x"), key).await,
@@ -349,7 +351,8 @@ mod tests {
         // I2: the read-only mechanism accessor the manifest projection probes. A registered kind's family
         // is handled (by string); an unregistered family — including an extension family with no EffectKind
         // variant — is not. handles(&EffectKind) agrees with handles_family(kind.family()).
-        let exec = CompositeExecutor::new().with(EffectKind::Http, Box::new(TagExecutor(b"h")));
+        let exec = CompositeExecutor::new()
+            .with_effect(crate::effect::effect_ct::HTTP, Box::new(TagExecutor(b"h")));
         assert!(exec.handles_family(EffectKind::Http.family()));
         assert!(exec.handles(&EffectKind::Http)); // the enum sibling agrees
         assert!(!exec.handles_family(EffectKind::Model.family()));
@@ -366,8 +369,14 @@ mod tests {
         // the two agree by construction; the register-by-string slice will let a family exist with no
         // matching `EffectKind` at all, and this is the seam that makes that work — so pin it now.)
         let mut exec = CompositeExecutor::new()
-            .with(EffectKind::Http, Box::new(TagExecutor(b"http-executor")))
-            .with(EffectKind::Model, Box::new(TagExecutor(b"model-executor")));
+            .with_effect(
+                crate::effect::effect_ct::HTTP,
+                Box::new(TagExecutor(b"http-executor")),
+            )
+            .with_effect(
+                crate::effect::effect_ct::MODEL,
+                Box::new(TagExecutor(b"model-executor")),
+            );
         let mut r = req(EffectKind::Http, "x");
         r.content_type.family = EffectKind::Model.family().into();
         // Routed by family ("model") to the MODEL executor, despite kind == Http.
