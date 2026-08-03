@@ -14,7 +14,7 @@
 use cdz_agent_host::{ClockExecutor, ModelExecutor, ModelTransport};
 use cdz_kernel::authz::Authorizer;
 use cdz_kernel::effect::{
-    Capability, EffectKind, EffectRequest, Payload, ResourcePredicate, Timeliness,
+    effect_ct, Capability, EffectKind, EffectRequest, Payload, ResourcePredicate, Timeliness,
 };
 use cdz_kernel::event::{ContentType, EffectOutcome, Event, EventBody};
 use cdz_kernel::executor::CompositeExecutor;
@@ -94,8 +94,8 @@ fn model_cap() -> Authorizer {
 #[tokio::test]
 async fn agent_loop_runs_end_to_end_through_the_model_executor() {
     let reducer = ModelAgent;
-    let mut exec =
-        CompositeExecutor::new().with(EffectKind::Model, Box::new(ModelExecutor::new(StubModel)));
+    let mut exec = CompositeExecutor::new()
+        .with_effect(effect_ct::MODEL, Box::new(ModelExecutor::new(StubModel)));
     let mut session = Session::genesis(Hash::of(b"model-agent-v1"));
 
     session
@@ -184,8 +184,8 @@ async fn one_composite_routes_both_now_and_model_for_one_agent() {
         },
     ]);
     let mut exec = CompositeExecutor::new()
-        .with(EffectKind::Now, Box::new(ClockExecutor::new()))
-        .with(EffectKind::Model, Box::new(ModelExecutor::new(StubModel)));
+        .with_effect(effect_ct::NOW, Box::new(ClockExecutor::new()))
+        .with_effect(effect_ct::MODEL, Box::new(ModelExecutor::new(StubModel)));
     let mut session = Session::genesis(Hash::of(b"clock-then-model-v1"));
 
     session
@@ -232,8 +232,8 @@ async fn a_model_call_to_an_unpermitted_id_is_denied_before_the_transport() {
             }
         }
     }
-    let mut exec =
-        CompositeExecutor::new().with(EffectKind::Model, Box::new(ModelExecutor::new(MustNotCall)));
+    let mut exec = CompositeExecutor::new()
+        .with_effect(effect_ct::MODEL, Box::new(ModelExecutor::new(MustNotCall)));
     let mut session = Session::genesis(Hash::of(b"wrong-model-v1"));
     session
         .deliver_async(

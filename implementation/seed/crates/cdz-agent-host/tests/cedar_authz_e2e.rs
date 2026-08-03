@@ -12,8 +12,10 @@
 //! crate's default gate needs no wasm-tools + no 3.3 MB blob enters the repo. The real decision assertion
 //! runs in CI where the component exists.
 
+mod common;
+
 use cdz_agent_host::{ModelExecutor, ModelTransport};
-use cdz_kernel::effect::{EffectKind, EffectRequest, Payload, Timeliness};
+use cdz_kernel::effect::{effect_ct, EffectKind, EffectRequest, Payload, Timeliness};
 use cdz_kernel::event::{ContentType, EffectOutcome, Event, EventBody};
 use cdz_kernel::executor::CompositeExecutor;
 use cdz_kernel::hash::Hash;
@@ -21,18 +23,7 @@ use cdz_kernel::kernel::Session;
 use cdz_kernel::kv::Kv;
 use cdz_kernel::reducer::{FoldOutput, Reducer};
 use cdz_kernel::wasm_host::ComponentAuthorizer;
-
-/// Load the lifted Cedar policy component the CI job built. `None` ONLY when the env var is UNSET (a
-/// local run without the wasm toolchain → the caller skips). When the var IS set, the file MUST read —
-/// a missing/unreadable/corrupt component is a CI misconfiguration or a broken lift, and swallowing it
-/// (`.ok()`) would silently skip the CI-gated authz e2e + let a broken component pass green (PR#1332).
-/// So this PANICS on a read error when the var is set — fail loud, same discipline as the S1 store-guard.
-fn policy_component_bytes() -> Option<Vec<u8>> {
-    let path = std::env::var("CEDAR_POLICY_COMPONENT").ok()?; // unset → skip (None)
-    Some(std::fs::read(&path).unwrap_or_else(|e| {
-        panic!("CEDAR_POLICY_COMPONENT is set to {path:?} but the component can't be read: {e}")
-    }))
-}
+use common::policy_component_bytes;
 
 /// A stub model transport (the Model executor's I/O half) — the agent's Model effect that gets AUTHORIZED
 /// reaches this; a canned completion keeps the loop hermetic. (An unauthorized effect never gets here.)
@@ -118,7 +109,7 @@ async fn a_real_agent_is_gated_by_a_real_cedar_decision() {
     {
         let reducer = PolicyProbe;
         let mut exec = CompositeExecutor::new()
-            .with(EffectKind::Model, Box::new(ModelExecutor::new(StubModel)));
+            .with_effect(effect_ct::MODEL, Box::new(ModelExecutor::new(StubModel)));
         let mut session = Session::genesis(Hash::of(b"cedar-permit-v1"));
         session
             .deliver_async(inbound("model-ok"), None, &reducer, &authz, &mut exec)
@@ -144,7 +135,7 @@ async fn a_real_agent_is_gated_by_a_real_cedar_decision() {
         // A Model executor is registered, but the Http effect is denied before any executor runs; an
         // Http executor isn't even needed to prove the deny (the gate stops it first).
         let mut exec = CompositeExecutor::new()
-            .with(EffectKind::Model, Box::new(ModelExecutor::new(StubModel)));
+            .with_effect(effect_ct::MODEL, Box::new(ModelExecutor::new(StubModel)));
         let mut session = Session::genesis(Hash::of(b"cedar-deny-v1"));
         session
             .deliver_async(inbound("http-imds"), None, &reducer, &authz, &mut exec)
