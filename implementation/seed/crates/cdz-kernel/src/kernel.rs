@@ -1255,7 +1255,7 @@ mod status_snapshot_tests {
     struct StatusReducer;
     #[async_trait::async_trait(?Send)]
     impl Reducer for StatusReducer {
-        async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => {
                     kv.put(b"public/status".to_vec(), b"investigating auth".to_vec());
@@ -1282,7 +1282,7 @@ mod status_snapshot_tests {
     struct ReportingReducer;
     #[async_trait::async_trait(?Send)]
     impl Reducer for ReportingReducer {
-        async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { content_type, .. } if content_type.is_report() => {
                     // Summarize from local KV alone — read the goal it recorded, describe progress.
@@ -1471,7 +1471,7 @@ mod status_snapshot_tests {
     struct TimerThenPublishReducer;
     #[async_trait::async_trait(?Send)]
     impl Reducer for TimerThenPublishReducer {
-        async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => {
                     FoldOutput::with_effects(vec![crate::reducer::Effect {
@@ -1712,7 +1712,7 @@ mod monotonic_now_tests {
     struct NowReducer;
     #[async_trait::async_trait(?Send)]
     impl Reducer for NowReducer {
-        async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } | EventBody::EffectResult { .. } => {
                     // On a Now result, stash it; then (up to 3 total) ask again to build a sequence.
@@ -1747,7 +1747,7 @@ mod monotonic_now_tests {
     struct StuckClock(u64);
     #[async_trait::async_trait(?Send)]
     impl Executor for StuckClock {
-        async fn perform_async(&mut self, req: &EffectRequest, _key: Hash) -> EffectOutcome {
+        async fn perform(&mut self, req: &EffectRequest, _key: Hash) -> EffectOutcome {
             assert_eq!(req.kind, EffectKind::Now);
             EffectOutcome::Ok(Some(Payload::Inline(self.0.to_le_bytes().to_vec().into())))
         }
@@ -1849,7 +1849,7 @@ mod monotonic_now_tests {
     struct SummaryEmitReducer;
     #[async_trait::async_trait(?Send)]
     impl Reducer for SummaryEmitReducer {
-        async fn fold_async(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+        async fn fold(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => {
                     let mut request = EffectRequest::new(
@@ -1934,7 +1934,7 @@ mod monotonic_now_tests {
     struct MixedEmitReducer;
     #[async_trait::async_trait(?Send)]
     impl Reducer for MixedEmitReducer {
-        async fn fold_async(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+        async fn fold(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => {
                     // (1) a control/summary effect — must surface, authz-exempt, unrouted.
@@ -2028,7 +2028,7 @@ mod monotonic_now_tests {
     struct CapabilitiesQueryReducer;
     #[async_trait::async_trait(?Send)]
     impl Reducer for CapabilitiesQueryReducer {
-        async fn fold_async(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+        async fn fold(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => {
                     let mut request =
@@ -2144,7 +2144,7 @@ mod monotonic_now_tests {
     struct InertReducer;
     #[async_trait::async_trait(?Send)]
     impl Reducer for InertReducer {
-        async fn fold_async(&self, _event: &Event, _kv: &mut Kv) -> FoldOutput {
+        async fn fold(&self, _event: &Event, _kv: &mut Kv) -> FoldOutput {
             FoldOutput::none()
         }
     }
@@ -2400,7 +2400,7 @@ mod monotonic_now_tests {
     struct TimerByFamilyReducer;
     #[async_trait::async_trait(?Send)]
     impl Reducer for TimerByFamilyReducer {
-        async fn fold_async(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+        async fn fold(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => {
                     let mut request =

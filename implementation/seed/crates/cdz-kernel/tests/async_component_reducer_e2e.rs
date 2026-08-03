@@ -61,7 +61,7 @@ async fn real_guest_folds_through_async_apply_end_to_end() {
 async fn async_reducer_drives_via_the_async_reducer_trait() {
     // Drive through the `Reducer` trait (what the async kernel loop will call) via a `&dyn` reference
     // — proving the native `impl Reducer for AsyncComponentReducer` is object-safe + folds a real
-    // Inbound event, mutating the passed-in KV (the fold_async contract).
+    // Inbound event, mutating the passed-in KV (the fold contract).
     let Some(guest) = guest_bytes() else {
         eprintln!(
             "SKIP async_reducer_drives_via_the_async_reducer_trait: REDUCER_GUEST_COMPONENT unset"
@@ -84,10 +84,10 @@ async fn async_reducer_drives_via_the_async_reducer_trait() {
         },
     };
     let mut kv = Kv::new();
-    let out = dyn_reducer.fold_async(&event, &mut kv).await;
+    let out = dyn_reducer.fold(&event, &mut kv).await;
 
     // The fold succeeded (no failure), emitted the guest's one Http effect, and mutated the KV in place.
-    // `fold_async` yields KERNEL effect types (crate::effect), not the guest-wire `wasm_host::EffectKind`.
+    // `fold` yields KERNEL effect types (crate::effect), not the guest-wire `wasm_host::EffectKind`.
     assert!(
         out.failure.is_none(),
         "fold should not fail: {:?}",

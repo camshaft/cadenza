@@ -718,7 +718,6 @@ impl crate::reducer::Reducer for ComponentReducer {
     /// async wasm path is [`AsyncComponentReducer`]. `ComponentReducer` remains because it is the only
     /// dep-CAPABLE wasm reducer today (§23 dep-compose; `AsyncComponentReducer` declines deps pending async
     /// dep-compose). Once async dep-compose lands, `ComponentReducer` collapses into `AsyncComponentReducer`.
-    /// Defines the TARGET unsuffixed `fold` (trait-rename beat T2, kernel-side).
     async fn fold(&self, event: &Event, kv: &mut Kv) -> crate::reducer::FoldOutput {
         // Map the kernel event → the guest's (content_type, payload, resumes) inputs.
         let (content_type, payload, resumes) = event_to_guest_inputs(&event.body);
@@ -775,7 +774,7 @@ impl crate::reducer::Reducer for ComponentReducer {
 /// counterpart of [`ComponentReducer`]. Its engine is configured with `async_support(true)` and
 /// `fuel_async_yield_interval`, so a long `fold.apply` YIELDS at fuel intervals (letting the single-
 /// threaded host loop interleave other sessions) instead of blocking, while the per-fold fuel BUDGET still
-/// traps a true runaway. It implements [`crate::reducer::Reducer`] natively (its `fold_async` awaits
+/// traps a true runaway. It implements [`crate::reducer::Reducer`] natively (its `fold` awaits
 /// the guest's async `call_apply_async`) — the single async `Reducer` trait (the all-async arc removed
 /// the sync twin + its adapter), so a pure-Rust and a wasm reducer both `impl Reducer` directly.
 ///
@@ -819,7 +818,7 @@ impl AsyncComponentReducer {
         let mut config = wasmtime::Config::new();
         config.consume_fuel(true);
         // The all-async engine: a long fold cooperatively yields (fuel_async_yield_interval, set per-store
-        // in fold_async) instead of blocking; sync calls would panic on this engine (per-engine flag).
+        // in fold) instead of blocking; sync calls would panic on this engine (per-engine flag).
         config.async_support(true);
         let engine = wasmtime::Engine::new(&config)
             .map_err(|e| ComponentError::Instantiate(e.to_string()))?;
@@ -945,7 +944,6 @@ impl AsyncComponentReducer {
 
 #[async_trait::async_trait(?Send)]
 impl crate::reducer::Reducer for AsyncComponentReducer {
-    // Defines the TARGET unsuffixed `fold` (trait-rename beat T2, kernel-side).
     async fn fold(&self, event: &Event, kv: &mut Kv) -> crate::reducer::FoldOutput {
         let (content_type, payload, resumes) = event_to_guest_inputs(&event.body);
         let taken = std::mem::take(kv);
@@ -1055,7 +1053,6 @@ impl crate::authz::Authorize for ComponentAuthorizer {
     /// legitimate decision. Native `Authorize` — the policy instantiate/call is a SYNC wasm engine
     /// call today (no `.await`); a fuel-yielding async policy eval is a later refinement (the trait is
     /// async so it drops in without a signature change).
-    /// Defines the TARGET unsuffixed `authorize` (trait-rename beat T2, kernel-side).
     async fn authorize(&self, req: &crate::effect::EffectRequest) -> Result<(), String> {
         let mut store = wasmtime::Store::new(&self.engine, ());
         if store.set_fuel(DEFAULT_FOLD_FUEL).is_err() {
@@ -1310,7 +1307,7 @@ mod tests {
         }
         // (A ComponentAuthorizer over a real policy denies fail-closed on a policy trap — exercised e2e
         // once the Cedar policy guest exists; the trait impl's Err arms encode the fail-closed contract.)
-        let _ = <ComponentAuthorizer as Authorize>::authorize_async; // name-check the impl exists
+        let _ = <ComponentAuthorizer as Authorize>::authorize; // name-check the impl exists
     }
 
     #[test]

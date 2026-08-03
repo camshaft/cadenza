@@ -26,28 +26,10 @@ use std::collections::HashMap;
 /// cross threads.
 #[async_trait::async_trait(?Send)]
 pub trait Executor {
-    /// Perform `req`. `idempotency_key` lets a side-effecting executor dedup a re-driven dispatch after a
+    /// Perform `req` — the un-suffixed name (the whole trait is `async`, so an `_async` suffix would be
+    /// redundant). `idempotency_key` lets a side-effecting executor dedup a re-driven dispatch after a
     /// crash. Returns the outcome the kernel folds back as an `EffectResult`. May `.await` real I/O.
-    /// Perform `req` — the un-suffixed name (the whole trait is `async`, so the `_async` suffix is
-    /// redundant; operator cleanup). This is the TARGET name. During the trait-rename window BOTH `perform`
-    /// and `perform_async` carry mutually-forwarding defaults, so an impl provides EXACTLY ONE and the other
-    /// forwards to it — a zero-red migration (no flag-day, no coordinated red window): existing impls keep
-    /// defining `perform_async`; new/migrated impls define `perform`; callers always use `perform`. Once ALL
-    /// impls (kernel + cdz-agent-host) define `perform`, `perform_async` is dropped and `perform` becomes
-    /// required (beat T3).
-    ///
-    /// TRANSITIONAL-WINDOW INVARIANT: every impl must define exactly one of the two. An impl that defines
-    /// NEITHER compiles but infinite-recurses at first call — a known, temporary hazard, guarded by the impl
-    /// set being fixed and enumerated. Do not add a new Executor impl without defining one method.
-    async fn perform(&mut self, req: &EffectRequest, idempotency_key: Hash) -> EffectOutcome {
-        self.perform_async(req, idempotency_key).await
-    }
-
-    /// Legacy suffixed name — TRANSITIONAL default forwarding to [`perform`]. Existing impls still define
-    /// this directly; dropped once every impl has migrated to `perform` (see the window invariant above).
-    async fn perform_async(&mut self, req: &EffectRequest, idempotency_key: Hash) -> EffectOutcome {
-        self.perform(req, idempotency_key).await
-    }
+    async fn perform(&mut self, req: &EffectRequest, idempotency_key: Hash) -> EffectOutcome;
 
     /// Does this executor serve effect `family`? The MECHANISM dimension the capability-manifest
     /// projection ([`crate::effect::project_manifest`]) probes over the canonical family set — "does the
@@ -64,7 +46,7 @@ pub trait Executor {
 }
 
 /// The by-kind effect router (§2 "the kernel routes, doesn't distinguish"): holds `Box<dyn Executor>`
-/// per kind and routes `perform_async` to the registered executor, awaiting it. A session that emits more
+/// per kind and routes `perform` to the registered executor, awaiting it. A session that emits more
 /// than one effect kind (an agent doing both `Http` and `Model`) wires one of these; a native-async
 /// executor (a real Bedrock/HTTP one that awaits its transport) registers directly.
 ///
@@ -115,7 +97,6 @@ impl CompositeExecutor {
 
 #[async_trait::async_trait(?Send)]
 impl Executor for CompositeExecutor {
-    // Defines the TARGET unsuffixed `perform` (trait-rename beat T2, kernel-side).
     async fn perform(&mut self, req: &EffectRequest, idempotency_key: Hash) -> EffectOutcome {
         // Route by the request's content-type FAMILY (seq-39): a request whose family has no registered
         // executor is an OBSERVABLE Err (§9d anti-stuck), never a panic/drop.
@@ -200,7 +181,6 @@ pub struct ShellExecutor;
 #[cfg(all(feature = "live-exec", unix))]
 #[async_trait::async_trait(?Send)]
 impl Executor for ShellExecutor {
-    // Defines the TARGET unsuffixed `perform` (trait-rename beat T2, kernel-side).
     async fn perform(&mut self, req: &EffectRequest, _idempotency_key: Hash) -> EffectOutcome {
         use crate::effect::EffectKind;
         if req.kind != EffectKind::Shell {
@@ -244,7 +224,7 @@ mod tests {
     struct TagExecutor(&'static [u8]);
     #[async_trait::async_trait(?Send)]
     impl Executor for TagExecutor {
-        async fn perform_async(&mut self, _req: &EffectRequest, _key: Hash) -> EffectOutcome {
+        async fn perform(&mut self, _req: &EffectRequest, _key: Hash) -> EffectOutcome {
             EffectOutcome::Ok(Some(Payload::Inline(self.0.to_vec().into())))
         }
     }
@@ -255,7 +235,7 @@ mod tests {
         let mut tagged = TagExecutor(b"async-ran");
         let dyn_exec: &mut dyn Executor = &mut tagged;
         let out = dyn_exec
-            .perform_async(&req(EffectKind::Http, "https://ok/x"), Hash::of(b"k"))
+            .perform(&req(EffectKind::Http, "https://ok/x"), Hash::of(b"k"))
             .await;
         assert_eq!(
             out,
@@ -279,12 +259,12 @@ mod tests {
 
         // Each kind reaches its own executor — the multi-kind session a single executor couldn't serve.
         assert_eq!(
-            exec.perform_async(&req(EffectKind::Http, "https://ok/x"), Hash::of(b"k"))
+            exec.perform(&req(EffectKind::Http, "https://ok/x"), Hash::of(b"k"))
                 .await,
             EffectOutcome::Ok(Some(Payload::Inline(b"http-ran".to_vec().into())))
         );
         assert_eq!(
-            exec.perform_async(&req(EffectKind::Shell, "echo hi"), Hash::of(b"k"))
+            exec.perform(&req(EffectKind::Shell, "echo hi"), Hash::of(b"k"))
                 .await,
             EffectOutcome::Ok(Some(Payload::Inline(b"shell-ran".to_vec().into())))
         );
@@ -298,7 +278,7 @@ mod tests {
             .with_effect(crate::effect::effect_ct::HTTP, Box::new(TagExecutor(b"h")));
         assert!(!exec.handles(&EffectKind::Model));
         match exec
-            .perform_async(&req(EffectKind::Model, "gpt"), Hash::of(b"k"))
+            .perform(&req(EffectKind::Model, "gpt"), Hash::of(b"k"))
             .await
         {
             EffectOutcome::Err(msg) => {
@@ -330,7 +310,7 @@ mod tests {
         let mut ext = req(EffectKind::Http, "x");
         ext.content_type.family = "embedding".into();
         assert_eq!(
-            exec.perform_async(&ext, Hash::of(b"k")).await,
+            exec.perform(&ext, Hash::of(b"k")).await,
             EffectOutcome::Ok(Some(Payload::Inline(b"embed-e".to_vec().into())))
         );
         // with(EffectKind) delegates to with_effect(kind.family(), ..) — same registration.
@@ -339,7 +319,7 @@ mod tests {
         assert!(viaenum.handles_family(crate::effect::effect_ct::HTTP));
         assert_eq!(
             viaenum
-                .perform_async(&req(EffectKind::Http, "x"), Hash::of(b"k"))
+                .perform(&req(EffectKind::Http, "x"), Hash::of(b"k"))
                 .await,
             EffectOutcome::Ok(Some(Payload::Inline(b"h".to_vec().into())))
         );
@@ -358,7 +338,7 @@ mod tests {
                 Box::new(TagExecutor(b"second")),
             );
         assert_eq!(
-            exec.perform_async(&req(EffectKind::Http, "x"), Hash::of(b"k"))
+            exec.perform(&req(EffectKind::Http, "x"), Hash::of(b"k"))
                 .await,
             EffectOutcome::Ok(Some(Payload::Inline(b"second".to_vec().into())))
         );
@@ -371,7 +351,7 @@ mod tests {
         struct KeyEcho;
         #[async_trait::async_trait(?Send)]
         impl Executor for KeyEcho {
-            async fn perform_async(&mut self, _req: &EffectRequest, key: Hash) -> EffectOutcome {
+            async fn perform(&mut self, _req: &EffectRequest, key: Hash) -> EffectOutcome {
                 EffectOutcome::Ok(Some(Payload::Inline(key.as_bytes().to_vec().into())))
             }
         }
@@ -379,7 +359,7 @@ mod tests {
             CompositeExecutor::new().with_effect(crate::effect::effect_ct::HTTP, Box::new(KeyEcho));
         let key = Hash::of(b"the-key");
         assert_eq!(
-            exec.perform_async(&req(EffectKind::Http, "x"), key).await,
+            exec.perform(&req(EffectKind::Http, "x"), key).await,
             EffectOutcome::Ok(Some(Payload::Inline(key.as_bytes().to_vec().into())))
         );
     }
@@ -419,14 +399,14 @@ mod tests {
         r.content_type.family = EffectKind::Model.family().into();
         // Routed by family ("model") to the MODEL executor, despite kind == Http.
         assert_eq!(
-            exec.perform_async(&r, Hash::of(b"k")).await,
+            exec.perform(&r, Hash::of(b"k")).await,
             EffectOutcome::Ok(Some(Payload::Inline(b"model-executor".to_vec().into())))
         );
         // And a family with NO registered executor (and no EffectKind variant) is an observable Err naming
         // that family — the fail-closed seam the register-by-string slice hardens to retry::permanent.
         let mut ext = req(EffectKind::Http, "x");
         ext.content_type.family = "embedding".into();
-        match exec.perform_async(&ext, Hash::of(b"k")).await {
+        match exec.perform(&ext, Hash::of(b"k")).await {
             EffectOutcome::Err(msg) => assert!(
                 msg.contains("embedding"),
                 "unroutable extension family named in the err: {msg}"
