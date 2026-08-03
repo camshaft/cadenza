@@ -11519,22 +11519,33 @@ fn emit(
         // (The `Core::ExternCall` emit arm was REMOVED in U4 — a peer op is now a peer-bound effect's
         // escaping `Core::HostCall`, which the `Core::HostCall` arm above emits as a `CallExternImport`
         // when the effect is peer-bound.)
-        // A SEQUENCING block — emit each statement FOR ITS EFFECT (in order), then the tail as the value.
-        // A statement is a host call whose result is `Unit` (it leaves NOTHING on the stack — a
-        // `func()`-typed import), so emitting it needs no `drop`; a value-leaving statement is not produced
-        // here yet (the `do`-fold only sequences Unit-returning host calls). The tail leaves the block's
-        // value on the stack.
+        // A SEQUENCING block — emit each non-final statement FOR ITS EFFECT (in order), then the tail as the
+        // value. The `do`-fold (`lower.rs`) puts a statement here only when SOME non-final statement reaches a
+        // host call; a statement itself is classified per the DEAD-INIT ruling (rust already does this,
+        // adv-56 — this is the wasm parity face):
+        //   • a statement that does NOT reach a host call is a DISCARDED PURE form — its value flows nowhere,
+        //     so it is UNOBSERVED and must be ELIDED (not emitted). Emitting it would (a) leave a dangling
+        //     value on the stack (imbalance) and (b) FORCE a trap that must not fire — `(do (/ 100 d) …)` at
+        //     d=0 yields the tail, the div-by-zero is dead. This is EXACTLY the predicate CDZ0307 warns on
+        //     (`collect_discarded_value_warnings` reads the same `subtree_reaches_host_call`), so no drift.
+        //   • a statement that DOES reach a host call must be EMITTED (the call crosses the boundary). A
+        //     Unit-result host call leaves nothing (a `func()`-typed import) — emit as-is. A value-leaving
+        //     host call (a discarded non-Unit result, e.g. `(io.put 1)` returning Int64) leaves its value on
+        //     the stack, so `Drop` it to keep the block balanced (the tail is the block's value).
+        //= spec/capabilities/core-semantics.md#a-sequencing-block-evaluates-its-forms-in-order
+        //# A sequencing block MUST evaluate to the value of its last form.
         Core::Seq { stmts, tail } => {
             for s in &stmts {
-                // A statement must leave nothing on the stack (a Unit host call). Guard it: a non-Unit
-                // statement would leave a dangling value (stack imbalance) — decline rather than emit it.
-                if !matches!(crate::infer::type_of(db, *s), Ty::Unit) {
-                    return Err(Reject::decline(
-                        "a sequencing statement that leaves a value is not yet emitted (only a \
-                         unit-returning host-call statement)",
-                    ));
+                // A discarded PURE statement is unobserved — elide it (its trap, if any, is dead-init).
+                if !crate::lower::subtree_reaches_host_call(db, *s) {
+                    continue;
                 }
+                // A host-reaching statement must run. Emit it; if it leaves a value (a non-Unit host-call
+                // result, discarded here), drop that value so the block stays stack-balanced.
                 emit(db, *s, slots, base, high, scratch_ty, layout, out)?;
+                if !matches!(crate::infer::type_of(db, *s), Ty::Unit) {
+                    out.push(Lir::Drop);
+                }
             }
             emit(db, tail, slots, base, high, scratch_ty, layout, out)
         }

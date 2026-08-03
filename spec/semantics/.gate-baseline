@@ -3571,6 +3571,7 @@ pass	a value definition may carry a leading doc, like a function definition
 pass	a value-eq guard on a LITERAL-probe arm drives a tail-recursive loop
 pass	a value-eq guard on a SUM-match arm drives a tail-recursive loop
 pass	a value-eq guard on a wildcard arm drives a tail-recursive loop
+pass	a value-leaving host-call statement in a do-body runs and its result is dropped (dead-init sibling)
 pass	a variadic Ast form is folded via a tail-splice rest-binder over its operands
 pass	a variant carrying a Char payload constructs, matches, and binds it
 pass	a variant carrying a RECORD payload constructs and matches
@@ -5627,7 +5628,7 @@ todo	a String host RESULT crosses the boundary and is read twice (byte-len + sca
 todo	a Symbol entry parameter compares to an interned constant
 todo	a closed literal closure forwarded through const-wrapper hops is not a false reject
 todo	a constant-try helper that fails feeds the None arm's fallback into resume
-todo	a discarded pure trapping item in a host do-body is elided beside a host call (dead-init ruling)
+pass	a discarded pure trapping item in a host do-body is elided beside a host call (dead-init ruling)
 todo	a recursive scalar-walk classifies characters across a multibyte String entry arg
 todo	a runtime bin match decodes a FINAL constant-size utf8 segment
 todo	a runtime-DISC `?` inside a stored closure applies per-call once BRICK 3b lands

@@ -2814,8 +2814,9 @@
            recorded), not the pure discarded sibling. Pins that the Core::Seq emit ELIDES a discarded pure
            non-final statement rather than force-evaluating it (adv-56 rust miscompile — `let _ = <stmt>;`
            ran the trap). The pure-only dead-init twin (02-binding-and-control) elides the same way with no
-           host call; this is the host-call face. Rust passes (the fix landed there); wasm / rust-async
-           decline this host-delegated shape (todo).")
+           host call; this is the host-call face. Rust + wasm pass (the wasm Core::Seq emit elides a
+           non-host-reaching statement via the SAME `subtree_reaches_host_call` predicate CDZ0307 warns on);
+           rust-async declines this host-delegated shape (todo).")
   (input  (do
             (effect io (op put (-> Int64 Int64)))
             (def (main (: d Int64))
@@ -2826,6 +2827,26 @@
             (export main)))
   (host-responses (respond io.put (: 0 Int64)))
   (host-calls (call io.put))
+  (call   main (: 0 Int64)) (output (: 42 Int64)))
+
+(case "a value-leaving host-call statement in a do-body runs and its result is dropped (dead-init sibling)"
+  (doc    "The DROP face of the dead-init Core::Seq emit: `(do (io.put 1) (io.put 2) 42)` — the two non-final
+           statements are VALUE-LEAVING host calls (`io.put : Int64 -> Int64`), not Unit. Each must RUN (both
+           host calls fire, recorded in order) but its returned value is DISCARDED — the emit drops the
+           leftover so the block stays stack-balanced and yields the tail, 42. Distinct from the pure-elide
+           sibling above (which does NOT emit its statement at all): a host-reaching statement is always
+           emitted; only a non-Unit RESULT is dropped. Pins the `Lir::Drop` arm the sibling's pure-elide path
+           doesn't exercise. Rust + wasm pass; rust-async todo pending its host-delegated Seq emit.")
+  (input  (do
+            (effect io (op put (-> Int64 Int64)))
+            (def (main (: k Int64))
+              (host (io)
+                (do (io.put 1)
+                    (io.put 2)
+                    42)))
+            (export main)))
+  (host-responses (respond io.put (: 0 Int64)) (respond io.put (: 0 Int64)))
+  (host-calls (call io.put) (call io.put))
   (call   main (: 0 Int64)) (output (: 42 Int64)))
 
 (case "a RESULT-returning effect op is matched on Ok / Err — the fallible-step idiom"
