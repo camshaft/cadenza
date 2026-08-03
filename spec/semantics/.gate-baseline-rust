@@ -1682,6 +1682,8 @@ pass	a generated map workload agrees with a linear-scan model at EVERY key of th
 pass	a generated value with a BIGINT leaf is reproducible (compound = walks the bignum)
 pass	a generated value with a FLOAT leaf is reproducible (compound = over the canonical float byte form)
 pass	a generated value with a SYMBOL leaf is reproducible (compound = walks the interned-name byte leaf)
+pass	a generic def rewrap that RETURNS the user generic is monomorphized at Int64 and Bool
+pass	a generic def unwrap is monomorphized at Bool and Int64 element types in one program
 pass	a generic definition takes the type as a type-valued parameter
 pass	a generic fold instantiated at an Int64 AND a String accumulator in one program
 pass	a generic newtype instantiated at a FUNCTION type carries a closure through erasure

@@ -9829,6 +9829,40 @@
             (export main)))
   (output (: 11 Int64)))
 
+; The case above re-instantiates a generic CTOR per use. The DEF companion: a generic function whose
+; parameter/result is a user generic sum is monomorphized PER CALL SITE — called at two distinct element
+; types in one program, each call gets its own instantiation. Covers a def that CONSUMES the generic
+; (unwrap : (Box a) -> a) and one that PRODUCES it (rewrap : a -> (Box a)), each exercised at two types.
+
+(case "a generic def unwrap is monomorphized at Bool and Int64 element types in one program"
+  (doc    "The DEF analogue of the two-instantiation ctor case above: `(def (unwrap b) (match b ((Mk v) v)))`
+           over `(type (Box a) (Mk a))` is a generic function whose parameter is the user generic — called at
+           TWO distinct element types in one program, `(unwrap (Mk true))` and `(unwrap (Mk 7))`, so each call
+           site monomorphizes to its own instantiation (Bool then Int64). The `true` result is truthy so the
+           `if` selects `(unwrap (Mk 7))` = 7. Pins that a generic DEF's scheme is re-instantiated per call
+           site (not frozen to the first element type seen) — the function companion of the per-use ctor
+           re-instantiation, where mis-monomorphizing to the first arg would misjudge the second's slot.")
+  (input  (do
+            (type (Box a) (Mk a))
+            (def (unwrap b) (match b ((Mk v) v)))
+            (def (main) (if (unwrap (Mk true)) (unwrap (Mk 7)) 0))
+            (export main)))
+  (output (: 7 Int64)))
+
+(case "a generic def rewrap that RETURNS the user generic is monomorphized at Int64 and Bool"
+  (doc    "The RETURN-position companion: `(def (rewrap x) (Mk x))` PRODUCES the user generic `(Box a)` (its
+           result, not just a parameter, is generic), called at Int64 (`(rewrap 5)`) and Bool (`(rewrap true)`)
+           in one program. Each call monomorphizes the result instantiation independently; the outer match
+           reads the Int64 payload (5) gated by the truthy Bool payload. Pins per-call monomorphization when
+           the generic is in RESULT position — a def returning a generic sum, the producer twin of the
+           consumer `unwrap` case above.")
+  (input  (do
+            (type (Box a) (Mk a))
+            (def (rewrap x) (Mk x))
+            (def (main) (match (rewrap 5) ((Mk v) (if (match (rewrap true) ((Mk w) w)) v 0))))
+            (export main)))
+  (output (: 5 Int64)))
+
 (case "a generic sum NESTS ITSELF at a different instantiation and destructures through both layers"
   (doc    "Self-application of a generic: `(Box (Box n))` instantiates `Box` at `(Box Int64)` — the type
            argument is the SAME generic at a different instantiation, so the solver's occurs-check-adjacent
