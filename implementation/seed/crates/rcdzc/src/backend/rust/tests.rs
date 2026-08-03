@@ -7455,6 +7455,22 @@ fn rustc_host_call_with_int_arg_emits_left_to_right_bound_args() {
 }
 
 #[test]
+fn rustc_host_call_bool_arg_marshals_to_i64() {
+    // A BOOL host-call ARGUMENT (`io.pick : (-> Bool Int64)`, arg a guest comparison) marshals to `i64`
+    // via `i64::from(<bool>)` (0/1) — the SAME uniform integer marshal an int arg uses, matching wasm
+    // (which reps Bool as i32 and crosses it fine). Bool was the one scalar-arg gap the earlier arms missed
+    // (int/UInt/Int64 already passed; v-effects routed the Bool-specific parity gap). `as i64` doesn't apply
+    // to `bool` in Rust, so the cast goes through `i64::from`. Pins the Bool arm of the host-arg marshal.
+    let src = "(module m (effect io (op pick (-> Bool Int64))) \
+        (def (main (: k Int64)) (host (io) (io.pick (> k 100)))) (export main))";
+    let rs = compile_rust(src);
+    assert!(
+        rs.contains("let __ha0 = i64::from(") && rs.contains("crate::__cdz_host_io_pick(__ha0)"),
+        "a Bool host-call arg marshals via i64::from(<bool>) then passes __ha0 to the shim:\n{rs}"
+    );
+}
+
+#[test]
 fn rustc_host_call_float_result_reads_the_shim_f64() {
     // H4 host-call emit: a delegated FLOAT-result host op (`Param.ratio -> Unit Float64`, from an
     // `@param(widget: slider) ratio : Float64`) emits `(crate::__cdz_host_<key>() as f64)` — the runner's
