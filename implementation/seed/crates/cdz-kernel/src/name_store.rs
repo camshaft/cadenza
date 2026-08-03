@@ -78,6 +78,10 @@ pub enum NameStoreError {
     /// A `set` to an `Unscoped` name — fail-closed: no authority governs the prefix, so it's unwritable
     /// (the authorizer is the real gate; this is the store's own last-line refusal for a nonsense prefix).
     UnscopedNameUnwritable,
+    /// An [`NameStore::apply_effect`] whose (family, hash) shape is invalid: a `store/set` with no hash,
+    /// a `store/resolve` carrying a hash, or a non-`store/*` family. Structural — a malformed store effect,
+    /// never a panic.
+    MalformedStoreEffect,
 }
 
 /// The mutable-name store: per-name append-only logs of [`SetEntry`]. In-memory for v0/tests; a durable
@@ -153,6 +157,51 @@ impl NameStore {
             NameAuthority::Unscoped
         }
     }
+
+    /// Apply a `store/*` effect by its FAMILY (slice-3a vocab: [`crate::effect::effect_ct::STORE_SET`] /
+    /// [`STORE_RESOLVE`](crate::effect::effect_ct::STORE_RESOLVE)) to this store, returning the outcome the
+    /// drive loop folds back as an `EffectResult` (§4c slice 3b calls this from the store-family arm; the
+    /// arm handles the AUTHZ gate + durable dispatch — this is the pure store SEMANTIC).
+    ///
+    /// - `store/set`: `hash` MUST be `Some` (the value to point `name` at) — append it as an
+    ///   [`SetEntry::unsigned`] (producer/signature ride the event envelope, deferred). Returns the set
+    ///   hash on success. `None` hash is a `MalformedStoreEffect` (a set needs a value).
+    /// - `store/resolve`: `hash` MUST be `None` (a resolve carries no value) — returns the name's CURRENT
+    ///   hash (§4c-pt3: the caller freezes it into its log). A `Some` hash is `MalformedStoreEffect`.
+    /// - any other family: `MalformedStoreEffect` (not a store verb — the drive loop only routes `store/*`
+    ///   here, so this is a defensive total-ness backstop).
+    pub fn apply_effect(
+        &mut self,
+        family: &str,
+        name: &str,
+        hash: Option<Hash>,
+    ) -> Result<StoreOutcome, NameStoreError> {
+        use crate::effect::effect_ct;
+        match family {
+            effect_ct::STORE_SET => {
+                let h = hash.ok_or(NameStoreError::MalformedStoreEffect)?;
+                self.set(name, SetEntry::unsigned(h))?;
+                Ok(StoreOutcome::Set(h))
+            }
+            effect_ct::STORE_RESOLVE => {
+                if hash.is_some() {
+                    return Err(NameStoreError::MalformedStoreEffect);
+                }
+                self.resolve(name).map(StoreOutcome::Resolved)
+            }
+            _ => Err(NameStoreError::MalformedStoreEffect),
+        }
+    }
+}
+
+/// The result of a [`NameStore::apply_effect`] — what the drive loop folds back as the `store/*` effect's
+/// outcome. `Set` echoes the hash the name now points at; `Resolved` carries the frozen current hash.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum StoreOutcome {
+    /// A `store/set` succeeded: the name now points at this hash (its new latest value).
+    Set(Hash),
+    /// A `store/resolve` succeeded: the name's CURRENT hash (the caller freezes it into its log, §4c-pt3).
+    Resolved(Hash),
 }
 
 #[cfg(test)]
@@ -276,5 +325,54 @@ mod tests {
         let mut s = NameStore::new();
         s.set(&name, SetEntry::unsigned(hash)).unwrap();
         assert_eq!(s.resolve("system/compiler/latest").unwrap(), h);
+    }
+
+    #[test]
+    fn apply_effect_dispatches_store_set_and_store_resolve_by_family() {
+        use crate::effect::effect_ct;
+        let mut s = NameStore::new();
+        let h = Hash::of(b"compiler wasm");
+
+        // store/set with a hash → appends + echoes the set hash.
+        assert_eq!(
+            s.apply_effect(effect_ct::STORE_SET, "system/compiler/latest", Some(h)),
+            Ok(StoreOutcome::Set(h))
+        );
+        // store/resolve with no hash → the current (frozen) hash.
+        assert_eq!(
+            s.apply_effect(effect_ct::STORE_RESOLVE, "system/compiler/latest", None),
+            Ok(StoreOutcome::Resolved(h))
+        );
+        // resolve of a never-set name surfaces NoSuchName (the drive loop folds it as an Err outcome).
+        assert_eq!(
+            s.apply_effect(effect_ct::STORE_RESOLVE, "system/never", None),
+            Err(NameStoreError::NoSuchName)
+        );
+    }
+
+    #[test]
+    fn apply_effect_is_total_on_malformed_shapes() {
+        use crate::effect::effect_ct;
+        let mut s = NameStore::new();
+        // store/set REQUIRES a hash (the value); None is malformed, not a panic.
+        assert_eq!(
+            s.apply_effect(effect_ct::STORE_SET, "system/x", None),
+            Err(NameStoreError::MalformedStoreEffect)
+        );
+        // store/resolve must NOT carry a hash.
+        assert_eq!(
+            s.apply_effect(effect_ct::STORE_RESOLVE, "system/x", Some(Hash::of(b"v"))),
+            Err(NameStoreError::MalformedStoreEffect)
+        );
+        // a non-store/* family is not a store verb (defensive backstop — the drive loop only routes store/*).
+        assert_eq!(
+            s.apply_effect("http", "system/x", Some(Hash::of(b"v"))),
+            Err(NameStoreError::MalformedStoreEffect)
+        );
+        // store/set to an Unscoped name still fails closed via the underlying set().
+        assert_eq!(
+            s.apply_effect(effect_ct::STORE_SET, "bare-name", Some(Hash::of(b"v"))),
+            Err(NameStoreError::UnscopedNameUnwritable)
+        );
     }
 }
