@@ -4123,6 +4123,7 @@
             (export main)))
   (call   main (: -1 Int64)) (trap "integer overflow")
   (call   main (: 2 Int64)) (output (: -4194304 Int64)))
+
 (case "an odd-width signed division overflow traps above the i32 slot too (Int48 min / -1)"
   (doc    "The wider-slot face: Int48.min = -140737488355328 in an i64 slot; /-1 overflows Int48 (max
            140737488355327) → traps. Pins that the declared-width guard is width-parametric, not special-cased
@@ -4133,17 +4134,62 @@
               (Int64.of (/ ((. (Int 48) wrap) -140737488355328) ((. (Int 48) wrap) k))))
             (export main)))
   (call   main (: -1 Int64)) (trap "integer overflow"))
+
 (case "an odd-width division overflow traps before the out-of-range value escapes into Int64 arithmetic"
   (doc    "The soundness bite (adv-67 poison face): if the odd-width Int24 min/-1 did NOT trap, the
-           out-of-range +8388608 would flow into `(+ bad …)` at Int64 unchecked — an out-of-range value
-           for the declared Int24 escaping into downstream math. The trap must fire AT the division, before
-           the escape. Both backends trap at k=-1.")
+           out-of-range +8388608 would be WIDENED by `Int64.of` and flow into `(+ bad 1)` at Int64 —
+           an Int64 add with NO Int24 checked-add to re-catch it. (An earlier version added at Int24,
+           `(+ bad ((.(Int 24) wrap) 0))`; Int24's OWN checked + would have masked a missed trap, so
+           that case only witnessed Int24 checked-add, not the Int64-escape it claimed — this widens
+           `bad` first so a missed trap surfaces as an out-of-range Int64 result.) The trap must fire
+           AT the division, before the widening. k=-1 → trap; the in-range control k=2 → -4194304
+           widened, +1 → -4194303. Both backends trap at k=-1.")
   (input  (do
             (def (main (: k Int64))
-              (let ((bad (/ ((. (Int 24) wrap) -8388608) ((. (Int 24) wrap) k))))
-                (Int64.of (+ bad ((. (Int 24) wrap) 0)))))
+              (let ((bad (Int64.of (/ ((. (Int 24) wrap) -8388608) ((. (Int 24) wrap) k)))))
+                (+ bad 1)))
             (export main)))
-  (call   main (: -1 Int64)) (trap "integer overflow"))
+  (call   main (: -1 Int64)) (trap "integer overflow")
+  (call   main (: 2 Int64)) (output (: -4194303 Int64)))
+
+; The declared-vs-slot-width family extends past Div to the left-SHIFT overflow guard (adv-67b, rust):
+; `<<`'s overflow round-trip check `(r >> c) != v` ran on the SLOT type, so an odd-width result that
+; exceeds the DECLARED width but fits the slot round-trips losslessly and never panics — the same shape
+; as the Div MIN/-1 guard above, and fixed in the same arc (#1681). UInt4 3<<3 = 24 fits i32 and
+; round-trips, but 24 > UInt4.max 15 → must trap (wasm always did). The shift-COUNT guard was already
+; correct (uses declared width) and the CONST face folds CDZ0304 on both backends; only the runtime
+; odd-width RESULT-overflow path split. These pin the shift result-overflow face at an unsigned sub-i32
+; width (UInt4), a signed sub-i32 width (Int24), and the downstream CHAMP-poison escape.
+(case "an odd-width unsigned shift result exceeding the declared width traps (UInt4: 3<<3)"
+  (doc    "`(<< (UInt4 3) (UInt4 k))` at k=3: 3<<3 = 24, which fits the i32 slot and round-trips through
+           `(24 >> 3) == 3`, so the slot-width overflow check passed — but 24 > UInt4.max (15) → MUST trap.
+           The in-range control k=2 → 12 confirms the shift is otherwise normal. Both backends trap now.")
+  (input  (do
+            (def (main (: k Int64)) (Int64.of (<< ((. (UInt 4) wrap) 3) ((. (UInt 4) wrap) k))))
+            (export main)))
+  (call   main (: 3 Int64)) (trap "integer overflow")
+  (call   main (: 2 Int64)) (output (: 12 Int64)))
+
+(case "an odd-width SIGNED shift result exceeding the declared width traps (Int24: 4194304<<1)"
+  (doc    "The signed sub-i32 face: Int24 4194304<<1 = 8388608 > Int24.max (8388607) → traps, though it
+           fits and round-trips in the i32 slot. Pins that the shift result guard is width-parametric on
+           the DECLARED width for signed odd widths too, not the slot. k=0 → 4194304 (identity). Both trap.")
+  (input  (do
+            (def (main (: k Int64)) (Int64.of (<< ((. (Int 24) wrap) 4194304) ((. (Int 24) wrap) k))))
+            (export main)))
+  (call   main (: 1 Int64)) (trap "integer overflow")
+  (call   main (: 0 Int64)) (output (: 4194304 Int64)))
+
+(case "an odd-width shift overflow traps before the escaped result poisons a CHAMP Set"
+  (doc    "The shift-family poison face (adv-67b soundness bite): if UInt4 3<<3 did NOT trap, the
+           out-of-range 24 would enter `(Set.of (list 24 8))` and rust would build a 2-element CHAMP Set
+           {24,8} — an out-of-range UInt4 value escaping into a collection. The trap must fire AT the shift.
+           k=3 → trap on both backends.")
+  (input  (do
+            (def (main (: k Int64))
+              (Set.len (Set.of (list (<< ((. (UInt 4) wrap) 3) ((. (UInt 4) wrap) k)) ((. (UInt 4) wrap) 8)))))
+            (export main)))
+  (call   main (: 3 Int64)) (trap "integer overflow"))
 
 (case "remainder by negative one annihilates to zero at every input including the minimum"
   (doc    "`(% x -1)` is 0 for EVERY x — including Int64.min, where the sibling `/` traps: the remainder
