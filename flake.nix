@@ -13,7 +13,10 @@
   #         asserted). `checks.*-hash-parity` verifies it equals the committed REQUIRED_RUNTIME_HASH.
   #   N2  — `packages.reducer-guest` + `packages.cedar-guest` (+ `-hash` each) : the cdz-kernel
   #         reducer-guest and cdz-agent-host cedar-policy-guest wasm components built from source, same
-  #         hash-falls-out shape. N3 tests follow. North star: nix builds every component, hash falls out.
+  #         hash-falls-out shape.
+  #   R2  — `packages.store` : every built component assembled into one content-addressed store dir
+  #         (`<derived-hash>.wasm`), mirroring target/cadenza-store but built + addressed by nix. N3
+  #         tests + runtime/harness load-from-store follow. North star: nix builds every component.
   #
   # The Rust toolchain is read DIRECTLY from `rust-toolchain.toml` (the load-bearing pin — the
   # recorded `REQUIRED_RUNTIME_HASH` is only reproducible on that exact rustc). `rust-toolchain.toml`
@@ -280,6 +283,23 @@
             ${pkgs.coreutils}/bin/sha256sum ${drv} | ${pkgs.coreutils}/bin/cut -d' ' -f1 \
               | ${pkgs.coreutils}/bin/tr -d '\n' > $out
           '';
+
+        # ── R2: the content-addressed component STORE ─────────────────────────────────────────────
+        #
+        # Assemble every nix-built component into ONE store directory, each file named by its DERIVED
+        # content hash: `<sha256>.wasm`. This mirrors `target/cadenza-store` (what `xtask build`
+        # produces) but built + addressed BY NIX — the store the operator's north star describes, from
+        # which a cadenza runtime / the harness loads a component by hash. Purely a function of the
+        # component derivations, so it's cache-shareable + rebuilt only when a component changes.
+        # (A later increment has the runtime/harness RESOLVE from this store; that's a cross-territory
+        # change coordinated with v-runtime + the harness — this increment only PRODUCES the store.)
+        componentStore = pkgs.runCommand "cdz-component-store" { } ''
+          mkdir -p "$out"
+          for c in ${runtime} ${runtimeDebug} ${reducerGuest} ${cedarGuest}; do
+            h=$(${pkgs.coreutils}/bin/sha256sum "$c" | ${pkgs.coreutils}/bin/cut -d' ' -f1)
+            ${pkgs.coreutils}/bin/cp "$c" "$out/$h.wasm"
+          done
+        '';
       in
       {
         # N1: the value-heap runtime components as NORMAL (input-addressed) derivations — `nix build
@@ -302,6 +322,10 @@
         # increment points cdz-agent-host's CEDAR_POLICY_COMPONENT at this store path.
         packages.cedar-guest = cedarGuest;
         packages.cedar-guest-hash = hashOf cedarGuest "cedar-guest-hash";
+
+        # R2: the content-addressed component store — every nix-built component as `<derived-hash>.wasm`
+        # in one dir (mirrors target/cadenza-store, but built + addressed by nix). `nix build .#store`.
+        packages.store = componentStore;
 
         # PARITY CHECK (not a pin): assert the DERIVED hash of the nix-built runtime equals the hash
         # `xtask codegen` already recorded in runtime_abi.rs. This reads the committed value only to
