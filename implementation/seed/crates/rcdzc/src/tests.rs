@@ -66084,6 +66084,55 @@ mod stage1 {
     }
 
     #[test]
+    fn a_runtime_bytes_host_arg_crosses_as_list_u8_and_runs() {
+        // The host BYTES-ARG path (the sibling of the runtime-string-arg test above): a runtime `Bytes`
+        // argument crosses the host boundary as `list<u8>` — the SAME `(ptr,len)` shared-memory core
+        // marshalling as a String arg (the guest copies the byte-buffer into `mem` via the rep-agnostic
+        // `bytes-len`/`bytes-get` walk), but the COMPONENT boundary type is `list<u8>` (a DEFINED type
+        // referenced by index in the import instance-type — the instance-type prepends `(list u8)` as type 0
+        // and shifts the op func types to 1..=h) vs the String's inline `string`. Previously a Bytes host arg
+        // DECLINED on wasm while rust crossed it (reverse-parity gap). `main(n)` builds a 2-byte runtime
+        // `Bytes.of` value and passes it to host op `h`, returning h's response (7). Pins: (a) it COMPILES
+        // (was a decline), (b) the composed component is VALID (the instance-type index-shift is well-formed —
+        // the `host_effect_instance_type` list-type prepend), (c) it RUNS. The canon Lower carries Memory(0),
+        // no realloc (a Bytes ARG is guest→host: guest allocates, host reads).
+        use crate::testkit::parse;
+        let Some(runtime) = find_runtime_wasm() else {
+            eprintln!("[host-mem-runtime-bytes-arg] runtime wasm not in the store; skipping run");
+            return;
+        };
+        let src = "(do (effect H (op h (-> Bytes Int64))) \
+                   (def (main (: n Int64)) \
+                     (host (H) (H.h (Bytes.of (list ((UInt 8).wrap n) ((UInt 8).wrap 66)))))) \
+                   (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src)))
+            .expect("a runtime Bytes host arg must cross as list<u8>, not decline");
+        // The composed component must be VALID — the list<u8> defined-type + the instance-type index-shift
+        // must produce a well-formed component (wasmtime rejects a malformed instance-type).
+        let engine = wasmtime::Engine::default();
+        wasmtime::component::Component::from_binary(&engine, &bytes)
+            .expect("the host-mem runtime-bytes-arg component (list<u8> import) must be valid");
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["65".to_string()],
+            runtime: Some(runtime),
+            nfc: super::find_nfc_wasm(),
+            runtime_cache_dir: None,
+            host_responses: vec![cdz_run::HostResponse {
+                op: "h".to_string(),
+                value: "7".to_string(),
+            }],
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "7",
+                "the runtime Bytes arg crosses as list<u8> + the host call returns its response"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("runtime-bytes host-arg run trapped: {t}"),
+        }
+    }
+
+    #[test]
     fn a_runtime_string_host_arg_handles_empty_and_multibyte_lengths() {
         // EDGE-LENGTH coverage for the `_mem` runtime-string-arg copy loop (the primary test uses a 1-byte
         // string). Two edges an off-by-one in the loop guard `pos >= len → done` would break: (1) an EMPTY
@@ -86637,6 +86686,7 @@ mod closure_host_resource {
             op: "emit".to_string(),
             comp_functype: comp_ft,
             core_functype: Vec::new(),
+            has_list_param: false,
         }];
         let dtor = crate::backend::wasm::serialize::resource_dtor_module_with_drop();
         let s64_comp = crate::backend::wasm::runtime_abi::AbiValType::S64.comp_byte();
@@ -88956,6 +89006,7 @@ mod cross_component_oracle {
             op: "f".to_string(),
             comp_functype,
             core_functype: Vec::new(),
+            has_list_param: false,
         }];
         let exports = [BoundaryExport {
             name: "main".to_string(),

@@ -341,6 +341,11 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                 match &at {
                     Ty::Unit => {}
                     Ty::String if !peer_bound => params.push(HostParam::Str),
+                    // A runtime `Bytes` arg crosses as `list<u8>` — the (ptr,len) shared-memory shape (same
+                    // core form as String, distinct component type). Closes the wasm-vs-rust reverse-parity
+                    // gap where a Bytes host-arg declined on wasm. A PEER-bound Bytes crosses as a heap
+                    // handle (`extern_abi_val_type` in the `_` arm below), not this host-boundary list<u8>.
+                    Ty::Bytes if !peer_bound => params.push(HostParam::Bytes),
                     _ => {
                         let v = if peer_bound {
                             extern_abi_val_type(&at)
@@ -663,9 +668,13 @@ pub fn host_import_index(imports: &[HostImport], effect: &str, op: &str) -> Opti
 /// shared-memory module + a Memory canon-option on each string op's lower. A scalar-only host set needs no
 /// memory (byte-identical to the E2h-2 scalar shape).
 pub fn set_needs_memory(imports: &[HostImport]) -> bool {
-    imports
-        .iter()
-        .any(|h| h.params.iter().any(|p| matches!(p, HostParam::Str)))
+    // A Str OR Bytes param crosses as `(ptr,len)` read out of the program's linear memory, so either
+    // requires the shared-memory core module + the canon `Lower`'s `Memory(0)` option.
+    imports.iter().any(|h| {
+        h.params
+            .iter()
+            .any(|p| matches!(p, HostParam::Str | HostParam::Bytes))
+    })
 }
 
 /// The first host operation the subtree at `id` performs whose BOUNDARY SIGNATURE this increment cannot
@@ -724,11 +733,16 @@ pub fn first_unrepresentable_host_op(
         if !matches!(result, Ty::Unit) && !ty_undetermined(&result) && !abi_ok(&result) {
             return Some((op, "result", result.render_name()));
         }
-        // Each ARGUMENT: emittable iff Unit, String, or (peer-bound) a handle-crossable value / (host) a
-        // scalar. An undetermined arg type (a synthesized node) is skipped for the same reason as the result.
+        // Each ARGUMENT: emittable iff Unit, String, Bytes, or (peer-bound) a handle-crossable value /
+        // (host) a scalar. A `Bytes` arg now crosses as `list<u8>` at the host boundary (the `(ptr,len)`
+        // shared-memory shape, same as String), so it is emittable — no longer a deferred compound. An
+        // undetermined arg type (a synthesized node) is skipped for the same reason as the result.
         for &a in &args {
             let at = crate::infer::type_of(db, a);
-            if !matches!(at, Ty::Unit | Ty::String) && !ty_undetermined(&at) && !abi_ok(&at) {
+            if !matches!(at, Ty::Unit | Ty::String | Ty::Bytes)
+                && !ty_undetermined(&at)
+                && !abi_ok(&at)
+            {
                 return Some((op, "argument", at.render_name()));
             }
         }
