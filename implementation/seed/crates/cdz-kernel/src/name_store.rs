@@ -141,6 +141,28 @@ impl NameStore {
         self.names.get(name).map(|v| v.as_slice()).unwrap_or(&[])
     }
 
+    /// Reconstruct a `NameStore` by REPLAYING an ordered stream of `(name, hash)` `set` entries — the
+    /// recovery primitive (§4c "the global store is itself a session": its state is derived from its
+    /// set-event log, exactly as a session's KV is derived from its event log). A durable backend persists
+    /// each authorized `store/set` as a `name-set` frame ([`crate::event_ast::encode_name_set`]); on boot it
+    /// decodes them in order and hands the `(name, hash)` sequence here to rebuild the value-over-time.
+    ///
+    /// The replay goes through [`NameStore::set`], so the SAME invariants hold on recovery as on live write:
+    /// an `Unscoped` name in the stream is rejected (fail-closed — a durable log should never carry one, but
+    /// a corrupt/tampered stream can't smuggle a nonsense name into the recovered store). Returns the rebuilt
+    /// store, or the first `NameStoreError` a bad entry produces (the caller decides recover-vs-halt, like the
+    /// session-log `Corrupt` path). `applied_set_keys` starts EMPTY — recovered entries are historical, not
+    /// in-flight, so there's no re-drive to dedup against them (the crash-recovery window is per-live-dispatch).
+    pub fn replay_set_entries<'a>(
+        entries: impl IntoIterator<Item = (&'a str, Hash)>,
+    ) -> Result<NameStore, NameStoreError> {
+        let mut store = NameStore::new();
+        for (name, hash) in entries {
+            store.set(name, SetEntry::unsigned(hash))?;
+        }
+        Ok(store)
+    }
+
     /// The §4c write-authority namespace for `name`, by its prefix — the pure classification a Cedar
     /// prefix-grant keys on. Signature-independent and total (every string maps to a variant; unknown →
     /// `Unscoped`, fail-closed).
@@ -357,6 +379,42 @@ mod tests {
         let mut s = NameStore::new();
         s.set(&name, SetEntry::unsigned(hash)).unwrap();
         assert_eq!(s.resolve("system/compiler/latest").unwrap(), h);
+    }
+
+    #[test]
+    fn replay_set_entries_rebuilds_value_over_time_and_resolves_the_latest() {
+        // §4c recovery: a durable backend persists set-events; replaying them (oldest→newest) reconstructs
+        // the store's value-over-time, and resolve returns the LATEST per name — like KV rebuilt from the log.
+        let (v1, v2) = (Hash::of(b"compiler v1"), Hash::of(b"compiler v2"));
+        let sess = Hash::of(b"scratch");
+        let rebuilt = NameStore::replay_set_entries([
+            ("system/compiler/latest", v1),
+            ("session/abc/scratch", sess),
+            ("system/compiler/latest", v2), // a later set moves the pointer
+        ])
+        .expect("replay a well-formed set-event stream");
+        assert_eq!(rebuilt.resolve("system/compiler/latest").unwrap(), v2);
+        assert_eq!(rebuilt.resolve("session/abc/scratch").unwrap(), sess);
+        // The full value-over-time is preserved (audit/rollback), not just the latest.
+        let hist: Vec<Hash> = rebuilt
+            .history("system/compiler/latest")
+            .iter()
+            .map(|e| e.hash)
+            .collect();
+        assert_eq!(hist, vec![v1, v2]);
+        // applied_set_keys starts empty on recovery — replayed entries are historical, not in-flight.
+        rebuilt.resolve("system/compiler/latest").unwrap();
+    }
+
+    #[test]
+    fn replay_set_entries_fails_closed_on_an_unscoped_name_in_the_stream() {
+        // A corrupt/tampered durable stream can't smuggle a nonsense (Unscoped) name into the recovered
+        // store — replay goes through set(), which rejects it (same fail-closed invariant as live write).
+        // (match on the Err — NameStore has no Debug, so avoid unwrap_err's Ok-side formatting.)
+        match NameStore::replay_set_entries([("bare-name", Hash::of(b"x"))]) {
+            Err(e) => assert_eq!(e, NameStoreError::UnscopedNameUnwritable),
+            Ok(_) => panic!("an Unscoped name in the stream must fail-closed on replay"),
+        }
     }
 
     #[test]
