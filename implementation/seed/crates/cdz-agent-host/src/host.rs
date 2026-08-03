@@ -1,7 +1,7 @@
 //! The agent HOST — assembles the kernel building blocks into a process that RUNS agents.
 //!
 //! This is the milestone the crate exists for: the kernel provides a `Session` (log + KV + the durable
-//! dispatch/fold loop), a reducer, a `CompositeExecutor` that routes effects by kind, and an `Authorize`
+//! dispatch/fold loop), a reducer, a `CompositeExecutor` that routes effects by family string, and an `Authorize`
 //! gate. Individually those are library pieces. [`AgentHost`] is what *assembles* them into a live,
 //! long-running host: it holds a **registry** of running sessions keyed by id, and for each one owns the
 //! Session plus the reducer / authorizer / executor that drive it. Delivering an inbound event to a
@@ -58,7 +58,7 @@ pub struct HostedSession {
 
 impl HostedSession {
     /// Start a fresh session from a genesis reducer hash, with its executor set + authorizer. The
-    /// `reducer` drives folds; `executor` (a by-kind [`CompositeExecutor`]) performs authorized effects;
+    /// `reducer` drives folds; `executor` (a by-family-string [`CompositeExecutor`]) performs authorized effects;
     /// `authz` gates them (SEC-F1). This is the assembly point — real executors (Now/Model/Http) go into
     /// `executor`, a real policy into `authz`.
     ///
