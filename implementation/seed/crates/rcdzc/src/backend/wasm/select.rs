@@ -11452,8 +11452,9 @@ fn emit(
                         _ => {
                             if runtime_string_arg_seen {
                                 return Err(Reject::decline(
-                                    "a host call with TWO runtime string arguments is not yet emitted \
-                                     (one fixed scratch buffer; a per-arg bump allocator is a later increment)",
+                                    "a host call with TWO runtime string/Bytes arguments is not yet emitted \
+                                     (one fixed scratch buffer, shared by String and Bytes args; a per-arg \
+                                     bump allocator is a later increment)",
                                 ));
                             }
                             runtime_string_arg_seen = true;
