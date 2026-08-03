@@ -13,37 +13,27 @@ they make it — so integration is a local `git merge`, never a push/fetch/CAS r
    cycle below.
 3. Build the runtime store (`cargo xtask build`) so your gate is truthful.
 
-## ⚠ Keep your context small — you ingest more than any other agent
-You process every MR's diff + a full gate/test cycle per request, so your context fills fastest of
-anyone — and a saturated context is the fleet's worst failure: at ~100% even `/compact` can't submit
-(it needs headroom the full window lacks), so the SOLE integrator wedges *unrecoverably* and stalls
-ALL integration. Two disciplines keep that from ever happening — follow BOTH every tick:
-
-- **(a) Compact BEFORE you fill up — at tick-top AND mid-batch.** Two checkpoints, both mandatory:
-  - **Tick-top:** if context is past ~70% at the start of a tick, run `/compact` FIRST (a compact at
-    70% submits fine; at 100% it cannot).
-  - **⚠ MID-BATCH (the load-bearing one under a big queue):** the tick-top check is NECESSARY BUT NOT
-    SUFFICIENT — one tick can integrate 40+ merge-requests back-to-back WITHOUT ever returning to the
-    tick-top check, so context climbs to 100% mid-batch and starves its own compact (this HAS crept
-    pr-sync to 99%; an external `/compact` can't preempt a busy pane either). So **after EACH
-    merge-request integration (step 2, alongside the per-MR heartbeat in 2e), CHECK your context and if
-    it's past ~70% run `/compact` BEFORE starting the next MR.** A long batch must have a compact
-    checkpoint per unit, not just per tick — never let a continuous batch run the window to 100%
-    without compacting. (Other roles return to a prompt between units so tick-top alone suffices; only
-    pr-sync's continuous-batch pattern needs the per-MR check.)
-- **(b) NEVER paste full gate/test output into your context or a reply.** `cargo xtask check` and
-  `cargo xtask gate` write their full output to `target/xtask-logs/check-*.log` (and print only a
-  short verdict — the pass/todo/fail counts, the fail-set diff, `check: all green ✓` / `FAILED at
-  <step>`). READ ONLY that verdict + the fail-set diff to decide green/red — never cat the whole log
-  into the conversation. Run gates as `cargo xtask check > /tmp/pr-sync-check.log 2>&1; tail -20
-  /tmp/pr-sync-check.log` (or read the `xtask-logs` file) and `grep -E 'FAILED|gate:|check:|error\['`
-  for the summary. On a `reject`, put a SHORT fail-summary (the failing step + the fail-set delta +
-  the log PATH) in `--body`, not the full stdout — a 40-MR batch must not dump 40× full gate logs
-  into your window. This is the ROOT fix: it makes saturation structurally impossible.
+## ⚠ Keep your context small — keep each pass short
+Under the CI-gated model you NO LONGER run local gates (GitHub Actions gates every candidate), so your
+context pressure is far lower than the old per-MR-gate loop — but you're still the sole integrator, so
+a wedge is the fleet's worst failure: at ~100% even `/compact` can't submit (it needs headroom the
+full window lacks) and integration stalls fleet-wide. Keep it small:
+- **You can't self-invoke `/compact`** (built-in CLI command, not a tool) — the watchdog send-keys it
+  to you when you're idle at a prompt in the pre-wall band, and auto-restarts you at the wall. So your
+  job is to STAY COMPACTABLE: end each `schedule-pass` cycle cleanly + return to a prompt (that's when
+  the watchdog can compact you), rather than chaining many heavy actions into one uninterrupted turn.
+- **Never paste full command output into your context or a reply.** `schedule-pass` prints a concise
+  per-candidate line (reap action / dispatch pick); a candidate's CI detail lives on its PR (view with
+  `gh run view <id> --log-failed` only when investigating a specific red). On a `reject`, the ack body
+  is a SHORT reason + the PR/run link, never dumped logs. (This is much less output than the old local
+  gate — CI holds the detail, not your window.)
 
 ## Each tick
-1. `cargo xtask fleet heartbeat pr-sync`. **Then apply discipline (a): if context > ~70%, `/compact`
-   before draining the batch** (never risk reaching the unrecoverable 100%).
+1. `cargo xtask fleet heartbeat pr-sync`. **Keep turns short so you stay compactable** — you can't
+   self-invoke `/compact` (it's a built-in CLI command, not a tool); the watchdog send-keys it to you
+   when you're idle at a prompt in the pre-wall band. So end a turn cleanly rather than sprinting a
+   pass to 100% (see the shared contract's context-discipline section). A `schedule-pass` cycle is far
+   lighter than the old per-MR gate loop, which helps.
 2. **Drain your inbox**, oldest-first — list it with `cargo xtask fleet inbox pr-sync` (resolves the
    canonical HUB path; a bare relative `.claude/fleet/inbox/...` glob from your worktree silently
    matches nothing — the recurring drain-stall class the watchdog escalates). `merge-request`s (from
@@ -54,112 +44,49 @@ ALL integration. Two disciplines keep that from ever happening — follow BOTH e
    merge-requests" — which made pr-sync charter-blind to notes, silently piling up an 8h+ note backlog
    and blocking coordination the watchdog's note-backlog signal now flags. Notes matter too.)
 
-   **⚡ DEFAULT FAST PATH — OPTIMISTIC BATCH + BISECT (`cargo xtask fleet gate-batch`).** Re-gating
-   per MR costs N full gate cycles for N MRs — the 13-30 min batch latency. Instead, when the queue has
-   more than a couple of MRs, run **`cargo xtask fleet gate-batch`** (advisory planner; it does NOT
-   touch `trunk` or reply — it plans on a throwaway scratch branch and prints a machine-readable
-   per-MR decision). Its loop: conflict-prefilter (a non-mergeable MR → `BOUNCE-CONFLICT`, cheap, no
-   gate) → gate the combined tree ONCE (green ⟹ the whole batch is `LAND` — one gate run for N MRs) →
-   on red, binary-search to isolate the culprit(s) (`REJECT-BROKEN`) and land the rest. Then EXECUTE
-   the plan (you are still the single writer + must honor the reply-invariant):
-   - For each `LAND` line: `git merge --no-ff <ref>` onto `trunk` (they're pre-verified cleanly
-     mergeable + collectively green), then `fleet ack <file> --outcome merged --ref <new-trunk-sha>`.
-   - For each `BOUNCE-CONFLICT` / `REJECT-BROKEN` line: `fleet ack <file> --outcome reject --body
-     "<conflict: rebase on trunk@X / broke the gate: <summary>>"`. Same bounce as the per-MR path.
-   - Notify `reviewer` of the landed diff (as below). One gate run replaces N; a bad MR costs
-     ~log₂(N) extra gate runs to isolate, not a full re-gate each. This is the throughput cure.
+   **⚡ INTEGRATION = ONE COMMAND: `cargo xtask fleet schedule-pass --execute`** (the CI-gated executor,
+   operator-greenlit + smoke-tested 2026-08-03; replaces the old local-gate/gate-batch/bisect + manual
+   publish loop). You NO LONGER gate locally — GitHub Actions is the gate, running every candidate's
+   full ~16-job check set IN PARALLEL. One `schedule-pass --execute` does BOTH halves of a scheduler
+   pass, honoring the reply-invariant + single-writer + forward-only-trunk rules:
+   - **REAP** each in-flight candidate PR (from `.claude/fleet/ci-dispatch/`): re-reads its `(state,
+     verdict)` fresh, then — MERGED on GitHub → advance `trunk` to `origin/main` (cherry-picks
+     `trunk..origin/main` onto trunk since they're tree-equal-but-commit-distinct, verifies
+     `git diff --quiet trunk origin/main`, then `fleet ack merged`); a merge-REQUIRED check RED or the
+     PR CLOSED-unmerged → `fleet ack reject` (with why) + free the slot; a NON-required-job red
+     (cdz-kernel / `cadenza @test suites`) → LEFT in flight (it still auto-merges — never reject on it);
+     still pending → left in flight.
+   - **TOP-UP DISPATCH**: pushes new candidates from the queue up to the in-flight cap (8), respecting
+     per-lane serialization + file-collision (`publish-candidate`: re-parent the `--ref` onto
+     origin/main in a scratch worktree, push `cand/<agent>-<sha>`, `gh pr create --base main --title
+     <commit-subject>`, arm `gh pr merge --squash --auto`, record the ci-dispatch state). GitHub
+     auto-merges each on green; the NEXT pass's reap observes it.
+   NO local gate, NO combined-tree bisect (a red candidate fails its OWN PR alone, blocks nothing). The
+   reply-invariant is preserved: the reap's `fleet ack` delivers exactly one `merged`/`reject` per MR +
+   archives it atomically — you never silently drop a request.
 
-   **Per-MR fallback (below)** is still correct for a 1-2 MR queue (no batching win) or if you want to
-   integrate one specific MR out of band. The invariant + gate discipline are identical either way.
+   **If you ever hand-write a ci-dispatch state file** (a manual fallback while machinery is down),
+   write `"status": "in-flight"` — that is the exact token `schedule-pass` counts as live
+   (`dispatch_is_in_flight`). A different value like `"dispatched"` reads as NOT-in-flight, so the next
+   pass under-counts your live candidates and re-dispatches PRs already in flight. `publish-candidate`
+   already writes `"in-flight"` for you; this note only matters for a by-hand record.
 
-   For each, in order:
+   **Preview first if unsure:** `cargo xtask fleet schedule-pass` (no `--execute`) prints the reap +
+   dispatch plan WITHOUT side-effects — eyeball it, then run `--execute`. `dispatch-plan <ref>` /
+   `mr-status <ref>` inspect a single MR; `lane-of <ref>` shows its lane.
 
-   **Integrate one `merge-request`** (`ref` = the sender's commit sha; subject/body name the branch
-   + carry the gate summary). **INVARIANT: every merge-request you take off the inbox MUST end in
-   exactly one `merged` OR `reject` reply to its sender — never move one to `processed/` silently.**
-   A dropped reply is invisible: the sender idles forever on work that never landed (this HAS
-   happened). To make that structurally impossible, resolve each request with **`cargo xtask fleet
-   ack <request-file> --outcome merged|reject [--ref …] [--body …]`** — it delivers the reply AND
-   archives the request in one atomic step (and nudges the sender awake), so you cannot archive
-   without replying. Do NOT hand-move a merge-request into `processed/`; let `ack` do it.
-   a. `git merge --no-ff <ref>` into `trunk` in your worktree. On a **conflict**: abort
-      (`git merge --abort`) and `fleet ack <request> --outcome reject --ref trunk@<current-sha>
-      --body "conflict in <paths>; rebase on trunk@<current-sha> and resend"`. Do not try to resolve
-      a peer's conflict for them.
-   b. Re-gate the merged result yourself — you are the last line of defense: `cargo test -p rcdzc
-      --lib` (0 failed) + `cargo xtask gate` (diff the FAIL SET vs baseline — a `Todo→Fail` is a
-      miscompile the sender's local gate missed under a stale base) + `cargo xtask check`. Run these
-      to a FILE and read only the verdict (per discipline (b) above) — do not ingest full stdout. If
-      it's red, `git reset --hard trunk@{1}` (undo the merge) and `fleet ack <request> --outcome
-      reject --body "<SHORT fail-summary: the failing step + fail-set delta + the log path>"` — a
-      concise summary the sender can act on, NOT the full gate output. The sender fixes and resends.
-   b′. **Frozen-hash MRs need a CLEAN-ENV codegen check.** If the merged diff touches
-      `REQUIRED_RUNTIME_HASH` / `runtime_abi.rs` / `cdz-runtime/**` / `wit/runtime.wit`, your normal
-      `codegen --check` is NOT enough: it hashes the runtime built in your AMBIENT `target/`, so a hash
-      computed against a stale/dirty runtime build is self-consistent in YOUR env yet DIFFERENT for
-      every clean builder + CI — a fleet-wide `codegen --check` RED that your gate (and the author's)
-      sailed past (this happened: `cf1ebb20e` → revert #459). So for THOSE MRs, re-run `codegen --check`
-      against a CLEAN runtime build first. ⚠ `cdz-runtime` is workspace-EXCLUDED (a standalone crate
-      built via `cargo component build` inside its own dir), so `cargo clean -p cdz-runtime` from the
-      workspace root is a NO-OP (`package ID … did not match any packages`) — it would clean NOTHING and
-      the check would silently run against the same warm build. Clean the runtime's OWN build dir:
-      `(cd implementation/seed/crates/cdz-runtime && cargo clean)` (or
-      `rm -rf implementation/seed/crates/cdz-runtime/target/wasm32-unknown-unknown/release/` — the wasm
-      the hash is computed from), THEN `cargo xtask build` + `cargo xtask codegen --check`. Red → reject
-      (the committed hash doesn't reproduce clean). Only a clean-env pass proves the frozen hash is what
-      CI will compute. (Backstop, until this is proven habitual: the frozen-hash owner **v-runtime**
-      should also independently verify such an MR in its own env before it lands — `note` v-runtime on a
-      frozen-hash MR so it double-checks the hash.)
-   c. Green → the merge stays. `trunk` has advanced. Resolve with `fleet ack <request> --outcome
-      merged --ref <new-trunk-sha> --body "<gate summary>"` (this replies `merged` to the sender AND
-      archives the request; the sender will `fleet remove` itself if it was a one-shot `fix` agent).
-      THEN notify the standing `reviewer` so it can review the just-landed diff: `cargo xtask fleet
-      send --to reviewer --kind note --subject "integrated <branch> onto trunk" --ref <new-trunk-sha>
-      --body "merged <sender-branch> (was <sender-commit>); review the diff this merge added". This
-      is fire-and-forget — the reviewer is NON-BLOCKING (it logs findings as issues; it never gates
-      or holds up integration). If `reviewer` isn't in the registry, skip the notify silently.
-   d. If you ever decide a merge-request is a stray/duplicate you won't integrate, STILL `fleet ack
-      <request> --outcome reject --body "not integrated: <reason, e.g. superseded/duplicate>"` — a
-      deliberate reject is fine; a silent drop is the bug.
-   e. **Stamp your heartbeat after EACH request** — `cargo xtask fleet heartbeat pr-sync` at the end
-      of every integrate-one-MR iteration, not just once at tick-top (step 1). A long batch runs many
-      MRs continuously WITHOUT cycling `/loop` ticks, so a tick-top-only heartbeat goes 20–30min stale
-      while you're actively integrating — which reads as "pr-sync STALLED" to other agents (who, unlike
-      the watchdog, don't special-case you via trunk-advance) and triggers false "nudge/compact pr-sync!"
-      escalations (someone could interrupt your live integration). A per-MR heartbeat keeps the mtime
-      honest: fresh whenever you're working, stale only when you're genuinely idle.
-   f. **Check context after EACH request and `/compact` if past ~70% — BEFORE starting the next MR**
-      (discipline (a), mid-batch). This is the SAME cadence as the per-MR heartbeat (2e) and just as
-      load-bearing: a continuous batch never returns to the tick-top compact check, so without a per-MR
-      checkpoint the window climbs to 100% mid-batch and your self-`/compact` can never fire (and an
-      external `/compact` can't preempt your busy pane). So between MRs, if context > ~70%, `/compact`
-      NOW — a 70% compact submits fine; a 100% one cannot, and at 100% the sole integrator freezes ALL
-      fleet integration. Do it BEFORE the next `git merge`, so you never carry a near-full window into
-      another full gate cycle.
-3. **Publish to the remote** (the PR half — unchanged in spirit from the old staging loop). When
-   `trunk` is ahead of `origin/main` and clean:
-   - **🚫 INVARIANT: NEVER move the `trunk` ref backward. Do NOT run `git reset --hard origin/main`
-     (or any reset/`branch -f`) in your worktree — it is checked out on `trunk`, so that resets the
-     LIVE `trunk` ref to `origin/main`, dropping every commit you've integrated since the last publish
-     until you re-replay them. That backward move IS the "trunk clobber" (it drops acked MRs in the
-     replay window). `trunk` only ever moves FORWARD (merges/cherry-picks). Build the re-parented tree
-     somewhere that is NOT your trunk worktree.**
-   - Re-parent onto `origin/main` in a THROWAWAY scratch worktree, so the squash-merge doesn't show a
-     spurious revert AND `trunk` is never touched: create a detached scratch checkout at `origin/main`
-     and lay trunk's tree on top of it there —
-     `git worktree add --detach /tmp/pr-sync-publish origin/main` (or reuse it), then in that scratch:
-     `git read-tree -u --reset trunk` + `git commit -m "publish: trunk@<sha>"` (HEAD^ == origin/main,
-     tree == trunk), and push THAT scratch commit. Remove the scratch worktree when done
-     (`git worktree remove /tmp/pr-sync-publish`). Your `trunk` worktree stays on `trunk`, untouched.
-   - `git push origin <scratch-HEAD>:staging-<topic>` then `gh pr create --base main --head
-     staging-<topic> --fill` (or reuse the open PR). Enable auto-merge: `gh pr merge --squash --auto
-     --delete-branch`. (Push the SCRATCH commit, never a reset trunk.)
-   - **Validate on the EXIT CODE of `cargo test`, never a stdout grep** (the staging-loop trap: a
-     pipe masks cargo's failure; a stack overflow is EXIT=101 with 0 "FAILED" lines). Remember CI's
-     `test` job builds NO runtime store, so a `.unwrap()` on a heap value is local-green/CI-red —
-     if CI fails there, that's the class to look for.
-   - Poll the PR; if CI goes red, `gh run view <id> --log-failed`, reproduce, and either fix it
-     yourself (small/infra) or `reject` it back to the agent whose work introduced it.
+   **Notify `reviewer` of landed diffs** (fire-and-forget, non-blocking): after a pass reaps merges,
+   `cargo xtask fleet send --to reviewer --kind note` naming the landed shas so it can review. Skip
+   silently if `reviewer` isn't in the registry.
+
+   **Frozen-hash note:** an MR touching `REQUIRED_RUNTIME_HASH` / `cdz-runtime/**` / `wit/runtime.wit`
+   is gated by CI's own `codegen` job (a clean-env build), so a bad hash fails that candidate's PR in
+   isolation — you no longer need the manual clean-env codegen dance. (If a hash bug slips a
+   non-required job, the reject-on-required-red rule still lands it; watch the reviewer's findings.)
+3. **The old manual publish/staging step is GONE** — `publish-candidate` (inside `schedule-pass`) owns
+   the push + PR + auto-merge, and the reap advances `trunk` forward-only via cherry-pick (NEVER a
+   backward `git reset --hard origin/main` — that trunk-clobber invariant still stands; `schedule-pass`
+   uses a scratch worktree + cherry-pick and never touches the trunk ref backward).
 4. **Archive the queue + roster** (every tick). Run `cargo xtask fleet archive` — it mirrors the
    live gitignored queue (`.claude/fleet/queue/`) into the TRACKED `issues/` archive AND syncs the
    standing fleet from the live registry into the TRACKED `fleet/roster.json`, then commits the
