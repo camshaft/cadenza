@@ -1609,3 +1609,37 @@
                 (Set.len (Set.of (list via-merge via-without (record (a n) (b 2)))))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 1 Int64)))
+
+(case "a record reached VIA Record.with keys a Map like the directly-built record"
+  (doc    "The Map-KEY face of row-op canonicalization (the merge/without Set-dedupe case above pins
+           3-paths-1-element): a record derived by `Record.with` (replacing field `a` in a runtime base)
+           must hit a Map keyed by the directly-built `(record (a 5) (b 2))` (42) AND compare `=` to it
+           (1) → 421. A with that produced a content-equal but layout-divergent record (a replaced slot
+           left unsorted) misses the CHAMP lookup while possibly still passing a structural walk.")
+  (input  (do
+            (def (main (: n Int64))
+              (do
+                (def base (record (a n) (b 2)))
+                (def derived (Record.with base #"a" 5))
+                (+ (* 10 (match (Map.lookup (Map.insert Map.empty (record (a 5) (b 2)) 42) derived)
+                           ((Some v) v) ((None _u) -1)))
+                   (if (= derived (record (a 5) (b 2))) 1 0))))
+            (export main)))
+  (call   main (: 9 Int64)) (output (: 421 Int64)))
+
+(case "a record reached via a with-CHAIN keys like the final direct build, generations intact"
+  (doc    "Three `Record.with` generations replace EVERY field of `g0` in turn (a→1, b→2, c→3); the
+           final generation must key a Map like the direct `(record (a 1) (b 2) (c 3))` (7) while the
+           ORIGINAL g0 still reads its own field (9) → 79. Persistence (g0 untouched through three
+           derivations) composed with canonicalization (the chain result is byte-identical to the
+           direct build as a CHAMP key).")
+  (input  (do
+            (def (main (: n Int64))
+              (do
+                (def g0 (record (a n) (b n) (c n)))
+                (def g3 (Record.with (Record.with (Record.with g0 #"a" 1) #"b" 2) #"c" 3))
+                (+ (* 10 (match (Map.lookup (Map.insert Map.empty (record (a 1) (b 2) (c 3)) 7) g3)
+                           ((Some v) v) ((None _u) -1)))
+                   (. g0 a))))
+            (export main)))
+  (call   main (: 9 Int64)) (output (: 79 Int64)))

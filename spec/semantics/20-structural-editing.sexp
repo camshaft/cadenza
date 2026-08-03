@@ -738,3 +738,33 @@
                  (if (= (rewrite (quote (lit 50)) 10) (quote (lit 50))) 1 0)))
             (export main)))
   (output (: 11 Int64)))
+
+(case "a simplifier pass applied TWICE equals one application (idempotence at the fixpoint)"
+  (doc    "The pipeline property the refactor-is-a-program story rests on: `simp` (the peephole
+           simplifier from the meaning-preservation case above) reaches its FIXPOINT in one bottom-up
+           application on this tree, so `(simp (simp e)) = (simp e)` as TREE values (deep sum
+           equality) — and the fixpoint is the fully-reduced `(Lit k)`. A rewrite that left a residual
+           reducible node (a dropped child rewrite, a top-only rule) re-fires on the second pass and
+           splits the equality; the once-result being `(Lit k)` pins that one pass fully reduces this
+           tree rather than both passes being equally lazy.")
+  (input  (do
+            (type Exp (Lit Int64) (Add (Tuple Exp Exp)) (Mul (Tuple Exp Exp)))
+            (def (is-lit e k) (match e ((Exp.Lit n) (= n k)) (_other false)))
+            (def (simp e)
+              (match e
+                ((Exp.Lit n) (Exp.Lit n))
+                ((Exp.Add (tuple a b))
+                  (let ((x (simp a)))
+                  (let ((y (simp b)))
+                    (if (is-lit y 0) x (if (is-lit x 0) y (Exp.Add (tuple x y)))))))
+                ((Exp.Mul (tuple a b))
+                  (let ((x (simp a)))
+                  (let ((y (simp b)))
+                    (if (is-lit y 1) x (if (is-lit x 1) y (Exp.Mul (tuple x y)))))))))
+            (def (main (: k Int64))
+              (let ((e (Add (tuple (Mul (tuple (Lit k) (Lit 1))) (Lit 0)))))
+                (let ((once (simp e)))
+                  (+ (* 10 (if (= (simp once) once) 1 0))
+                     (if (= once (Lit k)) 1 0)))))
+            (export main)))
+  (call   main (: 6 Int64)) (output (: 11 Int64)))
