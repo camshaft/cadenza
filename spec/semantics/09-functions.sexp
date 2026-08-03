@@ -6903,3 +6903,23 @@
                               3 0 20)))
             (export main)))
   (output (: 67 Int64)))
+
+(case "closures extracted from a list by RUNTIME index and applied dispatch correctly"
+  (doc    "The callback-REGISTRY idiom (the list-of-closures pins store + call directly; nothing
+           EXTRACTS by index and applies): three distinct closures in a list, one selected by a fixed
+           index and one by a runtime-computed index `(% k 3)`, each applied to a live argument. k=4 →
+           fns[1](4)=40 ·100 + fns[1](7)=70 → 4070; k=3 → 30·100 + fns[0](7)=8 → 3008. A registry whose
+           boxed-fn slots decayed to one shared code pointer (or whose index resolution mis-mapped the
+           funcref table) dispatches the wrong callback — visible because all three closures compute
+           different shapes.")
+  (input  (do
+            (def (main (: k Int64))
+              (do
+                (def fns (list (fn ((: x Int64)) (+ x 1))
+                               (fn ((: x Int64)) (* x 10))
+                               (fn ((: x Int64)) (- x 5))))
+                (+ (* 100 (match (List.at fns 1) ((Some f) (f k)) ((None _u) -1)))
+                   (match (List.at fns (% k 3)) ((Some g) (g 7)) ((None _u) -1)))))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: 4070 Int64))
+  (call   main (: 3 Int64)) (output (: 3008 Int64)))
