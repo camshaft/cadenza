@@ -42125,6 +42125,39 @@ mod match_engine {
     }
 
     #[test]
+    fn an_annotated_accumulator_lets_a_mutually_recursive_decoder_emit_on_both_backends() {
+        // PERIMETER pin for the (List Any) mutual-recursion freeze (v-rust-backend ask + breaker mx2):
+        // the UNANNOTATED accumulator `acc` of `dac` freezes to `(List Any)` and DECLINES on rust — its
+        // element `Ast` can't flow through the mutual partner `dn`'s not-yet-settled tuple result during
+        // the connected param-solve (a genuine `solving_params`↔`def_scheme` cycle; filed for a dedicated
+        // slice). The DOCUMENTED WORKAROUND is to ANNOTATE the accumulator `(: acc (List Ast))`: the
+        // annotation gives the param a fixed type (no inference through the cycle), so BOTH backends emit.
+        // This pins the workaround (so it keeps working) AND guards the perimeter — when the freeze is
+        // fixed the unannotated form joins this on rust; if annotated-param handling regresses, this
+        // catches it. Both backends must EMIT (the freeze is rust-only; wasm always ran).
+        let src = "(module m \
+          (type Ast (AInt Int64) ALeaf (AList (List Ast))) \
+          (def (dn b i) \
+            (if (= i 0) \
+                (tuple (AInt (Option.expect (List.at b 0) \"in range\")) (+ i 1)) \
+                (tuple (AList (dac b i (- i 1) (list))) (+ i 1)))) \
+          (def (dac b i n (: acc (List Ast))) \
+            (if (< n 1) acc \
+                (match (dn b i) ((tuple child nx) (dac b nx (- n 1) (List.push acc child)))))) \
+          (def (top b) (match (dn b 0) ((tuple ast pos) ast))) \
+          (def (main) (match (top (list 42 7)) ((AInt n) n) (_ -1))) (export main))";
+        let mut dbw = crate::db::Db::load(parse(src));
+        let layw = crate::layout::compute(&mut dbw).expect("annotated-acc decoder lays out (wasm)");
+        crate::backend::emit(crate::backend::Target::Wasm, &mut dbw, &layw, None, None)
+            .expect("annotated-acc mutrec decoder must emit wasm");
+        let mut dbr = crate::db::Db::load(parse(src));
+        let layr = crate::layout::compute(&mut dbr).expect("annotated-acc decoder lays out (rust)");
+        crate::backend::emit(crate::backend::Target::Rust, &mut dbr, &layr, None, None).expect(
+            "annotating the accumulator `(: acc (List Ast))` lets the mutrec decoder emit rust (the freeze workaround)",
+        );
+    }
+
+    #[test]
     fn a_mutually_recursive_decoder_infers_and_emits_valid_wasm() {
         // Two fixes compose here: (1) TRANSITIVE call-site inference — `dn`'s param `b` (a `(List Int64)`)
         // is decided only via `main → top → dn` / `dac → dn`, threaded through the pass-through param by
