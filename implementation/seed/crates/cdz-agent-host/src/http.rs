@@ -139,7 +139,7 @@ impl<T: HttpTransport> HttpExecutor<T> {
 
 #[async_trait::async_trait(?Send)]
 impl<T: HttpTransport> Executor for HttpExecutor<T> {
-    async fn perform_async(&mut self, req: &EffectRequest, idempotency_key: Hash) -> EffectOutcome {
+    async fn perform(&mut self, req: &EffectRequest, idempotency_key: Hash) -> EffectOutcome {
         // Family-keyed (seq-39), not the EffectKind enum — the same decision the router + authz make.
         if !req.content_type.matches_family(effect_ct::HTTP) {
             // Structural — PERMANENT, a supervisor must not retry it (§17: observable Err, never a panic).
@@ -302,10 +302,8 @@ mod tests {
             expect_body: None,
             response: resp(200, &[("content-type", "text/plain")], b"response body"),
         });
-        let (status, headers, body) = decode_result(
-            exec.perform_async(&http_req("get", None), Hash::of(b"k"))
-                .await,
-        );
+        let (status, headers, body) =
+            decode_result(exec.perform(&http_req("get", None), Hash::of(b"k")).await);
         assert_eq!(status, 200);
         assert_eq!(
             headers,
@@ -328,7 +326,7 @@ mod tests {
             response: resp(201, &[("location", "/new/1")], b"created"),
         });
         let (status, headers, body) = decode_result(
-            exec.perform_async(
+            exec.perform(
                 &http_req_h(
                     "post",
                     &[
@@ -358,10 +356,8 @@ mod tests {
             expect_body: None,
             response: resp(404, &[], b"not found"),
         });
-        let (status, _headers, body) = decode_result(
-            exec.perform_async(&http_req("get", None), Hash::of(b"k"))
-                .await,
-        );
+        let (status, _headers, body) =
+            decode_result(exec.perform(&http_req("get", None), Hash::of(b"k")).await);
         assert_eq!(
             status, 404,
             "a 404 is a completed response, not a transport error"
@@ -379,8 +375,7 @@ mod tests {
             response: resp(200, &[], b"a"),
         });
         assert!(matches!(
-            exec.perform_async(&http_req("post", None), Hash::of(b"k"))
-                .await,
+            exec.perform(&http_req("post", None), Hash::of(b"k")).await,
             EffectOutcome::Ok(_)
         ));
         let mut exec = HttpExecutor::new(StubHttp {
@@ -390,7 +385,7 @@ mod tests {
             response: resp(200, &[], b"b"),
         });
         assert!(matches!(
-            exec.perform_async(&http_req("delete", Some(b"why")), Hash::of(b"k"))
+            exec.perform(&http_req("delete", Some(b"why")), Hash::of(b"k"))
                 .await,
             EffectOutcome::Ok(_)
         ));
@@ -405,7 +400,7 @@ mod tests {
             response: resp(207, &[], b"x"),
         });
         assert!(matches!(
-            exec.perform_async(&http_req("propfind", None), Hash::of(b"k"))
+            exec.perform(&http_req("propfind", None), Hash::of(b"k"))
                 .await,
             EffectOutcome::Ok(_)
         ));
@@ -434,7 +429,7 @@ mod tests {
             Some(Payload::Blob(Hash::of(b"big"))),
             Timeliness::Interactive,
         );
-        match exec.perform_async(&req, Hash::of(b"k")).await {
+        match exec.perform(&req, Hash::of(b"k")).await {
             EffectOutcome::Err(msg) => {
                 assert!(msg.contains("no blob-store access"), "{msg}");
                 assert_eq!(
@@ -470,7 +465,7 @@ mod tests {
             None,
             Timeliness::Interactive,
         );
-        match exec.perform_async(&no_payload, Hash::of(b"k")).await {
+        match exec.perform(&no_payload, Hash::of(b"k")).await {
             EffectOutcome::Err(msg) => {
                 assert!(msg.contains("http-request payload"), "{msg}");
                 assert_eq!(
@@ -488,7 +483,7 @@ mod tests {
             Some(Payload::Inline(b"not a sexpr".to_vec().into())),
             Timeliness::Interactive,
         );
-        match exec.perform_async(&garbage, Hash::of(b"k")).await {
+        match exec.perform(&garbage, Hash::of(b"k")).await {
             EffectOutcome::Err(msg) => {
                 assert!(msg.contains("malformed"), "{msg}");
                 assert_eq!(
@@ -518,10 +513,7 @@ mod tests {
             }
         }
         let mut exec = HttpExecutor::new(FlakyHttp);
-        match exec
-            .perform_async(&http_req("get", None), Hash::of(b"k"))
-            .await
-        {
+        match exec.perform(&http_req("get", None), Hash::of(b"k")).await {
             EffectOutcome::Err(msg) => {
                 assert!(msg.contains("connection refused"), "{msg}");
                 assert_eq!(
@@ -557,7 +549,7 @@ mod tests {
             None,
             Timeliness::Interactive,
         );
-        match exec.perform_async(&req, Hash::of(b"k")).await {
+        match exec.perform(&req, Hash::of(b"k")).await {
             EffectOutcome::Err(msg) => {
                 assert!(
                     msg.contains(effect_ct::HTTP) && msg.contains(effect_ct::MODEL),

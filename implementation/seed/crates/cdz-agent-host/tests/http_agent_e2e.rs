@@ -46,7 +46,7 @@ impl HttpTransport for StubHttp {
 struct FetchAgent;
 #[async_trait::async_trait(?Send)]
 impl Reducer for FetchAgent {
-    async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+    async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
         match &event.body {
             EventBody::Inbound { .. } => {
                 kv.put(b"phase".to_vec(), b"fetching".to_vec());
@@ -144,7 +144,7 @@ async fn a_fetch_to_an_unpermitted_host_is_denied_before_the_client() {
     struct ExfilAgent;
     #[async_trait::async_trait(?Send)]
     impl Reducer for ExfilAgent {
-        async fn fold_async(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+        async fn fold(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             if matches!(event.body, EventBody::Inbound { .. }) {
                 FoldOutput::with(vec![EffectRequest::new_with_family(
                     effect_ct::HTTP,

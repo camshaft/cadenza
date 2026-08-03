@@ -69,7 +69,7 @@ impl<T: ModelTransport> ModelExecutor<T> {
 
 #[async_trait::async_trait(?Send)]
 impl<T: ModelTransport> Executor for ModelExecutor<T> {
-    async fn perform_async(&mut self, req: &EffectRequest, idempotency_key: Hash) -> EffectOutcome {
+    async fn perform(&mut self, req: &EffectRequest, idempotency_key: Hash) -> EffectOutcome {
         // These are structural request errors — retrying can't fix them, so they're PERMANENT (§17
         // totality: an observable Err, never a panic).
         // Key the guard on the effect FAMILY STRING (seq-39 / effect-schema slice 2), not the EffectKind
@@ -154,7 +154,7 @@ mod tests {
             response: Bytes::from_static(b"a completion"),
         });
         match exec
-            .perform_async(
+            .perform(
                 &model_req(Some(Payload::Inline(b"prompt".to_vec().into()))),
                 Hash::of(b"k"),
             )
@@ -172,7 +172,7 @@ mod tests {
         let mut exec = ModelExecutor::new(StubTransport {
             response: Bytes::new(),
         });
-        match exec.perform_async(&model_req(None), Hash::of(b"k")).await {
+        match exec.perform(&model_req(None), Hash::of(b"k")).await {
             EffectOutcome::Err(msg) => {
                 assert!(msg.contains("requires a request payload"), "{msg}");
                 // A structural request error is PERMANENT — a supervisor must not retry it.
@@ -192,7 +192,7 @@ mod tests {
             response: Bytes::new(),
         });
         match exec
-            .perform_async(
+            .perform(
                 &model_req(Some(Payload::Blob(Hash::of(b"big-body")))),
                 Hash::of(b"k"),
             )
@@ -224,7 +224,7 @@ mod tests {
         }
         let mut exec = ModelExecutor::new(ThrottledTransport);
         match exec
-            .perform_async(
+            .perform(
                 &model_req(Some(Payload::Inline(b"prompt".to_vec().into()))),
                 Hash::of(b"k"),
             )
@@ -260,7 +260,7 @@ mod tests {
             Some(Payload::Inline(b"x".to_vec().into())),
             Timeliness::Interactive,
         );
-        match exec.perform_async(&req, Hash::of(b"k")).await {
+        match exec.perform(&req, Hash::of(b"k")).await {
             EffectOutcome::Err(msg) => {
                 assert!(
                     msg.contains(effect_ct::MODEL) && msg.contains(effect_ct::HTTP),
