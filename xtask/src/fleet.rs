@@ -8267,6 +8267,37 @@ fn mark_dispatch_resolved(fleet: &Fleet, d: &CiDispatch, status: &str) {
 /// forward-only + single-writer are preserved (we only ADD this commit, never reset backward). Returns
 /// `Ok(new_sha)` on advance, `Ok(trunk)` if the PR is already present (ancestor OR patch-id — no-op),
 /// `Err` on a git/gh failure or a cherry-pick conflict (aborted, trunk untouched).
+/// Parse `git worktree list --porcelain` for the path of the worktree that has `trunk` CHECKED OUT.
+/// The output is blank-line-separated records; within a record a `worktree <path>` line is followed by
+/// `branch refs/heads/<name>` (or `detached`/`bare`). We want the path whose record's branch is
+/// `refs/heads/trunk` (pr-sync's worktree — the only checkout of trunk). Pure so it's unit-testable.
+fn parse_trunk_worktree(porcelain: &str) -> Option<String> {
+    let mut current: Option<&str> = None;
+    for line in porcelain.lines() {
+        if let Some(path) = line.strip_prefix("worktree ") {
+            current = Some(path);
+        } else if line == "branch refs/heads/trunk" {
+            return current.map(str::to_string);
+        }
+    }
+    None
+}
+
+/// Filesystem path of the worktree that has `trunk` checked out (pr-sync's). The reap's MUTATING git ops
+/// (cherry-pick) need a WORKING TREE, but `fleet.repo` is the BARE hub — a cherry-pick there fatals
+/// ("this operation must be run in a work tree") and gets misreported as a false conflict (pr-sync
+/// smoke-test #3, BUG-3, 2026-08-03). Read-only ancestry/rev-parse/fetch ops are bare-safe and stay on
+/// `fleet.repo`; only the working-tree ops route through here.
+fn trunk_worktree_dir(fleet: &Fleet) -> Option<PathBuf> {
+    let out = Command::new("git")
+        .current_dir(&fleet.repo)
+        .args(["worktree", "list", "--porcelain"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
+    parse_trunk_worktree(&String::from_utf8_lossy(&out.stdout)).map(PathBuf::from)
+}
+
 fn advance_trunk_for_merged_pr(fleet: &Fleet, pr: u64) -> Result<String, String> {
     let git = |args: &[&str]| {
         Command::new("git")
@@ -8274,7 +8305,6 @@ fn advance_trunk_for_merged_pr(fleet: &Fleet, pr: u64) -> Result<String, String>
             .args(args)
             .output()
     };
-    let git_ok = |args: &[&str]| git(args).map(|o| o.status.success()).unwrap_or(false);
     let rev = |r: &str| {
         git(&["rev-parse", r])
             .ok()
@@ -8327,11 +8357,22 @@ fn advance_trunk_for_merged_pr(fleet: &Fleet, pr: u64) -> Result<String, String>
     // guarantees that specific commit + its ancestry are local. (The `fetch origin main` above usually
     // covers it, but fetching the oid explicitly is the robust guarantee.)
     let _ = git(&["fetch", "origin", &merge_oid, "--quiet"]);
-    // Cherry-pick this PR's merge commit onto trunk (in pr-sync's trunk worktree — the only checkout of
-    // `trunk`). On conflict, abort + bail (trunk untouched) — a conflict means this PR's base wasn't
-    // trunk's tree (stale-base that slipped dispatch); pr-sync handles that MR manually.
-    if !git_ok(&["cherry-pick", "--allow-empty", &merge_oid]) {
-        let _ = git(&["cherry-pick", "--abort"]);
+    // Cherry-pick this PR's merge commit onto trunk. This MUTATING op needs a WORKING TREE, but
+    // `fleet.repo` is the BARE hub — running it there fatals ("this operation must be run in a work
+    // tree") and the failure was misreported as a false CONFLICT (pr-sync smoke-test #3, BUG-3,
+    // 2026-08-03). Route it (and its --abort) through pr-sync's trunk worktree, the only checkout of
+    // `trunk`. The read-only guards above (fetch/rev-parse/merge-base/cherry) are bare-safe and stayed
+    // on fleet.repo. On conflict, abort + bail (trunk untouched) — a conflict means this PR's base
+    // wasn't trunk's tree (stale-base that slipped dispatch); pr-sync handles that MR manually.
+    let wt = trunk_worktree_dir(fleet).ok_or_else(|| {
+        format!(
+            "PR #{pr}: could not find the worktree with `trunk` checked out (git worktree list) — cannot cherry-pick in the bare hub; trunk left at {trunk_before}."
+        )
+    })?;
+    let git_wt = |args: &[&str]| Command::new("git").current_dir(&wt).args(args).output();
+    let git_wt_ok = |args: &[&str]| git_wt(args).map(|o| o.status.success()).unwrap_or(false);
+    if !git_wt_ok(&["cherry-pick", "--allow-empty", &merge_oid]) {
+        let _ = git_wt(&["cherry-pick", "--abort"]);
         return Err(format!(
             "PR #{pr}: cherry-pick of its mergeCommit {merge_oid} onto trunk CONFLICTED — its base wasn't trunk's tree; aborted, trunk left at {trunk_before}. Manual reconcile."
         ));
@@ -13371,6 +13412,50 @@ mod tests {
         // land or a reject.
         assert_eq!(parse_pr_state(""), PrState::Open);
         assert_eq!(parse_pr_state(r#"{"state":"DRAFT"}"#), PrState::Open);
+    }
+
+    #[test]
+    fn parse_trunk_worktree_finds_the_trunk_checkout_path() {
+        // Real `git worktree list --porcelain` shape: blank-line-separated records; the bare hub first,
+        // then per-worktree `worktree <path>` / `HEAD <sha>` / (`branch refs/heads/<x>` | `detached`).
+        // We want the path whose record's branch is exactly refs/heads/trunk (pr-sync's checkout).
+        let porcelain = "\
+worktree /repo/hub
+bare
+
+worktree /repo/.claude/worktrees/breaker
+HEAD c1bdcc1e5
+detached
+
+worktree /repo/.claude/worktrees/concierge
+HEAD c1bdcc1e5
+branch refs/heads/fleet/concierge
+
+worktree /repo/.claude/worktrees/pr-sync
+HEAD c1bdcc1e5
+branch refs/heads/trunk
+";
+        assert_eq!(
+            parse_trunk_worktree(porcelain).as_deref(),
+            Some("/repo/.claude/worktrees/pr-sync")
+        );
+        // No trunk checkout anywhere → None (caller bails rather than cherry-pick in the bare hub).
+        let no_trunk = "\
+worktree /repo/hub
+bare
+
+worktree /repo/.claude/worktrees/v-a
+HEAD abc
+branch refs/heads/fleet/v-a
+";
+        assert_eq!(parse_trunk_worktree(no_trunk), None);
+        // Must not match a branch that merely CONTAINS 'trunk' as a substring (e.g. fleet/trunk-tools).
+        let substring = "\
+worktree /repo/.claude/worktrees/tt
+HEAD abc
+branch refs/heads/fleet/trunk-tools
+";
+        assert_eq!(parse_trunk_worktree(substring), None);
     }
 
     #[test]
