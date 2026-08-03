@@ -2190,3 +2190,33 @@
         (export main)))
   (call   main (: 10 UInt8)) (output (: 50 Int64))
   (call   main (: 0 UInt8)) (output (: 40 Int64)))
+
+(case "a bits run spanning TWO bytes decodes MSB-first over a runtime scrutinee"
+  (doc    "The cross-byte DECODE face (the sub-byte 3+5 run and the byte-aligned-run-then-int cases pin
+           single-byte shapes; construction pins cross-byte PACKING): `(bin (bits a 3) (bits b 13))` over
+           runtime bytes [h, 90] — the 13-bit `b` STRADDLES the byte boundary, so the matcher must read
+           the 16-bit run big-endian and shift/mask across bytes. h=182 (0b10110110): a = top 3 = 5,
+           b = low 13 of 0b1011011001011010 = 5722 → 505722. A per-byte decoder (or one that read the
+           run little-endian) misreads b.")
+  (input  (do (def (run (: h Int64))
+                (match (Bytes.of (list (UInt8.wrap h) (UInt8.wrap 90)))
+                  ((bin (bits a 3) (bits b 13)) (+ (* 100000 a) b))
+                  (_other -1)))
+              (export run)))
+  (call   run (: 182 Int64))
+  (output (: 505722 Int64)))
+
+(case "FOUR bit-fields with widths 5+7+9+3 decode across three runtime bytes"
+  (doc    "The dense-packing decode face: widths 5+7+9+3 = 24 bits over three runtime-headed bytes, where
+           `b` (7) crosses the first boundary and `c` (9) crosses the second — no field is byte-aligned
+           after the first. h=202, bytes [202,53,227] = 0b110010100011010111100011: a=25, b=35, c=188,
+           d=3 → 25351883. Any off-by-one in the running bit cursor (or a mask clipped at a byte edge)
+           shifts every later field.")
+  (input  (do (def (run (: h Int64))
+                (match (Bytes.of (list (UInt8.wrap h) (UInt8.wrap 53) (UInt8.wrap 227)))
+                  ((bin (bits a 5) (bits b 7) (bits c 9) (bits d 3))
+                    (+ (* 1000000 a) (+ (* 10000 b) (+ (* 10 c) d))))
+                  (_other -1)))
+              (export run)))
+  (call   run (: 202 Int64))
+  (output (: 25351883 Int64)))
