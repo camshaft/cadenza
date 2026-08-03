@@ -11541,14 +11541,16 @@ fn emit(
                 if !crate::lower::subtree_reaches_host_call(db, *s) {
                     continue;
                 }
-                // A host-reaching statement must run. Emit it; if it leaves a value (a non-Unit host-call
-                // result, discarded here), drop that value so the block stays stack-balanced. Strip nominals
-                // before the Unit test: a nominal-Unit (a newtype over `Unit`) leaves NO machine value at the
-                // boundary just like a bare `Unit` (`valtype_of` is None), so it must NOT be dropped — a
-                // `Lir::Drop` on an empty stack underflows → an invalid module. Mirrors the field-proj Unit
-                // check (~1108) and the tail-drop (~2486), both of which strip_nominal for the same reason.
+                // A host-reaching statement must run. Emit it; if it left a MACHINE VALUE on the stack (a
+                // discarded non-Unit host-call result), drop that value so the block stays stack-balanced.
+                // The drop condition is EXACTLY "did this statement leave a machine value?" =
+                // `valtype_of(type_of(..)).is_some()` — NOT `strip_nominal() != Unit`: `valtype_of` returns
+                // None for `Unit` AND for `Char` / `Type` / `Var` / `Any` (all no-runtime-slot), so a
+                // statement of one of those types leaves nothing and must NOT be dropped — a `Lir::Drop` on
+                // an empty stack underflows → an invalid module. (valtype_of strips nominals internally, so
+                // a newtype-over-Unit is covered too — the #1721/#1733 nominal-Unit case.)
                 emit(db, *s, slots, base, high, scratch_ty, layout, out)?;
-                if !matches!(crate::infer::type_of(db, *s).strip_nominal(), Ty::Unit) {
+                if valtype_of(&crate::infer::type_of(db, *s)).is_some() {
                     out.push(Lir::Drop);
                 }
             }
