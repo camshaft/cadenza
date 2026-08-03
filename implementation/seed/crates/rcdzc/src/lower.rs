@@ -13764,6 +13764,16 @@ fn is_runtime_computation(db: &mut Db, init: StructId) -> bool {
             // before widening. Scalar READS — *Len/*Size/BytesAt/*Cmp/Contains/HasKeys — copy-propagate fine.)
             | Core::StrToBytes { .. }
             | Core::StrSlice { .. }
+            // adv-54b: `Bytes.concat` is the same family — a fresh-leaf-building runtime op that CONSUMES/
+            // dups its operands. A `let`-bound concat used more than once was COPY-PROPAGATED (it was not in
+            // this list), RECOMPUTING the concat — and its slice-VIEW `String.to-bytes` operands — at each
+            // read; each recompute consumed the borrowed view sources, so the 2nd read walked a freed buffer
+            // → wasm OOB trap (rust rebuilt correctly → 200). Keeping it under the >= 2-use rule names `b`
+            // once. This was the deferred wider-family widening the adv-54 note warned regressed 3 cases
+            // ["their kept-binding EMIT has its own bug to fix first"]; that emit bug was adv-66 (#1610 —
+            // `BytesConcat` mis-classified in `mark_binder_dups`, now CONSUMING), so the keep is regression-
+            // free NOW (gate 0-fail with this arm; adv54b witness computes 200, traps OOB without it).
+            | Core::BytesConcat { .. }
     )
 }
 

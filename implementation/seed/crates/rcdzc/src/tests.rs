@@ -2390,6 +2390,62 @@ fn adv54_runtime_sliced_to_bytes_read_twice_sees_both_bytes() {
     }
 }
 
+/// adv-54b (v-runtime probe 2026-08-02, HIGH wasm-only soundness OOB; the adv-54 family, one op over):
+/// a `let`-bound `Bytes.concat` of two `String.to-bytes(String.slice …)` VIEWS, read MORE THAN ONCE via
+/// `Bytes.at`, must see the concatenated bytes on EVERY read. Root (same as adv-54): `Core::BytesConcat`
+/// was NOT in `is_runtime_computation` (lower.rs), so the let-bound `b` was COPY-PROPAGATED — the concat
+/// (and its sliced-view to-bytes operands) RECOMPUTED at each `Bytes.at`, and each recompute CONSUMES the
+/// borrowed slice-view sources, so the 2nd read walked a freed buffer → wasm OOB trap (rust rebuilt
+/// correctly, computing 200). `s` = "ab"++"cdé" (runtime concat, opaque to the fold); `tail` = slice(s,3,5)
+/// = "dé" = bytes [100,0xC3,0xA9]; `b` = concat(to-bytes tail, to-bytes tail) = [100,0xC3,0xA9,100,0xC3,
+/// 0xA9]; `b[0]+b[3]` = 100+100 = 200. Fix: add `BytesConcat` to `is_runtime_computation` so `b` is NAMED
+/// once (the concat evaluated once, the handle read by each `Bytes.at`) — the wasm kept-binding emit (its
+/// mark_binder_dups consume-classification, hardened by adv-66) then dups the view sources correctly so no
+/// read sees a freed buffer. Pins the fix at the unit tier so a future lower.rs change that drops
+/// `BytesConcat` from the keep-list fails HERE, not just in the corpus.
+#[test]
+fn adv54b_bytes_concat_of_slice_views_read_twice_sees_the_concatenated_bytes() {
+    use crate::testkit::parse;
+    let src = "(module m \
+                 (def (main (: k Int64)) \
+                   (let ((s (String.concat \"ab\" \"cdé\"))) \
+                     (match (String.slice s 3 5) \
+                       ((Some tail) \
+                         (let ((b (Bytes.concat (String.to-bytes tail) (String.to-bytes tail)))) \
+                           (+ (Int64.of (Option.expect (Bytes.at b 0) \"b0\")) \
+                              (Int64.of (Option.expect (Bytes.at b 3) \"b3\"))))) \
+                       ((None _u) -1)))) \
+                 (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    assert!(
+        cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+        "a runtime Bytes.concat of slice-view to-bytes must import the value-heap runtime (not a fold)"
+    );
+    let Some(runtime) = find_runtime_wasm() else {
+        eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+        return;
+    };
+    let opts = cdz_run::RunOpts {
+        export: Some("main".to_string()),
+        args: vec!["0".to_string()],
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    match cdz_run::run(&bytes, &opts).expect("run") {
+        cdz_run::Outcome::Value(s) => assert_eq!(
+            s, "200",
+            "both reads of a let-bound Bytes.concat-of-slice-views must see the concatenated bytes \
+             (b[0]=100 + b[3]=100 = 200); an OOB trap or a wrong value is adv-54b (the concat recompute \
+             consumed the borrowed view sources, so the 2nd read walked a freed buffer)"
+        ),
+        cdz_run::Outcome::Trap(t) => panic!(
+            "adv-54b: Bytes.concat-of-slice-views read twice trapped OOB (the concat was copy-propagated \
+             + recomputed, consuming the borrowed view sources on the 1st read): {t}"
+        ),
+    }
+}
+
 /// A FIELD read on a RUNTIME record (one whose value is not a compile-time-visible literal) projects
 /// like a tuple element: a record at run time IS a positional heap array in SORTED-KEY order, so
 /// `(. rec field)` is an `arr-get` at the field's sorted index. The record is written OUT of sorted
