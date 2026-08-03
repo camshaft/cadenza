@@ -5441,7 +5441,16 @@ fn sync(fleet: &Fleet, force: bool) {
         // subject line is missing (a short output → never wrongly drop).
         let mut args: Vec<&str> = vec!["show", "-s", "--format=%s"];
         args.extend(replay.iter().map(String::as_str));
-        let subjects: Vec<String> = git_stdout(&args).lines().map(str::to_string).collect();
+        // RAW read + `split_terminator('\n')`, NOT `git_stdout(...).lines()`: `git_stdout` global-trims,
+        // which would STRIP an empty commit subject (an `--allow-empty-message` / some merge/import
+        // commit yields a blank `%s` line) — and a dropped line shifts every later subject, MISALIGNING
+        // the positional `subjects[i]↔replay[i]` zip so the archive-mirror filter drops the WRONG commit
+        // (PR #1690 review, a real latent bug the batching introduced). `git show -s --format=%s`
+        // emits exactly one line per commit terminated by `\n`; `split_terminator` yields one element
+        // per commit (dropping only the final-newline artifact, never a genuine empty subject), so the
+        // index alignment holds even when a subject is empty. Per-element trim handles any `%s` padding.
+        let raw = String::from_utf8_lossy(&git(&args).stdout).into_owned();
+        let subjects: Vec<&str> = raw.split_terminator('\n').collect();
         replay = replay
             .into_iter()
             .enumerate()
