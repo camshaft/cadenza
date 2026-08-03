@@ -192,6 +192,20 @@
                 (tuple 1 (fn ((: x Int64)) (+ x (ask.ask)))))) (export main)))
   (error  CDZ0406))
 
+(case "a LET-bound escaping-effect closure returned from a host block cannot cross the host boundary"
+  (doc    "The let-indirection face of the escaping-closure fence: the performing closure is not returned
+           directly but LET-BOUND first — `(host (ask) (let ((f (fn (x) (+ x (ask.ask))))) f))` — then the
+           bound `f` is the host block's value. The escaping-closure scan must see through the `let` to the
+           returned closure whose body performs `ask.ask` outside the delegation's extent → rejected CDZ0406,
+           same as the bare and tuple-nested faces. Pins that a `let`-binding indirection does not smuggle an
+           escaping-effect closure past the fence. (breaker es5.) wasm+rust+rust-async all CDZ0406.")
+  (input  (do
+            (effect ask (op ask (-> Unit Int64)))
+            (def (main)
+              (host (ask)
+                (let ((f (fn ((: x Int64)) (+ x (ask.ask))))) f))) (export main)))
+  (error  CDZ0406))
+
 ; --- An exported closure's BODY is type-checked, like an ordinary def / an in-guest-applied lambda ------
 ; A `(def (a) (fn …))` exported as a host closure crosses the boundary and is NEVER applied in-guest, so
 ; its body is never β-reduced. An ill-typed body must still be a compile-time rejection — the same CDZ0203
