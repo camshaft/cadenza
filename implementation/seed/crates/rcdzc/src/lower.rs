@@ -8088,16 +8088,20 @@ fn scrutinee_reaches_host_perform(db: &mut Db, scrutinee: StructId) -> bool {
             return true; // too deep — assume it may perform (safe over-report; forces the wrapper)
         }
         // A `(host (E) body)` BLOCK reached in the scrutinee delegates its effects to the host boundary,
-        // so any perform in `body` is an observable host call — and a compiling host block ALWAYS performs
-        // (a host body that never performs its declared effect is CDZ0404 latent-authority, never reaches
-        // lowering). So a `Resolved::Host` node in the scrutinee = it reaches a host perform: return true.
-        // This is the ROBUST detector for a host perform inlined through a callee (adv-62): when a callee
-        // like `(def (mk) (host (io) (let ((v (io.get))) (tuple …))))` β-inlines into the scrutinee, the
-        // copied `io.get` occurrence LOSES its `effect-op` meta (a copy artifact), so the `effect_op_of`
-        // probe below returns None and the perform is missed — but the `Resolved::Host` wrapper survives the
-        // copy structurally. Without the wrapper the Leaf fold re-emits the whole host block once per tuple
-        // binder → the host op fires per closure and traps (call 2 of 1 response). Purely resolved (no
-        // `core_of`), so it keeps the same memoization-order safety the rest of this walk relies on.
+        // so a perform in `body` is an observable host call. Treat ANY `Resolved::Host` node as reaching a
+        // host perform — a CONSERVATIVE OVER-APPROXIMATION, not a claim that every compiling host block
+        // performs (it does not: an op-REFERENCE-only body like `(host (E) (E.get))` — the op named but
+        // never applied — compiles WITHOUT a perform; see the op-ref tests). Over-reporting is SAFE here:
+        // it only keeps the `MatchSum` wrapper (materialize the scrutinee ONCE), which is never wrong — a
+        // non-performing host-block scrutinee is merely materialized rather than folded through, same value,
+        // no re-emit. Under-reporting would be the bug. This is the ROBUST detector for a host perform
+        // inlined through a callee (adv-62): when a callee like `(def (mk) (host (io) (let ((v (io.get)))
+        // (tuple …))))` β-inlines into the scrutinee, the copied `io.get` occurrence LOSES its `effect-op`
+        // meta (a copy artifact), so the `effect_op_of` probe below returns None and a genuine perform is
+        // MISSED — but the `Resolved::Host` wrapper survives the copy structurally, so keying on it catches
+        // the perform the meta-probe can't. Without the wrapper the Leaf fold re-emits the whole host block
+        // once per tuple binder → the host op fires per closure and traps (call 2 of 1 response). Purely
+        // resolved (no `core_of`), so it keeps the same memoization-order safety the rest of this walk uses.
         if let Resolved::Host { .. } = resolved_of(db, node) {
             return true;
         }
