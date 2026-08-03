@@ -1,8 +1,7 @@
 # Host capability discovery + mid-session capability upgrade
 
-Owner: `v-agent-harness` (build; the feature lives in its `cdz-kernel` crate). Design by
-`design-host-capabilities`. Status:
-**PROPOSAL — peer-reviewed, awaiting operator ratification.** Operator idea via concierge 2026-08-03;
+Owner: `v-agent-harness` (build; design by `design-host-capabilities`). Status: **PROPOSAL — peer-reviewed,
+awaiting operator ratification.** Operator idea via concierge 2026-08-03;
 the operator is away all week (no live iteration), so this is a proposal shaped WITH the two harness
 owners (`v-agent-harness`, `v-agent-harness-host`) rather than decided in a live design session. The three
 core forks below carry a RECOMMENDED path (mine, endorsed/refined by the harness owners where noted) with
@@ -17,7 +16,7 @@ Cedar authorizer that PRODUCE the manifest).
 > The I4+ slices (the `control/capabilities` query + manifest/`capabilities-changed` event wiring) consume
 > the `control/*` partition, so they are sequenced AFTER the register-by-string / family-routing slices
 > that establish it, and take a dedicated control-plane design pass with `v-agent-harness-host` (where the
-> I4+ shape below is finalized). The forks flagged ⟨pending operator ratification⟩ below (esp. the REQUESTABLE
+> I4+ shape below is finalized). The forks flagged **⟨pending operator ratification⟩** below (esp. the REQUESTABLE
 > policy model) gate I3+/policy behaviour, not the I1–I3 mechanics.
 
 This dovetails with the in-flight extensible-effects arc: routing + authz already key on the effect
