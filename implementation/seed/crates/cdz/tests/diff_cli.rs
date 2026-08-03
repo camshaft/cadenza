@@ -130,3 +130,45 @@ fn diff_with_a_missing_argument_is_a_usage_error_exit_two() {
         "clap usage error on stderr: {err}"
     );
 }
+
+#[test]
+fn diff_is_structural_not_textual_across_surfaces() {
+    // `cdz diff` compares the AST, not the source text — so the SAME program written in DIFFERENT surfaces
+    // (s-expr vs ML) has NO structural change. The `--from` per-file inference (by extension) means diffing
+    // an `.sexp` against its `.cdz` equivalent must report `no structural changes` + exit 0. A regression
+    // that made diff surface-sensitive (comparing tokens/text) would report spurious changes here — this
+    // pins the surface-independence that is the whole point of a STRUCTURAL diff. (All the other tests use a
+    // single surface, so none witnesses this.) The `.cdz` form is produced by `cdz convert` so the two are
+    // guaranteed to be the same program in two spellings, not a hand-transliteration that could drift.
+    let dir = std::env::temp_dir().join(format!("cdz-diff-xsurface-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let sexpr = dir.join("p.sexp");
+    std::fs::write(&sexpr, PROG).unwrap();
+
+    // Convert the s-expr program to the ML surface (a .cdz file) — the exact same AST, different spelling.
+    let exe = env!("CARGO_BIN_EXE_cdz");
+    let conv = Command::new(exe)
+        .args(["convert", sexpr.to_str().unwrap(), "--to", "ml"])
+        .output()
+        .expect("spawn cdz convert");
+    assert!(
+        conv.status.success(),
+        "convert to ml succeeds: {}",
+        String::from_utf8_lossy(&conv.stderr)
+    );
+    let ml = dir.join("p.cdz");
+    std::fs::write(&ml, &conv.stdout).unwrap();
+
+    let (code, out, err) = run(&["diff", sexpr.to_str().unwrap(), ml.to_str().unwrap()]);
+    assert_eq!(
+        code, 0,
+        "diffing a program against its own other-surface form exits 0: out={out} err={err}"
+    );
+    assert!(
+        out.contains("no structural changes") || err.contains("no structural changes"),
+        "the same program in two surfaces has NO structural change (diff is structural, not textual): \
+         out={out} err={err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
