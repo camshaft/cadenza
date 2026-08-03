@@ -906,4 +906,56 @@ mod tests {
             "distinct subexpressions are not shared — no override installed"
         );
     }
+
+    // SOUNDNESS-GUARD WITNESS: the `body_is_pure_scalar` eligibility gate must SKIP any body that
+    // contains a nested def / lambda / capture. A pre-emit Core pass that `core_of`s such a body poisons
+    // `db.core` (the captured-ref fast path reads `db.captured_ref`, populated only at lambda-LIFT time —
+    // walking a capturing body pre-lift follows a captured ref to an out-of-scope binding and memoizes a
+    // wrong resolution → "parameter reference has no local slot" at emit). So the pass must install NO
+    // override for a body with a nested do-local fn, EVEN THOUGH it holds a repeated scalar `(& x 7)` that
+    // WOULD be shared in a capture-free body. This pins the gate that closed the 94→34→0 opt-sweep-div
+    // debug arc; a regression that dropped the gate would re-poison and decline this program at O2.
+    #[test]
+    fn global_cse_skips_a_body_that_contains_a_nested_capturing_def() {
+        let mut db = crate::db::Db::load(crate::testkit::parse(
+            "(module m (def (outer (: n Int64)) \
+               (do (def k (* n 3)) \
+                   (def (inner (: x Int64)) (+ (& x 7) (& x 7))) \
+                   (inner (+ n k)))) \
+             (export outer))",
+        ));
+        let d = db.def_by_name("outer").expect("def outer");
+        let body = db.defs[d].body.expect("outer body");
+        let _ = crate::lower::core_of(&mut db, body);
+        cse::GlobalCsePass.run(&mut db);
+        assert!(
+            !db.has_core_overrides(),
+            "a body containing a nested capturing def is NOT pure-scalar → the pass must skip it (no \
+             override), else core_of over the capturing body poisons db.core (the memo-poison class)"
+        );
+    }
+
+    // SOUNDNESS-GUARD WITNESS: the heap-type exclusion. A repeated HEAP-typed subexpression (here two
+    // identical `(list x x)` builds feeding `List.len`) must NOT be shared into a `Core::Let` — hoisting a
+    // heap handle drifts Perceus refcounts (one prologue dup covers only the first per-use consume; a
+    // shared handle read N× is an FBIP mutate-in-place / loop-carried drift). The `is_cse_candidate` heap
+    // guard (`!is_heap_type` + the `valtype_of` scalar filter) rejects it, so no override is installed —
+    // the two list builds stay distinct. Pins the guard v-wasm-opt flagged as the #1 correctness item.
+    #[test]
+    fn global_cse_does_not_share_a_repeated_heap_typed_subexpression() {
+        let mut db = crate::db::Db::load(crate::testkit::parse(
+            "(module m (def (main (: x Int64)) \
+               (+ (List.len (list x x)) (List.len (list x x)))) \
+             (export main))",
+        ));
+        let d = db.def_by_name("main").expect("def main");
+        let body = db.defs[d].body.expect("main body");
+        let _ = crate::lower::core_of(&mut db, body);
+        cse::GlobalCsePass.run(&mut db);
+        assert!(
+            !db.has_core_overrides(),
+            "a repeated heap-typed subexpression is NOT a CSE candidate (heap-type exclusion) → no \
+             override; sharing a heap handle would drift Perceus refcounts"
+        );
+    }
 }
