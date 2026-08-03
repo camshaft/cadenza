@@ -675,6 +675,7 @@ pass	a MONOTONE BISECTION finds the least r with r*r >= n over answer space, cer
 pass	a MULTI-LEVEL concat-built list SET element (n>=33) is found by a push-built equal element
 pass	a MULTI-LEVEL concat-built list map key (n>=33) is found by a push-built equal key
 pass	a MULTI-PAYLOAD variant with a nested same-sum variant reads the right payload depth (known outer disc)
+pass	a MULTI-parameter user generic resolves by name in a type annotation applied with two arguments
 pass	a MULTI-payload struct newtype escapes as its payload tuple under the type header
 pass	a MULTI-shot arm folds a perform in a let-bound lambda applied in the body
 pass	a MULTI-shot arm folds a perform under a CURRIED lambda applied to pure arguments
@@ -1484,6 +1485,7 @@ pass	a digit separator adjacent to a float's decimal point is a malformed litera
 pass	a dimensionless quantity carries the group identity Unit.one
 pass	a discarded do-statement that performs still advances the handler state
 pass	a discarded do-statement whose value would overflow is elided, so its trap does not occur
+pass	a discarded pure trapping item in a host do-body is elided beside a host call (dead-init ruling)
 pass	a discarded trapping item in a do sequence is elided per the dead-init ruling
 pass	a distinct-signature per-group call-g is a repeatable (borrow<t>) callback
 pass	a distinct-signature round-trip alongside a plain export — the Int64->Bool side runs
@@ -3556,6 +3558,8 @@ pass	a unit-result host op consumes its response row so the next value op reads 
 pass	a user Name variant does not capture the Ast sum's Name variant
 pass	a user SUM leaf inside a tuple key discriminates hits by variant AND payload
 pass	a user function may be named quote — its signature is a binding form, not a quote
+pass	a user generic NESTED as the type argument of a built-in generic resolves in an annotation
+pass	a user generic NESTED as the type argument of another user generic resolves in an annotation
 pass	a user generic sum named BARE (unapplied) in an annotation needs a type argument
 pass	a user sum NAMED `Box` wrapping a recursive type does not collide with the heap pointer
 pass	a user sum NAMED after a prelude sum shadows it without a duplicate definition
@@ -4300,6 +4304,7 @@ pass	concatenating tuples with a runtime element reads elements from both operan
 pass	concatenating two byte sequences appends their bytes in order
 pass	concatenating two empty lists is the empty list
 pass	concatenating two empty tuples is the empty tuple
+pass	concatenating two large runtime RRB vectors preserves length and every element across the join
 pass	concatenating two runtime strings and measuring the result
 pass	concatenating two tuples appends their elements
 pass	concatenating with the empty list on the left is the identity
@@ -5639,7 +5644,6 @@ todo	a String host RESULT crosses the boundary and is read twice (byte-len + sca
 todo	a Symbol entry parameter compares to an interned constant
 todo	a closed literal closure forwarded through const-wrapper hops is not a false reject
 todo	a constant-try helper that fails feeds the None arm's fallback into resume
-pass	a discarded pure trapping item in a host do-body is elided beside a host call (dead-init ruling)
 todo	a recursive scalar-walk classifies characters across a multibyte String entry arg
 todo	a runtime bin match decodes a FINAL constant-size utf8 segment
 todo	a runtime-DISC `?` inside a stored closure applies per-call once BRICK 3b lands

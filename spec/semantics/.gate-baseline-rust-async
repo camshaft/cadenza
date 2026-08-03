@@ -519,7 +519,6 @@ pass	a BigInt-inner quantity scales by a bare BigInt on the bigint path
 pass	a BigInt-inner quantity stored in a List reads back through List.at
 pass	a Bool argument to a parameter used in integer addition is rejected
 pass	a Bool generator derived from the seed is reproducible (same seed, same Bool)
-todo	a Bool host arg BESIDE a scalar and a String composes in one mixed-arity op
 pass	a Bool match with its arms in either order is exhaustive
 pass	a Bool match with only the true arm is non-exhaustive
 pass	a Bool-payload ctor BINDER used as a Bool in an if computes on the compiled path
@@ -666,6 +665,7 @@ pass	a MONOTONE BISECTION finds the least r with r*r >= n over answer space, cer
 pass	a MULTI-LEVEL concat-built list SET element (n>=33) is found by a push-built equal element
 pass	a MULTI-LEVEL concat-built list map key (n>=33) is found by a push-built equal key
 pass	a MULTI-PAYLOAD variant with a nested same-sum variant reads the right payload depth (known outer disc)
+pass	a MULTI-parameter user generic resolves by name in a type annotation applied with two arguments
 pass	a MULTI-payload struct newtype escapes as its payload tuple under the type header
 pass	a MULTI-shot arm folds a perform in a let-bound lambda applied in the body
 pass	a MULTI-shot arm folds a perform under a CURRIED lambda applied to pure arguments
@@ -721,7 +721,6 @@ pass	a NESTED sum-in-sum map key discriminates by the inner variant
 pass	a NESTED tuple of quantities renders every element scaled at depth
 pass	a NESTED tuple-of-tuples let pattern destructures a call's runtime result to all four leaves
 pass	a NESTED-tuple ARG composes with a NESTED-tuple RESULT
-todo	a NOMINAL-Unit-typed host-call statement in a do-body is not spuriously dropped
 pass	a NOMINAL-over-tuple ARG crosses as the underlying tuple (direct-call)
 pass	a NON-LAST handler arm whose body is a MATCH round-trips through the ML printer
 pass	a NON-TAIL recursion rebinding its rope arg to a slice-concat accumulates after each return
@@ -1231,6 +1230,7 @@ pass	a closure taking an Option Float64 ARG crosses the direct-call boundary
 pass	a closure taking an Option Int32 ARG (narrow-int payload) crosses the direct-call boundary
 pass	a closure taking an Option Int64 ARG — None crosses the direct-call boundary
 pass	a closure taking an Option Int64 ARG — Some crosses the direct-call boundary
+pass	a closure that performs a delegated effect cannot cross the host boundary
 pass	a closure whose CALL returns a tuple CONTAINING a list
 pass	a closure whose CALL returns a user sum crosses as the value form
 pass	a closure whose CALL returns an Option crosses as the value form
@@ -2772,9 +2772,7 @@ pass	a runtime BigInt three-way compare agrees with the boolean ordering
 pass	a runtime BigInt three-way compare reports Equal at a BEYOND-Int64 magnitude
 pass	a runtime BigInt three-way compare reports equality as Equal
 pass	a runtime BigInt-inner quantity used as a Map key hits, and a different magnitude misses
-todo	a runtime Bool host arg crosses the boundary and drives two response bindings
 pass	a runtime Bool-payload ctor binder threads its Bool through construction and destructure
-todo	a runtime Bytes host-arg BEFORE a scalar arg keeps distinct core slots (no width-clobber)
 pass	a runtime Bytes rope in a SUM payload compares equal to its flat twin
 pass	a runtime Bytes rope in a record field compares equal to its flat twin
 pass	a runtime Bytes rope is found as a Set element by its flat twin
@@ -3514,6 +3512,8 @@ pass	a unit raised to the ZEROTH power is the dimensionless identity Unit.one
 pass	a user Name variant does not capture the Ast sum's Name variant
 pass	a user SUM leaf inside a tuple key discriminates hits by variant AND payload
 pass	a user function may be named quote — its signature is a binding form, not a quote
+pass	a user generic NESTED as the type argument of a built-in generic resolves in an annotation
+pass	a user generic NESTED as the type argument of another user generic resolves in an annotation
 pass	a user generic sum named BARE (unapplied) in an annotation needs a type argument
 pass	a user sum NAMED `Box` wrapping a recursive type does not collide with the heap pointer
 pass	a user sum NAMED after a prelude sum shadows it without a duplicate definition
@@ -3538,7 +3538,6 @@ pass	a value definition may carry a leading doc, like a function definition
 pass	a value-eq guard on a LITERAL-probe arm drives a tail-recursive loop
 pass	a value-eq guard on a SUM-match arm drives a tail-recursive loop
 pass	a value-eq guard on a wildcard arm drives a tail-recursive loop
-todo	a value-leaving host-call statement in a do-body runs and its result is dropped (dead-init sibling)
 pass	a variadic Ast form is folded via a tail-splice rest-binder over its operands
 pass	a variant carrying a Char payload constructs, matches, and binds it
 pass	a variant carrying a RECORD payload constructs and matches
@@ -4244,6 +4243,7 @@ pass	concatenating tuples with a runtime element reads elements from both operan
 pass	concatenating two byte sequences appends their bytes in order
 pass	concatenating two empty lists is the empty list
 pass	concatenating two empty tuples is the empty tuple
+pass	concatenating two large runtime RRB vectors preserves length and every element across the join
 pass	concatenating two runtime strings and measuring the result
 pass	concatenating two tuples appends their elements
 pass	concatenating with the empty list on the left is the identity
@@ -5548,9 +5548,11 @@ todo	a @param slice window whose length exceeds the remaining bytes yields None
 todo	a @param value SEEDS an in-program handler's state
 todo	a @param value crosses into a closure capture and applies
 todo	a @param value drives a CHAMP map lookup as the KEY
+todo	a Bool host arg BESIDE a scalar and a String composes in one mixed-arity op
 todo	a Bytes value SENT to the host is still readable after the call (the arg marshal borrows)
 todo	a Float64 closure captures a Float64 build-time host effect result
 todo	a Float64-inner Qty host result crosses as its float magnitude
+todo	a NOMINAL-Unit-typed host-call statement in a do-body is not spuriously dropped
 todo	a NON-TAIL host call consumes rows on the unwind, deepest frame first
 todo	a Quantity @param generates a Qty-result accessor the host supplies as a scalar magnitude
 todo	a ROPE Bytes arg (recursive concat, uncompacted) crosses the host boundary
@@ -5560,7 +5562,6 @@ todo	a build-time delegated effect whose result a returned closure captures does
 todo	a closed literal closure forwarded through const-wrapper hops is not a false reject
 todo	a closure captures the result of a build-time host op called with an argument
 todo	a closure capturing a build-time host effect preserves the order of two host calls
-pass	a closure that performs a delegated effect cannot cross the host boundary
 todo	a conditional performs only the taken branch's effect — else
 todo	a conditional performs only the taken branch's effect — then
 todo	a constant-try helper that fails feeds the None arm's fallback into resume
@@ -5590,6 +5591,8 @@ todo	a recursion-driven host-call sequence consumes one response row per iterati
 todo	a recursive NEWTYPE traversal recurses on its projected recursive field
 todo	a recursive NEWTYPE-wrapped linked list folds to a scalar
 todo	a run's result is a deterministic function of a host call's recorded response
+todo	a runtime Bool host arg crosses the boundary and drives two response bindings
+todo	a runtime Bytes host-arg BEFORE a scalar arg keeps distinct core slots (no width-clobber)
 todo	a runtime Bytes value crosses a host op boundary as list<u8> (H-bytes-arg)
 todo	a runtime bin match decodes a FINAL constant-size utf8 segment
 todo	a runtime branch selects WHICH host op consumes the first response row
@@ -5597,6 +5600,7 @@ todo	a runtime closure whose body calls a recursive top-level function
 todo	a runtime-DISC `?` inside a stored closure applies per-call once BRICK 3b lands
 todo	a runtime-operand try as a list element declines pending brick 3b
 todo	a unit-result host op consumes its response row so the next value op reads its own (adv-65)
+todo	a value-leaving host-call statement in a do-body runs and its result is dropped (dead-init sibling)
 todo	an @param of a Bool type generates a Bool-typed accessor
 todo	an @param of a Float64 type generates a Float64-typed accessor
 todo	an @param site generates a Param accessor a host delegation reads at run time
