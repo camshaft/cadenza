@@ -2,11 +2,13 @@
 //!
 //! An agent that fetches a URL emits an `Http` effect; the kernel authorizes it (the host is gated by a
 //! SEC-F1 `HostIn` capability — the SSRF/exfil guard), durably dispatches it, this executor performs the
-//! request, and the response body folds back as the result. The effect's `target` is the URL; its
-//! `payload` is a `(http-request (method <name>) (body <opt>))` binary-sexpr (the kernel's
+//! request, and the response folds back as the result. The effect's `target` is the URL; its `payload` is
+//! a `(http-request (method <name>) (headers ((k v)…)) (body <opt>))` binary-sexpr (the kernel's
 //! [`cdz_kernel::event_ast::encode_http_request`] wire convention, §9b): the METHOD is CALLER-SPECIFIED
-//! (never inferred from body presence — a bodyless POST and a DELETE-with-body are both expressible), and
-//! the body is independent of the method. The response body becomes the result payload.
+//! (never inferred from body presence — a bodyless POST and a DELETE-with-body are both expressible), the
+//! request HEADERS are caller-supplied, and the body is independent of the method. The result is a
+//! `(http-response (status)(headers)(body))` binary-sexpr — STATUS + response HEADERS + BODY — so a
+//! reducer can read the status code and response headers, not just the body.
 //!
 //! **Transport seam** (identical shape to [`crate::model`]): the real request touches the network, so
 //! this executor is GENERIC over an [`HttpTransport`]. The executor owns the pure, hermetically-testable
@@ -23,7 +25,7 @@ use crate::retry;
 use bytes::Bytes;
 use cdz_kernel::effect::{effect_ct, EffectRequest, Payload};
 use cdz_kernel::event::EffectOutcome;
-use cdz_kernel::event_ast::decode_http_request;
+use cdz_kernel::event_ast::{decode_http_request, encode_http_response};
 use cdz_kernel::executor::Executor;
 use cdz_kernel::hash::Hash;
 
@@ -46,8 +48,11 @@ pub enum HttpMethod {
 }
 
 impl HttpMethod {
-    /// Map a decoded method name (the kernel returns it lowercase) to the enum. Case-insensitive; an
-    /// unrecognized name is preserved as [`HttpMethod::Other`] (open sum — never rejected here).
+    /// Map a decoded method name to the enum. `decode_http_request` returns the method name AS ENCODED
+    /// (case preserved — the kernel does not normalize case), so this matches CASE-INSENSITIVELY on its
+    /// own `to_ascii_lowercase` (a caller that encoded "GET"/"Get"/"get" all resolve to
+    /// [`HttpMethod::Get`]). An unrecognized name is preserved verbatim (original case) as
+    /// [`HttpMethod::Other`] (open sum — never rejected here).
     pub fn from_name(name: &str) -> Self {
         match name.to_ascii_lowercase().as_str() {
             "get" => HttpMethod::Get,
@@ -83,14 +88,17 @@ impl HttpMethod {
 ///
 /// `method` is the caller-specified [`HttpMethod`] (the transport puts it on the request line — no
 /// inference). `body` is `None` for a bodyless request and `Some(bytes)` for one with a body; the two are
-/// INDEPENDENT (any method may carry or omit a body). The response body is returned as [`Bytes`] (the
-/// hot-path buffer). The `idempotency_key` lets a side-effecting transport dedup a crash-re-driven request
-/// (§16c-S1/D) — relevant for a non-idempotent method.
+/// INDEPENDENT (any method may carry or omit a body). Returns the full [`HttpResponse`] — STATUS +
+/// response HEADERS + BODY, not just the body — so a reducer can branch on the status code (200 vs 404 vs
+/// 500) and read response headers (content-type, …). The `idempotency_key` lets a side-effecting transport
+/// dedup a crash-re-driven request (§16c-S1/D) — relevant for a non-idempotent method.
 ///
 /// **Error classification (supervision, [`crate::retry`]):** an `Err(reason)` MUST lead with a
 /// retryability token — a transient failure (5xx, timeout, connection reset) as
 /// [`crate::retry::retryable`], a permanent one (4xx client error, DNS failure, malformed URL) as
-/// [`crate::retry::permanent`]. Unprefixed reasons are treated PERMANENT (fail-closed).
+/// [`crate::retry::permanent`]. Unprefixed reasons are treated PERMANENT (fail-closed). Note: an `Err` is
+/// a TRANSPORT failure (couldn't complete the request); a completed request with a 4xx/5xx STATUS is an
+/// `Ok(HttpResponse)` carrying that status — the reducer decides what a 404/500 means, not the transport.
 /// `#[async_trait(?Send)]` — a real HTTP request awaits the socket; not `Send` (single-threaded host).
 #[async_trait::async_trait(?Send)]
 pub trait HttpTransport {
@@ -98,9 +106,21 @@ pub trait HttpTransport {
         &self,
         method: HttpMethod,
         url: &str,
+        headers: &[(String, String)],
         body: Option<&[u8]>,
         idempotency_key: Hash,
-    ) -> Result<Bytes, String>;
+    ) -> Result<HttpResponse, String>;
+}
+
+/// A completed HTTP response — the STATUS code, response HEADERS (ordered name/value pairs), and BODY. The
+/// executor encodes this into the effect result as a `(http-response (status)(headers)(body))` binary-sexpr
+/// (the kernel's [`cdz_kernel::event_ast::encode_http_response`] wire convention) so a reducer decodes it
+/// with `decode_http_response` and can read status + headers, not just the body.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct HttpResponse {
+    pub status: u16,
+    pub headers: Vec<(String, String)>,
+    pub body: Bytes,
 }
 
 /// Performs `Http` effects by delegating the request to an [`HttpTransport`]. Single-family: a non-`Http`
@@ -128,38 +148,51 @@ impl<T: HttpTransport> Executor for HttpExecutor<T> {
                 req.content_type.family
             )));
         }
-        // The payload is a `(http-request (method <name>) (body <opt>))` binary-sexpr — decode the
-        // caller-specified method + body (NO body-presence heuristic). A blob-ref payload can't be decoded
-        // (no blob-store handle) and a missing/garbage payload is malformed; both are structural → PERMANENT.
-        let (method, body): (HttpMethod, Option<Vec<u8>>) = match &req.payload {
-            Some(Payload::Inline(bytes)) => match decode_http_request(bytes) {
-                Ok((method_name, body)) => (HttpMethod::from_name(&method_name), body),
-                Err(e) => {
-                    return EffectOutcome::Err(retry::permanent(format!(
-                        "HttpExecutor: malformed http-request payload: {e:?}"
-                    )));
+        // The payload is a `(http-request (method <name>) (headers ((k v)…)) (body <opt>))` binary-sexpr —
+        // decode the caller-specified method + headers + body (NO body-presence heuristic). A blob-ref
+        // payload can't be decoded (no blob-store handle) and a missing/garbage payload is malformed; both
+        // are structural → PERMANENT.
+        let (method, headers, body): (HttpMethod, Vec<(String, String)>, Option<Vec<u8>>) =
+            match &req.payload {
+                Some(Payload::Inline(bytes)) => match decode_http_request(bytes) {
+                    Ok((method_name, headers, body)) => {
+                        (HttpMethod::from_name(&method_name), headers, body)
+                    }
+                    Err(e) => {
+                        return EffectOutcome::Err(retry::permanent(format!(
+                            "HttpExecutor: malformed http-request payload: {e:?}"
+                        )));
+                    }
+                },
+                Some(Payload::Blob(_)) => {
+                    return EffectOutcome::Err(retry::permanent(
+                        "HttpExecutor: blob-ref request payload unsupported — this executor has no blob-store access; inline the http-request",
+                    ));
                 }
-            },
-            Some(Payload::Blob(_)) => {
-                return EffectOutcome::Err(retry::permanent(
-                    "HttpExecutor: blob-ref request payload unsupported — this executor has no blob-store access; inline the http-request",
-                ));
-            }
-            None => {
-                return EffectOutcome::Err(retry::permanent(
-                    "HttpExecutor: an Http effect requires an http-request payload (method + optional body)",
-                ));
-            }
-        };
+                None => {
+                    return EffectOutcome::Err(retry::permanent(
+                        "HttpExecutor: an Http effect requires an http-request payload (method + optional body)",
+                    ));
+                }
+            };
         match self
             .transport
-            .request(method, &req.target, body.as_deref(), idempotency_key)
+            .request(
+                method,
+                &req.target,
+                &headers,
+                body.as_deref(),
+                idempotency_key,
+            )
             .await
         {
-            // The transport's `Bytes` response body moves straight into `Payload::Inline` (ref-counted
-            // `Bytes`) — no copy. The transport's Err reason already carries its retryability token, so
-            // pass it through unchanged.
-            Ok(response) => EffectOutcome::Ok(Some(Payload::Inline(response))),
+            // A completed response — encode its status + headers + body into the result as an
+            // `(http-response …)` binary-sexpr so the reducer reads status/headers, not just the body. A
+            // transport Err (couldn't complete) folds through with its retryability token unchanged.
+            Ok(resp) => {
+                let payload = encode_http_response(resp.status, &resp.headers, &resp.body);
+                EffectOutcome::Ok(Some(Payload::Inline(payload.into())))
+            }
             Err(reason) => EffectOutcome::Err(reason),
         }
     }
@@ -176,14 +209,17 @@ impl<T: HttpTransport> Executor for HttpExecutor<T> {
 mod tests {
     use super::*;
     use cdz_kernel::effect::Timeliness;
-    use cdz_kernel::event_ast::encode_http_request;
+    use cdz_kernel::event_ast::{
+        decode_http_response, encode_http_request, encode_http_request_with_headers,
+    };
 
-    /// A stub transport that asserts the method + body it was asked to perform and returns a canned
-    /// response. It records the exact method the executor decoded + passed through.
+    /// A stub transport: asserts the method/headers/body it was asked to perform, returns a canned
+    /// [`HttpResponse`] (status + headers + body). Records what the executor decoded + passed through.
     struct StubHttp {
         expect_method: HttpMethod,
+        expect_headers: Vec<(String, String)>,
         expect_body: Option<Vec<u8>>,
-        response: Bytes,
+        response: HttpResponse,
     }
     #[async_trait::async_trait(?Send)]
     impl HttpTransport for StubHttp {
@@ -191,17 +227,37 @@ mod tests {
             &self,
             method: HttpMethod,
             url: &str,
+            headers: &[(String, String)],
             body: Option<&[u8]>,
             _key: Hash,
-        ) -> Result<Bytes, String> {
+        ) -> Result<HttpResponse, String> {
             assert_eq!(url, "https://ok.host/x");
-            assert_eq!(method, self.expect_method, "method threaded through verbatim");
+            assert_eq!(
+                method, self.expect_method,
+                "method threaded through verbatim"
+            );
+            assert_eq!(
+                headers,
+                &self.expect_headers[..],
+                "request headers threaded through"
+            );
             assert_eq!(body.map(|b| b.to_vec()), self.expect_body);
-            Ok(self.response.clone()) // Bytes clone = O(1) refcount bump, not a deep copy
+            Ok(self.response.clone())
         }
     }
 
-    /// Build an Http effect whose payload is the `(http-request …)` binary-sexpr the kernel codec writes.
+    fn resp(status: u16, headers: &[(&str, &str)], body: &[u8]) -> HttpResponse {
+        HttpResponse {
+            status,
+            headers: headers
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            body: Bytes::copy_from_slice(body),
+        }
+    }
+
+    /// Build an Http effect (headerless http-request payload — the 2-arg encoder).
     fn http_req(method: &str, body: Option<&[u8]>) -> EffectRequest {
         EffectRequest::new_with_family(
             effect_ct::HTTP,
@@ -211,59 +267,126 @@ mod tests {
         )
     }
 
-    #[tokio::test]
-    async fn a_get_carries_no_body_and_returns_the_response() {
-        let mut exec = HttpExecutor::new(StubHttp {
-            expect_method: HttpMethod::Get,
-            expect_body: None,
-            response: Bytes::from_static(b"response body"),
-        });
-        match exec
-            .perform_async(&http_req("get", None), Hash::of(b"k"))
-            .await
-        {
+    /// Build an Http effect with request headers (the 3-arg encoder).
+    fn http_req_h(method: &str, headers: &[(&str, &str)], body: Option<&[u8]>) -> EffectRequest {
+        let hs: Vec<(String, String)> = headers
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        EffectRequest::new_with_family(
+            effect_ct::HTTP,
+            "https://ok.host/x".to_string(),
+            Some(Payload::Inline(
+                encode_http_request_with_headers(method, &hs, body).into(),
+            )),
+            Timeliness::Interactive,
+        )
+    }
+
+    /// Decode the executor's `(http-response …)` result payload for assertions.
+    fn decode_result(out: EffectOutcome) -> (u16, Vec<(String, String)>, Vec<u8>) {
+        match out {
             EffectOutcome::Ok(Some(Payload::Inline(bytes))) => {
-                assert_eq!(&bytes[..], b"response body")
+                decode_http_response(&bytes).expect("result is a valid http-response")
             }
-            other => panic!("expected Ok(Inline(response)), got {other:?}"),
+            other => panic!("expected Ok(Inline(http-response)), got {other:?}"),
         }
     }
 
     #[tokio::test]
-    async fn the_explicit_method_and_body_thread_through() {
-        // POST with a body: the caller-specified method reaches the transport, body independent of it.
+    async fn a_get_returns_status_headers_and_body() {
+        let mut exec = HttpExecutor::new(StubHttp {
+            expect_method: HttpMethod::Get,
+            expect_headers: vec![],
+            expect_body: None,
+            response: resp(200, &[("content-type", "text/plain")], b"response body"),
+        });
+        let (status, headers, body) = decode_result(
+            exec.perform_async(&http_req("get", None), Hash::of(b"k"))
+                .await,
+        );
+        assert_eq!(status, 200);
+        assert_eq!(
+            headers,
+            vec![("content-type".to_string(), "text/plain".to_string())]
+        );
+        assert_eq!(&body[..], b"response body");
+    }
+
+    #[tokio::test]
+    async fn request_headers_thread_through_to_the_transport() {
+        // Caller-supplied request headers reach the transport (asserted in the stub) + a non-200 status
+        // + response headers come back readable.
         let mut exec = HttpExecutor::new(StubHttp {
             expect_method: HttpMethod::Post,
-            expect_body: Some(b"post this".to_vec()),
-            response: Bytes::from_static(b"ok"),
+            expect_headers: vec![
+                ("authorization".to_string(), "Bearer x".to_string()),
+                ("content-type".to_string(), "application/json".to_string()),
+            ],
+            expect_body: Some(b"{}".to_vec()),
+            response: resp(201, &[("location", "/new/1")], b"created"),
         });
-        match exec
-            .perform_async(&http_req("post", Some(b"post this")), Hash::of(b"k"))
-            .await
-        {
-            EffectOutcome::Ok(Some(Payload::Inline(bytes))) => assert_eq!(&bytes[..], b"ok"),
-            other => panic!("expected Ok, got {other:?}"),
-        }
+        let (status, headers, body) = decode_result(
+            exec.perform_async(
+                &http_req_h(
+                    "post",
+                    &[
+                        ("authorization", "Bearer x"),
+                        ("content-type", "application/json"),
+                    ],
+                    Some(b"{}"),
+                ),
+                Hash::of(b"k"),
+            )
+            .await,
+        );
+        assert_eq!(status, 201);
+        assert_eq!(
+            headers,
+            vec![("location".to_string(), "/new/1".to_string())]
+        );
+        assert_eq!(&body[..], b"created");
+    }
+
+    #[tokio::test]
+    async fn a_reducer_can_read_a_404_status() {
+        // A completed request with a 4xx status is Ok(http-response), NOT Err — the reducer decides.
+        let mut exec = HttpExecutor::new(StubHttp {
+            expect_method: HttpMethod::Get,
+            expect_headers: vec![],
+            expect_body: None,
+            response: resp(404, &[], b"not found"),
+        });
+        let (status, _headers, body) = decode_result(
+            exec.perform_async(&http_req("get", None), Hash::of(b"k"))
+                .await,
+        );
+        assert_eq!(
+            status, 404,
+            "a 404 is a completed response, not a transport error"
+        );
+        assert_eq!(&body[..], b"not found");
     }
 
     #[tokio::test]
     async fn a_bodyless_post_and_a_delete_with_body_are_both_expressible() {
-        // The whole point of the explicit method: the two cases the body-presence heuristic couldn't do.
-        // Bodyless POST:
+        // The point of the explicit method: the two cases the body-presence heuristic couldn't do.
         let mut exec = HttpExecutor::new(StubHttp {
             expect_method: HttpMethod::Post,
+            expect_headers: vec![],
             expect_body: None,
-            response: Bytes::from_static(b"a"),
+            response: resp(200, &[], b"a"),
         });
         assert!(matches!(
-            exec.perform_async(&http_req("post", None), Hash::of(b"k")).await,
+            exec.perform_async(&http_req("post", None), Hash::of(b"k"))
+                .await,
             EffectOutcome::Ok(_)
         ));
-        // DELETE carrying a body:
         let mut exec = HttpExecutor::new(StubHttp {
             expect_method: HttpMethod::Delete,
+            expect_headers: vec![],
             expect_body: Some(b"why".to_vec()),
-            response: Bytes::from_static(b"b"),
+            response: resp(200, &[], b"b"),
         });
         assert!(matches!(
             exec.perform_async(&http_req("delete", Some(b"why")), Hash::of(b"k"))
@@ -274,11 +397,11 @@ mod tests {
 
     #[tokio::test]
     async fn an_unknown_method_survives_verbatim_as_other() {
-        // Open sum: an extension method (PROPFIND) is carried through, not rejected.
         let mut exec = HttpExecutor::new(StubHttp {
             expect_method: HttpMethod::Other("propfind".to_string()),
+            expect_headers: vec![],
             expect_body: None,
-            response: Bytes::from_static(b"x"),
+            response: resp(207, &[], b"x"),
         });
         assert!(matches!(
             exec.perform_async(&http_req("propfind", None), Hash::of(b"k"))
@@ -296,9 +419,10 @@ mod tests {
                 &self,
                 _m: HttpMethod,
                 _u: &str,
+                _h: &[(String, String)],
                 _b: Option<&[u8]>,
                 _k: Hash,
-            ) -> Result<Bytes, String> {
+            ) -> Result<HttpResponse, String> {
                 panic!("transport must not be called for a blob-ref payload");
             }
         }
@@ -331,13 +455,13 @@ mod tests {
                 &self,
                 _m: HttpMethod,
                 _u: &str,
+                _h: &[(String, String)],
                 _b: Option<&[u8]>,
                 _k: Hash,
-            ) -> Result<Bytes, String> {
+            ) -> Result<HttpResponse, String> {
                 panic!("transport must not be called for a malformed request");
             }
         }
-        // No payload → PERMANENT (an Http effect requires an http-request payload).
         let mut exec = HttpExecutor::new(NeverCalled);
         let no_payload = EffectRequest::new_with_family(
             effect_ct::HTTP,
@@ -348,11 +472,14 @@ mod tests {
         match exec.perform_async(&no_payload, Hash::of(b"k")).await {
             EffectOutcome::Err(msg) => {
                 assert!(msg.contains("http-request payload"), "{msg}");
-                assert_eq!(retry::classify(&msg), retry::Retryability::Permanent, "{msg}");
+                assert_eq!(
+                    retry::classify(&msg),
+                    retry::Retryability::Permanent,
+                    "{msg}"
+                );
             }
             other => panic!("expected Err for a missing payload, got {other:?}"),
         }
-        // Garbage (non-http-request) inline payload → PERMANENT (malformed), never a panic (decode is total).
         let mut exec = HttpExecutor::new(NeverCalled);
         let garbage = EffectRequest::new_with_family(
             effect_ct::HTTP,
@@ -363,7 +490,11 @@ mod tests {
         match exec.perform_async(&garbage, Hash::of(b"k")).await {
             EffectOutcome::Err(msg) => {
                 assert!(msg.contains("malformed"), "{msg}");
-                assert_eq!(retry::classify(&msg), retry::Retryability::Permanent, "{msg}");
+                assert_eq!(
+                    retry::classify(&msg),
+                    retry::Retryability::Permanent,
+                    "{msg}"
+                );
             }
             other => panic!("expected Err for a garbage payload, got {other:?}"),
         }
@@ -371,8 +502,6 @@ mod tests {
 
     #[tokio::test]
     async fn a_transient_transport_failure_stays_retryable_through_the_executor() {
-        // A transient transport failure (connection reset) carries RETRYABLE; the executor passes it
-        // through, so it reaches the supervisor still classified retryable.
         struct FlakyHttp;
         #[async_trait::async_trait(?Send)]
         impl HttpTransport for FlakyHttp {
@@ -380,9 +509,10 @@ mod tests {
                 &self,
                 _m: HttpMethod,
                 _u: &str,
+                _h: &[(String, String)],
                 _b: Option<&[u8]>,
                 _k: Hash,
-            ) -> Result<Bytes, String> {
+            ) -> Result<HttpResponse, String> {
                 Err(retry::retryable("connection refused"))
             }
         }
@@ -412,9 +542,10 @@ mod tests {
                 &self,
                 _m: HttpMethod,
                 _u: &str,
+                _h: &[(String, String)],
                 _b: Option<&[u8]>,
                 _k: Hash,
-            ) -> Result<Bytes, String> {
+            ) -> Result<HttpResponse, String> {
                 panic!("transport must not be called for a non-http-family effect");
             }
         }
@@ -443,11 +574,11 @@ mod tests {
 
     #[test]
     fn handles_only_the_http_family() {
-        // Bare-leaf mechanism dimension: serves Http, nothing else (the trait default false otherwise).
         let exec = HttpExecutor::new(StubHttp {
             expect_method: HttpMethod::Get,
+            expect_headers: vec![],
             expect_body: None,
-            response: Bytes::from_static(b""),
+            response: resp(200, &[], b""),
         });
         assert!(exec.handles_family(effect_ct::HTTP));
         assert!(!exec.handles_family(effect_ct::NOW));

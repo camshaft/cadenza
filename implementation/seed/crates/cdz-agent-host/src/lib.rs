@@ -49,7 +49,7 @@ pub mod status;
 pub use async_host::{AsyncAgentHost, Inbound, Inbox};
 pub use clock::ClockExecutor;
 pub use host::{AgentHost, HostedSession, SessionId};
-pub use http::{HttpExecutor, HttpMethod, HttpTransport};
+pub use http::{HttpExecutor, HttpMethod, HttpResponse, HttpTransport};
 pub use model::{ModelExecutor, ModelTransport};
 pub use retry::{classify, permanent, retryable, Retryability};
 pub use status::{host_session_status_json, session_status_json, DEFAULT_STALL_AFTER_MS};

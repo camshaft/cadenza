@@ -22,7 +22,8 @@ mod common;
 
 use bytes::Bytes;
 use cdz_agent_host::{
-    ClockExecutor, HttpExecutor, HttpMethod, HttpTransport, ModelExecutor, ModelTransport,
+    ClockExecutor, HttpExecutor, HttpMethod, HttpResponse, HttpTransport, ModelExecutor,
+    ModelTransport,
 };
 use cdz_kernel::effect::{effect_ct, project_manifest, GrantState};
 use cdz_kernel::executor::CompositeExecutor;
@@ -41,9 +42,10 @@ impl HttpTransport for UnusedHttp {
         &self,
         _method: HttpMethod,
         _url: &str,
+        _headers: &[(String, String)],
         _body: Option<&[u8]>,
         _key: Hash,
-    ) -> Result<Bytes, String> {
+    ) -> Result<HttpResponse, String> {
         unreachable!("manifest projection probes policy; it never performs an effect")
     }
 }
