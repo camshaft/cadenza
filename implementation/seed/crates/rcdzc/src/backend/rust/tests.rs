@@ -7471,6 +7471,30 @@ fn rustc_host_call_bool_arg_marshals_to_i64() {
 }
 
 #[test]
+fn rustc_closure_that_escapes_an_effect_rejects_cdz0406_not_a_broken_emit() {
+    // A closure whose body performs a DELEGATED effect and CROSSES the host boundary must be REJECTED
+    // (CDZ0406 — "closures escaping effects are not supported"): the closure's handler context does not
+    // travel with it, so the effect has no home when the host later invokes it. The wasm backend enforces
+    // this (backend/wasm/mod.rs); the rust backend previously had NO such guard, so it tried to EMIT the
+    // escaping-effect closure and produced un-compilable Rust (an unresolved host-shim call → E0061),
+    // graded `todo` while wasm rejected — a cross-backend diagnostic differential. The rust emit now scans
+    // the reached AND eta-peeled lifted bodies for a host import and rejects with the SAME code + message.
+    // Here `(def (main) (host (ask) (fn (x) (+ x (ask.ask)))))` peels `main` to `fn main(x)` whose body
+    // performs `ask.ask` — the peeled-export case the first (lifted-only) scan missed.
+    let src = "(module m (effect ask (op ask (-> Unit Int64))) \
+        (def (main) (host (ask) (fn ((: x Int64)) (+ x (ask.ask))))) (export main))";
+    let err = try_compile_rust(src).expect_err(
+        "a closure escaping an effect must REJECT on rust (CDZ0406), not emit broken Rust",
+    );
+    assert!(
+        err.iter().any(
+            |d| d.contains("closures escaping effects are not supported") && d.contains("ask.ask")
+        ),
+        "the rust reject must name the escaping effect + the unsupported feature (CDZ0406):\n{err:?}"
+    );
+}
+
+#[test]
 fn rustc_host_call_float_result_reads_the_shim_f64() {
     // H4 host-call emit: a delegated FLOAT-result host op (`Param.ratio -> Unit Float64`, from an
     // `@param(widget: slider) ratio : Float64`) emits `(crate::__cdz_host_<key>() as f64)` — the runner's

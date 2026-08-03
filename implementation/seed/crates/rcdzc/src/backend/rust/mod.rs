@@ -579,6 +579,47 @@ pub fn emit(db: &mut Db, layout: &Layout, mode: Mode) -> Result<Vec<u8>, Reject>
         out.push('\n');
         out.push_str(&f);
     }
+    // REJECT a closure escaping an effect (CDZ0406) — the SAME rule the wasm backend enforces
+    // (`backend/wasm/mod.rs`): a lifted-lambda body that performs a host effect carries that effect OUT to
+    // the host, to be run when the host later invokes the closure — outside the delegation's dynamic extent,
+    // where the effect has no home. A closure's handler context does not travel with it across the boundary.
+    // The RUST backend previously had NO such guard, so it tried to EMIT the escaping-effect closure and
+    // produced un-compilable Rust (an unresolved host-shim call → E0061) — graded `todo` (BadArtifact) while
+    // wasm rejected CDZ0406 (a cross-backend diagnostic differential). Scan the reached lifted bodies for a
+    // host import and reject with the same code + message, so both backends agree. (A fully intra-program-
+    // HANDLED effect leaves no `Core::HostCall` in the lifted body and is NOT caught here — only an escaping
+    // one is.) Placed before the lifted-lambda emit so the reject fires instead of the broken emit.
+    {
+        let mut escaping = Vec::new();
+        for k in 0..layout.lifted.len() {
+            // Scan a lifted body when it is REACHED (a `Core::Closure` builds it) OR ETA-PEELED into an
+            // export (`peeled_codes`): a peeled closure's body IS emitted as the export's `pub fn`, and if
+            // that body performs an effect the closure still escapes it to the host — the exact case here
+            // (`(def (main) (host (ask) (fn (x) (+ x (ask.ask)))))` peels `main` to `fn main(x)` whose body
+            // performs `ask.ask`). Scanning ONLY the non-peeled reached slots (the earlier bug) missed the
+            // peeled export, so the reject didn't fire and the broken emit slipped through.
+            let peeled = peeled_codes.contains(&k);
+            let reached = layout.lifted_reached.get(k).copied().unwrap_or(false);
+            if peeled || reached {
+                crate::backend::wasm::host::collect_host_imports(
+                    db,
+                    layout.lifted[k].body,
+                    &mut escaping,
+                );
+            }
+        }
+        if let Some(h) = escaping.first() {
+            return Err(Reject::coded(
+                crate::diag::Code::ClosureEscapesEffect,
+                format!(
+                    "a closure that performs an effect ({}.{}) cannot cross the host boundary — the \
+                     closure's handler context does not travel with it, so the effect would have no home \
+                     when the host invokes it (closures escaping effects are not supported)",
+                    h.effect, h.op
+                ),
+            ));
+        }
+    }
     // Each REACHED lambda-lifted closure (`layout.lifted[k]`, reached by a `Core::Closure` in some body)
     // becomes a private `fn __lifted_{k}(<captures…>, <params…>) -> <ret>` — the closure VALUE a
     // `Core::Closure` builds calls into it. An UNREACHED slot is skipped (no `Core::Closure` names it, so
