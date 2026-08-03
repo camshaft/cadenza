@@ -392,6 +392,7 @@ pass	TWO match inits in one let SEQUENCE - the second scrutinizes the first's bi
 pass	TWO performs in an if condition both fold on the strict-first spine
 pass	TWO prefix scalars then a Tuple then a suffix scalar cross the direct-call boundary
 pass	TWO sequential inner handles seed from the outer's ADVANCING state
+pass	TWO sibling inner handlers observe through ONE outer counter
 pass	TWO stacked @ensures COMPOSE: BOTH postconditions are enforced — value-transparent when both hold
 pass	TWO stacked @ensures: a violated INNER postcondition traps even when the OUTER holds
 pass	TWO-SUM finds a complement pair via a seen-set built during one walk
@@ -1468,6 +1469,7 @@ pass	a dependent-size segment binds exactly the number of bytes an earlier segme
 pass	a dependent-size segment that overruns the remaining bytes falls through
 pass	a dependent-size utf8 segment decodes a length-prefixed string
 pass	a depth-3 erased-and-boxed nested-sum match reads every level's discriminant at the right offset
+pass	a depth-3 transitive arm-perform cascade threads the innermost state end to end
 pass	a derived dimension composes across a def boundary through annotated Qty parameters
 pass	a derived-unit type annotation in INPUT position round-trips and the param computes
 pass	a destructuring let over a runtime value binds its parts
@@ -3816,6 +3818,7 @@ pass	an argument swap weaves with perform results through a recursive handler bo
 pass	an arithmetic operator with a single operand is rejected, not a crash
 pass	an arm binder SHADOWS an outer heap list and the outer survives the shadow's scope
 pass	an arm chooses its resume value by an if on the handler state
+pass	an arm performs the outer effect TWICE and the results feed the resume value
 pass	an arm re-performing its own effect with no outer handler has no home
 pass	an arm resuming with a re-perform of its OWN effect forwards to an outer handler of that effect
 pass	an arm that binds its resume in a lambda and applies it immediately folds
