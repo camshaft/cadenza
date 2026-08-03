@@ -819,6 +819,26 @@
                 (outer))) (export main)))
   (output (: 20 Int64)))
 
+(case "an inner handle of the SAME delegated effect discharges in-program inside the host block"
+  (doc    "The SHADOW face beside the interpose-and-forward pin: the entrypoint delegates `A`, and INSIDE
+           the host block an inner `(handle A 500 …)` re-binds the same effect — the inner perform
+           discharges IN-PROGRAM (reads the handler seed 500), while the OUTER perform (outside the
+           handle) still delegates to the host (7). Exactly ONE host call. A routing that let the inner
+           perform escape to the host would consume a second (unsupplied) response; one that captured the
+           outer perform into the handler would read 500 twice. 7 + 500 = 507. (rust-async: todo until
+           its host+handle composition lands; wasm + rust pin the pass.)")
+  (input  (do
+            (effect A (op get (-> Unit Int64)))
+            (def (main (: k Int64))
+              (host (A)
+                (+ (A.get unit)
+                   (handle A 500 ((get (_u) s (resume s s)))
+                     (A.get unit)))))
+            (export main)))
+  (host-responses (respond a.get (: 7 Int64)))
+  (host-calls (call a.get))
+  (call   main (: 0 Int64)) (output (: 507 Int64)))
+
 (case "a delegated effect performed inside an intra-program handler"
   (doc    "Witnesses the composition of the two routings (capabilities-and-effects.md
            #A Run Is A Deterministic Function Of Its Input And Responses with #An Effect That Does Not

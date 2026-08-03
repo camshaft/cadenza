@@ -1849,6 +1849,26 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 22117 Int64)))
 
+(case "pushing through ONE alias of a doubly-held list leaves the sibling field intact"
+  (doc    "The same-value-in-BOTH-FIELDS consume face: `(Mk xs xs)` holds ONE list in two payload slots
+           (refcount 2 on one heap value). `consume-left` destructures and List.pushes through field a —
+           the persistent push must copy-on-write, NOT mutate the shared cell: the grown copy is len 2
+           and carries the 99, while field b still reads len 1. 2 + 10·1 + 100·99 = 9912. A Perceus reuse
+           that saw field a as uniquely owned (missing the sibling's dup at construction) would grow both.")
+  (input  (do
+            (type Pair (Mk (List Int64) (List Int64)))
+            (def (consume-left (: p Pair))
+              (match p ((Mk a _b) (List.push a 99))))
+            (def (main (: k Int64))
+              (let ((xs (list k)))
+                (let ((p (Mk xs xs)))
+                  (let ((grown (consume-left p)))
+                    (+ (List.len grown)
+                       (+ (* 10 (match p ((Mk _a b) (List.len b))))
+                          (* 100 (match (List.at grown 1) ((Some v) v) ((None _u) -1)))))))))
+            (export main)))
+  (call   main (: 7 Int64)) (output (: 9912 Int64)))
+
 (case "a list PROJECTED from a shared aggregate, consumed then read, is unchanged (persistence via the child)"
   (doc    "The PROJECTION face of the still-live-binding family: the shared value is not the let-binding
            itself but a nested-compound PROJECTION of it. `t = (build …) : (Tuple (List Int64) Int64)` with

@@ -2787,6 +2787,42 @@
 ; path landed for the scalar case generalizes to a heap payload with an accessor-shaped invariant — no invalid
 ; NonEmptyList is ever built. (The value is used in-body, not exported: a `(List …)` has no boundary rep.)
 
+(case "an @invariant newtype REBUILT through a chain of constructor calls re-establishes each time"
+  (doc    "The LIFECYCLE face of the NonEmptyList establish pin (which constructs once): `grow` unwraps
+           and RECONSTRUCTS via `NEList.Mk` per step, so a chain of two grows runs the checked constructor
+           THREE times total (base + 2) — each rebuild re-establishes the invariant, and the persistent
+           base still reads its original length after. 3 + 10·1 = 13. A divert that checked only the
+           first-ever construction of the type would let a later rebuild skip the check.")
+  (input  (do
+            (@ (invariant (< 0 (List.len self))) (type NEList (Mk (List Int64))))
+            (def (grow (: ne NEList) (: v Int64))
+              (match ne (((. NEList Mk) xs) (NEList.Mk (List.push xs v)))))
+            (def (main (: k Int64))
+              (let ((base (NEList.Mk (list k))))
+                (let ((grown (grow (grow base 10) 20)))
+                  (match grown (((. NEList Mk) xs) (+ (List.len xs)
+                    (* 10 (match base (((. NEList Mk) b) (List.len b))))))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 13 Int64)))
+
+(case "shrinking an @invariant newtype to EMPTY traps at the rebuild — the invariant catches the crossing"
+  (doc    "The CROSSING face: a LEGAL one-element NEList is made illegal by an operation — `drop-first`
+           rebuilds with the tail, and for a singleton the tail is EMPTY, violating `(< 0 (List.len
+           self))`. The trap fires AT the rebuild constructor (where the illegal value would be born),
+           not later at a read — establish is per-construction, so an op that crosses the invariant
+           cannot hand out the broken value. The 2→1 shrink of the same op constructs fine (still
+           non-empty); only the 1→0 crossing traps.")
+  (input  (do
+            (@ (invariant (< 0 (List.len self))) (type NEList (Mk (List Int64))))
+            (def (drop-first (: ne NEList))
+              (match ne (((. NEList Mk) xs)
+                (NEList.Mk (match xs ((list _h .. t) t) (_ (list)))))))
+            (def (main (: k Int64))
+              (let ((one (NEList.Mk (list k))))
+                (match (drop-first one) (((. NEList Mk) xs) (List.len xs)))))
+            (export main)))
+  (call   main (: 5 Int64)) (trap "unreachable"))
+
 (case "@invariant ESTABLISH (divert) over a heap payload: a NonEmptyList newtype traps on the empty list, constructs a non-empty one (design §10.1/§10.2, (D))"
   (doc    "The establish divert is general over the payload KIND — here a HEAP `(List Int64)`, the design's
            `NonEmptyList`. `NEList = Mk (List Int64)` carries `@invariant(< 0 (List.len it))`. `mkfrom` builds
