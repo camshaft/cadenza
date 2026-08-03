@@ -862,6 +862,57 @@ async fn session_recover_is_the_one_call_recovery_entry_point() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn session_recover_from_is_backend_agnostic_no_file_needed() {
+    // The generic recovery core (operator directive "the log should be generic"): Session::recover_from
+    // takes an already-read `Recovered` from ANY backend — here a hand-built one, NO file involved — and
+    // reconstructs the session + report identically to the file path. This is what a network/replicated
+    // log backend calls after reading its own bytes; the kernel core carries no file assumption.
+    use cdz_kernel::kernel::{RecoverError, RecoveryReport};
+    use cdz_kernel::log_store::{Recovered, RecoveryKind};
+
+    let reducer = TwoStepReducer;
+
+    // An empty recovery (no events) is EmptyLog regardless of backend — same contract as the file path.
+    let empty = Recovered {
+        events: Vec::new(),
+        kind: RecoveryKind::Clean,
+        good_prefix_len: 0,
+    };
+    assert!(matches!(
+        Session::recover_from(empty, &reducer).await,
+        Err(RecoverError::EmptyLog)
+    ));
+
+    // Produce a real event prefix WITHOUT touching disk: run a session in memory, take its log, and wrap
+    // it in a `Recovered` as a non-file backend would after reading its stream.
+    let mut exec = RecordingExecutor::new();
+    let mut session = Session::genesis(Hash::of(b"two-step-v1"));
+    session
+        .deliver_async(inbound_go(), None, &reducer, &http_cap(), &mut exec)
+        .await
+        .unwrap();
+    let full_log = session.log().to_vec();
+    let first_dispatch_idx = full_log
+        .iter()
+        .position(|e| matches!(e.body, EventBody::Dispatched { .. }))
+        .unwrap();
+    let recovered = Recovered {
+        events: full_log[..=first_dispatch_idx].to_vec(),
+        kind: RecoveryKind::Clean,
+        good_prefix_len: 0, // the fold-and-report core doesn't consult this; it's a heal hint for the backend
+    };
+
+    let (restored, report): (Session, RecoveryReport) = Session::recover_from(recovered, &reducer)
+        .await
+        .expect("recover_from a hand-built (non-file) Recovered");
+    // Identical reconstruction to the file path (session_recover_is_the_one_call_recovery_entry_point).
+    assert_eq!(restored.kv().get(b"phase"), Some(&b"fetching"[..]));
+    assert_eq!(report.kind, RecoveryKind::Clean);
+    assert_eq!(report.open_effects.len(), 1);
+    assert_eq!(report.open_effects, restored.open_effect_ids());
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn session_recover_surfaces_corruption_to_the_caller() {
     // PR#993 #1 (substantive): the corrupt state must reach the PUBLIC Session::recover caller — the
     // whole point of detecting it. Persist a good genesis then a complete-but-invalid frame; recover
