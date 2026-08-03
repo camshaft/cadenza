@@ -2180,6 +2180,7 @@ pass	a multi-level RRB list persistently updates deep interior-level indices lea
 pass	a multi-limb BigInt leaf in a tuple orders by the high limb and ties fall to the next field
 pass	a multi-limb modulo keeps the truncating dividend-sign convention across the limb boundary
 pass	a multi-parameter closure keeps its captured environment distinct from its arguments
+pass	a multi-parameter user generic UNDER-applied in an annotation is rejected
 pass	a multi-payload destructure binds the head and recurses on the tail
 pass	a multi-payload nested same-sum match falls through when the nested variant differs
 pass	a multi-payload pattern of the wrong arity is a malformed destructure
@@ -2208,6 +2209,7 @@ pass	a mutual walk where BOTH partners perform threads one shared counter across
 pass	a mutually tail-recursive even/odd over a large runtime count iterates in constant stack
 pass	a mutually-recursive AST walker reads a node's child list without corrupting a sibling head-read
 pass	a mutually-recursive check/check-if returning a Result compiles and runs (if-cond is a call)
+pass	a mutually-recursive decoder returns a heap value and cursor and its heap slot is dispatched
 pass	a mutually-recursive fold matching a rebuilt list with a payload binder builds and computes
 pass	a mutually-recursive fresh-id walk assigns a fresh id at each node and sums them
 pass	a mutually-recursive generic group is instantiated per type
@@ -3587,6 +3589,7 @@ pass	a user SUM leaf inside a tuple key discriminates hits by variant AND payloa
 pass	a user function may be named quote — its signature is a binding form, not a quote
 pass	a user generic NESTED as the type argument of a built-in generic resolves in an annotation
 pass	a user generic NESTED as the type argument of another user generic resolves in an annotation
+pass	a user generic sum OVER-applied with too many type arguments in an annotation is rejected
 pass	a user generic sum named BARE (unapplied) in an annotation needs a type argument
 pass	a user sum NAMED `Box` wrapping a recursive type does not collide with the heap pointer
 pass	a user sum NAMED after a prelude sum shadows it without a duplicate definition
@@ -5672,7 +5675,6 @@ todo	Set.of over runtime lists at two different element types declines pending t
 todo	Type is a first-class value
 todo	a closed literal closure forwarded through const-wrapper hops is not a false reject
 todo	a constant-try helper that fails feeds the None arm's fallback into resume
-pass	a mutually-recursive decoder returns a heap value and cursor and its heap slot is dispatched
 todo	a recursive NEWTYPE traversal recurses on its projected recursive field
 todo	a recursive NEWTYPE-wrapped linked list folds to a scalar
 todo	a runtime bin match decodes a FINAL constant-size utf8 segment

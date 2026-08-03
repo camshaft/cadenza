@@ -266,6 +266,32 @@
   (call   main (: 6 Int64))
   (output (: 6 Int64)))
 
+; The resolve faces above pin CORRECT-arity user-generic applications. The WRONG-arity user-generic
+; applications must reject CDZ0203 with the true arity — exactly as a built-in generic does — now that a
+; user generic resolves by name (#1683): over-supplied (a 1-param generic given 2 args) and under-supplied
+; (a 2-param generic given 1). Distinct from the MONOMORPHIC over-application above (`(T Int64)`, which
+; takes ZERO params): here the ctor IS generic but the arg COUNT is wrong. The two faces below pin the
+; user-generic arity check agrees with the built-in's and doesn't panic or silently accept.
+
+(case "a user generic sum OVER-applied with too many type arguments in an annotation is rejected"
+  (doc    "`(: x (Box Int64 Bool))` applies the one-parameter user generic `(type (Box a) (Mk a))` to TWO
+           type arguments — over-supplied. Now that a user generic resolves by name in a type position
+           (#1683), its arity check must fire like a built-in's: `(Option Int64 Bool)` rejects CDZ0203, and
+           so must `(Box Int64 Bool)` (naming `Box`'s true arity of 1). Pins the over-supplied user-generic
+           face — the ctor is genuinely generic (unlike the monomorphic `(T Int64)` above) but given the
+           wrong COUNT; must reject, not truncate the extra arg or panic.")
+  (input  (do (type (Box a) (Mk a)) (def (f (: x (Box Int64 Bool))) 0) (def (main) 0) (export main)))
+  (error  CDZ0203))
+
+(case "a multi-parameter user generic UNDER-applied in an annotation is rejected"
+  (doc    "`(: x (Pair Int64))` applies the two-parameter user generic `(type (Pair a b) (Both a b))` to only
+           ONE type argument — under-supplied. The arity check must reject CDZ0203 naming `Pair`'s true arity
+           of 2 (the under-supplied companion of the over-supplied `Box` case, and the wrong-COUNT companion
+           of the correct-arity `(Pair Int64 Bool)` resolve case above). Pins that a partially-applied user
+           generic in an annotation is a coded reject, not a silently-accepted or defaulted instantiation.")
+  (input  (do (type (Pair a b) (Both a b)) (def (f (: x (Pair Int64))) 0) (def (main) 0) (export main)))
+  (error  CDZ0203))
+
 ; The two cases above over-apply a NON-generic type to a TYPE argument (arity is wrong). The dual slip
 ; is a legitimately GENERIC type constructor — one that DOES take a type parameter — applied to a VALUE
 ; where a type belongs: `(Option 5)`, `(List 5)`. Here the arity is right (Option/List take one
