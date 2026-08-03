@@ -8552,3 +8552,20 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 7 Int64))
   (call   main (: 2 Int64)) (output (: -1 Int64)))
+
+(case "a telescoping Rational fold over 20 recursive steps equals the closed form exactly"
+  (doc    "Exact arithmetic under RECURSION (the Rational pins are const-driver + single-op): the
+           telescoping sum Σ 1/(k(k+1)) for k=1..n folds recursively — twenty normalize-at-construction
+           cycles composing — and must equal `n/(n+1)` EXACTLY by Rational `=` at two regimes. A binary
+           float accumulator diverges from the closed form; an accumulator that skipped normalization
+           (or leaked gcd state across folds) fails the equality even when each single step is right.
+           The property CAD-style geometry rests on: derived exact values compare exactly.")
+  (input  (do
+            (def (tele (: k Int64) (: n Int64) (: acc Rational))
+              (if (> k n) acc
+                  (tele (+ k 1) n (+ acc (Rational.of 1 (* k (+ k 1)))))))
+            (def (main (: n Int64))
+              (if (= (tele 1 n (Rational.of 0 1)) (Rational.of n (+ n 1))) 1 0))
+            (export main)))
+  (call   main (: 20 Int64)) (output (: 1 Int64))
+  (call   main (: 7 Int64)) (output (: 1 Int64)))

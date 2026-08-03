@@ -3370,6 +3370,7 @@ pass	a task-facing `sleep` wrapper performs Sim.sleep — the surface a simulati
 pass	a tautology comparison against a masked value's derived range still traps on the operand
 pass	a tautology comparison against the type minimum still traps on a div-by-zero operand
 pass	a tautology comparison still folds when its operand cannot trap
+pass	a telescoping Rational fold over 20 recursive steps equals the closed form exactly
 pass	a template EXPANSION is a CHAMP Map key found by its directly-woven twin
 pass	a third-generation overwrite path-copies away from both ancestors and all three read true
 pass	a threaded String param consumed as the right concat operand survives the loop
