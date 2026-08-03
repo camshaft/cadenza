@@ -834,4 +834,77 @@ mod tests {
         assert_eq!(effect_ct::probe_target(effect_ct::MODEL), "");
         assert_eq!(effect_ct::probe_target("some-extension-family"), "");
     }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn manifest_over_all_with_a_realistic_mixed_grant_and_the_real_probe_defaults() {
+        // End-to-end: the WHOLE canonical set, the REAL CompositeExecutor mechanism source, the REAL
+        // effect_ct::probe_target defaults, and a realistic MIXED grant — the integration behavior a host
+        // gets. Grants: http scoped to the probe host (reads Granted at the default probe), now broad
+        // (Granted), model scoped to a specific id (Denied at the "" default — honest), shell/timer/emit no
+        // executor (Absent). Proves the http probe default ("https://probe.invalid/") distinguishes a
+        // matching HostIn grant (Granted) from the empty/absent cases, not just Any grants.
+        use crate::authz::Authorizer;
+        use crate::executor::{CompositeExecutor, RecordingExecutor};
+
+        // Host serves http + now + model; NOT shell/timer/emit.
+        let exec = CompositeExecutor::new()
+            .with(EffectKind::Http, Box::new(RecordingExecutor::new()))
+            .with(EffectKind::Now, Box::new(RecordingExecutor::new()))
+            .with(EffectKind::Model, Box::new(RecordingExecutor::new()));
+        let authz = Authorizer::new(vec![
+            // http granted exactly at the default probe host → Granted at the real probe target.
+            Capability {
+                kind: EffectKind::Http,
+                predicate: ResourcePredicate::HostIn(vec!["probe.invalid".into()]),
+            },
+            // now broad → Granted.
+            Capability {
+                kind: EffectKind::Now,
+                predicate: ResourcePredicate::Any,
+            },
+            // model scoped to a specific id → Denied at the "" default probe (honest; override to read it).
+            Capability {
+                kind: EffectKind::Model,
+                predicate: ResourcePredicate::Exact("claude-x".into()),
+            },
+        ]);
+
+        let m = project_manifest(
+            effect_ct::ALL,
+            |f| exec.handles_family(f),
+            &authz,
+            effect_ct::probe_target,
+        )
+        .await;
+        let g = |fam: &str| {
+            m.entries
+                .iter()
+                .find(|e| e.family == fam)
+                .unwrap()
+                .grant
+                .clone()
+        };
+        assert_eq!(
+            g(effect_ct::HTTP),
+            GrantState::Granted,
+            "http: HostIn matches the probe host"
+        );
+        assert_eq!(g(effect_ct::NOW), GrantState::Granted, "now: broad grant");
+        assert_eq!(
+            g(effect_ct::MODEL),
+            GrantState::Denied,
+            "model: scoped, denied at the \"\" probe"
+        );
+        assert_eq!(
+            g(effect_ct::SHELL),
+            GrantState::Absent,
+            "shell: no executor"
+        );
+        assert_eq!(
+            g(effect_ct::TIMER),
+            GrantState::Absent,
+            "timer: no executor"
+        );
+        assert_eq!(g(effect_ct::EMIT), GrantState::Absent, "emit: no executor");
+    }
 }
