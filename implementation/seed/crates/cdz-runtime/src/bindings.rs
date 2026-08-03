@@ -3,6 +3,64 @@
 //   * runtime_path: "wit_bindgen_rt"
 #[rustfmt::skip]
 #[allow(dead_code, clippy::all)]
+pub mod cadenza {
+    pub mod nfc {
+        #[allow(dead_code, async_fn_in_trait, unused_imports, clippy::all)]
+        pub mod normalize {
+            #[used]
+            #[doc(hidden)]
+            static __FORCE_SECTION_REF: fn() = super::super::super::__link_custom_section_describing_imports;
+            use super::super::super::_rt;
+            #[allow(unused_unsafe, clippy::all)]
+            /// Normalize a UTF-8 byte sequence to Unicode Normalization Form C. INPUT is assumed well-formed UTF-8
+            /// (the compiler only emits this at String-typed sites, whose bytes are already valid UTF-8 — a String
+            /// leaf is well-formed by construction, and NFC of well-formed UTF-8 is well-formed UTF-8). Idempotent
+            /// (nfc(nfc(x)) == nfc(x)); total (no trap — the emit guarantees valid UTF-8 in, so there is no
+            /// error arm; if a future caller could pass unvalidated bytes, this would become
+            /// `result<list<u8>, _>`). A pure value function: no host state, no capability, same shape as a
+            /// value-heap runtime import (component-abi.md).
+            pub fn nfc(utf8: &[u8]) -> _rt::Vec<u8> {
+                unsafe {
+                    #[cfg_attr(target_pointer_width = "64", repr(align(8)))]
+                    #[cfg_attr(target_pointer_width = "32", repr(align(4)))]
+                    struct RetArea(
+                        [::core::mem::MaybeUninit<
+                            u8,
+                        >; 2 * ::core::mem::size_of::<*const u8>()],
+                    );
+                    let mut ret_area = RetArea(
+                        [::core::mem::MaybeUninit::uninit(); 2
+                            * ::core::mem::size_of::<*const u8>()],
+                    );
+                    let vec0 = utf8;
+                    let ptr0 = vec0.as_ptr().cast::<u8>();
+                    let len0 = vec0.len();
+                    let ptr1 = ret_area.0.as_mut_ptr().cast::<u8>();
+                    #[cfg(target_arch = "wasm32")]
+                    #[link(wasm_import_module = "cadenza:nfc/normalize")]
+                    unsafe extern "C" {
+                        #[link_name = "nfc"]
+                        fn wit_import2(_: *mut u8, _: usize, _: *mut u8);
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    unsafe extern "C" fn wit_import2(_: *mut u8, _: usize, _: *mut u8) {
+                        unreachable!()
+                    }
+                    unsafe { wit_import2(ptr0.cast_mut(), len0, ptr1) };
+                    let l3 = *ptr1.add(0).cast::<*mut u8>();
+                    let l4 = *ptr1
+                        .add(::core::mem::size_of::<*const u8>())
+                        .cast::<usize>();
+                    let len5 = l4;
+                    let result6 = _rt::Vec::from_raw_parts(l3.cast(), len5, len5);
+                    result6
+                }
+            }
+        }
+    }
+}
+#[rustfmt::skip]
+#[allow(dead_code, clippy::all)]
 pub mod exports {
     pub mod cadenza {
         pub mod runtime {
@@ -833,6 +891,15 @@ pub mod exports {
                         false => 0,
                     }
                 }
+                #[doc(hidden)]
+                #[allow(non_snake_case)]
+                pub unsafe fn _export_str_nfc_normalize_cabi<T: Guest>(
+                    arg0: i32,
+                ) -> i32 {
+                    #[cfg(target_arch = "wasm32")] _rt::run_ctors_once();
+                    let result0 = T::str_nfc_normalize(arg0 as u32);
+                    _rt::as_i32(result0)
+                }
                 pub trait Guest {
                     /// ── Scalar leaves (indices 0–5). Box a primitive, read it back. No type tag: `get-*` is only
                     ///    ever called where the compiler's static type already says which primitive this handle
@@ -1302,6 +1369,22 @@ pub mod exports {
                     ///    constant). Consistent with `value-cmp`: `value-eq-shaped == true` iff `value-cmp == 0` for an orderable
                     ///    type. APPENDED last (frozen-contract rule). See `value_eq_shaped`.
                     fn value_eq_shaped(a: u32, b: u32, desc: u32) -> bool;
+                    /// 88 — descriptor-guided structural equality (borrows a+b)
+                    ///  str-nfc-normalize(s) -> handle
+                    ///    Normalize a runtime String value `s` to Unicode Normalization Form C (FINDING#23). A String is a
+                    ///    UTF-8 byte leaf (possibly a rope): this flattens it, normalizes the bytes to NFC, and returns a FRESH
+                    ///    OWNED flat String leaf whose contents are the NFC form. The compiler emits this at String-typed
+                    ///    CONSTRUCTION sites whose bytes may be decomposed-but-not-NFC — `String.concat` result, String
+                    ///    champ-key construction, symbol-intern — so length / equality / hashing agree on NORMALIZED contents
+                    ///    (collections-and-text.md #A String's Length Counts Its Normalized Contents / equality-on-normalized-
+                    ///    contents). NOT emitted on the `String.from-bytes` DECODE path (NFC-exempt, L90-94), so a from-bytes
+                    ///    value is never re-normalized here. The heavy Unicode composition tables do NOT live in this runtime:
+                    ///    the runtime IMPORTS `cadenza:nfc/normalize` (a separate component loaded+linked as this runtime's
+                    ///    DEPENDENCY — operator ruling 2026-08-02) and this op flattens `s`, calls the imported `nfc`, and
+                    ///    rebuilds a leaf. So the runtime bytes stay light; only the linked NFC dep carries the tables.
+                    ///    Ownership: CONSUMES `s` (returns a fresh owned normalized leaf; the caller's `s` handle is spent, like
+                    ///    `bytes-compact`/`str-to-bytes`). Idempotent. APPENDED last (frozen-contract rule). See `op_str_nfc`.
+                    fn str_nfc_normalize(s: u32) -> u32;
                 }
                 #[doc(hidden)]
                 macro_rules! __export_cadenza_runtime_heap_cabi {
@@ -1624,7 +1707,12 @@ pub mod exports {
                         (export_name = "cadenza:runtime/heap#value-eq-shaped")] unsafe
                         extern "C" fn export_value_eq_shaped(arg0 : i32, arg1 : i32, arg2
                         : i32,) -> i32 { unsafe { $($path_to_types)*::
-                        _export_value_eq_shaped_cabi::<$ty > (arg0, arg1, arg2) } } };
+                        _export_value_eq_shaped_cabi::<$ty > (arg0, arg1, arg2) } }
+                        #[unsafe (export_name =
+                        "cadenza:runtime/heap#str-nfc-normalize")] unsafe extern "C" fn
+                        export_str_nfc_normalize(arg0 : i32,) -> i32 { unsafe {
+                        $($path_to_types)*:: _export_str_nfc_normalize_cabi::<$ty >
+                        (arg0) } } };
                     };
                 }
                 #[doc(hidden)]
@@ -1647,6 +1735,7 @@ pub mod exports {
 #[rustfmt::skip]
 mod _rt {
     #![allow(dead_code, clippy::all)]
+    pub use alloc_crate::vec::Vec;
     #[cfg(target_arch = "wasm32")]
     pub fn run_ctors_once() {
         wit_bindgen_rt::run_ctors_once();
@@ -1761,7 +1850,6 @@ mod _rt {
             self as f64
         }
     }
-    pub use alloc_crate::vec::Vec;
     pub unsafe fn string_lift(bytes: Vec<u8>) -> String {
         if cfg!(debug_assertions) {
             String::from_utf8(bytes).unwrap()
@@ -1833,58 +1921,59 @@ pub(crate) use __export_runtime_impl as export;
 )]
 #[doc(hidden)]
 #[allow(clippy::octal_escapes)]
-pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 2226] = *b"\
-\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xb4\x10\x01A\x02\x01\
-A\x02\x01B\x8c\x01\x01@\x01\x01vx\0y\x04\0\x07box-int\x01\0\x01@\x01\x06handley\0\
-x\x04\0\x07get-int\x01\x01\x01@\x01\x01v\x7f\0y\x04\0\x08box-bool\x01\x02\x01@\x01\
-\x06handley\0\x7f\x04\0\x08get-bool\x01\x03\x01@\x01\x01vu\0y\x04\0\x09box-float\
-\x01\x04\x01@\x01\x06handley\0u\x04\0\x09get-float\x01\x05\x01@\x01\x03leny\0y\x04\
-\0\x09arr-alloc\x01\x06\x01@\x03\x03arry\x05indexy\x04elemy\0y\x04\0\x07arr-set\x01\
-\x07\x01@\x02\x03arry\x05indexy\0y\x04\0\x07arr-get\x01\x08\x01@\x01\x03arry\0y\x04\
-\0\x07arr-len\x01\x09\x01@\x02\x04discy\x07payloady\0y\x04\0\x07sum-new\x01\x0a\x01\
-@\x01\x06handley\0y\x04\0\x08sum-disc\x01\x0b\x04\0\x0bsum-payload\x01\x0b\x04\0\
-\x0bbytes-alloc\x01\x06\x01@\x03\x03bufy\x05indexy\x05valuey\0y\x04\0\x09bytes-s\
-et\x01\x0c\x01@\x02\x03bufy\x05indexy\0y\x04\0\x09bytes-get\x01\x0d\x01@\x01\x03\
-bufy\0y\x04\0\x09bytes-len\x01\x0e\x01@\x01\x01ss\0y\x04\0\x07str-new\x01\x0f\x01\
-@\x01\x06handley\0s\x04\0\x07str-get\x01\x10\x01@\x01\x06handley\x01\0\x04\0\x03\
-dup\x01\x11\x04\0\x04drop\x01\x11\x04\0\x09map-alloc\x01\x06\x01@\x04\x01my\x05i\
-ndexy\x03keyy\x05valuey\0y\x04\0\x07map-set\x01\x12\x01@\x02\x01my\x05indexy\0y\x04\
-\0\x07map-key\x01\x13\x04\0\x07map-val\x01\x13\x01@\x01\x01my\0y\x04\0\x07map-le\
-n\x01\x14\x01@\x01\x04nodey\0y\x04\0\x05reset\x01\x15\x01@\x02\x03leny\x05tokeny\
-\0y\x04\0\x0farr-alloc-reuse\x01\x16\x01@\x03\x04discy\x07payloady\x05tokeny\0y\x04\
-\0\x0dsum-new-reuse\x01\x17\x01@\0\0y\x04\0\x09vec-empty\x01\x18\x01@\x01\x01vy\0\
-y\x04\0\x07vec-len\x01\x19\x01@\x02\x01vy\x05indexy\0y\x04\0\x07vec-get\x01\x1a\x01\
-@\x02\x01vy\x04elemy\0y\x04\0\x08vec-push\x01\x1b\x01@\x03\x01vy\x05indexy\x04el\
-emy\0y\x04\0\x0avec-update\x01\x1c\x01@\x02\x01ay\x01by\0y\x04\0\x0cbytes-concat\
-\x01\x1d\x01@\x03\x03bufy\x05starty\x03leny\0y\x04\0\x0bbytes-slice\x01\x1e\x04\0\
-\x0dbytes-compact\x01\x0e\x04\0\x09map-empty\x01\x18\x01@\x03\x01my\x03keyy\x03v\
-aly\0y\x04\0\x0amap-insert\x01\x1f\x01@\x02\x01my\x03keyy\0y\x04\0\x0amap-lookup\
-\x01\x20\x04\0\x0amap-remove\x01\x20\x04\0\x08map-size\x01\x14\x04\0\x08map-iter\
-\x01\x14\x01@\x01\x03cury\0y\x04\0\x0dmap-iter-next\x01!\x04\0\x0cmap-iter-key\x01\
-!\x04\0\x0cmap-iter-val\x01!\x04\0\x09set-empty\x01\x18\x01@\x02\x01sy\x04elemy\0\
-y\x04\0\x0aset-insert\x01\"\x01@\x02\x01sy\x04elemy\0\x7f\x04\0\x0cset-contains\x01\
-#\x04\0\x0aset-remove\x01\"\x01@\x01\x01sy\0y\x04\0\x08set-size\x01$\x04\0\x08se\
-t-iter\x01$\x04\0\x0dset-iter-next\x01!\x04\0\x0dset-iter-elem\x01!\x04\0\x0cliv\
-e-objects\x01\x18\x04\0\x0avec-concat\x01\x1d\x01o\x02yy\x01@\x02\x01vy\x05index\
-y\0%\x04\0\x09vec-split\x01&\x04\0\x09set-union\x01\x1d\x04\0\x10set-intersectio\
-n\x01\x1d\x04\0\x0eset-difference\x01\x1d\x04\0\x0avec-of-arr\x01\x09\x01@\x02\x01\
-ay\x01by\0\x7f\x04\0\x08value-eq\x01'\x01@\x02\x01vy\x04descy\0y\x04\0\x0cvalue-\
-encode\x01(\x01@\x01\x01vv\0y\x04\0\x0bbox-float32\x01)\x01@\x01\x06handley\0v\x04\
-\0\x0bget-float32\x01*\x04\0\x0dbigint-of-i64\x01\0\x04\0\x15bigint-to-i64-check\
-ed\x01\x01\x04\0\x0abigint-add\x01\x1d\x04\0\x0abigint-sub\x01\x1d\x04\0\x0abigi\
-nt-mul\x01\x1d\x04\0\x0abigint-div\x01\x1d\x01@\x02\x01ay\x01by\0x\x04\0\x0abigi\
-nt-cmp\x01+\x04\0\x08vec-drop\x01\x1a\x04\0\x0abigint-rem\x01\x1d\x01@\x02\x03nu\
-my\x03deny\0y\x04\0\x0brational-of\x01,\x01@\x01\x01ry\0y\x04\0\x0crational-num\x01\
--\x04\0\x0crational-den\x01-\x04\0\x0crational-add\x01\x1d\x04\0\x0crational-sub\
-\x01\x1d\x04\0\x0crational-mul\x01\x1d\x04\0\x0crational-div\x01\x1d\x04\0\x0cra\
-tional-cmp\x01+\x04\0\x0fbigint-of-bytes\x01\x0e\x01@\x02\x01sy\x04descy\0y\x04\0\
-\x0bset-to-list\x01.\x01@\x02\x01my\x04descy\0y\x04\0\x0bmap-to-list\x01/\x04\0\x0e\
-str-from-bytes\x01\x0e\x01@\x03\x01ay\x01by\x04descy\0z\x04\0\x09value-cmp\x010\x01\
-@\x02\x01ay\x04descy\0y\x04\0\x12value-canonicalize\x011\x01@\x03\x01ay\x01by\x04\
-descy\0\x7f\x04\0\x0fvalue-eq-shaped\x012\x04\0\x14cadenza:runtime/heap\x05\0\x04\
-\0\x17cadenza:runtime/runtime\x04\0\x0b\x0d\x01\0\x07runtime\x03\0\0\0G\x09produ\
-cers\x01\x0cprocessed-by\x02\x0dwit-component\x070.227.1\x10wit-bindgen-rust\x06\
-0.41.0";
+pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 2299] = *b"\
+\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xfd\x10\x01A\x02\x01\
+A\x04\x01B\x03\x01p}\x01@\x01\x04utf8\0\0\0\x04\0\x03nfc\x01\x01\x03\0\x15cadenz\
+a:nfc/normalize\x05\0\x01B\x8d\x01\x01@\x01\x01vx\0y\x04\0\x07box-int\x01\0\x01@\
+\x01\x06handley\0x\x04\0\x07get-int\x01\x01\x01@\x01\x01v\x7f\0y\x04\0\x08box-bo\
+ol\x01\x02\x01@\x01\x06handley\0\x7f\x04\0\x08get-bool\x01\x03\x01@\x01\x01vu\0y\
+\x04\0\x09box-float\x01\x04\x01@\x01\x06handley\0u\x04\0\x09get-float\x01\x05\x01\
+@\x01\x03leny\0y\x04\0\x09arr-alloc\x01\x06\x01@\x03\x03arry\x05indexy\x04elemy\0\
+y\x04\0\x07arr-set\x01\x07\x01@\x02\x03arry\x05indexy\0y\x04\0\x07arr-get\x01\x08\
+\x01@\x01\x03arry\0y\x04\0\x07arr-len\x01\x09\x01@\x02\x04discy\x07payloady\0y\x04\
+\0\x07sum-new\x01\x0a\x01@\x01\x06handley\0y\x04\0\x08sum-disc\x01\x0b\x04\0\x0b\
+sum-payload\x01\x0b\x04\0\x0bbytes-alloc\x01\x06\x01@\x03\x03bufy\x05indexy\x05v\
+aluey\0y\x04\0\x09bytes-set\x01\x0c\x01@\x02\x03bufy\x05indexy\0y\x04\0\x09bytes\
+-get\x01\x0d\x01@\x01\x03bufy\0y\x04\0\x09bytes-len\x01\x0e\x01@\x01\x01ss\0y\x04\
+\0\x07str-new\x01\x0f\x01@\x01\x06handley\0s\x04\0\x07str-get\x01\x10\x01@\x01\x06\
+handley\x01\0\x04\0\x03dup\x01\x11\x04\0\x04drop\x01\x11\x04\0\x09map-alloc\x01\x06\
+\x01@\x04\x01my\x05indexy\x03keyy\x05valuey\0y\x04\0\x07map-set\x01\x12\x01@\x02\
+\x01my\x05indexy\0y\x04\0\x07map-key\x01\x13\x04\0\x07map-val\x01\x13\x01@\x01\x01\
+my\0y\x04\0\x07map-len\x01\x14\x01@\x01\x04nodey\0y\x04\0\x05reset\x01\x15\x01@\x02\
+\x03leny\x05tokeny\0y\x04\0\x0farr-alloc-reuse\x01\x16\x01@\x03\x04discy\x07payl\
+oady\x05tokeny\0y\x04\0\x0dsum-new-reuse\x01\x17\x01@\0\0y\x04\0\x09vec-empty\x01\
+\x18\x01@\x01\x01vy\0y\x04\0\x07vec-len\x01\x19\x01@\x02\x01vy\x05indexy\0y\x04\0\
+\x07vec-get\x01\x1a\x01@\x02\x01vy\x04elemy\0y\x04\0\x08vec-push\x01\x1b\x01@\x03\
+\x01vy\x05indexy\x04elemy\0y\x04\0\x0avec-update\x01\x1c\x01@\x02\x01ay\x01by\0y\
+\x04\0\x0cbytes-concat\x01\x1d\x01@\x03\x03bufy\x05starty\x03leny\0y\x04\0\x0bby\
+tes-slice\x01\x1e\x04\0\x0dbytes-compact\x01\x0e\x04\0\x09map-empty\x01\x18\x01@\
+\x03\x01my\x03keyy\x03valy\0y\x04\0\x0amap-insert\x01\x1f\x01@\x02\x01my\x03keyy\
+\0y\x04\0\x0amap-lookup\x01\x20\x04\0\x0amap-remove\x01\x20\x04\0\x08map-size\x01\
+\x14\x04\0\x08map-iter\x01\x14\x01@\x01\x03cury\0y\x04\0\x0dmap-iter-next\x01!\x04\
+\0\x0cmap-iter-key\x01!\x04\0\x0cmap-iter-val\x01!\x04\0\x09set-empty\x01\x18\x01\
+@\x02\x01sy\x04elemy\0y\x04\0\x0aset-insert\x01\"\x01@\x02\x01sy\x04elemy\0\x7f\x04\
+\0\x0cset-contains\x01#\x04\0\x0aset-remove\x01\"\x01@\x01\x01sy\0y\x04\0\x08set\
+-size\x01$\x04\0\x08set-iter\x01$\x04\0\x0dset-iter-next\x01!\x04\0\x0dset-iter-\
+elem\x01!\x04\0\x0clive-objects\x01\x18\x04\0\x0avec-concat\x01\x1d\x01o\x02yy\x01\
+@\x02\x01vy\x05indexy\0%\x04\0\x09vec-split\x01&\x04\0\x09set-union\x01\x1d\x04\0\
+\x10set-intersection\x01\x1d\x04\0\x0eset-difference\x01\x1d\x04\0\x0avec-of-arr\
+\x01\x09\x01@\x02\x01ay\x01by\0\x7f\x04\0\x08value-eq\x01'\x01@\x02\x01vy\x04des\
+cy\0y\x04\0\x0cvalue-encode\x01(\x01@\x01\x01vv\0y\x04\0\x0bbox-float32\x01)\x01\
+@\x01\x06handley\0v\x04\0\x0bget-float32\x01*\x04\0\x0dbigint-of-i64\x01\0\x04\0\
+\x15bigint-to-i64-checked\x01\x01\x04\0\x0abigint-add\x01\x1d\x04\0\x0abigint-su\
+b\x01\x1d\x04\0\x0abigint-mul\x01\x1d\x04\0\x0abigint-div\x01\x1d\x01@\x02\x01ay\
+\x01by\0x\x04\0\x0abigint-cmp\x01+\x04\0\x08vec-drop\x01\x1a\x04\0\x0abigint-rem\
+\x01\x1d\x01@\x02\x03numy\x03deny\0y\x04\0\x0brational-of\x01,\x01@\x01\x01ry\0y\
+\x04\0\x0crational-num\x01-\x04\0\x0crational-den\x01-\x04\0\x0crational-add\x01\
+\x1d\x04\0\x0crational-sub\x01\x1d\x04\0\x0crational-mul\x01\x1d\x04\0\x0cration\
+al-div\x01\x1d\x04\0\x0crational-cmp\x01+\x04\0\x0fbigint-of-bytes\x01\x0e\x01@\x02\
+\x01sy\x04descy\0y\x04\0\x0bset-to-list\x01.\x01@\x02\x01my\x04descy\0y\x04\0\x0b\
+map-to-list\x01/\x04\0\x0estr-from-bytes\x01\x0e\x01@\x03\x01ay\x01by\x04descy\0\
+z\x04\0\x09value-cmp\x010\x01@\x02\x01ay\x04descy\0y\x04\0\x12value-canonicalize\
+\x011\x01@\x03\x01ay\x01by\x04descy\0\x7f\x04\0\x0fvalue-eq-shaped\x012\x04\0\x11\
+str-nfc-normalize\x01$\x04\0\x14cadenza:runtime/heap\x05\x01\x04\0\x17cadenza:ru\
+ntime/runtime\x04\0\x0b\x0d\x01\0\x07runtime\x03\0\0\0G\x09producers\x01\x0cproc\
+essed-by\x02\x0dwit-component\x070.227.1\x10wit-bindgen-rust\x060.41.0";
 #[inline(never)]
 #[doc(hidden)]
 pub fn __link_custom_section_describing_imports() {

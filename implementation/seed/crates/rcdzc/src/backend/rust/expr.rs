@@ -2208,6 +2208,17 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 Ok(s)
             }
         }
+        // `str-nfc-normalize` (FINDING #23) — canonicalize a String value to NFC. The wasm backend calls the
+        // `str-nfc-normalize` runtime op; the native rust rep of a String is `String`, so the equivalent is
+        // `.nfc().collect::<String>()` (unicode-normalization). INTERIM: the emitted rust crate does not yet
+        // carry the unicode-normalization dep (adding a rust-TARGET dependency + the emit is v-rust-backend's
+        // lane — coordinated), so emit the IDENTITY here: this preserves `String.concat` on rust exactly as it
+        // works today (NO regression) while the wasm backend gets the real NFC fix. Rust stays at its
+        // pre-existing (un-normalized) String behavior — the SAME status quo, not a new defect; the rust-NFC
+        // parity arm lands separately (corpus-bugfix's pin gates x3, so the rust faces show as todo until then,
+        // never a fail). NOT a workaround of the bug — an explicit lane split (wasm = mine now, rust = v-rust-
+        // backend's dep+emit), tracked in FINDING #23. When rust gains the dep: `Ok(format!("{s}.nfc().collect::<String>()"))`.
+        Core::NfcNormalize { string } => emit(db, string, env, ctx),
         // A SUM VALUE CONSTRUCTION → the Rust enum variant `<Enum>::<Variant>(payloads…)`. The enum +
         // variant names come from the node's solved `Ty::Sum` declaration at the disc's index (the
         // discriminant IS the variant's declaration-order position). A nullary variant is the bare

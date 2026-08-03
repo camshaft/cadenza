@@ -204,10 +204,21 @@ fn real_run(cli: &RunArgs, prog: &str) -> anyhow::Result<ExitCode> {
         None => None,
     };
 
+    // If a runtime is composed, resolve its NFC dependency too (FINDING#23: the runtime imports
+    // `cadenza:nfc/normalize`; the host composes the stored NFC component into it — the transitive compose in
+    // `instantiate_runtime`). Resolve it from the same store by the manifest's recorded `nfc` hash; `None`
+    // when there is no runtime or no NFC entry (an older runtime that imports nothing skips the compose).
+    let nfc = if runtime.is_some() {
+        resolve_nfc(cli)
+    } else {
+        None
+    };
+
     let opts = RunOpts {
         export: cli.call.clone(),
         args: cli.args.clone(),
         runtime,
+        nfc,
         runtime_cache_dir,
         host_responses,
     };
@@ -311,6 +322,31 @@ fn resolve_runtime(cli: &RunArgs, req: &crate::RuntimeReq) -> anyhow::Result<Vec
         ));
     }
     Ok(bytes)
+}
+
+/// Resolve the runtime's NFC dependency (FINDING#23) from the store: read the store manifest's `nfc = "<hash>"`
+/// line and load `<store>/<hash>.wasm`. Returns `None` (not an error) when there is no manifest / no `nfc`
+/// entry / the file is missing — a runtime that imports NFC will then fail to instantiate with a clear
+/// message (`instantiate_runtime`'s "no NFC component was provided"), while an older import-free runtime is
+/// unaffected. The compose + hash-verify happens in `instantiate_runtime`; this just fetches the bytes.
+fn resolve_nfc(cli: &RunArgs) -> Option<Vec<u8>> {
+    let store = cli.store.clone().unwrap_or_else(default_store);
+    let manifest = std::fs::read_to_string(store.join("runtime.toml")).ok()?;
+    let hash = manifest.lines().find_map(|l| {
+        let l = l.trim();
+        l.strip_prefix("nfc")
+            .and_then(|r| r.trim_start().strip_prefix('='))
+            .map(|v| v.trim().trim_matches('"').to_string())
+    })?;
+    let bytes = std::fs::read(store.join(format!("{hash}.wasm"))).ok()?;
+    // Verify the stored bytes actually hash to the manifest's NFC content address — mirroring
+    // `resolve_runtime`. Content addressing's whole point is that a misnamed/corrupted/substituted store
+    // entry can't load silently; a mismatch drops to None (the runtime then fails to instantiate its NFC
+    // import with a clear error rather than composing wrong Unicode tables).
+    if content_address(&bytes) != hash {
+        return None;
+    }
+    Some(bytes)
 }
 
 /// SHA-256 of `bytes`, lowercase hex — the store's content-address function (matches xtask).
