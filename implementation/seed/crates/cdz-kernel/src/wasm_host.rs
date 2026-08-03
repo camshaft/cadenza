@@ -775,9 +775,8 @@ impl crate::reducer::Reducer for ComponentReducer {
 /// `fuel_async_yield_interval`, so a long `fold.apply` YIELDS at fuel intervals (letting the single-
 /// threaded host loop interleave other sessions) instead of blocking, while the per-fold fuel BUDGET still
 /// traps a true runaway. It implements [`crate::reducer::Reducer`] natively (its `fold_async` awaits
-/// the guest's async `call_apply_async`) — the reason the `Reducer` trait uses an explicit
-/// [`crate::reducer::SyncAsAsync`] adapter for sync reducers rather than a blanket impl (a blanket would
-/// forbid this native impl by coherence overlap; see `Reducer`'s docs).
+/// the guest's async `call_apply_async`) — the single async `Reducer` trait (the all-async arc removed
+/// the sync twin + its adapter), so a pure-Rust and a wasm reducer both `impl Reducer` directly.
 ///
 /// SEPARATE from [`ComponentReducer`] because `async_support` is a per-ENGINE flag: a sync call panics on
 /// an async store and vice versa, so the async fold needs its own async-configured engine + the async
