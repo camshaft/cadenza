@@ -1066,7 +1066,7 @@ impl crate::authz::Authorize for ComponentAuthorizer {
         let request = self::authz_bindings::cadenza::agent_kernel_authz::types::AuthRequest {
             principal: self.principal.clone(),
             action: effect_kind_wire_name(&req.kind).to_string(),
-            target: req.target.clone(),
+            target: req.target.to_string(),
         };
         match world
             .cadenza_agent_kernel_authz_authorizer()

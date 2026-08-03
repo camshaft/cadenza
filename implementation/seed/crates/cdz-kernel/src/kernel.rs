@@ -512,7 +512,7 @@ impl Session {
                 EventBody::Dispatched {
                     id,
                     kind: req.kind.clone(),
-                    target: req.target.clone(),
+                    target: req.target.to_string(),
                     idempotency_key,
                     deadline_ms: None,
                     token,
