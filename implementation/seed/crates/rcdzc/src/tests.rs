@@ -66372,9 +66372,13 @@ mod stage1 {
         // scratch — a regression here is a silent wrong-value at the host boundary. A SINGLE Bytes arg (and
         // a Bytes+scalar mix) compiles + runs (the corpus pins those); only TWO rep-args that both copy
         // collide. Assert it declines (Err) and the decline doesn't leak an internal scratch/emit name.
+        // BOTH args wrap a `k`-derived value so each is unambiguously a RUNTIME Bytes that MUST copy into
+        // scratch — a compile-time-constant second arg (`wrap 66`) would today still marshal, but a future
+        // const-Bytes data-segment fast-path could quietly stop exercising the two-RUNTIME-args collision
+        // this test names (the #1688 review nit, test-durability class of #1651/#1662).
         let src = "(do (effect io (op sink2 (-> Bytes Bytes Int64))) \
                    (def (main (: k Int64)) \
-                     (host (io) (io.sink2 (Bytes.of (list ((UInt 8).wrap k))) (Bytes.of (list ((UInt 8).wrap 66)))))) \
+                     (host (io) (io.sink2 (Bytes.of (list ((UInt 8).wrap k))) (Bytes.of (list ((UInt 8).wrap (+ k 1))))))) \
                    (export main))";
         let err = crate::compile::compile_component(&crate::codec::encode(&parse(src))).expect_err(
             "two runtime Bytes args share one scratch buffer → must decline, not miscompile",
