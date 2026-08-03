@@ -3253,9 +3253,22 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
             // Same guards as wake: skip stopped / interactive / no-live-window / mid-tick (`/compact` only
             // lands at an idle prompt). Thrash-guarded by COMPACT_NUDGE_GRACE. This converts the pre-wall rung
             // from a futile note into ACTUAL compaction, so the 100% auto-restart is rarely needed.
+            // SINGLE-TURN-SATURATED CLASS: if the pane already shows `/compact` DECLINED ("Not enough
+            // messages to compact" — the context is one giant turn, nothing to summarize), a
+            // compact-nudge is a PROVEN no-op that can never recover it (concierge: hit on
+            // v-diagnostics + v-nix). Don't re-nudge; surface it DISTINCTLY as restart-class so the
+            // concierge escalates to a restart rather than re-trying /compact. The 100%-wall
+            // auto-restart is the real recovery here (it loses the turn, but nothing else can).
+            let compact_declined = pane.as_deref().is_some_and(compact_was_declined);
+            if compact_declined {
+                eprintln!(
+                    "  ⚠ '{}' at {pct}% context — /compact DECLINED (single-turn-saturated: one huge turn, nothing to summarize). A compact-nudge CANNOT recover this; needs a RESTART (the 100%-wall auto-restart will, losing the turn). NOT re-nudging.",
+                    a.name
+                );
+            }
             let compacted_recently = compact_nudge_age_secs(fleet, &a.name, now)
                 .is_some_and(|s| s < COMPACT_NUDGE_GRACE);
-            if should_send_compact(ctx_pct, compacted_recently) {
+            if !compact_declined && should_send_compact(ctx_pct, compacted_recently) {
                 let stopped = fleet.stopfile(&a.name).exists();
                 let live = live.iter().any(|w| w == &a.name);
                 let interactive = role_is_terminal_interactive(&a.role); // never keystroke a human's window
@@ -4899,6 +4912,19 @@ fn window_is_working(session: &str, agent: &str) -> bool {
 /// `None` if no such marker is present (the agent isn't near any threshold, or the pane didn't render
 /// it this capture). Pure so the parse is unit-testable. Takes the LAST match (the live status line is
 /// at the bottom; an older value may linger higher in the visible buffer).
+/// Did a prior `/compact` DECLINE because the context is one huge turn with nothing to summarize?
+/// Claude's REPL answers `/compact` with "Not enough messages to compact." when the window is
+/// dominated by a SINGLE giant turn (a huge build/read/reasoning turn) rather than many messages —
+/// so the pre-wall compact-nudge is a no-op that can never recover it (only the 100%-wall auto-restart
+/// does, losing that turn). Detecting this lets the watchdog stop re-nudging a no-op and escalate to
+/// the restart path instead (concierge data point, 2026-08-03: hit on v-diagnostics + v-nix). Pure,
+/// substring match (case-insensitive) so it's unit-tested + robust to surrounding pane chrome.
+fn compact_was_declined(pane_text: &str) -> bool {
+    pane_text
+        .to_ascii_lowercase()
+        .contains("not enough messages to compact")
+}
+
 fn parse_context_pct(pane_text: &str) -> Option<u8> {
     let mut found: Option<u8> = None;
     for (i, _) in pane_text.match_indices("% context") {
@@ -11679,6 +11705,21 @@ mod tests {
         );
         // Clamp a nonsense over-100 reading to 100 (never trust a status line above the wall).
         assert_eq!(parse_context_pct("140% context"), Some(100));
+    }
+
+    #[test]
+    fn compact_was_declined_detects_the_single_turn_saturation_response() {
+        // The REPL's decline when the context is one huge turn (nothing to summarize).
+        assert!(compact_was_declined(
+            "> /compact\nNot enough messages to compact.\n❯ "
+        ));
+        // Case-insensitive + tolerant of surrounding pane chrome.
+        assert!(compact_was_declined("  NOT ENOUGH MESSAGES TO COMPACT.  "));
+        // A NORMAL pane (working / idle / a successful compact) does NOT match → keep nudging.
+        assert!(!compact_was_declined("Compacting conversation… 97% → 35%"));
+        assert!(!compact_was_declined("97% context used\n❯ "));
+        assert!(!compact_was_declined("esc to interrupt"));
+        assert!(!compact_was_declined(""));
     }
 
     #[test]
