@@ -311,7 +311,7 @@ pub fn emit(
             // type node is RECURSIVE, so a nested element crosses too (`(List (List Int64))`, `(Map K (Set
             // V))`), and the inner value shape already recurses to render the nested collection values.
             return emit_recursive_sum_resource(db, layout, e.def, &desc, spans);
-        } else if let Some(tpl) = crate::lower::runtime_value_form_template(&result) {
+        } else if let Some(tpl) = crate::lower::runtime_value_form_template(&e.result) {
             // A RUNTIME compound (not constant-foldable — a recursive return, a call whose result is
             // built on the heap) crosses through the SAME resource shape, but its `encode()` WALKS the
             // live handle rather than baking constant bytes (R2). Build the value-form TEMPLATE for the
