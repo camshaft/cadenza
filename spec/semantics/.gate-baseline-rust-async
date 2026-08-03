@@ -5589,3 +5589,5 @@ pass	an Int8 wrapping-add result drives a comparison — the SIGN-EXTENDED maske
 pass	a single-variant newtype value escaping a parameterized def emits a valid module and matches back
 pass	a scalar-erased newtype returned directly from a parameterized def renders its nominal type
 pass	a CONST narrow wrap folds with sign-extension at the target width, matching the runtime wrap
+pass	a same-name GENERIC ctor CONSTRUCTED AND MATCHED inside an inlined callee resolves (adv-63 b1)
+pass	a same-name GENERIC ctor in an inlined callee resolves with a CONST argument (adv-63 b2)

@@ -1351,6 +1351,35 @@
   (call   main (: 4 Int64))
   (output (: 5 Int64)))
 
+(case "a same-name GENERIC ctor CONSTRUCTED AND MATCHED inside an inlined callee resolves (adv-63 b1)"
+  (doc    "The construct-and-consume-fully-inside-the-callee face of adv-63 (distinct from the case above,
+           where the ctor value crosses OUT of the helper into the caller's match): here the WHOLE
+           `(match (Box k) ((Box v) v))` lives inside `inner`, and `inner` is called from `main`. When
+           `inner` β-inlines into `main`, its `(Box k)` head must still resolve to the VARIANT constructor
+           (not the same-name generic type) at the inlined site — the provenance-based synth disambiguation
+           must survive a full match-expression inline, not just a bare-ctor-value inline. `main 5` → inner
+           builds `(Box 5)`, matched → 5. Runtime arg so nothing folds.")
+  (input  (do
+            (type Box (Box a))
+            (def (inner (: k Int64)) (match (Box k) ((Box v) v)))
+            (def (main (: n Int64)) (inner n))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 5 Int64)))
+
+(case "a same-name GENERIC ctor in an inlined callee resolves with a CONST argument (adv-63 b2)"
+  (doc    "The const-argument twin of the inline-callee face above: `(inner 7)` passes a compile-time
+           constant, so `inner` β-reduces with `k`=7 folded in. The inlined `(Box 7)` head must STILL
+           resolve to the variant constructor through the β-reduction — the const-fold path must not
+           re-route the same-name head to the type. `main` (any arg) → `(inner 7)` builds `(Box 7)`,
+           matched → 7. Pins that the adv-63 resolve fix holds under const-argument inlining too, the
+           complement of the runtime-arg face.")
+  (input  (do
+            (type Box (Box a))
+            (def (inner (: k Int64)) (match (Box k) ((Box v) v)))
+            (def (main (: n Int64)) (inner 7))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 7 Int64)))
+
 (case "Type.of on a bare nullary variant reflects its element as UNDETERMINED"
   (doc    "`Type.of` reflects a value's INFERRED type, so a bare nullary variant — carrying no element —
            reflects an UNDETERMINED element. `(None)` is `Option ?a`, distinct from a concrete `Option
