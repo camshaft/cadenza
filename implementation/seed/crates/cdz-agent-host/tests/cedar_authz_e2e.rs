@@ -112,7 +112,7 @@ async fn a_real_agent_is_gated_by_a_real_cedar_decision() {
             .with_effect(effect_ct::MODEL, Box::new(ModelExecutor::new(StubModel)));
         let mut session = Session::genesis(Hash::of(b"cedar-permit-v1"));
         session
-            .deliver_async(inbound("model-ok"), None, &reducer, &authz, &mut exec)
+            .deliver(inbound("model-ok"), None, &reducer, &authz, &mut exec)
             .await
             .unwrap();
         assert_eq!(
@@ -138,7 +138,7 @@ async fn a_real_agent_is_gated_by_a_real_cedar_decision() {
             .with_effect(effect_ct::MODEL, Box::new(ModelExecutor::new(StubModel)));
         let mut session = Session::genesis(Hash::of(b"cedar-deny-v1"));
         session
-            .deliver_async(inbound("http-imds"), None, &reducer, &authz, &mut exec)
+            .deliver(inbound("http-imds"), None, &reducer, &authz, &mut exec)
             .await
             .unwrap();
         assert_ne!(

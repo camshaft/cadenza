@@ -99,7 +99,7 @@ async fn agent_loop_runs_end_to_end_through_the_model_executor() {
     let mut session = Session::genesis(Hash::of(b"model-agent-v1"));
 
     session
-        .deliver_async(inbound_go(), None, &ModelAgent, &model_cap(), &mut exec)
+        .deliver(inbound_go(), None, &ModelAgent, &model_cap(), &mut exec)
         .await
         .unwrap();
 
@@ -189,7 +189,7 @@ async fn one_composite_routes_both_now_and_model_for_one_agent() {
     let mut session = Session::genesis(Hash::of(b"clock-then-model-v1"));
 
     session
-        .deliver_async(inbound_go(), None, &ClockThenModel, &authz, &mut exec)
+        .deliver(inbound_go(), None, &ClockThenModel, &authz, &mut exec)
         .await
         .unwrap();
 
@@ -236,7 +236,7 @@ async fn a_model_call_to_an_unpermitted_id_is_denied_before_the_transport() {
         .with_effect(effect_ct::MODEL, Box::new(ModelExecutor::new(MustNotCall)));
     let mut session = Session::genesis(Hash::of(b"wrong-model-v1"));
     session
-        .deliver_async(
+        .deliver(
             inbound_go(),
             None,
             &WrongModelAgent,

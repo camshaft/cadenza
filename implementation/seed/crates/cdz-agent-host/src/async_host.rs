@@ -14,7 +14,7 @@
 //! `Send`; sessions never cross a thread.
 //!
 //! **The kernel-async seam:** `AgentHost::deliver`/`fire_due_timers` are ASYNC (they drive the kernel's
-//! `Session::deliver_async`/`fire_due_timers_async`, folding through an [`cdz_kernel::reducer::Reducer`]
+//! `Session::deliver`/`fire_due_timers`, folding through an [`cdz_kernel::reducer::Reducer`]
 //! with `Store::fuel_async_yield_interval`), so a long fold cooperatively YIELDS and this loop interleaves
 //! other sessions while it awaits — SAME loop, no reshape, no `Send` (still one task). The in-place
 //! `host.deliver(..).await` here is exactly that seam.

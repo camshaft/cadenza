@@ -89,7 +89,7 @@ async fn agent_loop_runs_end_to_end_through_the_real_clock_executor() {
     let mut session = Session::genesis(Hash::of(b"clock-agent-v1"));
 
     session
-        .deliver_async(inbound_go(), None, &reducer, &authz, &mut exec)
+        .deliver(inbound_go(), None, &reducer, &authz, &mut exec)
         .await
         .unwrap();
 
@@ -118,7 +118,7 @@ async fn the_recorded_instant_makes_the_run_replayable() {
     // §9c/§16c-S3: the clock read is non-deterministic, but its OUTCOME is recorded — so replaying the
     // log reconstructs the identical KV without ever touching the clock again. This is why a
     // world-touching executor doesn't break event-sourcing's replay-equivalence.
-    // Both the live drive and the replay go through the async path: `deliver_async` for the run, and
+    // Both the live drive and the replay go through the async path: `deliver` for the run, and
     // `Session::replay` for the replay (it re-folds the recorded log through the Reducer, runs
     // no executor). The reducer is a native `Reducer` (the single reducer trait, ruling (b)).
     let reducer = ClockAgent;
@@ -126,7 +126,7 @@ async fn the_recorded_instant_makes_the_run_replayable() {
         CompositeExecutor::new().with_effect(effect_ct::NOW, Box::new(ClockExecutor::new()));
     let mut session = Session::genesis(Hash::of(b"clock-agent-v1"));
     session
-        .deliver_async(inbound_go(), None, &ClockAgent, &now_cap(), &mut exec)
+        .deliver(inbound_go(), None, &ClockAgent, &now_cap(), &mut exec)
         .await
         .unwrap();
 
@@ -156,7 +156,7 @@ async fn a_now_effect_outside_the_grant_is_denied_never_reaching_the_clock() {
         CompositeExecutor::new().with_effect(effect_ct::NOW, Box::new(ClockExecutor::new()));
     let mut session = Session::genesis(Hash::of(b"clock-agent-v1"));
     session
-        .deliver_async(inbound_go(), None, &reducer, &deny, &mut exec)
+        .deliver(inbound_go(), None, &reducer, &deny, &mut exec)
         .await
         .unwrap();
 

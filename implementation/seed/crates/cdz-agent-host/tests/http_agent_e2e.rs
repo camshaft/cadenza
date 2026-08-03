@@ -101,7 +101,7 @@ async fn agent_loop_runs_end_to_end_through_the_http_executor() {
     let mut session = Session::genesis(Hash::of(b"fetch-agent-v1"));
 
     session
-        .deliver_async(inbound_go(), None, &FetchAgent, &host_cap(), &mut exec)
+        .deliver(inbound_go(), None, &FetchAgent, &host_cap(), &mut exec)
         .await
         .unwrap();
 
@@ -161,7 +161,7 @@ async fn a_fetch_to_an_unpermitted_host_is_denied_before_the_client() {
         .with_effect(effect_ct::HTTP, Box::new(HttpExecutor::new(MustNotCall)));
     let mut session = Session::genesis(Hash::of(b"exfil-agent-v1"));
     session
-        .deliver_async(inbound_go(), None, &ExfilAgent, &host_cap(), &mut exec)
+        .deliver(inbound_go(), None, &ExfilAgent, &host_cap(), &mut exec)
         .await
         .unwrap();
 
