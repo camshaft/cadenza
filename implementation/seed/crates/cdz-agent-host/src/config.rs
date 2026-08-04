@@ -127,7 +127,12 @@ impl DaemonConfig {
     /// Parse + validate from a TOML string (the testable core of [`from_toml_path`](Self::from_toml_path)).
     pub fn from_toml_str(text: &str) -> Result<Self, ConfigError> {
         let cfg: DaemonConfig =
-            toml::from_str(text).map_err(|e| ConfigError(format!("invalid TOML: {e}")))?;
+            // `toml::from_str` covers BOTH invalid TOML syntax AND a valid-TOML-but-invalid-schema failure
+            // (an unknown key under deny_unknown_fields, a type mismatch); its own error text says which, so
+            // the wording is "could not parse daemon config" rather than mislabeling a schema error as a
+            // syntax error.
+            toml::from_str(text)
+                .map_err(|e| ConfigError(format!("could not parse daemon config: {e}")))?;
         cfg.validate()?;
         Ok(cfg)
     }
@@ -228,7 +233,10 @@ mod tests {
     fn an_unknown_key_is_rejected_not_ignored() {
         // deny_unknown_fields: a typo'd key must be a loud error, not a silently-dropped setting.
         let err = DaemonConfig::from_toml_str("typo_field = \"oops\"\n").unwrap_err();
-        assert!(err.0.contains("invalid TOML"), "{err}");
+        assert!(err.0.contains("could not parse daemon config"), "{err}");
+        // the unknown key is named in the underlying toml error, distinguishing a schema error from a
+        // syntax error.
+        assert!(err.0.contains("typo_field"), "{err}");
     }
 
     #[test]
