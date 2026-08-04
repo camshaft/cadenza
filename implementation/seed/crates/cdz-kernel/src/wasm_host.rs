@@ -634,8 +634,11 @@ fn val_shape(val: &wasmtime::component::Val) -> String {
         Val::List(items) => format!("list(len {})", items.len()),
         Val::Record(fields) => format!("record({} fields)", fields.len()),
         Val::Tuple(items) => format!("tuple(len {})", items.len()),
-        Val::Variant(case, _) => format!("variant({case})"),
-        Val::Enum(case) => format!("enum({case})"),
+        // Drop the case LABEL: it's component type-metadata (attacker-controllable, arbitrarily long), so
+        // embedding it re-opens the same unbounded-message DoS the rest of val_shape closes (#2057 follow-up).
+        // Just the arm.
+        Val::Variant(_, _) => "variant".into(),
+        Val::Enum(_) => "enum".into(),
         Val::Option(_) => "option".into(),
         Val::Result(_) => "result".into(),
         Val::Flags(f) => format!("flags({} set)", f.len()),

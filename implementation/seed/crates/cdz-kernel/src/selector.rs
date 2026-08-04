@@ -37,7 +37,7 @@ pub enum Sink {
 /// One routing RULE: match an artifact by its opaque `kind` and/or `name`, and send a match to `sink`.
 /// Both matchers `None` = a catch-all (matches every artifact) — the natural DEFAULT rule at the end of
 /// a rule list. `kind` matches EXACTLY; `name_prefix` matches a name PREFIX (mirrors the authz
-/// [`crate::authz::ResourcePredicate::Prefix`] style — a prefix is enough for real routing and needs no
+/// [`crate::effect::ResourcePredicate::Prefix`] style — a prefix is enough for real routing and needs no
 /// glob/regex dependency). When both are set, BOTH must match (AND). Matching is on opaque strings only
 /// (keystone invariant): a rule carries zero knowledge of what produced the artifact.
 #[derive(Debug, Clone, PartialEq, Eq)]
