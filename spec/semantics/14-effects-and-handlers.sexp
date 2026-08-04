@@ -6248,6 +6248,49 @@
   (call   main (: 0 Int64))
   (output (: 1 Int64)))
 
+(case "a handler state of TWO tries (tuple) updates each side independently across resumes"
+  (doc    "The multi-field upgrade of the sum-state case above (whose state wraps ONE counter): the
+           handler's state is a TUPLE of two maps, each op destructuring the pair and rebuilding it with
+           ITS side updated — two addl grow the left trie, one addr the right, and sizes reads both
+           (2·10 + 1 = 21). A state-slot rebuild that clobbered the untouched side (or aliased the two
+           tries) would misreport a size. The two-table handler shape (e.g. a symbol table beside a
+           diagnostics table) threaded as one compound state.")
+  (input  (do
+            (effect Tw (op addl (-> Int64 Int64)) (op addr (-> Int64 Int64)) (op sizes (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle Tw (tuple Map.empty Map.empty)
+                ((addl (v) s (match s ((tuple l r) (resume 0 (tuple (Map.insert l v v) r)))))
+                 (addr (v) s (match s ((tuple l r) (resume 0 (tuple l (Map.insert r v v))))))
+                 (sizes (u) s (match s ((tuple l r) (resume (+ (* 10 (Map.len l)) (Map.len r)) s)))))
+                (do
+                  (Tw.addl 1)
+                  (Tw.addl 2)
+                  (Tw.addr 10)
+                  (Tw.sizes))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 21 Int64)))
+
+(case "a RECORD handler state evolves a table and a counter that genuinely DIVERGE"
+  (doc    "The record companion, with a divergence witness: the state is `(record (tbl …) (ops …))` and
+           each put inserts into the table AND increments the counter — but the table DEDUPES (three
+           puts, two distinct keys) while the counter counts every op, so tbl-len 2 ≠ ops 3 (→ 23). The
+           divergence proves both fields genuinely evolve per-resume rather than mirroring one count; a
+           state rebuild that recomputed one field from the other would collapse them. Field access via
+           projection, rebuild via the record constructor — the row machinery inside the arm.")
+  (input  (do
+            (effect St (op put (-> Int64 Int64)) (op stats (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St (record (tbl Map.empty) (ops 0))
+                ((put (v) s (resume 0 (record (tbl (Map.insert (. s tbl) v v)) (ops (+ (. s ops) 1)))))
+                 (stats (u) s (resume (+ (* 10 (Map.len (. s tbl))) (. s ops)) s)))
+                (do
+                  (St.put 5)
+                  (St.put 6)
+                  (St.put 5)
+                  (St.stats))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 23 Int64)))
+
 (case "a perform in a match-arm guard is discharged by the enclosing handle"
   (doc    "`(handle Ask 5 ((get () s (resume s (- s 1)))) (match 9 ((guard n (> (Ask.get) 3)) 100) (n 200)))`
            — a perform `(Ask.get)` inside a match-arm GUARD condition, discharged by an intra-program
