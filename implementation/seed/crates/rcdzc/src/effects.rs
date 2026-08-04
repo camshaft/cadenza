@@ -4658,9 +4658,22 @@ fn thread_bounded(
             // dropped — byte-identical to before for the single-handler-depth surface.
             let items_len = items.len();
             let mut kept: Vec<StructId> = Vec::new();
+            let abort_before_do = ctx.abort_value.get();
             for (i, it) in items.into_iter().enumerate() {
                 let (r, next) = thread_bounded(db, it, cur, ctx, inline_depth)?;
                 cur = next;
+                // A NON-FINAL item that ABORTS ends the sequence: everything AFTER it is DEAD (never runs at
+                // runtime — the abort abandons the continuation). Its rewrite `r` is the abort value, which
+                // becomes the do's value. Stop here — do NOT thread the dead suffix (threading it would run
+                // its performs / push pending self-call temps for code that never executes, and letting the
+                // loop continue would OVERWRITE `last` with the dead FINAL item's rewrite, dropping the abort
+                // value → `(do (A.tick) (B.bail 99) (A.tick))` under B mis-yielded the trailing dead `(A.tick)`
+                // as the do-value instead of 99, forcing the dead tick: 23/34 instead of 110). A non-final
+                // abort at the LAST item falls through to the `i+1==items_len` arm normally.
+                if i + 1 < items_len && ctx.abort_value.get() != abort_before_do {
+                    last = Some(r);
+                    break;
+                }
                 if i + 1 == items_len {
                     last = Some(r);
                 } else if ctx.abort_value.get().is_none()
