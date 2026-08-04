@@ -8380,3 +8380,23 @@
                   (Store.size))))
             (export main)))
   (call   main (: 50 Int64)) (output (: 50 Int64)))
+(case "a recursive performer of a nested-handler op whose resume performs the outer effect threads the advance"
+  (doc    "The recursive-nested-arm-resume fix (v-effects self-probe, concierge-steered pre-spec-lift): a
+           recursive `loop` calls a nested `B` handler's op `B.step` whose ARM resume-value performs the OUTER
+           `A` effect — `(step (u) t (resume (A.tick) t))`. Each iteration's `A.tick` reads+advances A-state.
+           `loop 2` sums the two B.step results (= A.tick's pre-advance values 10 then 11) → 21. Pins that the
+           per-iteration outer advance made INSIDE a nested handler's resume-value threads correctly across the
+           recursion — the merge specializes `loop` against BOTH A and B, and the pre-spec-lift makes the
+           arm-hidden `A.tick` a direct-body perform so it threads via the top-level perform arm. Before the
+           fix the merge was skipped (the outer perform hidden in B's arm was invisible to the merge decision)
+           and the advance dropped. NO post-loop A read here (that observing sub-case is a separate increment).")
+  (input  (do
+            (effect A (op tick (-> Unit Int64)) (op get (-> Unit Int64)))
+            (effect B (op step (-> Unit Int64)))
+            (def (loop (: n Int64)) (if (= n 0) 0 (+ (B.step) (loop (- n 1)))))
+            (def (main)
+              (handle A 10 ((tick (u) s (resume s (+ s 1))) (get (u) s (resume s s)))
+                (handle B 0 ((step (u) t (resume (A.tick) t)))
+                  (loop 2))))
+            (export main)))
+  (output (: 21 Int64)))
