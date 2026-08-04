@@ -3490,6 +3490,30 @@
             (export main)))
   (call   main) (output (: 34 Int64)))
 
+(case "a block-wrapped branch perform of the OUTER effect in a let-init INSIDE a nested handler body declines cleanly (adv-69 a4 sub-face)"
+  (doc    "adv-69 a4 (v-effects self-probe 2026-08-04): the let-init block-boundary drop, but the miscompiling
+           `let` sits inside a NESTED inner handler's BODY and performs the OUTER effect. `(handle A 3 ((ga …))
+           (handle B 100 ((gb …)) (let ((v (let ((k true)) (if k (A.ga) 9)))) (+ (* 10 v) (A.ga)))))` — the
+           block-wrapped branch perform is of the OUTER `A`, in a `let`-init in the inner `B` handle's body, and
+           the continuation RE-READS `A`. Seeded A=3 it ran 33, correct is 34 (A.ga returns 3, advances to 4;
+           trailing A.ga must read 4). The single-handle version of this shape declines via the let-init floor,
+           but the intervening nested `B` handle made the OUTER `A` reduction's scanner stop at the inner
+           `Handle` and MISS the block-wrapped `A`-perform in `B`'s body — a silent miscompile. FIX: the scanner
+           now descends into a nested handle's BODY (not its arms — that is a3's territory) keeping the OUTER
+           ctx, so `block_wrapped_branch_performs` (ctx-keyed) fires only on an OUTER-effect perform (an inner
+           `B`-effect perform never matches → no over-decline of `B`'s own shapes). Grades TODO on all backends;
+           flips to 34 PASS on the through-block fold.")
+  (input  (do
+            (effect A (op ga (-> Unit Int64)))
+            (effect B (op gb (-> Unit Int64)))
+            (def (main)
+              (handle A 3 ((ga (u) s (resume s (+ s 1))))
+                (handle B 100 ((gb (u) t (resume t t)))
+                  (let ((v (let ((k true)) (if k (A.ga) 9))))
+                    (+ (* 10 v) (A.ga))))))
+            (export main)))
+  (call   main) (output (: 34 Int64)))
+
 (case "a BLOCK-wrapped branch perform in a MATCH-SCRUTINEE declines cleanly (adv-69 g3 sub-face)"
   (doc    "adv-69 g3 (breaker probe-g3, block-outstate battery): the SAME block-boundary out-state drop, at a
            MATCH-SCRUTINEE consuming position. `(match (let ((b true)) (if b (St.get) 99)) (v (+ (* 10 v)
