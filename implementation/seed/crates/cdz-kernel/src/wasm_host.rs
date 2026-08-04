@@ -743,8 +743,9 @@ impl crate::reducer::Reducer for ComponentReducer {
                             // None. `g.payload` is a Vec<u8> from the guest; freeze it into `Bytes` (the
                             // ref-counted Inline body) via `.into()`.
                             g.payload.map(|p| crate::effect::Payload::Inline(p.into())),
-                            // The reducer WIT doesn't yet surface a per-effect timeliness (guest-declared
-                            // batchability is a follow-up WIT slice); guest effects default to Interactive.
+                            // Guest effects are Interactive: timeliness is not part of the reducer WIT
+                            // surface, so a guest can't declare per-effect batchability (a guest-declared
+                            // timeliness would be a WIT-surface extension).
                             crate::effect::Timeliness::Interactive,
                         ),
                         // The guest's continuation token rides into the kernel Effect (→ Dispatched frame).
