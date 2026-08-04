@@ -68134,22 +68134,32 @@ mod stage1 {
     }
 
     #[test]
-    fn a_perform_arg_with_a_foreign_effect_used_twice_in_the_arm_declines_not_miscompiles() {
-        // EFFECT-DUPLICATION GUARD. An operation whose ARGUMENT carries a FOREIGN perform, bound to an arm
-        // parameter the arm uses MORE THAN ONCE, must DECLINE — never duplicate the effect. `Add.sum`'s arm
-        // reads `(. p 0)` AND `(. p 1)`, and the argument `(tuple (Ask.get) (Ask.get))` carries two `Ask`
-        // gets foreign to the `Add` handler. β-substituting the tuple for `p` (used twice) would copy it,
-        // so the outer `Ask` handler would thread FOUR gets instead of two — a miscompile (observed: the
-        // second read jumped from 11 to 13). The guard turns that into a clean decline. Regression pin:
-        // before the guard, this compiled and ran to a wrong value.
+    fn a_perform_arg_with_a_foreign_effect_used_twice_in_the_arm_folds_running_the_effect_once() {
+        // OP-ARG LET-LIFT (c4ea51302). An operation whose ARGUMENT carries a FOREIGN perform, bound to an arm
+        // parameter the arm uses MORE THAN ONCE, now FOLDS — binding the arg to a fresh `#cv` let ONCE and
+        // duplicating the pure reference, so the foreign effect runs EXACTLY ONCE regardless of arm uses.
+        // `Add.sum`'s arm reads `(. p 0)` AND `(. p 1)`, and the argument `(tuple (Ask.get) (Ask.get))`
+        // carries two `Ask` gets foreign to the `Add` handler. An op argument is evaluated ONCE (before the
+        // call) regardless of how many times the arm reads the bound param, so the correct semantics is: the
+        // two `Ask.get`s run once each (seeded 10 → 10 then 11, tuple = (10,11)), then the arm reads that ONE
+        // tuple twice → `(+ (* 10 100) 11)` = 1011. Before the let-lift this DECLINED (the effect-duplication
+        // guard refused it rather than risk β-copying the tuple and threading FOUR gets); the let-lift folds
+        // it correctly. Regression pin: the foreign perform must fire exactly ONCE (a naive β-copy → four
+        // gets → wrong value; a decline → no fold at all). Distinct from an arg performing the handler's OWN
+        // op (still declines — that needs threading).
         let src = "(do (effect Ask (op get (-> Unit Int64))) \
                    (effect Add (op sum (-> (Tuple Int64 Int64) Int64))) \
                    (def (main) (handle Ask 10 ((get (u) s (resume s (+ s 1)))) \
                      (handle Add 0 ((sum (p) s (resume (+ (* (. p 0) 100) (. p 1)) s))) \
                        (Add.sum (tuple (Ask.get) (Ask.get)))))) (export main))";
-        assert!(
-            compile_component(&crate::codec::encode(&parse(src))).is_err(),
-            "a foreign-performing argument bound to a multiply-used arm param must decline, not miscompile"
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a foreign-performing op arg bound to a multiply-used arm param folds (op-arg let-lift)"),
+                "main"
+            ),
+            1011,
+            "the foreign perform must run EXACTLY ONCE (tuple (10,11)) → (+ (* 10 100) 11) = 1011, not duplicated"
         );
         // The SAME shape with PURE tuple elements folds fine (no effect to duplicate) → 7.
         let pure = "(do (effect Add (op sum (-> (Tuple Int64 Int64) Int64))) \

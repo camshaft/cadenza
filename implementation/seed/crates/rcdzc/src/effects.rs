@@ -4577,14 +4577,44 @@ fn thread_bounded(
             // mirrors the applied-lambda pre-reduction's pure-args soundness guard. (`arg_reaches_any_perform`
             // is used, NOT `body_reaches_foreign_perform`, because the latter over-reports a record literal's
             // field-pair as an unresolvable call — spuriously declining a pure record argument.)
+            // OP-ARG LET-LIFT (cross-handler inline-arg-position completeness fix, breaker xh1/xh2). A
+            // MULTI-USE param whose arg PERFORMS would duplicate the effect on substitution (the guard below).
+            // For a FOREIGN perform arg — an op THIS handler does not discharge, e.g. `(B.put (A.get))` under
+            // B where `A.get` homes to the enclosing A — the sound rewrite is to BIND it once to a fresh
+            // `#cv` let and duplicate the pure ref, exactly the Site-5 hoist for performing conditions (verified
+            // by xh2: the hand-let-bound spelling `(let ((x (A.get))) (B.put x))` FOLDS while the inline arg
+            // declines). Lift each such arg BEFORE building the arm body: replace the arg with a `#cv` ref and
+            // remember the binding, then wrap the whole arm result in the `let`s (the perform runs once, in
+            // arg-evaluation order, then B's arm reads the pure `#cv` twice). Gated to FOREIGN performs (a
+            // perform of THIS handler's OWN op as a multi-use arg still declines — it needs threading, not a
+            // plain let-bind; a distinct, harder shape). A single-use or pure arg is untouched.
+            let mut arg_lifts: Vec<(StructId, StructId)> = Vec::new(); // (#cv binder, arg)
             if arm.params.len() == rewritten_args.len() {
-                for (&p, &a) in arm.params.iter().zip(&rewritten_args) {
-                    if !is_unit_param(db, p)
-                        && arg_reaches_any_perform(db, a, ctx)
-                        && count_param_refs(db, arm.body, p) > 1
+                // Collect indices of multi-use params whose arg performs; decide lift-vs-decline per arg.
+                let mut to_lift: Vec<usize> = Vec::new();
+                for (i, &p) in arm.params.iter().enumerate() {
+                    let a = rewritten_args[i];
+                    if is_unit_param(db, p)
+                        || !arg_reaches_any_perform(db, a, ctx)
+                        || count_param_refs(db, arm.body, p) <= 1
                     {
+                        continue;
+                    }
+                    // A multi-use param with a performing arg. If the arg performs a FOREIGN op (none of it
+                    // is THIS handler's discharged op that would need threading), LET-LIFT it; else decline.
+                    if arg_performs_only_foreign(db, a, ctx) {
+                        to_lift.push(i);
+                    } else {
                         return None;
                     }
+                }
+                for i in to_lift {
+                    let a = rewritten_args[i];
+                    let cv_name = format!("#cv{}", a.0);
+                    let cv_binder = db.push_atom(Leaf::Name(cv_name.clone()));
+                    let cv_ref = db.push_atom(Leaf::Name(cv_name));
+                    arg_lifts.push((cv_binder, a));
+                    rewritten_args[i] = cv_ref;
                 }
             }
             // The arm binds its params to the args and its state binder to THIS SLOT's current state.
@@ -4670,6 +4700,22 @@ fn thread_bounded(
             let value = deep_fresh_copy(db, value);
             let next_state = deep_fresh_copy(db, next_state);
             cur[slot] = next_state;
+            // Wrap the perform's result VALUE in the op-arg `#cv` let-lifts (innermost binding = last lifted
+            // arg, so bindings evaluate in arg order): `(let ((#cv (A.get))) <value with v↦#cv>)`. The foreign
+            // perform now runs ONCE as the let-init (the enclosing fold discharges it), and B's arm reads the
+            // pure `#cv` however many times. Nothing lifted → `value` unchanged (byte-identical common case).
+            let value = if arg_lifts.is_empty() {
+                value
+            } else {
+                let mut wrapped = value;
+                for (binder, arg) in arg_lifts.into_iter().rev() {
+                    let let_head = db.push_atom(Leaf::Name("let".to_string()));
+                    let pair = db.push_list(vec![binder, arg]);
+                    let bindings = db.push_list(vec![pair]);
+                    wrapped = db.push_list(vec![let_head, bindings, wrapped]);
+                }
+                wrapped
+            };
             Some((value, cur))
         }
         // A `do` sequence — `(do e0 e1 … en)`. Evaluate each in EVALUATION ORDER, threading state; the
@@ -7715,6 +7761,47 @@ fn arg_reaches_any_perform(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> boo
     // ctx-free core is `reaches_any_perform` so callers without a `HandlerCtx` can reuse the same walk.
     let _ = ctx;
     reaches_any_perform(db, node)
+}
+
+/// Whether the argument subtree at `node` reaches a perform but performs NONE of THIS handler's discharged
+/// ops — i.e. every perform in it is FOREIGN (an outer handler's / host op that the enclosing fold handles).
+/// The op-arg let-lift gate: such an arg can be bound to a `#cv` let and left intact (the perform runs once
+/// as the let-init, the enclosing fold discharges it); an arg that performs THIS handler's OWN op needs
+/// threading (not a plain let-bind), so it is NOT lifted (returns false → the caller declines). CONSERVATIVE:
+/// requires it DOES reach a perform (else there's nothing to lift) AND reaches no discharged-op perform.
+fn arg_performs_only_foreign(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> bool {
+    reaches_any_perform(db, node) && !subtree_reaches_discharged_op(db, node, ctx)
+}
+
+/// Whether `node` reaches a perform of one of THIS ctx's DISCHARGED ops (in `ctx.arms`), following non-
+/// recursive callee bodies (bounded). Narrower than `arg_reaches_any_perform` (which counts foreign performs
+/// too) — used by the op-arg let-lift to exclude an arg that performs the handler's own op.
+fn subtree_reaches_discharged_op(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> bool {
+    fn walk(db: &mut Db, node: StructId, ctx: &HandlerCtx, depth: u32) -> bool {
+        if depth > 16 {
+            return true; // too deep — assume it may (safe over-report → decline, not mis-lift)
+        }
+        if let Resolved::Apply { head, args } = resolved_of(db, node) {
+            if is_perform(db, head, ctx).is_some() {
+                return true;
+            }
+            if crate::eval::effect_op_of(db, head).is_none()
+                && !is_pure_operator_head(db, head)
+                && let Some(callee) = crate::eval::lambda_body(db, head)
+                    .or_else(|| crate::eval::lambda_body_of_nullary(db, head))
+                && !crate::eval::is_recursive(db, callee)
+                && walk(db, callee, ctx, depth + 1)
+            {
+                return true;
+            }
+            return args.iter().any(|&a| walk(db, a, ctx, depth + 1));
+        }
+        match db.ast.get(node).clone() {
+            Struct::List(children) => children.iter().any(|&c| walk(db, c, ctx, depth + 1)),
+            Struct::Atom(_) => false,
+        }
+    }
+    walk(db, node, ctx, 0)
 }
 
 /// Whether the subtree at `node` transitively reaches ANY perform (this handler's discharged op, a foreign
