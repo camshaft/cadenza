@@ -1076,6 +1076,151 @@
             runHook postInstall
           '';
         };
+
+        # Full-CI-in-nix increment 6f: the GHA `guide-examples` job — the guide's runnable-content gate
+        # (`cargo xtask guide-wasm` then, in guide/, `npm ci` + a dozen `npm run check:*` + `npm run build`
+        # + check:bundle). This is the LAST required-set job to nixify (ruleset 10560470) and the heaviest:
+        # it composes the browser compiler wasm + a node toolchain + the value-heap runtime store.
+        #
+        #   aarch64 MANDATORY (like gate/codegen/bench): the guide bundles the value-heap runtime whose
+        #   content hash the compiler pins (staged via the runtime hash embedded in cdz_wasm) — reproducible
+        #   per-arch only. The context name is `guide examples` (no platform promise), so aarch64 is fine.
+        #
+        # HERMETIC wasm-pack: `wasm-pack build` network-downloads its own wasm-bindgen + wasm-opt at run time
+        # (fatal in a sandbox), so we REPLICATE what it does with pinned nix tools instead: `cargo build
+        # --target wasm32-unknown-unknown --release` in cdz-wasm, then the wasm-bindgen CLI (`--target web`)
+        # over the cdylib to emit pkg/ (the JS glue + cdz_wasm_bg.wasm the guide imports), then wasm-opt -Os
+        # (the release-profile shrink wasm-pack applies). cdz-wasm is its OWN root-excluded [workspace]
+        # (path-deps rcdzc → the 7-crate compiler closure), vendoring from its OWN committed leaf lock
+        # (`cdz-wasm/Cargo.lock`, 187 pkgs).
+        #   wasm-bindgen CLI is version-LOCKED to the crate: `wasm-bindgen` in the leaf lock is 0.2.126, and
+        #   the CLI schema-checks an EXACT version match, but nixpkgs ships 0.2.121 — so we build 0.2.126 via
+        #   `buildWasmBindgenCli` (the same builder nixpkgs' own package uses), pinning the crate + vendor
+        #   hashes. A crate bump means re-pinning these two hashes (discover by zeroing + reading `got:`).
+        cdzWasmVendor = pkgs.rustPlatform.importCargoLock {
+          lockFile = ./implementation/seed/crates/cdz-wasm/Cargo.lock;
+        };
+        # The 0.2.126 wasm-bindgen CLI matching the leaf lock's `wasm-bindgen` crate (nixpkgs ships 0.2.121).
+        wasmBindgenCli =
+          let
+            src = pkgs.fetchCrate {
+              pname = "wasm-bindgen-cli";
+              version = "0.2.126";
+              hash = "sha256-H6Is3fiZVxZCfOMWK5dWMSrtn50VGv0sfdnsT+cTtyk=";
+            };
+          in
+          pkgs.buildWasmBindgenCli {
+            inherit src;
+            cargoDeps = pkgs.rustPlatform.fetchCargoVendor {
+              inherit src;
+              inherit (src) pname version;
+              hash = "sha256-VucqkXbCi4qtQzY/HrXiDnbSURsagPsdNVMn1Tw3UiY=";
+            };
+          };
+        # The vendored npm dependency set for guide/ (fixed-output; hash off guide/package-lock.json — a
+        # dependency change re-pins via `nix run nixpkgs#prefetch-npm-deps -- guide/package-lock.json`).
+        guideNpmDeps = pkgs.fetchNpmDeps {
+          # fetchNpmDeps reads package-lock.json at the source ROOT — root the fileset at ./guide so the
+          # lock lands at top level (a fileset rooted at ./. would nest it under guide/ and the builder
+          # errors "No lock file!"). Scoped to just the lock → the vendor re-derives only on a lock change.
+          src = pkgs.lib.fileset.toSource {
+            root = ./guide;
+            fileset = ./guide/package-lock.json;
+          };
+          hash = "sha256-BDmtWCGFSZ9iTkStHBFT/otezwwZGZEQIBBRHyHdrrM=";
+        };
+        # The guide source + the cdz-wasm compiler closure + the staged-lib sources (CAD + music) the
+        # preload checks read. NOT the whole repo (fine-grained cache). NB: the CAD/music `.cdz` libs live
+        # under implementation/{cad,music}/src — stage-wasm.mjs copies them into guide/src/wasm/{cad,music}.
+        guideExamplesSrc = pkgs.lib.fileset.toSource {
+          root = ./.;
+          fileset = pkgs.lib.fileset.unions (
+            (map (c: ./implementation/seed/crates + ("/" + c)) [
+              "cdz-wasm" "rcdzc" "cadenza-syntax" "cadenza-ast" "cdz-run" "cdz-rt" "cdz-num"
+            ]) ++ [
+              ./guide
+              ./implementation/cad/src
+              ./implementation/music/src
+              ./rust-toolchain.toml
+            ]
+          );
+        };
+        guideExamplesCheck = pkgs.stdenvNoCC.mkDerivation {
+          pname = "cdz-guide-examples";
+          version = "0.0.0";
+          src = guideExamplesSrc;
+          nativeBuildInputs = [
+            rustToolchain
+            wasmBindgenCli
+            pkgs.binaryen # wasm-opt (the -Os shrink wasm-pack's --release applies)
+            pkgs.nodejs_22 # node 22 (>=22.6 for --experimental-strip-types in test:unit)
+            pkgs.npmHooks.npmConfigHook # wires npmDeps → the offline npm cache (npm ci runs offline)
+          ];
+          # npmConfigHook reads these: the vendored dep set + the dir holding package-lock.json.
+          npmDeps = guideNpmDeps;
+          npmRoot = "guide";
+          # The base the guide's vite build fingerprints assets under — mirror the GHA env
+          # (VITE_BASE=/<repo>/). The repo is `cadenza`; a bundle-path check reads it.
+          VITE_BASE = "/cadenza/";
+          buildPhase = ''
+            runHook preBuild
+            export HOME="$TMPDIR/home"
+            export CARGO_HOME="$TMPDIR/cargo"
+            export CARGO_NET_OFFLINE=true
+            mkdir -p "$HOME" "$CARGO_HOME"
+            cat > "$CARGO_HOME/config.toml" <<EOF
+            [build]
+            jobs = 4
+            [source.crates-io]
+            replace-with = "vendored-sources"
+            [source.vendored-sources]
+            directory = "${cdzWasmVendor}"
+            EOF
+
+            # ── 1. Build + bindgen the browser compiler wasm (the hermetic `wasm-pack build` equivalent).
+            ( cd implementation/seed/crates/cdz-wasm
+              cargo build --release --target wasm32-unknown-unknown --locked
+              wasm-bindgen --target web --out-dir pkg \
+                target/wasm32-unknown-unknown/release/cdz_wasm.wasm
+              # wasm-pack's --release runs wasm-opt; the crate profile is opt-level="s" → -Os.
+              wasm-opt -Os pkg/cdz_wasm_bg.wasm -o pkg/cdz_wasm_bg.wasm
+            )
+
+            # ── 2. Stage pkg/ + the value-heap runtime + the CAD/music preload libs into guide/src/wasm/.
+            # stage-wasm.mjs finds the runtime by the hash embedded in the compiler wasm, in CADENZA_STORE.
+            export CADENZA_STORE="${componentStore}"
+            node guide/scripts/stage-wasm.mjs
+
+            # ── 3. The guide gate: install (offline, from the npm cache the hook wired), then the exact
+            # check sequence checks.yml runs (unit → prose → diagnostics → examples → calculator → the
+            # conformance guards → build → bundle). Same order so a failure maps 1:1 to the GHA job.
+            ( cd guide
+              npm ci
+              # The vendored bins (tsc, vite, …) ship `#!/usr/bin/env node` shebangs; /usr/bin/env doesn't
+              # exist in the hermetic sandbox → rewrite to nix paths. Patch the WHOLE tree, not just
+              # node_modules/.bin: those are symlinks (find -type f skips them), the real files live under
+              # node_modules/<pkg>/bin/, so `.bin`-only leaves tsc/vite unpatched (build → bad interpreter).
+              patchShebangs node_modules
+              npm run test:unit
+              npm run check:prose
+              npm run check:diagnostics
+              npm run check:examples
+              npm run check:calculator
+              npm run check:worker-stack
+              npm run check:tuple-collection
+              npm run check:cad-preload
+              npm run check:music-preload
+              npm run build
+              npm run check:bundle
+            )
+            runHook postBuild
+          '';
+          installPhase = ''
+            runHook preInstall
+            echo "ok: cdz-guide-examples (wasm-pack + npm ci + check:* + build + bundle)" > "$out"
+            runHook postInstall
+          '';
+        };
       in
       {
         # N1: the value-heap runtime components as NORMAL (input-addressed) derivations — `nix build
@@ -1224,6 +1369,9 @@
             bench-check = benchCheck;
             # Full-CI-in-nix increment 6e: the GHA cad-tests job (cdz test on the 4 in-tree Cadenza projects).
             cad-tests = cdzCadTestsCheck;
+            # Full-CI-in-nix increment 6f: the GHA guide-examples job (the guide's runnable-content gate —
+            # hermetic wasm-pack + npm ci + the check:* battery + build + bundle). The LAST required job.
+            guide-examples = guideExamplesCheck;
             # Full-CI-in-nix increment 6a: the GHA `roundtrip` job — every corpus program round-trips
             # through the syntax surfaces. Corpus-only (reads spec/semantics, no runtime store) → narrow
             # `seedRoundtripSrc` (no compiler-ml, #2007). Invoked via `cargo run --locked` (not the bare
