@@ -483,6 +483,7 @@ pass	a 5000-element pushed list reads head, middle, and last through the deeper 
 pass	a 64-bit-unsigned closure crosses the host boundary
 pass	a @ensures postcondition over a HEAP result checks at exit and returns the live collection
 pass	a @ensures relating the RESULT to a PARAMETER enforces the relation at exit
+pass	a @param accessor read inside a RECURSIVE walk consumes one response per iteration
 pass	a @param accessor splices into a quasiquote and the eval computes with the host value
 pass	a @param drives a recursive fold's iteration count
 pass	a @param of type (Qty Rational unit) desugars to num/den scalars + a guest Qty.of with the unit (#13 B2)
@@ -494,6 +495,7 @@ pass	a @param slice window whose length exceeds the remaining bytes yields None
 pass	a @param value SEEDS an in-program handler's state
 pass	a @param value crosses into a closure capture and applies
 pass	a @param value drives a CHAMP map lookup as the KEY
+pass	a @param value sizes a guest-built HEAP structure
 pass	a @requires on a UNIT-returning def is enforced — the precondition traps before the unit body
 pass	a @requires on a recursive def is re-checked at every entry including self-calls
 pass	a @requires precondition is enforced for a genuinely-runtime argument

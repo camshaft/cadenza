@@ -496,3 +496,47 @@
   (call   main)
   (host-responses (respond Param.a (: 7 Int64)) (respond Param.b (: 5 Int64)) (respond Param.a (: 3 Int64)))
   (output (: 753 Int64)))
+
+(case "a @param accessor read inside a RECURSIVE walk consumes one response per iteration"
+  (doc    "The consumption-order rows above (TWICE, interleaved a-b-a) are straight-line; this one moves
+           the repeated read INSIDE a recursion: `(walk 3 0)` performs `(Param.gain)` once per iteration
+           and folds each response into a positional digit — responses 3,7,5 -> 375. Pins that the per-op
+           response queue is threaded through the recursive frames in iteration order (a wrong hoist of
+           the accessor out of the loop would read one response thrice -> 333; a reversed queue -> 573).
+           The fold's-iteration-count row above uses the param as the loop BOUND read once; here the
+           accessor is the loop BODY read n times.")
+  (input  (do
+            (pragma param (param (: widget slider)) (: gain Int64))
+            (def (walk (: n Int64) (: acc Int64))
+              (if (= n 0) acc (walk (- n 1) (+ (* 10 acc) (Param.gain)))))
+            (def (main)
+              (host (Param) (walk 3 0)))
+            (export main)))
+  (call   main)
+  (host-responses (respond Param.gain (: 3 Int64))
+                  (respond Param.gain (: 7 Int64))
+                  (respond Param.gain (: 5 Int64)))
+  (output (: 375 Int64)))
+
+(case "a @param value sizes a guest-built HEAP structure"
+  (doc    "The recursive-fold row uses a param as a scalar loop bound; here the host response decides a
+           HEAP allocation: `(fill (Param.size) (list))` pushes size..1 onto a list, then the guest
+           interrogates the structure it built — `(* 10 (List.len xs))` + element 0. size=6 -> a 6-element
+           list [6,5,4,3,2,1] -> 60 + 6 = 66. Pins that a sidecar value flows into collection construction
+           (the persistent-vector growth path runs against a genuinely-runtime count) and that the
+           resulting structure is ordinary — len and positional access agree with the host's number.")
+  (input  (do
+            (pragma param (param (: widget slider)) (: size Int64))
+            (def (fill (: i Int64) (: acc (List Int64)))
+              (if (= i 0) acc (fill (- i 1) (List.push acc i))))
+            (def (main)
+              (host (Param)
+                (do
+                  (def n (Param.size))
+                  (def xs (fill n (list)))
+                  (+ (* 10 (List.len xs))
+                     (match (List.at xs 0) ((Some v) v) ((None _u) -1))))))
+            (export main)))
+  (call   main)
+  (host-responses (respond Param.size (: 6 Int64)))
+  (output (: 66 Int64)))

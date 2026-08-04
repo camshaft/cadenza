@@ -5583,6 +5583,7 @@ pass	α-equivalence handles nesting and distinguishes a bound variable from a sa
 todo	Set.of over runtime lists at two different element types declines pending the recursive-generic tie
 todo	TWO closures capturing one let-bound host call share ONE firing (in the exported def)
 todo	Type is a first-class value
+todo	a @param accessor read inside a RECURSIVE walk consumes one response per iteration
 todo	a @param accessor splices into a quasiquote and the eval computes with the host value
 todo	a @param drives a recursive fold's iteration count
 todo	a @param of type (Qty Rational unit) desugars to num/den scalars + a guest Qty.of with the unit (#13 B2)
@@ -5594,6 +5595,7 @@ todo	a @param slice window whose length exceeds the remaining bytes yields None
 todo	a @param value SEEDS an in-program handler's state
 todo	a @param value crosses into a closure capture and applies
 todo	a @param value drives a CHAMP map lookup as the KEY
+todo	a @param value sizes a guest-built HEAP structure
 todo	a Bool host arg BESIDE a scalar and a String composes in one mixed-arity op
 todo	a Bytes value SENT to the host is still readable after the call (the arg marshal borrows)
 todo	a Float64 closure captures a Float64 build-time host effect result
