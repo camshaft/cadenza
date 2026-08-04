@@ -32,6 +32,10 @@
 //! - [`selector`] — the artifact OUTPUT-ROUTING decision (operator seq 108/109): a caller-supplied
 //!   selector program routes each invoked artifact to a [`selector::Sink`] (session-response | CAS),
 //!   matching ONLY opaque `kind`/`name` strings — the host knows nothing about what produced them.
+//! - [`ast_marshal`] — generic marshalling between a wasmtime component `Val` and the cadenza tagged-AST
+//!   wire (operator seq 107, "binary format = AST encoding"): [`ast_marshal::val_to_ast`] turns a result
+//!   `Val` of ANY WIT shape into a self-describing AST value; [`ast_marshal::ast_to_val`] is the dual
+//!   (AST bytes + a WIT type → `Val`, for marshalling args IN).
 //! - [`kernel`] — the core `fold → authorize → durably-dispatch → execute → fold-result` loop, plus
 //!   `replay`/`recover` (crash recovery: rebuild KV + open-obligation set from the log, no live
 //!   re-execution) and `time_out_effect` (the "or time out" half of the S4 recovery contract).
