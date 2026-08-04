@@ -80,7 +80,7 @@ pub enum LogConfig {
 /// regardless of config. The emitter that reads `targets` + performs the fan-out is a separate, feature-gated
 /// component (kept out of the default build to exclude the QUIC/metrics dependency tree); the fan-out
 /// described above is that emitter's intended behavior, which the config is defined ahead of.
-#[derive(Debug, Clone, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ObservabilityConfig {
     /// Emit metrics. Default off. When true, `targets` must be non-empty (validated below).
@@ -90,6 +90,29 @@ pub struct ObservabilityConfig {
     /// several sinks (the operator's config-MULTIPLE requirement). TOML: `[[observability.target]]` tables.
     #[serde(default, rename = "target")]
     pub targets: Vec<MetricsTarget>,
+    /// How often (seconds) the daemon reports/flushes metrics to the backends — the exporter's periodic
+    /// `Registry::report` cadence. Default 60 (the conventional statsd/otlp push interval). Since the
+    /// registry Counters are DRAIN-ON-REPORT, this interval IS the aggregation window (each report emits the
+    /// per-interval delta — standard push semantics). Min-clamped to 1 (validated below) so a misconfig
+    /// can't spin a tight flush loop. Applies to all targets (a per-target override could be added later).
+    #[serde(default = "ObservabilityConfig::default_report_interval_secs")]
+    pub report_interval_secs: u64,
+}
+
+impl ObservabilityConfig {
+    fn default_report_interval_secs() -> u64 {
+        60
+    }
+}
+
+impl Default for ObservabilityConfig {
+    fn default() -> Self {
+        ObservabilityConfig {
+            enabled: false,
+            targets: Vec::new(),
+            report_interval_secs: Self::default_report_interval_secs(),
+        }
+    }
 }
 
 /// One metrics target backend — a per-kind TYPED config, NOT a generic `{kind, endpoint}` pair (operator
@@ -394,6 +417,12 @@ impl DaemonConfig {
                         .into(),
                 ));
             }
+            if self.observability.report_interval_secs == 0 {
+                return Err(ConfigError(
+                    "[observability] report_interval_secs must be >= 1 (0 would spin a tight flush loop)"
+                        .into(),
+                ));
+            }
             // Per-kind semantic validation: each variant checks the fields IT needs (serde already rejected a
             // missing/unknown field or a bad `kind`; this catches present-but-blank values).
             for (i, t) in self.observability.targets.iter().enumerate() {
@@ -468,6 +497,10 @@ mod tests {
         assert_eq!(cfg, DaemonConfig::default());
         assert_eq!(cfg.log, LogConfig::Memory);
         assert!(!cfg.observability.enabled);
+        assert_eq!(
+            cfg.observability.report_interval_secs, 60,
+            "default report interval"
+        );
         assert_eq!(cfg.retries, RetryConfig::default());
         // [tracing] defaults: disabled, "info" filter, compact/stderr.
         assert!(!cfg.tracing.enabled);
@@ -556,6 +589,48 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.0.contains("at least one"), "{err}");
+    }
+
+    #[test]
+    fn observability_report_interval_parses_and_rejects_zero_when_enabled() {
+        // Custom interval parses.
+        let cfg = DaemonConfig::from_toml_str(
+            r#"
+            [observability]
+            enabled = true
+            report_interval_secs = 15
+            [[observability.target]]
+            kind = "statsd"
+            endpoint = "127.0.0.1:8125"
+            "#,
+        )
+        .expect("custom report interval parses");
+        assert_eq!(cfg.observability.report_interval_secs, 15);
+
+        // 0 when enabled is rejected (would spin a tight flush loop).
+        let err = DaemonConfig::from_toml_str(
+            r#"
+            [observability]
+            enabled = true
+            report_interval_secs = 0
+            [[observability.target]]
+            kind = "statsd"
+            endpoint = "127.0.0.1:8125"
+            "#,
+        )
+        .unwrap_err();
+        assert!(err.0.contains("report_interval_secs"), "{err}");
+
+        // 0 when DISABLED is fine (not validated — nothing reports).
+        let cfg = DaemonConfig::from_toml_str(
+            r#"
+            [observability]
+            enabled = false
+            report_interval_secs = 0
+            "#,
+        )
+        .expect("disabled skips interval validation");
+        assert_eq!(cfg.observability.report_interval_secs, 0);
     }
 
     #[test]
