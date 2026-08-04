@@ -4424,12 +4424,14 @@ fn thread_branch_local_abort_with_out(
         && let Some(abort) = after
     {
         ctx.abort_value.set(before);
-        // ABORT-FOLD do-SHAPE inside a BRANCH (the branch/scrutinee face of the abort-outer-advance fix;
-        // the direct-handle-body do-shape landed #2002, the strict-operand lift is queued). A FOREIGN
+        // ABORT-FOLD do-SHAPE inside a BRANCH / match-ARM body (the branch/arm-body face of the abort-outer-
+        // advance fix — this helper threads both `if` branches AND `match` arm BODIES; sibling faces landed
+        // separately: direct-handle-body do-shape #2002, strict-operand #2010, match-SCRUTINEE #2017 — a
+        // perform in a match SCRUTINEE is on the strict spine and threaded normally, NOT here). A FOREIGN
         // perform (an OUTER handler's effect) on the branch's strict spine BEFORE the abort has committed
         // its advance and must survive — but the branch-local collapse returns the BARE `abort` value,
         // discarding `rbranch` (which the do-arm already built as the sound `(do <foreign…> <abort-value>)`).
-        // `(if c (do (A.tick) (B.bail 99)) …)` / `(match (do (A.tick) (B.bail 99)) …)` under B then reads
+        // `(if c (do (A.tick) (B.bail 99)) …)` / `(match k (_ (do (A.tick) (B.bail 99))))` under B then reads
         // the outer `(A.get)` at the pre-advance state (109 vs 110). Use `rbranch` (a `do`-form reaching a
         // foreign perform) as the branch rewrite so the ENCLOSING fold discharges the prefix; its out-state
         // is still `states_in` (the abort abandons THIS branch's continuation, so no advance is observable
