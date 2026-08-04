@@ -431,6 +431,66 @@
           '';
         };
 
+        # Full-CI-in-nix increment 5: the GHA `cdz-agent-host` job (cargo test + clippy + fmt, plus the
+        # `--features admin` test + the default/admin/live-net/admin,live-net clippy matrix). cdz-agent-host
+        # is its OWN root-excluded [workspace] (path-deps cdz-kernel → cadenza-ast), vendoring from its OWN
+        # committed Cargo.lock (309 pkgs, v-agent-harness-host). Feeds BOTH guest components from my
+        # derivations — CEDAR_POLICY_COMPONENT=${cedarGuest} (cedar authz e2e) + CDZ_REDUCER_COMPONENT=
+        # ${reducerGuest} (ComponentSessionFactory e2e) — so the env-gated e2es RUN (unset → they skip).
+        # Both are pre-validated by my derivations, so the check skips the CI job's build+validate-guest
+        # steps. Advisory-by-omission → unilateral cargo-twin retire once green.
+        cdzAgentHostVendor = pkgs.rustPlatform.importCargoLock {
+          lockFile = ./implementation/seed/crates/cdz-agent-host/Cargo.lock;
+        };
+        cdzAgentHostSrc = pkgs.lib.fileset.toSource {
+          root = ./.;
+          fileset = pkgs.lib.fileset.unions [
+            ./implementation/seed/crates/cdz-agent-host
+            ./implementation/seed/crates/cdz-kernel
+            ./implementation/seed/crates/cadenza-ast
+            ./rust-toolchain.toml
+          ];
+        };
+        cdzAgentHostNativeCheck = pkgs.stdenvNoCC.mkDerivation {
+          pname = "cdz-agent-host-native";
+          version = "0.0.0";
+          src = cdzAgentHostSrc;
+          nativeBuildInputs = [ rustToolchain ];
+          buildPhase = ''
+            runHook preBuild
+            export HOME="$TMPDIR/home"
+            export CARGO_HOME="$TMPDIR/cargo"
+            export CARGO_NET_OFFLINE=true
+            mkdir -p "$HOME" "$CARGO_HOME"
+            cat > "$CARGO_HOME/config.toml" <<EOF
+            [build]
+            jobs = 4
+            [source.crates-io]
+            replace-with = "vendored-sources"
+            [source.vendored-sources]
+            directory = "${cdzAgentHostVendor}"
+            EOF
+            cd implementation/seed/crates/cdz-agent-host
+            # Feed the pre-built, pre-validated guest components (my derivations) so the env-gated cedar
+            # authz + ComponentSessionFactory e2es RUN instead of skipping.
+            export CEDAR_POLICY_COMPONENT="${cedarGuest}"
+            export CDZ_REDUCER_COMPONENT="${reducerGuest}"
+            cargo test --locked
+            cargo clippy --all-targets --locked -- -D warnings
+            cargo fmt --check
+            cargo test --locked --features admin
+            cargo clippy --all-targets --locked --features admin -- -D warnings
+            cargo clippy --all-targets --locked --features live-net -- -D warnings
+            cargo clippy --all-targets --locked --features admin,live-net -- -D warnings
+            runHook postBuild
+          '';
+          installPhase = ''
+            runHook preInstall
+            echo "ok: cdz-agent-host native (test + clippy + fmt + feature matrix)" > "$out"
+            runHook postInstall
+          '';
+        };
+
         # ── N1: the value-heap runtime components AS input-addressed derivations (hash from output) ─
         #
         # `xtask build` produces TWO runtime components (build_component + canonicalize_runtime in
@@ -881,6 +941,8 @@
             rcdzc-wasm-native = rcdzcWasmNativeCheck;
             # Full-CI-in-nix increment 4: the GHA cdz-kernel job (test + clippy + fmt + live-exec).
             cdz-kernel-native = cdzKernelNativeCheck;
+            # Full-CI-in-nix increment 5: the GHA cdz-agent-host job (test + clippy + fmt + feature matrix).
+            cdz-agent-host-native = cdzAgentHostNativeCheck;
             # Full-CI-in-nix increment 6a: the GHA `roundtrip` job (`cargo xtask roundtrip` — every corpus
             # program round-trips through the syntax surfaces). Corpus-only (reads spec/semantics, no
             # runtime store), so it reuses seedTestSrc (which already carries spec/semantics) via the
