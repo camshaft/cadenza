@@ -494,21 +494,38 @@ fn parse_hash_hex(hex: &str) -> Option<Hash> {
 /// runtime handle indices are the FROZEN `runtime.wit` order (documented per method).
 pub struct HeapHandle<T: 'static> {
     store: wasmtime::Store<T>,
+    /// The fuel budget reported in a [`ComponentError::FuelExhausted`] if a heap op hits `OutOfFuel` (the
+    /// store is metered) — set at [`HeapHandle::bind`]. The marshalling ops are host-driven + bounded, so
+    /// exhaustion is unexpected, but the classification mirrors the sibling wasm paths so the budget signal
+    /// is preserved if the shared store IS metered (#2133).
+    fuel_budget: u64,
+    // BUILD ops (slice 1) — construct the reducer's structural WIT args as value-heap handles.
     box_int: wasmtime::component::Func,
     arr_alloc: wasmtime::component::Func,
     arr_set: wasmtime::component::Func,
     sum_new: wasmtime::component::Func,
     vec_len: wasmtime::component::Func,
     str_new: wasmtime::component::Func,
+    // READ ops (slice 2) — project the reducer's returned effect-request list back to structural values.
+    arr_get: wasmtime::component::Func,
+    str_get: wasmtime::component::Func,
+    sum_disc: wasmtime::component::Func,
+    sum_payload: wasmtime::component::Func,
+    vec_get: wasmtime::component::Func,
+    get_int: wasmtime::component::Func,
 }
 
-/// Classify a heap-op `Func::call`/`post_return` failure (github-liaison #2122): a genuine guest TRAP is
-/// [`ComponentError::Trap`], but wasmtime also returns a NON-trap error for a host-side signature mismatch
-/// (a WIT-version drift between the kernel's expected heap ABI and the composed runtime's) — that's a
-/// host/config condition, NOT a guest trap, so classify it as [`ComponentError::Instantiate`] (mirroring
-/// [`invoke_component`]'s careful split), so a runtime-ABI drift doesn't masquerade as "the guest trapped".
-fn classify_heap_call_err(e: wasmtime::Error) -> ComponentError {
-    if e.downcast_ref::<wasmtime::Trap>().is_some() {
+/// Classify a heap-op `Func::call`/`post_return` failure (github-liaison #2122/#2133): the SAME 3-way split
+/// the sibling wasm paths ([`invoke_component`], [`ComponentReducer::apply`]) use:
+/// - `Trap::OutOfFuel` → [`ComponentError::FuelExhausted`] (a resource-ceiling hit — the Copilot PR#1009
+///   DoS convention; distinct from a semantic trap so the budget signal isn't lost if heap ops run metered);
+/// - any other trap → [`ComponentError::Trap`] (a genuine guest trap);
+/// - a NON-trap error → [`ComponentError::Instantiate`] (a host-side signature mismatch = a WIT/runtime-ABI
+///   drift, NOT a guest trap — so ABI drift doesn't masquerade as "the guest trapped").
+fn classify_heap_call_err(e: wasmtime::Error, budget: u64) -> ComponentError {
+    if let Some(wasmtime::Trap::OutOfFuel) = e.downcast_ref::<wasmtime::Trap>() {
+        ComponentError::FuelExhausted { budget }
+    } else if e.downcast_ref::<wasmtime::Trap>().is_some() {
         ComponentError::Trap(e.to_string())
     } else {
         ComponentError::Instantiate(format!("heap-op call failed (runtime-ABI mismatch?): {e}"))
@@ -546,14 +563,27 @@ impl<T: 'static> HeapHandle<T> {
         let sum_new = op("sum-new")?;
         let vec_len = op("vec-len")?;
         let str_new = op("str-new")?;
+        let arr_get = op("arr-get")?;
+        let str_get = op("str-get")?;
+        let sum_disc = op("sum-disc")?;
+        let sum_payload = op("sum-payload")?;
+        let vec_get = op("vec-get")?;
+        let get_int = op("get-int")?;
         Ok(HeapHandle {
             store,
+            fuel_budget: DEFAULT_FOLD_FUEL,
             box_int,
             arr_alloc,
             arr_set,
             sum_new,
             vec_len,
             str_new,
+            arr_get,
+            str_get,
+            sum_disc,
+            sum_payload,
+            vec_get,
+            get_int,
         })
     }
 
@@ -565,12 +595,13 @@ impl<T: 'static> HeapHandle<T> {
         args: &[u32],
     ) -> Result<u32, ComponentError> {
         use wasmtime::component::Val;
+        let budget = self.fuel_budget;
         let params: Vec<Val> = args.iter().map(|&a| Val::U32(a)).collect();
         let mut results = [Val::U32(0)];
         f.call(&mut self.store, &params, &mut results)
-            .map_err(classify_heap_call_err)?;
+            .map_err(|e| classify_heap_call_err(e, budget))?;
         f.post_return(&mut self.store)
-            .map_err(classify_heap_call_err)?;
+            .map_err(|e| classify_heap_call_err(e, budget))?;
         match results[0] {
             Val::U32(h) => Ok(h),
             ref other => Err(ComponentError::Trap(format!(
@@ -584,13 +615,13 @@ impl<T: 'static> HeapHandle<T> {
     /// `arr-set(arr, i, box_int(v))`.
     pub fn box_int(&mut self, v: i64) -> Result<u32, ComponentError> {
         use wasmtime::component::Val;
+        let budget = self.fuel_budget;
+        let f = self.box_int;
         let mut results = [Val::U32(0)];
-        self.box_int
-            .call(&mut self.store, &[Val::S64(v)], &mut results)
-            .map_err(classify_heap_call_err)?;
-        self.box_int
-            .post_return(&mut self.store)
-            .map_err(classify_heap_call_err)?;
+        f.call(&mut self.store, &[Val::S64(v)], &mut results)
+            .map_err(|e| classify_heap_call_err(e, budget))?;
+        f.post_return(&mut self.store)
+            .map_err(|e| classify_heap_call_err(e, budget))?;
         match results[0] {
             Val::U32(h) => Ok(h),
             ref other => Err(ComponentError::Trap(format!(
@@ -603,13 +634,13 @@ impl<T: 'static> HeapHandle<T> {
     /// as its rope handle.
     pub fn str_new(&mut self, s: &str) -> Result<u32, ComponentError> {
         use wasmtime::component::Val;
+        let budget = self.fuel_budget;
+        let f = self.str_new;
         let mut results = [Val::U32(0)];
-        self.str_new
-            .call(&mut self.store, &[Val::String(s.into())], &mut results)
-            .map_err(classify_heap_call_err)?;
-        self.str_new
-            .post_return(&mut self.store)
-            .map_err(classify_heap_call_err)?;
+        f.call(&mut self.store, &[Val::String(s.into())], &mut results)
+            .map_err(|e| classify_heap_call_err(e, budget))?;
+        f.post_return(&mut self.store)
+            .map_err(|e| classify_heap_call_err(e, budget))?;
         match results[0] {
             Val::U32(h) => Ok(h),
             ref other => Err(ComponentError::Trap(format!(
@@ -655,6 +686,78 @@ impl<T: 'static> HeapHandle<T> {
     pub fn vec_len(&mut self, v: u32) -> Result<u32, ComponentError> {
         let f = self.vec_len;
         self.call_u32s(&f, &[v])
+    }
+
+    // ── READ ops (slice 2) — PROJECT the reducer's returned effect-request list back to structural values.
+    // These read a value-heap handle the reducer produced: walk the `list<effect-request>` (vec-len/vec-get),
+    // project each effect-request record's fields (arr-get at the SORTED index), and decode leaf values
+    // (get-int for a boxed scalar, str-get for a String, sum-disc/sum-payload for an Option/enum-kind). The
+    // dual of the BUILD ops above; together they marshal the reducer's structural WIT boundary (B2/B3).
+
+    /// `vec-get(v, index) -> u32` (idx 31): the element handle at `index` of a value-heap vector — walks the
+    /// returned effect-request list (each element an effect-request record handle).
+    pub fn vec_get(&mut self, v: u32, index: u32) -> Result<u32, ComponentError> {
+        let f = self.vec_get;
+        self.call_u32s(&f, &[v, index])
+    }
+
+    /// `arr-get(arr, index) -> u32` (idx 8): the element handle at `index` of a value-heap array — projects
+    /// a record field by its SORTED-field-name index (v-rust-backend: records lay out arr in sorted order).
+    pub fn arr_get(&mut self, arr: u32, index: u32) -> Result<u32, ComponentError> {
+        let f = self.arr_get;
+        self.call_u32s(&f, &[arr, index])
+    }
+
+    /// `sum-disc(handle) -> u32` (idx 11): the discriminant of a sum handle — reads an Option's Some(0)/
+    /// None(1) or an effect-kind variant's disc (0..5 per the EffectKind table).
+    pub fn sum_disc(&mut self, handle: u32) -> Result<u32, ComponentError> {
+        let f = self.sum_disc;
+        self.call_u32s(&f, &[handle])
+    }
+
+    /// `sum-payload(handle) -> u32` (idx 12): the payload handle of a sum — the inner value of a `Some`, or
+    /// the unit for a nullary case.
+    pub fn sum_payload(&mut self, handle: u32) -> Result<u32, ComponentError> {
+        let f = self.sum_payload;
+        self.call_u32s(&f, &[handle])
+    }
+
+    /// `get-int(handle) -> s64` (idx 1): unbox a boxed scalar int — the read-dual of [`HeapHandle::box_int`]
+    /// (a record's scalar field, e.g. a version or a numeric effect field).
+    pub fn get_int(&mut self, handle: u32) -> Result<i64, ComponentError> {
+        use wasmtime::component::Val;
+        let budget = self.fuel_budget;
+        let f = self.get_int;
+        let mut results = [Val::S64(0)];
+        f.call(&mut self.store, &[Val::U32(handle)], &mut results)
+            .map_err(|e| classify_heap_call_err(e, budget))?;
+        f.post_return(&mut self.store)
+            .map_err(|e| classify_heap_call_err(e, budget))?;
+        match results[0] {
+            Val::S64(v) => Ok(v),
+            ref other => Err(ComponentError::Trap(format!(
+                "get-int returned {other:?}, not an s64"
+            ))),
+        }
+    }
+
+    /// `str-get(handle) -> string` (idx 18): read a String rope handle back to a Rust `String` — the
+    /// read-dual of [`HeapHandle::str_new`] (a record's String field, e.g. an effect target).
+    pub fn str_get(&mut self, handle: u32) -> Result<String, ComponentError> {
+        use wasmtime::component::Val;
+        let budget = self.fuel_budget;
+        let f = self.str_get;
+        let mut results = [Val::Bool(false)];
+        f.call(&mut self.store, &[Val::U32(handle)], &mut results)
+            .map_err(|e| classify_heap_call_err(e, budget))?;
+        f.post_return(&mut self.store)
+            .map_err(|e| classify_heap_call_err(e, budget))?;
+        match &results[0] {
+            Val::String(s) => Ok(s.clone()),
+            other => Err(ComponentError::Trap(format!(
+                "str-get returned {other:?}, not a string"
+            ))),
+        }
     }
 
     /// The underlying store, for the caller to instantiate/call the reducer against the SAME store (so a
@@ -1807,23 +1910,38 @@ mod tests {
     // §23 dep-compose (slice ii): a dependency COMPONENT composed into a consumer's linker satisfies the
     // consumer's like-named interface import, and a call through the consumer reaches the dep — proving
     // The reducer-boundary marshalling adapter (operator ruling C): a synthetic `cadenza:runtime/heap`
-    // stub exporting the B1 build-ops lets us drive `HeapHandle`'s marshalling methods without the real
-    // (frozen-hash) runtime. The stub's ops return sentinel handles (box-int→100, arr-alloc→200,
-    // sum-new→300, str-new→400; arr-set threads the arr; vec-len→0) — enough to prove the host reaches
-    // each op over the composed heap interface + threads handles, which is what B1's INPUT marshalling
-    // (build a content-type record + None option payloads) + reading the empty result (vec-len==0) needs.
+    // stub exporting the BUILD + READ ops lets us drive `HeapHandle`'s marshalling methods without the real
+    // (frozen-hash) runtime. BUILD ops return sentinel handles (box-int→100, sum-new→300, str-new→400;
+    // arr-set threads the arr; arr-alloc→2 for len==0 [inline-unit] / 200 for len>0 [#2133 discriminating]).
+    // READ ops return recognizable sentinels so a test can prove the host reaches each + reads the shape:
+    // vec-len→0, vec-get→700, arr-get→800, sum-disc→1, sum-payload→900, get-int→42, str-get→"target".
     fn heap_stub_component() -> Vec<u8> {
         wat::parse_str(
             r#"(component
                  (core module $m
                    (memory (export "mem") 1)
+                   (global $strret (mut i32) (i32.const 0))
                    (func (export "realloc") (param i32 i32 i32 i32) (result i32) (local.get 0))
                    (func (export "box-int") (param i64) (result i32) (i32.const 100))
-                   (func (export "arr-alloc") (param i32) (result i32) (i32.const 200))
+                   ;; arr-alloc(len): len==0 → 2 (inline-unit sentinel); len>0 → 200 (#2133 discriminating).
+                   (func (export "arr-alloc") (param $len i32) (result i32)
+                     (select (i32.const 200) (i32.const 2) (local.get $len)))
                    (func (export "arr-set") (param i32 i32 i32) (result i32) (local.get 0))
                    (func (export "sum-new") (param i32 i32) (result i32) (i32.const 300))
                    (func (export "vec-len") (param i32) (result i32) (i32.const 0))
-                   (func (export "str-new") (param i32 i32) (result i32) (i32.const 400)))
+                   (func (export "str-new") (param i32 i32) (result i32) (i32.const 400))
+                   ;; read ops: recognizable sentinels
+                   (func (export "vec-get") (param i32 i32) (result i32) (i32.const 700))
+                   (func (export "arr-get") (param i32 i32) (result i32) (i32.const 800))
+                   (func (export "sum-disc") (param i32) (result i32) (i32.const 1))
+                   (func (export "sum-payload") (param i32) (result i32) (i32.const 900))
+                   (func (export "get-int") (param i32) (result i64) (i64.const 42))
+                   ;; str-get returns "target" (6 bytes) — write to a fixed area, return (ptr,len).
+                   (data (i32.const 8) "target")
+                   (func (export "str-get") (param i32) (result i32)
+                     (i32.store (i32.const 4096) (i32.const 8))
+                     (i32.store (i32.const 4100) (i32.const 6))
+                     (i32.const 4096)))
                  (core instance $i (instantiate $m))
                  (func $box-int (param "v" s64) (result u32) (canon lift (core func $i "box-int")))
                  (func $arr-alloc (param "len" u32) (result u32) (canon lift (core func $i "arr-alloc")))
@@ -1831,13 +1949,25 @@ mod tests {
                  (func $sum-new (param "disc" u32) (param "payload" u32) (result u32) (canon lift (core func $i "sum-new")))
                  (func $vec-len (param "v" u32) (result u32) (canon lift (core func $i "vec-len")))
                  (func $str-new (param "s" string) (result u32) (canon lift (core func $i "str-new") (memory $i "mem") (realloc (func $i "realloc"))))
+                 (func $vec-get (param "v" u32) (param "index" u32) (result u32) (canon lift (core func $i "vec-get")))
+                 (func $arr-get (param "arr" u32) (param "index" u32) (result u32) (canon lift (core func $i "arr-get")))
+                 (func $sum-disc (param "handle" u32) (result u32) (canon lift (core func $i "sum-disc")))
+                 (func $sum-payload (param "handle" u32) (result u32) (canon lift (core func $i "sum-payload")))
+                 (func $get-int (param "handle" u32) (result s64) (canon lift (core func $i "get-int")))
+                 (func $str-get (param "handle" u32) (result string) (canon lift (core func $i "str-get") (memory $i "mem") (realloc (func $i "realloc"))))
                  (instance $heap
                    (export "box-int" (func $box-int))
                    (export "arr-alloc" (func $arr-alloc))
                    (export "arr-set" (func $arr-set))
                    (export "sum-new" (func $sum-new))
                    (export "vec-len" (func $vec-len))
-                   (export "str-new" (func $str-new)))
+                   (export "str-new" (func $str-new))
+                   (export "vec-get" (func $vec-get))
+                   (export "arr-get" (func $arr-get))
+                   (export "sum-disc" (func $sum-disc))
+                   (export "sum-payload" (func $sum-payload))
+                   (export "get-int" (func $get-int))
+                   (export "str-get" (func $str-get)))
                  (export "cadenza:runtime/heap" (instance $heap)))"#,
         )
         .expect("assemble heap stub component")
@@ -1877,11 +2007,48 @@ mod tests {
         // None option payload: sum-new(1=None disc, UNIT) — the unit is the inline-unit handle from
         // arr-alloc(0) (github-liaison #2122: NOT handle 0, which is NULL → a malformed sum).
         let unit = heap.unit().expect("unit (arr-alloc 0)");
-        assert_eq!(unit, 200); // stub's arr-alloc sentinel; the real runtime returns IMM_UNIT
+        // #2133: unit() must call arr-alloc(0) — the stub returns 2 for len==0 (distinct from the len>0
+        // sentinel 200), so this asserts unit() actually allocs LENGTH ZERO, not just any array.
+        assert_eq!(
+            unit, 2,
+            "unit() must call arr-alloc(0), the inline-unit — not arr-alloc(non-zero)"
+        );
         let none_payload = heap.sum_new(1, unit).expect("sum-new None");
         assert_eq!(none_payload, 300);
         // Read the (empty) effect-list result length.
         assert_eq!(heap.vec_len(999).expect("vec-len"), 0);
+    }
+
+    // HeapHandle slice-2 READ ops: project a returned effect-request list back to structural values. Drives
+    // each read op off the stub (sentinels: vec-get→700, arr-get→800, sum-disc→1, sum-payload→900,
+    // get-int→42, str-get→"target"), proving the host reaches every read op + gets the right value KIND
+    // (u32 handle / s64 / String) — the B2/B3 effect-request-reading half.
+    #[test]
+    fn heap_handle_drives_the_read_ops() {
+        let bytes = heap_stub_component();
+        let engine = wasmtime::Engine::default();
+        let mut store = wasmtime::Store::new(&engine, ());
+        let linker = wasmtime::component::Linker::<()>::new(&engine);
+        let component =
+            wasmtime::component::Component::new(&engine, &bytes).expect("valid heap stub");
+        let instance = linker
+            .instantiate(&mut store, &component)
+            .expect("heap stub instantiates");
+        let mut heap = match HeapHandle::bind(store, &instance) {
+            Ok(h) => h,
+            Err(e) => panic!("bind HeapHandle: {e:?}"),
+        };
+        // Walk a returned effect-list: vec-get(list, 0) → an effect-request record handle.
+        assert_eq!(heap.vec_get(555, 0).expect("vec-get"), 700);
+        // Project a record field by sorted index → a field handle.
+        assert_eq!(heap.arr_get(700, 1).expect("arr-get"), 800);
+        // Decode a boxed scalar field.
+        assert_eq!(heap.get_int(800).expect("get-int"), 42);
+        // Decode a String field (an effect target).
+        assert_eq!(heap.str_get(800).expect("str-get"), "target");
+        // Decode an Option/enum-kind discriminant + its payload.
+        assert_eq!(heap.sum_disc(300).expect("sum-disc"), 1);
+        assert_eq!(heap.sum_payload(300).expect("sum-payload"), 900);
     }
 
     // A runtime that doesn't export cadenza:runtime/heap → a clear Compose error naming it, not a trap.
