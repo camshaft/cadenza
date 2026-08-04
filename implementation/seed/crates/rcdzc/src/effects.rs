@@ -4854,9 +4854,12 @@ fn thread_bounded(
         // state, mirroring the `if` branches). An abortive perform in an arm BODY tail is branch-local — the
         // `match` IS the handle body's value, so per-arm the abort yields the arm value — captured by
         // `thread_branch_local_abort` (which restores the cell so a sibling arm / the handle is not
-        // collapsed). The out-state is the post-scrutinee state (the single-return shape does not observe a
-        // per-arm out-state). Rebuild the same `(match rscrut (pat rbody)…)` form so the pattern engine
-        // lowers it by the ordinary path.
+        // collapsed). The out-state MERGES the per-arm out-states into a match-valued out-state `(match
+        // scrut (pat arm-out)…)` — the `Match` analogue of the `if` per-branch out-state merge below — so a
+        // SIBLING reading state after the match (a recursive-call operand) observes an arm perform's advance
+        // (the recursive-branch-perform self-recursive miscompile's match-arm face, #1993); when no arm
+        // advanced a slot the merge collapses to the incoming state unchanged. Rebuild the same `(match
+        // rscrut (pat rbody)…)` form so the pattern engine lowers it by the ordinary path.
         Resolved::Match { scrutinee, arms } => {
             let (rscrut, cur) = thread_bounded(db, scrutinee, states, ctx, inline_depth)?;
             let match_head = db.push_atom(Leaf::Name("match".to_string()));
