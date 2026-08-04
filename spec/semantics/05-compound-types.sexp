@@ -1983,8 +1983,9 @@
 (case "a map-over-map rebuild transforms every retrieved value into a NEW trie in one walk"
   (doc    "The transform companion: an incremental rebuild walks 40 keys, looks each up in the SOURCE
            map, and inserts the transformed value (+1) into a DESTINATION map — source borrowed and
-           destination threaded through the same recursion, both live across the whole walk (len 40,
-           the transformed spot-read +1 → 401). The map-valued `map` operation a compiler pass runs
+           destination threaded through the same recursion, both live across the whole walk — len 40
+           gives 10·40 = 400, and the spot-read confirming dst[25] = 51 adds 1, so 401. The
+           map-valued `map` operation a compiler pass runs
            over a keyed table; a borrow/thread confusion between the two maps would corrupt either the
            source reads or the destination build.")
   (input  (do
@@ -14310,6 +14311,43 @@
             (export main)))
   (call   main (: -0.0 Float64)) (output (: 2 Int64))
   (call   main (: 0.0 Float64)) (output (: 1 Int64)))
+
+(case "a trie of 40 RECORD keys resolves descriptor-ordered field descent at depth"
+  (doc    "The record-key rows above run on 1-2 keys; this pins the record-key descent over a POPULATED
+           trie: 40 keys `(x i mod 6)(y i div 6)` — 2D record coordinates — fill a multi-level trie and
+           an interior `(record (x 4) (y 5))` lookup resolves to its entry (i=34 → 434). The record
+           hash walks fields in the descriptor's canonical order at every slot; a first-field-only hash
+           would collide the 6-7 keys sharing each x residue and misroute the descent.")
+  (input  (do
+            (def (fill (: i Int64) (: m (Map (Record (x Int64) (y Int64)) Int64)))
+              (if (= i 0) m (fill (- i 1) (Map.insert m (record (x (% i 6)) (y (/ i 6))) i))))
+            (def (main (: n Int64))
+              (do
+                (def m (fill n Map.empty))
+                (+ (* 10 (Map.len m))
+                   (match (Map.lookup m (record (x 4) (y 5))) ((Some v) v) ((None _u) -1)))))
+            (export main)))
+  (call   main (: 40 Int64)) (output (: 434 Int64)))
+
+(case "a record-keyed trie churned back equals the direct build with the seed resolving"
+  (doc    "The compound-key churn-identity face: 29 record keys (i = 1..n-1 at n = 30) churned around a
+           `(record (x 7) (y 8))` seed leave the map EQUAL to the direct build by canonical `=` (10)
+           with the seed still resolving (+1 → 11). Removal traffic in record keyspace collapses nodes
+           exactly as the scalar churn pins require — the two-field key layout leaves no residue in the
+           canonical form.")
+  (input  (do
+            (def (grow (: i Int64) (: n Int64) (: m (Map (Record (x Int64) (y Int64)) Int64)))
+              (if (= i n) m (grow (+ i 1) n (Map.insert m (record (x (+ i 100)) (y i)) i))))
+            (def (shrink (: i Int64) (: n Int64) (: m (Map (Record (x Int64) (y Int64)) Int64)))
+              (if (= i n) m (shrink (+ i 1) n (Map.remove m (record (x (+ i 100)) (y i))))))
+            (def (main (: n Int64))
+              (do
+                (def direct (Map.insert Map.empty (record (x 7) (y 8)) 50))
+                (def churned (shrink 1 n (grow 1 n direct)))
+                (+ (* 10 (if (= churned direct) 1 0))
+                   (match (Map.lookup churned (record (x 7) (y 8))) ((Some v) (if (= v 50) 1 0)) ((None _u) -1)))))
+            (export main)))
+  (call   main (: 30 Int64)) (output (: 11 Int64)))
 
 (case "a tuple key whose element is itself a float-bearing tuple keys by content"
   (doc    "The NESTED (depth-2) face: the float sits one level down — `(tuple 1 (tuple x 2))` — and the key
