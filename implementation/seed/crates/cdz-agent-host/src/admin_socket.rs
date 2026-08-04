@@ -31,22 +31,25 @@ pub struct AdminSocket {
 }
 
 impl AdminSocket {
-    /// Bind the admin control socket at `path`, replacing any stale socket file left by a previous run, and
-    /// restrict it to OWNER-ONLY (mode `0o600`) — the v0 OS-level auth (admin = whoever owns the daemon
-    /// process). `Err` if the bind or the perms-set fails.
+    /// Bind the admin control socket at `path` and restrict it to OWNER-ONLY (mode `0o600`) — the v0
+    /// OS-level auth (admin = whoever owns the daemon process). `Err` if the bind or the perms-set fails.
     ///
-    /// (A stale socket file from an unclean shutdown would make `bind` fail with `AddrInUse`; we remove a
-    /// pre-existing file first. This is safe for a single-daemon deployment — two daemons sharing one admin
-    /// socket path is a misconfiguration, not something to defend by leaving a stale file to block bind.)
+    /// **Bind FIRST, unlink ONLY a dead socket (#1962 review).** A prior version unconditionally
+    /// `remove_file`d the path before binding — which would delete ANY inode there: a regular file (a
+    /// fat-fingered config path → silent data loss) or an ACTIVE socket another daemon is accepting on
+    /// (unlink+rebind → the other daemon is left serving a now-nameless socket, unreachable, no error). So
+    /// we bind first; only on `AddrInUse` do we probe whether the existing socket is DEAD (no live
+    /// listener — a `connect` is refused), and if so unlink + rebind. A live socket or a non-socket file at
+    /// the path is a hard error (a real conflict / misconfiguration), never silently clobbered.
     pub fn bind(path: impl AsRef<Path>) -> io::Result<Self> {
         let path = path.as_ref().to_path_buf();
-        // Remove a stale socket file (ignore "not found"); a real bind failure surfaces below.
-        match std::fs::remove_file(&path) {
-            Ok(()) => {}
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        let listener = match UnixListener::bind(&path) {
+            Ok(l) => l,
+            // The path is occupied. Only reclaim it if it's a DEAD socket left by a crashed instance;
+            // anything else (a live daemon, a regular file) is a genuine conflict we must not clobber.
+            Err(e) if e.kind() == io::ErrorKind::AddrInUse => reclaim_dead_socket_then_bind(&path)?,
             Err(e) => return Err(e),
-        }
-        let listener = UnixListener::bind(&path)?;
+        };
         // Owner-only: an admin command installs/stops sessions, so the socket must not be world-writable.
         // This is the v0 auth gate (a Cedar admin/* policy layer follows). Unix-only perms via a raw mode.
         #[cfg(unix)]
@@ -63,11 +66,16 @@ impl AdminSocket {
     }
 
     /// Accept admin connections forever, dispatching each command through `admin` to the host loop. Runs
-    /// until `shutdown` fires (then returns) — typically spawned as a tokio task beside the host loop. Each
-    /// accepted connection is served inline (admin traffic is low-volume + serialized through the one host
-    /// loop anyway, so there's no win in spawning per-connection; keeping it inline needs no `Send` bound on
-    /// the connection future and keeps the ordering obvious). An accept error is logged to stderr and the
-    /// loop continues — one bad connection never takes the listener down.
+    /// until `shutdown` fires (then returns) — typically spawned as a tokio task beside the host loop.
+    ///
+    /// **One task PER connection (#1962 review).** Each accepted connection is served on its own
+    /// `tokio::spawn`ed task rather than inline, so a STALLED client (one that connects and never completes
+    /// a frame or closes) can't hold the accept loop and block every other admin — the inline-serve local
+    /// DoS. This does NOT change command ordering: the serialization point is the single host loop behind
+    /// the [`AdminChannel`] (every command still funnels through it), not `accept`; spawning only keeps
+    /// `accept()` live. The connection future is `Send` (it moves a `UnixStream` + a cloned `AdminChannel`
+    /// and never touches the `!Send` registry), so it spawns freely. An accept error is logged and the loop
+    /// continues — one bad connection never takes the listener down.
     pub async fn serve(
         self,
         admin: AdminChannel,
@@ -79,11 +87,15 @@ impl AdminSocket {
                 accepted = self.listener.accept() => {
                     match accepted {
                         Ok((stream, _addr)) => {
-                            // Serve this connection to completion. An error mid-connection (client hung up,
-                            // a malformed frame) ends only THIS connection — never the listener.
-                            if let Err(e) = serve_connection(stream, &admin).await {
-                                eprintln!("cdz-agent-daemon admin: connection ended with error: {e}");
-                            }
+                            // Serve on a detached task so a slow/stalled client can't block accept().
+                            let admin = admin.clone();
+                            tokio::spawn(async move {
+                                // An error mid-connection (client hung up, a malformed frame) ends only
+                                // THIS connection — never the listener.
+                                if let Err(e) = serve_connection(stream, &admin).await {
+                                    eprintln!("cdz-agent-daemon admin: connection ended with error: {e}");
+                                }
+                            });
                         }
                         Err(e) => {
                             eprintln!("cdz-agent-daemon admin: accept failed: {e}");
@@ -93,6 +105,52 @@ impl AdminSocket {
             }
         }
     }
+}
+
+/// The `AddrInUse` recovery path: the socket path is occupied. Reclaim it ONLY if it's a DEAD Unix socket
+/// (a socket inode whose owning process is gone, so a `connect` is refused); a LIVE socket or a non-socket
+/// file is a hard conflict we refuse to clobber. Returns the freshly-bound listener on success.
+fn reclaim_dead_socket_then_bind(path: &Path) -> io::Result<UnixListener> {
+    // The inode must be a SOCKET; a regular file at the admin path is a misconfiguration, not a stale
+    // socket — never delete it (that was the data-loss hazard).
+    let meta = std::fs::symlink_metadata(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileTypeExt;
+        if !meta.file_type().is_socket() {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!(
+                    "admin socket path {} exists and is not a socket — refusing to remove it",
+                    path.display()
+                ),
+            ));
+        }
+    }
+    // Is a listener LIVE on it? A successful connect (or a connect that isn't ECONNREFUSED/ENOENT) means
+    // someone is (or may be) serving — do NOT clobber a live daemon. ECONNREFUSED = a dead socket inode
+    // whose owner is gone: safe to reclaim.
+    match std::os::unix::net::UnixStream::connect(path) {
+        Ok(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::AddrInUse,
+                format!(
+                    "admin socket {} is already served by a live daemon — refusing to take it over",
+                    path.display()
+                ),
+            ));
+        }
+        Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => {
+            // Dead socket — the owner is gone. Safe to unlink + rebind.
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            // Raced away between bind and here; just rebind below.
+        }
+        // Any other connect error is ambiguous — fail safe rather than risk clobbering a live socket.
+        Err(e) => return Err(e),
+    }
+    std::fs::remove_file(path)?;
+    UnixListener::bind(path)
 }
 
 impl Drop for AdminSocket {
@@ -329,6 +387,94 @@ mod tests {
                 "a garbage frame gets an error response"
             );
             drop(stream);
+            let _ = sock_sd_tx.send(());
+            let _ = host_sd_tx.send(());
+        };
+
+        let (_host, (), ()) = tokio::join!(
+            async_host.run(host_sd_rx, || 0),
+            sock.serve(admin, sock_sd_rx),
+            client,
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn bind_refuses_to_clobber_a_non_socket_file() {
+        // The #1962 unlink-hazard fix: a REGULAR FILE at the admin path (fat-fingered config) must NOT be
+        // deleted — bind errors instead of silently removing it (the old unconditional remove_file would
+        // have destroyed it).
+        let path = socket_path("regular-file");
+        let _ = std::fs::remove_file(&path);
+        std::fs::write(&path, b"important data, not a socket").unwrap();
+
+        let err = match AdminSocket::bind(&path) {
+            Ok(_) => panic!("bind must refuse a non-socket file, not succeed"),
+            Err(e) => e,
+        };
+        // The file is untouched (not clobbered).
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"important data, not a socket",
+            "the regular file must be left intact, not deleted"
+        );
+        assert!(
+            format!("{err}").contains("not a socket"),
+            "error names the hazard: {err}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn bind_reclaims_a_dead_socket_file() {
+        // A stale socket file from a crashed instance (no live listener) IS reclaimable — bind unlinks +
+        // rebinds. Simulate by binding then dropping a std UnixListener (leaves the socket inode, no live
+        // accepter), then binding again over it.
+        let path = socket_path("dead-socket");
+        let _ = std::fs::remove_file(&path);
+        {
+            let stale = std::os::unix::net::UnixListener::bind(&path).unwrap();
+            drop(stale); // inode remains; no live listener
+        }
+        // The socket file still exists (dropping the listener doesn't unlink it).
+        assert!(path.exists(), "stale socket inode remains");
+        // bind() reclaims it (dead socket → connect refused → unlink + rebind).
+        let sock = AdminSocket::bind(&path).expect("a dead socket is reclaimable");
+        assert_eq!(sock.path(), path);
+        drop(sock);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn a_stalled_client_does_not_block_other_admins() {
+        // The #1962 inline-serve DoS fix: one client that connects and NEVER sends a frame must not block
+        // the accept loop — a second client's command still completes (per-connection tokio::spawn keeps
+        // accept() live). Even on the current-thread runtime, the stalled connection task's read().await
+        // cooperatively yields, so the second connection's task + the host loop still make progress; the
+        // pre-fix inline serve_connection().await would have parked the accept loop on the staller.
+        let path = socket_path("stalled-dos");
+        let _ = std::fs::remove_file(&path);
+        let sock = AdminSocket::bind(&path).expect("bind");
+        let async_host = AsyncAgentHost::with_factory(AgentHost::new(), Box::new(StubFactory));
+        let admin = async_host.admin_channel();
+        let (host_sd_tx, host_sd_rx) = tokio::sync::oneshot::channel();
+        let (sock_sd_tx, sock_sd_rx) = tokio::sync::oneshot::channel();
+
+        let client = async {
+            // Client 1: connect and STALL (hold the connection open, never send a frame).
+            let _staller = UnixStream::connect(&path).await.expect("staller connects");
+            // Client 2: a normal command — must still complete even though client 1 is stalled.
+            let mut live = UnixStream::connect(&path)
+                .await
+                .expect("second client connects");
+            let listed = client_call(&mut live, AdminCommand::ListSessions).await;
+            assert_eq!(
+                listed,
+                AdminResponseWire::Sessions { ids: vec![] },
+                "a second admin's command completes despite a stalled first client"
+            );
+            drop(live);
+            // _staller stays open (dropped at scope end) — the point is it didn't block client 2.
             let _ = sock_sd_tx.send(());
             let _ = host_sd_tx.send(());
         };
