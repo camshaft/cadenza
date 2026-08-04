@@ -105,6 +105,21 @@ impl HostedSession {
         self
     }
 
+    /// Attach a durable [`LogSink`](cdz_kernel::log_store::LogSink) as this session's write-through target —
+    /// a builder over [`genesis`](Self::genesis). Each event the session appends is also persisted through
+    /// the sink (the kernel LATCHES a sink append failure + refuses to route, §16c-S1 — so a durable
+    /// dispatch is never routed on an un-persisted event). ADDITIVE: a session with no sink keeps its
+    /// in-memory log only (dev/test); the deployed daemon attaches a per-session
+    /// [`LogStore`](cdz_kernel::log_store::LogStore) (a single-file durable log) when `[log].backend = file`.
+    ///
+    /// Per-session by value (like [`with_name_store`](Self::with_name_store)): the caller opens the sink for
+    /// this session (e.g. `LogStore::open(dir/<id>.log)`) and hands it over; the session owns it for its
+    /// lifetime.
+    pub fn with_sink(mut self, sink: Box<dyn cdz_kernel::log_store::LogSink>) -> Self {
+        self.session.attach_sink(sink);
+        self
+    }
+
     /// Register (or replace) a by-family effect executor on this LIVE session — the MECHANISM axis of a
     /// mid-session capability change (host-capability-discovery I6a). Adding an executor for a family the
     /// session couldn't perform before makes that family's manifest entry flip `Absent`→(policy-decided);
@@ -631,6 +646,44 @@ mod tests {
         let hosted = host.get(&id).expect("session registered");
         assert_eq!(hosted.session().kv().get(b"status"), Some(&b"ran"[..]));
         assert_eq!(hosted.open_effects(), 0);
+    }
+
+    #[tokio::test]
+    async fn with_sink_persists_a_sessions_events_durably() {
+        // with_sink attaches a durable LogStore: the events a session appends during a turn are persisted,
+        // so recovering the log file replays them. Proves the durable-log attach seam (the daemon uses this
+        // per-session when [log].backend = file).
+        use cdz_kernel::log_store::LogStore;
+        let dir = std::env::temp_dir().join("cdz-with-sink-test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("session-durable.log");
+        let _ = std::fs::remove_file(&path);
+
+        let sink = LogStore::open(&path).expect("open log store");
+        let mut host = AgentHost::new();
+        let id = SessionId::new("durable");
+        host.spawn(id.clone(), now_host().with_sink(Box::new(sink)));
+        // Drive a turn — the session appends events (Inbound + the Now dispatch/result), each written
+        // through to the sink.
+        host.deliver(&id, inbound_go(), None).await;
+
+        // The in-memory log has the full event stream (Genesis + the turn's events)…
+        let in_mem = host.get(&id).unwrap().session().log().len();
+        assert!(in_mem > 1, "the session appended a turn's events");
+        // …and recovering the durable file replays every event appended AFTER the sink was attached. The
+        // sink is attached post-genesis (with_sink is a builder over genesis), so the Genesis event predates
+        // it and isn't persisted through this sink — the durable log holds the (in_mem - 1) later events.
+        let recovered = LogStore::recover(&path).expect("recover the durable log");
+        assert_eq!(
+            recovered.events.len(),
+            in_mem - 1,
+            "every event appended after the sink was attached was persisted (all but pre-sink Genesis)"
+        );
+        assert!(
+            !recovered.events.is_empty(),
+            "the turn's events reached durable storage"
+        );
+        let _ = std::fs::remove_file(&path);
     }
 
     #[tokio::test]
