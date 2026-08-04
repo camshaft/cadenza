@@ -1963,6 +1963,48 @@
             (export main)))
   (call   main (: 100 Int64)) (output (: 50500 Int64)))
 
+(case "a fold walks 40 keys with a FRESH lookup per iteration (the map as a loop-carried borrow)"
+  (doc    "The 100-key checksum above reads every key back in a dedicated pass over a finished map; this
+           pins the map as a LOOP-CARRIED BORROW — one fold whose every iteration performs a fresh
+           `Map.lookup` against the same threaded map parameter (Σ i² for i = 1..40 = 22140, any miss
+           poisoning with a large negative). The lookup-in-loop discipline: the map borrows through 40
+           frames without a refcount slip on either the descent or the loop-carry path.")
+  (input  (do
+            (def (fill (: i Int64) (: m (Map Int64 Int64)))
+              (if (= i 0) m (fill (- i 1) (Map.insert m i (* i i)))))
+            (def (walk (: i Int64) (: m (Map Int64 Int64)) (: acc Int64))
+              (if (= i 0) acc
+                (walk (- i 1) m (+ acc (match (Map.lookup m i) ((Some v) v) ((None _u) -100000))))))
+            (def (main (: n Int64))
+              (walk n (fill n Map.empty) 0))
+            (export main)))
+  (call   main (: 40 Int64)) (output (: 22140 Int64)))
+
+(case "a map-over-map rebuild transforms every retrieved value into a NEW trie in one walk"
+  (doc    "The transform companion: an incremental rebuild walks 40 keys, looks each up in the SOURCE
+           map, and inserts the transformed value (+1) into a DESTINATION map — source borrowed and
+           destination threaded through the same recursion, both live across the whole walk (len 40,
+           the transformed spot-read +1 → 401). The map-valued `map` operation a compiler pass runs
+           over a keyed table; a borrow/thread confusion between the two maps would corrupt either the
+           source reads or the destination build.")
+  (input  (do
+            (def (fill (: i Int64) (: m (Map Int64 Int64)))
+              (if (= i 0) m (fill (- i 1) (Map.insert m i (* i 2)))))
+            (def (xform (: i Int64) (: src (Map Int64 Int64)) (: dst (Map Int64 Int64)))
+              (if (= i 0) dst
+                (xform (- i 1) src
+                  (match (Map.lookup src i)
+                    ((Some v) (Map.insert dst i (+ v 1)))
+                    ((None _u) dst)))))
+            (def (main (: n Int64))
+              (do
+                (def src (fill n Map.empty))
+                (def dst (xform n src Map.empty))
+                (+ (* 10 (Map.len dst))
+                   (match (Map.lookup dst 25) ((Some v) (if (= v 51) 1 0)) ((None _u) -1)))))
+            (export main)))
+  (call   main (: 40 Int64)) (output (: 401 Int64)))
+
 (case "a 200-element runtime Set resolves every member through a multi-level CHAMP trie and rejects non-members"
   (doc    "The SET analog of the 100-key deep-CHAMP-map checksum: `build` inserts 0..n into a Set (`Set.insert`
            is a persistent insert, returning a new set), and at n=200 the CHAMP grows past a single leaf into a multi-level trie

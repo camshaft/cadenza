@@ -1629,6 +1629,7 @@ pass	a flow refinement folds a compare over a no-overflow arith operand, but the
 pass	a fold of unit fractions sums EXACTLY to one - the harmonic identity float cannot hold
 pass	a fold over Map.to-list REBUILDS a filtered map at depth (the select-rebuild idiom)
 pass	a fold over Map.to-list rebuilds a TRANSFORMED map — the map-over-values idiom
+pass	a fold walks 40 keys with a FRESH lookup per iteration (the map as a loop-carried borrow)
 pass	a fold whose accumulator applies each list closure IN SEQUENCE (apply-all chain)
 pass	a four-level nested-constructor pattern with a generic user sum in the middle matches
 pass	a frame body ACCUMULATED by a fold of per-element bin constructions round-trips
@@ -2070,6 +2071,7 @@ pass	a map with a user-sum VALUE looks up and matches the stored variant
 pass	a map with record values of different field sets is a type error
 pass	a map with tuple values of different arities is a type error
 pass	a map with values of two different types is a type error
+pass	a map-over-map rebuild transforms every retrieved value into a NEW trie in one walk
 pass	a map-scrutinee match arm whose head is an unbound name is rejected in a recursive body (CDZ0101)
 pass	a masked-divisor signed division still traps on a zero divisor (zero guard never elided)
 pass	a match arm binds a nested tuple inside a sum payload
