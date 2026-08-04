@@ -349,7 +349,7 @@
            REMOVED as `i/3` — differently-written spellings of the same rational — so every removal must
            land on its insert's slot through the canonical form. The survivor (seeded `1/2`) must EQUAL
            the direct build by canonical `=` (10) and still resolve when probed as `2/4` (+1 → 11). Two
-           spellings per churn key (insert/remove) and three for the survivor (stored 1/2, probed 2/4),
+           spellings per churn key (insert/remove) and two for the survivor (stored 1/2, probed 2/4),
            all converging on one canonical slot at trie depth — the churn face of the normalized-key
            family.")
   (input  (do
