@@ -281,6 +281,12 @@ pub enum ComponentError {
     /// FETCHING the dep) — this is about WIRING a fetched dep, so a caller can tell "couldn't get the
     /// dep" from "the dep doesn't fit the import it's meant to satisfy."
     Compose { import_name: String, reason: String },
+    /// A generic [`invoke_bytes_to_bytes`] call couldn't find the requested export, or it wasn't the
+    /// canonical `func(list<u8>) -> list<u8>` shape. DISTINCT from [`ComponentError::Trap`] (the export
+    /// exists + ran but trapped) and [`ComponentError::InvalidComponent`] (the bytes aren't a component at
+    /// all): here the component is valid but doesn't expose the bytes→bytes entry the generic invoke seam
+    /// needs — an actionable "this component isn't invokable through the generic seam" signal.
+    NoBytesToBytesExport { func_name: String, reason: String },
 }
 
 /// A component DEPENDENCY a reducer declares by content hash (operator §23 — the kernel is
@@ -438,6 +444,132 @@ fn compose_dep_into_linker<T: 'static>(
 /// than reimplementing it here (this used to carry its own copy of the length/lowercase checks).
 fn parse_hash_hex(hex: &str) -> Option<Hash> {
     Hash::from_hex(hex)
+}
+
+/// The canonical export name the generic invoke seam calls when a caller doesn't name one. Operator
+/// ruling (Slack seq 105/106, 2026-08-04): the whole primitive is "resolve a name → hashed wasm
+/// component, invoke its interface → result." Every invokable component conforms to ONE canonical
+/// bytes→bytes entry so the kernel can invoke it without knowing its WIT shape — the compiler's
+/// `compile`, the syntax reader, `nfc`, and any emitted component all fit `func(list<u8>) -> list<u8>`.
+/// A caller MAY override this (naming a different export) once the effect layer carries the func name.
+pub const INVOKE_ENTRY: &str = "run";
+
+/// Generic component INVOCATION — the core mechanism of the operator's resolve-name→component→invoke
+/// primitive (Slack seq 105/106): instantiate arbitrary component `bytes`, call its `func_name` export
+/// (canonically [`INVOKE_ENTRY`]) as a `func(list<u8>) -> list<u8>`, and return the result bytes. This is
+/// deliberately NOT the reducer world — it's a bare, untyped component call over the ONE canonical
+/// bytes→bytes shape, so the kernel can invoke ANY resolved component (compiler, syntax reader, nfc, an
+/// emitted component) uniformly without knowing its interface. The compiler is not special: "compile an
+/// AST" is just `invoke_bytes_to_bytes(compiler_bytes, "run", ast)`.
+///
+/// Fuel-metered like the reducer fold (§22d): a runaway invokee is aborted at `fuel_budget` instructions
+/// with [`ComponentError::FuelExhausted`] rather than hanging the kernel — a resolved-and-invoked
+/// component is untrusted guest code exactly as a reducer is. A component whose bytes are invalid is
+/// [`ComponentError::InvalidComponent`]; one that's valid but lacks the bytes→bytes export is
+/// [`ComponentError::NoBytesToBytesExport`] (actionable: "not invokable through the generic seam"); a
+/// clean instantiation whose call traps is [`ComponentError::Trap`]. The invokee declares no host
+/// imports (it's a pure value transform — a component that imports host state is a reducer, installed +
+/// driven through the fold loop, v-ah-host's session path); a dep-carrying invokee is a later slice.
+pub fn invoke_bytes_to_bytes(
+    bytes: &[u8],
+    func_name: &str,
+    input: &[u8],
+    fuel_budget: u64,
+) -> Result<Vec<u8>, ComponentError> {
+    use wasmtime::component::{Component, Linker, Val};
+    // Fuel-metered engine, same discipline as `ComponentReducer::from_component_bytes`: metering is a
+    // per-engine flag, so a fresh engine per invoke. (Caching a compiled Component by hash is a perf
+    // slice once invocation is hot; correctness first.)
+    let mut config = wasmtime::Config::new();
+    config.consume_fuel(true);
+    let engine =
+        wasmtime::Engine::new(&config).map_err(|e| ComponentError::Instantiate(e.to_string()))?;
+    let component = Component::new(&engine, bytes)
+        .map_err(|e| ComponentError::InvalidComponent(e.to_string()))?;
+
+    let mut store = wasmtime::Store::new(&engine, ());
+    // Ample fuel for instantiation (a pure value component's instantiation is structure-bounded, not the
+    // DoS surface — the call body is), then reset to the caller's budget right before the call so the
+    // budget bounds the INVOCATION precisely. `set_fuel` can't fail with metering on, but surface it.
+    store
+        .set_fuel(u64::MAX)
+        .map_err(|e| ComponentError::Instantiate(e.to_string()))?;
+    // The invokee is a pure value transform: no host imports to serve, so an empty linker. (A component
+    // that imports host state is a reducer — installed + driven via the fold loop, not this seam.)
+    let linker = Linker::<()>::new(&engine);
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .map_err(|e| ComponentError::Instantiate(e.to_string()))?;
+
+    // Find the requested export as a bare component func. A missing export (or a non-func of that name)
+    // is NOT a trap — it's "this component isn't invokable through the generic bytes→bytes seam."
+    let func = {
+        let idx = instance
+            .get_export_index(&mut store, None, func_name)
+            .ok_or_else(|| ComponentError::NoBytesToBytesExport {
+                func_name: func_name.to_string(),
+                reason: format!("component exports no {func_name:?}"),
+            })?;
+        instance
+            .get_func(&mut store, idx)
+            .ok_or_else(|| ComponentError::NoBytesToBytesExport {
+                func_name: func_name.to_string(),
+                reason: format!("export {func_name:?} is not a func"),
+            })?
+    };
+
+    store
+        .set_fuel(fuel_budget)
+        .map_err(|e| ComponentError::Instantiate(e.to_string()))?;
+
+    // Call it over the canonical bytes→bytes shape: params = one `list<u8>`, results = one `list<u8>`.
+    // The `Val` marshalling makes the shape mismatch a clear typed error, not an opaque trap: `call`
+    // itself type-checks the params/results against the func's signature and errors if the export isn't
+    // `func(list<u8>) -> list<u8>`.
+    let params = [Val::List(input.iter().copied().map(Val::U8).collect())];
+    let mut results = [Val::Bool(false)]; // placeholder; `call` overwrites with the real result
+    if let Err(e) = func.call(&mut store, &params, &mut results) {
+        // A non-bytes→bytes signature surfaces here as a type error (wrong param/result arity or type);
+        // classify it as NoBytesToBytesExport (actionable "wrong shape"), and a genuine runtime trap /
+        // fuel exhaustion as its own outcome — mirroring `apply`'s OutOfFuel split.
+        if let Some(wasmtime::Trap::OutOfFuel) = e.downcast_ref::<wasmtime::Trap>() {
+            return Err(ComponentError::FuelExhausted {
+                budget: fuel_budget,
+            });
+        }
+        // wasmtime raises a type mismatch from `call` (params/results don't match the func type) as an
+        // anyhow error, not a `Trap`. Treat a non-trap `call` error as the shape being wrong (the export
+        // exists but isn't bytes→bytes); a real guest trap carries a `Trap` in its chain.
+        if e.downcast_ref::<wasmtime::Trap>().is_some() {
+            return Err(ComponentError::Trap(e.to_string()));
+        }
+        return Err(ComponentError::NoBytesToBytesExport {
+            func_name: func_name.to_string(),
+            reason: format!("export {func_name:?} is not func(list<u8>) -> list<u8>: {e}"),
+        });
+    }
+    // Some component funcs require an explicit post_return to release the return area. Best-effort: a
+    // failure here doesn't invalidate the already-read result, so surface it as a Trap only if it errors.
+    let _ = func.post_return(&mut store);
+
+    // Decode the single `list<u8>` result into bytes. A well-formed bytes→bytes export always returns a
+    // `Val::List` of `Val::U8`; anything else means the result type wasn't `list<u8>` (shape mismatch).
+    match &results[0] {
+        Val::List(items) => items
+            .iter()
+            .map(|v| match v {
+                Val::U8(b) => Ok(*b),
+                other => Err(ComponentError::NoBytesToBytesExport {
+                    func_name: func_name.to_string(),
+                    reason: format!("result list element is {other:?}, not a u8"),
+                }),
+            })
+            .collect(),
+        other => Err(ComponentError::NoBytesToBytesExport {
+            func_name: func_name.to_string(),
+            reason: format!("result is {other:?}, not a list<u8>"),
+        }),
+    }
 }
 
 impl ComponentReducer {
@@ -1412,6 +1544,103 @@ mod tests {
                 assert_eq!(import_name, "test:dep/api");
             }
             other => panic!("expected Compose error naming the interface, got {other:?}"),
+        }
+    }
+
+    // The canonical bytes→bytes invokee fixture (synthetic WAT, no wit-bindgen toolchain): a component
+    // exporting `run: func(list<u8>) -> list<u8>` as an IDENTITY — the core `run` returns the SAME
+    // (ptr, len) it was handed, so the input list the host lowered into guest memory (via `realloc`) is
+    // lifted straight back out. This exercises the WHOLE generic invoke path: param list lowered →
+    // export called → result list lifted + decoded to bytes.
+    fn identity_bytes_to_bytes_component() -> Vec<u8> {
+        wat::parse_str(
+            r#"(component
+                 (core module $m
+                   (memory (export "mem") 1)
+                   (global $next (mut i32) (i32.const 1024))
+                   ;; canonical realloc — the host calls it to lower the input list into guest memory
+                   ;; before `run`, and the canon ABI uses it for the indirect return area. A bump
+                   ;; allocator that ALIGNS `next` up to `align` (param 2) first: the canon ABI requires
+                   ;; the returned + return-area pointers be aligned, else `call` errors "not aligned".
+                   (func (export "realloc") (param $old i32) (param $oldsz i32) (param $align i32) (param $newsz i32) (result i32)
+                     (local $ret i32)
+                     (global.set $next
+                       (i32.and
+                         (i32.add (global.get $next) (i32.sub (local.get $align) (i32.const 1)))
+                         (i32.xor (i32.sub (local.get $align) (i32.const 1)) (i32.const -1))))
+                     (local.set $ret (global.get $next))
+                     (global.set $next (i32.add (global.get $next) (local.get $newsz)))
+                     (local.get $ret))
+                   ;; run(ptr,len) -> retptr : identity. A `list<u8>` result exceeds the canon flat-result
+                   ;; limit (1), so it returns INDIRECTLY — allocate a 4-aligned 8-byte (ptr,len) area,
+                   ;; store the SAME input ptr+len (echo the input region verbatim), return the area ptr.
+                   (func (export "run") (param $ptr i32) (param $len i32) (result i32)
+                     (local $ret i32)
+                     (global.set $next
+                       (i32.and (i32.add (global.get $next) (i32.const 3)) (i32.const -4)))
+                     (local.set $ret (global.get $next))
+                     (global.set $next (i32.add (global.get $next) (i32.const 8)))
+                     (i32.store (local.get $ret) (local.get $ptr))
+                     (i32.store (i32.add (local.get $ret) (i32.const 4)) (local.get $len))
+                     (local.get $ret)))
+                 (core instance $i (instantiate $m))
+                 (func $run (param "input" (list u8)) (result (list u8))
+                   (canon lift (core func $i "run") (memory $i "mem") (realloc (func $i "realloc"))))
+                 (export "run" (func $run)))"#,
+        )
+        .expect("assemble identity bytes→bytes component")
+    }
+
+    // The generic invoke seam (operator Slack seq 105/106): invoke an ARBITRARY component's canonical
+    // `run: func(list<u8>) -> list<u8>` export over bytes, no reducer world, no knowledge of its shape.
+    // Round-trips the input through the identity fixture — proving lower-param + call + lift-result.
+    #[test]
+    fn invoke_bytes_to_bytes_round_trips_the_input_through_the_canonical_run_export() {
+        let bytes = identity_bytes_to_bytes_component();
+        let out = invoke_bytes_to_bytes(
+            &bytes,
+            INVOKE_ENTRY,
+            &[1, 2, 3, 250, 0, 255],
+            DEFAULT_FOLD_FUEL,
+        )
+        .expect("identity component invokes bytes→bytes");
+        assert_eq!(
+            out,
+            vec![1, 2, 3, 250, 0, 255],
+            "the identity `run` echoes the exact input bytes back through the generic invoke seam"
+        );
+        // Empty input is a clean empty result (a zero-length list lowers + lifts cleanly).
+        let empty = invoke_bytes_to_bytes(&bytes, INVOKE_ENTRY, &[], DEFAULT_FOLD_FUEL)
+            .expect("empty input invokes");
+        assert!(empty.is_empty(), "empty in → empty out");
+    }
+
+    // A valid component that lacks the requested export is NoBytesToBytesExport (actionable "not
+    // invokable through the generic seam"), NOT a trap or an InvalidComponent — the component is fine, it
+    // just doesn't expose the canonical entry.
+    #[test]
+    fn invoke_of_a_component_missing_the_export_is_no_bytes_to_bytes_export() {
+        let empty = wat::parse_str("(component)").expect("empty component");
+        match invoke_bytes_to_bytes(&empty, INVOKE_ENTRY, b"x", DEFAULT_FOLD_FUEL) {
+            Err(ComponentError::NoBytesToBytesExport { func_name, .. }) => {
+                assert_eq!(func_name, INVOKE_ENTRY);
+            }
+            other => panic!("expected NoBytesToBytesExport for a missing export, got {other:?}"),
+        }
+    }
+
+    // Bytes that aren't a component at all are InvalidComponent (the bytes never parsed) — DISTINCT from
+    // "valid component, wrong shape" (NoBytesToBytesExport) so a caller can tell the two apart.
+    #[test]
+    fn invoke_of_non_component_bytes_is_invalid_component() {
+        match invoke_bytes_to_bytes(
+            b"not a wasm component",
+            INVOKE_ENTRY,
+            b"x",
+            DEFAULT_FOLD_FUEL,
+        ) {
+            Err(ComponentError::InvalidComponent(_)) => {}
+            other => panic!("expected InvalidComponent for garbage bytes, got {other:?}"),
         }
     }
 
