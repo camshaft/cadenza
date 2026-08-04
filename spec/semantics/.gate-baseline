@@ -511,7 +511,6 @@ pass	a BARE pattern on a withheld constructor is rejected like the qualified spe
 pass	a BASE-N conversion round-trips one value through three runtime radices
 pass	a BIGINT handler state multiplies per perform and each resume reads the prior product
 pass	a BINARY SEARCH halves a lo/hi window over a sorted list read by List.at
-todo	a BLOCK-wrapped branch perform in a let-init declines cleanly (adv-69 safe floor, not a silent miscompile)
 pass	a BOOL as a Map key routes a runtime lookup to the right entry
 pass	a BOOL-field Tuple closure ARG flattens + rebuilds (box-bool imported)
 pass	a BOOL-field Tuple closure ARG, false discriminant
@@ -5686,10 +5685,13 @@ pass	α-equivalence handles nesting and distinguishes a bound variable from a sa
 todo	SUM ARG + LIST RESULT declines cleanly (Option arg, List result)
 todo	Set.of over runtime lists at two different element types declines pending the recursive-generic tie
 todo	Set.to-list orders float-carrying sums discriminant-first then by float payload
+todo	a BLOCK-wrapped branch perform in a let-init declines cleanly (adv-69 safe floor, not a silent miscompile)
 todo	a BigInt entry argument is marshalled through the value's own constructor
 todo	a BigInt entry parameter added to a beyond-i64 annotated literal
 todo	a BigInt entry parameter is COMPUTED on, not just compared
 todo	a Bytes entry argument is marshalled as a Vec<u8>
+todo	a DEPTH-2 block-wrapped branch perform in a let-init declines cleanly (adv-69 safe floor, nested wrappers)
+todo	a HEAP-accumulator block-wrapped branch perform in a let-init declines cleanly (adv-69 safe floor)
 todo	a List entry argument is marshalled as a vec!
 todo	a MULTIBYTE and an EMPTY runtime String entry arg measure their UTF-8 byte lengths
 todo	a Rational ENTRY parameter crosses the boundary and reduces per call
