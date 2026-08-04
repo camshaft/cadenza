@@ -44,7 +44,7 @@ live-net = ["dep:reqwest", "dep:aws-config", "dep:aws-sdk-bedrockruntime"]
 # is feature-gated. It enables tokio's `net` feature (for `UnixListener`/`UnixStream`) + `io-util` (the
 # `AsyncReadExt`/`AsyncWriteExt` the frame read/write use). Local IPC only — a Unix socket is not network
 # egress, so this is not the same concern as `live-net`; gating it keeps the default build listener-free.
-admin = ["tokio/net", "tokio/io-util"]
+admin = ["tokio/net", "tokio/io-util", "tokio/signal"]
 
 [dependencies]
 # The kernel whose Executor/Authorize traits + effect/event types we implement. Path dep across the

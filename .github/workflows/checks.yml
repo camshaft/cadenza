@@ -351,6 +351,10 @@ jobs:
           # (unlike the sibling cdz-kernel live-exec, whose subprocess spawn works on any runner). The default
           # build stays hermetic; the live transports are exercised where egress exists, not in this job.
           cargo clippy --all-targets --features live-net -- -D warnings
+          # `admin,live-net` together: the cdz-agent-daemon bin's live control-plane wiring (admin socket +
+          # the real executor set) only compiles under BOTH — lint it so that path can't rot. Lint-only for
+          # the same live-net egress reason.
+          cargo clippy --all-targets --features admin,live-net -- -D warnings
 
   rcdzc-wasm:
     # The Cadenza COMPILER as a WASM artifact (implementation/seed/crates/rcdzc-wasm, v-agent-harness
