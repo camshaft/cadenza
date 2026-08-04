@@ -356,7 +356,7 @@ fn build_from_ast(a: &Arenas, id: StructId, ty: &Type) -> Result<Val, MarshalErr
             if payload.is_some() {
                 return Err(type_mismatch(
                     "enum",
-                    format!("case {case:?} carries a payload"),
+                    format!("case {} carries a payload", bounded_name(case)),
                 ));
             }
             if !et.names().any(|n| n == case) {
@@ -764,9 +764,11 @@ mod tests {
             ),
             Err(MarshalError::TypeMismatch { .. })
         ));
-        // github-liaison #2090: a HUGE untrusted extra-field name must NOT blow up the error string —
-        // TypeMismatch.found is bounded (bounded_name caps at 64 + ellipsis + len), never the raw name.
-        let huge = "x".repeat(2_000_000);
+        // github-liaison #2090: an untrusted extra-field name LONGER than the cap must NOT blow up the
+        // error string — TypeMismatch.found is bounded (bounded_name caps at 64 + ellipsis + len), never
+        // the raw name. A name well past the 64-byte cap exercises the same bounding path as a multi-MB one
+        // (github-liaison #2101: no need for a giant alloc in the test).
+        let huge = "x".repeat(4096);
         match ast_to_val(
             &record_bytes(&[("kind", "wasm"), (&huge, "v")]),
             &one_field_ty,
@@ -778,6 +780,31 @@ mod tests {
             ),
             other => {
                 panic!("expected a bounded TypeMismatch for a huge extra field, got {other:?}")
+            }
+        }
+    }
+
+    // github-liaison #2101: the enum "case carries a payload" reject arm (a name-head ctor with a payload
+    // against an enum target) also embeds the untrusted case name — it must be BOUNDED like the sibling
+    // arms. Build a name-head ctor `(<huge-case-name> <payload>)` against an enum type and assert the error
+    // is bounded.
+    #[test]
+    fn ast_to_val_bounds_the_enum_carries_payload_reject() {
+        let enum_ty = param_type(&probe_component(r#"(enum "red" "green")"#));
+        let huge_case = "z".repeat(4096);
+        let mut b = Builder::new();
+        let head = b.name(&huge_case);
+        let payload = b.atom_leaf(Leaf::Bool(true));
+        let root = b.list(vec![head, payload]); // (<huge-case> #t) — a ctor WITH a payload, illegal for an enum
+        let bytes = codec::encode(&b.finish(root));
+        match ast_to_val(&bytes, &enum_ty) {
+            Err(MarshalError::TypeMismatch { found, .. }) => assert!(
+                found.len() < 256,
+                "enum-carries-payload error must be bounded, got len {}",
+                found.len()
+            ),
+            other => {
+                panic!("expected a bounded TypeMismatch for an enum with a payload, got {other:?}")
             }
         }
     }
