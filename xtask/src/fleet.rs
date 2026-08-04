@@ -3277,25 +3277,36 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
                     compact_declined,
                     restarted_recently,
                 ) {
-                    // Restart EARLY (pre-wall) + gracefully, but only at a clean prompt — a mid-turn
-                    // agent is left to the 100%-wall backstop rather than killed mid-work. Same
-                    // idle-at-prompt gate as the compact-send + the same durable-state safety as the wall
-                    // restart (worktree/registry/memory/asks persist).
+                    // Restart EARLY (pre-wall) + gracefully, but ONLY on a CONFIRMED-idle pane — a
+                    // mid-turn (or unknown-state) agent is left to the 100%-wall backstop rather than
+                    // killed mid-work, with the same durable-state safety as the wall restart
+                    // (worktree/registry/memory/asks persist).
+                    //
+                    // CONFIRMED-idle, not just "not working": a capture FAILURE must never be read as
+                    // idle. `window_is_working`'s `unwrap_or(false)` is safe for the compact-NUDGE (unsure
+                    // → a harmless keystroke) but WRONG for a RESTART (unsure → destroy a possibly-mid-turn
+                    // window) — github-liaison/Copilot PR#1937. So restart only when the pane is
+                    // AFFIRMATIVELY idle. We reuse the SAME top-of-loop `pane` snapshot that established
+                    // the decline + ctx% (one consistent observation, no second racy capture): since
+                    // `compact_declined` was derived from `pane`, `pane` is necessarily `Some` here, so the
+                    // snapshot is authoritative — idle iff it does NOT show the working affordance. A None
+                    // (capture-fail) or a working affordance both fall through to "not confirmed idle" and
+                    // skip the restart.
                     let stopped = fleet.stopfile(&a.name).exists();
                     let live = live.iter().any(|w| w == &a.name);
                     let interactive = role_is_terminal_interactive(&a.role); // never touch a human's window
-                    let working = window_is_working(&session, &a.name); // restart only at an idle prompt
+                    let confirmed_idle = pane.as_deref().is_some_and(|p| !pane_shows_working(p));
                     if dry_run {
                         println!(
                             "  DRY-RUN would GRACEFUL-RESTART '{}' (compact-declined, pre-wall {pct}%)",
                             a.name
                         );
-                    } else if stopped || !live || interactive || working {
+                    } else if stopped || !live || interactive || !confirmed_idle {
                         eprintln!(
                             "  … '{}' compact-declined at {pct}% but can't graceful-restart now ({}); the 100%-wall backstop will catch it if it doesn't settle.",
                             a.name,
-                            if working {
-                                "mid-tick"
+                            if !confirmed_idle {
+                                "not confirmed idle (mid-turn or capture unavailable) — never restart on an unknown pane"
                             } else if !live {
                                 "no window"
                             } else if interactive {
