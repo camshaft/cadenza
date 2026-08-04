@@ -92,6 +92,13 @@ tracing = "0.1"
 # NOT take this — it only emits via the facade); the daemon bin is the sole subscriber-init site. `env-filter`
 # for the RUST_LOG-grammar `filter`, `fmt` (default) for the formats, `json` for the json format.
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+# s2n-quic-dc-metrics — the operator's metrics REGISTRY (seq-115/116: "use it directly, don't reinvent; we
+# get histograms + reporting for free"). ALWAYS-ON default dep: HostMetrics/EffectMetrics are defined as this
+# crate's registry Counters/Summaries (the recorder surface), and the export backends fan out from the
+# registry. Verified network-egress-FREE base (no QUIC/reqwest/TLS; the arrow/otel backends are opt-in
+# features of the crate, NOT enabled here) — so it honors the hermetic-default-gate (hermetic = no NETWORK,
+# not no-deps). Git dep = the operator's fork; branch=main HEAD tracks their metrics work.
+s2n-quic-dc-metrics = { git = "https://github.com/camshaft/s2n-quic", branch = "main" }
 # reqwest — the real async HTTP client behind the `HttpTransport` seam. OPTIONAL, enabled only by
 # `live-net` (default build never compiles it — keeps the hermetic gate free of the network/TLS tree).
 # `rustls-tls` (not the platform's OpenSSL) so it builds on any runner with no system SSL dep;

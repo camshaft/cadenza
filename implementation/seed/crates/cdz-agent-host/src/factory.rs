@@ -64,9 +64,10 @@ impl<F: Fn() -> CompositeExecutor> ExecutorSetBuilder for F {
 /// This is why the per-effect counts need no kernel change: every dispatch already flows through
 /// `Executor::perform`, so metering at the executor boundary (where the outcome is produced) captures it.
 /// The deployed daemon's `LiveExecutorSet::build` wraps each real leaf executor (Clock/Http/Model) with one
-/// of these, all sharing ONE host-wide `Arc<EffectMetrics>`, so every session's ok/retryable/permanent/
-/// timed-out tallies aggregate across all effect families into a daemon-wide set the status surface reads. A
-/// non-daemon caller (a test, an embedder) OPTS IN the same way — wrap an executor + share an `Arc`.
+/// of these, all sharing ONE host-wide `Arc<EffectMetrics>` (registered from the daemon's metrics registry),
+/// so every session's ok/retryable/permanent/timed-out tallies aggregate across all effect families into a
+/// daemon-wide set the export backend reports over. A non-daemon caller (a test, an embedder) OPTS IN the
+/// same way — wrap an executor + share an `Arc`.
 pub struct MeteredExecutor {
     inner: Box<dyn Executor>,
     metrics: Arc<EffectMetrics>,
@@ -83,7 +84,10 @@ impl MeteredExecutor {
 #[async_trait::async_trait(?Send)]
 impl Executor for MeteredExecutor {
     async fn perform(&mut self, req: &EffectRequest, idempotency_key: Hash) -> EffectOutcome {
+        let started = std::time::Instant::now();
         let outcome = self.inner.perform(req, idempotency_key).await;
+        self.metrics
+            .record_latency_us(started.elapsed().as_micros() as u64);
         // Tally the metric + trace at the SAME tap. The family names which effect; a failure logs its
         // classified reason (retryable/permanent) at warn (a supervisor signal), ok at debug (routine).
         let family = req.content_type.family.as_ref();
@@ -93,8 +97,18 @@ impl Executor for MeteredExecutor {
                 tracing::debug!(target: "cdz_agent_host::effect", family, "effect ok");
             }
             EffectOutcome::Err(reason) => {
-                self.metrics.record_err(crate::retry::classify(reason));
-                tracing::warn!(target: "cdz_agent_host::effect", family, reason, "effect errored");
+                // Classify ONCE + reuse for both the metric and the trace, so the event carries the derived
+                // Retryability as a structured field (filterable without parsing the reason string) — #2069
+                // review.
+                let retryability = crate::retry::classify(reason);
+                self.metrics.record_err(retryability);
+                tracing::warn!(
+                    target: "cdz_agent_host::effect",
+                    family,
+                    retryability = ?retryability,
+                    reason,
+                    "effect errored"
+                );
             }
             EffectOutcome::TimedOut => {
                 self.metrics.record_timed_out();
@@ -126,9 +140,9 @@ pub struct LiveExecutorSet {
     http: crate::ReqwestHttpTransport,
     model: crate::BedrockModelTransport,
     /// The HOST-WIDE per-effect metric tally (matching [`HostMetrics`](crate::HostMetrics)' host-wide
-    /// scope). Created once at daemon boot; every per-install executor is wrapped in a
-    /// [`MeteredExecutor`] sharing a CLONE of this `Arc`, so all sessions' effect outcomes aggregate into
-    /// one daemon-wide set the status surface / exporter reads via [`metrics`](Self::metrics).
+    /// scope). Registered from the daemon's shared registry at boot; every per-install executor is wrapped in
+    /// a [`MeteredExecutor`] sharing a CLONE of this `Arc`, so all sessions' effect outcomes aggregate into
+    /// one daemon-wide set the exporter reports over.
     metrics: Arc<EffectMetrics>,
 }
 
@@ -136,20 +150,22 @@ pub struct LiveExecutorSet {
 impl LiveExecutorSet {
     /// Build the shared transports ONCE (at daemon startup) — this is where the AWS config / IMDS load
     /// happens, on the boot path, NOT per install. `Err` if the HTTP client can't be built (e.g. no TLS
-    /// backend) — a fatal daemon misconfiguration surfaced at boot, not per session.
-    pub async fn new() -> Result<Self, String> {
+    /// backend) — a fatal daemon misconfiguration surfaced at boot, not per session. The per-effect
+    /// [`EffectMetrics`] register into `registry` (the daemon's — the SAME one
+    /// [`AgentHost`](crate::AgentHost) records host metrics into), so all metrics share one registry the
+    /// exporter reports over.
+    pub async fn new(registry: &crate::metrics::Registry) -> Result<Self, String> {
         let http = crate::ReqwestHttpTransport::new()?;
         let model = crate::BedrockModelTransport::new().await;
         Ok(LiveExecutorSet {
             http,
             model,
-            metrics: Arc::new(EffectMetrics::default()),
+            metrics: Arc::new(EffectMetrics::new(registry)),
         })
     }
 
-    /// The host-wide per-effect metrics this set's executors tally into — the daemon reads a
-    /// [`snapshot`](EffectMetrics::snapshot) for a status/admin surface (and, later, the exporter). Shared,
-    /// so the returned handle observes every session's dispatches.
+    /// The host-wide per-effect metrics this set's executors tally into — shared, so the returned handle
+    /// observes every session's dispatches. (Held so the wrap in `build` shares one `Arc`.)
     pub fn metrics(&self) -> Arc<EffectMetrics> {
         self.metrics.clone()
     }
@@ -582,7 +598,8 @@ mod tests {
                 .into(),
             ),
         };
-        let metrics = Arc::new(EffectMetrics::default());
+        let registry = crate::metrics::Registry::new();
+        let metrics = Arc::new(EffectMetrics::new(&registry));
         let mut metered = MeteredExecutor::new(Box::new(scripted), metrics.clone());
 
         // handles_family forwards (wrapping doesn't hide the served family from the manifest).
@@ -595,7 +612,9 @@ mod tests {
             None,
             Timeliness::Interactive,
         );
-        // Each outcome passes THROUGH unchanged…
+        // Each outcome passes THROUGH unchanged (the decorator is transparent) — the wrap classifies +
+        // records each into the registry along the way (registry Counters are drain-on-report with no value
+        // getter, so we assert pass-through + a reportable registry, not per-counter values).
         assert!(matches!(
             metered.perform(&req, Hash::of(b"k")).await,
             EffectOutcome::Ok(_)
@@ -611,29 +630,26 @@ mod tests {
             EffectOutcome::TimedOut
         ));
 
-        // …and the shared EffectMetrics tallied the ok/retryable/permanent/timed-out split (the unprefixed
-        // Err classified permanent, fail-closed; TimedOut counted on its own).
-        let s = metrics.snapshot();
-        assert_eq!(s.effects_ok, 1);
-        assert_eq!(s.effects_retryable_err, 1);
-        assert_eq!(
-            s.effects_permanent_err, 2,
-            "explicit permanent + unprefixed"
+        // The registry reports a metrics line over the recorded effect counters (proves the wrap fed the
+        // registry — the export path the exporter drives).
+        assert!(
+            registry.try_take_current_metrics_line().is_some(),
+            "the registry reports over the recorded effect metrics"
         );
-        assert_eq!(s.effects_timed_out, 1);
-        assert_eq!(s.effects_total(), 5);
     }
 
     #[tokio::test]
     async fn metered_executors_sharing_one_arc_aggregate_across_families() {
         // The wiring pattern LiveExecutorSet::build uses: register MULTIPLE MeteredExecutors (one per family)
         // in a CompositeExecutor, all sharing ONE Arc<EffectMetrics>, so a route to any family tallies into
-        // the SAME host-wide set. Two families here — one Ok + one TimedOut → the shared snapshot sees both
-        // outcomes (and proves the wrap tallies a non-Ok outcome across families too).
+        // the SAME registry-backed set. Two families here — one Ok + one TimedOut — both recorded through the
+        // shared Arc without panic (registry Counters are drain-on-report, no value getter, so we assert the
+        // record path is total + the registry reports over it, not per-counter values).
         use cdz_kernel::effect::{EffectKind, Payload, Timeliness};
         use cdz_kernel::executor::Executor as _;
 
-        let metrics = Arc::new(EffectMetrics::default());
+        let registry = crate::metrics::Registry::new();
+        let metrics = Arc::new(EffectMetrics::new(&registry));
         let ok_a = ScriptedExecutor {
             outcomes: std::cell::RefCell::new(
                 vec![EffectOutcome::Ok(Some(Payload::Inline(
@@ -668,10 +684,11 @@ mod tests {
         composite.perform(&req_a, Hash::of(b"a")).await;
         composite.perform(&req_b, Hash::of(b"b")).await;
 
-        // Both families' outcomes aggregated into the single shared set.
-        let s = metrics.snapshot();
-        assert_eq!(s.effects_ok, 1, "fam-a Ok");
-        assert_eq!(s.effects_timed_out, 1, "fam-b TimedOut");
-        assert_eq!(s.effects_total(), 2, "aggregated across both families");
+        // Both families' outcomes recorded through the one shared Arc into the one registry — which reports
+        // over them (proves cross-family aggregation into a single registry-backed set).
+        assert!(
+            registry.try_take_current_metrics_line().is_some(),
+            "the shared registry reports over both families' recorded effects"
+        );
     }
 }

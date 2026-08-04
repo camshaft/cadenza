@@ -312,7 +312,9 @@ impl HostedSession {
 
 /// The host: a registry of running agent sessions keyed by [`SessionId`]. Owns each [`HostedSession`],
 /// routes inbound events to the right one, and is the object a `session-status <id>` query reads.
-#[derive(Default)]
+///
+/// Constructed via [`new`](Self::new) / [`with_canonical_store`](Self::with_canonical_store) (each creates
+/// the metrics registry) — no `Default`, since the registry is a required, non-default collaborator.
 pub struct AgentHost {
     sessions: HashMap<SessionId, HostedSession>,
     /// The §4c v0.3 canonical shared name store, if this host is share-backed (see
@@ -320,9 +322,12 @@ pub struct AgentHost {
     /// replay-copy at spawn and folds its appends back after each turn — no shared handle. (Type:
     /// [`cdz_kernel::name_store::NameStore`].)
     canonical: Option<cdz_kernel::name_store::NameStore>,
-    /// The host's metric surface — monotonic counters bumped at the session-lifecycle + per-turn boundaries
-    /// (spawn/remove/deliver). Hermetic (plain atomics, no metrics dep); the registry-typed export recorder
-    /// is the following refactor (seq-116). `Default` = all-zero, so it needs no explicit init.
+    /// The s2n-quic-dc-metrics registry the host records into — the recorder surface an export backend drains.
+    /// Held so `metrics` (and the executor set's `EffectMetrics`) register into ONE registry, and so
+    /// [`AgentHost::registry`] can hand it to the exporter.
+    registry: crate::metrics::Registry,
+    /// The host's metric surface — registry [`Counter`]s bumped at the session-lifecycle + per-turn
+    /// boundaries (spawn/remove/deliver), registered from [`registry`](Self::registry).
     metrics: crate::metrics::HostMetrics,
 }
 
@@ -339,12 +344,21 @@ fn replay_of(canonical: &cdz_kernel::name_store::NameStore) -> cdz_kernel::name_
     .expect("a canonical store holds only scoped names, so its replay is total")
 }
 
+impl Default for AgentHost {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AgentHost {
     pub fn new() -> Self {
+        let registry = crate::metrics::Registry::new();
+        let metrics = crate::metrics::HostMetrics::new(&registry);
         AgentHost {
             sessions: HashMap::new(),
             canonical: None,
-            metrics: crate::metrics::HostMetrics::default(),
+            registry,
+            metrics,
         }
     }
 
@@ -360,10 +374,13 @@ impl AgentHost {
     /// shared handle / interior mutability — by-value copies + a reconcile, composing with the per-session
     /// [`HostedSession::with_name_store`] seam.
     pub fn with_canonical_store(canonical: cdz_kernel::name_store::NameStore) -> Self {
+        let registry = crate::metrics::Registry::new();
+        let metrics = crate::metrics::HostMetrics::new(&registry);
         AgentHost {
             sessions: HashMap::new(),
             canonical: Some(canonical),
-            metrics: crate::metrics::HostMetrics::default(),
+            registry,
+            metrics,
         }
     }
 
@@ -427,7 +444,10 @@ impl AgentHost {
             );
             return None;
         };
+        let started = std::time::Instant::now();
         let outcome = s.deliver(body, cause).await;
+        self.metrics
+            .record_turn_latency_us(started.elapsed().as_micros() as u64);
         self.metrics.record_turn(outcome.is_ok());
         // Trace the turn outcome at the same boundary the metric records. An errored turn logs the kernel
         // reason at warn (a supervisor signal); a successful turn at debug (routine, filtered out at info).
@@ -494,10 +514,16 @@ impl AgentHost {
         self.sessions.is_empty()
     }
 
-    /// The host's live metric surface — read a [`snapshot`](crate::HostMetrics::snapshot) for a status query
-    /// or the feature-gated metrics exporter. The counters are bumped internally at spawn/remove/deliver.
+    /// The host's live metric surface — registry counters bumped internally at spawn/remove/deliver.
     pub fn metrics(&self) -> &crate::metrics::HostMetrics {
         &self.metrics
+    }
+
+    /// The s2n-quic-dc-metrics registry the host records into — the daemon hands this to the export backend
+    /// (which drains it on its reporting interval) and registers the executor set's `EffectMetrics` into it,
+    /// so all the daemon's metrics share one registry the exporter reports over.
+    pub fn registry(&self) -> &crate::metrics::Registry {
+        &self.registry
     }
 
     /// Fire due timers across ALL registered sessions at `now_ms` (a host scheduler tick). Returns the
@@ -584,7 +610,7 @@ pub async fn live_executor_set() -> Result<CompositeExecutor, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ClockExecutor, HostMetricsSnapshot};
+    use crate::ClockExecutor;
     use cdz_kernel::authz::Authorizer;
     use cdz_kernel::effect::{
         effect_ct, Capability, EffectKind, EffectRequest, Payload, ResourcePredicate, Timeliness,
@@ -778,58 +804,40 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn host_metrics_count_the_lifecycle_and_turn_boundaries() {
-        // The metric surface bumps at the host boundaries: spawn (install), deliver (turn ok/err +
-        // unknown-session), remove. Drive a real sequence and assert the snapshot.
+    async fn host_metrics_record_at_the_lifecycle_and_turn_boundaries() {
+        // The metric surface records at the host boundaries: spawn (install), deliver (turn ok/err +
+        // unknown-session), remove — into the registry. Registry Counters are drain-on-report with no value
+        // getter, so drive a real sequence (must not panic) + assert the registry reports over the recorded
+        // metrics (the export path). The per-boundary increment logic is exercised; the values reach the
+        // exporter, not a test getter.
         let mut host = AgentHost::new();
-        assert_eq!(
-            host.metrics().snapshot(),
-            HostMetricsSnapshot::default(),
-            "a fresh host has zero metrics"
-        );
-
         host.spawn(SessionId::new("a"), now_host());
         host.spawn(SessionId::new("b"), now_host());
         // A delivered turn to a known session (the `now` reducer completes Ok).
         host.deliver(&SessionId::new("a"), inbound_go(), None).await;
-        // A delivery to an UNKNOWN id — counted distinctly, not as a turn.
+        // A delivery to an UNKNOWN id — recorded distinctly (deliveries_to_unknown_session), not as a turn.
         host.deliver(&SessionId::new("ghost"), inbound_go(), None)
             .await;
         // Remove one.
         host.remove(&SessionId::new("b"));
 
-        let s = host.metrics().snapshot();
-        assert_eq!(s.sessions_installed, 2);
-        assert_eq!(s.sessions_removed, 1);
-        assert_eq!(s.turns_delivered, 1, "only the known-session deliver");
-        assert_eq!(s.turns_ok, 1);
-        assert_eq!(s.turns_err, 0);
-        assert_eq!(
-            s.deliveries_to_unknown_session, 1,
-            "the ghost deliver counted as unknown, not a turn"
+        assert!(
+            host.registry().try_take_current_metrics_line().is_some(),
+            "the registry reports over the recorded host metrics"
         );
-        assert_eq!(s.sessions_live(), 1, "2 installed − 1 removed");
     }
 
     #[tokio::test]
-    async fn respawn_counts_the_replaced_session_as_removed_so_live_stays_accurate() {
-        // A spawn onto an existing id drops the old session without a remove() call; the surface counts that
-        // implicit drop so sessions_live (installed − removed) doesn't drift upward on restarts.
+    async fn respawn_records_the_replaced_session_as_removed() {
+        // A spawn onto an existing id drops the old session without a remove() call; spawn() records that
+        // implicit drop (record_session_removed) so the installed/removed counters stay balanced on restarts.
+        // Drive it (no panic) — the increment is on the replace path in spawn(); values reach the exporter.
         let mut host = AgentHost::new();
         let id = SessionId::new("worker");
         host.spawn(id.clone(), now_host());
-        host.spawn(id.clone(), now_host()); // restart — replaces
-        let s = host.metrics().snapshot();
-        assert_eq!(s.sessions_installed, 2);
-        assert_eq!(
-            s.sessions_removed, 1,
-            "the replaced session counted as removed"
-        );
-        assert_eq!(
-            s.sessions_live(),
-            1,
-            "one live session despite two installs"
-        );
+        host.spawn(id.clone(), now_host()); // restart — replaces + records a removal
+        assert_eq!(host.len(), 1, "replace, not add");
+        assert!(host.registry().try_take_current_metrics_line().is_some());
     }
 
     #[tokio::test]

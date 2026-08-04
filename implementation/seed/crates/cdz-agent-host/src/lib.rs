@@ -95,7 +95,7 @@ pub use host::{AgentHost, HostedSession, SessionId};
 #[cfg(feature = "live-net")]
 pub use http::ReqwestHttpTransport;
 pub use http::{HttpExecutor, HttpMethod, HttpResponse, HttpTransport};
-pub use metrics::{EffectMetrics, EffectMetricsSnapshot, HostMetrics, HostMetricsSnapshot};
+pub use metrics::{EffectMetrics, HostMetrics};
 #[cfg(feature = "live-net")]
 pub use model::BedrockModelTransport;
 pub use model::{ModelExecutor, ModelTransport};
