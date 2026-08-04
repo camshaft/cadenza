@@ -2421,4 +2421,70 @@ mod tests {
             "a self-cyclic transport structure must be NotATree"
         );
     }
+
+    #[test]
+    fn dict_idx_routes_to_the_correct_import_among_several() {
+        // Every OTHER transport test imports ≤ 1 dict, so `dict_idx` is always 0 — a bug that grafted the
+        // WRONG import (a transposed import list, an off-by-one in dict_idx → &imports[]) would pass them
+        // all. Pin the routing: TWO distinct dicts, a ref into EACH plus a SECOND ref reusing dict 0, so
+        // the result witnesses that dict_idx `i` grafts import `i` (not some other) AND that one dict can
+        // be referenced twice. dict 0 = `(A1 A2)`, dict 1 = `(B1 B2 B3)`; transport = a 3-elem list
+        // `<ref d0> <ref d1> <ref d0>` → `((A1 A2) (B1 B2 B3) (A1 A2))`.
+        let mut ab = Builder::new();
+        let a1 = ab.name("A1");
+        let a2 = ab.name("A2");
+        let a_root = ab.list(vec![a1, a2]);
+        let dict_a = ab.finish(a_root);
+        let a_root_id = dict_a.root.0 as u64;
+
+        let mut bb = Builder::new();
+        let b1 = bb.name("B1");
+        let b2 = bb.name("B2");
+        let b3 = bb.name("B3");
+        let b_root = bb.list(vec![b1, b2, b3]);
+        let dict_b = bb.finish(b_root);
+        let b_root_id = dict_b.root.0 as u64;
+
+        // Two DISTINCT hashes; the import list order fixes their dict_idx (A → 0, B → 1).
+        let ha = [0x11u8; 32];
+        let hb = [0x22u8; 32];
+        let mut dicts = DictSet::new();
+        dicts.insert(Hash(ha), dict_a);
+        dicts.insert(Hash(hb), dict_b);
+
+        // structure: [DictRef{0,a_root}, DictRef{1,b_root}, DictRef{0,a_root}, List[0,1,2]]; root = 3.
+        let bytes = build_transport(
+            &[ha, hb],
+            &[],
+            &[
+                (TAG_DICT_REF, vec![0, a_root_id]),
+                (TAG_DICT_REF, vec![1, b_root_id]),
+                (TAG_DICT_REF, vec![0, a_root_id]),
+                (TAG_LIST, vec![0, 1, 2]),
+            ],
+            3,
+        );
+        let got = decode_with_dicts(&bytes, &dicts).expect("multi-import refs resolve");
+
+        // Expected inline: `((A1 A2) (B1 B2 B3) (A1 A2))`.
+        let mut eb = Builder::new();
+        let ea1 = eb.name("A1");
+        let ea2 = eb.name("A2");
+        let ea = eb.list(vec![ea1, ea2]);
+        let eb1 = eb.name("B1");
+        let eb2 = eb.name("B2");
+        let eb3 = eb.name("B3");
+        let ebl = eb.list(vec![eb1, eb2, eb3]);
+        let ea1b = eb.name("A1");
+        let ea2b = eb.name("A2");
+        let ea_again = eb.list(vec![ea1b, ea2b]);
+        let eroot = eb.list(vec![ea, ebl, ea_again]);
+        let expected = eb.finish(eroot);
+        assert!(
+            got.structurally_eq(&expected),
+            "multi-import graft misrouted: got {got:?}"
+        );
+        // And it re-encodes to its canonical identity + round-trips.
+        assert!(decode(&encode(&got)).unwrap().structurally_eq(&expected));
+    }
 }
