@@ -3698,6 +3698,50 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 73 Int64)))
 
+(case "a block-wrapped OUTER-effect perform in a do-statement TWO nested handlers deep declines cleanly (adv-69 nh7 depth-3)"
+  (doc    "adv-69 nh7 (breaker depth escalation of c3-nested): the SAME non-tail do-statement drop, but the
+           outer `A`-perform sits inside TWO stacked nested handlers (`B` then `C`) — `(handle A x (…) (handle
+           B 100 (…) (handle C 200 (…) (do (let ((k true)) (if k (A.pa 7) unit)) (+ (* 10 (A.ga)) x)))))`. The
+           block-wrapped `A.pa 7` advance drops at the block boundary: seeded 3 it ran 33, correct is 73 (pa
+           sets state 7, `(A.ga)` reads 7 → 10*7 + x=3). Verifies the c3-nested scanner's nested-handle-body
+           descent is RECURSIVE — it re-invokes on EACH nested body, so the depth-2 nesting (A over B over C)
+           is covered exactly like depth-1, the depth-N regression guard analogous to a4-depth3 for the let-
+           init scanner. Grades TODO on all backends; flips to 73 PASS on the through-block fold.")
+  (input  (do
+            (effect A (op ga (-> Unit Int64)) (op pa (-> Int64 Unit)))
+            (effect B (op gb (-> Unit Int64)))
+            (effect C (op gc (-> Unit Int64)))
+            (def (main (: x Int64))
+              (handle A x ((ga (u) s (resume s (+ s 1))) (pa (v) _s (resume unit v)))
+                (handle B 100 ((gb (u) t (resume t t)))
+                  (handle C 200 ((gc (u) w (resume w w)))
+                    (do (let ((k true)) (if k (A.pa 7) unit))
+                        (+ (* 10 (A.ga)) x))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 73 Int64)))
+
+(case "a block-wrapped OUTER-effect perform in a match-SCRUTINEE inside a nested handler body declines cleanly (adv-69 g3-nested)"
+  (doc    "adv-69 g3-nested (v-effects bonus-probe of the c3-nested fix): the g3 match-scrutinee face of the
+           nested-handle-body escape. A block-wrapped OUTER `A`-perform sits in a `match` SCRUTINEE inside a
+           nested `B` handler's body — `(handle A 3 ((ga …)) (handle B 100 ((gb …)) (match (let ((k true)) (if
+           k (A.ga) 9)) (v (+ (* 10 v) (A.ga))))))`. The block-wrapped branch perform's advance drops at the
+           block boundary: seeded 3 it ran 33, correct is 34 (the scrutinee `A.ga` reads 3 and advances state
+           to 4, so v = 3; the arm's trailing `(A.ga)` reads the advanced 4 → 10*3 + 4 = 34). The g3/c3 scanner
+           (`body_has_block_wrapped_scrutinee_or_statement_branch_perform`) shares
+           the do-statement scanner's nested-handle-body descent, so the match-scrutinee position in a nested
+           body is covered by the same fix. Grades TODO on all backends; flips to 34 PASS on the through-block
+           fold.")
+  (input  (do
+            (effect A (op ga (-> Unit Int64)))
+            (effect B (op gb (-> Unit Int64)))
+            (def (main)
+              (handle A 3 ((ga (u) s (resume s (+ s 1))))
+                (handle B 100 ((gb (u) t (resume t t)))
+                  (match (let ((k true)) (if k (A.ga) 9))
+                    (v (+ (* 10 v) (A.ga)))))))
+            (export main)))
+  (call   main) (output (: 34 Int64)))
+
 (case "a block-wrapped conditional whose CONDITION performs (not a branch) folds correctly (adv-69 boundary control)"
   (doc    "The passing boundary control for the adv-69 guards: a block-wrapped conditional whose CONDITION
            performs — `(let ((v (let ((b (> (St.get) 0))) (if b 7 99)))) (+ (* 10 v) (St.get)))` — must still
