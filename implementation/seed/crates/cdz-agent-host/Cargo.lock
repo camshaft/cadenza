@@ -2049,7 +2049,7 @@ checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 [[package]]
 name = "s2n-quic-dc-metrics"
 version = "0.76.0"
-source = "git+https://github.com/camshaft/s2n-quic?branch=main#7ec9f027424badd576436d29d05f75c8d8594133"
+source = "git+https://github.com/camshaft/s2n-quic?rev=7ec9f027424badd576436d29d05f75c8d8594133#7ec9f027424badd576436d29d05f75c8d8594133"
 dependencies = [
  "chrono",
  "crossbeam-queue",
