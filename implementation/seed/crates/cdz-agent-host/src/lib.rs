@@ -81,7 +81,7 @@ pub use async_host::{AdminChannel, AdminRequest, AsyncAgentHost, Inbound, Inbox}
 pub use clock::ClockExecutor;
 pub use config::{
     AdminConfig, BlobConfig, DaemonConfig, LogConfig, MetricsTarget, ObservabilityConfig,
-    RetryConfig,
+    RetryConfig, TracingConfig, TracingFormat, TracingOutput,
 };
 #[cfg(feature = "live-net")]
 pub use factory::LiveExecutorSet;
