@@ -304,6 +304,7 @@ pass	Set.intersection unifies an arithmetic-produced rational with its construct
 pass	Set.of of a Set.to-list result reconstructs the same set (the enumeration round-trips)
 pass	Set.of of a computed (concatenated) runtime list dedups by value
 pass	Set.of over Rational elements dedupes a normalized-equal literal and to-list enumerates ascending
+pass	Set.of over Set.to-list round-trips a 100-element trie to the identical set
 pass	Set.of over a runtime list of TUPLE elements reconstructs the same set through the synthesized fold
 pass	Set.remove does not fold a set whose element is a runtime scalar
 pass	Set.remove of a rope-element set built via Set.of lowers the cardinality
@@ -325,6 +326,7 @@ pass	Set.to-list over Float64 elements enumerates by canonical byte order
 pass	Set.to-list over Option elements enumerates Some-first per the declared order
 pass	Set.to-list over Rational elements enumerates ascending by value, not by numerator/denominator pair
 pass	Set.to-list over STRING elements orders by content with a rope participating
+pass	Set.to-list over a 100-element trie enumerates strictly increasing end to end
 pass	Set.to-list over a RUNTIME-built set yields canonical order (first element is the minimum)
 pass	Set.to-list over a runtime set sums its distinct elements
 pass	Set.to-list over an all-nullary sum enumerates in discriminant order
