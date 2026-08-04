@@ -154,6 +154,15 @@ export default function Metaprogramming() {
 (def (main)
   (eval (Ast.List (list (Ast.Name "double") (Ast.Int 21)))))`}
       />
+      <P>
+        Every literal that quotes also evals back. A quoted byte string reifies to an <C>Ast.Bytes</C> and
+        evaluating that node hands you the blob straight back, so <C>{`(eval (quote b"hi"))`}</C> is the
+        original <C>{`b"hi"`}</C>, closing the loop from source to node to value:
+      </P>
+      <Runnable
+        source={`(def (main)
+  (= (eval (quote b"hi")) b"hi"))`}
+      />
 
       <Note>
         A tree can also be serialized: <C>Ast.encode</C> turns an AST into bytes and <C>Ast.decode</C>{" "}
