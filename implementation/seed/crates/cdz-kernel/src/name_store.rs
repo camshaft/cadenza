@@ -115,6 +115,18 @@ impl NameStore {
     /// anti-hijack write-authority — a random agent can't swap the compiler out from under everyone).
     pub const COMPILER_LATEST: &'static str = "system/compiler/latest";
 
+    /// The well-known mutable name for the CURRENT authorization policy component (the §20b seam:
+    /// policy-referenced-by-mutable-name). An admin `store/set`s this to a Cedar-policy component's
+    /// blob-hash; the host `store/resolve`s it, blob-fetches the bytes, and rebuilds the session's
+    /// [`ComponentAuthorizer`](crate::wasm_host::ComponentAuthorizer) — so swapping the live policy is just
+    /// a `store/set` to this name (which is ALSO an I6 `capabilities-changed` trigger: a policy swap can move
+    /// a session's grant-states, so the host re-runs `push_capabilities_changed` after the swap). ONE source
+    /// of truth for the pointer name across the kernel, the host, and any admin — not a string duplicated
+    /// per crate. Its `system/` prefix means only a `store/set` grant scoped to `system/` may repoint it (the
+    /// §4c anti-hijack write-authority — a random agent can't swap the policy that governs everyone out from
+    /// under them; the thing that DECIDES authorization is itself write-gated by that authorization).
+    pub const POLICY_CURRENT: &'static str = "system/policy/current";
+
     pub fn new() -> Self {
         NameStore {
             names: HashMap::new(),
@@ -450,6 +462,30 @@ mod tests {
         assert_eq!(
             s.resolve(NameStore::COMPILER_LATEST).unwrap(),
             Hash::of(b"wasm")
+        );
+    }
+
+    #[test]
+    fn policy_current_const_is_a_system_scoped_well_formed_name() {
+        // The §20b policy-pointer const: pin its value (one source of truth) + that it's System-scoped, so a
+        // store/set that swaps the live authorization policy is write-gated by a system/ grant (only an admin
+        // authority may repoint the policy governing everyone — the same anti-hijack property as the compiler
+        // pointer, applied to the thing that DECIDES authorization).
+        assert_eq!(NameStore::POLICY_CURRENT, "system/policy/current");
+        assert_eq!(
+            NameStore::authority_prefix_of(NameStore::POLICY_CURRENT),
+            NameAuthority::System,
+            "the policy pointer must be System-scoped (write-gated)"
+        );
+        let mut s = NameStore::new();
+        s.set(
+            NameStore::POLICY_CURRENT,
+            SetEntry::unsigned(Hash::of(b"policy-wasm")),
+        )
+        .unwrap();
+        assert_eq!(
+            s.resolve(NameStore::POLICY_CURRENT).unwrap(),
+            Hash::of(b"policy-wasm")
         );
     }
 
