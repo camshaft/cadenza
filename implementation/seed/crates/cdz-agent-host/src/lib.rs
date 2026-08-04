@@ -32,12 +32,20 @@
 //! shutdown) — the multi-session daemon, built so v-agent-harness's kernel-async conversion swaps the
 //! in-place `deliver` for `.await` with no reshape (single-threaded, no `Send`).
 //!
+//! The deployed daemon boots as a pure CONTROL PLANE (empty registry) and an ADMIN installs + manages
+//! sessions at runtime over an admin control interface (operator directive). [`admin`] is the transport-
+//! agnostic command layer of that: an [`AdminCommand`] (install-session / list / status / stop) applied
+//! by [`AgentHost::apply_admin`](host::AgentHost::apply_admin) via a [`SessionFactory`] install seam. The
+//! Unix-socket transport that carries the frames and the Cedar `admin/*` authorization of each command are
+//! the following slices.
+//!
 //! All executor errors are RECOVERABLE + classified for the kernel's supervision tree (see [`retry`]):
 //! an `EffectOutcome::Err` reason leads with a `RETRYABLE:`/`PERMANENT:` token so a supervisor decides
 //! backoff-retry vs give-up — never a panic, never a silent drop (the operator's error-resilience floor).
 //!
 //! The shared surface with `cdz-kernel` is ONLY the trait signatures; this crate never edits kernel src.
 
+pub mod admin;
 pub mod async_host;
 pub mod clock;
 pub mod config;
@@ -47,6 +55,7 @@ pub mod model;
 pub mod retry;
 pub mod status;
 
+pub use admin::{AdminCommand, AdminResponse, InstallSpec, SessionFactory};
 pub use async_host::{AsyncAgentHost, Inbound, Inbox};
 pub use clock::ClockExecutor;
 pub use config::{DaemonConfig, LogConfig, ObservabilityConfig, RetryConfig};
