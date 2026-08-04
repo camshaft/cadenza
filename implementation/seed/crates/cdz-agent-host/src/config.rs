@@ -60,11 +60,11 @@ pub enum LogConfig {
 }
 
 /// Observability config — the daemon's metrics integration (the operator's `s2n-quic-dc-metrics` crate,
-/// `camshaft/s2n-quic` branch `main`). Disabled by default; when enabled, metrics FAN OUT to one-or-more
-/// configured `targets` (operator requirement: "define more than one target backend"). Each
-/// `[[observability.target]]` is a [`MetricsTarget`] whose `kind` selects a backend and whose OTHER fields
-/// are that backend's OWN typed config, so the daemon can emit to several sinks (multiple statsd collectors,
-/// or different backend types).
+/// `camshaft/s2n-quic` branch `main`). Disabled by default; when enabled, metrics FAN OUT to the configured
+/// `targets` — a LIST so MULTIPLE backends are supported (the operator's config-multiple requirement), with
+/// at least one required when enabled (validated below). Each `[[observability.target]]` is a
+/// [`MetricsTarget`] whose `kind` selects a backend and whose OTHER fields are that backend's OWN typed
+/// config, so the daemon can emit to several sinks (multiple statsd collectors, or different backend types).
 ///
 /// The emitter itself is a following slice (feature-gated to keep the QUIC/metrics dep tree out of the
 /// default build), waiting on the operator's confirmation of the v0 backend SET. This CONFIG is always
