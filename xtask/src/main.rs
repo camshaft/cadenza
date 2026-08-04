@@ -594,9 +594,13 @@ fn run(paths: &Paths, profile: &str, file: &Path, from: &str, store: Option<Path
     // inherited/piped stdio so the result still streams live to the terminal — `wait_stages_with_timeout`
     // only polls exit + kills. It reports the first not-yet-exited stage on timeout; pipeline order in
     // the array preserves "first failing stage sets the exit code".
+    // Read the timeout ONCE and reuse it for both the enforced deadline and the message, so a
+    // `CDZ_RUN_TIMEOUT_SECS` change mid-run can't make the "did not finish within {N}s" text disagree
+    // with the deadline actually enforced (github-liaison/Copilot PR#2037 review).
+    let timeout = run_timeout();
     match wait_stages_with_timeout(
         [("cdz-syntax", syntax), ("rcdzc", rcdzc), ("cdz-run", run)],
-        run_timeout(),
+        timeout,
     ) {
         Ok(statuses) => {
             // Every stage exited within the deadline — first failing stage (pipeline order) sets the code.
@@ -611,7 +615,7 @@ fn run(paths: &Paths, profile: &str, file: &Path, from: &str, store: Option<Path
                 "xtask run: '{stage}' did not finish within {}s — killed (hang). Raise \
                  CDZ_RUN_TIMEOUT_SECS if this is a legitimately long run; a fresh-worktree hang usually \
                  means a cold store — run `cargo xtask build` first.",
-                run_timeout().as_secs()
+                timeout.as_secs()
             );
             std::process::exit(1);
         }
