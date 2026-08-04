@@ -288,8 +288,10 @@ Erlang's tree is ephemeral (in-memory restart policy). Ours is **durable + repla
   records `spawned-child(child-id)` in parent's log and `born(parent-id, goal, caps)` as child's
   genesis. Parent↔child link is immutable on both sides.
 - `close(outcome)` in the child is an effect. Kernel sees the child had a parent and auto-delivers
-  `child-completed(child-id, outcome-hash)` to the parent's inbox. Not special kernel logic —
-  just: the child's genesis recorded a parent, so `close` routes a signal there.
+  `child-completed(child-id, CloseOutcome)` to the parent's inbox — `outcome` is the structured
+  `CloseOutcome { Success(payload) | Failure(reason) }` (§6a, BUILT slice-1), so the parent
+  distinguishes success from failure. Not special kernel logic — just: the child's genesis recorded
+  a parent, so `close` routes the outcome there.
 - **Supervision strategy is userspace.** The parent's reducer folds `child-completed` and decides
   respawn / escalate / give up. Kernel hardcodes NO strategy — the parent reducer *is* the
   supervisor. (Minimalism test passes.)
@@ -303,6 +305,82 @@ causally-linked subtree — migrate/sandbox/audit as a unit.
 Default lean = close cascades down the subtree (like Erlang), BUT make it a capability/policy
 choice (some children should outlive their spawner, e.g. a long-running monitor). Flag, don't
 decide yet.
+
+## 6a. Error resilience & self-heal (operator directive 2026-08-02)
+
+**Directive:** errors must NOT stop a session dead or vanish into the void; the harness heads
+toward Erlang/OTP-style supervision — failures captured, isolated, recovered by a supervisor
+(restart/retry/escalate) so the system SELF-HEALS over time rather than needing a manual
+jump-start. This is core to robustness, not nice-to-have. It's a **design direction realized in
+incremental slices**, not one change — this subsection is the shape + the path, for the operator
+to steer the tree design (esp. the OPEN decisions at the end).
+
+### The failure taxonomy (every failure becomes a first-class event, never silent)
+The kernel already turns most failures into ordered log events a supervisor can fold; the gap was
+the reducer trap. Full taxonomy:
+- **Effect failure** — `EffectResult::Err(reason)` / `TimedOut` (§9d anti-stuck). A hung effect
+  becomes a normal event, never a wedge. Executors classify: `RETRYABLE:`/`PERMANENT:` prefix on
+  the reason (a Bedrock 5xx/rate-limit is retryable; a 400 is permanent).
+- **Reducer trap / fuel-exhaustion** — a guest fold that traps or burns its fuel is captured as a
+  first-class `FoldFailed { reason, caused_event }` log event (**BUILT**, gap #1 closed), NOT a
+  silent empty fold ("errors into the void", the old §17 fail-safe). v0 RECORDS it (a supervisor
+  reading the log sees it); it is deliberately NOT re-folded (no recursion — a fold that fails
+  can't be handed back to the same failing reducer this turn).
+- **Session close** — a session ends with a structured **`CloseOutcome { Success(payload) |
+  Failure(reason) }`** (**BUILT**, slice-1) — no longer an opaque payload, so a parent can tell a
+  clean completion from a failure and react. This is the outcome `child-completed` carries up.
+
+### The self-heal loop (userspace supervisor, kernel strategy-agnostic)
+Supervision strategy stays **userspace** (§6): the parent reducer IS the supervisor. On a
+`child-completed(child-id, CloseOutcome)` (or a `FoldFailed`/effect-`Err` it's watching), the
+supervisor reducer decides:
+- **Retry-with-backoff (transient):** re-emit the failed effect / re-spawn the child after a delay
+  via a `Timer` effect. The delay comes from a backoff schedule (exponential + a max-attempts
+  ceiling). **The retry DECISION is a logged event** (the supervisor's fold emits the Timer +
+  records the attempt count in its KV) → replay-deterministic, ties into the durable log + resume
+  already built. NOT host-side Rust auto-retry (that would bypass the log + duplicate the model).
+- **Restart (one-for-one):** re-`spawn` a fresh child over the same goal/caps.
+- **Escalate:** a repeatedly-failing child is isolated — the supervisor `close(Failure(…))`s
+  itself, so ITS `child-completed(Failure)` escalates to the GRANDPARENT rather than crash-looping.
+- **Restart-intensity ceiling (OTP's max-restarts-in-period):** N restarts within a window →
+  escalate instead of looping. The counter lives in the supervisor's KV (replay-safe).
+
+### Where the pieces live (layering — keeps the kernel minimal)
+- **Kernel:** the first-class failure EVENTS (FoldFailed, structured CloseOutcome, effect Err/
+  TimedOut) + `spawn`/`close`/`child-completed` auto-delivery (§6). Strategy-free.
+- **Prelude / library (Cadenza, userspace):** a reusable **supervisor reducer** (one-for-one
+  restart + the retry-with-backoff schedule helper — the backoff math lives HERE, in the layer the
+  supervisor runs, so replay sees the same delays; NOT in host Rust). This is the layer an app's
+  PM/developer reducers compose.
+- **Host (cdz-agent-host):** executors surface real errors as classified `EffectOutcome::Err`
+  (Bedrock/Http/Shell 5xx→retryable) — already done. The host does NOT auto-retry (confirmed with
+  v-agent-harness-host): retry is the userspace supervisor's job.
+
+### Incremental path (slices)
+- ✅ **gap #1 — FoldFailed error event** (a trapped fold → first-class logged event). BUILT.
+- ✅ **slice-1 — structured CloseOutcome** (Success|Failure vs opaque payload). BUILT — the
+  precondition a supervisor needs to distinguish success from failure.
+- ⏭️ **slice-2 — spawn as an effect** → child session with `born(parent, goal, caps)` genesis +
+  `spawned-child` in the parent log (the immutable parent↔child link).
+- ⏭️ **slice-3 — close auto-delivers `child-completed(child-id, CloseOutcome)`** to the parent
+  inbox (the child's genesis recorded a parent → `close` routes the outcome there).
+- ⏭️ **slice-4 — the userspace supervisor library** (prelude): one-for-one restart + retry-with-
+  backoff + restart-intensity ceiling, consuming child-completed/FoldFailed.
+
+### OPEN decisions for the operator to weigh
+1. **Orphan rule** (from §6): parent closed while children live → close-cascade (Erlang default)
+   vs. outlive-spawner (a monitor should survive its spawner)? Lean: make it a capability/policy
+   flag per spawn, default cascade. **Needs a call.**
+2. **Restart-intensity defaults:** the max-restarts-in-period ceiling (N, window) before escalate —
+   what defaults, and is it per-supervisor-configurable or a kernel-wide safety floor?
+3. **Backoff schedule shape:** exponential base + cap + jitter? A max-attempts ceiling before a
+   retry becomes an escalate? (Affects the prelude helper's signature.)
+4. **child-completed granularity:** does the parent get intermediate `child-stalled`/`child-blocked`
+   signals (via `watch`, §4b) in addition to terminal `child-completed`, and does a supervisor act
+   on those or only on terminal outcomes?
+5. **FoldFailed recovery:** v0 records-but-doesn't-refold. Should a supervisor be able to
+   `swap-reducer` + replay-from-snapshot to recover a trapped session in place, or is re-spawn the
+   only recovery? (Ties self-mod §7 into supervision.)
 
 ## 7. Self-modification
 
