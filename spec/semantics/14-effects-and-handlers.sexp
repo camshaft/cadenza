@@ -3366,6 +3366,43 @@
   (call   main (: true Bool))
   (output (: 2 Int64)))
 
+(case "a BLOCK-wrapped branch perform in a let-init declines cleanly (adv-69 safe floor, not a silent miscompile)"
+  (doc    "adv-69 (HIGH, breaker+corpus-bugfix): a branch-performing conditional wrapped in a BLOCK inside a
+           `let`-init — `(let ((v (let ((b true)) (if b (St.get) 99)))) (+ (* 10 v) (St.get)))` — DROPPED the
+           branch perform's state advance at the block boundary: the trailing `(St.get)` resumed the block-
+           ENTRY state, not the branch's out-state. Seeded 3 it produced 33 (= 10*3 + 3) on wasm AND rust,
+           where the correct value is 34 (= 10*3 + 4). The hoist's Site 4 lifts a conditional that is DIRECTLY
+           a `let`-init to tail position (per-branch threading carries the advance), but a conditional behind
+           a `let`/`do` block wrapper is opaque to it. Until the full through-block distribution lands (an
+           alpha-safe commuting conversion, a separate increment), reduce_handle DECLINES this residual shape
+           → a clean Todo (honest 'not yet reducible'), NEVER the silent 33. This case grades TODO on all
+           backends (the safe floor); its 34 becomes a PASS when the full fold lands. Distinct from the FIXED
+           direct-init/connective-scrutinee cases above (those still compute — see the control below).")
+  (input  (do
+            (effect St (op get (-> Unit Int64)))
+            (def (main)
+              (handle St 3 ((get (u) s (resume s (+ s 1))))
+                (let ((v (let ((b true)) (if b (St.get) 99))))
+                  (+ (* 10 v) (St.get)))))
+            (export main)))
+  (call   main) (output (: 34 Int64)))
+
+(case "a DIRECT-init branch perform in a let-init threads its state advance (adv-69 control, still computes)"
+  (doc    "The working control for adv-69's safe-decline: the SAME body but with the branch-performing
+           conditional DIRECTLY the `let`-init (no block wrapper) — `(let ((v (if true (St.get) 99))) (+ (* 10
+           v) (St.get)))`. Hoist Site 4 lifts it to tail position, so each branch threads the perform's advance
+           through the continuation: seeded 3, v=3 (first get, state→4), trailing get reads 4 → 10*3 + 4 = 34.
+           Pins that the adv-69 safe-decline floor does NOT over-decline the direct-init path the hoist already
+           handles correctly. Computes on all backends.")
+  (input  (do
+            (effect St (op get (-> Unit Int64)))
+            (def (main)
+              (handle St 3 ((get (u) s (resume s (+ s 1))))
+                (let ((v (if true (St.get) 99)))
+                  (+ (* 10 v) (St.get)))))
+            (export main)))
+  (call   main) (output (: 34 Int64)))
+
 (case "two performs bound by nested lets thread the handler state in order"
   (doc    "Two performs on the strict spine, each BOUND by its own `let`, thread the handler state in
            evaluation order across the binds. `(let ((a (Ask.get))) (let ((b (Ask.get))) (+ a b)))` under a

@@ -2118,6 +2118,20 @@ pub fn reduce_handle(
     // continuation. Idempotent + cheap: a no-op (returns `body` unchanged) when the inline surfaced no
     // branch-performing conditional, so a body with no such helper is untouched.
     let body = hoist_resumptive_conditional(db, body, &ctx);
+    // adv-69 SAFE-DECLINE FLOOR (HIGH silent miscompile, breaker + corpus-bugfix 2026-08-04). The hoist above
+    // lifts a branch-performing conditional that is DIRECTLY a `let`-init to tail position (Site 4), where
+    // per-branch threading carries its state advance. But a conditional wrapped in a BLOCK (`(let ((v (let
+    // ((b true)) (if b (E.op) x)))) cont)` — inner-let/do around the `if`/`match`) is opaque to Site 4: the
+    // block's exit state reverts to block-ENTRY, so the branch perform's advance is DROPPED and a later
+    // perform in `cont` resumes the stale pre-branch state → a WRONG VALUE, no error (worst class). Until the
+    // full through-block distribution lands (a commuting conversion needing alpha-safe binder handling — a
+    // separate careful increment), DECLINE this residual shape so it grades a clean Todo, never a silent
+    // miscompile. Detects a `let`-init whose value is a block-wrapped branch-performing conditional the hoist
+    // left in place. (The direct-init case the hoist DID lift no longer matches — it's now a tail conditional,
+    // not a `let`-init block — so this never over-declines the working Site-4 path.)
+    if body_has_block_wrapped_let_init_branch_perform(db, body, &ctx) {
+        return None;
+    }
     // E5 PURE ONE-HOLE-CONTINUATION fold (general one-shot, the pure-continuation case). When the handle
     // BODY reaches EXACTLY ONE discharged perform `P` through STRICT, UNCONDITIONAL, effect-free positions
     // (`pure_hole`), its delimited continuation is the PURE one-hole context `C = body[P := □]`. Resuming
@@ -3375,6 +3389,69 @@ fn conditional_branch_performs(db: &mut Db, node: StructId, ctx: &HandlerCtx) ->
             .iter()
             .any(|&(_, body)| subtree_performs(db, body, ctx)),
         _ => false,
+    }
+}
+
+/// Whether `node` is a BLOCK (`let`/`do`) whose TAIL VALUE — through nested `let`/`do` wrappers — is a
+/// branch-performing conditional that Site 4's hoist does NOT reach. Site 4 (`conditional_branch_performs`)
+/// only lifts a conditional that is DIRECTLY the `let`-init value; a conditional wrapped in a block
+/// (`(let ((v (let ((b true)) (if b (E.op) x)))) cont)`) is opaque to it, so the block's exit state falls
+/// back to the block-ENTRY state and the branch perform's advance is DROPPED at the block boundary — a
+/// silent wrong-value (adv-69, HIGH: `+ (* 10 v) (E.op)` reads the stale pre-branch state). Detecting this
+/// residual shape (AFTER the hoist ran, so a liftable direct-init case is already in tail position) lets
+/// `reduce_handle` DECLINE cleanly (honest Todo) rather than fold a wrong value. Peels only PURE-binding
+/// block wrappers to the tail; a wrapper with a PERFORMING binding is a different (threaded) shape, not this.
+fn block_wrapped_branch_performs(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> bool {
+    match resolved_of(db, node) {
+        // A `let` block: its value is the body; recurse through it. (A performing binding is threaded by
+        // the ordinary `let` arm — this drop only bites when the wrapper's BODY is the branch conditional.)
+        Resolved::Let { body, .. } => {
+            conditional_branch_performs(db, body, ctx)
+                || block_wrapped_branch_performs(db, body, ctx)
+        }
+        // A `do` block resolves to a `Ref` at its last form (its value); recurse through it.
+        Resolved::Ref { value } => {
+            conditional_branch_performs(db, value, ctx)
+                || block_wrapped_branch_performs(db, value, ctx)
+        }
+        _ => false,
+    }
+}
+
+/// Scan `node` for a `let` whose ANY binding init is a BLOCK-WRAPPED branch-performing conditional (the
+/// adv-69 shape the hoist cannot lift). Walks the whole subtree via `child_ids` — the miscompiling `let`
+/// may sit anywhere the fold would thread. Returns true iff such a `let`-init exists, so `reduce_handle`
+/// declines cleanly rather than folding the dropped-advance wrong value.
+fn body_has_block_wrapped_let_init_branch_perform(
+    db: &mut Db,
+    node: StructId,
+    ctx: &HandlerCtx,
+) -> bool {
+    // A NESTED handle's own lets belong to THAT handler's reduction — don't descend (mirrors the guard
+    // scanner); reducing this outer handle must not decline on an inner handle's still-unreduced shape.
+    if matches!(resolved_of(db, node), Resolved::Handle { .. }) {
+        return false;
+    }
+    // A `let` at THIS node: check each init for the block-wrapped branch-performing shape.
+    if let Some(parts) = db.ast.as_form(node, "let").map(<[_]>::to_vec)
+        && parts.len() == 2
+        && let Struct::List(pairs) = db.ast.get(parts[0]).clone()
+    {
+        for pair in pairs {
+            if let Struct::List(kv) = db.ast.get(pair).clone()
+                && kv.len() == 2
+                && block_wrapped_branch_performs(db, kv[1], ctx)
+            {
+                return true;
+            }
+        }
+    }
+    // Recurse structurally — the miscompiling `let` may be nested anywhere in the body.
+    match db.ast.get(node).clone() {
+        Struct::List(children) => children
+            .iter()
+            .any(|&c| body_has_block_wrapped_let_init_branch_perform(db, c, ctx)),
+        Struct::Atom(_) => false,
     }
 }
 

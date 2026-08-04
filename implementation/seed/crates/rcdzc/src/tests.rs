@@ -66148,6 +66148,41 @@ mod stage1 {
     }
 
     #[test]
+    fn a_block_wrapped_branch_perform_in_a_let_init_declines_not_miscompiles() {
+        // adv-69 (breaker + corpus-bugfix, HIGH cross-backend silent miscompile). A branch-performing
+        // conditional wrapped in a BLOCK inside a `let`-init — `(let ((v (let ((b true)) (if b (St.get) 99))))
+        // (+ (* 10 v) (St.get)))` — DROPPED the branch perform's state advance at the block boundary: the
+        // trailing `(St.get)` resumed the block-ENTRY state (3) instead of the branch's out-state (4), so
+        // seeded 3 it produced 33 (= 10*3 + 3) on wasm AND rust, where the correct value is 34. The hoist's
+        // Site 4 lifts a conditional that is DIRECTLY a `let`-init to tail position, but a conditional behind a
+        // `let`/`do` block wrapper is opaque to it. Until the full through-block distribution lands (alpha-safe
+        // commuting conversion), this MUST decline cleanly (→ Todo), NEVER fold the silent 33.
+        let src = "(do (effect St (op get (-> Unit Int64))) \
+                   (def (main) (handle St 3 ((get (u) s (resume s (+ s 1)))) \
+                     (let ((v (let ((b true)) (if b (St.get) 99)))) (+ (* 10 v) (St.get))))) \
+                   (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_err(),
+            "a block-wrapped branch perform in a let-init must decline, not miscompile to 33"
+        );
+        // CONTRAST — the direct-init shape (no block wrapper) the hoist DOES lift must still FOLD to 34
+        // (the safe-decline must not over-decline the working Site-4 path).
+        let direct = "(do (effect St (op get (-> Unit Int64))) \
+                   (def (main) (handle St 3 ((get (u) s (resume s (+ s 1)))) \
+                     (let ((v (if true (St.get) 99))) (+ (* 10 v) (St.get))))) \
+                   (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(direct)))
+                    .expect("a direct-init branch perform in a let-init folds"),
+                "main"
+            ),
+            34,
+            "the direct-init branch perform must still fold to 34 (no over-decline of the Site-4 hoist path)"
+        );
+    }
+
+    #[test]
     fn a_mutually_recursive_effectful_group_specializes_under_a_state_handler() {
         // E3 extended to MUTUAL recursion: `ev`/`od` call each other, and the effect (`Ctr.tick`) is reached
         // by `ev` only THROUGH its partner `od`. The fix: `body_reaches_discharged` now follows RECURSIVE
