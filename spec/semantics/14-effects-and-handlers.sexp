@@ -3555,6 +3555,29 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 73 Int64)))
 
+(case "a block-wrapped OUTER-effect perform in a non-tail do-statement INSIDE a nested handler body declines cleanly (adv-69 c3-nested sub-face)"
+  (doc    "adv-69 c3-nested (v-effects self-probe 2026-08-04): the c3 non-tail do-statement drop, but the
+           block-wrapped branch perform is of the OUTER effect and sits in a `do`-statement INSIDE a nested
+           inner handler's body. `(handle A x ((ga …)(pa …)) (handle B 100 ((gb …)) (do (let ((k true)) (if k
+           (A.pa 7) unit)) (+ (* 10 (A.ga)) x))))` — the discarded statement's `A.pa 7` advance drops at the
+           block boundary: seeded 3 it ran 33, correct is 73 (pa sets state 7, `(A.ga)` reads 7 → 10*7 + x=3).
+           Same nested-handle-escape class as the a4 let-init face, but for the do-statement scanner: the outer
+           `A` reduction's `body_has_block_wrapped_scrutinee_or_statement_branch_perform` scan STOPPED at the
+           nested `B` `Handle` and missed the block-wrapped `A`-perform in `B`'s body. FIX: that scanner now
+           descends into a nested handle's BODY (not arms) keeping the OUTER ctx — ctx-keyed so only an
+           outer-effect perform fires (no over-decline of `B`'s own shapes). Grades TODO on all backends; flips
+           to 73 PASS on the through-block fold.")
+  (input  (do
+            (effect A (op ga (-> Unit Int64)) (op pa (-> Int64 Unit)))
+            (effect B (op gb (-> Unit Int64)))
+            (def (main (: x Int64))
+              (handle A x ((ga (u) s (resume s s)) (pa (v) _s (resume unit v)))
+                (handle B 100 ((gb (u) t (resume t t)))
+                  (do (let ((k true)) (if k (A.pa 7) unit))
+                      (+ (* 10 (A.ga)) x)))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 73 Int64)))
+
 (case "a block-wrapped conditional whose CONDITION performs (not a branch) folds correctly (adv-69 boundary control)"
   (doc    "The passing boundary control for the adv-69 guards: a block-wrapped conditional whose CONDITION
            performs — `(let ((v (let ((b (> (St.get) 0))) (if b 7 99)))) (+ (* 10 v) (St.get)))` — must still

@@ -66244,6 +66244,20 @@ mod stage1 {
             compile_component(&crate::codec::encode(&parse(c3))).is_err(),
             "a block-wrapped branch perform in a non-tail do-statement must decline, not miscompile to 33"
         );
+        // c3-nested (v-effects self-probe): the SAME do-statement drop, but the block-wrapped perform is of the
+        // OUTER effect and sits in a `do`-statement INSIDE a nested inner handler's body — the outer reduction's
+        // scrutinee/statement scanner previously STOPPED at the nested `Handle` and missed it (33 vs 73). The
+        // fix descends into a nested handle's body keeping the outer ctx (ctx-keyed, so no over-decline of the
+        // inner handler's own shapes). Mirrors the a4 let-init nested-body fix for the do-statement scanner.
+        let c3_nested = "(do (effect A (op ga (-> Unit Int64)) (op pa (-> Int64 Unit))) (effect B (op gb (-> Unit Int64))) \
+                   (def (main (: x Int64)) (handle A x ((ga (u) s (resume s s)) (pa (v) _s (resume unit v))) \
+                     (handle B 100 ((gb (u) t (resume t t))) \
+                       (do (let ((k true)) (if k (A.pa 7) unit)) (+ (* 10 (A.ga)) x))))) \
+                   (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(c3_nested))).is_err(),
+            "a block-wrapped outer-perform in a do-statement inside a nested handle body must decline, not miscompile to 33"
+        );
     }
 
     #[test]
