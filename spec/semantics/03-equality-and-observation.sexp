@@ -345,12 +345,13 @@
   (call   main (: 40 Int64)) (output (: 40 Int64)))
 
 (case "a Rational-keyed trie churned with DIFFERENTLY-normalized spellings equals the direct build"
-  (doc    "The normalization-identity churn: 30 keys are INSERTED as `2i/6` and REMOVED as `i/3` —
-           differently-written spellings of the same rational — so every removal must land on its
-           insert's slot through the canonical form. The survivor (seeded `1/2`) must EQUAL the direct
-           build by canonical `=` (10) and still resolve when probed as `2/4` (+1 → 11). Three spellings
-           of every value in play (insert, remove, probe) all converging on one canonical slot at trie
-           depth — the churn face of the normalized-key family.")
+  (doc    "The normalization-identity churn: 29 keys (i = 1..n-1 at n = 30) are INSERTED as `2i/6` and
+           REMOVED as `i/3` — differently-written spellings of the same rational — so every removal must
+           land on its insert's slot through the canonical form. The survivor (seeded `1/2`) must EQUAL
+           the direct build by canonical `=` (10) and still resolve when probed as `2/4` (+1 → 11). Two
+           spellings per churn key (insert/remove) and three for the survivor (stored 1/2, probed 2/4),
+           all converging on one canonical slot at trie depth — the churn face of the normalized-key
+           family.")
   (input  (do
             (def (grow (: i Int64) (: n Int64) (: m (Map Rational Int64)))
               (if (= i n) m (grow (+ i 1) n (Map.insert m (Rational.of (* i 2) 6) i))))
@@ -410,6 +411,25 @@
                   ((Some v) v) ((None _u) -1))))
             (export main)))
   (call   main (: 2 Int64)) (output (: 42 Int64)))
+
+(case "a SET of BigInts as a map key matches its construction-order and arithmetic twin"
+  (doc    "The BigInt face of the collection-key normalization family: the key is a Set holding one
+           MULTI-LIMB BigInt (built `big·2`) and one small (`n`); the probe builds the SAME set with
+           the elements written in the OTHER order and the multi-limb member computed as `2·big`
+           (commuted operands — an independently-built heap twin) → 42. The set's canonical element
+           order absorbs the batch order, and the multi-limb element hashes by numeric content across
+           separately-allocated limb buffers. Completes the trio: list elements, map values, and set
+           elements all canonicalize inside a collection-typed key.")
+  (input  (do
+            (def big (BigInt.of 9223372036854775807))
+            (def (main (: n Int64))
+              (do
+                (def stored (Set.of (list (* big (BigInt.of 2)) (BigInt.of n))))
+                (def probe (Set.of (list (BigInt.of n) (* (BigInt.of 2) big))))
+                (match (Map.lookup (Map.insert Map.empty stored 42) probe)
+                  ((Some v) v) ((None _u) -1))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 42 Int64)))
 
 (case "Map.remove of a Rational key canonicalizes: a normalized-equal key removes the entry"
   (doc    "The DELETE-side companion of the Rational-map-key cases above (which pin lookup/insert
