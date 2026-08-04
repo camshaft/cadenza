@@ -3264,6 +3264,7 @@ pass	a set with elements of two different types is a type error
 pass	a shadowed-constructor application types at the binding's return type
 pass	a shared CHAMP map survives per-level path-copied inserts that are read or dropped
 pass	a shared and a differing element hoist across same-length list arms
+pass	a shared inner map retrieved through BOTH outer keys stays ONE canonical value for keying
 pass	a shared list concatenated with itself has twice its length
 pass	a shared list is consumed element-wise twice by rest-pattern recursion
 pass	a shared runtime rope survives per-level extension ropes that are read or dropped
@@ -3513,6 +3514,7 @@ pass	a trapping shared payload before the differing position must not preempt a 
 pass	a trie of 30 QUANTITY keys resolves a cross-normalized magnitude lookup at depth
 pass	a trie of 40 MULTI-LIMB BigInt keys enumerates in magnitude order
 pass	a trie of 40 RATIONAL keys with all-different denominators enumerates in numeric order
+pass	a trie of 40 TUPLE keys resolves compound-key descent at depth
 pass	a trie spanning NEGATIVE and positive keys enumerates in signed numeric order
 pass	a triple-nested match on the SAME variant-refined scrutinee folds every level to the known arm
 pass	a trivially-true guard does not make its variant arm unconditional

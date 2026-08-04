@@ -8477,6 +8477,44 @@
             (export main)))
   (call   main (: 50 Int64)) (output (: 11 Int64)))
 
+(case "a shared inner map retrieved through BOTH outer keys stays ONE canonical value for keying"
+  (doc    "The keying witness of the shared-value pins above: one 40-entry inner map stored under both
+           outer keys, retrieved separately through EACH — and a map keyed by the key-1 retrieval is
+           FOUND by the key-2 retrieval (42). Sharing doesn't fork identity: however many owners a heap
+           value has and whichever path retrieves it, it is one canonical value for the key hash. The
+           closure of the shared-value family (isolation under update above; identity under retrieval
+           here).")
+  (input  (do
+            (def (fill (: i Int64) (: m (Map Int64 Int64)))
+              (if (= i 0) m (fill (- i 1) (Map.insert m i i))))
+            (def (main (: n Int64))
+              (do
+                (def inner (fill n Map.empty))
+                (def outer (Map.insert (Map.insert Map.empty 1 inner) 2 inner))
+                (def k1 (match (Map.lookup outer 1) ((Some m1) m1) ((None _u) Map.empty)))
+                (def k2 (match (Map.lookup outer 2) ((Some m2) m2) ((None _u) Map.empty)))
+                (match (Map.lookup (Map.insert Map.empty k1 42) k2)
+                  ((Some v) v) ((None _u) -1))))
+            (export main)))
+  (call   main (: 40 Int64)) (output (: 42 Int64)))
+
+(case "a trie of 40 TUPLE keys resolves compound-key descent at depth"
+  (doc    "The compound-key rows above run on 1-2 keys; this pins the tuple-key descent over a POPULATED
+           trie: 40 keys `(i mod 7, i div 7)` — 2D coordinates, the grid-table shape — fill a multi-level
+           trie and an interior lookup `(tuple 3 3)` resolves to its entry (i=24 → 424). The compound
+           hash must combine both components at every one of 40 slots (a hash reading only the first
+           component would collide the 7 keys sharing it and misroute the descent).")
+  (input  (do
+            (def (fill (: i Int64) (: m (Map (Tuple Int64 Int64) Int64)))
+              (if (= i 0) m (fill (- i 1) (Map.insert m (tuple (% i 7) (/ i 7)) i))))
+            (def (main (: n Int64))
+              (do
+                (def m (fill n Map.empty))
+                (+ (* 10 (Map.len m))
+                   (match (Map.lookup m (tuple 3 3)) ((Some v) v) ((None _u) -1)))))
+            (export main)))
+  (call   main (: 40 Int64)) (output (: 424 Int64)))
+
 (case "a map of lists of tuples: a three-level mixed query with a miss at each level"
   (doc    "The nested-value cases above each nest ONE collection kind one level deep; this composes THREE
            kinds — `{1 ↦ [(10,11),(12,13)], 2 ↦ [(20,21)]}`, a Map whose values are LISTS of TUPLES (the
