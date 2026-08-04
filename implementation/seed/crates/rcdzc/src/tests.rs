@@ -66530,6 +66530,34 @@ mod stage1 {
     }
 
     #[test]
+    fn an_inner_abort_preserves_an_outer_advance_committed_in_a_branch_before_it() {
+        // ABORT-FOLD do-shape inside a BRANCH (v-effects self-probe — the if-branch / match-arm face of the
+        // abort-outer-advance class; the direct-body do-shape landed #2002, strict-operand #2010). The foreign
+        // `(A.tick)` and the abort sit on the strict do-spine of an `if` BRANCH — `(if true (do (A.tick)
+        // (B.bail 99)) 5)` under B. The branch's abort is branch-local, but `A.tick` committed A-state 10→11
+        // and must survive → outer `(A.get)` reads 11 → 110. Pre-fix: `thread_branch_local_abort_with_out`
+        // returned the BARE abort value, discarding the do-arm's sound `(do (A.tick) 99)` branch rewrite → 109.
+        // Fixed by the same do-shape gate as the direct fold, applied to the branch rewrite (covers if-branch
+        // AND match-arm-body, which share the helper).
+        let src = "(do (effect A (op tick (-> Unit Int64)) (op get (-> Unit Int64))) \
+                   (effect B (op bail (-> Int64 Int64))) \
+                   (def (main) \
+                     (handle A 10 ((tick (u) s (resume s (+ s 1))) (get (u) s (resume s s))) \
+                       (let ((b (handle B 0 ((bail (v) s v)) (if true (do (A.tick) (B.bail 99)) 5)))) \
+                         (+ b (A.get))))) \
+                   (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("the branch abort's outer-advance-preserving do-fold compiles"),
+                "main"
+            ),
+            110,
+            "a pre-abort outer advance in an if-branch must survive the branch-local abort (99 + 11 = 110), not roll back (was 109)"
+        );
+    }
+
+    #[test]
     fn a_state_mutual_recursion_with_perform_split_from_the_mutual_call_specializes() {
         // A STATE-threading handler over a mutually-recursive group where a cycle def performs the
         // discharged op in ONE `if`/`match` branch while the mutual call is in a DIFFERENT branch

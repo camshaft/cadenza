@@ -1379,6 +1379,41 @@
                     (+ (A.a) (+ (B.b) (Bail.bail 99))))))) (export main)))
   (output (: 99 Int64)))
 
+(case "an inner abort preserves an OUTER advance committed in an IF-BRANCH before it (branch do-shape)"
+  (doc    "The IF-BRANCH face of the outer-advance preservation (v-effects self-probe; the direct do-shape and
+           strict-operand faces are pinned above). The foreign `(A.tick)` and the abort sit on the strict
+           do-spine of an `if` BRANCH — `(if true (do (A.tick) (B.bail 99)) 5)` under B. The branch's abort is
+           branch-local (the `if` is the inner handle's value), but the pre-abort `A.tick` committed A-state
+           10→11 and must survive → outer `(A.get)` reads 11 → `(+ 99 11)` = 110. Before the fix the
+           branch-local collapse (`thread_branch_local_abort_with_out`) returned the BARE abort value,
+           discarding the do-arm's sound `(do (A.tick) 99)` branch rewrite → 109. Fixed by the same do-shape
+           gate as the direct fold, applied to the branch rewrite (the `if` condition is pure — a performing
+           condition with a second branch advance is a separate face).")
+  (input  (do
+            (effect A (op tick (-> Unit Int64)) (op get (-> Unit Int64)))
+            (effect B (op bail (-> Int64 Int64)))
+            (def (main)
+              (handle A 10 ((tick (u) s (resume s (+ s 1))) (get (u) s (resume s s)))
+                (let ((b (handle B 0 ((bail (v) s v)) (if true (do (A.tick) (B.bail 99)) 5))))
+                  (+ b (A.get))))) (export main)))
+  (output (: 110 Int64)))
+
+(case "an inner abort preserves an OUTER advance committed in a MATCH-ARM body before it (arm do-shape)"
+  (doc    "The MATCH-ARM-BODY face of the outer-advance preservation, sharing the branch-local abort helper
+           with the if-branch face above. The foreign `(A.tick)` and the abort sit on the strict do-spine of a
+           `match` ARM body — `(match 0 (_ (do (A.tick) (B.bail 99))))` under B. The arm's abort is arm-local,
+           but `A.tick` committed A-state 10→11 → outer `(A.get)` reads 11 → 110. Same fix + gate as the
+           if-branch (both route through `thread_branch_local_abort_with_out`, so one fix covers both branch
+           and arm-body positions); before it the arm collapse dropped `A.tick` → 109.")
+  (input  (do
+            (effect A (op tick (-> Unit Int64)) (op get (-> Unit Int64)))
+            (effect B (op bail (-> Int64 Int64)))
+            (def (main)
+              (handle A 10 ((tick (u) s (resume s (+ s 1))) (get (u) s (resume s s)))
+                (let ((b (handle B 0 ((bail (v) s v)) (match 0 (_ (do (A.tick) (B.bail 99)))))))
+                  (+ b (A.get))))) (export main)))
+  (output (: 110 Int64)))
+
 (case "a single handler with both a resuming and an abortive arm dispatches each op to its own arm kind"
   (doc    "One handler for ONE effect `E` declaring TWO operations whose arms are DIFFERENT KINDS — `get`
            resumes, `bail` abandons — so the fold must dispatch each performed op to its own arm kind within

@@ -4423,7 +4423,24 @@ fn thread_branch_local_abort_with_out(
         && let Some(abort) = after
     {
         ctx.abort_value.set(before);
-        Some((abort, states_in))
+        // ABORT-FOLD do-SHAPE inside a BRANCH (the branch/scrutinee face of the abort-outer-advance fix;
+        // the direct-handle-body do-shape landed #2002, the strict-operand lift is queued). A FOREIGN
+        // perform (an OUTER handler's effect) on the branch's strict spine BEFORE the abort has committed
+        // its advance and must survive — but the branch-local collapse returns the BARE `abort` value,
+        // discarding `rbranch` (which the do-arm already built as the sound `(do <foreign…> <abort-value>)`).
+        // `(if c (do (A.tick) (B.bail 99)) …)` / `(match (do (A.tick) (B.bail 99)) …)` under B then reads
+        // the outer `(A.get)` at the pre-advance state (109 vs 110). Use `rbranch` (a `do`-form reaching a
+        // foreign perform) as the branch rewrite so the ENCLOSING fold discharges the prefix; its out-state
+        // is still `states_in` (the abort abandons THIS branch's continuation, so no advance is observable
+        // PAST the conditional — only the foreign prefix's own effect escapes, carried inside the `do`). Same
+        // do-form gate + parented-foreign-reach as the reduce_handle do-shape fold; a non-do `rbranch`
+        // (a bare `(B.bail 7)` / a `(+ 100 (B.bail 7))` collapsed to `7`) keeps the bare-abort value.
+        if db.ast.as_form(rbranch, "do").is_some() && body_reaches_foreign_perform(db, branch, ctx)
+        {
+            Some((rbranch, states_in))
+        } else {
+            Some((abort, states_in))
+        }
     } else {
         Some((rbranch, out))
     }
