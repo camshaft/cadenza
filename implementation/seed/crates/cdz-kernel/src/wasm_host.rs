@@ -502,6 +502,19 @@ pub struct HeapHandle<T: 'static> {
     str_new: wasmtime::component::Func,
 }
 
+/// Classify a heap-op `Func::call`/`post_return` failure (github-liaison #2122): a genuine guest TRAP is
+/// [`ComponentError::Trap`], but wasmtime also returns a NON-trap error for a host-side signature mismatch
+/// (a WIT-version drift between the kernel's expected heap ABI and the composed runtime's) — that's a
+/// host/config condition, NOT a guest trap, so classify it as [`ComponentError::Instantiate`] (mirroring
+/// [`invoke_component`]'s careful split), so a runtime-ABI drift doesn't masquerade as "the guest trapped".
+fn classify_heap_call_err(e: wasmtime::Error) -> ComponentError {
+    if e.downcast_ref::<wasmtime::Trap>().is_some() {
+        ComponentError::Trap(e.to_string())
+    } else {
+        ComponentError::Instantiate(format!("heap-op call failed (runtime-ABI mismatch?): {e}"))
+    }
+}
+
 impl<T: 'static> HeapHandle<T> {
     /// Bind a `HeapHandle` from an already-instantiated runtime component `instance` in `store` (the
     /// SAME instance composed into the reducer's linker, so handles are shared). Extracts each B1 heap op
@@ -555,9 +568,9 @@ impl<T: 'static> HeapHandle<T> {
         let params: Vec<Val> = args.iter().map(|&a| Val::U32(a)).collect();
         let mut results = [Val::U32(0)];
         f.call(&mut self.store, &params, &mut results)
-            .map_err(|e| ComponentError::Trap(e.to_string()))?;
+            .map_err(classify_heap_call_err)?;
         f.post_return(&mut self.store)
-            .map_err(|e| ComponentError::Trap(e.to_string()))?;
+            .map_err(classify_heap_call_err)?;
         match results[0] {
             Val::U32(h) => Ok(h),
             ref other => Err(ComponentError::Trap(format!(
@@ -574,10 +587,10 @@ impl<T: 'static> HeapHandle<T> {
         let mut results = [Val::U32(0)];
         self.box_int
             .call(&mut self.store, &[Val::S64(v)], &mut results)
-            .map_err(|e| ComponentError::Trap(e.to_string()))?;
+            .map_err(classify_heap_call_err)?;
         self.box_int
             .post_return(&mut self.store)
-            .map_err(|e| ComponentError::Trap(e.to_string()))?;
+            .map_err(classify_heap_call_err)?;
         match results[0] {
             Val::U32(h) => Ok(h),
             ref other => Err(ComponentError::Trap(format!(
@@ -593,10 +606,10 @@ impl<T: 'static> HeapHandle<T> {
         let mut results = [Val::U32(0)];
         self.str_new
             .call(&mut self.store, &[Val::String(s.into())], &mut results)
-            .map_err(|e| ComponentError::Trap(e.to_string()))?;
+            .map_err(classify_heap_call_err)?;
         self.str_new
             .post_return(&mut self.store)
-            .map_err(|e| ComponentError::Trap(e.to_string()))?;
+            .map_err(classify_heap_call_err)?;
         match results[0] {
             Val::U32(h) => Ok(h),
             ref other => Err(ComponentError::Trap(format!(
@@ -620,11 +633,21 @@ impl<T: 'static> HeapHandle<T> {
     }
 
     /// `sum-new(disc, payload) -> u32` (idx 10): build a sum handle with discriminant `disc` and payload
-    /// handle `payload` — an `option` is `sum-new(0, some_handle)` / `sum-new(1, unit)`; a nullary variant
-    /// carries a unit payload.
+    /// handle `payload` — an `option` is `sum-new(0, some_handle)` / `sum-new(1, unit_handle)`; a nullary
+    /// variant carries the UNIT value as its payload. ⚠ the runtime's unit is the INLINE-UNIT handle
+    /// (`IMM_UNIT`), NOT handle 0 (a NULL handle/token) — obtain it via [`HeapHandle::unit`] (`arr-alloc(0)`,
+    /// the empty array = inline unit, per runtime.wit "a nullary variant carries the unit value (an arr of
+    /// length 0)"). Passing 0 would build a sum with a NULL payload = a malformed value.
     pub fn sum_new(&mut self, disc: u32, payload: u32) -> Result<u32, ComponentError> {
         let f = self.sum_new;
         self.call_u32s(&f, &[disc, payload])
+    }
+
+    /// The runtime's UNIT value handle — the inline-unit (`IMM_UNIT`), obtained as `arr-alloc(0)` (the
+    /// empty array IS the inline unit). Use this as the payload for a `None`/nullary sum, NOT handle 0 (a
+    /// NULL handle). A compile-time-known immediate; `arr-alloc(0)` returns it with no heap node.
+    pub fn unit(&mut self) -> Result<u32, ComponentError> {
+        self.arr_alloc(0)
     }
 
     /// `vec-len(v: u32) -> u32` (idx ~30): the element count of a value-heap vector — reads the length of
@@ -1851,8 +1874,11 @@ mod tests {
         assert_eq!(ct, 200);
         assert_eq!(heap.arr_set(ct, 0, family).expect("arr-set 0"), 200); // threads the arr
         assert_eq!(heap.arr_set(ct, 1, version).expect("arr-set 1"), 200);
-        // None option payload: sum-new(1=None disc, unit=0).
-        let none_payload = heap.sum_new(1, 0).expect("sum-new None");
+        // None option payload: sum-new(1=None disc, UNIT) — the unit is the inline-unit handle from
+        // arr-alloc(0) (github-liaison #2122: NOT handle 0, which is NULL → a malformed sum).
+        let unit = heap.unit().expect("unit (arr-alloc 0)");
+        assert_eq!(unit, 200); // stub's arr-alloc sentinel; the real runtime returns IMM_UNIT
+        let none_payload = heap.sum_new(1, unit).expect("sum-new None");
         assert_eq!(none_payload, 300);
         // Read the (empty) effect-list result length.
         assert_eq!(heap.vec_len(999).expect("vec-len"), 0);
