@@ -592,6 +592,7 @@ pass	a CONSTANT signed truncation of an all-ones Int 12 is -1
 pass	a CONSTANT signed truncation sign-extends at a WIDER storage width (Int 12, i16 storage)
 pass	a CONTINUED FRACTION evaluates bottom-up through recursive Rational division (a + 1/rest)
 pass	a CONTRACTED fn consumes perform results — @requires fires on a handler-produced value
+pass	a CROSS-handler op whose inline ARG performs an OUTER handler's op folds (op-arg let-lift)
 pass	a CURRIED closure capturing an inner-handled perform result closes over it through partial application
 pass	a Char-payload sum value escapes across the boundary in its canonical form
 pass	a DEFERRED resume-thunk escaping to another function re-installs the handler at apply, over a re-performing do-continuation
@@ -1433,6 +1434,7 @@ pass	a contradictory arrow annotation on a function in a runtime Map value is re
 pass	a contradictory arrow annotation on a function stored as a Map KEY is rejected
 pass	a correctly-annotated function parameter is accepted
 pass	a cross-function recursive fold's out-state threads to a later perform in the caller's continuation
+pass	a cross-handler op-arg performing an outer effect runs EXACTLY ONCE though the arm uses it thrice
 pass	a cross-type constructor pattern NESTED in a matching outer payload is rejected
 pass	a cross-type variant pattern of the SAME payload width and colliding tag is rejected
 pass	a cross-type variant pattern whose payload width differs is rejected, not miscompiled
