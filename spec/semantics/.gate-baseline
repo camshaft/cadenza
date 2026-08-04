@@ -5691,8 +5691,10 @@ pass	α-equivalence handles nesting and distinguishes a bound variable from a sa
 todo	SUM ARG + LIST RESULT declines cleanly (Option arg, List result)
 todo	Set.of over runtime lists at two different element types declines pending the recursive-generic tie
 todo	Set.to-list orders float-carrying sums discriminant-first then by float payload
+todo	a BLOCK-wrapped branch perform in a MATCH-SCRUTINEE declines cleanly (adv-69 g3 sub-face)
 todo	a BLOCK-wrapped branch perform in a NESTED handler-arm resume-value declines cleanly (adv-69 a3 sub-face)
 todo	a BLOCK-wrapped branch perform in a let-init declines cleanly (adv-69 safe floor, not a silent miscompile)
+todo	a BLOCK-wrapped branch perform in a non-tail DO-STATEMENT declines cleanly (adv-69 c3 sub-face)
 todo	a BigInt entry argument is marshalled through the value's own constructor
 todo	a BigInt entry parameter added to a beyond-i64 annotated literal
 todo	a BigInt entry parameter is COMPUTED on, not just compared

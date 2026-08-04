@@ -5607,8 +5607,10 @@ todo	a @param value SEEDS an in-program handler's state
 todo	a @param value crosses into a closure capture and applies
 todo	a @param value drives a CHAMP map lookup as the KEY
 todo	a @param value sizes a guest-built HEAP structure
+todo	a BLOCK-wrapped branch perform in a MATCH-SCRUTINEE declines cleanly (adv-69 g3 sub-face)
 todo	a BLOCK-wrapped branch perform in a NESTED handler-arm resume-value declines cleanly (adv-69 a3 sub-face)
 todo	a BLOCK-wrapped branch perform in a let-init declines cleanly (adv-69 safe floor, not a silent miscompile)
+todo	a BLOCK-wrapped branch perform in a non-tail DO-STATEMENT declines cleanly (adv-69 c3 sub-face)
 todo	a Bool host arg BESIDE a scalar and a String composes in one mixed-arity op
 todo	a Bytes value SENT to the host is still readable after the call (the arg marshal borrows)
 todo	a DEPTH-2 block-wrapped branch perform in a let-init declines cleanly (adv-69 safe floor, nested wrappers)

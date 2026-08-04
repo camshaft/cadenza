@@ -2140,6 +2140,14 @@ pub fn reduce_handle(
     if body_has_nested_arm_resume_value_block_wrapped_branch_perform(db, body, &ctx) {
         return None;
     }
+    // adv-69 g3 + c3 sub-faces: the SAME block-boundary out-state drop at a MATCH-SCRUTINEE (g3) or a non-tail
+    // `do`-STATEMENT (c3) consuming a block-wrapped branch perform — positions Site 5 / Site 1 lift only when
+    // the conditional is DIRECT, not block-wrapped. Decline cleanly rather than folding the dropped-advance
+    // wrong value (probe-g3 ran 33/34, probe-c3 ran 33/73). Keyed on the WRAPPED shape only, so a direct
+    // conditional in either position (the passing d2/e1 twins) still folds.
+    if body_has_block_wrapped_scrutinee_or_statement_branch_perform(db, body, &ctx) {
+        return None;
+    }
     // E5 PURE ONE-HOLE-CONTINUATION fold (general one-shot, the pure-continuation case). When the handle
     // BODY reaches EXACTLY ONE discharged perform `P` through STRICT, UNCONDITIONAL, effect-free positions
     // (`pure_hole`), its delimited continuation is the PURE one-hole context `C = body[P := □]`. Resuming
@@ -3407,8 +3415,11 @@ fn conditional_branch_performs(db: &mut Db, node: StructId, ctx: &HandlerCtx) ->
 /// back to the block-ENTRY state and the branch perform's advance is DROPPED at the block boundary — a
 /// silent wrong-value (adv-69, HIGH: `+ (* 10 v) (E.op)` reads the stale pre-branch state). Detecting this
 /// residual shape (AFTER the hoist ran, so a liftable direct-init case is already in tail position) lets
-/// `reduce_handle` DECLINE cleanly (honest Todo) rather than fold a wrong value. Peels only PURE-binding
-/// block wrappers to the tail; a wrapper with a PERFORMING binding is a different (threaded) shape, not this.
+/// `reduce_handle` DECLINE cleanly (honest Todo) rather than fold a wrong value. Peels `let`/`do` block
+/// wrappers to reach the tail conditional. (The `let` arm peels its BODY regardless of whether the binding
+/// PERFORMS — the `..` discards the init: a performing binding is threaded by the ordinary `let` arm, so it
+/// does not itself trigger this decline, but this scanner does not need to distinguish it — declining on the
+/// tail conditional is sound either way; a performing binding just means the peel keeps going to the body.)
 fn block_wrapped_branch_performs(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> bool {
     match resolved_of(db, node) {
         // A `let` block: its value is the body; recurse through it. (A performing binding is threaded by
@@ -3494,6 +3505,62 @@ fn body_has_block_wrapped_let_init_branch_perform(
         Struct::List(children) => children
             .iter()
             .any(|&c| body_has_block_wrapped_let_init_branch_perform(db, c, ctx)),
+        Struct::Atom(_) => false,
+    }
+}
+
+/// adv-69 **g3 + c3 sub-faces** (breaker block-outstate battery, post-floor 39-probe run). The SAME block-
+/// boundary out-state drop as the let-init floor, but at two more consuming positions the hoist does NOT
+/// reach:
+///   * **g3 — MATCH-SCRUTINEE**: `(match (let ((b true)) (if b (St.get) 99)) (v (+ (* 10 v) (St.get))))` — a
+///     block-wrapped branch perform in the scrutinee. Site 5 lifts a scrutinee that is DIRECTLY a branch-
+///     performing conditional, but a block wrapper is opaque to it, so the scrutinee's out-state reverts to
+///     entry (ran 33, correct 34).
+///   * **c3 — DO-STATEMENT (non-last, discarded)**: `(do (let ((x true)) (if x (St.put 7) unit)) (+ (* 10
+///     (St.get)) x))` — a block-wrapped branch perform as a non-tail `do` item. Site 1 hoists a non-last item
+///     that is DIRECTLY a branch-performing conditional, but a block wrapper defeats its `conditional_branch_
+///     performs` match, so the statement's `put` advance is dropped (ran 33, correct 73; the minimal twins
+///     d2/e1 — a BARE `if` in the statement, or a def-bound cond — hoist fine and PASS).
+///
+/// Both key on `block_wrapped_branch_performs` (the WRAPPED shape ONLY): a DIRECT `if`/`match` in either
+/// position is lifted by Site 1/5 and still folds — so this never over-declines the working hoist paths.
+/// Until the through-block fold lands (the deferred commuting conversion), DECLINE these residual shapes so
+/// they grade a clean Todo, never the silent wrong value. Related:
+/// [[adv69-block-wrapped-branch-perform-drops-state-advance-at-block-boundary]].
+fn body_has_block_wrapped_scrutinee_or_statement_branch_perform(
+    db: &mut Db,
+    node: StructId,
+    ctx: &HandlerCtx,
+) -> bool {
+    // A nested handle's own body belongs to THAT handler's reduction — don't descend (mirrors the sibling
+    // scanners); a3's `Resume{value}` scanner covers the nested-arm position separately.
+    if matches!(resolved_of(db, node), Resolved::Handle { .. }) {
+        return false;
+    }
+    // g3: a MATCH whose SCRUTINEE is a block-wrapped branch-performing conditional.
+    if let Resolved::Match { scrutinee, .. } = resolved_of(db, node)
+        && block_wrapped_branch_performs(db, scrutinee, ctx)
+    {
+        return true;
+    }
+    // c3: a `do` with a NON-LAST item that is a block-wrapped branch-performing conditional (a discarded
+    // statement whose branch performs — its advance is dropped at the block boundary). The LAST item is the
+    // do's value (tail) — a block-wrapped conditional there is the let-init/body shape the other scanners /
+    // hoist handle; only the non-tail statement position is this face.
+    if let Some(items) = db.ast.as_form(node, "do").map(<[_]>::to_vec)
+        && items.len() >= 2
+    {
+        for &it in &items[..items.len() - 1] {
+            if block_wrapped_branch_performs(db, it, ctx) {
+                return true;
+            }
+        }
+    }
+    // Recurse structurally — the miscompiling position may be nested anywhere in the body.
+    match db.ast.get(node).clone() {
+        Struct::List(children) => children
+            .iter()
+            .any(|&c| body_has_block_wrapped_scrutinee_or_statement_branch_perform(db, c, ctx)),
         Struct::Atom(_) => false,
     }
 }
