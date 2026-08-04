@@ -3787,6 +3787,7 @@ pass	an Ast.Bytes node constructs and deconstructs by pattern matching
 pass	an Ast.Bytes node round-trips through encode and decode
 pass	an Ast.Int carries a BEYOND-64-bit literal losslessly through quote
 pass	an Ast.Int stores an integer wider than Int64 without loss
+pass	an Ast.List handler STATE accumulates a node per perform and each resume reads the prior length
 pass	an EFFECTFUL @ensures predicate is value-transparent when SATISFIED — the body's own perform runs first
 pass	an EFFECTFUL @ensures predicate performs under the caller's handler at body-EXIT, after the body's own perform
 pass	an EFFECTFUL @requires predicate performs under the caller's handler and advances its state before the body
@@ -3956,6 +3957,7 @@ pass	an effect declared in a MODULE is performed by its helper and handled by th
 pass	an effect discharged by a handler does not escape to the manifest
 pass	an effect in a statically-dead branch is still syntactically reached, so its delegation is not latent
 pass	an effect in a statically-dead branch still requires a grant — ungranted is rejected
+pass	an effect op RESUMED with a constructed Ast node crosses the arm boundary and matches in the body
 pass	an effect op RESUMED with a slice-view Bytes crosses the arm boundary intact
 pass	an effect op resumed with a whole MAP threads the CHAMP through the continuation
 pass	an effect op whose declared RESULT is a QUANTITY resumes with a Qty value
