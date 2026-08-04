@@ -2563,7 +2563,7 @@
   (call   main (: 30 Int64)) (output (: 305 Int64)))
 
 (case "a Qty-keyed trie churned with differently-normalized magnitudes equals the direct build"
-  (doc    "The normalization-identity churn for quantity keys: 25 keys INSERTED as `2i/4 meter` and
+  (doc    "The normalization-identity churn for quantity keys: 24 keys (i = 1..n-1 at n = 25) INSERTED as `2i/4 meter` and
            REMOVED as `i/2 meter` — differently-written spellings of the same magnitude — so every
            removal must land on its insert's slot through the canonical form inside the Qty. The
            surviving seed (stored `999/1`) must leave the map EQUAL to the direct build by canonical

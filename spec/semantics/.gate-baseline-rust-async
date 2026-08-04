@@ -802,6 +802,7 @@ pass	a RECORD closure ARG whose fields are NOT in sorted source order
 pass	a RECORD closure ARG with a LIST result
 pass	a RECORD closure ARG with a narrow Bool field, among scalars
 pass	a RECORD field built from a runtime param boxes its Map handle correctly (function[27] record-path twin)
+pass	a RECORD handler state evolves a table and a counter that genuinely DIVERGE
 pass	a RECORD used as a map key hashes and matches by its field SET, independent of written order
 pass	a RECORD with a closure field as a map key is rejected (the record face of the compound descent)
 pass	a RECORD with a nested TUPLE field crosses the direct-call boundary
@@ -1793,6 +1794,7 @@ pass	a handler arm that resumes NON-tail folds when the perform is the whole bod
 pass	a handler folds a counter across the operations it discharges
 pass	a handler mixing arms of two different effects is rejected
 pass	a handler resumes its continuation at most once by default
+pass	a handler state of TWO tries (tuple) updates each side independently across resumes
 pass	a handler that does not discharge every operation of its effect is rejected
 pass	a handler threads a MAP as its state — a key-value store deduping keys across performs
 pass	a handler threads a SET as its state — the seen-set idiom, deduping across performs
