@@ -4113,6 +4113,7 @@ pass	an inner binding shadows an outer one only within its scope
 pass	an inner handle of the SAME delegated effect discharges in-program inside the host block
 pass	an inner handle's SEED expression performs against the outer handler
 pass	an inner handler's INIT state is computed by performing an enclosing effect
+pass	an inner handler's SEED is a perform of an OUTER in-program effect
 pass	an inner lambda captures an enclosing match-arm binder and is applied
 pass	an inner lambda captures an enclosing tuple-pattern binder and is applied
 pass	an inner map shared between two outer generations survives the loser's drop

@@ -1254,6 +1254,25 @@
   (host-responses (respond Env.seed (: 5 Int64)))
   (output (: 56 Int64)))
 
+(case "an inner handler's SEED is a perform of an OUTER in-program effect"
+  (doc    "The in-program analogue of the host-delegated-seed case above: an inner handler's SEED expression
+           is itself a perform of an OUTER in-program effect — `(handle B (A.base) …)` where `A.base` homes
+           to the enclosing `A` handler (not the host). The outer `A.base` reads A's state 5 (its arm resumes
+           `s` unchanged) → 5 becomes B's initial state, evaluated once before B's region. B's two ticks then
+           read 5 and 6 (B-state advancing) → `(+ 5 6)` = 11. Pins that the seed position accepts a performing
+           expression whose effect discharges at an ENCLOSING in-program handler — the intra-program
+           config-fetch-then-run idiom (the host-seed case's non-host twin).")
+  (input  (do
+            (effect A (op base (-> Unit Int64)))
+            (effect B (op step (-> Unit Int64)))
+            (def (main)
+              (handle A 5 ((base (u) s (resume s s)))
+                (handle B (A.base)
+                  ((step (u) t (resume t (+ t 1))))
+                  (+ (B.step) (B.step)))))
+            (export main)))
+  (output (: 11 Int64)))
+
 (case "a delegated host effect composes with the value-heap runtime"
   (doc    "Witnesses that a program may BOTH delegate an effect to the host AND use the value-heap runtime
            in one component (capabilities-and-effects.md #A Run Is A Deterministic Function Of Its Input And
