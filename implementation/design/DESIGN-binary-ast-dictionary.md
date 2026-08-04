@@ -338,8 +338,8 @@ codec owners are primed and want to be in the build loop.
 
 ## 6. Seams / file anchors (where each increment cuts)
 
-Paths below are repo-root-relative under `implementation/seed/crates/` (e.g. `cadenza-ast/src/codec.rs`
-= `implementation/seed/crates/cadenza-ast/src/codec.rs`), per §3.
+Paths below are relative to `implementation/seed/crates/` (so `cadenza-ast/src/codec.rs` is the file
+`implementation/seed/crates/cadenza-ast/src/codec.rs`) — the same base §3 uses.
 
 - `cadenza-ast/src/codec.rs` — new header const (near `:159`), `TAG_DICT_REF` (near `:110`), transport
   decode path (parallel to `decode_detailed` `:317`, reusing `read_leaf` and the tree guard), transport
