@@ -103,6 +103,30 @@ pub mod effect_ct {
         family.starts_with(STORE_PREFIX)
     }
 
+    /// The `compile/*` namespace PREFIX — the v0.2 "agents compile+call Cadenza programs" arc (operator
+    /// directive: a session compiles a `.cdz` program via the in-store `rcdzc-wasm` compiler and gets a runnable
+    /// program-component back). A family whose string starts with this is a COMPILE effect: the kernel resolves
+    /// the compiler from the §4c store (`system/compiler/latest`), runs its linear-memory `compile` ABI in the
+    /// wasm host over the request's AST/source payload, and folds the program-component bytes back as the
+    /// result. Like `store/*`/`control/*` these are NEW families (no wire history), so they carry the `compile/`
+    /// prefix. The flake names v-agent-harness the owner of "the store pointer + compile-effect ABI".
+    pub const COMPILE_PREFIX: &str = "compile/";
+
+    /// `compile/program` — compile a Cadenza program (its AST bytes, ride the payload) into a program-component
+    /// wasm via the in-store `rcdzc-wasm` compiler. The result payload is the program-component bytes (which the
+    /// host can then install as a session + call — the "call it, get a result" half). Diagnostics on a bad
+    /// program come back as an `EffectResult::Err` (a loud diagnostic, never a silent empty — matching
+    /// `rcdzc_wasm::compile_ast`'s contract).
+    pub const COMPILE_PROGRAM: &str = "compile/program";
+
+    /// Is `family` in the `compile/*` namespace (the v0.2 compile-effect arc — resolve the in-store compiler,
+    /// run it in the wasm host, return program-component bytes)? The one-source prefix test the drive loop
+    /// applies alongside [`is_store_family`]/[`is_control_family`] to route a `compile/*` effect to the
+    /// compile handler rather than a generic executor.
+    pub fn is_compile_family(family: &str) -> bool {
+        family.starts_with(COMPILE_PREFIX)
+    }
+
     /// Is `family` in the `control/*` namespace (authz-exempt, host/kernel-answered, never executor-routed)?
     /// The partition test the drive loop applies BEFORE authorize/route: `true` → control path, `false` →
     /// the effect path (authorize → executor). A simple prefix check on [`CONTROL_PREFIX`] — one source of
@@ -858,6 +882,33 @@ mod tests {
         // A family merely CONTAINING "store" but not prefixed is not a store family.
         assert!(!effect_ct::is_store_family("my-store"));
         assert!(!effect_ct::is_store_family(""));
+    }
+
+    #[test]
+    fn compile_family_partition_is_distinct_from_store_control_and_effect_families() {
+        // v0.2 compile/* partition: compile/program is a compile effect (resolve the in-store compiler, run
+        // it, return program bytes) — a partition alongside store/* (authz-gated writes), control/* (authz-
+        // exempt), and bare effect families (executor-routed).
+        assert!(effect_ct::is_compile_family(effect_ct::COMPILE_PROGRAM));
+        assert!(effect_ct::is_compile_family("compile/anything"));
+        assert_eq!(effect_ct::COMPILE_PREFIX, "compile/");
+        assert_eq!(effect_ct::COMPILE_PROGRAM, "compile/program");
+        assert!(effect_ct::COMPILE_PROGRAM.starts_with(effect_ct::COMPILE_PREFIX));
+        // Disjoint from the other partitions.
+        assert!(!effect_ct::is_store_family(effect_ct::COMPILE_PROGRAM));
+        assert!(!effect_ct::is_control_family(effect_ct::COMPILE_PROGRAM));
+        assert!(!effect_ct::is_compile_family(effect_ct::STORE_SET));
+        assert!(!effect_ct::is_compile_family(effect_ct::CAPABILITIES));
+        // Bare effect families are not compile.
+        for &fam in effect_ct::ALL {
+            assert!(
+                !effect_ct::is_compile_family(fam),
+                "effect {fam:?} not compile"
+            );
+        }
+        // Merely containing "compile" without the prefix is not a compile family.
+        assert!(!effect_ct::is_compile_family("recompile"));
+        assert!(!effect_ct::is_compile_family(""));
     }
 
     #[test]
