@@ -22,5 +22,6 @@
 pub mod ast;
 pub mod canon;
 pub mod codec;
+pub mod dict;
 pub mod fxhash;
 pub mod leb128;

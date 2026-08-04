@@ -79,6 +79,7 @@
 //! swapping the tag's content is a drop-in change.
 
 use crate::ast::{Arenas, Decimal, Leaf, LeafId, Radix, Struct, StructId, SuffixBody, SuffixKind};
+use crate::dict::{DictSet, Hash};
 use crate::leb128::{self, Reader};
 use num_bigint::{BigInt, Sign};
 
@@ -109,6 +110,11 @@ const BODY_FLOAT: u8 = 1;
 
 const TAG_ATOM: u8 = 0;
 const TAG_LIST: u8 = 1;
+// A dictionary reference — TRANSPORT-plane only (`cdzast\x00\x02`), NEVER in canonical `\x00\x01` bytes.
+// Payload `[dict_idx:var][node_id:var]`: `dict_idx` indexes the import section's hash list, `node_id`
+// indexes the referenced dictionary's `structure` arena. `decode_with_dicts` grafts the named subtree
+// in place of the ref; the canonical `decode` never accepts a header carrying this tag.
+const TAG_DICT_REF: u8 = 2;
 
 /// Why [`decode_detailed`] rejected a byte string. The load-bearing distinction for a streaming/log
 /// consumer (e.g. the agent-harness kernel's crash recovery) is [`DecodeError::Truncated`] — the input
@@ -142,6 +148,12 @@ pub enum DecodeError {
     NotATree,
     /// The AST decoded but bytes remain after it — a framing error or corruption.
     TrailingBytes,
+    /// A `cdzast\x00\x02` TRANSPORT artifact imports a dictionary [`Hash`] that is NOT present in the
+    /// supplied [`DictSet`] ([`decode_with_dicts`]). This is the HERMETIC-resolution failure (design/
+    /// seq-120: the decoder never fetches a missing dict — it errors out). Distinct from corruption:
+    /// the bytes are well-formed, the needed input artifact was simply not supplied. Only
+    /// `decode_with_dicts` produces this; the canonical `decode`/`decode_detailed` never see `\x00\x02`.
+    MissingDict(Hash),
 }
 
 impl From<crate::leb128::VarErr> for DecodeError {
@@ -157,6 +169,16 @@ impl From<crate::leb128::VarErr> for DecodeError {
 /// bytes with an unrecognized header, per ast-encoding.md §The Encoding Is Versioned (see the module
 /// header). The content could be strengthened to a schema hash later; swapping it is a drop-in change.
 const SCHEMA_HEADER: [u8; 8] = *b"cdzast\x00\x01";
+
+/// The 8-byte container tag for the DICTIONARY TRANSPORT plane (`cdzast\x00\x02`). A byte string with
+/// this header is a NON-CANONICAL transport artifact (design option A): it may carry dict-imports +
+/// `TAG_DICT_REF` nodes, and is decoded ONLY by [`decode_with_dicts`]. The canonical [`decode`]/
+/// [`decode_detailed`] REFUSE it (`BadHeader`) — the structural guarantee that a transport artifact can
+/// never be mistaken for an identity artifact. The `\x00\x01` canonical plane is untouched.
+const TRANSPORT_HEADER: [u8; 8] = *b"cdzast\x00\x02";
+
+/// The content-hash width in a transport artifact's import section (a [`Hash`] = 32 bytes).
+const HASH_LEN: usize = 32;
 
 fn int_kind(sign: Sign, radix: Radix) -> u8 {
     let neg = matches!(sign, Sign::Minus);
@@ -413,6 +435,314 @@ pub fn decode_detailed(bytes: &[u8]) -> Result<Arenas, DecodeError> {
         structure,
         root,
     })
+}
+
+/// A structure entry on the TRANSPORT (`cdzast\x00\x02`) plane — the canonical `Atom`/`List`, PLUS a
+/// dict reference. Kept internal to the transport decoder: it is resolved AWAY (grafted) into a normal
+/// dict-free [`Struct`] before any `Arenas` is returned, so the transport variant never escapes into the
+/// identity value model.
+enum TStruct {
+    Atom(LeafId),
+    List(Vec<StructId>),
+    /// `{dict_idx, node_id}` — resolves to the subtree rooted at `structure[node_id]` of the
+    /// `dict_idx`-th imported dictionary.
+    DictRef {
+        dict_idx: u32,
+        node_id: u32,
+    },
+}
+
+/// Decode a possibly-dict-bearing TRANSPORT artifact against a supplied [`DictSet`], EXPANDING every
+/// dict-ref into the subtree it names and returning a normal (dict-free, inline-canonical-equivalent)
+/// [`Arenas`]. Total, like [`decode`]: never panics, never over-reads, never returns a wrong tree.
+///
+/// - A `cdzast\x00\x01` input behaves EXACTLY like [`decode_detailed`] (the `dicts` are unused); the two
+///   never disagree on a dict-free artifact.
+/// - A `cdzast\x00\x02` input: resolve each import hash against `dicts` (a missing hash →
+///   [`DecodeError::MissingDict`], hermetic — no fetch), decode the structure (allowing [`TAG_DICT_REF`]),
+///   bounds-check every ref (`dict_idx` < import count, `node_id` < that dict's `structure` len — else
+///   [`DecodeError::IdOutOfRange`]), and GRAFT the named subtree in place of each ref, producing a
+///   normal `Arenas`. The grafted arena is then subject to the SAME tree/decode-bomb guard as `decode`.
+///
+/// The returned `Arenas` re-encodes via [`encode`] to canonical `cdzast\x00\x01` — that is its identity.
+/// The canonical [`decode`]/[`decode_detailed`] REFUSE `\x00\x02` (`BadHeader`): only THIS entry point
+/// accepts the transport plane, so a dict artifact can never be mistaken for an identity artifact.
+pub fn decode_with_dicts(bytes: &[u8], dicts: &DictSet) -> Result<Arenas, DecodeError> {
+    // Dispatch on the header. Fewer than 8 bytes = truncated. The canonical `\x00\x01` plane is decoded
+    // exactly as `decode_detailed` (dicts unused). Only `\x00\x02` engages the transport path.
+    let header = bytes.get(..8).ok_or(DecodeError::Truncated)?;
+    if header == SCHEMA_HEADER {
+        return decode_detailed(bytes);
+    }
+    if header != TRANSPORT_HEADER {
+        return Err(DecodeError::BadHeader);
+    }
+    let mut r = Reader::new(&bytes[8..]);
+
+    // Import section: a count, then that many 32-byte content hashes. Resolve each against the supplied
+    // DictSet immediately (hermetic — a missing hash is a hard error, never a fetch). `imports[i]` is the
+    // decoded dictionary a `TAG_DICT_REF` with `dict_idx == i` grafts from.
+    let import_count = r.read_var_len_checked()?;
+    let mut imports: Vec<&Arenas> = Vec::with_capacity(import_count.min(1 << 16));
+    for _ in 0..import_count {
+        let raw = r.take(HASH_LEN).ok_or(DecodeError::Truncated)?;
+        let mut h = [0u8; HASH_LEN];
+        h.copy_from_slice(raw);
+        let hash = Hash(h);
+        let dict = dicts.get(&hash).ok_or(DecodeError::MissingDict(hash))?;
+        imports.push(dict);
+    }
+
+    // Leaves — identical encoding to the canonical plane.
+    let leaf_count = r.read_var_len_checked()?;
+    let mut leaves = Vec::with_capacity(leaf_count.min(1 << 16));
+    for _ in 0..leaf_count {
+        leaves.push(read_leaf(&mut r)?);
+    }
+
+    // Structure — `Atom`/`List` as canonical, plus `TAG_DICT_REF`. Ids are bounds-checked after the full
+    // structure is read (a forward reference is permitted, like the canonical decoder).
+    let struct_count = r.read_var_len_checked()?;
+    let mut tstructure: Vec<TStruct> = Vec::with_capacity(struct_count.min(1 << 16));
+    for _ in 0..struct_count {
+        let tag = r.byte().ok_or(DecodeError::Truncated)?;
+        let entry = match tag {
+            TAG_ATOM => {
+                let leaf_id = r.read_varu64_checked()?;
+                if leaf_id as usize >= leaves.len() {
+                    return Err(DecodeError::IdOutOfRange);
+                }
+                TStruct::Atom(LeafId(
+                    u32::try_from(leaf_id).map_err(|_| DecodeError::IdOutOfRange)?,
+                ))
+            }
+            TAG_LIST => {
+                let n = r.read_var_len_checked()?;
+                let mut children = Vec::with_capacity(n.min(1 << 16));
+                for _ in 0..n {
+                    let child = r.read_varu64_checked()?;
+                    children.push(StructId(
+                        u32::try_from(child).map_err(|_| DecodeError::IdOutOfRange)?,
+                    ));
+                }
+                TStruct::List(children)
+            }
+            TAG_DICT_REF => {
+                let dict_idx = r.read_varu64_checked()?;
+                let node_id = r.read_varu64_checked()?;
+                // Bounds: which-dict must name a real import; the node id is bounds-checked against that
+                // dict's arena during the graft (below), where the dict is in hand.
+                if dict_idx as usize >= imports.len() {
+                    return Err(DecodeError::IdOutOfRange);
+                }
+                TStruct::DictRef {
+                    dict_idx: u32::try_from(dict_idx).map_err(|_| DecodeError::IdOutOfRange)?,
+                    node_id: u32::try_from(node_id).map_err(|_| DecodeError::IdOutOfRange)?,
+                }
+            }
+            _ => return Err(DecodeError::BadTag),
+        };
+        tstructure.push(entry);
+    }
+
+    // Root.
+    let root_raw = r.read_varu64_checked()?;
+    if root_raw as usize >= tstructure.len() {
+        return Err(DecodeError::IdOutOfRange);
+    }
+    let root = u32::try_from(root_raw).map_err(|_| DecodeError::IdOutOfRange)? as usize;
+
+    // Referential integrity for transport `List` child ids (into the transport structure).
+    for entry in &tstructure {
+        if let TStruct::List(children) = entry {
+            for StructId(id) in children {
+                if *id as usize >= tstructure.len() {
+                    return Err(DecodeError::IdOutOfRange);
+                }
+            }
+        }
+    }
+
+    // No trailing bytes — the whole transport artifact must be consumed.
+    if !r.at_end() {
+        return Err(DecodeError::TrailingBytes);
+    }
+
+    // Tree guard on the TRANSPORT structure, BEFORE grafting. The graft walks these child links, so a
+    // cycle/shared subtree among the transport's OWN `List` ids would make the graft diverge/decode-bomb
+    // — it must be refused here first (the post-graft guard below can't help: the graft never returns on
+    // a cyclic input). A `DictRef` is a leaf for this walk (its expansion is a fresh copy of a dict's
+    // tree, which cannot cycle back into the transport structure). Iterative, so it can't overflow.
+    {
+        let mut visited = vec![false; tstructure.len()];
+        let mut stack = vec![root];
+        while let Some(id) = stack.pop() {
+            if visited[id] {
+                return Err(DecodeError::NotATree); // reached twice: a cycle or a shared subtree
+            }
+            visited[id] = true;
+            if let TStruct::List(children) = &tstructure[id] {
+                for StructId(child) in children {
+                    stack.push(*child as usize);
+                }
+            }
+        }
+    }
+
+    // GRAFT: build a normal dict-free `Arenas` by walking the transport structure from `root`, copying
+    // each `Atom`/`List` and, at each `DictRef`, splicing a fresh copy of the named dictionary's subtree.
+    // Iterative post-order (an explicit stack — the transport structure can be arbitrarily deep, like a
+    // decoded canonical arena), so the graft cannot overflow the native stack. The result's structure is
+    // rebuilt fresh (post-order, parent-after-children), so it is a genuine tree by construction; the
+    // final tree guard below then also refuses a transport arena whose OWN child ids form a cycle/share.
+    let mut g = Grafter {
+        leaves,
+        out: Vec::new(),
+    };
+    let out_root = g.graft_transport(&tstructure, root, &imports)?;
+    let arenas = Arenas {
+        leaves: g.leaves,
+        structure: g.out,
+        root: StructId(out_root),
+    };
+
+    // Defensive re-check: the transport structure was verified a tree above and the graft rebuilds a
+    // fresh post-order tree, so the output IS a tree by construction — this only reasserts the invariant
+    // the canonical decoder also enforces (cheap, iterative), guarding any future graft change.
+    verify_tree(&arenas)?;
+    Ok(arenas)
+}
+
+/// Accumulates the grafted (dict-free) output arena while expanding a transport structure. Leaves are
+/// carried over verbatim (dict subtrees, being from a decoded dict `Arenas`, bring their OWN leaves which
+/// are appended + their leaf ids remapped during the copy).
+struct Grafter {
+    leaves: Vec<Leaf>,
+    out: Vec<Struct>,
+}
+
+impl Grafter {
+    /// Emit a node into the output arena, returning its new `StructId`.
+    fn push(&mut self, s: Struct) -> u32 {
+        let id = self.out.len() as u32;
+        self.out.push(s);
+        id
+    }
+
+    /// Graft the transport node `t_id` (of `tstructure`) into the output arena, expanding dict-refs, and
+    /// return its new id. Iterative post-order over an explicit work stack so deep input can't overflow.
+    fn graft_transport(
+        &mut self,
+        tstructure: &[TStruct],
+        t_root: usize,
+        imports: &[&Arenas],
+    ) -> Result<u32, DecodeError> {
+        enum Job {
+            Visit(usize),
+            EmitList(usize), // finish a transport List: pop `n` child results and emit
+        }
+        let mut jobs: Vec<Job> = vec![Job::Visit(t_root)];
+        let mut results: Vec<u32> = Vec::new();
+        while let Some(job) = jobs.pop() {
+            match job {
+                Job::Visit(t_id) => match &tstructure[t_id] {
+                    TStruct::Atom(leaf) => {
+                        let new = self.push(Struct::Atom(*leaf));
+                        results.push(new);
+                    }
+                    TStruct::List(children) => {
+                        jobs.push(Job::EmitList(children.len()));
+                        for &StructId(ch) in children.iter().rev() {
+                            jobs.push(Job::Visit(ch as usize));
+                        }
+                    }
+                    TStruct::DictRef { dict_idx, node_id } => {
+                        let dict = imports[*dict_idx as usize];
+                        if (*node_id as usize) >= dict.structure.len() {
+                            return Err(DecodeError::IdOutOfRange);
+                        }
+                        let new = self.graft_dict_subtree(dict, *node_id as usize)?;
+                        results.push(new);
+                    }
+                },
+                Job::EmitList(n) => {
+                    let kids = results.split_off(results.len() - n);
+                    let new = self.push(Struct::List(kids.into_iter().map(StructId).collect()));
+                    results.push(new);
+                }
+            }
+        }
+        Ok(results.pop().expect("graft leaves the root's new id"))
+    }
+
+    /// Copy the subtree rooted at `d_root` of dictionary `dict` into the output arena, interning the
+    /// dict's leaves (a dict brings its own leaf pool). Iterative post-order. The dict is a validated
+    /// inline-canonical (dict-free) `Arenas`, so it is a genuine tree — this copy terminates.
+    fn graft_dict_subtree(&mut self, dict: &Arenas, d_root: usize) -> Result<u32, DecodeError> {
+        enum Job {
+            Visit(usize),
+            EmitList(usize),
+        }
+        let mut jobs: Vec<Job> = vec![Job::Visit(d_root)];
+        let mut results: Vec<u32> = Vec::new();
+        while let Some(job) = jobs.pop() {
+            match job {
+                Job::Visit(d_id) => {
+                    let node = dict.structure.get(d_id).ok_or(DecodeError::IdOutOfRange)?;
+                    match node {
+                        Struct::Atom(LeafId(lid)) => {
+                            let leaf = dict
+                                .leaves
+                                .get(*lid as usize)
+                                .ok_or(DecodeError::IdOutOfRange)?
+                                .clone();
+                            let new_leaf = self.leaves.len() as u32;
+                            self.leaves.push(leaf);
+                            let new = self.push(Struct::Atom(LeafId(new_leaf)));
+                            results.push(new);
+                        }
+                        Struct::List(children) => {
+                            jobs.push(Job::EmitList(children.len()));
+                            for &StructId(ch) in children.iter().rev() {
+                                jobs.push(Job::Visit(ch as usize));
+                            }
+                        }
+                    }
+                }
+                Job::EmitList(n) => {
+                    let kids = results.split_off(results.len() - n);
+                    let new = self.push(Struct::List(kids.into_iter().map(StructId).collect()));
+                    results.push(new);
+                }
+            }
+        }
+        Ok(results
+            .pop()
+            .expect("dict subtree graft leaves the root's new id"))
+    }
+}
+
+/// The reachable-structure tree/decode-bomb guard, shared by `decode_detailed` and `decode_with_dicts`.
+/// Every node reachable from the root must be reached EXACTLY once (no cycle, no shared subtree).
+/// Iterative, so it cannot overflow on deep input.
+fn verify_tree(arenas: &Arenas) -> Result<(), DecodeError> {
+    let mut visited = vec![false; arenas.structure.len()];
+    let mut stack = vec![arenas.root.0 as usize];
+    while let Some(id) = stack.pop() {
+        if id >= arenas.structure.len() {
+            return Err(DecodeError::IdOutOfRange);
+        }
+        if visited[id] {
+            return Err(DecodeError::NotATree);
+        }
+        visited[id] = true;
+        if let Struct::List(children) = &arenas.structure[id] {
+            for StructId(child) in children {
+                stack.push(*child as usize);
+            }
+        }
+    }
+    Ok(())
 }
 
 fn read_leaf(r: &mut Reader) -> Result<Leaf, DecodeError> {
@@ -1216,5 +1546,259 @@ mod tests {
         let inner = b.list(vec![sym, ch, by]);
         let root = b.list(vec![inner, bad, esc, suf]);
         b.finish(root)
+    }
+
+    // ---- I1: the dictionary TRANSPORT plane (`cdzast\x00\x02`) + decode_with_dicts ----
+
+    /// Hand-build a `cdzast\x00\x02` transport artifact from parts (no encoder yet — I2). `imports` are
+    /// the 32-byte dict hashes (in the order dict_idx references them); `leaves`/`structure` are the
+    /// transport body. Structure entries are `(tag, [ids])` where an Atom is `(TAG_ATOM,[leaf_id])`, a
+    /// List `(TAG_LIST, child_ids)`, a DictRef `(TAG_DICT_REF,[dict_idx,node_id])`.
+    fn build_transport(
+        imports: &[[u8; 32]],
+        leaves: &[Leaf],
+        structure: &[(u8, Vec<u64>)],
+        root: u64,
+    ) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&TRANSPORT_HEADER);
+        leb128::write_u64(&mut out, imports.len() as u64);
+        for h in imports {
+            out.extend_from_slice(h);
+        }
+        leb128::write_u64(&mut out, leaves.len() as u64);
+        for leaf in leaves {
+            write_leaf(&mut out, leaf);
+        }
+        leb128::write_u64(&mut out, structure.len() as u64);
+        for (tag, ids) in structure {
+            out.push(*tag);
+            match *tag {
+                TAG_ATOM => leb128::write_u64(&mut out, ids[0]),
+                TAG_LIST => {
+                    leb128::write_u64(&mut out, ids.len() as u64);
+                    for id in ids {
+                        leb128::write_u64(&mut out, *id);
+                    }
+                }
+                TAG_DICT_REF => {
+                    leb128::write_u64(&mut out, ids[0]); // dict_idx
+                    leb128::write_u64(&mut out, ids[1]); // node_id
+                }
+                _ => unreachable!(),
+            }
+        }
+        leb128::write_u64(&mut out, root);
+        out
+    }
+
+    #[test]
+    fn decode_with_dicts_on_a_v1_artifact_is_exactly_decode() {
+        // A canonical `\x00\x01` input decodes IDENTICALLY through decode_with_dicts (dicts unused) — the
+        // two never disagree on a dict-free artifact. Assert over the whole `sample()` shape + an empty
+        // AND a populated dict-set (the dicts must be irrelevant to a v1 artifact).
+        let a = sample();
+        let v1 = encode(&a);
+        let empty = DictSet::new();
+        let mut full = DictSet::new();
+        full.insert(Hash([7u8; 32]), sample());
+        for dicts in [&empty, &full] {
+            let via_dicts =
+                decode_with_dicts(&v1, dicts).expect("v1 decodes via decode_with_dicts");
+            let via_plain = decode(&v1).expect("v1 decodes via decode");
+            assert_eq!(
+                via_dicts, via_plain,
+                "decode_with_dicts != decode on a v1 artifact"
+            );
+            assert!(a.structurally_eq(&via_dicts));
+        }
+    }
+
+    #[test]
+    fn canonical_decode_refuses_a_transport_header() {
+        // THE structural identity/transport separation: the canonical decode/decode_detailed accept ONLY
+        // `\x00\x01`; a `\x00\x02` transport artifact is refused with BadHeader (refuse-on-mismatch). This
+        // guarantees a dict-bearing artifact can NEVER be mistaken for an identity artifact.
+        let bytes = build_transport(&[], &[Leaf::Bool(true)], &[(TAG_ATOM, vec![0])], 0);
+        assert_eq!(
+            decode(&bytes),
+            None,
+            "canonical decode must refuse \\x00\\x02"
+        );
+        assert_eq!(
+            decode_detailed(&bytes),
+            Err(DecodeError::BadHeader),
+            "decode_detailed must classify a transport header as BadHeader"
+        );
+    }
+
+    #[test]
+    fn a_dict_free_transport_artifact_decodes_like_v1() {
+        // A `\x00\x02` artifact that happens to carry NO imports + no dict-refs is just a re-headered v1
+        // tree: decode_with_dicts yields the same arena as decoding the equivalent `\x00\x01` bytes.
+        // `(true)` — a one-element list whose child is a Bool atom.
+        let bytes = build_transport(
+            &[],
+            &[Leaf::Bool(true)],
+            &[(TAG_ATOM, vec![0]), (TAG_LIST, vec![0])],
+            1,
+        );
+        let a = decode_with_dicts(&bytes, &DictSet::new()).expect("dict-free transport decodes");
+        // Compare against the same tree built canonically.
+        let mut b = Builder::new();
+        let t = b.atom_leaf(Leaf::Bool(true));
+        let root = b.list(vec![t]);
+        let expected = b.finish(root);
+        assert!(
+            a.structurally_eq(&expected),
+            "dict-free transport != equivalent v1 tree"
+        );
+    }
+
+    #[test]
+    fn a_dict_ref_resolves_and_grafts_the_named_subtree() {
+        // The core resolution: a transport artifact references node `j` of an imported dict; decode grafts
+        // that subtree in place. Dict = `(pair a b)` (a 4-node arena); the transport is `(f <ref to the
+        // dict's root>)`, so the result must be `(f (pair a b))`.
+        let mut db = Builder::new();
+        let p = db.name("pair");
+        let da = db.name("a");
+        let dbb = db.name("b");
+        let dict_root = db.list(vec![p, da, dbb]); // structure[3] = the (pair a b) list
+        let dict = db.finish(dict_root);
+        let dict_root_id = dict.root.0 as u64;
+        let hash = Hash([0xABu8; 32]);
+        let mut dicts = DictSet::new();
+        dicts.insert(hash, dict.clone());
+
+        // transport: leaf[0] = Name "f"; structure: [Atom f, DictRef{0, dict_root}, List[0,1]]; root = 2.
+        let bytes = build_transport(
+            &[[0xABu8; 32]],
+            &[Leaf::Name("f".to_string())],
+            &[
+                (TAG_ATOM, vec![0]),
+                (TAG_DICT_REF, vec![0, dict_root_id]),
+                (TAG_LIST, vec![0, 1]),
+            ],
+            2,
+        );
+        let got = decode_with_dicts(&bytes, &dicts).expect("dict-ref resolves");
+
+        // Expected: `(f (pair a b))` built inline.
+        let mut eb = Builder::new();
+        let f = eb.name("f");
+        let ep = eb.name("pair");
+        let ea = eb.name("a");
+        let eb_ = eb.name("b");
+        let inner = eb.list(vec![ep, ea, eb_]);
+        let eroot = eb.list(vec![f, inner]);
+        let expected = eb.finish(eroot);
+        assert!(
+            got.structurally_eq(&expected),
+            "grafted arena != (f (pair a b)); got {got:?}"
+        );
+        // And the grafted arena re-encodes to canonical `\x00\x01` (its identity) and round-trips.
+        assert!(decode(&encode(&got)).unwrap().structurally_eq(&expected));
+    }
+
+    #[test]
+    fn a_missing_import_hash_is_missing_dict() {
+        // Hermetic resolution: a `\x00\x02` importing a hash NOT in the supplied DictSet is MissingDict —
+        // NOT a fetch, NOT corruption. The error carries the offending hash.
+        let missing = [0x99u8; 32];
+        let bytes = build_transport(
+            &[missing],
+            &[Leaf::Name("f".to_string())],
+            &[
+                (TAG_ATOM, vec![0]),
+                (TAG_DICT_REF, vec![0, 0]),
+                (TAG_LIST, vec![0, 1]),
+            ],
+            2,
+        );
+        assert_eq!(
+            decode_with_dicts(&bytes, &DictSet::new()),
+            Err(DecodeError::MissingDict(Hash(missing))),
+            "a missing import hash must be MissingDict(that hash)"
+        );
+    }
+
+    #[test]
+    fn an_out_of_range_dict_ref_is_id_out_of_range() {
+        // Bounds: dict_idx past the import count, and node_id past the dict's arena, both → IdOutOfRange
+        // (never a panic). Provide one valid dict so the node_id check is reachable for the second case.
+        let mut db = Builder::new();
+        let only = db.name("x");
+        let dict = db.finish(only); // 1-node arena (structure[0])
+        let mut dicts = DictSet::new();
+        dicts.insert(Hash([1u8; 32]), dict);
+
+        // (1) dict_idx = 5 but only import 0 exists.
+        let bad_dict = build_transport(
+            &[[1u8; 32]],
+            &[Leaf::Name("f".to_string())],
+            &[
+                (TAG_ATOM, vec![0]),
+                (TAG_DICT_REF, vec![5, 0]),
+                (TAG_LIST, vec![0, 1]),
+            ],
+            2,
+        );
+        assert_eq!(
+            decode_with_dicts(&bad_dict, &dicts),
+            Err(DecodeError::IdOutOfRange)
+        );
+
+        // (2) dict_idx = 0 (valid), node_id = 9 past the 1-node dict arena.
+        let bad_node = build_transport(
+            &[[1u8; 32]],
+            &[Leaf::Name("f".to_string())],
+            &[
+                (TAG_ATOM, vec![0]),
+                (TAG_DICT_REF, vec![0, 9]),
+                (TAG_LIST, vec![0, 1]),
+            ],
+            2,
+        );
+        assert_eq!(
+            decode_with_dicts(&bad_node, &dicts),
+            Err(DecodeError::IdOutOfRange)
+        );
+    }
+
+    #[test]
+    fn v1_canonical_bytes_are_unchanged_the_frozen_bijection_guard() {
+        // §7.2 — THE guard that proves option A held: adding the transport plane must NOT move a single
+        // byte of the canonical `\x00\x01` encoding. Re-encode `sample()` and assert the header is v1 and
+        // the exact bytes match a decode→re-encode fixed point (encode is deterministic on canonical
+        // arenas). If any `\x00\x01` byte shifts, the dict change perturbed the identity plane = wrong.
+        let a = sample();
+        let bytes = encode(&a);
+        assert_eq!(
+            &bytes[..8],
+            &SCHEMA_HEADER,
+            "canonical output must stay on the v1 header"
+        );
+        assert_ne!(&bytes[..8], &TRANSPORT_HEADER);
+        // Determinism / round-trip fixed point (canonical → canonical is byte-identical).
+        let back = decode(&bytes).expect("v1 decodes");
+        assert_eq!(
+            bytes,
+            encode(&back),
+            "canonical \\x00\\x01 bytes must be a fixed point"
+        );
+    }
+
+    #[test]
+    fn a_transport_artifact_whose_own_structure_cycles_is_not_a_tree() {
+        // The tree guard still applies on the transport plane: a `\x00\x02` whose own List ids form a
+        // cycle (node 0 → node 0) must be refused, not diverge. (No dict-ref needed — this is the
+        // transport structure's own referential hazard.)
+        let bytes = build_transport(&[], &[], &[(TAG_LIST, vec![0])], 0); // node 0 = List[0] → itself
+        assert_eq!(
+            decode_with_dicts(&bytes, &DictSet::new()),
+            Err(DecodeError::NotATree),
+            "a self-cyclic transport structure must be NotATree"
+        );
     }
 }
