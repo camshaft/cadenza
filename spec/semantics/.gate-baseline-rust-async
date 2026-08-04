@@ -485,7 +485,6 @@ pass	a 40-entry trie of LIST values keeps each heap payload addressable at depth
 pass	a 500-iteration Bytes.concat loop measures exactly and indexes both extremes
 pass	a 5000-deep recursive-sum spine builds, walks, and compares — the eq walk survives depth
 pass	a 5000-element pushed list reads head, middle, and last through the deeper trie
-todo	a 60-key trie captured ACROSS a host call reads intact after the response folds in
 pass	a 64-bit-unsigned closure crosses the host boundary
 pass	a @ensures postcondition over a HEAP result checks at exit and returns the live collection
 pass	a @ensures relating the RESULT to a PARAMETER enforces the relation at exit
@@ -1456,7 +1455,6 @@ pass	a deep nested-constructor pattern matching a nullary variant two layers dee
 pass	a deep out-of-order queue drains fully time-sorted with FIFO across every tie-group
 pass	a deep push chain beside two other live bindings retains each correctly
 pass	a deep rope indexes by scalar at both extremes
-todo	a deep trie built BETWEEN two host calls reads correctly after the second
 pass	a deep uniform arith accumulator chain (CSE-partition shape) computes the same value across opt levels
 pass	a deeper nested call chain still folds in linear time near the inliner limit
 pass	a deeply nested constant expression compiles or declines without crashing
@@ -2713,6 +2711,7 @@ pass	a recursive lower from a sum to Bytes assembles its output in match arms
 pass	a recursive map rebuilding a sum list infers its unannotated callback
 pass	a recursive parameter used only as a call argument infers from the callee's parameter type
 pass	a recursive parser drains a STREAM of length-prefixed frames to the empty base case
+pass	a recursive performer of a nested-handler op whose resume performs the outer effect threads the advance
 pass	a recursive predicate with the self-call in the else branch is a Bool condition
 pass	a recursive predicate with the self-call in the then branch is a Bool condition
 pass	a recursive reader decodes a CBOR application tree and evaluates it by head index
@@ -5668,6 +5667,7 @@ pass	α-equivalence handles nesting and distinguishes a bound variable from a sa
 todo	Set.of over runtime lists at two different element types declines pending the recursive-generic tie
 todo	TWO closures capturing one let-bound host call share ONE firing (in the exported def)
 todo	Type is a first-class value
+todo	a 60-key trie captured ACROSS a host call reads intact after the response folds in
 todo	a @param accessor read inside a RECURSIVE walk consumes one response per iteration
 todo	a @param accessor splices into a quasiquote and the eval computes with the host value
 todo	a @param drives a recursive fold's iteration count
@@ -5713,6 +5713,7 @@ todo	a closure capturing a build-time host effect preserves the order of two hos
 todo	a conditional performs only the taken branch's effect — else
 todo	a conditional performs only the taken branch's effect — then
 todo	a constant-try helper that fails feeds the None arm's fallback into resume
+todo	a deep trie built BETWEEN two host calls reads correctly after the second
 todo	a delegated effect performed in a closure passed to a HOF is reached and fires
 todo	a delegated effect performed inside an intra-program handler
 todo	a delegated effect reached only through an if-branch is granted and fires when the branch is taken

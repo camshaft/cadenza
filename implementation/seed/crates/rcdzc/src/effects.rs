@@ -595,9 +595,21 @@ fn inner_body_needs_merge(
         && recursive_call_reaches_discharged(db, &head, merged)
         && let Some(callee_def) = callee_def_index_of(db, head)
         && let Some(body) = db.defs[callee_def].body
-        && callee_reaches_outer_effect(db, body, inner_decl, merged, 0)
     {
-        return true;
+        // Scan the callee body AND — when accum rewrote it into a seed wrapper + copy `f$acc` — the COPY's
+        // body (the seed wrapper no longer holds the recursion / inner-op call; those moved to `f$acc`).
+        let reaches = callee_reaches_outer_effect(db, body, inner_decl, merged, 0)
+            || db
+                .transformed
+                .get(&callee_def)
+                .copied()
+                .and_then(|acc| db.defs[acc].body)
+                .is_some_and(|acc_body| {
+                    callee_reaches_outer_effect(db, acc_body, inner_decl, merged, 0)
+                });
+        if reaches {
+            return true;
+        }
     }
     // Otherwise descend structurally (the recursive callee may be nested in an `if`/`do`/etc.).
     match db.ast.get(node).clone() {
@@ -623,10 +635,18 @@ fn callee_reaches_outer_effect(
     }
     if let Resolved::Apply { head, .. } = resolved_of(db, node)
         && let Some((decl, idx)) = is_perform(db, head, merged)
-        && decl != inner_decl
     {
-        let _ = idx;
-        return true;
+        // A DIRECT outer-effect perform in the callee body.
+        if decl != inner_decl {
+            return true;
+        }
+        // An INNER-op perform whose ARM resume-value performs the OUTER effect (part 2): follow the arm body
+        // — `(step (u) t (resume (A.tick) t))` performs the outer `A`, hidden from a callee-body-only scan.
+        if let Some(arm) = merged.arms.get(&(decl, idx))
+            && callee_reaches_outer_effect(db, arm.body, inner_decl, merged, depth + 1)
+        {
+            return true;
+        }
     }
     // Follow a non-recursive call into its body.
     if let Resolved::Apply { head, .. } = resolved_of(db, node)
@@ -5254,6 +5274,14 @@ fn thread_bounded(
             body: inner_body,
         } => {
             if let Some(merged) = merged_nested_ctx(db, inner_init, &inner_arms, inner_body, ctx) {
+                // CALLER-OBSERVED OUT-STATE under the MERGE (recursive-nested-arm-resume fix). `reduce_handle`
+                // runs `mark_caller_observed_outstate` for the OUTER ctx, but the merged body threads HERE
+                // (not via reduce_handle), so a post-recursion sibling that observes the merged callee's
+                // out-state — `(+ (loop 1) (A.get))`, where `(A.get)` reads the A-advance `loop` made per
+                // iteration — is not marked, and the merged spec stays single-return (dropping the advance:
+                // 20 vs 21). Mark it under the MERGED ctx so `specialize_recursive` emits multi-value and
+                // threads the outer out-state to the observer. Additive (only upgrades a threadable callee).
+                mark_caller_observed_outstate(db, inner_body, &merged);
                 // Thread the inner body under the merged context, with the inner slot seeded by its init
                 // (appended after the outer states). The merged vector = outer states ++ [inner init].
                 let mut merged_states = states.clone();
@@ -5698,7 +5726,21 @@ fn recursive_call_reaches_discharged(db: &mut Db, head: &StructId, ctx: &Handler
     };
     let rec = crate::eval::is_recursive(db, body);
     let reaches = body_reaches_discharged(db, body, ctx, 0);
-    rec && reaches
+    if rec && reaches {
+        return true;
+    }
+    // ACCUM SUCCESSOR (part 1, recursive-nested-arm-resume fix). A linear non-tail recursion `f` that
+    // `accum::introduce` rewrote into a seed wrapper (this `body`, now non-recursive — it calls `f$acc n 0`)
+    // + a tail-recursive copy `f$acc`: `is_recursive(f.body)` reads false. Follow `transformed` (source→copy)
+    // and test the COPY so the merge decision sees the accum-transformed recursive performer.
+    if let Some(&acc) = db.transformed.get(&callee_def)
+        && let Some(acc_body) = db.defs[acc].body
+        && crate::eval::is_recursive(db, acc_body)
+        && body_reaches_discharged(db, acc_body, ctx, 0)
+    {
+        return true;
+    }
+    false
 }
 
 /// Whether the subtree at `node` MIGHT transitively reach ANY effect operation — a perform of ANY declared
@@ -6554,6 +6596,21 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
         .iter()
         .map(|n| db.push_atom(Leaf::Name(n.clone())))
         .collect();
+    // PRE-SPEC-LIFT (recursive-nested-arm-resume fix, concierge-steered). When the recursive callee calls an
+    // INNER op whose ARM resume-value performs an OUTER (merged-slot) op — `(step (u) t (resume (A.tick) t))`
+    // — that outer perform is hidden until the inner op folds mid-thread, and re-threading the peeled resume
+    // value produces a mis-scoped state-ref (the disproven arm-fold approach). INSTEAD, substitute the inner-
+    // op call with its arm's peeled resume VALUE directly in `orig_body` BEFORE threading, so the outer
+    // perform becomes a DIRECT-body perform threaded via the top-level perform arm — binding the spec's
+    // `state_refs` identically to the working direct-body cases (14-eff:7706 `(+ (A.geta) (B.getb))`). Only
+    // fires in the MERGED ctx (>1 slot) for an inner op whose arm reaches an outer perform AND threads its
+    // own state trivially (next-state == state binder — no inner-op state advance to preserve); a non-trivial
+    // inner-state advance is left to the ordinary fold (unchanged). Byte-identical when nothing matches.
+    let orig_body = if ctx.slots.len() > 1 {
+        lift_inner_op_arm_outer_perform(db, orig_body, ctx)
+    } else {
+        orig_body
+    };
     // MULTI-VALUE mode: the body's every tail leaf yields `("tuple" value out-states…)`, and each self-call
     // is let-bound (out-state projected + threaded). SINGLE-return mode: the ordinary `thread` (unchanged).
     let spec_body = if multivalue {
@@ -6646,6 +6703,90 @@ fn tail_resume(db: &mut Db, node: StructId) -> Option<(StructId, StructId)> {
 ///     Every branch must itself peel to a resume. (v-compiler-ml's get/put memoized-DB shape: a `put` arm
 ///     `(match kv (| (k,v) => resume(unit, Map.insert(s,k,v))))` performed in a `;`-sequence with a `get`.)
 ///
+/// PRE-SPEC-LIFT (recursive-nested-arm-resume fix): rewrite `node` (a recursive callee's body about to be
+/// threaded under a MERGED ctx) so an inner-op call whose ARM resume-value performs an OUTER effect becomes
+/// that outer perform DIRECTLY in the body spine. `(step 〈args〉)` where `step`'s arm is `(u) t (resume
+/// 〈val performing A〉 t)` → replaced by the β-reduced `val` (params↦args, state↦a fresh state ref). This
+/// makes the outer perform a direct-body perform (threaded via the top-level perform arm with the spec's
+/// `state_refs` in scope), instead of surfacing mid-fold with a re-entrant mis-scoped state-ref.
+///
+/// NARROW (soundness): fires ONLY when the arm (1) peels to a bare `(resume val next)` (no do/match wrapper),
+/// (2) has TRIVIAL state advance — `next` is exactly the state binder, so the inner op does not step its own
+/// state (q4a's `(resume (A.tick) t)`; a real inner-state advance is left to the ordinary fold), (3) `val`
+/// reaches a perform of a DIFFERENT discharged op (an outer merged slot), and (4) the op is 4-part (no `cont`
+/// — an E5 continuation arm is out of scope). Anything else is returned unchanged (byte-identical). The
+/// substituted `val` is `deep_fresh_copy`'d so its param/state refs re-resolve against the spec body freshly.
+/// Whether `node` reaches a DIRECT perform of an op discharged by `ctx` that is NOT `own` — i.e. a sibling
+/// (outer merged-slot) discharged op. Used by the pre-spec-lift to detect an arm resume-value that performs
+/// a DIFFERENT effect than the arm's own op (the arm-hidden outer perform).
+fn performs_discharged_op_other_than(
+    db: &mut Db,
+    node: StructId,
+    ctx: &HandlerCtx,
+    own: (u32, u32),
+) -> bool {
+    if let Resolved::Apply { head, .. } = resolved_of(db, node)
+        && let Some(id) = is_perform(db, head, ctx)
+        && id != own
+    {
+        return true;
+    }
+    match db.ast.get(node).clone() {
+        Struct::List(children) => children
+            .iter()
+            .any(|&c| performs_discharged_op_other_than(db, c, ctx, own)),
+        Struct::Atom(_) => false,
+    }
+}
+
+fn lift_inner_op_arm_outer_perform(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> StructId {
+    // Is this node an inner-op call whose arm resume-value performs an outer op with trivial inner-state?
+    if let Resolved::Apply { head, args } = resolved_of(db, node)
+        && let Some((decl, idx)) = crate::eval::effect_op_of(db, head)
+        && let Some(arm) = ctx.arms.get(&(decl.0, idx)).cloned()
+        && arm.cont.is_none()
+        && let Some((val, next)) = tail_resume(db, arm.body)
+        // trivial inner-state: next-state is exactly the arm's state binder (no advance to preserve).
+        && db.ast.as_name(next).is_some()
+        && db.ast.as_name(next) == db.ast.as_name(arm.state)
+        // the resume value performs a DIFFERENT discharged op (an outer merged slot).
+        && performs_discharged_op_other_than(db, val, ctx, (decl.0, idx))
+    {
+        // β-reduce the arm's resume value with params↦args (the op's args) so a param-referencing outer
+        // perform arg resolves. (Unit-op arms bind nothing; a mismatch leaves it un-substituted, still sound
+        // since the arm reached here means the shape matched.) Then deep-fresh so refs re-resolve in the body.
+        let mut subst: HashMap<StructId, StructId> = HashMap::default();
+        if arm.params.len() == args.len() {
+            for (&p, &a) in arm.params.iter().zip(args.iter()) {
+                if !is_unit_param(db, p) {
+                    subst.insert(p, a);
+                }
+            }
+        }
+        let reduced = if subst.is_empty() {
+            val
+        } else {
+            crate::eval::beta_reduce(db, val, &subst)
+        };
+        return deep_fresh_copy(db, reduced);
+    }
+    // Recurse structurally, rebuilding with lifted children.
+    match db.ast.get(node).clone() {
+        Struct::List(children) => {
+            let lifted: Vec<StructId> = children
+                .iter()
+                .map(|&c| lift_inner_op_arm_outer_perform(db, c, ctx))
+                .collect();
+            if lifted == children {
+                node
+            } else {
+                db.push_list(lifted)
+            }
+        }
+        Struct::Atom(_) => node,
+    }
+}
+
 /// `None` if the arm body is not one of these (the honest "not yet reducible" decline).
 fn peel_resume_from_arm_body(db: &mut Db, arm_body: StructId) -> Option<(StructId, StructId)> {
     // Bare `(resume v s)`.
