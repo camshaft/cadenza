@@ -953,7 +953,8 @@
            100-element set's self-difference must EQUAL `(Set.of (list))` by canonical `=` (10) as well as
            by len (+0). The difference walk tears down a deep trie node by node — a walk that left any
            residual interior structure (a non-collapsed empty branch) would report len 0 yet fail the
-           canonical-equality check. The empty-set seed is `(Set.of (list))` (Set has no `Set.empty`).")
+           canonical-equality check. The empty-set seed is `(Set.of (list))` — the `Set.insert`-onto-
+           `Set.empty` chain does not yet emit (see the construction-path asymmetry notes).")
   (input  (do
             (def (build (: i Int64) (: acc (Set Int64)))
               (if (= i 0) acc (build (- i 1) (Set.insert acc i))))
@@ -983,6 +984,51 @@
                 (+ (* 10 (if (= rt s) 1 0)) (if (Set.contains rt 57) 1 0))))
             (export main)))
   (call   main (: 100 Int64)) (output (: 11 Int64)))
+
+(case "intersection of a trie with its churned-back subset is the subset itself"
+  (doc    "The two-differently-built-operands face of trie-scale intersection: `full` = a 100-element
+           build; `odds` = full with every even element REMOVED (a churned derivation, its trie shaped
+           by 50 removals); their intersection must EQUAL `odds` by canonical `=` (10) with membership
+           correct (even 2 absent → +0). The merge walk receives one operand built by pure insertion
+           and one shaped by removal-collapse — canonical inputs commute through the intersection
+           regardless of construction history (the algebra face of the churn-identity family). The
+           empty-set seed is `(Set.of (list))` — the `Set.insert`-onto-`Set.empty` chain does not yet
+           emit (the construction-path asymmetry notes at the recursive-sum and remove-path cases).")
+  (input  (do
+            (def (build (: i Int64) (: acc (Set Int64)))
+              (if (= i 0) acc (build (- i 1) (Set.insert acc i))))
+            (def (drop-half (: i Int64) (: s (Set Int64)))
+              (if (> i 100) s (drop-half (+ i 2) (Set.remove s i))))
+            (def (main (: n Int64))
+              (do
+                (def full (build n (Set.of (list))))
+                (def odds (drop-half 2 full))
+                (def inter (Set.intersection full odds))
+                (+ (* 10 (if (= inter odds) 1 0)) (if (Set.contains inter 2) 1 0))))
+            (export main)))
+  (call   main (: 100 Int64)) (output (: 10 Int64)))
+
+(case "a SET churned to empty equals a fresh empty set and re-accepts elements"
+  (doc    "The Set face of the churn-to-empty family (the Map twins are in 05-compound-types): grow a
+           set to 120 elements, remove every one — the survivor must EQUAL `(Set.of (list))` by
+           canonical `=` (100), report len 0 (+0·10), and RE-ACCEPT an element with membership intact
+           (+1) → 101. The full drain collapses every node the growth created, and the re-insert
+           proves no tombstone or stale-node residue corrupts the re-grown trie. The empty-set seed is
+           `(Set.of (list))` — `Set.empty` is an intended surface member whose emit has not landed
+           (the insert-onto-Set.empty chain still declines; see the construction-path asymmetry notes).")
+  (input  (do
+            (def (grow (: i Int64) (: n Int64) (: s (Set Int64)))
+              (if (= i n) s (grow (+ i 1) n (Set.insert s i))))
+            (def (shrink (: i Int64) (: n Int64) (: s (Set Int64)))
+              (if (= i n) s (shrink (+ i 1) n (Set.remove s i))))
+            (def (main (: n Int64))
+              (do
+                (def emptied (shrink 1 n (grow 1 n (Set.of (list)))))
+                (+ (* 100 (if (= emptied (Set.of (list))) 1 0))
+                   (+ (* 10 (Set.len emptied))
+                      (if (Set.contains (Set.insert emptied 42) 42) 1 0)))))
+            (export main)))
+  (call   main (: 120 Int64)) (output (: 101 Int64)))
 
 (case "intersection is associative"
   (doc    "`(A ∩ B) ∩ C` equals `A ∩ (B ∩ C)` for A={1,2,3,4}, B={2,3,4,5}, C={3,4,5,6} — both regroupings
