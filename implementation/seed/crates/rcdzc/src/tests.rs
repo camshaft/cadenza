@@ -66558,15 +66558,15 @@ mod stage1 {
     }
 
     #[test]
-    fn an_inner_abort_preserves_an_outer_advance_committed_in_a_branch_before_it() {
-        // ABORT-FOLD do-shape inside a BRANCH (v-effects self-probe — the if-branch / match-arm face of the
-        // abort-outer-advance class; the direct-body do-shape landed #2002, strict-operand #2010). The foreign
-        // `(A.tick)` and the abort sit on the strict do-spine of an `if` BRANCH — `(if true (do (A.tick)
-        // (B.bail 99)) 5)` under B. The branch's abort is branch-local, but `A.tick` committed A-state 10→11
-        // and must survive → outer `(A.get)` reads 11 → 110. Pre-fix: `thread_branch_local_abort_with_out`
-        // returned the BARE abort value, discarding the do-arm's sound `(do (A.tick) 99)` branch rewrite → 109.
-        // Fixed by the same do-shape gate as the direct fold, applied to the branch rewrite (covers if-branch
-        // AND match-arm-body, which share the helper).
+    fn an_inner_abort_preserves_an_outer_advance_committed_in_an_if_branch_before_it() {
+        // ABORT-FOLD do-shape inside an IF-BRANCH (v-effects self-probe — the if-branch face of the
+        // abort-outer-advance class; the direct-body do-shape landed #2002, strict-operand #2010, match-
+        // scrutinee #2017). The foreign `(A.tick)` and the abort sit on the strict do-spine of an `if` BRANCH
+        // — `(if true (do (A.tick) (B.bail 99)) 5)` under B. The branch's abort is branch-local, but `A.tick`
+        // committed A-state 10→11 and must survive → outer `(A.get)` reads 11 → 110. Pre-fix:
+        // `thread_branch_local_abort_with_out` returned the BARE abort value, discarding the do-arm's sound
+        // `(do (A.tick) 99)` branch rewrite → 109. Fixed by the same do-shape gate as the direct fold, applied
+        // to the branch rewrite (the same helper also covers match-arm bodies — see the sibling test below).
         let src = "(do (effect A (op tick (-> Unit Int64)) (op get (-> Unit Int64))) \
                    (effect B (op bail (-> Int64 Int64))) \
                    (def (main) \
@@ -66577,11 +66577,37 @@ mod stage1 {
         assert_eq!(
             run_returns::<i64>(
                 &compile_component(&crate::codec::encode(&parse(src)))
-                    .expect("the branch abort's outer-advance-preserving do-fold compiles"),
+                    .expect("the if-branch abort's outer-advance-preserving do-fold compiles"),
                 "main"
             ),
             110,
             "a pre-abort outer advance in an if-branch must survive the branch-local abort (99 + 11 = 110), not roll back (was 109)"
+        );
+    }
+
+    #[test]
+    fn an_inner_abort_preserves_an_outer_advance_committed_in_a_match_arm_body_before_it() {
+        // ABORT-FOLD do-shape inside a MATCH-ARM body (the arm-body sibling of the if-branch test above —
+        // both route through `thread_branch_local_abort_with_out`, so this pins the match-arm CALL SITE at the
+        // compiler-test level, not just the corpus). The foreign `(A.tick)` and the abort sit on the strict
+        // do-spine of a `match` ARM body — `(match 0 (_ (do (A.tick) (B.bail 99))))` under B. The arm's abort
+        // is arm-local, but `A.tick` committed A-state 10→11 → outer `(A.get)` reads 11 → 110. Same fix + gate
+        // as the if-branch; before it the arm collapse dropped `A.tick` → 109.
+        let src = "(do (effect A (op tick (-> Unit Int64)) (op get (-> Unit Int64))) \
+                   (effect B (op bail (-> Int64 Int64))) \
+                   (def (main) \
+                     (handle A 10 ((tick (u) s (resume s (+ s 1))) (get (u) s (resume s s))) \
+                       (let ((b (handle B 0 ((bail (v) s v)) (match 0 (_ (do (A.tick) (B.bail 99))))))) \
+                         (+ b (A.get))))) \
+                   (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("the match-arm-body abort's outer-advance-preserving do-fold compiles"),
+                "main"
+            ),
+            110,
+            "a pre-abort outer advance in a match-arm body must survive the arm-local abort (99 + 11 = 110), not roll back (was 109)"
         );
     }
 
