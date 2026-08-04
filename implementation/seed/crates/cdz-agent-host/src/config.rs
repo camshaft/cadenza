@@ -61,13 +61,14 @@ pub enum LogConfig {
 
 /// Observability config — the operator's s2n-quic-dc-metrics integration. Disabled by default; when
 /// enabled, metrics FAN OUT to one-or-more configured `targets` (operator requirement: "define more than
-/// one target backend"). Each `[[observability.target]]` names a backend `kind` + its `endpoint`, so the
-/// daemon can emit to several sinks (multiple s2n-quic-dc-metrics collectors, or different backend types).
+/// one target backend"). Each `[[observability.target]]` is a [`MetricsTarget`] whose `kind` selects a
+/// backend and whose OTHER fields are that backend's OWN typed config, so the daemon can emit to several
+/// sinks (multiple s2n-quic-dc collectors, or different backend types).
 ///
-/// The `kind` string is the extension point — `s2n-quic-dc` is the first backend; the s2n-quic emitter
-/// itself is a following slice (feature-gated to keep the QUIC/network dep tree out of the default build),
-/// pending the operator's fork branch/rev. This CONFIG is always parseable ahead of that wiring (staged
-/// like `[log]`/`[blob]`: config first, emitter follows).
+/// The s2n-quic emitter itself is a following slice (feature-gated to keep the QUIC/network dep tree out of
+/// the default build) — the git dep is `camshaft/s2n-quic` (branch `main`), package `s2n-quic-dc-metrics`.
+/// This CONFIG is always parseable ahead of that wiring (staged like `[log]`/`[blob]`: config first, emitter
+/// follows).
 #[derive(Debug, Clone, Deserialize, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct ObservabilityConfig {
@@ -80,16 +81,32 @@ pub struct ObservabilityConfig {
     pub targets: Vec<MetricsTarget>,
 }
 
-/// One metrics target backend — where a copy of the metrics stream is emitted. `kind` selects the backend
-/// (e.g. `s2n-quic-dc`, the first supported); `endpoint` is that backend's collector address. Additional
-/// per-kind fields can extend this later without reshaping the array.
+/// One metrics target backend — a per-kind TYPED config, NOT a generic `{kind, endpoint}` pair (operator
+/// directive: "each backend needs its own config fields - not just some generic target string"). `kind`
+/// discriminates the variant (a tagged union, like [`LogConfig`]/[`BlobConfig`]); each variant carries the
+/// fields THAT backend needs, validated per-kind. Adding a backend adds a typed variant with its own fields,
+/// so a mis-shaped target (a field that belongs to another backend, a missing required field) is a loud
+/// deser error rather than an ignored generic string.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct MetricsTarget {
-    /// The backend kind (e.g. `"s2n-quic-dc"`). The extension point — new backends add a kind.
-    pub kind: String,
-    /// The collector address this target emits to.
-    pub endpoint: String,
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum MetricsTarget {
+    /// The `s2n-quic-dc` backend — the operator's `s2n-quic-dc-metrics` emitter (git dep `camshaft/s2n-quic`,
+    /// branch `main`). Emits the metrics stream to a collector reached over the DC path at `endpoint`
+    /// (`host:port`).
+    #[serde(rename = "s2n-quic-dc")]
+    S2nQuicDc {
+        /// The collector address this target emits to (`host:port`).
+        endpoint: String,
+    },
+}
+
+impl MetricsTarget {
+    /// The backend kind token (matches the TOML `kind = "…"` tag) — for diagnostics + fan-out logging.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            MetricsTarget::S2nQuicDc { .. } => "s2n-quic-dc",
+        }
+    }
 }
 
 /// The admin control interface config — the local Unix-domain socket an admin communicates with the
@@ -264,17 +281,17 @@ impl DaemonConfig {
                         .into(),
                 ));
             }
+            // Per-kind semantic validation: each variant checks the fields IT needs (serde already rejected a
+            // missing/unknown field or a bad `kind`; this catches present-but-blank values).
             for (i, t) in self.observability.targets.iter().enumerate() {
-                if t.kind.trim().is_empty() {
-                    return Err(ConfigError(format!(
-                        "[observability] target {i} needs a non-empty kind"
-                    )));
-                }
-                if t.endpoint.trim().is_empty() {
-                    return Err(ConfigError(format!(
-                        "[observability] target {i} ({}) needs a non-empty endpoint",
-                        t.kind
-                    )));
+                match t {
+                    MetricsTarget::S2nQuicDc { endpoint } if endpoint.trim().is_empty() => {
+                        return Err(ConfigError(format!(
+                            "[observability] target {i} ({}) needs a non-empty endpoint",
+                            t.kind()
+                        )));
+                    }
+                    _ => {}
                 }
             }
         }
@@ -352,8 +369,13 @@ mod tests {
         );
         assert!(cfg.observability.enabled);
         assert_eq!(cfg.observability.targets.len(), 1);
-        assert_eq!(cfg.observability.targets[0].kind, "s2n-quic-dc");
-        assert_eq!(cfg.observability.targets[0].endpoint, "127.0.0.1:9000");
+        assert_eq!(
+            cfg.observability.targets[0],
+            MetricsTarget::S2nQuicDc {
+                endpoint: "127.0.0.1:9000".into()
+            }
+        );
+        assert_eq!(cfg.observability.targets[0].kind(), "s2n-quic-dc");
         assert_eq!(cfg.retries.max_attempts, 5);
     }
 
@@ -416,7 +438,12 @@ mod tests {
         )
         .expect("multi-target observability parses");
         assert_eq!(cfg.observability.targets.len(), 2);
-        assert_eq!(cfg.observability.targets[1].endpoint, "10.0.0.2:9000");
+        assert_eq!(
+            cfg.observability.targets[1],
+            MetricsTarget::S2nQuicDc {
+                endpoint: "10.0.0.2:9000".into()
+            }
+        );
     }
 
     #[test]
@@ -437,8 +464,9 @@ mod tests {
 
     #[test]
     fn observability_target_omitted_endpoint_is_rejected() {
-        // A DIFFERENT path from the empty case: `endpoint: String` is required, so omitting the field is a
-        // serde/TOML missing-field deser error — caught before the trim-check ever runs.
+        // A DIFFERENT path from the empty case: the `s2n-quic-dc` variant's `endpoint` is required, so
+        // omitting the field is a serde/TOML missing-field deser error — caught before the trim-check ever
+        // runs. (This is a per-KIND typed field now, not a generic column — the whole point of the refine.)
         let err = DaemonConfig::from_toml_str(
             r#"
             [observability]
@@ -449,6 +477,44 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.0.contains("endpoint"), "{err}");
+    }
+
+    #[test]
+    fn observability_target_unknown_kind_is_rejected() {
+        // Per-kind TYPED union (operator directive): an unrecognized `kind` is a loud deser error, not a
+        // silently-accepted generic string. This is what the {kind, endpoint}→tagged-enum refine buys.
+        let err = DaemonConfig::from_toml_str(
+            r#"
+            [observability]
+            enabled = true
+            [[observability.target]]
+            kind = "not-a-real-backend"
+            endpoint = "127.0.0.1:9000"
+            "#,
+        )
+        .unwrap_err();
+        // serde names the offending variant tag in an "unknown variant" error.
+        assert!(err.0.contains("could not parse daemon config"), "{err}");
+        assert!(err.0.contains("not-a-real-backend"), "{err}");
+    }
+
+    #[test]
+    fn observability_target_foreign_field_is_rejected() {
+        // A field that isn't part of the selected kind's typed config is rejected (deny_unknown_fields on the
+        // variant) — a generic-string schema would have silently ignored it; the typed union catches it.
+        let err = DaemonConfig::from_toml_str(
+            r#"
+            [observability]
+            enabled = true
+            [[observability.target]]
+            kind = "s2n-quic-dc"
+            endpoint = "127.0.0.1:9000"
+            not_a_field = "oops"
+            "#,
+        )
+        .unwrap_err();
+        assert!(err.0.contains("could not parse daemon config"), "{err}");
+        assert!(err.0.contains("not_a_field"), "{err}");
     }
 
     #[test]
