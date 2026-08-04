@@ -60,16 +60,36 @@ pub enum LogConfig {
 }
 
 /// Observability config — the operator's s2n-quic-dc-metrics integration. Disabled by default; when
-/// enabled, `endpoint` is where metrics are emitted (the wiring lands as the observability daemon slice).
+/// enabled, metrics FAN OUT to one-or-more configured `targets` (operator requirement: "define more than
+/// one target backend"). Each `[[observability.target]]` names a backend `kind` + its `endpoint`, so the
+/// daemon can emit to several sinks (multiple s2n-quic-dc-metrics collectors, or different backend types).
+///
+/// The `kind` string is the extension point — `s2n-quic-dc` is the first backend; the s2n-quic emitter
+/// itself lands behind a `metrics` cargo feature (OFF by default, hermetic-gate discipline — keeps the
+/// QUIC/network dep tree out of the default build), a following slice pending the operator's fork branch/rev.
+/// This CONFIG is always parseable (staged like `[log]`/`[blob]`: config first, emitter follows).
 #[derive(Debug, Clone, Deserialize, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct ObservabilityConfig {
-    /// Emit metrics via s2n-quic-dc-metrics. Default off.
+    /// Emit metrics. Default off. When true, `targets` must be non-empty (validated below).
     #[serde(default)]
     pub enabled: bool,
-    /// Where to emit metrics to (a collector address); required-ish when `enabled` — validated below.
-    #[serde(default)]
-    pub endpoint: Option<String>,
+    /// The metrics target backends to FAN OUT to — a LIST (not a single endpoint) so metrics can go to
+    /// several sinks (the operator's config-MULTIPLE requirement). TOML: `[[observability.target]]` tables.
+    #[serde(default, rename = "target")]
+    pub targets: Vec<MetricsTarget>,
+}
+
+/// One metrics target backend — where a copy of the metrics stream is emitted. `kind` selects the backend
+/// (e.g. `s2n-quic-dc`, the first supported); `endpoint` is that backend's collector address. Additional
+/// per-kind fields can extend this later without reshaping the array.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct MetricsTarget {
+    /// The backend kind (e.g. `"s2n-quic-dc"`). The extension point — new backends add a kind.
+    pub kind: String,
+    /// The collector address this target emits to.
+    pub endpoint: String,
 }
 
 /// The admin control interface config — the local Unix-domain socket an admin communicates with the
@@ -234,10 +254,25 @@ impl DaemonConfig {
             }
             _ => {}
         }
-        if self.observability.enabled && self.observability.endpoint.is_none() {
-            return Err(ConfigError(
-                "[observability] enabled=true needs an endpoint".into(),
-            ));
+        if self.observability.enabled {
+            if self.observability.targets.is_empty() {
+                return Err(ConfigError(
+                    "[observability] enabled=true needs at least one [[observability.target]]".into(),
+                ));
+            }
+            for (i, t) in self.observability.targets.iter().enumerate() {
+                if t.kind.trim().is_empty() {
+                    return Err(ConfigError(format!(
+                        "[observability] target {i} needs a non-empty kind"
+                    )));
+                }
+                if t.endpoint.trim().is_empty() {
+                    return Err(ConfigError(format!(
+                        "[observability] target {i} ({}) needs a non-empty endpoint",
+                        t.kind
+                    )));
+                }
+            }
         }
         match &self.admin {
             AdminConfig {
@@ -294,6 +329,8 @@ mod tests {
 
             [observability]
             enabled = true
+            [[observability.target]]
+            kind = "s2n-quic-dc"
             endpoint = "127.0.0.1:9000"
 
             [retries]
@@ -310,10 +347,9 @@ mod tests {
             }
         );
         assert!(cfg.observability.enabled);
-        assert_eq!(
-            cfg.observability.endpoint.as_deref(),
-            Some("127.0.0.1:9000")
-        );
+        assert_eq!(cfg.observability.targets.len(), 1);
+        assert_eq!(cfg.observability.targets[0].kind, "s2n-quic-dc");
+        assert_eq!(cfg.observability.targets[0].endpoint, "127.0.0.1:9000");
         assert_eq!(cfg.retries.max_attempts, 5);
     }
 
@@ -346,11 +382,48 @@ mod tests {
     }
 
     #[test]
-    fn observability_enabled_without_endpoint_is_rejected() {
+    fn observability_enabled_without_a_target_is_rejected() {
+        // enabled=true but no [[observability.target]] → error (an enabled metrics layer with nowhere to
+        // emit is a misconfig, not a silent no-op).
         let err = DaemonConfig::from_toml_str(
             r#"
             [observability]
             enabled = true
+            "#,
+        )
+        .unwrap_err();
+        assert!(err.0.contains("at least one"), "{err}");
+    }
+
+    #[test]
+    fn observability_fans_out_to_multiple_targets() {
+        // The operator's config-MULTIPLE requirement: define MORE THAN ONE target backend, all parsed.
+        let cfg = DaemonConfig::from_toml_str(
+            r#"
+            [observability]
+            enabled = true
+            [[observability.target]]
+            kind = "s2n-quic-dc"
+            endpoint = "10.0.0.1:9000"
+            [[observability.target]]
+            kind = "s2n-quic-dc"
+            endpoint = "10.0.0.2:9000"
+            "#,
+        )
+        .expect("multi-target observability parses");
+        assert_eq!(cfg.observability.targets.len(), 2);
+        assert_eq!(cfg.observability.targets[1].endpoint, "10.0.0.2:9000");
+    }
+
+    #[test]
+    fn observability_target_missing_endpoint_is_rejected() {
+        let err = DaemonConfig::from_toml_str(
+            r#"
+            [observability]
+            enabled = true
+            [[observability.target]]
+            kind = "s2n-quic-dc"
+            endpoint = ""
             "#,
         )
         .unwrap_err();
