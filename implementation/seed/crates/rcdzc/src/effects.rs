@@ -4602,7 +4602,12 @@ fn thread_bounded(
                     }
                     // A multi-use param with a performing arg. If the arg performs a FOREIGN op (none of it
                     // is THIS handler's discharged op that would need threading), LET-LIFT it; else decline.
-                    if arg_performs_only_foreign(db, a, ctx) {
+                    // "Performs only foreign" = reaches a perform AND reaches no discharged op. We already
+                    // established the first half via the `continue` guard above (`arg_reaches_any_perform`
+                    // TRUE), so test only the discharged-op half here — a single traversal per candidate
+                    // rather than re-walking the subtree for the reaches-any-perform conjunct (github-liaison/
+                    // Copilot #2120 review).
+                    if !subtree_reaches_discharged_op(db, a, ctx) {
                         to_lift.push(i);
                     } else {
                         return None;
@@ -4610,6 +4615,13 @@ fn thread_bounded(
                 }
                 for i in to_lift {
                     let a = rewritten_args[i];
+                    // `#cv{StructId}` is a globally-unique fresh binder: the `#`-prefix blocks source forgery
+                    // (unspellable), and the StructId is the arena index of the arg node `a` — a MONOTONIC,
+                    // never-reused counter (`push_atom`/`push_list` = `StructId(structure.len())`). So this
+                    // name cannot collide with a user binder NOR with any other `#cv{…}` lift site (the Site-5
+                    // performing-condition hoist keys on its own distinct `if`/`match` node id; two distinct
+                    // nodes always have distinct ids). No centralized gensym needed — the arena id space
+                    // already guarantees uniqueness (github-liaison/Copilot #2120 review: confirmed unique).
                     let cv_name = format!("#cv{}", a.0);
                     let cv_binder = db.push_atom(Leaf::Name(cv_name.clone()));
                     let cv_ref = db.push_atom(Leaf::Name(cv_name));
@@ -7828,21 +7840,21 @@ fn arg_reaches_any_perform(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> boo
     reaches_any_perform(db, node)
 }
 
-/// Whether the argument subtree at `node` reaches a perform but performs NONE of THIS handler's discharged
-/// ops — i.e. every perform in it is FOREIGN (an outer handler's / host op that the enclosing fold handles).
-/// The op-arg let-lift gate: such an arg can be bound to a `#cv` let and left intact (the perform runs once
-/// as the let-init, the enclosing fold discharges it); an arg that performs THIS handler's OWN op needs
-/// threading (not a plain let-bind), so it is NOT lifted (returns false → the caller declines). CONSERVATIVE:
-/// requires it DOES reach a perform (else there's nothing to lift) AND reaches no discharged-op perform.
-fn arg_performs_only_foreign(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> bool {
-    reaches_any_perform(db, node) && !subtree_reaches_discharged_op(db, node, ctx)
-}
-
 /// Whether `node` reaches a perform of one of THIS ctx's DISCHARGED ops (in `ctx.arms`), following non-
 /// recursive callee bodies (bounded). Narrower than `arg_reaches_any_perform` (which counts foreign performs
 /// too) — used by the op-arg let-lift to exclude an arg that performs the handler's own op.
 fn subtree_reaches_discharged_op(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> bool {
     fn walk(db: &mut Db, node: StructId, ctx: &HandlerCtx, depth: u32) -> bool {
+        // Depth bound 16, DELIBERATELY STRICTER than `reaches_any_perform`'s 32 (github-liaison/Copilot #2120
+        // review asked why they differ). The two walks over-report in OPPOSITE directions, so the bound tunes
+        // each toward its own safe side: this walk's `true` means "may perform a DISCHARGED op" → the op-arg
+        // let-lift DECLINES (does not lift), which is always safe (a missed lift is a clean todo, never a
+        // miscompile), so a lower bound = decline-sooner = safe. `reaches_any_perform`'s `true` means "may
+        // perform ANY effect" → it gates the DUPLICATION guard (decline if a multi-use arg performs), also
+        // decline-on-true, but it must be permissive enough to actually SEE a foreign perform worth lifting,
+        // so its bound is higher. A shared const would force one walk off its safe side; the mismatch is
+        // intentional (each errs toward decline within its own role). Both bounds far exceed any real arg
+        // nesting, so neither triggers in practice.
         if depth > 16 {
             return true; // too deep — assume it may (safe over-report → decline, not mis-lift)
         }
