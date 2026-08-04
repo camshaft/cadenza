@@ -19,7 +19,7 @@
 //! other sessions while it awaits — SAME loop, no reshape, no `Send` (still one task). The in-place
 //! `host.deliver(..).await` here is exactly that seam.
 
-use crate::admin::{AdminCommand, AdminResponse, SessionFactory};
+use crate::admin::{AdminAuthorizer, AdminCommand, AdminResponse, AllowList, SessionFactory};
 use crate::host::{AgentHost, SessionId};
 use cdz_kernel::event::EventBody;
 use cdz_kernel::hash::Hash;
@@ -49,6 +49,13 @@ pub type Inbox = mpsc::UnboundedSender<Inbound>;
 /// `Send` half) awaits it and writes the encoded response back to the client.
 pub struct AdminRequest {
     pub command: AdminCommand,
+    /// The admin identity this command is submitted under — the PRINCIPAL the host's [`AdminAuthorizer`]
+    /// decides on. The transport asserts it: over the v0 local `0o600` socket every caller is the daemon's
+    /// owner, so the socket sets a fixed local-admin principal (the perms are the real identity gate; the
+    /// authorizer scopes WHICH actions that principal may take). `None` = the transport asserted no
+    /// identity → the host treats it as an anonymous principal (`""`), which a deny-by-default authorizer
+    /// refuses unless explicitly granted.
+    pub principal: Option<String>,
     /// The loop sends the response here. If the caller dropped the receiver (client hung up), the send
     /// fails silently — the command still applied; only the reply is discarded.
     pub reply: oneshot::Sender<AdminResponse>,
@@ -77,24 +84,44 @@ pub struct AsyncAgentHost {
     /// plane that only lists/stops/inspects needs no factory). Held here so the loop can pass it to
     /// `apply_admin`; boxed + owned because building a session is the factory's job, not the command's.
     factory: Option<Box<dyn SessionFactory>>,
+    /// The admin authorizer every admin command is gated through (deny-by-default). Defaults to
+    /// [`AllowList::deny_all`] — a host that doesn't configure one refuses ALL admin commands (fail-closed:
+    /// an un-configured control plane grants nothing). The deployed daemon installs a real authorizer via
+    /// [`with_admin_authz`](Self::with_admin_authz) (the local-admin allowlist, or later a Cedar policy).
+    admin_authz: Box<dyn AdminAuthorizer>,
 }
 
 impl AsyncAgentHost {
     /// Build over an existing (already-populated) [`AgentHost`] registry, with NO session factory — an
     /// admin `install-session` then returns a clean error (suitable for a host that only lists/stops/
-    /// inspects). Use [`with_factory`](Self::with_factory) to enable installs.
+    /// inspects). Use [`with_factory`](Self::with_factory) to enable installs. The admin authorizer defaults
+    /// to [`AllowList::deny_all`] (fail-closed); set a real one with [`with_admin_authz`](Self::with_admin_authz).
     pub fn new(host: AgentHost) -> Self {
-        Self::build(host, None)
+        Self::build(host, None, Box::new(AllowList::deny_all()))
     }
 
     /// Build over an existing registry WITH a session factory, so admin `install-session` commands can
     /// build + register sessions at runtime (the deployed daemon's control plane). The factory is the
-    /// reducer-load seam (blob-get → component → reducer, assembled host-side).
+    /// reducer-load seam (blob-get → component → reducer, assembled host-side). Admin authorizer defaults to
+    /// deny-all (fail-closed); set one with [`with_admin_authz`](Self::with_admin_authz).
     pub fn with_factory(host: AgentHost, factory: Box<dyn SessionFactory>) -> Self {
-        Self::build(host, Some(factory))
+        Self::build(host, Some(factory), Box::new(AllowList::deny_all()))
     }
 
-    fn build(host: AgentHost, factory: Option<Box<dyn SessionFactory>>) -> Self {
+    /// Install the admin authorizer that gates every admin command (deny-by-default). Builder-style — the
+    /// deployed daemon calls e.g. `AsyncAgentHost::with_factory(..).with_admin_authz(Box::new(AllowList::allow_all_for_local_admin()))`
+    /// (the trusted-local-admin preset behind the `0o600` socket) or a Cedar-policy-component authorizer.
+    /// Without this, the host denies all admin commands (an un-configured control plane grants nothing).
+    pub fn with_admin_authz(mut self, authz: Box<dyn AdminAuthorizer>) -> Self {
+        self.admin_authz = authz;
+        self
+    }
+
+    fn build(
+        host: AgentHost,
+        factory: Option<Box<dyn SessionFactory>>,
+        admin_authz: Box<dyn AdminAuthorizer>,
+    ) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
         let (admin_tx, admin_rx) = mpsc::unbounded_channel();
         AsyncAgentHost {
@@ -104,6 +131,7 @@ impl AsyncAgentHost {
             admin_rx,
             admin_tx,
             factory,
+            admin_authz,
         }
     }
 
@@ -163,6 +191,7 @@ impl AsyncAgentHost {
             mut admin_rx,
             admin_tx,
             mut factory,
+            admin_authz,
         } = self;
 
         // Drop OUR retained inbox sender so the channel closes once every EXTERNAL producer drops its clone.
@@ -270,7 +299,14 @@ impl AsyncAgentHost {
             // released when it returns — an inline `.await` would let the async_trait future's captured
             // lifetime inflate the borrow to the whole function, colliding with `factory`'s drop.
             if let Some(req) = pending_admin.take() {
-                handle_admin(&mut host, factory.as_deref_mut(), req, now_ms()).await;
+                handle_admin(
+                    &mut host,
+                    factory.as_deref_mut(),
+                    &*admin_authz,
+                    req,
+                    now_ms(),
+                )
+                .await;
             }
         }
     }
@@ -301,17 +337,26 @@ impl AsyncAgentHost {
     }
 }
 
-/// Apply one admin request against the host + factory and reply on its oneshot — a free `async fn` (not a
-/// method) so the `factory` borrow is confined to this call and released on return. Inlining the `.await`
-/// in [`AsyncAgentHost::run`]'s loop would let the `async_trait` build future's captured lifetime inflate
-/// the borrow to the whole function, colliding with `factory`'s end-of-scope drop.
+/// AUTHORIZE then apply one admin request, replying on its oneshot — a free `async fn` (not a method) so
+/// the `factory` borrow is confined to this call and released on return. Inlining the `.await` in
+/// [`AsyncAgentHost::run`]'s loop would let the `async_trait` build future's captured lifetime inflate the
+/// borrow to the whole function, colliding with `factory`'s end-of-scope drop.
+///
+/// The command is gated through `admin_authz` (deny-by-default) under the request's asserted principal
+/// (`None` = anonymous `""`, which a deny-by-default authorizer refuses) BEFORE it touches the registry —
+/// [`AgentHost::apply_admin_authorized`] does the authorize-then-apply, so a denied command never mutates
+/// state and comes back as an error.
 async fn handle_admin(
     host: &mut AgentHost,
     factory: Option<&mut (dyn SessionFactory + '_)>,
+    admin_authz: &(dyn AdminAuthorizer + '_),
     req: AdminRequest,
     now_ms: u64,
 ) {
-    let resp = host.apply_admin(req.command, factory, Some(now_ms)).await;
+    let principal = req.principal.as_deref().unwrap_or("");
+    let resp = host
+        .apply_admin_authorized(req.command, principal, admin_authz, factory, Some(now_ms))
+        .await;
     // The caller may have hung up (dropped the receiver); the command still applied, so a failed
     // reply-send is fine to ignore.
     let _ = req.reply.send(resp);
@@ -583,11 +628,23 @@ mod tests {
     }
 
     /// Submit one admin command through the channel and await the reply — the request/reply round-trip a
-    /// socket listener performs per frame.
+    /// socket listener performs per frame. Asserts the `"admin"` principal (the tests grant it via
+    /// `with_admin_authz`).
     async fn admin_call(ch: &AdminChannel, command: AdminCommand) -> AdminResponse {
         let (reply, rx) = tokio::sync::oneshot::channel();
-        ch.send(AdminRequest { command, reply }).unwrap();
+        ch.send(AdminRequest {
+            command,
+            principal: Some("admin".to_string()),
+            reply,
+        })
+        .unwrap();
         rx.await.expect("the loop replied")
+    }
+
+    /// The test authorizer: grants the `"admin"` principal every action (the tests exercise the loop wiring,
+    /// not the authz decision — that's unit-tested in admin.rs). A host built without this denies all.
+    fn test_authz() -> Box<dyn AdminAuthorizer> {
+        Box::new(AllowList::allow_all_for_local_admin())
     }
 
     #[tokio::test]
@@ -597,7 +654,8 @@ mod tests {
         // list-sessions reflects them. `AsyncAgentHost` is !Send (owns the factory + registry), so we drive
         // the loop + the client CONCURRENTLY on ONE task via `join!` (no spawn / no Send) — exactly the
         // single-threaded shape the daemon runs.
-        let async_host = AsyncAgentHost::with_factory(AgentHost::new(), Box::new(StubFactory));
+        let async_host = AsyncAgentHost::with_factory(AgentHost::new(), Box::new(StubFactory))
+            .with_admin_authz(test_authz());
         let admin = async_host.admin_channel();
         let (_sd_tx, sd_rx) = tokio::sync::oneshot::channel();
 
@@ -652,7 +710,7 @@ mod tests {
     async fn admin_install_without_a_factory_errors_but_the_loop_keeps_serving() {
         // A host built with `new` (no factory): an install-session is a clean error over the channel, and
         // the loop stays alive to serve a following list (a bad admin command never wedges the daemon).
-        let async_host = AsyncAgentHost::new(AgentHost::new());
+        let async_host = AsyncAgentHost::new(AgentHost::new()).with_admin_authz(test_authz());
         let admin = async_host.admin_channel();
         let (_sd_tx, sd_rx) = tokio::sync::oneshot::channel();
 
@@ -678,7 +736,8 @@ mod tests {
     async fn shutdown_ends_the_loop_even_with_a_live_admin_channel() {
         // A live admin channel (like a live inbox) must not keep the loop from shutting down — firing
         // shutdown ends run() promptly even though an admin sender is still held.
-        let async_host = AsyncAgentHost::with_factory(AgentHost::new(), Box::new(StubFactory));
+        let async_host = AsyncAgentHost::with_factory(AgentHost::new(), Box::new(StubFactory))
+            .with_admin_authz(test_authz());
         let _admin = async_host.admin_channel(); // held alive → admin channel stays open
         let (sd_tx, sd_rx) = tokio::sync::oneshot::channel();
         sd_tx.send(()).unwrap();
@@ -687,5 +746,71 @@ mod tests {
             .run(sd_rx, || 0)
             .await
             .expect("shutdown returns Ok");
+    }
+
+    #[tokio::test]
+    async fn the_loop_enforces_admin_authz_deny_by_default() {
+        // The wiring this slice adds: the loop gates every admin command through its authorizer. A host
+        // built WITHOUT a configured authorizer (default deny-all) refuses commands — even a list — and
+        // NEVER touches the registry. Proves the loop calls apply_admin_authorized, not the bare applier.
+        let async_host = AsyncAgentHost::with_factory(AgentHost::new(), Box::new(StubFactory));
+        // ^ no .with_admin_authz → deny-all default
+        let admin = async_host.admin_channel();
+        let (_sd_tx, sd_rx) = tokio::sync::oneshot::channel();
+
+        let client = async move {
+            // An install is denied (deny-all), registry untouched.
+            let resp = admin_call(&admin, install("blocked")).await;
+            assert!(
+                matches!(&resp, AdminResponse::Error { message } if message.contains("denied")),
+                "deny-all host refuses the install: {resp:?}"
+            );
+            // Even a read (list) is denied by the deny-all default.
+            let listed = admin_call(&admin, AdminCommand::ListSessions).await;
+            assert!(
+                matches!(&listed, AdminResponse::Error { message } if message.contains("denied")),
+                "deny-all refuses list too: {listed:?}"
+            );
+            drop(admin);
+        };
+
+        let (loop_result, ()) = tokio::join!(async_host.run(sd_rx, || 0), client);
+        let host = loop_result.expect("clean shutdown");
+        assert!(host.is_empty(), "a denied install left the registry empty");
+    }
+
+    #[tokio::test]
+    async fn an_anonymous_principal_is_denied_even_when_the_named_admin_is_allowed() {
+        // Principal plumbing: the authorizer grants "admin" but a request with NO principal (None → "") is
+        // anonymous, so a deny-by-default AllowList (which only granted "admin") refuses it.
+        let authz: Box<dyn AdminAuthorizer> =
+            Box::new(AllowList::deny_all().allow("admin", "admin/list-sessions"));
+        let async_host = AsyncAgentHost::new(AgentHost::new()).with_admin_authz(authz);
+        let admin = async_host.admin_channel();
+        let (_sd_tx, sd_rx) = tokio::sync::oneshot::channel();
+
+        let client = async move {
+            // Anonymous (principal None) → denied.
+            let (reply, rx) = tokio::sync::oneshot::channel();
+            admin
+                .send(AdminRequest {
+                    command: AdminCommand::ListSessions,
+                    principal: None,
+                    reply,
+                })
+                .unwrap();
+            let anon = rx.await.unwrap();
+            assert!(
+                matches!(&anon, AdminResponse::Error { message } if message.contains("denied")),
+                "anonymous principal is denied: {anon:?}"
+            );
+            // The named "admin" principal IS allowed for list.
+            let named = admin_call(&admin, AdminCommand::ListSessions).await;
+            assert_eq!(named, AdminResponse::Sessions { ids: vec![] });
+            drop(admin);
+        };
+
+        let (loop_result, ()) = tokio::join!(async_host.run(sd_rx, || 0), client);
+        loop_result.expect("clean shutdown");
     }
 }

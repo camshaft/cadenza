@@ -207,9 +207,18 @@ async fn serve_connection(mut stream: UnixStream, admin: &AdminChannel) -> io::R
     }
 }
 
+/// The principal the local Unix-socket transport asserts for every command. Over the `0o600` owner-only
+/// socket, every connecting client IS the daemon's owner — the file perms are the real identity gate — so
+/// the transport asserts one fixed local-admin identity and the host's [`AdminAuthorizer`](crate::admin::AdminAuthorizer)
+/// scopes WHICH actions it may take. (A remote transport, if ever added, would carry a real authenticated
+/// principal per connection instead.) Pair this with an authorizer that grants this principal, e.g.
+/// `AllowList::deny_all().allow_any_principal(...)` or `AllowList::allow_all_for_local_admin()`.
+pub const LOCAL_ADMIN_PRINCIPAL: &str = "local-admin";
+
 /// Forward one decoded command to the host loop and await its reply. Converts the wire command to the
 /// domain [`crate::admin::AdminCommand`] (returning a wire error response if the frame's hash is malformed),
-/// sends it on the [`AdminChannel`] with a fresh reply oneshot, and maps the domain response back to wire.
+/// sends it on the [`AdminChannel`] with a fresh reply oneshot (asserting the [`LOCAL_ADMIN_PRINCIPAL`] —
+/// the socket's owner-gate identity), and maps the domain response back to wire.
 async fn dispatch(cmd_wire: AdminCommandWire, admin: &AdminChannel) -> AdminResponseWire {
     let command = match cmd_wire.to_domain() {
         Ok(c) => c,
@@ -222,7 +231,12 @@ async fn dispatch(cmd_wire: AdminCommandWire, admin: &AdminChannel) -> AdminResp
         }
     };
     let (reply, rx) = tokio::sync::oneshot::channel();
-    if admin.send(AdminRequest { command, reply }).is_err() {
+    let request = AdminRequest {
+        command,
+        principal: Some(LOCAL_ADMIN_PRINCIPAL.to_string()),
+        reply,
+    };
+    if admin.send(request).is_err() {
         // The host loop is gone (shutting down) — report it rather than hang.
         return AdminResponseWire::Error {
             message: "daemon host loop is not accepting admin commands".into(),
@@ -240,7 +254,7 @@ async fn dispatch(cmd_wire: AdminCommandWire, admin: &AdminChannel) -> AdminResp
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::admin::{AdminCommand, InstallSpec, SessionFactory};
+    use crate::admin::{AdminCommand, AllowList, InstallSpec, SessionFactory};
     use crate::async_host::AsyncAgentHost;
     use crate::host::{AgentHost, HostedSession, SessionId};
     use cdz_kernel::authz::Authorizer;
@@ -310,7 +324,8 @@ mod tests {
         }
 
         // The host loop (with a factory so installs work) + its admin channel.
-        let async_host = AsyncAgentHost::with_factory(AgentHost::new(), Box::new(StubFactory));
+        let async_host = AsyncAgentHost::with_factory(AgentHost::new(), Box::new(StubFactory))
+            .with_admin_authz(Box::new(AllowList::allow_all_for_local_admin()));
         let admin = async_host.admin_channel();
         let (host_sd_tx, host_sd_rx) = tokio::sync::oneshot::channel();
         let (sock_sd_tx, sock_sd_rx) = tokio::sync::oneshot::channel();
@@ -357,7 +372,8 @@ mod tests {
     async fn a_garbage_frame_gets_an_error_response_not_a_crash() {
         let path = socket_path("garbage");
         let sock = AdminSocket::bind(&path).expect("bind");
-        let async_host = AsyncAgentHost::with_factory(AgentHost::new(), Box::new(StubFactory));
+        let async_host = AsyncAgentHost::with_factory(AgentHost::new(), Box::new(StubFactory))
+            .with_admin_authz(Box::new(AllowList::allow_all_for_local_admin()));
         let admin = async_host.admin_channel();
         let (host_sd_tx, host_sd_rx) = tokio::sync::oneshot::channel();
         let (sock_sd_tx, sock_sd_rx) = tokio::sync::oneshot::channel();
@@ -455,7 +471,8 @@ mod tests {
         let path = socket_path("stalled-dos");
         let _ = std::fs::remove_file(&path);
         let sock = AdminSocket::bind(&path).expect("bind");
-        let async_host = AsyncAgentHost::with_factory(AgentHost::new(), Box::new(StubFactory));
+        let async_host = AsyncAgentHost::with_factory(AgentHost::new(), Box::new(StubFactory))
+            .with_admin_authz(Box::new(AllowList::allow_all_for_local_admin()));
         let admin = async_host.admin_channel();
         let (host_sd_tx, host_sd_rx) = tokio::sync::oneshot::channel();
         let (sock_sd_tx, sock_sd_rx) = tokio::sync::oneshot::channel();
