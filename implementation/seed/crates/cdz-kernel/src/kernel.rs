@@ -1255,7 +1255,7 @@ impl Session {
     }
 
     /// Boot a session from a persisted log ON DISK — the file convenience over [`Session::recover_from`].
-    /// Reads the durable log via [`crate::log_store::LogStore::recover`], then hands the [`Recovered`] to
+    /// Reads the durable log via [`crate::log_store::LogStore::recover`], then hands the [`crate::log_store::Recovered`] to
     /// the backend-agnostic core. Callers on a non-file backend read their own `Recovered` and call
     /// [`Session::recover_from`] directly, so the kernel core carries no file assumption.
     ///

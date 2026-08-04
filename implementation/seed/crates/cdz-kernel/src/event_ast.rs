@@ -77,7 +77,7 @@ pub fn decode(bytes: &[u8]) -> Result<Event, EventAstError> {
 ///     `(requestable …)` split + future fields append with NO wire break (open sums; a tolerant guest
 ///     matches the head and ignores/denies an unknown one).
 ///   `<scope>` = `(none)` | `(some <predicate>)`; `<predicate>` = `(any)` | `(exact <str>)` |
-///     `(one-of <str>…)` | `(host-in <str>…)` | `(prefix <str>)` — mirrors [`ResourcePredicate`].
+///     `(one-of <str>…)` | `(host-in <str>…)` | `(prefix <str>)` — mirrors [`crate::effect::ResourcePredicate`].
 /// Entries are emitted in the manifest's order (the projection uses `effect_ct::ALL` order) so the bytes
 /// are stable/replay-safe. The leading `<version:int>` INSIDE the payload (=1) lets a decoder range-check
 /// without re-reading the envelope's `content_type.version`.

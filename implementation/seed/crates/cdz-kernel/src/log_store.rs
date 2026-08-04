@@ -139,7 +139,7 @@ impl LogStore {
         self.file.flush()
     }
 
-    /// Truncate the log file to `len` bytes — the heal for a torn/corrupt tail (see [`Recovered`]).
+    /// Truncate the log file to `len` bytes — the heal for a torn/corrupt tail (see [`crate::log_store::Recovered`]).
     /// After a crash-mid-append, the file carries trailing garbage past the last whole frame; appending
     /// over it would land a good frame AFTER the garbage, and the next recovery would stop at the stale
     /// bad frame and silently drop everything appended since. A driver that recovers with
