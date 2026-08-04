@@ -273,19 +273,66 @@ impl HostedSession {
 #[derive(Default)]
 pub struct AgentHost {
     sessions: HashMap<SessionId, HostedSession>,
+    /// The §4c v0.3 canonical shared name store, if this host is share-backed (see
+    /// [`AgentHost::with_canonical_store`]). `None` = share-less host. Held BY VALUE: each session gets a
+    /// replay-copy at spawn and folds its appends back after each turn — no shared handle. (Type:
+    /// [`cdz_kernel::name_store::NameStore`].)
+    canonical: Option<cdz_kernel::name_store::NameStore>,
+}
+
+/// A by-value copy of a canonical [`NameStore`](cdz_kernel::name_store::NameStore) for a freshly-spawned session — replays the canonical
+/// store's full set-event stream into a fresh store (§4c v0.3 spawn step). `to_set_entries` +
+/// `replay_set_entries` are total over a valid store (single-writer-per-name → no `Unscoped` name in the
+/// stream), so this can't fail in practice; a defensive `expect` documents that invariant rather than
+/// threading a Result through spawn (which the caller can't meaningfully recover from).
+fn replay_of(canonical: &cdz_kernel::name_store::NameStore) -> cdz_kernel::name_store::NameStore {
+    let entries = canonical.to_set_entries();
+    cdz_kernel::name_store::NameStore::replay_set_entries(
+        entries.iter().map(|(n, h)| (n.as_str(), *h)),
+    )
+    .expect("a canonical store holds only scoped names, so its replay is total")
 }
 
 impl AgentHost {
     pub fn new() -> Self {
         AgentHost {
             sessions: HashMap::new(),
+            canonical: None,
+        }
+    }
+
+    /// Enable the §4c v0.3 SHARED name store — a single host-owned canonical [`NameStore`](cdz_kernel::name_store::NameStore) that gives LIVE
+    /// cross-session visibility of published pointers, replacing the per-hand-off export/replay bridge.
+    /// Opt-in: a host built with [`new`](Self::new) stays share-less and every session keeps whatever store
+    /// (or none) it was spawned with.
+    ///
+    /// Lifecycle (single-writer-per-name, conflict-free): the host holds ONE canonical store; on
+    /// [`spawn`](Self::spawn) a session gets a by-VALUE copy of it (a replay of `canonical.to_set_entries()`),
+    /// so it's born seeing everyone's published pointers; after each [`deliver`](Self::deliver) turn the host
+    /// folds that session's new writes back with `canonical.merge_appends_from(session.name_store())`. No
+    /// shared handle / interior mutability — by-value copies + a reconcile, composing with the per-session
+    /// [`HostedSession::with_name_store`] seam.
+    pub fn with_canonical_store(canonical: cdz_kernel::name_store::NameStore) -> Self {
+        AgentHost {
+            sessions: HashMap::new(),
+            canonical: Some(canonical),
         }
     }
 
     /// Register a new running session under `id`. Returns the id back for convenience. If `id` already
     /// exists it is REPLACED (the caller chose to restart it) — the old session is dropped; a caller that
     /// wants collision-detection checks [`AgentHost::contains`] first.
+    ///
+    /// When the host has a canonical shared store (see [`with_canonical_store`](Self::with_canonical_store)),
+    /// the session is born with a by-value replay of it — so a freshly-spawned agent already sees every
+    /// pointer other sessions have published (and the host folds this session's new writes back after each
+    /// turn). A session spawned with its OWN store keeps it (the canonical replay is only attached when the
+    /// host is canonical-backed).
     pub fn spawn(&mut self, id: SessionId, session: HostedSession) -> SessionId {
+        let session = match &self.canonical {
+            Some(canonical) => session.with_name_store(replay_of(canonical)),
+            None => session,
+        };
         self.sessions.insert(id.clone(), session);
         id
     }
@@ -305,10 +352,18 @@ impl AgentHost {
         body: EventBody,
         cause: Option<Hash>,
     ) -> Option<Result<(), KernelError>> {
-        match self.sessions.get_mut(id) {
-            Some(s) => Some(s.deliver(body, cause).await),
-            None => None,
+        let s = self.sessions.get_mut(id)?;
+        let outcome = s.deliver(body, cause).await;
+        // §4c v0.3 merge-back: after the turn, fold this session's new name-store writes into the canonical
+        // shared store so the next-spawned (or next-reconciled) session sees them. Idempotent — a turn that
+        // wrote nothing re-merges as a no-op (the session's log is already a prefix of what it was handed).
+        // Only when the host is canonical-backed AND the session actually has a store attached.
+        if let Some(canonical) = &mut self.canonical {
+            if let Some(session_store) = s.session().name_store() {
+                canonical.merge_appends_from(session_store);
+            }
         }
+        Some(outcome)
     }
 
     /// Read-only access to a hosted session (for a status query / inspection). `None` = unknown id.
