@@ -1042,6 +1042,46 @@
                 (handle A 5 ((a (u) s (do (Count.tick) (resume s s)))) (A.a)))) (export main)))
   (output (: 5 Int64)))
 
+(case "a nested handler arm whose RESUME-VALUE performs the outer effect threads the advance to the continuation"
+  (doc    "The stateful analogue of the interpose-and-forward case above, and the WORKING boundary of the
+           recursive-nested-arm miscompile family (v-effects self-probe): the inner `B` handler's arm resumes
+           with a VALUE that performs the OUTER `A` effect — `(step (u) t (resume (A.tick) t))`. `A.tick` reads
+           the outer state (10) and advances it (→11); the resume VALUE is that 10, so `(B.step)` = 10. The
+           continuation `(A.get)` then reads the ADVANCED 11 → `(+ 10 11)` = 21. Pins that an outer-effect
+           advance made INSIDE a nested handler's resume-value threads correctly to a sibling reading the outer
+           effect after — the shape folds via the inside-out path when the `B.step` caller is DIRECT (not
+           behind a recursive callee). The recursive-caller variant of this shape currently drops the advance
+           (a separate known miscompile, merged_nested_ctx merge-skip); this case + its non-recursive-helper
+           twin below pin the folding boundary.")
+  (input  (do
+            (effect A (op tick (-> Unit Int64)) (op get (-> Unit Int64)))
+            (effect B (op step (-> Unit Int64)))
+            (def (main)
+              (handle A 10 ((tick (u) s (resume s (+ s 1))) (get (u) s (resume s s)))
+                (handle B 0 ((step (u) t (resume (A.tick) t)))
+                  (+ (B.step) (A.get))))) (export main)))
+  (output (: 21 Int64)))
+
+(case "a NON-recursive helper calling a nested op whose resume performs the outer effect folds"
+  (doc    "The non-recursive-helper twin of the resume-value-performs-outer case above (v-effects self-probe).
+           A non-recursive `helper` calls the inner `B.step` (whose arm resumes with `(A.tick)`, performing the
+           outer `A`), and the continuation reads `(A.get)`. Because `helper` is NON-recursive it INLINES, so
+           the outer advance threads correctly: `(helper)` = 10, `A.tick` advanced A to 11, `(A.get)` = 11 →
+           `(+ 10 11)` = 21. Pins the RECURSION boundary of the recursive-nested-arm miscompile: the SAME body
+           behind a RECURSIVE caller drops the advance (merged_nested_ctx skips the merge because the
+           accum-transformed recursive callee reads non-recursive at the merge decision), but a non-recursive
+           caller folds — so the discriminator is specifically the recursive-specialization path, not the
+           nested-arm-outer-perform shape itself.")
+  (input  (do
+            (effect A (op tick (-> Unit Int64)) (op get (-> Unit Int64)))
+            (effect B (op step (-> Unit Int64)))
+            (def (helper) (B.step))
+            (def (main)
+              (handle A 10 ((tick (u) s (resume s (+ s 1))) (get (u) s (resume s s)))
+                (handle B 0 ((step (u) t (resume (A.tick) t)))
+                  (+ (helper) (A.get))))) (export main)))
+  (output (: 21 Int64)))
+
 (case "a handler arm forwarding an effect its enclosing scope does not hold is rejected"
   (doc    "Witnesses capabilities-and-effects.md #Capabilities Attenuate: A Handler Forwards A Narrower Row
            (2nd sentence — attenuation never WIDENS): a handler MUST NOT grant its sub-computation an effect
