@@ -553,6 +553,46 @@
   (input  (= (print (Ast.Bytes b"\x00\xff")) "b\"\\x00\\xff\""))
   (output (: true Bool)))
 
+(case "an Ast.Bytes node round-trips through encode and decode"
+  (doc    "The interchange face of `Ast.Bytes` (operator seq 113 payoff): `Ast.encode` writes the blob as a
+           SINGLE length-prefixed raw-bytes node (a fresh additive tag past the Int/Name/List/Bool/Str/Float
+           tags — legacy bytes decode exactly as before), and `Ast.decode` reads it back to an EQUAL
+           `Ast.Bytes`. This is the whole point: a byte blob crosses the value codec as one node, not a
+           node-per-byte `Ast.List` of `Ast.Int` u8s. `Ast.decode` is total, so the round-trip matches the
+           `Ok` arm.")
+  (input  (match (Ast.decode (Ast.encode (Ast.Bytes b"hi")))
+            ((Ok a)  (= a (Ast.Bytes b"hi")))
+            ((Err _) false)))
+  (output (: true Bool)))
+
+(case "an empty Ast.Bytes round-trips through encode and decode"
+  (doc    "The zero-length edge of the bytes codec: `(Ast.Bytes b\"\")` encodes to the tag + a zero length
+           (no payload bytes) and decodes back to an equal empty `Ast.Bytes`. Pins that the length-prefix
+           framing handles the empty blob — a decoder mis-reading a zero length would diverge here.")
+  (input  (match (Ast.decode (Ast.encode (Ast.Bytes b"")))
+            ((Ok a)  (= a (Ast.Bytes b"")))
+            ((Err _) false)))
+  (output (: true Bool)))
+
+(case "an Ast.Bytes carrying NUL and high bytes round-trips through encode and decode"
+  (doc    "The raw-byte face (distinct from `Ast.Str`, which is UTF-8): `(Ast.Bytes b\"\\x00\\xff\")` carries
+           a NUL and a 0xff — bytes an `Ast.Str` could not — and round-trips byte-exactly through
+           `Ast.encode`/`Ast.decode`. Pins that the bytes payload is RAW (not re-validated as UTF-8), the
+           key difference from the Str codec arm.")
+  (input  (match (Ast.decode (Ast.encode (Ast.Bytes b"\x00\xff")))
+            ((Ok a)  (= a (Ast.Bytes b"\x00\xff")))
+            ((Err _) false)))
+  (output (: true Bool)))
+
+(case "an Ast.Bytes nested in an Ast.List round-trips through encode and decode"
+  (doc    "Composition: an `Ast.Bytes` as a child of an `Ast.List` (`(f b\"hi\")`) round-trips through the
+           value codec — the list arm recurses into the bytes arm and back. Pins that the bytes node
+           composes inside a compound, not only standalone.")
+  (input  (match (Ast.decode (Ast.encode (Ast.List (list (Ast.Name "f") (Ast.Bytes b"hi")))))
+            ((Ok a)  (= a (Ast.List (list (Ast.Name "f") (Ast.Bytes b"hi")))))
+            ((Err _) false)))
+  (output (: true Bool)))
+
 (case "the AST is a sum type deconstructible by pattern matching"
   (doc    "Witnesses metaprogramming.md #Quote Produces An AST Value (2nd sentence): the AST is a
            sum type with variants for each syntactic form. Pattern matching over (quote 42) binds

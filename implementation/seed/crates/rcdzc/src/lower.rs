@@ -2763,6 +2763,11 @@ const AST_TAG_LIST: u8 = 0x02;
 const AST_TAG_BOOL: u8 = 0x03;
 const AST_TAG_STR: u8 = 0x04;
 const AST_TAG_FLOAT: u8 = 0x05;
+// A raw byte-sequence node (`Ast.Bytes`) — a length-prefixed raw-bytes payload, so a blob rides this
+// value codec as ONE node, not a node-per-byte list (operator seq 113). ADDITIVE: a fresh tag past the
+// existing 0x00–0x05, so legacy bytes decode exactly as before. Same length-prefix framing as Str/Name
+// (4-byte LE length + that many bytes), but the bytes are RAW (not UTF-8) and decode to `Ast.Bytes`.
+const AST_TAG_BYTES: u8 = 0x06;
 
 /// Lower `(Ast.encode t)` — FOLD a compile-time-visible `Ast` value to a `Core::BytesOf` of its
 /// canonical bytes; a runtime `Ast` (no visible `Core::SumNew`) declines. A poison operand propagates.
@@ -3400,6 +3405,26 @@ fn encode_ast_value(db: &mut Db, node: StructId, disc: &AstDiscs, out: &mut Vec<
             encode_ast_value(db, e, disc, out)?;
         }
         Some(())
+    } else if d == disc.bytes && payloads.len() == 1 {
+        // A byte-sequence node: tag then the length-prefixed RAW bytes (4-byte LE length + bytes verbatim,
+        // the Str/Name framing but not UTF-8). The payload is a `Core::BytesOf` of `ConstInt` elements each
+        // range-checked to `0..=255` at `lower_bytes_of` (a non-constant element declines there, so no
+        // `BytesOf` reaches here). This is the whole point of the variant: one length-prefixed node, not a
+        // node-per-byte list.
+        let Core::BytesOf { elems } = core_of(db, payloads[0]) else {
+            return None;
+        };
+        let mut raw = Vec::with_capacity(elems.len());
+        for e in elems {
+            let Core::ConstInt(v) = core_of(db, e) else {
+                return None;
+            };
+            raw.push(u8::try_from(v.to_i64().filter(|n| (0..=255).contains(n))?).ok()?);
+        }
+        out.push(AST_TAG_BYTES);
+        out.extend_from_slice(&(u32::try_from(raw.len()).ok()?).to_le_bytes());
+        out.extend_from_slice(&raw);
+        Some(())
     } else {
         None
     }
@@ -3751,6 +3776,27 @@ fn decode_ast_value(db: &mut Db, raw: &[u8], disc: &AstDiscs) -> Option<(StructI
                 db,
                 Core::SumNew {
                     disc: disc.name,
+                    payloads: vec![payload],
+                },
+                disc.ty.clone(),
+            );
+            Some((node, 1 + 4 + len))
+        }
+        AST_TAG_BYTES => {
+            // Length-prefixed RAW bytes (not UTF-8, unlike Str/Name) → an `Ast.Bytes` whose payload is a
+            // `Core::BytesOf` of the decoded bytes (each a `UInt8` `Leaf::Int`, the `b"…"`/`Bytes.of` shape).
+            // `4 + len` can overflow `usize` on wasm32 for a large untrusted length → `checked_add` → `None`
+            // (never-panic on untrusted input, matching the Str/Name arms).
+            let len_field = rest.get(..4)?;
+            let len = u32::from_le_bytes(len_field.try_into().ok()?) as usize;
+            let end = 4usize.checked_add(len)?;
+            let raw_bytes = rest.get(4..end)?.to_vec();
+            let elems = bytes_to_elems(db, &raw_bytes);
+            let payload = synth_core(db, Core::BytesOf { elems }, crate::ty::Ty::Bytes);
+            let node = synth_core(
+                db,
+                Core::SumNew {
+                    disc: disc.bytes,
                     payloads: vec![payload],
                 },
                 disc.ty.clone(),
