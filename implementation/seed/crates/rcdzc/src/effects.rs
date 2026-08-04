@@ -2520,6 +2520,29 @@ pub fn reduce_handle(
         None
     };
     let thread_seed = seed_wrap.map(|(_, r)| r).unwrap_or(init);
+    // Apply the SEED LET-LIFT to a to-be-returned value: `(let ((#seed init)) value)` when the seed was
+    // let-bound (non-constant), else the value unchanged. Every `#seed` occurrence threaded into `value`
+    // re-resolves to this binding. Used by BOTH the resumptive return (below) AND the abortive returns: an
+    // abort arm that READS the state binder — `(halt (u) s (* 1000 (+ (Map.len s) a)))` over a HEAP seed
+    // `Map.empty` — carries `#seed` refs (the state binder was threaded as `#seed`), so the collapsed abort
+    // value must be wrapped in the same `let` or `#seed` reads UNBOUND (CDZ0101 — the abort × seed-let-lift
+    // seam; scalar seeds are shareable constants → no `#seed`, so they never hit it; heap seeds do). breaker
+    // heap-abort-state issue 2026-08-04.
+    // Use `binder`/`init` DIRECTLY (not copies): `init` is the ORIGINAL seed node — it may carry a free
+    // capture (an enclosing fn's param, `(handle St k …)` where `k` is main's param), and the whole `let` is
+    // grafted under the handle site by the caller's `reparent_under_handle_site`, restoring `init`'s lexical
+    // chain. A `copy_pure(init)` would re-push it DETACHED, orphaning that capture → CDZ0101. Only ONE return
+    // path fires per `reduce_handle` call, so reusing `binder`/`init` in one place is safe (no arena aliasing).
+    let apply_seed_wrap = |db: &mut Db, value: StructId| -> StructId {
+        if let Some((binder, _)) = seed_wrap {
+            let let_head = db.push_name("let");
+            let pair = db.push_list(vec![binder, init]);
+            let bindings = db.push_list(vec![pair]);
+            db.push_list(vec![let_head, bindings, value])
+        } else {
+            value
+        }
+    };
     // Thread the INIT state through the body in evaluation order. The handle's value is the body's
     // value (the accumulated state is observable only through the operations), so we return the
     // rewritten body; the final threaded state is discarded (the body never reads it directly).
@@ -2563,6 +2586,8 @@ pub fn reduce_handle(
             // common case — a plain `(do (A.tick) (B.bail 99))` has no self-call temp), so this is a strict
             // hardening: byte-identical when `ctx.pending` is empty, correct when it is not.
             let drained = drain_and_wrap(db, &ctx, 0, rewritten);
+            // Wrap in the seed let-lift (heap seed → the do-prefix / abort value may read `#seed`).
+            let drained = apply_seed_wrap(db, drained);
             reparent_under_handle_site(db, drained, body);
             return Some(drained);
         }
@@ -2577,6 +2602,9 @@ pub fn reduce_handle(
         // name) so it never exhibited this — only a runtime arg leaves a free reference. Re-parenting under
         // the handle restores the chain abort → handle → def so `k` re-resolves to the param and types
         // Int64. (Mirrors the identity-arm pass-through reparent for the resumptive path.)
+        // Wrap in the seed let-lift: an abort arm that READS a heap-typed state binder carries `#seed` refs
+        // (the state was threaded as `#seed`); without the wrapping `let` they read unbound (CDZ0101).
+        let abort = apply_seed_wrap(db, abort);
         reparent_under_handle_site(db, abort, body);
         return Some(abort);
     }
@@ -2590,14 +2618,8 @@ pub fn reduce_handle(
     // threaded into the body re-resolves to this binding; `init` (carrying the live capture) is evaluated
     // once here, and the whole `let` is grafted under the handle site below so `init`'s free names resolve
     // up the original chain. `None` (a constant seed) leaves `wrapped` untouched — byte-identical to before.
-    let wrapped = if let Some((binder, _)) = seed_wrap {
-        let let_head = db.push_name("let");
-        let pair = db.push_list(vec![binder, init]);
-        let bindings = db.push_list(vec![pair]);
-        db.push_list(vec![let_head, bindings, wrapped])
-    } else {
-        wrapped
-    };
+    // (Same helper the abortive returns above use.)
+    let wrapped = apply_seed_wrap(db, wrapped);
     // Graft the threaded result UNDER the original handle's site (the same re-anchoring the E5 pure-one-hole
     // and multi-shot blocks above do). The `thread` perform arm returns the resume VALUE as the perform's
     // result via `deep_fresh_copy` — a freshly-pushed subtree whose root parent is `None`. When that value is
