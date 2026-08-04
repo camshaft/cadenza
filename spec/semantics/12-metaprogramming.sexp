@@ -517,6 +517,42 @@
   (input  (= (print (Ast.Name "foo")) "foo"))
   (output (: true Bool)))
 
+(case "an Ast.Bytes node constructs and deconstructs by pattern matching"
+  (doc    "The AST sum has a `Bytes` variant for a raw byte-sequence LITERAL (`b\"…\"`) — a binary blob is a
+           syntactic form, carried as a single `Bytes` payload (operator seq 113) so a blob rides the AST +
+           its codec as ONE length-prefixed raw-bytes leaf rather than a node-per-byte list. `Ast.Bytes` is
+           an ordinary sum variant: `(Ast.Bytes b\"hi\")` constructs it and a `(Ast.Bytes b)` pattern
+           deconstructs it, exactly like the other Ast leaves.")
+  (input  (match (Ast.Bytes b"hi")
+            ((Ast.Bytes _) 1)
+            (_             0)))
+  (output (: 1 Int64)))
+
+(case "quote of a byte-string literal reifies to an Ast.Bytes node"
+  (doc    "`(quote b\"hi\")` reifies the `b\"…\"` byte-string literal to an `Ast.Bytes` node whose payload is
+           the blob — the bytes companion of `(quote \"hi\")`→`Ast.Str` and `(quote 42)`→`Ast.Int`. Pins that
+           the quote reifier has a `Leaf::Bytes`→`Ast.Bytes` arm (it previously declined, having no Bytes
+           variant), so a quoted binary literal is a first-class AST node.")
+  (input  (match (quote b"hi")
+            ((Ast.Bytes _) 1)
+            (_             0)))
+  (output (: 1 Int64)))
+
+(case "print renders a bare Ast.Bytes as its exact b\"…\" byte-literal text"
+  (doc    "`print (Ast.Bytes b\"hi\")` is exactly `\"b\\\"hi\\\"\"` — the `b\"…\"` byte-literal spelling
+           (printable ASCII verbatim, `\\n \\t \\r \\\\ \\\"` named, else `\\xNN`), the canonical re-readable
+           form for a blob. Pins the Bytes rendering distinct from an `Ast.Str` (which has no `b` prefix).")
+  (input  (= (print (Ast.Bytes b"hi")) "b\"hi\""))
+  (output (: true Bool)))
+
+(case "print of an Ast.Bytes escapes a non-printable byte as \\xNN"
+  (doc    "The escape face of the Bytes printer: a byte outside printable ASCII renders `\\xNN` (two
+           lowercase hex), matching the reader's byte-literal escapes. `b\"\\x00\\xff\"` (a NUL and a 0xff)
+           prints back to exactly that spelling. Pins the non-printable escape path the `b\"hi\"` case
+           doesn't reach.")
+  (input  (= (print (Ast.Bytes b"\x00\xff")) "b\"\\x00\\xff\""))
+  (output (: true Bool)))
+
 (case "the AST is a sum type deconstructible by pattern matching"
   (doc    "Witnesses metaprogramming.md #Quote Produces An AST Value (2nd sentence): the AST is a
            sum type with variants for each syntactic form. Pattern matching over (quote 42) binds

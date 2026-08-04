@@ -123,6 +123,13 @@ pub fn prelude_decls(ast: &mut Arenas) -> Vec<TypeDecl> {
         let bool_pay = push_atom(ast, Leaf::Name("Bool".to_string()));
         let str_pay = push_atom(ast, Leaf::Name("String".to_string()));
         let name_pay = push_atom(ast, Leaf::Name("String".to_string()));
+        // `Bytes` — a raw byte-sequence LITERAL (`b"…"` / a `Bytes` value), the syntactic form for a
+        // binary blob. Its payload is the `Bytes` type (not a `(List Int64)`), so a blob rides the AST +
+        // its codec as ONE length-prefixed raw-bytes leaf (codec `KIND_BYTES`, tag 11 — already present)
+        // rather than a node-per-byte list, cutting encode/decode overhead on the invoke wire format
+        // (operator seq 113). Appended LAST so existing variant discriminants are unchanged (discs are
+        // read BY NAME via `ast_variant_discs`, so order is display-only).
+        let bytes_pay = push_atom(ast, Leaf::Name("Bytes".to_string()));
         // `(List Ast)` — the recursive list-of-Ast payload for the `List` variant.
         let list_head = push_atom(ast, Leaf::Name("List".to_string()));
         let ast_ref = push_atom(ast, Leaf::Name("Ast".to_string()));
@@ -150,6 +157,7 @@ pub fn prelude_decls(ast: &mut Arenas) -> Vec<TypeDecl> {
                 ("Str", &[str_pay]),
                 ("Name", &[name_pay]),
                 ("List", &[list_ast]),
+                ("Bytes", &[bytes_pay]),
             ],
         )
     };

@@ -3765,6 +3765,7 @@ pass	an AST from quasiquoting a runtime value equals the same AST built by quote
 pass	an Ast as a MAP key looks up by structural content
 pass	an Ast-value-spliced template round-trips through encode and decode
 pass	an Ast.Bool and an Ast.Int are distinct by variant tag not by numeric value
+pass	an Ast.Bytes node constructs and deconstructs by pattern matching
 pass	an Ast.Int carries a BEYOND-64-bit literal losslessly through quote
 pass	an Ast.Int stores an integer wider than Int64 without loss
 pass	an EFFECTFUL @ensures predicate is value-transparent when SATISFIED — the body's own perform runs first
@@ -4952,11 +4953,13 @@ pass	print of a NEGATIVE Ast.Float round-trips through read (sign survives the t
 pass	print of a negative-zero Ast.Float preserves the sign through read (text-path signed-zero)
 pass	print of a quote containing a float renders re-readably
 pass	print of an Ast.Bool renders the bare word and read inverts it
+pass	print of an Ast.Bytes escapes a non-printable byte as \xNN
 pass	print of an Ast.Float renders a re-readable decimal and read inverts it
 pass	print of an Ast.Str renders a quoted literal with escapes and read inverts it
 pass	print of an exponent-scale Ast.Float round-trips through read
 pass	print of an integer-valued Ast.Float keeps its float form through read
 pass	print renders a bare Ast.Bool as its exact keyword text
+pass	print renders a bare Ast.Bytes as its exact b"…" byte-literal text
 pass	print renders a bare Ast.Int as its exact decimal text
 pass	print renders a bare Ast.Name as its exact identifier text
 pass	print renders a bare NEGATIVE Ast.Int as its exact signed text
@@ -5003,6 +5006,7 @@ pass	quasiquote constructs AST with selective evaluation
 pass	quasiquote makes AST construction readable
 pass	quasiquote nests with inner unquote evaluated
 pass	quasiquotes unquoting a runtime variable and a literal build equal ASTs
+pass	quote of a byte-string literal reifies to an Ast.Bytes node
 pass	quote of a let reifies as an Ast.List with a let head and round-trips
 pass	quote of a nested quote form is inert — the inner quote is not evaluated
 pass	quote produces an AST value without evaluating
