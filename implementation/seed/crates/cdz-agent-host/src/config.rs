@@ -4,18 +4,22 @@
 //! [`DaemonConfig`] is the root: parse it from a TOML path with [`DaemonConfig::from_toml_path`], and every
 //! later daemon concern reads its section — the durable-log backend (`[log]`, file dev / Dynamo prod,
 //! config-SELECTABLE per the generic-async-log directive), observability (`[observability]`, the operator's
-//! s2n-quic-dc-metrics), effect-retry policy (`[retries]`), and the sessions to spawn (`[[session]]`). This
-//! module is the config SPINE — schema + parse + validation; the wiring of each backend to real code lands
-//! as its own daemon slice. Unknown fields are REJECTED (`deny_unknown_fields`) so a typo'd key is a loud
-//! config error, not a silently-ignored setting.
+//! s2n-quic-dc-metrics), and effect-retry policy (`[retries]`). This module is the config SPINE — schema +
+//! parse + validation; the wiring of each backend to real code lands as its own daemon slice. Unknown
+//! fields are REJECTED (`deny_unknown_fields`) so a typo'd key is a loud config error, not silently ignored.
+//!
+//! **Config = INFRASTRUCTURE only, NOT a session roster** (operator refinement): the TOML configures the
+//! daemon's backends/policy, but it does NOT enumerate the sessions to run. Sessions are DYNAMIC — the
+//! daemon boots on its config, then sessions are INSTALLED into it at runtime (via the spawn/install path,
+//! dovetailing the supervision-tree work), not read from a fixed list here.
 
 use serde::Deserialize;
 use std::path::Path;
 
-/// The whole daemon configuration, deserialized from one TOML file. Sections default when omitted so a
-/// minimal config (just `[[session]]` entries) boots with sensible dev defaults (in-memory log, metrics
-/// off, default retry policy).
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+/// The whole daemon INFRASTRUCTURE configuration, deserialized from one TOML file. Every section defaults
+/// when omitted, so an empty config boots a valid daemon with dev defaults (in-memory log, metrics off,
+/// default retry policy) — sessions are installed into it at runtime, not listed here.
+#[derive(Debug, Clone, Deserialize, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct DaemonConfig {
     /// The durable event-log backend (where each session's log persists). Defaults to in-memory (dev).
@@ -28,10 +32,6 @@ pub struct DaemonConfig {
     /// bounded exponential backoff.
     #[serde(default)]
     pub retries: RetryConfig,
-    /// The sessions this daemon hosts. At least one is required (a daemon with no sessions does nothing) —
-    /// parsing via [`from_toml_str`](DaemonConfig::from_toml_str) enforces that.
-    #[serde(default)]
-    pub session: Vec<SessionConfig>,
 }
 
 /// The durable-log backend — config-SELECTABLE (the operator's "selectable backends"): `memory` for dev,
@@ -103,23 +103,6 @@ impl Default for RetryConfig {
     }
 }
 
-/// One hosted session the daemon spawns at boot: an `id` (its registry key) and the `reducer` component to
-/// run it (a path to a wasm reducer blob — the daemon loads + runs it). Policy is referenced by name (the
-/// §20b `POLICY_CURRENT` pointer) rather than inlined here, so a session's authorizer is swappable at
-/// runtime; a `policy` path here seeds the initial policy component.
-#[derive(Debug, Clone, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct SessionConfig {
-    /// The session's registry id.
-    pub id: String,
-    /// Path to the session's reducer wasm component.
-    pub reducer: String,
-    /// Optional path to the initial Cedar policy component (else the session starts deny-all until a
-    /// POLICY_CURRENT store/set swaps one in).
-    #[serde(default)]
-    pub policy: Option<String>,
-}
-
 /// A config error — a bad path, unparseable TOML, or a semantic-validation failure. Stringly-typed (the
 /// daemon surfaces it to stderr + exits non-zero; there's no recovery from a bad config).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -149,25 +132,10 @@ impl DaemonConfig {
         Ok(cfg)
     }
 
-    /// Semantic validation beyond what the type system + serde enforce: at least one session, non-empty
-    /// backend paths, and observability endpoint present when enabled.
+    /// Semantic validation beyond what the type system + serde enforce: non-empty selected-backend paths
+    /// and an observability endpoint present when enabled. (No session checks — sessions are installed at
+    /// runtime, not configured here.)
     fn validate(&self) -> Result<(), ConfigError> {
-        if self.session.is_empty() {
-            return Err(ConfigError(
-                "no [[session]] configured — a daemon with no sessions does nothing".into(),
-            ));
-        }
-        for s in &self.session {
-            if s.id.trim().is_empty() {
-                return Err(ConfigError("a [[session]] has an empty id".into()));
-            }
-            if s.reducer.trim().is_empty() {
-                return Err(ConfigError(format!(
-                    "session {:?} has an empty reducer path",
-                    s.id
-                )));
-            }
-        }
         match &self.log {
             LogConfig::File { dir } if dir.trim().is_empty() => {
                 return Err(ConfigError(
@@ -195,22 +163,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_minimal_config_boots_with_defaults() {
-        let cfg = DaemonConfig::from_toml_str(
-            r#"
-            [[session]]
-            id = "worker-1"
-            reducer = "/blobs/worker.wasm"
-            "#,
-        )
-        .expect("minimal config parses");
-        // Omitted sections take their defaults.
+    fn an_empty_config_boots_a_valid_daemon_with_defaults() {
+        // Config is INFRASTRUCTURE only — no session roster. An empty config is valid (sessions install at
+        // runtime); every section takes its dev default.
+        let cfg = DaemonConfig::from_toml_str("").expect("an empty config is a valid daemon");
+        assert_eq!(cfg, DaemonConfig::default());
         assert_eq!(cfg.log, LogConfig::Memory);
         assert!(!cfg.observability.enabled);
         assert_eq!(cfg.retries, RetryConfig::default());
-        assert_eq!(cfg.session.len(), 1);
-        assert_eq!(cfg.session[0].id, "worker-1");
-        assert_eq!(cfg.session[0].policy, None);
     }
 
     #[test]
@@ -229,15 +189,6 @@ mod tests {
             max_attempts = 5
             base_ms = 200
             max_ms = 10000
-
-            [[session]]
-            id = "a"
-            reducer = "/blobs/a.wasm"
-            policy = "/blobs/policy.wasm"
-
-            [[session]]
-            id = "b"
-            reducer = "/blobs/b.wasm"
             "#,
         )
         .expect("full config parses");
@@ -253,8 +204,6 @@ mod tests {
             Some("127.0.0.1:9000")
         );
         assert_eq!(cfg.retries.max_attempts, 5);
-        assert_eq!(cfg.session.len(), 2);
-        assert_eq!(cfg.session[0].policy.as_deref(), Some("/blobs/policy.wasm"));
     }
 
     #[test]
@@ -264,9 +213,6 @@ mod tests {
             [log]
             backend = "file"
             dir = "/var/lib/cdz/log"
-            [[session]]
-            id = "x"
-            reducer = "/x.wasm"
             "#,
         )
         .unwrap();
@@ -279,23 +225,9 @@ mod tests {
     }
 
     #[test]
-    fn no_sessions_is_a_validation_error() {
-        let err = DaemonConfig::from_toml_str("[log]\nbackend = \"memory\"\n").unwrap_err();
-        assert!(err.0.contains("no [[session]]"), "{err}");
-    }
-
-    #[test]
     fn an_unknown_key_is_rejected_not_ignored() {
         // deny_unknown_fields: a typo'd key must be a loud error, not a silently-dropped setting.
-        let err = DaemonConfig::from_toml_str(
-            r#"
-            [[session]]
-            id = "x"
-            reducer = "/x.wasm"
-            typo_field = "oops"
-            "#,
-        )
-        .unwrap_err();
+        let err = DaemonConfig::from_toml_str("typo_field = \"oops\"\n").unwrap_err();
         assert!(err.0.contains("invalid TOML"), "{err}");
     }
 
@@ -305,9 +237,6 @@ mod tests {
             r#"
             [observability]
             enabled = true
-            [[session]]
-            id = "x"
-            reducer = "/x.wasm"
             "#,
         )
         .unwrap_err();
@@ -321,9 +250,6 @@ mod tests {
             [log]
             backend = "dynamo"
             table = ""
-            [[session]]
-            id = "x"
-            reducer = "/x.wasm"
             "#,
         )
         .unwrap_err();

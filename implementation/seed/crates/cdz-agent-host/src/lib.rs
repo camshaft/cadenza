@@ -49,7 +49,7 @@ pub mod status;
 
 pub use async_host::{AsyncAgentHost, Inbound, Inbox};
 pub use clock::ClockExecutor;
-pub use config::{DaemonConfig, LogConfig, ObservabilityConfig, RetryConfig, SessionConfig};
+pub use config::{DaemonConfig, LogConfig, ObservabilityConfig, RetryConfig};
 #[cfg(feature = "live-net")]
 pub use host::live_executor_set;
 pub use host::{AgentHost, HostedSession, SessionId};
