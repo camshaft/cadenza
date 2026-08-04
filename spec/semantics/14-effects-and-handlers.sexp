@@ -924,6 +924,24 @@
             (def (main) (handle Amb 0 ((flip () s k (+ (k 10) 1))) (Amb.flip))) (export main)))
   (output (: 11 Int64)))
 
+(case "a ctl-style arm that reads the STATE binder AROUND its continuation application folds"
+  (doc    "The state-referencing companion of the lexical-`ctl` fold above: the 5-part arm body references
+           the STATE binder `s` (and could reference an op parameter) in a position OUTSIDE the `(k v)`
+           application — `(+ s (k x))`, where the `+`'s LEFT operand is the state and the RIGHT is the
+           continuation result. When `k` is applied lexically, `(k v)` = `(resume v s)`, so the arm becomes
+           `(+ s (resume x s))` — a NON-tail resume with a live `s`/`x` sibling. Seeded 100 over `(G.y 5)`:
+           `x` = 5, `C = □` (the whole body is the perform), so `(k 5)` = 5 and the arm value is `(+ 100 5)`
+           = 105. Pins that the lexical-`ctl`→`resume` rewrite preserves the arm's state/param binder
+           resolution for references OUTSIDE the `(k v)` call — the rewrite rebuilds the arm body, and
+           without pinning those sibling references first they were re-pushed UNPINNED into a detached tree,
+           lost their parent-walk to the arm binder, and leaked `unbound name s`/`x` at lowering (a CDZ0101
+           on a valid program — strictly worse than a clean decline). A reference INSIDE the `(k v)` argument
+           (`(k (+ x s))`) was spliced verbatim and always folded; this is the sibling-position face.")
+  (input  (do
+            (effect G (op y (-> Int64 Int64)))
+            (def (main) (handle G 100 ((y (x) s k (+ s (k x)))) (G.y 5))) (export main)))
+  (output (: 105 Int64)))
+
 (case "an abortive handler arm performed with a RUNTIME argument abandons the computation and returns it"
   (doc    "The runtime-argument companion of the constant-abort case. An abortive arm `(bail (n) s n)` never
            resumes, so performing `(Bail.bail k)` — with `k` a RUNTIME parameter, not a constant — abandons

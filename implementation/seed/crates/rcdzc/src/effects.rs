@@ -1809,6 +1809,18 @@ fn ctl_arm_lexical_k_to_resume(db: &mut Db, arm: &HandleArm) -> Option<StructId>
         sub.insert(app, resume);
     }
     // Splice the rewritten resume nodes in place of the `(k v)` applications (a node→node substitution).
+    // PIN the arm body first (`resolve_subtree`) so `substitute_nodes`'s `copy_pure` of every NON-`(k v)`
+    // atom SHARES the resolve-pinned occurrence (eval.rs's captured-free-variable path) instead of
+    // re-pushing it as a fresh UNPINNED atom in the detached rebuilt tree. Without this, a binder-ref that
+    // sits OUTSIDE the `(k v)` call — the state binder `s` / an op-param `x` in `(+ s (k x))` — is copied
+    // unpinned into a root-parentless tree, so it can no longer parent-walk to the arm's state/param binder
+    // (`handle_arm_binds`); the downstream pure-one-hole reify's `beta_reduce({state↦init, params↦args})`
+    // then cannot match it and it survives as a FREE name → CDZ0101 `unbound name s` at lowering (a leak on
+    // a valid program, strictly worse than a clean decline). A ref INSIDE the `(k v)` argument is spliced
+    // verbatim as the resume value, so it never hit this — hence the observed `(+ s (k x))` leaks vs `(k (+
+    // x s))` folds asymmetry. Pinning shares the occurrence with its memoized resolution intact, so the ref
+    // still reaches its arm binder in the rewritten body. (Idempotent + bounded to the arm body.)
+    crate::resolve::resolve_subtree(db, arm.body);
     Some(substitute_nodes(db, arm.body, &sub))
 }
 
