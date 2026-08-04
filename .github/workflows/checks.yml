@@ -28,33 +28,32 @@ env:
 jobs:
   # ── Pure native, no wasm toolchain ──────────────────────────────────────────
   fmt:
-    # Full-CI-in-nix cutover PILOT (Model A, v-fleet-tooling 2026-08-04): this job's BODY now runs the
-    # nix `checks.fmt` derivation instead of a bare `cargo fmt`, but keeps `name: rustfmt` so the required
-    # ruleset context `checks / rustfmt` is UNCHANGED — no ruleset edit, no lockstep. The nix check runs
-    # the identical `cargo fmt --all --check` hermetically under the pinned toolchain. First engine-swap;
-    # if it gates green across a few candidates, the same body-swap rolls to the other required jobs.
-    # aarch64 (ubuntu-24.04-arm): the flake's checks are aarch64-linux (the runtime-hash arch). The
-    # aggregate `nix flake check (advisory)` job stays as the belt-and-suspenders canary.
+    # Full-CI-in-nix cutover (Model A): body runs the nix `checks.fmt` derivation (identical
+    # `cargo fmt --all --check`, hermetic), keeping `name: rustfmt` so the required context
+    # `checks / rustfmt` is UNCHANGED (no ruleset edit). fmt is ARCH-INDEPENDENT (pure source, no runtime
+    # build) → runs on the DEFAULT x86 runner via `checks.x86_64-linux.fmt` (frees scarce ARM capacity;
+    # github-liaison #2054 + v-fleet-tooling affirmed — arch-agnostic checks name no platform, so x86 is
+    # correct). Only the runtime-touching checks (codegen/gate/bench) need aarch64.
     name: rustfmt
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@v22
       - name: cargo fmt (via nix)
-        run: nix build .#checks.aarch64-linux.fmt --print-build-logs
+        run: nix build .#checks.x86_64-linux.fmt --print-build-logs
 
   clippy:
     # Full-CI-in-nix cutover (Model A): body runs the nix `checks.clippy` derivation (identical
     # `cargo clippy --workspace --all-targets -- -D warnings`, hermetic), keeping `name: clippy` so the
-    # required context `checks / clippy` is unchanged (no ruleset edit). aarch64 (flake checks are
-    # aarch64-linux). Follows the fmt pilot (#2054), which gates green ~25-29s across candidates.
+    # required context `checks / clippy` is unchanged (no ruleset edit). ARCH-INDEPENDENT → x86 default
+    # runner via `checks.x86_64-linux.clippy` (frees ARM; #2054 + v-ft affirmed).
     name: clippy
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@v22
       - name: cargo clippy (via nix)
-        run: nix build .#checks.aarch64-linux.clippy --print-build-logs
+        run: nix build .#checks.x86_64-linux.clippy --print-build-logs
 
   test:
     name: test (${{ matrix.os }})
@@ -455,15 +454,17 @@ jobs:
 
   roundtrip:
     # Every corpus program must round-trip through the syntax surfaces — guards cadenza-syntax
-    # independently of the compiler. No runtime needed.
+    # independently of the compiler. Full-CI-in-nix cutover (Model A): body runs the nix `checks.roundtrip`
+    # derivation (identical `cargo xtask roundtrip`, hermetic), keeping `name: syntax roundtrip` so the
+    # required context `checks / syntax roundtrip` is UNCHANGED (no ruleset edit). ARCH-INDEPENDENT
+    # (corpus-only, no runtime build) → x86 default runner via `checks.x86_64-linux.roundtrip`.
     name: syntax roundtrip
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: ./.github/actions/setup-rust
-        with:
-          cache-key: roundtrip
-      - run: cargo xtask roundtrip
+      - uses: DeterminateSystems/nix-installer-action@v22
+      - name: cargo xtask roundtrip (via nix)
+        run: nix build .#checks.x86_64-linux.roundtrip --print-build-logs
 
   bench:
     # Runtime allocation regression check (allocation COUNT, deterministic native↔wasm) vs the
