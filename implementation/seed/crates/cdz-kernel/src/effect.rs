@@ -509,28 +509,40 @@ impl CapabilityManifest {
     /// an `Absent`-state entry mean the same thing to a consumer: unusable). Deterministic order: by family
     /// string, so the delta (and any log frame built from it) is replay-stable.
     ///
-    /// Compares grant STATE only, not scope — see [`GrantChange`]. Both manifests normally come from
-    /// [`project_manifest`] over the same canonical family set, so this is a linear walk in practice.
+    /// Compares grant STATE only, not scope — see [`GrantChange`]. Builds a family→state index for each
+    /// manifest (one pass each), then walks the union of family names once — an O(n log n) pass (the
+    /// `BTreeMap` also gives the replay-stable family-string order for free), not a find-per-family scan.
     pub fn grant_changes(&self, prev: &CapabilityManifest) -> Vec<GrantChange> {
-        use std::collections::BTreeSet;
-        let state_in = |m: &CapabilityManifest, fam: &str| {
-            m.entries
-                .iter()
-                .find(|e| e.family == fam)
-                .map(|e| e.grant.clone())
-                .unwrap_or(GrantState::Absent)
-        };
-        // Union of family names across both manifests, sorted (BTreeSet) for a replay-stable delta order.
-        let families: BTreeSet<&str> = self
+        use std::collections::BTreeMap;
+        // Index each manifest family→state in one pass (a BTreeMap keyed on family — its ordered keys are the
+        // replay-stable delta order, so no separate sort). A family absent from a map reads as `Absent`.
+        let self_idx: BTreeMap<&str, &GrantState> = self
             .entries
             .iter()
-            .chain(prev.entries.iter())
-            .map(|e| e.family.as_str())
+            .map(|e| (e.family.as_str(), &e.grant))
             .collect();
-        families
+        let prev_idx: BTreeMap<&str, &GrantState> = prev
+            .entries
+            .iter()
+            .map(|e| (e.family.as_str(), &e.grant))
+            .collect();
+        // Walk the union of family names (BTreeMap keys are sorted → the walk is ordered).
+        self_idx
+            .keys()
+            .chain(prev_idx.keys())
+            .collect::<std::collections::BTreeSet<_>>()
             .into_iter()
-            .filter_map(|fam| {
-                let (from, to) = (state_in(prev, fam), state_in(self, fam));
+            .filter_map(|&fam| {
+                let from = prev_idx
+                    .get(fam)
+                    .copied()
+                    .cloned()
+                    .unwrap_or(GrantState::Absent);
+                let to = self_idx
+                    .get(fam)
+                    .copied()
+                    .cloned()
+                    .unwrap_or(GrantState::Absent);
                 if from == to {
                     return None;
                 }
