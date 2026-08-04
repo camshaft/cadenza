@@ -1936,6 +1936,29 @@ mod status_snapshot_tests {
         assert_eq!(snap.state, SessionState::Closed);
         assert_eq!(snap.last_event_kind, "Closed");
     }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_failure_close_still_reports_closed_state() {
+        // The session STATE is outcome-AGNOSTIC: a session closed with CloseOutcome::Failure is just as
+        // `Closed` as a Success-close (a supervisor observes "closed" from the state, then reads the
+        // success-vs-failure from the outcome SEPARATELY — §6a). Pins that a Failure-close doesn't leave the
+        // session looking Active/Quiescent (which would strand a supervisor waiting on a child that's done).
+        let mut s = Session::genesis(Hash::of(b"r"));
+        s.append(
+            EventBody::Closed {
+                outcome: crate::event::CloseOutcome::Failure("goal unreachable".to_string()),
+            },
+            None,
+        )
+        .await;
+        let snap = s.status_snapshot(Some(0), 300_000);
+        assert_eq!(
+            snap.state,
+            SessionState::Closed,
+            "a Failure-close reports Closed, same as a Success-close (state is outcome-agnostic)"
+        );
+        assert_eq!(snap.last_event_kind, "Closed");
+    }
 }
 
 #[cfg(test)]

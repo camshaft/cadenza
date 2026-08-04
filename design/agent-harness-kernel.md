@@ -303,10 +303,11 @@ spawn effect and no parent-link/auto-delivery.
   respawn / escalate / give up. Kernel hardcodes NO strategy — the parent reducer *is* the
   supervisor. (Minimalism test passes.)
 
-**Scenario (works fully within this):** PM agent emits
-`spawn(developer-reducer, caps=[repo-X, read-metrics], goal="fix bug 123")`; developer spawns its
+**Scenario (INTENDED — the slices 2-3 design, not yet built):** a PM agent emits
+`spawn(developer-reducer, caps=[repo-X, read-metrics], goal="fix bug 123")`; the developer spawns its
 own children; they report via `child-completed` up the chain. The whole engagement is a
-causally-linked subtree — migrate/sandbox/audit as a unit.
+causally-linked subtree — migrate/sandbox/audit as a unit. (This is the target shape once slices 2-3
+land; the kernel does not do this yet — see the build-status note above.)
 
 **OPEN — orphan rule:** if a parent is closed/compacted while children live, what happens?
 Default lean = close cascades down the subtree (like Erlang), BUT make it a capability/policy
