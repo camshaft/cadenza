@@ -455,9 +455,10 @@
         # feature closure pulls aws-lc-sys (the aws-sdk/reqwest rustls-tls default crypto provider), whose
         # build script drives a C/asm build via cmake. It happens to take a no-cmake path on this
         # version/target today (the check built green under stdenvNoCC), but that's fragile — a future
-        # aws-lc-sys bump could require the C build, silently reding this check. Providing cmake +
+        # aws-lc-sys bump could require the C build, silently redding this check. Providing cmake +
         # pkg-config + a cc up front makes it robust regardless of aws-lc-sys's build path (github-liaison
-        # #2018). Build tools only — no effect on any emitted/hashed artifact (a lint+test check).
+        # #2018). Build tools only — this changes THIS derivation's store-path/hash (as any input change
+        # does in Nix), but produces no DOWNSTREAM consumed artifact (it's a lint+test check).
         cdzAgentHostNativeCheck = pkgs.stdenv.mkDerivation {
           pname = "cdz-agent-host-native";
           version = "0.0.0";
@@ -812,6 +813,20 @@
             h=$(${pkgs.coreutils}/bin/sha256sum "$c" | ${pkgs.coreutils}/bin/cut -d' ' -f1)
             ${pkgs.coreutils}/bin/cp "$c" "$out/$h.wasm"
           done
+          # `cdz-run` resolves the runtime's NFC dependency (FINDING#23) by reading `runtime.toml` from the
+          # store (the `nfc = "<hash>"` line → `<store>/<hash>.wasm`), and the runtime/debug hashes from
+          # it too — WITHOUT this manifest every heap case that composes the runtime fails to resolve NFC.
+          # `xtask build` writes exactly this file (main.rs:466); mirror its format so a program run against
+          # THIS nix store composes identically to one run against target/cadenza-store.
+          rt=$(${pkgs.coreutils}/bin/sha256sum ${runtime}      | ${pkgs.coreutils}/bin/cut -d' ' -f1)
+          dbg=$(${pkgs.coreutils}/bin/sha256sum ${runtimeDebug} | ${pkgs.coreutils}/bin/cut -d' ' -f1)
+          nfc=$(${pkgs.coreutils}/bin/sha256sum ${nfc}          | ${pkgs.coreutils}/bin/cut -d' ' -f1)
+          cat > "$out/runtime.toml" <<EOF
+          # Cadenza content-addressed store — the value-heap runtime + its NFC dependency.
+          runtime = "$rt"
+          debug_runtime = "$dbg"
+          nfc = "$nfc"
+          EOF
         '';
 
         # Full-CI-in-nix increment 6b: the GHA `codegen` job (`cargo xtask codegen --check`). This is the
@@ -887,6 +902,63 @@
           installPhase = ''
             runHook preInstall
             echo "ok: cdz-codegen-check (cargo xtask codegen --check)" > "$out"
+            runHook postInstall
+          '';
+        };
+
+        # Full-CI-in-nix increment 6c: the GHA `gate` job — THE behavior gate. `cargo xtask gate --check`
+        # compiles + runs every corpus case (spec/semantics/*.sexp) through the cdz-syntax→rcdzc→cdz-run
+        # pipeline, composing each program with the value-heap runtime, and grades the outcome vs the
+        # committed `.gate-baseline*` — failing on a REGRESSION. The CI job runs `xtask build` first to
+        # populate target/cadenza-store; here we SKIP that by pointing `--store` at my `componentStore`
+        # derivation (already the content-addressed runtime store), so the check reuses the nix-built
+        # components instead of rebuilding them. Needs: the seed workspace (to build cdz/rcdzc/cdz-run) +
+        # spec/semantics (corpus + baselines) + wasm-tools (composition) + the store. aarch64 MANDATORY
+        # (it composes the runtime whose hash is arch-specific). REQUIRED-class job.
+        gateSrc = pkgs.lib.fileset.toSource {
+          root = ./.;
+          fileset = pkgs.lib.fileset.unions [
+            ./implementation/seed/crates
+            ./xtask
+            ./Cargo.toml
+            ./Cargo.lock
+            ./.cargo
+            ./rust-toolchain.toml
+            # the corpus `.sexp` + the `.gate-baseline*` files the gate grades against.
+            ./spec/semantics
+          ];
+        };
+        gateCheck = pkgs.stdenvNoCC.mkDerivation {
+          pname = "cdz-gate-check";
+          version = "0.0.0";
+          src = gateSrc;
+          # wasm-tools for the runtime↔program composition; codegenVendor is a superset root-lock vendor
+          # (it also carries runtime/nfc/build-std locks, harmless here — gate builds only native host
+          # binaries cdz/rcdzc/cdz-run, no build-std).
+          nativeBuildInputs = [ rustToolchain pkgs.wasm-tools ];
+          buildPhase = ''
+            runHook preBuild
+            export HOME="$TMPDIR/home"
+            export CARGO_HOME="$TMPDIR/cargo"
+            export CARGO_NET_OFFLINE=true
+            mkdir -p "$HOME" "$CARGO_HOME"
+            cat > "$CARGO_HOME/config.toml" <<EOF
+            [build]
+            jobs = 4
+            [source.crates-io]
+            replace-with = "vendored-sources"
+            [source.vendored-sources]
+            directory = "${codegenVendor}"
+            EOF
+            # Grade the whole corpus against the committed baselines, resolving the runtime from my
+            # nix-built component store (skips the CI job's `xtask build`). --locked = hard-fail on lock
+            # drift (matches siblings).
+            cargo run --locked --package xtask --profile release -- gate --check --store "${componentStore}"
+            runHook postBuild
+          '';
+          installPhase = ''
+            runHook preInstall
+            echo "ok: cdz-gate-check (cargo xtask gate --check --store <nix store>)" > "$out"
             runHook postInstall
           '';
         };
@@ -1032,6 +1104,8 @@
             cdz-agent-host-native = cdzAgentHostNativeCheck;
             # Full-CI-in-nix increment 6b: the GHA codegen job (cargo xtask codegen --check, ABI staleness).
             codegen-check = codegenCheck;
+            # Full-CI-in-nix increment 6c: the GHA gate job (cargo xtask gate --check — THE behavior gate).
+            gate-check = gateCheck;
             # Full-CI-in-nix increment 6a: the GHA `roundtrip` job (`cargo xtask roundtrip` — every corpus
             # program round-trips through the syntax surfaces). Corpus-only (reads spec/semantics, no
             # runtime store), so it reuses seedTestSrc (which already carries spec/semantics) via the
