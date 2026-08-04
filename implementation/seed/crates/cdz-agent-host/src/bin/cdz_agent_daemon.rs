@@ -10,10 +10,10 @@
 //! session factory is wired) concurrently with the host loop, ctrl-c ending both. That socket is the
 //! operator's "communicate with the daemon + send it commands as admin" path.
 //!
-//! (`install-session` needs a [`SessionFactory`](cdz_agent_host::SessionFactory) to load the reducer; the
-//! daemon currently boots WITHOUT one, so an install returns a clean "no session factory" error until the
-//! factory-wiring slice — [`ComponentSessionFactory`](cdz_agent_host::ComponentSessionFactory) + a
-//! `[blob]`-configured blob store — is landed. list / status / stop work today.)
+//! (`install-session` loads the reducer through a [`ComponentSessionFactory`](cdz_agent_host::ComponentSessionFactory):
+//! it fetches the named reducer component from the `[blob]`-configured blob store, lifts it, and installs a
+//! live session. An installed session gets a deny-all authorizer for v0 — it takes no world-effects until a
+//! per-reducer capability policy is configured, a later slice.)
 //!
 //! ```text
 //! cargo run --bin cdz-agent-daemon --features admin,live-net -- /etc/cdz/daemon.toml
@@ -66,17 +66,6 @@ async fn main() -> std::process::ExitCode {
         config.log, config.observability.enabled, config.retries.max_attempts
     );
 
-    // Assemble the real executor set (Clock + HTTP + Bedrock; env creds). A future slice wires the
-    // config-selected durable-log backend + observability into the host here; for now the executor set is
-    // the live spine every session shares.
-    let _executors = match cdz_agent_host::live_executor_set().await {
-        Ok(e) => e,
-        Err(e) => {
-            eprintln!("cdz-agent-daemon: could not build the live executor set: {e}");
-            return std::process::ExitCode::from(1);
-        }
-    };
-
     // The admin CONTROL INTERFACE is what makes this a live control plane: when `[admin].enabled` (and the
     // `admin` feature is compiled), boot the async multi-session loop over an EMPTY registry, bind the Unix
     // socket, and serve it CONCURRENTLY with the loop — ctrl-c drives a graceful shutdown of both. Sessions
@@ -102,9 +91,38 @@ async fn main() -> std::process::ExitCode {
         };
         eprintln!("cdz-agent-daemon: admin control interface listening on {socket_path}");
 
-        let host = AsyncAgentHost::new(AgentHost::new()).with_admin_authz(Box::new(
-            cdz_agent_host::AllowList::allow_all_for_local_admin(),
-        ));
+        // Build the reducer BLOB STORE the install factory loads from, per [blob] config (memory or a disk
+        // dir). Boxed as `dyn SessionFactory` so the two concrete blob-store types share one factory value.
+        use cdz_agent_host::{
+            AllowList, BlobConfig, ComponentSessionFactory, LiveExecutorSet, SessionFactory,
+        };
+        // Each installed session's own authorizer: DENY-ALL for v0 (fail-closed — an installed session takes
+        // no world-effects until a policy grants them; the per-reducer capability policy is a later slice).
+        let session_authz = || -> Box<dyn cdz_kernel::authz::Authorize> {
+            Box::new(cdz_kernel::authz::Authorizer::deny_all())
+        };
+        let factory: Box<dyn SessionFactory> = match &config.blob {
+            BlobConfig::Memory => Box::new(ComponentSessionFactory::new(
+                cdz_kernel::blob::MemBlobStore::new(),
+                LiveExecutorSet,
+                session_authz,
+            )),
+            BlobConfig::Dir { dir } => match cdz_kernel::blob::DiskBlobStore::open(dir) {
+                Ok(store) => Box::new(ComponentSessionFactory::new(
+                    store,
+                    LiveExecutorSet,
+                    session_authz,
+                )),
+                Err(e) => {
+                    eprintln!("cdz-agent-daemon: could not open [blob] dir {dir}: {e}");
+                    return std::process::ExitCode::from(1);
+                }
+            },
+        };
+        eprintln!("cdz-agent-daemon: reducer blob store = {:?}", config.blob);
+
+        let host = AsyncAgentHost::with_factory(AgentHost::new(), factory)
+            .with_admin_authz(Box::new(AllowList::allow_all_for_local_admin()));
         // Drop our inbox sender so an idle inbox doesn't hold the loop open; the admin socket's AdminChannel
         // is what keeps the loop alive as a control plane.
         drop(host.inbox());
@@ -130,9 +148,13 @@ async fn main() -> std::process::ExitCode {
         let socket_task = tokio::spawn(socket.serve(admin_channel, sock_sd_rx));
         let loop_result = host.run_with_wall_clock(loop_sd_rx).await;
         // The loop is done — tear down the socket server and await its task so the socket file's Drop
-        // cleanup runs before we exit.
+        // cleanup runs before we exit. A JoinError here means the socket server task PANICKED; the exit code
+        // is still driven by loop_result (correct — the loop is the primary), but log the panic so a dead
+        // socket side isn't silently swallowed (#1984 review).
         let _ = sock_sd_tx.send(());
-        let _ = socket_task.await;
+        if let Err(e) = socket_task.await {
+            eprintln!("cdz-agent-daemon: admin socket task failed: {e:?}");
+        }
         return match loop_result {
             Ok(_registry) => {
                 eprintln!("cdz-agent-daemon: shut down cleanly.");

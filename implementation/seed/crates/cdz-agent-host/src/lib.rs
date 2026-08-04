@@ -81,6 +81,8 @@ pub use clock::ClockExecutor;
 pub use config::{
     AdminConfig, BlobConfig, DaemonConfig, LogConfig, ObservabilityConfig, RetryConfig,
 };
+#[cfg(feature = "live-net")]
+pub use factory::LiveExecutorSet;
 pub use factory::{AuthorizerBuilder, ComponentSessionFactory, ExecutorSetBuilder};
 #[cfg(feature = "live-net")]
 pub use host::live_executor_set;
