@@ -500,6 +500,15 @@
         # steps. Advisory-by-omission → unilateral cargo-twin retire once green.
         cdzAgentHostVendor = pkgs.rustPlatform.importCargoLock {
           lockFile = ./implementation/seed/crates/cdz-agent-host/Cargo.lock;
+          # cdz-agent-host gained an ALWAYS-ON git dependency (v-agent-harness-host #2084, operator
+          # seq-115/116: use s2n-quic's dc-metrics directly for histograms/reporting). importCargoLock
+          # can't fetch a git source hermetically without its tree hash, so pin it here. The KEY is
+          # "<name>-<version>" from the lock (NOT the git URL — see nixpkgs import-cargo-lock.nix); the
+          # VALUE is the git-tree hash for the pinned rev (7ec9f027…, `nix flake prefetch git+…?rev=`).
+          # A rev bump (the manifest is branch=main, though the lock pins the rev) → re-prefetch + re-pin.
+          outputHashes = {
+            "s2n-quic-dc-metrics-0.76.0" = "sha256-48vWZq7OSZcH1vf8qqH+DwnRyc+sH/BnJ+AhS6QrHBA=";
+          };
         };
         cdzAgentHostSrc = pkgs.lib.fileset.toSource {
           root = ./.;
@@ -532,14 +541,19 @@
             export CARGO_HOME="$TMPDIR/cargo"
             export CARGO_NET_OFFLINE=true
             mkdir -p "$HOME" "$CARGO_HOME"
-            cat > "$CARGO_HOME/config.toml" <<EOF
-            [build]
-            jobs = 4
-            [source.crates-io]
-            replace-with = "vendored-sources"
-            [source.vendored-sources]
-            directory = "${cdzAgentHostVendor}"
-            EOF
+            # cdz-agent-host has a GIT dependency (s2n-quic-dc-metrics). importCargoLock's vendor dir
+            # ships a config.toml with the FULL source-replacement stanzas — crates-io AND the
+            # `[source."git+…"]` git-source replace-with — so we must USE that config, not a hand-rolled
+            # crates-io-only one (which leaves the git source pointing at the network → offline-mode
+            # fetch failure). Copy the vendor's config verbatim (its `directory = "cargo-vendor-dir"` is
+            # relative, so also set CARGO_HOME-relative resolution by placing the vendor dir adjacent), then
+            # prepend our [build] jobs cap. NB: the vendor's `directory` is relative → point it absolute.
+            {
+              echo "[build]"
+              echo "jobs = 4"
+              sed 's|directory = "cargo-vendor-dir"|directory = "${cdzAgentHostVendor}"|' \
+                "${cdzAgentHostVendor}/.cargo/config.toml"
+            } > "$CARGO_HOME/config.toml"
             cd implementation/seed/crates/cdz-agent-host
             # Feed the pre-built, pre-validated guest components (my derivations) so the env-gated cedar
             # authz + ComponentSessionFactory e2es RUN instead of skipping.
