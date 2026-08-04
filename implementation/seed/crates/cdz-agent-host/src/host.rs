@@ -654,18 +654,9 @@ mod tests {
         // so recovering the log file replays them. Proves the durable-log attach seam (the daemon uses this
         // per-session when [log].backend = file).
         use cdz_kernel::log_store::LogStore;
-        use std::sync::atomic::{AtomicU64, Ordering};
-        // A UNIQUE per-run temp dir (pid + a process-local counter) so concurrent test runners (cargo's
-        // parallel harness + the nix test-check) never share the log file — a fixed shared path let one
-        // run's remove_file/recover race another's writes, and a crashed-run leftover poisoned the next
-        // (#1988 review). expect() the dir create so a real fs failure surfaces, not a swallowed `let _`.
-        static SEQ: AtomicU64 = AtomicU64::new(0);
-        let dir = std::env::temp_dir().join(format!(
-            "cdz-with-sink-{}-{}",
-            std::process::id(),
-            SEQ.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&dir).expect("create unique temp dir");
+        // A UNIQUE, proven-fresh per-run temp dir (crate::testutil) so concurrent runners (cargo's parallel
+        // harness + the nix test-check) never share the log file (#1988/#1991/#1995 review family).
+        let dir = crate::testutil::unique_temp_dir("with-sink");
         let path = dir.join("session-durable.log");
 
         let sink = LogStore::open(&path).expect("open log store");
