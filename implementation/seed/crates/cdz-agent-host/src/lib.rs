@@ -78,7 +78,9 @@ pub use admin_wire::{
 };
 pub use async_host::{AdminChannel, AdminRequest, AsyncAgentHost, Inbound, Inbox};
 pub use clock::ClockExecutor;
-pub use config::{AdminConfig, DaemonConfig, LogConfig, ObservabilityConfig, RetryConfig};
+pub use config::{
+    AdminConfig, BlobConfig, DaemonConfig, LogConfig, ObservabilityConfig, RetryConfig,
+};
 pub use factory::{AuthorizerBuilder, ComponentSessionFactory, ExecutorSetBuilder};
 #[cfg(feature = "live-net")]
 pub use host::live_executor_set;

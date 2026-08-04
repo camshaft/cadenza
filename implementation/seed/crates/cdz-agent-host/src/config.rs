@@ -36,6 +36,11 @@ pub struct DaemonConfig {
     /// disabled — a daemon with no admin section boots without a control socket.
     #[serde(default)]
     pub admin: AdminConfig,
+    /// The reducer BLOB store — where the daemon fetches a session's reducer component by content hash when
+    /// an admin `install-session` names one. Defaults to in-memory (dev/test: nothing persisted, an install
+    /// only works for a reducer already `put` into the store this run). A real deployment sets a `dir`.
+    #[serde(default)]
+    pub blob: BlobConfig,
 }
 
 /// The durable-log backend — config-SELECTABLE (the operator's "selectable backends"): `memory` for dev,
@@ -83,6 +88,20 @@ pub struct AdminConfig {
     /// validated below.
     #[serde(default)]
     pub socket: Option<String>,
+}
+
+/// The reducer blob-store backend — where the daemon resolves a `reducer_hash` to component bytes on an
+/// admin `install-session`. `memory` (default) is a non-durable in-process store (dev/test); `dir` is a
+/// content-addressed disk store rooted at a path (the single-host durable backend). A distributed backend
+/// (S3/Dynamo) is a later slice behind the same `BlobStore` trait.
+#[derive(Debug, Clone, Deserialize, PartialEq, Default)]
+#[serde(tag = "backend", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum BlobConfig {
+    /// In-memory blob store — non-durable, dev/test (an install only finds a reducer `put` this run). Default.
+    #[default]
+    Memory,
+    /// Disk-backed content-addressed store rooted at `dir` — the single-host durable reducer store.
+    Dir { dir: String },
 }
 
 /// Effect-retry policy: a bounded exponential backoff the daemon's supervisor applies to a RETRYABLE
@@ -199,6 +218,13 @@ impl DaemonConfig {
                 ));
             }
             _ => {}
+        }
+        if let BlobConfig::Dir { dir } = &self.blob {
+            if dir.trim().is_empty() {
+                return Err(ConfigError(
+                    "[blob] backend=dir needs a non-empty dir".into(),
+                ));
+            }
         }
         Ok(())
     }
@@ -336,5 +362,41 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.0.contains("socket"), "{err}");
+    }
+
+    #[test]
+    fn blob_defaults_to_memory_and_selects_a_dir_backend() {
+        // Default: no [blob] section → in-memory.
+        let cfg = DaemonConfig::from_toml_str("").unwrap();
+        assert_eq!(cfg.blob, BlobConfig::Memory);
+
+        // A dir backend carries its path.
+        let cfg = DaemonConfig::from_toml_str(
+            r#"
+            [blob]
+            backend = "dir"
+            dir = "/var/lib/cdz/reducers"
+            "#,
+        )
+        .expect("blob dir config parses");
+        assert_eq!(
+            cfg.blob,
+            BlobConfig::Dir {
+                dir: "/var/lib/cdz/reducers".into()
+            }
+        );
+    }
+
+    #[test]
+    fn an_empty_blob_dir_is_rejected() {
+        let err = DaemonConfig::from_toml_str(
+            r#"
+            [blob]
+            backend = "dir"
+            dir = ""
+            "#,
+        )
+        .unwrap_err();
+        assert!(err.0.contains("dir"), "{err}");
     }
 }
