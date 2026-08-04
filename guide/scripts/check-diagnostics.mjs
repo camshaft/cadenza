@@ -65,6 +65,18 @@ const PINS = [
     phrases: ["non-exhaustive match", "not covered"],
   },
   {
+    name: "function as map/set key → CDZ0216 no-canonical-identity",
+    // Ordering.tsx "What can't be a key: a function" quotes the load-bearing phrases "map/set key" and
+    // "no canonical identity" / "neither equatable nor orderable". A reworded non-equatable message would
+    // silently drift that prose (same class as the CDZ0203 / CDZ0210 / CDZ0301 pins).
+    chapter: "Ordering.tsx — 'What can't be a key: a function'",
+    snippet: `(do (def (main)
+      (Set.len (Set.of (list (fn (x) (+ x 1))))))
+    (export main))`,
+    code: "CDZ0216",
+    phrases: ["map/set key", "no canonical identity", "neither equatable nor orderable"],
+  },
+  {
     name: "mixed float widths → CDZ0301 precisions differ",
     // Floats.tsx quotes the exact phrase "floating-point precisions differ" as the diagnostic text. A reworded
     // width-mismatch message would silently drift that prose (same class as the CDZ0203 / CDZ0210 pins).

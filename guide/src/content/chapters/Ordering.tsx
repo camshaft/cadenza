@@ -137,6 +137,29 @@ export default function Ordering() {
         was inserted, so the <C>Map</C> finds it. A value you can order is a value you can organize.
       </P>
 
+      <H2>What can't be a key: a function</H2>
+      <P>
+        The flip side of that rule draws a sharp line. Keying needs equality and a total order, and a{" "}
+        <em>function</em> has neither: two closures can compute the same results yet be different values, and
+        there's no canonical way to compare or order them. So a function can't be a <C>Map</C> key or a{" "}
+        <C>Set</C> element, and the compiler says so rather than inventing an answer. A <C>Set</C> of
+        functions is rejected:
+      </P>
+      <Runnable
+        source={`(do (def (main)
+      (Set.len (Set.of (list (fn (x) (+ x 1))))))
+    (export main))`}
+        expect="error"
+      />
+      <P>
+        The error is <C>CDZ0216</C>: <em>a value of function type … cannot be a map/set key</em>, since a
+        function <em>has no canonical identity, so it is neither equatable nor orderable</em>. The check walks the whole
+        key, not just its outer shape, so a function buried inside a tuple key or a list element is caught
+        the same way. The fix the message points to is to key by a <em>value</em> instead: a field the
+        closure captures, an id you assign, a tag, anything with the equality and order that a function
+        lacks.
+      </P>
+
       <Why tenet="A total order is a three-way answer">
         Returning <C>-1 / 0 / 1</C> works, but it leans on a convention and can't be enforced. Cadenza's{" "}
         <C>compare</C> yields the <C>Ordering</C> sum of <em>less</em>, <em>equal</em>, and <em>greater</em>,
