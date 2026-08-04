@@ -1799,6 +1799,7 @@ pass	a handle body reads an enclosing function parameter
 pass	a handle seeded from a runtime caller argument advances from that seed
 pass	a handle whose head names a value rather than an effect is rejected
 pass	a handle's TUPLE value pairing a scalar with a built list escapes and is destructured
+pass	a handler ARM enumerates a 60-key trie op argument and resumes its fold
 pass	a handler STATE that is a recursive sum GROWS one constructor per operation
 pass	a handler accumulates into a list and a read-out operation reads it back
 pass	a handler arm RECURSES through a named helper before resuming
@@ -1832,6 +1833,7 @@ pass	a handler threads a TUPLE of two heaps as state with different ops touching
 pass	a handler whose STATE is a RECORD combining a scalar counter and a heap LIST field
 pass	a handler whose STATE is a TUPLE reads both fields and rebuilds the pair per performance
 pass	a handler whose STATE is a sum destructures it in the arm
+pass	a handler's heap STATE grows to a 40-key trie across resumes and enumerates at the end
 pass	a hash-prefixed atom quotes to an Ast.Name carrying the hash in its text
 pass	a hash-prefixed name is distinct from the bare name without the hash
 pass	a header of packed nibbles and a length-prefixed body round-trips
