@@ -877,6 +877,7 @@ pass	a SET as a Map key hits by canonical content and a different set misses
 pass	a SET as a set element hashes by content: three build orders, one element
 pass	a SET churned to empty equals a fresh empty set and re-accepts elements
 pass	a SET handler state grows per perform and dedupes a repeated event
+pass	a SET of BigInts as a map key matches its construction-order and arithmetic twin
 pass	a SET of SETS dedups elements by set CONTENT — insertion-order twins collapse
 pass	a SINGLE-variant open sum still requires an open-tail arm
 pass	a SLIDING-WINDOW max walks a k=3 window by paired index reads
