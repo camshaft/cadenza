@@ -4871,7 +4871,19 @@ fn thread_bounded(
         // advanced a slot the merge collapses to the incoming state unchanged. Rebuild the same `(match
         // rscrut (pat rbody)…)` form so the pattern engine lowers it by the ordinary path.
         Resolved::Match { scrutinee, arms } => {
+            let abort_before_scrut = ctx.abort_value.get();
             let (rscrut, cur) = thread_bounded(db, scrutinee, states, ctx, inline_depth)?;
+            // SCRUTINEE ABORT collapses the whole match (the abort-outer-advance class, scrutinee face). The
+            // scrutinee is evaluated BEFORE any arm; if it ABORTS — `(match (do (A.tick) (B.bail 99)) …)` under
+            // B — no arm runs, so the match's value is the scrutinee's rewrite. `thread_bounded` already
+            // produced the sound `(do (A.tick) 99)` (the do-arm kept the pre-abort foreign `A.tick`); return
+            // it directly so the ENCLOSING fold discharges the foreign prefix (advancing the outer state)
+            // rather than wrapping the aborted scrutinee in a dead `(match … arms)` whose bare-abort collapse
+            // would drop `A.tick` (109 vs 110). Only when a NEW abort fired threading the scrutinee (cell
+            // flipped) — a non-aborting scrutinee falls through to the ordinary per-arm threading below.
+            if ctx.abort_value.get() != abort_before_scrut {
+                return Some((rscrut, cur));
+            }
             let match_head = db.push_atom(Leaf::Name("match".to_string()));
             let mut children = vec![match_head, rscrut];
             // Collect each arm's (pattern, out-state) so the arm out-states can be MERGED into a match-valued
