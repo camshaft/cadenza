@@ -279,17 +279,22 @@ impl EffectRequest {
     /// the kind, so the placeholder is inert (the durable `Dispatched` frame records the family, the
     /// authoritative identity). `version` is 1. Additive alongside `new`; both yield the same shape.
     pub fn new_with_family(
-        family: impl Into<std::sync::Arc<str>>,
+        family: impl Into<std::borrow::Cow<'static, str>>,
         target: impl Into<std::sync::Arc<str>>,
         payload: Option<Payload>,
         timeliness: Timeliness,
     ) -> Self {
-        let family: std::sync::Arc<str> = family.into();
+        // Take the family as `Cow<'static, str>` (not `Arc<str>`): a well-known family passed as a
+        // `&'static str` const arrives as `Cow::Borrowed` with ZERO heap alloc — the same invariant `new`
+        // holds via `kind.family()` (#1563/#1722). (An `Arc<str>` parameter forced a heap alloc on EVERY call
+        // even for a `&'static str` const that the match below immediately re-borrows and discards.)
+        let family: std::borrow::Cow<'static, str> = family.into();
         // Canonicalize a WELL-KNOWN family (an effect kind OR a control-plane family) to its `&'static str`
-        // const → `Cow::Borrowed`, ZERO alloc (the same invariant `new` holds via `kind.family()`; #1563 Cow
-        // work). A well-known effect family carries its own kind; a control-plane family (control/*) has no
-        // world-effect kind, so it takes the `Emit` placeholder (inert — dispatch/idempotency key on family).
-        // Only a genuine register-by-string EXTENSION family (unknown to both) owns its string.
+        // const → `Cow::Borrowed`, zero alloc. A well-known effect family carries its own kind; a
+        // control-plane family (control/*) has no world-effect kind, so it takes the `Emit` placeholder
+        // (inert — dispatch/idempotency key on family). Only a genuine register-by-string EXTENSION family
+        // (unknown to both) keeps an owned string — and reuses the INPUT Cow, so a caller that already owns it
+        // doesn't re-allocate.
         let (kind, family) = match EffectKind::from_family(&family) {
             Some(k) => {
                 let fam = std::borrow::Cow::Borrowed(k.family());
@@ -297,10 +302,8 @@ impl EffectRequest {
             }
             None => match effect_ct::wellknown_control(&family) {
                 Some(c) => (EffectKind::Emit, std::borrow::Cow::Borrowed(c)),
-                None => (
-                    EffectKind::Emit,
-                    std::borrow::Cow::Owned(family.to_string()),
-                ),
+                // Extension family: keep the caller's Cow as-is (Borrowed stays borrowed, Owned isn't cloned).
+                None => (EffectKind::Emit, family),
             },
         };
         EffectRequest {
@@ -704,8 +707,10 @@ mod tests {
             "a well-known control family is Cow::Borrowed (zero-alloc), not owned"
         );
 
-        // An extension family with no EffectKind variant → Emit placeholder, family preserved, OWNED (it's
-        // a genuine ad-hoc string, not a known const).
+        // An extension family with no EffectKind variant → Emit placeholder, family preserved. Passed as a
+        // `&'static str`, it stays Cow::Borrowed — ZERO alloc even for an unknown family (the #1722 fix: the
+        // constructor takes `Into<Cow<'static, str>>` and preserves the caller's Cow instead of round-tripping
+        // through an Arc<str>, so a static extension family no longer allocates either).
         let ext =
             EffectRequest::new_with_family("custom/metrics", "m", None, Timeliness::Interactive);
         assert_eq!(ext.content_type.family, "custom/metrics");
@@ -715,8 +720,23 @@ mod tests {
             "an extension family with no built-in kind gets the Emit placeholder"
         );
         assert!(
-            matches!(ext.content_type.family, std::borrow::Cow::Owned(_)),
-            "a genuine extension family is owned (no static const to borrow)"
+            matches!(ext.content_type.family, std::borrow::Cow::Borrowed(_)),
+            "a static extension family stays Borrowed (zero-alloc — the #1722 fix)"
+        );
+
+        // A genuinely OWNED extension family (a runtime String, not a static const) is preserved as
+        // Cow::Owned WITHOUT re-allocation — the constructor reuses the caller's Cow, it doesn't clone it.
+        let dynamic: String = format!("custom/{}", "runtime");
+        let owned_ext = EffectRequest::new_with_family(
+            std::borrow::Cow::Owned(dynamic),
+            "m",
+            None,
+            Timeliness::Interactive,
+        );
+        assert_eq!(owned_ext.content_type.family, "custom/runtime");
+        assert!(
+            matches!(owned_ext.content_type.family, std::borrow::Cow::Owned(_)),
+            "a runtime-owned extension family is preserved as Owned (reused, not re-cloned)"
         );
     }
 
