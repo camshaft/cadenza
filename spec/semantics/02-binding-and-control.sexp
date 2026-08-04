@@ -757,6 +757,50 @@
   (call main (: 1 Int64)) (output (: 1 Int64))
   (call main (: 0 Int64)) (output (: 0 Int64)))
 
+(case "a match guard performs a MAP lookup keyed by the pattern binder (guard x CHAMP)"
+  (doc    "The guard-predicate cases above read the destructured payload directly (List.len bands); this
+           one sends the binder through a CHAMP descent INSIDE the guard: `(guard (Some id) (match
+           (Map.lookup prices id) ((Some p) (> p 60)) ((None _u) false)))` — the guard's truth is decided
+           by a lookup in an enclosing-scope map, with the inner match's own binder `p` scoped to the
+           predicate. k=1 finds 100 (>60) -> guard passes -> 1; k=2 finds 50 (fails) -> falls through to
+           the bare (Some _id) arm -> 2; k=9 misses (None -> false) -> same fall-through -> 2. Pins the
+           nested-match-as-predicate composition (a guard is an arbitrary Bool expression, including one
+           with its own binders) and that a MISS and a FAILING hit take the same fall-through edge.")
+  (input  (do
+            (def (main (: k Int64))
+              (do
+                (def prices (Map.insert (Map.insert Map.empty 1 100) 2 50))
+                (match (Some k)
+                  ((guard (Some id) (match (Map.lookup prices id) ((Some p) (> p 60)) ((None _u) false))) 1)
+                  ((Some _id) 2)
+                  ((None _u) -1))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 1 Int64))
+  (call   main (: 2 Int64)) (output (: 2 Int64))
+  (call   main (: 9 Int64)) (output (: 2 Int64)))
+
+(case "an IF nested in a match arm re-tests the binder with a MAP lookup (the unguarded twin)"
+  (doc    "The control beside the guard x CHAMP case above: the same lookup-decides-band logic spelled as
+           an ordinary `if` INSIDE the arm body instead of a guard — `(if <lookup id> 1 (if (= id 2) 2
+           0))`. Semantically the same classification (k=1 -> 1, k=2 -> 2, k=9 -> 0 here since the arm
+           body distinguishes the miss), but structurally the arm is UNCONDITIONALLY taken and the test
+           lives in its body — no fall-through edge, no re-match. Pins that the two spellings agree where
+           they overlap (hit-pass and hit-fail) and that moving the predicate INTO the arm changes only
+           what the author writes for a miss, not the lookup semantics.")
+  (input  (do
+            (def (main (: k Int64))
+              (do
+                (def prices (Map.insert (Map.insert Map.empty 1 100) 2 50))
+                (match (Some k)
+                  ((Some id) (if (match (Map.lookup prices id) ((Some p) (> p 60)) ((None _u) false))
+                                 1
+                                 (if (= id 2) 2 0)))
+                  (None -1))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 1 Int64))
+  (call   main (: 2 Int64)) (output (: 2 Int64))
+  (call   main (: 9 Int64)) (output (: 0 Int64)))
+
 (case "a MATCH as a NON-FINAL multi-binding let init selects the binding value per call"
   (doc    "No landed case puts a match in a NON-FINAL init of a multi-binding let: the match
            selects the first binding's value, the second binding evaluates after, both read in the
