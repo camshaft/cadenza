@@ -15628,6 +15628,48 @@
             (export main)))
   (output (: 1230 Int64)))
 
+(case "Map.to-list over a MULTI-LEVEL trie enumerates all 100 keys fully sorted"
+  (doc    "The to-list order rows above run on 3-entry (single-leaf) maps; this pins the enumeration walk
+           over a MULTI-LEVEL trie: 100 keys (i·7, spread across node splits) enumerate strictly
+           increasing END TO END, verified by a walk that requires every adjacent pair ascending and
+           counts all 100 entries — one out-of-order pair or a dropped key poisons the result with
+           -100000. A per-node sort that forgot the cross-node merge order (or a descent that visited
+           subtrees out of bitmap order) passes the 3-entry rows and fails here.")
+  (input  (do
+            (def (fill (: i Int64) (: m (Map Int64 Int64)))
+              (if (= i 0) m (fill (- i 1) (Map.insert m (* i 7) i))))
+            (def (sorted (: ps (List (Tuple Int64 Int64))) (: prev Int64) (: cnt Int64))
+              (match ps
+                ((list) cnt)
+                ((list h .. t) (match h ((tuple k _v) (if (> k prev) (sorted t k (+ cnt 1)) -100000))))))
+            (def (main (: n Int64))
+              (sorted (Map.to-list (fill n Map.empty)) -1 0))
+            (export main)))
+  (call   main (: 100 Int64)) (output (: 100 Int64)))
+
+(case "an enumerate-and-rebuild round trip equals the source map by canonical identity"
+  (doc    "The to-list⇄fold closure of the enumeration family: `Map.to-list` a 60-entry trie, rebuild by
+           folding the pairs into an empty map, and the rebuild must EQUAL the source by canonical `=`
+           with the same length. Composes enumeration (every entry surfaced exactly once), the tuple
+           payload round trip (k,v arrive intact), and construction canonicalization (the rebuilt trie's
+           structure matches the source's regardless of the enumeration's insertion order). An
+           enumeration that dropped, duplicated, or corrupted one entry breaks equality; so does a
+           rebuild path that canonicalizes differently from the original build.")
+  (input  (do
+            (def (fill (: i Int64) (: m (Map Int64 Int64)))
+              (if (= i 0) m (fill (- i 1) (Map.insert m (* i 3) (* i 5)))))
+            (def (rebuild (: ps (List (Tuple Int64 Int64))) (: m (Map Int64 Int64)))
+              (match ps
+                ((list) m)
+                ((list h .. t) (match h ((tuple k v) (rebuild t (Map.insert m k v)))))))
+            (def (main (: n Int64))
+              (do
+                (def src (fill n Map.empty))
+                (def rt (rebuild (Map.to-list src) Map.empty))
+                (+ (* 10 (if (= rt src) 1 0)) (if (= (Map.len rt) n) 1 0))))
+            (export main)))
+  (call   main (: 60 Int64)) (output (: 11 Int64)))
+
 (case "Map.to-list length is the map's entry count"
   (doc    "`(List.len (Map.to-list (Map.insert (Map.insert (Map.insert Map.empty 1 10) 2 20) 1 99)))` —
            the enumerated list has one (k,v) tuple per DISTINCT key ({1,2} → 2, the second insert at key 1

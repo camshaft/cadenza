@@ -236,6 +236,7 @@ pass	Map.to-list over Float64 KEYS enumerates by canonical byte key order
 pass	Map.to-list over Rational keys enumerates ascending by key value with the integer form last
 pass	Map.to-list over TUPLE keys enumerates in lexicographic key order (the minimum first)
 pass	Map.to-list over TUPLE keys places the middle key second (a full sort, not a min-pick)
+pass	Map.to-list over a MULTI-LEVEL trie enumerates all 100 keys fully sorted
 pass	Map.to-list over a RUNTIME-built map enumerates entries in canonical key order (first key is min)
 pass	Map.to-list over runtime STRING keys enumerates in content byte order (first is byte-smallest)
 pass	McCarthy 91 — a self-call nested INSIDE the argument of another self-call
@@ -3956,6 +3957,7 @@ pass	an entrypoint delegation reaches an effect performed in a recursive callee
 pass	an entrypoint returning a comparison presents a Bool result at the boundary
 pass	an entrypoint returning arithmetic presents an Int64 result at the boundary
 pass	an entrypoint that delegates no effect is pure and makes no host call
+pass	an enumerate-and-rebuild round trip equals the source map by canonical identity
 pass	an equality point fact decides a DIFFERENT equality test in the then branch — the point-fact eq-fold face
 pass	an equality point fact folds an inner range comparison, both directions — the point-fact analogue of the ordering fold
 pass	an equality point fact sheds a then-branch arithmetic overflow guard, but the trap survives unguarded
