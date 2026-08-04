@@ -5112,6 +5112,7 @@ pass	scan emits the seed plus one accumulator per element (n+1 outputs)
 pass	scan over an empty iterator emits just the seed
 pass	scan threads its accumulator left-to-right (an order-sensitive folder)
 pass	scan's kth emitted accumulator is the running fold of the first k elements
+pass	self-difference of a 100-element trie IS the canonical empty set by equality
 pass	self-operand division is NOT folded to one — it still traps at zero
 pass	self-operand subtraction and xor are zero, and-or are the operand, on a runtime value
 pass	sequenced memoize helpers with a local let thread the Map-state out-state (the memo-spine shape)
@@ -5633,6 +5634,7 @@ pass	union dedups overlapping elements by content, counted once
 pass	union is associative
 pass	union is commutative
 pass	union of a set with itself is the set (idempotent)
+pass	union with a DERIVED empty (self-difference) is identity at trie scale
 pass	union with the empty set is the set itself
 pass	unit and the empty tuple are the same value
 pass	unit arithmetic on a map-extracted quantity re-enters the map typed

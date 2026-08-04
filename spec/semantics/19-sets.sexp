@@ -947,6 +947,43 @@
   (call   main (: 0 Int64))
   (output (: (tuple 60 20 20 1 1 1 0) (Tuple Int64 Int64 Int64 Int64 Int64 Int64 Int64))))
 
+(case "self-difference of a 100-element trie IS the canonical empty set by equality"
+  (doc    "The self-difference law (A ∖ A = ∅) at MULTI-LEVEL trie scale, upgraded from cardinality to
+           IDENTITY: the runtime self-difference case above checks `Set.len` = 0 at n=3 (one leaf); here a
+           100-element set's self-difference must EQUAL `(Set.of (list))` by canonical `=` (10) as well as
+           by len (+0). The difference walk tears down a deep trie node by node — a walk that left any
+           residual interior structure (a non-collapsed empty branch) would report len 0 yet fail the
+           canonical-equality check. The empty-set seed is `(Set.of (list))` (Set has no `Set.empty`).")
+  (input  (do
+            (def (build (: i Int64) (: acc (Set Int64)))
+              (if (= i 0) acc (build (- i 1) (Set.insert acc i))))
+            (def (main (: n Int64))
+              (do
+                (def s (build n (Set.of (list))))
+                (def d (Set.difference s s))
+                (+ (* 10 (if (= d (Set.of (list))) 1 0)) (Set.len d))))
+            (export main)))
+  (call   main (: 100 Int64)) (output (: 10 Int64)))
+
+(case "union with a DERIVED empty (self-difference) is identity at trie scale"
+  (doc    "The identity-element law (∅ ∪ A = A) where the empty operand is DERIVED — `(Set.difference s
+           s)` — rather than a literal, and A is a 100-element multi-level trie: the union must return a
+           set EQUAL to the original by canonical `=` (10) with membership intact (+1). Composes the
+           self-difference collapse with the union merge walk: a derived empty carrying structural residue
+           would poison the union's merge (a wrong branch copied in), breaking equality with the pristine
+           operand. The union/intersection/difference identity laws above all use LITERAL empties; this
+           pins the derived-empty face at depth.")
+  (input  (do
+            (def (build (: i Int64) (: acc (Set Int64)))
+              (if (= i 0) acc (build (- i 1) (Set.insert acc i))))
+            (def (main (: n Int64))
+              (do
+                (def s (build n (Set.of (list))))
+                (def rt (Set.union (Set.difference s s) s))
+                (+ (* 10 (if (= rt s) 1 0)) (if (Set.contains rt 57) 1 0))))
+            (export main)))
+  (call   main (: 100 Int64)) (output (: 11 Int64)))
+
 (case "intersection is associative"
   (doc    "`(A ∩ B) ∩ C` equals `A ∩ (B ∩ C)` for A={1,2,3,4}, B={2,3,4,5}, C={3,4,5,6} — both regroupings
            yield {3,4}. The intersection companion of union associativity; pins that the meet regrouping is
