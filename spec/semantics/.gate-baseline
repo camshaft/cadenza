@@ -1077,6 +1077,7 @@ pass	a bitwise AND on an unusual signed width clears the sign bit to a non-negat
 pass	a bitwise OR on an unusual signed width sign-extends a result that sets the sign bit
 pass	a bitwise XOR on an unusual signed width sign-extends a result that sets the sign bit
 pass	a bitwise operator on a boolean operand names the integer requirement
+pass	a block-wrapped conditional whose CONDITION performs (not a branch) folds correctly (adv-69 boundary control)
 pass	a bool match missing the false arm is non-exhaustive
 pass	a bool match missing the true arm is non-exhaustive
 pass	a bool match on a constant scrutinee is non-exhaustive even when the constant hits the sole arm

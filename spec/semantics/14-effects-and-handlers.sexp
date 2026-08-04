@@ -3531,6 +3531,26 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 73 Int64)))
 
+(case "a block-wrapped conditional whose CONDITION performs (not a branch) folds correctly (adv-69 boundary control)"
+  (doc    "The passing boundary control for the adv-69 guards: a block-wrapped conditional whose CONDITION
+           performs — `(let ((v (let ((b (> (St.get) 0))) (if b 7 99)))) (+ (* 10 v) (St.get)))` — must still
+           FOLD, not decline. Unlike the adv-69 faces (where a BRANCH performs, so the advance is branch-local
+           and drops at the block boundary), here the perform is a pure `let`-binding on the block's STRICT
+           SPINE: `(St.get)` runs unconditionally as `b`'s init, advancing the state once (seeded 3 → 4), and
+           the `if`'s branches (7 / 99) perform nothing. So the block's out-state IS the threaded post-perform
+           state — no drop. v = 7 (b = 3>0 = true), trailing `(St.get)` reads the advanced 4 → 10*7 + 4 = 74.
+           Pins that the adv-69 decline-guards (`block_wrapped_branch_performs` et al.) key on a BRANCH perform,
+           NOT any perform inside a block — a condition/spine perform is correctly threaded and folds. Computes
+           on all backends.")
+  (input  (do
+            (effect St (op get (-> Unit Int64)))
+            (def (main)
+              (handle St 3 ((get (u) s (resume s (+ s 1))))
+                (let ((v (let ((b (> (St.get) 0))) (if b 7 99))))
+                  (+ (* 10 v) (St.get)))))
+            (export main)))
+  (call   main) (output (: 74 Int64)))
+
 (case "two performs bound by nested lets thread the handler state in order"
   (doc    "Two performs on the strict spine, each BOUND by its own `let`, thread the handler state in
            evaluation order across the binds. `(let ((a (Ask.get))) (let ((b (Ask.get))) (+ a b)))` under a
