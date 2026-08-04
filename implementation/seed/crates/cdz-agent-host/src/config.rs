@@ -41,6 +41,12 @@ pub struct DaemonConfig {
     /// only works for a reducer already `put` into the store this run). A real deployment sets a `dir`.
     #[serde(default)]
     pub blob: BlobConfig,
+    /// Structured TRACING — spans/events on the host loop + session/effect surface (operator directive:
+    /// "add tracing to the harness, configured via the toml"). Defaults to disabled (no subscriber
+    /// installed). The subscriber the daemon initializes from this section is wired in a following slice;
+    /// this section always parses ahead of that (config first, subscriber follows — like `[observability]`).
+    #[serde(default)]
+    pub tracing: TracingConfig,
 }
 
 /// The durable-log backend — config-SELECTABLE (the operator's "selectable backends"): `memory` for dev,
@@ -60,15 +66,18 @@ pub enum LogConfig {
 }
 
 /// Observability config — the daemon's metrics integration (the operator's `s2n-quic-dc-metrics` crate,
-/// `camshaft/s2n-quic` branch `main`). Disabled by default; when enabled, metrics FAN OUT to the configured
-/// `targets` — a LIST so MULTIPLE backends are supported (the operator's config-multiple requirement), with
-/// at least one required when enabled (validated below). Each `[[observability.target]]` is a
-/// [`MetricsTarget`] whose `kind` selects a backend and whose OTHER fields are that backend's OWN typed
-/// config, so the daemon can emit to several sinks (multiple statsd collectors, or different backend types).
+/// `camshaft/s2n-quic` branch `main`). Disabled by default. This section describes what the emitter does
+/// WHEN WIRED: when `enabled`, metrics fan out to the configured `targets` — a LIST so MULTIPLE backends are
+/// supported (the operator's config-multiple requirement), with at least one required when enabled
+/// (validated below). Each `[[observability.target]]` is a [`MetricsTarget`] whose `kind` selects a backend
+/// and whose OTHER fields are that backend's OWN typed config, so the wired emitter can send to several
+/// sinks (multiple statsd collectors, or different backend types).
 ///
-/// The emitter itself is a following slice (feature-gated to keep the QUIC/metrics dep tree out of the
-/// default build), waiting on the operator's confirmation of the v0 backend SET. This CONFIG is always
-/// parseable ahead of that wiring (staged like `[log]`/`[blob]`: config first, emitter follows).
+/// **Not yet wired (config-ahead-of-emitter, staging class of `[log]`/`[blob]`).** The daemon bin currently
+/// reads only `observability.enabled` (a boot log line); it does NOT yet consult `targets` — the emitter
+/// that reads them is a following, feature-gated slice (keeping the QUIC/metrics dep tree out of the default
+/// build). So a configured target PARSES + VALIDATES but nothing emits to it until that slice lands. The
+/// fan-out semantics above are the emitter's contract, not current daemon behavior.
 #[derive(Debug, Clone, Deserialize, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct ObservabilityConfig {
@@ -252,6 +261,79 @@ impl Default for RetryConfig {
     }
 }
 
+/// Structured-tracing config — how the daemon initializes its `tracing` subscriber (operator: "add tracing
+/// … configured via the toml"). Disabled by default (no subscriber installed → spans/events are the
+/// near-zero-cost no-op the `tracing` facade compiles to when nothing subscribes). When `enabled`, the
+/// daemon installs a `tracing-subscriber` at boot with this `filter`/`format`/`output`.
+///
+/// **Config first, subscriber follows.** This section always parses; the daemon-bin code that reads it to
+/// install a subscriber is the following slice (staged like `[observability]`). `filter` uses the standard
+/// `EnvFilter` directive syntax (e.g. `"info"`, `"cdz_agent_host=debug,warn"`) — the same grammar as
+/// `RUST_LOG` — so an operator writes familiar per-target levels.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct TracingConfig {
+    /// Install a tracing subscriber. Default off — a daemon with no `[tracing]` section (or `enabled=false`)
+    /// runs with no subscriber, so the facade's spans/events are inert.
+    #[serde(default)]
+    pub enabled: bool,
+    /// The `EnvFilter` directive string (RUST_LOG grammar) selecting which spans/events are recorded. Default
+    /// `"info"`. Validated non-blank when `enabled`.
+    #[serde(default = "TracingConfig::default_filter")]
+    pub filter: String,
+    /// The event/span rendering format. Default `compact`.
+    #[serde(default)]
+    pub format: TracingFormat,
+    /// Where formatted output goes. Default `stderr` (diagnostics off stdout, matching the daemon's boot
+    /// eprintln! convention). A `file` output writes to `path`.
+    #[serde(default)]
+    pub output: TracingOutput,
+}
+
+impl TracingConfig {
+    fn default_filter() -> String {
+        "info".to_string()
+    }
+}
+
+impl Default for TracingConfig {
+    fn default() -> Self {
+        TracingConfig {
+            enabled: false,
+            filter: Self::default_filter(),
+            format: TracingFormat::default(),
+            output: TracingOutput::default(),
+        }
+    }
+}
+
+/// The tracing event/span rendering format — maps to a `tracing-subscriber` fmt layer style.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum TracingFormat {
+    /// Terse single-line events (the fmt layer's `.compact()`). Default.
+    #[default]
+    Compact,
+    /// Multi-line human-readable (`.pretty()`).
+    Pretty,
+    /// Structured JSON (`.json()`) — for machine ingestion / an OTLP-adjacent pipeline.
+    Json,
+}
+
+/// Where the tracing subscriber writes — a `stderr`/`stdout` stream or a `file` at a path.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[serde(tag = "to", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum TracingOutput {
+    /// Write to stderr — the default (keeps trace output off stdout, matching the daemon's boot diagnostics).
+    #[default]
+    Stderr,
+    /// Write to stdout.
+    Stdout,
+    /// Append to a file at `path` (created if absent). The daemon opens it at boot; an un-openable path is a
+    /// fatal config error (surfaced at boot, like a bad `[log]` dir).
+    File { path: String },
+}
+
 /// A config error — a bad path, unparseable TOML, or a semantic-validation failure. Stringly-typed (the
 /// daemon surfaces it to stderr + exits non-zero; there's no recovery from a bad config).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -354,6 +436,20 @@ impl DaemonConfig {
                 ));
             }
         }
+        if self.tracing.enabled {
+            if self.tracing.filter.trim().is_empty() {
+                return Err(ConfigError(
+                    "[tracing] enabled=true needs a non-empty filter (e.g. \"info\")".into(),
+                ));
+            }
+            if let TracingOutput::File { path } = &self.tracing.output {
+                if path.trim().is_empty() {
+                    return Err(ConfigError(
+                        "[tracing] output to=file needs a non-empty path".into(),
+                    ));
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -371,6 +467,11 @@ mod tests {
         assert_eq!(cfg.log, LogConfig::Memory);
         assert!(!cfg.observability.enabled);
         assert_eq!(cfg.retries, RetryConfig::default());
+        // [tracing] defaults: disabled, "info" filter, compact/stderr.
+        assert!(!cfg.tracing.enabled);
+        assert_eq!(cfg.tracing.filter, "info");
+        assert_eq!(cfg.tracing.format, TracingFormat::Compact);
+        assert_eq!(cfg.tracing.output, TracingOutput::Stderr);
     }
 
     #[test]
@@ -752,5 +853,74 @@ mod tests {
             30_000,
             "huge attempt saturates, no panic/overflow"
         );
+    }
+
+    #[test]
+    fn tracing_config_parses_all_fields_and_file_output() {
+        let cfg = DaemonConfig::from_toml_str(
+            r#"
+            [tracing]
+            enabled = true
+            filter = "cdz_agent_host=debug,info"
+            format = "json"
+            [tracing.output]
+            to = "file"
+            path = "/var/log/cdz/trace.log"
+            "#,
+        )
+        .expect("full tracing config parses");
+        assert!(cfg.tracing.enabled);
+        assert_eq!(cfg.tracing.filter, "cdz_agent_host=debug,info");
+        assert_eq!(cfg.tracing.format, TracingFormat::Json);
+        assert_eq!(
+            cfg.tracing.output,
+            TracingOutput::File {
+                path: "/var/log/cdz/trace.log".into()
+            }
+        );
+    }
+
+    #[test]
+    fn tracing_enabled_with_a_blank_filter_is_rejected() {
+        let err = DaemonConfig::from_toml_str(
+            r#"
+            [tracing]
+            enabled = true
+            filter = ""
+            "#,
+        )
+        .unwrap_err();
+        assert!(err.0.contains("filter"), "{err}");
+    }
+
+    #[test]
+    fn tracing_file_output_needs_a_path() {
+        // A file output with a blank path is a misconfig — caught at validate (serde requires the field, so
+        // this exercises the trim-check on a present-but-blank value).
+        let err = DaemonConfig::from_toml_str(
+            r#"
+            [tracing]
+            enabled = true
+            [tracing.output]
+            to = "file"
+            path = ""
+            "#,
+        )
+        .unwrap_err();
+        assert!(err.0.contains("path"), "{err}");
+    }
+
+    #[test]
+    fn tracing_disabled_with_odd_fields_still_parses() {
+        // When disabled, the filter/output aren't validated (no subscriber installed) — a disabled section
+        // with defaults is valid and inert.
+        let cfg = DaemonConfig::from_toml_str(
+            r#"
+            [tracing]
+            enabled = false
+            "#,
+        )
+        .expect("disabled tracing parses");
+        assert!(!cfg.tracing.enabled);
     }
 }
