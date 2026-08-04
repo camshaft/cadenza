@@ -616,7 +616,8 @@ mod tests {
     async fn metered_executors_sharing_one_arc_aggregate_across_families() {
         // The wiring pattern LiveExecutorSet::build uses: register MULTIPLE MeteredExecutors (one per family)
         // in a CompositeExecutor, all sharing ONE Arc<EffectMetrics>, so a route to any family tallies into
-        // the SAME host-wide set. Two families here, one Ok each → the shared snapshot sees both.
+        // the SAME host-wide set. Two families here — one Ok + one TimedOut → the shared snapshot sees both
+        // outcomes (and proves the wrap tallies a non-Ok outcome across families too).
         use cdz_kernel::effect::{EffectKind, Payload, Timeliness};
         use cdz_kernel::executor::Executor as _;
 
@@ -629,7 +630,7 @@ mod tests {
                 .into(),
             ),
         };
-        let ok_b = ScriptedExecutor {
+        let timedout_b = ScriptedExecutor {
             outcomes: std::cell::RefCell::new(vec![EffectOutcome::TimedOut].into()),
         };
         let mut composite = CompositeExecutor::new()
@@ -639,7 +640,7 @@ mod tests {
             )
             .with_effect(
                 "fam-b",
-                Box::new(MeteredExecutor::new(Box::new(ok_b), metrics.clone())),
+                Box::new(MeteredExecutor::new(Box::new(timedout_b), metrics.clone())),
             );
 
         // Route one effect to each family (CompositeExecutor dispatches by req.content_type.family).
