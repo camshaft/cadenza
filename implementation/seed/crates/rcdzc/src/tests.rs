@@ -66510,7 +66510,8 @@ mod stage1 {
         // 109. Fixed: thread's Apply arm LIFTS the pre-abort foreign operand into a for-effect `do` prefix
         // `(do (A.tick) 99)` — the shape the landed do-shape fold then preserves. Done in `thread` (not
         // reduce_handle) so it preserves UNCONDITIONALLY: sound for the observed case (→110) AND the unobserved
-        // deep-nested 1251 (stays 99 — the prefix runs for effect only).
+        // deep-nested case (the corpus "a strict-operand abort in a DEEP-nested handler stack keeps its 99
+        // when the advances are UNOBSERVED" — stays 99, the prefix runs for effect only).
         let src = "(do (effect A (op tick (-> Unit Int64)) (op get (-> Unit Int64))) \
                    (effect B (op bail (-> Int64 Int64))) \
                    (def (main) \

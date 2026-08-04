@@ -2462,7 +2462,8 @@ pub fn reduce_handle(
         //
         // GATED to `rewritten` being a `do`-FORM. This is what SEPARATES the sound do-shape from the STILL-
         // AMBIGUOUS strict-operand shape (`(+ (A.tick) (B.bail 99))` → `rewritten` `(+ (A.tick) 99)`, a `+`
-        // form): a bare-abort `+` case that is CORRECT-because-UNOBSERVED (14-effects:1251 `(+ (A.a) (+ (B.b)
+        // form): a bare-abort `+` case that is CORRECT-because-UNOBSERVED (the corpus case "an abortive
+        // perform under THREE nested handlers abandons the two resumptive frames above it", `(+ (A.a) (+ (B.b)
         // (Bail.bail 99)))` = 99) is indistinguishable at THIS (inner) handler from the miscompiling one (the
         // difference lives in the OUTER continuation, invisible here) — so the strict-op lift is a SEPARATE
         // increment. Only the do-form, where the do-arm already produced the sound for-effect sequencing, is
@@ -5273,8 +5274,9 @@ fn thread_bounded(
             // 99)` — the SAME shape the do-arm produces, which the landed do-shape fold in reduce_handle then
             // preserves (the outer fold discharges the prefix, advancing the outer state, before the value).
             // Done in `thread` (not reduce_handle) because only here can we preserve UNCONDITIONALLY: sound for
-            // BOTH the observed miscompile (→110) AND the correct-because-unobserved 14-eff:1251 `(+ (A.a) (+
-            // (B.b) (Bail.bail 99)))` (→ nested `(do (A.a) (do (B.b) 99))` = 99 still, the prefix runs
+            // BOTH the observed miscompile (→110) AND the correct-because-unobserved deep-nested case ("a
+            // strict-operand abort in a DEEP-nested handler stack keeps its 99 when the advances are
+            // UNOBSERVED") `(+ (A.a) (+ (B.b) (Bail.bail 99)))` (→ nested `(do (A.a) (do (B.b) 99))` = 99 still, the prefix runs
             // unobserved). `body_reaches_foreign_perform` reads the ORIGINAL operand `a` (parented — no orphan
             // resolve-pin poison, and equivalent to the rewrite: a foreign perform is never folded by this ctx,
             // a discharged one is not foreign). Only lifts when a foreign operand actually PRECEDED the abort
