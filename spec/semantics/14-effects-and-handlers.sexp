@@ -1112,6 +1112,26 @@
                   (+ (B.step) (A.get))))) (export main)))
   (output (: 21 Int64)))
 
+(case "a recursive nested-op performer whose resume-VALUE reads the inner state around the outer perform declines cleanly"
+  (doc    "The state-reading companion of the fold above. Here the inner `B.step` arm's resume VALUE reads the
+           inner state binder `t` around the outer perform — `(step (u) t (resume (A.tick (+ t u)) t))`. The
+           pre-spec-lift only lifts an inner-op call whose resume value is FREE of the inner state binder (the
+           lift substitutes op params but not the state); lifting a state-reading value would orphan `t` onto
+           the outer body spine (a CDZ0101 leak on a valid program — the github-liaison/Copilot #2077 review).
+           So this shape is left UN-lifted and declines cleanly (the honest not-yet-reducible todo — threading
+           an inner-state-reading resume value onto the outer body is the full spec-lift fold, a later
+           increment). Pins that the state-reading face declines rather than leaks.")
+  (input  (do
+            (effect A (op tick (-> Int64 Int64)))
+            (effect B (op step (-> Int64 Int64)))
+            (def (loop (: n Int64)) (if (= n 0) 0 (+ (B.step n) (loop (- n 1)))))
+            (def (main)
+              (handle A 100 ((tick (a) s (resume (+ a s) (+ s 1))))
+                (handle B 7 ((step (b) t (resume (A.tick (+ t b)) t)))
+                  (loop 2))))
+            (export main)))
+  (output (: 218 Int64)))
+
 (case "a NON-recursive helper calling a nested op whose resume performs the outer effect folds"
   (doc    "The non-recursive-helper twin of the resume-value-performs-outer case above (v-effects self-probe).
            A non-recursive `helper` calls the inner `B.step` (whose arm resumes with `(A.tick)`, performing the

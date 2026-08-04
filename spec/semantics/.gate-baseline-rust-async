@@ -5747,6 +5747,7 @@ todo	a program uses a response-returning delegated host function's return value
 todo	a recursion-driven host-call sequence consumes one response row per iteration in order
 todo	a recursive NEWTYPE traversal recurses on its projected recursive field
 todo	a recursive NEWTYPE-wrapped linked list folds to a scalar
+todo	a recursive nested-op performer whose resume-VALUE reads the inner state around the outer perform declines cleanly
 todo	a run's result is a deterministic function of a host call's recorded response
 todo	a runtime Bool host arg crosses the boundary and drives two response bindings
 todo	a runtime Bytes host-arg BEFORE a scalar arg keeps distinct core slots (no width-clobber)
