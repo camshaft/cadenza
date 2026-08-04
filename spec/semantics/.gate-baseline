@@ -3354,6 +3354,7 @@ pass	a straight-line tuple built from callee params is projected in the caller
 pass	a strength-reduced multiply nested as an operand computes in place
 pass	a strict greater-than of equal operands is false
 pass	a strict less-than of equal operands is false
+pass	a strict-operand abort in a DEEP-nested handler stack keeps its 99 when the advances are UNOBSERVED
 pass	a string carried as a sum-variant payload is bound and measured at run time
 pass	a string compared to a symbol is a type error
 pass	a string equality on an inlined match operand
@@ -4074,6 +4075,7 @@ pass	an inlined helper matching a sum built FROM the fused binder plus an enclos
 pass	an inlined multi-use checked-arith argument is shared and computed directly into its slot
 pass	an inner abort ELIDES an outer perform sequenced AFTER it (dead-path control)
 pass	an inner abort preserves TWO outer advances committed before it (multi-step outer trace)
+pass	an inner abort preserves an OUTER advance committed in a STRICT OPERAND before it (operand-lift)
 pass	an inner abortive handler preserves an OUTER effect's advance committed before the abort (do-shape)
 pass	an inner arm resumes with the OUTER handler's result while both states advance
 pass	an inner binding shadows an outer one only within its scope

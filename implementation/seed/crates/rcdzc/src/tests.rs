@@ -66472,6 +66472,35 @@ mod stage1 {
     }
 
     #[test]
+    fn an_inner_abort_preserves_an_outer_advance_committed_in_a_strict_operand_before_it() {
+        // ABORT-FOLD strict-OPERAND lift (v-effects, breaker ao5 — the operand face of the do-shape fix above).
+        // The foreign `(A.tick)` is a strict `+` OPERAND before the abort — `(+ (A.tick) (B.bail 99))` under B
+        // — not a `do`-statement. `A.tick` COMMITS A-state 10→11; then `B.bail` (non-resuming) abandons B, so
+        // the `+` never completes and `b` = 99. Pre-fix: thread rebuilt `(+ (A.tick) 99)`, a dead `+` wrapper
+        // whose foreign perform reduce_handle's bare-abort collapse discarded → outer `(A.get)` read seed 10 →
+        // 109. Fixed: thread's Apply arm LIFTS the pre-abort foreign operand into a for-effect `do` prefix
+        // `(do (A.tick) 99)` — the shape the landed do-shape fold then preserves. Done in `thread` (not
+        // reduce_handle) so it preserves UNCONDITIONALLY: sound for the observed case (→110) AND the unobserved
+        // deep-nested 1251 (stays 99 — the prefix runs for effect only).
+        let src = "(do (effect A (op tick (-> Unit Int64)) (op get (-> Unit Int64))) \
+                   (effect B (op bail (-> Int64 Int64))) \
+                   (def (main) \
+                     (handle A 10 ((tick (u) s (resume s (+ s 1))) (get (u) s (resume s s))) \
+                       (let ((b (handle B 0 ((bail (v) s v)) (+ (A.tick) (B.bail 99))))) \
+                         (+ b (A.get))))) \
+                   (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("the strict-operand abort's outer-advance-preserving lift compiles"),
+                "main"
+            ),
+            110,
+            "a pre-abort outer advance in a strict operand must survive the abort (99 + 11 = 110), not roll back (was 109)"
+        );
+    }
+
+    #[test]
     fn a_state_mutual_recursion_with_perform_split_from_the_mutual_call_specializes() {
         // A STATE-threading handler over a mutually-recursive group where a cycle def performs the
         // discharged op in ONE `if`/`match` branch while the mutual call is in a DIFFERENT branch
