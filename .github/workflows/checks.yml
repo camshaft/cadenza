@@ -312,6 +312,12 @@ jobs:
           # different-but-valid bytes (same rationale as reducer-guest, trunk@455dcb7e7). The lifted
           # component's PATH is handed to the e2e via CEDAR_POLICY_COMPONENT (next step).
           rustup target add wasm32-unknown-unknown
+          # Run the guest's OWN unit tests on the HOST target first — its `decide()` policy logic (the Cedar
+          # PolicySet decisions: permit/forbid/default-deny, incl. the #1916 store/set-is-a-family-string
+          # regression pin) is native-testable (the cedar-policy crate runs on the host), and the wasm build
+          # below can't run tests (wasm32-unknown-unknown has no test runner). Without this the guest's
+          # decision tests only compile-check, never execute in CI.
+          ( cd tests/fixtures/cedar-policy-guest && cargo test --locked )
           # --locked: build against the COMMITTED Cargo.lock (#1522). The guest's deps are loose
           # (cedar-policy = "4", wit-bindgen = "0.45"), so without --locked CI floats to a newer
           # cedar-policy 4.x whose codegen breaks the component lift below — the "no longer builds a
