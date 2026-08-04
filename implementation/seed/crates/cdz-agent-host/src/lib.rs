@@ -100,9 +100,7 @@ pub use metrics::{EffectMetrics, EffectMetricsSnapshot, HostMetrics, HostMetrics
 pub use model::BedrockModelTransport;
 pub use model::{ModelExecutor, ModelTransport};
 pub use retry::{classify, permanent, retryable, Retryability};
-pub use status::{
-    host_metrics_json, host_session_status_json, session_status_json, DEFAULT_STALL_AFTER_MS,
-};
+pub use status::{host_session_status_json, session_status_json, DEFAULT_STALL_AFTER_MS};
 
 /// Shared test-only helpers (compiled only under `#[cfg(test)]`; placed LAST so no non-test item follows a
 /// test module — clippy `items_after_test_module`). The one PROVEN-FRESH temp-dir helper the crate's

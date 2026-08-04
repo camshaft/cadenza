@@ -321,15 +321,9 @@ pub struct AgentHost {
     /// [`cdz_kernel::name_store::NameStore`].)
     canonical: Option<cdz_kernel::name_store::NameStore>,
     /// The host's metric surface — monotonic counters bumped at the session-lifecycle + per-turn boundaries
-    /// (spawn/remove/deliver). Hermetic (plain atomics, no metrics dep); read via [`AgentHost::metrics`] for
-    /// a status surface or the feature-gated exporter. `Default` = all-zero, so it needs no explicit init.
+    /// (spawn/remove/deliver). Hermetic (plain atomics, no metrics dep); the registry-typed export recorder
+    /// is the following refactor (seq-116). `Default` = all-zero, so it needs no explicit init.
     metrics: crate::metrics::HostMetrics,
-    /// The daemon's host-wide PER-EFFECT metrics, if wired — a shared handle the executor set's
-    /// [`MeteredExecutor`](crate::factory::MeteredExecutor)s tally into (the executor set OWNS the `Arc`; the
-    /// daemon hands the host a clone via [`with_effect_metrics`](Self::with_effect_metrics) so an admin
-    /// `metrics` read can render both halves). `None` on a host whose executors aren't metered (tests, a
-    /// hermetic set) — the metrics read then reports zeroed effect counters.
-    effect_metrics: Option<std::sync::Arc<crate::metrics::EffectMetrics>>,
 }
 
 /// A by-value copy of a canonical [`NameStore`](cdz_kernel::name_store::NameStore) for a freshly-spawned session — replays the canonical
@@ -351,7 +345,6 @@ impl AgentHost {
             sessions: HashMap::new(),
             canonical: None,
             metrics: crate::metrics::HostMetrics::default(),
-            effect_metrics: None,
         }
     }
 
@@ -371,20 +364,7 @@ impl AgentHost {
             sessions: HashMap::new(),
             canonical: Some(canonical),
             metrics: crate::metrics::HostMetrics::default(),
-            effect_metrics: None,
         }
-    }
-
-    /// Wire the host-wide per-effect metrics handle (from the executor set — the daemon passes
-    /// `LiveExecutorSet::metrics()`) so an admin `metrics` read renders the per-effect counters alongside the
-    /// host-boundary ones. Builder-style; a host without this reports zeroed effect counters (a hermetic/test
-    /// set has no metered executors to read).
-    pub fn with_effect_metrics(
-        mut self,
-        effect_metrics: std::sync::Arc<crate::metrics::EffectMetrics>,
-    ) -> Self {
-        self.effect_metrics = Some(effect_metrics);
-        self
     }
 
     /// Register a new running session under `id`. Returns the id back for convenience. If `id` already
@@ -518,20 +498,6 @@ impl AgentHost {
     /// or the feature-gated metrics exporter. The counters are bumped internally at spawn/remove/deliver.
     pub fn metrics(&self) -> &crate::metrics::HostMetrics {
         &self.metrics
-    }
-
-    /// Render the daemon's metric surface as JSON (the `admin metrics` read) — both the host-boundary
-    /// counters and the per-effect counters if a handle was wired via
-    /// [`with_effect_metrics`](Self::with_effect_metrics). Without that handle the effect counters read all
-    /// zero (a host whose executors aren't metered has none to report). The shape is
-    /// [`crate::status::host_metrics_json`]'s stable contract.
-    pub fn metrics_json(&self) -> String {
-        let effects = self
-            .effect_metrics
-            .as_ref()
-            .map(|m| m.snapshot())
-            .unwrap_or_default();
-        crate::status::host_metrics_json(&self.metrics.snapshot(), &effects)
     }
 
     /// Fire due timers across ALL registered sessions at `now_ms` (a host scheduler tick). Returns the
