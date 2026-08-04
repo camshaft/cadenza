@@ -88,10 +88,19 @@ pub struct ObservabilityConfig {
 /// so a mis-shaped target (a field that belongs to another backend, a missing required field) is a loud
 /// deser error rather than an ignored generic string.
 ///
-/// The variants model REAL `s2n-quic-dc-metrics` backends. `statsd` is the first (the crate's
-/// `StatsdBackend`, whose caller-supplied sink sends UDP payloads to a collector). Other backends the crate
-/// offers (OTLP, prometheus, querylog, arrow) become ADDITIVE variants once the operator confirms the v0
-/// backend set — the tagged union makes each a cheap add with its OWN fields, no reshape of this array.
+/// The variants model REAL `s2n-quic-dc-metrics` backends. The operator's direction is "support all of
+/// them" (Statsd/Otlp/Prometheus/Querylog/Arrow). They fall into three CONFIG SHAPES — this enum grows one
+/// variant per backend as each shape is confirmed:
+/// - PUSH (a caller-supplied sink the daemon periodically flushes to): `statsd` (UDP) + `otlp` (OTLP
+///   payloads). Modeled here — an `endpoint` the daemon sends to.
+/// - PULL (the backend exposes state an external scraper reads): `prometheus` — the daemon would run a
+///   scrape server; its config is a bind address, a distinct shape (pending operator confirm on running an
+///   inbound listener).
+/// - FILE (no network; output the daemon writes locally): `querylog` / `arrow` (Parquet) — config is a
+///   path/rotation, another distinct shape (pending operator confirm on path + rotation).
+///
+/// The push variants land first (unambiguous — same sink shape); prometheus/querylog/arrow are held pending
+/// the config-shape confirm (see the concierge scoping ask), each a cheap additive variant when confirmed.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum MetricsTarget {
@@ -105,6 +114,20 @@ pub enum MetricsTarget {
         #[serde(default)]
         prefix: Option<String>,
     },
+    /// The `otlp` backend — `s2n-quic-dc-metrics`' `OtlpBackend`. Same PUSH shape as statsd: the daemon's
+    /// OTLP sink sends `ExportMetricsServiceRequest` payloads to the collector at `endpoint`. `scope_name` /
+    /// `scope_version` populate the OTLP `InstrumentationScope` on every metric (the backend's `new`
+    /// arguments); both default so a minimal config is just an endpoint.
+    Otlp {
+        /// The OTLP collector endpoint the sink sends to (`host:port` or a URL, per the sink transport).
+        endpoint: String,
+        /// The OTLP instrumentation-scope name embedded in every metric (defaults to the crate name).
+        #[serde(default)]
+        scope_name: Option<String>,
+        /// The OTLP instrumentation-scope version (defaults to unset).
+        #[serde(default)]
+        scope_version: Option<String>,
+    },
 }
 
 impl MetricsTarget {
@@ -112,6 +135,7 @@ impl MetricsTarget {
     pub fn kind(&self) -> &'static str {
         match self {
             MetricsTarget::Statsd { .. } => "statsd",
+            MetricsTarget::Otlp { .. } => "otlp",
         }
     }
 }
@@ -293,7 +317,11 @@ impl DaemonConfig {
             // missing/unknown field or a bad `kind`; this catches present-but-blank values).
             for (i, t) in self.observability.targets.iter().enumerate() {
                 match t {
-                    MetricsTarget::Statsd { endpoint, .. } if endpoint.trim().is_empty() => {
+                    // Both PUSH backends require a non-empty endpoint (the collector the sink sends to).
+                    MetricsTarget::Statsd { endpoint, .. }
+                    | MetricsTarget::Otlp { endpoint, .. }
+                        if endpoint.trim().is_empty() =>
+                    {
                         return Err(ConfigError(format!(
                             "[observability] target {i} ({}) needs a non-empty endpoint",
                             t.kind()
@@ -455,6 +483,83 @@ mod tests {
                 prefix: Some("cdz.agent".into()),
             }
         );
+    }
+
+    #[test]
+    fn observability_otlp_target_parses_with_and_without_optional_scopes() {
+        // The otlp PUSH backend: endpoint required, scope_name/scope_version optional (both default None so
+        // a minimal otlp target is just an endpoint).
+        let cfg = DaemonConfig::from_toml_str(
+            r#"
+            [observability]
+            enabled = true
+            [[observability.target]]
+            kind = "otlp"
+            endpoint = "10.0.0.9:4317"
+            [[observability.target]]
+            kind = "otlp"
+            endpoint = "10.0.0.10:4317"
+            scope_name = "cdz-agent-host"
+            scope_version = "0.1"
+            "#,
+        )
+        .expect("otlp targets parse");
+        assert_eq!(
+            cfg.observability.targets[0],
+            MetricsTarget::Otlp {
+                endpoint: "10.0.0.9:4317".into(),
+                scope_name: None,
+                scope_version: None,
+            }
+        );
+        assert_eq!(
+            cfg.observability.targets[1],
+            MetricsTarget::Otlp {
+                endpoint: "10.0.0.10:4317".into(),
+                scope_name: Some("cdz-agent-host".into()),
+                scope_version: Some("0.1".into()),
+            }
+        );
+        assert_eq!(cfg.observability.targets[1].kind(), "otlp");
+    }
+
+    #[test]
+    fn observability_fans_out_across_backend_kinds() {
+        // "Support all of them" + fan-out: a statsd AND an otlp target in one config, both parsed — the
+        // daemon emits to both (mixed push backends).
+        let cfg = DaemonConfig::from_toml_str(
+            r#"
+            [observability]
+            enabled = true
+            [[observability.target]]
+            kind = "statsd"
+            endpoint = "10.0.0.1:8125"
+            [[observability.target]]
+            kind = "otlp"
+            endpoint = "10.0.0.2:4317"
+            "#,
+        )
+        .expect("mixed-kind fan-out parses");
+        assert_eq!(cfg.observability.targets.len(), 2);
+        assert_eq!(cfg.observability.targets[0].kind(), "statsd");
+        assert_eq!(cfg.observability.targets[1].kind(), "otlp");
+    }
+
+    #[test]
+    fn observability_otlp_empty_endpoint_is_rejected() {
+        // The push-backend endpoint validation applies to otlp too (the or-pattern arm).
+        let err = DaemonConfig::from_toml_str(
+            r#"
+            [observability]
+            enabled = true
+            [[observability.target]]
+            kind = "otlp"
+            endpoint = ""
+            "#,
+        )
+        .unwrap_err();
+        assert!(err.0.contains("endpoint"), "{err}");
+        assert!(err.0.contains("otlp"), "names the offending kind: {err}");
     }
 
     #[test]
