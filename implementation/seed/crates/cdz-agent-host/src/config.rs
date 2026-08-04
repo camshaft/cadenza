@@ -73,12 +73,13 @@ pub enum LogConfig {
 /// and whose OTHER fields are that backend's OWN typed config, so the wired emitter can send to several
 /// sinks (multiple statsd collectors, or different backend types).
 ///
-/// **Current daemon behavior:** the daemon reads `observability.enabled` (it logs it at boot) and PARSES +
-/// VALIDATES the `targets`, but it does NOT emit to them — it never reads `targets` beyond validation, so no
-/// metrics are sent anywhere regardless of what's configured. The emitter that reads `targets` and performs
-/// the fan-out is a separate, feature-gated component (kept out of the default build to exclude the
-/// QUIC/metrics dependency tree); the fan-out described above is that emitter's intended behavior, which the
-/// config is defined ahead of.
+/// **Current daemon behavior:** the daemon reads `observability.enabled` (it logs it at boot). The `targets`
+/// are always PARSED (serde), but only VALIDATED (non-empty list, non-blank endpoints) WHEN `enabled` — a
+/// disabled section with a blank endpoint parses fine (nothing consumes it). The daemon does NOT emit to the
+/// targets at all: it never reads them beyond that gated validation, so no metrics are sent anywhere
+/// regardless of config. The emitter that reads `targets` + performs the fan-out is a separate, feature-gated
+/// component (kept out of the default build to exclude the QUIC/metrics dependency tree); the fan-out
+/// described above is that emitter's intended behavior, which the config is defined ahead of.
 #[derive(Debug, Clone, Deserialize, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct ObservabilityConfig {
