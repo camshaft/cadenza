@@ -3546,10 +3546,16 @@ fn body_has_block_wrapped_scrutinee_or_statement_branch_perform(
     node: StructId,
     ctx: &HandlerCtx,
 ) -> bool {
-    // A nested handle's own body belongs to THAT handler's reduction — don't descend (mirrors the sibling
-    // scanners); a3's `Resume{value}` scanner covers the nested-arm position separately.
-    if matches!(resolved_of(db, node), Resolved::Handle { .. }) {
-        return false;
+    // A NESTED handle: its ARMS are the inner handler's concern (a3's `Resume{value}` scanner covers the
+    // nested-arm position), but its BODY runs UNDER this (outer) handler — a block-wrapped OUTER-effect perform
+    // in a match-scrutinee or non-tail do-statement in the inner body drops the outer advance exactly like the
+    // top-level face, and a scan that stopped at the inner `Handle` MISSED it (the a4-class miscompile, but for
+    // the scrutinee/do-statement positions instead of the let-init: v-effects self-probe 2026-08-04, 33 vs 73).
+    // Descend into the inner body ONLY, keeping THIS outer `ctx` — `block_wrapped_branch_performs` is ctx-keyed,
+    // so only an OUTER-effect perform fires (an inner-effect perform never matches → no over-decline of the
+    // inner handler's own shapes). Recurses through depth-N nesting via this same descent.
+    if let Resolved::Handle { body, .. } = resolved_of(db, node) {
+        return body_has_block_wrapped_scrutinee_or_statement_branch_perform(db, body, ctx);
     }
     // g3: a MATCH whose SCRUTINEE is a block-wrapped branch-performing conditional.
     if let Resolved::Match { scrutinee, .. } = resolved_of(db, node)
