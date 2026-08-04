@@ -166,6 +166,17 @@ export default function Metaprogramming() {
   ((Ok a)  a)
   ((Err _) (quote nil)))`}
       />
+      <P>
+        A byte-string node survives the same round-trip, and it's where the binary codec earns its keep: a{" "}
+        <C>{`b"…"`}</C> blob rides the wire as a single length-prefixed <C>Ast.Bytes</C> leaf, not one node
+        per byte, so a binary payload stays compact. Encode a blob and decode it back and you get an equal
+        node, so this is <C>true</C>:
+      </P>
+      <Runnable
+        source={`(match (Ast.decode (Ast.encode (Ast.Bytes b"hi")))
+  ((Ok a)  (= a (Ast.Bytes b"hi")))
+  ((Err _) false))`}
+      />
 
       <P>
         There's a text round-trip too: <C>print</C> renders a tree as source text and <C>read</C> parses
