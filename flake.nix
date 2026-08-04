@@ -881,6 +881,16 @@
             rcdzc-wasm-native = rcdzcWasmNativeCheck;
             # Full-CI-in-nix increment 4: the GHA cdz-kernel job (test + clippy + fmt + live-exec).
             cdz-kernel-native = cdzKernelNativeCheck;
+            # Full-CI-in-nix increment 6a: the GHA `roundtrip` job (`cargo xtask roundtrip` — every corpus
+            # program round-trips through the syntax surfaces). Corpus-only (reads spec/semantics, no
+            # runtime store), so it reuses seedTestSrc (which already carries spec/semantics) via the
+            # cargoWorkspaceCheck helper. Advisory overlap with the GHA roundtrip job (REQUIRED-class →
+            # its eventual cutover is a 2-half lockstep with v-fleet-tooling).
+            roundtrip = cargoWorkspaceCheck {
+              name = "cargo-xtask-roundtrip";
+              cargoCmd = "cargo xtask roundtrip";
+              src = seedTestSrc;
+            };
           };
 
         devShells.default = pkgs.mkShell {
