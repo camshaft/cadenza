@@ -882,6 +882,7 @@ pass	a SELF-RECURSIVE named def passed as a value is applied twice through the p
 pass	a SET as a Map key hits by ORDER-INDEPENDENT inner-set content
 pass	a SET as a Map key hits by canonical content and a different set misses
 pass	a SET as a set element hashes by content: three build orders, one element
+pass	a SET churned to empty equals a fresh empty set and re-accepts elements
 pass	a SET handler state grows per perform and dedupes a repeated event
 pass	a SET of SETS dedups elements by set CONTENT — insertion-order twins collapse
 pass	a SINGLE-variant open sum still requires an open-tail arm
@@ -4701,6 +4702,7 @@ pass	intersection distributes over union on runtime-element sets
 pass	intersection is associative
 pass	intersection is commutative over runtime-element sets
 pass	intersection of a set with itself is the set (idempotent)
+pass	intersection of a trie with its churned-back subset is the subset itself
 pass	intersection with the empty set is the empty set
 pass	jointly-total guards over one variant are still non-exhaustive (guards are opaque to the checker)
 pass	keyed lookups at different keys are not shared
