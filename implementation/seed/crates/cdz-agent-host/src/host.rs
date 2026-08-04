@@ -109,8 +109,10 @@ impl HostedSession {
     /// mid-session capability change (host-capability-discovery I6a). Adding an executor for a family the
     /// session couldn't perform before makes that family's manifest entry flip `Absent`→(policy-decided);
     /// re-registering a family swaps its executor. This is the host-side trigger the reactive
-    /// capabilities-changed push (I6b) fires on: after calling it, a `push_capabilities_changed` recomputes
-    /// the manifest + pushes iff it actually changed (the I6b host forwarder lands with the kernel seam).
+    /// capabilities-changed push (I6b) fires on: after calling it, [`push_capabilities_changed`] recomputes
+    /// the manifest + pushes iff it actually changed.
+    ///
+    /// [`push_capabilities_changed`]: HostedSession::push_capabilities_changed
     ///
     /// (The kernel's [`CompositeExecutor`] is builder-shaped — `with_effect` consumes+returns — so this
     /// takes the executor by value via `mem::take` + rebuild, keeping the mutation on the owned field.)
@@ -122,10 +124,33 @@ impl HostedSession {
     /// Swap this LIVE session's authorizer — the POLICY axis of a mid-session capability change (I6a). A
     /// new policy (e.g. a broadened/tightened grant, or one loaded from a §4c policy-pointer `store/set`)
     /// changes which effects authorize, so a family's manifest entry can flip `Denied`↔`Granted` with the
-    /// same executor set. The reactive push over this (I6b — recompute + `capabilities-changed` iff the
-    /// manifest changed) lands once the kernel's `push_capabilities_changed` seam is on trunk.
+    /// same executor set. Pair with [`push_capabilities_changed`](Self::push_capabilities_changed) to push
+    /// the resulting delta.
     pub fn set_authorizer(&mut self, authz: Box<dyn Authorize>) {
         self.authz = authz;
+    }
+
+    /// Recompute this session's capability manifest against its CURRENT (post-mutation) authorizer +
+    /// executor set and, IFF it moved vs the manifest the guest last saw, fold a `capabilities-changed`
+    /// EffectResult back to the reducer — the reactive push (host-capability-discovery I6b). This is the
+    /// host trigger: call it after an [`add_executor`](Self::add_executor) / [`set_authorizer`](Self::set_authorizer)
+    /// mutation (or a §4c policy-pointer change) to notify a capability-aware agent that its usable surface
+    /// changed mid-session.
+    ///
+    /// A NO-OP when nothing changed (the "delivered only to sessions whose manifest actually changed" gate,
+    /// which also gives free coalescing: call it once per settle point after a burst of mutations, not
+    /// per-mutation, and a net-zero burst pushes nothing). The push reuses the SAME manifest shape as seed
+    /// (I5) / query (I4), so a capability-aware reducer decodes ONE shape however the manifest arrived.
+    /// Returns any [`ControlEffect`](cdz_kernel::effect::ControlEffect)s the fold surfaced (usually none).
+    ///
+    /// Baseline note (from the kernel seam): the last-known manifest it diffs against is EPHEMERAL host-side
+    /// state repopulated by projection (seed/query/push), NOT replay-rebuilt — so a freshly RECOVERED
+    /// session with no baseline pushes its current manifest on the first call (correct: the recovered guest
+    /// re-learns its surface). Re-seed after recover if you want to suppress that until a real change.
+    pub async fn push_capabilities_changed(&mut self) -> Vec<cdz_kernel::effect::ControlEffect> {
+        self.session
+            .push_capabilities_changed(&*self.reducer, &*self.authz, &mut self.executor)
+            .await
     }
 
     /// SEED the capability manifest so this agent is "born knowing" its capabilities — call ONCE right
@@ -1098,5 +1123,115 @@ mod tests {
         ) -> Result<crate::HttpResponse, String> {
             unreachable!("mechanism-surface test never performs the request")
         }
+    }
+
+    /// Project the capabilities manifest bytes for a given served-executor set + authorizer — the exact
+    /// wire bytes the kernel folds, via its public API (mirrors the seed test's expectation helper).
+    async fn expected_manifest(exec: &CompositeExecutor, authz: &Authorizer) -> Vec<u8> {
+        let manifest = cdz_kernel::effect::project_manifest(
+            effect_ct::ALL,
+            |f| exec.handles_family(f),
+            authz,
+            effect_ct::probe_target,
+        )
+        .await;
+        cdz_kernel::event_ast::encode_capability_manifest(&manifest)
+    }
+
+    #[tokio::test]
+    async fn push_capabilities_changed_folds_the_new_manifest_after_a_mechanism_change() {
+        // I6b: an agent SEEDED with a Now-only surface, then granted an Http executor mid-session, gets a
+        // capabilities-changed push carrying the NEW manifest (Http now usable) — same wire shape as seed.
+        // Authorizer permits both Now + Http broadly, so the manifest entry for Http tracks the MECHANISM
+        // (executor present) flipping Absent→Granted when we add the executor.
+        let authz = || {
+            Authorizer::new(vec![
+                Capability {
+                    kind: EffectKind::Now,
+                    predicate: ResourcePredicate::Any,
+                },
+                Capability {
+                    kind: EffectKind::Http,
+                    predicate: ResourcePredicate::Any,
+                },
+            ])
+        };
+        let mut hosted = HostedSession::genesis(
+            Hash::of(b"cap-push-v1"),
+            Box::new(CapabilityAwareAgent),
+            Box::new(authz()),
+            CompositeExecutor::new().with_effect(effect_ct::NOW, Box::new(ClockExecutor::new())),
+        );
+
+        // Baseline: seed the born-knowing manifest (Now only served → Http reads Absent).
+        hosted.seed_capabilities().await;
+        let now_only =
+            CompositeExecutor::new().with_effect(effect_ct::NOW, Box::new(ClockExecutor::new()));
+        assert_eq!(
+            hosted.session().kv().get(b"capabilities"),
+            Some(&expected_manifest(&now_only, &authz()).await[..]),
+            "seeded baseline reflects the Now-only surface"
+        );
+
+        // MECHANISM change: register an Http executor mid-session, then push.
+        hosted.add_executor(
+            effect_ct::HTTP,
+            Box::new(crate::HttpExecutor::new(NeverHttp)),
+        );
+        let surfaced = hosted.push_capabilities_changed().await;
+        assert!(
+            surfaced.is_empty(),
+            "the push is answered inline, not surfaced"
+        );
+
+        // The reducer recorded the NEW manifest — Now+Http served, both Granted by the broad policy.
+        let now_and_http = CompositeExecutor::new()
+            .with_effect(effect_ct::NOW, Box::new(ClockExecutor::new()))
+            .with_effect(
+                effect_ct::HTTP,
+                Box::new(crate::HttpExecutor::new(NeverHttp)),
+            );
+        assert_eq!(
+            hosted.session().kv().get(b"capabilities"),
+            Some(&expected_manifest(&now_and_http, &authz()).await[..]),
+            "push_capabilities_changed folded the NEW manifest (Http now usable) after add_executor"
+        );
+    }
+
+    #[tokio::test]
+    async fn push_capabilities_changed_is_a_no_op_when_nothing_changed() {
+        // I6b coalescing gate: pushing with NO capability change since the last-known manifest folds
+        // nothing — a session whose surface didn't move gets no spurious capabilities-changed.
+        let mut hosted = HostedSession::genesis(
+            Hash::of(b"cap-noop-v1"),
+            Box::new(CapabilityAwareAgent),
+            Box::new(Authorizer::deny_all()),
+            CompositeExecutor::new().with_effect(effect_ct::NOW, Box::new(ClockExecutor::new())),
+        );
+        hosted.seed_capabilities().await; // establishes the baseline
+        let after_seed = hosted
+            .session()
+            .kv()
+            .get(b"capabilities")
+            .map(|b| b.to_vec());
+        let log_len_before = hosted.session().log().len();
+
+        // No mutation between seed and push → the manifest hasn't moved → push is a no-op.
+        let surfaced = hosted.push_capabilities_changed().await;
+        assert!(surfaced.is_empty());
+        assert_eq!(
+            hosted
+                .session()
+                .kv()
+                .get(b"capabilities")
+                .map(|b| b.to_vec()),
+            after_seed,
+            "no capability change → the recorded manifest is untouched"
+        );
+        assert_eq!(
+            hosted.session().log().len(),
+            log_len_before,
+            "no capability change → nothing appended to the log (the coalescing/gate)"
+        );
     }
 }
