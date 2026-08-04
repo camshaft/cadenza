@@ -3256,15 +3256,83 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
             // SINGLE-TURN-SATURATED CLASS: if the pane already shows `/compact` DECLINED ("Not enough
             // messages to compact" — the context is one giant turn, nothing to summarize), a
             // compact-nudge is a PROVEN no-op that can never recover it (concierge: hit on
-            // v-diagnostics + v-nix). Don't re-nudge; surface it DISTINCTLY as restart-class so the
-            // concierge escalates to a restart rather than re-trying /compact. The 100%-wall
-            // auto-restart is the real recovery here (it loses the turn, but nothing else can).
+            // v-diagnostics + v-nix, then recurred on SIX agents). Don't re-nudge — and don't just wait
+            // for the 100%-wall auto-restart (a wall-CRASH that loses the turn on the slow path).
+            // Instead, because the decline PROVES the session is uncompactable, restart it EARLY +
+            // GRACEFULLY while it's still pre-wall and idle-at-prompt (see
+            // `should_graceful_restart_compact_declined`): a clean relaunch that recovers it sooner and
+            // loses no more than the wall-restart would (the uncompactable context is dead weight either
+            // way). The thrash-guard (`restarted_recently`) is SHARED with the wall restart below, so a
+            // just-relaunched agent can't be bounced twice within one WEDGE_RESTART_GRACE window.
             let compact_declined = pane.as_deref().is_some_and(compact_was_declined);
+            let restarted_recently = wedge_restart_age_secs(fleet, &a.name, now)
+                .is_some_and(|s| s < WEDGE_RESTART_GRACE);
             if compact_declined {
                 eprintln!(
-                    "  ⚠ '{}' at {pct}% context — /compact DECLINED (single-turn-saturated: one huge turn, nothing to summarize). A compact-nudge CANNOT recover this; needs a RESTART (the 100%-wall auto-restart will, losing the turn). NOT re-nudging.",
+                    "  ⚠ '{}' at {pct}% context — /compact DECLINED (single-turn-saturated: one huge turn, nothing to summarize). A compact-nudge CANNOT recover this. NOT re-nudging.",
                     a.name
                 );
+                if should_graceful_restart_compact_declined(
+                    ctx_pct,
+                    compact_declined,
+                    restarted_recently,
+                ) {
+                    // Restart EARLY (pre-wall) + gracefully, but only at a clean prompt — a mid-turn
+                    // agent is left to the 100%-wall backstop rather than killed mid-work. Same
+                    // idle-at-prompt gate as the compact-send + the same durable-state safety as the wall
+                    // restart (worktree/registry/memory/asks persist).
+                    let stopped = fleet.stopfile(&a.name).exists();
+                    let live = live.iter().any(|w| w == &a.name);
+                    let interactive = role_is_terminal_interactive(&a.role); // never touch a human's window
+                    let working = window_is_working(&session, &a.name); // restart only at an idle prompt
+                    if dry_run {
+                        println!(
+                            "  DRY-RUN would GRACEFUL-RESTART '{}' (compact-declined, pre-wall {pct}%)",
+                            a.name
+                        );
+                    } else if stopped || !live || interactive || working {
+                        eprintln!(
+                            "  … '{}' compact-declined at {pct}% but can't graceful-restart now ({}); the 100%-wall backstop will catch it if it doesn't settle.",
+                            a.name,
+                            if working {
+                                "mid-tick"
+                            } else if !live {
+                                "no window"
+                            } else if interactive {
+                                "interactive"
+                            } else {
+                                "stopped"
+                            }
+                        );
+                    } else {
+                        match restart_window(fleet, &session, &a.name) {
+                            RestartOutcome::Restarted => {
+                                stamp_wedge_restart(fleet, &a.name);
+                                wedge_restarts += 1;
+                                eprintln!(
+                                    "  ⟳ GRACEFUL-RESTARTED '{}' (compact-declined single-turn-saturation at {pct}%, PRE-WALL). Relaunched from a clean prompt BEFORE the 100% wall — recovers sooner than the wall-crash path; durable state persists. (self-heal, no operator needed)",
+                                    a.name
+                                );
+                                println!(
+                                    "  ⟳ graceful-restarted '{}' (compact-declined, pre-wall {pct}%)",
+                                    a.name
+                                );
+                            }
+                            RestartOutcome::RelaunchFailed => {
+                                eprintln!(
+                                    "  ‼ '{}' compact-declined graceful-restart: RELAUNCH FAILED (window killed or already gone) — no window running now. `fleet up` will re-create it; not rate-limiting so the next sweep retries.",
+                                    a.name
+                                );
+                            }
+                            RestartOutcome::KillFailed => {
+                                eprintln!(
+                                    "  ! '{}' compact-declined graceful-restart: tmux kill-window failed — left as-is, will retry next sweep.",
+                                    a.name
+                                );
+                            }
+                        }
+                    }
+                }
             }
             let compacted_recently = compact_nudge_age_secs(fleet, &a.name, now)
                 .is_some_and(|s| s < COMPACT_NUDGE_GRACE);
@@ -3335,9 +3403,9 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
             // window. Safe: the agent's durable state (worktree/registry/memory/asks) persists, and a
             // 100%-context agent can't make progress, so there's no real work to interrupt. Applies to
             // EVERY agent including the concierge (unlike the note escalation, which can't help a
-            // concierge that can't drain its inbox). Thrash-guarded by WEDGE_RESTART_GRACE.
-            let restarted_recently = wedge_restart_age_secs(fleet, &a.name, now)
-                .is_some_and(|s| s < WEDGE_RESTART_GRACE);
+            // concierge that can't drain its inbox). Thrash-guarded by WEDGE_RESTART_GRACE
+            // (`restarted_recently`, computed above + SHARED with the pre-wall graceful restart so a
+            // just-relaunched agent isn't bounced twice within one window).
             if should_auto_restart_wedge(ctx_pct, restarted_recently) {
                 if dry_run {
                     println!(
@@ -4137,6 +4205,40 @@ fn should_auto_restart_wedge(ctx_pct: Option<u8>, restarted_recently: bool) -> b
 fn should_send_compact(ctx_pct: Option<u8>, sent_recently: bool) -> bool {
     matches!(ctx_pct, Some(p) if (CTX_SATURATION_THRESHOLD..CTX_WEDGE_THRESHOLD).contains(&p))
         && !sent_recently
+}
+
+/// Should the watchdog trigger an EARLY, GRACEFUL restart of a SINGLE-TURN-SATURATED agent — one whose
+/// pane shows `/compact` was DECLINED ("Not enough messages to compact")? (concierge follow-up
+/// 2026-08-04: this recurred on SIX agents — v-diagnostics/v-nix/v-memory-safety/v-compiler-perf/breaker/
+/// github-liaison — each slow-pathing to the 100% wall and a wall-crash restart, which loses the turn.)
+///
+/// The compact-decline is the exact discriminator that makes a PRE-WALL restart SAFE: it PROVES the
+/// session is NOT compactable (one huge turn, nothing to summarize), so the usual objection to restarting
+/// pre-wall — "it would needlessly discard a still-compactable session" (see `should_auto_restart_wedge`)
+/// — does not apply here. Such an agent can ONLY climb to the wall; compaction, its one self-heal, is off
+/// the table. So rather than wait for the 100% wall (`should_auto_restart_wedge`) and a wall-crash, restart
+/// it NOW while it's still pre-wall and (the caller gates) at a clean prompt — a graceful relaunch that
+/// recovers it sooner and loses no more than the wall-restart would (the uncompactable context is dead
+/// weight either way). Fires when ALL hold:
+///   * the pane shows a compact-decline (`compact_declined`) — proven single-turn-saturated;
+///   * pre-wall band [`CTX_SATURATION_THRESHOLD`, `CTX_WEDGE_THRESHOLD`) — genuinely saturated but not yet
+///     AT the wall (at the wall `should_auto_restart_wedge` already restarts EVERY agent, decline or not);
+///   * not restarted within `WEDGE_RESTART_GRACE` — the SHARED thrash-guard with the wall restart, so a
+///     fresh session can't be bounced twice within one window.
+///
+/// Symmetric with `should_send_compact` over the SAME band, keyed on the decline discriminator:
+/// `!compact_declined` → send `/compact` (still compactable); `compact_declined` → graceful restart
+/// (proven uncompactable). Never both. The caller additionally gates the ACTION on idle-at-prompt (so the
+/// relaunch is clean, not mid-turn); a mid-turn agent is left for the 100%-wall restart backstop. Pure so
+/// the trigger is unit-tested without tmux.
+fn should_graceful_restart_compact_declined(
+    ctx_pct: Option<u8>,
+    compact_declined: bool,
+    restarted_recently: bool,
+) -> bool {
+    compact_declined
+        && matches!(ctx_pct, Some(p) if (CTX_SATURATION_THRESHOLD..CTX_WEDGE_THRESHOLD).contains(&p))
+        && !restarted_recently
 }
 
 /// Age (seconds) since we last sent this agent a `/compact` keystroke (mtime of
@@ -12171,6 +12273,85 @@ mod tests {
         assert!(should_send_compact(Some(CTX_WEDGE_THRESHOLD - 1), false)); // 99 → compact
         assert!(!should_send_compact(Some(CTX_WEDGE_THRESHOLD), false)); // 100 → NOT compact (restart)
         assert!(should_auto_restart_wedge(Some(CTX_WEDGE_THRESHOLD), false)); // 100 → restart
+    }
+
+    #[test]
+    fn graceful_restart_fires_pre_wall_only_when_compact_was_declined() {
+        // concierge follow-up 2026-08-04: a single-turn-saturated agent (compact DECLINED) can't be
+        // recovered by /compact, so restart it EARLY + gracefully in the pre-wall band instead of letting
+        // it slow-path to the 100% wall-crash. The decline is the discriminator that makes a pre-wall
+        // restart safe (the session is provably uncompactable).
+        assert!(should_graceful_restart_compact_declined(
+            Some(95),
+            true,
+            false
+        ));
+        assert!(should_graceful_restart_compact_declined(
+            Some(85),
+            true,
+            false
+        )); // warn floor → restart
+        assert!(should_graceful_restart_compact_declined(
+            Some(99),
+            true,
+            false
+        )); // last pre-wall pct
+
+        // NOT declined → this trigger is silent; the normal `should_send_compact` path handles it (a
+        // still-compactable session must be compacted, never restarted pre-wall).
+        assert!(!should_graceful_restart_compact_declined(
+            Some(95),
+            false,
+            false
+        ));
+        assert!(!should_graceful_restart_compact_declined(
+            Some(99),
+            false,
+            false
+        ));
+
+        // Below the saturation floor → not saturated, nothing to do even if a stale decline lingers.
+        assert!(!should_graceful_restart_compact_declined(
+            Some(84),
+            true,
+            false
+        ));
+
+        // AT/over the wall → NOT here: `should_auto_restart_wedge` already restarts EVERY agent at the
+        // wall (declined or not), so the two triggers partition the range at CTX_WEDGE_THRESHOLD with no
+        // overlap — pre-wall+declined → graceful restart; at-wall → wall restart.
+        assert!(!should_graceful_restart_compact_declined(
+            Some(100),
+            true,
+            false
+        ));
+        assert!(!should_graceful_restart_compact_declined(
+            Some(120),
+            true,
+            false
+        ));
+        assert!(should_graceful_restart_compact_declined(
+            Some(CTX_WEDGE_THRESHOLD - 1),
+            true,
+            false
+        )); // 99 → graceful restart
+        assert!(!should_graceful_restart_compact_declined(
+            Some(CTX_WEDGE_THRESHOLD),
+            true,
+            false
+        )); // 100 → wall restart's job
+        assert!(should_auto_restart_wedge(Some(CTX_WEDGE_THRESHOLD), false)); // 100 → wall restart
+
+        // Thrash-guard SHARED with the wall restart: already restarted within WEDGE_RESTART_GRACE → hold
+        // (a fresh session mustn't be bounced twice within one window).
+        assert!(!should_graceful_restart_compact_declined(
+            Some(95),
+            true,
+            true
+        ));
+
+        // No reading → never (can't prove saturation).
+        assert!(!should_graceful_restart_compact_declined(None, true, false));
     }
 
     #[test]
