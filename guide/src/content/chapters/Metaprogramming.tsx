@@ -195,6 +195,27 @@ export default function Metaprogramming() {
         source={`(and (match (read "+5") ((Ast.Name _n) true) (_ false))
      (match (read "-5") ((Ast.Int _n)  true) (_ false)))`}
       />
+      <P>
+        A byte-string node prints and reads back the same way. <C>print</C> renders an <C>Ast.Bytes</C> as
+        its <C>{`b"…"`}</C> literal, and <C>read</C> parses that back to an equal node, so the text round-trip
+        holds for binary blobs just as it does for numbers, this time carrying bytes a string couldn't, a{" "}
+        <C>{`\\x00`}</C> and a <C>{`\\xff`}</C>:
+      </P>
+      <Runnable
+        source={`(= (read (print (Ast.Bytes b"\\x00\\xff")))
+   (Ast.Bytes b"\\x00\\xff"))`}
+      />
+      <P>
+        The <C>b</C> prefix is what marks a byte literal, and <C>read</C> only treats it as one when the{" "}
+        <C>b</C> is immediately followed by the quote: a bare <C>b</C> on its own is an ordinary identifier,
+        so <C>{`(read "b")`}</C> is an <C>Ast.Name</C>, not a zero-length <C>Ast.Bytes</C>. That keeps a
+        variable named <C>b</C> from being mistaken for an empty blob:
+      </P>
+      <Runnable
+        source={`(match (read "b")
+  ((Ast.Name _n) true)
+  (_             false))`}
+      />
 
       <H2>Interpolating a computed subtree</H2>
       <P>
