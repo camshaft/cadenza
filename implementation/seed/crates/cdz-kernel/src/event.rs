@@ -212,9 +212,14 @@ pub enum EventBody {
 /// How a session CLOSED — the structured terminal outcome a supervisor acts on (§6 supervision, operator
 /// directive: "child-completed carries a structured outcome, success vs failure-with-reason"). Distinguishing
 /// success from failure is the minimum a one-for-one supervisor needs to choose restart/retry/escalate; the
-/// prior opaque `Payload` couldn't express it. A sum (no sentinel — mirrors [`EffectOutcome`]); grows
-/// additively (e.g. a future `Cancelled`/`Escalated`) with no wire break, matching the frozen-codec
-/// discipline (a tolerant decoder matches the head).
+/// prior opaque `Payload` couldn't express it. A sum (no sentinel — mirrors [`EffectOutcome`]).
+///
+/// **Wire compat (both codecs):** `Success` encodes BYTE-IDENTICALLY to the legacy `Closed { outcome: Payload }`
+/// (no wrapper tag — a bare payload), so an old `Closed` stream decodes as `Success` unchanged and its event
+/// hash / cause edges are preserved; `Failure` takes a fresh discriminant a legacy Payload never produced
+/// (binary tag `2`; textual head `failure`). A future arm (e.g. `Cancelled`) likewise takes a fresh unused
+/// tag/head — additive — but this is NOT a blanket "tolerant decoder ignores unknowns": both codecs are
+/// tag-discriminated and REJECT an unknown tag/head as corruption (the frozen-codec contract).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum CloseOutcome {
     /// The session finished its goal cleanly. `payload` is the (opaque) result it produced — what a parent
@@ -332,6 +337,12 @@ impl<'a> Cursor<'a> {
 
     fn u8(&mut self) -> Result<u8, DecodeError> {
         Ok(self.take(1)?[0])
+    }
+
+    /// The next byte WITHOUT consuming it (for a tag-discriminated sum whose variant then re-reads the tag —
+    /// e.g. `CloseOutcome`, whose `Success` delegates to `decode_payload` which re-reads the 0/1 payload tag).
+    fn peek_u8(&self) -> Result<u8, DecodeError> {
+        self.bytes.get(self.pos).copied().ok_or(DecodeError::Truncated)
     }
 
     fn u32(&mut self) -> Result<u32, DecodeError> {
@@ -687,23 +698,31 @@ fn encode_outcome(o: &EffectOutcome, out: &mut Vec<u8>) {
     }
 }
 
+// BACKWARD-COMPATIBLE with the legacy `Closed { outcome: Payload }` wire (frozen-codec discipline;
+// fix-forward on #1938 which shipped a wire-breaking wrapper tag): legacy encoded a bare `Payload` after the
+// `7` tag (its own inner tag 0=Inline / 1=Blob). So `Success` encodes BYTE-IDENTICALLY to a legacy Payload
+// (NO extra wrapper tag) — an old `Closed` stream decodes as `Success` unchanged, its event hash preserved —
+// and `Failure` takes a FRESH tag `2` that a legacy Payload's leading byte never was.
 fn encode_close_outcome(o: &CloseOutcome, out: &mut Vec<u8>) {
     match o {
-        CloseOutcome::Success(p) => {
-            out.push(0);
-            encode_payload(p, out);
-        }
+        // No wrapper tag: emit exactly the legacy Payload bytes (leading 0 or 1). Old readers/hashes match.
+        CloseOutcome::Success(p) => encode_payload(p, out),
         CloseOutcome::Failure(reason) => {
-            out.push(1);
+            out.push(2);
             encode_str(reason, out);
         }
     }
 }
 
 fn decode_close_outcome(c: &mut Cursor) -> Result<CloseOutcome, DecodeError> {
-    Ok(match c.u8()? {
-        0 => CloseOutcome::Success(decode_payload(c)?),
-        1 => CloseOutcome::Failure(c.string()?),
+    // Peek the leading byte WITHOUT consuming it: 0/1 = a legacy Payload → Success (so old streams parse);
+    // 2 = the new Failure tag. `decode_payload` re-reads the 0/1 tag itself, so Success delegates to it.
+    Ok(match c.peek_u8()? {
+        0 | 1 => CloseOutcome::Success(decode_payload(c)?),
+        2 => {
+            c.u8()?; // consume the Failure tag
+            CloseOutcome::Failure(c.string()?)
+        }
         t => {
             return Err(DecodeError::BadTag {
                 field: "close_outcome",
@@ -1043,6 +1062,15 @@ mod tests {
                 },
             },
             Event {
+                // Both CloseOutcome arms in the frozen per-variant harness (fix-forward on #1938): the Failure
+                // arm (its own reason string + fresh tag) is exercised by the frozen round-trip net.
+                seq: 120,
+                cause: None,
+                body: EventBody::Closed {
+                    outcome: CloseOutcome::Failure("goal abandoned: retries exhausted".to_string()),
+                },
+            },
+            Event {
                 seq: 13,
                 cause: None,
                 body: EventBody::FoldFailed {
@@ -1051,6 +1079,58 @@ mod tests {
                 },
             },
         ]
+    }
+
+    #[test]
+    fn legacy_closed_payload_stream_decodes_as_success_unchanged() {
+        // FROZEN-WIRE COMPAT (fix-forward on #1938, which shipped a wire-breaking wrapper tag): a Closed
+        // stream written BEFORE the CloseOutcome change was push(7) + a bare Payload (its own inner tag
+        // 0=Inline / 1=Blob). CloseOutcome::Success must encode BYTE-IDENTICALLY to that so an old log decodes
+        // as Success — same bytes, same event hash. Build the legacy stream by hand + prove decode + re-encode.
+        let payload = Payload::Inline(b"legacy-result".to_vec().into());
+        let (seq, cause) = (5u64, Hash::of(b"parent-close"));
+        let mut legacy = Vec::new();
+        legacy.extend_from_slice(&seq.to_le_bytes());
+        legacy.push(1); // cause present
+        legacy.extend_from_slice(cause.as_bytes());
+        legacy.push(7); // Closed body tag
+        encode_payload(&payload, &mut legacy); // bare Payload, NO wrapper tag (the legacy shape)
+
+        // 1. The legacy stream decodes to Closed{Success(the same payload)} — NOT a parse error.
+        let (decoded, n) = Event::decode(&legacy).expect("legacy Closed stream still decodes");
+        assert_eq!(n, legacy.len(), "consumes exactly the legacy bytes");
+        assert_eq!(
+            decoded.body,
+            EventBody::Closed {
+                outcome: CloseOutcome::Success(payload.clone()),
+            },
+            "a legacy Closed{{Payload}} stream decodes as Success (backward-compatible)"
+        );
+
+        // 2. The NEW encoder produces byte-identical output for that Success → old readers + event hashes match.
+        let new_event = Event {
+            seq,
+            cause: Some(cause),
+            body: EventBody::Closed {
+                outcome: CloseOutcome::Success(payload),
+            },
+        };
+        assert_eq!(
+            new_event.encode(),
+            legacy,
+            "Success re-encodes byte-identically to the legacy Closed{{Payload}} wire (no wrapper tag)"
+        );
+
+        // 3. Failure takes a FRESH tag (2) a legacy Payload never led with (0/1) → no collision, round-trips.
+        let fail = Event {
+            seq: 6,
+            cause: None,
+            body: EventBody::Closed {
+                outcome: CloseOutcome::Failure("boom".to_string()),
+            },
+        };
+        let (rt, _) = Event::decode(&fail.encode()).unwrap();
+        assert_eq!(rt, fail, "Failure round-trips on its fresh tag");
     }
 
     #[test]

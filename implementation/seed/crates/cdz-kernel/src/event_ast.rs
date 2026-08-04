@@ -604,14 +604,12 @@ fn body_form(b: &mut Builder, body: &EventBody) -> StructId {
         }
         EventBody::Closed { outcome } => {
             let head = b.name("closed");
-            // `(closed <close-outcome>)` where `<close-outcome>` = `(success <payload>)` | `(failure <str>)`
-            // — a Name-headed sum so a future arm (cancelled/escalated) appends with no wire break.
+            // BACKWARD-COMPATIBLE with legacy `(closed <payload>)` (fix-forward on #1938): Success encodes as
+            // the BARE payload form (headed `inline`/`blob`) — byte-identical to a legacy Closed — while
+            // Failure is `(failure <str>)`. Decode dispatches on the head, so an old `(closed (inline …))`
+            // reads as Success unchanged, and a future arm (cancelled/escalated) just adds a new head.
             let of = match outcome {
-                crate::event::CloseOutcome::Success(p) => {
-                    let h = b.name("success");
-                    let pf = payload_form(b, p);
-                    b.list(vec![h, pf])
-                }
+                crate::event::CloseOutcome::Success(p) => payload_form(b, p),
                 crate::event::CloseOutcome::Failure(reason) => {
                     let h = b.name("failure");
                     let r = str_leaf(b, reason);
@@ -764,19 +762,16 @@ fn read_outcome(a: &Arenas, id: StructId) -> Result<EffectOutcome, EventAstError
     }
 }
 
-/// Decode a `<close-outcome>` sum — `(success <payload>)` | `(failure <str>)` — the structured session
-/// close outcome (§6 supervision slice-1). Mirrors [`read_outcome`]; an unknown head is `Corrupt`.
+/// Decode a `<close-outcome>` — BACKWARD-COMPATIBLE with legacy `(closed <payload>)`: a payload-headed form
+/// (`inline`/`blob`) is a `Success` (so an old Closed decodes unchanged), `(failure <str>)` is a Failure.
+/// §6 supervision slice-1 (fix-forward on #1938's wire break); an unknown head is `Corrupt`.
 fn read_close_outcome(
     a: &Arenas,
     id: StructId,
 ) -> Result<crate::event::CloseOutcome, EventAstError> {
     match head_of(a, id)? {
-        "success" => {
-            let [p] = form(a, id, "success")? else {
-                return Err(shape("success arity"));
-            };
-            Ok(crate::event::CloseOutcome::Success(read_payload(a, *p)?))
-        }
+        // A bare payload form (legacy `(closed <payload>)`) = a successful close.
+        "inline" | "blob" => Ok(crate::event::CloseOutcome::Success(read_payload(a, id)?)),
         "failure" => {
             let [m] = form(a, id, "failure")? else {
                 return Err(shape("failure arity"));
@@ -1377,6 +1372,33 @@ mod tests {
             encode(&success),
             encode(&failure),
             "Success and Failure encode distinctly — a supervisor can tell them apart"
+        );
+
+        // FROZEN-WIRE COMPAT (fix-forward on #1938): a LEGACY `(closed <payload>)` sexpr (a bare payload form
+        // under the `closed` head, as written before the CloseOutcome change) must decode as Success — Success
+        // carries NO wrapper `success` head, it IS the bare payload. Build the legacy shape by hand + prove it.
+        let legacy_bytes = {
+            let mut b = Builder::new();
+            let head = b.name("event");
+            let seq = u64_leaf(&mut b, 3);
+            let cause = {
+                let n = b.name("none");
+                b.list(vec![n])
+            };
+            let closed_head = b.name("closed");
+            let pf = payload_form(&mut b, &Payload::Inline(b"legacy".to_vec().into()));
+            let body = b.list(vec![closed_head, pf]);
+            let root = b.list(vec![head, seq, cause, body]);
+            codec::encode(&b.finish(root))
+        };
+        assert_eq!(
+            decode(&legacy_bytes)
+                .expect("legacy (closed <payload>) still decodes")
+                .body,
+            EventBody::Closed {
+                outcome: CloseOutcome::Success(Payload::Inline(b"legacy".to_vec().into())),
+            },
+            "a legacy (closed (inline …)) decodes as Success (backward-compatible textual codec)"
         );
     }
 
