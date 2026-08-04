@@ -813,6 +813,79 @@
             ${pkgs.coreutils}/bin/cp "$c" "$out/$h.wasm"
           done
         '';
+
+        # Full-CI-in-nix increment 6b: the GHA `codegen` job (`cargo xtask codegen --check`). This is the
+        # runtime-ABI STALENESS gate: xtask regenerates runtime_abi.rs (+ wasm_abi.rs) — reading the
+        # runtime WIT + BUILDING the cdz-runtime (release + debug) and cdz-nfc components via
+        # `cargo component build` to fold in their content hashes (build_component_with_features) — and
+        # `--check` fails if the committed file drifted. So it's the heaviest check: it needs BOTH the root
+        # workspace (to build+run xtask) AND the runtime-component build machinery (cargo-component,
+        # build-std via RUSTC_BOOTSTRAP, wasm-tools, the NFC WIT dep). It also runs rustfmt on the
+        # generated file. NOTE: my `*-hash-parity` checks already assert the runtime hash == the committed
+        # constant; codegen --check ADDS the full ABI-table regeneration guard.
+        #   aarch64 MANDATORY — it builds the runtime whose content hash is arch-specific (same reason as
+        #   the GHA codegen/gate jobs run on ubuntu-24.04-arm).
+        codegenVendor = pkgs.symlinkJoin {
+          name = "cdz-codegen-cargo-vendor";
+          paths = [
+            # xtask + the seed workspace (root lock).
+            (pkgs.rustPlatform.importCargoLock { lockFile = ./Cargo.lock; })
+            # the cdz-runtime + cdz-nfc component builds (own locks) that codegen spawns.
+            (pkgs.rustPlatform.importCargoLock {
+              lockFile = ./implementation/seed/crates/cdz-runtime/Cargo.lock;
+            })
+            (pkgs.rustPlatform.importCargoLock {
+              lockFile = ./implementation/seed/crates/cdz-nfc/Cargo.lock;
+            })
+            # build-std's own lockfile (core/alloc/panic_abort), shipped inside the pinned toolchain.
+            (pkgs.rustPlatform.importCargoLock {
+              lockFile = "${rustToolchain}/lib/rustlib/src/rust/library/Cargo.lock";
+            })
+          ];
+        };
+        codegenSrc = pkgs.lib.fileset.toSource {
+          root = ./.;
+          fileset = pkgs.lib.fileset.unions [
+            # xtask + all root-workspace crates (xtask is a root member; codegen reads the runtime WIT).
+            ./implementation/seed/crates
+            ./xtask
+            ./Cargo.toml
+            ./Cargo.lock
+            ./.cargo
+            ./rust-toolchain.toml
+          ];
+        };
+        codegenCheck = pkgs.stdenvNoCC.mkDerivation {
+          pname = "cdz-codegen-check";
+          version = "0.0.0";
+          src = codegenSrc;
+          nativeBuildInputs = [ rustToolchain pkgs.wasm-tools pkgs.cargo-component ];
+          buildPhase = ''
+            runHook preBuild
+            export RUSTC_BOOTSTRAP=1
+            export HOME="$TMPDIR/home"
+            export CARGO_HOME="$TMPDIR/cargo"
+            export CARGO_NET_OFFLINE=true
+            mkdir -p "$HOME" "$CARGO_HOME"
+            cat > "$CARGO_HOME/config.toml" <<EOF
+            [build]
+            jobs = 4
+            [source.crates-io]
+            replace-with = "vendored-sources"
+            [source.vendored-sources]
+            directory = "${codegenVendor}"
+            EOF
+            # xtask codegen --check regenerates runtime_abi.rs (building cdz-runtime + cdz-nfc components
+            # via cargo-component to fold in their hashes) and fails if the committed file drifted.
+            cargo xtask codegen --check
+            runHook postBuild
+          '';
+          installPhase = ''
+            runHook preInstall
+            echo "ok: cdz-codegen-check (cargo xtask codegen --check)" > "$out"
+            runHook postInstall
+          '';
+        };
       in
       {
         # N1: the value-heap runtime components as NORMAL (input-addressed) derivations — `nix build
@@ -953,6 +1026,8 @@
             cdz-kernel-native = cdzKernelNativeCheck;
             # Full-CI-in-nix increment 5: the GHA cdz-agent-host job (test + clippy + fmt + feature matrix).
             cdz-agent-host-native = cdzAgentHostNativeCheck;
+            # Full-CI-in-nix increment 6b: the GHA codegen job (cargo xtask codegen --check, ABI staleness).
+            codegen-check = codegenCheck;
             # Full-CI-in-nix increment 6a: the GHA `roundtrip` job (`cargo xtask roundtrip` — every corpus
             # program round-trips through the syntax surfaces). Corpus-only (reads spec/semantics, no
             # runtime store), so it reuses seedTestSrc (which already carries spec/semantics) via the
