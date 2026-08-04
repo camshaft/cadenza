@@ -223,6 +223,50 @@
   (call   main (: 1 Int64)) (output (: 3 Int64))
   (call   main (: 0 Int64)) (output (: 2 Int64)))
 
+(case "a slice OF a slice over a CONCAT rope composes offsets across the seam"
+  (doc    "The view-of-a-view composition case above runs over a FLAT parent; here the parent is a
+           two-segment ROPE `(concat (10,20,30) (40,50,60,70))` and the OUTER slice (1,5) CROSSES the
+           seam — so the inner slice (1,3) must compose its offset through a view whose backing storage
+           changes segment mid-window. inner = (30,40,50): len 3, ends 30+50 → 100·3 + 80 = 380. An
+           offset composition that resolved against only one segment (or re-based the inner window at
+           the seam) would read the wrong bytes. The rope face of view-of-view offset composition.")
+  (input  (do
+            (def (main (: n Int64))
+              (do
+                (def rope (Bytes.concat (Bytes.of (list 10 20 30)) (Bytes.of (list 40 50 60 70))))
+                (match (Bytes.slice rope 1 5)
+                  ((Some outer)
+                    (match (Bytes.slice outer 1 3)
+                      ((Some inner)
+                        (+ (* 100 (Bytes.len inner))
+                           (+ (match (Bytes.at inner 0) ((Some v) v) ((None _u) -1))
+                              (match (Bytes.at inner 2) ((Some v) v) ((None _u) -1)))))
+                      ((None _u) -2)))
+                  ((None _u) -3))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 380 Int64)))
+
+(case "the composed slice view EQUALS its flat twin and keys a Map by canonical content"
+  (doc    "The identity witness of the rope view-of-view case above: the doubly-sliced seam-crossing
+           window must EQUAL `(Bytes.of (list 30 40 50))` by canonical `=` (10) AND find a value stored
+           under that flat literal as a Map KEY (+7 → 17). The key path hashes the canonical byte form —
+           a view that retained rope-offset residue (segment boundary, parent offsets) in its canonical
+           form would hash differently and miss even while element reads agree. Completes the
+           slice-composition family: offsets compose (above), and the RESULT is an ordinary value with
+           full canonical identity.")
+  (input  (do
+            (def (main (: n Int64))
+              (do
+                (def rope (Bytes.concat (Bytes.of (list 10 20 30)) (Bytes.of (list 40 50 60 70))))
+                (def inner (match (Bytes.slice rope 1 5)
+                             ((Some outer) (match (Bytes.slice outer 1 3) ((Some i) i) ((None _u) (Bytes.of (list)))))
+                             ((None _u) (Bytes.of (list)))))
+                (+ (* 10 (if (= inner (Bytes.of (list 30 40 50))) 1 0))
+                   (match (Map.lookup (Map.insert Map.empty (Bytes.of (list 30 40 50)) 7) inner)
+                     ((Some v) v) ((None _u) -1)))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 17 Int64)))
+
 (case "Bytes.concat of two runtime SLICES splices window content in order"
   (doc    "The concat-of-views face (the seam case below slices a CONCAT; this concatenates two SLICES):
            s1 = window [a..a+2] of (1,2,3,4), s2 = the (7,8) window of (5,6,7,8) — `(concat s1 s2)` at
