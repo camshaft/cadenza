@@ -24313,8 +24313,11 @@ mod match_engine {
                (def (f (: x (Option Box))) (match x ((Some b) (match b ((Mk v) v))) ((None) 0))) \
                (def (main) (f (Some (Mk 5)))) (export main))",
         )));
-        // MUST reject (the annotation is ill-formed) — and MUST return at all (no stack-overflow abort). The
-        // exact code/message is a downstream mismatch (CDZ0203); the crash-safety is the pinned property.
+        // MUST reject (the annotation is ill-formed) — and MUST RETURN at all (no stack-overflow abort): the
+        // crash-safety (a returning, cleanly-coded decline instead of a signal-6 crash) is the pinned
+        // property. The reject currently surfaces as CDZ0203 (a downstream type mismatch once the cycle is
+        // broken to `Ty::Any`); we assert the CODE so a future change can't quietly regress it to an UNCODED
+        // decline or a crash, but the message TEXT is not pinned (it may improve as diagnostics evolve).
         let e =
             r.expect_err("an under-applied generic nested in a type-arg must reject, not crash");
         assert_eq!(e.code.as_deref(), Some("CDZ0203"), "got: {}", e.message);
