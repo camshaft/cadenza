@@ -216,4 +216,16 @@ mod tests {
         m2.record_timed_out();
         // No panic + both handles record into the same set.
     }
+
+    #[test]
+    fn micros_u64_converts_exactly_and_saturates() {
+        use std::time::Duration;
+        // A normal duration converts exactly (µs).
+        assert_eq!(micros_u64(Duration::from_micros(0)), 0);
+        assert_eq!(micros_u64(Duration::from_micros(1234)), 1234);
+        assert_eq!(micros_u64(Duration::from_millis(5)), 5_000);
+        // An absurd duration whose µs exceed u64::MAX SATURATES (does not wrap to a small value) — the
+        // #2084-review concern the helper exists for. Duration::from_secs(u64::MAX) has ~1.8e25 µs >> u64::MAX.
+        assert_eq!(micros_u64(Duration::from_secs(u64::MAX)), u64::MAX);
+    }
 }

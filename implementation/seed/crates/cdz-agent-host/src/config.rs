@@ -93,8 +93,9 @@ pub struct ObservabilityConfig {
     /// How often (seconds) the daemon reports/flushes metrics to the backends — the exporter's periodic
     /// `Registry::report` cadence. Default 60 (the conventional statsd/otlp push interval). Since the
     /// registry Counters are DRAIN-ON-REPORT, this interval IS the aggregation window (each report emits the
-    /// per-interval delta — standard push semantics). Min-clamped to 1 (validated below) so a misconfig
-    /// can't spin a tight flush loop. Applies to all targets (a per-target override could be added later).
+    /// per-interval delta — standard push semantics). Validated ONLY when `enabled`: 0 is REJECTED (a config
+    /// error — a 0 interval would spin a tight flush loop); when disabled it isn't checked (nothing reports).
+    /// Applies to all targets (a per-target override could be added later).
     #[serde(default = "ObservabilityConfig::default_report_interval_secs")]
     pub report_interval_secs: u64,
 }
