@@ -498,6 +498,7 @@ pass	a BARE pattern on a withheld constructor is rejected like the qualified spe
 pass	a BASE-N conversion round-trips one value through three runtime radices
 pass	a BIGINT handler state multiplies per perform and each resume reads the prior product
 pass	a BINARY SEARCH halves a lo/hi window over a sorted list read by List.at
+todo	a BLOCK-wrapped branch perform in a let-init declines cleanly (adv-69 safe floor, not a silent miscompile)
 pass	a BOOL as a Map key routes a runtime lookup to the right entry
 pass	a BOOL-field Tuple closure ARG flattens + rebuilds (box-bool imported)
 pass	a BOOL-field Tuple closure ARG, false discriminant
@@ -579,6 +580,7 @@ pass	a CURRIED closure capturing an inner-handled perform result closes over it 
 pass	a Char-payload sum value escapes across the boundary in its canonical form
 pass	a DEFERRED resume-thunk escaping to another function re-installs the handler at apply, over a re-performing do-continuation
 pass	a DERIVED-dimension (velocity) quantity used as a Map key hits by content
+pass	a DIRECT-init branch perform in a let-init threads its state advance (adv-69 control, still computes)
 pass	a DOUBLY-nested Tuple ARG (three levels deep) crosses the direct-call boundary
 pass	a DOUBLY-nested projected list, consumed then read, is unchanged (child retain through a proj chain)
 pass	a DRAINED set compares equal to the literal empty set — removal restores the canonical empty rep
