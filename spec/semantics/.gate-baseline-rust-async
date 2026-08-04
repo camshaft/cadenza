@@ -1020,6 +1020,7 @@ pass	a bare nullary constructor is the nullary sum value
 pass	a bare number on the left scales the quantity and keeps its dimension
 pass	a bare prelude-colliding variant name matches as the local variant
 pass	a bare type-name-colliding variant name constructs as the local variant
+pass	a bare under-applied generic nested as a type argument declines, does not stack-overflow the compiler
 pass	a bare user constructor is passed as a first-class function to a higher-order function
 pass	a bare user generic ctor in a VALUE annotation needs a type argument
 pass	a bare variant reusing a prelude DATA-constructor name constructs and matches as the local variant
@@ -3569,6 +3570,7 @@ pass	a utf8 bin segment binds a decoded string when the bytes are well-formed
 pass	a utf8 bin segment is a non-match on ill-formed bytes, forcing the catch-all
 pass	a utf8 segment sized by a CONSTANT LITERAL decodes a fixed-width string
 pass	a utf8-decoding bin match with no catch-all is non-exhaustive
+pass	a valid deeply-nested generic type argument still resolves and runs (the crash-guard control)
 pass	a value declaration in a do block is in scope for the following forms
 pass	a value definition may carry a leading doc, like a function definition
 pass	a value-eq guard on a LITERAL-probe arm drives a tail-recursive loop
