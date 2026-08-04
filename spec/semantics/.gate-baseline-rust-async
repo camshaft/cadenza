@@ -2160,6 +2160,7 @@ pass	a multi-export shared call is a repeatable (borrow<t>) callback
 pass	a multi-field record with one param-named key survives the call
 pass	a multi-level RRB list persistently updates deep interior-level indices leaving the original intact
 pass	a multi-limb BigInt leaf in a tuple orders by the high limb and ties fall to the next field
+pass	a multi-limb BigInt-keyed trie churned back equals the direct build with the seed resolving
 pass	a multi-limb modulo keeps the truncating dividend-sign convention across the limb boundary
 pass	a multi-parameter closure keeps its captured environment distinct from its arguments
 pass	a multi-parameter user generic UNDER-applied in an annotation is rejected
@@ -3457,6 +3458,7 @@ pass	a trapping payload in the untaken arm of a same-constructor if does not tra
 pass	a trapping scrutinee of a same-constructor match traps before any arm
 pass	a trapping shared payload before the differing position must not preempt a trapping cond
 pass	a trie of 30 QUANTITY keys resolves a cross-normalized magnitude lookup at depth
+pass	a trie of 40 MULTI-LIMB BigInt keys enumerates in magnitude order
 pass	a trie of 40 RATIONAL keys with all-different denominators enumerates in numeric order
 pass	a trie spanning NEGATIVE and positive keys enumerates in signed numeric order
 pass	a triple-nested match on the SAME variant-refined scrutinee folds every level to the known arm

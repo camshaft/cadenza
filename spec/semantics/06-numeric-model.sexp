@@ -7125,6 +7125,48 @@
   (call   main (: 7 Int64))
   (output (: 42 Int64)))
 
+(case "a trie of 40 MULTI-LIMB BigInt keys enumerates in magnitude order"
+  (doc    "The BigInt-key rows above run on 1-2 keys; this pins the canonical ORDER over a populated
+           trie of ALL-multi-limb keys: 40 keys `i·(2^63-1)` — every one past the single-limb boundary,
+           magnitudes spanning 40 limb-multiples — enumerate strictly increasing end to end
+           (strictly-increasing walk counting all 40). The compare must be magnitude-aware across limb
+           counts; a per-limb lexicographic byte order (or a low-limb-only read) would misorder values
+           whose limb structures differ. The BigInt face of the deep-trie enumeration family.")
+  (input  (do
+            (def (fill (: i Int64) (: m (Map BigInt Int64)))
+              (if (= i 0) m
+                (fill (- i 1) (Map.insert m (* (BigInt.of 9223372036854775807) (BigInt.of i)) i))))
+            (def (inc (: ps (List (Tuple BigInt Int64))) (: prev BigInt) (: cnt Int64))
+              (match ps
+                ((list) cnt)
+                ((list h .. t) (match h ((tuple k _v) (if (< prev k) (inc t k (+ cnt 1)) -100000))))))
+            (def (main (: n Int64))
+              (inc (Map.to-list (fill n Map.empty)) (BigInt.of 0) 0))
+            (export main)))
+  (call   main (: 40 Int64)) (output (: 40 Int64)))
+
+(case "a multi-limb BigInt-keyed trie churned back equals the direct build with the seed resolving"
+  (doc    "The churn-identity face for multi-limb BigInt keys: 30 keys `(i+10)·(2^63-1)` — all
+           multi-limb — churned around a MIXED seed pair (one multi-limb `2·(2^63-1)`, one small `5`);
+           the survivor must EQUAL the direct build by canonical `=` (10) and the multi-limb seed must
+           still resolve, probed by an INDEPENDENTLY-recomputed arithmetic twin (+1 → 11). Removal
+           traffic entirely in multi-limb keyspace leaves the canonical structure identical, and limb
+           allocation/deallocation through 30 insert-remove cycles leaves no residue in the trie.")
+  (input  (do
+            (def big (BigInt.of 9223372036854775807))
+            (def (grow (: i Int64) (: n Int64) (: m (Map BigInt Int64)))
+              (if (= i n) m (grow (+ i 1) n (Map.insert m (* big (BigInt.of (+ i 10))) i))))
+            (def (shrink (: i Int64) (: n Int64) (: m (Map BigInt Int64)))
+              (if (= i n) m (shrink (+ i 1) n (Map.remove m (* big (BigInt.of (+ i 10)))))))
+            (def (main (: n Int64))
+              (do
+                (def direct (Map.insert (Map.insert Map.empty (* big (BigInt.of 2)) 20) (BigInt.of 5) 50))
+                (def churned (shrink 1 n (grow 1 n direct)))
+                (+ (* 10 (if (= churned direct) 1 0))
+                   (match (Map.lookup churned (* big (BigInt.of 2))) ((Some v) (if (= v 20) 1 0)) ((None _u) -1)))))
+            (export main)))
+  (call   main (: 30 Int64)) (output (: 11 Int64)))
+
 (case "two BigInts differing only PAST BIT 64 stay distinct as set elements"
   (doc    "The high-limb discrimination face: `1·2^64 + n` and `2·2^64 + n` share their ENTIRE low limb
            (the runtime `n`) and differ only in the second limb — a hash or compare reading only the low
