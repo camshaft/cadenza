@@ -281,6 +281,38 @@ pub enum ComponentError {
     /// FETCHING the dep) — this is about WIRING a fetched dep, so a caller can tell "couldn't get the
     /// dep" from "the dep doesn't fit the import it's meant to satisfy."
     Compose { import_name: String, reason: String },
+    /// A generic [`invoke_component`] call couldn't find the requested `interface#func` export, or the
+    /// export's result wasn't the canonical artifact-set shape the invoke seam decodes. DISTINCT from
+    /// [`ComponentError::Trap`] (the export exists + ran but trapped) and [`ComponentError::InvalidComponent`]
+    /// (the bytes aren't a component at all): here the component is valid but doesn't expose the named
+    /// export in the artifact-returning shape the generic multi-export invoke seam needs — an actionable
+    /// "this component isn't invokable at `interface#func`" signal (operator invoke-ABI ruling seq 107/108).
+    InvokeExport {
+        interface: String,
+        func: String,
+        reason: String,
+    },
+}
+
+/// One emitted ARTIFACT of a generic component invocation — the result unit of the operator's invoke
+/// primitive (Slack seq 107/108, 2026-08-04): a single invocation (e.g. the compiler) emits a SET of
+/// these, and a caller-supplied selector program (slice-2) routes each to its sink (session-response |
+/// CAS). Mirrors rcdzc's `abi::Artifact` shape `{kind, name, bytes}` — but the kernel owns its OWN copy
+/// (it does NOT depend on the compiler crate; a component's emitted artifacts are self-describing on the
+/// wire, so the kernel decodes them without knowing what produced them). `kind` categorizes the artifact
+/// (e.g. `"wasm"`, `"ast"`, `"diagnostics"`), `name` identifies it within the set, `bytes` is its opaque
+/// content (itself AST-encoded where the artifact is a value — the wire format is the AST encoding).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Artifact {
+    /// What KIND of artifact this is (`"wasm"`, `"ast"`, `"diagnostics"`, …) — the selector program keys
+    /// routing on this (and/or `name`). Opaque to the kernel: the producing component defines the vocab.
+    pub kind: String,
+    /// The artifact's NAME within the emitted set — distinguishes multiple artifacts of the same kind and
+    /// gives the selector program a per-artifact handle + a default CAS name.
+    pub name: String,
+    /// The artifact's content bytes (AST-encoded where it's a value). Opaque to the invoke mechanism; a
+    /// sink (session-response inline, or CAS `blob.put`) consumes them verbatim.
+    pub bytes: Vec<u8>,
 }
 
 /// A component DEPENDENCY a reducer declares by content hash (operator §23 — the kernel is
@@ -438,6 +470,174 @@ fn compose_dep_into_linker<T: 'static>(
 /// than reimplementing it here (this used to carry its own copy of the length/lowercase checks).
 fn parse_hash_hex(hex: &str) -> Option<Hash> {
     Hash::from_hex(hex)
+}
+
+/// Generic MULTI-EXPORT component INVOCATION — the core mechanism of the operator's resolve-name→
+/// component→invoke primitive (Slack seq 107/108, 2026-08-04). Instantiate arbitrary component `bytes`,
+/// call the export named by `interface`#`func` over an AST-encoded arg, and decode its result into a SET
+/// of [`Artifact`]s. NOT the reducer world, NOT a single canonical entry: the caller names WHICH export
+/// (multi-export, seq-107), the arg + artifact bytes are AST-encoded (the wire format is the AST
+/// encoding), and the result is `Vec<Artifact>` (seq-108's multi-artifact — the compiler emits several).
+/// A later slice adds the selector program that routes each artifact to its sink (session | CAS); this
+/// slice is the pure INVOKE mechanism, no placement.
+///
+/// The invoked export must be a WIT `func(list<u8>) -> list<record { kind: string, name: string, bytes:
+/// list<u8> }>` — one AST-encoded arg in, an artifact set out. (`arg` is a single AST-encoded value; a
+/// multi-arg call is a later refinement once the strong-typing/type-infer seam lands — the arg is
+/// self-describing AST bytes.) `interface` is the exported instance name (e.g. `cadenza:compiler/api`);
+/// `func` is the function within it. Passing an EMPTY `interface` looks the func up as a TOP-LEVEL
+/// export (a component that exports the func directly, not under an instance).
+///
+/// Fuel-metered (§22d, [`DEFAULT_FOLD_FUEL`]): a runaway invokee aborts at the budget with
+/// [`ComponentError::FuelExhausted`] rather than hanging — a resolved-and-invoked component is untrusted
+/// guest code, exactly as a reducer is. Bad bytes → [`ComponentError::InvalidComponent`]; a valid
+/// component missing `interface#func` or returning the wrong shape → [`ComponentError::InvokeExport`]
+/// (actionable "not invokable there"); a clean call that traps → [`ComponentError::Trap`]. The invokee
+/// declares no host imports (a component that imports host state is a reducer, driven via the fold loop /
+/// v-ah-host's session path); a dep-carrying invokee is a later slice.
+pub fn invoke_component(
+    bytes: &[u8],
+    interface: &str,
+    func: &str,
+    arg: &[u8],
+    fuel_budget: u64,
+) -> Result<Vec<Artifact>, ComponentError> {
+    use wasmtime::component::{Component, Linker, Val};
+    let export_err = |reason: String| ComponentError::InvokeExport {
+        interface: interface.to_string(),
+        func: func.to_string(),
+        reason,
+    };
+
+    // Fuel-metered engine (per-engine flag → fresh engine per invoke; caching a compiled Component by
+    // hash is a perf slice once invocation is hot — correctness first).
+    let mut config = wasmtime::Config::new();
+    config.consume_fuel(true);
+    let engine =
+        wasmtime::Engine::new(&config).map_err(|e| ComponentError::Instantiate(e.to_string()))?;
+    let component = Component::new(&engine, bytes)
+        .map_err(|e| ComponentError::InvalidComponent(e.to_string()))?;
+
+    let mut store = wasmtime::Store::new(&engine, ());
+    // Ample fuel for instantiation (structure-bounded, not the DoS surface), then reset to the caller's
+    // budget right before the call so the budget bounds the INVOCATION precisely.
+    store
+        .set_fuel(u64::MAX)
+        .map_err(|e| ComponentError::Instantiate(e.to_string()))?;
+    // The invokee is a pure value transform: no host imports to serve → empty linker. (A host-importing
+    // component is a reducer, driven via the fold loop — not this seam.)
+    let linker = Linker::<()>::new(&engine);
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .map_err(|e| ComponentError::Instantiate(e.to_string()))?;
+
+    // Resolve `interface#func`: an empty interface = a top-level func export; otherwise navigate into the
+    // exported instance `interface`, then the `func` within it. A missing export is InvokeExport (the
+    // component is valid but not invokable there), NOT a trap.
+    let func_handle = {
+        let iface_idx = if interface.is_empty() {
+            None
+        } else {
+            Some(
+                instance
+                    .get_export_index(&mut store, None, interface)
+                    .ok_or_else(|| {
+                        export_err(format!("component exports no interface {interface:?}"))
+                    })?,
+            )
+        };
+        let func_idx = instance
+            .get_export_index(&mut store, iface_idx.as_ref(), func)
+            .ok_or_else(|| {
+                export_err(format!("interface {interface:?} exports no func {func:?}"))
+            })?;
+        instance
+            .get_func(&mut store, func_idx)
+            .ok_or_else(|| export_err(format!("export {interface:?}#{func:?} is not a func")))?
+    };
+
+    store
+        .set_fuel(fuel_budget)
+        .map_err(|e| ComponentError::Instantiate(e.to_string()))?;
+
+    // Call over the canonical invoke shape: params = one AST-encoded `list<u8>`, result = one
+    // `list<record{kind,name,bytes}>`. `call` type-checks params/results against the func signature and
+    // errors if the export isn't that shape — surfaced as InvokeExport (wrong shape), a real trap as Trap,
+    // fuel exhaustion as FuelExhausted (mirroring `apply`'s split).
+    let params = [Val::List(arg.iter().copied().map(Val::U8).collect())];
+    let mut results = [Val::Bool(false)]; // placeholder; `call` overwrites with the real result
+    if let Err(e) = func_handle.call(&mut store, &params, &mut results) {
+        if let Some(wasmtime::Trap::OutOfFuel) = e.downcast_ref::<wasmtime::Trap>() {
+            return Err(ComponentError::FuelExhausted {
+                budget: fuel_budget,
+            });
+        }
+        if e.downcast_ref::<wasmtime::Trap>().is_some() {
+            return Err(ComponentError::Trap(e.to_string()));
+        }
+        // A non-trap `call` error is a param/result type mismatch — the export isn't the artifact-set shape.
+        return Err(export_err(format!(
+            "export {interface:?}#{func:?} is not func(list<u8>) -> list<record{{kind,name,bytes}}>: {e}"
+        )));
+    }
+    let _ = func_handle.post_return(&mut store);
+
+    // Decode the single `list<record{kind:string, name:string, bytes:list<u8>}>` result into Artifacts.
+    decode_artifact_list(&results[0], &export_err)
+}
+
+/// Decode a wasmtime component [`Val`] that is a `list<record{kind:string, name:string, bytes:list<u8>}>`
+/// into [`Artifact`]s — the result-shape half of [`invoke_component`], split out so the shape contract is
+/// in one place. Any deviation (not a list, an element that isn't the 3-field record, a field of the
+/// wrong type) is an [`ComponentError::InvokeExport`] via `export_err` — the export ran but didn't return
+/// the artifact-set shape the invoke seam decodes.
+fn decode_artifact_list(
+    val: &wasmtime::component::Val,
+    export_err: &impl Fn(String) -> ComponentError,
+) -> Result<Vec<Artifact>, ComponentError> {
+    use wasmtime::component::Val;
+    let Val::List(items) = val else {
+        return Err(export_err(format!(
+            "result is {val:?}, not a list<record{{kind,name,bytes}}>"
+        )));
+    };
+    let field_str = |rec: &[(String, Val)], want: &str| -> Result<String, ComponentError> {
+        match rec.iter().find(|(n, _)| n == want).map(|(_, v)| v) {
+            Some(Val::String(s)) => Ok(s.clone()),
+            other => Err(export_err(format!(
+                "artifact field {want:?} is {other:?}, not a string"
+            ))),
+        }
+    };
+    let field_bytes = |rec: &[(String, Val)], want: &str| -> Result<Vec<u8>, ComponentError> {
+        match rec.iter().find(|(n, _)| n == want).map(|(_, v)| v) {
+            Some(Val::List(bs)) => bs
+                .iter()
+                .map(|b| match b {
+                    Val::U8(x) => Ok(*x),
+                    other => Err(export_err(format!(
+                        "artifact {want:?} list element is {other:?}, not a u8"
+                    ))),
+                })
+                .collect(),
+            other => Err(export_err(format!(
+                "artifact field {want:?} is {other:?}, not a list<u8>"
+            ))),
+        }
+    };
+    items
+        .iter()
+        .map(|item| match item {
+            Val::Record(fields) => Ok(Artifact {
+                kind: field_str(fields, "kind")?,
+                name: field_str(fields, "name")?,
+                bytes: field_bytes(fields, "bytes")?,
+            }),
+            other => Err(export_err(format!(
+                "artifact-set element is {other:?}, not a record{{kind,name,bytes}}"
+            ))),
+        })
+        .collect()
 }
 
 impl ComponentReducer {
@@ -1412,6 +1612,130 @@ mod tests {
                 assert_eq!(import_name, "test:dep/api");
             }
             other => panic!("expected Compose error naming the interface, got {other:?}"),
+        }
+    }
+
+    // The generic multi-export invoke fixture (operator invoke-ABI ruling seq 107/108): a component whose
+    // `run: func(list<u8>) -> list<record{kind:string, name:string, bytes:list<u8>}>` export emits a SET
+    // of two artifacts. Synthetic WAT (no wit-bindgen toolchain): the core `run` lays out the record
+    // array in linear memory and returns the (ptr,len) the canon lift reads. Exercises the WHOLE invoke
+    // decode: navigate the export → call → lift the artifact list → decode records/strings/byte-lists.
+    // 🪤 An exported func referencing a named record type requires that TYPE to be EXPORTED first (aliased),
+    // else `Component::new` rejects it "func not valid to be used as export".
+    fn two_artifact_component() -> Vec<u8> {
+        wat::parse_str(
+            r#"(component
+                 (core module $m
+                   (memory (export "mem") 1)
+                   (global $next (mut i32) (i32.const 4096))
+                   (func (export "realloc") (param $old i32) (param $oldsz i32) (param $align i32) (param $newsz i32) (result i32)
+                     (local $ret i32)
+                     (global.set $next
+                       (i32.and
+                         (i32.add (global.get $next) (i32.sub (local.get $align) (i32.const 1)))
+                         (i32.xor (i32.sub (local.get $align) (i32.const 1)) (i32.const -1))))
+                     (local.set $ret (global.get $next))
+                     (global.set $next (i32.add (global.get $next) (local.get $newsz)))
+                     (local.get $ret))
+                   ;; static string/byte data: "wasm"@0 "prog"@4 DE AD@8 ; "diag"@16 "log"@20 pad@23 2A@24
+                   (data (i32.const 0) "wasmprog\de\ad")
+                   (data (i32.const 16) "diaglog\00\2a")
+                   ;; run(inptr,inlen) -> retptr : ignore input, return 2 records. record{string,string,
+                   ;; list<u8>} = 6 i32s (24 B) as (ptr,len) pairs; 2 records = 48 B; then an 8-B (ptr,len)
+                   ;; return area for the list itself.
+                   (func (export "run") (param $inptr i32) (param $inlen i32) (result i32)
+                     (local $recs i32)
+                     (local $ret i32)
+                     (global.set $next (i32.and (i32.add (global.get $next) (i32.const 3)) (i32.const -4)))
+                     (local.set $recs (global.get $next))
+                     (global.set $next (i32.add (global.get $next) (i32.const 48)))
+                     ;; rec0: kind="wasm"(0,4) name="prog"(4,4) bytes=(8,2)
+                     (i32.store (i32.add (local.get $recs) (i32.const 0)) (i32.const 0))
+                     (i32.store (i32.add (local.get $recs) (i32.const 4)) (i32.const 4))
+                     (i32.store (i32.add (local.get $recs) (i32.const 8)) (i32.const 4))
+                     (i32.store (i32.add (local.get $recs) (i32.const 12)) (i32.const 4))
+                     (i32.store (i32.add (local.get $recs) (i32.const 16)) (i32.const 8))
+                     (i32.store (i32.add (local.get $recs) (i32.const 20)) (i32.const 2))
+                     ;; rec1: kind="diag"(16,4) name="log"(20,3) bytes=(24,1)
+                     (i32.store (i32.add (local.get $recs) (i32.const 24)) (i32.const 16))
+                     (i32.store (i32.add (local.get $recs) (i32.const 28)) (i32.const 4))
+                     (i32.store (i32.add (local.get $recs) (i32.const 32)) (i32.const 20))
+                     (i32.store (i32.add (local.get $recs) (i32.const 36)) (i32.const 3))
+                     (i32.store (i32.add (local.get $recs) (i32.const 40)) (i32.const 24))
+                     (i32.store (i32.add (local.get $recs) (i32.const 44)) (i32.const 1))
+                     (global.set $next (i32.and (i32.add (global.get $next) (i32.const 3)) (i32.const -4)))
+                     (local.set $ret (global.get $next))
+                     (global.set $next (i32.add (global.get $next) (i32.const 8)))
+                     (i32.store (local.get $ret) (local.get $recs))
+                     (i32.store (i32.add (local.get $ret) (i32.const 4)) (i32.const 2))
+                     (local.get $ret)))
+                 (core instance $i (instantiate $m))
+                 (type $artifact (record (field "kind" string) (field "name" string) (field "bytes" (list u8))))
+                 (export $artifact-x "artifact" (type $artifact))
+                 (func $run (param "input" (list u8)) (result (list $artifact-x))
+                   (canon lift (core func $i "run") (memory $i "mem") (realloc (func $i "realloc"))))
+                 (export "run" (func $run)))"#,
+        )
+        .expect("assemble two-artifact component")
+    }
+
+    // The generic multi-export invoke (operator seq 107/108): invoke a component's named export over an
+    // AST-encoded arg and decode a SET of artifacts. Empty interface = top-level `run` export. Proves
+    // export navigation + call + full artifact-list decode (records, strings, byte lists), multi-artifact.
+    #[test]
+    fn invoke_component_decodes_the_emitted_artifact_set() {
+        let bytes = two_artifact_component();
+        let artifacts = invoke_component(&bytes, "", "run", b"ignored-ast-arg", DEFAULT_FOLD_FUEL)
+            .expect("two-artifact component invokes");
+        assert_eq!(
+            artifacts,
+            vec![
+                Artifact {
+                    kind: "wasm".into(),
+                    name: "prog".into(),
+                    bytes: vec![0xDE, 0xAD],
+                },
+                Artifact {
+                    kind: "diag".into(),
+                    name: "log".into(),
+                    bytes: vec![0x2A],
+                },
+            ],
+            "invoke returns the exact multi-artifact set the component emitted (seq-108)"
+        );
+    }
+
+    // A valid component that lacks the named export is InvokeExport (actionable "not invokable at
+    // interface#func"), naming the interface + func — NOT a trap or InvalidComponent.
+    #[test]
+    fn invoke_of_a_missing_export_is_invoke_export_naming_interface_and_func() {
+        let empty = wat::parse_str("(component)").expect("empty component");
+        match invoke_component(&empty, "", "run", b"", DEFAULT_FOLD_FUEL) {
+            Err(ComponentError::InvokeExport {
+                interface, func, ..
+            }) => {
+                assert_eq!(interface, "");
+                assert_eq!(func, "run");
+            }
+            other => panic!("expected InvokeExport for a missing export, got {other:?}"),
+        }
+        // A missing INTERFACE (non-empty) is likewise InvokeExport, naming it.
+        let bytes = two_artifact_component();
+        match invoke_component(&bytes, "test:nope/api", "run", b"", DEFAULT_FOLD_FUEL) {
+            Err(ComponentError::InvokeExport { interface, .. }) => {
+                assert_eq!(interface, "test:nope/api");
+            }
+            other => panic!("expected InvokeExport for a missing interface, got {other:?}"),
+        }
+    }
+
+    // Bytes that aren't a component at all are InvalidComponent (never parsed) — DISTINCT from
+    // "valid component, wrong/missing export" (InvokeExport).
+    #[test]
+    fn invoke_of_non_component_bytes_is_invalid_component() {
+        match invoke_component(b"not a wasm component", "", "run", b"", DEFAULT_FOLD_FUEL) {
+            Err(ComponentError::InvalidComponent(_)) => {}
+            other => panic!("expected InvalidComponent for garbage bytes, got {other:?}"),
         }
     }
 
