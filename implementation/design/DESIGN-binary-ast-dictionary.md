@@ -3,13 +3,15 @@
 **Author:** design agent (`design-ast-dictionary`). **Audience:** `v-syntax` (owns the wire half in
 `cadenza-ast`), `v-metaprogramming` (owns the model/resolution side), `v-agent-harness` (the first
 consumer — the AST-as-ABI invoke primitive), + future me.
-**Status:** design DECIDED — the load-bearing canonicality fork is RESOLVED by the operator (option A,
-below). Nothing is landed. This doc pins the shape, the increments (top-to-bottom the way a vertical
-lands them), the seams/file anchors, the gate, and the deferred extensions with a chosen default.
+**Status:** design DECIDED (option A + seq-125 refinement) and BUILD UNDERWAY — **I1 (the `cdzast\x00\x02`
+transport plane + `decode_with_dicts`) LANDED** on trunk (v-syntax, PR #2086). This doc pins the shape,
+the increments (top-to-bottom the way a vertical lands them), the seams/file anchors, the gate, and the
+deferred extensions with a chosen default. This revision folds the operator's seq-125 clarification, the
+Hash-crate-location fix, and the six PR-#2082 design-clarity review points.
 
 The operator floated this across three Slack messages (seq 119–121, verbatim in §1). It is a coherent,
-meaningful feature that COLLIDES with a spec-pinned invariant, so it got a design pass with the operator
-before any frozen-wire code was cut. `v-syntax` held all dict wire code pending this ruling.
+meaningful feature that COLLIDED with a spec-pinned invariant, so it got a design pass with the operator
+before any frozen-wire code was cut; `v-syntax` held all dict wire code pending the ruling, then cut I1.
 
 ---
 
@@ -23,6 +25,13 @@ before any frozen-wire code was cut. `v-syntax` held all dict wire code pending 
   resolve those without making any external calls or anything."
 - **seq 121:** "And I think a dictionary could really just be another binary AST, actually! So it's not
   even strictly limited to leaf values - it could be any arbitrary AST node!"
+- **seq 122 (the ruling):** "I won't be able to do a design session. But I think any ast that has a
+  dictionary is non-canonical and that's fine." → **option A** (a dict-bearing AST is non-canonical;
+  the one canonical encoding of any AST stays inline; content-addressing + `Event::hash` untouched).
+- **seq 125 (identity refinement):** "To be clear on the dictionaries - their identities would be the
+  hashes of the contents. So ASTs would be DAGs and hashing them would just be hashing the hashes of the
+  dictionaries. You wouldn't need to inline or even deref any of them. We could always provide a way to
+  fully deref and canonicalize as well."
 
 **So the feature.** A binary-AST encoding carries a SECTION of hashed dictionary IMPORTS
 (content-addressed). A node — **any arbitrary AST subtree, not just a leaf** (seq-121, since a
@@ -47,29 +56,56 @@ introduces a SECOND way to encode the same tree (inline vs by-index), which tens
 
 `v-syntax` surfaced three options; the operator RULED:
 
-- **(A) — CHOSEN. Dict form is NON-CANONICAL TRANSPORT ONLY.** `canon`/`encode` always emit inline;
-  the canonical byte form and content-addressing are UNCHANGED. Dict-bearing bytes are an
-  accepted-but-non-canonical INPUT that DECODES (resolving dict-refs against a supplied dict-set) and
-  then RE-ENCODES to the canonical inline form. The dictionary is purely a wire/transport compaction
-  layer (great for the AST-as-ABI invoke wire and at-rest transfer), never the stored/identity form.
-  **The frozen bijection is preserved untouched.**
-- (B) — rejected. Canonicality becomes dict-relative (identity = `(tree, dict-set)`). More compaction
-  reach (the stored/hashed form itself is dict-compressed) but a SPEC CHANGE to the bijection pins and a
-  reshape of content-addressing — a program's identity would depend on which dict it imported.
+- **(A) — CHOSEN (seq 122). A dict-bearing AST is NON-CANONICAL — "and that's fine."** The ONE
+  canonical (inline `cdzast\x00\x01`) encoding of any AST is UNCHANGED; the frozen bijection holds over
+  the inline plane exactly as today. A dict-bearing artifact is a legitimate, non-canonical FORM of the
+  same tree that can always be fully DEREFERENCED + canonicalized back to that one inline encoding.
+- (B) — rejected. Canonicality becomes dict-relative (the inline bijection itself is redefined). SPEC
+  CHANGE to the frozen pins. Not needed — A gets the compaction without touching the inline contract.
 - (C) — rejected. Defer entirely.
 
-**Consequence of A (the spine of this whole design).** There are TWO distinct byte planes:
+**The seq-125 refinement — the DAG form is DIRECTLY content-addressable (no deref needed).** The
+operator sharpened A: dictionaries are content-addressed (identity = the content hash of the dict), and
+**a dict-bearing AST is a DAG whose content hash is a HASH-OF-HASHES** — you hash the AST's own
+structure together with the content-hashes of the dictionaries it references, **without inlining or even
+dereferencing them**. So a dict-bearing artifact is NOT identity-less: it has a well-defined content
+address computed cheaply over the DAG. Full-deref-to-inline + canonicalize is ALWAYS AVAILABLE as a
+transform, but it is NOT on the hashing hot path. This is a strengthening: dictionaries buy both
+compaction AND a cheap structural content-hash, and two equal DAGs (same structure + same referenced
+dict-hashes) hash equal WITHOUT any deref.
 
-| plane | header | who emits | who reads | is it the identity? |
-|---|---|---|---|---|
-| **canonical / inline** | `cdzast\x00\x01` | `codec::encode` (unchanged) | `codec::decode` (unchanged) | **YES** — hashed, content-addressed, stored, `Event::hash` |
-| **transport / dict-bearing** | `cdzast\x00\x02` | `codec::encode_with_dict` (NEW) | `codec::decode_with_dicts` (NEW) | **NO** — decodes then re-canonicalizes to the inline plane |
+**Consequence — TWO content-address bases over ONE tree, related by an available transform:**
 
-The identity of a program is ALWAYS its inline `cdzast\x00\x01` bytes. A dict-bearing artifact is
-resolved+expanded to a normal `Arenas`, and if you want its identity you `encode` that arena — yielding
-byte-identical `cdzast\x00\x01` output regardless of how it arrived over the wire. Dict-free bytes stay
-`cdzast\x00\x01` **byte-identical to today** — the entire existing corpus and every stored artifact are
-untouched.
+| form | header | content hash | is it THE canonical bijection form? |
+|---|---|---|---|
+| **inline** | `cdzast\x00\x01` | hash of the canonical inline bytes (unchanged) | **YES** — the frozen bijection; corpus + `Event::hash` unchanged |
+| **DAG / dict-bearing** | `cdzast\x00\x02` | **hash-of-hashes**: own structure + referenced dict content-hashes, NO deref | **NO** — a non-canonical form; deref+canonicalize → the inline form |
+
+Both forms have a well-defined content address; they are the SAME tree in two forms, bridged by the
+`deref + canonicalize` transform (DAG → inline). Which address a given SUBSYSTEM keys on is that
+subsystem's choice (§2.1). Dict-free bytes stay `cdzast\x00\x01` **byte-identical to today** — the
+entire existing corpus and every stored artifact are untouched, and `codec::encode`/`decode`/`canon` are
+not modified.
+
+### 2.1 Which hash does each subsystem key on?
+
+- **The kernel durable log / `Event::hash` / the existing corpus keep the INLINE hash, unchanged.** The
+  frozen bijection is guarded (§7.2). No existing identity moves. This is the hard invariant of A.
+- **A dict-bearing artifact (the invoke wire, at-rest transfer) may be content-addressed by its DAG
+  hash-of-hashes** — cheap, no deref, and stable given a fixed referenced dict-set. This is what makes
+  dictionaries pay off on the hot path (you neither expand nor re-hash the shared subtrees).
+- **The two are bridged, not merged:** `deref + canonicalize` maps a DAG to its inline form (and inline
+  hash); there is no requirement that the DAG hash equals the inline hash (it does not — different
+  bytes, different bases). A subsystem that needs the canonical identity of a dict-bearing artifact runs
+  the transform; one that only needs a stable structural address uses the DAG hash directly.
+
+**One point flagged to the operator via the concierge (not blocking):** whether the STORED/primary
+identity of a dict-bearing program should be its DAG hash-of-hashes or its deref-canonical inline hash.
+seq-125 leans DAG-hash-as-primary ("you wouldn't need to inline or even deref"); this doc adopts that as
+the default (DAG hash is a first-class content address; deref-canonical is the available transform), and
+the inline hash remains the FROZEN identity for everything that exists today. If the operator wants the
+stored identity of NEW dict-bearing programs pinned to the deref-canonical hash instead, that is a
+one-line change to §2.1 — it does not alter the wire or the increments.
 
 ---
 
@@ -116,8 +152,9 @@ node, not just a leaf) for free. The existing `TAG_ATOM`/`TAG_LIST` bytes are un
 ### 4.1 A dictionary is a content-addressed inline-canonical AST
 
 A dictionary IS just another binary AST (seq-121): a normal `cdzast\x00\x01` inline-canonical byte
-string. Its content hash (the SAME hash used for content-addressing elsewhere — `cdz-kernel`'s `Hash`
-over the canonical bytes) is its identity. A dict's importable NODES are the `StructId`s of its own
+string. Its content hash (a value-only `Hash([u8;32])` over the canonical bytes, defined in
+`cadenza-ast` — see §9.1 for why it lives in the bottom crate, not `cdz-kernel`) is its identity. A
+dict's importable NODES are the `StructId`s of its own
 `structure` arena: dict-ref `{dict: i, node: j}` resolves to "the subtree rooted at `structure[j]` of
 the dictionary whose hash is the `i`-th import".
 
@@ -131,7 +168,7 @@ This keeps v1's resolver a bounded, obviously-terminating graft.
 
 ```text
 [ header:8 = "cdzast\x00\x02" ]
-[ import_count:var ] then each import: [ hash:32 ]   # content hashes, in a CANONICAL (sorted) order
+[ import_count:var ] then each import: [ hash:32 ]   # content hashes, sorted ASCENDING lexicographically by the 32 raw bytes
 [ leaf_count:var ]  then each leaf (identical leaf encoding to v1)
 [ struct_count:var ] then each entry: [ tag:1 ]
       TAG_ATOM(0)      → [ leaf_id:var ]                 # unchanged
@@ -139,10 +176,16 @@ This keeps v1's resolver a bounded, obviously-terminating graft.
       TAG_DICT_REF(2)  → [ dict_idx:var ][ node_id:var ] # NEW: node_id into import[dict_idx]'s arena
 [ root:var ]
 ```
-The import section is ORDERED canonically (imports sorted by hash) so that a dict-bearing artifact ALSO
-has a deterministic byte form GIVEN a fixed ref-set — useful for de-dup/caching of transport artifacts,
-though (per A) this is NOT a program-identity claim. `dict_idx` indexes the import list; `node_id`
-indexes the referenced dictionary's `structure`. Both are bounds-checked on decode.
+The import section is ORDERED canonically — imports sorted ascending by the 32 raw hash bytes,
+lexicographically — so that a dict-bearing artifact ALSO has a deterministic byte form GIVEN a fixed
+ref-set (useful for de-dup/caching of transport artifacts, though per A this is NOT a program-identity
+claim). **`dict_idx` indexes THIS sorted import list** (the one and only import table — there is no
+second, differently-ordered table for `dict_idx` to disagree with), so a `DictRef`'s `dict_idx` names
+`import[dict_idx]`'s hash directly. `node_id` indexes the referenced dictionary's own `structure`
+arena. Both `dict_idx` and `node_id` are bounds-checked on decode. Note the sort is a property the
+ENCODER establishes; a decoder does NOT require the imports to be sorted to resolve refs (it just reads
+`import[dict_idx]`), so an out-of-order import list is still decodable — sorting only guarantees the
+deterministic-bytes property for a producer that wants it.
 
 ### 4.3 Hermetic resolution — `decode_with_dicts`
 
@@ -160,33 +203,70 @@ pub fn decode_with_dicts(bytes: &[u8], dicts: &DictSet) -> Result<Arenas, Decode
   dict-free artifact.
 - `cdzast\x00\x02` input → resolve every import hash against `dicts` (missing → `MissingDict(Hash)`),
   bounds-check each `DictRef` (`dict_idx < import_count`, `node_id < that dict's struct_count`), and
-  GRAFT the named subtree in place of the ref, producing a normal `Arenas`. The result is then subject
-  to the SAME tree/decode-bomb guard as `decode` (a grafted arena must still be a genuine tree).
-- The returned `Arenas` re-encodes via `encode` to canonical `cdzast\x00\x01` — that is the identity.
+  GRAFT the named subtree in place of the ref, producing a normal `Arenas`. **The grafted, fully-
+  dereferenced arena is then RE-CANONICALIZED (`canon::canonicalize`) — canon collapses the shared
+  subtrees a graft introduces into the one canonical tree**, so the decode-bomb tree-guard is applied to
+  the CANONICAL result, never to the pre-canon graft (a DAG legitimately shares subtrees; only the
+  canonical inline form is the strict tree the guard protects). This is the "full deref + canonicalize"
+  transform the operator named (seq 125).
+- The returned `Arenas` re-encodes via `encode` to the canonical `cdzast\x00\x01` inline bytes — that is
+  the DEREF-CANONICAL identity. (Whether a subsystem keys on this or on the cheaper DAG hash of §4.5 is
+  its choice — §2.1.)
 
 **The canonical `decode` REFUSES `cdzast\x00\x02`.** Per A, dict-bearing bytes are non-canonical: the
-identity-bearing `decode`/`decode_detailed` continue to accept ONLY `cdzast\x00\x01` and return
-`BadHeader` on `\x00\x02` (refuse-on-mismatch, `ast-encoding.md` §The Encoding Is Versioned). Only the
-explicitly-transport `decode_with_dicts` accepts `\x00\x02`. This is the structural guarantee that a
-dict artifact can never be mistaken for an identity artifact.
+identity-bearing `decode`/`decode_detailed` continue to accept ONLY `cdzast\x00\x01`. Precisely: today
+`decode` returns `Option<Arenas>` (it DROPS the error reason) and `decode_detailed` returns
+`Result<Arenas, DecodeError>` (it CLASSIFIES it) — this design does NOT change those signatures. So on a
+`\x00\x02` header, `decode_detailed` returns `Err(DecodeError::BadHeader)` and `decode` returns `None`
+(the `.ok()` of that `Err`) — the refuse-on-mismatch guarantee (`ast-encoding.md` §The Encoding Is
+Versioned) holds through BOTH surfaces; "returns `BadHeader`" throughout this doc means the
+`decode_detailed` classification, surfaced as `None` through `decode`. Only the explicitly-transport
+`decode_with_dicts` (which returns `Result<Arenas, DecodeError>`) accepts `\x00\x02`. This is the
+structural guarantee that a dict artifact can never be mistaken for an identity artifact.
 
-### 4.4 The transport encoder — `encode_with_dict` (honor-supplied-dict)
+### 4.4 The transport encoder — `encode_with_dicts` (honor-supplied-dict)
 
 ```rust
 /// Encode `arenas` as a transport artifact that REFERENCES the supplied dictionaries: any subtree of
 /// `arenas` that is structurally equal to an importable node of some dict in `dicts` MAY be emitted as
 /// a DictRef instead of inline. v1 emits a ref for an EXACT subtree match against a caller-SUPPLIED
 /// dict-set; it does NOT choose which subtrees to factor into a dictionary (that is dict CONSTRUCTION,
-/// deferred — §8). Round-trips: decode_with_dicts(encode_with_dict(a, d), d) == canonicalize(a).
-pub fn encode_with_dict(arenas: &Arenas, dicts: &DictSet) -> Vec<u8>;
+/// deferred — §8). Round-trips: decode_with_dicts(encode_with_dicts(a, d), d) == canonicalize(a).
+pub fn encode_with_dicts(arenas: &Arenas, dicts: &DictSet) -> Vec<u8>;
 ```
+(Naming: the pair is `decode_with_dicts` / `encode_with_dicts` — both PLURAL, since each takes a
+`DictSet` of potentially many dictionaries. The symmetric names make the transport pair obvious next to
+the canonical `decode`/`encode`.)
 **Decided: v1 = decode/resolve + honor-supplied-dict.** v1 delivers the transport codec and an encoder
 that emits refs against a dict-set the CALLER supplies. Automatic dictionary CONSTRUCTION (scanning a
 corpus, choosing high-frequency/large repeated subtrees to factor into a dict, emitting `(dict, refs)`)
 is a separate, later increment (§8). This keeps v1 small and PROVABLE — the round-trip and hermeticity
 properties are the whole correctness story and are testable without a heuristic builder.
 
-### 4.5 The decode-error surface
+### 4.5 The DAG content-hash — `hash_dag` (hash-of-hashes, no deref)
+
+Per seq-125, a dict-bearing artifact has a cheap content address computed WITHOUT dereferencing any
+dictionary:
+
+```rust
+/// Content-hash a possibly-dict-bearing transport artifact as a DAG, WITHOUT resolving/dereferencing
+/// its dictionaries: fold the artifact's own leaves + structure with the 32-byte content-hashes of the
+/// dictionaries it imports (a hash-of-hashes). Requires only the import hashes ALREADY in the bytes — it
+/// needs no DictSet and makes no external call. For a `cdzast\x00\x01` (dict-free) input this equals the
+/// ordinary content hash of those bytes, so it agrees with the inline identity on dict-free artifacts.
+pub fn hash_dag(bytes: &[u8]) -> Result<Hash, DecodeError>;
+```
+- Two DAGs with the same structure AND the same referenced dict-hashes hash equal — no deref.
+- `hash_dag` of a dict-BEARING artifact does NOT equal the inline hash of its deref-canonical form (they
+  are different byte bases). They are bridged by `decode_with_dicts` + `encode` (the deref-canonical
+  transform), not by hash equality — §2.1.
+- Because the import section is hash-sorted (§4.2) and leaves/structure are the canonical arena vectors,
+  `hash_dag` is stable given a fixed ref-set. (v1 keeps this straightforward: it folds the bytes'
+  own leaf/structure vectors + the sorted import hashes. A stronger "canonical-DAG" hash that is
+  invariant under choice of which subtrees were factored is a v2 refinement — §8 — not needed for a
+  stable address of a GIVEN encoding.)
+
+### 4.6 The decode-error surface
 
 Extend `DecodeError` (`codec.rs:120`) additively:
 - `MissingDict(Hash)` — a `\x00\x02` artifact imports a hash NOT present in the supplied `DictSet`. This
@@ -209,19 +289,27 @@ Each increment is independently gate-green and a MEANINGFUL merge-request (a who
   and `decode_with_dicts`. The canonical `encode`/`decode`/`canon` paths and `cdzast\x00\x01` bytes are
   UNTOUCHED. Gate: a dict-free `\x00\x02` decodes identically to `decode`; a `\x00\x02` with refs
   resolves + grafts + passes the tree guard; a missing hash → `MissingDict`; out-of-range ref →
-  `IdOutOfRange`; canonical `decode` REFUSES `\x00\x02` (`BadHeader`). This is the load-bearing slice.
-- **I2 — transport encoder honoring a supplied dict (`v-syntax`).** Add `encode_with_dict`: emit a
+  `IdOutOfRange`; canonical `decode_detailed` REFUSES `\x00\x02` with `Err(BadHeader)` (and `decode`
+  with `None`) — signatures unchanged. This is the load-bearing slice.
+- **I2 — transport encoder honoring a supplied dict (`v-syntax`).** Add `encode_with_dicts`: emit a
   `DictRef` for a subtree that EXACTLY matches an importable node of a supplied dict; else inline.
   Emit imports in canonical (hash-sorted) order. Gate: the ROUND-TRIP identity
-  `decode_with_dicts(encode_with_dict(a, d), d) == canonicalize(a)` for a matrix of trees × dict-sets
+  `decode_with_dicts(encode_with_dicts(a, d), d) == canonicalize(a)` for a matrix of trees × dict-sets
   (empty dict, matching dict, superset dict), AND `encode(decode_with_dicts(...)) == encode(a)`
   (transport is identity-preserving). A fuzz/property test over random arenas + random dicts.
+- **I2b — the DAG content-hash `hash_dag` (`v-syntax`, folds into I2).** Add `hash_dag(bytes)` (§4.5):
+  hash-of-hashes over the artifact's leaves/structure + its sorted import hashes, no deref. Gate: for a
+  dict-free input `hash_dag(b) == content_hash(b)` (agrees with inline identity); two DAGs with the same
+  structure + same import hashes hash equal; changing a referenced dict hash changes the DAG hash. This
+  is the seq-125 cheap structural address; it is a small, coherent add on I2's encoder and can ship in
+  the same MR as I2 or immediately after.
 - **I3 — model/resolution API for the compiler front (`v-metaprogramming`, area=`cadenza-ast`/
   `rcdzc`).** The typed surface the rest of the compiler uses: build a `DictSet` from supplied input
   artifacts (bytes → validated flat inline-canonical `Arenas`, keyed by hash), the "resolve then hand
-  the compiler a normal `Arenas`" entry point, and the `MissingDict` diagnostic wording. Hermetic: the
-  builder takes bytes it is GIVEN; it never reads a path or fetches. Gate: a reject test for a dict
-  artifact that is itself dict-bearing (v1 dicts must be flat) and for a missing import.
+  the compiler a normal `Arenas`" entry point, the `hash_dag`-vs-deref-canonical identity choice (§2.1)
+  exposed to callers, and the `MissingDict` diagnostic wording. Hermetic: the builder takes bytes it is
+  GIVEN; it never reads a path or fetches. Gate: a reject test for a dict artifact that is itself
+  dict-bearing (v1 dicts must be flat) and for a missing import.
 - **I4 — invoke-wire integration (`v-agent-harness` leads, `v-metaprogramming` supports).** The
   AST-as-ABI component-invoke primitive accepts dictionaries as ADDITIONAL input artifacts alongside the
   primary AST arg; the host resolves the arg via `decode_with_dicts(arg, dictset)` before type-inference/
@@ -230,8 +318,15 @@ Each increment is independently gate-green and a MEANINGFUL merge-request (a who
   missing dict is a clean host-level error, not a panic. Coordinate with the AST-as-ABI marshalling
   work already in flight (v-agent-harness kernel design).
 
-I1 → I2 → I3 are `cadenza-ast`-local and can land back-to-back. I4 waits on the invoke primitive's
-generic marshalling landing (v-agent-harness rework-a/b), then composes.
+I1 → I2 (+I2b) → I3 are `cadenza-ast`-local and can land back-to-back. I4 waits on the invoke
+primitive's generic marshalling landing (v-agent-harness rework-a/b), then composes.
+
+**Sequencing (v-metaprogramming's rec):** start this arc AFTER the in-flight bytes-literal arc (operator
+seq 113 `Ast.Bytes`: B2a in-flight, B2b next). It composes cleanly and is strictly additive — a
+dictionary entry can be a `Bytes` leaf, and nothing here touches the leaf encoding — so there is no
+reason to interleave with the bytes-literal wire. **Split:** `v-syntax` = wire (I1/I2/I2b),
+`v-metaprogramming` = model (I3), `v-agent-harness` = invoke-wire consumer/constraint (I4). All three
+codec owners are primed and want to be in the build loop.
 
 ## 6. Seams / file anchors (where each increment cuts)
 
@@ -239,10 +334,11 @@ generic marshalling landing (v-agent-harness rework-a/b), then composes.
   decode path (parallel to `decode_detailed` `:317`, reusing `read_leaf` and the tree guard), transport
   encode path (parallel to `encode` `:179`), `DecodeError::MissingDict` (`:120`). **Do NOT alter the
   `SCHEMA_HEADER`/`\x00\x01` branch** — that is the frozen identity plane.
-- `cadenza-ast/src/ast.rs` — the transport-only `DictRef`/`DictSet` types (a transport module; keep them
-  OUT of the canonical `Struct`/`Arenas` used for identity so `encode`/`canon` cannot accidentally emit
-  a ref).
-- `cadenza-ast/src/lib.rs` — re-export the transport surface (`decode_with_dicts`, `encode_with_dict`,
+- `cadenza-ast/src/ast.rs` (or a small transport module) — the value-only `Hash([u8;32])` (§9.1) and the
+  transport-only `DictRef`/`DictSet` types; keep the transport types OUT of the canonical
+  `Struct`/`Arenas` used for identity so `encode`/`canon` cannot accidentally emit a ref. `cdz-kernel`
+  re-exports / `From`-converts the `cadenza-ast` `Hash` (byte-identical) rather than the reverse.
+- `cadenza-ast/src/lib.rs` — re-export the transport surface (`decode_with_dicts`, `encode_with_dicts`,
   `DictSet`).
 - `cdz-kernel/src/event_ast.rs` — **read-only invariant:** this path stays on `\x00\x01`. A regression
   test asserts every `Event` still encodes to byte-identical `\x00\x01` (guards A).
@@ -271,36 +367,69 @@ generic marshalling landing (v-agent-harness rework-a/b), then composes.
   (canonical-subtree hashing to find repeats) to synthesize dictionaries and measure the compaction win.
   Default until then: callers supply the dict-set explicitly.
 - **Layered dictionaries (dict-imports-dicts).** v1 dicts are FLAT. If a real need appears, make it an
-  ADDITIVE v2: allow a dict's bytes to be `\x00\x02`, walk the content-hash DAG in `decode_with_dicts`,
-  and add a `CyclicDict` guard (content-addressing makes the import graph naturally a DAG — a hash can
-  only reference pre-existing lower hashes — but the resolver still refuses a claimed cycle). Reserved
-  in the error enum now; not built.
+  ADDITIVE v2: allow a dict's bytes to be `\x00\x02`, walk the content-hash graph in `decode_with_dicts`,
+  and add a `CyclicDict` guard. Content-addressing makes an honest import graph naturally ACYCLIC — a
+  dict's hash is computed over bytes that already contain its imports' hashes, so a dict cannot import
+  one whose hash is not yet fixed, i.e. it can only import dicts that already existed when it was
+  created (this is a temporal/derivation ordering, NOT a numeric ordering of the hash bytes — hash
+  values have no `<` relation to content). A hostile or corrupt `DictSet` could still PRESENT a claimed
+  cycle (hash A's bytes name B and B's name A), so the resolver must still detect and refuse it
+  (`CyclicDict`) rather than trust the acyclicity. Reserved in the error enum now; not built.
 - **Dict identity / GC.** A `DictSet` is caller-owned input; the compiler/host does not persist or GC
   dictionaries in v1. If dicts become a managed store later, GC by content-address reachability from
   live artifacts (out of scope here).
 - **Mandatory vs optional in the encoding.** Dict-refs are ALWAYS optional (transport-only). No artifact
   is ever REQUIRED to be dict-bearing; the identity form is always inline.
+- **Evolution / versioning (seq-119 "evolution of the dictionary").** Because a dict is content-
+  addressed, evolution is FREE and needs no supersession machinery: a "new version" of a dictionary is
+  simply a new dict with a new hash. An old artifact pins the OLD dict hash and keeps resolving against
+  it; a new artifact imports the NEWER hash. Both coexist in a `DictSet` (a decode supplies whatever
+  hashes its artifacts name). A single artifact MAY import multiple dicts (the import section is a list),
+  so one body can mix dicts. There is no dict "supersession" or in-place mutation — content-addressing
+  makes an updated dict a distinct object, which is exactly the stable-evolution property the operator
+  wanted. GC of unreferenced dicts (if dicts ever become a managed store rather than caller-supplied
+  input) is by content-address reachability from live artifacts — out of scope for v1.
+- **DAG-invariant "canonical" hash.** `hash_dag` (§4.5) is stable for a GIVEN encoding but is NOT
+  invariant under a different choice of which subtrees were factored into dicts (two DAGs that deref to
+  the same inline tree but factor differently hash differently). If a factor-invariant structural
+  identity is ever wanted, that is a v2 refinement (canonicalize the DAG's factoring before hashing);
+  v1 does not need it, since the deref-canonical inline hash already provides the factor-invariant
+  identity via the transform.
 
 ## 9. Open decisions (each with a chosen default — override only with operator sign-off)
 
-1. **Hash width in the import section = 32 bytes** (matches `cdz-kernel`'s `Hash`). Default: reuse the
-   existing content-hash type verbatim so a dict hash IS a normal content-address.
+1. **Import-section hash type = a value-only `Hash([u8;32])` defined IN `cadenza-ast`** (the bottom
+   crate). NOT `cdz-kernel::Hash` — `cadenza-ast` is the bottom crate and `cdz-kernel` depends on IT, so
+   referencing `cdz-kernel::Hash` from the wire format would be a dependency-inversion CYCLE (v-syntax's
+   ruling, folded in). `cadenza-ast` defines its own `Hash([u8;32])` — value-only: it just stores +
+   compares the 32 bytes an import names, with no hashing machinery or extra dep — and `cdz-kernel`
+   re-exports / `From`-converts it byte-identically. The VALUE is unchanged (a dict hash is still a
+   normal 32-byte content-address); only the type's crate location moves down to where the wire needs
+   it. 32-byte width matches the existing content-address.
 2. **Import ordering = sorted by hash** (deterministic transport bytes given a ref-set). Default: sort;
    it costs nothing and aids transport de-dup/caching.
 3. **`DictSet` key = full content hash.** Default: yes — that is the seq-119 "hashed dictionary imports"
    and gives evolution-by-hash for free (a new dict version is a new hash; old artifacts still resolve
    against the old hash).
-4. **Should `encode_with_dict` be greedy (largest-subtree-first) ref matching?** Default: yes — prefer
+4. **Should `encode_with_dicts` be greedy (largest-subtree-first) ref matching?** Default: yes — prefer
    the largest matching subtree so a ref replaces the most inline bytes; a smaller nested match inside a
    larger matched subtree is subsumed. (Purely a compaction heuristic; does not affect correctness since
    any ref set round-trips.)
+5. **Primary stored identity of a NEW dict-bearing program = DAG hash-of-hashes vs deref-canonical inline
+   hash?** Default per seq-125: the DAG hash (`hash_dag`) is a first-class content address (cheap, no
+   deref), and deref-canonical is the always-available transform. The FROZEN inline hash remains the
+   identity for everything that exists today (the guarded invariant). This is the one point flagged to
+   the operator via the concierge; it does not block the wire or the increments, and flipping the default
+   is a one-line change to §2.1 if the operator prefers deref-canonical-as-primary.
 
 ---
 
 ## 10. Hand-off
 
-Wire half → `v-syntax` (I1/I2, `cadenza-ast`). Model/resolution → `v-metaprogramming` (I3, the compiler
-front surface + diagnostics). First consumer → `v-agent-harness` (I4, invoke wire). The PM (`corpus-
-bugfix`) is asked to stand up / point a vertical at I1 first, since I2/I3 stack on it and I4 waits on
-the invoke primitive's generic marshalling. The frozen-bijection guard (§7.2) is the one test that must
+Wire half → `v-syntax` (I1/I2/I2b, `cadenza-ast`). Model/resolution → `v-metaprogramming` (I3, the
+compiler front surface + diagnostics). First consumer → `v-agent-harness` (I4, invoke wire) — the prime
+beneficiary AND the hardest constraint (deps-by-hash-from-CAS invoke model), so it is in the loop from
+the start. The PM (`corpus-bugfix`) is asked to point a vertical at I1 first (after the in-flight
+bytes-literal arc, per the sequencing note in §5), since I2/I2b/I3 stack on it and I4 waits on the
+invoke primitive's generic marshalling. The frozen-bijection guard (§7.2) is the one test that must
 never go red — it is the structural proof that option A held.
