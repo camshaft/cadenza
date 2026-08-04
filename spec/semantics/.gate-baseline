@@ -865,6 +865,7 @@ pass	a Rational-inner quantity Map key matches an equal value written with a dif
 pass	a Rational-inner quantity Set dedups equal elements and keeps distinct ones
 pass	a Rational-inner quantity addition stays exact through the quantity wrapper
 pass	a Rational-inner quantity stored in a List reads back canonicalized through List.at
+pass	a Rational-keyed trie churned with DIFFERENTLY-normalized spellings equals the direct build
 pass	a Rational-payload sum value escapes across the boundary in its canonical form
 pass	a Record.merge of two runtime records reads a field from the second operand
 pass	a Record.pop over a runtime record splits off the named field's value
@@ -3501,6 +3502,7 @@ pass	a trapping payload in the taken arm of a same-constructor match still traps
 pass	a trapping payload in the untaken arm of a same-constructor if does not trap
 pass	a trapping scrutinee of a same-constructor match traps before any arm
 pass	a trapping shared payload before the differing position must not preempt a trapping cond
+pass	a trie of 40 RATIONAL keys with all-different denominators enumerates in numeric order
 pass	a trie spanning NEGATIVE and positive keys enumerates in signed numeric order
 pass	a triple-nested match on the SAME variant-refined scrutinee folds every level to the known arm
 pass	a trivially-true guard does not make its variant arm unconditional

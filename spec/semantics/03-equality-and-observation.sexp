@@ -324,6 +324,47 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: (tuple 42 -1 1) (Tuple Int64 Int64 Int64))))
 
+(case "a trie of 40 RATIONAL keys with all-different denominators enumerates in numeric order"
+  (doc    "The Rational-key rows above run on 1-2 keys; this pins the canonical ORDER over a populated
+           trie: 40 keys `i/(i+1)` — every denominator different, the sequence strictly ascending toward
+           1 — must enumerate in NUMERIC order end to end (strictly-increasing walk counting all 40).
+           Ordering adjacent fractions like 39/40 vs 40/41 requires genuine cross-multiplication in the
+           canonical compare; a per-component (numerator-then-denominator) order would misplace nearly
+           every pair. The Rational face of the deep-trie enumeration family.")
+  (input  (do
+            (def (fill (: i Int64) (: m (Map Rational Int64)))
+              (if (= i 0) m
+                (fill (- i 1) (Map.insert m (Rational.of i (+ i 1)) i))))
+            (def (inc (: ps (List (Tuple Rational Int64))) (: prev Rational) (: cnt Int64))
+              (match ps
+                ((list) cnt)
+                ((list h .. t) (match h ((tuple k _v) (if (< prev k) (inc t k (+ cnt 1)) -100000))))))
+            (def (main (: n Int64))
+              (inc (Map.to-list (fill n Map.empty)) (Rational.of 0 1) 0))
+            (export main)))
+  (call   main (: 40 Int64)) (output (: 40 Int64)))
+
+(case "a Rational-keyed trie churned with DIFFERENTLY-normalized spellings equals the direct build"
+  (doc    "The normalization-identity churn: 30 keys are INSERTED as `2i/6` and REMOVED as `i/3` —
+           differently-written spellings of the same rational — so every removal must land on its
+           insert's slot through the canonical form. The survivor (seeded `1/2`) must EQUAL the direct
+           build by canonical `=` (10) and still resolve when probed as `2/4` (+1 → 11). Three spellings
+           of every value in play (insert, remove, probe) all converging on one canonical slot at trie
+           depth — the churn face of the normalized-key family.")
+  (input  (do
+            (def (grow (: i Int64) (: n Int64) (: m (Map Rational Int64)))
+              (if (= i n) m (grow (+ i 1) n (Map.insert m (Rational.of (* i 2) 6) i))))
+            (def (shrink (: i Int64) (: n Int64) (: m (Map Rational Int64)))
+              (if (= i n) m (shrink (+ i 1) n (Map.remove m (Rational.of i 3)))))
+            (def (main (: n Int64))
+              (do
+                (def direct (Map.insert Map.empty (Rational.of 1 2) 50))
+                (def churned (shrink 1 n (grow 1 n direct)))
+                (+ (* 10 (if (= churned direct) 1 0))
+                   (match (Map.lookup churned (Rational.of 2 4)) ((Some v) (if (= v 50) 1 0)) ((None _u) -1)))))
+            (export main)))
+  (call   main (: 30 Int64)) (output (: 11 Int64)))
+
 (case "a COMPOUND map key with a Rational leaf hashes+matches by the leaf's normalized form"
   (doc    "Composes the two faces above: the tuple-element walk (:194/:207) pins Rational `=` inside a tuple,
            and the CHAMP-KEY face (:211) pins a BARE Rational key — this pins their COMPOSITION, a compound
