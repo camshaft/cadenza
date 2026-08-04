@@ -222,7 +222,12 @@ impl<T: HttpTransport> Executor for HttpExecutor<T> {
 /// surfaced verbatim as a 3xx `HttpResponse` (the reducer sees the `location` header + status and can
 /// re-emit a NEW `Http` effect to that host, which is authorized afresh). Following a redirect must never
 /// bypass the per-host capability check.
+// `Clone` is cheap: `reqwest::Client` is an `Arc`-backed handle to a shared connection pool, so cloning is
+// a refcount bump (NOT a new pool). This lets the daemon build ONE transport at startup and clone it into a
+// fresh per-session executor without re-running client construction (#1987 review — a per-install rebuild
+// stalled the single-threaded loop).
 #[cfg(feature = "live-net")]
+#[derive(Clone)]
 pub struct ReqwestHttpTransport {
     client: reqwest::Client,
 }
