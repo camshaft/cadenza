@@ -320,6 +320,10 @@ pub struct AgentHost {
     /// replay-copy at spawn and folds its appends back after each turn — no shared handle. (Type:
     /// [`cdz_kernel::name_store::NameStore`].)
     canonical: Option<cdz_kernel::name_store::NameStore>,
+    /// The host's metric surface — monotonic counters bumped at the session-lifecycle + per-turn boundaries
+    /// (spawn/remove/deliver). Hermetic (plain atomics, no metrics dep); read via [`AgentHost::metrics`] for
+    /// a status surface or the feature-gated exporter. `Default` = all-zero, so it needs no explicit init.
+    metrics: crate::metrics::HostMetrics,
 }
 
 /// A by-value copy of a canonical [`NameStore`](cdz_kernel::name_store::NameStore) for a freshly-spawned session — replays the canonical
@@ -340,6 +344,7 @@ impl AgentHost {
         AgentHost {
             sessions: HashMap::new(),
             canonical: None,
+            metrics: crate::metrics::HostMetrics::default(),
         }
     }
 
@@ -358,6 +363,7 @@ impl AgentHost {
         AgentHost {
             sessions: HashMap::new(),
             canonical: Some(canonical),
+            metrics: crate::metrics::HostMetrics::default(),
         }
     }
 
@@ -377,7 +383,13 @@ impl AgentHost {
             Some(canonical) => session.with_name_store(replay_of(canonical)),
             None => session,
         };
-        self.sessions.insert(id.clone(), session);
+        let replaced = self.sessions.insert(id.clone(), session).is_some();
+        self.metrics.record_session_installed();
+        // A spawn onto an existing id REPLACES (drops) the old session without a `remove` call — count that
+        // implicit drop as a removal too, so `sessions_live` (installed − removed) stays accurate.
+        if replaced {
+            self.metrics.record_session_removed();
+        }
         id
     }
 
@@ -396,8 +408,14 @@ impl AgentHost {
         body: EventBody,
         cause: Option<Hash>,
     ) -> Option<Result<(), KernelError>> {
-        let s = self.sessions.get_mut(id)?;
+        let Some(s) = self.sessions.get_mut(id) else {
+            // Addressed to no live session — a misrouted/late event. Count it distinctly from a delivered
+            // turn, then report "unknown" up (None) as before.
+            self.metrics.record_delivery_to_unknown_session();
+            return None;
+        };
         let outcome = s.deliver(body, cause).await;
+        self.metrics.record_turn(outcome.is_ok());
         // §4c v0.3 merge-back: after a SUCCESSFUL turn, fold this session's new name-store writes into the
         // canonical shared store so the next-spawned (or next-reconciled) session sees them. Idempotent — a
         // turn that wrote nothing re-merges as a no-op (the session's log is already a prefix of what it was
@@ -431,7 +449,11 @@ impl AgentHost {
     /// Remove a finished/closed session from the registry, returning it if present (so a caller can
     /// inspect its final state). A completed agent is dropped from the host this way.
     pub fn remove(&mut self, id: &SessionId) -> Option<HostedSession> {
-        self.sessions.remove(id)
+        let removed = self.sessions.remove(id);
+        if removed.is_some() {
+            self.metrics.record_session_removed();
+        }
+        removed
     }
 
     /// How many sessions are registered.
@@ -442,6 +464,12 @@ impl AgentHost {
     /// Is the registry empty (no running sessions)?
     pub fn is_empty(&self) -> bool {
         self.sessions.is_empty()
+    }
+
+    /// The host's live metric surface — read a [`snapshot`](crate::HostMetrics::snapshot) for a status query
+    /// or the feature-gated metrics exporter. The counters are bumped internally at spawn/remove/deliver.
+    pub fn metrics(&self) -> &crate::metrics::HostMetrics {
+        &self.metrics
     }
 
     /// Fire due timers across ALL registered sessions at `now_ms` (a host scheduler tick). Returns the
@@ -528,7 +556,7 @@ pub async fn live_executor_set() -> Result<CompositeExecutor, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ClockExecutor;
+    use crate::{ClockExecutor, HostMetricsSnapshot};
     use cdz_kernel::authz::Authorizer;
     use cdz_kernel::effect::{
         effect_ct, Capability, EffectKind, EffectRequest, Payload, ResourcePredicate, Timeliness,
@@ -719,6 +747,61 @@ mod tests {
         assert_eq!(host.len(), 1);
         // Removing an absent id is None, not a panic.
         assert!(host.remove(&SessionId::new("a")).is_none());
+    }
+
+    #[tokio::test]
+    async fn host_metrics_count_the_lifecycle_and_turn_boundaries() {
+        // The metric surface bumps at the host boundaries: spawn (install), deliver (turn ok/err +
+        // unknown-session), remove. Drive a real sequence and assert the snapshot.
+        let mut host = AgentHost::new();
+        assert_eq!(
+            host.metrics().snapshot(),
+            HostMetricsSnapshot::default(),
+            "a fresh host has zero metrics"
+        );
+
+        host.spawn(SessionId::new("a"), now_host());
+        host.spawn(SessionId::new("b"), now_host());
+        // A delivered turn to a known session (the `now` reducer completes Ok).
+        host.deliver(&SessionId::new("a"), inbound_go(), None).await;
+        // A delivery to an UNKNOWN id — counted distinctly, not as a turn.
+        host.deliver(&SessionId::new("ghost"), inbound_go(), None)
+            .await;
+        // Remove one.
+        host.remove(&SessionId::new("b"));
+
+        let s = host.metrics().snapshot();
+        assert_eq!(s.sessions_installed, 2);
+        assert_eq!(s.sessions_removed, 1);
+        assert_eq!(s.turns_delivered, 1, "only the known-session deliver");
+        assert_eq!(s.turns_ok, 1);
+        assert_eq!(s.turns_err, 0);
+        assert_eq!(
+            s.deliveries_to_unknown_session, 1,
+            "the ghost deliver counted as unknown, not a turn"
+        );
+        assert_eq!(s.sessions_live(), 1, "2 installed − 1 removed");
+    }
+
+    #[tokio::test]
+    async fn respawn_counts_the_replaced_session_as_removed_so_live_stays_accurate() {
+        // A spawn onto an existing id drops the old session without a remove() call; the surface counts that
+        // implicit drop so sessions_live (installed − removed) doesn't drift upward on restarts.
+        let mut host = AgentHost::new();
+        let id = SessionId::new("worker");
+        host.spawn(id.clone(), now_host());
+        host.spawn(id.clone(), now_host()); // restart — replaces
+        let s = host.metrics().snapshot();
+        assert_eq!(s.sessions_installed, 2);
+        assert_eq!(
+            s.sessions_removed, 1,
+            "the replaced session counted as removed"
+        );
+        assert_eq!(
+            s.sessions_live(),
+            1,
+            "one live session despite two installs"
+        );
     }
 
     #[tokio::test]
