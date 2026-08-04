@@ -15,9 +15,12 @@
 // ── The request: a PARC-style triple (principal, action, resource) ───────────────────────────────
 // Mirrors Cedar's authorization model (verified feasible by v-agent-harness-host: cedar-policy 4.x
 // compiles for wasm32 and expresses deny-by-default + forbid-overrides-permit). The kernel maps an
-// `EffectRequest` to this triple: `action` = the effect KIND (a coarse verb — "http"/"model"/"shell"/…),
-// `resource` = the resolved TARGET (the SEC-F1 security-relevant string the policy gates — a URL, model
-// id, command), `principal` = who is acting (the session/agent identity; v0 passes the session id).
+// `EffectRequest` to this triple: `action` = the effect FAMILY string (the seq-39 source of truth —
+// "http"/"model"/"shell"/… for the well-known kinds, AND register-by-string families like "store/set",
+// whose EffectKind is a placeholder; the flat `Authorizer` gates on this same family, so the policy sees
+// the same action string), `resource` = the resolved TARGET (the SEC-F1 security-relevant string the
+// policy gates — a URL, model id, command, or store NAME), `principal` = who is acting (the session/agent
+// identity; v0 passes the session id).
 // `payload` is NOT part of the authz decision (SEC-F1 gates the kind+target, not the body).
 //
 // ── Determinism ──────────────────────────────────────────────────────────────────────────────────
@@ -38,7 +41,10 @@ interface types {
   record auth-request {
     // Who is acting — the session/agent identity (v0: the session id string). Cedar's PRINCIPAL.
     principal: string,
-    // What verb — the effect kind ("http", "model", "shell", "now", "timer", "emit"). Cedar's ACTION.
+    // What verb — the effect FAMILY string ("http", "model", "shell", …, and register-by-string families
+    // like "store/set"/"store/resolve"). Cedar's ACTION. This is the content-type family (seq-39 source of
+    // truth), NOT the EffectKind enum: a store/* or extension family carries a placeholder kind, so keying
+    // on the enum would misreport it as "emit" — the family string is what the flat Authorizer gates on too.
     action: string,
     // The resolved target the policy gates (URL / model id / command / session id). Cedar's RESOURCE.
     // This is the SEC-F1 security-relevant string — a policy admits/denies on principal×action×target.
