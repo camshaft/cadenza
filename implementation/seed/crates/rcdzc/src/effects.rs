@@ -5219,14 +5219,53 @@ fn thread_bounded(
         // covers `(+ (E.op) 1)`, `(List.push s (E.op))`, etc. The head itself is not a perform (that
         // arm above caught it), so it is copied as-is.
         Resolved::Apply { head, args } => {
+            let abort_before = ctx.abort_value.get();
             let mut cur = states;
             let (rhead, next0) = thread_or_copy(db, head, cur, ctx, inline_depth)?;
             cur = next0;
             let mut children = vec![rhead];
+            // STRICT-OPERAND ABORT-LIFT (the operand face of the abort-outer-advance fix; do-shape landed
+            // #2002). When a strict operand ABORTS — `(+ (A.tick) (B.bail 99))` under B — the operands
+            // evaluated BEFORE it on the strict spine have already run; a FOREIGN one (an outer handler's
+            // effect) committed its state advance and must survive the abort. But rebuilding `(+ (A.tick)
+            // 99)` leaves the foreign perform inside a DEAD arithmetic wrapper that reduce_handle's bare-abort
+            // collapse discards (the outer `(A.get)` then reads the pre-advance state → 109 vs 110). Lift the
+            // pre-abort foreign operands into a for-effect `do` PREFIX around the abort value — `(do (A.tick)
+            // 99)` — the SAME shape the do-arm produces, which the landed do-shape fold in reduce_handle then
+            // preserves (the outer fold discharges the prefix, advancing the outer state, before the value).
+            // Done in `thread` (not reduce_handle) because only here can we preserve UNCONDITIONALLY: sound for
+            // BOTH the observed miscompile (→110) AND the correct-because-unobserved 14-eff:1251 `(+ (A.a) (+
+            // (B.b) (Bail.bail 99)))` (→ nested `(do (A.a) (do (B.b) 99))` = 99 still, the prefix runs
+            // unobserved). `body_reaches_foreign_perform` reads the ORIGINAL operand `a` (parented — no orphan
+            // resolve-pin poison, and equivalent to the rewrite: a foreign perform is never folded by this ctx,
+            // a discharged one is not foreign). Only lifts when a foreign operand actually PRECEDED the abort
+            // (`!kept_foreign.is_empty()`); a plain `(+ 5 (B.bail 99))` / `(+ (B.bail 7) (ask.ask))` keeps the
+            // bare-abort collapse (nothing committed before the abort — 7, ask elided).
+            let mut kept_foreign: Vec<StructId> = Vec::new();
+            let mut abort_tail: Option<StructId> = None;
             for &a in args.iter() {
+                let pre_abort = abort_before.is_none() && ctx.abort_value.get().is_none();
+                let foreign = pre_abort && body_reaches_foreign_perform(db, a, ctx);
                 let (ra, next) = thread_bounded(db, a, cur, ctx, inline_depth)?;
-                children.push(ra);
                 cur = next;
+                children.push(ra);
+                if abort_before.is_none() && abort_tail.is_none() && ctx.abort_value.get().is_some()
+                {
+                    // THIS operand fired the abort (cell None→Some): `ra` is the abort value → the do-tail.
+                    abort_tail = Some(ra);
+                } else if abort_tail.is_none() && foreign {
+                    // A pre-abort foreign operand: keep it for the for-effect prefix.
+                    kept_foreign.push(ra);
+                }
+            }
+            if let Some(tail) = abort_tail
+                && !kept_foreign.is_empty()
+            {
+                let do_head = db.push_name("do");
+                let mut ch = vec![do_head];
+                ch.extend(kept_foreign);
+                ch.push(tail);
+                return Some((db.push_list(ch), cur));
             }
             Some((db.push_list(children), cur))
         }

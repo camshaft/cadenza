@@ -1321,6 +1321,46 @@
                   (+ b (A.get))))) (export main)))
   (output (: 109 Int64)))
 
+(case "an inner abort preserves an OUTER advance committed in a STRICT OPERAND before it (operand-lift)"
+  (doc    "The STRICT-OPERAND face of the outer-advance preservation (breaker ao5; the do-shape face is pinned
+           above). The foreign `(A.tick)` is a strict `+` OPERAND evaluated before the abort — `(+ (A.tick)
+           (B.bail 99))` under B — not a `do`-statement. `A.tick` resumes, COMMITTING A-state 10→11; then
+           `B.bail` (non-resuming) abandons B's OWN handle, so the `+` never completes and `b` = the abort
+           value 99. The committed A-advance must survive → outer `(A.get)` reads 11 → `(+ 99 11)` = 110.
+           Before the operand-lift the bare-abort collapse discarded `(A.tick)` (a dead `+` wrapper), reading
+           the seed 10 → 109. Fixed by lifting the pre-abort foreign operand into a for-effect `do` prefix
+           `(do (A.tick) 99)` — the same shape the do-arm produces — which the do-shape abort-fold then
+           preserves. Distinct from the do-shape only in the CONSUMING form (`+` operand vs `do` statement).")
+  (input  (do
+            (effect A (op tick (-> Unit Int64)) (op get (-> Unit Int64)))
+            (effect B (op bail (-> Int64 Int64)))
+            (def (main)
+              (handle A 10 ((tick (u) s (resume s (+ s 1))) (get (u) s (resume s s)))
+                (let ((b (handle B 0 ((bail (v) s v)) (+ (A.tick) (B.bail 99)))))
+                  (+ b (A.get))))) (export main)))
+  (output (: 110 Int64)))
+
+(case "a strict-operand abort in a DEEP-nested handler stack keeps its 99 when the advances are UNOBSERVED"
+  (doc    "The soundness control for the operand-lift: the SAME strict-operand-abort-with-foreign-prefix shape
+           `(+ (A.a) (+ (B.b) (Bail.bail 99)))` under `handle A…(handle B…(handle Bail…))`, but here the outer
+           advances are UNOBSERVED (nothing reads A/B after the aborted handle). `A.a` and `B.b` resume (their
+           arms pass state through, no increment); `Bail.bail 99` abandons; the value is the abort value 99.
+           The operand-lift rewrites the dead `+` nest into `(do (A.a) (do (B.b) 99))` — the foreign prefix
+           runs for effect (unobserved) and the value stays 99. Pins that the lift is sound BOTH ways: it
+           preserves an OBSERVED advance (the 110 case above) AND leaves an UNOBSERVED one at the correct value
+           (this case), because a for-effect `do` prefix only runs the performs — it never changes the abort
+           value. (Distinguishes the lift from a naive rewrite that would leak the prefix into the value.)")
+  (input  (do
+            (effect A (op a (-> Unit Int64)))
+            (effect B (op b (-> Unit Int64)))
+            (effect Bail (op bail (-> Int64 Int64)))
+            (def (main)
+              (handle A 1 ((a (u) s (resume s s)))
+                (handle B 2 ((b (u) s (resume s s)))
+                  (handle Bail 0 ((bail (n) s n))
+                    (+ (A.a) (+ (B.b) (Bail.bail 99))))))) (export main)))
+  (output (: 99 Int64)))
+
 (case "a single handler with both a resuming and an abortive arm dispatches each op to its own arm kind"
   (doc    "One handler for ONE effect `E` declaring TWO operations whose arms are DIFFERENT KINDS — `get`
            resumes, `bail` abandons — so the fold must dispatch each performed op to its own arm kind within
