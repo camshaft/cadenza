@@ -3292,13 +3292,14 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
                     // loses nothing).
                     //
                     // FRESH capture, taken here just before the destructive kill — NOT the sweep-top
-                    // `pane` snapshot (:3016). Between that snapshot and this gate the same iteration can
-                    // block on the drain-stall re-check `sleep` + a drain-nudge send-keys, so the top
-                    // snapshot can be SECONDS stale (github-liaison/Copilot PR#1941): a window that goes
-                    // busy after the snapshot but before the restart would be caught mid-turn. Re-capturing
-                    // immediately before the kill shrinks that window to an irreducible sub-ms TOCTOU. The
-                    // cost — one extra tmux capture — is paid ONLY on the narrow compact-declined+pre-wall
-                    // path, and a destructive op is exactly where paying for a fresh read is worth it.
+                    // `pane` snapshot reused for the drain-stall/saturation signals earlier this
+                    // iteration. Between that snapshot and this gate the same iteration can block on the
+                    // drain-stall re-check `sleep` + a drain-nudge send-keys, so the top snapshot can be
+                    // SECONDS stale (github-liaison/Copilot PR#1941): a window that goes busy after the
+                    // snapshot but before the restart would be caught mid-turn. Re-capturing immediately
+                    // before the kill shrinks that to a narrow capture→restart TOCTOU. The cost — one
+                    // extra tmux capture — is paid ONLY on the narrow compact-declined+pre-wall path, and
+                    // a destructive op is exactly where paying for a fresh read is worth it.
                     let stopped = fleet.stopfile(&a.name).exists();
                     let live = live.iter().any(|w| w == &a.name);
                     let interactive = role_is_terminal_interactive(&a.role); // never touch a human's window
