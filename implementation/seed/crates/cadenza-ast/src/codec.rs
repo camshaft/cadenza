@@ -298,14 +298,33 @@ pub fn encode_with_dict(arenas: &Arenas, dicts: &DictSet) -> Vec<u8> {
     // Match table: canonical subtree bytes -> (hash, node_id). Built over every importable node of every
     // supplied dict. Keyed by the subtree's canonical `\x00\x01` bytes so a match is exact structural
     // equality (the same key `encode` would produce for that subtree inline).
+    //
+    // A CYCLIC imported dict is SKIPPED entirely (not indexed): `subtree_arena` walks the dict structure,
+    // so a cyclic dict would diverge here during encoding — the encode-side sibling of the decode graft
+    // DoS. `encode_with_dict` is infallible (returns `Vec<u8>`), so it cannot error on a bad dict; instead
+    // a malformed (cyclic) dict simply contributes no match candidates → it is never referenced, and the
+    // output is still a valid transport artifact (just uncompacted against that dict). `DictSet::insert`
+    // does not validate (that is I3's job), so this guard makes the bottom-crate path robust on its own.
     let mut by_bytes: std::collections::HashMap<Vec<u8>, (Hash, u32)> =
         std::collections::HashMap::new();
     for (hash, dict) in dicts.iter() {
+        if !dict_is_acyclic(dict) {
+            continue; // skip a cyclic dict — do not walk it (would diverge) / index it
+        }
         for node in 0..dict.structure.len() as u32 {
             let key = encode(&subtree_arena(dict, StructId(node)));
-            // First writer wins per key; a dict rarely has two structurally-identical importable nodes,
-            // and either resolves to the same subtree, so the choice is immaterial to correctness.
-            by_bytes.entry(key).or_insert((*hash, node));
+            // DETERMINISTIC tie-break: if two dict nodes (across the DictSet's HashMap-ordered iteration)
+            // encode to the SAME subtree bytes, keep the SMALLEST (hash, node) so the emitted DictRef —
+            // and thus the transport bytes — are identical run-to-run for identical DictSet contents (the
+            // design's deterministic-transport goal). `or_insert` alone was HashMap-order-dependent.
+            by_bytes
+                .entry(key)
+                .and_modify(|cur| {
+                    if (*hash, node) < *cur {
+                        *cur = (*hash, node);
+                    }
+                })
+                .or_insert((*hash, node));
         }
     }
 
@@ -973,6 +992,52 @@ impl Grafter {
             .pop()
             .expect("dict subtree graft leaves the root's new id"))
     }
+}
+
+/// Whether an imported dictionary's WHOLE structure is acyclic — i.e. NO node (reachable or not) lies on
+/// a cycle. This is stronger than `verify_tree`'s root-reachability check ON PURPOSE: a `TAG_DICT_REF`
+/// can target ANY `node_id`, including one unreachable from the dict's own root, so a dict is only safe
+/// to walk (in `encode_with_dict`'s `subtree_arena` match-table build AND `decode_with_dicts`' graft) if
+/// EVERY node is acyclic. A cyclic dict would make either walk diverge/OOM on untrusted input. Iterative
+/// DFS with a 3-color (unvisited/on-stack/done) marking over every node as a potential root; O(nodes+edges).
+fn dict_is_acyclic(dict: &Arenas) -> bool {
+    // 0 = unvisited, 1 = on the current DFS stack (a back-edge to it = cycle), 2 = fully explored.
+    let mut color = vec![0u8; dict.structure.len()];
+    for start in 0..dict.structure.len() {
+        if color[start] != 0 {
+            continue;
+        }
+        // Iterative DFS; a frame is (node, whether we've entered it yet).
+        let mut stack: Vec<(usize, bool)> = vec![(start, false)];
+        while let Some((id, entered)) = stack.pop() {
+            if entered {
+                color[id] = 2; // all children explored
+                continue;
+            }
+            if color[id] == 1 {
+                continue; // already on-stack via another path in this same DFS; the enter below handles it
+            }
+            if color[id] == 2 {
+                continue;
+            }
+            color[id] = 1;
+            stack.push((id, true)); // post-visit marker to color it done
+            if let Some(Struct::List(children)) = dict.structure.get(id) {
+                for StructId(child) in children {
+                    let c = *child as usize;
+                    if c >= dict.structure.len() {
+                        continue; // out-of-range child: not a cycle; the graft/decoder rejects it as IdOutOfRange
+                    }
+                    match color[c] {
+                        1 => return false, // back-edge to a node on the current stack = a cycle
+                        0 => stack.push((c, false)),
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+    true
 }
 
 /// The reachable-structure tree/decode-bomb guard used by `decode_with_dicts` on its GRAFTED output.
@@ -2219,6 +2284,95 @@ mod tests {
             }
             assert_transport_identity(&a, &dicts);
         }
+    }
+
+    #[test]
+    fn encode_with_dict_skips_a_cyclic_dict_and_terminates() {
+        // #2093 review finding 2 (encode side): encode_with_dict walks each dict via subtree_arena to
+        // build its match table, so a CYCLIC imported dict would diverge there. It must SKIP a cyclic dict
+        // (encode is infallible) and still produce a valid uncompacted artifact — not hang.
+        let cyclic = Arenas {
+            leaves: vec![Leaf::Name("x".to_string())],
+            structure: vec![Struct::List(vec![StructId(0)]), Struct::Atom(LeafId(0))], // node 0 → itself
+            root: StructId(1),
+        };
+        let mut dicts = DictSet::new();
+        dicts.insert(Hash([0x77u8; 32]), cyclic);
+        let mut b = Builder::new();
+        let f = b.name("f");
+        let g = b.name("g");
+        let root = b.list(vec![f, g]);
+        let a = b.finish(root);
+        // Must terminate; the cyclic dict contributes no matches → plain canonical fallback (no ref).
+        let bytes = encode_with_dict(&a, &dicts);
+        assert_eq!(
+            &bytes[..8],
+            &SCHEMA_HEADER,
+            "a cyclic dict yields no match → canonical v1 fallback"
+        );
+        assert_eq!(bytes, encode(&a), "fallback is byte-identical to encode");
+        // dict_is_acyclic correctly classifies the cyclic dict + an acyclic one.
+        let cyclic2 = Arenas {
+            leaves: vec![],
+            structure: vec![Struct::List(vec![StructId(0)])],
+            root: StructId(0),
+        };
+        assert!(
+            !dict_is_acyclic(&cyclic2),
+            "self-cyclic node is not acyclic"
+        );
+        assert!(dict_is_acyclic(&a), "a genuine tree is acyclic");
+    }
+
+    #[test]
+    fn encode_with_dict_is_deterministic_and_min_tie_breaks() {
+        // #2093 review finding 1: identical (arena, DictSet) contents must yield identical transport bytes
+        // run-to-run. Build TWO dicts that each contain the SAME importable subtree `(pair a b)` under
+        // DIFFERENT hashes; the emitted ref must deterministically pick the SMALLEST (hash, node), so the
+        // bytes don't vary with HashMap iteration order.
+        let mk_pair_dict = || {
+            let mut pb = Builder::new();
+            let p = pb.name("pair");
+            let x = pb.name("a");
+            let y = pb.name("b");
+            let r = pb.list(vec![p, x, y]);
+            pb.finish(r)
+        };
+        let lo = Hash([0x01u8; 32]);
+        let hi = Hash([0x02u8; 32]);
+        let mut dicts = DictSet::new();
+        dicts.insert(hi, mk_pair_dict());
+        dicts.insert(lo, mk_pair_dict());
+
+        let mut b = Builder::new();
+        let f = b.name("f");
+        let pp = b.name("pair");
+        let pa = b.name("a");
+        let pb2 = b.name("b");
+        let pair = b.list(vec![pp, pa, pb2]);
+        let root = b.list(vec![f, pair]);
+        let a = b.finish(root);
+
+        // Encode several times — identical bytes each time (determinism), and the import is the SMALLER
+        // hash (0x01…), not whichever HashMap happened to yield first.
+        let first = encode_with_dict(&a, &dicts);
+        for _ in 0..5 {
+            assert_eq!(
+                encode_with_dict(&a, &dicts),
+                first,
+                "transport bytes must be deterministic"
+            );
+        }
+        assert!(
+            first.windows(32).any(|w| w == [0x01u8; 32]),
+            "the min hash (0x01) must be the imported one (deterministic tie-break)"
+        );
+        assert!(
+            !first.windows(32).any(|w| w == [0x02u8; 32]),
+            "the larger hash (0x02) must NOT be imported when a smaller ties"
+        );
+        // And it still round-trips.
+        assert_transport_identity(&a, &dicts);
     }
 
     #[test]
