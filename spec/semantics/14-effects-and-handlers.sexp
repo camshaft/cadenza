@@ -3403,6 +3403,47 @@
             (export main)))
   (call   main) (output (: 34 Int64)))
 
+; Two more faces of the adv-69 safe-decline floor (both grade TODO — decline cleanly, flip to a 34/11 PASS
+; when the through-block commuting-conversion fold lands): the floor's block_wrapped_branch_performs guard
+; peels DEPTH-N pure let/do wrappers and covers a HEAP-accumulator perform in the same let-init position.
+; (The arm-resume-value positional sub-face — a block-wrapped OUTER-effect perform inside an INNER handle's
+; resume-value — is NOT covered by this floor and still miscompiles; it awaits a targeted arm-position guard.)
+
+(case "a DEPTH-2 block-wrapped branch perform in a let-init declines cleanly (adv-69 safe floor, nested wrappers)"
+  (doc    "The depth-2 face of the adv-69 safe-decline: the branch-performing conditional sits behind TWO
+           nested `let` wrappers in the init — `(let ((v (let ((b true)) (let ((c true)) (if (and b c) (St.get)
+           99))))) …)`. The floor's block_wrapped_branch_performs peel recurses through depth-N pure let/do
+           wrappers, so this declines cleanly (TODO) exactly as the depth-1 witness does — NOT the silent 33
+           state-drop. Pins that the trigger is ANY block nesting ≥1, not a single-wrapper shape. Flips to the
+           34 PASS when the through-block fold lands. Declines on all backends (shared lowering).")
+  (input  (do
+            (effect St (op get (-> Unit Int64)))
+            (def (main)
+              (handle St 3 ((get (u) s (resume s (+ s 1))))
+                (let ((v (let ((b true)) (let ((c true)) (if (and b c) (St.get) 99)))))
+                  (+ (* 10 v) (St.get)))))
+            (export main)))
+  (call   main) (output (: 34 Int64)))
+
+(case "a HEAP-accumulator block-wrapped branch perform in a let-init declines cleanly (adv-69 safe floor)"
+  (doc    "The heap-state face: the block-wrapped branch performs a HEAP-accumulating effect — a `Log.add`
+           that `List.push`es onto the handler's list state — in the let-init `(let ((v (let ((b true)) (if b
+           (Log.add 5) 99)))) …)`. Under the floor this declines cleanly (TODO) rather than DROPPING the push
+           (the silent-miscompile would lose the entry: `count` would read the entry list, e.g. length 0 not
+           1) — the data-loss face of the block-boundary out-state drop, so the safe decline matters more here
+           than for a stale scalar. Flips to the 11 PASS (10*1 + 1, the pushed entry counted twice) when the
+           through-block fold lands. Declines on all backends.")
+  (input  (do
+            (effect Log (op add (-> Int64 Unit)) (op count (-> Unit Int64)))
+            (def (main)
+              (handle Log (list)
+                ((add (v) s (resume unit (List.push s v)))
+                 (count (u) s (resume (List.len s) s)))
+                (let ((v (let ((b true)) (if b (Log.add 5) 99))))
+                  (+ (* 10 (Log.count)) (Log.count)))))
+            (export main)))
+  (call   main) (output (: 11 Int64)))
+
 (case "two performs bound by nested lets thread the handler state in order"
   (doc    "Two performs on the strict spine, each BOUND by its own `let`, thread the handler state in
            evaluation order across the binds. `(let ((a (Ask.get))) (let ((b (Ask.get))) (+ a b)))` under a

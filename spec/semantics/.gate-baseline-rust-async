@@ -498,7 +498,6 @@ pass	a BARE pattern on a withheld constructor is rejected like the qualified spe
 pass	a BASE-N conversion round-trips one value through three runtime radices
 pass	a BIGINT handler state multiplies per perform and each resume reads the prior product
 pass	a BINARY SEARCH halves a lo/hi window over a sorted list read by List.at
-todo	a BLOCK-wrapped branch perform in a let-init declines cleanly (adv-69 safe floor, not a silent miscompile)
 pass	a BOOL as a Map key routes a runtime lookup to the right entry
 pass	a BOOL-field Tuple closure ARG flattens + rebuilds (box-bool imported)
 pass	a BOOL-field Tuple closure ARG, false discriminant
@@ -5602,10 +5601,13 @@ todo	a @param value SEEDS an in-program handler's state
 todo	a @param value crosses into a closure capture and applies
 todo	a @param value drives a CHAMP map lookup as the KEY
 todo	a @param value sizes a guest-built HEAP structure
+todo	a BLOCK-wrapped branch perform in a let-init declines cleanly (adv-69 safe floor, not a silent miscompile)
 todo	a Bool host arg BESIDE a scalar and a String composes in one mixed-arity op
 todo	a Bytes value SENT to the host is still readable after the call (the arg marshal borrows)
+todo	a DEPTH-2 block-wrapped branch perform in a let-init declines cleanly (adv-69 safe floor, nested wrappers)
 todo	a Float64 closure captures a Float64 build-time host effect result
 todo	a Float64-inner Qty host result crosses as its float magnitude
+todo	a HEAP-accumulator block-wrapped branch perform in a let-init declines cleanly (adv-69 safe floor)
 todo	a MODULE-exported closure that performs a delegated effect cannot cross the host boundary
 todo	a NOMINAL-Unit-typed host-call statement in a do-body is not spuriously dropped
 todo	a NON-TAIL host call consumes rows on the unwind, deepest frame first
