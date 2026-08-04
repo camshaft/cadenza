@@ -66,6 +66,12 @@ async-trait = "0.1"
 # behind live-net) — a `DaemonConfig` deserialize is cheap + the daemon binary needs them unconditionally.
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+# serde_json — the wire codec for the admin control interface. Admin commands/responses cross a control
+# frame as JSON (a human-inspectable, versionable wire contract), so the daemon + an admin client speak the
+# same shape. Always-on (the admin command layer is daemon-core, like the config); the SOCKET that carries
+# the frames is feature-gated, but the CODEC is hermetically testable without any transport, so it lives in
+# the default build where CI's `cargo test` covers it.
+serde_json = "1"
 # reqwest — the real async HTTP client behind the `HttpTransport` seam. OPTIONAL, enabled only by
 # `live-net` (default build never compiles it — keeps the hermetic gate free of the network/TLS tree).
 # `rustls-tls` (not the platform's OpenSSL) so it builds on any runner with no system SSL dep;
