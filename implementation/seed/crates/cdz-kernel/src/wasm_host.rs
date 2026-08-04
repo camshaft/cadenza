@@ -653,9 +653,14 @@ impl ComponentReducer {
                 }
             }
         };
+        // A `set_fuel` failure is a HOST-setup error (fuel metering not enabled on the engine), NOT a guest
+        // trap — classify it as `Instantiate`, same as the load-phase `set_fuel(u64::MAX)` above. Mapping it
+        // to `Trap` would tell the driver "the guest trapped" when the host mis-configured. (metering IS on
+        // via `consume_fuel(true)` at construction, so this can't fail in practice — but the error path's
+        // classification must not conflate host failure with guest semantics.)
         if let Err(e) = store.set_fuel(self.fuel_budget) {
             let kv = store.into_data().into_kv();
-            return Err((ComponentError::Trap(e.to_string()), kv));
+            return Err((ComponentError::Instantiate(e.to_string()), kv));
         }
         let effects = match instance.cadenza_agent_kernel_fold().call_apply(
             &mut store,
@@ -897,9 +902,14 @@ impl AsyncComponentReducer {
                 return Err((ComponentError::Instantiate(e.to_string()), kv));
             }
         };
+        // A `set_fuel` failure is a HOST-setup error (fuel metering not enabled on the engine), NOT a guest
+        // trap — classify it as `Instantiate`, same as the load-phase `set_fuel(u64::MAX)` above. Mapping it
+        // to `Trap` would tell the driver "the guest trapped" when the host mis-configured. (metering IS on
+        // via `consume_fuel(true)` at construction, so this can't fail in practice — but the error path's
+        // classification must not conflate host failure with guest semantics.)
         if let Err(e) = store.set_fuel(self.fuel_budget) {
             let kv = store.into_data().into_kv();
-            return Err((ComponentError::Trap(e.to_string()), kv));
+            return Err((ComponentError::Instantiate(e.to_string()), kv));
         }
         let effects = match instance
             .cadenza_agent_kernel_fold()
