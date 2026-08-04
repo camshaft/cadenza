@@ -289,6 +289,54 @@
   (host-calls (call a-b.geta) (call a-b.getb) (call a-b.geta))
   (call   main (: 0 Int64)) (output (: 321 Int64)))
 
+(case "a 60-key trie captured ACROSS a host call reads intact after the response folds in"
+  (doc    "The deep-heap survival face of host delegation: a 60-key multi-level trie is built BEFORE the
+           host block, the delegation fires (response 7), and the trie reads len + a checked interior
+           entry AFTER the response is consumed (7·1000 + 60·10 + 1 = 7601). The guest heap must survive
+           the boundary crossing untouched — a delegation that reset or corrupted live heap state (or a
+           marshal that clobbered the trie's handle slot) would break a read. The trie-scale companion
+           of the scalar-arg re-read pin at :251.")
+  (input  (do
+            (effect io (op ping (-> Unit Int64)))
+            (def (fill (: i Int64) (: m (Map Int64 Int64)))
+              (if (= i 0) m (fill (- i 1) (Map.insert m i (* i 3)))))
+            (def (main (: n Int64))
+              (do
+                (def m (fill n Map.empty))
+                (host (io)
+                  (+ (* 1000 (io.ping))
+                     (+ (* 10 (Map.len m))
+                        (match (Map.lookup m 37) ((Some v) (if (= v 111) 1 0)) ((None _u) -1)))))))
+            (export main)))
+  (call   main (: 60 Int64))
+  (host-responses (respond io.ping (: 7 Int64)))
+  (output (: 7601 Int64)))
+
+(case "a deep trie built BETWEEN two host calls reads correctly after the second"
+  (doc    "The interleave face: the first response is consumed, a 50-key trie is built ENTIRELY between
+           the two delegations (the response cursor mid-flight), and the second response arrives before
+           the trie is read — (3+4)·1000 + 50 + 42 = 7092. Pins that heap construction interleaves with
+           the per-run response cursor without either corrupting the other (a cursor implementation
+           sharing scratch state with the allocator, or a build that disturbed the pending-delegation
+           frame, would flip a component).")
+  (input  (do
+            (effect io (op ping (-> Unit Int64)))
+            (def (fill (: i Int64) (: m (Map Int64 Int64)))
+              (if (= i 0) m (fill (- i 1) (Map.insert m i i))))
+            (def (main (: n Int64))
+              (host (io)
+                (do
+                  (def a (io.ping))
+                  (def m (fill n Map.empty))
+                  (def b (io.ping))
+                  (+ (* 1000 (+ a b))
+                     (+ (Map.len m)
+                        (match (Map.lookup m 42) ((Some v) v) ((None _u) -1)))))))
+            (export main)))
+  (call   main (: 50 Int64))
+  (host-responses (respond io.ping (: 3 Int64)) (respond io.ping (: 4 Int64)))
+  (output (: 7092 Int64)))
+
 (case "a String host RESULT crosses the boundary and is read twice (byte-len + scalar-len of a multibyte response)"
   (doc    "The String-RESULT boundary face (H7's marshal reached through H9's unit-arg emit): `io.fetch :
            (-> Unit String)` returns the recorded multibyte response \"héllo\" (6 bytes, 5 scalars), which

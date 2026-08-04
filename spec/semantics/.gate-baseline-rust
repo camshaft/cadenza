@@ -485,6 +485,7 @@ pass	a 33-VARIANT sum dispatches across the discriminant range with a payload va
 pass	a 500-iteration Bytes.concat loop measures exactly and indexes both extremes
 pass	a 5000-deep recursive-sum spine builds, walks, and compares — the eq walk survives depth
 pass	a 5000-element pushed list reads head, middle, and last through the deeper trie
+pass	a 60-key trie captured ACROSS a host call reads intact after the response folds in
 pass	a 64-bit-unsigned closure crosses the host boundary
 pass	a @ensures postcondition over a HEAP result checks at exit and returns the live collection
 pass	a @ensures relating the RESULT to a PARAMETER enforces the relation at exit
@@ -1484,6 +1485,7 @@ pass	a deep nested-constructor pattern matching a nullary variant two layers dee
 pass	a deep out-of-order queue drains fully time-sorted with FIFO across every tie-group
 pass	a deep push chain beside two other live bindings retains each correctly
 pass	a deep rope indexes by scalar at both extremes
+pass	a deep trie built BETWEEN two host calls reads correctly after the second
 pass	a deep uniform arith accumulator chain (CSE-partition shape) computes the same value across opt levels
 pass	a deeper nested call chain still folds in linear time near the inliner limit
 pass	a deeply nested constant expression compiles or declines without crashing
