@@ -7127,15 +7127,15 @@
 
 (case "a trie of 40 MULTI-LIMB BigInt keys enumerates in magnitude order"
   (doc    "The BigInt-key rows above run on 1-2 keys; this pins the canonical ORDER over a populated
-           trie of ALL-multi-limb keys: 40 keys `i·(2^63-1)` — every one past the single-limb boundary,
-           magnitudes spanning 40 limb-multiples — enumerate strictly increasing end to end
+           trie of ALL-multi-limb keys: 40 keys `(i+2)·(2^63-1)` — the smallest is 3·(2^63-1) > 2^64, so
+           every key genuinely needs a second limb — enumerate strictly increasing end to end
            (strictly-increasing walk counting all 40). The compare must be magnitude-aware across limb
            counts; a per-limb lexicographic byte order (or a low-limb-only read) would misorder values
            whose limb structures differ. The BigInt face of the deep-trie enumeration family.")
   (input  (do
             (def (fill (: i Int64) (: m (Map BigInt Int64)))
               (if (= i 0) m
-                (fill (- i 1) (Map.insert m (* (BigInt.of 9223372036854775807) (BigInt.of i)) i))))
+                (fill (- i 1) (Map.insert m (* (BigInt.of 9223372036854775807) (BigInt.of (+ i 2))) i))))
             (def (inc (: ps (List (Tuple BigInt Int64))) (: prev BigInt) (: cnt Int64))
               (match ps
                 ((list) cnt)
@@ -7146,7 +7146,7 @@
   (call   main (: 40 Int64)) (output (: 40 Int64)))
 
 (case "a multi-limb BigInt-keyed trie churned back equals the direct build with the seed resolving"
-  (doc    "The churn-identity face for multi-limb BigInt keys: 30 keys `(i+10)·(2^63-1)` — all
+  (doc    "The churn-identity face for multi-limb BigInt keys: 29 keys (i = 1..n-1 at n = 30), each `(i+10)·(2^63-1)` — all
            multi-limb — churned around a MIXED seed pair (one multi-limb `2·(2^63-1)`, one small `5`);
            the survivor must EQUAL the direct build by canonical `=` (10) and the multi-limb seed must
            still resolve, probed by an INDEPENDENTLY-recomputed arithmetic twin (+1 → 11). Removal
