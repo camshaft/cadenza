@@ -41,6 +41,7 @@
 //! scoped authorization (SEC-F1), absolute timer deadlines (S5), canonical/deterministic encoding
 //! (S3/S8). Cross-version replay, multi-node, PKI, and Cadenza-native reducers are explicitly deferred.
 
+pub mod ast_marshal;
 pub mod authz;
 pub mod blob;
 pub mod effect;
