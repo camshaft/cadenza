@@ -97,6 +97,16 @@ pub struct Session {
     /// mutable state, not derived from this session's log (unlike kv/armed_timers), so the driver
     /// re-attaches it after `recover`, exactly like `attach_log`.
     name_store: Option<crate::name_store::NameStore>,
+    /// The last capability manifest the kernel projected for this session (from the most recent
+    /// seed/query/change-push inline answer) — the BASELINE the I6 reactive push diffs against via
+    /// [`crate::effect::CapabilityManifest::grant_changes`] to decide whether a capability change is
+    /// worth pushing. `None` until the first projection. EPHEMERAL kernel state, NOT replay-rebuilt: the
+    /// manifest bytes ARE in the log (the answer EffectResult), but the kernel never re-parses its own
+    /// control payloads (see [`crate::event_ast::encode_capability_manifest`]), so this cache is repopulated
+    /// by live projection activity, not by replay. A freshly-recovered session has `None` until its next
+    /// projection — safe, because the first push after recovery simply has no baseline to suppress against
+    /// (it pushes iff there's anything to know), and steady-state pushes diff against the live baseline.
+    last_manifest: Option<crate::effect::CapabilityManifest>,
 }
 
 impl Session {
@@ -114,6 +124,7 @@ impl Session {
             store: None,
             persist_error: None,
             name_store: None,
+            last_manifest: None,
         };
         s.log.push(Event {
             seq: 0,
@@ -466,6 +477,74 @@ impl Session {
         })
     }
 
+    /// Push a `capabilities-changed` to the guest IFF this session's projected capability manifest actually
+    /// moved (host-capability-discovery I6b, the kernel half). The DRIVER (host) calls this AFTER mutating the
+    /// session's capability surface — an executor added/removed, or the authorizer swapped (e.g. a §4c
+    /// `store/set` to the policy pointer) — passing the NEW `authz`/`executor`. The kernel:
+    ///
+    /// 1. Projects the manifest over [`effect_ct::ALL`](crate::effect::effect_ct::ALL) against the CURRENT
+    ///    (post-mutation) `authz` + `executor` — the same projection the seed/query inline arm uses.
+    /// 2. Diffs it against the last manifest the guest saw (`last_manifest`) via
+    ///    [`CapabilityManifest::grant_changes`](crate::effect::CapabilityManifest::grant_changes).
+    /// 3. If the delta is EMPTY → NO-OP, appends nothing, returns an empty Vec. This is the design's "delivered
+    ///    ONLY to sessions whose projected manifest actually changed" gate — and it makes coalescing FREE: after
+    ///    a burst of N surface mutations, one call here appends at most one push carrying the net manifest (call
+    ///    it once per settle point, not per mutation).
+    /// 4. If non-empty → folds the NEW manifest back through the SAME inline `control/capabilities` path as
+    ///    seed/query (one manifest shape, one guest decoder, replay-safe logged answer), which also refreshes
+    ///    `last_manifest`. The push's dispatch is cause-linked to the current tip (a mid-session event, unlike
+    ///    the genesis-anchored seed).
+    ///
+    /// Returns any `ControlEffect`s the fold surfaced (usually none). Idempotent in the sense that matters: a
+    /// second call with an unchanged surface is the empty-delta no-op.
+    pub async fn push_capabilities_changed(
+        &mut self,
+        reducer: &dyn Reducer,
+        authz: &(impl Authorize + ?Sized),
+        executor: &mut (impl Executor + ?Sized),
+    ) -> Vec<crate::effect::ControlEffect> {
+        // Project the manifest against the CURRENT surface, and gate on whether it moved vs the last one the
+        // guest saw. A None baseline (never projected — e.g. a session that was never seeded, or freshly
+        // recovered) means "no baseline to suppress against" → treat any non-empty manifest as a change worth
+        // telling the guest (an all-Absent manifest over ALL never happens, so this pushes the initial state).
+        let projected = crate::effect::project_manifest(
+            crate::effect::effect_ct::ALL,
+            |f| executor.handles_family(f),
+            authz,
+            crate::effect::effect_ct::probe_target,
+        )
+        .await;
+        let changed = match &self.last_manifest {
+            Some(prev) => !projected.grant_changes(prev).is_empty(),
+            None => !projected.entries.is_empty(),
+        };
+        if !changed {
+            return Vec::new();
+        }
+        // Something moved — answer a fresh control/capabilities inline (re-projects the SAME manifest, appends
+        // the durable Dispatched+EffectResult, folds it to the guest, and refreshes `last_manifest`). Reusing
+        // the inline arm keeps ONE manifest shape / decoder / replay path for seed + query + push.
+        let request = EffectRequest::new_with_family(
+            crate::effect::effect_ct::CAPABILITIES,
+            "self",
+            None,
+            crate::effect::Timeliness::Interactive,
+        );
+        // A mid-session push is cause-linked to the current tip (the mutation that prompted it), NOT genesis —
+        // so it's distinct from the seed (`already_seeded_capabilities` keys the seed on cause==genesis).
+        let cause = self
+            .log
+            .last()
+            .map(|e| e.hash())
+            .expect("log always has at least genesis");
+        let push = Effect {
+            request,
+            token: None,
+        };
+        self.drive_worklist(vec![(push, cause)], reducer, authz, executor)
+            .await
+    }
+
     /// Fire every armed timer past `now_ms`, driving the [`Reducer`] for each. Determinism (§9c): the FIRED
     /// time is the timer's own deadline, not `now_ms`, so replay reconstructs identically.
     pub async fn fire_due_timers(
@@ -635,6 +714,10 @@ impl Session {
                         )
                         .await;
                         let bytes = crate::event_ast::encode_capability_manifest(&manifest);
+                        // Cache the just-projected manifest as the I6 baseline: every inline answer
+                        // (seed/query/push) refreshes it, so `push_capabilities_changed` always diffs against
+                        // the last manifest the guest actually saw. (Ephemeral — see the `last_manifest` field.)
+                        self.last_manifest = Some(manifest);
                         EffectOutcome::Ok(Some(crate::effect::Payload::Inline(bytes.into())))
                     };
                     let more = self
@@ -1070,6 +1153,7 @@ impl Session {
             store: None,
             persist_error: None,
             name_store: None,
+            last_manifest: None,
         };
         for (i, event) in log.into_iter().enumerate() {
             if event.seq != i as u64 {
@@ -2363,6 +2447,110 @@ mod monotonic_now_tests {
                 && a.as_form(e[1], "granted").is_some()
         });
         assert!(emit_granted, "seeded manifest reads emit as granted");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn push_capabilities_changed_pushes_on_a_surface_change_and_no_ops_when_unchanged() {
+        use crate::executor::CompositeExecutor;
+        // I6b: after the host mutates a session's capability surface, push_capabilities_changed folds a fresh
+        // manifest IFF the projection actually moved. Model the surface change by widening the executor: the
+        // session starts serving only `emit`, then `http` is added → http moves Absent→Granted, so a push
+        // fires; a second push with the SAME surface is the empty-delta no-op.
+        let authz = Authorizer::new(vec![
+            Capability {
+                kind: EffectKind::Emit,
+                predicate: crate::effect::ResourcePredicate::Any,
+            },
+            Capability {
+                kind: EffectKind::Http,
+                predicate: crate::effect::ResourcePredicate::Any,
+            },
+        ]);
+        let mut session = Session::genesis(Hash::of(b"push-v1"));
+
+        // Seed the baseline manifest with an emit-only executor (http is Absent — no executor serves it).
+        let mut narrow = CompositeExecutor::new().with_effect(
+            crate::effect::effect_ct::EMIT,
+            Box::new(RecordingExecutor::new()),
+        );
+        session
+            .seed_capabilities(&InertReducer, &authz, &mut narrow)
+            .await;
+        let cap_results = |s: &Session| {
+            s.log()
+                .iter()
+                .filter(|e| {
+                    matches!(
+                        &e.body,
+                        EventBody::EffectResult {
+                            result: EffectOutcome::Ok(Some(_)),
+                            ..
+                        }
+                    )
+                })
+                .count()
+        };
+        assert_eq!(cap_results(&session), 1, "seed folded one manifest");
+
+        // Surface change: now an http executor is also present. push with the WIDER surface → http moved
+        // Absent→Granted, so a capabilities-changed manifest is folded (a second result appears).
+        let mut wide = CompositeExecutor::new()
+            .with_effect(
+                crate::effect::effect_ct::EMIT,
+                Box::new(RecordingExecutor::new()),
+            )
+            .with_effect(
+                crate::effect::effect_ct::HTTP,
+                Box::new(RecordingExecutor::new()),
+            );
+        let surfaced = session
+            .push_capabilities_changed(&InertReducer, &authz, &mut wide)
+            .await;
+        assert!(
+            surfaced.is_empty(),
+            "the push is answered inline, not surfaced"
+        );
+        assert_eq!(
+            cap_results(&session),
+            2,
+            "a real surface change folds a second (capabilities-changed) manifest"
+        );
+        // The pushed manifest reads http as granted now (served + permitted).
+        let latest_payload = session
+            .log()
+            .iter()
+            .rev()
+            .find_map(|e| match &e.body {
+                EventBody::EffectResult {
+                    result: EffectOutcome::Ok(Some(crate::effect::Payload::Inline(b))),
+                    ..
+                } => Some(b.clone()),
+                _ => None,
+            })
+            .expect("a pushed manifest");
+        let a = cadenza_ast::codec::decode_detailed(&latest_payload).expect("manifest decodes");
+        let root = a
+            .as_form(a.root, "capabilities-manifest")
+            .expect("payload is a capabilities-manifest");
+        let entries = a.as_form(root[1], "entries").expect("entries");
+        let http_granted = entries.iter().any(|&eid| {
+            let e = a.as_form(eid, "entry").expect("entry");
+            a.as_str(e[0]) == Some(crate::effect::effect_ct::HTTP)
+                && a.as_form(e[1], "granted").is_some()
+        });
+        assert!(http_granted, "the pushed manifest reads http as granted");
+
+        // No change: a second push with the SAME (wide) surface is the empty-delta no-op — nothing folded.
+        let log_len = session.log().len();
+        let noop = session
+            .push_capabilities_changed(&InertReducer, &authz, &mut wide)
+            .await;
+        assert!(noop.is_empty());
+        assert_eq!(
+            session.log().len(),
+            log_len,
+            "an unchanged surface pushes nothing (the manifest-didn't-move gate)"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
