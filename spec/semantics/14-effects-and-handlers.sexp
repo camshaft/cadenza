@@ -5789,6 +5789,42 @@
             (export main)))
   (call   main (: 40 Int64)) (output (: 8200 Int64)))
 
+(case "a handler SEEDED with a 40-key trie reads it across resumes"
+  (doc    "The deep-trie SEED face (the state-growth case above starts EMPTY and grows; here the heap
+           state arrives fully-built at the handle boundary): a 40-key trie built before the handle
+           seeds it, and the arm reads `Map.len` across two resumes (80). The seed materializes once
+           and threads intact — a seed path that re-evaluated the fill per resume, or that handed the
+           arm a stale snapshot, would double-build or misread.")
+  (input  (do
+            (effect Rd (op keys (-> Unit Int64)))
+            (def (fill (: i Int64) (: m (Map Int64 Int64)))
+              (if (= i 0) m (fill (- i 1) (Map.insert m i i))))
+            (def (main (: n Int64))
+              (handle Rd (fill n Map.empty)
+                ((keys (u) s (resume (Map.len s) s)))
+                (+ (Rd.keys) (Rd.keys))))
+            (export main)))
+  (call   main (: 40 Int64)) (output (: 80 Int64)))
+
+(case "an arm REPLACES the trie state wholesale and the next op reads the replacement"
+  (doc    "The state-slot ownership face at scale: the arm's resume hands back a COMPLETELY NEW trie
+           (a 60-key rebuild with a different key prefix) in place of the 30-key seed — drop-old /
+           adopt-new across one resume. The swap op reports the OLD len as its value (30) while
+           installing the replacement; the next op reads the NEW len (60) → 30·1000 + 60 = 30060.
+           A state thread that leaked the old trie, or aliased old and new, would corrupt one of the
+           two reads. (The wholesale-replacement companion of the per-op insert growth above.)")
+  (input  (do
+            (effect Sw (op swap (-> Unit Int64)) (op len (-> Unit Int64)))
+            (def (fill (: i Int64) (: k Int64) (: m (Map Int64 Int64)))
+              (if (= i 0) m (fill (- i 1) k (Map.insert m (+ (* k 1000) i) i))))
+            (def (main (: n Int64))
+              (handle Sw (fill n 1 Map.empty)
+                ((swap (u) s (resume (Map.len s) (fill (* n 2) 2 Map.empty)))
+                 (len (u) s (resume (Map.len s) s)))
+                (+ (* 1000 (Sw.swap)) (Sw.len))))
+            (export main)))
+  (call   main (: 30 Int64)) (output (: 30060 Int64)))
+
 (case "a TUPLE op argument with a HEAP leaf destructures inside the arm"
   (doc    "The mixed-representation companion of the scalar tuple-parameter case: `(tuple a \"abc\")`
            carries an i64 AND a rope handle through the perform; the arm destructures both and measures
