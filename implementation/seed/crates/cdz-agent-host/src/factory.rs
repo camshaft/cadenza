@@ -63,11 +63,10 @@ impl<F: Fn() -> CompositeExecutor> ExecutorSetBuilder for F {
 ///
 /// This is why the per-effect counts need no kernel change: every dispatch already flows through
 /// `Executor::perform`, so metering at the executor boundary (where the outcome is produced) captures it.
-/// A caller OPTS IN by wrapping each real leaf executor with one of these sharing ONE `Arc<EffectMetrics>`,
-/// so a session's ok/retryable/permanent/timed-out tallies aggregate across all its effect families. The
-/// daemon's built-in executor set does NOT wrap yet — wiring this into `LiveExecutorSet::build` (and
-/// surfacing the shared `EffectMetrics` for the exporter) is a follow-up; today this is the metering seam a
-/// caller uses explicitly.
+/// The deployed daemon's `LiveExecutorSet::build` wraps each real leaf executor (Clock/Http/Model) with one
+/// of these, all sharing ONE host-wide `Arc<EffectMetrics>`, so every session's ok/retryable/permanent/
+/// timed-out tallies aggregate across all effect families into a daemon-wide set the status surface reads. A
+/// non-daemon caller (a test, an embedder) OPTS IN the same way — wrap an executor + share an `Arc`.
 pub struct MeteredExecutor {
     inner: Box<dyn Executor>,
     metrics: Arc<EffectMetrics>,
@@ -114,6 +113,11 @@ impl Executor for MeteredExecutor {
 pub struct LiveExecutorSet {
     http: crate::ReqwestHttpTransport,
     model: crate::BedrockModelTransport,
+    /// The HOST-WIDE per-effect metric tally (matching [`HostMetrics`](crate::HostMetrics)' host-wide
+    /// scope). Created once at daemon boot; every per-install executor is wrapped in a
+    /// [`MeteredExecutor`] sharing a CLONE of this `Arc`, so all sessions' effect outcomes aggregate into
+    /// one daemon-wide set the status surface / exporter reads via [`metrics`](Self::metrics).
+    metrics: Arc<EffectMetrics>,
 }
 
 #[cfg(feature = "live-net")]
@@ -124,7 +128,18 @@ impl LiveExecutorSet {
     pub async fn new() -> Result<Self, String> {
         let http = crate::ReqwestHttpTransport::new()?;
         let model = crate::BedrockModelTransport::new().await;
-        Ok(LiveExecutorSet { http, model })
+        Ok(LiveExecutorSet {
+            http,
+            model,
+            metrics: Arc::new(EffectMetrics::default()),
+        })
+    }
+
+    /// The host-wide per-effect metrics this set's executors tally into — the daemon reads a
+    /// [`snapshot`](EffectMetrics::snapshot) for a status/admin surface (and, later, the exporter). Shared,
+    /// so the returned handle observes every session's dispatches.
+    pub fn metrics(&self) -> Arc<EffectMetrics> {
+        self.metrics.clone()
     }
 }
 
@@ -133,17 +148,32 @@ impl LiveExecutorSet {
 impl ExecutorSetBuilder for LiveExecutorSet {
     async fn build(&self) -> CompositeExecutor {
         use cdz_kernel::effect::effect_ct;
-        // Cheap per-install assembly: CLONE the shared transports (Arc bumps) into fresh executors. No
+        // Cheap per-install assembly: CLONE the shared transports (Arc bumps) into fresh executors, each
+        // WRAPPED in a MeteredExecutor sharing the host-wide Arc<EffectMetrics> (an Arc-clone, also cheap) so
+        // every session's ok/retryable/permanent/timed-out outcomes tally into one daemon-wide set. No
         // network / IMDS work here, so it never stalls the loop.
+        let m = &self.metrics;
         CompositeExecutor::new()
-            .with_effect(effect_ct::NOW, Box::new(crate::ClockExecutor::new()))
+            .with_effect(
+                effect_ct::NOW,
+                Box::new(MeteredExecutor::new(
+                    Box::new(crate::ClockExecutor::new()),
+                    m.clone(),
+                )),
+            )
             .with_effect(
                 effect_ct::HTTP,
-                Box::new(crate::HttpExecutor::new(self.http.clone())),
+                Box::new(MeteredExecutor::new(
+                    Box::new(crate::HttpExecutor::new(self.http.clone())),
+                    m.clone(),
+                )),
             )
             .with_effect(
                 effect_ct::MODEL,
-                Box::new(crate::ModelExecutor::new(self.model.clone())),
+                Box::new(MeteredExecutor::new(
+                    Box::new(crate::ModelExecutor::new(self.model.clone())),
+                    m.clone(),
+                )),
             )
     }
 }
@@ -580,5 +610,55 @@ mod tests {
         );
         assert_eq!(s.effects_timed_out, 1);
         assert_eq!(s.effects_total(), 5);
+    }
+
+    #[tokio::test]
+    async fn metered_executors_sharing_one_arc_aggregate_across_families() {
+        // The wiring pattern LiveExecutorSet::build uses: register MULTIPLE MeteredExecutors (one per family)
+        // in a CompositeExecutor, all sharing ONE Arc<EffectMetrics>, so a route to any family tallies into
+        // the SAME host-wide set. Two families here, one Ok each → the shared snapshot sees both.
+        use cdz_kernel::effect::{EffectKind, Payload, Timeliness};
+        use cdz_kernel::executor::Executor as _;
+
+        let metrics = Arc::new(EffectMetrics::default());
+        let ok_a = ScriptedExecutor {
+            outcomes: std::cell::RefCell::new(
+                vec![EffectOutcome::Ok(Some(Payload::Inline(
+                    b"a".to_vec().into(),
+                )))]
+                .into(),
+            ),
+        };
+        let ok_b = ScriptedExecutor {
+            outcomes: std::cell::RefCell::new(vec![EffectOutcome::TimedOut].into()),
+        };
+        let mut composite = CompositeExecutor::new()
+            .with_effect(
+                "fam-a",
+                Box::new(MeteredExecutor::new(Box::new(ok_a), metrics.clone())),
+            )
+            .with_effect(
+                "fam-b",
+                Box::new(MeteredExecutor::new(Box::new(ok_b), metrics.clone())),
+            );
+
+        // Route one effect to each family (CompositeExecutor dispatches by req.content_type.family).
+        let mut req_a = EffectRequest::new(
+            EffectKind::Emit,
+            "t".to_string(),
+            None,
+            Timeliness::Interactive,
+        );
+        req_a.content_type.family = "fam-a".into();
+        let mut req_b = req_a.clone();
+        req_b.content_type.family = "fam-b".into();
+        composite.perform(&req_a, Hash::of(b"a")).await;
+        composite.perform(&req_b, Hash::of(b"b")).await;
+
+        // Both families' outcomes aggregated into the single shared set.
+        let s = metrics.snapshot();
+        assert_eq!(s.effects_ok, 1, "fam-a Ok");
+        assert_eq!(s.effects_timed_out, 1, "fam-b TimedOut");
+        assert_eq!(s.effects_total(), 2, "aggregated across both families");
     }
 }

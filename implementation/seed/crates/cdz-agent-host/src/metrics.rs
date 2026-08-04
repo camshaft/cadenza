@@ -11,13 +11,13 @@
 //! - [`HostMetrics`] — HOST-BOUNDARY events (session lifecycle + per-turn outcomes) that
 //!   [`AgentHost`](crate::AgentHost) sees directly at `spawn`/`remove`/`deliver`.
 //! - [`EffectMetrics`] — PER-EFFECT dispatch outcomes (ok / retryable-err / permanent-err / timed-out).
-//!   These happen DEEP in the kernel's deliver loop, not at the host boundary, so a caller OPTS IN by
-//!   wrapping an executor in a [`MeteredExecutor`](crate::factory::MeteredExecutor) decorator (sharing an
+//!   These happen DEEP in the kernel's deliver loop, not at the host boundary, so they're captured by a
+//!   [`MeteredExecutor`](crate::factory::MeteredExecutor) decorator wrapping an executor (sharing an
 //!   `Arc<EffectMetrics>`), which classifies every [`EffectOutcome`](cdz_kernel::event::EffectOutcome) via
-//!   [`crate::retry::classify`] — no kernel change, no faked data. This is the metering MECHANISM; wiring it
-//!   into the daemon's built-in executor set (and tying the snapshots to the exporter) is a follow-up, so
-//!   today `EffectMetrics` is captured only where a caller explicitly wraps (the metering seam is staged
-//!   ahead of the daemon-boot wiring, like the rest of the observability surface).
+//!   [`crate::retry::classify`] — no kernel change, no faked data. The deployed daemon's
+//!   `LiveExecutorSet::build` wraps each leaf executor sharing ONE host-wide `Arc<EffectMetrics>`, so all
+//!   sessions' effect outcomes aggregate into a daemon-wide set the status surface reads (tying it to the
+//!   feature-gated exporter is the remaining follow-up).
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
