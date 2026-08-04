@@ -63,8 +63,11 @@ impl<F: Fn() -> CompositeExecutor> ExecutorSetBuilder for F {
 ///
 /// This is why the per-effect counts need no kernel change: every dispatch already flows through
 /// `Executor::perform`, so metering at the executor boundary (where the outcome is produced) captures it.
-/// The daemon wraps each real leaf executor with one of these sharing ONE `Arc<EffectMetrics>`, so a
-/// session's ok/retryable/permanent tallies aggregate across all its effect families.
+/// A caller OPTS IN by wrapping each real leaf executor with one of these sharing ONE `Arc<EffectMetrics>`,
+/// so a session's ok/retryable/permanent/timed-out tallies aggregate across all its effect families. The
+/// daemon's built-in executor set does NOT wrap yet — wiring this into `LiveExecutorSet::build` (and
+/// surfacing the shared `EffectMetrics` for the exporter) is a follow-up; today this is the metering seam a
+/// caller uses explicitly.
 pub struct MeteredExecutor {
     inner: Box<dyn Executor>,
     metrics: Arc<EffectMetrics>,

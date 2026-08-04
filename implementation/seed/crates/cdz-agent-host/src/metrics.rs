@@ -1,22 +1,23 @@
-//! The daemon's METRIC SURFACE — the counters a running host produces, so observability has something to
-//! export. (Operator directive: a real daemon with metrics. Concierge-sequenced: "produce metrics → then
-//! export" — this is the PRODUCE half; the s2n-quic-dc-metrics EXPORT half is a following, feature-gated
-//! slice that bridges this surface to a [`MetricsTarget`](crate::MetricsTarget) backend.)
+//! The daemon's METRIC SURFACE — the counters a running host produces so observability has something to
+//! export.
 //!
-//! [`HostMetrics`] is a hermetic, crate-local set of monotonic counters — plain [`AtomicU64`]s, NO metrics
-//! dependency — so it lives in the DEFAULT build and the host loop increments it unconditionally (a counter
-//! bump is a `Relaxed` add, free enough to always run). The exporter reads a [`HostMetricsSnapshot`] and maps
-//! each counter onto the export backend's own metric type; nothing here knows about the backend.
+//! The counters are hermetic + crate-local: plain [`AtomicU64`]s with NO metrics dependency, so they live in
+//! the default build and the host increments them unconditionally (a bump is a `Relaxed` add). A consumer —
+//! a status query or the feature-gated exporter — reads a plain-value snapshot ([`HostMetricsSnapshot`] /
+//! [`EffectMetricsSnapshot`]) and maps each counter onto its own metric type; nothing here knows about the
+//! backend.
 //!
 //! **Surface, two halves:**
 //! - [`HostMetrics`] — HOST-BOUNDARY events (session lifecycle + per-turn outcomes) that
 //!   [`AgentHost`](crate::AgentHost) sees directly at `spawn`/`remove`/`deliver`.
-//! - [`EffectMetrics`] — PER-EFFECT dispatch outcomes (ok / retryable-err / permanent-err). These happen
-//!   DEEP in the kernel's deliver loop, not at the host boundary, so they're captured by a metering
-//!   [`MeteredExecutor`](crate::factory::MeteredExecutor) decorator that wraps each real executor at
-//!   registration and classifies every [`EffectOutcome`](cdz_kernel::event::EffectOutcome) via
-//!   [`crate::retry::classify`] — no kernel change, no faked data. `EffectMetrics` is `Arc`-shared so all of
-//!   a session's per-family decorators tally into one set the exporter reads.
+//! - [`EffectMetrics`] — PER-EFFECT dispatch outcomes (ok / retryable-err / permanent-err / timed-out).
+//!   These happen DEEP in the kernel's deliver loop, not at the host boundary, so a caller OPTS IN by
+//!   wrapping an executor in a [`MeteredExecutor`](crate::factory::MeteredExecutor) decorator (sharing an
+//!   `Arc<EffectMetrics>`), which classifies every [`EffectOutcome`](cdz_kernel::event::EffectOutcome) via
+//!   [`crate::retry::classify`] — no kernel change, no faked data. This is the metering MECHANISM; wiring it
+//!   into the daemon's built-in executor set (and tying the snapshots to the exporter) is a follow-up, so
+//!   today `EffectMetrics` is captured only where a caller explicitly wraps (the metering seam is staged
+//!   ahead of the daemon-boot wiring, like the rest of the observability surface).
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -34,9 +35,6 @@ pub struct HostMetrics {
     /// Sessions removed from the registry (each [`AgentHost::remove`](crate::AgentHost::remove) that found a
     /// session — a completed/closed agent dropped from the host).
     sessions_removed: AtomicU64,
-    /// Turns delivered to a KNOWN session (each [`AgentHost::deliver`](crate::AgentHost::deliver) that routed
-    /// to a live session, regardless of the turn's outcome). Equals `turns_ok + turns_err`.
-    turns_delivered: AtomicU64,
     /// Turns that completed successfully (`deliver` returned `Ok`).
     turns_ok: AtomicU64,
     /// Turns that erred (`deliver` returned a `KernelError` — a fold/loop failure on that turn).
@@ -47,21 +45,21 @@ pub struct HostMetrics {
 }
 
 impl HostMetrics {
-    /// Record a session install (one successful `spawn`).
-    pub fn record_session_installed(&self) {
+    /// Record a session install (one successful `spawn`). `pub(crate)` — only the host bumps its own
+    /// counters; a consumer reads [`snapshot`](Self::snapshot), never a mutator.
+    pub(crate) fn record_session_installed(&self) {
         self.sessions_installed.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Record a session removal (one `remove` that found a session).
-    pub fn record_session_removed(&self) {
+    pub(crate) fn record_session_removed(&self) {
         self.sessions_removed.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Record one turn delivered to a known session, tagged by whether the turn succeeded. Bumps
-    /// `turns_delivered` plus exactly one of `turns_ok` / `turns_err`, so the ok+err split always sums to the
-    /// delivered total.
-    pub fn record_turn(&self, ok: bool) {
-        self.turns_delivered.fetch_add(1, Ordering::Relaxed);
+    /// Record one turn delivered to a known session, tagged by whether the turn succeeded — bumps exactly one
+    /// of `turns_ok` / `turns_err`. (The delivered TOTAL is derived as their sum in [`snapshot`](Self::snapshot),
+    /// so there's no separate counter that could be read torn from the ok/err bump.)
+    pub(crate) fn record_turn(&self, ok: bool) {
         if ok {
             self.turns_ok.fetch_add(1, Ordering::Relaxed);
         } else {
@@ -70,20 +68,24 @@ impl HostMetrics {
     }
 
     /// Record a delivery addressed to an unknown session id (routed nowhere).
-    pub fn record_delivery_to_unknown_session(&self) {
+    pub(crate) fn record_delivery_to_unknown_session(&self) {
         self.deliveries_to_unknown_session
             .fetch_add(1, Ordering::Relaxed);
     }
 
     /// A point-in-time copy of every counter — plain `u64`s the status surface / metrics exporter reads
-    /// without touching the atomics directly. (Not cross-counter atomic; see the type-level note.)
+    /// without touching the atomics directly. `turns_delivered` is DERIVED (`turns_ok + turns_err`) rather
+    /// than loaded from its own counter, so the `delivered == ok + err` invariant holds even if a concurrent
+    /// exporter snapshots between the two per-turn bumps (no torn cross-counter read).
     pub fn snapshot(&self) -> HostMetricsSnapshot {
+        let turns_ok = self.turns_ok.load(Ordering::Relaxed);
+        let turns_err = self.turns_err.load(Ordering::Relaxed);
         HostMetricsSnapshot {
             sessions_installed: self.sessions_installed.load(Ordering::Relaxed),
             sessions_removed: self.sessions_removed.load(Ordering::Relaxed),
-            turns_delivered: self.turns_delivered.load(Ordering::Relaxed),
-            turns_ok: self.turns_ok.load(Ordering::Relaxed),
-            turns_err: self.turns_err.load(Ordering::Relaxed),
+            turns_delivered: turns_ok.saturating_add(turns_err),
+            turns_ok,
+            turns_err,
             deliveries_to_unknown_session: self
                 .deliveries_to_unknown_session
                 .load(Ordering::Relaxed),
@@ -144,8 +146,9 @@ pub struct EffectMetrics {
 }
 
 impl EffectMetrics {
-    /// Record one successful effect dispatch.
-    pub fn record_ok(&self) {
+    /// Record one successful effect dispatch. `pub(crate)` — only the metering decorator bumps these; a
+    /// consumer reads [`snapshot`](Self::snapshot).
+    pub(crate) fn record_ok(&self) {
         self.effects_ok.fetch_add(1, Ordering::Relaxed);
     }
 
@@ -153,7 +156,7 @@ impl EffectMetrics {
     /// decorator classifies the `Err` reason with [`crate::retry::classify`] and passes the result here, so
     /// the retryable/permanent split matches exactly what a supervisor would branch on (fail-closed: an
     /// unprefixed reason classifies Permanent).
-    pub fn record_err(&self, retryability: crate::retry::Retryability) {
+    pub(crate) fn record_err(&self, retryability: crate::retry::Retryability) {
         match retryability {
             crate::retry::Retryability::Retryable => {
                 self.effects_retryable_err.fetch_add(1, Ordering::Relaxed);
@@ -165,7 +168,7 @@ impl EffectMetrics {
     }
 
     /// Record one effect the kernel cancelled on deadline (`EffectOutcome::TimedOut`).
-    pub fn record_timed_out(&self) {
+    pub(crate) fn record_timed_out(&self) {
         self.effects_timed_out.fetch_add(1, Ordering::Relaxed);
     }
 
