@@ -641,10 +641,18 @@ mod tests {
         rx.await.expect("the loop replied")
     }
 
-    /// The test authorizer: grants the `"admin"` principal every action (the tests exercise the loop wiring,
-    /// not the authz decision — that's unit-tested in admin.rs). A host built without this denies all.
+    /// The test authorizer: grants ONLY the `"admin"` principal (the one `admin_call` asserts) every v0
+    /// action. Scoped to that specific principal — NOT a `"*"` wildcard — so the loop tests actually
+    /// exercise the principal PLUMBING: a request arriving with a wrong/absent principal is DENIED, which is
+    /// the security half of the authz wiring (#1975 review). A host built without an authorizer denies all.
     fn test_authz() -> Box<dyn AdminAuthorizer> {
-        Box::new(AllowList::allow_all_for_local_admin())
+        Box::new(
+            AllowList::deny_all()
+                .allow("admin", "admin/install-session")
+                .allow("admin", "admin/list-sessions")
+                .allow("admin", "admin/session-status")
+                .allow("admin", "admin/stop-session"),
+        )
     }
 
     #[tokio::test]

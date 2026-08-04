@@ -329,13 +329,32 @@ jobs:
             -o /tmp/cedar_policy_guest.component.wasm
           wasm-tools validate --features component-model /tmp/cedar_policy_guest.component.wasm \
             || { echo "::error::cedar-policy-guest source no longer builds a valid wasm component"; exit 1; }
+      - name: Build the reducer-guest fixture → a fold-world component for the ComponentSessionFactory e2e
+        run: |
+          # The factory's install_of_a_real_reducer_component_runs_an_agent e2e loads a REAL reducer
+          # component (blob.get → AsyncComponentReducer → install → deliver → assert the fold ran). Without a
+          # built component it skips — so build the kernel's reducer-guest fixture (a wit-bindgen fold-world
+          # guest, the same one the cdz-kernel job builds) + lift it, and export CDZ_REDUCER_COMPONENT so the
+          # factory e2e actually RUNS here (the #1979 review flagged the test was never exercised anywhere).
+          # Cross-crate reach into cdz-kernel's fixture is deliberate: it's THE canonical dep-free fold-world
+          # guest, and duplicating one into this crate would just drift from it.
+          rustup target add wasm32-unknown-unknown
+          ( cd implementation/seed/crates/cdz-kernel/tests/fixtures/reducer-guest \
+            && cargo build --locked --target wasm32-unknown-unknown --release )
+          wasm-tools component new \
+            implementation/seed/crates/cdz-kernel/tests/fixtures/reducer-guest/target/wasm32-unknown-unknown/release/reducer_guest.wasm \
+            -o /tmp/reducer_guest.component.wasm
+          wasm-tools validate --features component-model /tmp/reducer_guest.component.wasm \
+            || { echo "::error::reducer-guest source no longer builds a valid wasm component"; exit 1; }
       - name: Test + lint the cdz-agent-host crate (standalone workspace)
         working-directory: implementation/seed/crates/cdz-agent-host
         # Hand the lifted Cedar component (built above) to the cedar_authz_e2e test, which gates a real
         # agent through the kernel's ComponentAuthorizer built from it (permit + fail-closed deny). Absent
-        # this var — a plain local `cargo test` without the wasm toolchain — that e2e skips cleanly.
+        # this var — a plain local `cargo test` without the wasm toolchain — that e2e skips cleanly. Same for
+        # CDZ_REDUCER_COMPONENT (the lifted reducer-guest) → the factory's real-component install-runs-e2e.
         env:
           CEDAR_POLICY_COMPONENT: /tmp/cedar_policy_guest.component.wasm
+          CDZ_REDUCER_COMPONENT: /tmp/reducer_guest.component.wasm
         run: |
           cargo test
           cargo clippy --all-targets -- -D warnings

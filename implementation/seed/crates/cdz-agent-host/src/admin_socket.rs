@@ -112,8 +112,15 @@ impl AdminSocket {
 /// file is a hard conflict we refuse to clobber. Returns the freshly-bound listener on success.
 fn reclaim_dead_socket_then_bind(path: &Path) -> io::Result<UnixListener> {
     // The inode must be a SOCKET; a regular file at the admin path is a misconfiguration, not a stale
-    // socket — never delete it (that was the data-loss hazard).
-    let meta = std::fs::symlink_metadata(path)?;
+    // socket — never delete it (that was the data-loss hazard). If the path is ALREADY GONE here (a race:
+    // unlinked between our bind→AddrInUse and this stat), that's the recoverable case — just rebind on the
+    // now-free path rather than aborting on the bare `?` (#1977 review, the earlier sibling of the #1971
+    // remove_file NotFound fix).
+    let meta = match std::fs::symlink_metadata(path) {
+        Ok(m) => m,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return UnixListener::bind(path),
+        Err(e) => return Err(e),
+    };
     #[cfg(unix)]
     {
         use std::os::unix::fs::FileTypeExt;
