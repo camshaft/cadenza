@@ -66,7 +66,9 @@ pub mod model;
 pub mod retry;
 pub mod status;
 
-pub use admin::{AdminCommand, AdminResponse, InstallSpec, SessionFactory};
+pub use admin::{
+    AdminAuthorizer, AdminCommand, AdminResponse, AllowList, InstallSpec, SessionFactory,
+};
 #[cfg(feature = "admin")]
 pub use admin_socket::AdminSocket;
 pub use admin_wire::{
