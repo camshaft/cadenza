@@ -3489,16 +3489,23 @@ fn body_has_block_wrapped_let_init_branch_perform(
     ctx: &HandlerCtx,
 ) -> bool {
     // A NESTED handle: its ARMS belong to THAT inner handler's reduction (a block-wrapped perform in an arm
-    // resume-value is the a3 guard's territory), so don't scan them here. But its BODY still runs UNDER this
-    // (outer) handler — a block-wrapped branch perform of THIS handler's OUTER op in a `let`-init in the inner
-    // body drops the outer advance exactly like the top-level face (the intervening inner handle does not
-    // rewrite an outer-effect perform), and the outer reduction's scan previously stopped dead at the inner
-    // `Handle` and MISSED it (a silent 33-vs-34 miscompile, v-effects self-probe 2026-08-04). Descend into the
-    // inner body ONLY, keeping THIS outer `ctx`: `block_wrapped_branch_performs` is ctx-keyed, so it fires only
-    // on a perform of the OUTER discharged op — an inner-effect perform in the inner body never matches, so
-    // this cannot over-decline the inner handler's own shapes.
-    if let Resolved::Handle { body, .. } = resolved_of(db, node) {
-        return body_has_block_wrapped_let_init_branch_perform(db, body, ctx);
+    // resume-value is the a3 guard's territory), so don't scan them here. But its INIT and BODY both run UNDER
+    // this (outer) handler — a block-wrapped branch perform of THIS handler's OUTER op in a `let`-init in the
+    // inner body OR the inner handle's INIT (the init is evaluated as part of the handle expression, in the
+    // outer extent — `eval.rs` passes `init` to `reduce_handle` alongside `body`) drops the outer advance
+    // exactly like the top-level face (the intervening inner handle does not rewrite an outer-effect perform),
+    // and the outer reduction's scan previously stopped dead at the inner `Handle` and MISSED it (a silent
+    // 33-vs-34 miscompile, v-effects self-probe 2026-08-04; the INIT position was the a4-init sub-face,
+    // liaison/Copilot on merged #1933). Descend into BOTH the inner init and body, keeping THIS outer `ctx`:
+    // `block_wrapped_branch_performs` is ctx-keyed, so it fires only on a perform of the OUTER discharged op —
+    // an inner-effect perform never matches, so this cannot over-decline the inner handler's own shapes.
+    if let Resolved::Handle { init, body, .. } = resolved_of(db, node) {
+        // The inner handle's INIT may ITSELF be a block-wrapped branch perform (`(handle B (let ((k true))
+        // (if k (A.ga) 9)) …)` — the block IS the init, not a let-binding within it), so check the init node
+        // directly too; then recurse into both init and body for a `let`-init nested anywhere inside them.
+        return block_wrapped_branch_performs(db, init, ctx)
+            || body_has_block_wrapped_let_init_branch_perform(db, init, ctx)
+            || body_has_block_wrapped_let_init_branch_perform(db, body, ctx);
     }
     // A `let` at THIS node: check each init for the block-wrapped branch-performing shape.
     if let Some(parts) = db.ast.as_form(node, "let").map(<[_]>::to_vec)

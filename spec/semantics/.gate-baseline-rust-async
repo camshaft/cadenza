@@ -5637,6 +5637,7 @@ todo	a Rational-MAGNITUDE Quantity host value composes the num/den ops with the 
 todo	a String host RESULT crosses the boundary and is read twice (byte-len + scalar-len of a multibyte response)
 todo	a build-time delegated effect whose result a returned closure captures does not escape
 todo	a block-wrapped OUTER-effect perform in a let-init THREE handlers deep declines cleanly (adv-69 a4-depth3 sub-face)
+todo	a block-wrapped OUTER-effect perform in a nested handle's INIT declines cleanly (adv-69 a4-init sub-face)
 todo	a block-wrapped branch perform of the OUTER effect in a let-init INSIDE a nested handler body declines cleanly (adv-69 a4 sub-face)
 todo	a block-wrapped OUTER-effect perform in a non-tail do-statement INSIDE a nested handler body declines cleanly (adv-69 c3-nested sub-face)
 todo	a closed literal closure forwarded through const-wrapper hops is not a false reject

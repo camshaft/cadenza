@@ -3537,6 +3537,29 @@
             (export main)))
   (call   main) (output (: 34 Int64)))
 
+(case "a block-wrapped OUTER-effect perform in a nested handle's INIT declines cleanly (adv-69 a4-init sub-face)"
+  (doc    "adv-69 a4-init (liaison/Copilot on merged #1933): the a4 nested-handle-escape, but the block-wrapped
+           OUTER-effect perform sits in the inner handle's INIT — `(handle A 3 ((ga …)) (handle B (let ((k true))
+           (if k (A.ga) 9)) ((gb …)) (+ (* 10 (B.gb)) (A.ga))))`. The inner `B` handle's INIT is evaluated as
+           part of the handle expression in the OUTER `A` extent (eval.rs passes `init` to `reduce_handle`
+           alongside `body`), so a block-wrapped `A`-perform there drops the outer advance exactly like the a4
+           body face: seeded A=3 it ran 33, correct is 34 (B's init A.ga returns 3, A→4; B.gb returns B-state 3;
+           trailing A.ga must read 4 → 10*3 + 4). The a4 fix scanned the inner handle's BODY but early-returned
+           without the INIT, missing this position. FIX: the nested-Handle scan checks the init node directly
+           (`block_wrapped_branch_performs`) AND recurses into both init and body — ctx-keyed, so only an
+           OUTER-op perform fires (no over-decline of `B`'s shapes). Grades TODO on all backends; flips to 34
+           PASS on the through-block fold.")
+  (input  (do
+            (effect A (op ga (-> Unit Int64)))
+            (effect B (op gb (-> Unit Int64)))
+            (def (main)
+              (handle A 3 ((ga (u) s (resume s (+ s 1))))
+                (handle B (let ((k true)) (if k (A.ga) 9))
+                  ((gb (u) t (resume t t)))
+                  (+ (* 10 (B.gb)) (A.ga)))))
+            (export main)))
+  (call   main) (output (: 34 Int64)))
+
 (case "a BLOCK-wrapped branch perform in a MATCH-SCRUTINEE declines cleanly (adv-69 g3 sub-face)"
   (doc    "adv-69 g3 (breaker probe-g3, block-outstate battery): the SAME block-boundary out-state drop, at a
            MATCH-SCRUTINEE consuming position. `(match (let ((b true)) (if b (St.get) 99)) (v (+ (* 10 v)

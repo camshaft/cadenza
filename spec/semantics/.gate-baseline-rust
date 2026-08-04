@@ -5722,6 +5722,7 @@ todo	a DEPTH-2 block-wrapped branch perform in a let-init declines cleanly (adv-
 todo	a DIRECT branch perform in a NESTED handler-arm resume-value declines cleanly (adv-69 a3-direct sub-face)
 todo	a HEAP-accumulator block-wrapped branch perform in a let-init declines cleanly (adv-69 safe floor)
 todo	a block-wrapped OUTER-effect perform in a let-init THREE handlers deep declines cleanly (adv-69 a4-depth3 sub-face)
+todo	a block-wrapped OUTER-effect perform in a nested handle's INIT declines cleanly (adv-69 a4-init sub-face)
 todo	a block-wrapped branch perform of the OUTER effect in a let-init INSIDE a nested handler body declines cleanly (adv-69 a4 sub-face)
 todo	a block-wrapped OUTER-effect perform in a non-tail do-statement INSIDE a nested handler body declines cleanly (adv-69 c3-nested sub-face)
 todo	a closed literal closure forwarded through const-wrapper hops is not a false reject
