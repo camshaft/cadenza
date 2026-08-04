@@ -8553,3 +8553,26 @@
                   (loop 2))))
             (export main)))
   (output (: 21 Int64)))
+
+(case "a recursive nested-op performer whose per-iteration outer advance is read by a POST-loop observer threads it"
+  (doc    "The post-loop-observer companion of the case above — the sub-case that one explicitly deferred. The
+           recursive `loop` calls `B.step` whose arm resumes with the outer `(A.tick)`; then a POST-loop
+           `(A.get)` reads the A-state the recursion advanced. `loop 1` calls `B.step` once → `A.tick` returns
+           the pre-advance A-state 10 and advances A → 11; the loop sums that one value = 10. Then `(A.get)`
+           reads the ADVANCED A-state 11, so `(+ (loop 1) (A.get))` = `(+ 10 11)` = 21. Pins that the outer
+           advance the recursion made is OBSERVABLE after the loop — the merged specialization returns the
+           advanced A out-state (multi-value) and the post-loop `(A.get)` reads it, not the pre-loop seed
+           (which would give 20 — the silent miscompile this fix eliminates). Requires: (1) the merged
+           specialization target the accum-COPY of the seed-wrapped `loop` (`accum_seed_redirect`, threading
+           the accumulator seed as a call-site arg), and (2) the merged nested-handler body drain its pending
+           multi-value spec-call temp into a wrapping `let` (else the out-state projection leaks its binder).")
+  (input  (do
+            (effect A (op tick (-> Unit Int64)) (op get (-> Unit Int64)))
+            (effect B (op step (-> Unit Int64)))
+            (def (loop (: n Int64)) (if (= n 0) 0 (+ (B.step) (loop (- n 1)))))
+            (def (main)
+              (handle A 10 ((tick (u) s (resume s (+ s 1))) (get (u) s (resume s s)))
+                (handle B 0 ((step (u) t (resume (A.tick) t)))
+                  (+ (loop 1) (A.get)))))
+            (export main)))
+  (output (: 21 Int64)))

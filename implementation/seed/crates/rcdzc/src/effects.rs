@@ -4853,6 +4853,19 @@ fn thread_bounded(
                 rargs.push(ra);
                 cur = next;
             }
+            // ACCUM-COPY REDIRECT (rn post-observer fix, increment 1). When `head` names a seed-wrapper this
+            // merged context redirects to its accum COPY `f$acc` (which has extra accumulator params), the
+            // wrapper's own call `(f 1)` supplied only the ORIGINAL args — so append the accumulator SEEDS
+            // (read from the wrapper body `(f$acc orig… seed…)`) here, positioned right after the original
+            // args and BEFORE captures/states, matching `f$acc`'s sig layout `[orig… seed… captures… states…]`.
+            // A self-call INSIDE `f$acc` names `f$acc` directly (not the wrapper), so `accum_seed_redirect`
+            // returns `None` for it and it passes its own accumulator arg — no double-seed. Empty (no-op) for
+            // every non-redirected call.
+            if let Some(head_def) = callee_def_index_of(db, head)
+                && let Some((_acc, seeds)) = accum_seed_redirect(db, head_def, ctx.slots.len())
+            {
+                rargs.extend(seeds);
+            }
             let spec = specialize_recursive(db, head, ctx)?;
             // CAPTURED enclosing-fn params come AFTER the original args and BEFORE the state args (the sig
             // layout). Each is passed as a fresh bare-name reference: inside `f#ctx` it resolves to the new
@@ -5392,8 +5405,19 @@ fn thread_bounded(
                 // (appended after the outer states). The merged vector = outer states ++ [inner init].
                 let mut merged_states = states.clone();
                 merged_states.push(inner_init);
+                // DRAIN the merged body's pending MULTIVALUE temps (rn post-observer fix, increment 1 tail).
+                // A caller-observed merged spec call in `inner_body` — `(+ (loop 1) (A.get))`, where the
+                // post-loop `(A.get)` observes `loop`'s A-advance — emits a multi-value spec call let-bound to
+                // `{spec}$t{k}`, pushed to `merged.pending`, with `(. t 0)` in its place. The single-handler
+                // path drains these at reduce_handle's tail (line ~2528), but the MERGED body threads HERE via
+                // `thread_bounded`, which never drained → `(. loop$acc#eff$t0 0)` referenced an unbound `$t0`
+                // (CDZ0101). Mark the pending length, thread, then `drain_and_wrap` binds every temp this body
+                // produced into wrapping `let`s around `rbody`. No-op when nothing pending (byte-identical to
+                // before for a merged body with no multivalue call — the common case).
+                let mark = merged.pending.borrow().len();
                 let (rbody, out) =
                     thread_bounded(db, inner_body, merged_states, &merged, inline_depth)?;
+                let rbody = drain_and_wrap(db, &merged, mark, rbody);
                 // Drop the inner slot's final state; return the OUTER slots' states (the prefix).
                 let outer_states = out[..states.len()].to_vec();
                 Some((rbody, outer_states))
@@ -6322,10 +6346,17 @@ fn operand_is_branch_performing_conditional(db: &mut Db, node: StructId, ctx: &H
 fn collect_rec_eff_call_defs(db: &mut Db, node: StructId, ctx: &HandlerCtx, out: &mut Vec<usize>) {
     if let Resolved::Apply { head, .. } = resolved_of(db, node)
         && recursive_call_reaches_discharged(db, &head, ctx)
-        && let Some(cd) = callee_def_index_of(db, head)
-        && !out.contains(&cd)
+        && let Some(cd0) = callee_def_index_of(db, head)
     {
-        out.push(cd);
+        // ACCUM-COPY REDIRECT (rn post-observer fix, increment 1): record the def `specialize_recursive`
+        // will actually specialize. A merged-ctx call to a seed-wrapper redirects to its accum COPY
+        // `f$acc`; `force_multivalue` is keyed by the SPECIALIZED def's body, and the mode decision looks
+        // it up under `f$acc`'s body — so record `f$acc`'s index here, not the (non-recursive) wrapper's,
+        // else the observation misses and the caller-observed out-state is dropped (q4a folds 20 not 21).
+        let cd = accum_seed_redirect(db, cd0, ctx.slots.len()).map_or(cd0, |(acc, _)| acc);
+        if !out.contains(&cd) {
+            out.push(cd);
+        }
     }
     match db.ast.get(node).clone() {
         Struct::List(children) => {
@@ -6454,8 +6485,59 @@ fn self_calls_tail(db: &mut Db, node: StructId, callee_def: usize, tail: bool) -
     }
 }
 
+/// ACCUM-COPY REDIRECT detector (rn post-observer fix, increment 1). A linear NON-tail recursion `f` that
+/// `accum::introduce` rewrote into a seed-wrapper `(def (f p…) (f$acc p… seed…))` + a tail-recursive copy
+/// `f$acc` reads `is_recursive(f.body)=false` — so specializing `f` (the seed-wrapper) under a MERGED
+/// context threads the NON-recursive wrapper (its body is just the seed call), which drops the advance (the
+/// rn post-observer safe-decline). The ACTUAL recursion lives in `f$acc`. When `def_index` is such a
+/// seed-wrapper — `slots>1` (merged), `db.transformed[def_index]=Some(f$acc)`, body is a call
+/// `(f$acc <orig-args…> <seed…>)` naming `f$acc` — return `Some((f$acc-index, seed-args))`: the caller
+/// specializes `f$acc` and threads the SEEDS (the wrapper-body args past the original params) as extra
+/// call-site args (before the trailing states, mirroring the captured-enclosing-param plumbing). Approach
+/// (a), concierge-steered (2026-08-04): reading the seed from the wrapper body handles a CONSTANT or a
+/// NON-constant seed uniformly — no latent hole. `None` (no redirect) for a non-wrapper / single-slot ctx
+/// (the inside-out path already specializes `f$acc` directly). The returned seeds are DEEP-FRESH copies,
+/// safe to splice at a call site. Idempotent (a pure read of `db.defs`/`db.transformed`/the AST).
+fn accum_seed_redirect(
+    db: &mut Db,
+    def_index: usize,
+    slots: usize,
+) -> Option<(usize, Vec<StructId>)> {
+    if slots <= 1 {
+        return None;
+    }
+    let wrapper_body = db.defs[def_index].body?;
+    if crate::eval::is_recursive(db, wrapper_body) {
+        return None; // already the recursive copy (or a genuine recursion) — not a seed-wrapper
+    }
+    let &acc = db.transformed.get(&def_index)?;
+    let wrapper_params = db.defs[def_index].params.len();
+    let Struct::List(call_children) = db.ast.get(wrapper_body).clone() else {
+        return None;
+    };
+    // The wrapper body must be a call `(f$acc <orig-args…> <seed…>)` naming the accum copy, with at least
+    // the wrapper's own params as leading args (the rest are the accumulator seeds `f$acc` introduced).
+    if call_children.is_empty()
+        || db.ast.as_name(call_children[0]) != Some(&db.defs[acc].name.clone())
+        || call_children.len() - 1 < wrapper_params
+    {
+        return None;
+    }
+    let seeds: Vec<StructId> = call_children[1 + wrapper_params..]
+        .iter()
+        .map(|&s| deep_fresh_copy(db, s))
+        .collect();
+    Some((acc, seeds))
+}
+
 fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option<String> {
-    let callee_def = callee_def_index_of(db, head)?;
+    let call_head_def = callee_def_index_of(db, head)?;
+    // ACCUM-COPY REDIRECT (rn post-observer fix, increment 1 — see `accum_seed_redirect`). A merged-ctx call
+    // to a seed-wrapper `f` specializes the tail-recursive accum COPY `f$acc` instead (the wrapper's body is
+    // just the non-recursive seed call, which drops the advance). The seed args the call site must add are
+    // recomputed there via the same `accum_seed_redirect`; here we only need the redirected def index.
+    let callee_def = accum_seed_redirect(db, call_head_def, ctx.slots.len())
+        .map_or(call_head_def, |(acc, _seeds)| acc);
     let orig_body = db.defs[callee_def].body?;
     if !ctx.has_state() {
         return None;
