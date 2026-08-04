@@ -39,7 +39,12 @@ dies or after a cron's 7-day auto-expiry — so verify them each tick and RE-CRE
    line: (a) **drain your inbox** (route asks — surface genuine operator-decisions via
    Slack via the bridge, answer clear-default ones yourself; append backlogs; note notes; move handled
    to `processed/`; leave a real operator-ask in place if the operator isn't around), (b) **watchdog**:
-   `cd .claude/worktrees/pr-sync && cargo xtask fleet watchdog` (re-arm stalled loops), (c) **reap**:
+   `cd .claude/worktrees/pr-sync && cargo xtask fleet watchdog --nudge-drain-stalls` (re-arm stalled
+   loops AND auto-nudge a detected drain-stall's idle pane to drain, instead of only warning you — you
+   own tmux, so you're the operator-owned watchdog meant to run with this. It's hard-guarded: idle-at-
+   prompt only, never a context-saturated pane (that needs a restart), rate-limited per agent, with a
+   short re-nudge-if-the-message-persists window that flags loudly. OFF by default because auto-sending
+   keystrokes is the highest-risk watchdog action — enabling it HERE is the intended use), (c) **reap**:
    `tmux kill-window` any agent that is registry-`stopped` + has a stop-file + still has a live window
    (never an active agent; windows only, not registry rows). This cron is what makes the concierge
    self-driving instead of only waking when the operator messages — WITHOUT it your inbox silently
