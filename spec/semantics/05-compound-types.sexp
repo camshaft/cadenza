@@ -2131,7 +2131,7 @@
 
 (case "a map churned all the way DOWN TO EMPTY equals Map.empty canonically"
   (doc    "The zero-boundary of the history-independence family above (those churn back to 2 entries; the
-           deep-trie case drains to empty but checks only len): a 120-entry trie shrunk to NOTHING must
+           deep-trie case drains to empty but checks only len): a 119-entry trie (keys i = 1..n-1 at n = 120) shrunk to NOTHING must
            EQUAL `Map.empty` by canonical `=` (10) as well as len (+1). The full drain collapses every
            node the growth created — a final collapse that left a residual root (empty interior node
            instead of the canonical empty) would report len 0 yet break equality and any downstream
@@ -2150,7 +2150,7 @@
   (call   main (: 120 Int64)) (output (: 11 Int64)))
 
 (case "the churned-to-empty map REGROWS with correct structure (no residue corrupts re-insertion)"
-  (doc    "The regrow companion of the churn-to-empty case above: after the 120-entry full drain, re-insert
+  (doc    "The regrow companion of the churn-to-empty case above: after the 119-entry (i = 1..n-1) full drain, re-insert
            two fresh keys — `Map.len` 2 and the lookup reads the new value (70). The deep-trie case regrows
            the SAME keys it drained; this regrows DIFFERENT keys (7/8, disjoint from the churn range 1..n),
            so a stale-node reuse or tombstone left by the drain would misroute the fresh inserts rather
@@ -15762,8 +15762,8 @@
   (doc    "The negative-keyspace face of the churn-identity family: churn 60 NEGATIVE keys (-3i) around
            a mixed ±7 seed pair, and the survivor must enumerate identically to the direct build
            (`Map.to-list` equality as LISTS, ·10) with the negative seed key still resolving (+1 → 11).
-           Removal traffic entirely on the negative side must leave the canonical structure — and the
-           signed enumeration order — byte-identical to the never-grown twin.")
+           Removal traffic entirely on the negative side must leave the enumeration — order and
+           contents — identical to the never-grown twin's.")
   (input  (do
             (def (grow (: i Int64) (: n Int64) (: m (Map Int64 Int64)))
               (if (= i n) m (grow (+ i 1) n (Map.insert m (- 0 (* i 3)) i))))
@@ -15800,6 +15800,54 @@
                 (+ (* 10 (if (= rt src) 1 0)) (if (= (Map.len rt) n) 1 0))))
             (export main)))
   (call   main (: 60 Int64)) (output (: 11 Int64)))
+
+(case "a fold over Map.to-list REBUILDS a filtered map at depth (the select-rebuild idiom)"
+  (doc    "The filtering upgrade of the enumerate-rebuild case above (which keeps every entry): walk a
+           60-entry trie's enumeration and rebuild keeping only EVEN keys — 30 survive, and a deep
+           lookup reads through the filtered result (30·10 + 1 → 301). The keyed-table filter pass a
+           self-hosted compiler runs to prune a symbol table: enumeration, per-entry predicate, and
+           selective rebuild in one walk.")
+  (input  (do
+            (def (fill (: i Int64) (: m (Map Int64 Int64)))
+              (if (= i 0) m (fill (- i 1) (Map.insert m i (* i 2)))))
+            (def (keep-even (: ps (List (Tuple Int64 Int64))) (: m (Map Int64 Int64)))
+              (match ps
+                ((list) m)
+                ((list h .. t) (match h ((tuple k v)
+                  (keep-even t (if (= (% k 2) 0) (Map.insert m k v) m)))))))
+            (def (main (: n Int64))
+              (do
+                (def src (fill n Map.empty))
+                (def evens (keep-even (Map.to-list src) Map.empty))
+                (+ (* 10 (Map.len evens))
+                   (match (Map.lookup evens 30) ((Some v) (if (= v 60) 1 0)) ((None _u) -1)))))
+            (export main)))
+  (call   main (: 60 Int64)) (output (: 301 Int64)))
+
+(case "the filtered rebuild EQUALS the direct selection build (selection is canonical)"
+  (doc    "The identity witness of the select-rebuild case above: the filtered rebuild must EQUAL a map
+           built by inserting ONLY the even keys directly — by canonical `=` (1). Selection composed
+           through enumerate+rebuild inherits nothing structural from the source's odd-key shape; a
+           rebuild whose trie retained any allocation artifact of the walk order (or of the skipped
+           entries) would break equality with the direct build. The filter face of the
+           construction-path-independence family.")
+  (input  (do
+            (def (fill (: i Int64) (: m (Map Int64 Int64)))
+              (if (= i 0) m (fill (- i 1) (Map.insert m i (* i 2)))))
+            (def (fill-even (: i Int64) (: m (Map Int64 Int64)))
+              (if (= i 0) m (fill-even (- i 1) (if (= (% i 2) 0) (Map.insert m i (* i 2)) m))))
+            (def (keep-even (: ps (List (Tuple Int64 Int64))) (: m (Map Int64 Int64)))
+              (match ps
+                ((list) m)
+                ((list h .. t) (match h ((tuple k v)
+                  (keep-even t (if (= (% k 2) 0) (Map.insert m k v) m)))))))
+            (def (main (: n Int64))
+              (do
+                (def filtered (keep-even (Map.to-list (fill n Map.empty)) Map.empty))
+                (def direct (fill-even n Map.empty))
+                (if (= filtered direct) 1 0)))
+            (export main)))
+  (call   main (: 60 Int64)) (output (: 1 Int64)))
 
 (case "Map.to-list length is the map's entry count"
   (doc    "`(List.len (Map.to-list (Map.insert (Map.insert (Map.insert Map.empty 1 10) 2 20) 1 99)))` —
