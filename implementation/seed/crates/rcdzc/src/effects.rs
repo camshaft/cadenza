@@ -2472,8 +2472,18 @@ pub fn reduce_handle(
         // flips todo→pass).
         if db.ast.as_form(rewritten, "do").is_some() && body_reaches_foreign_perform(db, body, &ctx)
         {
-            reparent_under_handle_site(db, rewritten, body);
-            return Some(rewritten);
+            // DRAIN before returning (github-liaison review on #2002, HIGH-class). The normal path below
+            // runs `drain_and_wrap` to wrap `rewritten` in the binding-`let`s for any pending MULTIVALUE
+            // self-call temps (a `f#ctx` self-call arm pushes `#t` to `ctx.pending` and returns `(. t 0)`;
+            // the temp is bound here). This do-form early-return must drain TOO: a multivalue self-call in
+            // the KEPT pre-abort foreign prefix — `(do (relabel-self…) (A.tick) (B.bail 99))` — would leave
+            // its `(. t 0)` referencing an unbound `#t` if we returned `rewritten` undrained → spurious
+            // CDZ0101 / no-machine-representation. `drain_and_wrap` is a no-op when nothing is pending (the
+            // common case — a plain `(do (A.tick) (B.bail 99))` has no self-call temp), so this is a strict
+            // hardening: byte-identical when `ctx.pending` is empty, correct when it is not.
+            let drained = drain_and_wrap(db, &ctx, 0, rewritten);
+            reparent_under_handle_site(db, drained, body);
+            return Some(drained);
         }
         // Re-anchor the abort value under the handle site BEFORE returning — the SAME reparent the normal
         // path does below (line ~1848). The abort value is the arm body `copy_pure`d off the (now-dead)
