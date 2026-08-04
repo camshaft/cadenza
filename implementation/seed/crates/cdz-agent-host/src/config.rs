@@ -114,8 +114,11 @@ pub enum BlobConfig {
 
 /// Effect-retry policy: a bounded exponential backoff the daemon's supervisor applies to a RETRYABLE
 /// effect outcome (a transient Bedrock/HTTP failure classified `RETRYABLE:` by [`crate::retry`]). A
-/// PERMANENT failure is never retried. (The retry MECHANISM — re-emit via Timer — is a userspace/supervisor
-/// concern; this is the POLICY the daemon's driver reads.)
+/// PERMANENT failure is never retried. This is the POLICY; the retry MECHANISM (re-emit via Timer on a
+/// RETRYABLE `EffectResult`) is a userspace/kernel-supervisor concern that reads it. The policy math —
+/// [`should_retry`](Self::should_retry) (attempt within `max_attempts`?) + [`backoff_ms`](Self::backoff_ms)
+/// (the bounded-exponential delay before an attempt) — lives here so every retry driver computes it
+/// identically (and it's unit-tested without needing the supervision mechanism).
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct RetryConfig {
@@ -139,6 +142,34 @@ impl RetryConfig {
     }
     fn default_max_ms() -> u64 {
         30_000
+    }
+
+    /// Should a RETRYABLE failure be retried on its `attempt`-th retry? `attempt` is 1-based (the FIRST
+    /// retry is `attempt = 1`). True while `attempt <= max_attempts`; `max_attempts = 0` never retries.
+    /// The retry driver (a userspace/kernel supervisor) calls this to decide whether to schedule another
+    /// re-emit vs give up + escalate. (A PERMANENT failure is never passed here — it's not retried at all.)
+    pub fn should_retry(&self, attempt: u32) -> bool {
+        attempt >= 1 && attempt <= self.max_attempts
+    }
+
+    /// The backoff delay (ms) before the `attempt`-th retry — bounded exponential: `base_ms * 2^(attempt-1)`,
+    /// saturating at `max_ms`. `attempt` is 1-based (the first retry waits `base_ms`, the second `2*base_ms`,
+    /// …). The retry driver waits this long (a Timer) before re-emitting the effect with the same
+    /// idempotency key (§16c — a paid Bedrock invoke dedups on re-issue). Saturating throughout, so a large
+    /// attempt can't overflow — it just pins at `max_ms`.
+    ///
+    /// `attempt = 0` (or below 1) returns 0 (no wait) — a caller shouldn't ask for a pre-first-retry delay,
+    /// but returning 0 is the harmless total answer rather than a panic (§17 totality).
+    pub fn backoff_ms(&self, attempt: u32) -> u64 {
+        if attempt < 1 {
+            return 0;
+        }
+        // 2^(attempt-1) via saturating shift: a shift >= 64 (attempt-1 >= 64) would be UB/wrap, so clamp the
+        // exponent and let the multiply saturate to max_ms anyway.
+        let exp = attempt - 1;
+        let factor: u64 = if exp >= 63 { u64::MAX } else { 1u64 << exp };
+        let delay = self.base_ms.saturating_mul(factor);
+        delay.min(self.max_ms)
     }
 }
 
@@ -406,5 +437,43 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.0.contains("dir"), "{err}");
+    }
+
+    #[test]
+    fn retry_should_retry_respects_max_attempts() {
+        let r = RetryConfig {
+            max_attempts: 3,
+            base_ms: 100,
+            max_ms: 30_000,
+        };
+        assert!(!r.should_retry(0), "attempt 0 is not a retry");
+        assert!(r.should_retry(1), "1st retry allowed");
+        assert!(r.should_retry(3), "3rd retry allowed (== max)");
+        assert!(!r.should_retry(4), "4th retry denied (> max)");
+        // max_attempts = 0 → never retry.
+        let none = RetryConfig {
+            max_attempts: 0,
+            base_ms: 100,
+            max_ms: 30_000,
+        };
+        assert!(!none.should_retry(1), "max_attempts=0 never retries");
+    }
+
+    #[test]
+    fn retry_backoff_is_bounded_exponential() {
+        let r = RetryConfig {
+            max_attempts: 10,
+            base_ms: 100,
+            max_ms: 30_000,
+        };
+        assert_eq!(r.backoff_ms(0), 0, "no pre-first-retry delay");
+        assert_eq!(r.backoff_ms(1), 100, "1st retry = base");
+        assert_eq!(r.backoff_ms(2), 200, "doubles");
+        assert_eq!(r.backoff_ms(3), 400);
+        assert_eq!(r.backoff_ms(4), 800);
+        // Saturates at max_ms (100 * 2^9 = 51200 > 30000 → capped).
+        assert_eq!(r.backoff_ms(10), 30_000, "capped at max_ms");
+        // A large attempt can't overflow — pins at max_ms (saturating shift + mul + min).
+        assert_eq!(r.backoff_ms(1000), 30_000, "huge attempt saturates, no panic/overflow");
     }
 }
