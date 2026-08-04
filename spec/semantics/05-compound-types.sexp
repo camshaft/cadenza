@@ -16376,6 +16376,42 @@
   (input  (do (def (main) (match (record (x 5)) ((record) 0) (_ 1))) (export main)))
   (output (: 0 Int64)))
 
+(case "a record pattern destructures a ROW-OP derived record (with-chain result)"
+  (doc    "The record-pattern rows above match records built by the `(record …)` CONSTRUCTOR; this one
+           matches a record produced by a ROW-OP chain — `(Record.with (Record.with base #\"a\" 10) #\"c\"
+           30)` — composing the with-derived heap value with pattern destructuring. The pattern names a
+           SUBSET (`a` and `c`, skipping the untouched `b`), reading the replaced values through the
+           derived record: 100*10 + 30 = 1030. Pins that a with-chain result is an ordinary match
+           scrutinee (the row ops and the pattern matcher agree on field layout after replacement) and
+           that partial naming works over a derived record exactly as over a constructed one.")
+  (input  (do
+            (def (main (: n Int64))
+              (do
+                (def base (record (a n) (b 2) (c 3)))
+                (def derived (Record.with (Record.with base #"a" 10) #"c" 30))
+                (match derived
+                  ((record (a x) (c z)) (+ (* 100 x) z)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 1030 Int64)))
+
+(case "a record pattern over a Map-STORED record reads live heap fields after retrieval"
+  (doc    "The storage-round-trip face of record matching: a record with a HEAP field (`(xs (list n 2))`,
+           plus a `tag` string) is stored as a CHAMP map VALUE, retrieved by `Map.lookup`, and only then
+           destructured — `(match r ((record (xs ys)) (List.len ys)))` → 2. Pins that a record surviving
+           a Map store/retrieve round trip presents live heap fields to the pattern matcher (the boxed
+           record's field layout is intact after the trie storage, and the retrieved handle supports
+           partial naming — `tag` is unnamed and dropped cleanly). Composes three owners: record layout,
+           CHAMP storage, and match destructuring.")
+  (input  (do
+            (def (main (: n Int64))
+              (do
+                (def m (Map.insert Map.empty 1 (record (xs (list n 2)) (tag "t"))))
+                (match (Map.lookup m 1)
+                  ((Some r) (match r ((record (xs ys)) (List.len ys))))
+                  ((None _u) -1))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 2 Int64)))
+
 (case "a record sub-pattern nested inside a tuple match names the feature, not an unbound binder (CDZ0201)"
   (doc    "A record match binds its fields to bare names at the TOP level, but a record sub-pattern NESTED
            inside a tuple/list/constructor match — `(tuple (record (x a)) c)` — is not yet wired: a record
