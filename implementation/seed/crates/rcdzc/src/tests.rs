@@ -66421,6 +66421,29 @@ mod stage1 {
     }
 
     #[test]
+    fn a_match_arm_perform_in_a_self_recursive_performer_threads_the_advance() {
+        // The MATCH-arm face of the recursive-branch-perform fix (the `if`-branch twin is the test above). A
+        // discharged perform in a `match` ARM body alongside a self-call — `(+ (match true (_ (St.get)))
+        // (walk (- n 1)))`. Same drop as the `if` case: thread_bounded's `Match` arm returned the
+        // post-SCRUTINEE state, so the recursion reseeded from the stale state (ran 3, correct 6). Fixed by
+        // the `Match` arm analogue of the per-branch out-state merge (a `(match scrut (pat arm-out)…)`-valued
+        // out-state, same pure-scrutinee + `#cv`-free gating as the `if` arm).
+        let src = "(do (effect St (op get (-> Unit Int64))) \
+                   (def (walk (: n Int64)) (if (= n 0) 0 (+ (match true (_ (St.get))) (walk (- n 1))))) \
+                   (def (main) (handle St 1 ((get (u) s (resume s (+ s 1)))) (walk 3))) \
+                   (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a match-arm perform in a self-recursive performer folds"),
+                "main"
+            ),
+            6,
+            "the match-arm perform's advance must thread across the recursion (1+2+3=6), not reseed (was 3)"
+        );
+    }
+
+    #[test]
     fn a_state_mutual_recursion_with_perform_split_from_the_mutual_call_specializes() {
         // A STATE-threading handler over a mutually-recursive group where a cycle def performs the
         // discharged op in ONE `if`/`match` branch while the mutual call is in a DIFFERENT branch
