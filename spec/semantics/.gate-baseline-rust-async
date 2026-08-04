@@ -4561,6 +4561,7 @@ pass	eval of a quoted RECURSIVE-sum construction builds the heap spine
 pass	eval of a quoted String.byte-len folds the string operation
 pass	eval of a quoted boolean connective short-circuits
 pass	eval of a quoted boolean executes it to the boolean value
+pass	eval of a quoted byte-string literal folds to the bytes value
 pass	eval of a quoted conditional reduces its comparison condition first
 pass	eval of a quoted conditional takes the branch its boolean literal selects
 pass	eval of a quoted disjunction short-circuits to true
@@ -4911,6 +4912,8 @@ pass	print then read of a keyword-spelled Ast.Name reclassifies it as the boolea
 pass	print then read of a string-spelled Ast.Name reclassifies it as an Ast.Str
 pass	print then read of an Ast.Int at i64::MAX+1 round-trips (the exact reader handoff seam)
 pass	print then read of an Ast.Int at i64::MIN-1 round-trips (the negative reader handoff seam)
+pass	print then read round-trips an Ast.Bytes carrying escapes and high bytes
+pass	print then read round-trips an Ast.Bytes through the text path
 pass	print/read is IDEMPOTENT after one trip and read normalizes whitespace to one canonical tree
 pass	print/read round-trips a 12-deep nest and a 25-wide list
 pass	print/read round-trips a tree carrying every leaf kind in one canonical form
@@ -4959,6 +4962,7 @@ pass	re-wrapping the intermediate with Qty.of makes a two-step conversion well-f
 pass	reaching an effect neither handled nor delegated is rejected at compile time
 pass	read classifies a lone punctuation token as an Ast.Name and it round-trips
 pass	read normalizes numeric token spellings to canonical float values
+pass	read of a bare b token is an Ast.Name, not a byte-literal
 pass	read of a leading-'+' BEYOND-i64 integer token is an Ast.Name too (both sides of the boundary)
 pass	read of a leading-'+' integer token is an Ast.Name, not an Ast.Int (within i64)
 pass	read of text that is not a well-formed s-expression declines

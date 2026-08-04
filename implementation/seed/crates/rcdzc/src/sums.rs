@@ -136,11 +136,12 @@ pub fn prelude_decls(ast: &mut Arenas) -> Vec<TypeDecl> {
         let list_ast = push_list(ast, vec![list_head, ast_ref]);
         // The `Ast` sum's variants follow the spec's enumeration order (`type-system.md` §The Abstract
         // Syntax Tree Is An Ordinary Sum Type: "an integer, a float, a string, a boolean, a name, and a
-        // list of child nodes"). FULLY REALIZED: `Int` (Int64), `Float` (Float64), `Bool` (Bool), `Str`
-        // (String — a string LITERAL, distinct from `Name` which carries an identifier), `Name` (String),
-        // `List` ((List Ast)) — the complete spec variant set. Discriminants are read BY NAME everywhere
-        // (`ast_variant_discs`), never positionally, so this order is display-only and adding a variant
-        // never mis-tags an existing one.
+        // list of child nodes"). The variants: `Int` (BigInt — non-lossy quoted-integer storage), `Float`
+        // (Float64), `Bool` (Bool), `Str` (String — a string LITERAL, distinct from `Name` which carries an
+        // identifier), `Name` (String), `List` ((List Ast)) — the spec's set — plus `Bytes` (Bytes — a raw
+        // byte-sequence literal `b"…"`, appended for compact binary-AST encoding, operator seq 113).
+        // Discriminants are read BY NAME everywhere (`ast_variant_discs`), never positionally, so this order
+        // is display-only and appending a variant never mis-tags an existing one.
         //
         // `Ast` is an ordinary `(type …)` sum built by the same `type_form_payloads`/`scan_type_decl` path
         // as any user sum — NOT a compiler-special-cased primitive — with exactly the spec's variant per
