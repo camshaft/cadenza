@@ -342,7 +342,10 @@ impl<'a> Cursor<'a> {
     /// The next byte WITHOUT consuming it (for a tag-discriminated sum whose variant then re-reads the tag —
     /// e.g. `CloseOutcome`, whose `Success` delegates to `decode_payload` which re-reads the 0/1 payload tag).
     fn peek_u8(&self) -> Result<u8, DecodeError> {
-        self.bytes.get(self.pos).copied().ok_or(DecodeError::Truncated)
+        self.bytes
+            .get(self.pos)
+            .copied()
+            .ok_or(DecodeError::Truncated)
     }
 
     fn u32(&mut self) -> Result<u32, DecodeError> {
