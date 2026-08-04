@@ -66183,6 +66183,26 @@ mod stage1 {
     }
 
     #[test]
+    fn a_block_wrapped_branch_perform_in_a_nested_arm_resume_value_declines_not_miscompiles() {
+        // adv-69 a3 sub-face (breaker probe-a3, block-outstate battery). The SAME block-boundary out-state
+        // drop as the let-init floor, but at a NESTED handler's arm RESUME-VALUE performing the OUTER op:
+        // `(handle St 3 ((get …)) (handle Up 0 ((ask (u) t (resume (let ((b true)) (if b (St.get) 99)) t)))
+        // (+ (* 10 (Up.ask)) (St.get))))`. The block boundary inside the inner arm's resume-VALUE dropped the
+        // outer `St.get`'s advance → seeded 3 it ran 33, correct 34. The let-init scanner stops at a nested
+        // `handle`, so this position escaped that floor; a guard keyed PRECISELY on the `Resume{value}`
+        // position declines it (→ Todo) without over-declining threaded positions the fold serves.
+        let src = "(do (effect St (op get (-> Unit Int64))) (effect Up (op ask (-> Unit Int64))) \
+                   (def (main) (handle St 3 ((get (u) s (resume s (+ s 1)))) \
+                     (handle Up 0 ((ask (u) t (resume (let ((b true)) (if b (St.get) 99)) t))) \
+                       (+ (* 10 (Up.ask)) (St.get))))) \
+                   (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_err(),
+            "a block-wrapped branch perform in a nested arm resume-value must decline, not miscompile to 33"
+        );
+    }
+
+    #[test]
     fn a_mutually_recursive_effectful_group_specializes_under_a_state_handler() {
         // E3 extended to MUTUAL recursion: `ev`/`od` call each other, and the effect (`Ctr.tick`) is reached
         // by `ev` only THROUGH its partner `od`. The fix: `body_reaches_discharged` now follows RECURSIVE

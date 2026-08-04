@@ -3403,11 +3403,11 @@
             (export main)))
   (call   main) (output (: 34 Int64)))
 
-; Two more faces of the adv-69 safe-decline floor (both grade TODO — decline cleanly, flip to a 34/11 PASS
+; Three more faces of the adv-69 safe-decline floor (all grade TODO — decline cleanly, flip to a 34/11 PASS
 ; when the through-block commuting-conversion fold lands): the floor's block_wrapped_branch_performs guard
 ; peels DEPTH-N pure let/do wrappers and covers a HEAP-accumulator perform in the same let-init position.
-; (The arm-resume-value positional sub-face — a block-wrapped OUTER-effect perform inside an INNER handle's
-; resume-value — is NOT covered by this floor and still miscompiles; it awaits a targeted arm-position guard.)
+; The arm-resume-value positional sub-face (a3 — a block-wrapped OUTER-effect perform inside an INNER
+; handle's resume-value) is now ALSO declined by a targeted `Resume{value}`-keyed guard (its case below).
 
 (case "a DEPTH-2 block-wrapped branch perform in a let-init declines cleanly (adv-69 safe floor, nested wrappers)"
   (doc    "The depth-2 face of the adv-69 safe-decline: the branch-performing conditional sits behind TWO
@@ -3443,6 +3443,30 @@
                   (+ (* 10 (Log.count)) (Log.count)))))
             (export main)))
   (call   main) (output (: 11 Int64)))
+
+(case "a BLOCK-wrapped branch perform in a NESTED handler-arm resume-value declines cleanly (adv-69 a3 sub-face)"
+  (doc    "adv-69 a3 (breaker probe-a3, block-outstate battery): the SAME block-boundary out-state drop as the
+           let-init floor above, but at a DIFFERENT position — a block-wrapped branch-performing conditional in
+           a NESTED handler's arm RESUME-VALUE, performing the OUTER handler's op. The outer `St` handler threads
+           its state through the inner `Up` handle, but the block boundary inside the inner arm's resume-VALUE
+           `(resume (let ((b true)) (if b (St.get) 99)) t)` dropped the outer `St.get`'s advance: seeded 3 it ran
+           33, correct is 34 (= 10*(St.get resumes 3, state→4 seen by trailing get) ... trailing `(St.get)` reads
+           4). The let-init scanner stops at a nested `handle` (an inner handle's lets are its own reduction), so
+           this position escaped that floor. A targeted guard keyed PRECISELY on the `Resume{value}` position
+           (not a position-agnostic block-wrapped-perform scan, which over-declines working threaded positions)
+           declines this residual shape → a clean Todo, never the silent 33. Grades TODO on all backends; its 34
+           becomes a PASS when the full through-block fold lands (same deferred commuting conversion as the
+           let-init face).")
+  (input  (do
+            (effect St (op get (-> Unit Int64)))
+            (effect Up (op ask (-> Unit Int64)))
+            (def (main)
+              (handle St 3 ((get (u) s (resume s (+ s 1))))
+                (handle Up 0
+                  ((ask (u) t (resume (let ((b true)) (if b (St.get) 99)) t)))
+                  (+ (* 10 (Up.ask)) (St.get)))))
+            (export main)))
+  (call   main) (output (: 34 Int64)))
 
 (case "two performs bound by nested lets thread the handler state in order"
   (doc    "Two performs on the strict spine, each BOUND by its own `let`, thread the handler state in
