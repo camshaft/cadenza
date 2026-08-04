@@ -27,7 +27,11 @@
 //!   recovery (`Clean`/`TornTail`/`Corrupt`), heal-a-torn-tail via `truncate_to`.
 //! - [`wasm_host`] — the wasmtime component host (§19b): binds `wit/reducer.wit`, runs a reducer as a
 //!   real wasm component (fuel-bounded fold), and resolves declared component deps by hash (§23 —
-//!   runtime-agnostic, no hard-coded runtime).
+//!   runtime-agnostic, no hard-coded runtime). Also the generic multi-export [`wasm_host::invoke_component`]
+//!   primitive (resolve→invoke→artifact-set, operator seq 107/108) and its [`wasm_host::Artifact`].
+//! - [`selector`] — the artifact OUTPUT-ROUTING decision (operator seq 108/109): a caller-supplied
+//!   selector program routes each invoked artifact to a [`selector::Sink`] (session-response | CAS),
+//!   matching ONLY opaque `kind`/`name` strings — the host knows nothing about what produced them.
 //! - [`kernel`] — the core `fold → authorize → durably-dispatch → execute → fold-result` loop, plus
 //!   `replay`/`recover` (crash recovery: rebuild KV + open-obligation set from the log, no live
 //!   re-execution) and `time_out_effect` (the "or time out" half of the S4 recovery contract).
@@ -49,4 +53,5 @@ pub mod kv;
 pub mod log_store;
 pub mod name_store;
 pub mod reducer;
+pub mod selector;
 pub mod wasm_host;
