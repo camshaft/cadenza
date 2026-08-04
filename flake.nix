@@ -133,6 +133,11 @@
               runHook preBuild
               export HOME="$TMPDIR/home"
               export CARGO_HOME="$TMPDIR/cargo"
+              # Network is blocked by CARGO_NET_OFFLINE (belt-and-suspenders with the vendored source
+              # below) — matches the sibling cargo-in-nix derivations (rcdzcWasm, mkStripComponent), so
+              # if cargo's source resolution ever changes the lint fails LOUDLY offline instead of
+              # attempting a fetch (github-liaison #1982).
+              export CARGO_NET_OFFLINE=true
               mkdir -p "$HOME" "$CARGO_HOME"
               cat > "$CARGO_HOME/config.toml" <<EOF
               [source.crates-io]
