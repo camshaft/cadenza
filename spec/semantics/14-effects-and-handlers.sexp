@@ -310,6 +310,7 @@
             (export main)))
   (call   main (: 60 Int64))
   (host-responses (respond io.ping (: 7 Int64)))
+  (host-calls (call io.ping))
   (output (: 7601 Int64)))
 
 (case "a deep trie built BETWEEN two host calls reads correctly after the second"
@@ -335,6 +336,7 @@
             (export main)))
   (call   main (: 50 Int64))
   (host-responses (respond io.ping (: 3 Int64)) (respond io.ping (: 4 Int64)))
+  (host-calls (call io.ping) (call io.ping))
   (output (: 7092 Int64)))
 
 (case "a String host RESULT crosses the boundary and is read twice (byte-len + scalar-len of a multibyte response)"
