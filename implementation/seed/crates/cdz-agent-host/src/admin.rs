@@ -54,6 +54,106 @@ pub enum AdminCommand {
     StopSession { id: SessionId },
 }
 
+impl AdminCommand {
+    /// The `admin/*` ACTION name this command authorizes as — the stable string an [`AdminAuthorizer`]
+    /// (and, later, a Cedar policy) decides on. Deliberately id-free (the action is the VERB, not the
+    /// target): a policy grants "may install sessions", not "may install session X". Kept in one place so
+    /// the wire, the authorizer, and the audit log all name an admin action identically.
+    pub fn action(&self) -> &'static str {
+        match self {
+            AdminCommand::InstallSession(_) => "admin/install-session",
+            AdminCommand::ListSessions => "admin/list-sessions",
+            AdminCommand::SessionStatus { .. } => "admin/session-status",
+            AdminCommand::StopSession { .. } => "admin/stop-session",
+        }
+    }
+}
+
+/// Authorizes admin commands — the deny-by-default gate on the control interface (operator/concierge
+/// directive: "Cedar admin/* authz", uniform with effect authz). Every command an admin submits is checked
+/// here before [`apply_admin`](AgentHost::apply_admin) touches the registry; a denied command is an
+/// [`AdminResponse::Error`], never applied.
+///
+/// The v0 shape mirrors the kernel's [`Authorize`](cdz_kernel::authz::Authorize) seam: the daemon holds a
+/// `Box<dyn AdminAuthorizer>` and the real deployment swaps in a Cedar-policy-component impl (reusing the
+/// [`ComponentAuthorizer`](cdz_kernel::wasm_host::ComponentAuthorizer) path — the following slice), while
+/// tests and the always-on build use the concrete [`AllowList`]. Decides on the command's
+/// [`action`](AdminCommand::action) string; `principal` is the admin identity the transport asserts (over a
+/// local `0o600` socket that identity is implicitly the daemon's owner — the socket perms are the real
+/// gate; this layer decides WHICH actions that principal may take).
+pub trait AdminAuthorizer {
+    /// May `principal` perform `command`? `Ok(())` permits; `Err(reason)` denies (the reason is surfaced in
+    /// the error response + is audit-loggable). Total, must not panic — a broken decision denies.
+    fn authorize(&self, principal: &str, command: &AdminCommand) -> Result<(), String>;
+}
+
+/// A concrete deny-by-default [`AdminAuthorizer`]: an explicit allowlist of `(principal, action)` pairs.
+/// The always-on / test authorizer until the Cedar-policy-component impl lands — and a perfectly serviceable
+/// production gate for a small fixed admin set. Anything not explicitly allowed is denied (the fail-closed
+/// default): an unknown principal, or a known principal attempting an un-granted action.
+#[derive(Debug, Clone, Default)]
+pub struct AllowList {
+    /// `(principal, action)` pairs that are permitted. A `("*", action)` entry allows that action for ANY
+    /// principal (the "single trusted local admin" shape — pair it with the socket's `0o600` owner-gate).
+    allowed: std::collections::HashSet<(String, String)>,
+}
+
+impl AllowList {
+    /// An empty allowlist — denies everything (the strictest fail-closed default). Grant with
+    /// [`allow`](Self::allow) / [`allow_any_principal`](Self::allow_any_principal).
+    pub fn deny_all() -> Self {
+        AllowList::default()
+    }
+
+    /// Allow `principal` to perform `action` (an `admin/*` string, e.g. [`AdminCommand::action`]). Builder-
+    /// style (chains).
+    pub fn allow(mut self, principal: impl Into<String>, action: impl Into<String>) -> Self {
+        self.allowed.insert((principal.into(), action.into()));
+        self
+    }
+
+    /// Allow ANY principal to perform `action` — the "trusted local admin over the 0o600 socket" grant,
+    /// where the socket's owner-only perms are the real identity gate and this layer just scopes actions.
+    pub fn allow_any_principal(self, action: impl Into<String>) -> Self {
+        self.allow("*", action)
+    }
+
+    /// Allow ANY principal to perform EVERY v0 admin action — the "full trusted local admin" preset (the
+    /// daemon's default when the socket is the owner-gated control plane and no finer policy is configured).
+    pub fn allow_all_for_local_admin() -> Self {
+        let mut list = AllowList::deny_all();
+        for action in [
+            "admin/install-session",
+            "admin/list-sessions",
+            "admin/session-status",
+            "admin/stop-session",
+        ] {
+            list = list.allow_any_principal(action);
+        }
+        list
+    }
+}
+
+impl AdminAuthorizer for AllowList {
+    fn authorize(&self, principal: &str, command: &AdminCommand) -> Result<(), String> {
+        let action = command.action();
+        // A specific (principal, action) grant, OR a wildcard-principal grant for this action.
+        let permitted = self
+            .allowed
+            .contains(&(principal.to_string(), action.to_string()))
+            || self
+                .allowed
+                .contains(&("*".to_string(), action.to_string()));
+        if permitted {
+            Ok(())
+        } else {
+            Err(format!(
+                "admin command denied: principal {principal:?} may not {action}"
+            ))
+        }
+    }
+}
+
 /// The daemon's reply to an [`AdminCommand`]. Data-only (a control frame serializes it back to the admin).
 /// Every failure mode (unknown session, an already-taken id, a factory build error) is an
 /// [`Error`](AdminResponse::Error) rather than a panic — an admin command must never crash the daemon.
@@ -163,6 +263,26 @@ impl AgentHost {
                 },
             },
         }
+    }
+
+    /// AUTHORIZE then apply — the deny-by-default gate the daemon's control interface actually calls. Runs
+    /// `authz.authorize(principal, &cmd)` FIRST; only on `Ok` does it delegate to
+    /// [`apply_admin`](Self::apply_admin). A denied command returns an [`AdminResponse::Error`] carrying the
+    /// deny reason and NEVER touches the registry — the fail-closed control-plane guard (uniform with the
+    /// kernel's effect authz). This is the entry point the socket transport / loop uses; the bare
+    /// `apply_admin` remains available for an already-authorized/trusted caller (e.g. an in-process test).
+    pub async fn apply_admin_authorized(
+        &mut self,
+        cmd: AdminCommand,
+        principal: &str,
+        authz: &dyn AdminAuthorizer,
+        factory: Option<&mut (dyn SessionFactory + '_)>,
+        now_ms: Option<u64>,
+    ) -> AdminResponse {
+        if let Err(reason) = authz.authorize(principal, &cmd) {
+            return AdminResponse::Error { message: reason };
+        }
+        self.apply_admin(cmd, factory, now_ms).await
     }
 }
 
@@ -460,5 +580,132 @@ mod tests {
         );
         assert_eq!(host.len(), 1);
         assert_eq!(factory.builds, 2, "two real installs across the restart");
+    }
+
+    // ── admin authorization (deny-by-default) ───────────────────────────────────────────────────────
+
+    #[test]
+    fn command_action_strings_are_stable() {
+        assert_eq!(
+            AdminCommand::InstallSession(spec("x")).action(),
+            "admin/install-session"
+        );
+        assert_eq!(AdminCommand::ListSessions.action(), "admin/list-sessions");
+        assert_eq!(
+            AdminCommand::SessionStatus {
+                id: SessionId::new("x")
+            }
+            .action(),
+            "admin/session-status"
+        );
+        assert_eq!(
+            AdminCommand::StopSession {
+                id: SessionId::new("x")
+            }
+            .action(),
+            "admin/stop-session"
+        );
+    }
+
+    #[test]
+    fn allowlist_denies_by_default_and_permits_only_granted_actions() {
+        let list = AllowList::deny_all()
+            .allow("admin", "admin/list-sessions")
+            .allow("admin", "admin/session-status");
+
+        // Granted (specific principal + action).
+        assert!(list.authorize("admin", &AdminCommand::ListSessions).is_ok());
+        // Un-granted action for a known principal → denied.
+        let err = list
+            .authorize("admin", &AdminCommand::InstallSession(spec("x")))
+            .unwrap_err();
+        assert!(err.contains("may not admin/install-session"), "{err}");
+        // Unknown principal → denied even for a granted action.
+        assert!(list
+            .authorize("intruder", &AdminCommand::ListSessions)
+            .is_err());
+    }
+
+    #[test]
+    fn allowlist_wildcard_principal_grants_any_caller() {
+        let list = AllowList::deny_all().allow_any_principal("admin/list-sessions");
+        assert!(list
+            .authorize("anyone", &AdminCommand::ListSessions)
+            .is_ok());
+        assert!(list.authorize("other", &AdminCommand::ListSessions).is_ok());
+        // Still deny-by-default for un-granted actions.
+        assert!(list
+            .authorize(
+                "anyone",
+                &AdminCommand::StopSession {
+                    id: SessionId::new("x")
+                }
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn allow_all_for_local_admin_permits_every_v0_action() {
+        let list = AllowList::allow_all_for_local_admin();
+        for cmd in [
+            AdminCommand::InstallSession(spec("x")),
+            AdminCommand::ListSessions,
+            AdminCommand::SessionStatus {
+                id: SessionId::new("x"),
+            },
+            AdminCommand::StopSession {
+                id: SessionId::new("x"),
+            },
+        ] {
+            assert!(list.authorize("owner", &cmd).is_ok(), "{}", cmd.action());
+        }
+    }
+
+    #[tokio::test]
+    async fn apply_admin_authorized_denies_without_touching_the_registry() {
+        // The fail-closed gate: a denied command returns an Error and NEVER applies (nothing installed).
+        let mut host = AgentHost::new();
+        let mut factory = StubFactory { builds: 0 };
+        let authz = AllowList::deny_all(); // denies everything
+
+        let resp = host
+            .apply_admin_authorized(
+                AdminCommand::InstallSession(spec("blocked")),
+                "someone",
+                &authz,
+                Some(&mut factory),
+                None,
+            )
+            .await;
+        assert!(
+            matches!(&resp, AdminResponse::Error { message } if message.contains("denied")),
+            "a denied command is an error: {resp:?}"
+        );
+        assert!(host.is_empty(), "a denied install touches nothing");
+        assert_eq!(factory.builds, 0, "the factory is never even consulted");
+    }
+
+    #[tokio::test]
+    async fn apply_admin_authorized_applies_when_permitted() {
+        let mut host = AgentHost::new();
+        let mut factory = StubFactory { builds: 0 };
+        let authz = AllowList::allow_all_for_local_admin();
+
+        let resp = host
+            .apply_admin_authorized(
+                AdminCommand::InstallSession(spec("ok")),
+                "owner",
+                &authz,
+                Some(&mut factory),
+                None,
+            )
+            .await;
+        assert_eq!(
+            resp,
+            AdminResponse::Installed {
+                id: SessionId::new("ok")
+            }
+        );
+        assert!(host.contains(&SessionId::new("ok")));
     }
 }
