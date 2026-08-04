@@ -66396,6 +66396,31 @@ mod stage1 {
     }
 
     #[test]
+    fn a_branch_perform_in_a_self_recursive_performer_threads_the_advance_not_the_seed() {
+        // recursive-branch-perform SELF-recursive fix (v-effects self-probe rw1, operator-prioritized HIGH
+        // miscompile). A discharged perform inside a conditional BRANCH `(if true (St.get) 0)` that is a strict
+        // operand alongside the self-call `(walk (- n 1))`. Pre-fix: thread_bounded's If arm returned the
+        // post-CONDITION state as the if's out-state (branch advances unmerged), so the sibling recursion
+        // reseeded from the stale pre-branch state and every step read the seed — seeded 1 it ran 3 (1+1+1),
+        // correct is 6 (1+2+3), a SILENT MISCOMPILE all backends. Fixed by merging the per-branch out-states
+        // into a conditional-valued out-state `(if cond then-out else-out)` (gated on a pure cond + #cv-free
+        // branch out-states for arena safety) so the recursion threads the branch's advance.
+        let src = "(do (effect St (op get (-> Unit Int64))) \
+                   (def (walk (: n Int64)) (if (= n 0) 0 (+ (if true (St.get) 0) (walk (- n 1))))) \
+                   (def (main) (handle St 1 ((get (u) s (resume s (+ s 1)))) (walk 3))) \
+                   (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("a branch-perform in a self-recursive performer folds"),
+                "main"
+            ),
+            6,
+            "the branch perform's advance must thread across the recursion (1+2+3=6), not reseed from 1 (was 3)"
+        );
+    }
+
+    #[test]
     fn a_state_mutual_recursion_with_perform_split_from_the_mutual_call_specializes() {
         // A STATE-threading handler over a mutually-recursive group where a cycle def performs the
         // discharged op in ONE `if`/`match` branch while the mutual call is in a DIFFERENT branch
