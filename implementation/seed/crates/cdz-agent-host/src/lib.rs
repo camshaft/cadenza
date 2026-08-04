@@ -63,6 +63,7 @@ pub mod config;
 pub mod factory;
 pub mod host;
 pub mod http;
+pub mod metrics;
 pub mod model;
 pub mod retry;
 pub mod status;
@@ -94,6 +95,7 @@ pub use host::{AgentHost, HostedSession, SessionId};
 #[cfg(feature = "live-net")]
 pub use http::ReqwestHttpTransport;
 pub use http::{HttpExecutor, HttpMethod, HttpResponse, HttpTransport};
+pub use metrics::{HostMetrics, HostMetricsSnapshot};
 #[cfg(feature = "live-net")]
 pub use model::BedrockModelTransport;
 pub use model::{ModelExecutor, ModelTransport};
