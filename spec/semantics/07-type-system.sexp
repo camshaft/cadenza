@@ -1933,6 +1933,50 @@
             (export main)))
   (error  CDZ0216))
 
+(case "a TUPLE containing a closure as a map key is rejected (CDZ0216 descends into compound keys)"
+  (doc    "The compound-wrapped face of the fn-Map-KEY reject above: the function is not the key itself
+           but a COMPONENT of a tuple key — `(Map.insert Map.empty (tuple 1 f) 42)`. Keyability is
+           decided over the WHOLE key type, so the check must descend into the tuple and find the
+           un-equatable fn leaf → CDZ0216. A keyability check inspecting only the top-level constructor
+           (Tuple is normally keyable) would admit the closure into the CHAMP hash path — the exact
+           smuggle that re-opens the adv-50 wasm-invents-identity vs rust-E0277 divergence the bare
+           reject closed. The closure CAPTURES a runtime binding (n) so nothing erases it.")
+  (input  (do
+            (def (main (: n Int64))
+              (do
+                (def f (fn ((: x Int64)) (+ x n)))
+                (Map.len (Map.insert Map.empty (tuple 1 f) 42))))
+            (export main)))
+  (error  CDZ0216))
+
+(case "a RECORD with a closure field as a map key is rejected (the record face of the compound descent)"
+  (doc    "The record companion of the tuple-wrapped fn-key reject: `(record (id 1) (cb f))` as a Map
+           key — the keyability descent must walk record FIELDS (by the descriptor, not just the head
+           constructor) and reject on the fn-typed `cb` → CDZ0216. Together with the tuple face this
+           pins that both compound layouts route their component types through the same keyability
+           check; a callback-registry record accidentally used as a key gets the coded reject, not a
+           backend-divergent identity.")
+  (input  (do
+            (def (main (: n Int64))
+              (do
+                (def f (fn ((: x Int64)) (+ x n)))
+                (Map.len (Map.insert Map.empty (record (id 1) (cb f)) 42))))
+            (export main)))
+  (error  CDZ0216))
+
+(case "a LIST of closures as a set element is rejected (the collection-element face of the descent)"
+  (doc    "The third wrapper kind: the closure hides inside a LIST that is itself a Set ELEMENT —
+           `(Set.of (list (list (fn ...))))`. The element-keyability check must descend through the
+           collection's ELEMENT type (a (List (-> Int64 Int64)) is un-equatable because its element is)
+           → CDZ0216. Completes the compound descent family: tuple component, record field, and
+           collection element all reject uniformly on every backend (no wasm-invented closure identity
+           at any nesting).")
+  (input  (do
+            (def (main (: n Int64))
+              (Set.len (Set.of (list (list (fn ((: x Int64)) (+ x n)))))))
+            (export main)))
+  (error  CDZ0216))
+
 (case "Type.of grounds a Map-value function nested inside a tuple"
   (doc    "The compounding facet: a runtime-Map-value function wrapped in an outer container —
            `(tuple (Map.insert Map.empty 1 f) 0)`. The tuple-element reflection recurses INTO the

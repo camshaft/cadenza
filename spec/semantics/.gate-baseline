@@ -652,6 +652,7 @@ pass	a LET-bound escaping-effect closure returned from a host block cannot cross
 pass	a LET-bound outer perform under an inner handle threads its state advance
 pass	a LIST OF SUMS resumed from a handler feeds an event-sourcing fold in the body
 pass	a LIST built in the handle body from perform results crosses the handle exit live
+pass	a LIST of closures as a set element is rejected (the collection-element face of the descent)
 pass	a LIST of closures rides one perform and the arm picks by state per call
 pass	a LIST shrinker drops elements greedily and converges to a minimal failing sublist
 pass	a LONGEST-COMMON-PREFIX walks two strings in scalar lockstep to the first mismatch
@@ -808,6 +809,7 @@ pass	a RECORD closure ARG with a LIST result
 pass	a RECORD closure ARG with a narrow Bool field, among scalars
 pass	a RECORD field built from a runtime param boxes its Map handle correctly (function[27] record-path twin)
 pass	a RECORD used as a map key hashes and matches by its field SET, independent of written order
+pass	a RECORD with a closure field as a map key is rejected (the record face of the compound descent)
 pass	a RECORD with a nested TUPLE field crosses the direct-call boundary
 pass	a RECURSIVE effectful walk accumulates into a list-state handler
 pass	a RECURSIVE sum as a Map key hits and misses by structural content
@@ -947,6 +949,7 @@ pass	a TOGGLE fold flips set membership per occurrence — odd count in, even co
 pass	a TOPOLOGICAL sort drains min-ready nodes and verifies every edge points forward
 pass	a TRANSPOSE of a 2x3 list-of-rows walks columns across row spines
 pass	a TRIPLY-nested Record ARG crosses the direct-call boundary
+pass	a TUPLE containing a closure as a map key is rejected (CDZ0216 descends into compound keys)
 pass	a TUPLE op argument with a HEAP leaf destructures inside the arm
 pass	a TUPLE-result perform's projected field feeds a SECOND perform's argument, threading state across both
 pass	a TUPLE-returning operation resumes a pair built from the handler state, then projected
