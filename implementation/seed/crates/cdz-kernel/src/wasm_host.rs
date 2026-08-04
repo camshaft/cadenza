@@ -1104,7 +1104,6 @@ impl crate::authz::Authorize for ComponentAuthorizer {
     }
 }
 
-
 /// Map a kernel [`EventBody`] to the guest `fold.apply` inputs `(content_type, payload, resumes)`.
 /// `resumes` (§19e ruling B) is the event's continuation token, already copied onto result/timer events
 /// from their originating `Dispatched` frame (slice-2b-i) — so this reads it off the event, never a map.
