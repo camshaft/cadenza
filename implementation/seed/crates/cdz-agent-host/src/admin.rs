@@ -646,18 +646,20 @@ mod tests {
             AdminResponse::Status { json } => json,
             other => panic!("expected Status, got {other:?}"),
         };
-        // host-boundary counter moved with the install… assert the EXACT sessions object (not a loose
-        // `"installed":1` substring, which `str::contains` would also match against :10/:12/:123 — a
-        // mis-count to 10+ must not slip through; #2036 review).
-        assert!(
-            json.contains("\"sessions\":{\"installed\":1,\"removed\":0,\"live\":1}"),
-            "sessions object reflects exactly one install: {json}"
-        );
-        // …and the (unwired) effect counters are present + zeroed.
-        assert!(
-            json.contains("\"effects\":{\"ok\":0,\"retryable_err\":0,\"permanent_err\":0,\"timed_out\":0,\"total\":0}"),
-            "effects zeroed without a metered executor set: {json}"
-        );
+        // PARSE + assert structurally (#2044 review): a `contains()` on the serialized object is brittle to
+        // any whitespace/key-order change in serialization — parse the JSON once and compare the numeric
+        // fields, so the test pins the VALUES, not the exact byte layout.
+        let v: serde_json::Value = serde_json::from_str(&json).expect("metrics JSON parses");
+        // host-boundary counters moved with the install.
+        assert_eq!(v["sessions"]["installed"], 1, "{json}");
+        assert_eq!(v["sessions"]["removed"], 0, "{json}");
+        assert_eq!(v["sessions"]["live"], 1, "{json}");
+        // the (unwired) effect counters are present + zeroed (no metered executor set).
+        assert_eq!(v["effects"]["ok"], 0, "{json}");
+        assert_eq!(v["effects"]["retryable_err"], 0, "{json}");
+        assert_eq!(v["effects"]["permanent_err"], 0, "{json}");
+        assert_eq!(v["effects"]["timed_out"], 0, "{json}");
+        assert_eq!(v["effects"]["total"], 0, "{json}");
     }
 
     #[tokio::test]
