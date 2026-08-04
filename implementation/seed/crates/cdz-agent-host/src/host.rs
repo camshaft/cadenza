@@ -153,6 +153,33 @@ impl HostedSession {
             .await
     }
 
+    /// LIVE-SWAP this session's policy from a Cedar policy-component blob, then push the resulting
+    /// capability change — the §20b policy-referenced-by-mutable-name close-out. A privileged admin
+    /// `store/set`s [`POLICY_CURRENT`](cdz_kernel::name_store::NameStore::POLICY_CURRENT) → a policy blob
+    /// hash (write-gated by a `system/` grant — the anti-hijack property); the host resolves that pointer,
+    /// blob-gets the component `bytes`, and calls this to rebuild the authorizer + notify the agent.
+    ///
+    /// It lifts `bytes` into a [`ComponentAuthorizer`](cdz_kernel::wasm_host::ComponentAuthorizer) (the
+    /// lifted Cedar policy), [`set_authorizer`](Self::set_authorizer)s it, and
+    /// [`push_capabilities_changed`](Self::push_capabilities_changed)es — so a policy swap that widened or
+    /// tightened a grant folds a `capabilities-changed` to the agent (a no-op if grant-states didn't move).
+    /// Returns the pushed [`ControlEffect`](cdz_kernel::effect::ControlEffect)s (usually none), or `Err` if
+    /// the bytes aren't a valid policy component (the swap is then NOT applied — the old policy stays).
+    ///
+    /// `principal` is the agent's authz principal (e.g. `"agent://<id>"`), the same value the session's
+    /// original authorizer was built with. The host owns resolving POLICY_CURRENT + the blob fetch (it holds
+    /// the blob store); this method takes the already-fetched bytes so `HostedSession` stays blob-store-free.
+    pub async fn reload_policy_from_component_bytes(
+        &mut self,
+        bytes: &[u8],
+        principal: impl Into<String>,
+    ) -> Result<Vec<cdz_kernel::effect::ControlEffect>, String> {
+        let authz = cdz_kernel::wasm_host::ComponentAuthorizer::from_policy_bytes(bytes, principal)
+            .map_err(|e| format!("policy component did not lift into an authorizer: {e:?}"))?;
+        self.set_authorizer(Box::new(authz));
+        Ok(self.push_capabilities_changed().await)
+    }
+
     /// SEED the capability manifest so this agent is "born knowing" its capabilities — call ONCE right
     /// after [`HostedSession::genesis`], before the first [`deliver`](Self::deliver) (host-capability-
     /// discovery I5). The kernel folds a synthetic `control/capabilities` EffectResult (byte-identical to
