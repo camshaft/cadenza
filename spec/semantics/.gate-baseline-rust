@@ -482,6 +482,7 @@ pass	a 3-arg effect op binds its operands POSITIONALLY — an argument-order swa
 pass	a 32-bit-float closure crosses the host boundary
 pass	a 32-bit-integer closure crosses the host boundary
 pass	a 33-VARIANT sum dispatches across the discriminant range with a payload variant last
+pass	a 40-entry trie of LIST values keeps each heap payload addressable at depth
 pass	a 500-iteration Bytes.concat loop measures exactly and indexes both extremes
 pass	a 5000-deep recursive-sum spine builds, walks, and compares — the eq walk survives depth
 pass	a 5000-element pushed list reads head, middle, and last through the deeper trie
@@ -4934,6 +4935,7 @@ pass	over-applying a constructor is a type error, not a silent argument drop
 pass	over-applying a lambda by an extra argument is a type error
 pass	over-applying a named function by an extra argument is a type error
 pass	overflow of the default integer traps deterministically
+pass	overwriting ONE deep list value leaves the neighbors AND the original map live
 pass	parsing a length-framed message and rebuilding it yields the original bytes
 pass	partial application captures a let-bound value in the residual lambda
 pass	partial application captures a runtime parameter in the residual lambda

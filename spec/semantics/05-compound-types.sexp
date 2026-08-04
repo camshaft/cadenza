@@ -8557,6 +8557,45 @@
             (export main)))
   (call   main (: 40 Int64)) (output (: 424 Int64)))
 
+(case "a 40-entry trie of LIST values keeps each heap payload addressable at depth"
+  (doc    "The per-entry-heap-payload face at trie scale (the nested-value rows above use 1-3 outer
+           entries): 40 entries each holding a 3-element list, and a deep lookup reads the retrieved
+           list's len AND an element through the descent (10·3 + 75 = 105). Forty live list handles
+           as values across node splits — a value slot that shared or truncated payloads under the
+           trie's growth would misread one.")
+  (input  (do
+            (def (fill (: i Int64) (: m (Map Int64 (List Int64))))
+              (if (= i 0) m (fill (- i 1) (Map.insert m i (list i (* i 2) (* i 3))))))
+            (def (main (: n Int64))
+              (do
+                (def m (fill n Map.empty))
+                (match (Map.lookup m 25)
+                  ((Some xs) (+ (* 10 (List.len xs))
+                                (match (List.at xs 2) ((Some v) v) ((None _u) -1))))
+                  ((None _u) -1))))
+            (export main)))
+  (call   main (: 40 Int64)) (output (: 105 Int64)))
+
+(case "overwriting ONE deep list value leaves the neighbors AND the original map live"
+  (doc    "The three-way isolation face for heap VALUES (the churn pins isolate keys): overwrite entry
+           25's 2-element list with a fresh 1-element one — the new map reads len 1 at 25 (·100), the
+           NEIGHBOR entry 24 still reads len 2 (·10), and the ORIGINAL map's entry 25 still reads len
+           2 (+2) → 122. Path-copy value isolation with live heap payloads on every side: the
+           replacement is visible only through the new map, and no refcount slips in either direction
+           (a leak keeps dead payloads, a double-free corrupts a live one).")
+  (input  (do
+            (def (fill (: i Int64) (: m (Map Int64 (List Int64))))
+              (if (= i 0) m (fill (- i 1) (Map.insert m i (list i (* i 2))))))
+            (def (main (: n Int64))
+              (do
+                (def m (fill n Map.empty))
+                (def m2 (Map.insert m 25 (list 999)))
+                (+ (* 100 (match (Map.lookup m2 25) ((Some xs) (List.len xs)) ((None _u) -1)))
+                   (+ (* 10 (match (Map.lookup m2 24) ((Some xs) (List.len xs)) ((None _u) -1)))
+                      (match (Map.lookup m 25) ((Some xs) (List.len xs)) ((None _u) -1))))))
+            (export main)))
+  (call   main (: 40 Int64)) (output (: 122 Int64)))
+
 (case "a map of lists of tuples: a three-level mixed query with a miss at each level"
   (doc    "The nested-value cases above each nest ONE collection kind one level deep; this composes THREE
            kinds — `{1 ↦ [(10,11),(12,13)], 2 ↦ [(20,21)]}`, a Map whose values are LISTS of TUPLES (the
