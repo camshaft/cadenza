@@ -200,7 +200,7 @@ pub struct DictSet { /* hash -> decoded, inline-canonical Arenas (validated flat
 /// never panics, never returns a wrong tree. Does NOT canonicalize — feed the result to `encode` for that.
 pub fn decode_with_dicts(bytes: &[u8], dicts: &DictSet) -> Result<Arenas, DecodeError>;
 ```
-*(This section matches the LANDED `cadenza-ast/src/codec.rs` — I1, PR #2086/#2093.)*
+*(This section matches the LANDED `implementation/seed/crates/cadenza-ast/src/codec.rs` — I1, PR #2086/#2093.)*
 - `cdzast\x00\x01` input → dispatches to `decode_detailed` (the `dicts` are unused); the two never
   disagree on a dict-free artifact. (It calls `decode_detailed`, not `decode`, so it likewise CLASSIFIES
   the error rather than dropping it.)
@@ -337,6 +337,9 @@ reason to interleave with the bytes-literal wire. **Split:** `v-syntax` = wire (
 codec owners are primed and want to be in the build loop.
 
 ## 6. Seams / file anchors (where each increment cuts)
+
+Paths below are repo-root-relative under `implementation/seed/crates/` (e.g. `cadenza-ast/src/codec.rs`
+= `implementation/seed/crates/cadenza-ast/src/codec.rs`), per §3.
 
 - `cadenza-ast/src/codec.rs` — new header const (near `:159`), `TAG_DICT_REF` (near `:110`), transport
   decode path (parallel to `decode_detailed` `:317`, reusing `read_leaf` and the tree guard), transport
