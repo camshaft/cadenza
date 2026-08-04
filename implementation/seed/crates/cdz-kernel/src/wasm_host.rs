@@ -1058,7 +1058,7 @@ impl ComponentAuthorizer {
 #[async_trait::async_trait(?Send)]
 impl crate::authz::Authorize for ComponentAuthorizer {
     /// Decide via the policy component: map the `EffectRequest` to the PARC triple (principal, action =
-    /// effect kind, target = resolved target), instantiate the policy into a fresh store, call
+    /// content-type FAMILY, target = resolved target), instantiate the policy into a fresh store, call
     /// `authorize`, and map the verdict. FAIL-CLOSED: any instantiate/trap failure denies (§10 safe
     /// default), never panics (§17). A generous fuel budget bounds a runaway policy without tripping a
     /// legitimate decision. Native `Authorize` — the policy instantiate/call is a SYNC wasm engine
@@ -1079,7 +1079,13 @@ impl crate::authz::Authorize for ComponentAuthorizer {
         };
         let request = self::authz_bindings::cadenza::agent_kernel_authz::types::AuthRequest {
             principal: self.principal.clone(),
-            action: effect_kind_wire_name(&req.kind).to_string(),
+            // ACTION = the content-type FAMILY (seq-39 source of truth), NOT the EffectKind enum. The flat
+            // `Authorizer` gates on `req.content_type.family` (via `matches_family`), so the policy component
+            // MUST see the same string or the two authz paths disagree. Critically, a register-by-string
+            // family (a `store/*` set/resolve, or any extension family) carries the `Emit` PLACEHOLDER kind —
+            // keying `action` on the enum would present "emit" to the policy for a `store/set`, so a Cedar
+            // policy could never gate store writes (or any register-by-string family) correctly.
+            action: req.content_type.family.to_string(),
             target: req.target.to_string(),
         };
         match world
@@ -1098,18 +1104,6 @@ impl crate::authz::Authorize for ComponentAuthorizer {
     }
 }
 
-/// The wire name of an effect kind for the authorizer's `action` field (Cedar's ACTION verb). Lowercase,
-/// stable — a policy matches on these strings.
-fn effect_kind_wire_name(kind: &crate::effect::EffectKind) -> &'static str {
-    match kind {
-        crate::effect::EffectKind::Shell => "shell",
-        crate::effect::EffectKind::Http => "http",
-        crate::effect::EffectKind::Model => "model",
-        crate::effect::EffectKind::Now => "now",
-        crate::effect::EffectKind::Timer => "timer",
-        crate::effect::EffectKind::Emit => "emit",
-    }
-}
 
 /// Map a kernel [`EventBody`] to the guest `fold.apply` inputs `(content_type, payload, resumes)`.
 /// `resumes` (§19e ruling B) is the event's continuation token, already copied onto result/timer events
