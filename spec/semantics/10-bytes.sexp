@@ -229,11 +229,16 @@
            seam — so the inner slice (1,3) must compose its offset through a view whose backing storage
            changes segment mid-window. inner = (30,40,50): len 3, ends 30+50 → 100·3 + 80 = 380. An
            offset composition that resolved against only one segment (or re-based the inner window at
-           the seam) would read the wrong bytes. The rope face of view-of-view offset composition.")
+           the seam) would read the wrong bytes. The rope face of view-of-view offset composition.
+           The chunks are RUNTIME-SELECTED (the pick idiom of the runtime-assembled-rope case below,
+           per this file's own deferral note) so the concat cannot fold to a flat leaf — the seam is
+           genuinely deferred, not pre-joined.")
   (input  (do
-            (def (main (: n Int64))
+            (def (pick (: s Int64) (: t Bytes) (: f Bytes)) (if (= s 0) t f))
+            (def (main (: s Int64))
               (do
-                (def rope (Bytes.concat (Bytes.of (list 10 20 30)) (Bytes.of (list 40 50 60 70))))
+                (def rope (Bytes.concat (pick s (Bytes.of (list 10 20 30)) (Bytes.of (list 99)))
+                                        (pick s (Bytes.of (list 40 50 60 70)) (Bytes.of (list 99)))))
                 (match (Bytes.slice rope 1 5)
                   ((Some outer)
                     (match (Bytes.slice outer 1 3)
@@ -253,11 +258,13 @@
            a view that retained rope-offset residue (segment boundary, parent offsets) in its canonical
            form would hash differently and miss even while element reads agree. Completes the
            slice-composition family: offsets compose (above), and the RESULT is an ordinary value with
-           full canonical identity.")
+           full canonical identity. Chunks runtime-selected (pick idiom) so the rope cannot pre-join.")
   (input  (do
-            (def (main (: n Int64))
+            (def (pick (: s Int64) (: t Bytes) (: f Bytes)) (if (= s 0) t f))
+            (def (main (: s Int64))
               (do
-                (def rope (Bytes.concat (Bytes.of (list 10 20 30)) (Bytes.of (list 40 50 60 70))))
+                (def rope (Bytes.concat (pick s (Bytes.of (list 10 20 30)) (Bytes.of (list 99)))
+                                        (pick s (Bytes.of (list 40 50 60 70)) (Bytes.of (list 99)))))
                 (def inner (match (Bytes.slice rope 1 5)
                              ((Some outer) (match (Bytes.slice outer 1 3) ((Some i) i) ((None _u) (Bytes.of (list)))))
                              ((None _u) (Bytes.of (list)))))
