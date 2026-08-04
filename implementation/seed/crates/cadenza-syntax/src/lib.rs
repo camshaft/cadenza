@@ -13,7 +13,7 @@
 // one wire format). Re-exported here so the public paths (`cadenza_syntax::ast`/`::canon`/`::codec`/
 // `::fxhash`/`::leb128`) and the internal `crate::` paths stay byte-stable. `canon`/`codec`'s
 // SURFACE-dependent tests (which build inputs via the readers below) relocated to `tests/`.
-pub use cadenza_ast::{ast, canon, codec, fxhash};
+pub use cadenza_ast::{ast, canon, codec, dict, fxhash};
 /// The Cedar surface: an authorization-policy document (`(cedar-policyset (cedar-policy …)…)`,
 /// mirroring Cedar's `pst`) is a projection of the same arena the code surfaces use — so an agent can
 /// structurally construct/modify a policy with Cadenza's tools. Data, not a program; no authorization
