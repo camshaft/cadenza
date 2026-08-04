@@ -66472,6 +66472,33 @@ mod stage1 {
     }
 
     #[test]
+    fn an_inner_abort_in_a_nonfinal_do_statement_elides_the_dead_suffix_after_it() {
+        // ABORT do-arm dead-suffix (github-liaison review follow-on on #2002/#2014). The aborting `(B.bail 99)`
+        // is a NON-FINAL do-statement with a foreign `(A.tick)` both BEFORE and AFTER it — `(do (A.tick)
+        // (B.bail 99) (A.tick))` under B. The pre-abort `A.tick` commits A-state 10→11 (kept); the trailing
+        // `(A.tick)` is DEAD (the abort abandons the rest) and must NOT run → value 99, outer `(A.get)` reads
+        // 11 → 110. Pre-fix the do-arm kept threading past the abort and set `last` to the dead final `(A.tick)`
+        // (dropping the abort value + forcing the dead tick) → 23 (and a dead multivalue self-call → 34).
+        // Fixed by BREAKING the do-item loop when a non-final item fires the abort.
+        let src = "(do (effect A (op tick (-> Unit Int64)) (op get (-> Unit Int64))) \
+                   (effect B (op bail (-> Int64 Int64))) \
+                   (def (main) \
+                     (handle A 10 ((tick (u) s (resume s (+ s 1))) (get (u) s (resume s s))) \
+                       (let ((b (handle B 0 ((bail (v) s v)) (do (A.tick) (B.bail 99) (A.tick))))) \
+                         (+ b (A.get))))) \
+                   (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("the do-arm dead-suffix elision compiles"),
+                "main"
+            ),
+            110,
+            "the dead trailing perform after the abort must NOT run (99 + 11 = 110), not be forced as the do-value (was 23)"
+        );
+    }
+
+    #[test]
     fn an_inner_abort_preserves_an_outer_advance_committed_in_a_match_scrutinee_before_it() {
         // ABORT-FOLD scrutinee collapse (v-effects self-probe, breaker ao9 — the match-scrutinee face of the
         // abort-outer-advance class). The foreign `(A.tick)` and the abort sit on the strict do-spine of a

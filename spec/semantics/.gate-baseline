@@ -4080,6 +4080,7 @@ pass	an inline-never definition with a const dictionary still monomorphizes the 
 pass	an inlined helper matching a sum built FROM the fused binder plus an enclosing capture
 pass	an inlined multi-use checked-arith argument is shared and computed directly into its slot
 pass	an inner abort ELIDES an outer perform sequenced AFTER it (dead-path control)
+pass	an inner abort in a NON-FINAL do-statement elides the DEAD suffix after it (pre-abort advance kept)
 pass	an inner abort preserves TWO outer advances committed before it (multi-step outer trace)
 pass	an inner abort preserves an OUTER advance committed in a MATCH-SCRUTINEE before it (scrutinee collapse)
 pass	an inner abort preserves an OUTER advance committed in a MATCH-ARM body before it (arm do-shape)

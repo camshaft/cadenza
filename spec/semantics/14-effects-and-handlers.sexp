@@ -1321,6 +1321,26 @@
                   (+ b (A.get))))) (export main)))
   (output (: 109 Int64)))
 
+(case "an inner abort in a NON-FINAL do-statement elides the DEAD suffix after it (pre-abort advance kept)"
+  (doc    "The dead-suffix control for the do-shape abort-fold (github-liaison review follow-on on #2002/#2014,
+           self-probed). The aborting `(B.bail 99)` is a NON-FINAL do-statement with a foreign `(A.tick)` BOTH
+           before AND after it — `(do (A.tick) (B.bail 99) (A.tick))` under B. The PRE-abort `A.tick` commits
+           A-state 10→11 (kept); the abort abandons the rest, so the trailing `(A.tick)` is DEAD and must NOT
+           run. Value is the abort 99, outer `(A.get)` reads 11 → `(+ 99 11)` = 110. Before the fix the do-arm
+           kept threading past the abort and set `last` to the DEAD final `(A.tick)` (dropping the abort value
+           and FORCING the dead tick) → 23; a multivalue self-call in the dead suffix was likewise forced (34).
+           Fixed by BREAKING the do-item loop when a non-final item fires the abort: the abort value is the do's
+           value, the dead suffix is never threaded. Composes with the pre-abort-prefix preservation (the
+           kept `A.tick` still advances) — this pins BOTH halves in one body.")
+  (input  (do
+            (effect A (op tick (-> Unit Int64)) (op get (-> Unit Int64)))
+            (effect B (op bail (-> Int64 Int64)))
+            (def (main)
+              (handle A 10 ((tick (u) s (resume s (+ s 1))) (get (u) s (resume s s)))
+                (let ((b (handle B 0 ((bail (v) s v)) (do (A.tick) (B.bail 99) (A.tick)))))
+                  (+ b (A.get))))) (export main)))
+  (output (: 110 Int64)))
+
 (case "an inner abort preserves an OUTER advance committed in a MATCH-SCRUTINEE before it (scrutinee collapse)"
   (doc    "The MATCH-SCRUTINEE face of the outer-advance preservation (breaker ao9). The foreign `(A.tick)`
            and the abort sit on the strict do-spine of a `match` SCRUTINEE — `(match (do (A.tick) (B.bail 99))
