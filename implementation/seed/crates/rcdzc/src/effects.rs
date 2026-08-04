@@ -4342,6 +4342,24 @@ fn thread(
 /// just yields the arm value for that branch, since the enclosing `if` is the handle body's value).
 /// Returns the branch's rewritten value (the abort value if it aborted, else the threaded rewrite). The
 /// branch's out-state is discarded (nothing after an `if` in the tail-fold shape reads it).
+/// Whether `node` references a synthesized `#cv{…}` name — the condition-value binding the performing-
+/// conditional hoist introduces (`(if C t e)` ≡ `(let ((#cv C)) (if #cv t e))`). Such a name is bound by a
+/// `let` that wraps only its own conditional; a branch out-state carrying a `#cv` ref cannot be re-used in
+/// the merged If-arm state position (it would resolve out of scope → CDZ0101). The If-arm branch-out-state
+/// merge skips a slot whose branch out-state contains one. A cheap name-prefix scan (the `#cv` prefix is
+/// unspellable, so a match is unambiguous).
+fn contains_cv_ref(db: &Db, node: StructId) -> bool {
+    if let Some(name) = db.ast.as_name(node)
+        && name.starts_with("#cv")
+    {
+        return true;
+    }
+    match db.ast.get(node) {
+        Struct::List(children) => children.iter().any(|&c| contains_cv_ref(db, c)),
+        Struct::Atom(_) => false,
+    }
+}
+
 fn thread_branch_local_abort(
     db: &mut Db,
     branch: StructId,
@@ -4349,19 +4367,38 @@ fn thread_branch_local_abort(
     ctx: &HandlerCtx,
     inline_depth: u32,
 ) -> Option<StructId> {
+    thread_branch_local_abort_with_out(db, branch, states, ctx, inline_depth).map(|(b, _)| b)
+}
+
+/// Like [`thread_branch_local_abort`] but ALSO returns the branch's OUT-STATE (per slot) — the threaded
+/// state each slot has after the branch runs. The `If`/`Match` arms use this to MERGE per-branch out-states
+/// into a conditional-valued out-state so a SIBLING that reads state after the conditional (a recursive-call
+/// operand, a `do`-continuation) sees the advance a branch perform made — fixing the recursive-branch-perform
+/// self-recursive faces + the through-block fold (the If-arm previously returned the pre-branch post-condition
+/// state, dropping branch advances). On a branch-local abort, the out-state is the incoming `states`
+/// unchanged (the abort discards the continuation, so no advance is observable past it).
+fn thread_branch_local_abort_with_out(
+    db: &mut Db,
+    branch: StructId,
+    states: Vec<StructId>,
+    ctx: &HandlerCtx,
+    inline_depth: u32,
+) -> Option<(StructId, Vec<StructId>)> {
     let before = ctx.abort_value.get();
-    let (rbranch, _) = thread_bounded(db, branch, states, ctx, inline_depth)?;
+    let states_in = states.clone();
+    let (rbranch, out) = thread_bounded(db, branch, states, ctx, inline_depth)?;
     let after = ctx.abort_value.get();
     // A NEW abort fired while threading THIS branch → it is local to the branch: use the abort value as
     // the branch's rewrite and restore the cell to its prior state (so a sibling branch / the handle is
-    // not collapsed). If no new abort fired, keep the ordinary threaded rewrite.
+    // not collapsed). Its out-state is the incoming state (the abort abandons the continuation). If no new
+    // abort fired, keep the ordinary threaded rewrite + its threaded out-state.
     if after != before
         && let Some(abort) = after
     {
         ctx.abort_value.set(before);
-        Some(abort)
+        Some((abort, states_in))
     } else {
-        Some(rbranch)
+        Some((rbranch, out))
     }
 }
 
@@ -4739,10 +4776,59 @@ fn thread_bounded(
             // the specialized def's sig (which declares `$s{k}`).
             let then_states: Vec<StructId> = cur.iter().map(|&s| deep_fresh_copy(db, s)).collect();
             let else_states: Vec<StructId> = cur.iter().map(|&s| deep_fresh_copy(db, s)).collect();
-            let rthen = thread_branch_local_abort(db, then_, then_states, ctx, inline_depth)?;
-            let relse = thread_branch_local_abort(db, else_, else_states, ctx, inline_depth)?;
+            let (rthen, then_out) =
+                thread_branch_local_abort_with_out(db, then_, then_states, ctx, inline_depth)?;
+            let (relse, else_out) =
+                thread_branch_local_abort_with_out(db, else_, else_states, ctx, inline_depth)?;
             let if_head = db.push_atom(Leaf::Name("if".to_string()));
-            Some((db.push_list(vec![if_head, rcond, rthen, relse]), cur))
+            let rif = db.push_list(vec![if_head, rcond, rthen, relse]);
+            // MERGE the per-branch out-states. Only ONE branch runs at runtime, so the `if`'s out-state for
+            // each slot is that branch's out-state, selected by the SAME condition: `(if cond then_out
+            // else_out)`. This lets a SIBLING that reads state AFTER the conditional (a recursive-call operand,
+            // a `do`-continuation) observe a branch perform's advance — the recursive-branch-perform fix
+            // (self-recursive rw1/rw3/rw5 + the through-block fold; operator-prioritized). When NEITHER branch
+            // advanced a slot (`then_out[i] == else_out[i] == cur[i]` — the common no-branch-perform case, e.g.
+            // countdown), the merge collapses to `cur[i]` unchanged, so those working cases are byte-identical.
+            // GATED on a PURE condition (`!subtree_performs(cond)`): only a pure `cond` is safely re-usable in
+            // the state selector. A PERFORMING condition is lifted to `(let ((#cv COND)) (if #cv t e))` — its
+            // threaded `rcond` is a `#cv` reference bound by a `let` that wraps ONLY the value-if, so re-using
+            // it in the state position (outside that `let`) leaks the `#cv` name (CDZ0101). Those
+            // performing-condition cases (the short-circuit `or`/`and` connectives desugared to an `if`) were
+            // ALREADY correct with the post-condition `cur` out-state (the condition's own performs advanced
+            // `cur`; the branches there are pure `true`/`false`/value literals), so skipping the merge for them
+            // is both necessary (avoid the leak) and sound (no branch advance to propagate). The condition is
+            // pure here, evaluated once as the value-if's head — re-using it in the state selector duplicates
+            // no effect (the same soundness the `match` branch-dependent-next-state peel relies on).
+            let cond_pure = !subtree_performs(db, cond, ctx) && !contains_cv_ref(db, rcond);
+            let merged: Vec<StructId> = cur
+                .iter()
+                .zip(then_out.iter().zip(else_out.iter()))
+                .map(|(&c, (&t, &e))| {
+                    // SAFE to merge this slot only when: (1) the condition is PURE (a performing cond is
+                    // lifted to `(let ((#cv COND)) …)`, so `rcond` = a `#cv` ref bound by a `let` wrapping only
+                    // the value-if — re-using it in the state position leaks the name); AND (2) NEITHER branch
+                    // out-state references a synthesized `#cv` (a branch whose sub-position performs is itself
+                    // `#cv`-lifted INSIDE the branch, so its out-state carries a branch-local `#cv` that is
+                    // out of scope in the merged state position — the leak the connective-desugar hit). A
+                    // clean branch out-state (rw1's `(if true (St.get) 0)` → then_out is a plain resume
+                    // next-state, no `#cv`) merges safely. When unsafe or when neither branch advanced the
+                    // slot, keep `cur` (byte-identical to the pre-fix behavior — no regression).
+                    let mergeable = cond_pure
+                        && (t != c || e != c)
+                        && !contains_cv_ref(db, t)
+                        && !contains_cv_ref(db, e);
+                    if mergeable {
+                        let ifh = db.push_atom(Leaf::Name("if".to_string()));
+                        let condc = deep_fresh_copy(db, rcond);
+                        let tc = deep_fresh_copy(db, t);
+                        let ec = deep_fresh_copy(db, e);
+                        db.push_list(vec![ifh, condc, tc, ec])
+                    } else {
+                        c
+                    }
+                })
+                .collect();
+            Some((rif, merged))
         }
         // A `(match scrutinee (pattern body)…)` — the analogue of `if` for the pattern engine. Thread the
         // SCRUTINEE (a perform there reads/threads state, `(match (Get.next) …)`), then rewrite each arm:

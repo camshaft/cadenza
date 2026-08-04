@@ -5057,6 +5057,53 @@
               (handle Idx 3 ((next (u) s (resume s (- s 1)))) (sum-down))) (export main)))
   (output (: 6 Int64)))
 
+(case "a branch-performing conditional in a self-recursive performer threads the advance across recursion (rw1)"
+  (doc    "The recursive-branch-perform fix (v-effects self-probe, breaker rw1, operator-prioritized as a HIGH
+           miscompile): a discharged perform inside a conditional BRANCH `(if true (St.get) 0)` that is a strict
+           operand alongside the self-call `(walk (- n 1))` — `(+ (if true (St.get) 0) (walk (- n 1)))`. The
+           branch perform advances the handler state, and the sibling recursion must see that advance. This was
+           a SILENT MISCOMPILE — `thread_bounded`'s `If` arm returned the post-CONDITION state as the `if`'s
+           out-state (branch advances unmerged), so the walk reseeded from the stale pre-branch state and every
+           step read the seed: seeded 1 it ran 3 (1+1+1), correct is 6 (1+2+3). FIXED by MERGING the per-branch
+           out-states into a conditional-valued out-state `(if cond then-out else-out)` so the sibling recursion
+           threads the branch's advance (gated on a pure condition + `#cv`-free branch out-states to stay
+           arena-safe). Now folds to 6 on all backends.")
+  (input  (do
+            (effect St (op get (-> Unit Int64)))
+            (def (walk (: n Int64)) (if (= n 0) 0 (+ (if true (St.get) 0) (walk (- n 1)))))
+            (def (main) (handle St 1 ((get (u) s (resume s (+ s 1)))) (walk 3)))
+            (export main)))
+  (output (: 6 Int64)))
+
+(case "a RUNTIME-conditioned branch perform in a self-recursive performer threads the advance (rw3)"
+  (doc    "The runtime-condition face of the recursive-branch-perform fix (rw3): the branch conditional's test
+           is a RUNTIME value `(> n 0)` rather than a constant, so the fold cannot key on a foldable condition —
+           the per-branch out-state merge handles it uniformly. Same shape/values as rw1 (seeded 1 → 6), the
+           branch perform's advance threads to the sibling recursion via the conditional-valued out-state.")
+  (input  (do
+            (effect St (op get (-> Unit Int64)))
+            (def (walk (: n Int64)) (if (= n 0) 0 (+ (if (> n 0) (St.get) 0) (walk (- n 1)))))
+            (def (main) (handle St 1 ((get (u) s (resume s (+ s 1)))) (walk 3)))
+            (export main)))
+  (output (: 6 Int64)))
+
+(case "a HEAP-state branch perform in a self-recursive performer threads the pushes across recursion (rw5)"
+  (doc    "The heap-state (data-loss) face of the recursive-branch-perform fix (rw5): the handler state is a
+           LIST accumulator and the branch perform conditionally pushes onto it; the branch advance is the
+           `List.push`, which the recursion must carry forward. Pre-fix the pushes were LOST (the branch
+           out-state dropped, so each step pushed against the empty seed → count 0); the per-branch out-state
+           merge threads the growing list, so the three conditional pushes accumulate → length 3. The data-loss
+           twin of rw1 — a wrong heap value, not just a stale scalar.")
+  (input  (do
+            (effect Log (op add (-> Int64 Int64)) (op count (-> Unit Int64)))
+            (def (walk (: n Int64))
+              (if (= n 0) (Log.count) (do (if true (Log.add n) 0) (walk (- n 1)))))
+            (def (main)
+              (handle Log (list) ((add (v) s (resume v (List.push s v))) (count (u) s (resume (List.len s) s)))
+                (walk 3)))
+            (export main)))
+  (output (: 3 Int64)))
+
 (case "a recursive function with an annotated parameter walks and bails through an abortive handler"
   (doc    "The recursive-effect idiom with an ANNOTATED parameter and an ABORTIVE discharge. `walk` takes
            `(: n Int64)` and tail-recurses, counting `n` down; at zero it performs `(Bail.bail 99)`, whose

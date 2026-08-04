@@ -648,6 +648,7 @@ pass	a HANDLE as a NON-FINAL multi-binding let init completes before the sibling
 pass	a HANDLE of an undeclared effect in an uncalled def is rejected
 pass	a HEAP element pushed across the RRB 32→33 boundary reads back intact at every index
 pass	a HEAP handler seed stays readable in the body after performs advance the state
+pass	a HEAP-state branch perform in a self-recursive performer threads the pushes across recursion (rw5)
 pass	a HEX DECODER finds each digit's value by alphabet scan and rejects a bad digit
 pass	a HEX ENCODER splits each byte into nibbles and indexes a digit alphabet string
 pass	a HOF callback matching a tuple argument computes through the nested reduction
@@ -852,6 +853,7 @@ pass	a RUNTIME string scrutinee matches string literals by equality
 pass	a RUNTIME-built Rational is usable as a map key, matched by its exact value
 pass	a RUNTIME-built Rational set deduplicates by exact value
 pass	a RUNTIME-built unreduced Rational and its reduced form are ONE map key
+pass	a RUNTIME-conditioned branch perform in a self-recursive performer threads the advance (rw3)
 pass	a RUNTIME-count generated batch insorts fully time-ordered, verified by a sortedness walk
 pass	a RUNTIME-dependent hole threads through the tag application per call
 pass	a RUNTIME-selected combiner closure crosses a join and drives a fold
@@ -1128,6 +1130,7 @@ pass	a boxed runtime closure taking Unit (a lazy thunk) is forced without declin
 pass	a branch perform under two nested handlers threads the inner state to the continuation
 pass	a branch refinement does not leak into the else arm's overflow guard
 pass	a branch selects between MUTUALLY-recursive defs and the selected one runs its cycle
+pass	a branch-performing conditional in a self-recursive performer threads the advance across recursion (rw1)
 pass	a branching recursive tree fold infers its unannotated callback across both arms
 pass	a build-time delegated effect whose result a returned closure captures does not escape
 pass	a built map renders its entries in canonical key order
@@ -5736,8 +5739,8 @@ todo	a DIRECT branch perform in a NESTED handler-arm resume-value declines clean
 todo	a HEAP-accumulator block-wrapped branch perform in a let-init declines cleanly (adv-69 safe floor)
 todo	a block-wrapped OUTER-effect perform in a let-init THREE handlers deep declines cleanly (adv-69 a4-depth3 sub-face)
 todo	a block-wrapped OUTER-effect perform in a nested handle's INIT declines cleanly (adv-69 a4-init sub-face)
-todo	a block-wrapped branch perform of the OUTER effect in a let-init INSIDE a nested handler body declines cleanly (adv-69 a4 sub-face)
 todo	a block-wrapped OUTER-effect perform in a non-tail do-statement INSIDE a nested handler body declines cleanly (adv-69 c3-nested sub-face)
+todo	a block-wrapped branch perform of the OUTER effect in a let-init INSIDE a nested handler body declines cleanly (adv-69 a4 sub-face)
 todo	a closed literal closure forwarded through const-wrapper hops is not a false reject
 todo	a constant-try helper that fails feeds the None arm's fallback into resume
 todo	a mutually-recursive group with a BRANCH-PERFORM sharing a strict expr with the mutual call declines cleanly (adv-69 rw4 sub-face)
