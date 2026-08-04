@@ -256,22 +256,34 @@ fn build_from_ast(a: &Arenas, id: StructId, ty: &Type) -> Result<Val, MarshalErr
         // record ← ("record" (fieldname val)…): match each declared field by NAME (order-independent).
         Type::Record(rt) => {
             let field_nodes = form(a, id, "record")?;
+            // Collect the AST fields as (name → value-node), rejecting a malformed field entry (not a
+            // (name val) 2-list) AND a DUPLICATE name up front. ast_to_val decodes UNTRUSTED arg bytes, so
+            // the record must EXACTLY match the WIT shape (github-liaison #2078): silently accepting extra
+            // or duplicate fields hides malformed input + yields a surprising Val (same untrusted-input
+            // hardening as the #2050 {val:?} DoS; mirrors the tuple arm's strict arity below).
+            let mut ast_fields: std::collections::BTreeMap<&str, StructId> = Default::default();
+            for &fnode in field_nodes {
+                let (name, val_node) = match a.get(fnode) {
+                    Struct::List(kids) if kids.len() == 2 => match a.as_name(kids[0]) {
+                        Some(n) => (n, kids[1]),
+                        None => return Err(type_mismatch("record", "field name is not a name")),
+                    },
+                    _ => return Err(type_mismatch("record", "field is not a (name val) pair")),
+                };
+                if ast_fields.insert(name, val_node).is_some() {
+                    return Err(type_mismatch("record", format!("duplicate field {name:?}")));
+                }
+            }
             let mut out = Vec::new();
             for field in rt.fields() {
-                let node = field_nodes
-                    .iter()
-                    .find_map(|&fnode| match a.get(fnode) {
-                        Struct::List(kids)
-                            if kids.len() == 2 && a.as_name(kids[0]) == Some(field.name) =>
-                        {
-                            Some(kids[1])
-                        }
-                        _ => None,
-                    })
-                    .ok_or_else(|| {
-                        type_mismatch("record", format!("missing field {:?}", field.name))
-                    })?;
+                let node = ast_fields.remove(field.name).ok_or_else(|| {
+                    type_mismatch("record", format!("missing field {:?}", field.name))
+                })?;
                 out.push((field.name.to_string(), build_from_ast(a, node, &field.ty)?));
+            }
+            // Any AST field left over is an EXTRA field not in the WIT record shape — reject (exact match).
+            if let Some((extra, _)) = ast_fields.iter().next() {
+                return Err(type_mismatch("record", format!("unknown field {extra:?}")));
             }
             Ok(Val::Record(out))
         }
@@ -562,9 +574,10 @@ mod tests {
     }
 
     // --- ast_to_val test harness: extract real wasmtime `Type`s from a WAT component's exported func ---
-    // A `Type` isn't directly constructible (it comes from component reflection), so a WAT component whose
-    // `probe` func takes a single param of the WANTED type gives us that `Type` via `Func::params`. We
-    // instantiate against an empty linker and never CALL probe — we only read its param type.
+    // A `Type` isn't directly constructible (it comes from component reflection), so a WAT `probe` func
+    // whose RESULT wraps the WANTED type as `(list <ty>)` gives us that `Type` via `Func::results` (we read
+    // the RESULT, not a param — a list result forces a uniform indirect return, so ONE probe shape reflects
+    // any type). We instantiate against an empty linker and never CALL probe — only read its result type.
     fn param_type(component_wat: &str) -> Type {
         let engine = wasmtime::Engine::default();
         let bytes = wat::parse_str(component_wat).expect("assemble probe component");
@@ -682,6 +695,45 @@ mod tests {
             ),
             v
         );
+    }
+
+    // ast_to_val decodes UNTRUSTED arg bytes, so a record must EXACTLY match the WIT shape (github-liaison
+    // #2078): an EXTRA field beyond the declared set, or a DUPLICATE field name, is rejected — not silently
+    // accepted. Build the malformed record AST by hand (a string-head ("record" (name val)…) form) and
+    // decode against a 1-field record type.
+    #[test]
+    fn ast_to_val_rejects_extra_and_duplicate_record_fields() {
+        let one_field_ty = param_type(&probe_component(r#"(record (field "kind" string))"#));
+        let record_bytes = |fields: &[(&str, &str)]| -> Vec<u8> {
+            let mut b = Builder::new();
+            let mut kids = vec![b.atom_leaf(Leaf::Str("record".into()))];
+            for (name, val) in fields {
+                let n = b.name(name);
+                let v = b.atom_leaf(Leaf::Str((*val).into()));
+                let pair = b.list(vec![n, v]);
+                kids.push(pair);
+            }
+            let root = b.list(kids);
+            codec::encode(&b.finish(root))
+        };
+        // exact 1-field record → OK
+        assert!(ast_to_val(&record_bytes(&[("kind", "wasm")]), &one_field_ty).is_ok());
+        // EXTRA field "size" beyond the declared {kind} → TypeMismatch (unknown field)
+        assert!(matches!(
+            ast_to_val(
+                &record_bytes(&[("kind", "wasm"), ("size", "big")]),
+                &one_field_ty
+            ),
+            Err(MarshalError::TypeMismatch { .. })
+        ));
+        // DUPLICATE "kind" → TypeMismatch (duplicate field)
+        assert!(matches!(
+            ast_to_val(
+                &record_bytes(&[("kind", "a"), ("kind", "b")]),
+                &one_field_ty
+            ),
+            Err(MarshalError::TypeMismatch { .. })
+        ));
     }
 
     #[test]
