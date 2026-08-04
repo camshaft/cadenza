@@ -69,6 +69,53 @@
             targets = [ "wasm32-unknown-unknown" "wasm32-wasip1" ];
           };
 
+        # ── build FRAMEWORK helper (operator seq-126: DRY the per-build boilerplate) ───────────────
+        #
+        # `mkCargoVendorEnv { vendor }` emits the shell preamble every cargo-in-nix derivation shares:
+        # set HOME/CARGO_HOME, write the offline `config.toml` (jobs cap + source-replacement), block the
+        # network. Replaces the ~dozen hand-rolled copies. Two vendor shapes:
+        #   - SINGLE importCargoLock vendor (merged = false, the default): the vendor dir SHIPS its own
+        #     `.cargo/config.toml` carrying ALL source replacements — crates-io ALWAYS, plus a
+        #     `[source."git+…#sha"] … replace-with` stanza WHEN the lock has a git dep. So we SOURCE that
+        #     config (rewrite its relative `directory = "cargo-vendor-dir"` → the absolute store path,
+        #     prepend our [build] jobs cap) rather than hand-roll a crates-io-only one. This makes a git
+        #     dependency Just Work: the derivation inherits the vendor's git source-replacement stanza,
+        #     so cargo resolves the git crate from the vendor instead of the network (the offline-mode
+        #     fetch failure that bit cdz-agent-host's s2n-quic-dc-metrics dep). Verified byte-identical to
+        #     the old hand-rolled crates-io-only config for a no-git vendor (the config only affects
+        #     source RESOLUTION, not the built bytes).
+        #   - symlinkJoin-MERGED vendor (merged = true): several importCargoLock outputs joined into one
+        #     dir; their per-vendor `.cargo/config.toml`s collide in the join (one wins), so we can't
+        #     source a single authoritative one — hand-roll the crates-io config pointing `directory` at
+        #     the join. All merged vendors today are crates-io-only (build-std + component-dep locks); a
+        #     merged vendor that ever needs a git stanza would need it merged in explicitly (flag if so).
+        mkCargoVendorEnv = { vendor, merged ? false }:
+          if merged then ''
+            export HOME="$TMPDIR/home"
+            export CARGO_HOME="$TMPDIR/cargo"
+            export CARGO_NET_OFFLINE=true
+            mkdir -p "$HOME" "$CARGO_HOME"
+            cat > "$CARGO_HOME/config.toml" <<EOF
+            [build]
+            jobs = 4
+            [source.crates-io]
+            replace-with = "vendored-sources"
+            [source.vendored-sources]
+            directory = "${vendor}"
+            EOF
+          '' else ''
+            export HOME="$TMPDIR/home"
+            export CARGO_HOME="$TMPDIR/cargo"
+            export CARGO_NET_OFFLINE=true
+            mkdir -p "$HOME" "$CARGO_HOME"
+            {
+              echo "[build]"
+              echo "jobs = 4"
+              sed 's|directory = "cargo-vendor-dir"|directory = "${vendor}"|' \
+                "${vendor}/.cargo/config.toml"
+            } > "$CARGO_HOME/config.toml"
+          '';
+
         # ── S1: the SEED COMPILER (native cdz/cdz-run toolchain) AS a derivation ──────────────────
         #
         # Operator arc (2026-08-03): after nixifying the wasm components, nix builds the native bootstrap
@@ -372,18 +419,7 @@
           dontFixup = true; # a single wasm file — fixup's `strip` would truncate it (see note above).
           buildPhase = ''
             runHook preBuild
-            export HOME="$TMPDIR/home"
-            export CARGO_HOME="$TMPDIR/cargo"
-            export CARGO_NET_OFFLINE=true
-            mkdir -p "$HOME" "$CARGO_HOME"
-            cat > "$CARGO_HOME/config.toml" <<EOF
-            [build]
-            jobs = 4
-            [source.crates-io]
-            replace-with = "vendored-sources"
-            [source.vendored-sources]
-            directory = "${rcdzcWasmVendor}"
-            EOF
+            ${mkCargoVendorEnv { vendor = rcdzcWasmVendor; }}
             cd implementation/seed/crates/rcdzc-wasm
             cargo build --release --target wasm32-wasip1 --locked
             runHook postBuild
@@ -657,28 +693,17 @@
             buildPhase = ''
               runHook preBuild
               export RUSTC_BOOTSTRAP=1
-              export HOME="$TMPDIR/home"
-              export CARGO_HOME="$TMPDIR/cargo"
-              mkdir -p "$HOME" "$CARGO_HOME"
-              # Point cargo at the merged offline vendor dir (crates.io + build-std deps).
-              cat > "$CARGO_HOME/config.toml" <<EOF
-              [build]
-              jobs = 4
-              [source.crates-io]
-              replace-with = "vendored-sources"
-              [source.vendored-sources]
-              directory = "${vendor}"
-              EOF
+              # Merged vendor (crates.io + build-std + the NFC component-dep lock) → merged = true.
+              ${mkCargoVendorEnv { inherit vendor; merged = true; }}
               cd implementation/seed/crates/${crateDir}
               # --locked honors the committed Cargo.lock exactly. Network is blocked by CARGO_NET_OFFLINE
-              # (set below) + the sandbox itself — NOT the `--offline` FLAG: the runtime's world imports
-              # the NFC component (a `[package.metadata.component.target.dependencies]` WIT path-dep on
-              # ../cdz-nfc/wit, FINDING#23), and the `--offline` flag makes `cargo component` refuse that
-              # component-dep resolution outright ("lock file must be provided when offline mode is
-              # enabled") even though it's a LOCAL path needing no network. CARGO_NET_OFFLINE blocks the
-              # crates.io registry (our vendor covers it) while still letting cargo-component resolve the
-              # local WIT dep. A truly-missing dep still fails LOUD (no network in the sandbox).
-              export CARGO_NET_OFFLINE=true
+              # (set by mkCargoVendorEnv) + the sandbox itself — NOT the `--offline` FLAG: the runtime's
+              # world imports the NFC component (a `[package.metadata.component.target.dependencies]` WIT
+              # path-dep on ../cdz-nfc/wit, FINDING#23), and the `--offline` flag makes `cargo component`
+              # refuse that component-dep resolution outright ("lock file must be provided when offline
+              # mode is enabled") even though it's a LOCAL path needing no network. CARGO_NET_OFFLINE
+              # blocks the crates.io registry (our vendor covers it) while still letting cargo-component
+              # resolve the local WIT dep. A truly-missing dep still fails LOUD (no network in the sandbox).
               cargo component build --release --target wasm32-unknown-unknown --locked $featuresArg
               runHook postBuild
             '';
@@ -783,17 +808,7 @@
           nativeBuildInputs = [ rustToolchain pkgs.wasm-tools ];
           buildPhase = ''
             runHook preBuild
-            export HOME="$TMPDIR/home"
-            export CARGO_HOME="$TMPDIR/cargo"
-            mkdir -p "$HOME" "$CARGO_HOME"
-            cat > "$CARGO_HOME/config.toml" <<EOF
-            [build]
-            jobs = 4
-            [source.crates-io]
-            replace-with = "vendored-sources"
-            [source.vendored-sources]
-            directory = "${reducerGuestVendor}"
-            EOF
+            ${mkCargoVendorEnv { vendor = reducerGuestVendor; }}
             cd implementation/seed/crates/cdz-kernel/tests/fixtures/reducer-guest
             cargo build --release --target wasm32-unknown-unknown --locked --offline
             runHook postBuild
@@ -837,17 +852,7 @@
           nativeBuildInputs = [ rustToolchain pkgs.wasm-tools ];
           buildPhase = ''
             runHook preBuild
-            export HOME="$TMPDIR/home"
-            export CARGO_HOME="$TMPDIR/cargo"
-            mkdir -p "$HOME" "$CARGO_HOME"
-            cat > "$CARGO_HOME/config.toml" <<EOF
-            [build]
-            jobs = 4
-            [source.crates-io]
-            replace-with = "vendored-sources"
-            [source.vendored-sources]
-            directory = "${cedarGuestVendor}"
-            EOF
+            ${mkCargoVendorEnv { vendor = cedarGuestVendor; }}
             cd implementation/seed/crates/cdz-agent-host/tests/fixtures/cedar-policy-guest
             cargo build --release --target wasm32-unknown-unknown --locked --offline
             runHook postBuild
