@@ -95,9 +95,19 @@ export default function Metaprogramming() {
   (_             (quote nil)))`}
       />
       <P>
-        That completes the literal set: integers, floats, strings, booleans, and names each reify to their
-        own variant. And because a constructor is type-checked like any other, <C>(Ast.Bool 5)</C> is a
-        compile error: the payload must be a <C>Bool</C>, not an integer.
+        A byte-string literal has its own variant too. A <C>{`b"…"`}</C> blob quotes to an <C>Ast.Bytes</C>{" "}
+        whose payload is a real <C>Bytes</C> value, so a binary literal is a single first-class node rather
+        than a list of one node per byte:
+      </P>
+      <Runnable
+        source={`(match (quote b"hi")
+  ((Ast.Bytes b) (Ast.Bytes b))
+  (_             (quote nil)))`}
+      />
+      <P>
+        That completes the literal set: integers, floats, strings, booleans, names, and byte strings each
+        reify to their own variant. And because a constructor is type-checked like any other,{" "}
+        <C>(Ast.Bool 5)</C> is a compile error: the payload must be a <C>Bool</C>, not an integer.
       </P>
       <Runnable source={`(Ast.Bool 5)`} expect="error" />
 
