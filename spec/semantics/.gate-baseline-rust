@@ -2853,6 +2853,7 @@ pass	a rope in an Option payload equals its flat-twin payload
 pass	a rope label rides a pqueue entry through insort to its time-ordered slot
 pass	a rope threads TWO chained if-selects, each operand multi-use, and every length stays live
 pass	a rope two levels deep (tuple in a tuple) equals its flat twin
+pass	a rope-built String key probes the trie entry stored under its FLAT twin at depth
 pass	a round-trip alongside a parameterized plain export applies its argument
 pass	a round-trip alongside a plain export — the plain export runs
 pass	a round-trip alongside a plain export — the round-trip still works
@@ -3542,6 +3543,7 @@ pass	a trie of 40 MULTI-LIMB BigInt keys enumerates in magnitude order
 pass	a trie of 40 RATIONAL keys with all-different denominators enumerates in numeric order
 pass	a trie of 40 RECORD keys resolves descriptor-ordered field descent at depth
 pass	a trie of 40 TUPLE keys resolves compound-key descent at depth
+pass	a trie of 40 rope-built String keys resolves content descent at depth
 pass	a trie spanning NEGATIVE and positive keys enumerates in signed numeric order
 pass	a triple-nested match on the SAME variant-refined scrutinee folds every level to the known arm
 pass	a trivially-true guard does not make its variant arm unconditional
