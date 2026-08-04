@@ -654,18 +654,31 @@ mod tests {
         // so recovering the log file replays them. Proves the durable-log attach seam (the daemon uses this
         // per-session when [log].backend = file).
         use cdz_kernel::log_store::LogStore;
-        let dir = std::env::temp_dir().join("cdz-with-sink-test");
-        let _ = std::fs::create_dir_all(&dir);
+        use std::sync::atomic::{AtomicU64, Ordering};
+        // A UNIQUE per-run temp dir (pid + a process-local counter) so concurrent test runners (cargo's
+        // parallel harness + the nix test-check) never share the log file — a fixed shared path let one
+        // run's remove_file/recover race another's writes, and a crashed-run leftover poisoned the next
+        // (#1988 review). expect() the dir create so a real fs failure surfaces, not a swallowed `let _`.
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "cdz-with-sink-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).expect("create unique temp dir");
         let path = dir.join("session-durable.log");
-        let _ = std::fs::remove_file(&path);
 
         let sink = LogStore::open(&path).expect("open log store");
         let mut host = AgentHost::new();
         let id = SessionId::new("durable");
         host.spawn(id.clone(), now_host().with_sink(Box::new(sink)));
         // Drive a turn — the session appends events (Inbound + the Now dispatch/result), each written
-        // through to the sink.
-        host.deliver(&id, inbound_go(), None).await;
+        // through to the sink. Assert the turn actually SUCCEEDED (Some(Ok)) — a KernelError turn would
+        // still append the Inbound, so a log-length-only check could pass on a failed turn (#1988 review).
+        assert!(
+            matches!(host.deliver(&id, inbound_go(), None).await, Some(Ok(()))),
+            "the durable session ran its turn without a kernel error"
+        );
 
         // The in-memory log has the full event stream (Genesis + the turn's events)…
         let in_mem = host.get(&id).unwrap().session().log().len();
@@ -683,7 +696,9 @@ mod tests {
             !recovered.events.is_empty(),
             "the turn's events reached durable storage"
         );
-        let _ = std::fs::remove_file(&path);
+        // Clean up the unique per-run dir (best-effort — the process is ending; a leftover unique dir can't
+        // poison another run since the pid+seq is distinct each time).
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
