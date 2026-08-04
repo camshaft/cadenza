@@ -652,6 +652,53 @@ mod tests {
     }
 
     #[test]
+    fn a_bytes_leaf_round_trips_through_the_codec_including_empty_and_high_bytes() {
+        // `Leaf::Bytes` is the length-prefixed raw-bytes wire node (`KIND_BYTES` + `write_bytes` = a
+        // var-len byte count then the raw bytes; decode via `read_raw_bytes`). The generated `gen_leaf`
+        // sweep only ever produces FIXED-LENGTH-2 byte vectors, so two contract edges go unexercised by
+        // it: the EMPTY byte sequence (length prefix 0, zero payload — the case most prone to a
+        // count/`read_raw_bytes` off-by-one) and HIGH bytes ≥ 0x80 / an embedded 0x00 (which must ride
+        // verbatim, NOT as UTF-8 like a `Str`). Pin both explicitly. This is also the exact wire contract
+        // the new `Ast.Bytes` metaprogramming node rests on: it reuses THIS `Leaf::Bytes`/`KIND_BYTES`
+        // path (no new frozen tag — v-metaprogramming's Ast.Bytes maps a bytes value onto a Bytes leaf
+        // atom), so a regression here would silently break `Ast.encode`/`decode` of a bytes literal.
+        let mut b = Builder::new();
+        let empty = b.atom_leaf(Leaf::Bytes(vec![])); // zero-length: length prefix 0, no payload
+        let high = b.atom_leaf(Leaf::Bytes(vec![0x89, b'P', b'N', b'G', 0x00, 0xff])); // PNG-ish, incl 0x00/0xff
+        let ascii = b.atom_leaf(Leaf::Bytes(b"hi".to_vec()));
+        let root = b.list(vec![empty, high, ascii]);
+        let a = b.finish(root);
+        let bytes = encode(&a);
+        let back = decode(&bytes).expect("decode of an arena carrying Bytes leaves");
+        assert!(
+            a.structurally_eq(&back),
+            "Bytes leaves (empty + high-byte) not preserved through the codec: {a:?} vs {back:?}"
+        );
+        assert_eq!(
+            bytes,
+            encode(&back),
+            "re-encode of the decoded arena is not byte-identical (Bytes wire not deterministic)"
+        );
+        // Three DISTINCT Bytes leaves survive (a Bytes value's identity is its exact byte sequence — the
+        // empty, the high-byte, and the ASCII vec must not collapse or reorder).
+        assert_eq!(a.leaves.len(), 3, "three distinct Bytes leaves");
+        // And a Bytes leaf is NOT confused with a same-text Str: `b"hi"` (Bytes) ≠ `"hi"` (Str) on the wire.
+        let mut b2 = Builder::new();
+        let as_str = b2.atom_leaf(Leaf::Str("hi".to_string()));
+        let str_root = b2.list(vec![as_str]);
+        let str_a = b2.finish(str_root);
+        let mut b3 = Builder::new();
+        let as_bytes = b3.atom_leaf(Leaf::Bytes(b"hi".to_vec()));
+        let bytes_root = b3.list(vec![as_bytes]);
+        let bytes_a = b3.finish(bytes_root);
+        assert_ne!(
+            encode(&str_a),
+            encode(&bytes_a),
+            "a Str and a Bytes carrying the same text must encode DISTINCTLY (different KIND tag)"
+        );
+    }
+
+    #[test]
     fn radix_round_trips() {
         // Same value, different bases -> distinct leaves that survive the round-trip.
         let mut b = Builder::new();
