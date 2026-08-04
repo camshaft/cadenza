@@ -127,8 +127,12 @@
         # `test` (`cargo test --workspace`) reads more of the repo at RUN time than fmt/clippy do, so its
         # src is WIDER than `seedSrc` (crates + xtask). fmt/clippy keep the narrow `seedSrc` for finer
         # cache invalidation (a spec/compiler-ml edit shouldn't bust lint). The extra paths:
-        #   spec/                     — cadenza-syntax's corpus_roundtrip tests resolve
-        #                               `$CARGO_MANIFEST_DIR/../../../../spec/semantics`.
+        #   spec/semantics            — cadenza-syntax's corpus_roundtrip tests resolve
+        #                               `$CARGO_MANIFEST_DIR/../../../../spec/semantics`. Scoped to
+        #                               semantics/ (not all of spec/) so a spec/design|capabilities edit
+        #                               doesn't bust the test-check cache — other spec refs in the seed
+        #                               are compile-time duvet `//=` citations, not runtime reads
+        #                               (github-liaison #1989).
         #   implementation/compiler-ml — cdz's run_ml_cli tests shell out to `cdz run-ml`, which locates
         #                               `implementation/compiler-ml/src` and writes a pid-stamped driver
         #                               INTO it. nix's unpackPhase copies src into the WRITABLE build dir,
@@ -144,7 +148,7 @@
             ./Cargo.lock
             ./.cargo
             ./rust-toolchain.toml
-            ./spec
+            ./spec/semantics
           ];
         };
         cargoWorkspaceCheck = { name, cargoCmd, src ? seedSrc, extraInputs ? [ ] }:
@@ -362,6 +366,61 @@
           installPhase = ''
             runHook preInstall
             echo "ok: rcdzc-wasm native (test + clippy + fmt)" > "$out"
+            runHook postInstall
+          '';
+        };
+
+        # Full-CI-in-nix increment 4: the GHA `cdz-kernel` job (cargo test + clippy + fmt + the
+        # `--features live-exec` clippy/test) as a nix check. cdz-kernel is its OWN root-excluded
+        # [workspace] (path-deps cadenza-ast), so it vendors from its OWN committed Cargo.lock (158 pkgs,
+        # v-agent-harness `5a8bb10b0`). The CI job builds + validates the reducer-guest wasm then feeds it
+        # via REDUCER_GUEST_COMPONENT — but my `reducerGuest` derivation ALREADY produces a validated
+        # component, so the check just points the env at it (skips the redundant build+validate; the
+        # component-model validity is separately gated by checks.reducer-guest-valid). The base `cargo
+        # test` is hermetic + passes without the env (the component e2e is env-gated); passing it makes
+        # that e2e actually RUN. Advisory-by-omission → unilateral cargo-twin retire once green.
+        cdzKernelVendor = pkgs.rustPlatform.importCargoLock {
+          lockFile = ./implementation/seed/crates/cdz-kernel/Cargo.lock;
+        };
+        cdzKernelSrc = pkgs.lib.fileset.toSource {
+          root = ./.;
+          fileset = pkgs.lib.fileset.unions [
+            ./implementation/seed/crates/cdz-kernel
+            ./implementation/seed/crates/cadenza-ast
+            ./rust-toolchain.toml
+          ];
+        };
+        cdzKernelNativeCheck = pkgs.stdenvNoCC.mkDerivation {
+          pname = "cdz-kernel-native";
+          version = "0.0.0";
+          src = cdzKernelSrc;
+          nativeBuildInputs = [ rustToolchain ];
+          buildPhase = ''
+            runHook preBuild
+            export HOME="$TMPDIR/home"
+            export CARGO_HOME="$TMPDIR/cargo"
+            export CARGO_NET_OFFLINE=true
+            mkdir -p "$HOME" "$CARGO_HOME"
+            cat > "$CARGO_HOME/config.toml" <<EOF
+            [source.crates-io]
+            replace-with = "vendored-sources"
+            [source.vendored-sources]
+            directory = "${cdzKernelVendor}"
+            EOF
+            cd implementation/seed/crates/cdz-kernel
+            # Feed the pre-built, pre-validated reducer-guest component (my derivation) so the env-gated
+            # component-reducer e2e RUNS instead of skipping.
+            export REDUCER_GUEST_COMPONENT="${reducerGuest}"
+            cargo test --locked
+            cargo clippy --all-targets --locked -- -D warnings
+            cargo fmt --check
+            cargo clippy --all-targets --locked --features live-exec -- -D warnings
+            cargo test --locked --features live-exec
+            runHook postBuild
+          '';
+          installPhase = ''
+            runHook preInstall
+            echo "ok: cdz-kernel native (test + clippy + fmt + live-exec)" > "$out"
             runHook postInstall
           '';
         };
@@ -808,6 +867,8 @@
             # Full-CI-in-nix increment 3: the native half of the GHA rcdzc-wasm job (the wasm build half
             # is the rcdzcWasm derivation / rcdzc-wasm-hash, already covered).
             rcdzc-wasm-native = rcdzcWasmNativeCheck;
+            # Full-CI-in-nix increment 4: the GHA cdz-kernel job (test + clippy + fmt + live-exec).
+            cdz-kernel-native = cdzKernelNativeCheck;
           };
 
         devShells.default = pkgs.mkShell {
