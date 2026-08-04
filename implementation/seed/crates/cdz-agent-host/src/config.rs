@@ -73,11 +73,12 @@ pub enum LogConfig {
 /// and whose OTHER fields are that backend's OWN typed config, so the wired emitter can send to several
 /// sinks (multiple statsd collectors, or different backend types).
 ///
-/// **Not yet wired (config-ahead-of-emitter, staging class of `[log]`/`[blob]`).** The daemon bin currently
-/// reads only `observability.enabled` (a boot log line); it does NOT yet consult `targets` — the emitter
-/// that reads them is a following, feature-gated slice (keeping the QUIC/metrics dep tree out of the default
-/// build). So a configured target PARSES + VALIDATES but nothing emits to it until that slice lands. The
-/// fan-out semantics above are the emitter's contract, not current daemon behavior.
+/// **Current daemon behavior:** the daemon reads `observability.enabled` (it logs it at boot) and PARSES +
+/// VALIDATES the `targets`, but it does NOT emit to them — it never reads `targets` beyond validation, so no
+/// metrics are sent anywhere regardless of what's configured. The emitter that reads `targets` and performs
+/// the fan-out is a separate, feature-gated component (kept out of the default build to exclude the
+/// QUIC/metrics dependency tree); the fan-out described above is that emitter's intended behavior, which the
+/// config is defined ahead of.
 #[derive(Debug, Clone, Deserialize, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct ObservabilityConfig {
@@ -911,16 +912,20 @@ mod tests {
     }
 
     #[test]
-    fn tracing_disabled_with_odd_fields_still_parses() {
-        // When disabled, the filter/output aren't validated (no subscriber installed) — a disabled section
-        // with defaults is valid and inert.
+    fn tracing_disabled_skips_validation_of_a_would_be_invalid_filter() {
+        // When disabled, validate() skips the filter/output checks (no subscriber installed). Prove it by
+        // giving a filter that WOULD be rejected if enabled (blank — see
+        // tracing_enabled_with_a_blank_filter_is_rejected): with enabled=false it still parses + validates OK,
+        // so this proves disabled genuinely skips the check (a validate-when-disabled bug would fail here).
         let cfg = DaemonConfig::from_toml_str(
             r#"
             [tracing]
             enabled = false
+            filter = ""
             "#,
         )
-        .expect("disabled tracing parses");
+        .expect("disabled tracing skips filter validation");
         assert!(!cfg.tracing.enabled);
+        assert_eq!(cfg.tracing.filter, "");
     }
 }
