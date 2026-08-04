@@ -5566,6 +5566,53 @@
   (call   main (: 9 Int64))
   (output (: -1 Int64)))
 
+(case "a handler ARM enumerates a 60-key trie op argument and resumes its fold"
+  (doc    "The DEEP-trie upgrade of the map-argument arm case above (whose map has 2 entries): the
+           perform carries a 60-key MULTI-LEVEL trie, and the arm runs a full `Map.to-list` enumeration
+           plus a pair-fold over it before resuming — Σ i for i = 1..60 = 1830. The multi-level
+           enumeration walk (node descent, cross-node merge order) runs INSIDE the handler's dispatch
+           machinery; an arm context that corrupted a frame slot mid-walk would poison the sum. The
+           arm-side companion of the deep-trie enumeration pins.")
+  (input  (do
+            (effect Sink (op tally (-> (Map Int64 Int64) Int64)))
+            (def (fill (: i Int64) (: m (Map Int64 Int64)))
+              (if (= i 0) m (fill (- i 1) (Map.insert m i i))))
+            (def (sum-pairs (: ps (List (Tuple Int64 Int64))) (: acc Int64))
+              (match ps
+                ((list) acc)
+                ((list h .. t) (match h ((tuple _k v) (sum-pairs t (+ acc v)))))))
+            (def (main (: n Int64))
+              (handle Sink 0
+                ((tally (m) s (resume (sum-pairs (Map.to-list m) 0) s)))
+                (Sink.tally (fill n Map.empty))))
+            (export main)))
+  (call   main (: 60 Int64)) (output (: 1830 Int64)))
+
+(case "a handler's heap STATE grows to a 40-key trie across resumes and enumerates at the end"
+  (doc    "The state-side companion: the handler's STATE is a map that GROWS by one insert per resume
+           across 40 separate `put` discharges (values i·10), then a second op enumerates the
+           accumulated trie — Σ i·10 for i = 1..40 = 8200. Composes state threading (each resume hands
+           the next state forward), trie growth past the single-node capacity, and the enumeration walk
+           over the final accumulated structure. The keyed-store idiom's growth face at scale (the
+           Map-state pins put/get single entries).")
+  (input  (do
+            (effect Acc (op put (-> Int64 Int64)) (op total (-> Unit Int64)))
+            (def (sum-pairs (: ps (List (Tuple Int64 Int64))) (: acc Int64))
+              (match ps
+                ((list) acc)
+                ((list h .. t) (match h ((tuple _k v) (sum-pairs t (+ acc v)))))))
+            (def (feed (: i Int64) (: n Int64))
+              (if (= i n) 0 (+ (Acc.put i) (feed (+ i 1) n))))
+            (def (main (: n Int64))
+              (handle Acc Map.empty
+                ((put (v) s (resume 0 (Map.insert s v (* v 10))))
+                 (total (u) s (resume (sum-pairs (Map.to-list s) 0) s)))
+                (do
+                  (feed 1 (+ n 1))
+                  (Acc.total))))
+            (export main)))
+  (call   main (: 40 Int64)) (output (: 8200 Int64)))
+
 (case "a TUPLE op argument with a HEAP leaf destructures inside the arm"
   (doc    "The mixed-representation companion of the scalar tuple-parameter case: `(tuple a \"abc\")`
            carries an i64 AND a rope handle through the perform; the arm destructures both and measures
@@ -7914,9 +7961,10 @@
            a trailing tick pinning the exact post-connective state. k=20: the lhs tick reads 20 (s→21),
            true short-circuits the rhs → 100 + 21 = 121 (ONE tick). k=4: lhs 4 (s→5) false, rhs 5 (s→6)
            true → 100 + 6 = 106 (TWO ticks). k=0: both false (s→2) → 200 + 2 = 202. A fold treating the
-           rhs perform as unconditional double-fires and shifts every digit — the adv-55 Core::And rhs-conditionality
-           class (Core::And is the SHARED core node for both and/or — not a typo in this or case) observed at the STATE tier, where a wrong fold is visible even when
-           the boolean value happens to agree.")
+           rhs perform as unconditional double-fires and shifts every digit — the adv-55 rhs-conditionality
+           class observed at the STATE tier, where a wrong fold is visible even when the boolean value
+           happens to agree. (Core::And is the shared and/or core node — this case correctly references
+           it even though the surface operator here is `or`.)")
   (input  (do
             (effect Ctr (op tick (-> Unit Int64)))
             (def (main (: k Int64))
