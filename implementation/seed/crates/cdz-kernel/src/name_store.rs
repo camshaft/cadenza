@@ -337,6 +337,31 @@ impl NameStore {
     pub fn forget_applied_key(&mut self, idempotency_key: &Hash) {
         self.applied_set_keys.remove(idempotency_key);
     }
+
+    /// Merge the NEW appends from `other` into `self` — the single-host-owned shared-store primitive (§4c
+    /// v0.3): the host holds ONE canonical `NameStore`, hands each session a fresh copy (a
+    /// [`replay_set_entries`](NameStore::replay_set_entries) of `to_set_entries`), lets the session drive a
+    /// turn (its `store/set`s append to ITS copy), then folds those new writes back here. This is what makes
+    /// a pointer published by session A visible to session B WITHOUT the explicit export/replay bridge — the
+    /// host reconciles into canonical after each turn, and hands B a copy that already has A's write.
+    ///
+    /// For each name in `other`, if `other`'s value-over-time log is LONGER than `self`'s, the extra tail
+    /// entries are appended here (they're the session's new `set`s this turn). This is correct — and
+    /// conflict-free — under the store's concurrency model (§4c: single-writer-per-name, hot names partition
+    /// by scope): a session only appends to names its grant authorizes, so two sessions never race the same
+    /// name, and each name's log here is a PREFIX of the copy the writing session extended. A name `other`
+    /// has fewer/equal entries for contributes nothing (no rewind — append-only). Entries are appended via
+    /// the raw log (not [`set`](NameStore::set)) because they were ALREADY authority-checked when the session
+    /// wrote them; re-checking would be redundant, and merge-back is a host-internal reconcile, not a write.
+    /// `applied_set_keys` is untouched: those are per-live-dispatch crash-dedup keys, not shared state.
+    pub fn merge_appends_from(&mut self, other: &NameStore) {
+        for (name, other_log) in &other.names {
+            let mine = self.names.entry(name.clone()).or_default();
+            if other_log.len() > mine.len() {
+                mine.extend_from_slice(&other_log[mine.len()..]);
+            }
+        }
+    }
 }
 
 /// The result of a [`NameStore::apply_effect`] — what the drive loop folds back as the `store/*` effect's
@@ -570,6 +595,68 @@ mod tests {
             s2.to_set_entries(),
             entries,
             "byte-stable regardless of insertion order"
+        );
+    }
+
+    #[test]
+    fn merge_appends_from_folds_a_sessions_new_writes_back_into_canonical() {
+        // The single-host-owned shared-store flow (§4c v0.3): host holds canonical, hands session A a copy,
+        // A writes, host merges A's new appends back — then a copy handed to B sees A's write. No bridge.
+        let (v1, v2, other) = (Hash::of(b"v1"), Hash::of(b"v2"), Hash::of(b"other"));
+        let mut canonical = NameStore::new();
+        canonical
+            .set("system/compiler/latest", SetEntry::unsigned(v1))
+            .unwrap();
+
+        // Session A gets a COPY of canonical, then store/set's the pointer to v2 (append to its own log).
+        let mut session_a = NameStore::replay_set_entries(
+            canonical
+                .to_set_entries()
+                .iter()
+                .map(|(n, h)| (n.as_str(), *h)),
+        )
+        .unwrap();
+        session_a
+            .set("system/compiler/latest", SetEntry::unsigned(v2))
+            .unwrap();
+        // A also touches a name canonical never had.
+        session_a
+            .set("session/a/scratch", SetEntry::unsigned(other))
+            .unwrap();
+
+        // Host merges A's new appends back into canonical.
+        canonical.merge_appends_from(&session_a);
+        // Canonical now resolves the pointer to A's new value, with full history preserved (v1 then v2)...
+        assert_eq!(canonical.resolve("system/compiler/latest").unwrap(), v2);
+        assert_eq!(
+            canonical
+                .history("system/compiler/latest")
+                .iter()
+                .map(|e| e.hash)
+                .collect::<Vec<_>>(),
+            vec![v1, v2],
+            "merge appends the new tail, not a duplicate of the shared prefix"
+        );
+        // ...and the brand-new name A created is now in canonical too.
+        assert_eq!(canonical.resolve("session/a/scratch").unwrap(), other);
+
+        // A COPY handed to session B now sees A's published pointer — the whole point (no export/replay bridge).
+        let session_b = NameStore::replay_set_entries(
+            canonical
+                .to_set_entries()
+                .iter()
+                .map(|(n, h)| (n.as_str(), *h)),
+        )
+        .unwrap();
+        assert_eq!(session_b.resolve("system/compiler/latest").unwrap(), v2);
+
+        // Idempotent: re-merging the SAME session (no new writes since) appends nothing (no duplicate tail).
+        let before = canonical.to_set_entries();
+        canonical.merge_appends_from(&session_a);
+        assert_eq!(
+            canonical.to_set_entries(),
+            before,
+            "re-merging an unchanged session is a no-op (append-only, prefix already present)"
         );
     }
 
