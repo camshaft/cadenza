@@ -410,6 +410,14 @@ impl AgentHost {
         if replaced {
             self.metrics.record_session_removed();
         }
+        // Trace at the same boundary the metric records — a structured event (side-channel, no control-flow
+        // dependence). `replaced` distinguishes a fresh install from a restart.
+        tracing::info!(
+            target: "cdz_agent_host::session",
+            session_id = id.as_str(),
+            replaced,
+            "session installed"
+        );
         id
     }
 
@@ -432,10 +440,30 @@ impl AgentHost {
             // Addressed to no live session — a misrouted/late event. Count it distinctly from a delivered
             // turn, then report "unknown" up (None) as before.
             self.metrics.record_delivery_to_unknown_session();
+            tracing::warn!(
+                target: "cdz_agent_host::session",
+                session_id = id.as_str(),
+                "delivery to unknown session (routed nowhere)"
+            );
             return None;
         };
         let outcome = s.deliver(body, cause).await;
         self.metrics.record_turn(outcome.is_ok());
+        // Trace the turn outcome at the same boundary the metric records. An errored turn logs the kernel
+        // reason at warn (a supervisor signal); a successful turn at debug (routine, filtered out at info).
+        match &outcome {
+            Ok(()) => tracing::debug!(
+                target: "cdz_agent_host::session",
+                session_id = id.as_str(),
+                "turn ok"
+            ),
+            Err(e) => tracing::warn!(
+                target: "cdz_agent_host::session",
+                session_id = id.as_str(),
+                error = ?e,
+                "turn errored"
+            ),
+        }
         // §4c v0.3 merge-back: after a SUCCESSFUL turn, fold this session's new name-store writes into the
         // canonical shared store so the next-spawned (or next-reconciled) session sees them. Idempotent — a
         // turn that wrote nothing re-merges as a no-op (the session's log is already a prefix of what it was

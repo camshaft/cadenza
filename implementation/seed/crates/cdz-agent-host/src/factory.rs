@@ -84,10 +84,22 @@ impl MeteredExecutor {
 impl Executor for MeteredExecutor {
     async fn perform(&mut self, req: &EffectRequest, idempotency_key: Hash) -> EffectOutcome {
         let outcome = self.inner.perform(req, idempotency_key).await;
+        // Tally the metric + trace at the SAME tap. The family names which effect; a failure logs its
+        // classified reason (retryable/permanent) at warn (a supervisor signal), ok at debug (routine).
+        let family = req.content_type.family.as_ref();
         match &outcome {
-            EffectOutcome::Ok(_) => self.metrics.record_ok(),
-            EffectOutcome::Err(reason) => self.metrics.record_err(crate::retry::classify(reason)),
-            EffectOutcome::TimedOut => self.metrics.record_timed_out(),
+            EffectOutcome::Ok(_) => {
+                self.metrics.record_ok();
+                tracing::debug!(target: "cdz_agent_host::effect", family, "effect ok");
+            }
+            EffectOutcome::Err(reason) => {
+                self.metrics.record_err(crate::retry::classify(reason));
+                tracing::warn!(target: "cdz_agent_host::effect", family, reason, "effect errored");
+            }
+            EffectOutcome::TimedOut => {
+                self.metrics.record_timed_out();
+                tracing::warn!(target: "cdz_agent_host::effect", family, "effect timed out");
+            }
         }
         outcome
     }
