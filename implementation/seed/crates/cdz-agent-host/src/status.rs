@@ -10,7 +10,7 @@
 //! path.
 //!
 //! **Zero-dep JSON.** The crate keeps a minimal dep floor (no `serde`/`serde_json`), so this hand-renders
-//! a small, fixed-shape JSON object with a correct string escaper ([`escape`]). The shape is documented
+//! a small, fixed-shape JSON object with a correct string escaper (the private `escape` fn below). The shape is documented
 //! here and is the contract the concierge parses against — keep it stable (add fields, don't rename).
 
 use crate::host::{AgentHost, HostedSession, SessionId};

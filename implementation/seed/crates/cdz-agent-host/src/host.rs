@@ -109,8 +109,8 @@ impl HostedSession {
     /// mid-session capability change (host-capability-discovery I6a). Adding an executor for a family the
     /// session couldn't perform before makes that family's manifest entry flip `Absent`→(policy-decided);
     /// re-registering a family swaps its executor. This is the host-side trigger the reactive
-    /// capabilities-changed push (I6b) fires on: after calling it, [`push_capabilities_changed`] recomputes
-    /// the manifest + pushes iff it actually changed.
+    /// capabilities-changed push (I6b) fires on: after calling it, a `push_capabilities_changed` recomputes
+    /// the manifest + pushes iff it actually changed (the I6b host forwarder lands with the kernel seam).
     ///
     /// (The kernel's [`CompositeExecutor`] is builder-shaped — `with_effect` consumes+returns — so this
     /// takes the executor by value via `mem::take` + rebuild, keeping the mutation on the owned field.)
