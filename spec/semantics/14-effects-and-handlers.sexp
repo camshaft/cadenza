@@ -4069,6 +4069,44 @@
                 (Acc.step (Acc.step 1)))) (export main)))
   (output (: 202 Int64)))
 
+(case "a CROSS-handler op whose inline ARG performs an OUTER handler's op folds (op-arg let-lift)"
+  (doc    "The cross-handler analogue of the same-handler nested-perform-arg case above (Acc.step (Acc.step 1)):
+           a NESTED handler's op whose INLINE argument performs an OUTER handler's op — `(B.put (A.get))` under
+           `handle A (handle B …)`, where `A.get` homes to the enclosing `A` (foreign to `B`). B's arm uses its
+           param `v` TWICE (`(resume (+ s v) (+ s v))`), so substituting the performing `(A.get)` inline would
+           duplicate it (effect-duplication guard). Fixed by the op-arg LET-LIFT: bind the foreign-perform arg
+           to a fresh `#cv` once, then B's arm reads the pure ref twice — exactly the WORKING let-bound spelling
+           `(let ((x (A.get))) (B.put x))`. `A.get`=7 (no advance), `B.put(7)` = `0+7` = 7. Pins that an inline
+           cross-handler op-arg-performs-outer folds (was a clean decline — the inline-arg-position completeness
+           gap; the let-bound spelling always folded).")
+  (input  (do
+            (effect A (op get (-> Unit Int64)))
+            (effect B (op put (-> Int64 Int64)))
+            (def (main)
+              (handle A 7 ((get (u) s (resume s s)))
+                (handle B 0 ((put (v) s (resume (+ s v) (+ s v))))
+                  (B.put (A.get)))))
+            (export main)))
+  (output (: 7 Int64)))
+
+(case "a cross-handler op-arg performing an outer effect runs EXACTLY ONCE though the arm uses it thrice"
+  (doc    "The soundness control for the op-arg let-lift: the foreign-perform arg must run ONCE (an op arg is
+           evaluated once, before the call, regardless of how many times the arm reads its param). `(B.put
+           (A.tick))` where `A.tick` ADVANCES the outer A-state, and B's arm reads `v` THREE times
+           (`(resume (+ (+ v v) v) s)`). If the lift wrongly duplicated the perform, A would advance 3× and the
+           reads would differ; correctly it advances ONCE (10→11), all three reads see 10 → `v+v+v` = 30, then
+           the outer `(A.get)` reads the once-advanced 11 → `(+ 30 11)` = 41. Pins that the `#cv` let-bind
+           runs the foreign perform exactly once and the arm reads the pure ref — no effect duplication.")
+  (input  (do
+            (effect A (op tick (-> Unit Int64)) (op get (-> Unit Int64)))
+            (effect B (op put (-> Int64 Int64)))
+            (def (main)
+              (handle A 10 ((tick (u) s (resume s (+ s 1))) (get (u) s (resume s s)))
+                (let ((b (handle B 0 ((put (v) s (resume (+ (+ v v) v) s))) (B.put (A.tick)))))
+                  (+ b (A.get)))))
+            (export main)))
+  (output (: 41 Int64)))
+
 (case "two performs as the two ARGUMENTS of a pure USER function thread the state left-to-right"
   (doc    "The performs sit in the argument list of a non-primitive, effect-free USER function, whose call
            evaluates its arguments left-to-right before applying — so the two reads are sequenced by the
