@@ -3286,16 +3286,24 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
                     // idle. `window_is_working`'s `unwrap_or(false)` is safe for the compact-NUDGE (unsure
                     // → a harmless keystroke) but WRONG for a RESTART (unsure → destroy a possibly-mid-turn
                     // window) — github-liaison/Copilot PR#1937. So restart only when the pane is
-                    // AFFIRMATIVELY idle. We reuse the SAME top-of-loop `pane` snapshot that established
-                    // the decline + ctx% (one consistent observation, no second racy capture): since
-                    // `compact_declined` was derived from `pane`, `pane` is necessarily `Some` here, so the
-                    // snapshot is authoritative — idle iff it does NOT show the working affordance. A None
+                    // AFFIRMATIVELY idle: capture succeeded AND shows no working affordance. A None
                     // (capture-fail) or a working affordance both fall through to "not confirmed idle" and
-                    // skip the restart.
+                    // skip (the 100%-wall backstop still catches a genuine wedge next sweep — skipping
+                    // loses nothing).
+                    //
+                    // FRESH capture, taken here just before the destructive kill — NOT the sweep-top
+                    // `pane` snapshot (:3016). Between that snapshot and this gate the same iteration can
+                    // block on the drain-stall re-check `sleep` + a drain-nudge send-keys, so the top
+                    // snapshot can be SECONDS stale (github-liaison/Copilot PR#1941): a window that goes
+                    // busy after the snapshot but before the restart would be caught mid-turn. Re-capturing
+                    // immediately before the kill shrinks that window to an irreducible sub-ms TOCTOU. The
+                    // cost — one extra tmux capture — is paid ONLY on the narrow compact-declined+pre-wall
+                    // path, and a destructive op is exactly where paying for a fresh read is worth it.
                     let stopped = fleet.stopfile(&a.name).exists();
                     let live = live.iter().any(|w| w == &a.name);
                     let interactive = role_is_terminal_interactive(&a.role); // never touch a human's window
-                    let confirmed_idle = pane.as_deref().is_some_and(|p| !pane_shows_working(p));
+                    let confirmed_idle =
+                        capture_pane(&session, &a.name).is_some_and(|p| !pane_shows_working(&p));
                     if dry_run {
                         println!(
                             "  DRY-RUN would GRACEFUL-RESTART '{}' (compact-declined, pre-wall {pct}%)",
