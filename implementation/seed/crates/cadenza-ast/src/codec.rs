@@ -994,12 +994,15 @@ impl Grafter {
     }
 }
 
-/// Whether an imported dictionary's WHOLE structure is acyclic — i.e. NO node (reachable or not) lies on
-/// a cycle. This is stronger than `verify_tree`'s root-reachability check ON PURPOSE: a `TAG_DICT_REF`
-/// can target ANY `node_id`, including one unreachable from the dict's own root, so a dict is only safe
-/// to walk (in `encode_with_dict`'s `subtree_arena` match-table build AND `decode_with_dicts`' graft) if
-/// EVERY node is acyclic. A cyclic dict would make either walk diverge/OOM on untrusted input. Iterative
-/// DFS with a 3-color (unvisited/on-stack/done) marking over every node as a potential root; O(nodes+edges).
+/// Whether an imported dictionary's WHOLE structure is SAFE to walk from any node — i.e. NO node
+/// (reachable or not) lies on a cycle AND every child id is in range. This is stronger than
+/// `verify_tree`'s root-reachability check ON PURPOSE: a `TAG_DICT_REF` can target ANY `node_id`,
+/// including one unreachable from the dict's own root, so a dict is only safe to walk (in
+/// `encode_with_dict`'s `subtree_arena` match-table build AND `decode_with_dicts`' graft) if EVERY node
+/// is acyclic and in-range. A cyclic dict would make either walk diverge/OOM; an out-of-range child would
+/// make `encode`'s `subtree_arena` PANIC (it indexes via `Arenas::get`) — both on untrusted input, so
+/// both are rejected here. Iterative DFS with a 3-color (unvisited/on-stack/done) marking over every node
+/// as a potential root; O(nodes+edges).
 fn dict_is_acyclic(dict: &Arenas) -> bool {
     // 0 = unvisited, 1 = on the current DFS stack (a back-edge to it = cycle), 2 = fully explored.
     let mut color = vec![0u8; dict.structure.len()];
@@ -1015,7 +1018,10 @@ fn dict_is_acyclic(dict: &Arenas) -> bool {
                 continue;
             }
             if color[id] == 1 {
-                continue; // already on-stack via another path in this same DFS; the enter below handles it
+                // Already entered on this DFS stack (a shared DAG node re-reached via a second parent
+                // before we colored it done) — SKIP the duplicate push; NOT cycle detection (a back-edge
+                // to an on-stack node is caught below at the child-push site, before it's popped again).
+                continue;
             }
             if color[id] == 2 {
                 continue;
@@ -1026,7 +1032,12 @@ fn dict_is_acyclic(dict: &Arenas) -> bool {
                 for StructId(child) in children {
                     let c = *child as usize;
                     if c >= dict.structure.len() {
-                        continue; // out-of-range child: not a cycle; the graft/decoder rejects it as IdOutOfRange
+                        // An out-of-range child id is INVALID, not just non-cyclic: on the ENCODE path,
+                        // `subtree_arena` indexes `dict.structure` via `Arenas::get` and would PANIC on it.
+                        // Reject the whole dict (skip it, like a cycle) so `encode_with_dict` never indexes
+                        // a bad id. (The DECODE graft rejects it as IdOutOfRange separately; encode has no
+                        // such fallible seam, so the guard must live HERE — the 3rd untrusted-input layer.)
+                        return false;
                     }
                     match color[c] {
                         1 => return false, // back-edge to a node on the current stack = a cycle
@@ -2322,6 +2333,41 @@ mod tests {
             "self-cyclic node is not acyclic"
         );
         assert!(dict_is_acyclic(&a), "a genuine tree is acyclic");
+    }
+
+    #[test]
+    fn encode_with_dict_skips_a_dict_with_an_out_of_range_child_and_does_not_panic() {
+        // #2109 review finding (3rd untrusted-input layer): a dict whose structure has an OUT-OF-RANGE
+        // child id is acyclic but UNWALKABLE — encode_with_dict's subtree_arena indexes dict.structure via
+        // Arenas::get, which panics on a bad id. dict_is_acyclic must reject it (return false → skip), so
+        // encode never indexes it. DictSet::insert doesn't validate, so such a dict genuinely reaches here.
+        let bad = Arenas {
+            leaves: vec![Leaf::Name("x".to_string())],
+            // node 0 = List[1, 9]: child 9 is past the 2-node structure.
+            structure: vec![
+                Struct::List(vec![StructId(1), StructId(9)]),
+                Struct::Atom(LeafId(0)),
+            ],
+            root: StructId(0),
+        };
+        assert!(
+            !dict_is_acyclic(&bad),
+            "an out-of-range child id must make the dict unsafe-to-walk (not acyclic)"
+        );
+        let mut dicts = DictSet::new();
+        dicts.insert(Hash([0x55u8; 32]), bad);
+        let mut b = Builder::new();
+        let f = b.name("f");
+        let g = b.name("g");
+        let root = b.list(vec![f, g]);
+        let a = b.finish(root);
+        // Must NOT panic; the bad dict is skipped → plain canonical fallback.
+        let bytes = encode_with_dict(&a, &dicts);
+        assert_eq!(
+            bytes,
+            encode(&a),
+            "a bad dict yields no match → canonical v1 fallback"
+        );
     }
 
     #[test]
