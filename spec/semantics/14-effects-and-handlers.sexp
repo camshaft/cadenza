@@ -5104,6 +5104,23 @@
             (export main)))
   (output (: 3 Int64)))
 
+(case "a MATCH-arm perform in a self-recursive performer threads the advance across recursion (rw-match)"
+  (doc    "The MATCH-arm face of the recursive-branch-perform fix (the `if`-branch cases rw1/rw3/rw5 are its
+           `if` siblings): the discharged perform is in a `match` ARM body — `(+ (match true (_ (St.get)))
+           (walk (- n 1)))` — a strict operand alongside the self-call. Same drop as rw1: `thread_bounded`'s
+           `Match` arm returned the post-SCRUTINEE state as the match's out-state (arm advances unmerged), so
+           the sibling recursion reseeded from the stale pre-arm state — seeded 1 it ran 3, correct is 6. FIXED
+           by the `Match` arm analogue of the `if` per-branch out-state merge: the arm out-states merge into a
+           `(match scrut (pat arm-out)…)`-valued out-state (gated on a pure scrutinee + `#cv`-free arm
+           out-states, same as the `if` arm). Now folds to 6 on all backends. Pins that the merge covers BOTH
+           conditional forms (`if` and `match`).")
+  (input  (do
+            (effect St (op get (-> Unit Int64)))
+            (def (walk (: n Int64)) (if (= n 0) 0 (+ (match true (_ (St.get))) (walk (- n 1)))))
+            (def (main) (handle St 1 ((get (u) s (resume s (+ s 1)))) (walk 3)))
+            (export main)))
+  (output (: 6 Int64)))
+
 (case "a recursive function with an annotated parameter walks and bails through an abortive handler"
   (doc    "The recursive-effect idiom with an ANNOTATED parameter and an ABORTIVE discharge. `walk` takes
            `(: n Int64)` and tail-recurses, counting `n` down; at zero it performs `(Bail.bail 99)`, whose

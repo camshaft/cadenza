@@ -4360,17 +4360,7 @@ fn contains_cv_ref(db: &Db, node: StructId) -> bool {
     }
 }
 
-fn thread_branch_local_abort(
-    db: &mut Db,
-    branch: StructId,
-    states: Vec<StructId>,
-    ctx: &HandlerCtx,
-    inline_depth: u32,
-) -> Option<StructId> {
-    thread_branch_local_abort_with_out(db, branch, states, ctx, inline_depth).map(|(b, _)| b)
-}
-
-/// Like [`thread_branch_local_abort`] but ALSO returns the branch's OUT-STATE (per slot) — the threaded
+/// Thread a conditional BRANCH / match ARM body, returning its rewrite AND its OUT-STATE (per slot) — the threaded
 /// state each slot has after the branch runs. The `If`/`Match` arms use this to MERGE per-branch out-states
 /// into a conditional-valued out-state so a SIBLING that reads state after the conditional (a recursive-call
 /// operand, a `do`-continuation) sees the advance a branch perform made — fixing the recursive-branch-perform
@@ -4844,7 +4834,16 @@ fn thread_bounded(
             let (rscrut, cur) = thread_bounded(db, scrutinee, states, ctx, inline_depth)?;
             let match_head = db.push_atom(Leaf::Name("match".to_string()));
             let mut children = vec![match_head, rscrut];
-            for (pat, body) in arms {
+            // Collect each arm's (pattern, out-state) so the arm out-states can be MERGED into a match-valued
+            // out-state (the `Match` analogue of the `if` per-branch out-state merge — see that arm). An
+            // arm-body perform advances the state, and a sibling reading state after the match (a recursive
+            // call operand) must see that advance; without the merge the match returns the post-SCRUTINEE
+            // state and the advance is dropped (the recursive-branch-perform self-recursive miscompile's
+            // match-arm face). Each arm's out-state is captured alongside its rewrite.
+            let mut arm_outs: Vec<Vec<StructId>> = Vec::with_capacity(arms.len());
+            let mut arm_pats: Vec<StructId> = Vec::with_capacity(arms.len());
+            for (pat, body) in arms.iter() {
+                let (pat, body) = (*pat, *body);
                 // The pattern binds names for the arm body (a binder position) — copy it structurally so it
                 // is self-contained, exactly as a `let` binder name is copied (never substituted/threaded).
                 let rpat = copy_pure(db, pat);
@@ -4859,10 +4858,43 @@ fn thread_bounded(
                 // fresh node that re-resolves against the spec sig.
                 let arm_states: Vec<StructId> =
                     cur.iter().map(|&s| deep_fresh_copy(db, s)).collect();
-                let rbody = thread_branch_local_abort(db, body, arm_states, ctx, inline_depth)?;
+                let (rbody, arm_out) =
+                    thread_branch_local_abort_with_out(db, body, arm_states, ctx, inline_depth)?;
                 children.push(db.push_list(vec![rpat, rbody]));
+                arm_pats.push(pat);
+                arm_outs.push(arm_out);
             }
-            Some((db.push_list(children), cur))
+            let rmatch = db.push_list(children);
+            // MERGE the per-arm out-states into a `(match scrut (pat arm-out)…)`-valued out-state per slot —
+            // the `Match` analogue of the `if` merge. Only ONE arm runs, selected by the SAME (pure, already-
+            // evaluated) scrutinee, so the slot's out-state is that arm's out-state under the matching pattern.
+            // GATED identically to the `if` arm: a PURE scrutinee (a performing one is `#cv`-lifted, whose ref
+            // can't be re-used in the state position) with `#cv`-free arm out-states; collapses to `cur[i]`
+            // when NO arm advanced the slot (byte-identical to the pre-fix post-scrutinee behavior — working
+            // cases unchanged, no regression). The scrutinee is re-used in the state selector, duplicating no
+            // effect (pure) — the same soundness the `match` branch-dependent-next-state peel relies on.
+            let scrut_pure = !subtree_performs(db, scrutinee, ctx) && !contains_cv_ref(db, rscrut);
+            let merged: Vec<StructId> = (0..cur.len())
+                .map(|i| {
+                    let c = cur[i];
+                    let advanced = arm_outs.iter().any(|o| o[i] != c);
+                    let cv_clean = arm_outs.iter().all(|o| !contains_cv_ref(db, o[i]));
+                    if scrut_pure && advanced && cv_clean {
+                        let mh = db.push_atom(Leaf::Name("match".to_string()));
+                        let sc = deep_fresh_copy(db, rscrut);
+                        let mut ch = vec![mh, sc];
+                        for (a, &pat) in arm_pats.iter().enumerate() {
+                            let pc = copy_pure(db, pat);
+                            let oc = deep_fresh_copy(db, arm_outs[a][i]);
+                            ch.push(db.push_list(vec![pc, oc]));
+                        }
+                        db.push_list(ch)
+                    } else {
+                        c
+                    }
+                })
+                .collect();
+            Some((rmatch, merged))
         }
         // A short-circuit connective `(and lhs rhs)` / `(or lhs rhs)` whose rhs runs only conditionally on
         // `lhs`. Threading it as a strict two-operand form would evaluate rhs's perform even when `lhs`

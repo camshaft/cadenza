@@ -680,6 +680,7 @@ pass	a MAP argument to an effect op is looked up inside the arm at the handler's
 pass	a MAP built from generated pairs is equal regardless of insertion order (the Map analogue of set convergence)
 pass	a MAP keyed by perform results in the handle body crosses the exit and looks up by those keys
 pass	a MATCH as a NON-FINAL multi-binding let init selects the binding value per call
+pass	a MATCH-arm perform in a self-recursive performer threads the advance across recursion (rw-match)
 pass	a MATCH-dispatched mutual group with the perform in one arm and the mutual call in another folds
 pass	a MAX-fold over quantities compares through the erased unit wrapper per step
 pass	a MAX-fold threads a CONDITIONAL accumulator over a list with a runtime element
