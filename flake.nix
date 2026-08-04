@@ -318,6 +318,8 @@
             export CARGO_NET_OFFLINE=true
             mkdir -p "$HOME" "$CARGO_HOME"
             cat > "$CARGO_HOME/config.toml" <<EOF
+            [build]
+            jobs = 4
             [source.crates-io]
             replace-with = "vendored-sources"
             [source.vendored-sources]
@@ -352,6 +354,8 @@
             export CARGO_NET_OFFLINE=true
             mkdir -p "$HOME" "$CARGO_HOME"
             cat > "$CARGO_HOME/config.toml" <<EOF
+            [build]
+            jobs = 4
             [source.crates-io]
             replace-with = "vendored-sources"
             [source.vendored-sources]
@@ -402,6 +406,8 @@
             export CARGO_NET_OFFLINE=true
             mkdir -p "$HOME" "$CARGO_HOME"
             cat > "$CARGO_HOME/config.toml" <<EOF
+            [build]
+            jobs = 4
             [source.crates-io]
             replace-with = "vendored-sources"
             [source.vendored-sources]
@@ -512,6 +518,8 @@
               mkdir -p "$HOME" "$CARGO_HOME"
               # Point cargo at the merged offline vendor dir (crates.io + build-std deps).
               cat > "$CARGO_HOME/config.toml" <<EOF
+              [build]
+              jobs = 4
               [source.crates-io]
               replace-with = "vendored-sources"
               [source.vendored-sources]
@@ -635,6 +643,8 @@
             export CARGO_HOME="$TMPDIR/cargo"
             mkdir -p "$HOME" "$CARGO_HOME"
             cat > "$CARGO_HOME/config.toml" <<EOF
+            [build]
+            jobs = 4
             [source.crates-io]
             replace-with = "vendored-sources"
             [source.vendored-sources]
@@ -687,6 +697,8 @@
             export CARGO_HOME="$TMPDIR/cargo"
             mkdir -p "$HOME" "$CARGO_HOME"
             cat > "$CARGO_HOME/config.toml" <<EOF
+            [build]
+            jobs = 4
             [source.crates-io]
             replace-with = "vendored-sources"
             [source.vendored-sources]
