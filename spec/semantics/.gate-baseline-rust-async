@@ -1168,6 +1168,7 @@ pass	a checked integer conversion of an out-of-range CONSTANT is rejected at com
 pass	a checked integer conversion that fits succeeds
 pass	a checked result is consumed by matching its Option at run time
 pass	a checked-add over a RUNTIME operand declines pending the Core::CheckedArith runtime emit
+pass	a churned-back map IS a CHAMP key equal to the direct build (history-independence as a key)
 pass	a closure NESTED IN A TUPLE that performs a delegated effect cannot cross the host boundary
 pass	a closure RETURNS its captured map and the alias plus the original both read after
 pass	a closure applied through an unbuilt sibling variant compiles and runs
@@ -1998,6 +1999,7 @@ pass	a map built from a BigInt sum key and a BigInt.of-over-arithmetic key has b
 pass	a map can be a key, compared by its value
 pass	a map can hold a map as a value
 pass	a map chosen by a runtime if is size-measured with valid wasm
+pass	a map churned up to 200 entries and back to its original 2 EQUALS the direct 2-entry build
 pass	a map consumed by Map.insert in one operand is unchanged for a later read of the same binding
 pass	a map consumed by Map.remove in one operand is unchanged for a later read of the same binding
 pass	a map consumed by Map.swap in one operand is unchanged for a later read of the same binding

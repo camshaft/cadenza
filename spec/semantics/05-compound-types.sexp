@@ -2085,6 +2085,50 @@
   (call   main (: 0 Int64))
   (output (: (tuple 0 250 490 50 -1 0 370 50) (Tuple Int64 Int64 Int64 Int64 Int64 Int64 Int64 Int64))))
 
+(case "a map churned up to 200 entries and back to its original 2 EQUALS the direct 2-entry build"
+  (doc    "HISTORY-INDEPENDENCE under deep churn: grow a 2-entry map by 199 inserts (a multi-level trie),
+           then remove every added key — the survivor must EQUAL the map that never grew, by canonical
+           `=` (10) and by length (1). The shrink-to-empty case above checks len/lookups after a drain;
+           this one pins the stronger identity claim: node collapse on the way DOWN restores the exact
+           canonical structure (a collapse that left a one-child interior node, or a different leaf
+           ordering, would break `=` while passing every lookup). The two seed keys (5000/6000) sit apart
+           from the churn range 1..n so removal traffic churns AROUND them.")
+  (input  (do
+            (def (grow (: i Int64) (: n Int64) (: m (Map Int64 Int64)))
+              (if (= i n) m (grow (+ i 1) n (Map.insert m i (* i 10)))))
+            (def (shrink (: i Int64) (: n Int64) (: m (Map Int64 Int64)))
+              (if (= i n) m (shrink (+ i 1) n (Map.remove m i))))
+            (def (main (: n Int64))
+              (do
+                (def m0 (Map.insert (Map.insert Map.empty 5000 50) 6000 60))
+                (def big (grow 1 n m0))
+                (def back (shrink 1 n big))
+                (+ (* 10 (if (= back (Map.insert (Map.insert Map.empty 5000 50) 6000 60)) 1 0))
+                   (if (= (Map.len back) 2) 1 0))))
+            (export main)))
+  (call   main (: 200 Int64)) (output (: 11 Int64)))
+
+(case "a churned-back map IS a CHAMP key equal to the direct build (history-independence as a key)"
+  (doc    "The KEYING witness of the history-independence case above: equality says the churned-back map
+           and the direct build are one value; this pins that they are one KEY — a map stored under the
+           direct build `{999: 9}` is FOUND by looking up with the map that grew to 150 entries and shrank
+           back. The map-as-key path hashes the canonical byte form, so any structural residue the churn
+           left behind (that `=` might normalize over) would produce a different hash and a miss. The
+           strongest observable form of 'churn leaves no trace': the trie is byte-identical where it
+           counts.")
+  (input  (do
+            (def (grow (: i Int64) (: n Int64) (: m (Map Int64 Int64)))
+              (if (= i n) m (grow (+ i 1) n (Map.insert m i i))))
+            (def (shrink (: i Int64) (: n Int64) (: m (Map Int64 Int64)))
+              (if (= i n) m (shrink (+ i 1) n (Map.remove m i))))
+            (def (main (: n Int64))
+              (do
+                (def back (shrink 1 n (grow 1 n (Map.insert Map.empty 999 9))))
+                (match (Map.lookup (Map.insert Map.empty (Map.insert Map.empty 999 9) 42) back)
+                  ((Some v) v) ((None _u) -1))))
+            (export main)))
+  (call   main (: 150 Int64)) (output (: 42 Int64)))
+
 ; The deep-CHAMP checksum case above stresses the MAP trie (multi-level descent, node splitting) by reading
 ; every key back. A List is an RRB vector with the SAME multi-level-trie machinery (base-32 radix, VEC_BITS=5),
 ; but the runtime-built list cases so far stay small (n<=40 — a single strict leaf, or one interior level) so
