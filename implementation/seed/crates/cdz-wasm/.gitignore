@@ -1,0 +1,8 @@
+# The repo-root .gitignore ignores `Cargo.lock` globally (root-workspace crates lock via the seed root).
+# But cdz-wasm is its OWN [workspace] (root-excluded — it's the browser-facing wasm-bindgen wrapper built
+# for wasm32 by wasm-pack, never part of the native seed build), so it needs its OWN Cargo.lock to build
+# reproducibly offline. The full-CI-in-nix arc (v-nix) nixifies the guide-examples job, which runs
+# `wasm-pack build` on this crate in a hermetic derivation that can only vendor from a git-tracked lock.
+# So we COMMIT this crate's Cargo.lock — un-ignore it here (scoped to this dir) — mirroring the
+# cedar-policy-guest / reducer-guest fixtures. `--locked` builds are then deterministic in CI + Nix.
+!Cargo.lock
