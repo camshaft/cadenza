@@ -284,14 +284,21 @@ reads snapshot external state into local immutable history (safe touch of the ou
 
 Erlang's tree is ephemeral (in-memory restart policy). Ours is **durable + replayable**.
 
-- `spawn(reducer, caps, goal, cause=my-event)` is an effect. Kernel creates a child session,
-  records `spawned-child(child-id)` in parent's log and `born(parent-id, goal, caps)` as child's
-  genesis. Parent↔child link is immutable on both sides.
-- `close(outcome)` in the child is an effect. Kernel sees the child had a parent and auto-delivers
-  `child-completed(child-id, CloseOutcome)` to the parent's inbox — `outcome` is the structured
-  `CloseOutcome { Success(payload) | Failure(reason) }` (§6a, BUILT slice-1), so the parent
-  distinguishes success from failure. Not special kernel logic — just: the child's genesis recorded
-  a parent, so `close` routes the outcome there.
+**Build status (see §6a for the incremental path):** the structured close outcome is BUILT (slice-1);
+`spawn`/`born`/`spawned-child` (slice-2) and the `close`→`child-completed` auto-delivery (slice-3) are
+DESIGNED here but NOT yet implemented — the bullets below describe the intended shape (future tense),
+gated on the operator's review of §6a. The current kernel has `Closed { outcome: CloseOutcome }` but no
+spawn effect and no parent-link/auto-delivery.
+
+- `spawn(reducer, caps, goal, cause=my-event)` WILL be an effect. The kernel creates a child session,
+  recording `spawned-child(child-id)` in the parent's log and `born(parent-id, goal, caps)` as the child's
+  genesis. Parent↔child link is immutable on both sides. (slice-2, planned.)
+- `close(outcome)` in the child is an effect (the `Closed { outcome: CloseOutcome }` event is BUILT,
+  slice-1). WHEN the child had a parent, the kernel WILL auto-deliver `child-completed(child-id,
+  CloseOutcome)` to the parent's inbox — `outcome` is the structured `CloseOutcome { Success(payload) |
+  Failure(reason) }` (§6a slice-1), so the parent distinguishes success from failure. Not special kernel
+  logic — just: the child's genesis recorded a parent, so `close` routes the outcome there. (The
+  auto-delivery is slice-3, planned; the CloseOutcome it carries is already built.)
 - **Supervision strategy is userspace.** The parent's reducer folds `child-completed` and decides
   respawn / escalate / give up. Kernel hardcodes NO strategy — the parent reducer *is* the
   supervisor. (Minimalism test passes.)
@@ -347,7 +354,8 @@ supervisor reducer decides:
 
 ### Where the pieces live (layering — keeps the kernel minimal)
 - **Kernel:** the first-class failure EVENTS (FoldFailed, structured CloseOutcome, effect Err/
-  TimedOut) + `spawn`/`close`/`child-completed` auto-delivery (§6). Strategy-free.
+  TimedOut — all BUILT) + `spawn`/`close`/`child-completed` auto-delivery (§6, slices 2-3 PLANNED).
+  Strategy-free.
 - **Prelude / library (Cadenza, userspace):** a reusable **supervisor reducer** (one-for-one
   restart + the retry-with-backoff schedule helper — the backoff math lives HERE, in the layer the
   supervisor runs, so replay sees the same delays; NOT in host Rust). This is the layer an app's
