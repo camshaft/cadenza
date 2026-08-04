@@ -451,11 +451,21 @@
             ./rust-toolchain.toml
           ];
         };
-        cdzAgentHostNativeCheck = pkgs.stdenvNoCC.mkDerivation {
+        # Uses the FULL stdenv (a C toolchain) + cmake + pkg-config, NOT stdenvNoCC: the `live-net`
+        # feature closure pulls aws-lc-sys (the aws-sdk/reqwest rustls-tls default crypto provider), whose
+        # build script drives a C/asm build via cmake. It happens to take a no-cmake path on this
+        # version/target today (the check built green under stdenvNoCC), but that's fragile — a future
+        # aws-lc-sys bump could require the C build, silently reding this check. Providing cmake +
+        # pkg-config + a cc up front makes it robust regardless of aws-lc-sys's build path (github-liaison
+        # #2018). Build tools only — no effect on any emitted/hashed artifact (a lint+test check).
+        cdzAgentHostNativeCheck = pkgs.stdenv.mkDerivation {
           pname = "cdz-agent-host-native";
           version = "0.0.0";
           src = cdzAgentHostSrc;
-          nativeBuildInputs = [ rustToolchain ];
+          nativeBuildInputs = [ rustToolchain pkgs.cmake pkgs.pkg-config ];
+          # cmake is here for aws-lc-sys's build script to CALL, not to configure THIS derivation (no
+          # CMakeLists.txt) — disable cmake's configure setup-hook so it doesn't hijack configurePhase.
+          dontUseCmakeConfigure = true;
           buildPhase = ''
             runHook preBuild
             export HOME="$TMPDIR/home"
