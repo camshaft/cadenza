@@ -604,8 +604,21 @@ fn body_form(b: &mut Builder, body: &EventBody) -> StructId {
         }
         EventBody::Closed { outcome } => {
             let head = b.name("closed");
-            let pf = payload_form(b, outcome);
-            b.list(vec![head, pf])
+            // `(closed <close-outcome>)` where `<close-outcome>` = `(success <payload>)` | `(failure <str>)`
+            // — a Name-headed sum so a future arm (cancelled/escalated) appends with no wire break.
+            let of = match outcome {
+                crate::event::CloseOutcome::Success(p) => {
+                    let h = b.name("success");
+                    let pf = payload_form(b, p);
+                    b.list(vec![h, pf])
+                }
+                crate::event::CloseOutcome::Failure(reason) => {
+                    let h = b.name("failure");
+                    let r = str_leaf(b, reason);
+                    b.list(vec![h, r])
+                }
+            };
+            b.list(vec![head, of])
         }
         EventBody::FoldFailed {
             reason,
@@ -751,6 +764,29 @@ fn read_outcome(a: &Arenas, id: StructId) -> Result<EffectOutcome, EventAstError
     }
 }
 
+/// Decode a `<close-outcome>` sum — `(success <payload>)` | `(failure <str>)` — the structured session
+/// close outcome (§6 supervision slice-1). Mirrors [`read_outcome`]; an unknown head is `Corrupt`.
+fn read_close_outcome(
+    a: &Arenas,
+    id: StructId,
+) -> Result<crate::event::CloseOutcome, EventAstError> {
+    match head_of(a, id)? {
+        "success" => {
+            let [p] = form(a, id, "success")? else {
+                return Err(shape("success arity"));
+            };
+            Ok(crate::event::CloseOutcome::Success(read_payload(a, *p)?))
+        }
+        "failure" => {
+            let [m] = form(a, id, "failure")? else {
+                return Err(shape("failure arity"));
+            };
+            Ok(crate::event::CloseOutcome::Failure(read_str(a, *m)?))
+        }
+        _ => Err(shape("unknown close-outcome tag")),
+    }
+}
+
 fn read_opt_ms(a: &Arenas, id: StructId) -> Result<Option<u64>, EventAstError> {
     match head_of(a, id)? {
         "none" => Ok(None),
@@ -869,11 +905,11 @@ fn read_body(a: &Arenas, id: StructId) -> Result<EventBody, EventAstError> {
             }
         }
         "closed" => {
-            let [pf] = form(a, id, "closed")? else {
+            let [of] = form(a, id, "closed")? else {
                 return Err(shape("closed arity"));
             };
             EventBody::Closed {
-                outcome: read_payload(a, *pf)?,
+                outcome: read_close_outcome(a, *of)?,
             }
         }
         "fold-failed" => {
@@ -908,6 +944,7 @@ fn read_event(a: &Arenas, id: StructId) -> Result<Event, EventAstError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::event::CloseOutcome;
 
     fn all_variants() -> Vec<Event> {
         let h = Hash::of(b"x");
@@ -1046,7 +1083,7 @@ mod tests {
                 seq: 13,
                 cause: None,
                 body: EventBody::Closed {
-                    outcome: Payload::Inline(vec![].into()),
+                    outcome: CloseOutcome::Success(Payload::Inline(vec![].into())),
                 },
             },
             Event {
@@ -1311,6 +1348,36 @@ mod tests {
             decode_name_set(&encode_name_set("session/abc-123/scratch", &Hash::of(b"x"))).unwrap();
         assert_eq!(name2, "session/abc-123/scratch");
         assert_eq!(hash2, Hash::of(b"x"));
+    }
+
+    #[test]
+    fn closed_round_trips_both_close_outcome_arms_through_the_shared_codec() {
+        // §6 supervision slice-1: the structured close outcome (Success-with-payload vs Failure-with-reason)
+        // survives the durable shared codec — a supervisor reading the log recovers success-vs-failure + the
+        // failure reason. (`every_variant_round_trips` covers the Success arm; this pins BOTH, esp. that the
+        // Failure reason string round-trips — the bit a supervisor keys restart/escalate on.)
+        let success = Event {
+            seq: 1,
+            cause: None,
+            body: EventBody::Closed {
+                outcome: CloseOutcome::Success(Payload::Inline(b"result-bytes".to_vec().into())),
+            },
+        };
+        let failure = Event {
+            seq: 2,
+            cause: None,
+            body: EventBody::Closed {
+                outcome: CloseOutcome::Failure("goal unreachable: budget exhausted".to_string()),
+            },
+        };
+        assert_eq!(decode(&encode(&success)).unwrap(), success);
+        assert_eq!(decode(&encode(&failure)).unwrap(), failure);
+        // The two arms are DISTINGUISHABLE after a round-trip (not collapsed to one opaque shape).
+        assert_ne!(
+            encode(&success),
+            encode(&failure),
+            "Success and Failure encode distinctly — a supervisor can tell them apart"
+        );
     }
 
     #[test]
