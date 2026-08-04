@@ -1792,6 +1792,7 @@ pass	a handle seeded from a runtime caller argument advances from that seed
 pass	a handle whose head names a value rather than an effect is rejected
 pass	a handle's TUPLE value pairing a scalar with a built list escapes and is destructured
 pass	a handler ARM enumerates a 60-key trie op argument and resumes its fold
+pass	a handler SEEDED with a 40-key trie reads it across resumes
 pass	a handler STATE that is a recursive sum GROWS one constructor per operation
 pass	a handler accumulates into a list and a read-out operation reads it back
 pass	a handler arm RECURSES through a named helper before resuming
@@ -3909,6 +3910,7 @@ pass	an argument bound to a used parameter IS observed, so its trap occurs (the 
 pass	an argument bound to an unused parameter is not evaluated, so its trap does not occur
 pass	an argument swap weaves with perform results through a recursive handler body
 pass	an arithmetic operator with a single operand is rejected, not a crash
+pass	an arm REPLACES the trie state wholesale and the next op reads the replacement
 pass	an arm binder SHADOWS an outer heap list and the outer survives the shadow's scope
 pass	an arm chooses its resume value by an if on the handler state
 pass	an arm performs the outer effect TWICE and the results feed the resume value
