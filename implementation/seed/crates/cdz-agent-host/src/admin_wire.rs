@@ -200,13 +200,13 @@ pub fn encode_frame<T: Serialize>(value: &T) -> Result<Vec<u8>, WireError> {
 }
 
 /// Decode one length-prefixed JSON frame from the front of `buf`, returning the decoded value and the
-/// number of bytes consumed (so a caller draining a stream buffer can advance past it). `Err` if the buffer
-/// is too short for the declared frame (an incomplete read — the caller should read more bytes), if the
-/// declared length exceeds [`MAX_FRAME_LEN`], or if the body isn't valid JSON for `T`.
+/// number of bytes consumed (so a caller draining a stream buffer can advance past it). `Err` if the
+/// declared length exceeds [`MAX_FRAME_LEN`] or if the body isn't valid JSON for `T`.
 ///
 /// Returns `Ok(None)` when `buf` doesn't yet hold a full frame (fewer than 4 header bytes, or fewer than
-/// the declared body length) — the "need more bytes" signal a streaming reader loops on. A genuinely
-/// malformed frame (oversized length, bad JSON) is `Err`.
+/// the declared body length) — the "need more bytes" signal a streaming reader loops on (NOT an `Err`: a
+/// short buffer is an incomplete read to retry, not a malformed frame). Only an oversized declared length
+/// or a full-but-unparseable body is `Err`.
 pub fn decode_frame<T: for<'de> Deserialize<'de>>(
     buf: &[u8],
 ) -> Result<Option<(T, usize)>, WireError> {

@@ -340,6 +340,12 @@ jobs:
           cargo test
           cargo clippy --all-targets -- -D warnings
           cargo fmt --check
+          # `admin` gates the admin control interface's Unix-socket LISTENER. Unlike `live-net`, it needs NO
+          # egress or credentials — a Unix domain socket is local IPC that binds + connects on any runner — so
+          # it's fully TESTED here (its e2e binds a real socket in the temp dir + round-trips frames), not
+          # lint-only. Both test + clippy so the feature-gated transport is covered.
+          cargo test --features admin
+          cargo clippy --all-targets --features admin -- -D warnings
           # `live-net` gates the network executors (Bedrock model / real HTTP transports), which need egress
           # + credentials a CI runner lacks — so LINT-ONLY here (clippy), no `cargo test --features live-net`
           # (unlike the sibling cdz-kernel live-exec, whose subprocess spawn works on any runner). The default

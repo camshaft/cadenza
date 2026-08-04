@@ -32,6 +32,10 @@ pub struct DaemonConfig {
     /// bounded exponential backoff.
     #[serde(default)]
     pub retries: RetryConfig,
+    /// The admin control interface (the Unix-domain socket an admin sends commands to). Defaults to
+    /// disabled — a daemon with no admin section boots without a control socket.
+    #[serde(default)]
+    pub admin: AdminConfig,
 }
 
 /// The durable-log backend — config-SELECTABLE (the operator's "selectable backends"): `memory` for dev,
@@ -61,6 +65,24 @@ pub struct ObservabilityConfig {
     /// Where to emit metrics to (a collector address); required-ish when `enabled` — validated below.
     #[serde(default)]
     pub endpoint: Option<String>,
+}
+
+/// The admin control interface config — the local Unix-domain socket an admin communicates with the
+/// running daemon over (install/list/status/stop sessions). Disabled by default; when enabled, `socket` is
+/// the filesystem path to bind (validated present below). LOCAL only — a Unix socket, not a network
+/// listener, matching the hermetic/no-egress posture (a remote admin transport would be a later opt-in with
+/// its own auth). The socket LISTENER itself is behind the `admin` cargo feature; this config is always
+/// parseable so a config-path smoke test needs no feature.
+#[derive(Debug, Clone, Deserialize, PartialEq, Default)]
+#[serde(deny_unknown_fields)]
+pub struct AdminConfig {
+    /// Serve the admin control interface. Default off (no control socket).
+    #[serde(default)]
+    pub enabled: bool,
+    /// The Unix-domain socket path to bind (e.g. `/run/cdz/admin.sock`); required when `enabled` —
+    /// validated below.
+    #[serde(default)]
+    pub socket: Option<String>,
 }
 
 /// Effect-retry policy: a bounded exponential backoff the daemon's supervisor applies to a RETRYABLE
@@ -158,6 +180,25 @@ impl DaemonConfig {
             return Err(ConfigError(
                 "[observability] enabled=true needs an endpoint".into(),
             ));
+        }
+        match &self.admin {
+            AdminConfig {
+                enabled: true,
+                socket: None,
+            } => {
+                return Err(ConfigError(
+                    "[admin] enabled=true needs a socket path".into(),
+                ));
+            }
+            AdminConfig {
+                enabled: true,
+                socket: Some(s),
+            } if s.trim().is_empty() => {
+                return Err(ConfigError(
+                    "[admin] enabled=true needs a non-empty socket path".into(),
+                ));
+            }
+            _ => {}
         }
         Ok(())
     }
@@ -262,5 +303,38 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.0.contains("table"), "{err}");
+    }
+
+    #[test]
+    fn admin_defaults_to_disabled_and_carries_its_socket_when_set() {
+        // Default: no [admin] section → disabled, no socket.
+        let cfg = DaemonConfig::from_toml_str("").unwrap();
+        assert_eq!(cfg.admin, AdminConfig::default());
+        assert!(!cfg.admin.enabled);
+        assert!(cfg.admin.socket.is_none());
+
+        // Set: enabled + a socket path is carried through.
+        let cfg = DaemonConfig::from_toml_str(
+            r#"
+            [admin]
+            enabled = true
+            socket = "/run/cdz/admin.sock"
+            "#,
+        )
+        .expect("admin config parses");
+        assert!(cfg.admin.enabled);
+        assert_eq!(cfg.admin.socket.as_deref(), Some("/run/cdz/admin.sock"));
+    }
+
+    #[test]
+    fn admin_enabled_without_a_socket_is_rejected() {
+        let err = DaemonConfig::from_toml_str(
+            r#"
+            [admin]
+            enabled = true
+            "#,
+        )
+        .unwrap_err();
+        assert!(err.0.contains("socket"), "{err}");
     }
 }

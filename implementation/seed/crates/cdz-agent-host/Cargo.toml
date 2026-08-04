@@ -37,6 +37,15 @@ path = "src/bin/cdz_agent_daemon.rs"
 # tree, no network types). The `dep:` bindings tie the optional dependencies to this feature only.
 live-net = ["dep:reqwest", "dep:aws-config", "dep:aws-sdk-bedrockruntime"]
 
+# `admin` gates the ADMIN CONTROL INTERFACE's transport — the Unix-domain-socket listener that carries
+# admin command/response frames to a running daemon (operator: "a way to communicate with the daemon + send
+# it commands as an admin"). OFF by default so the hermetic gate BINDS NO SOCKET + pulls no tokio `net`
+# tree: the admin COMMAND layer + wire CODEC stay always-on (hermetically tested), only the socket LISTENER
+# is feature-gated. It enables tokio's `net` feature (for `UnixListener`/`UnixStream`) + `io-util` (the
+# `AsyncReadExt`/`AsyncWriteExt` the frame read/write use). Local IPC only — a Unix socket is not network
+# egress, so this is not the same concern as `live-net`; gating it keeps the default build listener-free.
+admin = ["tokio/net", "tokio/io-util"]
+
 [dependencies]
 # The kernel whose Executor/Authorize traits + effect/event types we implement. Path dep across the
 # workspace boundary (both are their own workspaces). We CONSUME these traits; we never edit its src.
