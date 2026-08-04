@@ -101,25 +101,57 @@ async fn main() -> std::process::ExitCode {
         let session_authz = || -> Box<dyn cdz_kernel::authz::Authorize> {
             Box::new(cdz_kernel::authz::Authorizer::deny_all())
         };
+        // A per-session durable-log sink builder when [log].backend = file (each session's log →
+        // <dir>/<id>.log); None for the in-memory log backend. Applied to the factory below.
+        use cdz_agent_host::{FileLogSinkBuilder, LogConfig, LogSinkBuilder};
+        let log_sink: Option<Box<dyn LogSinkBuilder>> = match &config.log {
+            LogConfig::File { dir } => Some(Box::new(FileLogSinkBuilder::new(dir))),
+            // memory (default) → in-memory session logs; dynamo → not yet a session-log backend (later slice).
+            _ => None,
+        };
+        // Build the LIVE executor transports ONCE, here at startup (this is where the AWS config / IMDS load
+        // happens — on the boot path, NOT per install). Each install then CLONES these into a fresh executor
+        // set cheaply, so a slow IMDS probe can't stall the host loop mid-run (#1987 review).
+        let executors = match LiveExecutorSet::new().await {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!("cdz-agent-daemon: could not build the live executor transports: {e}");
+                return std::process::ExitCode::from(1);
+            }
+        };
+        // Attach the optional log-sink builder to whichever blob-backed factory we build, then box it. (The
+        // two arms are distinct concrete factory types, so the with_log_sink + Box happens per-arm; the
+        // executor set is moved into the one arm that runs.)
         let factory: Box<dyn SessionFactory> = match &config.blob {
-            BlobConfig::Memory => Box::new(ComponentSessionFactory::new(
-                cdz_kernel::blob::MemBlobStore::new(),
-                LiveExecutorSet,
-                session_authz,
-            )),
-            BlobConfig::Dir { dir } => match cdz_kernel::blob::DiskBlobStore::open(dir) {
-                Ok(store) => Box::new(ComponentSessionFactory::new(
-                    store,
-                    LiveExecutorSet,
+            BlobConfig::Memory => {
+                let mut f = ComponentSessionFactory::new(
+                    cdz_kernel::blob::MemBlobStore::new(),
+                    executors,
                     session_authz,
-                )),
+                );
+                if let Some(b) = log_sink {
+                    f = f.with_log_sink(b);
+                }
+                Box::new(f)
+            }
+            BlobConfig::Dir { dir } => match cdz_kernel::blob::DiskBlobStore::open(dir) {
+                Ok(store) => {
+                    let mut f = ComponentSessionFactory::new(store, executors, session_authz);
+                    if let Some(b) = log_sink {
+                        f = f.with_log_sink(b);
+                    }
+                    Box::new(f)
+                }
                 Err(e) => {
                     eprintln!("cdz-agent-daemon: could not open [blob] dir {dir}: {e}");
                     return std::process::ExitCode::from(1);
                 }
             },
         };
-        eprintln!("cdz-agent-daemon: reducer blob store = {:?}", config.blob);
+        eprintln!(
+            "cdz-agent-daemon: reducer blob store = {:?}, session log = {:?}",
+            config.blob, config.log
+        );
 
         let host = AsyncAgentHost::with_factory(AgentHost::new(), factory)
             .with_admin_authz(Box::new(AllowList::allow_all_for_local_admin()));

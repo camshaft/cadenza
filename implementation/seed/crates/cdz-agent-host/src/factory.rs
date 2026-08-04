@@ -49,31 +49,51 @@ impl<F: Fn() -> CompositeExecutor> ExecutorSetBuilder for F {
     }
 }
 
-/// The deployed daemon's [`ExecutorSetBuilder`]: build the LIVE executor set (Clock + HTTP + Bedrock, env
-/// creds) via [`live_executor_set`](crate::live_executor_set) per install. Behind `live-net` (it pulls the
-/// network transports). A synchronous closure can't call an async fn, and async closures aren't stable, so
-/// this is a concrete zero-sized builder rather than a `Fn`. `live_executor_set` returns `Err` on a
-/// transport-build failure (e.g. no TLS backend); this builder treats that as fatal-per-install and falls
-/// back to an EMPTY executor set so a build failure surfaces as the session simply having no executors
-/// (every effect then folds an observable `Err`) rather than the factory panicking — a per-session
-/// misconfig shouldn't crash the daemon. (The failure is logged to stderr.)
+/// The deployed daemon's [`ExecutorSetBuilder`]: assemble the LIVE executor set (Clock + HTTP + Bedrock,
+/// env creds) per install by CLONING transports built ONCE at daemon startup. Behind `live-net`.
+///
+/// **Build-once, clone-per-install (#1987 review).** A prior version called `live_executor_set().await` in
+/// every `build()` — which rebuilt the reqwest client + re-ran the AWS/IMDS config load EACH install, inside
+/// the single-threaded host loop; a slow/timing-out IMDS probe then stalled every session. Now the daemon
+/// constructs the HTTP + Bedrock transports ONCE ([`LiveExecutorSet::new`], which `.await`s the AWS load at
+/// boot) and each `build()` just CLONES them (a reqwest `Client` / aws-sdk client clone is an `Arc` refcount
+/// bump over a shared pool — cheap + non-blocking) into a fresh `CompositeExecutor`. The per-install cost is
+/// now a couple of cheap clones, not a network probe.
 #[cfg(feature = "live-net")]
-pub struct LiveExecutorSet;
+pub struct LiveExecutorSet {
+    http: crate::ReqwestHttpTransport,
+    model: crate::BedrockModelTransport,
+}
+
+#[cfg(feature = "live-net")]
+impl LiveExecutorSet {
+    /// Build the shared transports ONCE (at daemon startup) — this is where the AWS config / IMDS load
+    /// happens, on the boot path, NOT per install. `Err` if the HTTP client can't be built (e.g. no TLS
+    /// backend) — a fatal daemon misconfiguration surfaced at boot, not per session.
+    pub async fn new() -> Result<Self, String> {
+        let http = crate::ReqwestHttpTransport::new()?;
+        let model = crate::BedrockModelTransport::new().await;
+        Ok(LiveExecutorSet { http, model })
+    }
+}
 
 #[cfg(feature = "live-net")]
 #[async_trait::async_trait(?Send)]
 impl ExecutorSetBuilder for LiveExecutorSet {
     async fn build(&self) -> CompositeExecutor {
-        match crate::live_executor_set().await {
-            Ok(set) => set,
-            Err(e) => {
-                eprintln!(
-                    "cdz-agent-host: live executor set build failed ({e}); \
-                     the installed session will have no executors"
-                );
-                CompositeExecutor::new()
-            }
-        }
+        use cdz_kernel::effect::effect_ct;
+        // Cheap per-install assembly: CLONE the shared transports (Arc bumps) into fresh executors. No
+        // network / IMDS work here, so it never stalls the loop.
+        CompositeExecutor::new()
+            .with_effect(effect_ct::NOW, Box::new(crate::ClockExecutor::new()))
+            .with_effect(
+                effect_ct::HTTP,
+                Box::new(crate::HttpExecutor::new(self.http.clone())),
+            )
+            .with_effect(
+                effect_ct::MODEL,
+                Box::new(crate::ModelExecutor::new(self.model.clone())),
+            )
     }
 }
 
@@ -91,13 +111,69 @@ impl<F: Fn() -> Box<dyn Authorize>> AuthorizerBuilder for F {
     }
 }
 
+/// Builds a per-session DURABLE-LOG sink — where an installed session's event log persists. Called ONCE per
+/// install, keyed by the session id (so a file backend derives a per-session path, e.g.
+/// `<log-dir>/<id>.log`). Returns `None` for a session that should keep its in-memory log only (the `memory`
+/// log backend, dev/test), or `Err` if opening the durable log failed (surfaced as an install error — an
+/// un-openable log is a real misconfig). Async (`?Send`) to match the crate convention (a network log
+/// backend `.await`s; a disk `LogStore::open` returns ready).
+#[async_trait::async_trait(?Send)]
+pub trait LogSinkBuilder {
+    async fn build(
+        &self,
+        id: &crate::host::SessionId,
+    ) -> Result<Option<Box<dyn cdz_kernel::log_store::LogSink>>, String>;
+}
+
+/// A [`LogSinkBuilder`] that opens a per-session file-backed [`LogStore`](cdz_kernel::log_store::LogStore)
+/// under a root directory — the `[log].backend = file` durable log. Each session's log is
+/// `<root>/<session-id>.log`; the session id is sanitized (path separators → `_`) so an id can't escape the
+/// root. The deployed daemon installs this when the log config selects a file backend.
+pub struct FileLogSinkBuilder {
+    root: std::path::PathBuf,
+}
+
+impl FileLogSinkBuilder {
+    /// Root the per-session logs at `root` (created on first open by `LogStore::open`).
+    pub fn new(root: impl Into<std::path::PathBuf>) -> Self {
+        FileLogSinkBuilder { root: root.into() }
+    }
+}
+
+#[async_trait::async_trait(?Send)]
+impl LogSinkBuilder for FileLogSinkBuilder {
+    async fn build(
+        &self,
+        id: &crate::host::SessionId,
+    ) -> Result<Option<Box<dyn cdz_kernel::log_store::LogSink>>, String> {
+        // Sanitize the id into a single safe filename component — no '/' or '\\' so a crafted id can't
+        // write outside the root; a `.log` suffix keeps the files recognizable.
+        let safe: String = id
+            .as_str()
+            .chars()
+            .map(|c| if c == '/' || c == '\\' { '_' } else { c })
+            .collect();
+        // Ensure the root dir exists (LogStore::open opens a file, it does NOT create parent dirs — unlike
+        // DiskBlobStore::open). Create it once here so a fresh [log].dir just works.
+        std::fs::create_dir_all(&self.root)
+            .map_err(|e| format!("could not create log dir {}: {e}", self.root.display()))?;
+        let path = self.root.join(format!("{safe}.log"));
+        let store = cdz_kernel::log_store::LogStore::open(&path)
+            .map_err(|e| format!("could not open durable log {}: {e}", path.display()))?;
+        Ok(Some(Box::new(store)))
+    }
+}
+
 /// The real [`SessionFactory`]: load a reducer component from a [`BlobStore`] by hash and assemble a live
 /// [`HostedSession`]. Generic over the blob store; the executor set + authorizer come from caller-supplied
-/// builders (so the network/AWS tree stays in the daemon, not this hermetically-testable factory).
+/// builders (so the network/AWS tree stays in the daemon, not this hermetically-testable factory). An
+/// optional [`LogSinkBuilder`] attaches a per-session durable log when configured (`[log].backend = file`);
+/// without one, installed sessions keep their in-memory log (the `memory` backend / tests).
 pub struct ComponentSessionFactory<B, E, A> {
     blob: B,
     executors: E,
     authz: A,
+    log_sink: Option<Box<dyn LogSinkBuilder>>,
 }
 
 impl<B, E, A> ComponentSessionFactory<B, E, A>
@@ -106,13 +182,23 @@ where
     E: ExecutorSetBuilder,
     A: AuthorizerBuilder,
 {
-    /// Assemble the factory over a blob store + the per-session executor-set / authorizer builders.
+    /// Assemble the factory over a blob store + the per-session executor-set / authorizer builders. No
+    /// durable-log sink by default (installed sessions keep their in-memory log); add one with
+    /// [`with_log_sink`](Self::with_log_sink).
     pub fn new(blob: B, executors: E, authz: A) -> Self {
         ComponentSessionFactory {
             blob,
             executors,
             authz,
+            log_sink: None,
         }
+    }
+
+    /// Attach a per-session durable-log [`LogSinkBuilder`] — the deployed daemon supplies one when
+    /// `[log].backend = file` so each installed session's event log persists to disk. Builder-style.
+    pub fn with_log_sink(mut self, log_sink: Box<dyn LogSinkBuilder>) -> Self {
+        self.log_sink = Some(log_sink);
+        self
     }
 }
 
@@ -153,12 +239,22 @@ where
         // 3. Assemble the session with a fresh executor set + the session's authorizer. genesis records the
         //    reducer hash as the session's genesis identity (so replay reconstructs it).
         let executors = self.executors.build().await;
-        Ok(HostedSession::genesis(
+        let mut hosted = HostedSession::genesis(
             spec.reducer_hash,
             Box::new(reducer),
             self.authz.build(),
             executors,
-        ))
+        );
+        // 4. Attach a per-session durable log if configured ([log].backend = file). A build error (an
+        //    un-openable log path) fails the install — a session that should be durable but can't persist
+        //    must NOT silently run in-memory-only. `None` = this session keeps its in-memory log (the
+        //    `memory` backend).
+        if let Some(builder) = &self.log_sink {
+            if let Some(sink) = builder.build(&spec.id).await? {
+                hosted = hosted.with_sink(sink);
+            }
+        }
+        Ok(hosted)
     }
 }
 
@@ -308,5 +404,47 @@ mod tests {
             Some(&[1u8][..]),
             "the reducer's fold bumped its count counter — the agent ran"
         );
+    }
+
+    #[tokio::test]
+    async fn file_log_sink_builder_opens_a_per_session_log() {
+        // The [log]=file sink builder: build(id) opens a LogStore at <root>/<id>.log and returns Some. A
+        // fresh path yields a usable sink + the file exists after open.
+        let root = std::env::temp_dir().join("cdz-filelog-test");
+        let _ = std::fs::remove_dir_all(&root);
+        let builder = FileLogSinkBuilder::new(&root);
+        let sink = builder
+            .build(&SessionId::new("sess-1"))
+            .await
+            .expect("build ok")
+            .expect("file backend yields a sink");
+        // The sink is a real LogStore; dropping it is fine — the point is the per-session file was created.
+        drop(sink);
+        assert!(
+            root.join("sess-1.log").exists(),
+            "per-session log file created at <root>/<id>.log"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn file_log_sink_builder_sanitizes_a_slashed_session_id() {
+        // A session id with a '/' must NOT escape the root — it's sanitized to a single filename component.
+        let root = std::env::temp_dir().join("cdz-filelog-sanitize-test");
+        let _ = std::fs::remove_dir_all(&root);
+        let builder = FileLogSinkBuilder::new(&root);
+        let _sink = builder
+            .build(&SessionId::new("evil/../escape"))
+            .await
+            .expect("build ok")
+            .expect("sink");
+        // The log stayed under root (the '/'s became '_'), nothing escaped.
+        let entries: Vec<_> = std::fs::read_dir(&root)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(entries, vec!["evil_.._escape.log".to_string()], "{entries:?}");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

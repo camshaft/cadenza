@@ -141,7 +141,13 @@ impl<T: ModelTransport> Executor for ModelExecutor<T> {
 /// **Error classification (§17):** a throttle / server / timeout / dispatch failure is
 /// [`retry::retryable`]; a request-construction or other service error is [`retry::permanent`]
 /// (fail-closed — an unprefixed reason is treated permanent, so a misclassification never retries forever).
+// `Clone` is cheap: an `aws_sdk_bedrockruntime::Client` is an `Arc`-backed handle over a shared
+// `SdkConfig` (connection pool + credential cache), so cloning is a refcount bump, NOT a re-resolution of
+// AWS config / IMDS. This lets the daemon build ONE Bedrock client at startup and clone it into a fresh
+// per-session executor — the per-install AWS/IMDS load (which stalled the single-threaded loop) moves to
+// boot (#1987 review).
 #[cfg(feature = "live-net")]
+#[derive(Clone)]
 pub struct BedrockModelTransport {
     client: aws_sdk_bedrockruntime::Client,
 }

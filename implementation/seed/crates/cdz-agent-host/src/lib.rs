@@ -83,7 +83,10 @@ pub use config::{
 };
 #[cfg(feature = "live-net")]
 pub use factory::LiveExecutorSet;
-pub use factory::{AuthorizerBuilder, ComponentSessionFactory, ExecutorSetBuilder};
+pub use factory::{
+    AuthorizerBuilder, ComponentSessionFactory, ExecutorSetBuilder, FileLogSinkBuilder,
+    LogSinkBuilder,
+};
 #[cfg(feature = "live-net")]
 pub use host::live_executor_set;
 pub use host::{AgentHost, HostedSession, SessionId};
