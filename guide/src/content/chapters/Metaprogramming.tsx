@@ -209,18 +209,18 @@ export default function Metaprogramming() {
       <P>
         A byte-string node prints and reads back the same way. <C>print</C> renders an <C>Ast.Bytes</C> as
         its <C>{`b"…"`}</C> literal, and <C>read</C> parses that back to an equal node, so the text round-trip
-        holds for binary blobs just as it does for numbers, this time carrying bytes a string couldn't, a{" "}
-        <C>{`\\x00`}</C> and a <C>{`\\xff`}</C>:
+        holds for binary blobs just as it does for numbers, this time carrying a byte no text string could,
+        the non-UTF-8 <C>{`\\xff`}</C>:
       </P>
       <Runnable
         source={`(= (read (print (Ast.Bytes b"\\x00\\xff")))
    (Ast.Bytes b"\\x00\\xff"))`}
       />
       <P>
-        The <C>b</C> prefix is what marks a byte literal, and <C>read</C> only treats it as one when the{" "}
-        <C>b</C> is immediately followed by the quote: a bare <C>b</C> on its own is an ordinary identifier,
-        so <C>{`(read "b")`}</C> is an <C>Ast.Name</C>, not a zero-length <C>Ast.Bytes</C>. That keeps a
-        variable named <C>b</C> from being mistaken for an empty blob:
+        It's the <C>{`b"…"`}</C> form that marks a byte literal, and <C>read</C> only treats it as one when
+        the <C>b</C> is immediately followed by the quote: a bare <C>b</C> on its own is an ordinary
+        identifier, so <C>{`(read "b")`}</C> is an <C>Ast.Name</C>, not a zero-length <C>Ast.Bytes</C>. That
+        keeps a variable named <C>b</C> from being mistaken for an empty blob:
       </P>
       <Runnable
         source={`(match (read "b")
