@@ -20,7 +20,7 @@
 use cdz_kernel::authz::Authorize;
 use cdz_kernel::effect::effect_ct;
 use cdz_kernel::event::EventBody;
-use cdz_kernel::executor::CompositeExecutor;
+use cdz_kernel::executor::{CompositeExecutor, Executor};
 use cdz_kernel::hash::Hash;
 use cdz_kernel::kernel::{KernelError, Session};
 use cdz_kernel::reducer::Reducer;
@@ -103,6 +103,29 @@ impl HostedSession {
     pub fn with_name_store(mut self, name_store: cdz_kernel::name_store::NameStore) -> Self {
         self.session.attach_name_store(name_store);
         self
+    }
+
+    /// Register (or replace) a by-family effect executor on this LIVE session — the MECHANISM axis of a
+    /// mid-session capability change (host-capability-discovery I6a). Adding an executor for a family the
+    /// session couldn't perform before makes that family's manifest entry flip `Absent`→(policy-decided);
+    /// re-registering a family swaps its executor. This is the host-side trigger the reactive
+    /// capabilities-changed push (I6b) fires on: after calling it, [`push_capabilities_changed`] recomputes
+    /// the manifest + pushes iff it actually changed.
+    ///
+    /// (The kernel's [`CompositeExecutor`] is builder-shaped — `with_effect` consumes+returns — so this
+    /// takes the executor by value via `mem::take` + rebuild, keeping the mutation on the owned field.)
+    pub fn add_executor(&mut self, family: impl Into<String>, executor: Box<dyn Executor>) {
+        let composite = std::mem::take(&mut self.executor);
+        self.executor = composite.with_effect(family, executor);
+    }
+
+    /// Swap this LIVE session's authorizer — the POLICY axis of a mid-session capability change (I6a). A
+    /// new policy (e.g. a broadened/tightened grant, or one loaded from a §4c policy-pointer `store/set`)
+    /// changes which effects authorize, so a family's manifest entry can flip `Denied`↔`Granted` with the
+    /// same executor set. The reactive push over this (I6b — recompute + `capabilities-changed` iff the
+    /// manifest changed) lands once the kernel's `push_capabilities_changed` seam is on trunk.
+    pub fn set_authorizer(&mut self, authz: Box<dyn Authorize>) {
+        self.authz = authz;
     }
 
     /// SEED the capability manifest so this agent is "born knowing" its capabilities — call ONCE right
@@ -992,5 +1015,88 @@ mod tests {
             Some(&expected[..]),
             "the seed folds THE capabilities manifest (mechanism ∩ policy) — born knowing, not just any payload"
         );
+    }
+
+    #[test]
+    fn add_executor_extends_the_live_sessions_mechanism_surface() {
+        // I6a mechanism axis: a session born with only Now cannot perform Http; add_executor(Http, …) makes
+        // it able to, mid-session. handles_family is the mechanism dimension the capability manifest probes.
+        let mut hosted = HostedSession::genesis(
+            Hash::of(b"grow-mechanism-v1"),
+            Box::new(ClockAgent),
+            Box::new(Authorizer::deny_all()),
+            CompositeExecutor::new().with_effect(effect_ct::NOW, Box::new(ClockExecutor::new())),
+        );
+        assert!(hosted.executor.handles_family(effect_ct::NOW));
+        assert!(
+            !hosted.executor.handles_family(effect_ct::HTTP),
+            "born without an Http executor"
+        );
+
+        hosted.add_executor(
+            effect_ct::HTTP,
+            Box::new(crate::HttpExecutor::new(NeverHttp)),
+        );
+
+        assert!(
+            hosted.executor.handles_family(effect_ct::HTTP),
+            "add_executor flipped Http from Absent to present, mid-session"
+        );
+        assert!(
+            hosted.executor.handles_family(effect_ct::NOW),
+            "the pre-existing Now executor is retained (add, not replace-all)"
+        );
+    }
+
+    #[tokio::test]
+    async fn set_authorizer_swaps_the_live_sessions_policy_surface() {
+        // I6a policy axis: swapping the authorizer flips which effects authorize with the SAME executor set.
+        let mut hosted = HostedSession::genesis(
+            Hash::of(b"swap-policy-v1"),
+            Box::new(ClockAgent),
+            Box::new(Authorizer::deny_all()),
+            CompositeExecutor::new().with_effect(effect_ct::NOW, Box::new(ClockExecutor::new())),
+        );
+        let now_req = || {
+            EffectRequest::new(
+                EffectKind::Now,
+                String::new(),
+                None,
+                Timeliness::Interactive,
+            )
+        };
+
+        // Before: deny_all → the Now effect is refused even though a Now executor is present.
+        assert!(
+            hosted.authz.authorize(&now_req()).await.is_err(),
+            "deny_all refuses Now"
+        );
+
+        hosted.set_authorizer(Box::new(Authorizer::new(vec![Capability {
+            kind: EffectKind::Now,
+            predicate: ResourcePredicate::Any,
+        }])));
+
+        assert!(
+            hosted.authz.authorize(&now_req()).await.is_ok(),
+            "set_authorizer swapped in a policy that permits Now, mid-session"
+        );
+    }
+
+    /// A never-called Http transport — `add_executor` only needs a constructible executor to register the
+    /// family; the test probes `handles_family` (mechanism), never performs a request.
+    struct NeverHttp;
+    #[async_trait::async_trait(?Send)]
+    impl crate::HttpTransport for NeverHttp {
+        async fn request(
+            &self,
+            _m: crate::HttpMethod,
+            _u: &str,
+            _h: &[(String, String)],
+            _b: Option<&[u8]>,
+            _k: Hash,
+        ) -> Result<crate::HttpResponse, String> {
+            unreachable!("mechanism-surface test never performs the request")
+        }
     }
 }
