@@ -66206,6 +66206,33 @@ mod stage1 {
     }
 
     #[test]
+    fn a_block_wrapped_branch_perform_in_a_scrutinee_or_statement_declines_not_miscompiles() {
+        // adv-69 g3 + c3 sub-faces (breaker probe-g3/c3, block-outstate battery). Same block-boundary
+        // out-state drop as the let-init floor, at two more positions the hoist doesn't reach when the
+        // conditional is BLOCK-wrapped.
+        // g3 — MATCH-SCRUTINEE: `(match (let ((b true)) (if b (St.get) 99)) (v (+ (* 10 v) (St.get))))` — Site 5
+        // lifts a DIRECT branch-performing scrutinee, but a block wrapper reverts its out-state → ran 33, want 34.
+        let g3 = "(do (effect St (op get (-> Unit Int64))) \
+                   (def (main) (handle St 3 ((get (u) s (resume s (+ s 1)))) \
+                     (match (let ((b true)) (if b (St.get) 99)) (v (+ (* 10 v) (St.get)))))) \
+                   (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(g3))).is_err(),
+            "a block-wrapped branch perform in a match-scrutinee must decline, not miscompile to 33"
+        );
+        // c3 — non-tail DO-STATEMENT: `(do (let ((x true)) (if x (St.put 7) unit)) (+ (* 10 (St.get)) x))` — Site
+        // 1 hoists a DIRECT non-last branch-performing item, but a block wrapper drops the `put` advance → 33/73.
+        let c3 = "(do (effect St (op get (-> Unit Int64)) (op put (-> Int64 Unit))) \
+                   (def (main (: x Int64)) (handle St x ((get (u) s (resume s s)) (put (v) _s (resume unit v))) \
+                     (do (let ((x true)) (if x (St.put 7) unit)) (+ (* 10 (St.get)) x)))) \
+                   (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(c3))).is_err(),
+            "a block-wrapped branch perform in a non-tail do-statement must decline, not miscompile to 33"
+        );
+    }
+
+    #[test]
     fn a_mutually_recursive_effectful_group_specializes_under_a_state_handler() {
         // E3 extended to MUTUAL recursion: `ev`/`od` call each other, and the effect (`Ctr.tick`) is reached
         // by `ev` only THROUGH its partner `od`. The fix: `body_reaches_discharged` now follows RECURSIVE

@@ -3468,6 +3468,47 @@
             (export main)))
   (call   main) (output (: 34 Int64)))
 
+(case "a BLOCK-wrapped branch perform in a MATCH-SCRUTINEE declines cleanly (adv-69 g3 sub-face)"
+  (doc    "adv-69 g3 (breaker probe-g3, block-outstate battery): the SAME block-boundary out-state drop, at a
+           MATCH-SCRUTINEE consuming position. `(match (let ((b true)) (if b (St.get) 99)) (v (+ (* 10 v)
+           (St.get))))` — the scrutinee is a block-wrapped branch-performing conditional. Site 5 lifts a
+           scrutinee that is DIRECTLY a branch-performing conditional (per-branch threading carries its
+           advance), but a block wrapper is opaque to it, so the scrutinee's out-state reverts to entry: seeded
+           3 it ran 33, correct is 34 (v=3, state→4, trailing `(St.get)` reads 4). Keyed on the WRAPPED shape
+           only (a DIRECT `if`/`match` scrutinee still folds — no over-decline of the Site-5 path). Declines
+           cleanly → a clean Todo, never the silent 33; flips to 34 PASS on the through-block fold.")
+  (input  (do
+            (effect St (op get (-> Unit Int64)))
+            (def (main)
+              (handle St 3 ((get (u) s (resume s (+ s 1))))
+                (match (let ((b true)) (if b (St.get) 99))
+                  (v (+ (* 10 v) (St.get))))))
+            (export main)))
+  (call   main) (output (: 34 Int64)))
+
+(case "a BLOCK-wrapped branch perform in a non-tail DO-STATEMENT declines cleanly (adv-69 c3 sub-face)"
+  (doc    "adv-69 c3 (breaker probe-c3, block-outstate battery): the SAME block-boundary out-state drop, at a
+           non-tail `do`-STATEMENT position. `(do (let ((x true)) (if x (St.put 7) unit)) (+ (* 10 (St.get))
+           x))` — a block-wrapped branch perform as a DISCARDED (non-last) `do` item. Site 1 hoists a non-last
+           item that is DIRECTLY a branch-performing conditional (distributing the continuation into each
+           branch), but a block wrapper defeats its match, so the statement's `St.put 7` advance is dropped:
+           seeded 3 the trailing `(St.get)` reads the stale pre-statement state → ran 33, correct is 73 (put
+           sets state 7, `(St.get)` resumes 7 → 10*7 + shadowed-outer x=3 = 73). The minimal twins d2/e1 — a
+           BARE `if` in the statement, or a def-bound cond — hoist fine and PASS, so this keys on the block
+           wrapper. Declines cleanly → a clean Todo, never the silent 33; flips to 73 PASS on the through-block
+           fold.")
+  (input  (do
+            (effect St (op get (-> Unit Int64)) (op put (-> Int64 Unit)))
+            (def (main (: x Int64))
+              (handle St x
+                ((get (u) s (resume s s))
+                 (put (v) _s (resume unit v)))
+                (do
+                  (let ((x true)) (if x (St.put 7) unit))
+                  (+ (* 10 (St.get)) x))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 73 Int64)))
+
 (case "two performs bound by nested lets thread the handler state in order"
   (doc    "Two performs on the strict spine, each BOUND by its own `let`, thread the handler state in
            evaluation order across the binds. `(let ((a (Ask.get))) (let ((b (Ask.get))) (+ a b)))` under a
