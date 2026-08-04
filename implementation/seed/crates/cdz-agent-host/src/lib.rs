@@ -60,6 +60,7 @@ pub mod admin_wire;
 pub mod async_host;
 pub mod clock;
 pub mod config;
+pub mod factory;
 pub mod host;
 pub mod http;
 pub mod model;
@@ -78,6 +79,7 @@ pub use admin_wire::{
 pub use async_host::{AdminChannel, AdminRequest, AsyncAgentHost, Inbound, Inbox};
 pub use clock::ClockExecutor;
 pub use config::{AdminConfig, DaemonConfig, LogConfig, ObservabilityConfig, RetryConfig};
+pub use factory::{AuthorizerBuilder, ComponentSessionFactory, ExecutorSetBuilder};
 #[cfg(feature = "live-net")]
 pub use host::live_executor_set;
 pub use host::{AgentHost, HostedSession, SessionId};
