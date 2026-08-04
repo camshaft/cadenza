@@ -111,7 +111,7 @@ impl AgentHost {
     pub async fn apply_admin(
         &mut self,
         cmd: AdminCommand,
-        factory: Option<&mut dyn SessionFactory>,
+        factory: Option<&mut (dyn SessionFactory + '_)>,
         now_ms: Option<u64>,
     ) -> AdminResponse {
         match cmd {

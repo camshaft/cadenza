@@ -19,11 +19,12 @@
 //! other sessions while it awaits — SAME loop, no reshape, no `Send` (still one task). The in-place
 //! `host.deliver(..).await` here is exactly that seam.
 
+use crate::admin::{AdminCommand, AdminResponse, SessionFactory};
 use crate::host::{AgentHost, SessionId};
 use cdz_kernel::event::EventBody;
 use cdz_kernel::hash::Hash;
 use cdz_kernel::kernel::KernelError;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 /// One inbound delivery to route to a session: its id + the event body + optional cause. The `Inbox`
 /// sender clones cheaply, so many producers (network listeners, peer-emit bridges, a test) can feed the
@@ -37,6 +38,28 @@ pub struct Inbound {
 /// The sending half a producer holds to deliver events into the host loop. Cloneable (mpsc sender).
 pub type Inbox = mpsc::UnboundedSender<Inbound>;
 
+/// One admin command routed to the host loop with a reply channel — the in-process half of the admin
+/// CONTROL INTERFACE. A producer (the future Unix-socket listener, or a test) sends this on the
+/// [`AdminChannel`]; the loop applies it via [`AgentHost::apply_admin`] on the single-threaded loop task
+/// (where the `!Send` registry lives) and returns the [`AdminResponse`] on `reply`.
+///
+/// **Why a request/reply pair (not a bare command like [`Inbound`]):** an admin command must RETURN a
+/// result to the caller (installed? the session list? the status JSON?), whereas an inbound delivery is
+/// fire-and-forget. The `reply` oneshot is that return path; the socket listener task (which holds the
+/// `Send` half) awaits it and writes the encoded response back to the client.
+pub struct AdminRequest {
+    pub command: AdminCommand,
+    /// The loop sends the response here. If the caller dropped the receiver (client hung up), the send
+    /// fails silently — the command still applied; only the reply is discarded.
+    pub reply: oneshot::Sender<AdminResponse>,
+}
+
+/// The sending half a control producer holds to submit [`AdminRequest`]s into the host loop. Cloneable.
+/// This is the seam the Unix-socket listener feeds: the listener task (Send) decodes a frame into an
+/// [`AdminCommand`], sends an [`AdminRequest`] here, and awaits the reply — while the single-threaded loop
+/// runs the actual `apply_admin` against the non-Send registry. Clean Send/!Send split.
+pub type AdminChannel = mpsc::UnboundedSender<AdminRequest>;
+
 /// The async host: owns the [`AgentHost`] registry and runs the single-threaded multiplexing loop.
 /// Construct with [`AsyncAgentHost::new`], hand out [`AsyncAgentHost::inbox`] senders to producers, then
 /// [`AsyncAgentHost::run`] the loop (typically the process's main future). A `shutdown` receiver ends it.
@@ -44,19 +67,56 @@ pub struct AsyncAgentHost {
     host: AgentHost,
     rx: mpsc::UnboundedReceiver<Inbound>,
     tx: Inbox,
+    /// The admin CONTROL-INTERFACE receiver — the loop drains [`AdminRequest`]s here and applies them via
+    /// [`AgentHost::apply_admin`] on this (single-threaded) task. Paired with the [`AdminChannel`] sender
+    /// handed to a control producer (the Unix-socket listener).
+    admin_rx: mpsc::UnboundedReceiver<AdminRequest>,
+    admin_tx: AdminChannel,
+    /// The session factory admin `install-session` commands build through (the reducer-load seam). `None`
+    /// = the host was built without one, so an `install-session` returns a clean error (a pure control
+    /// plane that only lists/stops/inspects needs no factory). Held here so the loop can pass it to
+    /// `apply_admin`; boxed + owned because building a session is the factory's job, not the command's.
+    factory: Option<Box<dyn SessionFactory>>,
 }
 
 impl AsyncAgentHost {
-    /// Build over an existing (already-populated) [`AgentHost`] registry.
+    /// Build over an existing (already-populated) [`AgentHost`] registry, with NO session factory — an
+    /// admin `install-session` then returns a clean error (suitable for a host that only lists/stops/
+    /// inspects). Use [`with_factory`](Self::with_factory) to enable installs.
     pub fn new(host: AgentHost) -> Self {
+        Self::build(host, None)
+    }
+
+    /// Build over an existing registry WITH a session factory, so admin `install-session` commands can
+    /// build + register sessions at runtime (the deployed daemon's control plane). The factory is the
+    /// reducer-load seam (blob-get → component → reducer, assembled host-side).
+    pub fn with_factory(host: AgentHost, factory: Box<dyn SessionFactory>) -> Self {
+        Self::build(host, Some(factory))
+    }
+
+    fn build(host: AgentHost, factory: Option<Box<dyn SessionFactory>>) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
-        AsyncAgentHost { host, rx, tx }
+        let (admin_tx, admin_rx) = mpsc::unbounded_channel();
+        AsyncAgentHost {
+            host,
+            rx,
+            tx,
+            admin_rx,
+            admin_tx,
+            factory,
+        }
     }
 
     /// A cloneable sender to feed inbound events into the loop. Every producer that wants to deliver to a
     /// session holds one of these.
     pub fn inbox(&self) -> Inbox {
         self.tx.clone()
+    }
+
+    /// A cloneable sender to submit admin control commands into the loop — the seam the Unix-socket
+    /// listener (or a test) feeds. Each [`AdminRequest`] carries a oneshot the loop replies on.
+    pub fn admin_channel(&self) -> AdminChannel {
+        self.admin_tx.clone()
     }
 
     /// Mutable access to the registry (to `spawn` sessions before/around running the loop). During the
@@ -87,22 +147,60 @@ impl AsyncAgentHost {
     /// corruption / a programming error (a genuine reducer FAULT is instead captured as a `FoldFailed` log
     /// EVENT, not a KernelError), so the loop FAILS FAST + surfaces it rather than swallowing it (PR#1303).
     pub async fn run(
-        mut self,
+        self,
         mut shutdown: tokio::sync::oneshot::Receiver<()>,
         mut now_ms: impl FnMut() -> u64,
     ) -> Result<AgentHost, KernelError> {
-        // Drop OUR retained sender so the inbox channel closes once every EXTERNAL producer drops its
-        // clone. Otherwise `self.tx` would keep the channel open forever and `rx.recv()` would never
-        // return `None` — the loop could only ever exit via `shutdown`. (Producers get their senders from
-        // `inbox()` BEFORE `run`; the loop itself never needs to send to itself.)
-        drop(self.tx);
+        // Destructure into independent locals up front. `apply_admin` holds the factory across an `.await`
+        // (the async_trait build future); a `self.factory` FIELD borrow held across that await inside the
+        // loop would demand a `'static` borrow (the field is tied to `self`'s lifetime). Fully separate
+        // locals — `host` + `factory` — are disjoint bindings, so the borrow is clean and each return moves
+        // `host` freely. `tx`/`admin_tx` are dropped (see below).
+        let AsyncAgentHost {
+            mut host,
+            mut rx,
+            tx,
+            mut admin_rx,
+            admin_tx,
+            mut factory,
+        } = self;
+
+        // Drop OUR retained inbox sender so the channel closes once every EXTERNAL producer drops its clone.
+        // Otherwise `tx` would keep it open forever and `rx.recv()` would never return `None` — the loop
+        // could only ever exit via `shutdown`. (Producers get their senders from `inbox()` BEFORE `run`.)
+        drop(tx);
+        // Same for the admin channel: drop our retained sender so `admin_rx.recv()` yields `None` once the
+        // last external admin producer (the socket listener) drops its clone. The admin channel closing is
+        // NOT a loop-exit condition on its own (an admin-less run still serves inbound + timers) — a closed
+        // admin_rx just makes that select arm inert (recv → None).
+        drop(admin_tx);
+        // Once `admin_rx` closes (all admin senders dropped), its `recv()` resolves `None` IMMEDIATELY on
+        // every poll — so we must stop selecting on it or the loop busy-spins. This flag latches closed and
+        // gates the admin select arm off (a `select!` branch precondition), leaving inbound + timers to
+        // drive the loop.
+        // Each of the two producer channels latches closed independently once its last external sender
+        // drops. The loop runs while EITHER is open (a pure control-plane daemon may have ONLY admin
+        // producers and NO inbox producers — so a closed inbox must NOT end the loop while admin is live,
+        // and vice-versa). It returns only when BOTH are closed (no producers of any kind left) or shutdown
+        // fires. Gating each arm off when its channel closes also avoids busy-spinning on an immediate `None`.
+        let mut inbox_open = true;
+        let mut admin_open = true;
+        // A slot for an admin request captured in the select! and handled just below it (see the admin arm).
+        let mut pending_admin: Option<AdminRequest> = None;
         loop {
+            // Both producer channels closed → nothing can ever drive the loop again → return (unless a timer
+            // is still pending, which the arms below still service; once channels are closed AND no timer is
+            // armed, this exits). Checked here so a control-plane daemon whose last admin client hung up (and
+            // that has no inbox producers or armed timers) shuts down cleanly.
+            if !inbox_open && !admin_open && host.next_timer_deadline_across_sessions().is_none() {
+                return Ok(host);
+            }
             // Fire any ALREADY-DUE timers up front (deadline ≤ now), before we might block on a ready
             // inbox — this is what stops a busy inbox from starving deadlines (a `select!` has no fairness
             // guarantee). Bounds a timer's lateness to a single iteration.
-            if let Some(deadline) = self.host.next_timer_deadline_across_sessions() {
+            if let Some(deadline) = host.next_timer_deadline_across_sessions() {
                 if deadline <= now_ms() {
-                    self.host.fire_due_timers(now_ms()).await;
+                    host.fire_due_timers(now_ms()).await;
                     // Loop back: firing may have armed new timers / the inbox may now be ready; re-evaluate.
                     continue;
                 }
@@ -110,7 +208,7 @@ impl AsyncAgentHost {
 
             // The next FUTURE armed-timer deadline (all due ones fired above). None = no timer armed → the
             // sleep arm never wakes; only inbound/shutdown drive the loop.
-            let next_deadline = self.host.next_timer_deadline_across_sessions();
+            let next_deadline = host.next_timer_deadline_across_sessions();
             let sleep = async {
                 match next_deadline {
                     Some(deadline) => {
@@ -123,12 +221,15 @@ impl AsyncAgentHost {
 
             tokio::select! {
                 // Shutdown wins — end the loop promptly.
-                _ = &mut shutdown => return Ok(self.host),
-                // An inbound event: route it to its session and drive that session's loop in-place.
-                maybe = self.rx.recv() => {
+                _ = &mut shutdown => return Ok(host),
+                // An inbound event: route it to its session and drive that session's loop in-place. Gated on
+                // `inbox_open` so a closed inbox doesn't busy-spin on an immediate `None` (mirrors the admin
+                // arm). A closed inbox no longer ends the loop on its own — the admin channel may still be
+                // serving (the both-closed check at the top of the loop handles final exit).
+                maybe = rx.recv(), if inbox_open => {
                     match maybe {
                         Some(msg) => {
-                            match self.host.deliver(&msg.session, msg.body, msg.cause).await {
+                            match host.deliver(&msg.session, msg.body, msg.cause).await {
                                 // Delivered + the session ran a turn.
                                 Some(Ok(())) => {}
                                 // Unknown session id: a no-op (the producer addressed a session that isn't
@@ -140,15 +241,36 @@ impl AsyncAgentHost {
                                 Some(Err(e)) => return Err(e),
                             }
                         }
-                        // All senders dropped → no more producers → nothing more to serve.
-                        None => return Ok(self.host),
+                        // All inbox senders dropped → stop selecting on this arm (the both-closed check at
+                        // the loop top ends the loop once admin is also closed + no timer is armed).
+                        None => inbox_open = false,
+                    }
+                }
+                // An admin control command: capture it, then apply it AFTER the select! block (below) — the
+                // host+factory split-borrow + await can't be held inside the select arm (it would demand a
+                // 'static borrow of factory across the .await). Gated on `admin_open` so a closed channel
+                // doesn't busy-spin on an immediate `None`.
+                maybe = admin_rx.recv(), if admin_open => {
+                    match maybe {
+                        Some(req) => pending_admin = Some(req),
+                        // All admin senders dropped → stop selecting on this arm (avoid the busy-spin).
+                        None => admin_open = false,
                     }
                 }
                 // The earliest FUTURE timer came due → fire due timers across sessions (next iteration's
                 // up-front check also catches any that became due meanwhile).
                 _ = sleep => {
-                    self.host.fire_due_timers(now_ms()).await;
+                    host.fire_due_timers(now_ms()).await;
                 }
+            }
+
+            // Handle a captured admin request outside the select! (disjoint host/factory borrows are legal
+            // here). Apply on THIS task (the !Send registry never leaves it) and reply on the oneshot. The
+            // apply is delegated to a free `async fn` so the `factory` borrow is scoped to that call and
+            // released when it returns — an inline `.await` would let the async_trait future's captured
+            // lifetime inflate the borrow to the whole function, colliding with `factory`'s drop.
+            if let Some(req) = pending_admin.take() {
+                handle_admin(&mut host, factory.as_deref_mut(), req, now_ms()).await;
             }
         }
     }
@@ -177,6 +299,22 @@ impl AsyncAgentHost {
         })
         .await
     }
+}
+
+/// Apply one admin request against the host + factory and reply on its oneshot — a free `async fn` (not a
+/// method) so the `factory` borrow is confined to this call and released on return. Inlining the `.await`
+/// in [`AsyncAgentHost::run`]'s loop would let the `async_trait` build future's captured lifetime inflate
+/// the borrow to the whole function, colliding with `factory`'s end-of-scope drop.
+async fn handle_admin(
+    host: &mut AgentHost,
+    factory: Option<&mut (dyn SessionFactory + '_)>,
+    req: AdminRequest,
+    now_ms: u64,
+) {
+    let resp = host.apply_admin(req.command, factory, Some(now_ms)).await;
+    // The caller may have hung up (dropped the receiver); the command still applied, so a failed
+    // reply-send is fine to ignore.
+    let _ = req.reply.send(resp);
 }
 
 #[cfg(test)]
@@ -420,5 +558,134 @@ mod tests {
             Some(&b"1"[..]),
             "the session ran its turn through the wall-clock loop"
         );
+    }
+
+    // ── admin control interface, wired into the loop ────────────────────────────────────────────────
+
+    use crate::admin::{AdminCommand, AdminResponse, InstallSpec, SessionFactory};
+
+    /// A factory that builds a canned mark-agent session for any spec — the test stand-in for the real
+    /// wasm-loading factory, so an `install-session` command through the loop actually registers a session.
+    struct StubFactory;
+    #[async_trait::async_trait(?Send)]
+    impl SessionFactory for StubFactory {
+        async fn build(&mut self, _spec: &InstallSpec) -> Result<HostedSession, String> {
+            Ok(mark_host())
+        }
+    }
+
+    fn install(id: &str) -> AdminCommand {
+        AdminCommand::InstallSession(InstallSpec {
+            id: SessionId::new(id),
+            reducer_hash: Hash::of(id.as_bytes()),
+            goal: None,
+        })
+    }
+
+    /// Submit one admin command through the channel and await the reply — the request/reply round-trip a
+    /// socket listener performs per frame.
+    async fn admin_call(ch: &AdminChannel, command: AdminCommand) -> AdminResponse {
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        ch.send(AdminRequest { command, reply }).unwrap();
+        rx.await.expect("the loop replied")
+    }
+
+    #[tokio::test]
+    async fn admin_install_then_list_through_the_loop() {
+        // The control interface end-to-end (in-process): submit install-session commands over the admin
+        // channel, the loop applies each via apply_admin on the loop task + replies, and a subsequent
+        // list-sessions reflects them. `AsyncAgentHost` is !Send (owns the factory + registry), so we drive
+        // the loop + the client CONCURRENTLY on ONE task via `join!` (no spawn / no Send) — exactly the
+        // single-threaded shape the daemon runs.
+        let async_host = AsyncAgentHost::with_factory(AgentHost::new(), Box::new(StubFactory));
+        let admin = async_host.admin_channel();
+        let (_sd_tx, sd_rx) = tokio::sync::oneshot::channel();
+
+        let client = async move {
+            // Install two sessions, then list.
+            assert_eq!(
+                admin_call(&admin, install("a")).await,
+                AdminResponse::Installed {
+                    id: SessionId::new("a")
+                }
+            );
+            assert_eq!(
+                admin_call(&admin, install("b")).await,
+                AdminResponse::Installed {
+                    id: SessionId::new("b")
+                }
+            );
+            assert_eq!(
+                admin_call(&admin, AdminCommand::ListSessions).await,
+                AdminResponse::Sessions {
+                    ids: vec![SessionId::new("a"), SessionId::new("b")]
+                }
+            );
+            // A stop, then list reflects the removal.
+            assert_eq!(
+                admin_call(
+                    &admin,
+                    AdminCommand::StopSession {
+                        id: SessionId::new("a")
+                    }
+                )
+                .await,
+                AdminResponse::Stopped {
+                    id: SessionId::new("a")
+                }
+            );
+            assert_eq!(
+                admin_call(&admin, AdminCommand::ListSessions).await,
+                AdminResponse::Sessions {
+                    ids: vec![SessionId::new("b")]
+                }
+            );
+            // Drop the admin channel (last producer) → the loop's channels close → run() returns.
+            drop(admin);
+        };
+
+        let (loop_result, ()) = tokio::join!(async_host.run(sd_rx, || 0), client);
+        loop_result.expect("clean shutdown, no kernel error");
+    }
+
+    #[tokio::test]
+    async fn admin_install_without_a_factory_errors_but_the_loop_keeps_serving() {
+        // A host built with `new` (no factory): an install-session is a clean error over the channel, and
+        // the loop stays alive to serve a following list (a bad admin command never wedges the daemon).
+        let async_host = AsyncAgentHost::new(AgentHost::new());
+        let admin = async_host.admin_channel();
+        let (_sd_tx, sd_rx) = tokio::sync::oneshot::channel();
+
+        let client = async move {
+            let resp = admin_call(&admin, install("x")).await;
+            assert!(
+                matches!(&resp, AdminResponse::Error { message } if message.contains("no session factory")),
+                "install with no factory is a clean error: {resp:?}"
+            );
+            // The loop is still serving — a list works and shows nothing was installed.
+            assert_eq!(
+                admin_call(&admin, AdminCommand::ListSessions).await,
+                AdminResponse::Sessions { ids: vec![] }
+            );
+            drop(admin);
+        };
+
+        let (loop_result, ()) = tokio::join!(async_host.run(sd_rx, || 0), client);
+        loop_result.expect("clean shutdown");
+    }
+
+    #[tokio::test]
+    async fn shutdown_ends_the_loop_even_with_a_live_admin_channel() {
+        // A live admin channel (like a live inbox) must not keep the loop from shutting down — firing
+        // shutdown ends run() promptly even though an admin sender is still held.
+        let async_host = AsyncAgentHost::with_factory(AgentHost::new(), Box::new(StubFactory));
+        let _admin = async_host.admin_channel(); // held alive → admin channel stays open
+        let (sd_tx, sd_rx) = tokio::sync::oneshot::channel();
+        sd_tx.send(()).unwrap();
+        // Should return via the shutdown arm, not hang on the still-open admin/inbox channels.
+        async_host
+            .run(sd_rx, || 0)
+            .await
+            .expect("shutdown returns Ok");
     }
 }

@@ -38,8 +38,12 @@
 //! by [`AgentHost::apply_admin`](host::AgentHost::apply_admin) via a [`SessionFactory`] install seam.
 //! [`admin_wire`] is the codec that carries those commands/responses over a control frame — serde-native
 //! wire DTOs (decoupled from the domain types, ids as strings + hashes as hex) + a length-prefixed JSON
-//! frame codec. The Unix-socket transport that reads/writes those frames and the Cedar `admin/*`
-//! authorization of each command are the following slices.
+//! frame codec. The [`AsyncAgentHost`] loop drains admin commands from an in-process channel
+//! ([`AdminChannel`]) alongside its inbox + timers, applying each on the loop
+//! task (where the `!Send` registry lives) and replying via a per-command oneshot — so a `Send`
+//! socket-listener task can drive the control interface without the registry ever crossing a thread. The
+//! Unix-socket transport that reads/writes those frames and the Cedar `admin/*` authorization of each
+//! command are the following slices.
 //!
 //! All executor errors are RECOVERABLE + classified for the kernel's supervision tree (see [`retry`]):
 //! an `EffectOutcome::Err` reason leads with a `RETRYABLE:`/`PERMANENT:` token so a supervisor decides
@@ -63,7 +67,7 @@ pub use admin_wire::{
     decode_frame, encode_frame, AdminCommandWire, AdminResponseWire, InstallSpecWire, WireError,
     MAX_FRAME_LEN,
 };
-pub use async_host::{AsyncAgentHost, Inbound, Inbox};
+pub use async_host::{AdminChannel, AdminRequest, AsyncAgentHost, Inbound, Inbox};
 pub use clock::ClockExecutor;
 pub use config::{DaemonConfig, LogConfig, ObservabilityConfig, RetryConfig};
 #[cfg(feature = "live-net")]
