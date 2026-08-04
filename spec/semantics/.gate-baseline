@@ -4070,6 +4070,9 @@ pass	an inline-never definition is emitted once and called
 pass	an inline-never definition with a const dictionary still monomorphizes the dictionary
 pass	an inlined helper matching a sum built FROM the fused binder plus an enclosing capture
 pass	an inlined multi-use checked-arith argument is shared and computed directly into its slot
+pass	an inner abort ELIDES an outer perform sequenced AFTER it (dead-path control)
+pass	an inner abort preserves TWO outer advances committed before it (multi-step outer trace)
+pass	an inner abortive handler preserves an OUTER effect's advance committed before the abort (do-shape)
 pass	an inner arm resumes with the OUTER handler's result while both states advance
 pass	an inner binding shadows an outer one only within its scope
 pass	an inner handle of the SAME delegated effect discharges in-program inside the host block

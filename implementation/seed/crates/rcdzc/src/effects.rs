@@ -2448,6 +2448,33 @@ pub fn reduce_handle(
     // value — the surrounding computation was abandoned, so the threaded body is dead. (Unconditional
     // strict abort only; a conditional abort was declined above.)
     if let Some(abort) = ctx.abort_value.get() {
+        // ABORT-FOLD, do-SHAPE (preserve a pre-abort FOREIGN advance). An abort collapses the handle to the
+        // arm value — but a FOREIGN perform (an OUTER handler's effect, or a host op) evaluated on the strict
+        // spine BEFORE the abort has ALREADY committed its state advance to the ENCLOSING computation and must
+        // survive (the inner abort is the inner handle's control; it cannot roll back an outer effect's
+        // committed step). For a `(do <foreign…> <abortive-perform>)` body, the do-arm above ALREADY keeps the
+        // pre-abort foreign items and appends the abort value as the tail — so `rewritten` is a sound
+        // `(do <foreign…> <abort-value>)` whose foreign prefix the ENCLOSING fold discharges (advancing the
+        // outer state), then yields the abort value. Returning it (instead of the BARE abort) preserves that
+        // advance: `(do (A.tick) (B.bail 99))` under B → `(do (A.tick) 99)`, so an outer `(A.get)` reads the
+        // advanced state (110, not the 109 the bare-abort collapse produced — breaker ao1-ao4, incl. heap ao3
+        // + multi-advance ao4; the do-arm's `kept` already threads the FULL prefix trace per ao4).
+        //
+        // GATED to `rewritten` being a `do`-FORM. This is what SEPARATES the sound do-shape from the STILL-
+        // AMBIGUOUS strict-operand shape (`(+ (A.tick) (B.bail 99))` → `rewritten` `(+ (A.tick) 99)`, a `+`
+        // form): a bare-abort `+` case that is CORRECT-because-UNOBSERVED (14-effects:1251 `(+ (A.a) (+ (B.b)
+        // (Bail.bail 99)))` = 99) is indistinguishable at THIS (inner) handler from the miscompiling one (the
+        // difference lives in the OUTER continuation, invisible here) — so the strict-op lift is a SEPARATE
+        // increment. Only the do-form, where the do-arm already produced the sound for-effect sequencing, is
+        // safe to return now. The foreign-reach check reads the ORIGINAL `body` (parented — no orphan
+        // resolve-pin poison, unlike `rewritten` whose tail is the orphan abort value). ZERO corpus regressions
+        // (a `+`/`let`/`match`-shaped abort body is untouched; only a `do` body with a kept foreign prefix
+        // flips todo→pass).
+        if db.ast.as_form(rewritten, "do").is_some() && body_reaches_foreign_perform(db, body, &ctx)
+        {
+            reparent_under_handle_site(db, rewritten, body);
+            return Some(rewritten);
+        }
         // Re-anchor the abort value under the handle site BEFORE returning — the SAME reparent the normal
         // path does below (line ~1848). The abort value is the arm body `copy_pure`d off the (now-dead)
         // resume/perform node, a synthesized orphan with parent `None`. When it is (or contains) a BARE

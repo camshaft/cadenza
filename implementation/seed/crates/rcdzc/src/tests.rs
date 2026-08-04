@@ -66444,6 +66444,34 @@ mod stage1 {
     }
 
     #[test]
+    fn an_inner_abort_preserves_an_outer_effects_advance_committed_before_it_do_shape() {
+        // ABORT-FOLD do-shape (v-effects, breaker ao1-ao4 — a HIGH silent cross-backend miscompile). An inner
+        // abortive `B`-handle runs a FOREIGN perform `(A.tick)` — an OUTER `A` handler's op — on its strict
+        // do-spine BEFORE it aborts. `A.tick` COMMITS A-state 10→11; then `B.bail` (non-resuming) abandons B's
+        // OWN handle only. Pre-fix: reduce_handle's abort collapse returned the BARE abort value, discarding
+        // the WHOLE inner body — including `A.tick` — so the outer `(A.get)` read the seed 10 → 109 (want 110).
+        // Fixed: the do-arm already keeps the pre-abort foreign item and appends the abort value as the tail
+        // `(do (A.tick) 99)`; reduce_handle now RETURNS that (gated on a `do`-form rewritten + a foreign perform
+        // in the original body) so the OUTER fold discharges the foreign prefix (advancing A) before the value.
+        let src = "(do (effect A (op tick (-> Unit Int64)) (op get (-> Unit Int64))) \
+                   (effect B (op bail (-> Int64 Int64))) \
+                   (def (main) \
+                     (handle A 10 ((tick (u) s (resume s (+ s 1))) (get (u) s (resume s s))) \
+                       (let ((b (handle B 0 ((bail (v) s v)) (do (A.tick) (B.bail 99))))) \
+                         (+ b (A.get))))) \
+                   (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("the inner abort's outer-advance-preserving do-fold compiles"),
+                "main"
+            ),
+            110,
+            "the pre-abort outer advance must survive the inner abort (99 + 11 = 110), not roll back to the seed (was 109)"
+        );
+    }
+
+    #[test]
     fn a_state_mutual_recursion_with_perform_split_from_the_mutual_call_specializes() {
         // A STATE-threading handler over a mutually-recursive group where a cycle def performs the
         // discharged op in ONE `if`/`match` branch while the mutual call is in a DIFFERENT branch
