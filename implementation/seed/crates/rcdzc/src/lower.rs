@@ -2892,7 +2892,15 @@ fn print_ast_value(db: &mut Db, node: StructId, disc: &AstDiscs, out: &mut Strin
                 b'\\' => out.push_str("\\\\"),
                 b'"' => out.push_str("\\\""),
                 0x20..=0x7e => out.push(b as char),
-                _ => out.push_str(&format!("\\x{b:02x}")),
+                // `\xNN` (two lowercase hex) — push the nibbles directly rather than `format!`, which would
+                // alloc a temp String per non-printable byte (matters for a large byte-literal).
+                _ => {
+                    const HEX: &[u8; 16] = b"0123456789abcdef";
+                    out.push('\\');
+                    out.push('x');
+                    out.push(HEX[(b >> 4) as usize] as char);
+                    out.push(HEX[(b & 0xf) as usize] as char);
+                }
             }
         }
         out.push('"');
@@ -3038,6 +3046,7 @@ enum SNode {
     Bool(bool),
     Str(String),
     Name(String),
+    Bytes(Vec<u8>),
     List(Vec<SNode>),
 }
 
@@ -3096,6 +3105,17 @@ fn reify_read_ast(db: &mut Db, node: &SNode, disc: &AstDiscs) -> Core {
             let payload = synth_core(db, Core::ConstStr(name.clone()), crate::ty::Ty::String);
             Core::SumNew {
                 disc: disc.name,
+                payloads: vec![payload],
+            }
+        }
+        SNode::Bytes(raw) => {
+            // A `b"…"` byte-string reads back to an `Ast.Bytes` whose payload is a `Core::BytesOf` of the
+            // raw bytes (the same shape `b"…"`/`Bytes.of` build, and the shape `decode_ast_value`'s bytes
+            // arm produces), so `read(print v) == v` for a bytes node. Typed `Ty::Bytes`.
+            let elems = bytes_to_elems(db, raw);
+            let payload = synth_core(db, Core::BytesOf { elems }, crate::ty::Ty::Bytes);
+            Core::SumNew {
+                disc: disc.bytes,
                 payloads: vec![payload],
             }
         }
@@ -3192,6 +3212,14 @@ impl<'a> SexprReader<'a> {
         if self.bytes[self.pos] == b'"' {
             return self.read_string().map(SNode::Str);
         }
+        // A `b"…"` byte-string literal (the `print_ast_value` spelling of an `Ast.Bytes`) — a `b`
+        // IMMEDIATELY followed by `"`. Must precede the bare-token scan (a lone `b` is a valid name-start),
+        // mirroring the front-end lexer's `b"…"` rule. Reads the RAW bytes with the byte-literal escape set
+        // (`\n \t \r \\ \"` + `\xNN`). `None` on an unterminated literal or a bad escape.
+        if self.bytes[self.pos] == b'b' && self.bytes.get(self.pos + 1) == Some(&b'"') {
+            self.pos += 1; // consume the `b`; `read_byte_string` consumes the `"…"`
+            return self.read_byte_string().map(SNode::Bytes);
+        }
         // A bare token: run to the next whitespace, paren, or `;` (comment start — the front-end reader
         // treats `;` as a comment delimiter everywhere, so a token never contains one).
         let start = self.pos;
@@ -3283,6 +3311,68 @@ impl<'a> SexprReader<'a> {
             }
         }
         None // unterminated string
+    }
+    /// Read a `b"…"` byte-string literal's payload as RAW bytes — the inverse of `print_ast_value`'s
+    /// `Ast.Bytes` rendering. Called with `self.pos` at the opening `"` (the `b` already consumed). The
+    /// escape set matches the printer: `\n \t \r \\ \"` named, `\xNN` (two lowercase-hex) for any other
+    /// byte, else the byte verbatim. `None` on an unterminated literal or a malformed escape (declines,
+    /// never mis-parses). Distinct from `read_string`: bytes are RAW (not UTF-8-validated) and `\xNN` is
+    /// accepted (a string literal has no `\x`).
+    fn read_byte_string(&mut self) -> Option<Vec<u8>> {
+        debug_assert_eq!(self.bytes.get(self.pos), Some(&b'"'));
+        self.pos += 1; // consume opening '"'
+        let mut out: Vec<u8> = Vec::new();
+        while self.pos < self.bytes.len() {
+            let b = self.bytes[self.pos];
+            match b {
+                b'"' => {
+                    self.pos += 1; // consume closing '"'
+                    return Some(out);
+                }
+                b'\\' => {
+                    self.pos += 1;
+                    match self.bytes.get(self.pos)? {
+                        b'n' => {
+                            out.push(b'\n');
+                            self.pos += 1;
+                        }
+                        b't' => {
+                            out.push(b'\t');
+                            self.pos += 1;
+                        }
+                        b'r' => {
+                            out.push(b'\r');
+                            self.pos += 1;
+                        }
+                        b'\\' => {
+                            out.push(b'\\');
+                            self.pos += 1;
+                        }
+                        b'"' => {
+                            out.push(b'"');
+                            self.pos += 1;
+                        }
+                        b'x' => {
+                            // `\xNN` — exactly two hex digits (the printer emits lowercase; accept any case).
+                            self.pos += 1; // consume 'x'
+                            let hi = self.bytes.get(self.pos)?;
+                            let lo = self.bytes.get(self.pos + 1)?;
+                            let byte =
+                                u8::from_str_radix(std::str::from_utf8(&[*hi, *lo]).ok()?, 16)
+                                    .ok()?;
+                            out.push(byte);
+                            self.pos += 2;
+                        }
+                        _ => return None, // unrecognized escape — decline
+                    }
+                }
+                _ => {
+                    out.push(b);
+                    self.pos += 1;
+                }
+            }
+        }
+        None // unterminated byte-string
     }
 }
 

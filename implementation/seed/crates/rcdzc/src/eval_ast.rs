@@ -378,6 +378,12 @@ fn reconstruct(ast: &mut Arenas, node: StructId) -> Option<StructId> {
     if let Some(payload) = ast_ctor_arg(ast, node, "Str") {
         return Some(payload);
     }
+    // `(Ast.Bytes payload)` -> the payload AS SOURCE (the `b"…"` byte-literal node). Like `Ast.Str`, a
+    // reified byte-string literal unwraps back to the `b"…"` literal, which evaluates to itself. So
+    // `(eval (quote b"hi"))` reconstructs the byte literal and folds to that Bytes value.
+    if let Some(payload) = ast_ctor_arg(ast, node, "Bytes") {
+        return Some(payload);
+    }
     // `(Ast.Name payload)` -> the bare name the String payload spells. `Ast.Name` carries the identifier
     // as a String (the reifier turned a `Leaf::Name` into a `Leaf::Str`); reconstruction turns it back.
     if let Some(payload) = ast_ctor_arg(ast, node, "Name") {

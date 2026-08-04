@@ -593,6 +593,38 @@
             ((Err _) false)))
   (output (: true Bool)))
 
+(case "print then read round-trips an Ast.Bytes through the text path"
+  (doc    "The TEXT interchange face: `print (Ast.Bytes b\"hi\")` renders `b\"hi\"` and `read` parses that
+           byte-literal back to an EQUAL `Ast.Bytes` — `read(print v) == v` for a bytes node, the byte
+           companion of the Str/Int text round-trips. Pins the reader's `b\"…\"` arm (a `b` immediately
+           before `\"`), distinct from a bare `b` name.")
+  (input  (= (read (print (Ast.Bytes b"hi"))) (Ast.Bytes b"hi")))
+  (output (: true Bool)))
+
+(case "print then read round-trips an Ast.Bytes carrying escapes and high bytes"
+  (doc    "The escape face of the bytes text round-trip: `b\"\\x00\\xff\\n\"` (NUL, 0xff, newline) prints
+           with `\\xNN`/`\\n` escapes and `read` parses them back byte-exactly. Pins the reader's `\\xNN`
+           two-hex escape + the named `\\n` — the byte-literal escape set the printer emits, which a plain
+           string reader (no `\\x`) would reject.")
+  (input  (= (read (print (Ast.Bytes b"\x00\xff\n"))) (Ast.Bytes b"\x00\xff\n")))
+  (output (: true Bool)))
+
+(case "read of a bare b token is an Ast.Name, not a byte-literal"
+  (doc    "The `b\"…\"` reader arm fires only when `b` is IMMEDIATELY followed by `\"` — a bare `b` token is
+           an ordinary identifier, so `read \"b\"` is an `Ast.Name`. Pins that the byte-literal detection
+           does not over-match a lone `b` (which would break reading the common single-letter name).")
+  (input  (match (read "b")
+            ((Ast.Name _) 1)
+            (_            0)))
+  (output (: 1 Int64)))
+
+(case "eval of a quoted byte-string literal folds to the bytes value"
+  (doc    "`(eval (quote b\"hi\"))` reconstructs the `b\"…\"` byte literal (which evaluates to itself, like a
+           quoted string) and folds to that `Bytes` value — the bytes companion of `(eval (quote \"hi\"))`.
+           Pins the eval reconstruct arm for `Ast.Bytes`.")
+  (input  (= (eval (quote b"hi")) b"hi"))
+  (output (: true Bool)))
+
 (case "the AST is a sum type deconstructible by pattern matching"
   (doc    "Witnesses metaprogramming.md #Quote Produces An AST Value (2nd sentence): the AST is a
            sum type with variants for each syntactic form. Pattern matching over (quote 42) binds
