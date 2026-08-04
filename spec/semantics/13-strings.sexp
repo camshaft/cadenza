@@ -1377,8 +1377,9 @@
 
 (case "a rope-built String key probes the trie entry stored under its FLAT twin at depth"
   (doc    "The cross-construction face AT DEPTH (the 1-entry stored-slice-key case above pins the
-           2-entry version): among 30 other rope-built entries, a probe assembled as `\"flat-\" ++
-           rep(\"\", 3-y's twin)` hits the entry stored under the FLAT literal `\"flat-yyy\"` (777).
+           2-entry version): among 30 other rope-built entries, a probe assembled as
+           `(String.concat \"flat-\" (rep \"\" 3))` — a rope ending in three y's — hits the entry
+           stored under the FLAT literal `\"flat-yyy\"` (777).
            Rope-vs-flat canonical equivalence holds through a populated descent — insert-site and
            probe-site canonicalization agree regardless of which construction each side used.")
   (input  (do
