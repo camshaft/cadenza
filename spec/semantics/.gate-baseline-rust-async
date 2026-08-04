@@ -5616,6 +5616,7 @@ todo	a BLOCK-wrapped branch perform in a non-tail DO-STATEMENT declines cleanly 
 todo	a Bool host arg BESIDE a scalar and a String composes in one mixed-arity op
 todo	a Bytes value SENT to the host is still readable after the call (the arg marshal borrows)
 todo	a DEPTH-2 block-wrapped branch perform in a let-init declines cleanly (adv-69 safe floor, nested wrappers)
+todo	a DIRECT branch perform in a NESTED handler-arm resume-value declines cleanly (adv-69 a3-direct sub-face)
 todo	a Float64 closure captures a Float64 build-time host effect result
 todo	a Float64-inner Qty host result crosses as its float magnitude
 todo	a HEAP-accumulator block-wrapped branch perform in a let-init declines cleanly (adv-69 safe floor)

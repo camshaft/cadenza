@@ -3468,6 +3468,28 @@
             (export main)))
   (call   main) (output (: 34 Int64)))
 
+(case "a DIRECT branch perform in a NESTED handler-arm resume-value declines cleanly (adv-69 a3-direct sub-face)"
+  (doc    "The DIRECT-conditional twin of the a3 case: `(resume (if true (St.get) 99) t)` — a branch-performing
+           conditional DIRECTLY (no block wrapper) in a nested handler's arm resume-value, performing the OUTER
+           op. Unlike the let-init face — where a DIRECT init is lifted by Site 4 and folds — a `resume`-value
+           is never hoisted (it lives inside the inner `Up` handle's arm, which the outer `St` reduction does
+           not rewrite), so the direct conditional here ALSO drops the outer `St.get`'s advance: seeded 3 it ran
+           33, correct is 34. The a3 guard's `Resume{value}` scanner declines this via its direct-conditional
+           disjunct (verified: dropping that disjunct makes this miscompile to 33, not fold to 34 — so the
+           disjunct is load-bearing, not an over-decline). Pins that the resume-value drop is NOT block-wrapper-
+           specific (contrast the let-init face). Grades TODO on all backends; flips to 34 PASS on the
+           through-block fold.")
+  (input  (do
+            (effect St (op get (-> Unit Int64)))
+            (effect Up (op ask (-> Unit Int64)))
+            (def (main)
+              (handle St 3 ((get (u) s (resume s (+ s 1))))
+                (handle Up 0
+                  ((ask (u) t (resume (if true (St.get) 99) t)))
+                  (+ (* 10 (Up.ask)) (St.get)))))
+            (export main)))
+  (call   main) (output (: 34 Int64)))
+
 (case "a BLOCK-wrapped branch perform in a MATCH-SCRUTINEE declines cleanly (adv-69 g3 sub-face)"
   (doc    "adv-69 g3 (breaker probe-g3, block-outstate battery): the SAME block-boundary out-state drop, at a
            MATCH-SCRUTINEE consuming position. `(match (let ((b true)) (if b (St.get) 99)) (v (+ (* 10 v)

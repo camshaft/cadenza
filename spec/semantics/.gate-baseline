@@ -5702,6 +5702,7 @@ todo	a BigInt entry parameter added to a beyond-i64 annotated literal
 todo	a BigInt entry parameter is COMPUTED on, not just compared
 todo	a Bytes entry argument is marshalled as a Vec<u8>
 todo	a DEPTH-2 block-wrapped branch perform in a let-init declines cleanly (adv-69 safe floor, nested wrappers)
+todo	a DIRECT branch perform in a NESTED handler-arm resume-value declines cleanly (adv-69 a3-direct sub-face)
 todo	a HEAP-accumulator block-wrapped branch perform in a let-init declines cleanly (adv-69 safe floor)
 todo	a List entry argument is marshalled as a vec!
 todo	a MULTIBYTE and an EMPTY runtime String entry arg measure their UTF-8 byte lengths
