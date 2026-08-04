@@ -1321,6 +1321,24 @@
                   (+ b (A.get))))) (export main)))
   (output (: 109 Int64)))
 
+(case "an inner abort preserves an OUTER advance committed in a MATCH-SCRUTINEE before it (scrutinee collapse)"
+  (doc    "The MATCH-SCRUTINEE face of the outer-advance preservation (breaker ao9). The foreign `(A.tick)`
+           and the abort sit on the strict do-spine of a `match` SCRUTINEE — `(match (do (A.tick) (B.bail 99))
+           (x x))` under B. The scrutinee is evaluated BEFORE any arm; it ABORTS, so no arm runs and the match
+           collapses to the scrutinee's value — but the pre-abort `A.tick` committed A-state 10→11 and must
+           survive → outer `(A.get)` reads 11 → `(+ 99 11)` = 110. Before the fix the `Match` thread arm wrapped
+           the aborted scrutinee in a dead `(match (do (A.tick) 99) (x x))` whose bare-abort collapse dropped
+           `A.tick` → 109. Fixed by collapsing the match to the scrutinee rewrite when threading the scrutinee
+           fires a NEW abort (no arm runs), so the enclosing fold discharges the `(do (A.tick) 99)` prefix.")
+  (input  (do
+            (effect A (op tick (-> Unit Int64)) (op get (-> Unit Int64)))
+            (effect B (op bail (-> Int64 Int64)))
+            (def (main)
+              (handle A 10 ((tick (u) s (resume s (+ s 1))) (get (u) s (resume s s)))
+                (let ((b (handle B 0 ((bail (v) s v)) (match (do (A.tick) (B.bail 99)) (x x)))))
+                  (+ b (A.get))))) (export main)))
+  (output (: 110 Int64)))
+
 (case "an inner abort preserves an OUTER advance committed in a STRICT OPERAND before it (operand-lift)"
   (doc    "The STRICT-OPERAND face of the outer-advance preservation (breaker ao5; the do-shape face is pinned
            above). The foreign `(A.tick)` is a strict `+` OPERAND evaluated before the abort — `(+ (A.tick)

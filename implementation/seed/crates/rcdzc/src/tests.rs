@@ -66472,6 +66472,35 @@ mod stage1 {
     }
 
     #[test]
+    fn an_inner_abort_preserves_an_outer_advance_committed_in_a_match_scrutinee_before_it() {
+        // ABORT-FOLD scrutinee collapse (v-effects self-probe, breaker ao9 — the match-scrutinee face of the
+        // abort-outer-advance class). The foreign `(A.tick)` and the abort sit on the strict do-spine of a
+        // `match` SCRUTINEE — `(match (do (A.tick) (B.bail 99)) (x x))` under B. The scrutinee is evaluated
+        // before any arm; it aborts, so no arm runs and the match collapses to the scrutinee value — but
+        // `A.tick` committed A-state 10→11 → outer `(A.get)` reads 11 → 110. Pre-fix: the `Match` thread arm
+        // wrapped the aborted scrutinee in a dead `(match (do (A.tick) 99) (x x))` whose bare-abort collapse
+        // dropped `A.tick` → 109. Fixed by collapsing the match to the scrutinee rewrite when threading the
+        // scrutinee fires a NEW abort (no arm runs), so the enclosing fold discharges the `(do (A.tick) 99)`.
+        let src = "(do (effect A (op tick (-> Unit Int64)) (op get (-> Unit Int64))) \
+                   (effect B (op bail (-> Int64 Int64))) \
+                   (def (main) \
+                     (handle A 10 ((tick (u) s (resume s (+ s 1))) (get (u) s (resume s s))) \
+                       (let ((b (handle B 0 ((bail (v) s v)) (match (do (A.tick) (B.bail 99)) (x x))))) \
+                         (+ b (A.get))))) \
+                   (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src))).expect(
+                    "the match-scrutinee abort's outer-advance-preserving collapse compiles"
+                ),
+                "main"
+            ),
+            110,
+            "a pre-abort outer advance in a match scrutinee must survive the abort (99 + 11 = 110), not roll back (was 109)"
+        );
+    }
+
+    #[test]
     fn an_inner_abort_preserves_an_outer_advance_committed_in_a_strict_operand_before_it() {
         // ABORT-FOLD strict-OPERAND lift (v-effects, breaker ao5 — the operand face of the do-shape fix above).
         // The foreign `(A.tick)` is a strict `+` OPERAND before the abort — `(+ (A.tick) (B.bail 99))` under B

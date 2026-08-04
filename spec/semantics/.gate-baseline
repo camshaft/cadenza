@@ -4078,6 +4078,7 @@ pass	an inlined helper matching a sum built FROM the fused binder plus an enclos
 pass	an inlined multi-use checked-arith argument is shared and computed directly into its slot
 pass	an inner abort ELIDES an outer perform sequenced AFTER it (dead-path control)
 pass	an inner abort preserves TWO outer advances committed before it (multi-step outer trace)
+pass	an inner abort preserves an OUTER advance committed in a MATCH-SCRUTINEE before it (scrutinee collapse)
 pass	an inner abort preserves an OUTER advance committed in a STRICT OPERAND before it (operand-lift)
 pass	an inner abortive handler preserves an OUTER effect's advance committed before the abort (do-shape)
 pass	an inner arm resumes with the OUTER handler's result while both states advance
