@@ -18,6 +18,14 @@ version = "0.0.0"
 edition = "2021"
 publish = false
 
+# The real multi-session daemon binary (operator headline): boot the host from ONE TOML config path (the
+# only cli arg). Its live wiring (live_executor_set / real transports) is `#[cfg(feature = "live-net")]`;
+# a no-op main covers the default build so the bin target always has a main + the default gate stays
+# hermetic. Run: `cargo run --bin cdz-agent-daemon --features live-net -- /path/to/daemon.toml`.
+[[bin]]
+name = "cdz-agent-daemon"
+path = "src/bin/cdz_agent_daemon.rs"
+
 [features]
 # `live-net` gates executors that touch the network (the Bedrock model executor, a real HTTP client) —
 # OFF by default so the default build/tests never make a network call or need AWS credentials, exactly
