@@ -59,16 +59,16 @@ pub enum LogConfig {
     Dynamo { table: String },
 }
 
-/// Observability config — the operator's s2n-quic-dc-metrics integration. Disabled by default; when
-/// enabled, metrics FAN OUT to one-or-more configured `targets` (operator requirement: "define more than
-/// one target backend"). Each `[[observability.target]]` is a [`MetricsTarget`] whose `kind` selects a
-/// backend and whose OTHER fields are that backend's OWN typed config, so the daemon can emit to several
-/// sinks (multiple s2n-quic-dc collectors, or different backend types).
+/// Observability config — the daemon's metrics integration (the operator's `s2n-quic-dc-metrics` crate,
+/// `camshaft/s2n-quic` branch `main`). Disabled by default; when enabled, metrics FAN OUT to one-or-more
+/// configured `targets` (operator requirement: "define more than one target backend"). Each
+/// `[[observability.target]]` is a [`MetricsTarget`] whose `kind` selects a backend and whose OTHER fields
+/// are that backend's OWN typed config, so the daemon can emit to several sinks (multiple statsd collectors,
+/// or different backend types).
 ///
-/// The s2n-quic emitter itself is a following slice (feature-gated to keep the QUIC/network dep tree out of
-/// the default build) — the git dep is `camshaft/s2n-quic` (branch `main`), package `s2n-quic-dc-metrics`.
-/// This CONFIG is always parseable ahead of that wiring (staged like `[log]`/`[blob]`: config first, emitter
-/// follows).
+/// The emitter itself is a following slice (feature-gated to keep the QUIC/metrics dep tree out of the
+/// default build), waiting on the operator's confirmation of the v0 backend SET. This CONFIG is always
+/// parseable ahead of that wiring (staged like `[log]`/`[blob]`: config first, emitter follows).
 #[derive(Debug, Clone, Deserialize, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct ObservabilityConfig {
@@ -87,16 +87,23 @@ pub struct ObservabilityConfig {
 /// fields THAT backend needs, validated per-kind. Adding a backend adds a typed variant with its own fields,
 /// so a mis-shaped target (a field that belongs to another backend, a missing required field) is a loud
 /// deser error rather than an ignored generic string.
+///
+/// The variants model REAL `s2n-quic-dc-metrics` backends. `statsd` is the first (the crate's
+/// `StatsdBackend`, whose caller-supplied sink sends UDP payloads to a collector). Other backends the crate
+/// offers (OTLP, prometheus, querylog, arrow) become ADDITIVE variants once the operator confirms the v0
+/// backend set — the tagged union makes each a cheap add with its OWN fields, no reshape of this array.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum MetricsTarget {
-    /// The `s2n-quic-dc` backend — the operator's `s2n-quic-dc-metrics` emitter (git dep `camshaft/s2n-quic`,
-    /// branch `main`). Emits the metrics stream to a collector reached over the DC path at `endpoint`
-    /// (`host:port`).
-    #[serde(rename = "s2n-quic-dc")]
-    S2nQuicDc {
-        /// The collector address this target emits to (`host:port`).
+    /// The `statsd` backend — `s2n-quic-dc-metrics`' `StatsdBackend`. The daemon's statsd sink sends UDP
+    /// payloads to the collector at `endpoint`; `prefix` optionally namespaces every metric name (the
+    /// backend's `prefix` argument), e.g. `"cdz.agent"`.
+    Statsd {
+        /// The statsd collector address the sink sends UDP payloads to (`host:port`).
         endpoint: String,
+        /// Optional metric-name prefix applied to every emitted metric (maps to `StatsdBackend`'s prefix).
+        #[serde(default)]
+        prefix: Option<String>,
     },
 }
 
@@ -104,7 +111,7 @@ impl MetricsTarget {
     /// The backend kind token (matches the TOML `kind = "…"` tag) — for diagnostics + fan-out logging.
     pub fn kind(&self) -> &'static str {
         match self {
-            MetricsTarget::S2nQuicDc { .. } => "s2n-quic-dc",
+            MetricsTarget::Statsd { .. } => "statsd",
         }
     }
 }
@@ -201,10 +208,11 @@ impl RetryConfig {
         if attempt < 1 {
             return 0;
         }
-        // 2^(attempt-1) via saturating shift: a shift >= 64 (attempt-1 >= 64) would be UB/wrap, so clamp the
-        // exponent and let the multiply saturate to max_ms anyway.
+        // 2^(attempt-1) via saturating shift: a shift >= 64 (attempt-1 >= 64) is out of range for a u64, so
+        // clamp the exponent and let the multiply saturate to max_ms anyway.
         let exp = attempt - 1;
-        // A left shift is UB only at exp >= 64; exp == 63 (1<<63 = 2^63) is valid, so guard at the exact UB
+        // A `1u64 << exp` is out of range only at exp >= 64 (in safe Rust that PANICS in debug / masks in
+        // release — not UB, but still wrong); exp == 63 (1<<63 = 2^63) is valid, so guard at the exact
         // boundary. (Reachable behavior is unchanged either way — at exp 63 the saturating_mul+min already
         // pin at max_ms for any real config — but this makes the boundary precisely correct; #1998 review.)
         let factor: u64 = if exp >= 64 { u64::MAX } else { 1u64 << exp };
@@ -285,7 +293,7 @@ impl DaemonConfig {
             // missing/unknown field or a bad `kind`; this catches present-but-blank values).
             for (i, t) in self.observability.targets.iter().enumerate() {
                 match t {
-                    MetricsTarget::S2nQuicDc { endpoint } if endpoint.trim().is_empty() => {
+                    MetricsTarget::Statsd { endpoint, .. } if endpoint.trim().is_empty() => {
                         return Err(ConfigError(format!(
                             "[observability] target {i} ({}) needs a non-empty endpoint",
                             t.kind()
@@ -351,7 +359,7 @@ mod tests {
             [observability]
             enabled = true
             [[observability.target]]
-            kind = "s2n-quic-dc"
+            kind = "statsd"
             endpoint = "127.0.0.1:9000"
 
             [retries]
@@ -371,11 +379,12 @@ mod tests {
         assert_eq!(cfg.observability.targets.len(), 1);
         assert_eq!(
             cfg.observability.targets[0],
-            MetricsTarget::S2nQuicDc {
-                endpoint: "127.0.0.1:9000".into()
+            MetricsTarget::Statsd {
+                endpoint: "127.0.0.1:9000".into(),
+                prefix: None,
             }
         );
-        assert_eq!(cfg.observability.targets[0].kind(), "s2n-quic-dc");
+        assert_eq!(cfg.observability.targets[0].kind(), "statsd");
         assert_eq!(cfg.retries.max_attempts, 5);
     }
 
@@ -429,19 +438,21 @@ mod tests {
             [observability]
             enabled = true
             [[observability.target]]
-            kind = "s2n-quic-dc"
+            kind = "statsd"
             endpoint = "10.0.0.1:9000"
             [[observability.target]]
-            kind = "s2n-quic-dc"
+            kind = "statsd"
             endpoint = "10.0.0.2:9000"
+            prefix = "cdz.agent"
             "#,
         )
         .expect("multi-target observability parses");
         assert_eq!(cfg.observability.targets.len(), 2);
         assert_eq!(
             cfg.observability.targets[1],
-            MetricsTarget::S2nQuicDc {
-                endpoint: "10.0.0.2:9000".into()
+            MetricsTarget::Statsd {
+                endpoint: "10.0.0.2:9000".into(),
+                prefix: Some("cdz.agent".into()),
             }
         );
     }
@@ -454,7 +465,7 @@ mod tests {
             [observability]
             enabled = true
             [[observability.target]]
-            kind = "s2n-quic-dc"
+            kind = "statsd"
             endpoint = ""
             "#,
         )
@@ -464,15 +475,15 @@ mod tests {
 
     #[test]
     fn observability_target_omitted_endpoint_is_rejected() {
-        // A DIFFERENT path from the empty case: the `s2n-quic-dc` variant's `endpoint` is required, so
-        // omitting the field is a serde/TOML missing-field deser error — caught before the trim-check ever
-        // runs. (This is a per-KIND typed field now, not a generic column — the whole point of the refine.)
+        // A DIFFERENT path from the empty case: the `statsd` variant's `endpoint` is required, so omitting
+        // the field is a serde/TOML missing-field deser error — caught before the trim-check ever runs.
+        // (This is a per-KIND typed field now, not a generic column — the whole point of the refine.)
         let err = DaemonConfig::from_toml_str(
             r#"
             [observability]
             enabled = true
             [[observability.target]]
-            kind = "s2n-quic-dc"
+            kind = "statsd"
             "#,
         )
         .unwrap_err();
@@ -507,7 +518,7 @@ mod tests {
             [observability]
             enabled = true
             [[observability.target]]
-            kind = "s2n-quic-dc"
+            kind = "statsd"
             endpoint = "127.0.0.1:9000"
             not_a_field = "oops"
             "#,
