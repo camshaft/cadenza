@@ -66203,6 +66203,20 @@ mod stage1 {
             compile_component(&crate::codec::encode(&parse(src))).is_err(),
             "a block-wrapped branch perform in a nested arm resume-value must decline, not miscompile to 33"
         );
+        // a3-direct: the DIRECT-conditional twin (no block wrapper) at the SAME resume-value position ALSO
+        // drops the advance — a `resume`-value is never hoisted (it lives in the inner handle's arm), so the
+        // guard's direct-conditional disjunct is load-bearing (dropping it makes this miscompile to 33, not
+        // fold to 34). Pins that the resume-value drop is NOT block-wrapper-specific (contrast the let-init
+        // face, where a direct init IS lifted by Site 4 and folds). liaison/Copilot #1917 doc-accuracy point.
+        let direct = "(do (effect St (op get (-> Unit Int64))) (effect Up (op ask (-> Unit Int64))) \
+                   (def (main) (handle St 3 ((get (u) s (resume s (+ s 1)))) \
+                     (handle Up 0 ((ask (u) t (resume (if true (St.get) 99) t))) \
+                       (+ (* 10 (Up.ask)) (St.get))))) \
+                   (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(direct))).is_err(),
+            "a direct branch perform in a nested arm resume-value must decline too, not miscompile to 33"
+        );
     }
 
     #[test]

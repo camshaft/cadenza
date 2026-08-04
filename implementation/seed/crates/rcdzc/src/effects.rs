@@ -3444,20 +3444,27 @@ fn block_wrapped_branch_performs(db: &mut Db, node: StructId, ctx: &HandlerCtx) 
 /// boundary INSIDE the inner arm's resume-VALUE drops the outer `St.get`'s state advance (runs 33, correct
 /// 34) — the same class of block-boundary out-state drop as the let-init face, but at a DIFFERENT position
 /// (`Resume{value}`) that the let-init scanner deliberately does not reach (it stops at a nested `Handle`).
-/// Detect a `Resume` whose VALUE is a block-wrapped branch-performing conditional performing THIS handler's
-/// op, so `reduce_handle` declines cleanly (honest Todo) instead of folding the dropped-advance wrong value.
-/// PRECISELY POSITIONAL — keyed on the `Resume{value}` slot, NOT a position-agnostic block-wrapped-perform
-/// scan (that over-declines 5 working cases where the block-wrapped perform sits in a threaded position the
-/// fold DOES serve). The through-block fold that flips a3 → PASS is the same deferred commuting conversion
-/// as the let-init face. Related: [[adv69-block-wrapped-let-init-branch-perform-state-drop]].
+/// Detect a `Resume` whose VALUE is a branch-performing conditional performing THIS handler's op — whether
+/// DIRECT (`(resume (if b (St.get) 99) t)`) or BLOCK-WRAPPED (`(resume (let ((b true)) (if b (St.get) 99))
+/// t)`) — so `reduce_handle` declines cleanly (honest Todo) instead of folding the dropped-advance wrong
+/// value. BOTH forms drop the advance at this position (verified: dropping the direct-conditional disjunct
+/// makes `(resume (if true (St.get) 99) t)` miscompile to 33, not fold to 34) — unlike the let-init face,
+/// where a DIRECT init is lifted by Site 4 and only the block-wrapped residue remains; a `resume`-value is
+/// never hoisted (it lives in a nested handle's arm the outer reduction doesn't rewrite), so a direct
+/// conditional there is a genuine miscompile too. PRECISELY POSITIONAL — keyed on the `Resume{value}` slot,
+/// NOT a position-agnostic branch-perform scan (that over-declines 5 working cases where the perform sits in
+/// a threaded position the fold DOES serve). The through-block fold that flips a3 → PASS is the same deferred
+/// commuting conversion as the let-init face. Related:
+/// [[adv69-block-wrapped-branch-perform-drops-state-advance-at-block-boundary]].
 fn body_has_nested_arm_resume_value_block_wrapped_branch_perform(
     db: &mut Db,
     node: StructId,
     ctx: &HandlerCtx,
 ) -> bool {
-    // A `Resume` whose VALUE block-wraps a branch perform of THIS handler's op is the a3 drop. (A `Resume`
-    // reached while scanning the outer handle's BODY belongs to a nested handle's arm — the outer body
-    // itself has no bare resume; the outer handler's own arms are not in `body`.)
+    // A `Resume` whose VALUE is a branch perform of THIS handler's op — direct (`conditional_branch_performs`)
+    // OR block-wrapped (`block_wrapped_branch_performs`) — is the a3 drop; both forms revert the out-state at
+    // this position. (A `Resume` reached while scanning the outer handle's BODY belongs to a nested handle's
+    // arm — the outer body itself has no bare resume; the outer handler's own arms are not in `body`.)
     if let Resolved::Resume { value, .. } = resolved_of(db, node)
         && (conditional_branch_performs(db, value, ctx)
             || block_wrapped_branch_performs(db, value, ctx))
