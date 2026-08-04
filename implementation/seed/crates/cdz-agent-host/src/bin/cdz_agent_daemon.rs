@@ -218,6 +218,39 @@ async fn main() -> std::process::ExitCode {
             config.blob, config.log
         );
 
+        // Metrics EXPORT: when the `metrics-export` feature is compiled AND `[observability]` is enabled with
+        // statsd targets, clone the host's metrics registry (the Arc-backed handle shares the same storage the
+        // host loop increments) BEFORE `agent_host` moves into the loop, and spawn a periodic export task that
+        // flushes the registry to the configured statsd collectors every `report_interval_secs`. The task is
+        // shut down alongside the host loop (its own oneshot, fired after the loop returns) and does one final
+        // flush on the way out. OTLP/prometheus targets are not exported yet (statsd first); a following slice.
+        #[cfg(feature = "metrics-export")]
+        let (export_registry, export_targets, export_interval) = {
+            use cdz_agent_host::{MetricsTarget, StatsdTarget};
+            let targets: Vec<StatsdTarget> = if config.observability.enabled {
+                config
+                    .observability
+                    .targets
+                    .iter()
+                    .filter_map(|t| match t {
+                        MetricsTarget::Statsd { endpoint, prefix } => Some(StatsdTarget {
+                            endpoint: endpoint.clone(),
+                            prefix: prefix.clone(),
+                        }),
+                        // OTLP (+ future pull/file backends) aren't exported yet — statsd first.
+                        MetricsTarget::Otlp { .. } => None,
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            (
+                agent_host.registry().clone(),
+                targets,
+                std::time::Duration::from_secs(config.observability.report_interval_secs),
+            )
+        };
+
         let host = AsyncAgentHost::with_factory(agent_host, factory)
             .with_admin_authz(Box::new(AllowList::allow_all_for_local_admin()));
         // Drop our inbox sender so an idle inbox doesn't hold the loop open; the admin socket's AdminChannel
@@ -243,7 +276,36 @@ async fn main() -> std::process::ExitCode {
         // only), so a loop error left join! blocked on the socket forever, swallowing the error (#1977
         // review). Now the loop's return drives socket teardown, and the loop's Err reaches the exit code.
         let socket_task = tokio::spawn(socket.serve(admin_channel, sock_sd_rx));
+        // Spawn the periodic metrics-export task (if built + configured with statsd targets). It reads the
+        // cloned registry the host loop increments; its own shutdown oneshot fires after the loop returns so
+        // it does a final flush on the way out. Skipped (no task) when no statsd targets are configured.
+        #[cfg(feature = "metrics-export")]
+        let (export_task, export_sd_tx) = if export_targets.is_empty() {
+            (None, None)
+        } else {
+            eprintln!(
+                "cdz-agent-daemon: metrics export → {} statsd target(s) every {}s",
+                export_targets.len(),
+                export_interval.as_secs()
+            );
+            let (export_sd_tx, export_sd_rx) = tokio::sync::oneshot::channel::<()>();
+            let task = tokio::spawn(cdz_agent_host::run_statsd_export_loop(
+                export_registry,
+                export_targets,
+                export_interval,
+                export_sd_rx,
+            ));
+            (Some(task), Some(export_sd_tx))
+        };
         let loop_result = host.run_with_wall_clock(loop_sd_rx).await;
+        // Tear the export task down (final-flush-and-return) before the socket, so its last metrics ship.
+        #[cfg(feature = "metrics-export")]
+        if let (Some(task), Some(tx)) = (export_task, export_sd_tx) {
+            let _ = tx.send(());
+            if let Err(e) = task.await {
+                eprintln!("cdz-agent-daemon: metrics export task failed: {e:?}");
+            }
+        }
         // The loop is done — tear down the socket server and await its task so the socket file's Drop
         // cleanup runs before we exit. A JoinError here means the socket server task PANICKED; the exit code
         // is still driven by loop_result (correct — the loop is the primary), but log the panic so a dead
