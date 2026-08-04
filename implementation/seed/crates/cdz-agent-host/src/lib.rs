@@ -87,7 +87,7 @@ pub use config::{
 pub use factory::LiveExecutorSet;
 pub use factory::{
     AuthorizerBuilder, ComponentSessionFactory, ExecutorSetBuilder, FileLogSinkBuilder,
-    LogSinkBuilder,
+    LogSinkBuilder, MeteredExecutor,
 };
 #[cfg(feature = "live-net")]
 pub use host::live_executor_set;
@@ -95,7 +95,7 @@ pub use host::{AgentHost, HostedSession, SessionId};
 #[cfg(feature = "live-net")]
 pub use http::ReqwestHttpTransport;
 pub use http::{HttpExecutor, HttpMethod, HttpResponse, HttpTransport};
-pub use metrics::{HostMetrics, HostMetricsSnapshot};
+pub use metrics::{EffectMetrics, EffectMetricsSnapshot, HostMetrics, HostMetricsSnapshot};
 #[cfg(feature = "live-net")]
 pub use model::BedrockModelTransport;
 pub use model::{ModelExecutor, ModelTransport};

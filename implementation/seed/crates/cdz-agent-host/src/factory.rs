@@ -21,10 +21,15 @@
 
 use crate::admin::{InstallSpec, SessionFactory};
 use crate::host::HostedSession;
+use crate::metrics::EffectMetrics;
 use cdz_kernel::authz::Authorize;
 use cdz_kernel::blob::BlobStore;
-use cdz_kernel::executor::CompositeExecutor;
+use cdz_kernel::effect::EffectRequest;
+use cdz_kernel::event::EffectOutcome;
+use cdz_kernel::executor::{CompositeExecutor, Executor};
+use cdz_kernel::hash::Hash;
 use cdz_kernel::wasm_host::AsyncComponentReducer;
+use std::sync::Arc;
 
 /// Builds a per-session executor set (the effects a freshly-installed session may perform). Called ONCE per
 /// install so each session gets its OWN [`CompositeExecutor`] — the kernel's `Executor::perform` takes
@@ -46,6 +51,49 @@ pub trait ExecutorSetBuilder {
 impl<F: Fn() -> CompositeExecutor> ExecutorSetBuilder for F {
     async fn build(&self) -> CompositeExecutor {
         self()
+    }
+}
+
+/// A metering DECORATOR over an [`Executor`] — the executor-level seam for the PER-EFFECT half of the
+/// metric surface (see [`crate::metrics::EffectMetrics`]). It wraps a real executor and, on every
+/// `perform`, dispatches to the inner one and then tallies the outcome into a shared [`EffectMetrics`]:
+/// `Ok` → `record_ok`, `Err(reason)` → `record_err(classify(reason))` (the same [`crate::retry`]
+/// classification a supervisor branches on). Transparent otherwise — the outcome is returned unchanged and
+/// `handles_family` forwards, so wrapping is invisible to the kernel.
+///
+/// This is why the per-effect counts need no kernel change: every dispatch already flows through
+/// `Executor::perform`, so metering at the executor boundary (where the outcome is produced) captures it.
+/// The daemon wraps each real leaf executor with one of these sharing ONE `Arc<EffectMetrics>`, so a
+/// session's ok/retryable/permanent tallies aggregate across all its effect families.
+pub struct MeteredExecutor {
+    inner: Box<dyn Executor>,
+    metrics: Arc<EffectMetrics>,
+}
+
+impl MeteredExecutor {
+    /// Wrap `inner`, tallying each outcome into `metrics`. Boxes ready to register with
+    /// [`CompositeExecutor::with_effect`].
+    pub fn new(inner: Box<dyn Executor>, metrics: Arc<EffectMetrics>) -> Self {
+        MeteredExecutor { inner, metrics }
+    }
+}
+
+#[async_trait::async_trait(?Send)]
+impl Executor for MeteredExecutor {
+    async fn perform(&mut self, req: &EffectRequest, idempotency_key: Hash) -> EffectOutcome {
+        let outcome = self.inner.perform(req, idempotency_key).await;
+        match &outcome {
+            EffectOutcome::Ok(_) => self.metrics.record_ok(),
+            EffectOutcome::Err(reason) => self.metrics.record_err(crate::retry::classify(reason)),
+            EffectOutcome::TimedOut => self.metrics.record_timed_out(),
+        }
+        outcome
+    }
+
+    /// Forward the mechanism probe so wrapping doesn't hide the inner executor's served family from the
+    /// capability manifest (a wrapped executor must still report what it serves).
+    fn handles_family(&self, family: &str) -> bool {
+        self.inner.handles_family(family)
     }
 }
 
@@ -450,5 +498,84 @@ mod tests {
             "{entries:?}"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A stub executor that returns a SCRIPTED sequence of outcomes (one per `perform`), for exercising the
+    /// metering decorator's classification without a real transport.
+    struct ScriptedExecutor {
+        outcomes: std::cell::RefCell<std::collections::VecDeque<EffectOutcome>>,
+    }
+    #[async_trait::async_trait(?Send)]
+    impl Executor for ScriptedExecutor {
+        async fn perform(&mut self, _req: &EffectRequest, _key: Hash) -> EffectOutcome {
+            self.outcomes
+                .borrow_mut()
+                .pop_front()
+                .expect("scripted outcome available")
+        }
+        fn handles_family(&self, family: &str) -> bool {
+            family == "scripted"
+        }
+    }
+
+    #[tokio::test]
+    async fn metered_executor_tallies_outcomes_and_passes_them_through() {
+        use crate::retry::{permanent, retryable};
+        use cdz_kernel::effect::{EffectKind, Payload, Timeliness};
+
+        // Script Ok, a retryable Err, a permanent Err, an UNPREFIXED Err (fail-closed → permanent), and a
+        // TimedOut (its own counter, not an Err).
+        let scripted = ScriptedExecutor {
+            outcomes: std::cell::RefCell::new(
+                vec![
+                    EffectOutcome::Ok(Some(Payload::Inline(b"ok".to_vec().into()))),
+                    EffectOutcome::Err(retryable("bedrock throttled (429)")),
+                    EffectOutcome::Err(permanent("bad request (400)")),
+                    EffectOutcome::Err("no token here".to_string()),
+                    EffectOutcome::TimedOut,
+                ]
+                .into(),
+            ),
+        };
+        let metrics = Arc::new(EffectMetrics::default());
+        let mut metered = MeteredExecutor::new(Box::new(scripted), metrics.clone());
+
+        // handles_family forwards (wrapping doesn't hide the served family from the manifest).
+        assert!(metered.handles_family("scripted"));
+        assert!(!metered.handles_family("other"));
+
+        let req = EffectRequest::new(
+            EffectKind::Model,
+            "m".to_string(),
+            None,
+            Timeliness::Interactive,
+        );
+        // Each outcome passes THROUGH unchanged…
+        assert!(matches!(
+            metered.perform(&req, Hash::of(b"k")).await,
+            EffectOutcome::Ok(_)
+        ));
+        assert!(matches!(
+            metered.perform(&req, Hash::of(b"k")).await,
+            EffectOutcome::Err(_)
+        ));
+        metered.perform(&req, Hash::of(b"k")).await;
+        metered.perform(&req, Hash::of(b"k")).await;
+        assert!(matches!(
+            metered.perform(&req, Hash::of(b"k")).await,
+            EffectOutcome::TimedOut
+        ));
+
+        // …and the shared EffectMetrics tallied the ok/retryable/permanent/timed-out split (the unprefixed
+        // Err classified permanent, fail-closed; TimedOut counted on its own).
+        let s = metrics.snapshot();
+        assert_eq!(s.effects_ok, 1);
+        assert_eq!(s.effects_retryable_err, 1);
+        assert_eq!(
+            s.effects_permanent_err, 2,
+            "explicit permanent + unprefixed"
+        );
+        assert_eq!(s.effects_timed_out, 1);
+        assert_eq!(s.effects_total(), 5);
     }
 }
