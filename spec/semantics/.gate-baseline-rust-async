@@ -909,6 +909,7 @@ pass	a String compound export under a non-main name crosses to the host
 pass	a String match with a BOUND default arm equals its (= s literal) if-chain with a bound else
 pass	a String match with disjoint literal arms is order-independent (reordering the arms preserves the result)
 pass	a String param threaded through a self-recursive loop and concatenated each step is retained
+pass	a String slice OF a slice over a MULTIBYTE concat rope composes scalar offsets
 pass	a String slice VIEW keys a map by content in both directions, rope-backed included
 pass	a String-keyed map of MIXED-field records reads both leaves of a looked-up value (the config idiom)
 pass	a String-returning closure alongside a parameterized plain export
@@ -5189,6 +5190,7 @@ pass	the byte-len of a multi-byte String.slice exceeds its scalar-len (the two m
 pass	the churned-to-empty map REGROWS with correct structure (no residue corrupts re-insertion)
 pass	the compare walk recurses list-of-sums-of-lists with discriminant-first at depth
 pass	the complement laws fold x-and-not-x to zero and x-or-not-x to all-ones on a signed runtime value
+pass	the composed multibyte slice view equals its literal twin and keys a Map
 pass	the composed slice view EQUALS its flat twin and keys a Map by canonical content
 pass	the compound comparator drives a full INSERTION SORT over runtime tuples
 pass	the decode error's kind is matchable

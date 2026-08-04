@@ -1354,6 +1354,50 @@
   (call   main (: 1 Int64))
   (output (: 42 Int64)))
 
+(case "a String slice OF a slice over a MULTIBYTE concat rope composes scalar offsets"
+  (doc    "The view-of-a-view face for STRING with multibyte scalars: the parent is a concat rope
+           `\"aé∀\" + \"bçd\"` (é = 2 bytes, ∀ = 3 bytes, so scalar index ≠ byte offset), the outer
+           slice (1,5) crosses the seam, and the inner slice (1,3) re-offsets WITHIN that view —
+           `\"∀b\"`, scalar-len 2 → 201. Composing two view layers must translate scalar offsets
+           through both, landing on byte boundaries that don't align with scalar indices; a composition
+           that re-based against bytes (or only one layer) would split a scalar or read the wrong
+           window. The String twin of the Bytes slice-of-slice rope case (10-bytes); the chunks here
+           are constants because a STRING slice's scalar-offset walk cannot pre-resolve — the multibyte
+           re-indexing is the pinned machinery, not the seam deferral.")
+  (input  (do
+            (def (main (: n Int64))
+              (do
+                (def rope (String.concat "aé∀" "bçd"))
+                (match (String.slice rope 1 5)
+                  ((Some outer)
+                    (match (String.slice outer 1 3)
+                      ((Some inner)
+                        (+ (* 100 (String.scalar-len inner))
+                           (if (= inner "∀b") 1 0)))
+                      ((None _u) -2)))
+                  ((None _u) -3))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 201 Int64)))
+
+(case "the composed multibyte slice view equals its literal twin and keys a Map"
+  (doc    "The identity witness of the multibyte view-of-view case above, completing the family the
+           single-slice champ-key rows begin: the doubly-sliced view `\"∀b\"` must EQUAL the literal
+           by canonical `=` (10) AND find a value stored under the literal as a Map KEY (+7 → 17).
+           The canonical form must be the content bytes, independent of the two view layers' offsets
+           into the multibyte rope — residue from either layer would hash differently and miss.")
+  (input  (do
+            (def (main (: n Int64))
+              (do
+                (def rope (String.concat "aé∀" "bçd"))
+                (def inner (match (String.slice rope 1 5)
+                             ((Some outer) (match (String.slice outer 1 3) ((Some i) i) ((None _u) "")))
+                             ((None _u) "")))
+                (+ (* 10 (if (= inner "∀b") 1 0))
+                   (match (Map.lookup (Map.insert Map.empty "∀b" 7) inner)
+                     ((Some v) v) ((None _u) -1)))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 17 Int64)))
+
 (case "a String.slice view returned from a helper OUTLIVES the helper's local parent"
   (doc    "The String twin of the Bytes slice-escape liveness pin (10-bytes): `mk` builds its rope
            parent as a LOCAL (`String.concat`, runtime storage) and returns a slice view of it — the
