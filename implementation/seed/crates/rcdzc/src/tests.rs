@@ -66375,6 +66375,24 @@ mod stage1 {
             "a match-dispatched mutual group with the perform in one arm and the mutual call in another \
              must specialize, not decline or leak an internal ev#eff…$s0 name"
         );
+        // adv-69 rw4 (v-effects self-probe, breaker-confirmed): the MUTUAL-SCC face of recursive-branch-perform
+        // — CONTRAST the separate-branch cases above (perform and mutual call in DIFFERENT branches, which
+        // fold). Here the branch-perform SHARES a strict expression with the mutual call: `(+ (if true (St.get)
+        // 0) (odd-w (- n 1)))`. The single-return specialization threads the branch perform against the
+        // INCOMING state, but the advance is branch-local + the recursion carries the incoming state forward,
+        // so it drops across the cycle (seeded 1 → 3 not 6). `branch_perform_coexists_with_reentrant_call`
+        // declines it (a branch-performing conditional as a strict operand alongside a re-entrant call, keyed
+        // via `contains_recursive_call` for the mutual SCC). This is the MUTUAL-SCC face; the SELF-recursive
+        // faces go through the load-time accum pass and are tracked separately.
+        let rw4 = "(do (effect St (op get (-> Unit Int64))) \
+                   (def (even-w (: n Int64)) (if (= n 0) 0 (+ (if true (St.get) 0) (odd-w (- n 1))))) \
+                   (def (odd-w (: n Int64)) (if (= n 0) 0 (+ (if true (St.get) 0) (even-w (- n 1))))) \
+                   (def (main) (handle St 1 ((get (u) s (resume s (+ s 1)))) (even-w 3))) \
+                   (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(rw4))).is_err(),
+            "a mutual-SCC branch-perform sharing a strict expr with the mutual call must decline, not miscompile to 3"
+        );
     }
 
     #[test]

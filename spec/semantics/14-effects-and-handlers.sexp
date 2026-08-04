@@ -4929,6 +4929,30 @@
               (handle Fresh 42 ((next () s (resume (+ s 1) s))) (ev 2))) (export main)))
   (output (: 43 Int64)))
 
+(case "a mutually-recursive group with a BRANCH-PERFORM sharing a strict expr with the mutual call declines cleanly (adv-69 rw4 sub-face)"
+  (doc    "adv-69 recursive-branch-perform, MUTUAL-SCC face (v-effects self-probe 2026-08-04, breaker rw4).
+           CONTRAST the two folding cases above (perform and mutual call in SEPARATE branches — no shared
+           strict context, mutually exclusive): here the branch-perform and the mutual call SHARE one strict
+           expression — `(def (even-w n) (if (= n 0) 0 (+ (if true (St.get) 0) (odd-w (- n 1)))))` (and the
+           odd-w twin). The `(if true (St.get) 0)` branch-perform is a strict operand of `+` ALONGSIDE the
+           mutual call `(odd-w …)`. The single-return specialization threads the branch perform against the
+           INCOMING state, but the advance is branch-local and the recursion carries the incoming state
+           forward, so it drops across the cycle: seeded St=1 it ran 3 (three gets all read seed 1), correct
+           is 6 (1+2+3). DECLINE cleanly (safe floor) — a full fold needs the branch-perform lifted before
+           specialization. Detected by `branch_perform_coexists_with_reentrant_call` (a branch-performing
+           conditional as a strict operand alongside a re-entrant self/mutual call), keyed via
+           `contains_recursive_call` so it covers the mutual SCC, not just direct self-recursion. This is the
+           MUTUAL-SCC face ONLY; the SELF-recursive faces (bare `(walk n)` with the same `+` shape) are
+           rewritten by the load-time accum pass and are tracked SEPARATELY (still open). Grades TODO on all
+           backends; flips to 6 PASS when the branch-perform-before-recursion fold lands.")
+  (input  (do
+            (effect St (op get (-> Unit Int64)))
+            (def (even-w (: n Int64)) (if (= n 0) 0 (+ (if true (St.get) 0) (odd-w (- n 1)))))
+            (def (odd-w (: n Int64)) (if (= n 0) 0 (+ (if true (St.get) 0) (even-w (- n 1)))))
+            (def (main) (handle St 1 ((get (u) s (resume s (+ s 1)))) (even-w 3)))
+            (export main)))
+  (output (: 6 Int64)))
+
 (case "a MATCH-dispatched mutual group with the perform in one arm and the mutual call in another folds"
   (doc    "The `match` companion of the separate-branch mutual case above — the cycle dispatches on a
            `match` rather than an `if`, with the perform in one arm and the mutual call in another. `(def (ev
