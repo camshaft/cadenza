@@ -60,6 +60,8 @@ pub mod admin_wire;
 pub mod async_host;
 pub mod clock;
 pub mod config;
+#[cfg(feature = "metrics-export")]
+pub mod export;
 pub mod factory;
 pub mod host;
 pub mod http;
@@ -83,6 +85,8 @@ pub use config::{
     AdminConfig, BlobConfig, DaemonConfig, LogConfig, MetricsTarget, ObservabilityConfig,
     RetryConfig, TracingConfig, TracingFormat, TracingOutput,
 };
+#[cfg(feature = "metrics-export")]
+pub use export::{report_once, UdpStatsdSink};
 #[cfg(feature = "live-net")]
 pub use factory::LiveExecutorSet;
 pub use factory::{
