@@ -1707,6 +1707,46 @@ fn host_effect_decl(db: &mut Db, e: StructId) -> Option<u32> {
     }
 }
 
+/// Selectively RESOLVE-PIN every name occurrence in `node` whose resolution chain reaches one of `binders`
+/// (an arm's state/param/cont binders), so a following `copy_pure`/`substitute_nodes` of the arm body SHARES
+/// those occurrences (eval.rs's `resolved_subtrees` captured-free-variable share-path) with their memoized
+/// resolution intact — the ref keeps reaching its arm binder even in the detached rebuilt tree. Deliberately
+/// does NOT pin a ref to a BODY-LOCAL binder (a `let`/`do`-def inside `node`): that must re-resolve against
+/// the rebuilt tree's own (possibly rewritten) local init. Fills `db.resolved` (via `resolved_of`) AND marks
+/// the node in `db.resolved_subtrees` — both are required for the share-path to fire. Bounded to `node`.
+fn pin_refs_to_binders(db: &mut Db, node: StructId, binders: &[StructId]) {
+    // A bare name whose resolution reaches one of `binders` → pin it (memo + walk-guard membership).
+    if db.ast.as_name(node).is_some() {
+        let reaches = match resolved_of(db, node) {
+            Resolved::Param { binder } => binders.contains(&binder),
+            Resolved::Ref { value } => {
+                let mut t = value;
+                loop {
+                    if binders.contains(&t) {
+                        break true;
+                    }
+                    match resolved_of(db, t) {
+                        Resolved::Ref { value: n } => t = n,
+                        _ => break false,
+                    }
+                }
+            }
+            _ => false,
+        };
+        if reaches {
+            // `resolved_of` above already filled `db.resolved`; add the walk-guard membership so
+            // `beta_reduce`'s share-path (eval.rs) returns this pinned occurrence as-is.
+            db.resolved_subtrees.insert(node);
+        }
+        return;
+    }
+    if let Struct::List(children) = db.ast.get(node).clone() {
+        for c in children {
+            pin_refs_to_binders(db, c, binders);
+        }
+    }
+}
+
 /// E5 STEP 2 — WITHIN-ACTIVATION lexical `k`. A `ctl`-style arm binds the continuation `k` (`arm.cont =
 /// Some(k)`) and applies it as `(k v)`. When `k` is used ONLY as the HEAD of applications — never bare,
 /// never passed as an argument, never stored — the continuation does NOT escape: each `(k v)` returns into
@@ -1809,6 +1849,26 @@ fn ctl_arm_lexical_k_to_resume(db: &mut Db, arm: &HandleArm) -> Option<StructId>
         sub.insert(app, resume);
     }
     // Splice the rewritten resume nodes in place of the `(k v)` applications (a node→node substitution).
+    // SELECTIVELY PIN the arm body's ARM-BINDER references before `substitute_nodes`'s `copy_pure` re-pushes
+    // every non-`(k v)` atom into the DETACHED rebuilt tree (root parent `None`). Two classes of name ref
+    // need OPPOSITE treatment:
+    //   • A ref to an ARM binder — the state binder `s`, an op-param `x` — resolves OUTSIDE the arm body
+    //     (up the parent chain to `handle_arm_binds`). In the detached copy that parent walk is gone, so the
+    //     ref must keep its pinned resolution (else the pure-one-hole reify's `beta_reduce({state↦init,
+    //     params↦args})` can't match it and it leaks `unbound name s` — the bare-position `(+ s (k x))`
+    //     leak, breaker ek1).
+    //   • A ref to a BODY-LOCAL binder — a `let`/`do`-def `r` in `(let ((r (k x))) (+ r s))` — resolves
+    //     INSIDE the arm body (down to the local `(def r …)`). It must NOT be pinned: after the rewrite the
+    //     init changes `(k x)`→`(resume x s)`, and a pinned `r` would keep pointing at the ORIGINAL, now-
+    //     orphaned `(k x)` init (a bare k-application) → "value is not applyable" (breaker ek5). Left
+    //     unpinned, `r` re-resolves within the rebuilt tree to the REWRITTEN `(def r (resume x s))` init —
+    //     correct (the explicit-resume twin `(let ((r (resume x s))) (+ r s))` already folds this way).
+    // A blunt `resolve_subtree` pins BOTH (breaks ek5); a blunt `forget` pins NEITHER (re-leaks ek1). So
+    // pin ONLY refs whose resolution chain reaches one of THIS arm's binders. Idempotent + bounded.
+    let mut arm_binders: Vec<StructId> = vec![arm.state];
+    arm_binders.extend(arm.params.iter().copied());
+    arm_binders.push(k_binder);
+    pin_refs_to_binders(db, arm.body, &arm_binders);
     Some(substitute_nodes(db, arm.body, &sub))
 }
 
