@@ -11724,9 +11724,11 @@ fn map_duplicate_const_key(db: &mut Db, entries: &[(StructId, StructId)]) -> Opt
 fn first_non_reifiable_leaf(db: &Db, node: crate::ast::StructId) -> Option<&'static str> {
     match db.ast.get(node) {
         crate::ast::Struct::Atom(l) => match db.ast.leaf(*l) {
+            // Sym/Char have no `Ast` variant yet, so `quote` bails on them (reject-don't-miscompile).
+            // NOT `Bytes` — it reifies to `Ast.Bytes` (operator seq 113), so a `b"…"` is reifiable and
+            // must not be flagged here.
             crate::ast::Leaf::Sym(_) => Some("a `#\"…\"` symbol literal"),
             crate::ast::Leaf::Char(_) => Some("a `#\\…` char literal"),
-            crate::ast::Leaf::Bytes(_) => Some("a `b\"…\"` bytes literal"),
             _ => None,
         },
         crate::ast::Struct::List(kids) => {
@@ -11767,10 +11769,10 @@ fn enrich_unbound(db: &mut Db, id: crate::ast::StructId, r: Reject) -> Reject {
     {
         // A `(quote …)` argument IS compile-time-visible, so "nothing to reconstruct" is the WRONG
         // reason when it declined because it carries a leaf kind the `Ast` sum has no variant for — a
-        // `#"…"` symbol, a `#\c` char, or a `b"…"` bytes literal (`quote`'s reify bails on those, so the
-        // whole quote — and the enclosing `eval` — declines). Name the actual offending literal instead
-        // of the misleading runtime/non-constant phrasing. (These reify once the corresponding `Ast`
-        // variant lands — e.g. `Ast.Symbol` with the symbols vertical.)
+        // `#"…"` symbol or a `#\c` char (`quote`'s reify bails on those, so the whole quote — and the
+        // enclosing `eval` — declines). Name the actual offending literal instead of the misleading
+        // runtime/non-constant phrasing. (These reify once the corresponding `Ast` variant lands — e.g.
+        // `Ast.Symbol` with the symbols vertical; `Ast.Bytes` already landed, so `b"…"` is NOT flagged.)
         if let Some(kind) = eval_args
             .iter()
             .find_map(|&a| first_non_reifiable_leaf(db, a))
@@ -11780,9 +11782,9 @@ fn enrich_unbound(db: &mut Db, id: crate::ast::StructId, r: Reject) -> Reject {
                 format!(
                     "`eval` reconstructs a compile-time-visible AST to source, but this one contains \
                      {kind}, which has no `Ast` leaf variant to reconstruct (the `Ast` sum covers \
-                     integers, floats, booleans, strings, names, and lists). `quote` cannot reify such \
-                     a literal, so the whole `(quote …)` — and this `eval` — declines. Use a reifiable \
-                     literal, or compute the value outside `quote`."
+                     integers, floats, booleans, strings, names, byte sequences, and lists). `quote` \
+                     cannot reify such a literal, so the whole `(quote …)` — and this `eval` — declines. \
+                     Use a reifiable literal, or compute the value outside `quote`."
                 ),
             )
             .at(id);
