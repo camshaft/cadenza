@@ -1537,15 +1537,18 @@ mod status_snapshot_tests {
         .await
         .unwrap(); // deliver itself SUCCEEDS — the fold failure is data, not a kernel error.
 
-        // A FoldFailed event is on the log, carrying the reason + cause-linked to the inbound it choked on.
-        let (reason, caused) = s
+        // A FoldFailed event is on the log, carrying the reason + BOTH cause linkages: the body's
+        // `caused_event` field AND the envelope `Event.cause` edge (distinct — the body field is a payload,
+        // `Event.cause` is the real causal-DAG parent edge replay/tamper-evidence/consumers walk; a regression
+        // that filled one but not the other would break the DAG, so pin BOTH — liaison pr1963).
+        let (reason, body_caused, envelope_cause) = s
             .log()
             .iter()
             .find_map(|e| match &e.body {
                 EventBody::FoldFailed {
                     reason,
                     caused_event,
-                } => Some((reason.clone(), *caused_event)),
+                } => Some((reason.clone(), *caused_event, e.cause)),
                 _ => None,
             })
             .expect("a failed fold records a FoldFailed event");
@@ -1553,15 +1556,21 @@ mod status_snapshot_tests {
             reason, "wasm reducer trapped: unreachable",
             "the failure reason is preserved"
         );
-        // The inbound the fold choked on is on the log, and FoldFailed is cause-linked to it.
+        // The inbound the fold choked on is on the log; FoldFailed links to it BOTH ways.
         let inbound_hash = s
             .log()
             .iter()
             .find_map(|e| matches!(&e.body, EventBody::Inbound { .. }).then(|| e.hash()))
             .expect("the inbound is logged");
         assert_eq!(
-            caused, inbound_hash,
-            "FoldFailed is cause-linked to the event whose fold failed"
+            body_caused, inbound_hash,
+            "FoldFailed body caused_event names the event whose fold failed"
+        );
+        assert_eq!(
+            envelope_cause,
+            Some(inbound_hash),
+            "FoldFailed's ENVELOPE Event.cause edge points at the inbound too (the causal-DAG edge, not just \
+             the body field) — replay/tamper-evidence walk this"
         );
 
         // No effects were routed (a failed fold carries none), and the session is NOT stuck — it's a normal
