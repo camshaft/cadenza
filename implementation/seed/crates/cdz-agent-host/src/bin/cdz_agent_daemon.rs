@@ -33,6 +33,53 @@ fn main() {
     std::process::exit(2);
 }
 
+/// Install the `tracing` subscriber from `[tracing]` config. `Ok(())` with no subscriber when disabled (the
+/// facade stays a no-op); otherwise build an `EnvFilter` from `filter`, a fmt layer per `format`, and a
+/// writer per `output` (opening the file for a `file` output), then `.init()` the global subscriber. `Err`
+/// on a bad filter directive or an un-openable file — a fatal boot misconfig the caller surfaces + exits on.
+#[cfg(feature = "live-net")]
+fn init_tracing(cfg: &cdz_agent_host::TracingConfig) -> Result<(), String> {
+    use cdz_agent_host::{TracingFormat, TracingOutput};
+    use tracing_subscriber::fmt::writer::BoxMakeWriter;
+    use tracing_subscriber::EnvFilter;
+
+    if !cfg.enabled {
+        return Ok(());
+    }
+
+    // The RUST_LOG-grammar directive → EnvFilter. A bad directive is a fatal config error (not silently
+    // dropped to a default), so a typo'd filter is loud at boot.
+    let filter = EnvFilter::try_new(&cfg.filter)
+        .map_err(|e| format!("bad [tracing] filter {:?}: {e}", cfg.filter))?;
+
+    // Collapse the WRITER dimension to one boxed type so the format match below is the only branching. A
+    // `file` output opens (create+append) the path; stderr/stdout use the process streams.
+    let writer: BoxMakeWriter = match &cfg.output {
+        TracingOutput::Stderr => BoxMakeWriter::new(std::io::stderr),
+        TracingOutput::Stdout => BoxMakeWriter::new(std::io::stdout),
+        TracingOutput::File { path } => {
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .map_err(|e| format!("could not open [tracing] output file {path}: {e}"))?;
+            BoxMakeWriter::new(std::sync::Mutex::new(file))
+        }
+    };
+
+    let builder = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(writer);
+    // The FORMAT dimension: each returns a distinct builder type, so `.init()` per-arm (can't unify the
+    // value). `try_init` so a double-init (shouldn't happen at boot) is an error, not a panic.
+    match cfg.format {
+        TracingFormat::Compact => builder.compact().try_init(),
+        TracingFormat::Pretty => builder.pretty().try_init(),
+        TracingFormat::Json => builder.json().try_init(),
+    }
+    .map_err(|e| format!("could not install tracing subscriber: {e}"))
+}
+
 #[cfg(feature = "live-net")]
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> std::process::ExitCode {
@@ -60,10 +107,23 @@ async fn main() -> std::process::ExitCode {
             return std::process::ExitCode::from(1);
         }
     };
+
+    // Install the tracing subscriber from `[tracing]` BEFORE anything else logs — so the boot line + every
+    // later host span/event is captured through it. `[tracing].enabled=false` (the default) installs no
+    // subscriber (the facade's spans stay the near-zero-cost no-op). A subscriber build failure (a bad filter
+    // directive, an un-openable file) is fatal like a bad config.
+    if let Err(e) = init_tracing(&config.tracing) {
+        eprintln!("cdz-agent-daemon: could not initialize tracing: {e}");
+        return std::process::ExitCode::from(1);
+    }
+
     eprintln!(
         "cdz-agent-daemon: booted from {config_path} — log={:?}, observability.enabled={}, \
-         retries.max_attempts={}",
-        config.log, config.observability.enabled, config.retries.max_attempts
+         retries.max_attempts={}, tracing.enabled={}",
+        config.log,
+        config.observability.enabled,
+        config.retries.max_attempts,
+        config.tracing.enabled
     );
 
     // The admin CONTROL INTERFACE is what makes this a live control plane: when `[admin].enabled` (and the
