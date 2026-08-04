@@ -70,7 +70,7 @@ pub use admin::{
     AdminAuthorizer, AdminCommand, AdminResponse, AllowList, InstallSpec, SessionFactory,
 };
 #[cfg(feature = "admin")]
-pub use admin_socket::AdminSocket;
+pub use admin_socket::{AdminSocket, LOCAL_ADMIN_PRINCIPAL};
 pub use admin_wire::{
     decode_frame, encode_frame, AdminCommandWire, AdminResponseWire, InstallSpecWire, WireError,
     MAX_FRAME_LEN,

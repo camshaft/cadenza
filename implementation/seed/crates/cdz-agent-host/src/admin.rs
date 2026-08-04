@@ -81,10 +81,17 @@ impl AdminCommand {
 /// [`action`](AdminCommand::action) string; `principal` is the admin identity the transport asserts (over a
 /// local `0o600` socket that identity is implicitly the daemon's owner — the socket perms are the real
 /// gate; this layer decides WHICH actions that principal may take).
+///
+/// **Async + `?Send`** (like the kernel's `Authorize`): the Cedar-component impl's evaluation `.await`s
+/// (fuel-yielding) and holds a non-`Send` wasmtime store, so the trait is async NOW — while there's only
+/// the synchronous [`AllowList`] impl — to avoid a breaking signature change when that impl lands (#1967
+/// review).
+#[async_trait::async_trait(?Send)]
 pub trait AdminAuthorizer {
     /// May `principal` perform `command`? `Ok(())` permits; `Err(reason)` denies (the reason is surfaced in
-    /// the error response + is audit-loggable). Total, must not panic — a broken decision denies.
-    fn authorize(&self, principal: &str, command: &AdminCommand) -> Result<(), String>;
+    /// the error response + is audit-loggable). Total, must not panic — a broken decision denies. May
+    /// `.await` a wasm policy evaluation internally (a synchronous impl like [`AllowList`] just returns).
+    async fn authorize(&self, principal: &str, command: &AdminCommand) -> Result<(), String>;
 }
 
 /// A concrete deny-by-default [`AdminAuthorizer`]: an explicit allowlist of `(principal, action)` pairs.
@@ -134,16 +141,17 @@ impl AllowList {
     }
 }
 
+#[async_trait::async_trait(?Send)]
 impl AdminAuthorizer for AllowList {
-    fn authorize(&self, principal: &str, command: &AdminCommand) -> Result<(), String> {
+    async fn authorize(&self, principal: &str, command: &AdminCommand) -> Result<(), String> {
         let action = command.action();
-        // A specific (principal, action) grant, OR a wildcard-principal grant for this action.
+        // A specific (principal, action) grant, OR a wildcard-principal ("*") grant for this action.
+        // Compare the stored pairs' fields as &str (no per-check `.to_string()` allocation — #1967 review);
+        // the allowed set is tiny (a handful of grants), so the linear scan is trivial.
         let permitted = self
             .allowed
-            .contains(&(principal.to_string(), action.to_string()))
-            || self
-                .allowed
-                .contains(&("*".to_string(), action.to_string()));
+            .iter()
+            .any(|(p, a)| a == action && (p == principal || p == "*"));
         if permitted {
             Ok(())
         } else {
@@ -275,11 +283,11 @@ impl AgentHost {
         &mut self,
         cmd: AdminCommand,
         principal: &str,
-        authz: &dyn AdminAuthorizer,
+        authz: &(dyn AdminAuthorizer + '_),
         factory: Option<&mut (dyn SessionFactory + '_)>,
         now_ms: Option<u64>,
     ) -> AdminResponse {
-        if let Err(reason) = authz.authorize(principal, &cmd) {
+        if let Err(reason) = authz.authorize(principal, &cmd).await {
             return AdminResponse::Error { message: reason };
         }
         self.apply_admin(cmd, factory, now_ms).await
@@ -607,32 +615,41 @@ mod tests {
         );
     }
 
-    #[test]
-    fn allowlist_denies_by_default_and_permits_only_granted_actions() {
+    #[tokio::test]
+    async fn allowlist_denies_by_default_and_permits_only_granted_actions() {
         let list = AllowList::deny_all()
             .allow("admin", "admin/list-sessions")
             .allow("admin", "admin/session-status");
 
         // Granted (specific principal + action).
-        assert!(list.authorize("admin", &AdminCommand::ListSessions).is_ok());
+        assert!(list
+            .authorize("admin", &AdminCommand::ListSessions)
+            .await
+            .is_ok());
         // Un-granted action for a known principal → denied.
         let err = list
             .authorize("admin", &AdminCommand::InstallSession(spec("x")))
+            .await
             .unwrap_err();
         assert!(err.contains("may not admin/install-session"), "{err}");
         // Unknown principal → denied even for a granted action.
         assert!(list
             .authorize("intruder", &AdminCommand::ListSessions)
+            .await
             .is_err());
     }
 
-    #[test]
-    fn allowlist_wildcard_principal_grants_any_caller() {
+    #[tokio::test]
+    async fn allowlist_wildcard_principal_grants_any_caller() {
         let list = AllowList::deny_all().allow_any_principal("admin/list-sessions");
         assert!(list
             .authorize("anyone", &AdminCommand::ListSessions)
+            .await
             .is_ok());
-        assert!(list.authorize("other", &AdminCommand::ListSessions).is_ok());
+        assert!(list
+            .authorize("other", &AdminCommand::ListSessions)
+            .await
+            .is_ok());
         // Still deny-by-default for un-granted actions.
         assert!(list
             .authorize(
@@ -641,11 +658,12 @@ mod tests {
                     id: SessionId::new("x")
                 }
             )
+            .await
             .is_err());
     }
 
-    #[test]
-    fn allow_all_for_local_admin_permits_every_v0_action() {
+    #[tokio::test]
+    async fn allow_all_for_local_admin_permits_every_v0_action() {
         let list = AllowList::allow_all_for_local_admin();
         for cmd in [
             AdminCommand::InstallSession(spec("x")),
@@ -657,7 +675,11 @@ mod tests {
                 id: SessionId::new("x"),
             },
         ] {
-            assert!(list.authorize("owner", &cmd).is_ok(), "{}", cmd.action());
+            assert!(
+                list.authorize("owner", &cmd).await.is_ok(),
+                "{}",
+                cmd.action()
+            );
         }
     }
 
