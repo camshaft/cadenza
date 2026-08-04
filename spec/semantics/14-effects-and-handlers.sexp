@@ -1125,6 +1125,25 @@
   (host-calls)
   (output (: 7 Int64)))
 
+(case "an abortive handler ISSUES a host call sequenced BEFORE the abort in its discarded body"
+  (doc    "The complement of the case above (abort ELIDES a host call AFTER it): a delegated host call
+           sequenced BEFORE the abort on the strict do-spine IS issued — its effect is committed before the
+           abort abandons the rest. `(do (ask.ask) (Bail.bail 7))` under `Bail`: `ask.ask` runs (the host
+           call is issued, response 100 discarded — the `do` evaluates it for effect), THEN `Bail.bail 7` —
+           a non-resuming arm — abandons the `do`, so the handle value is the abort 7. The observed host-call
+           sequence is `(call ask.ask)` (issued), NOT empty. Pins that the do-shape abort-fold preserves a
+           FOREIGN HOST perform in the pre-abort prefix (the host analogue of the outer-effect pre-abort
+           preservation): the discarded continuation drops only what comes AFTER the abort, never a
+           side-effect already committed before it.")
+  (input  (do
+            (effect ask (op ask (-> Unit Int64)))
+            (effect Bail (op bail (-> Int64 Int64)))
+            (def (main)
+              (host (ask) (handle Bail 0 ((bail (n) s n)) (do (ask.ask) (Bail.bail 7))))) (export main)))
+  (host-responses (respond ask.ask (: 100 Int64)))
+  (host-calls (call ask.ask))
+  (output (: 7 Int64)))
+
 (case "a host-delegated result SEEDS an in-program handler's initial state"
   (doc    "The host-to-handler data flow: the handle's SEED expression is itself a host-delegated perform —
            `(handle Ctr (Env.seed unit) …)` — so the host response (5) becomes the in-program handler's

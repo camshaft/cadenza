@@ -3828,6 +3828,7 @@ pass	an abort abandons a pending borrowed map lookup and the map survives
 pass	an abort abandons a pending consuming op and the shared binding survives
 pass	an abortive arm yields a RECURSIVE-SUM spine as the handle's value
 pass	an abortive arm yields a heap LIST built in the arm as the handle's value
+pass	an abortive handler ISSUES a host call sequenced BEFORE the abort in its discarded body
 pass	an abortive handler abandons a host call in the path it discards
 pass	an abortive handler arm never resumes, so its value becomes the handle's value
 pass	an abortive handler arm performed with a RUNTIME argument abandons the computation and returns it
@@ -4095,8 +4096,8 @@ pass	an inlined multi-use checked-arith argument is shared and computed directly
 pass	an inner abort ELIDES an outer perform sequenced AFTER it (dead-path control)
 pass	an inner abort in a NON-FINAL do-statement elides the DEAD suffix after it (pre-abort advance kept)
 pass	an inner abort preserves TWO outer advances committed before it (multi-step outer trace)
-pass	an inner abort preserves an OUTER advance committed in a MATCH-SCRUTINEE before it (scrutinee collapse)
 pass	an inner abort preserves an OUTER advance committed in a MATCH-ARM body before it (arm do-shape)
+pass	an inner abort preserves an OUTER advance committed in a MATCH-SCRUTINEE before it (scrutinee collapse)
 pass	an inner abort preserves an OUTER advance committed in a STRICT OPERAND before it (operand-lift)
 pass	an inner abort preserves an OUTER advance committed in an IF-BRANCH before it (branch do-shape)
 pass	an inner abortive handler preserves an OUTER effect's advance committed before the abort (do-shape)

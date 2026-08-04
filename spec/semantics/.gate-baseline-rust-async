@@ -4023,8 +4023,8 @@ pass	an inlined multi-use checked-arith argument is shared and computed directly
 pass	an inner abort ELIDES an outer perform sequenced AFTER it (dead-path control)
 pass	an inner abort in a NON-FINAL do-statement elides the DEAD suffix after it (pre-abort advance kept)
 pass	an inner abort preserves TWO outer advances committed before it (multi-step outer trace)
-pass	an inner abort preserves an OUTER advance committed in a MATCH-SCRUTINEE before it (scrutinee collapse)
 pass	an inner abort preserves an OUTER advance committed in a MATCH-ARM body before it (arm do-shape)
+pass	an inner abort preserves an OUTER advance committed in a MATCH-SCRUTINEE before it (scrutinee collapse)
 pass	an inner abort preserves an OUTER advance committed in a STRICT OPERAND before it (operand-lift)
 pass	an inner abort preserves an OUTER advance committed in an IF-BRANCH before it (branch do-shape)
 pass	an inner abortive handler preserves an OUTER effect's advance committed before the abort (do-shape)
@@ -5733,6 +5733,7 @@ todo	an @param of a Float64 type generates a Float64-typed accessor
 todo	an @param site generates a Param accessor a host delegation reads at run time
 todo	an @param with no widget config still generates its typed accessor
 todo	an EMPTY Bytes arg crosses the host boundary
+todo	an abortive handler ISSUES a host call sequenced BEFORE the abort in its discarded body
 todo	an abortive handler abandons a host call in the path it discards
 todo	an abortive perform in a recursive callee with a PENDING continuation in the handle body abandons it
 todo	an effectful host arg flowing into a compound then a destructuring match is evaluated ONCE
