@@ -472,6 +472,175 @@ fn parse_hash_hex(hex: &str) -> Option<Hash> {
     Hash::from_hex(hex)
 }
 
+/// A host-side handle to a live `cadenza:runtime/heap` instance, exposing the value-heap ops the reducer
+/// fold-boundary MARSHALLING needs (operator ruling C, 2026-08-04): the kernel host builds the reducer's
+/// structurally-typed WIT arguments (a content-type `record`, `option<list<u8>>` payloads) as value-heap
+/// HANDLES the Cadenza reducer consumes, and reads its `list<effect-request>` result back — because a real
+/// Cadenza component crosses every compound as an opaque `u32` handle into the shared runtime, NOT as a
+/// structural component-model value (`backend/wasm/host.rs::extern_abi_val_type`; component-abi.md
+/// "components composed against a shared runtime exchange values as handles"). So `reducer.wit` stays
+/// structurally typed (the contract), and this adapter marshals each field ↔ handle around the reducer's
+/// `apply(u32,u32,u32)->u32` handle-ABI export — reusing the SAME runtime instance the reducer's linker
+/// is composed against (§23 [`compose_dep_into_linker`]), so a handle the host mints indexes the heap the
+/// reducer reads.
+///
+/// This is SLICE 1: the BUILD (write) ops B1's empty-effects fold needs — `box-int` (scalar field),
+/// `str-new` (a `String` field), `arr-alloc`/`arr-set` (a record as a sorted-field array), `sum-new` (an
+/// `option` ctor), and `vec-len` (read the effect-list length). The READ ops for B2/B3 (`arr-get`/
+/// `str-get`/`sum-disc`/`sum-payload`/`vec-get`/`get-int`/`bytes-*`) layer on in the next slice.
+///
+/// Each op is a wasmtime component [`Func`] extracted off the instantiated runtime under its
+/// `cadenza:runtime/heap` interface; a method calls it over the runtime's `u32`/`s64` valtypes. The
+/// runtime handle indices are the FROZEN `runtime.wit` order (documented per method).
+pub struct HeapHandle<T: 'static> {
+    store: wasmtime::Store<T>,
+    box_int: wasmtime::component::Func,
+    arr_alloc: wasmtime::component::Func,
+    arr_set: wasmtime::component::Func,
+    sum_new: wasmtime::component::Func,
+    vec_len: wasmtime::component::Func,
+    str_new: wasmtime::component::Func,
+}
+
+impl<T: 'static> HeapHandle<T> {
+    /// Bind a `HeapHandle` from an already-instantiated runtime component `instance` in `store` (the
+    /// SAME instance composed into the reducer's linker, so handles are shared). Extracts each B1 heap op
+    /// as a [`Func`] off the `cadenza:runtime/heap` exported interface — a missing op is a `Compose`
+    /// error naming it (the runtime doesn't expose the expected interface, caught here rather than as an
+    /// opaque trap at marshal time).
+    pub fn bind(
+        mut store: wasmtime::Store<T>,
+        instance: &wasmtime::component::Instance,
+    ) -> Result<Self, ComponentError> {
+        let iface_err = |reason: String| ComponentError::Compose {
+            import_name: "cadenza:runtime/heap".to_string(),
+            reason,
+        };
+        let iface_idx = instance
+            .get_export_index(&mut store, None, "cadenza:runtime/heap")
+            .ok_or_else(|| iface_err("runtime does not export cadenza:runtime/heap".into()))?;
+        let mut op = |name: &str| -> Result<wasmtime::component::Func, ComponentError> {
+            let idx = instance
+                .get_export_index(&mut store, Some(&iface_idx), name)
+                .ok_or_else(|| iface_err(format!("heap interface missing op {name:?}")))?;
+            instance
+                .get_func(&mut store, idx)
+                .ok_or_else(|| iface_err(format!("heap export {name:?} is not a func")))
+        };
+        let box_int = op("box-int")?;
+        let arr_alloc = op("arr-alloc")?;
+        let arr_set = op("arr-set")?;
+        let sum_new = op("sum-new")?;
+        let vec_len = op("vec-len")?;
+        let str_new = op("str-new")?;
+        Ok(HeapHandle {
+            store,
+            box_int,
+            arr_alloc,
+            arr_set,
+            sum_new,
+            vec_len,
+            str_new,
+        })
+    }
+
+    /// Call a heap op that takes u32 args and returns one u32 handle — the common shape (arr-alloc,
+    /// arr-set, sum-new, vec-len). Args are passed as `Val::U32`; the single result is read back as u32.
+    fn call_u32s(
+        &mut self,
+        f: &wasmtime::component::Func,
+        args: &[u32],
+    ) -> Result<u32, ComponentError> {
+        use wasmtime::component::Val;
+        let params: Vec<Val> = args.iter().map(|&a| Val::U32(a)).collect();
+        let mut results = [Val::U32(0)];
+        f.call(&mut self.store, &params, &mut results)
+            .map_err(|e| ComponentError::Trap(e.to_string()))?;
+        f.post_return(&mut self.store)
+            .map_err(|e| ComponentError::Trap(e.to_string()))?;
+        match results[0] {
+            Val::U32(h) => Ok(h),
+            ref other => Err(ComponentError::Trap(format!(
+                "heap op returned {other:?}, not a u32 handle"
+            ))),
+        }
+    }
+
+    /// `box-int(v: s64) -> u32` (runtime.wit idx 0): box a scalar int as a heap handle — a scalar field
+    /// inside a record crosses as a BOXED handle (v-rust-backend confirm), so a record's int field is
+    /// `arr-set(arr, i, box_int(v))`.
+    pub fn box_int(&mut self, v: i64) -> Result<u32, ComponentError> {
+        use wasmtime::component::Val;
+        let mut results = [Val::U32(0)];
+        self.box_int
+            .call(&mut self.store, &[Val::S64(v)], &mut results)
+            .map_err(|e| ComponentError::Trap(e.to_string()))?;
+        self.box_int
+            .post_return(&mut self.store)
+            .map_err(|e| ComponentError::Trap(e.to_string()))?;
+        match results[0] {
+            Val::U32(h) => Ok(h),
+            ref other => Err(ComponentError::Trap(format!(
+                "box-int returned {other:?}, not a u32 handle"
+            ))),
+        }
+    }
+
+    /// `str-new(s: string) -> u32` (idx 17): intern a String as a heap handle — a `String` field crosses
+    /// as its rope handle.
+    pub fn str_new(&mut self, s: &str) -> Result<u32, ComponentError> {
+        use wasmtime::component::Val;
+        let mut results = [Val::U32(0)];
+        self.str_new
+            .call(&mut self.store, &[Val::String(s.into())], &mut results)
+            .map_err(|e| ComponentError::Trap(e.to_string()))?;
+        self.str_new
+            .post_return(&mut self.store)
+            .map_err(|e| ComponentError::Trap(e.to_string()))?;
+        match results[0] {
+            Val::U32(h) => Ok(h),
+            ref other => Err(ComponentError::Trap(format!(
+                "str-new returned {other:?}, not a u32 handle"
+            ))),
+        }
+    }
+
+    /// `arr-alloc(len: u32) -> u32` (idx 6): allocate a `len`-element value-heap array — a record/tuple
+    /// crosses as an array of its field handles (in SORTED field-name order for a record).
+    pub fn arr_alloc(&mut self, len: u32) -> Result<u32, ComponentError> {
+        let f = self.arr_alloc;
+        self.call_u32s(&f, &[len])
+    }
+
+    /// `arr-set(arr, index, elem) -> arr` (idx 7): set element `index` of `arr` to handle `elem`, returning
+    /// the array handle for threading.
+    pub fn arr_set(&mut self, arr: u32, index: u32, elem: u32) -> Result<u32, ComponentError> {
+        let f = self.arr_set;
+        self.call_u32s(&f, &[arr, index, elem])
+    }
+
+    /// `sum-new(disc, payload) -> u32` (idx 10): build a sum handle with discriminant `disc` and payload
+    /// handle `payload` — an `option` is `sum-new(0, some_handle)` / `sum-new(1, unit)`; a nullary variant
+    /// carries a unit payload.
+    pub fn sum_new(&mut self, disc: u32, payload: u32) -> Result<u32, ComponentError> {
+        let f = self.sum_new;
+        self.call_u32s(&f, &[disc, payload])
+    }
+
+    /// `vec-len(v: u32) -> u32` (idx ~30): the element count of a value-heap vector — reads the length of
+    /// the reducer's returned `list<effect-request>` (B1 asserts it's 0).
+    pub fn vec_len(&mut self, v: u32) -> Result<u32, ComponentError> {
+        let f = self.vec_len;
+        self.call_u32s(&f, &[v])
+    }
+
+    /// The underlying store, for the caller to instantiate/call the reducer against the SAME store (so a
+    /// handle the host minted is valid in the reducer's `apply` call).
+    pub fn store_mut(&mut self) -> &mut wasmtime::Store<T> {
+        &mut self.store
+    }
+}
+
 /// Generic MULTI-EXPORT component INVOCATION — the core mechanism of the operator's resolve-name→
 /// component→invoke primitive (Slack seq 107/108, 2026-08-04). Instantiate arbitrary component `bytes`,
 /// call the export named by `interface`#`func` over an AST-encoded arg, and decode its result into a SET
@@ -1614,6 +1783,101 @@ mod tests {
 
     // §23 dep-compose (slice ii): a dependency COMPONENT composed into a consumer's linker satisfies the
     // consumer's like-named interface import, and a call through the consumer reaches the dep — proving
+    // The reducer-boundary marshalling adapter (operator ruling C): a synthetic `cadenza:runtime/heap`
+    // stub exporting the B1 build-ops lets us drive `HeapHandle`'s marshalling methods without the real
+    // (frozen-hash) runtime. The stub's ops return sentinel handles (box-int→100, arr-alloc→200,
+    // sum-new→300, str-new→400; arr-set threads the arr; vec-len→0) — enough to prove the host reaches
+    // each op over the composed heap interface + threads handles, which is what B1's INPUT marshalling
+    // (build a content-type record + None option payloads) + reading the empty result (vec-len==0) needs.
+    fn heap_stub_component() -> Vec<u8> {
+        wat::parse_str(
+            r#"(component
+                 (core module $m
+                   (memory (export "mem") 1)
+                   (func (export "realloc") (param i32 i32 i32 i32) (result i32) (local.get 0))
+                   (func (export "box-int") (param i64) (result i32) (i32.const 100))
+                   (func (export "arr-alloc") (param i32) (result i32) (i32.const 200))
+                   (func (export "arr-set") (param i32 i32 i32) (result i32) (local.get 0))
+                   (func (export "sum-new") (param i32 i32) (result i32) (i32.const 300))
+                   (func (export "vec-len") (param i32) (result i32) (i32.const 0))
+                   (func (export "str-new") (param i32 i32) (result i32) (i32.const 400)))
+                 (core instance $i (instantiate $m))
+                 (func $box-int (param "v" s64) (result u32) (canon lift (core func $i "box-int")))
+                 (func $arr-alloc (param "len" u32) (result u32) (canon lift (core func $i "arr-alloc")))
+                 (func $arr-set (param "arr" u32) (param "index" u32) (param "elem" u32) (result u32) (canon lift (core func $i "arr-set")))
+                 (func $sum-new (param "disc" u32) (param "payload" u32) (result u32) (canon lift (core func $i "sum-new")))
+                 (func $vec-len (param "v" u32) (result u32) (canon lift (core func $i "vec-len")))
+                 (func $str-new (param "s" string) (result u32) (canon lift (core func $i "str-new") (memory $i "mem") (realloc (func $i "realloc"))))
+                 (instance $heap
+                   (export "box-int" (func $box-int))
+                   (export "arr-alloc" (func $arr-alloc))
+                   (export "arr-set" (func $arr-set))
+                   (export "sum-new" (func $sum-new))
+                   (export "vec-len" (func $vec-len))
+                   (export "str-new" (func $str-new)))
+                 (export "cadenza:runtime/heap" (instance $heap)))"#,
+        )
+        .expect("assemble heap stub component")
+    }
+
+    // HeapHandle binds each B1 heap op off a composed cadenza:runtime/heap instance + drives them — the
+    // host-side marshalling foundation (option C). Proves: bind finds every op, and the B1 INPUT-marshal
+    // sequence runs (build a content-type record `arr[0]=str-new(family), arr[1]=box-int(version)`, a None
+    // option `sum-new(1, unit)`, and read an empty effect-list `vec-len==0`).
+    #[test]
+    fn heap_handle_binds_and_drives_the_b1_build_ops() {
+        let bytes = heap_stub_component();
+        let engine = wasmtime::Engine::default();
+        let mut store = wasmtime::Store::new(&engine, ());
+        let linker = wasmtime::component::Linker::<()>::new(&engine);
+        let component =
+            wasmtime::component::Component::new(&engine, &bytes).expect("valid heap stub");
+        let instance = linker
+            .instantiate(&mut store, &component)
+            .expect("heap stub instantiates");
+        // `.expect` would need HeapHandle: Debug (it holds non-Debug Func/Store) — match instead.
+        let mut heap = match HeapHandle::bind(store, &instance) {
+            Ok(h) => h,
+            Err(e) => panic!("bind HeapHandle to the heap iface: {e:?}"),
+        };
+
+        // B1 ct record: arr-alloc(2); arr[0]=str-new("demo"); arr[1]=box-int(1). The stub threads the arr
+        // handle (arr-alloc→200), so the record handle is 200; the field handles are the op sentinels.
+        let family = heap.str_new("demo").expect("str-new");
+        assert_eq!(family, 400);
+        let version = heap.box_int(1).expect("box-int");
+        assert_eq!(version, 100);
+        let ct = heap.arr_alloc(2).expect("arr-alloc");
+        assert_eq!(ct, 200);
+        assert_eq!(heap.arr_set(ct, 0, family).expect("arr-set 0"), 200); // threads the arr
+        assert_eq!(heap.arr_set(ct, 1, version).expect("arr-set 1"), 200);
+        // None option payload: sum-new(1=None disc, unit=0).
+        let none_payload = heap.sum_new(1, 0).expect("sum-new None");
+        assert_eq!(none_payload, 300);
+        // Read the (empty) effect-list result length.
+        assert_eq!(heap.vec_len(999).expect("vec-len"), 0);
+    }
+
+    // A runtime that doesn't export cadenza:runtime/heap → a clear Compose error naming it, not a trap.
+    #[test]
+    fn heap_handle_bind_errors_clearly_without_the_heap_interface() {
+        let empty = wat::parse_str("(component)").expect("empty component");
+        let engine = wasmtime::Engine::default();
+        let mut store = wasmtime::Store::new(&engine, ());
+        let linker = wasmtime::component::Linker::<()>::new(&engine);
+        let component = wasmtime::component::Component::new(&engine, &empty).expect("valid");
+        let instance = linker
+            .instantiate(&mut store, &component)
+            .expect("instantiates");
+        match HeapHandle::bind(store, &instance) {
+            Err(ComponentError::Compose { import_name, .. }) => {
+                assert_eq!(import_name, "cadenza:runtime/heap");
+            }
+            Err(e) => panic!("expected a Compose error naming the heap interface, got {e:?}"),
+            Ok(_) => panic!("expected bind to fail without the heap interface, but it succeeded"),
+        }
+    }
+
     // the runtime-agnostic linker-composition mechanism (mirrors cdz-run::run_with_peers). Synthetic
     // components (wat), so no wit-bindgen fixture toolchain needed.
     #[test]
