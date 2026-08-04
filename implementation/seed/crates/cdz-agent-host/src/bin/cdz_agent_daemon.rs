@@ -2,7 +2,7 @@
 //!
 //! Boots entirely from ONE TOML config file whose path is the SOLE cli argument (operator directive: "set
 //! the entire thing up via config and not from cli args; the only arg I want is the path to the config").
-//! The config ([`DaemonConfig`]) selects the INFRASTRUCTURE — the durable-log backend, observability
+//! The config ([`DaemonConfig`](cdz_agent_host::DaemonConfig)) selects the INFRASTRUCTURE — the durable-log backend, observability
 //! (s2n-quic-dc-metrics), and effect-retry policy. Sessions are NOT listed in the config: the daemon boots
 //! its infrastructure + an empty session registry, and sessions are INSTALLED at runtime (the install
 //! mechanism — control interface vs a spawn/supervision path — is the next slice, pending the operator's
