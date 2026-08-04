@@ -679,9 +679,20 @@ mod tests {
             encode(&back),
             "re-encode of the decoded arena is not byte-identical (Bytes wire not deterministic)"
         );
-        // Three DISTINCT Bytes leaves survive (a Bytes value's identity is its exact byte sequence — the
-        // empty, the high-byte, and the ASCII vec must not collapse or reorder).
-        assert_eq!(a.leaves.len(), 3, "three distinct Bytes leaves");
+        // Three DISTINCT Bytes leaves SURVIVE the codec (a Bytes value's identity is its exact byte
+        // sequence — the empty, the high-byte, and the ASCII vec must not collapse or reorder). Assert on
+        // the DECODED `back` arena, not the pre-encode `a` we just built with 3 (that would be
+        // tautological — a codec that dropped/merged a Bytes leaf changes `back.leaves`, not `a.leaves`).
+        assert_eq!(
+            a.leaves.len(),
+            3,
+            "input built with three distinct Bytes leaves"
+        );
+        assert_eq!(
+            back.leaves.len(),
+            3,
+            "three distinct Bytes leaves must SURVIVE the codec (decoded pool preserved, none dropped/merged)"
+        );
         // And a Bytes leaf is NOT confused with a same-text Str: `b"hi"` (Bytes) ≠ `"hi"` (Str) on the wire.
         let mut b2 = Builder::new();
         let as_str = b2.atom_leaf(Leaf::Str("hi".to_string()));
