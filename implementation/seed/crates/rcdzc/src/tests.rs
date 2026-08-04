@@ -66247,6 +66247,44 @@ mod stage1 {
     }
 
     #[test]
+    fn a_block_wrapped_outer_perform_in_a_let_init_inside_a_nested_handle_body_declines() {
+        // adv-69 a4 sub-face (v-effects self-probe). A block-wrapped branch perform of the OUTER effect (A) in
+        // a `let`-init INSIDE a nested inner (B) handle's body, with the continuation re-reading A:
+        // `(handle A 3 ((ga …)) (handle B 100 ((gb …)) (let ((v (let ((k true)) (if k (A.ga) 9)))) (+ (* 10 v)
+        // (A.ga)))))`. The single-handle version declines via the let-init floor, but the intervening nested B
+        // handle made the OUTER A reduction's scanner STOP at the inner `Handle` and miss the block-wrapped
+        // A-perform in B's body → silent 33 vs 34. Fix: the scanner descends into a nested handle's BODY (not
+        // its arms) keeping the outer ctx, so it fires only on an OUTER-effect perform (an inner B-effect
+        // perform never matches → no over-decline of B's own shapes).
+        let src = "(do (effect A (op ga (-> Unit Int64))) (effect B (op gb (-> Unit Int64))) \
+                   (def (main) (handle A 3 ((ga (u) s (resume s (+ s 1)))) \
+                     (handle B 100 ((gb (u) t (resume t t))) \
+                       (let ((v (let ((k true)) (if k (A.ga) 9)))) (+ (* 10 v) (A.ga)))))) \
+                   (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_err(),
+            "a block-wrapped outer-perform in a let-init inside a nested handle body must decline, not miscompile to 33"
+        );
+        // CONTROL — the DIRECT-conditional twin (no block wrapper) at the same position folds (Site 4 lifts a
+        // direct init even through the nested handle), so the fix must NOT over-decline it.
+        let direct = "(do (effect A (op ga (-> Unit Int64))) (effect B (op gb (-> Unit Int64))) \
+                   (def (main) (handle A 3 ((ga (u) s (resume s (+ s 1)))) \
+                     (handle B 100 ((gb (u) t (resume t t))) \
+                       (let ((v (if true (A.ga) 9))) (+ (* 10 v) (A.ga)))))) \
+                   (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(direct))).expect(
+                    "a direct outer-perform in a let-init inside a nested handle body folds"
+                ),
+                "main"
+            ),
+            34,
+            "the direct-init twin must still fold to 34 (no over-decline through the nested handle)"
+        );
+    }
+
+    #[test]
     fn a_mutually_recursive_effectful_group_specializes_under_a_state_handler() {
         // E3 extended to MUTUAL recursion: `ev`/`od` call each other, and the effect (`Ctr.tick`) is reached
         // by `ev` only THROUGH its partner `od`. The fix: `body_reaches_discharged` now follows RECURSIVE

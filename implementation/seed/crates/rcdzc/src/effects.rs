@@ -3488,10 +3488,17 @@ fn body_has_block_wrapped_let_init_branch_perform(
     node: StructId,
     ctx: &HandlerCtx,
 ) -> bool {
-    // A NESTED handle's own lets belong to THAT handler's reduction — don't descend (mirrors the guard
-    // scanner); reducing this outer handle must not decline on an inner handle's still-unreduced shape.
-    if matches!(resolved_of(db, node), Resolved::Handle { .. }) {
-        return false;
+    // A NESTED handle: its ARMS belong to THAT inner handler's reduction (a block-wrapped perform in an arm
+    // resume-value is the a3 guard's territory), so don't scan them here. But its BODY still runs UNDER this
+    // (outer) handler — a block-wrapped branch perform of THIS handler's OUTER op in a `let`-init in the inner
+    // body drops the outer advance exactly like the top-level face (the intervening inner handle does not
+    // rewrite an outer-effect perform), and the outer reduction's scan previously stopped dead at the inner
+    // `Handle` and MISSED it (a silent 33-vs-34 miscompile, v-effects self-probe 2026-08-04). Descend into the
+    // inner body ONLY, keeping THIS outer `ctx`: `block_wrapped_branch_performs` is ctx-keyed, so it fires only
+    // on a perform of the OUTER discharged op — an inner-effect perform in the inner body never matches, so
+    // this cannot over-decline the inner handler's own shapes.
+    if let Resolved::Handle { body, .. } = resolved_of(db, node) {
+        return body_has_block_wrapped_let_init_branch_perform(db, body, ctx);
     }
     // A `let` at THIS node: check each init for the block-wrapped branch-performing shape.
     if let Some(parts) = db.ast.as_form(node, "let").map(<[_]>::to_vec)
