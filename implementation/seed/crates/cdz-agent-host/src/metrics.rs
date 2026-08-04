@@ -8,11 +8,15 @@
 //! bump is a `Relaxed` add, free enough to always run). The exporter reads a [`HostMetricsSnapshot`] and maps
 //! each counter onto the export backend's own metric type; nothing here knows about the backend.
 //!
-//! **Surface scope (v0): the HOST-BOUNDARY observable events** — session lifecycle + per-turn outcomes,
-//! which [`AgentHost`](crate::AgentHost) sees directly at `spawn`/`remove`/`deliver`. Per-EFFECT dispatch
-//! outcomes (ok / retryable / permanent, the [`crate::retry`] classification) happen DEEP in the kernel's
-//! deliver loop (folded into the session log, not visible at the host boundary), so counting them needs an
-//! executor-level reporting seam — a deliberate FOLLOW-UP slice, not faked here from data the host can't see.
+//! **Surface, two halves:**
+//! - [`HostMetrics`] — HOST-BOUNDARY events (session lifecycle + per-turn outcomes) that
+//!   [`AgentHost`](crate::AgentHost) sees directly at `spawn`/`remove`/`deliver`.
+//! - [`EffectMetrics`] — PER-EFFECT dispatch outcomes (ok / retryable-err / permanent-err). These happen
+//!   DEEP in the kernel's deliver loop, not at the host boundary, so they're captured by a metering
+//!   [`MeteredExecutor`](crate::factory::MeteredExecutor) decorator that wraps each real executor at
+//!   registration and classifies every [`EffectOutcome`](cdz_kernel::event::EffectOutcome) via
+//!   [`crate::retry::classify`] — no kernel change, no faked data. `EffectMetrics` is `Arc`-shared so all of
+//!   a session's per-family decorators tally into one set the exporter reads.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -116,6 +120,89 @@ impl HostMetricsSnapshot {
     }
 }
 
+/// Per-EFFECT dispatch counters — how the daemon's effects RESOLVED, split by the
+/// [`retry`](crate::retry) classification of a failure. Fed by the
+/// [`MeteredExecutor`](crate::factory::MeteredExecutor) decorator that wraps each real executor: on every
+/// `perform`, it bumps exactly one of ok / retryable-err / permanent-err from the outcome. `Arc`-shared
+/// (all of a session's per-family decorators tally into ONE set), so it's behind a shared reference and its
+/// methods take `&self` (the atomics give interior mutability).
+///
+/// The retryable/permanent split is exactly what a supervision/retry driver acts on, so surfacing it as a
+/// metric lets an operator SEE the transient-vs-fatal failure mix (a rising retryable rate = a flaky
+/// upstream; a permanent spike = a misconfig/bad request) before the retry MECHANISM itself lands.
+#[derive(Debug, Default)]
+pub struct EffectMetrics {
+    /// Effects that resolved `Ok`.
+    effects_ok: AtomicU64,
+    /// Effects that resolved `Err` with a `RETRYABLE:`-classified reason (a transient failure).
+    effects_retryable_err: AtomicU64,
+    /// Effects that resolved `Err` with a PERMANENT reason (incl. the fail-closed unprefixed default).
+    effects_permanent_err: AtomicU64,
+    /// Effects the kernel CANCELLED on deadline (`EffectOutcome::TimedOut`, §16c-S4) — a distinct failure
+    /// mode from a classified `Err` (a hung effect that never returned a result), counted on its own.
+    effects_timed_out: AtomicU64,
+}
+
+impl EffectMetrics {
+    /// Record one successful effect dispatch.
+    pub fn record_ok(&self) {
+        self.effects_ok.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record one FAILED effect dispatch, split by its [`retry`](crate::retry) classification. The metering
+    /// decorator classifies the `Err` reason with [`crate::retry::classify`] and passes the result here, so
+    /// the retryable/permanent split matches exactly what a supervisor would branch on (fail-closed: an
+    /// unprefixed reason classifies Permanent).
+    pub fn record_err(&self, retryability: crate::retry::Retryability) {
+        match retryability {
+            crate::retry::Retryability::Retryable => {
+                self.effects_retryable_err.fetch_add(1, Ordering::Relaxed);
+            }
+            crate::retry::Retryability::Permanent => {
+                self.effects_permanent_err.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// Record one effect the kernel cancelled on deadline (`EffectOutcome::TimedOut`).
+    pub fn record_timed_out(&self) {
+        self.effects_timed_out.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// A point-in-time copy of every effect counter.
+    pub fn snapshot(&self) -> EffectMetricsSnapshot {
+        EffectMetricsSnapshot {
+            effects_ok: self.effects_ok.load(Ordering::Relaxed),
+            effects_retryable_err: self.effects_retryable_err.load(Ordering::Relaxed),
+            effects_permanent_err: self.effects_permanent_err.load(Ordering::Relaxed),
+            effects_timed_out: self.effects_timed_out.load(Ordering::Relaxed),
+        }
+    }
+}
+
+/// A plain-value snapshot of [`EffectMetrics`] — what the status surface / exporter reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct EffectMetricsSnapshot {
+    /// Effects that resolved `Ok` (cumulative).
+    pub effects_ok: u64,
+    /// Effects that failed with a retryable (transient) reason (cumulative).
+    pub effects_retryable_err: u64,
+    /// Effects that failed with a permanent reason (cumulative; includes the unprefixed fail-closed default).
+    pub effects_permanent_err: u64,
+    /// Effects the kernel cancelled on deadline (cumulative).
+    pub effects_timed_out: u64,
+}
+
+impl EffectMetricsSnapshot {
+    /// Total effects dispatched = ok + retryable-err + permanent-err + timed-out.
+    pub fn effects_total(&self) -> u64 {
+        self.effects_ok
+            .saturating_add(self.effects_retryable_err)
+            .saturating_add(self.effects_permanent_err)
+            .saturating_add(self.effects_timed_out)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -161,5 +248,30 @@ mod tests {
             ..HostMetricsSnapshot::default()
         };
         assert_eq!(s.sessions_live(), 0);
+    }
+
+    #[test]
+    fn effect_metrics_split_ok_retryable_permanent() {
+        use crate::retry::Retryability;
+        let m = EffectMetrics::default();
+        assert_eq!(m.snapshot(), EffectMetricsSnapshot::default());
+
+        m.record_ok();
+        m.record_ok();
+        m.record_err(Retryability::Retryable);
+        m.record_err(Retryability::Permanent);
+        m.record_err(Retryability::Permanent);
+        m.record_timed_out();
+
+        let s = m.snapshot();
+        assert_eq!(s.effects_ok, 2);
+        assert_eq!(s.effects_retryable_err, 1);
+        assert_eq!(s.effects_permanent_err, 2);
+        assert_eq!(s.effects_timed_out, 1);
+        assert_eq!(
+            s.effects_total(),
+            6,
+            "total = ok + retryable + permanent + timed-out"
+        );
     }
 }
