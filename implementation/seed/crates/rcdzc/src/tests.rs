@@ -24298,6 +24298,43 @@ mod match_engine {
     }
 
     #[test]
+    fn a_bare_under_applied_generic_nested_in_a_type_arg_declines_not_stack_overflows() {
+        // FIX (crash-safety): a BARE under-applied generic constructor NESTED as a type-argument —
+        // `(: x (Option Box))` where `(Box a)` needs an arg — bound a CYCLIC substitution `?v := (Option ?v)`
+        // that BYPASSED `unify`'s occurs-check (a direct `subst` insert during recursive-generic handling of
+        // the under-applied `Box`). `Subst::apply` — the universal type-read path — then chased the cycle
+        // FOREVER and STACK-OVERFLOWED/aborted `rcdzc-compile` (a compiler crash, not a catchable panic) when
+        // the annotated value was USED. FIX: `Subst::apply` now caps its combined var-chain + structural
+        // descent (APPLY_VAR_CHAIN_LIMIT); a cycle blows past it and is broken to `Ty::Any`, so the fault
+        // walk reports a clean CDZ0203 instead of the compiler crashing. This pins that the used-value case
+        // RETURNS (rejects) rather than aborting — the essential crash-safety property.
+        let r = compile_component(&crate::codec::encode(&parse(
+            "(module m (type (Box a) (Mk a)) \
+               (def (f (: x (Option Box))) (match x ((Some b) (match b ((Mk v) v))) ((None) 0))) \
+               (def (main) (f (Some (Mk 5)))) (export main))",
+        )));
+        // MUST reject (the annotation is ill-formed) — and MUST return at all (no stack-overflow abort). The
+        // exact code/message is a downstream mismatch (CDZ0203); the crash-safety is the pinned property.
+        let e =
+            r.expect_err("an under-applied generic nested in a type-arg must reject, not crash");
+        assert_eq!(e.code.as_deref(), Some("CDZ0203"), "got: {}", e.message);
+        // A correctly-applied nested generic still compiles + runs (the guard doesn't over-fire on a
+        // well-formed deeply-nested type — its limit is far above any real depth).
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (type (Box a) (Mk a)) \
+                       (def (f (: x (Option (Box Int64)))) \
+                          (match x ((Some b) (match b ((Mk v) v))) ((None) 0))) \
+                       (def (main) (f (Some (Mk 9)))) (export main))"
+                ),
+                "main"
+            ),
+            9
+        );
+    }
+
+    #[test]
     fn a_bare_generic_ctor_in_a_value_annotation_is_the_needs_argument_message_not_a_confusing_mismatch()
      {
         // FIX: a BARE under-applied generic constructor in a VALUE annotation `(: (Mk 1) Box)` / `(: 5 List)`

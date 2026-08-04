@@ -49,6 +49,14 @@ use crate::fxhash::FxHashMap;
 use crate::ty::{IntTy, Scheme, Sign, Ty, Width};
 use tracing::trace;
 
+/// The depth cap on `Subst::apply`'s combined var-chain + structural descent. A cyclic substitution
+/// binding (one that bypassed `unify`'s occurs-check — e.g. `?v := (Option ?v)` from an UNDER-APPLIED
+/// generic) would otherwise recurse forever and stack-overflow/abort the compiler. This bound is FAR above
+/// any real type's depth: a genuine annotation/inferred type nests only a handful of levels, and even a
+/// pathologically deep generic is well under this — so a well-formed program never approaches it, while a
+/// cycle blows past it and is broken to `Ty::Any` (a clean decline downstream instead of a crash).
+const APPLY_VAR_CHAIN_LIMIT: u32 = 10_000;
+
 /// A substitution: what each type, width, and SIGN variable has been solved to. Applied to a type,
 /// it replaces solved variables with their solutions (transitively).
 #[derive(Clone, Debug, Default)]
@@ -65,8 +73,20 @@ impl Subst {
 
     /// Apply the substitution to a type — replace every solved variable with its solution, following
     /// chains (a variable solved to another variable resolves through). Total and terminating: the
-    /// occurs-check keeps the variable graph acyclic.
+    /// occurs-check normally keeps the variable graph acyclic, but a CYCLIC binding that slipped in through
+    /// a path bypassing `unify`'s occurs-check (e.g. a direct `subst` insert during recursive-generic
+    /// monomorphization of an UNDER-APPLIED generic — `(: x (Option Box))` bound `?v := (Option ?v)`) would
+    /// make the naive `Ty::Var` chain-follow recurse forever and STACK-OVERFLOW/abort `rcdzc-compile` (not
+    /// a catchable panic — a crash on ill-formed input). `apply` is the universal read path, so guard it
+    /// here with a depth cap on the var-chain: a chain longer than `APPLY_VAR_CHAIN_LIMIT` is a cycle → stop
+    /// and yield `Ty::Any` (the cyclic type is genuinely infinite/ill-formed; `Any` lets the fault walk
+    /// report a clean decline instead of the compiler aborting). Defense-in-depth: it protects against ANY
+    /// occurs-check bypass, present or future, at the one place every type read funnels through.
     pub fn apply(&self, ty: &Ty) -> Ty {
+        self.apply_depth(ty, 0)
+    }
+
+    fn apply_depth(&self, ty: &Ty, chain: u32) -> Ty {
         // GROUND FAST-PATH: a type with no substitutable variable of any kind is an `apply` fixpoint, so
         // returning `ty.clone()` is correct — and for an Rc-shared `Record`/`Tuple`/`Sum` that clone is a
         // refcount bump, NOT the deep `.iter().map(apply).collect()` rebuild (+ its BTreeMap drop) the arms
@@ -78,8 +98,17 @@ impl Subst {
             return ty.clone();
         }
         match ty {
+            // The var-chain follow is the ONLY unbounded recursion (structural arms below descend a FINITE
+            // type). A chain longer than the limit means a cyclic binding bypassed the occurs-check — break
+            // it with `Ty::Any` rather than overflow. The limit is far above any real solved-var chain
+            // depth (union-find chains are short; even a pathological deep generic is well under it), so a
+            // well-formed program is byte-identical.
+            Ty::Var(v) if chain >= APPLY_VAR_CHAIN_LIMIT => {
+                trace!(target: "rcdzc::unify", var = *v, "apply: var-chain depth limit hit → Any (cyclic substitution — occurs-check bypass)");
+                Ty::Any
+            }
             Ty::Var(v) => match self.tys.get(v) {
-                Some(t) => self.apply(t),
+                Some(t) => self.apply_depth(t, chain + 1),
                 None => Ty::Var(*v),
             },
             Ty::Int(it) => Ty::Int(IntTy {
@@ -91,36 +120,54 @@ impl Subst {
             Ty::Float(ft) => Ty::Float(crate::ty::FloatTy {
                 width: self.apply_width(ft.width),
             }),
-            Ty::Fn(p, r) => Ty::Fn(Box::new(self.apply(p)), Box::new(self.apply(r))),
+            // Structural arms thread `chain` through — a cyclic binding `?v := (Option ?v)` re-enters a
+            // `Ty::Var` one structural level down, so the chain counter must keep climbing across the
+            // descent (resetting it per structural node would let the cycle loop forever). A well-formed
+            // (finite) type still terminates on its own structure long before the limit.
+            Ty::Fn(p, r) => Ty::Fn(
+                Box::new(self.apply_depth(p, chain + 1)),
+                Box::new(self.apply_depth(r, chain + 1)),
+            ),
             Ty::Cont { resume, answer } => Ty::Cont {
-                resume: Box::new(self.apply(resume)),
-                answer: Box::new(self.apply(answer)),
+                resume: Box::new(self.apply_depth(resume, chain + 1)),
+                answer: Box::new(self.apply_depth(answer, chain + 1)),
             },
             Ty::Record(fields) => Ty::Record(std::rc::Rc::new(
                 fields
                     .iter()
-                    .map(|(k, t)| (k.clone(), self.apply(t)))
+                    .map(|(k, t)| (k.clone(), self.apply_depth(t, chain + 1)))
                     .collect(),
             )),
-            Ty::Tuple(elems) => Ty::Tuple(elems.iter().map(|t| self.apply(t)).collect()),
+            Ty::Tuple(elems) => Ty::Tuple(
+                elems
+                    .iter()
+                    .map(|t| self.apply_depth(t, chain + 1))
+                    .collect(),
+            ),
             // A list substitutes into its element type (a deferred `List ?0` — the empty-list case).
-            Ty::List(elem) => Ty::List(Box::new(self.apply(elem))),
+            Ty::List(elem) => Ty::List(Box::new(self.apply_depth(elem, chain + 1))),
             // A map substitutes into its key AND value types (a deferred `Map ?0 ?1` — the empty-map case).
-            Ty::Map(k, v) => Ty::Map(Box::new(self.apply(k)), Box::new(self.apply(v))),
+            Ty::Map(k, v) => Ty::Map(
+                Box::new(self.apply_depth(k, chain + 1)),
+                Box::new(self.apply_depth(v, chain + 1)),
+            ),
             // A set substitutes into its element type (a deferred `Set ?0` — an empty set).
-            Ty::Set(elem) => Ty::Set(Box::new(self.apply(elem))),
+            Ty::Set(elem) => Ty::Set(Box::new(self.apply_depth(elem, chain + 1))),
             // A sum's identity is its `decl`, but a GENERIC instantiation carries type ARGS that may hold
             // unsolved variables (a deferred payload — `Option ?0`), so substitute into each arg. A
             // monomorphic sum has empty args, so this is a cheap clone of the name/decl.
             Ty::Sum { decl, name, args } => Ty::Sum {
                 decl: *decl,
                 name: name.clone(),
-                args: args.iter().map(|t| self.apply(t)).collect(),
+                args: args
+                    .iter()
+                    .map(|t| self.apply_depth(t, chain + 1))
+                    .collect(),
             },
             // A quantity substitutes into its INNER numeric type (a deferred inner width — `(Qty ?0 u)` —
             // solves); the unit is a concrete compile-time value, carried unchanged.
             Ty::Qty { inner, unit } => Ty::Qty {
-                inner: Box::new(self.apply(inner)),
+                inner: Box::new(self.apply_depth(inner, chain + 1)),
                 unit: unit.clone(),
             },
             // A nominal substitutes into its type ARGS (a generic `Box ?0` — the deferred instantiation)
@@ -133,8 +180,11 @@ impl Subst {
             } => Ty::Nominal {
                 decl: *decl,
                 name: name.clone(),
-                args: args.iter().map(|t| self.apply(t)).collect(),
-                inner: std::rc::Rc::new(self.apply(inner)),
+                args: args
+                    .iter()
+                    .map(|t| self.apply_depth(t, chain + 1))
+                    .collect(),
+                inner: std::rc::Rc::new(self.apply_depth(inner, chain + 1)),
             },
             Ty::Bool
             | Ty::Unit
