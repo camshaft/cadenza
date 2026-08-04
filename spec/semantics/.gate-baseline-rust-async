@@ -3713,7 +3713,10 @@ pass	an AST from quasiquoting a runtime value equals the same AST built by quote
 pass	an Ast as a MAP key looks up by structural content
 pass	an Ast-value-spliced template round-trips through encode and decode
 pass	an Ast.Bool and an Ast.Int are distinct by variant tag not by numeric value
+pass	an Ast.Bytes carrying NUL and high bytes round-trips through encode and decode
+pass	an Ast.Bytes nested in an Ast.List round-trips through encode and decode
 pass	an Ast.Bytes node constructs and deconstructs by pattern matching
+pass	an Ast.Bytes node round-trips through encode and decode
 pass	an Ast.Int carries a BEYOND-64-bit literal losslessly through quote
 pass	an Ast.Int stores an integer wider than Int64 without loss
 pass	an EFFECTFUL @ensures predicate is value-transparent when SATISFIED — the body's own perform runs first
@@ -3916,6 +3919,7 @@ pass	an element is projected from a tuple returned by a function
 pass	an element is projected from a tuple returned by a nullary function
 pass	an element pattern matches a list by its length and elements
 pass	an element read across a concatenation boundary is the right value
+pass	an empty Ast.Bytes round-trips through encode and decode
 pass	an empty binary form is the empty byte sequence
 pass	an empty byte-string literal is the empty byte sequence
 pass	an empty list escaping to the host is rejected as undetermined, like a bare None
