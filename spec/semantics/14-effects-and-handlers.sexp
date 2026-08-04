@@ -814,6 +814,23 @@
   (call   main (: 22 Int64))
   (output (: 42 Int64)))
 
+(case "an effect op RESUMED with a constructed Ast node crosses the arm boundary and matches in the body"
+  (doc    "An AST as the resume value — the first Ast crossing an effect boundary in the corpus: the arm
+           constructs `(Ast.Int (BigInt.of x))` from the op param and resumes with it; the body pattern-matches
+           the node back out and extracts the boxed BigInt payload (25N). Ast is a recursive sum with a
+           BigInt-boxed leaf, a representation the scalar/string/sum/view resume-value pins don't reach — the
+           template-provider idiom (a handler that answers with syntax) rests on this crossing.")
+  (input  (do
+            (effect Tmpl (op get (-> Int64 Ast)))
+            (def (main (: n Int64))
+              (handle Tmpl 0
+                ((get (x) s (resume (Ast.Int (BigInt.of x)) s)))
+                (match (Tmpl.get n)
+                  ((Ast.Int b) b)
+                  (_ -1N))))
+            (export main)))
+  (call   main (: 25 Int64)) (output (: 25 BigInt)))
+
 (case "an effect op resumed with a whole MAP threads the CHAMP through the continuation"
   (doc    "A collection HANDLE as the resume value: the arm resumes with a 2-entry map, and the body
            looks it up at the boundary parameter — k=2 → 20, k=9 → None → -1. The CHAMP handle rides the
@@ -7536,6 +7553,29 @@
             (export main)))
   (call   main (: 1 Int64) (: 2 Int64))
   (output (: 123 Int64)))
+
+(case "an Ast.List handler STATE accumulates a node per perform and each resume reads the prior length"
+  (doc    "AST joins the handler-state type family (scalar/tuple/record/Map/Set/Bytes-rope): the
+           template-accumulator idiom — each put pushes `(Ast.Int (BigInt.of v))` onto the `Ast.List`
+           state's element list (rebuilt via the Ast.List ctor, matched back open per perform), resume
+           value = the PRIOR List.len (0,1,2 -> 12). A recursive-sum state with BigInt-boxed leaves must
+           survive the perform round-trips exactly as the flat state shapes do.")
+  (input  (do
+            (effect Acc (op put (-> Int64 Int64)))
+            (def (main (: a Int64) (: b Int64))
+              (handle Acc (Ast.List (list))
+                ((put (v) s (match s
+                              ((Ast.List els)
+                                (resume (List.len els)
+                                        (Ast.List (List.push els (Ast.Int (BigInt.of v))))))
+                              (_ (resume -100 s)))))
+                (do
+                  (def l1 (Acc.put a))
+                  (def l2 (Acc.put b))
+                  (+ (* 100 l1) (+ (* 10 l2) (Acc.put 3))))))
+            (export main)))
+  (call   main (: 1 Int64) (: 2 Int64))
+  (output (: 12 Int64)))
 
 ; --- Effects/try leftovers: the closure-resume factory, the response-transforming adapter
 ; interposer (wasm-first; rust todo rides the host-effect family), and the try-composition
