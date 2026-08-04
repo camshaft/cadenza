@@ -2000,6 +2000,7 @@ pass	a map built from a BigInt sum key and a BigInt.of-over-arithmetic key has b
 pass	a map can be a key, compared by its value
 pass	a map can hold a map as a value
 pass	a map chosen by a runtime if is size-measured with valid wasm
+pass	a map churned all the way DOWN TO EMPTY equals Map.empty canonically
 pass	a map churned up to 200 entries and back to its original 2 EQUALS the direct 2-entry build
 pass	a map consumed by Map.insert in one operand is unchanged for a later read of the same binding
 pass	a map consumed by Map.remove in one operand is unchanged for a later read of the same binding
@@ -5179,6 +5180,7 @@ pass	the byte length of a run-time multibyte string exceeds its scalar length
 pass	the byte length of a run-time-selected string reads the actual handle
 pass	the byte length of a runtime string equals the length of its encoded bytes
 pass	the byte-len of a multi-byte String.slice exceeds its scalar-len (the two measures diverge)
+pass	the churned-to-empty map REGROWS with correct structure (no residue corrupts re-insertion)
 pass	the compare walk recurses list-of-sums-of-lists with discriminant-first at depth
 pass	the complement laws fold x-and-not-x to zero and x-or-not-x to all-ones on a signed runtime value
 pass	the compound comparator drives a full INSERTION SORT over runtime tuples

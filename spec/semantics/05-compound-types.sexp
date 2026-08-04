@@ -2129,6 +2129,46 @@
             (export main)))
   (call   main (: 150 Int64)) (output (: 42 Int64)))
 
+(case "a map churned all the way DOWN TO EMPTY equals Map.empty canonically"
+  (doc    "The zero-boundary of the history-independence family above (those churn back to 2 entries; the
+           deep-trie case drains to empty but checks only len): a 120-entry trie shrunk to NOTHING must
+           EQUAL `Map.empty` by canonical `=` (10) as well as len (+1). The full drain collapses every
+           node the growth created — a final collapse that left a residual root (empty interior node
+           instead of the canonical empty) would report len 0 yet break equality and any downstream
+           keying. Expected: 11.")
+  (input  (do
+            (def (grow (: i Int64) (: n Int64) (: m (Map Int64 Int64)))
+              (if (= i n) m (grow (+ i 1) n (Map.insert m i i))))
+            (def (shrink (: i Int64) (: n Int64) (: m (Map Int64 Int64)))
+              (if (= i n) m (shrink (+ i 1) n (Map.remove m i))))
+            (def (main (: n Int64))
+              (do
+                (def emptied (shrink 1 n (grow 1 n Map.empty)))
+                (+ (* 10 (if (= emptied Map.empty) 1 0))
+                   (if (= (Map.len emptied) 0) 1 0))))
+            (export main)))
+  (call   main (: 120 Int64)) (output (: 11 Int64)))
+
+(case "the churned-to-empty map REGROWS with correct structure (no residue corrupts re-insertion)"
+  (doc    "The regrow companion of the churn-to-empty case above: after the 120-entry full drain, re-insert
+           two fresh keys — `Map.len` 2 and the lookup reads the new value (70). The deep-trie case regrows
+           the SAME keys it drained; this regrows DIFFERENT keys (7/8, disjoint from the churn range 1..n),
+           so a stale-node reuse or tombstone left by the drain would misroute the fresh inserts rather
+           than be masked by identical key paths. Expected: 270.")
+  (input  (do
+            (def (grow (: i Int64) (: n Int64) (: m (Map Int64 Int64)))
+              (if (= i n) m (grow (+ i 1) n (Map.insert m i (* i 2)))))
+            (def (shrink (: i Int64) (: n Int64) (: m (Map Int64 Int64)))
+              (if (= i n) m (shrink (+ i 1) n (Map.remove m i))))
+            (def (main (: n Int64))
+              (do
+                (def emptied (shrink 1 n (grow 1 n Map.empty)))
+                (def again (Map.insert (Map.insert emptied 7 70) 8 80))
+                (+ (* 100 (Map.len again))
+                   (match (Map.lookup again 7) ((Some v) v) ((None _u) -1)))))
+            (export main)))
+  (call   main (: 120 Int64)) (output (: 270 Int64)))
+
 ; The deep-CHAMP checksum case above stresses the MAP trie (multi-level descent, node splitting) by reading
 ; every key back. A List is an RRB vector with the SAME multi-level-trie machinery (base-32 radix, VEC_BITS=5),
 ; but the runtime-built list cases so far stay small (n<=40 — a single strict leaf, or one interior level) so
