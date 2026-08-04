@@ -237,6 +237,119 @@
             '';
           };
 
+        # ── seq-126 Part B: PER-CRATE dependency-granularity (concierge-confirmed, option A + 1a) ───
+        #
+        # REPLACE the whole-workspace `clippy --workspace` / `test --workspace` (which bust on ANY
+        # root-crate edit — the coarse spot) with PER-CRATE checks (`clippy -p C` + `test -p C`). What a
+        # SHARED cargo workspace permits (concierge-confirmed 2026-08-04):
+        #   - INDEPENDENT crates don't cross-trigger: editing X's src re-runs only the per-crate checks
+        #     whose CLOSURE contains X (editing cdz-num does NOT re-run cadenza-syntax's check).
+        #   - TEST-dir churn is isolated: each check ships ONLY its own crate's tests/, so editing a
+        #     crate's tests/ re-runs only its check (the high-frequency win).
+        #   - A src edit correctly re-runs DEPENDENTS (a real dep change — not a shortfall).
+        # We can't scope below "all member src + this crate's tests": `cargo -p C` LOADS the whole
+        # workspace, and loading requires every member's Cargo.toml to PARSE (target auto-detection needs
+        # each member's src/lib.rs present). `fmt --all` stays whole-workspace (inherently whole-tree +
+        # cheap). Coverage parity: every workspace test binary maps to one member crate (verified via
+        # `cargo test --workspace --no-run`) → ∪ `test -p C` == the old whole-workspace run.
+        rootWorkspaceCrates = {
+          cadenza-ast = "implementation/seed/crates/cadenza-ast";
+          cadenza-syntax = "implementation/seed/crates/cadenza-syntax";
+          cdz = "implementation/seed/crates/cdz";
+          cdz-calc = "implementation/seed/crates/cdz-calc";
+          cdz-corpus = "implementation/seed/crates/cdz-corpus";
+          cdz-num = "implementation/seed/crates/cdz-num";
+          cdz-rt = "implementation/seed/crates/cdz-rt";
+          cdz-run = "implementation/seed/crates/cdz-run";
+          cdz-rust-render = "implementation/seed/crates/cdz-rust-render";
+          rcdzc = "implementation/seed/crates/rcdzc";
+          xtask = "xtask";
+        };
+        rootCrateNames = builtins.attrNames rootWorkspaceCrates;
+        # direct member-edges of one crate across the three rebuild-relevant dep sections (A1 walk).
+        crateDirectDeps = name:
+          let
+            manifest = builtins.fromTOML
+              (builtins.readFile (./. + "/${rootWorkspaceCrates.${name}}/Cargo.toml"));
+            depsIn = section: manifest.${section} or { };
+            edgesIn = section:
+              builtins.filter (d: builtins.elem d rootCrateNames)
+                (builtins.filter
+                  (d: let v = (depsIn section).${d}; in builtins.isAttrs v && (v ? path))
+                  (builtins.attrNames (depsIn section)));
+          in
+          pkgs.lib.unique (pkgs.lib.concatMap edgesIn
+            [ "dependencies" "dev-dependencies" "build-dependencies" ]);
+        # transitive closure (incl. self) via a fixpoint over crateDirectDeps.
+        crateClosure = start:
+          let
+            step = acc:
+              let next = pkgs.lib.unique (acc ++ pkgs.lib.concatMap crateDirectDeps acc);
+              in if builtins.length next == builtins.length acc then acc else step next;
+          in pkgs.lib.sort (a: b: a < b) (step [ start ]);
+        # ALL members' Cargo.toml + src/ (+ build.rs) — the cargo workspace-parse floor (see note above).
+        allMemberSrc = pkgs.lib.concatMap
+          (c:
+            let d = ./. + "/${rootWorkspaceCrates.${c}}"; in
+            [ (d + "/Cargo.toml") ]
+            ++ pkgs.lib.optional (builtins.pathExists (d + "/src")) (d + "/src")
+            ++ pkgs.lib.optional (builtins.pathExists (d + "/build.rs")) (d + "/build.rs"))
+          rootCrateNames;
+        # a per-crate clippy+test check. Fileset = allMemberSrc + ONLY this crate's tests/ + root
+        # manifest/lock/.cargo/toolchain + extraSrc. extraSrc = non-member paths a crate's build/tests read
+        # (spec/semantics corpus, compiler-ml run_ml driver, cdz-runtime/src/bigint.rs which cdz-num
+        # `#[path]`-includes → every crate whose closure has cdz-num needs it). extraInputs = tools.
+        mkCrateCheck = { crate, extraSrc ? [ ], extraInputs ? [ ] }:
+          pkgs.stdenvNoCC.mkDerivation {
+            pname = "cargo-crate-${crate}";
+            version = "0.0.0";
+            src = pkgs.lib.fileset.toSource {
+              root = ./.;
+              fileset = pkgs.lib.fileset.unions (
+                allMemberSrc
+                ++ pkgs.lib.optional
+                  (builtins.pathExists (./. + "/${rootWorkspaceCrates.${crate}}/tests"))
+                  (./. + "/${rootWorkspaceCrates.${crate}}/tests")
+                ++ [ ./Cargo.toml ./Cargo.lock ./.cargo ./rust-toolchain.toml ]
+                ++ extraSrc);
+            };
+            nativeBuildInputs = [ rustToolchain ] ++ extraInputs;
+            buildPhase = ''
+              runHook preBuild
+              ${mkCargoVendorEnv { vendor = seedCargoVendor; }}
+              cargo clippy -p ${crate} --all-targets --locked -- -D warnings
+              cargo test -p ${crate} --locked
+              runHook postBuild
+            '';
+            installPhase = ''
+              runHook preInstall
+              echo "ok: cargo-crate-${crate} (clippy -p + test -p; closure/tests-dir scoped)" > "$out"
+              runHook postInstall
+            '';
+          };
+        # CLOSURE guard (concierge mandate): pure-eval assert that the fromTOML walk yields the EXPECTED
+        # closures for anchor crates — a Cargo.toml restructure that breaks the walk fails LOUD (throws at
+        # eval → fails `nix flake check`) rather than silently under-scoping a crate's inputs.
+        crateClosureAssert =
+          let
+            expected = {
+              rcdzc = [ "cadenza-ast" "cadenza-syntax" "cdz-num" "cdz-rt" "cdz-run" "rcdzc" ];
+              cadenza-syntax = [ "cadenza-ast" "cadenza-syntax" ];
+              cdz-num = [ "cdz-num" ];
+              xtask = [ "cdz-rust-render" "xtask" ];
+            };
+            mismatches = builtins.filter (n: (crateClosure n) != expected.${n})
+              (builtins.attrNames expected);
+          in
+          if mismatches != [ ] then
+            throw ("flake.nix Part-B closure-assert: fromTOML closure walk disagrees with expected for "
+              + builtins.toString mismatches
+              + " — the crate dep graph changed; re-verify vs `cargo metadata` and update `expected`.")
+          else
+            pkgs.runCommand "crate-closure-assert" { } ''
+              echo "ok: per-crate closures match expected (${builtins.toString (builtins.attrNames expected)})" > $out
+            '';
+
         # ── S2: build a CADENZA PROJECT through nix ───────────────────────────────────────────────
         #
         # Operator arc (2026-08-03): "then we can have it building cadenza projects." A reusable function
@@ -1248,6 +1361,41 @@
                 wasm-tools validate --features component-model ${drv}
                 echo "ok: nix-built ${name} is a valid wasm component" > $out
               '';
+            # seq-126 Part B: the 10 closure/tests-dir-scoped per-crate clippy+test checks (cdz is
+            # workspace-src, crateCdzCheck below). In a let-attrset so BOTH the individual `crate-*` checks
+            # AND the `clippy`/`test` AGGREGATE can reference them.
+            perCrateChecks = {
+              crate-cadenza-ast = mkCrateCheck { crate = "cadenza-ast"; };
+              crate-cadenza-syntax = mkCrateCheck { crate = "cadenza-syntax"; extraSrc = [ ./spec/semantics ]; };
+              crate-cdz-calc = mkCrateCheck { crate = "cdz-calc"; extraSrc = [ ./implementation/seed/crates/cdz-runtime/src/bigint.rs ]; };
+              crate-cdz-corpus = mkCrateCheck { crate = "cdz-corpus"; extraSrc = [ ./spec/semantics ]; };
+              crate-cdz-num = mkCrateCheck { crate = "cdz-num"; extraSrc = [ ./implementation/seed/crates/cdz-runtime/src/bigint.rs ]; };
+              crate-cdz-rt = mkCrateCheck { crate = "cdz-rt"; };
+              crate-cdz-run = mkCrateCheck { crate = "cdz-run"; extraSrc = [ ./implementation/compiler-ml ]; };
+              crate-cdz-rust-render = mkCrateCheck { crate = "cdz-rust-render"; };
+              crate-rcdzc = mkCrateCheck {
+                crate = "rcdzc";
+                extraSrc = [ ./spec/semantics ./implementation/compiler-ml ./implementation/seed/crates/cdz-runtime/src/bigint.rs ];
+              };
+              crate-xtask = mkCrateCheck { crate = "xtask"; extraSrc = [ ./spec/semantics ./implementation/compiler-ml ]; extraInputs = [ pkgs.git ]; };
+            };
+            # cdz's check is WORKSPACE-SRC (concierge-confirmed 1a) — see the long note at its registration.
+            crateCdzCheck = cargoWorkspaceCheck {
+              name = "cargo-crate-cdz";
+              cargoCmd = "cargo build --workspace --locked && cargo clippy -p cdz --all-targets --locked -- -D warnings && cargo test -p cdz --locked";
+              src = seedTestSrc;
+              extraInputs = [ pkgs.git ];
+            };
+            # `clippy`/`test` AGGREGATE: a thin node depending on ALL per-crate checks + crateCdzCheck.
+            # RETAINED because the full-CI-in-nix cutover body-swaps the required GHA context `checks /
+            # clippy` to `nix build .#checks.<sys>.clippy` — that NAME must resolve or the required context
+            # reds (the #2130 reject). Builds nothing itself; forces every per-crate check, so `.#checks.
+            # clippy` == "all crates lint+test clean" — KEEPS granularity (nix rebuilds only the per-crate
+            # derivations whose inputs changed; this is a zero-cost dependency node) AND the CI contract.
+            crateCheckAggregate = pkgs.runCommand "cargo-crate-aggregate"
+              (perCrateChecks // { inherit crateCdzCheck; }) ''
+              echo "ok: aggregate — all per-crate clippy+test checks built (seq-126 Part B)" > $out
+            '';
           in
           {
             runtime-hash-parity = parity {
@@ -1272,22 +1420,36 @@
               name = "cargo-fmt";
               cargoCmd = "cargo fmt --all --check";
             };
-            clippy = cargoWorkspaceCheck {
-              name = "cargo-clippy";
-              cargoCmd = "cargo clippy --workspace --all-targets -- -D warnings";
-            };
-            # Full-CI-in-nix increment 2: the workspace test suite, mirroring checks.yml `test`
-            # (`cargo test --workspace`) — pure native workspace, no runtime store. (CI runs it on both
-            # ubuntu + macos; nix reproduces the linux run.) Advisory overlap with the GHA `test` job.
-            test = cargoWorkspaceCheck {
-              name = "cargo-test";
-              cargoCmd = "cargo test --workspace";
-              src = seedTestSrc;
-              # xtask's fleet::tests::batch_* spawn `git` to build throwaway fixture repos in $TMPDIR
-              # (writable in the sandbox); the seed toolchain has no git, so add it. (cdz's run_ml tests
-              # write a driver into the compiler-ml src copy — that's the writable build dir, no tool.)
-              extraInputs = [ pkgs.git ];
-            };
+            # seq-126 Part B (option A + 1a): the whole-workspace `clippy --workspace` + `test --workspace`
+            # are REPLACED by PER-CRATE checks (clippy -p C + test -p C), each shipping all member src (the
+            # cargo workspace-parse floor) + ONLY its own tests/, so an independent crate's edit doesn't
+            # cross-trigger and a crate's test-dir edit re-runs only its check. `fmt --all` stays
+            # whole-workspace (below). closure-assert guards the fromTOML walk. Coverage parity: every
+            # workspace test binary maps to one member crate (`cargo test --workspace --no-run`) → ∪ per-crate
+            # == workspace; the store-dependent cdz tests self-skip with no store (same as the old
+            # `cargo test --workspace`, which ran storeless). extraSrc: spec/semantics (corpus round-trip),
+            # compiler-ml (cdz run_ml driver), cdz-runtime/src/bigint.rs (cdz-num `#[path]`-includes it →
+            # every crate whose closure has cdz-num: cdz-num/cdz-calc/rcdzc). extraInputs: git (xtask fleet
+            # batch tests).
+            crate-closure-assert = crateClosureAssert;
+            # cdz = WORKSPACE-SRC (concierge-confirmed 1a), NOT closure/tests-dir-scoped like the other 10.
+            # WHY cdz differs: its run_rust_cli tests are WORKSPACE-INTEGRATION — they rustc-compile emitted
+            # Rust linking the sibling cdz-num/cdz-rt rlibs "beside the cdz bin", which only a full-workspace
+            # build lays out (a bare `-p cdz` does NOT even emit libcdz_num.rlib — cdz uses cdz-num only
+            # transitively via rcdzc → E0433). So crateCdzCheck does `cargo build --workspace` FIRST (lays
+            # every rlib) THEN `test -p cdz`, from seedTestSrc (crates+xtask+compiler-ml+spec/semantics; git
+            # for xtask fleet batch tests). cdz is the TOP crate (reruns on ~every edit anyway → tests-dir
+            # granularity is ~nil), so workspace-src costs ~nothing AND is DRIFT-FREE — a `--test`-exclusion
+            # list to keep it closure-scoped would silently drop a new cdz test (the coverage regression the
+            # parity guard forbids). Do NOT "fix" this back to a split.
+            crate-cdz = crateCdzCheck;
+            # `clippy` + `test` = the AGGREGATE (retained so the cutover context `checks / clippy` — swapped
+            # to `nix build .#checks.<sys>.clippy` — still resolves; the #2130 reject was that name going
+            # missing when Part B replaced the whole-workspace clippy). Both alias the same node (all
+            # per-crate checks + crateCdzCheck built); `test` kept for symmetry + a future test-ubuntu
+            # nix-swap. Granularity preserved (per-crate derivations rebuild independently; zero-cost node).
+            clippy = crateCheckAggregate;
+            test = crateCheckAggregate;
             # Full-CI-in-nix increment 3: the native half of the GHA rcdzc-wasm job (the wasm build half
             # is the rcdzcWasm derivation / rcdzc-wasm-hash, already covered).
             rcdzc-wasm-native = rcdzcWasmNativeCheck;
@@ -1316,7 +1478,11 @@
               cargoCmd = "cargo run --locked --package xtask --profile release -- roundtrip";
               src = seedRoundtripSrc;
             };
-          };
+          }
+          # seq-126 Part B: expose each per-crate check individually (granular signal + `nix flake check`
+          # runs them). The `clippy`/`test` aggregates force this same set; these add per-crate cache
+          # granularity + a precise red when one crate fails.
+          // perCrateChecks;
 
         devShells.default = pkgs.mkShell {
           # TIGHTLY SCOPED: only what the seed workspace's build/gate actually needs —
