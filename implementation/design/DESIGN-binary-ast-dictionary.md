@@ -195,23 +195,31 @@ deterministic-bytes property for a producer that wants it.
 pub struct DictSet { /* hash -> decoded, inline-canonical Arenas (validated flat: dict-free) */ }
 
 /// Decode a possibly-dict-bearing transport artifact against a supplied DictSet, EXPANDING every
-/// dict-ref into the subtree it names, and returning a normal (dict-free) `Arenas`. Total, like decode:
-/// never panics, never returns a wrong tree.
+/// dict-ref into the subtree it names, and returning a normal (dict-free) `Arenas`. A `\x00\x01` input
+/// dispatches to `decode_detailed`; only `\x00\x02` engages the graft path. Total, like decode_detailed:
+/// never panics, never returns a wrong tree. Does NOT canonicalize — feed the result to `encode` for that.
 pub fn decode_with_dicts(bytes: &[u8], dicts: &DictSet) -> Result<Arenas, DecodeError>;
 ```
-- `cdzast\x00\x01` input → behaves EXACTLY like `decode` (dicts unused); the two never disagree on a
-  dict-free artifact.
+*(This section matches the LANDED `cadenza-ast/src/codec.rs` — I1, PR #2086/#2093.)*
+- `cdzast\x00\x01` input → dispatches to `decode_detailed` (the `dicts` are unused); the two never
+  disagree on a dict-free artifact. (It calls `decode_detailed`, not `decode`, so it likewise CLASSIFIES
+  the error rather than dropping it.)
 - `cdzast\x00\x02` input → resolve every import hash against `dicts` (missing → `MissingDict(Hash)`),
-  bounds-check each `DictRef` (`dict_idx < import_count`, `node_id < that dict's struct_count`), and
-  GRAFT the named subtree in place of the ref, producing a normal `Arenas`. **The grafted, fully-
-  dereferenced arena is then RE-CANONICALIZED (`canon::canonicalize`) — canon collapses the shared
-  subtrees a graft introduces into the one canonical tree**, so the decode-bomb tree-guard is applied to
-  the CANONICAL result, never to the pre-canon graft (a DAG legitimately shares subtrees; only the
-  canonical inline form is the strict tree the guard protects). This is the "full deref + canonicalize"
-  transform the operator named (seq 125).
-- The returned `Arenas` re-encodes via `encode` to the canonical `cdzast\x00\x01` inline bytes — that is
-  the DEREF-CANONICAL identity. (Whether a subsystem keys on this or on the cheaper DAG hash of §4.5 is
-  its choice — §2.1.)
+  bounds-check each `DictRef` (`dict_idx < import_count`, `node_id < that dict's struct_count`), apply the
+  decode-bomb TREE GUARD to the transport structure BEFORE grafting (a cycle among the transport's own
+  `List` ids would make the graft diverge — a `DictRef` is a leaf for this walk), then GRAFT: walk the
+  transport structure post-order, COPY each `Atom`/`List`, and at each `DictRef` splice a FRESH COPY of
+  the named dictionary's subtree, interning leaves by value into one deduped pool. The result is a normal
+  dict-free `Arenas`, a genuine tree BY CONSTRUCTION (rebuilt fresh post-order), with a cheap defensive
+  `verify_tree` re-check at the end.
+- **There is NO post-graft `canon::canonicalize` inside `decode_with_dicts`** — the graft produces a
+  well-formed dict-free arena, and canonicalization to the one normal form is imposed by `encode` /
+  `canon::canonicalize`, NOT by the decoder (same as canonical `decode`, which also does not canonicalize
+  on the way in). So the "full deref + canonicalize" transform the operator named (seq 125) is
+  `decode_with_dicts` (deref) FOLLOWED BY `encode` (which canonicalizes) — not a single call.
+- Getting the DEREF-CANONICAL identity is therefore: `encode(decode_with_dicts(bytes, dicts))` →
+  canonical `cdzast\x00\x01` inline bytes. (Whether a subsystem keys on this or on the cheaper DAG hash
+  of §4.5 is its choice — §2.1.)
 
 **The canonical `decode` REFUSES `cdzast\x00\x02`.** Per A, dict-bearing bytes are non-canonical: the
 identity-bearing `decode`/`decode_detailed` continue to accept ONLY `cdzast\x00\x01`. Precisely: today
