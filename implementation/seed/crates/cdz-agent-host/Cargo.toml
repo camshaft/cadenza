@@ -46,6 +46,15 @@ live-net = ["dep:reqwest", "dep:aws-config", "dep:aws-sdk-bedrockruntime"]
 # egress, so this is not the same concern as `live-net`; gating it keeps the default build listener-free.
 admin = ["tokio/net", "tokio/io-util", "tokio/signal"]
 
+# `metrics-export` gates the observability EXPORT emitter — the daemon periodically reports the metrics
+# registry to a backend (statsd first) over the network. OFF by default so the hermetic gate never sends UDP
+# / opens a socket: the metric RECORDING (registry Counters, always-on since seq-116) stays hermetic; only
+# the periodic EXPORT to a collector is feature-gated. The statsd sink uses std::net::UdpSocket (a blocking
+# send off the periodic timer tick — not hot-path — so no tokio `net` is needed). No extra deps: the
+# s2n-quic-dc-metrics StatsdBackend is already in the always-on dep; this feature just compiles the sink +
+# the report task. (OTLP/prometheus backends slot in behind this same feature later.)
+metrics-export = []
+
 [dependencies]
 # The kernel whose Executor/Authorize traits + effect/event types we implement. Path dep across the
 # workspace boundary (both are their own workspaces). We CONSUME these traits; we never edit its src.
