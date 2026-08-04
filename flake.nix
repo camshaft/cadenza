@@ -116,19 +116,43 @@
         # hand-wiring), then cut over. Incremental — one job-class per increment, each ADVISORY
         # (continue-on-error in checks.yml) until v-fleet-tooling flips the required-set cutover.
         #
-        # Increment 1 — the LINT pair (checks.yml `fmt` + `clippy`): pure native workspace, NO runtime
-        # store, NO wasm. `seedCargoVendor` vendors the root lock offline (a normal derivation has no
-        # network); `lintCheck` runs one cargo lint command against the scoped seed workspace source and
-        # writes a pass-marker. The pinned `rustToolchain` carries rustfmt + clippy (from the toolchain
-        # file's components), so these reproduce EXACTLY what CI's `cargo fmt --all --check` /
-        # `cargo clippy --workspace --all-targets -- -D warnings` run — now hermetic + cached by nix.
+        # `cargoWorkspaceCheck` runs ONE cargo command against the scoped seed workspace source, hermetic
+        # + offline-vendored. `seedCargoVendor` vendors the root lock offline (a normal derivation has no
+        # network); the pinned `rustToolchain` carries rustfmt + clippy (from the toolchain file's
+        # components). Used for the pure-native-workspace checks — those needing NO runtime store + NO
+        # wasm — so each reproduces EXACTLY the matching GHA job, now cached by nix:
+        #   Increment 1 — `fmt` (cargo fmt --all --check) + `clippy` (cargo clippy --workspace …).
+        #   Increment 2 — `test` (cargo test --workspace).
         seedCargoVendor = pkgs.rustPlatform.importCargoLock { lockFile = ./Cargo.lock; };
-        lintCheck = { name, cargoCmd }:
+        # `test` (`cargo test --workspace`) reads more of the repo at RUN time than fmt/clippy do, so its
+        # src is WIDER than `seedSrc` (crates + xtask). fmt/clippy keep the narrow `seedSrc` for finer
+        # cache invalidation (a spec/compiler-ml edit shouldn't bust lint). The extra paths:
+        #   spec/                     — cadenza-syntax's corpus_roundtrip tests resolve
+        #                               `$CARGO_MANIFEST_DIR/../../../../spec/semantics`.
+        #   implementation/compiler-ml — cdz's run_ml_cli tests shell out to `cdz run-ml`, which locates
+        #                               `implementation/compiler-ml/src` and writes a pid-stamped driver
+        #                               INTO it. nix's unpackPhase copies src into the WRITABLE build dir,
+        #                               so the driver write succeeds there (the driver is .gitignored +
+        #                               cleaned up on exit).
+        seedTestSrc = pkgs.lib.fileset.toSource {
+          root = ./.;
+          fileset = pkgs.lib.fileset.unions [
+            ./implementation/seed/crates
+            ./implementation/compiler-ml
+            ./xtask
+            ./Cargo.toml
+            ./Cargo.lock
+            ./.cargo
+            ./rust-toolchain.toml
+            ./spec
+          ];
+        };
+        cargoWorkspaceCheck = { name, cargoCmd, src ? seedSrc, extraInputs ? [ ] }:
           pkgs.stdenvNoCC.mkDerivation {
             pname = name;
             version = "0.0.0";
-            src = seedSrc;
-            nativeBuildInputs = [ rustToolchain ];
+            inherit src;
+            nativeBuildInputs = [ rustToolchain ] ++ extraInputs;
             buildPhase = ''
               runHook preBuild
               export HOME="$TMPDIR/home"
@@ -725,13 +749,25 @@
             # Full-CI-in-nix increment 1: the LINT pair, mirroring checks.yml `fmt` + `clippy` exactly.
             # `nix flake check` now runs them; the checks.yml jobs stay in place (advisory overlap) until
             # v-fleet-tooling's required-set cutover retires the hand-wired ones.
-            fmt = lintCheck {
+            fmt = cargoWorkspaceCheck {
               name = "cargo-fmt";
               cargoCmd = "cargo fmt --all --check";
             };
-            clippy = lintCheck {
+            clippy = cargoWorkspaceCheck {
               name = "cargo-clippy";
               cargoCmd = "cargo clippy --workspace --all-targets -- -D warnings";
+            };
+            # Full-CI-in-nix increment 2: the workspace test suite, mirroring checks.yml `test`
+            # (`cargo test --workspace`) — pure native workspace, no runtime store. (CI runs it on both
+            # ubuntu + macos; nix reproduces the linux run.) Advisory overlap with the GHA `test` job.
+            test = cargoWorkspaceCheck {
+              name = "cargo-test";
+              cargoCmd = "cargo test --workspace";
+              src = seedTestSrc;
+              # xtask's fleet::tests::batch_* spawn `git` to build throwaway fixture repos in $TMPDIR
+              # (writable in the sandbox); the seed toolchain has no git, so add it. (cdz's run_ml tests
+              # write a driver into the compiler-ml src copy — that's the writable build dir, no tool.)
+              extraInputs = [ pkgs.git ];
             };
           };
 
