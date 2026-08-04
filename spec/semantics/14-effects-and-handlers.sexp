@@ -1268,6 +1268,59 @@
                     (+ (A.a) (+ (B.b) (Bail.bail 99))))))) (export main)))
   (output (: 99 Int64)))
 
+(case "an inner abortive handler preserves an OUTER effect's advance committed before the abort (do-shape)"
+  (doc    "The abort-fold's outer-advance preservation (v-effects, breaker ao1). An inner abortive `B`-handle
+           runs a FOREIGN perform `(A.tick)` — an OUTER `A` handler's op — on its strict do-spine BEFORE it
+           aborts: `(handle B 0 ((bail (v) s v)) (do (A.tick) (B.bail 99)))`. `A.tick` resumes, COMMITTING
+           A-state 10→11; then `B.bail` — a non-resuming arm — abandons B's OWN handle (`b` = 99). B's abort
+           is B's control over the INNER handle only; it must NOT roll back A's already-committed advance. So
+           the outer `(A.get)` reads 11 → `(+ 99 11)` = 110. Before the fold the bare-abort collapse discarded
+           the whole inner body — INCLUDING `A.tick` — so `A.get` read the seed 10 and the run yielded 109 (a
+           silent cross-backend wrong value). The do-arm keeps the pre-abort foreign item and appends the abort
+           value as the tail, `(do (A.tick) 99)`, whose foreign prefix the OUTER fold discharges before the
+           value. Contrast the after-abort-dead control below (foreign perform AFTER the abort is genuinely
+           unreachable and correctly elided).")
+  (input  (do
+            (effect A (op tick (-> Unit Int64)) (op get (-> Unit Int64)))
+            (effect B (op bail (-> Int64 Int64)))
+            (def (main)
+              (handle A 10 ((tick (u) s (resume s (+ s 1))) (get (u) s (resume s s)))
+                (let ((b (handle B 0 ((bail (v) s v)) (do (A.tick) (B.bail 99)))))
+                  (+ b (A.get))))) (export main)))
+  (output (: 110 Int64)))
+
+(case "an inner abort preserves TWO outer advances committed before it (multi-step outer trace)"
+  (doc    "The multi-advance face of the outer-advance preservation (breaker ao4): the FULL outer trace of the
+           aborted inner computation is preserved, not just the last step. TWO foreign `(A.tick)` performs run
+           on the inner `B`-handle's do-spine before the abort: `(do (A.tick) (A.tick) (B.bail 99))`. Each
+           advances A-state (10→11→12); then `B.bail` abandons B. The outer `(A.get)` must read 12 → `(+ 99
+           12)` = 111. Before the fold BOTH advances were discarded (A.get read 10 → 109). Pins that the abort-
+           fold threads every pre-abort foreign step, not only the final one.")
+  (input  (do
+            (effect A (op tick (-> Unit Int64)) (op get (-> Unit Int64)))
+            (effect B (op bail (-> Int64 Int64)))
+            (def (main)
+              (handle A 10 ((tick (u) s (resume s (+ s 1))) (get (u) s (resume s s)))
+                (let ((b (handle B 0 ((bail (v) s v)) (do (A.tick) (A.tick) (B.bail 99)))))
+                  (+ b (A.get))))) (export main)))
+  (output (: 111 Int64)))
+
+(case "an inner abort ELIDES an outer perform sequenced AFTER it (dead-path control)"
+  (doc    "The control companion of the outer-advance preservation above: a foreign `(A.tick)` sequenced AFTER
+           the abort in the inner do-spine — `(do (B.bail 99) (A.tick))` — is genuinely UNREACHABLE (the abort
+           abandons the rest of the sequence), so it is correctly ELIDED: A-state is NOT advanced, the outer
+           `(A.get)` reads the seed 10 → `(+ 99 10)` = 109. Pins that the abort-fold preserves only the pre-
+           abort prefix (a committed advance) and drops the post-abort dead tail — the discriminator is
+           evaluation ORDER relative to the abort, not the mere presence of a foreign perform in the body.")
+  (input  (do
+            (effect A (op tick (-> Unit Int64)) (op get (-> Unit Int64)))
+            (effect B (op bail (-> Int64 Int64)))
+            (def (main)
+              (handle A 10 ((tick (u) s (resume s (+ s 1))) (get (u) s (resume s s)))
+                (let ((b (handle B 0 ((bail (v) s v)) (do (B.bail 99) (A.tick)))))
+                  (+ b (A.get))))) (export main)))
+  (output (: 109 Int64)))
+
 (case "a single handler with both a resuming and an abortive arm dispatches each op to its own arm kind"
   (doc    "One handler for ONE effect `E` declaring TWO operations whose arms are DIFFERENT KINDS — `get`
            resumes, `bail` abandons — so the fold must dispatch each performed op to its own arm kind within
