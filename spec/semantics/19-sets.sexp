@@ -1495,6 +1495,43 @@
             (export main)))
   (output (: 258 Int64)))
 
+(case "Set.to-list over a 100-element trie enumerates strictly increasing end to end"
+  (doc    "The order rows above run on 3-element (single-leaf) sets; this pins the enumeration walk over
+           a MULTI-LEVEL trie: 100 elements (i·13, spread across node splits) enumerate strictly
+           increasing END TO END — an adjacent-pair walk requires every consecutive pair ascending and
+           counts all 100, so one out-of-order pair or a dropped element poisons with -100000. The Set
+           twin of the deep-trie Map.to-list sortedness pin: a per-node sort missing the cross-node
+           merge order passes the small rows and fails here.")
+  (input  (do
+            (def (build (: i Int64) (: acc (Set Int64)))
+              (if (= i 0) acc (build (- i 1) (Set.insert acc (* i 13)))))
+            (def (inc (: xs (List Int64)) (: prev Int64) (: cnt Int64))
+              (match xs
+                ((list) cnt)
+                ((list h .. t) (if (> h prev) (inc t h (+ cnt 1)) -100000))))
+            (def (main (: n Int64))
+              (inc (Set.to-list (build n (Set.of (list)))) -1 0))
+            (export main)))
+  (call   main (: 100 Int64)) (output (: 100 Int64)))
+
+(case "Set.of over Set.to-list round-trips a 100-element trie to the identical set"
+  (doc    "The enumerate⇄rebuild closure for sets: `(Set.of (Set.to-list s))` over a 100-element
+           multi-level trie must EQUAL the source by canonical `=` with the same cardinality — every
+           element surfaced exactly once by the enumeration and re-canonicalized identically by the
+           batch build. The Set twin of the Map enumerate-rebuild identity pin; an enumeration that
+           dropped or duplicated an element, or a rebuild that canonicalized differently from the
+           incremental Set.insert build, breaks the equality.")
+  (input  (do
+            (def (build (: i Int64) (: acc (Set Int64)))
+              (if (= i 0) acc (build (- i 1) (Set.insert acc (* i 11)))))
+            (def (main (: n Int64))
+              (do
+                (def src (build n (Set.of (list))))
+                (def rt (Set.of (Set.to-list src)))
+                (+ (* 10 (if (= rt src) 1 0)) (if (= (Set.len rt) n) 1 0))))
+            (export main)))
+  (call   main (: 100 Int64)) (output (: 11 Int64)))
+
 (case "Set.to-list length is the set's cardinality (deduped)"
   (doc    "`(List.len (Set.to-list (Set.of (list 3 1 2 1 3))))` — the enumerated list has one element per
            DISTINCT set element ({1,2,3} → 3), so its length equals Set.len. Pins the dedup + round count.
