@@ -43,6 +43,14 @@ pub struct Authorizer {
     /// `Capability{kind,predicate}` struct + its 45 literals stay untouched (additive); `authorize` admits a
     /// request permitted by EITHER list. Empty unless populated via [`Authorizer::with_family_grants`].
     family_grants: Vec<crate::effect::FamilyGrant>,
+    /// Explicit DENY rules that OVERRIDE any grant — the "deny wins" precedence (standard security model:
+    /// an explicit deny beats an allow). A request matching ANY deny rule is refused even if a `Capability`
+    /// or `FamilyGrant` would permit it. Keyed by family + [`ResourcePredicate`](crate::effect::ResourcePredicate)
+    /// like a grant (reuses [`crate::effect::FamilyGrant`], so a deny of `http` to `HostIn(["169.254.169.254"])`
+    /// carves an IMDS hole out of a broad `http` grant). Separate list so grants stay purely additive; empty
+    /// unless populated via [`Authorizer::with_deny_rules`], so an authorizer with no deny rules behaves
+    /// EXACTLY as before (this is additive — deny-overrides only engages when a rule is present).
+    deny_rules: Vec<crate::effect::FamilyGrant>,
 }
 
 impl Authorizer {
@@ -52,6 +60,7 @@ impl Authorizer {
         Authorizer {
             caps,
             family_grants: Vec::new(),
+            deny_rules: Vec::new(),
         }
     }
 
@@ -64,12 +73,25 @@ impl Authorizer {
         self
     }
 
+    /// Add explicit DENY rules that OVERRIDE any grant (the "deny wins" precedence). A request matching any
+    /// deny rule is refused even if a `Capability`/`FamilyGrant` permits it — so a broad grant can be carved
+    /// with a narrow hole (e.g. grant `http` to `Any` but deny `http` to the IMDS host, or grant `store/set`
+    /// on `system/` but deny it on `system/compiler/`). Each rule is a [`FamilyGrant`](crate::effect::FamilyGrant)
+    /// (family + predicate); a request is denied iff its family matches AND the predicate admits its target.
+    /// Builder-style, additive: an authorizer with no deny rules is unchanged (deny-overrides engages only
+    /// when a rule matches). Composes with [`Authorizer::new`]/[`Authorizer::with_family_grants`].
+    pub fn with_deny_rules(mut self, rules: Vec<crate::effect::FamilyGrant>) -> Self {
+        self.deny_rules.extend(rules);
+        self
+    }
+
     /// Grant nothing — every effect is denied. Useful for pure-fold reducers that should have no
     /// ambient authority (the §9c "deny the clock entirely" case).
     pub fn deny_all() -> Self {
         Authorizer {
             caps: Vec::new(),
             family_grants: Vec::new(),
+            deny_rules: Vec::new(),
         }
     }
 }
@@ -78,8 +100,18 @@ impl Authorizer {
 impl Authorize for Authorizer {
     /// SEC-F1: permission requires a grant whose predicate admits the *resolved target* — a `Capability`
     /// (keyed on `EffectKind::family`) OR a register-by-string `FamilyGrant` (keyed on the family string, for
-    /// families with no built-in kind, e.g. `store/*`). Native async (no `.await` — a flat set check).
+    /// families with no built-in kind, e.g. `store/*`). An explicit DENY rule OVERRIDES any grant ("deny
+    /// wins"): a request matching a deny rule is refused first, before the grant check, so a narrow deny
+    /// carves a hole out of a broad allow. Native async (no `.await` — a flat set check).
     async fn authorize(&self, req: &EffectRequest) -> Result<(), String> {
+        // DENY-overrides-ALLOW: an explicit deny rule wins over any grant. Checked first so a matched deny
+        // short-circuits the grant check (and can't be re-permitted by a broad Capability/FamilyGrant).
+        if let Some(rule) = self.deny_rules.iter().find(|r| r.permits(req)) {
+            return Err(format!(
+                "explicitly DENIED: a deny rule for family {:?} covers target {:?}",
+                rule.family, req.target
+            ));
+        }
         if self.caps.iter().any(|c| c.permits(req))
             || self.family_grants.iter().any(|g| g.permits(req))
         {
@@ -183,6 +215,102 @@ mod tests {
         assert!(http_grant.authorize(&r).await.is_err());
         // ...and the Model grant's family ("model") matches → permitted, despite kind == Http.
         assert!(model_grant.authorize(&r).await.is_ok());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_deny_rule_overrides_a_broad_grant_carving_a_hole() {
+        // explicit-DENY-overrides-ALLOW (operator-flagged): a narrow deny rule refuses a request a broad
+        // grant would permit. Grant Http to ANY host, then deny Http to the IMDS host specifically — the
+        // classic SSRF hole carved out of a broad allow. deny wins.
+        let authz = Authorizer::new(vec![Capability {
+            kind: EffectKind::Http,
+            predicate: ResourcePredicate::Any,
+        }])
+        .with_deny_rules(vec![Capability::for_family(
+            EffectKind::Http.family(),
+            ResourcePredicate::HostIn(vec!["169.254.169.254".into()]),
+        )]);
+        // A normal host is still permitted (the grant applies, no deny matches)...
+        assert!(authz
+            .authorize(&req(EffectKind::Http, "https://ok.host/x"))
+            .await
+            .is_ok());
+        // ...but the denied host is refused despite the Any grant (deny overrides).
+        let denied = authz
+            .authorize(&req(
+                EffectKind::Http,
+                "http://169.254.169.254/latest/meta-data/",
+            ))
+            .await;
+        assert!(
+            denied.is_err(),
+            "the IMDS host is denied despite the broad Http grant"
+        );
+        assert!(
+            denied.unwrap_err().contains("DENIED"),
+            "the denial reason names the explicit deny, not a missing grant"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_deny_rule_only_bites_its_family_and_predicate() {
+        // A deny rule is scoped: it refuses only its family+predicate, leaving other families/targets to the
+        // normal grant check. Deny store/set on `system/compiler/`, but store/set on `system/other` still
+        // rides the grant (deny didn't match), and a different family is untouched.
+        use crate::effect::{effect_ct, EffectRequest};
+        let store_set = |name: &str| {
+            EffectRequest::new_with_family(
+                effect_ct::STORE_SET,
+                name,
+                None,
+                crate::effect::Timeliness::Interactive,
+            )
+        };
+        let authz = Authorizer::new(vec![Capability {
+            kind: EffectKind::Http,
+            predicate: ResourcePredicate::Any,
+        }])
+        .with_family_grants(vec![Capability::for_family(
+            effect_ct::STORE_SET,
+            ResourcePredicate::Prefix("system/".into()),
+        )])
+        .with_deny_rules(vec![Capability::for_family(
+            effect_ct::STORE_SET,
+            ResourcePredicate::Prefix("system/compiler/".into()),
+        )]);
+        // Denied: store/set under the carved-out prefix (deny matches, overrides the system/ grant).
+        assert!(authz
+            .authorize(&store_set("system/compiler/latest"))
+            .await
+            .is_err());
+        // Permitted: store/set to another system/ name (grant applies, deny prefix doesn't match).
+        assert!(authz
+            .authorize(&store_set("system/policy/current"))
+            .await
+            .is_ok());
+        // A different family (Http) is entirely unaffected by the store/set deny rule.
+        assert!(authz
+            .authorize(&req(EffectKind::Http, "https://ok.host/x"))
+            .await
+            .is_ok());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn no_deny_rules_is_unchanged_behavior() {
+        // Additive guarantee: an authorizer with no deny rules behaves EXACTLY as before — a grant permits,
+        // absence denies, nothing new engages.
+        let authz = Authorizer::new(vec![Capability {
+            kind: EffectKind::Http,
+            predicate: ResourcePredicate::HostIn(vec!["ok.host".into()]),
+        }]);
+        assert!(authz
+            .authorize(&req(EffectKind::Http, "https://ok.host/x"))
+            .await
+            .is_ok());
+        assert!(authz
+            .authorize(&req(EffectKind::Http, "https://evil.host/x"))
+            .await
+            .is_err());
     }
 
     #[tokio::test(flavor = "current_thread")]
