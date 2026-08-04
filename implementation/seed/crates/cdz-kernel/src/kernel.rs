@@ -2928,6 +2928,98 @@ mod monotonic_now_tests {
             "identical request → identical key (crash-re-drive dedup)"
         );
     }
+
+    // An executor whose perform ALWAYS fails with a classified error — models a real host executor
+    // (Bedrock/Http/Shell) returning a recoverable EffectOutcome::Err (never a panic/drop). The
+    // `PERMANENT:`/`RETRYABLE:` prefix is the classification a supervisor keys retry-vs-give-up on (§6a).
+    struct FailingHttpExecutor;
+    #[async_trait::async_trait(?Send)]
+    impl Executor for FailingHttpExecutor {
+        async fn perform(&mut self, req: &EffectRequest, _key: Hash) -> EffectOutcome {
+            assert_eq!(req.kind, EffectKind::Http);
+            EffectOutcome::Err("PERMANENT: 400 bad request".to_string())
+        }
+    }
+
+    // Emits an Http effect on inbound; on its result, records the Err reason into KV so the test can see the
+    // failure reached the reducer as a normal folded event (§9d anti-stuck).
+    struct HttpThenRecordReducer;
+    #[async_trait::async_trait(?Send)]
+    impl Reducer for HttpThenRecordReducer {
+        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+            match &event.body {
+                EventBody::Inbound { .. } => FoldOutput::with_effects(vec![Effect {
+                    request: EffectRequest::new(
+                        EffectKind::Http,
+                        "https://ok.host/x",
+                        None,
+                        Timeliness::Interactive,
+                    ),
+                    token: None,
+                }]),
+                EventBody::EffectResult {
+                    result: EffectOutcome::Err(reason),
+                    ..
+                } => {
+                    kv.put(b"last_err".to_vec(), reason.clone().into_bytes());
+                    FoldOutput::none()
+                }
+                _ => FoldOutput::none(),
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_routed_effect_err_folds_back_to_the_reducer_and_the_session_is_not_stuck() {
+        // §6a failure-taxonomy / §9d anti-stuck for the ROUTED-effect leg: an executor Err becomes a normal
+        // EffectResult event the reducer FOLDS (never a wedge, panic, or silent drop), the classified reason
+        // reaches the reducer intact, and the dispatched effect SETTLES (no dangling open obligation).
+        let authz = Authorizer::new(vec![Capability {
+            kind: EffectKind::Http,
+            predicate: ResourcePredicate::Any,
+        }]);
+        let mut exec = FailingHttpExecutor;
+        let mut s = Session::genesis(Hash::of(b"http-err-v1"));
+        s.deliver(
+            EventBody::Inbound {
+                content_type: ContentType {
+                    family: "message".into(),
+                    version: 1,
+                },
+                payload: Payload::Inline(b"go".to_vec().into()),
+            },
+            None,
+            &HttpThenRecordReducer,
+            &authz,
+            &mut exec,
+        )
+        .await
+        .unwrap();
+
+        // The Err reached the reducer as a folded EffectResult (recorded verbatim, classification prefix intact).
+        assert_eq!(
+            s.kv().get(b"last_err").map(|v| v.to_vec()),
+            Some(b"PERMANENT: 400 bad request".to_vec()),
+            "the executor Err folds back to the reducer as a normal EffectResult event"
+        );
+        // §9d anti-stuck: the failed effect SETTLED — no dispatched-but-unsettled obligation left hanging.
+        assert_eq!(
+            s.open_effects(),
+            0,
+            "a routed-effect Err settles the dispatch — the session isn't wedged waiting on it"
+        );
+        // An Err EffectResult is on the log (the durable failure record a supervisor/replay sees).
+        assert!(
+            s.log().iter().any(|e| matches!(
+                &e.body,
+                EventBody::EffectResult {
+                    result: EffectOutcome::Err(_),
+                    ..
+                }
+            )),
+            "the Err outcome is a first-class log event"
+        );
+    }
 }
 
 // §4c slice 3b: the drive-loop store partition — a `store/*` effect, once authorized, is applied to the
