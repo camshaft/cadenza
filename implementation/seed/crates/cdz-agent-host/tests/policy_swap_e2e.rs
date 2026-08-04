@@ -52,7 +52,7 @@ async fn a_policy_swap_via_reload_flips_the_authorizer_and_pushes_a_capabilities
     };
 
     // Start deny-all: the session refuses everything, and its born-knowing manifest reflects that. The
-    // executor serves Now+Model so the mechanism axis is present; only the POLICY denies.
+    // executor serves Now (the mechanism axis is present for that family); only the POLICY denies.
     let mut hosted = HostedSession::genesis(
         Hash::of(b"policy-swap-v1"),
         Box::new(CapabilityAwareAgent),

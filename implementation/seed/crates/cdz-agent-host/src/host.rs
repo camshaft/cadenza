@@ -160,11 +160,11 @@ impl HostedSession {
     /// blob-gets the component `bytes`, and calls this to rebuild the authorizer + notify the agent.
     ///
     /// It lifts `bytes` into a [`ComponentAuthorizer`](cdz_kernel::wasm_host::ComponentAuthorizer) (the
-    /// lifted Cedar policy), [`set_authorizer`](Self::set_authorizer)s it, and
-    /// [`push_capabilities_changed`](Self::push_capabilities_changed)es — so a policy swap that widened or
+    /// lifted Cedar policy), installs it via [`set_authorizer`](Self::set_authorizer), then calls
+    /// [`push_capabilities_changed`](Self::push_capabilities_changed) — so a policy swap that widened or
     /// tightened a grant folds a `capabilities-changed` to the agent (a no-op if grant-states didn't move).
-    /// Returns the pushed [`ControlEffect`](cdz_kernel::effect::ControlEffect)s (usually none), or `Err` if
-    /// the bytes aren't a valid policy component (the swap is then NOT applied — the old policy stays).
+    /// Returns the pushed [`ControlEffect`](cdz_kernel::effect::ControlEffect) list (usually empty), or `Err`
+    /// if the bytes aren't a valid policy component (the swap is then NOT applied — the old policy stays).
     ///
     /// `principal` is the agent's authz principal (e.g. `"agent://<id>"`), the same value the session's
     /// original authorizer was built with. The host owns resolving POLICY_CURRENT + the blob fetch (it holds
@@ -353,8 +353,10 @@ impl AgentHost {
     /// When the host has a canonical shared store (see [`with_canonical_store`](Self::with_canonical_store)),
     /// the session is born with a by-value replay of it — so a freshly-spawned agent already sees every
     /// pointer other sessions have published (and the host folds this session's new writes back after each
-    /// turn). A session spawned with its OWN store keeps it (the canonical replay is only attached when the
-    /// host is canonical-backed).
+    /// turn). This REPLACES any store the session was built with (via
+    /// [`HostedSession::with_name_store`]): a canonical-backed host is the single source of the shared name
+    /// space, so it attaches the canonical replay unconditionally. On a share-less host (plain
+    /// [`new`](Self::new)) the session keeps whatever store (or none) it was spawned with.
     pub fn spawn(&mut self, id: SessionId, session: HostedSession) -> SessionId {
         let session = match &self.canonical {
             Some(canonical) => session.with_name_store(replay_of(canonical)),
@@ -381,13 +383,18 @@ impl AgentHost {
     ) -> Option<Result<(), KernelError>> {
         let s = self.sessions.get_mut(id)?;
         let outcome = s.deliver(body, cause).await;
-        // §4c v0.3 merge-back: after the turn, fold this session's new name-store writes into the canonical
-        // shared store so the next-spawned (or next-reconciled) session sees them. Idempotent — a turn that
-        // wrote nothing re-merges as a no-op (the session's log is already a prefix of what it was handed).
-        // Only when the host is canonical-backed AND the session actually has a store attached.
-        if let Some(canonical) = &mut self.canonical {
-            if let Some(session_store) = s.session().name_store() {
-                canonical.merge_appends_from(session_store);
+        // §4c v0.3 merge-back: after a SUCCESSFUL turn, fold this session's new name-store writes into the
+        // canonical shared store so the next-spawned (or next-reconciled) session sees them. Idempotent — a
+        // turn that wrote nothing re-merges as a no-op (the session's log is already a prefix of what it was
+        // handed). Gated on `outcome.is_ok()`: a turn that ERRED (KernelError — session/log corruption or an
+        // invalid transition) may have left partial/invalid store state, and folding that into the SHARED
+        // store would leak it to every future session — so an errored turn's writes are NOT published.
+        // Only when the host is canonical-backed AND the session has a store attached.
+        if outcome.is_ok() {
+            if let Some(canonical) = &mut self.canonical {
+                if let Some(session_store) = s.session().name_store() {
+                    canonical.merge_appends_from(session_store);
+                }
             }
         }
         Some(outcome)

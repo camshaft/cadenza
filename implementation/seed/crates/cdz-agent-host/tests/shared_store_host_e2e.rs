@@ -188,4 +188,25 @@ async fn a_share_less_host_leaves_sessions_store_less() {
             .is_none(),
         "nothing resolved — a share-less host attaches no store"
     );
+
+    // No-cross-session-leak: even after a first session ran on this share-less host, a SECOND session
+    // spawned on it is still store-less (the host holds no canonical store to hand down) — the opt-in
+    // boundary means share-less sessions never see each other's (nonexistent) name space.
+    let id2 = host.spawn(
+        SessionId::new("no-store-2"),
+        HostedSession::genesis(
+            Hash::of(b"no-store-2-v1"),
+            Box::new(Consumer),
+            resolve_system(),
+            CompositeExecutor::new(),
+        ),
+    );
+    host.deliver(&id2, inbound_go(), None)
+        .await
+        .expect("session 2 exists")
+        .expect("session 2's turn ran (store/* settled as an Err, no panic)");
+    assert!(
+        host.get(&id2).unwrap().session().kv().get(b"resolved").is_none(),
+        "a second share-less session also resolves nothing — no store handed down, no cross-session leak"
+    );
 }
