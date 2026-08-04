@@ -52,6 +52,12 @@ tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
 # (all async, single trait each). My `ModelTransport`/`HttpTransport` sub-traits + my native `impl Executor`
 # for the executors use `#[async_trait(?Send)]` (single-threaded host, non-Send transport futures — §15b).
 async-trait = "0.1"
+# serde + toml — the daemon's single-TOML config (operator directive: "set the entire thing up via config
+# and not from cli args; the only arg I want is the path to the config"). serde derives the config schema;
+# toml parses the file. Small, always-on (the config layer is part of the daemon's core, not feature-gated
+# behind live-net) — a `DaemonConfig` deserialize is cheap + the daemon binary needs them unconditionally.
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
 # reqwest — the real async HTTP client behind the `HttpTransport` seam. OPTIONAL, enabled only by
 # `live-net` (default build never compiles it — keeps the hermetic gate free of the network/TLS tree).
 # `rustls-tls` (not the platform's OpenSSL) so it builds on any runner with no system SSL dep;
