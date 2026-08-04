@@ -222,20 +222,11 @@
             nativeBuildInputs = [ rustToolchain ] ++ extraInputs;
             buildPhase = ''
               runHook preBuild
-              export HOME="$TMPDIR/home"
-              export CARGO_HOME="$TMPDIR/cargo"
-              # Network is blocked by CARGO_NET_OFFLINE (belt-and-suspenders with the vendored source
-              # below) — matches the sibling cargo-in-nix derivations (rcdzcWasm, mkStripComponent), so
-              # if cargo's source resolution ever changes the lint fails LOUDLY offline instead of
-              # attempting a fetch (github-liaison #1982).
-              export CARGO_NET_OFFLINE=true
-              mkdir -p "$HOME" "$CARGO_HOME"
-              cat > "$CARGO_HOME/config.toml" <<EOF
-              [source.crates-io]
-              replace-with = "vendored-sources"
-              [source.vendored-sources]
-              directory = "${seedCargoVendor}"
-              EOF
+              # Network is blocked by CARGO_NET_OFFLINE (set by mkCargoVendorEnv, belt-and-suspenders with
+              # the vendored source) so if cargo's source resolution ever changes the lint fails LOUDLY
+              # offline instead of attempting a fetch (github-liaison #1982). seedCargoVendor is a single
+              # importCargoLock (no git deps) → merged = false (source its config).
+              ${mkCargoVendorEnv { vendor = seedCargoVendor; }}
               ${cargoCmd}
               runHook postBuild
             '';
@@ -444,18 +435,7 @@
           nativeBuildInputs = [ rustToolchain ];
           buildPhase = ''
             runHook preBuild
-            export HOME="$TMPDIR/home"
-            export CARGO_HOME="$TMPDIR/cargo"
-            export CARGO_NET_OFFLINE=true
-            mkdir -p "$HOME" "$CARGO_HOME"
-            cat > "$CARGO_HOME/config.toml" <<EOF
-            [build]
-            jobs = 4
-            [source.crates-io]
-            replace-with = "vendored-sources"
-            [source.vendored-sources]
-            directory = "${rcdzcWasmVendor}"
-            EOF
+            ${mkCargoVendorEnv { vendor = rcdzcWasmVendor; }}
             cd implementation/seed/crates/rcdzc-wasm
             cargo test --locked
             cargo clippy --all-targets --locked -- -D warnings
@@ -496,18 +476,7 @@
           nativeBuildInputs = [ rustToolchain ];
           buildPhase = ''
             runHook preBuild
-            export HOME="$TMPDIR/home"
-            export CARGO_HOME="$TMPDIR/cargo"
-            export CARGO_NET_OFFLINE=true
-            mkdir -p "$HOME" "$CARGO_HOME"
-            cat > "$CARGO_HOME/config.toml" <<EOF
-            [build]
-            jobs = 4
-            [source.crates-io]
-            replace-with = "vendored-sources"
-            [source.vendored-sources]
-            directory = "${cdzKernelVendor}"
-            EOF
+            ${mkCargoVendorEnv { vendor = cdzKernelVendor; }}
             cd implementation/seed/crates/cdz-kernel
             # Feed the pre-built, pre-validated reducer-guest component (my derivation) so the env-gated
             # component-reducer e2e RUNS instead of skipping.
@@ -573,23 +542,10 @@
           dontUseCmakeConfigure = true;
           buildPhase = ''
             runHook preBuild
-            export HOME="$TMPDIR/home"
-            export CARGO_HOME="$TMPDIR/cargo"
-            export CARGO_NET_OFFLINE=true
-            mkdir -p "$HOME" "$CARGO_HOME"
-            # cdz-agent-host has a GIT dependency (s2n-quic-dc-metrics). importCargoLock's vendor dir
-            # ships a config.toml with the FULL source-replacement stanzas — crates-io AND the
-            # `[source."git+…"]` git-source replace-with — so we must USE that config, not a hand-rolled
-            # crates-io-only one (which leaves the git source pointing at the network → offline-mode
-            # fetch failure). Copy the vendor's config verbatim (its `directory = "cargo-vendor-dir"` is
-            # relative, so also set CARGO_HOME-relative resolution by placing the vendor dir adjacent), then
-            # prepend our [build] jobs cap. NB: the vendor's `directory` is relative → point it absolute.
-            {
-              echo "[build]"
-              echo "jobs = 4"
-              sed 's|directory = "cargo-vendor-dir"|directory = "${cdzAgentHostVendor}"|' \
-                "${cdzAgentHostVendor}/.cargo/config.toml"
-            } > "$CARGO_HOME/config.toml"
+            # cdz-agent-host has a GIT dependency (s2n-quic-dc-metrics) — mkCargoVendorEnv's default
+            # (merged = false) sources the vendor's own config.toml, which carries the git source-
+            # replacement stanza, so the offline build resolves the git crate from the vendor.
+            ${mkCargoVendorEnv { vendor = cdzAgentHostVendor; }}
             cd implementation/seed/crates/cdz-agent-host
             # Feed the pre-built, pre-validated guest components (my derivations) so the env-gated cedar
             # authz + ComponentSessionFactory e2es RUN instead of skipping.
@@ -956,18 +912,8 @@
           buildPhase = ''
             runHook preBuild
             export RUSTC_BOOTSTRAP=1
-            export HOME="$TMPDIR/home"
-            export CARGO_HOME="$TMPDIR/cargo"
-            export CARGO_NET_OFFLINE=true
-            mkdir -p "$HOME" "$CARGO_HOME"
-            cat > "$CARGO_HOME/config.toml" <<EOF
-            [build]
-            jobs = 4
-            [source.crates-io]
-            replace-with = "vendored-sources"
-            [source.vendored-sources]
-            directory = "${codegenVendor}"
-            EOF
+            # codegenVendor is a symlinkJoin of 4 locks → merged = true (hand-rolled crates-io config).
+            ${mkCargoVendorEnv { vendor = codegenVendor; merged = true; }}
             # xtask codegen --check regenerates runtime_abi.rs (building cdz-runtime + cdz-nfc components
             # via cargo-component to fold in their hashes) and fails if the committed file drifted.
             # Invoke the xtask binary via `cargo run --locked` (not the bare `cargo xtask` alias, which
@@ -1015,18 +961,8 @@
           nativeBuildInputs = [ rustToolchain pkgs.wasm-tools ];
           buildPhase = ''
             runHook preBuild
-            export HOME="$TMPDIR/home"
-            export CARGO_HOME="$TMPDIR/cargo"
-            export CARGO_NET_OFFLINE=true
-            mkdir -p "$HOME" "$CARGO_HOME"
-            cat > "$CARGO_HOME/config.toml" <<EOF
-            [build]
-            jobs = 4
-            [source.crates-io]
-            replace-with = "vendored-sources"
-            [source.vendored-sources]
-            directory = "${codegenVendor}"
-            EOF
+            # codegenVendor is a symlinkJoin of 4 locks → merged = true (hand-rolled crates-io config).
+            ${mkCargoVendorEnv { vendor = codegenVendor; merged = true; }}
             # Grade the whole corpus against the committed baselines, resolving the runtime from my
             # nix-built component store (skips the CI job's `xtask build`). --locked = hard-fail on lock
             # drift (matches siblings).
@@ -1071,19 +1007,9 @@
           nativeBuildInputs = [ rustToolchain ];
           buildPhase = ''
             runHook preBuild
-            export HOME="$TMPDIR/home"
-            export CARGO_HOME="$TMPDIR/cargo"
-            export CARGO_NET_OFFLINE=true
             export RUST_MIN_STACK=67108864
-            mkdir -p "$HOME" "$CARGO_HOME"
-            cat > "$CARGO_HOME/config.toml" <<EOF
-            [build]
-            jobs = 4
-            [source.crates-io]
-            replace-with = "vendored-sources"
-            [source.vendored-sources]
-            directory = "${codegenVendor}"
-            EOF
+            # codegenVendor is a symlinkJoin of 4 locks → merged = true (hand-rolled crates-io config).
+            ${mkCargoVendorEnv { vendor = codegenVendor; merged = true; }}
             # Runs cdz-runtime's hot_op_allocation_ceilings test + diffs the ALLOC counts vs
             # spec/bench/.alloc-baseline. --locked = hard-fail on lock drift (matches siblings).
             cargo run --locked --package xtask --profile release -- bench
@@ -1183,18 +1109,7 @@
           VITE_BASE = "/cadenza/";
           buildPhase = ''
             runHook preBuild
-            export HOME="$TMPDIR/home"
-            export CARGO_HOME="$TMPDIR/cargo"
-            export CARGO_NET_OFFLINE=true
-            mkdir -p "$HOME" "$CARGO_HOME"
-            cat > "$CARGO_HOME/config.toml" <<EOF
-            [build]
-            jobs = 4
-            [source.crates-io]
-            replace-with = "vendored-sources"
-            [source.vendored-sources]
-            directory = "${cdzWasmVendor}"
-            EOF
+            ${mkCargoVendorEnv { vendor = cdzWasmVendor; }}
 
             # ── 1. Build + bindgen the browser compiler wasm (the hermetic `wasm-pack build` equivalent).
             ( cd implementation/seed/crates/cdz-wasm
