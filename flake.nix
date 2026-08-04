@@ -330,6 +330,42 @@
           '';
         };
 
+        # Full-CI-in-nix increment 3: the NATIVE half of the GHA `rcdzc-wasm` job (cargo test + clippy +
+        # fmt in the rcdzc-wasm crate dir). The job's OTHER half — the wasm32-wasip1 build — is already
+        # the `rcdzcWasm` derivation above, so `nix flake check` covers the whole job via two checks. This
+        # reuses rcdzc-wasm's OWN vendor + 7-crate src (it's a standalone workspace, its own Cargo.lock).
+        # Advisory-by-omission job (not in ruleset 10560470) → once green I can retire its cargo twin
+        # UNILATERALLY, no lockstep.
+        rcdzcWasmNativeCheck = pkgs.stdenvNoCC.mkDerivation {
+          pname = "rcdzc-wasm-native";
+          version = "0.0.0";
+          src = rcdzcWasmSrc;
+          nativeBuildInputs = [ rustToolchain ];
+          buildPhase = ''
+            runHook preBuild
+            export HOME="$TMPDIR/home"
+            export CARGO_HOME="$TMPDIR/cargo"
+            export CARGO_NET_OFFLINE=true
+            mkdir -p "$HOME" "$CARGO_HOME"
+            cat > "$CARGO_HOME/config.toml" <<EOF
+            [source.crates-io]
+            replace-with = "vendored-sources"
+            [source.vendored-sources]
+            directory = "${rcdzcWasmVendor}"
+            EOF
+            cd implementation/seed/crates/rcdzc-wasm
+            cargo test --locked
+            cargo clippy --all-targets --locked -- -D warnings
+            cargo fmt --check
+            runHook postBuild
+          '';
+          installPhase = ''
+            runHook preInstall
+            echo "ok: rcdzc-wasm native (test + clippy + fmt)" > "$out"
+            runHook postInstall
+          '';
+        };
+
         # ── N1: the value-heap runtime components AS input-addressed derivations (hash from output) ─
         #
         # `xtask build` produces TWO runtime components (build_component + canonicalize_runtime in
@@ -769,6 +805,9 @@
               # write a driver into the compiler-ml src copy — that's the writable build dir, no tool.)
               extraInputs = [ pkgs.git ];
             };
+            # Full-CI-in-nix increment 3: the native half of the GHA rcdzc-wasm job (the wasm build half
+            # is the rcdzcWasm derivation / rcdzc-wasm-hash, already covered).
+            rcdzc-wasm-native = rcdzcWasmNativeCheck;
           };
 
         devShells.default = pkgs.mkShell {
