@@ -5885,14 +5885,15 @@ fn branch_perform_coexists_with_reentrant_call(
     // the recursion threads the incoming state. (The head is a0; operands a1..). We check each operand for the
     // branch-perform shape and, separately, whether ANY operand carries a re-entrant call.
     if let Resolved::Apply { head, args } = resolved_of(db, node) {
-        let all: Vec<StructId> = std::iter::once(head).chain(args.iter().copied()).collect();
-        let has_reentrant = all
-            .iter()
-            .any(|&a| contains_recursive_call(db, a, callee_def));
+        // Iterate `once(head).chain(args)` directly in each `.any()` (no intermediate `Vec` alloc per Apply
+        // on the effects AST walk — liaison/Copilot LOW-perf nit on #1957).
+        let has_reentrant = std::iter::once(head)
+            .chain(args.iter().copied())
+            .any(|a| contains_recursive_call(db, a, callee_def));
         if has_reentrant
-            && all
-                .iter()
-                .any(|&a| operand_is_branch_performing_conditional(db, a, ctx))
+            && std::iter::once(head)
+                .chain(args.iter().copied())
+                .any(|a| operand_is_branch_performing_conditional(db, a, ctx))
         {
             return true;
         }
