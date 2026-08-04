@@ -95,8 +95,9 @@ pub fn host_session_status_json(
 ///   "effects": {"ok": 40, "retryable_err": 3, "permanent_err": 1, "timed_out": 0, "total": 44}
 /// }
 /// ```
-/// All values are cumulative counters (except `sessions.live` = installed − removed). Numbers are plain
-/// integers (no escaping needed); the object has no string fields, so it's always valid JSON.
+/// All values are cumulative counters (except `sessions.live` = installed − removed, SATURATING at 0 — never
+/// negative even if the counters are transiently inconsistent). Numbers are plain integers (no escaping
+/// needed); the object has no string fields, so it's always valid JSON.
 pub fn host_metrics_json(
     host: &crate::HostMetricsSnapshot,
     effects: &crate::EffectMetricsSnapshot,
