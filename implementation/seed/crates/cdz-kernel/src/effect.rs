@@ -486,6 +486,64 @@ pub struct CapabilityManifest {
     pub entries: Vec<CapabilityEntry>,
 }
 
+/// One family's grant-state transition between two manifests — the unit of a capability CHANGE (the
+/// §host-capability-discovery I6 reactive-push input). `from`/`to` are the [`GrantState`] before and after
+/// (they differ — an unchanged family produces no [`GrantChange`]); `family` names which effect family moved.
+/// A push consumer reads this to decide relevance (a change touching a family this session could use) and to
+/// carry what moved (e.g. `Absent → Granted` = a new executor/grant landed; `Granted → Denied` = a policy
+/// tightened). Scope-only changes are deliberately NOT reported here — I6 wakes on grant-STATE moves, and the
+/// snapshot manifest carries the current scope; a scope-only refinement doesn't change usability.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct GrantChange {
+    pub family: String,
+    pub from: GrantState,
+    pub to: GrantState,
+}
+
+impl CapabilityManifest {
+    /// The per-family grant-state DELTA from `prev` to `self` — the pure heart of the I6 reactive push:
+    /// "which families' usability changed, and how." Empty iff no family's [`GrantState`] moved (so a
+    /// session whose projected manifest didn't change gets NO `capabilities-changed` push — the design's
+    /// "delivered ONLY to sessions whose projected manifest actually changed"). A family present in one
+    /// manifest but not the other is treated as a move to/from [`GrantState::Absent`] (an absent entry and
+    /// an `Absent`-state entry mean the same thing to a consumer: unusable). Deterministic order: by family
+    /// string, so the delta (and any log frame built from it) is replay-stable.
+    ///
+    /// Compares grant STATE only, not scope — see [`GrantChange`]. Both manifests normally come from
+    /// [`project_manifest`] over the same canonical family set, so this is a linear walk in practice.
+    pub fn grant_changes(&self, prev: &CapabilityManifest) -> Vec<GrantChange> {
+        use std::collections::BTreeSet;
+        let state_in = |m: &CapabilityManifest, fam: &str| {
+            m.entries
+                .iter()
+                .find(|e| e.family == fam)
+                .map(|e| e.grant.clone())
+                .unwrap_or(GrantState::Absent)
+        };
+        // Union of family names across both manifests, sorted (BTreeSet) for a replay-stable delta order.
+        let families: BTreeSet<&str> = self
+            .entries
+            .iter()
+            .chain(prev.entries.iter())
+            .map(|e| e.family.as_str())
+            .collect();
+        families
+            .into_iter()
+            .filter_map(|fam| {
+                let (from, to) = (state_in(prev, fam), state_in(self, fam));
+                if from == to {
+                    return None;
+                }
+                Some(GrantChange {
+                    family: fam.to_string(),
+                    from,
+                    to,
+                })
+            })
+            .collect()
+    }
+}
+
 /// Project a session's capability manifest by PROBING (the LOCKED crux — not authorizer enumeration).
 /// For each family in the canonical set (`families`, normally [`effect_ct::ALL`]): the mechanism dimension
 /// is `handles(family)` (does the host have an executor?), and the policy dimension is ONE `authorize`
@@ -1183,5 +1241,83 @@ mod tests {
             "timer: no executor"
         );
         assert_eq!(g(effect_ct::EMIT), GrantState::Absent, "emit: no executor");
+    }
+
+    // ---- host-capability-discovery I6: manifest grant-state delta (reactive-push input) --------------
+
+    #[test]
+    fn grant_changes_reports_only_moved_families_in_stable_order() {
+        // I6's pure heart: which families' usability CHANGED between two projected manifests, and how — the
+        // input to the `capabilities-changed` push (delivered ONLY to sessions whose manifest actually moved).
+        let entry = |family: &str, grant: GrantState| CapabilityEntry {
+            family: family.to_string(),
+            grant,
+            scope: None,
+        };
+        // prev: http Granted, model Denied, shell Absent.
+        let prev = CapabilityManifest {
+            entries: vec![
+                entry(effect_ct::HTTP, GrantState::Granted),
+                entry(effect_ct::MODEL, GrantState::Denied),
+                entry(effect_ct::SHELL, GrantState::Absent),
+            ],
+        };
+        // now: model policy loosened (Denied→Granted), shell executor registered (Absent→Granted), http
+        // unchanged. Entries listed out of family order to prove the delta is sorted, not input-ordered.
+        let now = CapabilityManifest {
+            entries: vec![
+                entry(effect_ct::SHELL, GrantState::Granted),
+                entry(effect_ct::HTTP, GrantState::Granted),
+                entry(effect_ct::MODEL, GrantState::Granted),
+            ],
+        };
+        let changes = now.grant_changes(&prev);
+        assert_eq!(
+            changes,
+            vec![
+                GrantChange {
+                    family: effect_ct::MODEL.to_string(),
+                    from: GrantState::Denied,
+                    to: GrantState::Granted,
+                },
+                GrantChange {
+                    family: effect_ct::SHELL.to_string(),
+                    from: GrantState::Absent,
+                    to: GrantState::Granted,
+                },
+            ],
+            "only model + shell moved, in family-string order (http unchanged → omitted)"
+        );
+
+        // No move → empty delta (the "session's manifest didn't change → no push" gate).
+        assert!(
+            now.grant_changes(&now).is_empty(),
+            "an unchanged manifest yields no grant changes"
+        );
+
+        // A family present in only ONE manifest is a move to/from Absent (absent entry ≡ Absent state).
+        let with_timer = CapabilityManifest {
+            entries: vec![entry(effect_ct::TIMER, GrantState::Granted)],
+        };
+        let empty = CapabilityManifest::default();
+        assert_eq!(
+            with_timer.grant_changes(&empty),
+            vec![GrantChange {
+                family: effect_ct::TIMER.to_string(),
+                from: GrantState::Absent,
+                to: GrantState::Granted,
+            }],
+            "a newly-present Granted family reads as Absent→Granted vs an empty manifest"
+        );
+        // ...and the reverse direction (losing a family) is Granted→Absent, symmetric.
+        assert_eq!(
+            empty.grant_changes(&with_timer),
+            vec![GrantChange {
+                family: effect_ct::TIMER.to_string(),
+                from: GrantState::Granted,
+                to: GrantState::Absent,
+            }],
+            "losing a family reads as Granted→Absent"
+        );
     }
 }
