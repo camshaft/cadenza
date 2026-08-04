@@ -4201,6 +4201,7 @@ pass	an unusual-width value that overflows its computed range is rejected at com
 pass	an unwrap-transform-rewrap helper round-trips a newtype at runtime
 pass	an unwrapped conversion result is a bare number under ordinary numeric rules
 pass	an unwrapped length adds to an unwrapped time with no dimension error
+pass	an updated-back RRB list EQUALS the never-updated build (update history-independence)
 pass	and evaluates the right operand when the left is true
 pass	and performs the right operand's effect when the left is true
 pass	and short-circuit does not perform the right operand's effect
@@ -5462,6 +5463,7 @@ pass	the unit value
 pass	the unit-op response-cursor discriminator: a nonzero ping row is not misread by the later get (adv-65)
 pass	the untaken branch's runtime div-by-zero does not fire
 pass	the unusual-width overflow check is width-parametric: a SECOND width (Int 12) also enforces its own range
+pass	the updated-back list KEYS a Map like the pristine build (RRB update leaves no key trace)
 pass	the value-yielding insert of a new key adds the entry
 pass	the value-yielding insert reports None when the key is new
 pass	the value-yielding insert reports the prior value at a runtime key

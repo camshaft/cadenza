@@ -2225,6 +2225,49 @@
             (export main)))
   (call   main (: 1100 Int64)) (output (: 3000000 Int64)))
 
+(case "an updated-back RRB list EQUALS the never-updated build (update history-independence)"
+  (doc    "The identity upgrade of the persistent-update case above (that one checks the pristine ORIGINAL
+           survives; this checks the update path leaves no trace in the RESULT): churn one index of a
+           100-element list with 30 same-index `List.update`s, then update it back to its original value —
+           the restored list must EQUAL the pristine build by canonical `=` and len. Path-copying that
+           left any structural difference (a rebuilt spine node with different fill, a leaked width) would
+           break `=` while every element read still agrees. The RRB face of the CHAMP churn-back-equality
+           pin (the map returns to its value; here a vector returns to its value through repeated
+           same-slot writes). Expected: 11.")
+  (input  (do
+            (def (build (: i Int64) (: acc (List Int64)))
+              (if (= i 0) acc (build (- i 1) (List.push acc i))))
+            (def (churn (: i Int64) (: xs (List Int64)))
+              (if (= i 0) xs (churn (- i 1) (List.update xs 20 777))))
+            (def (main (: n Int64))
+              (do
+                (def base (build n (list)))
+                (def restored (List.update (churn 30 base) 20 (match (List.at base 20) ((Some v) v) ((None _u) -1))))
+                (+ (* 10 (if (= restored base) 1 0))
+                   (if (= (List.len restored) n) 1 0))))
+            (export main)))
+  (call   main (: 100 Int64)) (output (: 11 Int64)))
+
+(case "the updated-back list KEYS a Map like the pristine build (RRB update leaves no key trace)"
+  (doc    "The keying witness of the update history-independence case above: a value stored under the
+           PRISTINE list as a Map key is FOUND by looking up with the updated-back list (update index 35
+           to 999, then restore it from the original's own element). The list-as-key path hashes the
+           canonical byte form, so any residue the update left in the trie (that `=` might normalize
+           over) would hash differently and miss. The RRB twin of the churned-back-map-as-key pin —
+           together they pin that BOTH persistent structures' mutation paths are byte-invisible where
+           canonical identity counts. Expected: 42.")
+  (input  (do
+            (def (build (: i Int64) (: acc (List Int64)))
+              (if (= i 0) acc (build (- i 1) (List.push acc i))))
+            (def (main (: n Int64))
+              (do
+                (def base (build n (list)))
+                (def restored (List.update (List.update base 35 999) 35 (match (List.at base 35) ((Some v) v) ((None _u) -1))))
+                (match (Map.lookup (Map.insert Map.empty base 42) restored)
+                  ((Some v) v) ((None _u) -1))))
+            (export main)))
+  (call   main (: 100 Int64)) (output (: 42 Int64)))
+
 (case "a 1100-element prepend-built runtime list reads every index through a multi-level RRB front-spine"
   (doc    "`build` prepends i for i in 0..n via `List.prepend`, so after prepending 0,1,...,n-1 the list is
            [n-1, n-2, ..., 1, 0] (each new element goes to the FRONT). At n=1100 the RRB vector is a 3-level
