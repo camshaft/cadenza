@@ -2132,6 +2132,14 @@ pub fn reduce_handle(
     if body_has_block_wrapped_let_init_branch_perform(db, body, &ctx) {
         return None;
     }
+    // adv-69 a3 sub-face: the SAME block-boundary out-state drop at a NESTED handle's arm RESUME-VALUE
+    // position (performing THIS handler's op), which the let-init scan above does not reach (it stops at a
+    // nested `Handle`). Decline cleanly rather than folding the dropped-advance wrong value (probe-a3 ran 33,
+    // correct 34). Precisely keyed on `Resume{value}` so it never over-declines a threaded position the fold
+    // serves (a position-agnostic block-wrapped-perform scan over-declines 5 working cases).
+    if body_has_nested_arm_resume_value_block_wrapped_branch_perform(db, body, &ctx) {
+        return None;
+    }
     // E5 PURE ONE-HOLE-CONTINUATION fold (general one-shot, the pure-continuation case). When the handle
     // BODY reaches EXACTLY ONE discharged perform `P` through STRICT, UNCONDITIONAL, effect-free positions
     // (`pure_hole`), its delimited continuation is the PURE one-hole context `C = body[P := □]`. Resuming
@@ -3415,6 +3423,41 @@ fn block_wrapped_branch_performs(db: &mut Db, node: StructId, ctx: &HandlerCtx) 
                 || block_wrapped_branch_performs(db, value, ctx)
         }
         _ => false,
+    }
+}
+
+/// adv-69 **a3 sub-face** (breaker `probe-a3`, block-outstate battery). A block-wrapped branch-performing
+/// conditional in a NESTED handle's arm RESUME-VALUE position, performing the OUTER (this) handler's
+/// discharged op: `(handle St x ((get …)) (handle Up 0 ((ask (u) t (resume (let ((b true)) (if b (St.get)
+/// 99)) t))) …))`. The outer `St` handler threads its state through the inner `Up` handle, but the block
+/// boundary INSIDE the inner arm's resume-VALUE drops the outer `St.get`'s state advance (runs 33, correct
+/// 34) — the same class of block-boundary out-state drop as the let-init face, but at a DIFFERENT position
+/// (`Resume{value}`) that the let-init scanner deliberately does not reach (it stops at a nested `Handle`).
+/// Detect a `Resume` whose VALUE is a block-wrapped branch-performing conditional performing THIS handler's
+/// op, so `reduce_handle` declines cleanly (honest Todo) instead of folding the dropped-advance wrong value.
+/// PRECISELY POSITIONAL — keyed on the `Resume{value}` slot, NOT a position-agnostic block-wrapped-perform
+/// scan (that over-declines 5 working cases where the block-wrapped perform sits in a threaded position the
+/// fold DOES serve). The through-block fold that flips a3 → PASS is the same deferred commuting conversion
+/// as the let-init face. Related: [[adv69-block-wrapped-let-init-branch-perform-state-drop]].
+fn body_has_nested_arm_resume_value_block_wrapped_branch_perform(
+    db: &mut Db,
+    node: StructId,
+    ctx: &HandlerCtx,
+) -> bool {
+    // A `Resume` whose VALUE block-wraps a branch perform of THIS handler's op is the a3 drop. (A `Resume`
+    // reached while scanning the outer handle's BODY belongs to a nested handle's arm — the outer body
+    // itself has no bare resume; the outer handler's own arms are not in `body`.)
+    if let Resolved::Resume { value, .. } = resolved_of(db, node)
+        && (conditional_branch_performs(db, value, ctx)
+            || block_wrapped_branch_performs(db, value, ctx))
+    {
+        return true;
+    }
+    match db.ast.get(node).clone() {
+        Struct::List(children) => children
+            .iter()
+            .any(|&c| body_has_nested_arm_resume_value_block_wrapped_branch_perform(db, c, ctx)),
+        Struct::Atom(_) => false,
     }
 }
 
