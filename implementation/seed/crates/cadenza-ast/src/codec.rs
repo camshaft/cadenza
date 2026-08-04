@@ -2371,6 +2371,58 @@ mod tests {
     }
 
     #[test]
+    fn encode_with_dict_skips_only_the_bad_dict_and_still_compacts_against_a_good_one() {
+        // The bad/cyclic-dict skip is PER-DICT (`continue`), NOT a global bail: one unsafe dict in the set
+        // must not disable compaction against the OTHER, sound dicts. Pin that resilience so a future
+        // refactor (e.g. hoisting the acyclic check to a whole-set validate) can't silently regress it.
+        // Set = { a self-cyclic dict (skipped) , a sound `(pair a b)` dict (used) }; the input contains
+        // `(pair a b)` → it MUST still emit a dict-ref to the good dict (transport header, not the v1 one).
+        let cyclic = Arenas {
+            leaves: vec![Leaf::Name("x".to_string())],
+            structure: vec![Struct::List(vec![StructId(0)])], // node 0 → itself
+            root: StructId(0),
+        };
+        let mut gb = Builder::new();
+        let p = gb.name("pair");
+        let ga = gb.name("a");
+        let gbb = gb.name("b");
+        let groot = gb.list(vec![p, ga, gbb]);
+        let good = gb.finish(groot);
+
+        let mut dicts = DictSet::new();
+        dicts.insert(Hash([0x01u8; 32]), cyclic);
+        dicts.insert(Hash([0x02u8; 32]), good);
+
+        // input = `(f (pair a b))` — the (pair a b) subtree matches the good dict's root.
+        let mut b = Builder::new();
+        let f = b.name("f");
+        let ip = b.name("pair");
+        let ia = b.name("a");
+        let ib = b.name("b");
+        let inner = b.list(vec![ip, ia, ib]);
+        let root = b.list(vec![f, inner]);
+        let a = b.finish(root);
+
+        let bytes = encode_with_dict(&a, &dicts);
+        assert_eq!(
+            &bytes[..8],
+            &TRANSPORT_HEADER,
+            "the sound dict must still be used for compaction despite the cyclic one"
+        );
+        assert!(
+            bytes.windows(32).any(|w| w == [0x02u8; 32]),
+            "the good dict (0x02) must be the imported one"
+        );
+        assert!(
+            !bytes.windows(32).any(|w| w == [0x01u8; 32]),
+            "the skipped cyclic dict (0x01) must NOT be imported"
+        );
+        // And it round-trips back to the inline arena through decode_with_dicts.
+        let got = decode_with_dicts(&bytes, &dicts).expect("compacted transport round-trips");
+        assert!(got.structurally_eq(&a), "round-trip changed the arena");
+    }
+
+    #[test]
     fn encode_with_dict_is_deterministic_and_min_tie_breaks() {
         // #2093 review finding 1: identical (arena, DictSet) contents must yield identical transport bytes
         // run-to-run. Build TWO dicts that each contain the SAME importable subtree `(pair a b)` under
