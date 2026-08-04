@@ -52,6 +52,10 @@ pub enum AdminCommand {
     SessionStatus { id: SessionId },
     /// Stop (remove) a running session, dropping it from the registry.
     StopSession { id: SessionId },
+    /// Fetch the daemon's METRIC snapshot (host-boundary + per-effect counters, the
+    /// [`crate::status::host_metrics_json`] shape) — the observability read over the whole host, not one
+    /// session.
+    Metrics,
 }
 
 impl AdminCommand {
@@ -65,6 +69,7 @@ impl AdminCommand {
             AdminCommand::ListSessions => "admin/list-sessions",
             AdminCommand::SessionStatus { .. } => "admin/session-status",
             AdminCommand::StopSession { .. } => "admin/stop-session",
+            AdminCommand::Metrics => "admin/metrics",
         }
     }
 }
@@ -269,6 +274,12 @@ impl AgentHost {
                 None => AdminResponse::Error {
                     message: format!("unknown session: {}", id.as_str()),
                 },
+            },
+            // Host-wide metrics read — reuses the Status response (a JSON body); the shape is
+            // host_metrics_json's, distinct from a per-session status. Always succeeds (a fresh host reports
+            // zeroed counters), so there's no not-found case.
+            AdminCommand::Metrics => AdminResponse::Status {
+                json: self.metrics_json(),
             },
         }
     }
@@ -612,6 +623,38 @@ mod tests {
             }
             .action(),
             "admin/stop-session"
+        );
+        assert_eq!(AdminCommand::Metrics.action(), "admin/metrics");
+    }
+
+    #[tokio::test]
+    async fn metrics_command_returns_the_host_metrics_json() {
+        // The host-wide metrics read: apply_admin(Metrics) returns a Status response whose JSON is the
+        // host_metrics_json shape. Install a session through the factory so sessions.installed moves, then
+        // read metrics. A host with no effect-metrics handle (no metered executors) reports zeroed effect
+        // counters but real host-boundary ones.
+        let mut host = AgentHost::new();
+        let mut factory = StubFactory { builds: 0 };
+        host.apply_admin(
+            AdminCommand::InstallSession(spec("s")),
+            Some(&mut factory),
+            None,
+        )
+        .await;
+        let resp = host.apply_admin(AdminCommand::Metrics, None, None).await;
+        let json = match resp {
+            AdminResponse::Status { json } => json,
+            other => panic!("expected Status, got {other:?}"),
+        };
+        // host-boundary counter moved with the install…
+        assert!(
+            json.contains("\"installed\":1"),
+            "sessions.installed reflects the install: {json}"
+        );
+        // …and the (unwired) effect counters are present + zeroed.
+        assert!(
+            json.contains("\"effects\":{\"ok\":0,\"retryable_err\":0,\"permanent_err\":0,\"timed_out\":0,\"total\":0}"),
+            "effects zeroed without a metered executor set: {json}"
         );
     }
 
