@@ -3514,6 +3514,29 @@
             (export main)))
   (call   main) (output (: 34 Int64)))
 
+(case "a block-wrapped OUTER-effect perform in a let-init THREE handlers deep declines cleanly (adv-69 a4-depth3 sub-face)"
+  (doc    "adv-69 a4 at DEPTH-3 (breaker nh5 escalation, block-outstate battery): the a4 nested-handle-body
+           drop, but the block-wrapped OUTER-effect (`A`) perform sits in a `let`-init THREE handlers deep —
+           `(handle A 3 (…) (handle B 100 (…) (handle C 200 (…) (let ((v (let ((k true)) (if k (A.ga) 9))))
+           (+ (* 10 v) (A.ga))))))`. Seeded A=3 it ran 33, correct is 34. Pins that the a4 scanner's descent
+           into a nested handle's BODY is RECURSIVE, not one-level: the outer `A` reduction descends through
+           BOTH the `B` and `C` handle bodies (keeping the outer ctx) to reach the block-wrapped `A`-perform.
+           If the descent peeled only one `Handle`, this depth-3 shape would escape and miscompile — so this
+           locks in the depth-N property (analogous to the a2 depth-2 witness for the flat let-init floor).
+           Grades TODO on all backends; flips to 34 PASS on the through-block fold.")
+  (input  (do
+            (effect A (op ga (-> Unit Int64)))
+            (effect B (op gb (-> Unit Int64)))
+            (effect C (op gc (-> Unit Int64)))
+            (def (main)
+              (handle A 3 ((ga (u) s (resume s (+ s 1))))
+                (handle B 100 ((gb (u) t (resume t t)))
+                  (handle C 200 ((gc (u) w (resume w w)))
+                    (let ((v (let ((k true)) (if k (A.ga) 9))))
+                      (+ (* 10 v) (A.ga)))))))
+            (export main)))
+  (call   main) (output (: 34 Int64)))
+
 (case "a BLOCK-wrapped branch perform in a MATCH-SCRUTINEE declines cleanly (adv-69 g3 sub-face)"
   (doc    "adv-69 g3 (breaker probe-g3, block-outstate battery): the SAME block-boundary out-state drop, at a
            MATCH-SCRUTINEE consuming position. `(match (let ((b true)) (if b (St.get) 99)) (v (+ (* 10 v)
