@@ -43,7 +43,6 @@ pub enum AdminCommandWire {
     ListSessions,
     SessionStatus { id: String },
     StopSession { id: String },
-    Metrics,
 }
 
 /// The wire form of an [`AdminResponse`] — internally tagged on `result` (`{"result":"installed","id":…}`).
@@ -128,7 +127,6 @@ impl From<&AdminCommand> for AdminCommandWire {
             AdminCommand::StopSession { id } => AdminCommandWire::StopSession {
                 id: id.as_str().to_string(),
             },
-            AdminCommand::Metrics => AdminCommandWire::Metrics,
         }
     }
 }
@@ -147,7 +145,6 @@ impl AdminCommandWire {
             AdminCommandWire::StopSession { id } => AdminCommand::StopSession {
                 id: SessionId::new(id.as_str()),
             },
-            AdminCommandWire::Metrics => AdminCommand::Metrics,
         })
     }
 }
@@ -341,17 +338,6 @@ mod tests {
             decode_frame(&frame).unwrap().expect("a full frame decodes");
         assert_eq!(back, wire);
         assert_eq!(consumed, frame.len());
-    }
-
-    #[test]
-    fn metrics_command_round_trips_domain_wire_domain() {
-        // The host-wide `metrics` command: domain → wire → domain preserves it, and its JSON tag is the
-        // stable kebab-case `metrics` an external admin client authors against.
-        let wire = AdminCommandWire::from(&AdminCommand::Metrics);
-        assert_eq!(wire, AdminCommandWire::Metrics);
-        assert_eq!(wire.to_domain().unwrap(), AdminCommand::Metrics);
-        let json = serde_json::to_string(&wire).unwrap();
-        assert_eq!(json, "{\"cmd\":\"metrics\"}", "stable self-describing tag");
     }
 
     #[test]

@@ -179,10 +179,6 @@ async fn main() -> std::process::ExitCode {
                 return std::process::ExitCode::from(1);
             }
         };
-        // Grab the host-wide per-effect metrics handle BEFORE `executors` is moved into the factory below, so
-        // the host's admin `metrics` read can render per-effect counters (ok/retryable/permanent/timed-out)
-        // alongside the host-boundary ones. The executor set's MeteredExecutors tally into this shared Arc.
-        let effect_metrics = executors.metrics();
         // Attach the optional log-sink builder to whichever blob-backed factory we build, then box it. (The
         // two arms are distinct concrete factory types, so the with_log_sink + Box happens per-arm; the
         // executor set is moved into the one arm that runs.)
@@ -217,11 +213,8 @@ async fn main() -> std::process::ExitCode {
             config.blob, config.log
         );
 
-        let host = AsyncAgentHost::with_factory(
-            AgentHost::new().with_effect_metrics(effect_metrics),
-            factory,
-        )
-        .with_admin_authz(Box::new(AllowList::allow_all_for_local_admin()));
+        let host = AsyncAgentHost::with_factory(AgentHost::new(), factory)
+            .with_admin_authz(Box::new(AllowList::allow_all_for_local_admin()));
         // Drop our inbox sender so an idle inbox doesn't hold the loop open; the admin socket's AdminChannel
         // is what keeps the loop alive as a control plane.
         drop(host.inbox());
