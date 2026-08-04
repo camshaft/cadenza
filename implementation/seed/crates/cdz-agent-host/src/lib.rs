@@ -86,7 +86,7 @@ pub use config::{
     RetryConfig, TracingConfig, TracingFormat, TracingOutput,
 };
 #[cfg(feature = "metrics-export")]
-pub use export::{report_once, UdpStatsdSink};
+pub use export::{run_export_loop, MetricsReporter, StatsdTarget, UdpStatsdSink};
 #[cfg(feature = "live-net")]
 pub use factory::LiveExecutorSet;
 pub use factory::{
