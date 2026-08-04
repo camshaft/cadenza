@@ -472,7 +472,15 @@ fn reify_inner(
                 let payload = push_atom(ast, Leaf::Str(name));
                 Some(ast_ctor(ast, "Name", payload))
             }
-            // Any other leaf kind (Char/Sym/Bytes/…) has no `Ast` variant yet: not
+            // A byte-sequence LITERAL (`b"…"`) -> `(Ast.Bytes b"…")`. `Ast.Bytes` carries a `Bytes` payload
+            // (a raw blob is a syntactic form — operator seq 113), so `(quote b"hi")` reifies to a single
+            // bytes node whose payload REUSES the literal's leaf; it rides the AST codec as one
+            // length-prefixed raw-bytes leaf (`KIND_BYTES`), not a node-per-byte list.
+            leaf @ Leaf::Bytes(_) => {
+                let payload = push_atom(ast, leaf);
+                Some(ast_ctor(ast, "Bytes", payload))
+            }
+            // Any other leaf kind (Char/Sym/…) has no `Ast` variant yet: not
             // reifiable — bail so the whole quote declines rather than miscompiling.
             _ => None,
         },

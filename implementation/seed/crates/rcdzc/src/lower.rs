@@ -2865,6 +2865,33 @@ fn print_ast_value(db: &mut Db, node: StructId, disc: &AstDiscs, out: &mut Strin
         };
         out.push_str(&s);
         Some(())
+    } else if d == disc.bytes && payloads.len() == 1 {
+        // A byte-sequence LITERAL renders `b"…"` — printable ASCII verbatim, `\n \t \r \\ \"` named, else
+        // `\xNN` (two lowercase hex). A constant `Ast.Bytes` payload is a `Core::BytesOf` of `ConstInt`
+        // elements each range-checked to `0..=255` at `lower_bytes_of` (a non-constant element declines
+        // there, so no `BytesOf` reaches here). Mirrors cadenza-syntax `literal::escape_bytes` (COPIED, not
+        // depended — the rcdzc lib is dependency-free).
+        let Core::BytesOf { elems } = core_of(db, payloads[0]) else {
+            return None;
+        };
+        out.push_str("b\"");
+        for e in &elems {
+            let Core::ConstInt(v) = core_of(db, *e) else {
+                return None;
+            };
+            let b = u8::try_from(v.to_i64().filter(|n| (0..=255).contains(n))?).ok()?;
+            match b {
+                b'\n' => out.push_str("\\n"),
+                b'\t' => out.push_str("\\t"),
+                b'\r' => out.push_str("\\r"),
+                b'\\' => out.push_str("\\\\"),
+                b'"' => out.push_str("\\\""),
+                0x20..=0x7e => out.push(b as char),
+                _ => out.push_str(&format!("\\x{b:02x}")),
+            }
+        }
+        out.push('"');
+        Some(())
     } else if d == disc.list && payloads.len() == 1 {
         let Core::ListNew { elems } = core_of(db, payloads[0]) else {
             return None;
@@ -3263,6 +3290,7 @@ struct AstDiscs {
     str: u32,
     name: u32,
     list: u32,
+    bytes: u32,
     ty: crate::ty::Ty,
 }
 /// Whether a `Core::SumNew { disc }` at result type `ty` constructs the reify `Ast` sum's `Float` variant
@@ -3296,6 +3324,7 @@ fn ast_variant_discs(db: &mut Db) -> Option<AstDiscs> {
         str: variant_disc_by_name(db, &ty, "Str")?,
         name: variant_disc_by_name(db, &ty, "Name")?,
         list: variant_disc_by_name(db, &ty, "List")?,
+        bytes: variant_disc_by_name(db, &ty, "Bytes")?,
         ty,
     })
 }
