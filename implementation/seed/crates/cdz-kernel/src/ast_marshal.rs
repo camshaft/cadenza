@@ -325,7 +325,7 @@ fn build_from_ast(a: &Arenas, id: StructId, ty: &Type) -> Result<Val, MarshalErr
                 "None" => Ok(Val::Option(None)),
                 other => Err(type_mismatch(
                     "option",
-                    format!("case {other:?} ∉ {{Some,None}}"),
+                    format!("case {} ∉ {{Some,None}}", bounded_name(other)),
                 )),
             }
         }
@@ -337,7 +337,7 @@ fn build_from_ast(a: &Arenas, id: StructId, ty: &Type) -> Result<Val, MarshalErr
                 "Err" => Ok(Val::Result(Err(opt_payload(a, payload, rt.err())?))),
                 other => Err(type_mismatch(
                     "result",
-                    format!("case {other:?} ∉ {{Ok,Err}}"),
+                    format!("case {} ∉ {{Ok,Err}}", bounded_name(other)),
                 )),
             }
         }
@@ -806,6 +806,41 @@ mod tests {
             other => {
                 panic!("expected a bounded TypeMismatch for an enum with a payload, got {other:?}")
             }
+        }
+    }
+
+    // reviewer catch (post-#2108): the option/result BAD-CASE reject arms (a name-head ctor whose case ∉
+    // {Some,None}/{Ok,Err}) also embed the untrusted case name — must be BOUNDED like the sibling arms. A
+    // 4096-char bogus case name against an option (and a result) target → bounded TypeMismatch.
+    #[test]
+    fn ast_to_val_bounds_the_option_and_result_bad_case_rejects() {
+        let huge_case = "q".repeat(4096);
+        let bad_ctor = || -> Vec<u8> {
+            let mut b = Builder::new();
+            let head = b.name(&huge_case);
+            let payload = b.atom_leaf(Leaf::Bool(true));
+            let root = b.list(vec![head, payload]); // (<huge-bogus-case> #t)
+            codec::encode(&b.finish(root))
+        };
+        let option_ty = param_type(&probe_component("(option u8)"));
+        match ast_to_val(&bad_ctor(), &option_ty) {
+            Err(MarshalError::TypeMismatch { found, .. }) => assert!(
+                found.len() < 256,
+                "option bad-case error must be bounded, got len {}",
+                found.len()
+            ),
+            other => {
+                panic!("expected a bounded TypeMismatch for an option bad case, got {other:?}")
+            }
+        }
+        let result_ty = param_type(&probe_component("(result u8 (error string))"));
+        match ast_to_val(&bad_ctor(), &result_ty) {
+            Err(MarshalError::TypeMismatch { found, .. }) => assert!(
+                found.len() < 256,
+                "result bad-case error must be bounded, got len {}",
+                found.len()
+            ),
+            other => panic!("expected a bounded TypeMismatch for a result bad case, got {other:?}"),
         }
     }
 
