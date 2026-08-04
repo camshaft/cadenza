@@ -243,6 +243,7 @@ pass	McCarthy 91 — a self-call nested INSIDE the argument of another self-call
 pass	N-suffixed literals compose under BigInt arithmetic
 pass	NESTED CONTRACT: an @ensures predicate that CALLS a @requires-guarded helper enforces the HELPER's precondition during postcondition eval
 pass	NaN equality survives the hoisted float compare by canonical byte form
+pass	ONE inner map shared under TWO outer keys updates independently (no aliasing cross-talk)
 pass	ONE-EDIT-APART checks strings for exactly one substitution or one insertion by length case
 pass	OPEN-sum values as SET elements hash by tag and payload
 pass	OR-saturation to a full-width mask on an unsigned runtime value
@@ -4863,6 +4864,7 @@ pass	odd-width values as Set keys dedupe at their own width (UInt4: wrap 3 = wra
 pass	odd-width wrap lands exactly at its own boundary (UInt4 16->0, Int24 2^23 -> -2^23)
 pass	one @param accessor performed TWICE consumes two host responses in order
 pass	one @param read bound ONCE fans out to a map key, a set probe, and arithmetic
+pass	one RRB list shared as two map VALUES diverges by List.update without cross-talk
 pass	one effect's result flows as the ARGUMENT to a DIFFERENT effect's op under nested handlers
 pass	one encode-decode cycle is byte-stable
 pass	one entrypoint's host authority is not reachable by another that does not delegate it

@@ -8429,6 +8429,54 @@
   (call   main (: 3 Int64)) (output (: 103752099 Int64))
   (call   main (: -100 Int64)) (output (: 752099 Int64)))
 
+(case "ONE inner map shared under TWO outer keys updates independently (no aliasing cross-talk)"
+  (doc    "The map-of-maps rows above store DISTINCT inner maps; this pins the SHARED-value face: one
+           40-entry inner map is stored under BOTH outer keys 1 and 2, then a path-copy update through
+           key 1 (insert key 999 into ITS inner) must leave key 2's view at the original 40 entries —
+           len 41 vs len 40 → 4140. Under Perceus the shared inner is one heap value with two owners;
+           an update that mutated the shared trie in place (rather than path-copying its spine) would
+           show 41 through BOTH keys. The map twin of the shared-list divergence pin below.")
+  (input  (do
+            (def (fill (: i Int64) (: m (Map Int64 Int64)))
+              (if (= i 0) m (fill (- i 1) (Map.insert m i (* i 10)))))
+            (def (main (: n Int64))
+              (do
+                (def inner (fill n Map.empty))
+                (def outer (Map.insert (Map.insert Map.empty 1 inner) 2 inner))
+                (def bumped (match (Map.lookup outer 1)
+                              ((Some m1) (Map.insert outer 1 (Map.insert m1 999 1)))
+                              ((None _u) outer)))
+                (+ (* 100 (match (Map.lookup bumped 1) ((Some m1) (Map.len m1)) ((None _u) -1)))
+                   (match (Map.lookup bumped 2) ((Some m2) (Map.len m2)) ((None _u) -1)))))
+            (export main)))
+  (call   main (: 40 Int64)) (output (: 4140 Int64)))
+
+(case "one RRB list shared as two map VALUES diverges by List.update without cross-talk"
+  (doc    "The vector twin of the shared-inner-map case above: one 50-element list is stored as the
+           value under BOTH map keys, then `List.update` index 5 → 777 through key 1's retrieval. Key
+           1's view must show 777 (+10) and key 2's view must NOT (+1 → 11). The update path-copies the
+           RRB spine of one owner's view; an in-place write to the shared leaf would bleed through both
+           keys. Together the pair pins shared-value isolation for both persistent structures stored in
+           a container.")
+  (input  (do
+            (def (build (: i Int64) (: acc (List Int64)))
+              (if (= i 0) acc (build (- i 1) (List.push acc i))))
+            (def (main (: n Int64))
+              (do
+                (def xs (build n (list)))
+                (def m (Map.insert (Map.insert Map.empty 1 xs) 2 xs))
+                (def m2 (match (Map.lookup m 1)
+                          ((Some l1) (Map.insert m 1 (List.update l1 5 777)))
+                          ((None _u) m)))
+                (+ (* 10 (match (Map.lookup m2 1)
+                           ((Some l1) (match (List.at l1 5) ((Some v) (if (= v 777) 1 0)) ((None _u) -1)))
+                           ((None _u) -1)))
+                   (match (Map.lookup m2 2)
+                     ((Some l2) (match (List.at l2 5) ((Some v) (if (= v 777) 0 1)) ((None _u) -1)))
+                     ((None _u) -1)))))
+            (export main)))
+  (call   main (: 50 Int64)) (output (: 11 Int64)))
+
 (case "a map of lists of tuples: a three-level mixed query with a miss at each level"
   (doc    "The nested-value cases above each nest ONE collection kind one level deep; this composes THREE
            kinds — `{1 ↦ [(10,11),(12,13)], 2 ↦ [(20,21)]}`, a Map whose values are LISTS of TUPLES (the
