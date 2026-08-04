@@ -377,6 +377,40 @@
   (call   main)
   (output (: 42 Int64)))
 
+(case "a LIST of Rationals as a map key normalizes EVERY element for the key hash"
+  (doc    "The collection-element upgrade of the tuple-leaf case above: the key is a LIST of three
+           Rationals, and the probe spells every element differently — stored `[1/2, n/3, 3/4]`, probed
+           `[2/4, 2n/6, 9/12]` → 42. The key path must canonicalize each element as the hash walks the
+           list (a walk that normalized only the first element, or hashed the spelled forms, would
+           miss). Extends the compound-key normalization contract from a fixed tuple slot to an
+           arbitrary-length collection's elements.")
+  (input  (do
+            (def (main (: n Int64))
+              (do
+                (def stored (list (Rational.of 1 2) (Rational.of n 3) (Rational.of 3 4)))
+                (def probe (list (Rational.of 2 4) (Rational.of (* n 2) 6) (Rational.of 9 12)))
+                (match (Map.lookup (Map.insert Map.empty stored 42) probe)
+                  ((Some v) v) ((None _u) -1))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 42 Int64)))
+
+(case "a MAP-valued key normalizes its Rational VALUES for the outer key hash"
+  (doc    "The deepest face of nested-key normalization: the KEY is itself a map whose VALUES are
+           Rationals — stored `{1 ↦ 1/2, 2 ↦ n/3}`, probed `{1 ↦ 3/6, 2 ↦ 3n/9}` → 42. The outer key
+           hash walks the inner map's entries, and each entry's VALUE leaf must canonicalize (a hash
+           reaching keys but reading value leaves by spelling would miss). Together with the
+           list-element case this pins that normalization reaches every leaf position — element, key,
+           and value — of a collection-typed key.")
+  (input  (do
+            (def (main (: n Int64))
+              (do
+                (def stored (Map.insert (Map.insert Map.empty 1 (Rational.of 1 2)) 2 (Rational.of n 3)))
+                (def probe (Map.insert (Map.insert Map.empty 1 (Rational.of 3 6)) 2 (Rational.of (* n 3) 9)))
+                (match (Map.lookup (Map.insert Map.empty stored 42) probe)
+                  ((Some v) v) ((None _u) -1))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 42 Int64)))
+
 (case "Map.remove of a Rational key canonicalizes: a normalized-equal key removes the entry"
   (doc    "The DELETE-side companion of the Rational-map-key cases above (which pin lookup/insert
            canonicalization): `Map.remove` must also match the key by its normalized form. Insert under

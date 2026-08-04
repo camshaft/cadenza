@@ -644,6 +644,7 @@ pass	a LET-bound escaping-effect closure returned from a host block cannot cross
 pass	a LET-bound outer perform under an inner handle threads its state advance
 pass	a LIST OF SUMS resumed from a handler feeds an event-sourcing fold in the body
 pass	a LIST built in the handle body from perform results crosses the handle exit live
+pass	a LIST of Rationals as a map key normalizes EVERY element for the key hash
 pass	a LIST of closures as a set element is rejected (the collection-element face of the descent)
 pass	a LIST of closures rides one perform and the arm picks by state per call
 pass	a LIST shrinker drops elements greedily and converges to a minimal failing sublist
@@ -661,6 +662,7 @@ pass	a MAP MERGE folds one map's entries into another, summing values on key col
 pass	a MAP argument to an effect op is looked up inside the arm at the handler's own state
 pass	a MAP built from generated pairs is equal regardless of insertion order (the Map analogue of set convergence)
 pass	a MAP keyed by perform results in the handle body crosses the exit and looks up by those keys
+pass	a MAP-valued key normalizes its Rational VALUES for the outer key hash
 pass	a MATCH as a NON-FINAL multi-binding let init selects the binding value per call
 pass	a MATCH-arm perform in a self-recursive performer threads the advance across recursion (rw-match)
 pass	a MATCH-dispatched mutual group with the perform in one arm and the mutual call in another folds
