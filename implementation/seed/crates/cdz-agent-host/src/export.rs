@@ -402,38 +402,46 @@ mod tests {
     }
 
     #[test]
-    fn connect_tries_all_resolved_addresses() {
-        // `localhost` typically resolves to BOTH ::1 and 127.0.0.1 (in some order). connect must succeed by
-        // trying addresses until one binds+connects — proving the multi-address iteration (#2119 review): even
-        // if the first-resolved family were unusable, a later address still connects. We bind a v4 collector
-        // and target it by the `localhost:port` NAME so resolution yields multiple candidates.
+    fn connect_resolves_a_multi_address_name() {
+        // connect must accept a NAME that resolves to multiple addresses and succeed by trying them until one
+        // binds+connects (the #2119 multi-address iteration). `localhost` typically resolves to both ::1 and
+        // 127.0.0.1. We assert only that connect SUCCEEDS on the name — NOT which family it picks: a UDP
+        // `connect` does not validate the receiver, so asserting a datagram arrives at a single-family
+        // collector would be flaky (if the name resolves v6-first + v6 is usable, connect correctly picks ::1
+        // and a v4-only collector never receives it — the test would fail though connect behaved correctly,
+        // #2129 review). Datagram DELIVERY is proven deterministically in the explicit-family test below.
+        use std::net::ToSocketAddrs;
+        // Skip cleanly on a runner where `localhost` doesn't resolve at all (unusual sandbox) — the
+        // explicit-family test still covers the connect+deliver path.
+        if "localhost:65000".to_socket_addrs().is_err() {
+            return;
+        }
+        let sink = UdpStatsdSink::connect("localhost:65000");
+        assert!(
+            sink.is_ok(),
+            "connect resolves a multi-address name and connects a usable address: {sink:?}"
+        );
+    }
+
+    #[test]
+    fn connect_delivers_to_an_explicit_family_collector() {
+        // Datagram delivery, made DETERMINISTIC by targeting 127.0.0.1 EXPLICITLY (a single v4 address, not
+        // the ambiguous `localhost` name) so connect binds v4 and the v4 collector always receives (#2129
+        // review). This is the family-matched bind (#2112) + actual send end-to-end.
         let collector = std::net::UdpSocket::bind(("127.0.0.1", 0)).expect("bind collector");
         collector
             .set_read_timeout(Some(std::time::Duration::from_millis(200)))
             .unwrap();
-        let port = collector.local_addr().unwrap().port();
+        let addr = collector.local_addr().unwrap().to_string();
 
-        // Skip cleanly if `localhost` doesn't resolve to a v4 address on this runner (unusual).
-        use std::net::ToSocketAddrs;
-        let has_v4 = format!("localhost:{port}")
-            .to_socket_addrs()
-            .map(|it| it.into_iter().any(|a| a.is_ipv4()))
-            .unwrap_or(false);
-        if !has_v4 {
-            return;
-        }
-
-        let sink = UdpStatsdSink::connect(&format!("localhost:{port}"))
-            .expect("connect resolves localhost and connects a usable address");
-        // Prove the connected socket actually reaches the v4 collector.
+        let mut sink = UdpStatsdSink::connect(&addr).expect("connect to the explicit v4 collector");
         use s2n_quic_dc_metrics::backend::StatsdSink;
-        let mut sink = sink;
         sink.send_batch(std::iter::once("cdz.test:1|c"));
+
         let mut buf = [0u8; 64];
-        // The datagram lands only if connect picked (or fell back to) the v4 address the collector is on.
         assert!(
             collector.recv(&mut buf).map(|n| n > 0).unwrap_or(false),
-            "a datagram reached the v4 collector via a resolved address"
+            "the datagram reached the explicit v4 collector"
         );
     }
 

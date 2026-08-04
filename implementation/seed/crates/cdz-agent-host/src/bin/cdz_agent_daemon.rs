@@ -229,6 +229,9 @@ async fn main() -> std::process::ExitCode {
         #[cfg(feature = "metrics-export")]
         let (export_registry, export_reporter, export_interval) = {
             use cdz_agent_host::{MetricsReporter, MetricsTarget, StatsdTarget};
+            // How many configured targets we CAN'T export yet (OTLP etc.) — so an observability config that is
+            // enabled but has ONLY unexportable targets gets a loud diagnostic instead of a silent no-op.
+            let mut unexportable = 0usize;
             let statsd_targets: Vec<StatsdTarget> = if config.observability.enabled {
                 config
                     .observability
@@ -240,12 +243,24 @@ async fn main() -> std::process::ExitCode {
                             prefix: prefix.clone(),
                         }),
                         // OTLP (+ future pull/file backends) aren't exported yet — statsd first.
-                        MetricsTarget::Otlp { .. } => None,
+                        MetricsTarget::Otlp { .. } => {
+                            unexportable += 1;
+                            None
+                        }
                     })
                     .collect()
             } else {
                 Vec::new()
             };
+            // Enabled but nothing we can export → warn (not a silent skip). The common trip is an OTLP-only
+            // config in a build where OTLP export isn't wired yet (#2129 review).
+            if config.observability.enabled && statsd_targets.is_empty() {
+                eprintln!(
+                    "cdz-agent-daemon: [observability] enabled but no exportable (statsd) targets configured \
+                     — nothing will be exported ({unexportable} non-statsd target(s) present; OTLP export not \
+                     yet wired)."
+                );
+            }
             let (reporter, failed) = MetricsReporter::from_statsd_targets(&statsd_targets);
             for f in &failed {
                 eprintln!("cdz-agent-daemon: metrics export target unavailable at boot: {f}");
