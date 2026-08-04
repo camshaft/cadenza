@@ -275,6 +275,24 @@ export const EXAMPLES: Example[] = [
     expected: "(: (tuple (Some 3) (Some 1)) (Tuple (Option Int64) (Option Int64)))",
   },
   {
+    // Shows off: a byte-string literal — b"…" is a Bytes value directly, no String.to-bytes needed.
+    // "GIF89a" is the classic GIF magic-number header; its length is 6 and its first byte is 'G' (71).
+    id: "byte-string-literal",
+    name: "Byte-string literal",
+    theme: "data-and-collections",
+    surface: "sexpr",
+    source: `(do
+  ; b"…" builds a Bytes value straight from the source text — no String.to-bytes step.
+  ; "GIF89a" is the GIF magic-number header: 6 bytes, first byte 'G' (ASCII 71).
+  (def (main)
+    (let ((magic b"GIF89a"))
+      (match (Bytes.at magic 0)
+        ((Some first) (tuple (Bytes.len magic) first))
+        ((None) (trap "byte-literal: unexpectedly empty")))))
+  (export main))`,
+    expected: "(: (tuple 6 71) (Tuple Int64 Int64))",
+  },
+  {
     // Shows off: EXACT rational arithmetic — 1/2 + 1/3 + 1/6 is EXACTLY 1, with no floating-point
     // drift. The `(pragma default-fraction Rational)` directive makes every bare literal in scope an
     // exact fraction; compare with Float64, where 0.1 + 0.2 famously isn't 0.3.
