@@ -318,6 +318,43 @@
   (input  (do (type (Pair a b) (Both a b)) (def (f (: x (Pair Int64))) 0) (def (main) 0) (export main)))
   (error  CDZ0203))
 
+; A bare under-applied generic NESTED as another generic's type argument — `(: x (Option Box))` where
+; `(Box a)` needs an arg — is a harder sibling of the flat under-application above: it bound a CYCLIC
+; substitution `?v := (Option ?v)` that bypassed unify's occurs-check, and the universal type-read then
+; chased the cycle forever and CRASHED the compiler (stack overflow, not a catchable decline) when the
+; annotated value was consumed. It must reject CDZ0203 cleanly. The two cases below pin the clean reject +
+; a valid deeply-nested control (a resolved cycle would break the valid case too).
+
+(case "a bare under-applied generic nested as a type argument declines, does not stack-overflow the compiler"
+  (doc    "`(: x (Option Box))` annotates a CONSUMED parameter with the built-in `Option` whose type argument
+           is the BARE under-applied user generic `Box` (`(type (Box a) (Mk a))` needs one arg). This bound a
+           cyclic substitution `?v := (Option ?v)` bypassing the occurs-check; `Subst::apply` (every type
+           read funnels through it) then chased the cycle and STACK-OVERFLOWED rcdzc — a compiler crash, the
+           worst class (not even a catchable panic), triggered when `x` is matched + the fn called. The fix
+           caps the apply var-chain/descent so a cycle breaks to `Ty::Any` and the fault walk reports a clean
+           CDZ0203. Pins that a nested under-applied generic DECLINES, never crashes the compiler — the
+           nested (cycle-inducing) sibling of the flat `(: b Container)` bare-under-application above.")
+  (input  (do
+            (type (Box a) (Mk a))
+            (def (f (: x (Option Box))) (match x ((Some b) (match b ((Mk v) v))) ((None) 0)))
+            (def (main) (f (Some (Mk 5))))
+            (export main)))
+  (error  CDZ0203))
+
+(case "a valid deeply-nested generic type argument still resolves and runs (the crash-guard control)"
+  (doc    "The passing control for the cyclic-substitution guard above: the SAME shape but the nested generic
+           is FULLY applied — `(: x (Option (Box Int64)))` — so no cycle forms and the annotation resolves
+           normally. `(f (Some (Mk 9)))` peels the `Option` then the `Box` to recover 9. Pins that the
+           apply-depth cap (which breaks a genuine cycle to `Ty::Any`) does NOT over-decline a well-formed
+           deeply-nested generic — a real program never approaches the limit.")
+  (input  (do
+            (type (Box a) (Mk a))
+            (def (f (: x (Option (Box Int64)))) (match x ((Some b) (match b ((Mk v) v))) ((None) 0)))
+            (def (main) (f (Some (Mk 9))))
+            (export main)))
+  (call   main)
+  (output (: 9 Int64)))
+
 ; The arity rejects above (a non-generic type over-applied, and a generic type over-/under-supplied) are
 ; about the NUMBER of type arguments. The dual slip is a legitimately GENERIC type constructor — one that
 ; DOES take a type parameter — applied to a VALUE where a type belongs: `(Option 5)`, `(List 5)`. Here the
