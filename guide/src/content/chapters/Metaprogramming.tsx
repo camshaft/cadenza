@@ -155,9 +155,11 @@ export default function Metaprogramming() {
   (eval (Ast.List (list (Ast.Name "double") (Ast.Int 21)))))`}
       />
       <P>
-        Every literal that quotes also evals back. A quoted byte string reifies to an <C>Ast.Bytes</C> and
-        evaluating that node hands you the blob straight back, so <C>{`(eval (quote b"hi"))`}</C> is the
-        original <C>{`b"hi"`}</C>, closing the loop from source to node to value:
+        A quoted <em>value</em> literal evals back to itself. Unlike a quoted name (which <C>eval</C>{" "}
+        resolves) or a quoted call (which it runs), a bare integer, string, or byte string is already its own
+        value, so evaluating its node just hands it back. A quoted byte string reifies to an <C>Ast.Bytes</C>,
+        and <C>{`(eval (quote b"hi"))`}</C> is the original <C>{`b"hi"`}</C>, closing the loop from source to
+        node to value:
       </P>
       <Runnable
         source={`(def (main)
