@@ -169,10 +169,15 @@ async fn main() -> std::process::ExitCode {
             // memory (default) → in-memory session logs; dynamo → not yet a session-log backend (later slice).
             _ => None,
         };
+        // Build the AgentHost FIRST so its metrics registry exists — the live executor set's per-effect
+        // metrics register into the SAME registry (one registry the exporter reports over: host-boundary +
+        // per-effect metrics together).
+        let agent_host = AgentHost::new();
         // Build the LIVE executor transports ONCE, here at startup (this is where the AWS config / IMDS load
         // happens — on the boot path, NOT per install). Each install then CLONES these into a fresh executor
-        // set cheaply, so a slow IMDS probe can't stall the host loop mid-run (#1987 review).
-        let executors = match LiveExecutorSet::new().await {
+        // set cheaply, so a slow IMDS probe can't stall the host loop mid-run (#1987 review). The per-effect
+        // metrics register into the host's registry (shared).
+        let executors = match LiveExecutorSet::new(agent_host.registry()).await {
             Ok(e) => e,
             Err(e) => {
                 eprintln!("cdz-agent-daemon: could not build the live executor transports: {e}");
@@ -213,7 +218,7 @@ async fn main() -> std::process::ExitCode {
             config.blob, config.log
         );
 
-        let host = AsyncAgentHost::with_factory(AgentHost::new(), factory)
+        let host = AsyncAgentHost::with_factory(agent_host, factory)
             .with_admin_authz(Box::new(AllowList::allow_all_for_local_admin()));
         // Drop our inbox sender so an idle inbox doesn't hold the loop open; the admin socket's AdminChannel
         // is what keeps the loop alive as a control plane.
