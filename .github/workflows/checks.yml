@@ -44,14 +44,17 @@ jobs:
         run: nix build .#checks.aarch64-linux.fmt --print-build-logs
 
   clippy:
+    # Full-CI-in-nix cutover (Model A): body runs the nix `checks.clippy` derivation (identical
+    # `cargo clippy --workspace --all-targets -- -D warnings`, hermetic), keeping `name: clippy` so the
+    # required context `checks / clippy` is unchanged (no ruleset edit). aarch64 (flake checks are
+    # aarch64-linux). Follows the fmt pilot (#2054), which gates green ~25-29s across candidates.
     name: clippy
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v7
-      - uses: ./.github/actions/setup-rust
-        with:
-          cache-key: clippy
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - uses: DeterminateSystems/nix-installer-action@v22
+      - name: cargo clippy (via nix)
+        run: nix build .#checks.aarch64-linux.clippy --print-build-logs
 
   test:
     name: test (${{ matrix.os }})
