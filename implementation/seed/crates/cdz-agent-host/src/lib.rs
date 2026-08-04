@@ -79,7 +79,8 @@ pub use admin_wire::{
 pub use async_host::{AdminChannel, AdminRequest, AsyncAgentHost, Inbound, Inbox};
 pub use clock::ClockExecutor;
 pub use config::{
-    AdminConfig, BlobConfig, DaemonConfig, LogConfig, MetricsTarget, ObservabilityConfig, RetryConfig,
+    AdminConfig, BlobConfig, DaemonConfig, LogConfig, MetricsTarget, ObservabilityConfig,
+    RetryConfig,
 };
 #[cfg(feature = "live-net")]
 pub use factory::LiveExecutorSet;
@@ -98,3 +99,36 @@ pub use model::BedrockModelTransport;
 pub use model::{ModelExecutor, ModelTransport};
 pub use retry::{classify, permanent, retryable, Retryability};
 pub use status::{host_session_status_json, session_status_json, DEFAULT_STALL_AFTER_MS};
+
+/// Shared test-only helpers (compiled only under `#[cfg(test)]`; placed LAST so no non-test item follows a
+/// test module — clippy `items_after_test_module`). The one PROVEN-FRESH temp-dir helper the crate's
+/// fs-touching tests use, so no test writes to a fixed path (parallel-collision / crashed-run leftover
+/// flakiness — the #1988/#1991/#1995 review family).
+#[cfg(test)]
+pub(crate) mod testutil {
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// A UNIQUE, PROVEN-FRESH temp dir for a test run: `<tmp>/cdz-<tag>-<pid>-<seq>`, created with
+    /// `create_dir` (NOT `create_dir_all`) so it must NOT already exist — on `AlreadyExists` (a crashed
+    /// prior run whose pid the OS reused + a seq collision) it bumps the seq and retries, so the returned
+    /// dir is guaranteed fresh (never a silently-reused stale dir). The caller `remove_dir_all`s it when
+    /// done. No `Date`/`rand` needed — pid + a process-local atomic counter is unique per run + call.
+    pub(crate) fn unique_temp_dir(tag: &str) -> PathBuf {
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        loop {
+            let dir = std::env::temp_dir().join(format!(
+                "cdz-{tag}-{}-{}",
+                std::process::id(),
+                SEQ.fetch_add(1, Ordering::Relaxed)
+            ));
+            match std::fs::create_dir(&dir) {
+                Ok(()) => return dir,
+                // The dir already exists (pid reuse + seq collision from a crashed run) — bump seq + retry
+                // so we PROVE a fresh dir rather than reuse a stale one.
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => panic!("could not create a unique temp dir for {tag}: {e}"),
+            }
+        }
+    }
+}

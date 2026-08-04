@@ -65,9 +65,9 @@ pub enum LogConfig {
 /// daemon can emit to several sinks (multiple s2n-quic-dc-metrics collectors, or different backend types).
 ///
 /// The `kind` string is the extension point — `s2n-quic-dc` is the first backend; the s2n-quic emitter
-/// itself lands behind a `metrics` cargo feature (OFF by default, hermetic-gate discipline — keeps the
-/// QUIC/network dep tree out of the default build), a following slice pending the operator's fork branch/rev.
-/// This CONFIG is always parseable (staged like `[log]`/`[blob]`: config first, emitter follows).
+/// itself is a following slice (feature-gated to keep the QUIC/network dep tree out of the default build),
+/// pending the operator's fork branch/rev. This CONFIG is always parseable ahead of that wiring (staged
+/// like `[log]`/`[blob]`: config first, emitter follows).
 #[derive(Debug, Clone, Deserialize, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct ObservabilityConfig {
@@ -187,7 +187,10 @@ impl RetryConfig {
         // 2^(attempt-1) via saturating shift: a shift >= 64 (attempt-1 >= 64) would be UB/wrap, so clamp the
         // exponent and let the multiply saturate to max_ms anyway.
         let exp = attempt - 1;
-        let factor: u64 = if exp >= 63 { u64::MAX } else { 1u64 << exp };
+        // A left shift is UB only at exp >= 64; exp == 63 (1<<63 = 2^63) is valid, so guard at the exact UB
+        // boundary. (Reachable behavior is unchanged either way — at exp 63 the saturating_mul+min already
+        // pin at max_ms for any real config — but this makes the boundary precisely correct; #1998 review.)
+        let factor: u64 = if exp >= 64 { u64::MAX } else { 1u64 << exp };
         let delay = self.base_ms.saturating_mul(factor);
         delay.min(self.max_ms)
     }
@@ -257,7 +260,8 @@ impl DaemonConfig {
         if self.observability.enabled {
             if self.observability.targets.is_empty() {
                 return Err(ConfigError(
-                    "[observability] enabled=true needs at least one [[observability.target]]".into(),
+                    "[observability] enabled=true needs at least one [[observability.target]]"
+                        .into(),
                 ));
             }
             for (i, t) in self.observability.targets.iter().enumerate() {
@@ -416,7 +420,8 @@ mod tests {
     }
 
     #[test]
-    fn observability_target_missing_endpoint_is_rejected() {
+    fn observability_target_empty_endpoint_is_rejected() {
+        // An endpoint that is PRESENT but blank — exercises the `endpoint.trim().is_empty()` validation.
         let err = DaemonConfig::from_toml_str(
             r#"
             [observability]
@@ -424,6 +429,22 @@ mod tests {
             [[observability.target]]
             kind = "s2n-quic-dc"
             endpoint = ""
+            "#,
+        )
+        .unwrap_err();
+        assert!(err.0.contains("endpoint"), "{err}");
+    }
+
+    #[test]
+    fn observability_target_omitted_endpoint_is_rejected() {
+        // A DIFFERENT path from the empty case: `endpoint: String` is required, so omitting the field is a
+        // serde/TOML missing-field deser error — caught before the trim-check ever runs.
+        let err = DaemonConfig::from_toml_str(
+            r#"
+            [observability]
+            enabled = true
+            [[observability.target]]
+            kind = "s2n-quic-dc"
             "#,
         )
         .unwrap_err();
@@ -547,6 +568,10 @@ mod tests {
         // Saturates at max_ms (100 * 2^9 = 51200 > 30000 → capped).
         assert_eq!(r.backoff_ms(10), 30_000, "capped at max_ms");
         // A large attempt can't overflow — pins at max_ms (saturating shift + mul + min).
-        assert_eq!(r.backoff_ms(1000), 30_000, "huge attempt saturates, no panic/overflow");
+        assert_eq!(
+            r.backoff_ms(1000),
+            30_000,
+            "huge attempt saturates, no panic/overflow"
+        );
     }
 }

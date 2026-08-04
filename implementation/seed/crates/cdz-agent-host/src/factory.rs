@@ -409,9 +409,9 @@ mod tests {
     #[tokio::test]
     async fn file_log_sink_builder_opens_a_per_session_log() {
         // The [log]=file sink builder: build(id) opens a LogStore at <root>/<id>.log and returns Some. A
-        // fresh path yields a usable sink + the file exists after open.
-        let root = std::env::temp_dir().join("cdz-filelog-test");
-        let _ = std::fs::remove_dir_all(&root);
+        // fresh path yields a usable sink + the file exists after open. Unique proven-fresh root (no fixed
+        // temp path — #1991 review).
+        let root = crate::testutil::unique_temp_dir("filelog");
         let builder = FileLogSinkBuilder::new(&root);
         let sink = builder
             .build(&SessionId::new("sess-1"))
@@ -430,8 +430,8 @@ mod tests {
     #[tokio::test]
     async fn file_log_sink_builder_sanitizes_a_slashed_session_id() {
         // A session id with a '/' must NOT escape the root — it's sanitized to a single filename component.
-        let root = std::env::temp_dir().join("cdz-filelog-sanitize-test");
-        let _ = std::fs::remove_dir_all(&root);
+        // Unique proven-fresh root (#1991 review).
+        let root = crate::testutil::unique_temp_dir("filelog-sanitize");
         let builder = FileLogSinkBuilder::new(&root);
         let _sink = builder
             .build(&SessionId::new("evil/../escape"))
@@ -444,7 +444,11 @@ mod tests {
             .filter_map(|e| e.ok())
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .collect();
-        assert_eq!(entries, vec!["evil_.._escape.log".to_string()], "{entries:?}");
+        assert_eq!(
+            entries,
+            vec!["evil_.._escape.log".to_string()],
+            "{entries:?}"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 }
