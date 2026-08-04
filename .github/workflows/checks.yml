@@ -127,14 +127,17 @@ jobs:
     # in a host-dependent order (same functions, same bodies, reordered). Until the planned function-
     # order canonicalizer lands, this job must match the arch the committed hash was recorded on, or
     # it flakes. See the memory note runtime-cross-arch-determinism.
+    # Full-CI-in-nix cutover (Model A): body runs the nix `checks.codegen-check` derivation (`cargo run
+    # --locked -- codegen --check`, hermetic — builds cdz-runtime+nfc via cargo-component + regenerates
+    # runtime_abi.rs), keeping the job key `codegen` so the required context `checks / codegen` is
+    # UNCHANGED (no ruleset edit). STAYS aarch64: the check builds the runtime whose content hash is
+    # arch-specific (the reason for the pin above).
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v7
-      - uses: ./.github/actions/setup-rust
-        with:
-          wasm-tools: "true"
-          cache-key: codegen
-      - run: cargo xtask codegen --check
+      - uses: DeterminateSystems/nix-installer-action@v22
+      - name: cargo xtask codegen --check (via nix)
+        run: nix build .#checks.aarch64-linux.codegen-check --print-build-logs
 
   wasm-runtime:
     # The runtime is workspace-excluded and wasm32-only; a plain `cargo build` skips it, so build it
@@ -468,15 +471,19 @@ jobs:
 
   bench:
     # Runtime allocation regression check (allocation COUNT, deterministic native↔wasm) vs the
-    # committed baseline. Runs the cdz-runtime native #[ignore]d ceilings test.
+    # committed baseline. Full-CI-in-nix cutover (Model A): body runs the nix `checks.bench-check`
+    # derivation (`cargo run --locked -- bench`, hermetic — runs cdz-runtime's #[ignore]d ceilings test +
+    # diffs vs spec/bench/.alloc-baseline), keeping `name: allocation bench` so the required context
+    # `checks / allocation bench` is UNCHANGED (no ruleset edit). ARCH-INDEPENDENT: the allocation COUNT
+    # is deterministic across arches (not wall-clock/codegen), so it runs on the DEFAULT x86 runner via
+    # `checks.x86_64-linux.bench-check` (frees ARM; matches the GHA x86 baseline, github-liaison #2042).
     name: allocation bench
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: ./.github/actions/setup-rust
-        with:
-          cache-key: bench
-      - run: cargo xtask bench
+      - uses: DeterminateSystems/nix-installer-action@v22
+      - name: cargo xtask bench (via nix)
+        run: nix build .#checks.x86_64-linux.bench-check --print-build-logs
 
   guide-examples:
     # PRE-MERGE gate for the guide's runnable content. pages.yml runs the SAME checks but only
