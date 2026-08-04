@@ -562,7 +562,7 @@ impl CapabilityManifest {
 /// Project a session's capability manifest by PROBING (the LOCKED crux — not authorizer enumeration).
 /// For each family in the canonical set (`families`, normally [`effect_ct::ALL`]): the mechanism dimension
 /// is `handles(family)` (does the host have an executor?), and the policy dimension is ONE `authorize`
-/// probe (the existing decide-only [`Authorize`] trait — no enumeration API). Complete BY CONSTRUCTION: the
+/// probe (the existing decide-only [`crate::authz::Authorize`] trait — no enumeration API). Complete BY CONSTRUCTION: the
 /// family set is finite + canonical, so nothing is missed. Pure: deterministic given the inputs; async only
 /// because the authorizer may `.await` a wasm policy eval.
 ///
@@ -737,6 +737,39 @@ mod tests {
         assert!(
             matches!(owned_ext.content_type.family, std::borrow::Cow::Owned(_)),
             "a runtime-owned extension family is preserved as Owned (reused, not re-cloned)"
+        );
+    }
+
+    #[test]
+    fn a_store_set_request_carries_the_family_not_the_placeholder_kind_for_authz() {
+        // The request-layer BACKSTOP for #1916 (ComponentAuthorizer authorizes on content_type.family, NOT
+        // the EffectKind enum): a register-by-string store/* request carries the REAL family string while its
+        // `kind` is the inert `Emit` PLACEHOLDER. This pins the PRECONDITION that fix relies on — if this
+        // invariant ever broke (e.g. store/set started carrying kind=Shell, or the family got lost), the
+        // policy would gate the wrong string. The end-to-end decision test lives in the host's Cedar e2e
+        // (a forbid on action=="store/set" denies a store/set); this is the cheap kernel-side 2nd layer
+        // catching a regression at the request-construction boundary, no policy fixture needed.
+        let set = EffectRequest::new_with_family(
+            effect_ct::STORE_SET,
+            "system/compiler/latest",
+            None,
+            Timeliness::Interactive,
+        );
+        assert_eq!(
+            set.content_type.family, effect_ct::STORE_SET,
+            "a store/set request carries family 'store/set' — the string authz (and a Cedar policy) sees"
+        );
+        assert_eq!(
+            set.kind,
+            EffectKind::Emit,
+            "store/* has no EffectKind variant → the inert Emit placeholder; authz MUST key on family, not \
+             this kind (else store/set authorizes as 'emit' — the #1916 bug)"
+        );
+        // The family and the placeholder kind's family DIFFER — the exact gap that makes keying-on-kind wrong.
+        assert_ne!(
+            set.content_type.family.as_ref(),
+            EffectKind::Emit.family(),
+            "the store/set family must NOT equal the placeholder kind's family, or the bug would be invisible"
         );
     }
 
