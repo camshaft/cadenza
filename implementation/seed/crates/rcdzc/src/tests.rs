@@ -47358,15 +47358,18 @@ mod match_engine {
             "a runtime Ast argument keeps the reconstruct-nothing message"
         );
         // A `b"…"` bytes literal is NOT non-reifiable: it reifies to `Ast.Bytes` (operator seq 113), so
-        // `(eval (quote b"hi"))` reconstructs + runs — NO CDZ0101 at all. Pins that `first_non_reifiable_leaf`
-        // does NOT flag Bytes (a regression re-adding a Bytes arm would surface a spurious CDZ0101 here).
+        // `(eval (quote b"hi"))` reconstructs + COMPILES CLEAN — not merely "no CDZ0101". Asserting the
+        // module compiles with NO error at all is strictly stronger: a regression that re-added a Bytes arm
+        // to `first_non_reifiable_leaf` (spurious CDZ0101) OR that broke the reconstruct some OTHER way
+        // (leaving a different reject) would both fail here, whereas a CDZ0101-only check would miss the latter.
+        let bytes_diags = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (main) (eval (quote b\"hi\"))) (export main))",
+        )));
         assert!(
-            crate::diagnostics(&mut crate::db::Db::load(parse(
-                "(module m (def (main) (eval (quote b\"hi\"))) (export main))"
-            )))
-            .iter()
-            .all(|d| d.code.as_deref() != Some("CDZ0101")),
-            "eval of a quoted bytes literal must NOT be a CDZ0101 — Ast.Bytes reifies"
+            bytes_diags
+                .iter()
+                .all(|d| d.severity != crate::abi::Severity::Error),
+            "eval of a quoted bytes literal must COMPILE CLEAN — Ast.Bytes reifies + reconstructs; got: {bytes_diags:?}"
         );
     }
 

@@ -11715,8 +11715,9 @@ fn map_duplicate_const_key(db: &mut Db, entries: &[(StructId, StructId)]) -> Opt
 }
 
 /// Walk the subtree at `node` for the FIRST leaf kind that quote's reifier cannot turn into an `Ast`
-/// value — a `#"…"` symbol (`Sym`), a `#\c` char (`Char`), or a `b"…"` bytes literal (`Bytes`) — since
-/// the `Ast` sum has variants only for Int/Float/Bool/Str/Name/List. `quote`'s reify bails (`_ => None`,
+/// value — a `#"…"` symbol (`Sym`) or a `#\c` char (`Char`) — since the `Ast` sum has no `Ast.Symbol`
+/// / `Ast.Char` variant for them. (A `b"…"` bytes literal IS reifiable: `Bytes` → `Ast.Bytes`, operator
+/// seq 113 — it is NOT flagged here.) `quote`'s reify bails (`_ => None`,
 /// `quote.rs`) on any such leaf, so the WHOLE `(quote …)` declines and an enclosing `(eval …)` then falls
 /// through as an unbound `eval` name. Returns a human phrase naming the offending literal kind (for the
 /// `eval` diagnostic below), or `None` if every leaf is reifiable (the ordinary "nothing to reconstruct"
