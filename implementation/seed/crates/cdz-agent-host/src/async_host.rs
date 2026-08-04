@@ -152,6 +152,31 @@ impl AsyncAgentHost {
             }
         }
     }
+
+    /// Run the loop against the system WALL CLOCK — the convenience a real host process uses (versus
+    /// [`run`](Self::run), which takes an injected `now_ms` closure so tests can drive a fake clock). Timer
+    /// deadlines are milliseconds since the Unix epoch, matching the `Now`/timer payload convention (§9c).
+    /// Same shutdown-and-channel-close termination and the same `Result<AgentHost, KernelError>` as
+    /// [`run`](Self::run) — this only supplies the clock, so a deployed daemon writes
+    /// `host.run_with_wall_clock(shutdown).await` instead of hand-wiring `SystemTime`.
+    ///
+    /// (A wall clock can jump backward — NTP step, leap second. The loop only ever uses `now_ms` to compute
+    /// a non-negative sleep duration via `saturating_sub`, so a backward jump can at worst make a timer fire
+    /// slightly late, never panic or busy-spin — the same tolerance the `Now` executor's clamp relies on.)
+    pub async fn run_with_wall_clock(
+        self,
+        shutdown: tokio::sync::oneshot::Receiver<()>,
+    ) -> Result<AgentHost, KernelError> {
+        self.run(shutdown, || {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                // Before the epoch = a grossly-misconfigured host clock; treat as t=0 so the loop still runs
+                // (a timer just fires "immediately") rather than surfacing a clock error into the event loop.
+                .unwrap_or(0)
+        })
+        .await
+    }
 }
 
 #[cfg(test)]
@@ -359,6 +384,41 @@ mod tests {
                 .get(b"woke"),
             Some(&b"1"[..]),
             "an already-due timer fires up front, not starved by shutdown/inbox"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_with_wall_clock_drives_a_session_end_to_end() {
+        // The real-process convenience: run the loop on the SYSTEM clock (not an injected closure) and prove
+        // it still drives a session's turn to completion. No timers armed here, so the wall clock only feeds
+        // the (never-taken) sleep arm — the point is that run_with_wall_clock wires the clock + delegates to
+        // run() correctly, so a deployed daemon can call it with no clock plumbing.
+        let mut host = AgentHost::new();
+        host.spawn(SessionId::new("wall"), mark_host());
+        let async_host = AsyncAgentHost::new(host);
+        let inbox = async_host.inbox();
+        let (_sd_tx, sd_rx) = tokio::sync::oneshot::channel();
+        inbox
+            .send(Inbound {
+                session: SessionId::new("wall"),
+                body: go(),
+                cause: None,
+            })
+            .unwrap();
+        drop(inbox); // channel closes after the one message → loop returns
+
+        let host = async_host
+            .run_with_wall_clock(sd_rx)
+            .await
+            .expect("clean shutdown on the wall clock, no kernel error");
+        assert_eq!(
+            host.get(&SessionId::new("wall"))
+                .unwrap()
+                .session()
+                .kv()
+                .get(b"ran"),
+            Some(&b"1"[..]),
+            "the session ran its turn through the wall-clock loop"
         );
     }
 }
