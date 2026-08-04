@@ -646,10 +646,12 @@ mod tests {
             AdminResponse::Status { json } => json,
             other => panic!("expected Status, got {other:?}"),
         };
-        // host-boundary counter moved with the install…
+        // host-boundary counter moved with the install… assert the EXACT sessions object (not a loose
+        // `"installed":1` substring, which `str::contains` would also match against :10/:12/:123 — a
+        // mis-count to 10+ must not slip through; #2036 review).
         assert!(
-            json.contains("\"installed\":1"),
-            "sessions.installed reflects the install: {json}"
+            json.contains("\"sessions\":{\"installed\":1,\"removed\":0,\"live\":1}"),
+            "sessions object reflects exactly one install: {json}"
         );
         // …and the (unwired) effect counters are present + zeroed.
         assert!(
