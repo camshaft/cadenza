@@ -1845,7 +1845,9 @@ mod status_snapshot_tests {
         // Append a Closed event directly (a session that shut down).
         s.append(
             EventBody::Closed {
-                outcome: crate::effect::Payload::Inline(b"".to_vec().into()),
+                outcome: crate::event::CloseOutcome::Success(crate::effect::Payload::Inline(
+                    b"".to_vec().into(),
+                )),
             },
             None,
         )

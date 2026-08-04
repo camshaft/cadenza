@@ -201,9 +201,28 @@ pub enum EventBody {
     /// react (restart/retry/escalate) to a child's FoldFailed.
     FoldFailed { reason: String, caused_event: Hash },
 
-    /// The session closed. `outcome` is opaque; if the session had a parent, the kernel delivers a
-    /// completion signal to it (§6 supervision).
-    Closed { outcome: Payload },
+    /// The session closed, carrying a STRUCTURED [`CloseOutcome`] (success-with-payload vs
+    /// failure-with-reason). §6 supervision slice-1 (operator directive): a supervisor must be able to tell a
+    /// clean completion from a failure to decide restart/retry/escalate — an opaque payload couldn't express
+    /// that first-class. When the session had a parent, the kernel delivers this outcome to it as a
+    /// `child-completed` signal (slices 2-3, pending the operator's design review).
+    Closed { outcome: CloseOutcome },
+}
+
+/// How a session CLOSED — the structured terminal outcome a supervisor acts on (§6 supervision, operator
+/// directive: "child-completed carries a structured outcome, success vs failure-with-reason"). Distinguishing
+/// success from failure is the minimum a one-for-one supervisor needs to choose restart/retry/escalate; the
+/// prior opaque `Payload` couldn't express it. A sum (no sentinel — mirrors [`EffectOutcome`]); grows
+/// additively (e.g. a future `Cancelled`/`Escalated`) with no wire break, matching the frozen-codec
+/// discipline (a tolerant decoder matches the head).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum CloseOutcome {
+    /// The session finished its goal cleanly. `payload` is the (opaque) result it produced — what a parent
+    /// consumes on a successful child-completed.
+    Success(Payload),
+    /// The session terminated in failure. `reason` is a human/diagnostic string (why it gave up / what
+    /// broke) — what a supervisor logs and reacts to (restart/retry/escalate).
+    Failure(String),
 }
 
 /// The outcome of an executed effect: success payload, a failure, or a timeout (the §9d anti-stuck
@@ -412,7 +431,7 @@ fn decode_body(c: &mut Cursor) -> Result<EventBody, DecodeError> {
             token: decode_opt_bytes(c)?,
         },
         7 => EventBody::Closed {
-            outcome: decode_payload(c)?,
+            outcome: decode_close_outcome(c)?,
         },
         8 => EventBody::FoldFailed {
             reason: c.string()?,
@@ -582,7 +601,7 @@ fn encode_body(body: &EventBody, out: &mut Vec<u8>) {
         }
         EventBody::Closed { outcome } => {
             out.push(7);
-            encode_payload(outcome, out);
+            encode_close_outcome(outcome, out);
         }
         EventBody::FoldFailed {
             reason,
@@ -666,6 +685,32 @@ fn encode_outcome(o: &EffectOutcome, out: &mut Vec<u8>) {
         }
         EffectOutcome::TimedOut => out.push(2),
     }
+}
+
+fn encode_close_outcome(o: &CloseOutcome, out: &mut Vec<u8>) {
+    match o {
+        CloseOutcome::Success(p) => {
+            out.push(0);
+            encode_payload(p, out);
+        }
+        CloseOutcome::Failure(reason) => {
+            out.push(1);
+            encode_str(reason, out);
+        }
+    }
+}
+
+fn decode_close_outcome(c: &mut Cursor) -> Result<CloseOutcome, DecodeError> {
+    Ok(match c.u8()? {
+        0 => CloseOutcome::Success(decode_payload(c)?),
+        1 => CloseOutcome::Failure(c.string()?),
+        t => {
+            return Err(DecodeError::BadTag {
+                field: "close_outcome",
+                tag: t,
+            })
+        }
+    })
 }
 
 #[cfg(test)]
@@ -862,7 +907,7 @@ mod tests {
     fn cause_edge_is_part_of_identity() {
         let mut e = genesis();
         e.body = EventBody::Closed {
-            outcome: Payload::Inline(vec![].into()),
+            outcome: CloseOutcome::Success(Payload::Inline(vec![].into())),
         };
         let without = e.hash();
         e.cause = Some(Hash::of(b"parent"));
@@ -994,7 +1039,7 @@ mod tests {
                 seq: 12,
                 cause: None,
                 body: EventBody::Closed {
-                    outcome: Payload::Inline(vec![].into()),
+                    outcome: CloseOutcome::Success(Payload::Inline(vec![].into())),
                 },
             },
             Event {
