@@ -5749,7 +5749,9 @@ todo	a Rational entry argument is marshalled through Rational::new
 todo	a String ENTRY arg rides a rope into an effect-op argument and the arm reads its bytes
 todo	a String host RESULT crosses the boundary and is read twice (byte-len + scalar-len of a multibyte response)
 todo	a Symbol entry parameter compares to an interned constant
+todo	a block-wrapped OUTER-effect perform in a do-statement TWO nested handlers deep declines cleanly (adv-69 nh7 depth-3)
 todo	a block-wrapped OUTER-effect perform in a let-init THREE handlers deep declines cleanly (adv-69 a4-depth3 sub-face)
+todo	a block-wrapped OUTER-effect perform in a match-SCRUTINEE inside a nested handler body declines cleanly (adv-69 g3-nested)
 todo	a block-wrapped OUTER-effect perform in a nested handle's INIT declines cleanly (adv-69 a4-init sub-face)
 todo	a block-wrapped OUTER-effect perform in a non-tail do-statement INSIDE a nested handler body declines cleanly (adv-69 c3-nested sub-face)
 todo	a block-wrapped branch perform of the OUTER effect in a let-init INSIDE a nested handler body declines cleanly (adv-69 a4 sub-face)
