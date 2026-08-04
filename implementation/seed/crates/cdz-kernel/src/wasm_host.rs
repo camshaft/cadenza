@@ -549,7 +549,13 @@ pub fn invoke_component(
         let func_idx = instance
             .get_export_index(&mut store, iface_idx.as_ref(), func)
             .ok_or_else(|| {
-                export_err(format!("interface {interface:?} exports no func {func:?}"))
+                // Empty interface = a top-level lookup; word the error that way rather than the confusing
+                // `interface "" exports no func` (github-liaison #2050 LOW).
+                if interface.is_empty() {
+                    export_err(format!("component exports no top-level func {func:?}"))
+                } else {
+                    export_err(format!("interface {interface:?} exports no func {func:?}"))
+                }
             })?;
         instance
             .get_func(&mut store, func_idx)
@@ -580,10 +586,63 @@ pub fn invoke_component(
             "export {interface:?}#{func:?} is not func(list<u8>) -> list<record{{kind,name,bytes}}>: {e}"
         )));
     }
-    let _ = func_handle.post_return(&mut store);
+    // PROPAGATE post_return (github-liaison #2050 MED): the dep-forwarding path (`compose_dep_into_linker`)
+    // propagates it too. post_return can surface a guest trap / out-of-fuel / resource-cleanup failure
+    // AFTER the call returned; dropping it (`let _ =`) makes a post-return-trapping guest look successful and
+    // leaks the cleanup failure. Classify it exactly like the call error above (fuel → FuelExhausted, trap →
+    // Trap, else a host-side Instantiate — a non-trap post_return failure is host/engine, not guest shape).
+    if let Err(e) = func_handle.post_return(&mut store) {
+        if let Some(wasmtime::Trap::OutOfFuel) = e.downcast_ref::<wasmtime::Trap>() {
+            return Err(ComponentError::FuelExhausted {
+                budget: fuel_budget,
+            });
+        }
+        if e.downcast_ref::<wasmtime::Trap>().is_some() {
+            return Err(ComponentError::Trap(e.to_string()));
+        }
+        return Err(ComponentError::Instantiate(format!(
+            "post_return after {interface:?}#{func:?} failed: {e}"
+        )));
+    }
 
     // Decode the single `list<record{kind:string, name:string, bytes:list<u8>}>` result into Artifacts.
     decode_artifact_list(&results[0], &export_err)
+}
+
+/// A BOUNDED description of a component [`Val`]'s shape for an error message — its type/variant, never its
+/// full `{:?}` (github-liaison #2050 MED/DoS): `decode_artifact_list` reports on UNTRUSTED guest output, so
+/// Debug-formatting a huge/deeply-nested wrong-shape value into the error string is an unbounded log/memory
+/// blowup on the error path (same class as the #1852 unbounded-set finding). This reports the variant name
+/// with a size hint (list/record length) — enough to diagnose a shape mismatch, capped regardless of the
+/// value's size.
+fn val_shape(val: &wasmtime::component::Val) -> String {
+    use wasmtime::component::Val;
+    match val {
+        Val::Bool(_) => "bool".into(),
+        Val::S8(_) => "s8".into(),
+        Val::U8(_) => "u8".into(),
+        Val::S16(_) => "s16".into(),
+        Val::U16(_) => "u16".into(),
+        Val::S32(_) => "s32".into(),
+        Val::U32(_) => "u32".into(),
+        Val::S64(_) => "s64".into(),
+        Val::U64(_) => "u64".into(),
+        Val::Float32(_) => "float32".into(),
+        Val::Float64(_) => "float64".into(),
+        Val::Char(_) => "char".into(),
+        Val::String(s) => format!("string(len {})", s.len()),
+        Val::List(items) => format!("list(len {})", items.len()),
+        Val::Record(fields) => format!("record({} fields)", fields.len()),
+        Val::Tuple(items) => format!("tuple(len {})", items.len()),
+        Val::Variant(case, _) => format!("variant({case})"),
+        Val::Enum(case) => format!("enum({case})"),
+        Val::Option(_) => "option".into(),
+        Val::Result(_) => "result".into(),
+        Val::Flags(f) => format!("flags({} set)", f.len()),
+        Val::Resource(_) => "resource".into(),
+        // wasmtime's Val is #[non_exhaustive]; a future variant reports generically rather than {:?}-ing it.
+        _ => "other".into(),
+    }
 }
 
 /// Decode a wasmtime component [`Val`] that is a `list<record{kind:string, name:string, bytes:list<u8>}>`
@@ -596,16 +655,24 @@ fn decode_artifact_list(
     export_err: &impl Fn(String) -> ComponentError,
 ) -> Result<Vec<Artifact>, ComponentError> {
     use wasmtime::component::Val;
+    // Error reasons report `val_shape` (bounded variant + size hint), NEVER `{val:?}` of the untrusted
+    // guest output (github-liaison #2050 MED/DoS): a huge/deeply-nested wrong-shape value would otherwise be
+    // fully Debug-formatted into the error string = unbounded log/memory blowup.
     let Val::List(items) = val else {
         return Err(export_err(format!(
-            "result is {val:?}, not a list<record{{kind,name,bytes}}>"
+            "result is {}, not a list<record{{kind,name,bytes}}>",
+            val_shape(val)
         )));
     };
     let field_str = |rec: &[(String, Val)], want: &str| -> Result<String, ComponentError> {
         match rec.iter().find(|(n, _)| n == want).map(|(_, v)| v) {
             Some(Val::String(s)) => Ok(s.clone()),
-            other => Err(export_err(format!(
-                "artifact field {want:?} is {other:?}, not a string"
+            Some(other) => Err(export_err(format!(
+                "artifact field {want:?} is {}, not a string",
+                val_shape(other)
+            ))),
+            None => Err(export_err(format!(
+                "artifact record is missing field {want:?}"
             ))),
         }
     };
@@ -616,12 +683,17 @@ fn decode_artifact_list(
                 .map(|b| match b {
                     Val::U8(x) => Ok(*x),
                     other => Err(export_err(format!(
-                        "artifact {want:?} list element is {other:?}, not a u8"
+                        "artifact {want:?} list element is {}, not a u8",
+                        val_shape(other)
                     ))),
                 })
                 .collect(),
-            other => Err(export_err(format!(
-                "artifact field {want:?} is {other:?}, not a list<u8>"
+            Some(other) => Err(export_err(format!(
+                "artifact field {want:?} is {}, not a list<u8>",
+                val_shape(other)
+            ))),
+            None => Err(export_err(format!(
+                "artifact record is missing field {want:?}"
             ))),
         }
     };
@@ -634,7 +706,8 @@ fn decode_artifact_list(
                 bytes: field_bytes(fields, "bytes")?,
             }),
             other => Err(export_err(format!(
-                "artifact-set element is {other:?}, not a record{{kind,name,bytes}}"
+                "artifact-set element is {}, not a record{{kind,name,bytes}}",
+                val_shape(other)
             ))),
         })
         .collect()
@@ -1712,10 +1785,18 @@ mod tests {
         let empty = wat::parse_str("(component)").expect("empty component");
         match invoke_component(&empty, "", "run", b"", DEFAULT_FOLD_FUEL) {
             Err(ComponentError::InvokeExport {
-                interface, func, ..
+                interface,
+                func,
+                reason,
             }) => {
                 assert_eq!(interface, "");
                 assert_eq!(func, "run");
+                // Empty interface → the message says "top-level func", not `interface "" exports no func`
+                // (github-liaison #2050 LOW clarity fix).
+                assert!(
+                    reason.contains("top-level func"),
+                    "empty-interface error should say top-level func, got {reason:?}"
+                );
             }
             other => panic!("expected InvokeExport for a missing export, got {other:?}"),
         }
@@ -1736,6 +1817,62 @@ mod tests {
         match invoke_component(b"not a wasm component", "", "run", b"", DEFAULT_FOLD_FUEL) {
             Err(ComponentError::InvalidComponent(_)) => {}
             other => panic!("expected InvalidComponent for garbage bytes, got {other:?}"),
+        }
+    }
+
+    // A component whose `run` returns the WRONG shape (a plain `list<u8>`, not the artifact-record list)
+    // is InvokeExport, and — github-liaison #2050 MED/DoS — the error message is BOUNDED (reports the
+    // Val shape/variant + length, e.g. "u8"/"list(len N)"), NEVER a full `{:?}` of the untrusted guest
+    // value. Proves the val_shape path: no matter how large the guest's wrong-shape output, the error
+    // string stays small.
+    #[test]
+    fn invoke_of_a_wrong_shape_result_is_bounded_invoke_export_not_full_debug() {
+        // `run: func(list<u8>) -> list<u8>` that returns 4096 bytes — the identity-style fixture, but its
+        // result is a byte list, so decode_artifact_list sees list elements that are u8, not records.
+        let bytes = wat::parse_str(
+            r#"(component
+                 (core module $m
+                   (memory (export "mem") 1)
+                   (global $next (mut i32) (i32.const 8192))
+                   (func (export "realloc") (param $old i32) (param $oldsz i32) (param $align i32) (param $newsz i32) (result i32)
+                     (local $ret i32)
+                     (global.set $next
+                       (i32.and (i32.add (global.get $next) (i32.sub (local.get $align) (i32.const 1)))
+                                (i32.xor (i32.sub (local.get $align) (i32.const 1)) (i32.const -1))))
+                     (local.set $ret (global.get $next))
+                     (global.set $next (i32.add (global.get $next) (local.get $newsz)))
+                     (local.get $ret))
+                   ;; run -> a (ptr,len) list of 4096 bytes starting at 0 (memory is zero-filled)
+                   (func (export "run") (param $ptr i32) (param $len i32) (result i32)
+                     (local $ret i32)
+                     (global.set $next (i32.and (i32.add (global.get $next) (i32.const 3)) (i32.const -4)))
+                     (local.set $ret (global.get $next))
+                     (global.set $next (i32.add (global.get $next) (i32.const 8)))
+                     (i32.store (local.get $ret) (i32.const 0))
+                     (i32.store (i32.add (local.get $ret) (i32.const 4)) (i32.const 4096))
+                     (local.get $ret)))
+                 (core instance $i (instantiate $m))
+                 (func $run (param "input" (list u8)) (result (list u8))
+                   (canon lift (core func $i "run") (memory $i "mem") (realloc (func $i "realloc"))))
+                 (export "run" (func $run)))"#,
+        )
+        .expect("assemble wrong-shape (list<u8>) component");
+        match invoke_component(&bytes, "", "run", b"", DEFAULT_FOLD_FUEL) {
+            Err(ComponentError::InvokeExport { reason, .. }) => {
+                // The message names the u8 shape (bounded) and is SHORT — not a 4096-element Debug dump.
+                assert!(
+                    reason.contains("u8"),
+                    "should report the u8 shape, got {reason:?}"
+                );
+                assert!(
+                    reason.len() < 200,
+                    "error message must be bounded regardless of guest output size, got len {}",
+                    reason.len()
+                );
+            }
+            other => {
+                panic!("expected a bounded InvokeExport for a wrong-shape result, got {other:?}")
+            }
         }
     }
 
