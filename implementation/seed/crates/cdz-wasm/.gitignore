@@ -6,3 +6,7 @@
 # So we COMMIT this crate's Cargo.lock — un-ignore it here (scoped to this dir) — mirroring the
 # cedar-policy-guest / reducer-guest fixtures. `--locked` builds are then deterministic in CI + Nix.
 !Cargo.lock
+
+# `wasm-pack build --target web` emits a pkg/ dir here (the guide stages it into guide/src/wasm/pkg/,
+# already git-ignored). It's build output — never commit it; ignore so a direct in-crate build stays clean.
+pkg/
