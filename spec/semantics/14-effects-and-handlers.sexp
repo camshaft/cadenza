@@ -2160,6 +2160,27 @@
   (call   main (: 7 Int64))
   (output (: 17 Int64)))
 
+(case "a BARE-param escaping closure capturing a handled value declines cleanly (annotated-param twin folds)"
+  (doc    "The BARE-parameter twin of the escaping-closure-captures-handled-value case above (v-effects
+           self-probe 2026-08-04). The SAME sound shape — a closure capturing a `let`-bound in-extent perform
+           result `v`, escaping the handle, applied outside — but the closure's parameter is BARE `(fn (x) (+
+           x v))` instead of annotated `(fn ((: x Int64)) …)`. The annotated twin (the case above) FOLDS to
+           17; the bare-param version DECLINES with `parameter reference has no local slot` (select.rs:10382,
+           the Core::Param no-slot arm) on all 3 backends. A CLEAN decline (compile-time, never a wrong value)
+           — the escaping-closure lift (`lambda_of`/env-snapshot) slots an ANNOTATED closure param but not a
+           BARE one when the closure captures a handler-computed value, so the bare param's reference reaches
+           emit un-slotted. A completeness gap in the closure-capture-escape family (NOT a miscompile): the
+           bare-param lift needs the same slot allocation the annotated path gets. Pinned as a decline-witness
+           to lock the bare-vs-annotated boundary; flips to 17 PASS when the bare-param escaping-closure lift
+           slots the param. Related to the sibling-closures-sharing-outer-capture-scope decline (same no-slot
+           arm, different trigger).")
+  (input  (do
+            (effect St (op get (-> Unit Int64)))
+            (def (main)
+              ((handle St 7 ((get (u) s (resume s s))) (let ((v (St.get))) (fn (x) (+ x v)))) 10))
+            (export main)))
+  (call   main) (output (: 17 Int64)))
+
 (case "TWO performs in an if condition both fold on the strict-first spine"
   (input  (do
             (effect Amb (op flip (-> Unit Int64)))
