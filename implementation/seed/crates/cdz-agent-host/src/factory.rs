@@ -27,15 +27,53 @@ use cdz_kernel::executor::CompositeExecutor;
 use cdz_kernel::wasm_host::AsyncComponentReducer;
 
 /// Builds a per-session executor set (the effects a freshly-installed session may perform). Called ONCE per
-/// install so each session gets its own [`CompositeExecutor`] (executors hold per-session transport state);
-/// the deployed daemon returns the live set (Clock + HTTP + Bedrock), a test returns a hermetic one.
+/// install so each session gets its OWN [`CompositeExecutor`] — the kernel's `Executor::perform` takes
+/// `&mut self` and [`HostedSession`] owns its executor by value, so sessions can't share one set. The
+/// deployed daemon returns the live set (Clock + HTTP + Bedrock), a test returns a hermetic one.
+///
+/// ASYNC (`?Send`, matching the crate's single-threaded convention): the deployed daemon's builder is
+/// `LiveExecutorSet` (behind `live-net`), whose `build` `.await`s the live executor assembly (it loads AWS
+/// config for the Bedrock transport). A synchronous builder (a plain closure) satisfies it with no real
+/// await via the blanket impl.
+#[async_trait::async_trait(?Send)]
 pub trait ExecutorSetBuilder {
-    fn build(&self) -> CompositeExecutor;
+    async fn build(&self) -> CompositeExecutor;
 }
 
+/// A synchronous `Fn() -> CompositeExecutor` (a test's hermetic set, or any non-async assembly) is an
+/// `ExecutorSetBuilder` for free — its `build` just calls the closure (no real await).
+#[async_trait::async_trait(?Send)]
 impl<F: Fn() -> CompositeExecutor> ExecutorSetBuilder for F {
-    fn build(&self) -> CompositeExecutor {
+    async fn build(&self) -> CompositeExecutor {
         self()
+    }
+}
+
+/// The deployed daemon's [`ExecutorSetBuilder`]: build the LIVE executor set (Clock + HTTP + Bedrock, env
+/// creds) via [`live_executor_set`](crate::live_executor_set) per install. Behind `live-net` (it pulls the
+/// network transports). A synchronous closure can't call an async fn, and async closures aren't stable, so
+/// this is a concrete zero-sized builder rather than a `Fn`. `live_executor_set` returns `Err` on a
+/// transport-build failure (e.g. no TLS backend); this builder treats that as fatal-per-install and falls
+/// back to an EMPTY executor set so a build failure surfaces as the session simply having no executors
+/// (every effect then folds an observable `Err`) rather than the factory panicking — a per-session
+/// misconfig shouldn't crash the daemon. (The failure is logged to stderr.)
+#[cfg(feature = "live-net")]
+pub struct LiveExecutorSet;
+
+#[cfg(feature = "live-net")]
+#[async_trait::async_trait(?Send)]
+impl ExecutorSetBuilder for LiveExecutorSet {
+    async fn build(&self) -> CompositeExecutor {
+        match crate::live_executor_set().await {
+            Ok(set) => set,
+            Err(e) => {
+                eprintln!(
+                    "cdz-agent-host: live executor set build failed ({e}); \
+                     the installed session will have no executors"
+                );
+                CompositeExecutor::new()
+            }
+        }
     }
 }
 
@@ -114,11 +152,12 @@ where
         })?;
         // 3. Assemble the session with a fresh executor set + the session's authorizer. genesis records the
         //    reducer hash as the session's genesis identity (so replay reconstructs it).
+        let executors = self.executors.build().await;
         Ok(HostedSession::genesis(
             spec.reducer_hash,
             Box::new(reducer),
             self.authz.build(),
-            self.executors.build(),
+            executors,
         ))
     }
 }
