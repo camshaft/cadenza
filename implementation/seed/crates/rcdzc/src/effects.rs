@@ -5857,6 +5857,75 @@ fn selfcall_precedes_perform_in_operands(
     }
 }
 
+/// Whether `node` is (or contains) a strict APPLICATION / `do` / spine context in which a CONDITIONAL whose
+/// BRANCH performs a discharged op is a NON-TAIL operand ALONGSIDE a re-entrant call (a self-call to
+/// `callee_def` OR a mutual-recursive partner). This is the RESUMPTIVE recursive-branch-perform gap (v-effects
+/// self-probe 2026-08-04, breaker-confirmed rw1-rw5): unlike `selfcall_precedes_perform_in_operands` (which
+/// catches a self-call THEN a later perform reading the OUT-state), here a perform inside a conditional BRANCH
+/// PRECEDES/coexists with the self-call, and the single-return specialization threads the branch perform
+/// against the INCOMING state — but the advance is BRANCH-LOCAL (only the taken path advances) and the
+/// recursion carries the incoming state forward, so the advance is DROPPED across the recursion (`(+ (if true
+/// (St.get) 0) (walk (- n 1)))` seeded 1 → 3 not 6). The non-recursive branch-perform hoist (Site 1/2/4/5)
+/// does NOT run inside the specialized body. Covers: runtime conditions (keyed on the BRANCH position, not a
+/// foldable cond — rw3), MUTUAL recursion (a partner call via `contains_recursive_call` — rw4), and heap state
+/// (`contains_any_perform` is state-shape-agnostic — rw5). Does NOT fire on the FOLDING shapes: a BARE tail
+/// perform `(+ (St.get) (walk …))` (the perform is not under a conditional branch here — it is a direct
+/// operand), a let-init-bound perform then `if` on the binding (`sum-down`: the perform is a let-init, not
+/// under a branch), or a perform as the WHOLE tail of one branch with the self-call in a SIBLING branch
+/// (`ev`/`od`: no shared strict context — the branches are mutually exclusive). The discriminator: the
+/// branch-perform's enclosing conditional and a re-entrant call are BOTH operands of the SAME strict node.
+fn branch_perform_coexists_with_reentrant_call(
+    db: &mut Db,
+    node: StructId,
+    callee_def: usize,
+    ctx: &HandlerCtx,
+) -> bool {
+    // A strict application `(op a0 … ak)`: if one operand is a conditional whose branch performs a discharged
+    // op AND another operand is (contains) a re-entrant call, the branch-perform's advance is dropped while
+    // the recursion threads the incoming state. (The head is a0; operands a1..). We check each operand for the
+    // branch-perform shape and, separately, whether ANY operand carries a re-entrant call.
+    if let Resolved::Apply { head, args } = resolved_of(db, node) {
+        let all: Vec<StructId> = std::iter::once(head).chain(args.iter().copied()).collect();
+        let has_reentrant = all
+            .iter()
+            .any(|&a| contains_recursive_call(db, a, callee_def));
+        if has_reentrant
+            && all
+                .iter()
+                .any(|&a| operand_is_branch_performing_conditional(db, a, ctx))
+        {
+            return true;
+        }
+    }
+    // Recurse structurally — the shape may be nested (inside a branch, let-init, do-item, etc.).
+    match db.ast.get(node).clone() {
+        Struct::List(children) => children
+            .iter()
+            .any(|&c| branch_perform_coexists_with_reentrant_call(db, c, callee_def, ctx)),
+        Struct::Atom(_) => false,
+    }
+}
+
+/// Whether `node` is a CONDITIONAL (`if`/`match`) whose taken BRANCH (then/else, or an arm body) reaches a
+/// discharged perform — i.e. a branch-performing conditional whose advance is branch-local. The condition /
+/// scrutinee is NOT a branch (a perform there is on the strict spine, threaded normally), so it is excluded.
+/// Peels PURE `let`/`do` block wrappers so `(let ((v (let ((b true)) (if b (St.get) 0)))) …)` as an operand
+/// is recognized (the block-wrapped variant of the same gap).
+fn operand_is_branch_performing_conditional(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> bool {
+    match resolved_of(db, node) {
+        Resolved::If { then_, else_, .. } => {
+            contains_any_perform(db, then_, ctx) || contains_any_perform(db, else_, ctx)
+        }
+        Resolved::Match { arms, .. } => arms
+            .iter()
+            .any(|&(_, body)| contains_any_perform(db, body, ctx)),
+        // Peel a PURE block wrapper to its tail value (the block-wrapped branch-perform operand).
+        Resolved::Let { body, .. } => operand_is_branch_performing_conditional(db, body, ctx),
+        Resolved::Ref { value } => operand_is_branch_performing_conditional(db, value, ctx),
+        _ => false,
+    }
+}
+
 /// Collect the `db.defs` indices of every RECURSIVE-EFFECTFUL call in `node` this handler discharges — a
 /// call `(f args…)` where `f` is a recursive def whose body reaches an op in `ctx.arms`. Used by
 /// [`mark_caller_observed_outstate`] to know which callee's out-state a later spine item observes.
@@ -6086,6 +6155,25 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
     if selfcall_precedes_perform_in_operands(db, orig_body, callee_def, ctx) && !multivalue {
         return None; // an out-state-observing shape the multi-value path does not cover yet (abortive, or
         // a self-call gated behind a conditional inside a leaf) — decline BEFORE reserving the def.
+    }
+    // BRANCH-PERFORMING CONDITIONAL alongside a re-entrant call (v-effects self-probe 2026-08-04,
+    // breaker-confirmed rw1-rw5, concierge-greenlit safe-decline). A discharged perform inside a conditional
+    // BRANCH that is a strict operand ALONGSIDE a self-call / mutual-recursive call — `(+ (if c (St.get) 0)
+    // (walk (- n 1)))` — has its advance dropped across the recursion: the single-return specialization
+    // threads the branch perform against the INCOMING state, but the advance is branch-local and the recursion
+    // carries the incoming state forward (seeded 1 → 3 not 6, all backends). The non-recursive branch-perform
+    // hoist does NOT run inside the specialized body. DECLINE cleanly (safe floor) rather than fold the
+    // dropped-advance wrong value; a full fold needs the branch-perform lifted before specialization (a later
+    // increment). PRECISE (not a naive "perform under any conditional" scanner, which would decline every
+    // recursive fn's base-case `if`): fires only when the branch-perform's conditional and a re-entrant call
+    // are operands of the SAME strict node. Covers runtime-cond (rw3), mutual-SCC (rw4, via
+    // `contains_recursive_call`), and heap-state (rw5, state-shape-agnostic). Does NOT over-decline the
+    // FOLDING shapes: bare tail perform `(+ (St.get) (walk …))` (perform is a direct operand, not under a
+    // branch), let-init-bound perform (`sum-down`), or perform-as-whole-branch with the self-call in a SIBLING
+    // branch (`ev`/`od`: mutually exclusive, no shared strict context). Placed after the multivalue decision
+    // so a shape that path linearizes is not pre-empted.
+    if !multivalue && branch_perform_coexists_with_reentrant_call(db, orig_body, callee_def, ctx) {
+        return None;
     }
 
     // MEMO: the same recursive def under the same handler context specializes ONCE. Keyed by the def's
