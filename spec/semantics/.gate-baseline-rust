@@ -763,6 +763,7 @@ pass	a NON-LAST handler arm whose body is a MATCH round-trips through the ML pri
 pass	a NON-TAIL host call consumes rows on the unwind, deepest frame first
 pass	a NON-TAIL recursion rebinding its rope arg to a slice-concat accumulates after each return
 pass	a NON-identity constant add over a high UInt64 operand still rejects the overflow
+pass	a NON-recursive helper calling a nested op whose resume performs the outer effect folds
 pass	a NON-tail heap-spine build 5000 deep constructs and drains through real frames
 pass	a NON-tail one-shot arm that ADVANCES the state threads the advance through the re-reduced continuation
 pass	a NON-tail recursion 10000 deep computes through real stack frames
@@ -2367,6 +2368,7 @@ pass	a nested element kind mismatch in equality is a type error
 pass	a nested element pattern dispatches on a MIDDLE-variant list payload
 pass	a nested element pattern dispatches on a NON-variant-0 list payload
 pass	a nested handle's INIT expression performs against the OUTER handler before installing
+pass	a nested handler arm whose RESUME-VALUE performs the outer effect threads the advance to the continuation
 pass	a nested if of a common constructor builds it once and dispatches to each arm
 pass	a nested if on the same condition collapses the inner test to the known branch
 pass	a nested inner handler that re-threads its own state folds (merged-context seed from init)
