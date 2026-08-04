@@ -6719,6 +6719,37 @@ fn tail_resume(db: &mut Db, node: StructId) -> Option<(StructId, StructId)> {
 /// Whether `node` reaches a DIRECT perform of an op discharged by `ctx` that is NOT `own` — i.e. a sibling
 /// (outer merged-slot) discharged op. Used by the pre-spec-lift to detect an arm resume-value that performs
 /// a DIFFERENT effect than the arm's own op (the arm-hidden outer perform).
+/// Whether the subtree at `node` contains a VALUE reference that resolves to the binder `binder` — a bare
+/// name occurrence whose `resolved_of` chain reaches `binder` (an arm's state/param binder). Used by
+/// `lift_inner_op_arm_outer_perform` to REFUSE lifting a resume value that reads the inner arm's state
+/// binder (which the lift's `params↦args`-only substitution does not rebind, so lifting would orphan it).
+/// A structural walk; the binder-position occurrence of `binder` itself is not a value reference, but the
+/// lift only inspects a resume VALUE (never the binder slot), so any match here is a genuine read.
+fn subtree_references_binder(db: &mut Db, node: StructId, binder: StructId) -> bool {
+    match resolved_of(db, node) {
+        Resolved::Ref { value } => {
+            let mut t = value;
+            loop {
+                if t == binder {
+                    return true;
+                }
+                match resolved_of(db, t) {
+                    Resolved::Ref { value: n } => t = n,
+                    _ => break,
+                }
+            }
+        }
+        Resolved::Param { binder: b } if b == binder => return true,
+        _ => {}
+    }
+    match db.ast.get(node).clone() {
+        Struct::List(children) => children
+            .iter()
+            .any(|&c| subtree_references_binder(db, c, binder)),
+        Struct::Atom(_) => false,
+    }
+}
+
 fn performs_discharged_op_other_than(
     db: &mut Db,
     node: StructId,
@@ -6751,6 +6782,20 @@ fn lift_inner_op_arm_outer_perform(db: &mut Db, node: StructId, ctx: &HandlerCtx
         && db.ast.as_name(next) == db.ast.as_name(arm.state)
         // the resume value performs a DIFFERENT discharged op (an outer merged slot).
         && performs_discharged_op_other_than(db, val, ctx, (decl.0, idx))
+        // …AND the resume value does NOT read the inner arm's STATE binder. The `next == arm.state` guard
+        // above ensures the NEXT-state is trivial, but says NOTHING about `val` itself. If `val` references
+        // `arm.state` — `(step (u) t (resume (A.tick t) t))`, the outer perform arg reads the inner state —
+        // the substitution below covers `arm.params` but NOT `arm.state`, so the lifted+`deep_fresh_copy`'d
+        // value carries an ORPHANED `t` ref (its inner-handler binder is gone once lifted onto the body
+        // spine) → CDZ0101 `unbound name t` at lowering: a LEAK on a valid program, strictly worse than a
+        // clean decline (github-liaison/Copilot review of #2077, VERIFIED-PLAUSIBLE; the same state-binder-
+        // scope failure as this arc's #1933 orphan). Threading an inner-state-reading resume value onto the
+        // outer body correctly is the full spec-lift fold (a later increment — it must re-bind `t` to the
+        // inner slot's threaded state); until then, leaving this node UN-lifted makes `specialize_recursive`
+        // decline cleanly downstream (the pre-spec-lift floor breaker verified is silent-wrong-value-free),
+        // the honest "not yet reducible" todo. The safe shape (`val` free of `arm.state`, the landed →21
+        // witness `(resume (A.tick) t)`) is UNAFFECTED — it lifts and folds as before.
+        && !subtree_references_binder(db, val, arm.state)
     {
         // β-reduce the arm's resume value with params↦args (the op's args) so a param-referencing outer
         // perform arg resolves. (Unit-op arms bind nothing; a mismatch leaves it un-substituted, still sound
