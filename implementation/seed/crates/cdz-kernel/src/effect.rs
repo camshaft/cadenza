@@ -286,8 +286,10 @@ impl EffectRequest {
     ) -> Self {
         // Take the family as `Cow<'static, str>` (not `Arc<str>`): a well-known family passed as a
         // `&'static str` const arrives as `Cow::Borrowed` with ZERO heap alloc — the same invariant `new`
-        // holds via `kind.family()` (#1563/#1722). (An `Arc<str>` parameter forced a heap alloc on EVERY call
-        // even for a `&'static str` const that the match below immediately re-borrows and discards.)
+        // holds via `kind.family()` (#1563/#1722). (An `Arc<str>` parameter forced a heap alloc for every
+        // `&str`/`&'static str`-const input via `Arc::from` — which is every call site here — that the match
+        // below then immediately re-borrows and discards; a caller already holding an `Arc<str>` wouldn't
+        // re-allocate, but none do.)
         let family: std::borrow::Cow<'static, str> = family.into();
         // Canonicalize a WELL-KNOWN family (an effect kind OR a control-plane family) to its `&'static str`
         // const → `Cow::Borrowed`, zero alloc. A well-known effect family carries its own kind; a
