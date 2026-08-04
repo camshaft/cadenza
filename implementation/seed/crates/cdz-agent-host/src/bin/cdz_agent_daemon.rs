@@ -6,9 +6,14 @@
 //! backend, observability (s2n-quic-dc-metrics), effect-retry policy, and the admin control interface.
 //! Sessions are NOT listed in the config: the daemon boots its infrastructure + an EMPTY session registry,
 //! and sessions are INSTALLED at runtime through the ADMIN CONTROL INTERFACE — when `[admin].enabled`, the
-//! daemon binds a local Unix socket and serves admin commands (install / list / status / stop) concurrently
-//! with the host loop, ctrl-c ending both. That socket is the operator's "communicate with the daemon +
-//! send it commands as admin" path.
+//! daemon binds a local Unix socket and serves admin commands (list / status / stop, and install once the
+//! session factory is wired) concurrently with the host loop, ctrl-c ending both. That socket is the
+//! operator's "communicate with the daemon + send it commands as admin" path.
+//!
+//! (`install-session` needs a [`SessionFactory`](cdz_agent_host::SessionFactory) to load the reducer; the
+//! daemon currently boots WITHOUT one, so an install returns a clean "no session factory" error until the
+//! factory-wiring slice — [`ComponentSessionFactory`](cdz_agent_host::ComponentSessionFactory) + a
+//! `[blob]`-configured blob store — is landed. list / status / stop work today.)
 //!
 //! ```text
 //! cargo run --bin cdz-agent-daemon --features admin,live-net -- /etc/cdz/daemon.toml
@@ -107,20 +112,27 @@ async fn main() -> std::process::ExitCode {
 
         let (loop_sd_tx, loop_sd_rx) = tokio::sync::oneshot::channel::<()>();
         let (sock_sd_tx, sock_sd_rx) = tokio::sync::oneshot::channel::<()>();
-        // ctrl-c → shut down BOTH the host loop and the socket server.
+        // ctrl-c → shut down the host LOOP (only). The loop's return then drives the socket teardown below,
+        // so ctrl-c needs to fire just the loop signal; keeping sock_sd_tx here (not moved into this task)
+        // lets the single "loop returned → tear down socket" path handle BOTH ctrl-c and a loop-Err exit.
         tokio::spawn(async move {
             if tokio::signal::ctrl_c().await.is_ok() {
                 eprintln!("cdz-agent-daemon: ctrl-c received — shutting down");
                 let _ = loop_sd_tx.send(());
-                let _ = sock_sd_tx.send(());
             }
         });
-        // Run the loop + the socket server together: the loop owns the !Send registry, the socket task is
-        // the Send producer feeding it. Both end on ctrl-c.
-        let (loop_result, ()) = tokio::join!(
-            host.run_with_wall_clock(loop_sd_rx),
-            socket.serve(admin_channel, sock_sd_rx)
-        );
+        // Serve the socket on its OWN task (the loop owns the !Send registry, the socket task is the Send
+        // producer feeding it). Then drive the host loop as the primary future — CRUCIALLY, when the loop
+        // RETURNS (clean shutdown OR a kernel Err), tear the socket task down explicitly. A prior version
+        // `join!`ed both, which DEADLOCKED on a loop-Err: the socket only exits when sock_sd_tx fires (ctrl-c
+        // only), so a loop error left join! blocked on the socket forever, swallowing the error (#1977
+        // review). Now the loop's return drives socket teardown, and the loop's Err reaches the exit code.
+        let socket_task = tokio::spawn(socket.serve(admin_channel, sock_sd_rx));
+        let loop_result = host.run_with_wall_clock(loop_sd_rx).await;
+        // The loop is done — tear down the socket server and await its task so the socket file's Drop
+        // cleanup runs before we exit.
+        let _ = sock_sd_tx.send(());
+        let _ = socket_task.await;
         return match loop_result {
             Ok(_registry) => {
                 eprintln!("cdz-agent-daemon: shut down cleanly.");

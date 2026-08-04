@@ -1,9 +1,9 @@
 //! The real [`SessionFactory`] — turns an admin `install-session` command into a running agent by LOADING
 //! its reducer from the blob store.
 //!
-//! Slice A's admin command layer left session CONSTRUCTION behind the [`SessionFactory`] seam (building a
-//! reducer from a `reducer_hash` means loading its wasm component — a host concern, per v-agent-harness's
-//! answer: the kernel exposes the PIECES, the host assembles them). This is that assembly:
+//! Building a reducer from a `reducer_hash` means loading its wasm component, which is a HOST concern — the
+//! kernel exposes the pieces ([`BlobStore::get`] + [`AsyncComponentReducer::from_component_bytes`]) and the
+//! host assembles them behind the [`SessionFactory`] seam. This is that assembly:
 //! [`ComponentSessionFactory`] holds a [`BlobStore`] + the per-session executor set, and on each install it
 //!
 //! 1. fetches the reducer component bytes by content hash (`blob.get(reducer_hash)`),
@@ -132,13 +132,15 @@ mod tests {
     use cdz_kernel::blob::MemBlobStore;
     use cdz_kernel::hash::Hash;
 
-    /// A minimal VALID async-reducer component, built once from the committed reducer-guest fixture bytes if
-    /// present. The test is env-gated on a real component path (like the cedar/e2e tests) so it runs in CI
-    /// where the fixture is built, and skips cleanly locally without it.
+    /// The reducer-guest fold-world component bytes, if `CDZ_REDUCER_COMPONENT` points at one (CI builds +
+    /// exports it; absent locally → the test skips). Distinguishes "var UNSET → skip" from "var SET but the
+    /// file is unreadable → PANIC" (#1979 review): a silent `.ok()` on the read would mask a CI misconfig
+    /// (the var set to a bad path) as a green skip. If the var is set, the component MUST be readable.
     fn reducer_component_bytes() -> Option<Vec<u8>> {
-        // CDZ_REDUCER_COMPONENT points at a lifted fold-world component (CI builds one); absent → skip.
         let path = std::env::var("CDZ_REDUCER_COMPONENT").ok()?;
-        std::fs::read(path).ok()
+        Some(std::fs::read(&path).unwrap_or_else(|e| {
+            panic!("CDZ_REDUCER_COMPONENT is set to {path} but the component is unreadable: {e}")
+        }))
     }
 
     fn hermetic_executors() -> CompositeExecutor {
@@ -196,18 +198,22 @@ mod tests {
     #[tokio::test]
     async fn install_of_a_real_reducer_component_runs_an_agent() {
         // The end-to-end payoff: a REAL reducer component in the blob store → install builds a live session
-        // that a subsequent inbound actually drives. Env-gated on a built component fixture (skips locally).
+        // that a subsequent inbound ACTUALLY DRIVES. Env-gated on a built component fixture (skips locally).
+        // The reducer-guest fixture, on a `message` inbound, bumps a `count` KV counter (then requests an
+        // Http effect); we deliver one message + assert `count` was written — proving the reducer RAN, not
+        // merely that a session registered (#1979 review: the prior version stopped at `contains`).
         let Some(bytes) = reducer_component_bytes() else {
             eprintln!("CDZ_REDUCER_COMPONENT unset — skipping the real-component install test");
             return;
         };
         let mut blob = MemBlobStore::new();
         let hash = blob.put(&bytes).await.unwrap();
-        // Grant the session Now so a fold that reads the clock can run.
+        // Grant the session Http so the fold's requested effect authorizes (the KV `count` write happens in
+        // the fold regardless, but granting Http keeps the turn from erroring on an AuthzDenied).
         let authz = || -> Box<dyn Authorize> {
             use cdz_kernel::effect::{Capability, EffectKind, ResourcePredicate};
             Box::new(Authorizer::new(vec![Capability {
-                kind: EffectKind::Now,
+                kind: EffectKind::Http,
                 predicate: ResourcePredicate::Any,
             }]))
         };
@@ -232,6 +238,36 @@ mod tests {
             },
             "a real reducer component installs"
         );
-        assert!(host.contains(&SessionId::new("real")));
+
+        // Drive the installed session: deliver a `message` inbound → the reducer's fold runs → `count`=1.
+        use cdz_kernel::effect::Payload;
+        use cdz_kernel::event::{ContentType, EventBody};
+        let outcome = host
+            .deliver(
+                &SessionId::new("real"),
+                EventBody::Inbound {
+                    content_type: ContentType {
+                        family: "message".into(),
+                        version: 1,
+                    },
+                    payload: Payload::Inline(b"hello".to_vec().into()),
+                },
+                None,
+            )
+            .await;
+        assert!(
+            matches!(outcome, Some(Ok(()))),
+            "the installed real reducer ran a turn: {outcome:?}"
+        );
+        // The reducer WROTE to its own KV during the fold — proof it actually executed (not just registered).
+        assert_eq!(
+            host.get(&SessionId::new("real"))
+                .unwrap()
+                .session()
+                .kv()
+                .get(b"count"),
+            Some(&[1u8][..]),
+            "the reducer's fold bumped its count counter — the agent ran"
+        );
     }
 }

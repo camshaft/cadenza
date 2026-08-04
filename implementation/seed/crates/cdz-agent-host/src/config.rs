@@ -92,8 +92,16 @@ pub struct AdminConfig {
 
 /// The reducer blob-store backend — where the daemon resolves a `reducer_hash` to component bytes on an
 /// admin `install-session`. `memory` (default) is a non-durable in-process store (dev/test); `dir` is a
-/// content-addressed disk store rooted at a path (the single-host durable backend). A distributed backend
-/// (S3/Dynamo) is a later slice behind the same `BlobStore` trait.
+/// content-addressed disk store rooted at a path (the single-host durable backend). The
+/// [`BlobStore`](cdz_kernel::blob::BlobStore) trait is the extension seam — further backends drop in behind
+/// it without a config reshape.
+///
+/// **Parsed-but-not-yet-wired (staging gap, #1981 review).** Like `[log]`/`[observability]`, this config
+/// SECTION lands ahead of the code that reads it: the daemon bin does not yet consult `config.blob` (the
+/// factory-wiring slice — [`ComponentSessionFactory`](crate::ComponentSessionFactory) + a config-built blob
+/// store — is the follow-up). So a `backend = "dir"` currently PARSES + VALIDATES but selects no store yet;
+/// it takes effect once that slice lands. Documented so the no-op is a conscious staging gap, not a silent
+/// surprise (the "config that does nothing" hazard).
 #[derive(Debug, Clone, Deserialize, PartialEq, Default)]
 #[serde(tag = "backend", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum BlobConfig {
