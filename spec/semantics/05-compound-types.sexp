@@ -15647,6 +15647,51 @@
             (export main)))
   (call   main (: 100 Int64)) (output (: 100 Int64)))
 
+(case "a trie spanning NEGATIVE and positive keys enumerates in signed numeric order"
+  (doc    "The signed face of the deep-trie sortedness pin above (whose keys are all positive): 100 keys
+           `(i-50)·7` span [-343..350], and the enumeration must interleave them in SIGNED numeric order
+           with the most-negative key FIRST — verified by a strictly-increasing walk seeded below the
+           range counting all 100 (·10) plus an explicit head check (`List.at 0` = -343, +1 → 1001). A
+           canonical order over raw two's-complement key bytes would enumerate the positives before the
+           negatives (sign bit high); this is the face where that implementation diverges from the
+           small-key rows.")
+  (input  (do
+            (def (fill (: i Int64) (: m (Map Int64 Int64)))
+              (if (= i 0) m (fill (- i 1) (Map.insert m (* (- i 50) 7) i))))
+            (def (inc (: ps (List (Tuple Int64 Int64))) (: prev Int64) (: cnt Int64))
+              (match ps
+                ((list) cnt)
+                ((list h .. t) (match h ((tuple k _v) (if (> k prev) (inc t k (+ cnt 1)) -100000))))))
+            (def (main (: n Int64))
+              (do
+                (def m (fill n Map.empty))
+                (+ (* 10 (inc (Map.to-list m) -100000 0))
+                   (match (List.at (Map.to-list m) 0)
+                     ((Some p) (match p ((tuple k _v) (if (= k -343) 1 0))))
+                     ((None _u) -1)))))
+            (export main)))
+  (call   main (: 100 Int64)) (output (: 1001 Int64)))
+
+(case "a negative-key trie churned back keys and enumerates like the direct build"
+  (doc    "The negative-keyspace face of the churn-identity family: churn 60 NEGATIVE keys (-3i) around
+           a mixed ±7 seed pair, and the survivor must enumerate identically to the direct build
+           (`Map.to-list` equality as LISTS, ·10) with the negative seed key still resolving (+1 → 11).
+           Removal traffic entirely on the negative side must leave the canonical structure — and the
+           signed enumeration order — byte-identical to the never-grown twin.")
+  (input  (do
+            (def (grow (: i Int64) (: n Int64) (: m (Map Int64 Int64)))
+              (if (= i n) m (grow (+ i 1) n (Map.insert m (- 0 (* i 3)) i))))
+            (def (shrink (: i Int64) (: n Int64) (: m (Map Int64 Int64)))
+              (if (= i n) m (shrink (+ i 1) n (Map.remove m (- 0 (* i 3))))))
+            (def (main (: n Int64))
+              (do
+                (def direct (Map.insert (Map.insert Map.empty -7 70) 7 77))
+                (def churned (shrink 1 n (grow 1 n direct)))
+                (+ (* 10 (if (= (Map.to-list churned) (Map.to-list direct)) 1 0))
+                   (match (Map.lookup churned -7) ((Some v) (if (= v 70) 1 0)) ((None _u) -1)))))
+            (export main)))
+  (call   main (: 60 Int64)) (output (: 11 Int64)))
+
 (case "an enumerate-and-rebuild round trip equals the source map by canonical identity"
   (doc    "The to-list⇄fold closure of the enumeration family: `Map.to-list` a 60-entry trie, rebuild by
            folding the pairs into an empty map, and the rebuild must EQUAL the source by canonical `=`
