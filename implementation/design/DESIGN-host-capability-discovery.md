@@ -1,6 +1,6 @@
 # Host capability discovery + mid-session capability upgrade
 
-Owner: `v-agent-harness` (build; design by `design-host-capabilities`). Status: **PROPOSAL — peer-reviewed,
+Owner: `v-agent-harness` (builds it; design by `design-host-capabilities`). Status: **PROPOSAL — peer-reviewed,
 awaiting operator ratification.** Operator idea via concierge 2026-08-03;
 the operator is away all week (no live iteration), so this is a proposal shaped WITH the two harness
 owners (`v-agent-harness`, `v-agent-harness-host`) rather than decided in a live design session. The three
