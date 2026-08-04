@@ -98,7 +98,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 # registry. Verified network-egress-FREE base (no QUIC/reqwest/TLS; the arrow/otel backends are opt-in
 # features of the crate, NOT enabled here) — so it honors the hermetic-default-gate (hermetic = no NETWORK,
 # not no-deps). Git dep = the operator's fork; branch=main HEAD tracks their metrics work.
-s2n-quic-dc-metrics = { git = "https://github.com/camshaft/s2n-quic", branch = "main" }
+# Pinned to an exact rev (not a bare branch=main) for a REPRODUCIBLE build (#2084 review): a moving branch
+# would let `cargo update` drift the seed off the locked rev + can break when upstream main moves. The rev is
+# the lock's pinned HEAD; bump it deliberately when adopting new metrics-crate work. (Also keeps v-nix's
+# importCargoLock outputHashes key stable — the lock source names this exact rev.)
+s2n-quic-dc-metrics = { git = "https://github.com/camshaft/s2n-quic", rev = "7ec9f027424badd576436d29d05f75c8d8594133" }
 # reqwest — the real async HTTP client behind the `HttpTransport` seam. OPTIONAL, enabled only by
 # `live-net` (default build never compiles it — keeps the hermetic gate free of the network/TLS tree).
 # `rustls-tls` (not the platform's OpenSSL) so it builds on any runner with no system SSL dep;

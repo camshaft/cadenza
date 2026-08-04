@@ -87,7 +87,7 @@ impl Executor for MeteredExecutor {
         let started = std::time::Instant::now();
         let outcome = self.inner.perform(req, idempotency_key).await;
         self.metrics
-            .record_latency_us(started.elapsed().as_micros() as u64);
+            .record_latency_us(crate::metrics::micros_u64(started.elapsed()));
         // Tally the metric + trace at the SAME tap. The family names which effect; a failure logs its
         // classified reason (retryable/permanent) at warn (a supervisor signal), ok at debug (routine).
         let family = req.content_type.family.as_ref();

@@ -24,6 +24,14 @@ use s2n_quic_dc_metrics::{Counter, Summary, Unit};
 /// `crate::metrics::Registry` without depending on the metrics crate directly).
 pub use s2n_quic_dc_metrics::Registry;
 
+/// Saturating `Duration`-micros → `u64` for a latency [`Summary`] record. `Duration::as_micros` returns
+/// `u128`; the `as u64` truncation is unreachable in practice (`u64::MAX` µs ≈ 584k years), but saturate
+/// rather than silently wrap so an absurd/monotonic-clock-glitch duration clamps to the max instead of
+/// wrapping to a small value (#2084 review; one helper for the host + effect latency sites).
+pub(crate) fn micros_u64(d: std::time::Duration) -> u64 {
+    u64::try_from(d.as_micros()).unwrap_or(u64::MAX)
+}
+
 /// The metric name every host-boundary counter aggregates under (the aggregation string distinguishes the
 /// individual counters via the `Variant|…` convention the s2n-quic-dc registry uses).
 const HOST_METRIC: &str = "cdz_agent_host.session";

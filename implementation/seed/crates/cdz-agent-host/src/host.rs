@@ -314,7 +314,8 @@ impl HostedSession {
 /// routes inbound events to the right one, and is the object a `session-status <id>` query reads.
 ///
 /// Constructed via [`new`](Self::new) / [`with_canonical_store`](Self::with_canonical_store) (each creates
-/// the metrics registry) — no `Default`, since the registry is a required, non-default collaborator.
+/// the metrics registry). `Default` delegates to `new` (it can't be derived — the metrics registry is a
+/// required collaborator, not a `Default` field — so the impl forwards to `new`).
 pub struct AgentHost {
     sessions: HashMap<SessionId, HostedSession>,
     /// The §4c v0.3 canonical shared name store, if this host is share-backed (see
@@ -447,7 +448,7 @@ impl AgentHost {
         let started = std::time::Instant::now();
         let outcome = s.deliver(body, cause).await;
         self.metrics
-            .record_turn_latency_us(started.elapsed().as_micros() as u64);
+            .record_turn_latency_us(crate::metrics::micros_u64(started.elapsed()));
         self.metrics.record_turn(outcome.is_ok());
         // Trace the turn outcome at the same boundary the metric records. An errored turn logs the kernel
         // reason at warn (a supervisor signal); a successful turn at debug (routine, filtered out at info).
