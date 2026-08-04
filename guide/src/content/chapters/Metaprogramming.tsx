@@ -156,8 +156,9 @@ export default function Metaprogramming() {
       />
       <P>
         A quoted <em>value</em> literal evals back to itself. Unlike a quoted name (which <C>eval</C>{" "}
-        resolves) or a quoted call (which it runs), a bare integer, string, or byte string is already its own
-        value, so evaluating its node just hands it back. A quoted byte string reifies to an <C>Ast.Bytes</C>,
+        resolves) or a quoted call (which it runs), a bare value literal such as an integer, float, boolean,
+        string, or byte string is already its own value, so evaluating its node just hands it back. A quoted
+        byte string reifies to an <C>Ast.Bytes</C>,
         and <C>{`(eval (quote b"hi"))`}</C> is the original <C>{`b"hi"`}</C>, closing the loop from source to
         node to value:
       </P>
