@@ -299,6 +299,49 @@
           src = exampleProjectSrc;
         };
 
+        # Full-CI-in-nix increment 6e: the GHA `cad-tests` job — `cdz test` on the 4 committed
+        # in-tree Cadenza PROJECTS (implementation/{cad,compiler-ml,choreography,iterators}). These are
+        # pure-Cadenza (Project.cdz + src/*.cdz), NOT the excluded Rust cdz-cad crate — so no cmake/C++,
+        # just the S3 testCadenzaProject pattern applied to real project dirs: the nix-built seedCompiler
+        # runs each project's @test suite, resolving the value-heap runtime from my componentStore
+        # (CDZ_STORE) — skipping the CI job's `xtask build` + native cdz rebuild. Each project is
+        # self-contained (`modules = ["src/*.cdz"]`, no cross-dir imports). Advisory-by-omission →
+        # unilateral cargo-twin retire once green.
+        cdzCadProjectsSrc = pkgs.lib.fileset.toSource {
+          root = ./.;
+          fileset = pkgs.lib.fileset.unions [
+            ./implementation/cad
+            ./implementation/compiler-ml
+            ./implementation/choreography
+            ./implementation/iterators
+          ];
+        };
+        cdzCadTestsCheck = pkgs.stdenvNoCC.mkDerivation {
+          pname = "cdz-cad-tests";
+          version = "0.0.0";
+          src = cdzCadProjectsSrc;
+          nativeBuildInputs = [ seedCompiler ];
+          buildPhase = ''
+            runHook preBuild
+            set -o pipefail
+            export HOME="$TMPDIR/home"; mkdir -p "$HOME"
+            export CDZ_STORE="${componentStore}"
+            # Run each project's @test suite explicitly (its dir), resolving the runtime from the nix
+            # store. A non-zero `cdz test` propagates (pipefail) and fails the build.
+            for p in implementation/cad implementation/compiler-ml \
+                     implementation/choreography implementation/iterators; do
+              echo "== cdz test $p =="
+              cdz test "$p" | tee -a "$TMPDIR/cad-tests.out"
+            done
+            runHook postBuild
+          '';
+          installPhase = ''
+            runHook preInstall
+            cp "$TMPDIR/cad-tests.out" "$out"
+            runHook postInstall
+          '';
+        };
+
         # ── rcdzc→WASM: the Cadenza COMPILER as a wasm artifact (agent-harness v0.2, operator 2026-08-03) ─
         #
         # v-agent-harness needs rcdzc as a content-addressable wasm the kernel loads from its blob store +
@@ -984,7 +1027,9 @@
         # committed `spec/bench/.alloc-baseline` — failing on a regression. It's a NATIVE (host) cargo test
         # — cdz-runtime's `.cargo/config.toml` scopes build-std to `[target.wasm32-unknown-unknown]` ONLY,
         # so the host test needs NO build-std / RUSTC_BOOTSTRAP / wasm-tools (simpler than codegen/gate).
-        # REQUIRED-class job. aarch64 for parity with the recorded baseline.
+        # REQUIRED-class job. Runs on aarch64 here (the flake's host); the ALLOCATION COUNT is
+        # arch-independent (it's gross heap allocs, not wall-clock or codegen), so this matches the GHA
+        # bench job's x86_64 (ubuntu-latest) run against the same committed baseline (github-liaison #2042).
         benchSrc = pkgs.lib.fileset.toSource {
           root = ./.;
           fileset = pkgs.lib.fileset.unions [
@@ -1177,6 +1222,8 @@
             gate-check = gateCheck;
             # Full-CI-in-nix increment 6d: the GHA bench job (cargo xtask bench — runtime alloc ceilings).
             bench-check = benchCheck;
+            # Full-CI-in-nix increment 6e: the GHA cad-tests job (cdz test on the 4 in-tree Cadenza projects).
+            cad-tests = cdzCadTestsCheck;
             # Full-CI-in-nix increment 6a: the GHA `roundtrip` job — every corpus program round-trips
             # through the syntax surfaces. Corpus-only (reads spec/semantics, no runtime store) → narrow
             # `seedRoundtripSrc` (no compiler-ml, #2007). Invoked via `cargo run --locked` (not the bare
