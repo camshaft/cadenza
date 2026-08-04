@@ -909,10 +909,8 @@
             # xtask codegen --check regenerates runtime_abi.rs (building cdz-runtime + cdz-nfc components
             # via cargo-component to fold in their hashes) and fails if the committed file drifted.
             # Invoke the xtask binary via `cargo run --locked` (not the bare `cargo xtask` alias, which
-            # omits --locked) so a root-lockfile drift is a HARD FAIL, matching the workspace test/clippy
-            # checks (github-liaison #2027). (The runtime/nfc COMPONENT builds xtask spawns internally do
-            # NOT pass --locked — that's a separate consideration; this --locked guards the seed/xtask
-            # workspace lock the check itself vendors.)
+            # omits --locked) so a root-lockfile drift is a HARD FAIL for this check (github-liaison
+            # #2027/#2038 — no comparison to other checks; several deliberately omit --locked).
             cargo run --locked --package xtask --profile release -- codegen --check
             runHook postBuild
           '';
@@ -976,6 +974,60 @@
           installPhase = ''
             runHook preInstall
             echo "ok: cdz-gate-check (cargo xtask gate --check --store <nix store>)" > "$out"
+            runHook postInstall
+          '';
+        };
+
+        # Full-CI-in-nix increment 6d: the GHA `bench` job (`cargo xtask bench`) — the runtime ALLOCATION
+        # benchmark. xtask runs cdz-runtime's `#[ignore]`d `hot_op_allocation_ceilings` test
+        # (`cargo test --release … --ignored --test-threads=1`), parses its ALLOC lines, and diffs vs the
+        # committed `spec/bench/.alloc-baseline` — failing on a regression. It's a NATIVE (host) cargo test
+        # — cdz-runtime's `.cargo/config.toml` scopes build-std to `[target.wasm32-unknown-unknown]` ONLY,
+        # so the host test needs NO build-std / RUSTC_BOOTSTRAP / wasm-tools (simpler than codegen/gate).
+        # REQUIRED-class job. aarch64 for parity with the recorded baseline.
+        benchSrc = pkgs.lib.fileset.toSource {
+          root = ./.;
+          fileset = pkgs.lib.fileset.unions [
+            ./implementation/seed/crates
+            ./xtask
+            ./Cargo.toml
+            ./Cargo.lock
+            ./.cargo
+            ./rust-toolchain.toml
+            # the committed allocation baseline the bench diffs against.
+            ./spec/bench
+          ];
+        };
+        benchCheck = pkgs.stdenvNoCC.mkDerivation {
+          pname = "cdz-bench-check";
+          version = "0.0.0";
+          src = benchSrc;
+          # codegenVendor is a superset root-lock vendor (also carries the cdz-runtime lock the bench test
+          # compiles against). No wasm-tools/cargo-component: the bench test is a native host build.
+          nativeBuildInputs = [ rustToolchain ];
+          buildPhase = ''
+            runHook preBuild
+            export HOME="$TMPDIR/home"
+            export CARGO_HOME="$TMPDIR/cargo"
+            export CARGO_NET_OFFLINE=true
+            export RUST_MIN_STACK=67108864
+            mkdir -p "$HOME" "$CARGO_HOME"
+            cat > "$CARGO_HOME/config.toml" <<EOF
+            [build]
+            jobs = 4
+            [source.crates-io]
+            replace-with = "vendored-sources"
+            [source.vendored-sources]
+            directory = "${codegenVendor}"
+            EOF
+            # Runs cdz-runtime's hot_op_allocation_ceilings test + diffs the ALLOC counts vs
+            # spec/bench/.alloc-baseline. --locked = hard-fail on lock drift (matches siblings).
+            cargo run --locked --package xtask --profile release -- bench
+            runHook postBuild
+          '';
+          installPhase = ''
+            runHook preInstall
+            echo "ok: cdz-bench-check (cargo xtask bench)" > "$out"
             runHook postInstall
           '';
         };
@@ -1123,6 +1175,8 @@
             codegen-check = codegenCheck;
             # Full-CI-in-nix increment 6c: the GHA gate job (cargo xtask gate --check — THE behavior gate).
             gate-check = gateCheck;
+            # Full-CI-in-nix increment 6d: the GHA bench job (cargo xtask bench — runtime alloc ceilings).
+            bench-check = benchCheck;
             # Full-CI-in-nix increment 6a: the GHA `roundtrip` job — every corpus program round-trips
             # through the syntax surfaces. Corpus-only (reads spec/semantics, no runtime store) → narrow
             # `seedRoundtripSrc` (no compiler-ml, #2007). Invoked via `cargo run --locked` (not the bare
