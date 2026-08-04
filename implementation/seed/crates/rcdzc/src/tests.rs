@@ -66296,6 +66296,18 @@ mod stage1 {
             34,
             "the direct-init twin must still fold to 34 (no over-decline through the nested handle)"
         );
+        // a4-init (liaison/Copilot on #1933): the block-wrapped OUTER perform in the inner handle's INIT (the
+        // init is evaluated in the outer extent). The a4 fix scanned the inner body but early-returned without
+        // the init — this closes that gap (scan the init node directly + recurse into both init and body).
+        let init_face = "(do (effect A (op ga (-> Unit Int64))) (effect B (op gb (-> Unit Int64))) \
+                   (def (main) (handle A 3 ((ga (u) s (resume s (+ s 1)))) \
+                     (handle B (let ((k true)) (if k (A.ga) 9)) ((gb (u) t (resume t t))) \
+                       (+ (* 10 (B.gb)) (A.ga))))) \
+                   (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(init_face))).is_err(),
+            "a block-wrapped outer perform in a nested handle's init must decline, not miscompile to 33"
+        );
     }
 
     #[test]
