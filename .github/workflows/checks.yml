@@ -28,14 +28,20 @@ env:
 jobs:
   # ── Pure native, no wasm toolchain ──────────────────────────────────────────
   fmt:
+    # Full-CI-in-nix cutover PILOT (Model A, v-fleet-tooling 2026-08-04): this job's BODY now runs the
+    # nix `checks.fmt` derivation instead of a bare `cargo fmt`, but keeps `name: rustfmt` so the required
+    # ruleset context `checks / rustfmt` is UNCHANGED — no ruleset edit, no lockstep. The nix check runs
+    # the identical `cargo fmt --all --check` hermetically under the pinned toolchain. First engine-swap;
+    # if it gates green across a few candidates, the same body-swap rolls to the other required jobs.
+    # aarch64 (ubuntu-24.04-arm): the flake's checks are aarch64-linux (the runtime-hash arch). The
+    # aggregate `nix flake check (advisory)` job stays as the belt-and-suspenders canary.
     name: rustfmt
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v7
-      - uses: ./.github/actions/setup-rust
-        with:
-          cache-key: fmt
-      - run: cargo fmt --all --check
+      - uses: DeterminateSystems/nix-installer-action@v22
+      - name: cargo fmt (via nix)
+        run: nix build .#checks.aarch64-linux.fmt --print-build-logs
 
   clippy:
     name: clippy
