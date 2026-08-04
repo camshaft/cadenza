@@ -1504,6 +1504,86 @@ mod status_snapshot_tests {
         }
     }
 
+    // A reducer that FAILS its fold on an inbound (returns FoldOutput::failed) — models a wasm guest trap /
+    // fuel-exhaustion surfaced as data (§17). Used to pin the FoldFailed error-capture path (§6a gap #1).
+    struct FailingReducer;
+    #[async_trait::async_trait(?Send)]
+    impl Reducer for FailingReducer {
+        async fn fold(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+            match &event.body {
+                EventBody::Inbound { .. } => {
+                    FoldOutput::failed("wasm reducer trapped: unreachable")
+                }
+                _ => FoldOutput::none(),
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_failed_fold_is_captured_as_a_foldfailed_event_and_the_session_survives() {
+        // §6a error-resilience gap #1 (the supervision FOUNDATION): a fold that FAILS must be CAPTURED as a
+        // first-class FoldFailed LOG event a supervisor can observe — NOT vanish into a silent empty fold
+        // ("errors into the void"), NOT panic the loop, NOT wedge the session. Pins the drive-loop BEHAVIOR
+        // (the codec round-trip is pinned separately in event.rs/event_ast).
+        let mut exec = RecordingExecutor::new();
+        let mut s = Session::genesis(Hash::of(b"fail-v1"));
+        s.deliver(
+            inbound(),
+            None,
+            &FailingReducer,
+            &Authorizer::deny_all(),
+            &mut exec,
+        )
+        .await
+        .unwrap(); // deliver itself SUCCEEDS — the fold failure is data, not a kernel error.
+
+        // A FoldFailed event is on the log, carrying the reason + cause-linked to the inbound it choked on.
+        let (reason, caused) = s
+            .log()
+            .iter()
+            .find_map(|e| match &e.body {
+                EventBody::FoldFailed {
+                    reason,
+                    caused_event,
+                } => Some((reason.clone(), *caused_event)),
+                _ => None,
+            })
+            .expect("a failed fold records a FoldFailed event");
+        assert_eq!(
+            reason, "wasm reducer trapped: unreachable",
+            "the failure reason is preserved"
+        );
+        // The inbound the fold choked on is on the log, and FoldFailed is cause-linked to it.
+        let inbound_hash = s
+            .log()
+            .iter()
+            .find_map(|e| matches!(&e.body, EventBody::Inbound { .. }).then(|| e.hash()))
+            .expect("the inbound is logged");
+        assert_eq!(
+            caused, inbound_hash,
+            "FoldFailed is cause-linked to the event whose fold failed"
+        );
+
+        // No effects were routed (a failed fold carries none), and the session is NOT stuck — it's a normal
+        // observable state a supervisor reads, and the loop didn't panic.
+        assert!(exec.seen.is_empty(), "a failed fold routes no effects");
+        assert_eq!(
+            s.open_effects(),
+            0,
+            "no dispatched-but-unsettled obligations from a failed fold"
+        );
+
+        // Self-heal precondition: ONE failed fold doesn't wedge the session — a SUBSEQUENT deliver still folds.
+        // (StatusReducer here just to prove the session accepts + processes a new event after the failure.)
+        s.deliver(inbound(), None, &StatusReducer, &timer_cap(), &mut exec)
+            .await
+            .unwrap();
+        assert!(
+            s.kv().get(b"public/status").is_some(),
+            "the session survives a failed fold and processes the next event"
+        );
+    }
+
     // A report-aware reducer (the fork-for-query summarize protocol, operator ruling (a)): on an ordinary
     // message it does work + publishes status; on the well-known `report` content-type it describes ITSELF
     // from LOCAL STATE (no model call — the operator's preferred path) by writing a summary to `public/`.
