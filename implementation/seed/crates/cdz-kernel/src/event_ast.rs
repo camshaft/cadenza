@@ -762,16 +762,28 @@ fn read_outcome(a: &Arenas, id: StructId) -> Result<EffectOutcome, EventAstError
     }
 }
 
-/// Decode a `<close-outcome>` — BACKWARD-COMPATIBLE with legacy `(closed <payload>)`: a payload-headed form
-/// (`inline`/`blob`) is a `Success` (so an old Closed decodes unchanged), `(failure <str>)` is a Failure.
-/// §6 supervision slice-1 (fix-forward on #1938's wire break); an unknown head is `Corrupt`.
+/// Decode a `<close-outcome>` — accepts ALL THREE textual shapes that have existed across time, so no
+/// persisted `Closed` fails to decode (the durable log is this codec): legacy pre-#1938 `(closed <payload>)`
+/// (bare `inline`/`blob`) → `Success`; the #1938-window `(closed (success <payload>))` (wrapped) → `Success`;
+/// the current (= legacy) bare form → `Success`; plus `(failure <str>)` → `Failure`. §6 supervision slice-1
+/// (fix-forward on #1938's wire break). An unknown head returns [`EventAstError::Shape`] (the framing layer
+/// maps that to a `Corrupt` recovery outcome; there is no distinct `Corrupt` variant here).
 fn read_close_outcome(
     a: &Arenas,
     id: StructId,
 ) -> Result<crate::event::CloseOutcome, EventAstError> {
     match head_of(a, id)? {
-        // A bare payload form (legacy `(closed <payload>)`) = a successful close.
+        // A bare payload form (legacy pre-#1938 + the current write shape) = a successful close.
         "inline" | "blob" => Ok(crate::event::CloseOutcome::Success(read_payload(a, id)?)),
+        // The #1938-WINDOW wrapped shape `(success <payload>)` — #1938 briefly WROTE this before the
+        // fix-forward reverted to the bare form. Kept so a Closed persisted in that window still decodes
+        // (accept-all-read, write-one — the durable log may hold any of the 3 shapes across time).
+        "success" => {
+            let [p] = form(a, id, "success")? else {
+                return Err(shape("success arity"));
+            };
+            Ok(crate::event::CloseOutcome::Success(read_payload(a, *p)?))
+        }
         "failure" => {
             let [m] = form(a, id, "failure")? else {
                 return Err(shape("failure arity"));
@@ -1399,6 +1411,35 @@ mod tests {
                 outcome: CloseOutcome::Success(Payload::Inline(b"legacy".to_vec().into())),
             },
             "a legacy (closed (inline …)) decodes as Success (backward-compatible textual codec)"
+        );
+
+        // #1938-WINDOW shape (liaison pr1947): a `(closed (success <payload>))` sexpr — the wrapped form
+        // #1938 briefly WROTE (and #1947's first cut dropped from the decoder) — must ALSO decode as Success,
+        // else a Closed persisted in that window fails. Proves all 3 textual shapes are accepted on read.
+        let window_bytes = {
+            let mut b = Builder::new();
+            let head = b.name("event");
+            let seq = u64_leaf(&mut b, 4);
+            let cause = {
+                let n = b.name("none");
+                b.list(vec![n])
+            };
+            let closed_head = b.name("closed");
+            let success_head = b.name("success");
+            let pf = payload_form(&mut b, &Payload::Inline(b"window".to_vec().into()));
+            let success = b.list(vec![success_head, pf]);
+            let body = b.list(vec![closed_head, success]);
+            let root = b.list(vec![head, seq, cause, body]);
+            codec::encode(&b.finish(root))
+        };
+        assert_eq!(
+            decode(&window_bytes)
+                .expect("#1938-window (closed (success …)) still decodes")
+                .body,
+            EventBody::Closed {
+                outcome: CloseOutcome::Success(Payload::Inline(b"window".to_vec().into())),
+            },
+            "a #1938-window (closed (success …)) decodes as Success (all 3 shapes accepted)"
         );
     }
 
