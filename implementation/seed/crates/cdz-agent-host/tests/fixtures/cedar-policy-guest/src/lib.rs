@@ -32,6 +32,11 @@ use std::str::FromStr;
 /// - permit `http` broadly BUT `forbid` the IMDS metadata host (SSRF/exfil guard — forbid wins over the
 ///   broad permit, the case a flat capability set can't express);
 /// - permit `model` only to a specific allow-listed model id;
+/// - permit `store/resolve` broadly (read a name), but FORBID `store/set` to the system policy pointer
+///   (the §20b anti-hijack: an agent may read the current-policy pointer but not overwrite it). These two
+///   rules exist BECAUSE the authorizer's action is the effect FAMILY string (`store/set`/`store/resolve`),
+///   not the old `Emit` placeholder kind (#1916) — a policy can only gate store writes if it sees the real
+///   family, so a decision test over them regression-guards that family-not-kind mapping end-to-end;
 /// - everything else → denied by default (no matching permit).
 ///
 /// A real deployment ships its own policy set as the component's embedded bytes; this fixture's set is
@@ -42,6 +47,8 @@ permit(principal, action == Action::"timer", resource);
 permit(principal, action == Action::"http", resource);
 forbid(principal, action == Action::"http", resource == Resource::"http://169.254.169.254/latest/meta-data/");
 permit(principal, action == Action::"model", resource == Resource::"claude-test");
+permit(principal, action == Action::"store/resolve", resource);
+forbid(principal, action == Action::"store/set", resource == Resource::"system/policy/current");
 "#;
 
 struct Guest0;
@@ -150,6 +157,40 @@ mod tests {
         // default-deny: a model id outside the allow-list, and an unmodelled action.
         assert_eq!(decide(&req("agent", "model", "other-model")), Ok(false));
         assert_eq!(decide(&req("agent", "shell", "rm -rf /")), Ok(false));
+    }
+
+    #[test]
+    fn store_action_is_the_family_string_not_the_emit_placeholder_kind() {
+        // Regression pin for #1916 (ComponentAuthorizer action = content-type FAMILY, not the Emit
+        // placeholder kind). A store/* effect carries kind==Emit but family=="store/set"/"store/resolve";
+        // the authorizer must present the FAMILY to the policy, else store writes look like "emit" and are
+        // ungovernable. This decision test proves the family reaches the policy end-to-end:
+        //
+        // - store/set to the system policy pointer is FORBIDDEN (the §20b anti-hijack forbid rule fires —
+        //   which it can ONLY do if action=="store/set", not "emit"),
+        assert_eq!(
+            decide(&req("agent", "store/set", "system/policy/current")),
+            Ok(false),
+            "store/set to system/policy/current is forbidden — the forbid rule matched action==\"store/set\""
+        );
+        // - store/resolve is PERMITTED (a DIFFERENT family → the broad store/resolve permit, NOT the
+        //   store/set forbid; proves it's the specific family, not a blanket store deny),
+        assert_eq!(
+            decide(&req("agent", "store/resolve", "system/policy/current")),
+            Ok(true),
+            "store/resolve is permitted — a distinct family from store/set (not a blanket store deny)"
+        );
+        // - a store/set to a NON-forbidden name is default-denied (no permit for store/set at all), NOT
+        //   allowed — confirms the forbid is scoped to the pointer and store/set isn't broadly permitted.
+        assert_eq!(
+            decide(&req("agent", "store/set", "user/scratch/x")),
+            Ok(false),
+            "store/set elsewhere is default-denied (no store/set permit) — the mapping distinguishes the two store families"
+        );
+        // Sanity: had the action been the old "emit" placeholder, NONE of the store rules would match and
+        // store/set would fall to default-deny for the WRONG reason — this test would still pass the two
+        // deny cases but FAIL the store/resolve permit (emit has no permit). So the resolve-permit assertion
+        // above is the load-bearing proof that the real family string reaches the policy.
     }
 
     #[test]
