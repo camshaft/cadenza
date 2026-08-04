@@ -271,7 +271,10 @@ fn build_from_ast(a: &Arenas, id: StructId, ty: &Type) -> Result<Val, MarshalErr
                     _ => return Err(type_mismatch("record", "field is not a (name val) pair")),
                 };
                 if ast_fields.insert(name, val_node).is_some() {
-                    return Err(type_mismatch("record", format!("duplicate field {name:?}")));
+                    return Err(type_mismatch(
+                        "record",
+                        format!("duplicate field {}", bounded_name(name)),
+                    ));
                 }
             }
             let mut out = Vec::new();
@@ -283,7 +286,10 @@ fn build_from_ast(a: &Arenas, id: StructId, ty: &Type) -> Result<Val, MarshalErr
             }
             // Any AST field left over is an EXTRA field not in the WIT record shape — reject (exact match).
             if let Some((extra, _)) = ast_fields.iter().next() {
-                return Err(type_mismatch("record", format!("unknown field {extra:?}")));
+                return Err(type_mismatch(
+                    "record",
+                    format!("unknown field {}", bounded_name(extra)),
+                ));
             }
             Ok(Val::Record(out))
         }
@@ -338,10 +344,9 @@ fn build_from_ast(a: &Arenas, id: StructId, ty: &Type) -> Result<Val, MarshalErr
         // variant ← name-head (Case v?): match the case name against the declared cases.
         Type::Variant(vt) => {
             let (case, payload) = ctor(a, id)?;
-            let decl = vt
-                .cases()
-                .find(|c| c.name == case)
-                .ok_or_else(|| type_mismatch("variant", format!("unknown case {case:?}")))?;
+            let decl = vt.cases().find(|c| c.name == case).ok_or_else(|| {
+                type_mismatch("variant", format!("unknown case {}", bounded_name(case)))
+            })?;
             let val = opt_payload(a, payload, decl.ty)?;
             Ok(Val::Variant(case.to_string(), val))
         }
@@ -355,7 +360,10 @@ fn build_from_ast(a: &Arenas, id: StructId, ty: &Type) -> Result<Val, MarshalErr
                 ));
             }
             if !et.names().any(|n| n == case) {
-                return Err(type_mismatch("enum", format!("unknown case {case:?}")));
+                return Err(type_mismatch(
+                    "enum",
+                    format!("unknown case {}", bounded_name(case)),
+                ));
             }
             Ok(Val::Enum(case.to_string()))
         }
@@ -369,7 +377,10 @@ fn build_from_ast(a: &Arenas, id: StructId, ty: &Type) -> Result<Val, MarshalErr
                     .as_name(n)
                     .ok_or_else(|| type_mismatch("flags", "non-name flag element"))?;
                 if !declared.contains(&name) {
-                    return Err(type_mismatch("flags", format!("unknown flag {name:?}")));
+                    return Err(type_mismatch(
+                        "flags",
+                        format!("unknown flag {}", bounded_name(name)),
+                    ));
                 }
                 set.push(name.to_string());
             }
@@ -532,6 +543,25 @@ fn type_mismatch(expected: &str, found: impl Into<String>) -> MarshalError {
     MarshalError::TypeMismatch {
         expected: expected.to_string(),
         found: found.into(),
+    }
+}
+
+/// A BOUNDED rendering of an UNTRUSTED name (a record field / variant case / enum case / flag) for an
+/// error message (github-liaison #2090): these names come from untrusted arg bytes, and
+/// `TypeMismatch.found` is a bounded hint — Debug-formatting a multi-MB attacker-supplied name would blow
+/// up the error-string alloc on the reject path (same class as the #2050 `{val:?}` DoS + the #2078
+/// `val_shape` fix). Caps at 64 bytes (on a char boundary) with an ellipsis + the full length, so the
+/// message stays small regardless of the name's size.
+fn bounded_name(name: &str) -> String {
+    const CAP: usize = 64;
+    if name.len() <= CAP {
+        format!("{name:?}")
+    } else {
+        let mut end = CAP;
+        while end > 0 && !name.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{:?}… (len {})", &name[..end], name.len())
     }
 }
 
@@ -734,6 +764,22 @@ mod tests {
             ),
             Err(MarshalError::TypeMismatch { .. })
         ));
+        // github-liaison #2090: a HUGE untrusted extra-field name must NOT blow up the error string —
+        // TypeMismatch.found is bounded (bounded_name caps at 64 + ellipsis + len), never the raw name.
+        let huge = "x".repeat(2_000_000);
+        match ast_to_val(
+            &record_bytes(&[("kind", "wasm"), (&huge, "v")]),
+            &one_field_ty,
+        ) {
+            Err(MarshalError::TypeMismatch { found, .. }) => assert!(
+                found.len() < 256,
+                "error must be bounded regardless of the untrusted field-name size, got len {}",
+                found.len()
+            ),
+            other => {
+                panic!("expected a bounded TypeMismatch for a huge extra field, got {other:?}")
+            }
+        }
     }
 
     #[test]
