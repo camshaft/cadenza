@@ -877,7 +877,11 @@
             EOF
             # xtask codegen --check regenerates runtime_abi.rs (building cdz-runtime + cdz-nfc components
             # via cargo-component to fold in their hashes) and fails if the committed file drifted.
-            cargo xtask codegen --check
+            # Invoke the xtask binary via `cargo run --locked` (not the bare `cargo xtask` alias, which
+            # omits --locked) so a root-lockfile drift is a HARD FAIL, matching every sibling nix check's
+            # `--locked` (github-liaison #2027). (Note: the runtime/nfc COMPONENT builds xtask spawns
+            # internally already pass --locked, per build_component_with_features.)
+            cargo run --locked --package xtask --profile release -- codegen --check
             runHook postBuild
           '';
           installPhase = ''
