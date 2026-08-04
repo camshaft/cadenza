@@ -2544,6 +2544,46 @@
   (call   main (: 5 Int64))
   (output (: 42 Int64)))
 
+(case "a trie of 30 QUANTITY keys resolves a cross-normalized magnitude lookup at depth"
+  (doc    "The Qty-key rows above run on single-key maps; this pins a POPULATED trie of Rational-inner
+           quantity keys: 30 keys `i/2 meter` fill the trie, and a lookup spelled `10/4` must hit the
+           `5/2` slot — Rational normalization inside the Qty magnitude composing with the CHAMP descent
+           at depth (·10 on len + the hit value → 305). A key path that normalized a bare Rational but
+           read a Qty magnitude's spelling literally would miss among 30 neighbors.")
+  (input  (do
+            (def (fill (: i Int64) (: m (Map (Qty Rational (Unit.base #"meter")) Int64)))
+              (if (= i 0) m
+                (fill (- i 1) (Map.insert m (Qty.of (Rational.of i 2) (Unit.base #"meter")) i))))
+            (def (main (: n Int64))
+              (do
+                (def m (fill n Map.empty))
+                (+ (* 10 (Map.len m))
+                   (match (Map.lookup m (Qty.of (Rational.of 10 4) (Unit.base #"meter"))) ((Some v) v) ((None _u) -1)))))
+            (export main)))
+  (call   main (: 30 Int64)) (output (: 305 Int64)))
+
+(case "a Qty-keyed trie churned with differently-normalized magnitudes equals the direct build"
+  (doc    "The normalization-identity churn for quantity keys: 25 keys INSERTED as `2i/4 meter` and
+           REMOVED as `i/2 meter` — differently-written spellings of the same magnitude — so every
+           removal must land on its insert's slot through the canonical form inside the Qty. The
+           surviving seed (stored `999/1`) must leave the map EQUAL to the direct build by canonical
+           `=` (10) and resolve when probed as `1998/2` (+1 → 11). Three spellings per value across
+           insert/remove/probe, all converging on one slot — the Qty face of the normalized-key churn
+           family (the Rational twin is in 03-equality).")
+  (input  (do
+            (def (grow (: i Int64) (: n Int64) (: m (Map (Qty Rational (Unit.base #"meter")) Int64)))
+              (if (= i n) m (grow (+ i 1) n (Map.insert m (Qty.of (Rational.of (* i 2) 4) (Unit.base #"meter")) i))))
+            (def (shrink (: i Int64) (: n Int64) (: m (Map (Qty Rational (Unit.base #"meter")) Int64)))
+              (if (= i n) m (shrink (+ i 1) n (Map.remove m (Qty.of (Rational.of i 2) (Unit.base #"meter"))))))
+            (def (main (: n Int64))
+              (do
+                (def direct (Map.insert Map.empty (Qty.of (Rational.of 999 1) (Unit.base #"meter")) 50))
+                (def churned (shrink 1 n (grow 1 n direct)))
+                (+ (* 10 (if (= churned direct) 1 0))
+                   (match (Map.lookup churned (Qty.of (Rational.of 1998 2) (Unit.base #"meter"))) ((Some v) (if (= v 50) 1 0)) ((None _u) -1)))))
+            (export main)))
+  (call   main (: 25 Int64)) (output (: 11 Int64)))
+
 ; --- Quantity as a Set element: content-address dedup + membership --------------------------------
 ; The Map-key cases above pin a quantity on the key side of a Map. These pin the Set analogue: a
 ; quantity as a SET element is deduplicated + tested for membership by CONTENT (the erased magnitude

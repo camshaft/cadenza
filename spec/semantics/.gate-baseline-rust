@@ -807,6 +807,7 @@ pass	a QUICKSELECT finds the kth smallest by partitioning and recursing into ONE
 pass	a Qty handler state advances via Qty.value / re-wrap in the next-state slot
 pass	a Qty payload with a GENERIC inner type rejects a bare use with no type argument
 pass	a Qty payload's INNER type stays a real type parameter — the unit-arg skip does not over-skip
+pass	a Qty-keyed trie churned with differently-normalized magnitudes equals the direct build
 pass	a Qty-typed export carries its unit frame across the module boundary into caller algebra
 pass	a Qty-typed variant payload keeps its type non-generic and matches back
 pass	a Quantity @param generates a Qty-result accessor the host supplies as a scalar magnitude
@@ -3513,6 +3514,7 @@ pass	a trapping payload in the taken arm of a same-constructor match still traps
 pass	a trapping payload in the untaken arm of a same-constructor if does not trap
 pass	a trapping scrutinee of a same-constructor match traps before any arm
 pass	a trapping shared payload before the differing position must not preempt a trapping cond
+pass	a trie of 30 QUANTITY keys resolves a cross-normalized magnitude lookup at depth
 pass	a trie of 40 RATIONAL keys with all-different denominators enumerates in numeric order
 pass	a trie spanning NEGATIVE and positive keys enumerates in signed numeric order
 pass	a triple-nested match on the SAME variant-refined scrutinee folds every level to the known arm
