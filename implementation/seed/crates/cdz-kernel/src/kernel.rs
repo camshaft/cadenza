@@ -505,8 +505,10 @@ impl Session {
     ) -> Vec<crate::effect::ControlEffect> {
         // Project the manifest against the CURRENT surface, and gate on whether it moved vs the last one the
         // guest saw. A None baseline (never projected — e.g. a session that was never seeded, or freshly
-        // recovered) means "no baseline to suppress against" → treat any non-empty manifest as a change worth
-        // telling the guest (an all-Absent manifest over ALL never happens, so this pushes the initial state).
+        // recovered) means "no baseline to suppress against" → the gate below is `!entries.is_empty()`, so a
+        // non-empty manifest pushes the initial state. Projecting over `effect_ct::ALL` always yields one entry
+        // per family (the entries may all be `Absent`, but the Vec is non-empty), so in practice a first push
+        // always fires; the empty guard is the honest, minimal condition (an empty family set → nothing to say).
         let projected = crate::effect::project_manifest(
             crate::effect::effect_ct::ALL,
             |f| executor.handles_family(f),
