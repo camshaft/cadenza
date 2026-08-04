@@ -57,16 +57,20 @@ pub enum AdminCommand {
 /// The daemon's reply to an [`AdminCommand`]. Data-only (a control frame serializes it back to the admin).
 /// Every failure mode (unknown session, an already-taken id, a factory build error) is an
 /// [`Error`](AdminResponse::Error) rather than a panic — an admin command must never crash the daemon.
+///
+/// Ids are carried as [`SessionId`] (not `String`), symmetric with [`AdminCommand`]/[`InstallSpec`]: an
+/// in-process caller keeps type-safety + the `Arc<str>` cheap clone, and the String↔SessionId conversion
+/// happens only at the transport boundary (`admin_wire`), not here (#1949 review).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AdminResponse {
     /// A session was installed under this id.
-    Installed { id: String },
+    Installed { id: SessionId },
     /// The ids of all running sessions (sorted, deterministic).
-    Sessions { ids: Vec<String> },
+    Sessions { ids: Vec<SessionId> },
     /// A session's status as the [`session_status_json`] JSON string.
     Status { json: String },
     /// A session was stopped (removed) under this id.
-    Stopped { id: String },
+    Stopped { id: SessionId },
     /// The command could not be applied — the message says why (unknown id, id already in use, a factory
     /// build failure). NOT a panic: a bad admin command is reported, not fatal.
     Error { message: String },
@@ -87,14 +91,17 @@ pub trait SessionFactory {
 
 impl AgentHost {
     /// Apply one [`AdminCommand`] against this live registry, returning the [`AdminResponse`]. `factory`
-    /// builds the session for an install (unused by the other commands); `now_ms` is the admin's wall clock
-    /// for the status-stall derivation (`None` skips the time-based stall check).
+    /// builds the session for an install; it is `Option` because ONLY [`InstallSession`](AdminCommand::InstallSession)
+    /// needs it — a pure read/remove (list/status/stop) passes `None` and never threads an unused factory
+    /// (#1949 review). An `InstallSession` with `None` is an [`Error`](AdminResponse::Error) ("no session
+    /// factory available"), not a panic. `now_ms` is the admin's wall clock for the status-stall derivation
+    /// (`None` skips the time-based stall check).
     ///
     /// Semantics:
     /// - **Install** — build via `factory`; register under the spec's id. REFUSES an id already in use
     ///   (returns [`Error`](AdminResponse::Error), registry untouched) — install is explicit, so a restart
-    ///   is `StopSession` then `InstallSession`, never a silent replace. A factory build error is likewise
-    ///   surfaced with the registry untouched.
+    ///   is `StopSession` then `InstallSession`, never a silent replace. A factory build error (or a missing
+    ///   factory) is likewise surfaced with the registry untouched.
     /// - **List** — the sorted session ids.
     /// - **Status** — the target's status JSON, or an error for an unknown id.
     /// - **Stop** — remove the target, or an error for an unknown id.
@@ -104,11 +111,21 @@ impl AgentHost {
     pub async fn apply_admin(
         &mut self,
         cmd: AdminCommand,
-        factory: &mut dyn SessionFactory,
+        factory: Option<&mut dyn SessionFactory>,
         now_ms: Option<u64>,
     ) -> AdminResponse {
         match cmd {
             AdminCommand::InstallSession(spec) => {
+                // Install is the ONLY command that needs a factory — a caller doing a pure read/remove
+                // passes None. No factory for an install is a clean error, not a panic.
+                let Some(factory) = factory else {
+                    return AdminResponse::Error {
+                        message: format!(
+                            "no session factory available to install {}",
+                            spec.id.as_str()
+                        ),
+                    };
+                };
                 // Explicit install: refuse a taken id (restart = stop then install, not a silent replace —
                 // spawn() itself would REPLACE, so we guard here before building/registering).
                 if self.contains(&spec.id) {
@@ -120,9 +137,7 @@ impl AgentHost {
                     Ok(session) => {
                         let id = spec.id.clone();
                         self.spawn(id.clone(), session);
-                        AdminResponse::Installed {
-                            id: id.as_str().to_string(),
-                        }
+                        AdminResponse::Installed { id }
                     }
                     // Build failed → registry untouched, error surfaced.
                     Err(e) => AdminResponse::Error {
@@ -131,11 +146,7 @@ impl AgentHost {
                 }
             }
             AdminCommand::ListSessions => AdminResponse::Sessions {
-                ids: self
-                    .session_ids()
-                    .iter()
-                    .map(|s| s.as_str().to_string())
-                    .collect(),
+                ids: self.session_ids(),
             },
             AdminCommand::SessionStatus { id } => match self.get(&id) {
                 Some(hosted) => AdminResponse::Status {
@@ -146,9 +157,7 @@ impl AgentHost {
                 },
             },
             AdminCommand::StopSession { id } => match self.remove(&id) {
-                Some(_) => AdminResponse::Stopped {
-                    id: id.as_str().to_string(),
-                },
+                Some(_) => AdminResponse::Stopped { id },
                 None => AdminResponse::Error {
                     message: format!("unknown session: {}", id.as_str()),
                 },
@@ -219,14 +228,14 @@ mod tests {
         let resp = host
             .apply_admin(
                 AdminCommand::InstallSession(spec("worker")),
-                &mut factory,
+                Some(&mut factory),
                 None,
             )
             .await;
         assert_eq!(
             resp,
             AdminResponse::Installed {
-                id: "worker".into()
+                id: SessionId::new("worker")
             }
         );
         assert!(
@@ -238,6 +247,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_install_with_no_factory_is_an_error_not_a_panic() {
+        // Install is the only command needing a factory; apply_admin with None for an InstallSession is a
+        // clean error (#1949 review — the other commands pass None and never touch a factory).
+        let mut host = AgentHost::new();
+        let resp = host
+            .apply_admin(AdminCommand::InstallSession(spec("orphan")), None, None)
+            .await;
+        assert!(
+            matches!(resp, AdminResponse::Error { message } if message.contains("no session factory")),
+        );
+        assert!(host.is_empty(), "nothing installed without a factory");
+    }
+
+    #[tokio::test]
     async fn install_refuses_an_id_already_in_use_without_building() {
         // Explicit install: a taken id is refused (restart = stop then install, not a silent replace). The
         // guard fires BEFORE the factory build — so the factory is NOT asked to build on a collision.
@@ -245,7 +268,7 @@ mod tests {
         let mut factory = StubFactory { builds: 0 };
         host.apply_admin(
             AdminCommand::InstallSession(spec("dup")),
-            &mut factory,
+            Some(&mut factory),
             None,
         )
         .await;
@@ -254,7 +277,7 @@ mod tests {
         let resp = host
             .apply_admin(
                 AdminCommand::InstallSession(spec("dup")),
-                &mut factory,
+                Some(&mut factory),
                 None,
             )
             .await;
@@ -275,7 +298,7 @@ mod tests {
         let resp = host
             .apply_admin(
                 AdminCommand::InstallSession(spec("bad")),
-                &mut factory,
+                Some(&mut factory),
                 None,
             )
             .await;
@@ -290,17 +313,26 @@ mod tests {
         let mut host = AgentHost::new();
         let mut factory = StubFactory { builds: 0 };
         // Install out of order; list must come back sorted (deterministic).
-        host.apply_admin(AdminCommand::InstallSession(spec("b")), &mut factory, None)
-            .await;
-        host.apply_admin(AdminCommand::InstallSession(spec("a")), &mut factory, None)
-            .await;
+        host.apply_admin(
+            AdminCommand::InstallSession(spec("b")),
+            Some(&mut factory),
+            None,
+        )
+        .await;
+        host.apply_admin(
+            AdminCommand::InstallSession(spec("a")),
+            Some(&mut factory),
+            None,
+        )
+        .await;
+        // A pure read passes None for the factory (never threads an unused one).
         let resp = host
-            .apply_admin(AdminCommand::ListSessions, &mut factory, None)
+            .apply_admin(AdminCommand::ListSessions, None, None)
             .await;
         assert_eq!(
             resp,
             AdminResponse::Sessions {
-                ids: vec!["a".into(), "b".into()]
+                ids: vec![SessionId::new("a"), SessionId::new("b")]
             }
         );
     }
@@ -309,15 +341,20 @@ mod tests {
     async fn status_returns_the_session_json_or_an_error_for_unknown() {
         let mut host = AgentHost::new();
         let mut factory = StubFactory { builds: 0 };
-        host.apply_admin(AdminCommand::InstallSession(spec("s1")), &mut factory, None)
-            .await;
+        host.apply_admin(
+            AdminCommand::InstallSession(spec("s1")),
+            Some(&mut factory),
+            None,
+        )
+        .await;
 
+        // A pure read passes None for the factory.
         let ok = host
             .apply_admin(
                 AdminCommand::SessionStatus {
                     id: SessionId::new("s1"),
                 },
-                &mut factory,
+                None,
                 Some(0),
             )
             .await;
@@ -334,7 +371,7 @@ mod tests {
                 AdminCommand::SessionStatus {
                     id: SessionId::new("ghost"),
                 },
-                &mut factory,
+                None,
                 Some(0),
             )
             .await;
@@ -349,25 +386,26 @@ mod tests {
         let mut factory = StubFactory { builds: 0 };
         host.apply_admin(
             AdminCommand::InstallSession(spec("victim")),
-            &mut factory,
+            Some(&mut factory),
             None,
         )
         .await;
         assert_eq!(host.len(), 1);
 
+        // A stop passes None for the factory.
         let stopped = host
             .apply_admin(
                 AdminCommand::StopSession {
                     id: SessionId::new("victim"),
                 },
-                &mut factory,
+                None,
                 None,
             )
             .await;
         assert_eq!(
             stopped,
             AdminResponse::Stopped {
-                id: "victim".into()
+                id: SessionId::new("victim")
             }
         );
         assert!(host.is_empty(), "the session was removed");
@@ -378,7 +416,7 @@ mod tests {
                 AdminCommand::StopSession {
                     id: SessionId::new("victim"),
                 },
-                &mut factory,
+                None,
                 None,
             )
             .await;
@@ -393,20 +431,33 @@ mod tests {
         // stop-then-install re-installs cleanly (a fresh session under the same id).
         let mut host = AgentHost::new();
         let mut factory = StubFactory { builds: 0 };
-        host.apply_admin(AdminCommand::InstallSession(spec("r")), &mut factory, None)
-            .await;
+        host.apply_admin(
+            AdminCommand::InstallSession(spec("r")),
+            Some(&mut factory),
+            None,
+        )
+        .await;
         host.apply_admin(
             AdminCommand::StopSession {
                 id: SessionId::new("r"),
             },
-            &mut factory,
+            None,
             None,
         )
         .await;
         let reinstalled = host
-            .apply_admin(AdminCommand::InstallSession(spec("r")), &mut factory, None)
+            .apply_admin(
+                AdminCommand::InstallSession(spec("r")),
+                Some(&mut factory),
+                None,
+            )
             .await;
-        assert_eq!(reinstalled, AdminResponse::Installed { id: "r".into() });
+        assert_eq!(
+            reinstalled,
+            AdminResponse::Installed {
+                id: SessionId::new("r")
+            }
+        );
         assert_eq!(host.len(), 1);
         assert_eq!(factory.builds, 2, "two real installs across the restart");
     }

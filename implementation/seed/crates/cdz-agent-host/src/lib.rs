@@ -35,9 +35,11 @@
 //! The deployed daemon boots as a pure CONTROL PLANE (empty registry) and an ADMIN installs + manages
 //! sessions at runtime over an admin control interface (operator directive). [`admin`] is the transport-
 //! agnostic command layer of that: an [`AdminCommand`] (install-session / list / status / stop) applied
-//! by [`AgentHost::apply_admin`](host::AgentHost::apply_admin) via a [`SessionFactory`] install seam. The
-//! Unix-socket transport that carries the frames and the Cedar `admin/*` authorization of each command are
-//! the following slices.
+//! by [`AgentHost::apply_admin`](host::AgentHost::apply_admin) via a [`SessionFactory`] install seam.
+//! [`admin_wire`] is the codec that carries those commands/responses over a control frame — serde-native
+//! wire DTOs (decoupled from the domain types, ids as strings + hashes as hex) + a length-prefixed JSON
+//! frame codec. The Unix-socket transport that reads/writes those frames and the Cedar `admin/*`
+//! authorization of each command are the following slices.
 //!
 //! All executor errors are RECOVERABLE + classified for the kernel's supervision tree (see [`retry`]):
 //! an `EffectOutcome::Err` reason leads with a `RETRYABLE:`/`PERMANENT:` token so a supervisor decides
@@ -46,6 +48,7 @@
 //! The shared surface with `cdz-kernel` is ONLY the trait signatures; this crate never edits kernel src.
 
 pub mod admin;
+pub mod admin_wire;
 pub mod async_host;
 pub mod clock;
 pub mod config;
@@ -56,6 +59,10 @@ pub mod retry;
 pub mod status;
 
 pub use admin::{AdminCommand, AdminResponse, InstallSpec, SessionFactory};
+pub use admin_wire::{
+    decode_frame, encode_frame, AdminCommandWire, AdminResponseWire, InstallSpecWire, WireError,
+    MAX_FRAME_LEN,
+};
 pub use async_host::{AsyncAgentHost, Inbound, Inbox};
 pub use clock::ClockExecutor;
 pub use config::{DaemonConfig, LogConfig, ObservabilityConfig, RetryConfig};
