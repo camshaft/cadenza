@@ -582,25 +582,105 @@ fn run(paths: &Paths, profile: &str, file: &Path, from: &str, store: Option<Path
     if let Some(dir) = &store {
         run.arg("--store").arg(dir);
     }
-    let mut run = run.spawn().unwrap_or_else(|e| launch_fail("cdz-run", e));
+    let run = run.spawn().unwrap_or_else(|e| launch_fail("cdz-run", e));
 
-    // Wait on every stage; the first that fails determines the exit code. Waiting on all (rather
-    // than short-circuiting) reaps each child and lets its stderr finish flushing to the terminal.
-    let statuses = [
-        ("cdz-syntax", syntax.wait()),
-        ("rcdzc", rcdzc.wait()),
-        ("cdz-run", run.wait()),
-    ];
-    for (stage, status) in statuses {
-        match status {
-            Ok(s) if s.success() => {}
-            Ok(s) => std::process::exit(s.code().unwrap_or(1)),
-            Err(e) => {
-                eprintln!("xtask run: {stage} did not complete: {e}");
-                std::process::exit(1);
+    // Wait on every stage under ONE shared wall-clock deadline, killing any survivor at the deadline.
+    // A bare `.wait()` here (the previous code) had NO bound, so a hung stage wedged `run` FOREVER — a
+    // compile-hang in rcdzc, or cdz-run blocked resolving a COLD/empty store in a fresh worktree, would
+    // never return. That was the gap behind "`cargo xtask run` hangs in fresh worktrees" (v-effects via
+    // concierge 2026-08-04): the gate's per-case run path was already bounded (`wait_with_timeout` in
+    // `run_program_wasm`), so `xtask gate` worked while `xtask run` hung. This gives `run` the SAME
+    // `run_timeout()` bound. Unlike `wait_with_timeout` (which pipes+captures), the stages keep their
+    // inherited/piped stdio so the result still streams live to the terminal — `wait_stages_with_timeout`
+    // only polls exit + kills. It reports the first not-yet-exited stage on timeout; pipeline order in
+    // the array preserves "first failing stage sets the exit code".
+    match wait_stages_with_timeout(
+        [("cdz-syntax", syntax), ("rcdzc", rcdzc), ("cdz-run", run)],
+        run_timeout(),
+    ) {
+        Ok(statuses) => {
+            // Every stage exited within the deadline — first failing stage (pipeline order) sets the code.
+            for status in statuses {
+                if !status.success() {
+                    std::process::exit(status.code().unwrap_or(1));
+                }
             }
         }
+        Err(StageWait::Timeout(stage)) => {
+            eprintln!(
+                "xtask run: '{stage}' did not finish within {}s — killed (hang). Raise \
+                 CDZ_RUN_TIMEOUT_SECS if this is a legitimately long run; a fresh-worktree hang usually \
+                 means a cold store — run `cargo xtask build` first.",
+                run_timeout().as_secs()
+            );
+            std::process::exit(1);
+        }
+        Err(StageWait::WaitError(stage, e)) => {
+            eprintln!("xtask run: {stage} did not complete: {e}");
+            std::process::exit(1);
+        }
     }
+}
+
+/// Why `wait_stages_with_timeout` failed: a stage exceeded the deadline (its name), or a `try_wait`
+/// errored on a stage (its name + the io error). Distinguishes the hang (kill + named) from an OS-level
+/// wait failure (surfaced), so the caller can message each precisely.
+#[derive(Debug)]
+enum StageWait {
+    Timeout(String),
+    WaitError(String, std::io::Error),
+}
+
+/// Poll a fixed set of named pipeline children to exit under ONE shared wall-clock `timeout`, KILLING
+/// any still-running stage at the deadline. Returns each stage's `ExitStatus` in the SAME ORDER on
+/// success (so the caller's "first failing stage sets the exit code" holds by index), or the first
+/// stage that timed out / errored. The children keep whatever stdio they were spawned with (this does
+/// NOT touch their pipes — unlike `wait_with_timeout`, which drains+captures), so an inherited-stdout
+/// pipeline still streams live. Same try_wait/kill/deadline shape as `wait_with_timeout`, generalized to
+/// N stages; unit-tested with real sleeper children so the hang-kill path has coverage `run()` can't get
+/// (its stages are real built tools). `N` is a const generic so the caller's array size is preserved.
+fn wait_stages_with_timeout<const N: usize>(
+    children: [(&str, std::process::Child); N],
+    timeout: std::time::Duration,
+) -> Result<[std::process::ExitStatus; N], StageWait> {
+    let mut stages: Vec<(&str, std::process::Child, Option<std::process::ExitStatus>)> =
+        children.into_iter().map(|(n, c)| (n, c, None)).collect();
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        let mut all_done = true;
+        for (stage, child, status) in stages.iter_mut() {
+            if status.is_none() {
+                match child.try_wait() {
+                    Ok(Some(s)) => *status = Some(s),
+                    Ok(None) => all_done = false,
+                    Err(e) => return Err(StageWait::WaitError(stage.to_string(), e)),
+                }
+            }
+        }
+        if all_done {
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            // Deadline hit — kill + reap EVERY still-running stage (leave no orphan), then report the
+            // FIRST one that hadn't exited (pipeline order → the earliest-blocking stage is named).
+            let mut first_hung: Option<String> = None;
+            for (stage, child, status) in stages.iter_mut() {
+                if status.is_none() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    first_hung.get_or_insert_with(|| stage.to_string());
+                }
+            }
+            return Err(StageWait::Timeout(
+                first_hung.unwrap_or_else(|| "unknown".to_string()),
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    // Every stage exited — collect statuses in the original (pipeline) order.
+    let out: Vec<std::process::ExitStatus> =
+        stages.into_iter().map(|(_, _, s)| s.unwrap()).collect();
+    Ok(out.try_into().expect("N stages in → N statuses out"))
 }
 
 /// A stage's binary could not be spawned at all (missing/not-executable) — distinct from it running
@@ -7474,6 +7554,66 @@ mod trap_grading_tests {
         assert!(out.status.success());
         assert_eq!(out.stdout, b"hello");
         assert_eq!(out.stderr, b"oops");
+    }
+
+    #[test]
+    fn wait_stages_with_timeout_returns_statuses_in_order_for_fast_children() {
+        // All stages exit within the deadline → their ExitStatuses come back in pipeline order, so the
+        // caller's "first failing stage sets the exit code" holds by index. Middle stage exits non-zero.
+        let mk = |script: &str| {
+            std::process::Command::new("sh")
+                .args(["-c", script])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .expect("spawn sh")
+        };
+        let statuses = wait_stages_with_timeout(
+            [
+                ("s1", mk("exit 0")),
+                ("s2", mk("exit 7")),
+                ("s3", mk("exit 0")),
+            ],
+            std::time::Duration::from_secs(10),
+        )
+        .expect("all exited in time");
+        assert!(statuses[0].success());
+        assert_eq!(
+            statuses[1].code(),
+            Some(7),
+            "middle stage's code preserved by index"
+        );
+        assert!(statuses[2].success());
+    }
+
+    #[test]
+    fn wait_stages_with_timeout_kills_a_hanging_stage_and_names_the_first() {
+        // The `xtask run` hang-bound (v-effects fresh-worktree hang, 2026-08-04): a stage that runs far
+        // past the deadline is KILLED and reported as Timeout(name) — not waited out. s1 exits fast, s2
+        // hangs; the first still-running stage (s2) is named. Tiny deadline so the test is fast; the
+        // sleeper runs far longer, so it can only end via our kill.
+        let start = std::time::Instant::now();
+        let fast = std::process::Command::new("sh")
+            .args(["-c", "exit 0"])
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn fast");
+        let hang = std::process::Command::new("sleep")
+            .arg("30")
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn sleep");
+        match wait_stages_with_timeout(
+            [("s1-fast", fast), ("s2-hang", hang)],
+            std::time::Duration::from_millis(150),
+        ) {
+            Err(StageWait::Timeout(stage)) => assert_eq!(stage, "s2-hang", "names the hung stage"),
+            _ => panic!("a hanging stage must time out to Timeout(name)"),
+        }
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "timeout must kill promptly, not wait out the 30s sleeper"
+        );
     }
 
     #[test]
