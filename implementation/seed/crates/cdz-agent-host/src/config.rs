@@ -88,19 +88,15 @@ pub struct ObservabilityConfig {
 /// so a mis-shaped target (a field that belongs to another backend, a missing required field) is a loud
 /// deser error rather than an ignored generic string.
 ///
-/// The variants model REAL `s2n-quic-dc-metrics` backends. The operator's direction is "support all of
-/// them" (Statsd/Otlp/Prometheus/Querylog/Arrow). They fall into three CONFIG SHAPES — this enum grows one
-/// variant per backend as each shape is confirmed:
-/// - PUSH (a caller-supplied sink the daemon periodically flushes to): `statsd` (UDP) + `otlp` (OTLP
-///   payloads). Modeled here — an `endpoint` the daemon sends to.
-/// - PULL (the backend exposes state an external scraper reads): `prometheus` — the daemon would run a
-///   scrape server; its config is a bind address, a distinct shape (pending operator confirm on running an
-///   inbound listener).
-/// - FILE (no network; output the daemon writes locally): `querylog` / `arrow` (Parquet) — config is a
-///   path/rotation, another distinct shape (pending operator confirm on path + rotation).
+/// The variants model REAL `s2n-quic-dc-metrics` backends. Modeled today: the two PUSH backends — `statsd`
+/// (a UDP sink) and `otlp` (an OTLP-payload sink) — both a caller-supplied sink the daemon flushes to, so
+/// their config is an `endpoint` the daemon sends to.
 ///
-/// The push variants land first (unambiguous — same sink shape); prometheus/querylog/arrow are held pending
-/// the config-shape confirm (see the concierge scoping ask), each a cheap additive variant when confirmed.
+/// The crate's other backends are NOT modeled yet because their config SHAPE differs from the push kinds:
+/// `prometheus` is PULL (the backend exposes state an external scraper reads — its config would be a scrape
+/// bind address, and the daemon would run an inbound listener), and `querylog` / `arrow` are FILE (local
+/// output the daemon writes — config would be a path/rotation). Each is a cheap additive variant once its
+/// shape is settled; they're absent here rather than modeled with a guessed shape.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum MetricsTarget {
@@ -117,14 +113,16 @@ pub enum MetricsTarget {
     /// The `otlp` backend — `s2n-quic-dc-metrics`' `OtlpBackend`. Same PUSH shape as statsd: the daemon's
     /// OTLP sink sends `ExportMetricsServiceRequest` payloads to the collector at `endpoint`. `scope_name` /
     /// `scope_version` populate the OTLP `InstrumentationScope` on every metric (the backend's `new`
-    /// arguments); both default so a minimal config is just an endpoint.
+    /// arguments). Both are optional; a minimal config is just an endpoint.
     Otlp {
         /// The OTLP collector endpoint the sink sends to (`host:port` or a URL, per the sink transport).
         endpoint: String,
-        /// The OTLP instrumentation-scope name embedded in every metric (defaults to the crate name).
+        /// The OTLP instrumentation-scope name embedded in every metric. Omitting it leaves it `None` here;
+        /// the emitter/backend wiring supplies the default (e.g. the crate name) — config parsing does not.
         #[serde(default)]
         scope_name: Option<String>,
-        /// The OTLP instrumentation-scope version (defaults to unset).
+        /// The OTLP instrumentation-scope version. Omitting it leaves it `None` here; the emitter/backend
+        /// wiring decides any default — config parsing does not.
         #[serde(default)]
         scope_version: Option<String>,
     },
@@ -164,12 +162,11 @@ pub struct AdminConfig {
 /// [`BlobStore`](cdz_kernel::blob::BlobStore) trait is the extension seam — further backends drop in behind
 /// it without a config reshape.
 ///
-/// **Parsed-but-not-yet-wired (staging gap, #1981 review).** Like `[log]`/`[observability]`, this config
-/// SECTION lands ahead of the code that reads it: the daemon bin does not yet consult `config.blob` (the
-/// factory-wiring slice — [`ComponentSessionFactory`](crate::ComponentSessionFactory) + a config-built blob
-/// store — is the follow-up). So a `backend = "dir"` currently PARSES + VALIDATES but selects no store yet;
-/// it takes effect once that slice lands. Documented so the no-op is a conscious staging gap, not a silent
-/// surprise (the "config that does nothing" hazard).
+/// **Wired.** The daemon bin reads `config.blob` at boot and builds the selected store — `memory` →
+/// [`MemBlobStore`](cdz_kernel::blob::MemBlobStore), `dir` → [`DiskBlobStore`](cdz_kernel::blob::DiskBlobStore)
+/// rooted at the path — handing it to the [`ComponentSessionFactory`](crate::ComponentSessionFactory) that
+/// resolves each `install-session`'s `reducer_hash`. (This closed the earlier staging gap from #1981 where the
+/// section parsed ahead of the factory-wiring slice; `backend = "dir"` now takes effect.)
 #[derive(Debug, Clone, Deserialize, PartialEq, Default)]
 #[serde(tag = "backend", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum BlobConfig {
