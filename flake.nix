@@ -151,6 +151,22 @@
             ./spec/semantics
           ];
         };
+        # `roundtrip` (`cargo xtask roundtrip`) is corpus-only — it reads spec/semantics but NOT
+        # compiler-ml (that's only for `cargo test`'s run_ml_cli). So it gets a NARROWER src than
+        # seedTestSrc (drops ./implementation/compiler-ml) — a compiler-ml edit shouldn't bust the
+        # roundtrip check's cache (github-liaison #2007).
+        seedRoundtripSrc = pkgs.lib.fileset.toSource {
+          root = ./.;
+          fileset = pkgs.lib.fileset.unions [
+            ./implementation/seed/crates
+            ./xtask
+            ./Cargo.toml
+            ./Cargo.lock
+            ./.cargo
+            ./rust-toolchain.toml
+            ./spec/semantics
+          ];
+        };
         cargoWorkspaceCheck = { name, cargoCmd, src ? seedSrc, extraInputs ? [ ] }:
           pkgs.stdenvNoCC.mkDerivation {
             pname = name;
@@ -893,9 +909,10 @@
             # xtask codegen --check regenerates runtime_abi.rs (building cdz-runtime + cdz-nfc components
             # via cargo-component to fold in their hashes) and fails if the committed file drifted.
             # Invoke the xtask binary via `cargo run --locked` (not the bare `cargo xtask` alias, which
-            # omits --locked) so a root-lockfile drift is a HARD FAIL, matching every sibling nix check's
-            # `--locked` (github-liaison #2027). (Note: the runtime/nfc COMPONENT builds xtask spawns
-            # internally already pass --locked, per build_component_with_features.)
+            # omits --locked) so a root-lockfile drift is a HARD FAIL, matching the workspace test/clippy
+            # checks (github-liaison #2027). (The runtime/nfc COMPONENT builds xtask spawns internally do
+            # NOT pass --locked — that's a separate consideration; this --locked guards the seed/xtask
+            # workspace lock the check itself vendors.)
             cargo run --locked --package xtask --profile release -- codegen --check
             runHook postBuild
           '';
@@ -1106,15 +1123,15 @@
             codegen-check = codegenCheck;
             # Full-CI-in-nix increment 6c: the GHA gate job (cargo xtask gate --check — THE behavior gate).
             gate-check = gateCheck;
-            # Full-CI-in-nix increment 6a: the GHA `roundtrip` job (`cargo xtask roundtrip` — every corpus
-            # program round-trips through the syntax surfaces). Corpus-only (reads spec/semantics, no
-            # runtime store), so it reuses seedTestSrc (which already carries spec/semantics) via the
-            # cargoWorkspaceCheck helper. Advisory overlap with the GHA roundtrip job (REQUIRED-class →
-            # its eventual cutover is a 2-half lockstep with v-fleet-tooling).
+            # Full-CI-in-nix increment 6a: the GHA `roundtrip` job — every corpus program round-trips
+            # through the syntax surfaces. Corpus-only (reads spec/semantics, no runtime store) → narrow
+            # `seedRoundtripSrc` (no compiler-ml, #2007). Invoked via `cargo run --locked` (not the bare
+            # `cargo xtask` alias, which omits --locked) so a lockfile drift hard-fails, matching the
+            # workspace test/clippy checks (#2032).
             roundtrip = cargoWorkspaceCheck {
               name = "cargo-xtask-roundtrip";
-              cargoCmd = "cargo xtask roundtrip";
-              src = seedTestSrc;
+              cargoCmd = "cargo run --locked --package xtask --profile release -- roundtrip";
+              src = seedRoundtripSrc;
             };
           };
 
