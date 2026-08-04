@@ -111,6 +111,45 @@
           doCheck = false;
         };
 
+        # ── Full-CI-in-nix (operator GO 2026-08-04): re-express each GHA `checks.yml` job as a nix
+        # derivation so the WHOLE CI is runnable inside nix (replacing the one-off scripts + brittle
+        # hand-wiring), then cut over. Incremental — one job-class per increment, each ADVISORY
+        # (continue-on-error in checks.yml) until v-fleet-tooling flips the required-set cutover.
+        #
+        # Increment 1 — the LINT pair (checks.yml `fmt` + `clippy`): pure native workspace, NO runtime
+        # store, NO wasm. `seedCargoVendor` vendors the root lock offline (a normal derivation has no
+        # network); `lintCheck` runs one cargo lint command against the scoped seed workspace source and
+        # writes a pass-marker. The pinned `rustToolchain` carries rustfmt + clippy (from the toolchain
+        # file's components), so these reproduce EXACTLY what CI's `cargo fmt --all --check` /
+        # `cargo clippy --workspace --all-targets -- -D warnings` run — now hermetic + cached by nix.
+        seedCargoVendor = pkgs.rustPlatform.importCargoLock { lockFile = ./Cargo.lock; };
+        lintCheck = { name, cargoCmd }:
+          pkgs.stdenvNoCC.mkDerivation {
+            pname = name;
+            version = "0.0.0";
+            src = seedSrc;
+            nativeBuildInputs = [ rustToolchain ];
+            buildPhase = ''
+              runHook preBuild
+              export HOME="$TMPDIR/home"
+              export CARGO_HOME="$TMPDIR/cargo"
+              mkdir -p "$HOME" "$CARGO_HOME"
+              cat > "$CARGO_HOME/config.toml" <<EOF
+              [source.crates-io]
+              replace-with = "vendored-sources"
+              [source.vendored-sources]
+              directory = "${seedCargoVendor}"
+              EOF
+              ${cargoCmd}
+              runHook postBuild
+            '';
+            installPhase = ''
+              runHook preInstall
+              echo "ok: ${name} (${cargoCmd})" > "$out"
+              runHook postInstall
+            '';
+          };
+
         # ── S2: build a CADENZA PROJECT through nix ───────────────────────────────────────────────
         #
         # Operator arc (2026-08-03): "then we can have it building cadenza projects." A reusable function
@@ -677,6 +716,18 @@
             # S3: the example project's @tests run through nix — a cache HIT when its sources are
             # unchanged (the "skip tests that haven't changed" win), a re-run + fail on a red test.
             example-project-tests = exampleProjectTests;
+
+            # Full-CI-in-nix increment 1: the LINT pair, mirroring checks.yml `fmt` + `clippy` exactly.
+            # `nix flake check` now runs them; the checks.yml jobs stay in place (advisory overlap) until
+            # v-fleet-tooling's required-set cutover retires the hand-wired ones.
+            fmt = lintCheck {
+              name = "cargo-fmt";
+              cargoCmd = "cargo fmt --all --check";
+            };
+            clippy = lintCheck {
+              name = "cargo-clippy";
+              cargoCmd = "cargo clippy --workspace --all-targets -- -D warnings";
+            };
           };
 
         devShells.default = pkgs.mkShell {
