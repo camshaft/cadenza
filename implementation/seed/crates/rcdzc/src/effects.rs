@@ -6832,28 +6832,11 @@ fn tail_resume(db: &mut Db, node: StructId) -> Option<(StructId, StructId)> {
 /// A structural walk; the binder-position occurrence of `binder` itself is not a value reference, but the
 /// lift only inspects a resume VALUE (never the binder slot), so any match here is a genuine read.
 fn subtree_references_binder(db: &mut Db, node: StructId, binder: StructId) -> bool {
-    match resolved_of(db, node) {
-        Resolved::Ref { value } => {
-            let mut t = value;
-            loop {
-                if t == binder {
-                    return true;
-                }
-                match resolved_of(db, t) {
-                    Resolved::Ref { value: n } => t = n,
-                    _ => break,
-                }
-            }
-        }
-        Resolved::Param { binder: b } if b == binder => return true,
-        _ => {}
-    }
-    match db.ast.get(node).clone() {
-        Struct::List(children) => children
-            .iter()
-            .any(|&c| subtree_references_binder(db, c, binder)),
-        Struct::Atom(_) => false,
-    }
+    // Existence is "at least one reference" — delegate to `count_param_refs` (the single source of truth for
+    // "what counts as a reference reaching `binder`": a `Param { binder }` or a `Ref` whose chain reaches it,
+    // matching how `beta_reduce` substitutes). Sharing the traversal avoids the divergence risk of two copies
+    // of the ref-chain logic drifting apart (github-liaison/Copilot #2102 review).
+    count_param_refs(db, node, binder) > 0
 }
 
 fn performs_discharged_op_other_than(
