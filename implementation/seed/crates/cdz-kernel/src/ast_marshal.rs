@@ -232,6 +232,19 @@ fn build_from_ast(a: &Arenas, id: StructId, ty: &Type) -> Result<Val, MarshalErr
                 let bytes = read_bytes(a, id)?;
                 Ok(Val::List(bytes.into_iter().map(Val::U8).collect()))
             } else {
+                // An EMPTY list<T> of ANY element type marshalled to an empty `Leaf::Bytes` on the write
+                // side (a `Val::List` carries no element-type tag when empty, so `val_to_ast` can't tell
+                // list<u8> from an empty list<u32>/list<record>/… — they're all byte-identical empty-Bytes).
+                // The read is TYPE-DIRECTED (reviewer catch): the target Type says list<T≠u8>, so an
+                // empty-Bytes node here IS a valid empty list<T> — accept it, don't demand a ("list" …) form.
+                if let Some(Leaf::Bytes(bytes)) = leaf_of(a, id) {
+                    if bytes.is_empty() {
+                        return Ok(Val::List(Vec::new()));
+                    }
+                    // A NON-empty Bytes for a non-u8 element type is a genuine shape mismatch (a byte blob
+                    // can't be a list<u32> etc.).
+                    return Err(type_mismatch("list", "non-empty bytes for a non-u8 list"));
+                }
                 let elems = form(a, id, "list")?;
                 let mut out = Vec::with_capacity(elems.len());
                 for &e in elems {
@@ -632,6 +645,28 @@ mod tests {
     fn ast_to_val_round_trips_a_non_u8_list() {
         let v = Val::List(vec![Val::U32(10), Val::U32(20)]);
         assert_eq!(round_trip(v.clone(), "(list u32)"), v);
+    }
+
+    // Reviewer catch (#2078 follow-up): an EMPTY list<T> of ANY element type marshals to an empty
+    // Leaf::Bytes (a Val::List carries no element-type tag when empty), byte-identical to an empty
+    // list<u8>. The dual read is TYPE-DIRECTED, so an empty list<u32> must round-trip through the
+    // empty-Bytes wire node, not error demanding a ("list" …) form.
+    #[test]
+    fn ast_to_val_round_trips_an_empty_non_u8_list_via_empty_bytes() {
+        let empty_u32 = Val::List(vec![]);
+        assert_eq!(round_trip(empty_u32.clone(), "(list u32)"), empty_u32);
+        // and an empty list<string> likewise (same empty-Bytes wire node, different target type)
+        assert_eq!(
+            round_trip(Val::List(vec![]), "(list string)"),
+            Val::List(vec![])
+        );
+        // a NON-empty bytes node against a non-u8 list target is still a genuine mismatch
+        let bytes_node = val_to_ast(&Val::List(vec![Val::U8(1), Val::U8(2)])).unwrap();
+        let u32_list_ty = param_type(&probe_component("(list u32)"));
+        assert!(matches!(
+            ast_to_val(&bytes_node, &u32_list_ty),
+            Err(MarshalError::TypeMismatch { .. })
+        ));
     }
 
     #[test]
