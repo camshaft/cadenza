@@ -149,7 +149,15 @@ fn reclaim_dead_socket_then_bind(path: &Path) -> io::Result<UnixListener> {
         // Any other connect error is ambiguous — fail safe rather than risk clobbering a live socket.
         Err(e) => return Err(e),
     }
-    std::fs::remove_file(path)?;
+    // Unlink the dead socket, then rebind. IGNORE a NotFound here (#1971 review): the connect NotFound arm
+    // above, or a TOCTOU where another process unlinked between symlink_metadata and now, means the path is
+    // already gone — that's a RECOVERABLE state (bind will succeed on the free path), so a NotFound from
+    // remove_file must NOT abort the rebind. Any other remove error is real and propagates.
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
     UnixListener::bind(path)
 }
 
