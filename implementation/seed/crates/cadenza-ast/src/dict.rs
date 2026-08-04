@@ -72,6 +72,12 @@ impl DictSet {
         self.dicts.get(hash)
     }
 
+    /// Iterate `(hash, dict)` pairs — used by the transport ENCODER (`encode_with_dict`) to build its
+    /// subtree-match table over every importable node of every supplied dictionary.
+    pub fn iter(&self) -> impl Iterator<Item = (&Hash, &Arenas)> {
+        self.dicts.iter()
+    }
+
     /// How many dictionaries are registered.
     pub fn len(&self) -> usize {
         self.dicts.len()

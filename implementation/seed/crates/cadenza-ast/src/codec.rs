@@ -232,6 +232,215 @@ pub fn encode(arenas: &Arenas) -> Vec<u8> {
     out
 }
 
+/// Extract the subtree rooted at `id` of `arenas` into its own standalone `Arenas` (a fresh, dense
+/// arena rooted at the copied subtree). Used to compute a subtree's CANONICAL content bytes (via
+/// `encode`) for dict-match keying. Iterative (explicit stack), so a deep subtree can't overflow.
+fn subtree_arena(arenas: &Arenas, id: StructId) -> Arenas {
+    let mut leaves: Vec<Leaf> = Vec::new();
+    let mut structure: Vec<Struct> = Vec::new();
+    enum Job {
+        Visit(u32),
+        EmitList(u32, usize),
+    }
+    let mut jobs = vec![Job::Visit(id.0)];
+    let mut results: Vec<u32> = Vec::new();
+    while let Some(job) = jobs.pop() {
+        match job {
+            Job::Visit(sid) => match arenas.get(StructId(sid)) {
+                Struct::Atom(LeafId(lid)) => {
+                    let new_leaf = leaves.len() as u32;
+                    leaves.push(arenas.leaf(LeafId(*lid)).clone());
+                    let new = structure.len() as u32;
+                    structure.push(Struct::Atom(LeafId(new_leaf)));
+                    results.push(new);
+                }
+                Struct::List(children) => {
+                    jobs.push(Job::EmitList(sid, children.len()));
+                    for &StructId(ch) in children.iter().rev() {
+                        jobs.push(Job::Visit(ch));
+                    }
+                }
+            },
+            Job::EmitList(_sid, n) => {
+                let kids = results.split_off(results.len() - n);
+                let new = structure.len() as u32;
+                structure.push(Struct::List(kids.into_iter().map(StructId).collect()));
+                results.push(new);
+            }
+        }
+    }
+    let root = StructId(results.pop().expect("subtree_arena leaves a root"));
+    Arenas {
+        leaves,
+        structure,
+        root,
+    }
+}
+
+/// Encode `arenas` as a TRANSPORT artifact (`cdzast\x00\x02`) that REFERENCES the supplied dictionaries:
+/// any subtree of `arenas` that is structurally equal to an importable node of some dict in `dicts` MAY
+/// be emitted as a `TAG_DICT_REF` instead of inline (compaction). v1 emits a ref for an EXACT subtree
+/// match against a caller-SUPPLIED dict-set; it does NOT choose which subtrees to factor into a
+/// dictionary (that is dict CONSTRUCTION, deferred — design §8).
+///
+/// Matching is GREEDY largest-first: a node is checked BEFORE its children, so a ref replaces the most
+/// inline bytes; a smaller nested match inside a larger matched subtree is subsumed. This is purely a
+/// compaction heuristic — any ref set round-trips, since `decode_with_dicts` grafts each ref back.
+///
+/// Imports are emitted in CANONICAL (hash-sorted) order, and only the dicts actually referenced are
+/// listed. The identity guarantee: `decode_with_dicts(encode_with_dict(a, d), d) == canonicalize(a)`,
+/// and `encode(decode_with_dicts(encode_with_dict(a, d), d)) == encode(a)` — transport is
+/// identity-preserving; the canonical inline `encode` remains the sole identity form.
+pub fn encode_with_dict(arenas: &Arenas, dicts: &DictSet) -> Vec<u8> {
+    let canon = crate::canon::canonicalize(arenas);
+    let arenas = &*canon;
+
+    // Match table: canonical subtree bytes -> (hash, node_id). Built over every importable node of every
+    // supplied dict. Keyed by the subtree's canonical `\x00\x01` bytes so a match is exact structural
+    // equality (the same key `encode` would produce for that subtree inline).
+    let mut by_bytes: std::collections::HashMap<Vec<u8>, (Hash, u32)> =
+        std::collections::HashMap::new();
+    for (hash, dict) in dicts.iter() {
+        for node in 0..dict.structure.len() as u32 {
+            let key = encode(&subtree_arena(dict, StructId(node)));
+            // First writer wins per key; a dict rarely has two structurally-identical importable nodes,
+            // and either resolves to the same subtree, so the choice is immaterial to correctness.
+            by_bytes.entry(key).or_insert((*hash, node));
+        }
+    }
+
+    // Walk the input's canonical structure GREEDILY (node before children). For each node, if its
+    // canonical subtree bytes match an importable dict node, record a dict-ref; else recurse. Collect the
+    // set of referenced dict hashes so the import section lists only what is used, in sorted order.
+    //
+    // We build the transport structure directly. `emit[sid]` maps an input StructId to its emitted
+    // transport-structure id (post-order, parent-after-children), EXCEPT a matched node emits a single
+    // TAG_DICT_REF entry and its subtree is not walked.
+    // Assign each referenced hash a dict_idx AFTER collecting + sorting; so first record (hash, node) refs.
+    let mut refs_used: std::collections::BTreeSet<Hash> = std::collections::BTreeSet::new();
+
+    // First pass: decide, for each node in a pre-order walk, whether it is a dict-match (and skip its
+    // subtree) — recording which hashes are referenced. Post-order emit happens in the second pass.
+    // To keep this a single structural walk we memo the match decision per node.
+    let n = arenas.structure.len();
+    let mut matched: Vec<Option<(Hash, u32)>> = vec![None; n];
+    {
+        // Pre-order from root; when a node matches, record it and DON'T descend (greedy largest-first).
+        let mut stack = vec![arenas.root.0 as usize];
+        while let Some(sid) = stack.pop() {
+            let key = encode(&subtree_arena(arenas, StructId(sid as u32)));
+            if let Some(&(hash, node)) = by_bytes.get(&key) {
+                matched[sid] = Some((hash, node));
+                refs_used.insert(hash);
+                continue; // subsumed — do not descend into a matched subtree
+            }
+            if let Struct::List(children) = &arenas.structure[sid] {
+                for StructId(ch) in children {
+                    stack.push(*ch as usize);
+                }
+            }
+        }
+    }
+
+    // If nothing matched, there is no compaction to do — emit the plain canonical `\x00\x01` form so a
+    // dict-free result stays byte-identical to `encode` (a transport artifact with zero refs would only
+    // add an empty import section + a header bump for no benefit).
+    if refs_used.is_empty() {
+        return encode(arenas);
+    }
+
+    // Assign dict_idx by sorted hash (BTreeSet iterates in order).
+    let imports: Vec<Hash> = refs_used.iter().copied().collect();
+    let dict_idx_of: std::collections::HashMap<Hash, u32> = imports
+        .iter()
+        .enumerate()
+        .map(|(i, h)| (*h, i as u32))
+        .collect();
+
+    // Build the transport leaves + structure. Only leaves referenced by inline (non-matched) atoms are
+    // needed; but to keep this simple + correct we re-walk the (canonical) arena post-order, emitting a
+    // fresh dense arena where a matched node becomes a single DICT_REF entry.
+    let mut t_leaves: Vec<Leaf> = Vec::new();
+    let mut leaf_map: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+    let mut t_structure: Vec<(u8, Vec<u64>)> = Vec::new(); // (tag, payload ids)
+    enum Job {
+        Visit(u32),
+        EmitList(u32, usize),
+    }
+    let mut jobs = vec![Job::Visit(arenas.root.0)];
+    let mut results: Vec<u32> = Vec::new();
+    while let Some(job) = jobs.pop() {
+        match job {
+            Job::Visit(sid) => {
+                if let Some((hash, node)) = matched[sid as usize] {
+                    let idx = dict_idx_of[&hash];
+                    let id = t_structure.len() as u32;
+                    t_structure.push((TAG_DICT_REF, vec![idx as u64, node as u64]));
+                    results.push(id);
+                    continue;
+                }
+                match &arenas.structure[sid as usize] {
+                    Struct::Atom(LeafId(lid)) => {
+                        let new_leaf = *leaf_map.entry(*lid).or_insert_with(|| {
+                            let nl = t_leaves.len() as u32;
+                            t_leaves.push(arenas.leaf(LeafId(*lid)).clone());
+                            nl
+                        });
+                        let id = t_structure.len() as u32;
+                        t_structure.push((TAG_ATOM, vec![new_leaf as u64]));
+                        results.push(id);
+                    }
+                    Struct::List(children) => {
+                        jobs.push(Job::EmitList(sid, children.len()));
+                        for &StructId(ch) in children.iter().rev() {
+                            jobs.push(Job::Visit(ch));
+                        }
+                    }
+                }
+            }
+            Job::EmitList(_sid, cnt) => {
+                let kids = results.split_off(results.len() - cnt);
+                let id = t_structure.len() as u32;
+                t_structure.push((TAG_LIST, kids.iter().map(|k| *k as u64).collect()));
+                results.push(id);
+            }
+        }
+    }
+    let t_root = results.pop().expect("encode_with_dict leaves a root") as u64;
+
+    // Serialize the transport artifact.
+    let mut out = Vec::new();
+    out.extend_from_slice(&TRANSPORT_HEADER);
+    leb128::write_u64(&mut out, imports.len() as u64);
+    for h in &imports {
+        out.extend_from_slice(h.as_bytes());
+    }
+    leb128::write_u64(&mut out, t_leaves.len() as u64);
+    for leaf in &t_leaves {
+        write_leaf(&mut out, leaf);
+    }
+    leb128::write_u64(&mut out, t_structure.len() as u64);
+    for (tag, ids) in &t_structure {
+        out.push(*tag);
+        match *tag {
+            TAG_ATOM => leb128::write_u64(&mut out, ids[0]),
+            TAG_LIST => {
+                leb128::write_u64(&mut out, ids.len() as u64);
+                for id in ids {
+                    leb128::write_u64(&mut out, *id);
+                }
+            }
+            TAG_DICT_REF => {
+                leb128::write_u64(&mut out, ids[0]);
+                leb128::write_u64(&mut out, ids[1]);
+            }
+            _ => unreachable!(),
+        }
+    }
+    leb128::write_u64(&mut out, t_root);
+    out
+}
+
 fn write_leaf(out: &mut Vec<u8>, leaf: &Leaf) {
     match leaf {
         Leaf::Int { value, radix } => {
@@ -596,12 +805,14 @@ pub fn decode_with_dicts(bytes: &[u8], dicts: &DictSet) -> Result<Arenas, Decode
     // rebuilt fresh (post-order, parent-after-children), so it is a genuine tree by construction; the
     // final tree guard below then also refuses a transport arena whose OWN child ids form a cycle/share.
     let mut g = Grafter {
-        leaves,
+        src_leaves: leaves,
+        out_leaves: Vec::new(),
+        leaf_dedup: std::collections::HashMap::new(),
         out: Vec::new(),
     };
     let out_root = g.graft_transport(&tstructure, root, &imports)?;
     let arenas = Arenas {
-        leaves: g.leaves,
+        leaves: g.out_leaves,
         structure: g.out,
         root: StructId(out_root),
     };
@@ -614,10 +825,20 @@ pub fn decode_with_dicts(bytes: &[u8], dicts: &DictSet) -> Result<Arenas, Decode
 }
 
 /// Accumulates the grafted (dict-free) output arena while expanding a transport structure. Leaves are
-/// carried over verbatim (dict subtrees, being from a decoded dict `Arenas`, bring their OWN leaves which
-/// are appended + their leaf ids remapped during the copy).
+/// interned BY VALUE (dedup) into a single pool as they are encountered — the transport artifact's own
+/// leaves AND every grafted dict subtree's leaves — so the result's leaf pool is the minimal deduped
+/// pool an equivalent inline arena would have. This is REQUIRED for the identity guarantee: without
+/// dedup, a dict subtree would append duplicate `pair`/`a`/… leaves and the re-encoded arena would
+/// differ byte-wise from `encode(a)` (though structurally equal), breaking
+/// `decode_with_dicts(encode_with_dict(a,d),d) == canonicalize(a)`. (`canon` numbers leaves by
+/// FIRST-ENCOUNTER, not by value, so dedup must happen HERE, mirroring how `ast::Builder` interns.)
 struct Grafter {
-    leaves: Vec<Leaf>,
+    /// The transport artifact's decoded leaf pool, indexed by the artifact's own leaf ids.
+    src_leaves: Vec<Leaf>,
+    /// The output pool being built (deduped by value via `leaf_dedup`).
+    out_leaves: Vec<Leaf>,
+    /// Value → output-leaf-id, so an identical leaf (from the artifact or any dict) interns once.
+    leaf_dedup: std::collections::HashMap<Leaf, u32>,
     out: Vec<Struct>,
 }
 
@@ -626,6 +847,17 @@ impl Grafter {
     fn push(&mut self, s: Struct) -> u32 {
         let id = self.out.len() as u32;
         self.out.push(s);
+        id
+    }
+
+    /// Intern a leaf VALUE into the output pool (dedup), returning its output leaf id.
+    fn intern_leaf(&mut self, leaf: Leaf) -> u32 {
+        if let Some(&id) = self.leaf_dedup.get(&leaf) {
+            return id;
+        }
+        let id = self.out_leaves.len() as u32;
+        self.out_leaves.push(leaf.clone());
+        self.leaf_dedup.insert(leaf, id);
         id
     }
 
@@ -646,8 +878,12 @@ impl Grafter {
         while let Some(job) = jobs.pop() {
             match job {
                 Job::Visit(t_id) => match &tstructure[t_id] {
-                    TStruct::Atom(leaf) => {
-                        let new = self.push(Struct::Atom(*leaf));
+                    TStruct::Atom(LeafId(lid)) => {
+                        // Re-intern by value: the transport leaf id indexes `src_leaves`; dedup into the
+                        // output pool so the result matches a Builder-deduped equivalent.
+                        let leaf = self.src_leaves[*lid as usize].clone();
+                        let out_leaf = self.intern_leaf(leaf);
+                        let new = self.push(Struct::Atom(LeafId(out_leaf)));
                         results.push(new);
                     }
                     TStruct::List(children) => {
@@ -696,9 +932,8 @@ impl Grafter {
                                 .get(*lid as usize)
                                 .ok_or(DecodeError::IdOutOfRange)?
                                 .clone();
-                            let new_leaf = self.leaves.len() as u32;
-                            self.leaves.push(leaf);
-                            let new = self.push(Struct::Atom(LeafId(new_leaf)));
+                            let out_leaf = self.intern_leaf(leaf);
+                            let new = self.push(Struct::Atom(LeafId(out_leaf)));
                             results.push(new);
                         }
                         Struct::List(children) => {
@@ -1787,6 +2022,184 @@ mod tests {
             encode(&back),
             "canonical \\x00\\x01 bytes must be a fixed point"
         );
+    }
+
+    // ---- I2: encode_with_dict (honor-supplied-dict transport encoder) ----
+
+    /// The round-trip IDENTITY that is I2's whole correctness story (design §7): encoding against a dict
+    /// then decoding against the SAME dict yields the canonical arena, and the transport is
+    /// identity-preserving (re-encoding the decoded result gives `encode(a)`).
+    fn assert_transport_identity(a: &Arenas, dicts: &DictSet) {
+        let bytes = encode_with_dict(a, dicts);
+        let decoded = decode_with_dicts(&bytes, dicts).expect("transport round-trips");
+        assert!(
+            crate::canon::canonicalize(a).structurally_eq(&decoded),
+            "decode_with_dicts(encode_with_dict(a,d),d) != canonicalize(a)"
+        );
+        assert_eq!(
+            encode(&decoded),
+            encode(a),
+            "transport is not identity-preserving: encode(decoded) != encode(a)"
+        );
+    }
+
+    #[test]
+    fn encode_with_dict_round_trips_over_empty_matching_and_superset_dicts() {
+        // A tree `(f (pair a b) (pair a b))` — the `(pair a b)` subtree repeats, so a dict containing it
+        // exercises a real ref (twice). Matrix: empty dict (no refs → plain v1), matching dict (the exact
+        // subtree), superset dict (extra unrelated nodes). All must satisfy the round-trip identity.
+        let mut b = Builder::new();
+        let mk_pair = |b: &mut Builder| {
+            let p = b.name("pair");
+            let x = b.name("a");
+            let y = b.name("b");
+            b.list(vec![p, x, y])
+        };
+        let f = b.name("f");
+        let p1 = mk_pair(&mut b);
+        let p2 = mk_pair(&mut b);
+        let root = b.list(vec![f, p1, p2]);
+        let a = b.finish(root);
+
+        // The dict = a standalone `(pair a b)` arena; any 32-byte hash works for the test as long as
+        // encode_with_dict + decode_with_dicts use the SAME DictSet.
+        let mut pb = Builder::new();
+        let pair_only = mk_pair(&mut pb);
+        let pair_dict = pb.finish(pair_only);
+
+        let empty = DictSet::new();
+        let mut matching = DictSet::new();
+        matching.insert(Hash([0x11u8; 32]), pair_dict.clone());
+        let mut superset = DictSet::new();
+        superset.insert(Hash([0x11u8; 32]), pair_dict.clone());
+        let mut extrab = Builder::new();
+        let extra = extrab.name("unrelated");
+        superset.insert(Hash([0x22u8; 32]), extrab.finish(extra));
+
+        assert_transport_identity(&a, &empty);
+        assert_transport_identity(&a, &matching);
+        assert_transport_identity(&a, &superset);
+
+        // With the matching dict the encode is a `\x00\x02` TRANSPORT artifact carrying refs; with the
+        // empty dict it FALLS BACK to plain canonical `\x00\x01` (byte-identical to `encode`). (Whether
+        // the transport form is SMALLER depends on subtree size vs the 32-byte import-hash overhead — a
+        // tiny `(pair a b)` doesn't beat a 32-byte hash, so size is NOT asserted here; the compaction WIN
+        // is a large-subtree property, and correctness is the round-trip identity above, not the size.)
+        let with = encode_with_dict(&a, &matching);
+        let without = encode_with_dict(&a, &empty);
+        assert_eq!(
+            &with[..8],
+            &TRANSPORT_HEADER,
+            "a matched encode is a transport artifact"
+        );
+        assert_eq!(
+            &without[..8],
+            &SCHEMA_HEADER,
+            "an unmatched encode falls back to canonical v1"
+        );
+        assert_eq!(
+            without,
+            encode(&a),
+            "the no-match fallback is byte-identical to encode"
+        );
+        // The matched transport form carries exactly one import (the pair dict) — the ref set is minimal.
+        assert!(
+            with.windows(32).any(|w| w == [0x11u8; 32]),
+            "the matched transport artifact imports the pair dict's hash"
+        );
+    }
+
+    #[test]
+    fn encode_with_dict_compacts_a_large_repeated_subtree() {
+        // The compaction WIN is real when the referenced subtree exceeds the 32-byte hash overhead. Build
+        // a tree with a LARGE repeated subtree (a deep list) referenced twice; the transport form (two
+        // 32-byte-hash-amortized refs replacing two large inline subtrees) is strictly SMALLER than inline.
+        let mut sub_b = Builder::new();
+        let mut cur = sub_b.name("leaf");
+        for i in 0..40 {
+            let tag = sub_b.name(if i % 2 == 0 { "wrap-a" } else { "wrap-b" });
+            cur = sub_b.list(vec![tag, cur]);
+        }
+        let big_sub = sub_b.finish(cur); // a ~40-deep chain — far more than 32 bytes inline
+
+        let mut b = Builder::new();
+        let f = b.name("f");
+        // two copies of the big subtree under `f` — inline that's ~2× the chain; as refs it's 2 small refs
+        let build_copy = |b: &mut Builder| {
+            let mut c = b.name("leaf");
+            for i in 0..40 {
+                let tag = b.name(if i % 2 == 0 { "wrap-a" } else { "wrap-b" });
+                c = b.list(vec![tag, c]);
+            }
+            c
+        };
+        let c1 = build_copy(&mut b);
+        let c2 = build_copy(&mut b);
+        let root = b.list(vec![f, c1, c2]);
+        let a = b.finish(root);
+
+        let mut dicts = DictSet::new();
+        dicts.insert(Hash([0x33u8; 32]), big_sub);
+        assert_transport_identity(&a, &dicts);
+        let with = encode_with_dict(&a, &dicts);
+        let without = encode(&a);
+        assert_eq!(&with[..8], &TRANSPORT_HEADER);
+        assert!(
+            with.len() < without.len(),
+            "a large repeated subtree must compact: transport {} vs inline {}",
+            with.len(),
+            without.len()
+        );
+    }
+
+    #[test]
+    fn encode_with_dict_identity_over_generated_arenas_and_dicts() {
+        // Property sweep (design §7.5): random arenas × random dicts (built from subtrees of the arena,
+        // so matches actually occur) all satisfy the transport round-trip identity + never panic. Uses
+        // the crate's SplitMix64 house style.
+        struct Rng(u64);
+        impl Rng {
+            fn next(&mut self) -> u64 {
+                self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
+                let mut z = self.0;
+                z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+                z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+                z ^ (z >> 31)
+            }
+            fn below(&mut self, n: usize) -> usize {
+                (self.next() % n as u64) as usize
+            }
+        }
+        fn gen_tree(rng: &mut Rng, b: &mut Builder, depth: usize) -> StructId {
+            let names = ["a", "b", "f", "g", "pair", "+"];
+            if depth == 0 || rng.next().is_multiple_of(3) {
+                return b.name(names[rng.below(names.len())]);
+            }
+            let k = 1 + rng.below(3);
+            let kids: Vec<StructId> = (0..k).map(|_| gen_tree(rng, b, depth - 1)).collect();
+            b.list(kids)
+        }
+        let mut rng = Rng(0x0d1c_7c0d_e5da_7abc);
+        for _ in 0..500 {
+            let mut b = Builder::new();
+            let depth = 1 + rng.below(4);
+            let root = gen_tree(&mut rng, &mut b, depth);
+            let a = b.finish(root);
+            let canon = crate::canon::canonicalize(&a).into_owned();
+
+            // Build a dict from a random subtree of `a` (so refs occur), keyed by a hash derived from the
+            // iteration (distinct per dict). Empty half the time to exercise the fallback path too.
+            let mut dicts = DictSet::new();
+            if rng.next() & 1 == 0 && !canon.structure.is_empty() {
+                let node = rng.below(canon.structure.len());
+                let sub = subtree_arena(&canon, StructId(node as u32));
+                let mut h = [0u8; 32];
+                let seed = rng.next();
+                h[..8].copy_from_slice(&seed.to_le_bytes());
+                dicts.insert(Hash(h), sub);
+            }
+            assert_transport_identity(&a, &dicts);
+        }
     }
 
     #[test]
