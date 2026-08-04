@@ -55,7 +55,15 @@ use tracing::trace;
 /// any real type's depth: a genuine annotation/inferred type nests only a handful of levels, and even a
 /// pathologically deep generic is well under this — so a well-formed program never approaches it, while a
 /// cycle blows past it and is broken to `Ty::Any` (a clean decline downstream instead of a crash).
-const APPLY_VAR_CHAIN_LIMIT: u32 = 10_000;
+///
+/// TIED to [`crate::db::DESCENT_DEPTH_LIMIT`] — the compiler-wide native-recursion stack-sizing policy (the
+/// worker stack in `host.rs` is sized from it). `apply_depth` is itself NATIVELY recursive (each `chain + 1`
+/// is a real frame, and the structural arms recurse on top of that), so the guard MUST fire within that
+/// policy: a bound above it (the former `10_000`, ~10× the 1024 policy) risks a hard stack OVERFLOW on a
+/// small-stack target (wasm32) BEFORE the guard ever fires — the exact crash the guard exists to prevent.
+/// The policy bound is still far above any real type's var-chain depth, so a well-formed program is
+/// byte-identical; a cycle is now guaranteed to be broken to `Ty::Any` before the stack is exhausted.
+const APPLY_VAR_CHAIN_LIMIT: u32 = crate::db::DESCENT_DEPTH_LIMIT;
 
 /// A substitution: what each type, width, and SIGN variable has been solved to. Applied to a type,
 /// it replaces solved variables with their solutions (transitively).
