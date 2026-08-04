@@ -80,6 +80,50 @@ pub fn host_session_status_json(
         .map(|hosted| session_status_json(id, hosted, now_ms, stall_after_ms))
 }
 
+/// Render the daemon's METRIC snapshots as a JSON object string — the read surface that makes the captured
+/// counters ([`HostMetrics`](crate::HostMetrics) host-boundary + [`EffectMetrics`](crate::EffectMetrics)
+/// per-effect) OBSERVABLE (an admin `metrics` read / a status endpoint), so a supervisor sees the live
+/// session-lifecycle + effect-outcome mix. Zero-dep, fixed-shape (same discipline as
+/// [`session_status_json`]); the caller passes both snapshots (the host owns `HostMetrics`, the executor set
+/// owns the shared `EffectMetrics`), so this renderer needs no handle to either.
+///
+/// Shape (a stable parse contract — add fields, don't rename):
+/// ```json
+/// {
+///   "sessions": {"installed": 3, "removed": 1, "live": 2},
+///   "turns": {"delivered": 10, "ok": 9, "err": 1, "to_unknown_session": 2},
+///   "effects": {"ok": 40, "retryable_err": 3, "permanent_err": 1, "timed_out": 0, "total": 44}
+/// }
+/// ```
+/// All values are cumulative counters (except `sessions.live` = installed − removed). Numbers are plain
+/// integers (no escaping needed); the object has no string fields, so it's always valid JSON.
+pub fn host_metrics_json(
+    host: &crate::HostMetricsSnapshot,
+    effects: &crate::EffectMetricsSnapshot,
+) -> String {
+    format!(
+        concat!(
+            "{{",
+            "\"sessions\":{{\"installed\":{},\"removed\":{},\"live\":{}}},",
+            "\"turns\":{{\"delivered\":{},\"ok\":{},\"err\":{},\"to_unknown_session\":{}}},",
+            "\"effects\":{{\"ok\":{},\"retryable_err\":{},\"permanent_err\":{},\"timed_out\":{},\"total\":{}}}",
+            "}}"
+        ),
+        host.sessions_installed,
+        host.sessions_removed,
+        host.sessions_live(),
+        host.turns_delivered,
+        host.turns_ok,
+        host.turns_err,
+        host.deliveries_to_unknown_session,
+        effects.effects_ok,
+        effects.effects_retryable_err,
+        effects.effects_permanent_err,
+        effects.effects_timed_out,
+        effects.effects_total(),
+    )
+}
+
 fn state_str(state: SessionState) -> &'static str {
     match state {
         SessionState::Closed => "Closed",
@@ -353,5 +397,33 @@ mod tests {
         let json = host_session_status_json(&host, &id, Some(0), DEFAULT_STALL_AFTER_MS).unwrap();
         assert!(json.contains("\"state\":\"Quiescent\""), "{json}");
         assert!(json.contains("\"in_flight\":[]"), "{json}");
+    }
+
+    #[test]
+    fn host_metrics_json_renders_both_snapshots_with_derived_fields() {
+        // The metrics read surface: host-boundary + per-effect snapshots → one fixed-shape JSON object with
+        // the derived fields (sessions.live = installed−removed; effects.total = ok+retryable+permanent+timed_out).
+        let host = crate::HostMetricsSnapshot {
+            sessions_installed: 3,
+            sessions_removed: 1,
+            turns_delivered: 10,
+            turns_ok: 9,
+            turns_err: 1,
+            deliveries_to_unknown_session: 2,
+        };
+        let effects = crate::EffectMetricsSnapshot {
+            effects_ok: 40,
+            effects_retryable_err: 3,
+            effects_permanent_err: 1,
+            effects_timed_out: 0,
+        };
+        let json = host_metrics_json(&host, &effects);
+        assert_eq!(
+            json,
+            "{\"sessions\":{\"installed\":3,\"removed\":1,\"live\":2},\
+             \"turns\":{\"delivered\":10,\"ok\":9,\"err\":1,\"to_unknown_session\":2},\
+             \"effects\":{\"ok\":40,\"retryable_err\":3,\"permanent_err\":1,\"timed_out\":0,\"total\":44}}",
+            "{json}"
+        );
     }
 }
