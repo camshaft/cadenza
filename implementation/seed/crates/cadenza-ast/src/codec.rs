@@ -843,22 +843,26 @@ struct Grafter {
 }
 
 impl Grafter {
-    /// Emit a node into the output arena, returning its new `StructId`.
-    fn push(&mut self, s: Struct) -> u32 {
-        let id = self.out.len() as u32;
+    /// Emit a node into the output arena, returning its new `StructId`. Bounds-checked: an artifact that
+    /// expands past `u32::MAX` nodes is refused (`IdOutOfRange`) rather than SILENTLY WRAPPING the id into
+    /// arena corruption — the ids are `u32`, and this runs on UNTRUSTED transport input (a dict-ref can
+    /// fan out an arena far larger than its own byte length).
+    fn push(&mut self, s: Struct) -> Result<u32, DecodeError> {
+        let id = u32::try_from(self.out.len()).map_err(|_| DecodeError::IdOutOfRange)?;
         self.out.push(s);
-        id
+        Ok(id)
     }
 
-    /// Intern a leaf VALUE into the output pool (dedup), returning its output leaf id.
-    fn intern_leaf(&mut self, leaf: Leaf) -> u32 {
+    /// Intern a leaf VALUE into the output pool (dedup), returning its output leaf id. Bounds-checked for
+    /// the same reason as [`Self::push`] — the leaf id is `u32`.
+    fn intern_leaf(&mut self, leaf: Leaf) -> Result<u32, DecodeError> {
         if let Some(&id) = self.leaf_dedup.get(&leaf) {
-            return id;
+            return Ok(id);
         }
-        let id = self.out_leaves.len() as u32;
+        let id = u32::try_from(self.out_leaves.len()).map_err(|_| DecodeError::IdOutOfRange)?;
         self.out_leaves.push(leaf.clone());
         self.leaf_dedup.insert(leaf, id);
-        id
+        Ok(id)
     }
 
     /// Graft the transport node `t_id` (of `tstructure`) into the output arena, expanding dict-refs, and
@@ -882,8 +886,8 @@ impl Grafter {
                         // Re-intern by value: the transport leaf id indexes `src_leaves`; dedup into the
                         // output pool so the result matches a Builder-deduped equivalent.
                         let leaf = self.src_leaves[*lid as usize].clone();
-                        let out_leaf = self.intern_leaf(leaf);
-                        let new = self.push(Struct::Atom(LeafId(out_leaf)));
+                        let out_leaf = self.intern_leaf(leaf)?;
+                        let new = self.push(Struct::Atom(LeafId(out_leaf)))?;
                         results.push(new);
                     }
                     TStruct::List(children) => {
@@ -903,7 +907,7 @@ impl Grafter {
                 },
                 Job::EmitList(n) => {
                     let kids = results.split_off(results.len() - n);
-                    let new = self.push(Struct::List(kids.into_iter().map(StructId).collect()));
+                    let new = self.push(Struct::List(kids.into_iter().map(StructId).collect()))?;
                     results.push(new);
                 }
             }
@@ -912,19 +916,33 @@ impl Grafter {
     }
 
     /// Copy the subtree rooted at `d_root` of dictionary `dict` into the output arena, interning the
-    /// dict's leaves (a dict brings its own leaf pool). Iterative post-order. The dict is a validated
-    /// inline-canonical (dict-free) `Arenas`, so it is a genuine tree — this copy terminates.
+    /// dict's leaves (a dict brings its own leaf pool). Iterative post-order.
+    ///
+    /// DoS GUARD: this must NOT assume the dict subtree is a tree. A `DictSet` is caller-supplied and a
+    /// `TAG_DICT_REF` can target ANY `node_id` — including an UNREACHABLE node of the dict, which
+    /// `decode`'s tree guard does NOT cover (it checks reachability from the dict's own root only). A dict
+    /// with a cycle among its unreachable nodes, referenced at such a node, would make an unguarded graft
+    /// LOOP FOREVER (a decode DoS on untrusted input). So the walk carries its own `visited` guard over
+    /// the dict's structure under `d_root`: a node reached twice → [`DecodeError::NotATree`]. (A dict
+    /// produced by a correct encoder is a tree, so this refuses nothing legitimate.)
     fn graft_dict_subtree(&mut self, dict: &Arenas, d_root: usize) -> Result<u32, DecodeError> {
         enum Job {
             Visit(usize),
             EmitList(usize),
         }
+        let mut visited = vec![false; dict.structure.len()];
         let mut jobs: Vec<Job> = vec![Job::Visit(d_root)];
         let mut results: Vec<u32> = Vec::new();
         while let Some(job) = jobs.pop() {
             match job {
                 Job::Visit(d_id) => {
-                    let node = dict.structure.get(d_id).ok_or(DecodeError::IdOutOfRange)?;
+                    // Cycle/shared-subtree guard: a dict node reached twice under `d_root` is a cyclic or
+                    // shared (non-tree) dict — refuse rather than loop/explode.
+                    if *visited.get(d_id).ok_or(DecodeError::IdOutOfRange)? {
+                        return Err(DecodeError::NotATree);
+                    }
+                    visited[d_id] = true;
+                    let node = &dict.structure[d_id];
                     match node {
                         Struct::Atom(LeafId(lid)) => {
                             let leaf = dict
@@ -932,8 +950,8 @@ impl Grafter {
                                 .get(*lid as usize)
                                 .ok_or(DecodeError::IdOutOfRange)?
                                 .clone();
-                            let out_leaf = self.intern_leaf(leaf);
-                            let new = self.push(Struct::Atom(LeafId(out_leaf)));
+                            let out_leaf = self.intern_leaf(leaf)?;
+                            let new = self.push(Struct::Atom(LeafId(out_leaf)))?;
                             results.push(new);
                         }
                         Struct::List(children) => {
@@ -946,7 +964,7 @@ impl Grafter {
                 }
                 Job::EmitList(n) => {
                     let kids = results.split_off(results.len() - n);
-                    let new = self.push(Struct::List(kids.into_iter().map(StructId).collect()));
+                    let new = self.push(Struct::List(kids.into_iter().map(StructId).collect()))?;
                     results.push(new);
                 }
             }
@@ -957,9 +975,10 @@ impl Grafter {
     }
 }
 
-/// The reachable-structure tree/decode-bomb guard, shared by `decode_detailed` and `decode_with_dicts`.
+/// The reachable-structure tree/decode-bomb guard used by `decode_with_dicts` on its GRAFTED output.
 /// Every node reachable from the root must be reached EXACTLY once (no cycle, no shared subtree).
-/// Iterative, so it cannot overflow on deep input.
+/// Iterative, so it cannot overflow on deep input. (`decode_detailed` performs the equivalent check
+/// inline over its own decoded structure; this standalone form guards the transport graft's result.)
 fn verify_tree(arenas: &Arenas) -> Result<(), DecodeError> {
     let mut visited = vec![false; arenas.structure.len()];
     let mut stack = vec![arenas.root.0 as usize];
@@ -2200,6 +2219,40 @@ mod tests {
             }
             assert_transport_identity(&a, &dicts);
         }
+    }
+
+    #[test]
+    fn a_dict_ref_into_a_cyclic_dict_subtree_is_not_a_tree_not_a_hang() {
+        // DoS regression (#2086 review finding 1): a DictSet is caller-supplied and a TAG_DICT_REF can
+        // target ANY node_id, including an UNREACHABLE dict node that `decode`'s reachability guard never
+        // saw. If that node's subtree CYCLES, an unguarded graft loops forever. Build a dict arena whose
+        // structure has a self-cyclic node (structure[0] = List[0] → itself) plus a real root, reference
+        // node 0, and assert decode_with_dicts returns NotATree (fast) rather than hanging.
+        let cyclic_dict = Arenas {
+            leaves: vec![Leaf::Name("x".to_string())],
+            // node 0: List[0] (points at itself — a cycle, unreachable from the real root node 1)
+            // node 1: Atom(x) — the dict's declared root (a valid tree on its own)
+            structure: vec![Struct::List(vec![StructId(0)]), Struct::Atom(LeafId(0))],
+            root: StructId(1),
+        };
+        let mut dicts = DictSet::new();
+        dicts.insert(Hash([0x55u8; 32]), cyclic_dict);
+        // transport: (f <ref to dict node 0, the cyclic one>) — leaf[0]=f, [Atom f, DictRef{0,0}, List[0,1]], root 2
+        let bytes = build_transport(
+            &[[0x55u8; 32]],
+            &[Leaf::Name("f".to_string())],
+            &[
+                (TAG_ATOM, vec![0]),
+                (TAG_DICT_REF, vec![0, 0]),
+                (TAG_LIST, vec![0, 1]),
+            ],
+            2,
+        );
+        assert_eq!(
+            decode_with_dicts(&bytes, &dicts),
+            Err(DecodeError::NotATree),
+            "a dict-ref into a cyclic dict subtree must be NotATree, never a hang"
+        );
     }
 
     #[test]
