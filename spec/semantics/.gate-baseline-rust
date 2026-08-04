@@ -904,6 +904,7 @@ pass	a SET churned to empty equals a fresh empty set and re-accepts elements
 pass	a SET handler state grows per perform and dedupes a repeated event
 pass	a SET of BigInts as a map key matches its construction-order and arithmetic twin
 pass	a SET of SETS dedups elements by set CONTENT — insertion-order twins collapse
+pass	a SET-valued handler state accumulates uniques across resumes (the visited-set idiom)
 pass	a SINGLE-variant open sum still requires an open-tail arm
 pass	a SLIDING-WINDOW max walks a k=3 window by paired index reads
 pass	a SOLE RECORD closure ARG crosses the direct-call boundary
@@ -5420,6 +5421,7 @@ pass	the let-form of the dual-resume-slot arm computes (the always-worked oracle
 pass	the logical-shift-drops-all-bits fold does not discard a trapping runtime operand
 pass	the magnitude of a bare-scaled quantity reads back
 pass	the manifest is DERIVED from what entrypoints delegate, not from effect declarations
+pass	the mark op's dup-flag RESULT counts repeats while the set state dedupes
 pass	the maximum Int64 in hexadecimal reads as an integer
 pass	the maximum Int64 literal reads as an integer
 pass	the maximum unsigned 8-bit value is its per-width bound

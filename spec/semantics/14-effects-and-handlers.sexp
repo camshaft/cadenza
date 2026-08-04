@@ -6330,6 +6330,45 @@
             (export main)))
   (call   main (: 0 Int64)) (output (: 23 Int64)))
 
+(case "a SET-valued handler state accumulates uniques across resumes (the visited-set idiom)"
+  (doc    "The Set face of heap handler state (the map-state rows insert; a set's DEDUP across resumes
+           is the distinct contract): 20 marks of `i mod 7` feed a handler whose state is a Set — each
+           arm resumes a dup-flag and inserts — and a final count reads 7 uniques. The visited-set a
+           graph walk carries: membership decided against the accumulated state at every resume, the
+           insert a no-op for repeats (a state thread that re-seeded or double-inserted would inflate
+           the count).")
+  (input  (do
+            (effect Seen (op mark (-> Int64 Int64)) (op count (-> Unit Int64)))
+            (def (feed (: i Int64) (: n Int64))
+              (if (= i n) 0 (+ (Seen.mark (% i 7)) (feed (+ i 1) n))))
+            (def (main (: n Int64))
+              (handle Seen (Set.of (list))
+                ((mark (v) s (resume (if (Set.contains s v) 1 0) (Set.insert s v)))
+                 (count (u) s (resume (Set.len s) s)))
+                (do
+                  (feed 0 n)
+                  (Seen.count))))
+            (export main)))
+  (call   main (: 20 Int64)) (output (: 7 Int64)))
+
+(case "the mark op's dup-flag RESULT counts repeats while the set state dedupes"
+  (doc    "The companion reading the op RESULTS instead of the final state: each mark resumes 1 iff the
+           value was already seen, and the caller SUMS the flags — 20 feeds of `i mod 7` produce 13
+           repeats (20 − 7 first-sightings). Pins that the per-resume result is computed against the
+           state BEFORE that resume's insert (an arm that inserted first and then tested would flag
+           every mark as a repeat), composing the membership read, the state advance, and the resumed
+           value in one arm.")
+  (input  (do
+            (effect Seen (op mark (-> Int64 Int64)))
+            (def (feed (: i Int64) (: n Int64))
+              (if (= i n) 0 (+ (Seen.mark (% i 7)) (feed (+ i 1) n))))
+            (def (main (: n Int64))
+              (handle Seen (Set.of (list))
+                ((mark (v) s (resume (if (Set.contains s v) 1 0) (Set.insert s v))))
+                (feed 0 n)))
+            (export main)))
+  (call   main (: 20 Int64)) (output (: 13 Int64)))
+
 (case "a perform in a match-arm guard is discharged by the enclosing handle"
   (doc    "`(handle Ask 5 ((get () s (resume s (- s 1)))) (match 9 ((guard n (> (Ask.get) 3)) 100) (n 200)))`
            — a perform `(Ask.get)` inside a match-arm GUARD condition, discharged by an intra-program
