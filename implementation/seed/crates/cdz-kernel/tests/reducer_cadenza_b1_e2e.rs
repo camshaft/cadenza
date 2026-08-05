@@ -62,7 +62,18 @@ async fn reducer_cadenza_b1_folds_empty_effects_through_apply_handle_lowered() {
         "a real Cadenza reducer_b1 must declare a cadenza:runtime/heap dep (it can't fold without a heap)"
     );
     let resolved = resolve_runtime_deps(&deps).await;
-    let reducer = reducer.with_resolved_deps(resolved);
+    let mut reducer = reducer.with_resolved_deps(resolved);
+    // Attach the component store so the TRANSITIVE compose (§23) can resolve the runtime's OWN bare
+    // `cadenza:nfc/normalize` import by name from `CDZ_STORE`'s `runtime.toml` (the value-heap runtime is
+    // not a leaf — it imports nfc). Without this, `apply_handle_lowered` composing the runtime would fail
+    // "imports cadenza:nfc/normalize, not found in linker". Only when CDZ_STORE is wired (the nix path);
+    // the RUNTIME_HEAP_COMPONENT direct-path override has no store, so a runtime that imports nfc needs
+    // CDZ_STORE. (See `ComponentReducer::with_component_store` + `compose_transitive_bare_deps`.)
+    if let Ok(store_dir) = std::env::var("CDZ_STORE") {
+        reducer = reducer.with_component_store(cdz_kernel::component_store::ComponentStore::open(
+            &store_dir,
+        ));
+    }
 
     // Fold an inbound "message" event. b1 emits ZERO effects → the returned effect-list handle unmarshals
     // to an empty Vec: the minimal real-reducer-through-the-marshalled-boundary proof.
