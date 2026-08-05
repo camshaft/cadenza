@@ -510,6 +510,7 @@ pass	a BOOL-field Tuple closure ARG flattens + rebuilds (box-bool imported)
 pass	a BOOL-field Tuple closure ARG, false discriminant
 pass	a BOOL-result effect op threads state across two performs on a boolean connective's operands
 pass	a BORROWED runtime Bytes rope map key is compacted at the key site and found by its flat twin
+pass	a BRANCHING tree walk performs once per leaf at 200-leaf scale
 pass	a BST built by comparison-driven inserts reads back sorted via in-order traversal
 pass	a BigInt computed across the limb boundary keys a Map like its literal twin
 pass	a BigInt entry argument is marshalled through the value's own constructor
@@ -5274,6 +5275,7 @@ pass	the complement laws fold x-and-not-x to zero and x-or-not-x to all-ones on 
 pass	the composed multibyte slice view equals its literal twin and keys a Map
 pass	the composed slice view EQUALS its flat twin and keys a Map by canonical content
 pass	the compound comparator drives a full INSERTION SORT over runtime tuples
+pass	the cross-handler op-arg lift fires 100 times inside a recursive accumulator loop
 pass	the decode error's kind is matchable
 pass	the default-integer pragma is definition-site scoped, not use-site
 pass	the difference contains the elements not in the second set
