@@ -412,6 +412,26 @@
   (host-calls (call ask.ask))
   (output (: 15 Int64)))
 
+(case "performs in DISCARDED do positions still run — the effect count is the observable"
+  (doc    "The side-effect-only statement face (the evaluate-ONCE pins above bound the count from ABOVE;
+           this bounds it from BELOW): three bare `(St.a)` statements whose results nothing binds or
+           consumes, followed by an observer. Each statement must still perform and advance — the observer
+           reads 8, not the seed 5. An optimizer that reasoned 'result unused → drop the call' would
+           silently skip the advances; the statement position's effect is the whole point of writing it.")
+  (input  (do
+            (effect St (op a (-> Unit Int64)) (op get (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((a (u) s (resume 0 (+ s 1)))
+                 (get (u) s (resume s s)))
+                (do
+                  (St.a)
+                  (St.a)
+                  (St.a)
+                  (St.get))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 8 Int64)))
+
 (case "an abortive perform in a connective that is an if-condition abandons the computation when the connective reaches it"
   (doc    "The abortive analogue of the connective-in-condition threading, for a NON-resuming handler. `(and
            b (> (Bail.bail 7) 0))` is the CONDITION of `(if _ 100 200)`; when `b` is true the connective

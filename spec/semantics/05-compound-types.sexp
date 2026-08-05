@@ -8725,6 +8725,25 @@
   (call   main (: 9 Int64)) (output (: 900 Int64))
   (call   main (: 8 Int64)) (output (: -1 Int64)))
 
+(case "perform RESULTS as Map keys: each key a distinct state read, lookup by the computed key"
+  (doc    "The effect-fed KEY face (the exotic-key family covers unusual key TYPES; this covers unusual key
+           PROVENANCE): two inserts whose keys are successive reads of an ADVANCING handler op (5 then 6 —
+           distinct because the state moved between them), then a lookup by the second computed key. The
+           key values flow from the effect machinery into the CHAMP hash/eq path: len 2 (no collision from
+           a stale re-read) and the lookup hits (10·2 + 200/100 = 22). A lowering that re-performed or
+           cached the key expressions would collapse or miss.")
+  (input  (do
+            (effect Cnt (op bump (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle Cnt n
+                ((bump (u) s (resume s (+ s 1))))
+                (do
+                  (def m (Map.insert (Map.insert Map.empty (Cnt.bump) 100) (Cnt.bump) 200))
+                  (+ (* 10 (Map.len m))
+                     (match (Map.lookup m (+ n 1)) ((Some v) (/ v 100)) (_ -1))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 22 Int64)))
+
 (case "indexing a list in bounds yields Some of the element"
   (doc    "Witnesses collections-and-text.md #Indexing And Lookup Are Fallible, Not Trapping: a
            well-typed list access whose index is in range yields the element wrapped in Some — an
