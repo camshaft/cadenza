@@ -43,6 +43,11 @@ live-exec = []
 async-trait = "0.1"
 # blake3: content-addressing for events, KV nodes, and blobs. Fast, no_std-friendly, stable digest.
 blake3 = "1"
+# sha2: SHA-256 for the ONE dual-hash boundary — verifying blobs read from the EXTERNAL on-disk component
+# store (`component_store`), which the seed/nix producers (xtask, cdz-run, v-nix `componentStore`) address
+# by SHA-256, NOT blake3. Kernel-internal durable state stays blake3 (`hash::Hash::of`); this is the only
+# place the two meet. Same pin the canonical impl (`cdz-run::cli::content_address`) uses.
+sha2 = "0.10"
 # bytes: ref-counted immutable byte buffer (operator perf directive 2026-08-02). Hot-path payloads /
 # continuation tokens / KV values that get CLONED + shared but not mutated in place are `Bytes` so a
 # clone is an O(1) refcount bump + slice, not a deep memcpy. `Bytes: From<Vec<u8>>` keeps build-then-
