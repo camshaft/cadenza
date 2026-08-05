@@ -116,8 +116,8 @@ async fn reducer_cadenza_b1_folds_empty_effects_through_apply_handle_lowered() {
 
 /// Resolve every declared dep's bytes for the b1 e2e, from whichever runtime source v-nix wired:
 /// `RUNTIME_HEAP_COMPONENT` (a direct path, composed as-is) takes precedence; else `CDZ_STORE` (a
-/// content-addressed [`DiskBlobStore`] the dep is looked up in by its `+<hash>`). A declared dep with
-/// neither source available FAILS LOUD.
+/// content-addressed `ComponentStore`, read via `get_by_hash` — the SHA-256-verified content-address
+/// path the fold itself uses). A declared dep with neither source available FAILS LOUD.
 async fn resolve_runtime_deps(deps: &[ComponentDep]) -> Vec<(ComponentDep, Vec<u8>)> {
     // Direct-path override: compose the runtime component from a path env, no hash lookup. b1 declares a
     // single runtime dep, so a single direct path satisfies it.
