@@ -625,13 +625,17 @@ async function checkExample(ex) {
     const mlFail = await checkProgram(mlProgram, "ml", ex, "ML");
     if (mlFail) return mlFail;
     try {
-      // Render the WRAPPED ML program to s-expr and compile that — the toggle pass (mirrors line ~89's
-      // renderToMl direction). render_syntax takes a whole module, so feed it the wrapped ML.
-      const sexprProgram = render_syntax(mlProgram, "ml", "sexpr");
+      // Toggle pass — the EXACT mirror of renderToMl (line ~89) in the ml→s-expr direction, so both toggle
+      // directions exercise identical wrap → render → STRIP → rewrap. The reader's real toggle re-renders
+      // the wrapped ML to s-expr, STRIPS back to the bare displayed snippet, then REWRAPS to compile/run;
+      // compiling the un-stripped render output would gate a shape the reader never runs and let a
+      // strip/wrap bug for the s-expr surface slip past (the scaffolding-bug class this arc keeps hitting).
+      const sexprSnippet = stripModule(render_syntax(mlProgram, "ml", "sexpr"), "sexpr");
+      const sexprProgram = wrapModule(sexprSnippet, "sexpr");
       const sexprFail = await checkProgram(sexprProgram, "sexpr", ex, "s-expr toggle");
       if (sexprFail) return sexprFail;
     } catch (e) {
-      return `${ex.file} [${ex.kind}] (s-expr toggle): render threw — ${String(e.message || e).slice(0, 80)}`;
+      return `${ex.file} [${ex.kind}] (s-expr toggle): render/strip/wrap threw — ${String(e.message || e).slice(0, 80)}`;
     }
     return null;
   }
