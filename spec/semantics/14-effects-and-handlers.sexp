@@ -1812,6 +1812,48 @@
   (call   main (: 10 Int64))
   (output (: 15 Int64)))
 
+(case "a handler ARM gates its answer on a CAPTURED Set from the enclosing scope"
+  (doc    "The arm-side twin of the body-reads-enclosing-parameter case above: it is the ARM (not the body)
+           that reaches a heap value defined in `main`'s scope. `allow = Set.of [2 5 9]` is captured by the
+           `check` arm, which answers `(if (Set.contains allow v) 1 0)` per op ARGUMENT. Three membership
+           probes (5 ∈, 3 ∉, 9 ∈) place-value to 101. Pins that the fold keeps the arm anchored where the
+           handler sat lexically, so a free heap binding resolves up the original chain from inside the arm.")
+  (input  (do
+            (effect St (op check (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (do
+                (def allow (Set.of (list 2 5 9)))
+                (handle St 0
+                  ((check (v) s (resume (if (Set.contains allow v) 1 0) s)))
+                  (+ (* 100 (St.check n)) (+ (* 10 (St.check 3)) (St.check 9))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 101 Int64)))
+
+(case "a TWO-resume-site arm branching on a CAPTURED Map folds — the branch reads heap, not state"
+  (doc    "The SERVED face of the multi-resume-site boundary: an arm with two resume sites carrying
+           DIFFERENT states per site — the hit path advances the count `(resume v (+ s 1))`, the miss path
+           holds it `(resume 0 s)` — folds through FOUR performs because its branch condition reads a
+           CAPTURED Map (`Map.lookup table k`), not the state binder. The sibling shape whose condition
+           reads STATE declines with ≥2 performs (that decline is pinned as a never-miscompile lib test).
+           Lookups: 1→100 (s→1), 7→miss→0 (s stays 1), 2→250 (s→2), then `hits` reports 2 → 100+0+250+2000
+           = 2350. Pins the captured-table routing idiom — a real-world lookup-with-hit-count handler —
+           as folding today, and pins the boundary conjunct: it is WHAT THE CONDITION READS that gates
+           the fold, not the resume-site count.")
+  (input  (do
+            (effect St (op price (-> Int64 Int64)) (op hits (-> Unit Int64)))
+            (def (main (: n Int64))
+              (do
+                (def table (Map.insert (Map.insert Map.empty 1 100) 2 250))
+                (handle St 0
+                  ((price (k) s
+                    (match (Map.lookup table k)
+                      ((Some v) (resume v (+ s 1)))
+                      ((None _u) (resume 0 s))))
+                   (hits (u) s (resume s s)))
+                  (+ (St.price 1) (+ (St.price 7) (+ (St.price 2) (* 1000 (St.hits))))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 2350 Int64)))
+
 ; A do-local value def in a handle body must stay in scope for a perform's ARGUMENT (breaker FINDING;
 ; v-effects e49c698a1). The handle-body folds dropped non-final do-items and re-spliced only a survivor,
 ; orphaning a `(def v e)` that a later perform arg referenced → a false CDZ0101 'unbound name'; the
