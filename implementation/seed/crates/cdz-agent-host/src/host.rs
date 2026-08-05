@@ -903,6 +903,116 @@ mod tests {
         assert_eq!(genesis_ct::KV_CONTEXT, b"bootstrap/context");
     }
 
+    /// END-TO-END: drive the REAL rcdzc-compiled genesis reducer (v-harness-bootstrap's
+    /// `reducer_genesis.cdz`) through the HOST's async path — `HostedSession::seed_genesis` → the async
+    /// `AsyncComponentReducer` fold (§23 dep-compose, landed #2256) → session KV — and assert every seeded
+    /// setup payload lands under its contracted `genesis_ct` KV key. Where `seed_genesis_folds_the_setup_events_into_kv`
+    /// uses a Rust MOCK reducer (so a literal rename moves both sides + still passes, see
+    /// `genesis_ct_contract_constants_are_pinned_to_their_wire_literals`), THIS proves the host drives the
+    /// ACTUAL Cadenza reducer that hard-codes the literal families/keys — the true host↔reducer contract.
+    ///
+    /// Env-gated skip-on-unset (mirrors the kernel's `reducer_cadenza_b1_e2e`): a bare `cargo test` with no
+    /// nix env stays green; CI (v-nix, per the #2249 b1 pattern) sets both. Two vars are REQUIRED together —
+    /// - `GENESIS_REDUCER_COMPONENT` — the compiled `reducer-cadenza-genesis` component bytes.
+    /// - `CDZ_STORE` — the hash-keyed `<sha256hex>.wasm` component store; the genesis reducer imports the
+    ///   value-heap runtime (it lowers compounds to handles), whose OWN transitive `cadenza:nfc/normalize`
+    ///   the §23 compose resolves by name from this store. Set one without the other and we FAIL LOUD (a
+    ///   half-wired CI env must not masquerade as a clean skip).
+    #[tokio::test]
+    async fn real_genesis_reducer_folds_setup_events_through_the_host_async_path() {
+        use cdz_kernel::wasm_host::AsyncComponentReducer;
+
+        let reducer_path = std::env::var("GENESIS_REDUCER_COMPONENT").ok();
+        let store_dir = std::env::var("CDZ_STORE").ok();
+        match (&reducer_path, &store_dir) {
+            (None, None) => {
+                eprintln!(
+                    "SKIP real_genesis_reducer_folds_setup_events_through_the_host_async_path: \
+                     GENESIS_REDUCER_COMPONENT + CDZ_STORE unset"
+                );
+                return;
+            }
+            // Half-wired env is a broken CI setup, not a clean skip — fail loud so it can't hide.
+            (Some(_), None) => panic!(
+                "GENESIS_REDUCER_COMPONENT is set but CDZ_STORE is not — the genesis reducer's runtime dep \
+                 needs the component store to resolve its transitive cadenza:nfc/normalize (§23)"
+            ),
+            (None, Some(_)) => panic!(
+                "CDZ_STORE is set but GENESIS_REDUCER_COMPONENT is not — nothing to drive"
+            ),
+            (Some(_), Some(_)) => {}
+        }
+        let reducer_path = reducer_path.unwrap();
+        let store_dir = store_dir.unwrap();
+
+        let bytes = std::fs::read(&reducer_path).unwrap_or_else(|e| {
+            panic!("GENESIS_REDUCER_COMPONENT={reducer_path:?} set but unreadable: {e}")
+        });
+        let reducer = AsyncComponentReducer::from_component_bytes(&bytes)
+            .unwrap_or_else(|e| panic!("reducer_genesis must be a valid component: {e:?}"));
+
+        // The genesis reducer lowers compounds to value-heap handles, so it declares a `cadenza:runtime/heap`
+        // dep — resolve every declared dep's bytes from the hash-keyed store (`<hash>.wasm`, matching the b1
+        // e2e's componentStore layout), then attach the store so the §23 compose can also resolve the
+        // runtime's OWN transitive `cadenza:nfc/normalize` by name.
+        let deps = reducer.deps().to_vec();
+        assert!(
+            !deps.is_empty(),
+            "the real genesis reducer must declare a cadenza:runtime/heap dep (it folds via the value heap)"
+        );
+        let mut resolved = Vec::with_capacity(deps.len());
+        for dep in &deps {
+            let path = std::path::Path::new(&store_dir).join(format!("{}.wasm", dep.hash.to_hex()));
+            let dep_bytes = std::fs::read(&path).unwrap_or_else(|e| {
+                panic!(
+                    "CDZ_STORE has no blob {path:?} for genesis reducer dep {:?} (hash {}): {e}",
+                    dep.import_name,
+                    dep.hash.to_hex()
+                )
+            });
+            resolved.push((dep.clone(), dep_bytes));
+        }
+        let reducer = reducer.with_resolved_deps(resolved).with_component_store(
+            cdz_kernel::component_store::ComponentStore::open(&store_dir),
+        );
+
+        // Drive the HOST path: a genesis session over the REAL reducer, then seed the three setup events.
+        // Deny-all authz is fine — genesis setup events request no effects.
+        let mut session = HostedSession::genesis(
+            Hash::of(b"real-genesis-reducer"),
+            Box::new(reducer),
+            Box::new(Authorizer::deny_all()),
+            CompositeExecutor::new(),
+        );
+        session
+            .seed_genesis(
+                b"root-identity-bytes",
+                Some(b"authz-hash-bytes"),
+                Some(b"ctx-blob"),
+            )
+            .await
+            .expect("the real genesis reducer folds the seed events through the host async path");
+
+        // Each setup payload landed under its contracted genesis_ct KV key — the real reducer's hard-coded
+        // family→key routing agrees with the host's genesis_ct literals, end to end.
+        let kv = session.session().kv();
+        assert_eq!(
+            kv.get(genesis_ct::KV_ROOT_IDENTITY),
+            Some(&b"root-identity-bytes"[..]),
+            "genesis/root payload folds to bootstrap/root-identity"
+        );
+        assert_eq!(
+            kv.get(genesis_ct::KV_AUTHORIZER_HASH),
+            Some(&b"authz-hash-bytes"[..]),
+            "genesis/authorizer payload folds to bootstrap/authorizer-hash"
+        );
+        assert_eq!(
+            kv.get(genesis_ct::KV_CONTEXT),
+            Some(&b"ctx-blob"[..]),
+            "genesis/context payload folds to bootstrap/context"
+        );
+    }
+
     #[tokio::test]
     async fn with_sink_persists_a_sessions_events_durably() {
         // with_sink attaches a durable LogStore: the events a session appends during a turn are persisted,
