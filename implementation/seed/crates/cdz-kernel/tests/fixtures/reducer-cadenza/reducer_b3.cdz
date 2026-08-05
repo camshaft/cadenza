@@ -105,20 +105,29 @@ def b3_counter_wraps_at_max() =
   if Bytes.at(bump-count(Some(Bytes.of([UInt8.wrap(255)]))), 0) == Some(0) then unit
   else trap("bump-count of byte 255 must wrap to byte 0")
 
-// Pin the Http effect-request's fields (the message branch performs kv so isn't callable standalone,
-// but http-effect is a pure def — pin the kind/target/correlation the host marshals via sum-disc/str-get/
-// sum-payload, so a silent target/token change is caught).
+// Pin the Http effect-request's fields. The message branch performs kv so isn't callable standalone, but
+// http-effect is a pure def — pin the kind, target, and correlation (the fields the host marshals via
+// sum-disc, str-get, and sum-payload) so a silent target/token change is caught.
 @test
 def b3_http_effect_kind_is_http() =
   match http-effect() with
-    | EffectRequest.Mk(r) => (match r.kind with | EffectKind.Http() => unit | _ => trap("B3's http-effect kind must be Http"))
+    | EffectRequest.Mk(r) =>
+      (match r.kind with
+        | EffectKind.Http() => unit
+        | _ => trap("B3's http-effect kind must be Http"))
 
 @test
-def b3_http_effect_target_and_correlation_pinned() =
+def b3_http_effect_target_is_pinned() =
   match http-effect() with
     | EffectRequest.Mk(r) =>
-      (if r.target == "https://ok.host/x" then
-        (if r.correlation == Some(String.to-bytes("step-1")) then unit else trap("B3 http-effect correlation must be Some(\"step-1\")"))
-       else trap("B3 http-effect target must be https://ok.host/x"))
+      if r.target == "https://ok.host/x" then unit
+      else trap("B3's http-effect target must be https://ok.host/x")
+
+@test
+def b3_http_effect_correlation_is_pinned() =
+  match http-effect() with
+    | EffectRequest.Mk(r) =>
+      if r.correlation == Some(String.to-bytes("step-1")) then unit
+      else trap("B3's http-effect correlation must be Some(\"step-1\")")
 
 export { apply }

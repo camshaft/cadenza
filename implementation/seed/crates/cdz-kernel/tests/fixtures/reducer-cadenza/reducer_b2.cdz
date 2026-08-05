@@ -57,19 +57,26 @@ def b2_the_effect_is_http() =
 @test
 def b2_effect_target_is_pinned() =
   match List.at(apply({ family = "message", version = 1 }, None(), None()), 0) with
-    | Some(EffectRequest.Mk(r)) => (if r.target == "https://ok.host/x" then unit else trap("B2's effect target must be https://ok.host/x"))
+    | Some(EffectRequest.Mk(r)) =>
+      if r.target == "https://ok.host/x" then unit
+      else trap("B2's effect target must be https://ok.host/x")
     | None() => trap("B2 must have an effect at index 0")
 
 @test
 def b2_effect_correlation_is_pinned() =
   match List.at(apply({ family = "message", version = 1 }, None(), None()), 0) with
-    | Some(EffectRequest.Mk(r)) => (if r.correlation == Some(String.to-bytes("step-1")) then unit else trap("B2's effect correlation token must be Some(\"step-1\")"))
+    | Some(EffectRequest.Mk(r)) =>
+      if r.correlation == Some(String.to-bytes("step-1")) then unit
+      else trap("B2's effect correlation token must be Some(\"step-1\")")
     | None() => trap("B2 must have an effect at index 0")
 
 @test
 def b2_effect_payload_is_none() =
   match List.at(apply({ family = "message", version = 1 }, None(), None()), 0) with
-    | Some(EffectRequest.Mk(r)) => (match r.payload with | None() => unit | Some(_) => trap("B2's effect payload must be None"))
+    | Some(EffectRequest.Mk(r)) =>
+      (match r.payload with
+        | None() => unit
+        | Some(_) => trap("B2's effect payload must be None"))
     | None() => trap("B2 must have an effect at index 0")
 
 export { apply }
