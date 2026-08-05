@@ -8725,7 +8725,7 @@
   (call   main (: 9 Int64)) (output (: 900 Int64))
   (call   main (: 8 Int64)) (output (: -1 Int64)))
 
-(case "perform RESULTS as Map keys: each key a distinct state read, lookup by the computed key"
+(case "performs as Map keys: each key a distinct state read, lookup by the computed key"
   (doc    "The effect-fed KEY face (the exotic-key family covers unusual key TYPES; this covers unusual key
            PROVENANCE): two inserts whose keys are successive reads of an ADVANCING handler op (5 then 6 —
            distinct because the state moved between them), then a lookup by the second computed key. The
