@@ -11302,10 +11302,19 @@ fn emit(
                 _ => None,
             };
             // The lifted function is `(env, args…) -> result`, so push env (param 0) THEN each arg, in
-            // order, before the call. Each arg emits above the cell slot (never reusing it).
+            // order, before the call. Each arg emits above the cell slot AND above every scratch slot the
+            // CLOSURE OPERAND's own emit consumed — use `(*high).max(cell_slot + 1)`, not a bare
+            // `cell_slot + 1`. A closure operand that is a dup-site `Core::SumPayload` (the looked-up-closure
+            // shape: `(match (Map.lookup …) ((Some f) (f …)))`) floats its retain child into a slot at `*high`
+            // typed I32 (the closure cell); a plain `cell_slot + 1` base lets a following perform-threaded arg
+            // (an i64) materialize into that SAME index, and a wasm local has ONE type function-wide → i32/i64
+            // collision → an invalid module (`func failed to validate: expected i64, found i32`). Threading the
+            // base past `*high` keeps the arg's scratch DISJOINT from the closure operand's retain slot. (The
+            // host-call arg emit below already threads `arg_base` for the identical two-widths hazard.)
+            let arg_base = (*high).max(cell_slot + 1);
             out.push(Lir::LocalGet(cell_slot)); // env (the cell)
             for &arg in &args {
-                emit(db, arg, slots, cell_slot + 1, high, scratch_ty, layout, out)?;
+                emit(db, arg, slots, arg_base, high, scratch_ty, layout, out)?;
             }
             match known_code {
                 // Devirtualized: the table slot is known, so call the lifted function directly.
