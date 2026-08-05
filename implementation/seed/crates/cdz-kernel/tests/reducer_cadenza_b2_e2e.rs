@@ -107,8 +107,9 @@ async fn reducer_cadenza_b2_folds_one_http_effect_through_apply_handle_lowered()
     }
 }
 
-/// Resolve every declared dep's bytes from `CDZ_STORE` (v-nix's componentStore, `<hash>.wasm` naming) or
-/// the `RUNTIME_HEAP_COMPONENT` direct-path override — identical to the b1 e2e's resolver.
+/// Resolve every declared dep's bytes from `CDZ_STORE` (v-nix's componentStore, read via
+/// `ComponentStore::get_by_hash` — the SHA-256-verified content-address path the fold uses) or the
+/// `RUNTIME_HEAP_COMPONENT` direct-path override — identical to the b1 e2e's resolver.
 async fn resolve_runtime_deps(deps: &[ComponentDep]) -> Vec<(ComponentDep, Vec<u8>)> {
     if let Ok(path) = std::env::var("RUNTIME_HEAP_COMPONENT") {
         let bytes = std::fs::read(&path)
