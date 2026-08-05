@@ -227,9 +227,9 @@ mod tests {
                    (data (i32.const 452) "\00\00\00\00\d0\01\00\00")
                    ;; @464 EMPTY bytes: [len=0], no bytes — read_bytes returns vec![].
                    (data (i32.const 464) "\00\00\00\00")
-                   ;; @500 a length-1 vec whose element record@520 carries a BOGUS option discriminant in its
+                   ;; @500 a length-1 vec whose element record@532 carries a BOGUS option discriminant in its
                    ;; correlation sum (disc=7, neither Some(0) nor None(1)) — read_option_bytes must hard-Trap
-                   ;; (ABI drift), not silently default. [len=1][elem0=record@520]
+                   ;; (ABI drift), not silently default. [len=1][elem0=record@532] (0x0214 = 532)
                    (data (i32.const 500) "\01\00\00\00\14\02\00\00")
                    ;; @532 record: [len=4][correlation@560][kind@160][payload@240][target@180]
                    (data (i32.const 532) "\04\00\00\00\30\02\00\00\a0\00\00\00\f0\00\00\00\b4\00\00\00")
@@ -382,10 +382,15 @@ mod tests {
     fn a_bogus_option_discriminant_hard_traps_not_defaults() {
         let mut heap = bind_read_stub();
         match read_effect_requests(&mut heap, 500) {
-            Err(ComponentError::Trap(msg)) => assert!(
-                msg.contains("neither Some(0) nor None(1)"),
-                "expected the option ABI-drift trap message, got {msg:?}"
-            ),
+            // Assert primarily on the VARIANT (a hard Trap) + STABLE anchors — the concept ("discriminant")
+            // and the actual bogus value ("7", which the test controls) — NOT the full human-readable phrase,
+            // which is free to be reworded (test-precision family, #2176 / #2216 review).
+            Err(ComponentError::Trap(msg)) => {
+                assert!(
+                    msg.contains("discriminant") && msg.contains('7'),
+                    "expected an option ABI-drift trap naming the bogus discriminant 7, got {msg:?}"
+                )
+            }
             other => panic!("a bogus option discriminant must hard-Trap, got {other:?}"),
         }
     }
