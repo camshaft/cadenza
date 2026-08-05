@@ -425,13 +425,22 @@ fn compose_dep_into_linker<T: 'static>(
     };
     let dep = Component::new(engine, dep_bytes)
         .map_err(|e| compose_err(format!("dependency bytes are not a valid component: {e}")))?;
-    // The func names the dep exports under `import_name` (its exported interface must match the name the
-    // consumer imports it under). Read them off the component TYPE, not a live instance, so a dep that
-    // exports the wrong shape is caught with a clear message rather than an opaque trap at call time.
+    // The consumer IMPORTS under the full content-addressed name (`cadenza:runtime/heap@0.0.0+<hash>`), but
+    // the dep component EXPORTS the BARE interface name (`cadenza:runtime/heap`) — a real Cadenza reducer's
+    // `+<hash>` import build-metadata is NOT part of the dep's export name (verified against a compiled
+    // reducer_b1 + its runtime component). So look the dep's exported interface up by the bare name (strip
+    // the `@version+hash` suffix), while still registering into the CONSUMER's linker under the full
+    // `import_name` it imports (below). A bare name with no suffix is unchanged. (Earlier this used
+    // `import_name` for both sides — it only worked because the WAT test stubs happened to export the same
+    // full string; a real content-addressed dep exposed the mismatch.)
+    let dep_iface_name = import_name.split('@').next().unwrap_or(import_name);
+    // The func names the dep exports under `dep_iface_name`. Read them off the component TYPE, not a live
+    // instance, so a dep that exports the wrong shape is caught with a clear message rather than an opaque
+    // trap at call time.
     let func_names: Vec<String> = dep
         .component_type()
         .exports(engine)
-        .find(|(n, _)| *n == import_name)
+        .find(|(n, _)| *n == dep_iface_name)
         .and_then(|(_, item)| match item {
             ComponentItem::ComponentInstance(inst) => Some(
                 inst.exports(engine)
@@ -444,7 +453,8 @@ fn compose_dep_into_linker<T: 'static>(
         })
         .ok_or_else(|| {
             compose_err(format!(
-                "dependency does not export the interface {import_name:?} the consumer imports"
+                "dependency does not export the interface {dep_iface_name:?} the consumer imports \
+                 (as {import_name:?})"
             ))
         })?;
     // Instantiate the dep in the shared store (a dep is dependency-free here; a dep-of-dep chain is a
@@ -455,11 +465,12 @@ fn compose_dep_into_linker<T: 'static>(
         .instantiate(&mut *store, &dep)
         .map_err(|e| compose_err(format!("instantiating the dependency failed: {e}")))?;
     let iface_idx = dep_instance
-        .get_export_index(&mut *store, None, import_name)
+        .get_export_index(&mut *store, None, dep_iface_name)
         .ok_or_else(|| {
             compose_err("dependency instance is missing its exported interface".into())
         })?;
-    // Forward each dep func into the consumer's linker under `import_name`.
+    // Forward each dep func into the consumer's linker under the full `import_name` (the content-addressed
+    // name the consumer imports — NOT the bare `dep_iface_name`).
     let mut iface = linker
         .instance(import_name)
         .map_err(|e| compose_err(format!("linker.instance({import_name:?}): {e}")))?;
@@ -560,41 +571,73 @@ impl<T: 'static> HeapHandle<T> {
     /// as a [`Func`] off the `cadenza:runtime/heap` exported interface — a missing op is a `Compose`
     /// error naming it (the runtime doesn't expose the expected interface, caught here rather than as an
     /// opaque trap at marshal time).
+    ///
+    /// On error the CONSUMED `store` is handed back with the error (`Err((e, store))`), so a caller can
+    /// recover the store's data — e.g. the fold-boundary rebind returns the reducer host's base KV rather
+    /// than dropping it (github-liaison #2203 MED: the "any error hands the base KV back" atomicity
+    /// contract). A caller that doesn't need the store just discards it.
     pub fn bind(
         mut store: wasmtime::Store<T>,
         instance: &wasmtime::component::Instance,
-    ) -> Result<Self, ComponentError> {
+    ) -> Result<Self, (ComponentError, wasmtime::Store<T>)> {
         let iface_err = |reason: String| ComponentError::Compose {
             import_name: "cadenza:runtime/heap".to_string(),
             reason,
         };
-        let iface_idx = instance
-            .get_export_index(&mut store, None, "cadenza:runtime/heap")
-            .ok_or_else(|| iface_err("runtime does not export cadenza:runtime/heap".into()))?;
-        let mut op = |name: &str| -> Result<wasmtime::component::Func, ComponentError> {
-            let idx = instance
-                .get_export_index(&mut store, Some(&iface_idx), name)
-                .ok_or_else(|| iface_err(format!("heap interface missing op {name:?}")))?;
-            instance
-                .get_func(&mut store, idx)
-                .ok_or_else(|| iface_err(format!("heap export {name:?} is not a func")))
+        // Extract every op in an inner closure returning a plain `Result<_, ComponentError>` (it borrows
+        // `store`); the borrow ends when it returns, so on Err `store` is free to move into the error tuple.
+        let ops = (|| {
+            let iface_idx = instance
+                .get_export_index(&mut store, None, "cadenza:runtime/heap")
+                .ok_or_else(|| iface_err("runtime does not export cadenza:runtime/heap".into()))?;
+            let mut op = |name: &str| -> Result<wasmtime::component::Func, ComponentError> {
+                let idx = instance
+                    .get_export_index(&mut store, Some(&iface_idx), name)
+                    .ok_or_else(|| iface_err(format!("heap interface missing op {name:?}")))?;
+                instance
+                    .get_func(&mut store, idx)
+                    .ok_or_else(|| iface_err(format!("heap export {name:?} is not a func")))
+            };
+            Ok::<_, ComponentError>((
+                op("box-int")?,
+                op("arr-alloc")?,
+                op("arr-set")?,
+                op("sum-new")?,
+                op("vec-len")?,
+                op("str-new")?,
+                op("arr-get")?,
+                op("str-get")?,
+                op("sum-disc")?,
+                op("sum-payload")?,
+                op("vec-get")?,
+                op("get-int")?,
+                op("bytes-alloc")?,
+                op("bytes-set")?,
+                op("bytes-len")?,
+                op("bytes-get")?,
+            ))
+        })();
+        let (
+            box_int,
+            arr_alloc,
+            arr_set,
+            sum_new,
+            vec_len,
+            str_new,
+            arr_get,
+            str_get,
+            sum_disc,
+            sum_payload,
+            vec_get,
+            get_int,
+            bytes_alloc,
+            bytes_set,
+            bytes_len,
+            bytes_get,
+        ) = match ops {
+            Ok(ops) => ops,
+            Err(e) => return Err((e, store)),
         };
-        let box_int = op("box-int")?;
-        let arr_alloc = op("arr-alloc")?;
-        let arr_set = op("arr-set")?;
-        let sum_new = op("sum-new")?;
-        let vec_len = op("vec-len")?;
-        let str_new = op("str-new")?;
-        let arr_get = op("arr-get")?;
-        let str_get = op("str-get")?;
-        let sum_disc = op("sum-disc")?;
-        let sum_payload = op("sum-payload")?;
-        let vec_get = op("vec-get")?;
-        let get_int = op("get-int")?;
-        let bytes_alloc = op("bytes-alloc")?;
-        let bytes_set = op("bytes-set")?;
-        let bytes_len = op("bytes-len")?;
-        let bytes_get = op("bytes-get")?;
         Ok(HeapHandle {
             store,
             fuel_budget: DEFAULT_FOLD_FUEL,
@@ -867,6 +910,68 @@ impl<T: 'static> HeapHandle<T> {
     /// handle the host minted is valid in the reducer's `apply` call).
     pub fn store_mut(&mut self) -> &mut wasmtime::Store<T> {
         &mut self.store
+    }
+
+    /// Consume the handle, returning the owned store — for the fold-boundary rebind to commit/recover the
+    /// reducer host's KV after the marshalled `apply` (the handle is done once the effects are unmarshalled).
+    pub fn into_store(self) -> wasmtime::Store<T> {
+        self.store
+    }
+
+    /// Set the fuel budget reported on an `OutOfFuel` classification (the marshalled `apply` reuses the
+    /// reducer's per-fold budget, so the handle's budget should match — see [`HeapHandle::bind`]).
+    pub fn set_fuel_budget(&mut self, budget: u64) {
+        self.fuel_budget = budget;
+    }
+
+    /// Call a handle-lowered reducer's `apply(ct, payload, resumes) -> list-handle` (§19e): three `u32`
+    /// value-heap arg handles in, one `u32` result handle (the returned `list<effect-request>`) out. Runs
+    /// on the SAME store the arg handles were built in, so the guest reads them off the shared heap.
+    ///
+    /// Errors are classified with REDUCER-FOLD context, NOT as a runtime heap-op (#2203): the fuel/trap
+    /// split matches `classify_heap_call_err` (OutOfFuel → `FuelExhausted`, other trap → `Trap`), but a
+    /// NON-trap `call` error here is the reducer's `apply` export not matching the expected
+    /// `func(u32,u32,u32)->u32` signature (an ABI drift in the REDUCER, not the runtime), so it's an
+    /// `InvokeExport` naming the fold apply — reusing `call_u32s`'s "heap-op call failed" label would
+    /// mis-point a debugger at the runtime.
+    pub fn call_apply_lowered(
+        &mut self,
+        apply: &wasmtime::component::Func,
+        ct: u32,
+        payload: u32,
+        resumes: u32,
+    ) -> Result<u32, ComponentError> {
+        use wasmtime::component::Val;
+        let budget = self.fuel_budget;
+        let reducer_err = |e: wasmtime::Error| -> ComponentError {
+            if let Some(wasmtime::Trap::OutOfFuel) = e.downcast_ref::<wasmtime::Trap>() {
+                ComponentError::FuelExhausted { budget }
+            } else if e.downcast_ref::<wasmtime::Trap>().is_some() {
+                ComponentError::Trap(e.to_string())
+            } else {
+                ComponentError::InvokeExport {
+                    interface: "cadenza:agent-kernel/fold".to_string(),
+                    func: "apply".to_string(),
+                    reason: format!(
+                        "reducer apply is not func(u32,u32,u32)->u32 (reducer-ABI mismatch?): {e}"
+                    ),
+                }
+            }
+        };
+        let params = [Val::U32(ct), Val::U32(payload), Val::U32(resumes)];
+        let mut results = [Val::U32(0)];
+        apply
+            .call(&mut self.store, &params, &mut results)
+            .map_err(reducer_err)?;
+        apply.post_return(&mut self.store).map_err(reducer_err)?;
+        match results[0] {
+            Val::U32(h) => Ok(h),
+            ref other => Err(ComponentError::InvokeExport {
+                interface: "cadenza:agent-kernel/fold".to_string(),
+                func: "apply".to_string(),
+                reason: format!("reducer apply returned {other:?}, not a u32 list handle"),
+            }),
+        }
     }
 }
 
@@ -1367,6 +1472,173 @@ impl ComponentReducer {
         let kv = host.into_kv();
         Ok((effects, kv))
     }
+
+    /// The OPTION-C HANDLE-LOWERED fold (§19e): drive a real Cadenza reducer whose `fold.apply` is lowered
+    /// to `apply(u32, u32, u32) -> u32` over the shared `cadenza:runtime/heap` value-heap, instead of the
+    /// WIT-structural [`ComponentReducer::apply`] (which the bindgen path drives). rcdzc CANNOT emit the
+    /// structural shape — every compound crosses the boundary as an opaque value-heap HANDLE (v-hb
+    /// confirmed by compiling `reducer_b1.cdz`), so the host MARSHALS the `(content-type, payload, resumes)`
+    /// inputs into three heap handles ([`crate::heap_marshal`]), calls the guest's `apply`, then UNMARSHALS
+    /// the returned `list<effect-request>` handle back to effects ([`crate::heap_unmarshal`]).
+    ///
+    /// The runtime is a composed dep (§23): [`compose_dep_into_linker`] returns the runtime `Instance`, and
+    /// the host binds a [`HeapHandle`] on THAT instance — so the handles the host builds and the ones the
+    /// guest's `apply` reads index the ONE shared heap. `apply` is exported through the
+    /// `cadenza:agent-kernel/fold` INTERFACE instance (not a top-level func), so it's reached via a nested
+    /// `get_export_index`. Requires exactly one resolved runtime dep exporting `cadenza:runtime/heap`; a
+    /// dependency-free reducer (no runtime) can't be handle-lowered (it has no heap to marshal on).
+    ///
+    /// Fuel/atomicity mirror [`ComponentReducer::apply`]: metered per-fold, `OutOfFuel` → `FuelExhausted`,
+    /// any error hands the base KV back (the guest's overlay is discarded, so a failed fold is atomic). On
+    /// success the overlay commits.
+    pub fn apply_handle_lowered(
+        &self,
+        kv: Kv,
+        content_type: ContentType,
+        payload: Option<Vec<u8>>,
+        resumes: Option<Vec<u8>>,
+    ) -> Result<(Vec<EffectRequest>, Kv), (ComponentError, Kv)> {
+        let mut store = wasmtime::Store::new(&self.engine, ReducerHost::new(kv));
+        if let Err(e) = store.set_fuel(u64::MAX) {
+            let kv = store.into_data().into_kv();
+            return Err((ComponentError::Instantiate(e.to_string()), kv));
+        }
+        // Compose every declared dep into a per-fold linker, capturing the value-heap RUNTIME instance (the
+        // dep exporting `cadenza:runtime/heap`) — that's the instance the host marshals on. A handle-lowered
+        // reducer MUST declare a runtime dep; without one there's no heap, so this path doesn't apply.
+        let mut l = self.linker.clone();
+        let mut runtime_instance: Option<wasmtime::component::Instance> = None;
+        for (import_name, bytes) in &self.resolved_deps {
+            let inst =
+                match compose_dep_into_linker(&self.engine, &mut store, &mut l, import_name, bytes) {
+                    Ok(inst) => inst,
+                    Err(e) => {
+                        let kv = store.into_data().into_kv();
+                        return Err((e, kv));
+                    }
+                };
+            if import_name.starts_with("cadenza:runtime/heap") {
+                // FAIL LOUD on a second runtime match (#2203 MED): silently overwriting `runtime_instance`
+                // would let a non-deterministic resolved_deps order pick the wrong instance, breaking the
+                // shared-heap invariant. The handle-lowered boundary binds ONE value-heap runtime.
+                if runtime_instance.is_some() {
+                    let kv = store.into_data().into_kv();
+                    return Err((
+                        ComponentError::Compose {
+                            import_name: import_name.clone(),
+                            reason: "reducer resolved MORE THAN ONE cadenza:runtime/heap dep — the \
+                                     handle-lowered boundary marshals on exactly one shared runtime"
+                                .to_string(),
+                        },
+                        kv,
+                    ));
+                }
+                runtime_instance = Some(inst);
+            }
+        }
+        let Some(runtime_instance) = runtime_instance else {
+            let kv = store.into_data().into_kv();
+            return Err((
+                ComponentError::Compose {
+                    import_name: "cadenza:runtime/heap".to_string(),
+                    reason: "no resolved cadenza:runtime/heap dep composed — a handle-lowered reducer \
+                             needs its value-heap runtime resolved (via with_resolved_deps) to marshal on"
+                        .to_string(),
+                },
+                kv,
+            ));
+        };
+        // Instantiate the reducer against the composed linker (its runtime import is now satisfied). Use a
+        // plain `Linker::instantiate` for the RAW `Instance` (not the bindgen `Reducer` wrapper, which only
+        // exposes the structural `call_apply`) — the handle-lowered `apply` is reached generically via
+        // `get_export_index`, so we need the raw instance.
+        let reducer_instance = match l.instantiate(&mut store, &self.component) {
+            Ok(i) => i,
+            Err(e) => {
+                let kv = store.into_data().into_kv();
+                return Err((ComponentError::Instantiate(e.to_string()), kv));
+            }
+        };
+        // Reach the INTERFACE-NESTED `apply`: `cadenza:agent-kernel/fold` instance → its `apply` func. Both
+        // the runtime instance and this func handle live in `store`; extract the `Func` (Copy) BEFORE
+        // `HeapHandle::bind` takes ownership of the store, then call it via `heap.store_mut()`.
+        let apply_func = match reach_fold_apply(&mut store, &reducer_instance) {
+            Ok(f) => f,
+            Err(e) => {
+                let kv = store.into_data().into_kv();
+                return Err((e, kv));
+            }
+        };
+        // Bind a HeapHandle on the SHARED runtime instance (consumes the store — we drive the reducer's
+        // apply through `heap.store_mut()` from here). Set the per-fold fuel budget now (post-instantiation).
+        // On bind failure recover the base KV from the store bind hands back (#2203 MED: never drop it —
+        // the "any error hands the base KV back" atomicity contract, same as every other arm here).
+        let mut heap = match HeapHandle::bind(store, &runtime_instance) {
+            Ok(h) => h,
+            Err((e, store)) => return Err((e, store.into_data().into_kv())),
+        };
+        heap.set_fuel_budget(self.fuel_budget);
+        if let Err(e) = heap.store_mut().set_fuel(self.fuel_budget) {
+            let kv = heap.into_store().into_data().into_kv();
+            return Err((ComponentError::Instantiate(e.to_string()), kv));
+        }
+        // MARSHAL the inputs into three value-heap handles on the shared runtime.
+        let (ct_h, payload_h, resumes_h) = match crate::heap_marshal::marshal_fold_inputs(
+            &mut heap,
+            (content_type.family.as_str(), content_type.version),
+            payload.as_deref(),
+            resumes.as_deref(),
+        ) {
+            Ok(hs) => hs,
+            Err(e) => {
+                let kv = heap.into_store().into_data().into_kv();
+                return Err((e, kv));
+            }
+        };
+        // CALL the guest's `apply(ct, payload, resumes) -> list-handle` over u32 handles.
+        let result_handle = match heap.call_apply_lowered(&apply_func, ct_h, payload_h, resumes_h) {
+            Ok(h) => h,
+            Err(e) => {
+                let kv = heap.into_store().into_data().into_kv();
+                return Err((e, kv));
+            }
+        };
+        // UNMARSHAL the returned `list<effect-request>` handle back to effects.
+        let effects = match crate::heap_unmarshal::read_effect_requests(&mut heap, result_handle) {
+            Ok(es) => es,
+            Err(e) => {
+                let kv = heap.into_store().into_data().into_kv();
+                return Err((e, kv));
+            }
+        };
+        // Success: COMMIT the overlay into the base KV, hand it back.
+        let mut host = heap.into_store().into_data();
+        host.commit();
+        Ok((effects, host.into_kv()))
+    }
+}
+
+/// Reach the INTERFACE-NESTED `apply` export of a handle-lowered reducer: navigate into the
+/// `cadenza:agent-kernel/fold` interface instance, then its `apply` func (§19e — a real Cadenza reducer
+/// exports `apply` THROUGH the fold interface, not as a top-level func, so a plain top-level lookup fails).
+fn reach_fold_apply(
+    store: &mut wasmtime::Store<ReducerHost>,
+    instance: &wasmtime::component::Instance,
+) -> Result<wasmtime::component::Func, ComponentError> {
+    let err = |reason: String| ComponentError::InvokeExport {
+        interface: "cadenza:agent-kernel/fold".to_string(),
+        func: "apply".to_string(),
+        reason,
+    };
+    let iface_idx = instance
+        .get_export_index(&mut *store, None, "cadenza:agent-kernel/fold")
+        .ok_or_else(|| err("reducer exports no cadenza:agent-kernel/fold interface".into()))?;
+    let apply_idx = instance
+        .get_export_index(&mut *store, Some(&iface_idx), "apply")
+        .ok_or_else(|| err("fold interface exports no apply func".into()))?;
+    instance
+        .get_func(&mut *store, apply_idx)
+        .ok_or_else(|| err("fold apply export is not a func".into()))
 }
 
 /// Drive a WASM `ComponentReducer` through the kernel's [`crate::reducer::Reducer`] loop (§19b/§19e
@@ -2172,7 +2444,7 @@ mod tests {
         // `.expect` would need HeapHandle: Debug (it holds non-Debug Func/Store) — match instead.
         let mut heap = match HeapHandle::bind(store, &instance) {
             Ok(h) => h,
-            Err(e) => panic!("bind HeapHandle to the heap iface: {e:?}"),
+            Err((e, _)) => panic!("bind HeapHandle to the heap iface: {e:?}"),
         };
 
         // B1 ct record: arr-alloc(2); arr[0]=str-new("demo"); arr[1]=box-int(1). The stub threads the arr
@@ -2217,7 +2489,7 @@ mod tests {
             .expect("heap stub instantiates");
         let mut heap = match HeapHandle::bind(store, &instance) {
             Ok(h) => h,
-            Err(e) => panic!("bind HeapHandle: {e:?}"),
+            Err((e, _)) => panic!("bind HeapHandle: {e:?}"),
         };
         // Walk a returned effect-list: vec-get(list, 0) → an effect-request record handle.
         assert_eq!(heap.vec_get(555, 0).expect("vec-get"), 700);
@@ -2249,7 +2521,7 @@ mod tests {
             .expect("heap stub instantiates");
         let mut heap = match HeapHandle::bind(store, &instance) {
             Ok(h) => h,
-            Err(e) => panic!("bind HeapHandle: {e:?}"),
+            Err((e, _)) => panic!("bind HeapHandle: {e:?}"),
         };
         // Arbitrary bytes (incl. 0x00 and 0xFF, non-UTF8) round-trip exactly.
         let payload = [0xDE, 0xAD, 0x00, 0xFF, 0x2A];
@@ -2285,7 +2557,7 @@ mod tests {
             .expect("heap stub instantiates");
         let mut heap = match HeapHandle::bind(store, &instance) {
             Ok(h) => h,
-            Err(e) => panic!("bind HeapHandle: {e:?}"),
+            Err((e, _)) => panic!("bind HeapHandle: {e:?}"),
         };
         match heap.read_bytes(100) {
             Err(_) => {} // clean fail-loud (a bytes-get memory Trap), NOT a process abort
@@ -2308,10 +2580,12 @@ mod tests {
             .instantiate(&mut store, &component)
             .expect("instantiates");
         match HeapHandle::bind(store, &instance) {
-            Err(ComponentError::Compose { import_name, .. }) => {
+            Err((ComponentError::Compose { import_name, .. }, _store)) => {
                 assert_eq!(import_name, "cadenza:runtime/heap");
             }
-            Err(e) => panic!("expected a Compose error naming the heap interface, got {e:?}"),
+            Err((e, _store)) => {
+                panic!("expected a Compose error naming the heap interface, got {e:?}")
+            }
             Ok(_) => panic!("expected bind to fail without the heap interface, but it succeeded"),
         }
     }
@@ -2422,13 +2696,103 @@ mod tests {
         // returned instance is the usable runtime the host marshals on (the stub's box-int → sentinel 100).
         let mut heap = match HeapHandle::bind(store, &runtime_instance) {
             Ok(h) => h,
-            Err(e) => panic!("bind HeapHandle to the composed runtime instance: {e:?}"),
+            Err((e, _)) => panic!("bind HeapHandle to the composed runtime instance: {e:?}"),
         };
         assert_eq!(
             heap.box_int(7).expect("box-int on the composed runtime"),
             100,
             "the composed runtime instance's heap ops are drivable via HeapHandle"
         );
+    }
+
+    // Content-addressed dep NAME MATCHING (real-reducer regression): a real Cadenza reducer IMPORTS its
+    // runtime under the full content-addressed name `cadenza:runtime/heap@0.0.0+<hash>`, but the runtime
+    // component EXPORTS the BARE `cadenza:runtime/heap`. compose_dep_into_linker must look the dep's export
+    // up by the bare name (strip `@version+hash`) while forwarding into the linker under the full import
+    // name — verified against the compiled reducer_b1 + its runtime, which the WAT stubs (same name both
+    // sides) had masked. Here: compose the heap stub (exports bare `cadenza:runtime/heap`) under a FULL
+    // `@version+hash` import name, and confirm the returned instance is bindable + drivable.
+    #[test]
+    fn compose_matches_a_bare_dep_export_against_a_versioned_hashed_import_name() {
+        let bytes = heap_stub_component();
+        let engine = wasmtime::Engine::default();
+        let mut store = wasmtime::Store::new(&engine, ());
+        let mut linker = wasmtime::component::Linker::<()>::new(&engine);
+        // Import name carries the @version+hash the bare-exporting stub does NOT have in its export name.
+        let import_name = "cadenza:runtime/heap@0.0.0+39358be448eac4e8afe25add5977767f814c0f9a6cad714cb778d223839ad739";
+        let runtime_instance =
+            match compose_dep_into_linker(&engine, &mut store, &mut linker, import_name, &bytes) {
+                Ok(inst) => inst,
+                Err(e) => panic!("compose must match the bare export against the versioned import: {e:?}"),
+            };
+        let mut heap = match HeapHandle::bind(store, &runtime_instance) {
+            Ok(h) => h,
+            Err((e, _)) => panic!("bind HeapHandle to the composed runtime: {e:?}"),
+        };
+        assert_eq!(heap.box_int(1).expect("box-int"), 100);
+    }
+
+    // §19e HANDLE-LOWERED fold END-TO-END: a synthetic reducer that IMPORTS `cadenza:runtime/heap` and
+    // EXPORTS the interface-nested `cadenza:agent-kernel/fold`.`apply(u32,u32,u32)->u32` — the exact shape
+    // rcdzc emits for a real Cadenza reducer (v-hb-confirmed). Its `apply` ignores its 3 arg handles and
+    // returns `arr-alloc(0)` (an empty-list handle) — the heap stub's `vec-len` is 0, so the host's
+    // `read_effect_requests` decodes ZERO effects (B1-shaped: empty-effects fold). This drives the WHOLE
+    // rebind: compose the runtime dep → capture its instance → instantiate the reducer against it → reach
+    // the nested apply → marshal (ct,payload,resumes)→3 handles → call apply → unmarshal the returned
+    // list handle. The runtime + reducer share ONE store/heap (the point of compose-returns-instance).
+    fn handle_lowered_reducer_component() -> Vec<u8> {
+        wat::parse_str(
+            r#"(component
+                 ;; IMPORT the runtime — declare only the ops apply uses (arr-alloc). The composed heap
+                 ;; stub satisfies this under the same interface name.
+                 (import "cadenza:runtime/heap" (instance $rt
+                   (export "arr-alloc" (func (param "len" u32) (result u32)))))
+                 (core module $m
+                   (import "" "arr-alloc" (func $arr_alloc (param i32) (result i32)))
+                   ;; apply(ct, payload, resumes) -> list-handle : ignore args, return arr-alloc(0) = empty list.
+                   (func (export "apply") (param i32 i32 i32) (result i32)
+                     (call $arr_alloc (i32.const 0))))
+                 (core func $arr_alloc_core (canon lower (func $rt "arr-alloc")))
+                 (core instance $shim (export "arr-alloc" (func $arr_alloc_core)))
+                 (core instance $i (instantiate $m (with "" (instance $shim))))
+                 (func $apply (param "ct" u32) (param "payload" u32) (param "resumes" u32) (result u32)
+                   (canon lift (core func $i "apply")))
+                 ;; EXPORT apply THROUGH the fold interface instance (interface-nested, not top-level).
+                 (instance $fold (export "apply" (func $apply)))
+                 (export "cadenza:agent-kernel/fold" (instance $fold)))"#,
+        )
+        .expect("assemble handle-lowered reducer component")
+    }
+
+    #[test]
+    fn apply_handle_lowered_drives_a_reducer_through_the_marshalled_boundary() {
+        let reducer_bytes = handle_lowered_reducer_component();
+        let runtime_bytes = heap_stub_component();
+        // Build the reducer + attach the runtime as its resolved `cadenza:runtime/heap` dep (the fixture
+        // imports it under that bare name — no +hash — so declared_deps won't auto-detect it; wire it
+        // explicitly, exactly as CAS resolution would for a real reducer).
+        let reducer = match ComponentReducer::from_component_bytes(&reducer_bytes) {
+            Ok(r) => r,
+            Err(e) => panic!("build handle-lowered reducer: {e:?}"),
+        };
+        let runtime_dep = ComponentDep {
+            import_name: "cadenza:runtime/heap".to_string(),
+            hash: Hash::of(b"heap-stub-runtime"),
+        };
+        let reducer = reducer.with_resolved_deps(vec![(runtime_dep, runtime_bytes)]);
+        // Drive the handle-lowered fold: marshal a content-type + None payload/resumes, call apply, unmarshal.
+        let ct = ContentType {
+            family: "message".to_string(),
+            version: 1,
+        };
+        match reducer.apply_handle_lowered(Kv::new(), ct, None, None) {
+            Ok((effects, _kv)) => assert!(
+                effects.is_empty(),
+                "the reducer returned arr-alloc(0) (empty list) → zero effects, got {}",
+                effects.len()
+            ),
+            Err((e, _kv)) => panic!("apply_handle_lowered should drive the reducer, got {e:?}"),
+        }
     }
 
     // The generic multi-export invoke fixture (operator invoke-ABI ruling seq 107/108): a component whose
