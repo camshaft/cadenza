@@ -23,6 +23,10 @@
 //!   [`executor::CompositeExecutor`] routes by kind so a session serves multiple effect kinds.
 //! - [`blob`] — the content-addressable blob store (CAS): `hash → bytes`, self-verifying on disk. The
 //!   §4 large-payload store + the substrate for resolving a reducer's declared component deps by hash.
+//! - [`component_store`] — resolve a component's bytes from an on-disk content-addressed store (v-nix's
+//!   `componentStore`: `<hash>.wasm` + a `runtime.toml` name→hash manifest): by HASH (a reducer's `+<hash>`
+//!   dep) or by manifest NAME (the runtime's bare `cadenza:nfc/normalize` inter-runtime import). The
+//!   resolution half of the §19e/§23 transitive-dep compose; content-verifies every fetch.
 //! - [`log_store`] — the durable append-only disk log: length-framed events, torn-tail-tolerant
 //!   recovery (`Clean`/`TornTail`/`Corrupt`), heal-a-torn-tail via `truncate_to`.
 //! - [`wasm_host`] — the wasmtime component host (§19b): binds `wit/reducer.wit`, runs a reducer as a
@@ -59,6 +63,7 @@
 pub mod ast_marshal;
 pub mod authz;
 pub mod blob;
+pub mod component_store;
 pub mod effect;
 pub mod event;
 pub mod event_ast;
