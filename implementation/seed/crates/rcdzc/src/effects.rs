@@ -6989,7 +6989,7 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
     // own state trivially (next-state == state binder — no inner-op state advance to preserve); a non-trivial
     // inner-state advance is left to the ordinary fold (unchanged). Byte-identical when nothing matches.
     let orig_body = if ctx.slots.len() > 1 {
-        lift_inner_op_arm_outer_perform(db, orig_body, ctx)
+        lift_inner_op_arm_outer_perform(db, orig_body, ctx, caller_observes_outstate)
     } else {
         orig_body
     };
@@ -7229,11 +7229,22 @@ fn resume_val_op_arm_also_performs_outer(
     }
     match tail_resume(db, inner_arm.body) {
         Some((inner_val, _)) => resume_reaches_another_effect_op(db, inner_val, op_id),
-        None => false,
+        // The deeper op's arm is NOT a bare `(resume v next)` — a shape this analysis cannot inspect (a
+        // wrapped `do`/`match` body, or an abortive arm). Per the doc contract, treat an un-analyzable arm
+        // CONSERVATIVELY as "may perform a further outer op" → true, so `lift_inner_op_arm_outer_perform`
+        // DECLINES the chain (under the observer gate) rather than lifting a shape whose depth it can't verify
+        // (github-liaison #2179 review: the old `None => false` said "safe to lift", the OPPOSITE of the
+        // documented conservative-decline, letting a wrapped/abortive depth-3+ intermediate arm slip the lift).
+        None => true,
     }
 }
 
-fn lift_inner_op_arm_outer_perform(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> StructId {
+fn lift_inner_op_arm_outer_perform(
+    db: &mut Db,
+    node: StructId,
+    ctx: &HandlerCtx,
+    caller_observes_outstate: bool,
+) -> StructId {
     // Is this node an inner-op call whose arm resume-value performs an outer op with trivial inner-state?
     if let Resolved::Apply { head, args } = resolved_of(db, node)
         && let Some((decl, idx)) = crate::eval::effect_op_of(db, head)
@@ -7269,7 +7280,19 @@ fn lift_inner_op_arm_outer_perform(db: &mut Db, node: StructId, ctx: &HandlerCtx
         // → `specialize_recursive` declines cleanly) rather than fold a wrong value. Depth-2 (val's op's arm
         // does NOT perform-outer, e.g. B.step's arm `(resume (A.tick) t)` where A.tick's arm is a plain
         // state step) is UNAFFECTED — it lifts and folds → 21.
-        && !resume_val_op_arm_also_performs_outer(db, val, ctx, (decl.0, idx))
+        //
+        // OBSERVER-GATED (rn3/rx4 vs rx6, breaker 2026-08-05). The depth-3+ decline above OVER-DECLINED the
+        // NO-OBSERVER chain: `#2179` applied it unconditionally, so rx6 (bare `(loop 2)`, no post-recursion
+        // observer of the out-state) regressed from fold-21 to a decline. The silent-20 miscompile the decline
+        // exists to prevent ONLY arises under an OBSERVING caller (the accum-redirect path #2136 added, keyed
+        // by `force_multivalue` = `caller_observes_outstate`): there the single-step lift drops the deepest
+        // advance. WITHOUT an observer the deep chain still folds correctly (rx6 → 21 — the between-iteration
+        // advance carries, the redirect never engages), so the lift must fire there as before. Gate the
+        // depth-3+ decline on `caller_observes_outstate`: decline the deeper chain (rn3/rx4) only when observed;
+        // let rx6 lift+fold when unobserved. (A correct recursive lift folding →21 at all depths regardless of
+        // observation is a later increment.)
+        && !(caller_observes_outstate
+            && resume_val_op_arm_also_performs_outer(db, val, ctx, (decl.0, idx)))
     {
         // β-reduce the arm's resume value with params↦args (the op's args) so a param-referencing outer
         // perform arg resolves. (Unit-op arms bind nothing; a mismatch leaves it un-substituted, still sound
@@ -7294,7 +7317,7 @@ fn lift_inner_op_arm_outer_perform(db: &mut Db, node: StructId, ctx: &HandlerCtx
         Struct::List(children) => {
             let lifted: Vec<StructId> = children
                 .iter()
-                .map(|&c| lift_inner_op_arm_outer_perform(db, c, ctx))
+                .map(|&c| lift_inner_op_arm_outer_perform(db, c, ctx, caller_observes_outstate))
                 .collect();
             if lifted == children {
                 node

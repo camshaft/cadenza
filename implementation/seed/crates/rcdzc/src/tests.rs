@@ -68149,6 +68149,59 @@ mod stage1 {
     }
 
     #[test]
+    fn a_depth3_nested_op_chain_folds_without_an_observer_but_declines_with_one() {
+        use crate::testkit::parse;
+        // OBSERVER-GATED DEPTH-3+ pre-spec-lift guard (breaker rn3/rx6, 2026-08-05). A depth-3 nested-op
+        // chain — `loop` performs `C.hop`; C's arm resumes `(B.step)`; B's arm resumes `(A.tick)` — is lifted
+        // one step at a time; the single lift does NOT chase the deepest `A.tick`, so under an OBSERVING caller
+        // the merged fold drops A's advance → a SILENT 20 (want 21). #2136 briefly shipped that; #2179's guard
+        // fixed it BUT applied unconditionally, over-declining the NO-OBSERVER twin (rx6, which folds 21
+        // correctly). This pins the observer-GATED guard: decline the deeper chain ONLY when the out-state is
+        // observed (rn3), and let the unobserved chain fold (rx6). A correct recursive lift folding →21 at all
+        // depths is a later increment.
+
+        // rx6 — NO post-recursion observer (bare `(loop 2)`, single-op A): the between-iteration advance
+        // carries, the accum-redirect never engages → FOLDS 21. Must NOT be over-declined.
+        let rx6 = "(do (effect A (op tick (-> Unit Int64))) (effect B (op step (-> Unit Int64))) \
+             (effect C (op hop (-> Unit Int64))) \
+             (def (loop (: n Int64)) (if (= n 0) 0 (+ (C.hop) (loop (- n 1))))) \
+             (def (main) (handle A 10 ((tick (u) s (resume s (+ s 1)))) \
+               (handle B 0 ((step (u) t (resume (A.tick) t))) \
+                 (handle C 0 ((hop (u) w (resume (B.step) w))) (loop 2))))) (export main))";
+        let rx6_bytes = compile_component(&crate::codec::encode(&parse(rx6)))
+            .expect("rx6 (depth-3 chain, NO observer) must FOLD — the observer-gated guard must not over-decline it");
+        if let Some(v) = run_linked(&rx6_bytes, "main") {
+            assert_eq!(
+                v, "21",
+                "rx6: loop 2 sums the two A.tick pre-advance values 10 + 11 = 21"
+            );
+        }
+
+        // rn3 — WITH a post-recursion observer (`(+ (loop 1) (A.get))`): the depth-3 chain under an observing
+        // caller would drop A's advance if lifted → the guard DECLINES cleanly (a decline is safe; the silent
+        // 20 is not). Pins the silent-20 stays eliminated: it must NOT compile to a wrong value.
+        let rn3 = "(do (effect A (op tick (-> Unit Int64)) (op get (-> Unit Int64))) \
+             (effect B (op step (-> Unit Int64))) (effect C (op hop (-> Unit Int64))) \
+             (def (loop (: n Int64)) (if (= n 0) 0 (+ (C.hop) (loop (- n 1))))) \
+             (def (main) (handle A 10 ((tick (u) s (resume s (+ s 1))) (get (u) s (resume s s))) \
+               (handle B 0 ((step (u) t (resume (A.tick) t))) \
+                 (handle C 0 ((hop (u) w (resume (B.step) w))) (+ (loop 1) (A.get)))))) (export main))";
+        match compile_component(&crate::codec::encode(&parse(rn3))) {
+            // Clean decline — the current, expected behavior (the correct →21 fold is a later increment).
+            Err(_) => {}
+            // If a future recursive lift folds it, the value MUST be 21, never the silent 20 this guards.
+            Ok(bytes) => {
+                if let Some(v) = run_linked(&bytes, "main") {
+                    assert_eq!(
+                        v, "21",
+                        "if rn3 (observer, depth-3) ever folds, it must be 21, never the silent 20"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn a_recursive_advance_observed_by_a_same_effect_abort_arm_declines_not_miscompiles() {
         use crate::testkit::parse;
         // BREAKER sr5 (HIGH silent-miscompile, restore-safe-decline). A recursive loop of same-effect
