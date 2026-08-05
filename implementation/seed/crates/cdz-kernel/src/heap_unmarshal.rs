@@ -382,12 +382,13 @@ mod tests {
     fn a_bogus_option_discriminant_hard_traps_not_defaults() {
         let mut heap = bind_read_stub();
         match read_effect_requests(&mut heap, 500) {
-            // Assert primarily on the VARIANT (a hard Trap) + STABLE anchors — the concept ("discriminant")
-            // and the actual bogus value ("7", which the test controls) — NOT the full human-readable phrase,
-            // which is free to be reworded (test-precision family, #2176 / #2216 review).
+            // Assert on the VARIANT (a hard Trap) + a STABLE, SPECIFIC anchor: the substring "discriminant 7"
+            // (production format is "... discriminant {other} ..."). NOT the full human-readable phrase
+            // (brittle to rewording, #2216) NOR a bare contains('7') (too loose — matches "17"/any stray 7,
+            // #2222 overshoot). The middle ground pins the bogus disc is surfaced without coupling to the message.
             Err(ComponentError::Trap(msg)) => {
                 assert!(
-                    msg.contains("discriminant") && msg.contains('7'),
+                    msg.contains("discriminant 7"),
                     "expected an option ABI-drift trap naming the bogus discriminant 7, got {msg:?}"
                 )
             }
