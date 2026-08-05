@@ -24,7 +24,6 @@
 //! runtime dep but NEITHER is provided, the test FAILS LOUD (a real b1 needs its heap — a silent skip there
 //! would hide a broken wiring), distinct from the reducer-env-unset clean skip.
 
-use cdz_kernel::blob::DiskBlobStore;
 use cdz_kernel::wasm_host::{ComponentDep, ComponentReducer, ContentType};
 
 /// The compiled b1 component bytes from `REDUCER_CADENZA_COMPONENT`; `None` (clean SKIP) when unset. A set
@@ -93,29 +92,27 @@ async fn resolve_runtime_deps(deps: &[ComponentDep]) -> Vec<(ComponentDep, Vec<u
             .unwrap_or_else(|e| panic!("RUNTIME_HEAP_COMPONENT={path:?} set but unreadable: {e}"));
         return deps.iter().cloned().map(|d| (d, bytes.clone())).collect();
     }
-    // Otherwise resolve by content-address from CDZ_STORE.
+    // Otherwise resolve by content-address from CDZ_STORE. v-nix's `componentStore` is hash-keyed with a
+    // `<hash>.wasm` naming (confirmed: `39358be4….wasm` = the value-heap runtime) — NOT the kernel's
+    // `DiskBlobStore` bare-`<hash>` layout, so read `<CDZ_STORE>/<hash>.wasm` directly rather than via
+    // DiskBlobStore. (If v-nix's store layout ever changes to bare-hash, swap this back to DiskBlobStore.)
     let store_dir = std::env::var("CDZ_STORE").unwrap_or_else(|_| {
         panic!(
             "reducer_b1 declares a runtime dep but neither RUNTIME_HEAP_COMPONENT nor CDZ_STORE is set \
              — the e2e can't supply the value-heap runtime to compose"
         )
     });
-    let blobs = DiskBlobStore::open(&store_dir)
-        .unwrap_or_else(|e| panic!("CDZ_STORE={store_dir:?} is not an openable blob store: {e}"));
-    // Resolve each declared dep's bytes from the store by its content-address hash.
     let mut out = Vec::with_capacity(deps.len());
     for dep in deps {
-        let bytes = cdz_kernel::blob::BlobStore::get(&blobs, &dep.hash)
-            .await
-            .unwrap_or_else(|e| panic!("CDZ_STORE lookup for dep {:?} failed: {e}", dep.import_name))
-            .unwrap_or_else(|| {
-                panic!(
-                    "CDZ_STORE has no blob for runtime dep {:?} (hash {}) — is componentStore \
-                     hash-keyed (DiskBlobStore layout)?",
-                    dep.import_name,
-                    dep.hash.to_hex()
-                )
-            });
+        let path = std::path::Path::new(&store_dir).join(format!("{}.wasm", dep.hash.to_hex()));
+        let bytes = std::fs::read(&path).unwrap_or_else(|e| {
+            panic!(
+                "CDZ_STORE has no blob {path:?} for runtime dep {:?} (hash {}): {e} — is componentStore \
+                 hash-keyed with <hash>.wasm naming?",
+                dep.import_name,
+                dep.hash.to_hex()
+            )
+        });
         out.push((dep.clone(), bytes));
     }
     out

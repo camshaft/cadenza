@@ -425,13 +425,22 @@ fn compose_dep_into_linker<T: 'static>(
     };
     let dep = Component::new(engine, dep_bytes)
         .map_err(|e| compose_err(format!("dependency bytes are not a valid component: {e}")))?;
-    // The func names the dep exports under `import_name` (its exported interface must match the name the
-    // consumer imports it under). Read them off the component TYPE, not a live instance, so a dep that
-    // exports the wrong shape is caught with a clear message rather than an opaque trap at call time.
+    // The consumer IMPORTS under the full content-addressed name (`cadenza:runtime/heap@0.0.0+<hash>`), but
+    // the dep component EXPORTS the BARE interface name (`cadenza:runtime/heap`) — a real Cadenza reducer's
+    // `+<hash>` import build-metadata is NOT part of the dep's export name (verified against a compiled
+    // reducer_b1 + its runtime component). So look the dep's exported interface up by the bare name (strip
+    // the `@version+hash` suffix), while still registering into the CONSUMER's linker under the full
+    // `import_name` it imports (below). A bare name with no suffix is unchanged. (Earlier this used
+    // `import_name` for both sides — it only worked because the WAT test stubs happened to export the same
+    // full string; a real content-addressed dep exposed the mismatch.)
+    let dep_iface_name = import_name.split('@').next().unwrap_or(import_name);
+    // The func names the dep exports under `dep_iface_name`. Read them off the component TYPE, not a live
+    // instance, so a dep that exports the wrong shape is caught with a clear message rather than an opaque
+    // trap at call time.
     let func_names: Vec<String> = dep
         .component_type()
         .exports(engine)
-        .find(|(n, _)| *n == import_name)
+        .find(|(n, _)| *n == dep_iface_name)
         .and_then(|(_, item)| match item {
             ComponentItem::ComponentInstance(inst) => Some(
                 inst.exports(engine)
@@ -444,7 +453,8 @@ fn compose_dep_into_linker<T: 'static>(
         })
         .ok_or_else(|| {
             compose_err(format!(
-                "dependency does not export the interface {import_name:?} the consumer imports"
+                "dependency does not export the interface {dep_iface_name:?} the consumer imports \
+                 (as {import_name:?})"
             ))
         })?;
     // Instantiate the dep in the shared store (a dep is dependency-free here; a dep-of-dep chain is a
@@ -455,11 +465,12 @@ fn compose_dep_into_linker<T: 'static>(
         .instantiate(&mut *store, &dep)
         .map_err(|e| compose_err(format!("instantiating the dependency failed: {e}")))?;
     let iface_idx = dep_instance
-        .get_export_index(&mut *store, None, import_name)
+        .get_export_index(&mut *store, None, dep_iface_name)
         .ok_or_else(|| {
             compose_err("dependency instance is missing its exported interface".into())
         })?;
-    // Forward each dep func into the consumer's linker under `import_name`.
+    // Forward each dep func into the consumer's linker under the full `import_name` (the content-addressed
+    // name the consumer imports — NOT the bare `dep_iface_name`).
     let mut iface = linker
         .instance(import_name)
         .map_err(|e| compose_err(format!("linker.instance({import_name:?}): {e}")))?;
@@ -2610,6 +2621,33 @@ mod tests {
             100,
             "the composed runtime instance's heap ops are drivable via HeapHandle"
         );
+    }
+
+    // Content-addressed dep NAME MATCHING (real-reducer regression): a real Cadenza reducer IMPORTS its
+    // runtime under the full content-addressed name `cadenza:runtime/heap@0.0.0+<hash>`, but the runtime
+    // component EXPORTS the BARE `cadenza:runtime/heap`. compose_dep_into_linker must look the dep's export
+    // up by the bare name (strip `@version+hash`) while forwarding into the linker under the full import
+    // name — verified against the compiled reducer_b1 + its runtime, which the WAT stubs (same name both
+    // sides) had masked. Here: compose the heap stub (exports bare `cadenza:runtime/heap`) under a FULL
+    // `@version+hash` import name, and confirm the returned instance is bindable + drivable.
+    #[test]
+    fn compose_matches_a_bare_dep_export_against_a_versioned_hashed_import_name() {
+        let bytes = heap_stub_component();
+        let engine = wasmtime::Engine::default();
+        let mut store = wasmtime::Store::new(&engine, ());
+        let mut linker = wasmtime::component::Linker::<()>::new(&engine);
+        // Import name carries the @version+hash the bare-exporting stub does NOT have in its export name.
+        let import_name = "cadenza:runtime/heap@0.0.0+39358be448eac4e8afe25add5977767f814c0f9a6cad714cb778d223839ad739";
+        let runtime_instance =
+            match compose_dep_into_linker(&engine, &mut store, &mut linker, import_name, &bytes) {
+                Ok(inst) => inst,
+                Err(e) => panic!("compose must match the bare export against the versioned import: {e:?}"),
+            };
+        let mut heap = match HeapHandle::bind(store, &runtime_instance) {
+            Ok(h) => h,
+            Err(e) => panic!("bind HeapHandle to the composed runtime: {e:?}"),
+        };
+        assert_eq!(heap.box_int(1).expect("box-int"), 100);
     }
 
     // §19e HANDLE-LOWERED fold END-TO-END: a synthetic reducer that IMPORTS `cadenza:runtime/heap` and
