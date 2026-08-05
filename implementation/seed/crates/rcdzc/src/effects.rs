@@ -7008,6 +7008,71 @@ fn performs_discharged_op_other_than(
     }
 }
 
+/// DEPTH-3+ GUARD for the pre-spec-lift (rn3 regression, breaker 2026-08-05). `val` is an inner-op arm's
+/// resume value that performs a DIFFERENT discharged op (established by `performs_discharged_op_other_than`).
+/// Return true iff the op `val` performs ITSELF has an arm whose resume value performs YET ANOTHER outer op
+/// — a depth-3+ chain (`C.hop`→arm resumes `(B.step)`→B's arm resumes `(A.tick)`). The single-step lift
+/// rewrites `C.hop`→`(B.step)` but does NOT chase `B.step`'s own arm-hidden `A.tick`, so folding it drops the
+/// deepest advance (SILENT wrong value). Detecting this makes `lift_inner_op_arm_outer_perform` decline the
+/// deeper chain (leave it un-lifted → clean decline) rather than mis-fold; a correct recursive lift is a
+/// later increment. Only inspects a 4-part `(resume v next)` arm (the shape the lift itself handles); an arm
+/// of a different shape is conservatively treated as "may perform outer" (decline — safe).
+fn resume_val_op_arm_also_performs_outer(
+    db: &mut Db,
+    val: StructId,
+    ctx: &HandlerCtx,
+    own: (u32, u32),
+) -> bool {
+    // Find the discharged op `val` performs (the leftmost such op — its arm is what the lift would expose).
+    fn find_performed_op(
+        db: &mut Db,
+        node: StructId,
+        ctx: &HandlerCtx,
+        own: (u32, u32),
+    ) -> Option<(u32, u32)> {
+        if let Resolved::Apply { head, .. } = resolved_of(db, node)
+            && let Some(id) = is_perform(db, head, ctx)
+            && id != own
+        {
+            return Some(id);
+        }
+        match db.ast.get(node).clone() {
+            Struct::List(children) => children
+                .iter()
+                .find_map(|&c| find_performed_op(db, c, ctx, own)),
+            Struct::Atom(_) => None,
+        }
+    }
+    let Some(op_id) = find_performed_op(db, val, ctx, own) else {
+        return false;
+    };
+    let Some(inner_arm) = ctx.arms.get(&op_id).cloned() else {
+        return false;
+    };
+    // The op `val` performs (op_id) has an arm in THIS ctx. If that arm's resume value performs YET ANOTHER
+    // effect op (ANY effect, not just one THIS ctx discharges — a depth-3 chain's third handler is NOT in
+    // this 2-slot merge, so a ctx-scoped `is_perform` check would MISS it — use `effect_op_of`), other than
+    // op_id itself, this is a deeper chain the single lift can't flatten → guard fires (decline).
+    fn resume_reaches_another_effect_op(db: &mut Db, node: StructId, own_op: (u32, u32)) -> bool {
+        if let Resolved::Apply { head, .. } = resolved_of(db, node)
+            && let Some((d, i)) = crate::eval::effect_op_of(db, head)
+            && (d.0, i) != own_op
+        {
+            return true;
+        }
+        match db.ast.get(node).clone() {
+            Struct::List(children) => children
+                .iter()
+                .any(|&c| resume_reaches_another_effect_op(db, c, own_op)),
+            Struct::Atom(_) => false,
+        }
+    }
+    match tail_resume(db, inner_arm.body) {
+        Some((inner_val, _)) => resume_reaches_another_effect_op(db, inner_val, op_id),
+        None => false,
+    }
+}
+
 fn lift_inner_op_arm_outer_perform(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> StructId {
     // Is this node an inner-op call whose arm resume-value performs an outer op with trivial inner-state?
     if let Resolved::Apply { head, args } = resolved_of(db, node)
@@ -7034,6 +7099,17 @@ fn lift_inner_op_arm_outer_perform(db: &mut Db, node: StructId, ctx: &HandlerCtx
         // the honest "not yet reducible" todo. The safe shape (`val` free of `arm.state`, the landed →21
         // witness `(resume (A.tick) t)`) is UNAFFECTED — it lifts and folds as before.
         && !subtree_references_binder(db, val, arm.state)
+        // …AND the resume value's own performed op does NOT ITSELF have an arm that performs a further outer
+        // op — i.e. this is a DEPTH-2 chain, not depth-3+. rn3 (breaker): `loop` performs `C.hop`; C's arm
+        // resumes `(B.step)`; B's arm resumes `(A.tick)`. Lifting `(C.hop)`→`(B.step)` in ONE step leaves
+        // `(B.step)` whose OWN arm still hides the `A.tick` outer perform — the single lift does not chase
+        // the second level, so the merged fold specializes against B alone and DROPS A's advance → SILENT 20
+        // (a regression: this depth-3 shape was a safe decline under the #2077 floor). A correct depth-3 fold
+        // must lift RECURSIVELY (a later increment); until then, DECLINE the deeper chain (leave it un-lifted
+        // → `specialize_recursive` declines cleanly) rather than fold a wrong value. Depth-2 (val's op's arm
+        // does NOT perform-outer, e.g. B.step's arm `(resume (A.tick) t)` where A.tick's arm is a plain
+        // state step) is UNAFFECTED — it lifts and folds → 21.
+        && !resume_val_op_arm_also_performs_outer(db, val, ctx, (decl.0, idx))
     {
         // β-reduce the arm's resume value with params↦args (the op's args) so a param-referencing outer
         // perform arg resolves. (Unit-op arms bind nothing; a mismatch leaves it un-substituted, still sound

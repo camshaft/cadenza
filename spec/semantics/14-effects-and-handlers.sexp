@@ -8644,3 +8644,28 @@
                   (+ (loop 1) (A.get)))))
             (export main)))
   (output (: 21 Int64)))
+
+(case "a DEPTH-3 nested-op chain whose deepest resume performs the outer effect declines cleanly (no silent drop)"
+  (doc    "The depth-3 companion of the post-observer case above — the outer perform hides TWO handler levels
+           down. `loop` performs `C.hop`; C's arm resumes `(B.step)`; B's arm resumes `(A.tick)`; then a
+           post-loop `(A.get)`. The correct value is 21 (tick returns 10 advancing A→11; loop=10; A.get reads
+           11). The depth-2 fix's pre-spec-lift (`lift_inner_op_arm_outer_perform`) rewrites `(C.hop)` into
+           C's resume value `(B.step)` in ONE step, but does NOT chase `B.step`'s OWN arm-hidden `(A.tick)` —
+           so folding it would specialize against B alone and DROP A's advance → a SILENT 20 (the regression
+           this guards against — it briefly shipped that way in #2136 before the depth-3 guard). A correct
+           depth-3 fold must lift RECURSIVELY (a later increment); until then this DECLINES cleanly (a decline
+           is safe, a wrong value is not). `resume_val_op_arm_also_performs_outer` detects the deeper chain
+           (the op the resume value performs has an arm that itself performs YET ANOTHER effect op) and leaves
+           it un-lifted → `specialize_recursive` declines. Flips decline→21 when the recursive lift lands.")
+  (input  (do
+            (effect A (op tick (-> Unit Int64)) (op get (-> Unit Int64)))
+            (effect B (op step (-> Unit Int64)))
+            (effect C (op hop (-> Unit Int64)))
+            (def (loop (: n Int64)) (if (= n 0) 0 (+ (C.hop) (loop (- n 1)))))
+            (def (main)
+              (handle A 10 ((tick (u) s (resume s (+ s 1))) (get (u) s (resume s s)))
+                (handle B 0 ((step (u) t (resume (A.tick) t)))
+                  (handle C 0 ((hop (u) w (resume (B.step) w)))
+                    (+ (loop 1) (A.get))))))
+            (export main)))
+  (output (: 21 Int64)))
