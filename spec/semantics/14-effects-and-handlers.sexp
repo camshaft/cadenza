@@ -3468,6 +3468,40 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 3 Int64)))
 
+(case "an abortive arm that READS a heap-typed (Map) handler state folds — seed-let-lift on the abort path"
+  (doc    "breaker heap-abort-state. A HEAP-typed handler state (`Map.empty`) is not a shareable constant, so
+           `reduce_handle` let-binds the seed to a fresh `#seed` and threads THAT (each state splice is a
+           `#seed` ref). An ABORT arm (no resume) whose expression READS the state binder — `(halt (u) s (*
+           1000 (+ (Map.len s) a)))` — carries `#seed` refs in the collapsed abort value. Before the fix the
+           abort-collapse return path did NOT re-wrap the value in the `(let ((#seed Map.empty)) …)` (only the
+           resumptive return did), so `#seed` read UNBOUND → CDZ0101 on a valid program. Fixed by applying the
+           same seed-let-lift on the abortive returns. Seeded `Map.empty`, called `(main 2)`: the abort reads
+           `(Map.len Map.empty)` = 0, so `(* 1000 (+ 0 2))` = 2000. Pins that a heap-state read in an abort arm
+           folds (scalar-state reads already folded — a scalar seed is a shareable constant with no `#seed`;
+           heap-state CONSTANT-answer abort arms already folded — no `#seed` ref survives).")
+  (input  (do
+            (effect St (op halt (-> Unit Int64)))
+            (def (main (: a Int64))
+              (handle St Map.empty
+                ((halt (u) s (* 1000 (+ (Map.len s) a))))
+                (St.halt)))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 2000 Int64)))
+
+(case "an abortive arm that READS a heap-typed (List) handler state folds — the List face"
+  (doc    "The List face of the heap-abort-state fix above (breaker sk2g): same shape with a `(list)` seed and
+           `(List.len s)` in the abort arm. `(list)` is a heap seed → `#seed` let-bound → the abort value's
+           `#seed` ref is wrapped by the seed-let-lift on the abort path. `(main 2)`: `(List.len (list))` = 0
+           → `(* 1000 (+ 0 2))` = 2000. Confirms the fix is state-shape-agnostic (Map + List).")
+  (input  (do
+            (effect St (op halt (-> Unit Int64)))
+            (def (main (: a Int64))
+              (handle St (list)
+                ((halt (u) s (* 1000 (+ (List.len s) a))))
+                (St.halt)))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 2000 Int64)))
+
 (case "an abortive arm yields a RECURSIVE-SUM spine as the handle's value"
   (doc    "The unbounded-shape abort: the arm yields `(S (S (Z)))` — a recursive-sum spine — and the
            abandoned body would have produced the different-depth `(Z)`. The abort path must carry the
