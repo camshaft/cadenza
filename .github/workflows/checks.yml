@@ -39,6 +39,22 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@v22
+      # PILOT (rustfmt only) of the /nix/store cache — GHA-cache-backed, keyed off flake.lock, SAVE only on
+      # trunk (default branch) so candidate runs RESTORE a shared base without each writing a capped cache.
+      # Rolls out to the other 7 nix jobs once this pilot shows a restore-HIT + a clean trunk save (can't be
+      # tested locally — a GHA action). v-fleet-tooling blessed the mechanism (their cutover pipeline).
+      - uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7 (resolved 2026-08-04)
+        with:
+          primary-key: nix-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('flake.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-${{ runner.arch }}-
+          # No built-in save-on-default-branch flag → gate `save` with a github.ref expression (the trunk
+          # cache is still visible to candidate branches, so they RESTORE it).
+          save: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+          gc-max-store-size-linux: 8000000000 # ~8GB cap (under GHA's 10GB/repo) — GC the store before save.
+          purge: true
+          purge-prefixes: nix-${{ runner.os }}-${{ runner.arch }}-
+          purge-created: 0
+          purge-primary-key: never
       - name: cargo fmt (via nix)
         run: nix build .#checks.x86_64-linux.fmt --print-build-logs
 
