@@ -212,6 +212,7 @@ pass	MULTI-EXPORT: two two-Tuple-arg closures with a LIST result share one `call
 pass	MULTI-EXPORT: two two-Tuple-arg closures with a fixed COMPOUND result
 pass	MULTI-LIMB BigInts built by three arithmetic routes hash to one set element
 pass	MULTI-TYPE bracket matching pushes openers on a list stack and rejects the interleave
+pass	MUTUALLY recursive helpers BOTH perform against the same handler
 pass	MUTUALLY-recursive MODULE-exported performers are both homed by the importer's handler
 pass	Map.remove and Map.lookup by different-route MULTI-LIMB keys agree with the inserted key
 pass	Map.remove at a RUNTIME key shrinks only on a hit
@@ -670,6 +671,7 @@ pass	a LIST built in the handle body from perform results crosses the handle exi
 pass	a LIST of Rationals as a map key normalizes EVERY element for the key hash
 pass	a LIST of closures as a set element is rejected (the collection-element face of the descent)
 pass	a LIST of closures rides one perform and the arm picks by state per call
+pass	a LIST of strategies is walked recursively, each applied to a fresh perform result
 pass	a LIST shrinker drops elements greedily and converges to a minimal failing sublist
 pass	a LONGEST-COMMON-PREFIX walks two strings in scalar lockstep to the first mismatch
 pass	a List-returning closure alongside a plain export — the closure
@@ -898,6 +900,7 @@ pass	a Result pipeline short-circuits on the first Err
 pass	a Result-of-Option threads both wrappers through one runtime match
 pass	a Result-valued `?` under an Option boundary is a type error
 pass	a SCALAR do-def resumed in both slots stays in scope (scalar twin of the dual-slot fix)
+pass	a SCALAR-capturing closure-state replacement folds at three dispatches (no env chain)
 pass	a SELECT-axiom theorem is unforgeable — its Thm cannot be fabricated outside the kernel
 pass	a SELF-RECURSIVE named def passed as a value is applied twice through the parameter
 pass	a SET as a Map key hits by ORDER-INDEPENDENT inner-set content
@@ -1024,6 +1027,7 @@ pass	a VARIABLE catch-all arm binds the whole runtime scrutinee as a Bytes value
 pass	a VIOLATED @ensures traps when the def arrives through a runtime branch
 pass	a WIDE integer literal pattern (beyond ±2^31) matches a runtime scrutinee by equality
 pass	a WORD COUNT threads an in-word flag through a scalar scan, counting entries not characters
+pass	a WRAP-composing closure state (the replacement captures the PREVIOUS closure) folds at two dispatches
 pass	a WRITER effect accumulates a PRE-ORDER trace string during a recursive tree walk
 pass	a `?` in a CALLED (inlined, non-exported) helper finds its boundary
 pass	a `?` in a GENERIC function monomorphizes correctly at two element types
@@ -2257,6 +2261,7 @@ pass	a multibyte-scalar char orders by scalar value, not UTF-8 byte length
 pass	a multiply crossing the single-limb boundary lands exactly and divides back
 pass	a mutual AST walker re-extracts a node's payload in a sibling operand while a mutual call consumes it
 pass	a mutual walk where BOTH partners perform threads one shared counter across the cycle
+pass	a mutual-recursion pair where each side performs against its OWN handler (two nested frames)
 pass	a mutually tail-recursive even/odd over a large runtime count iterates in constant stack
 pass	a mutually-recursive AST walker reads a node's child list without corrupting a sibling head-read
 pass	a mutually-recursive check/check-if returning a Result compiles and runs (if-cond is a call)
@@ -3783,6 +3788,7 @@ pass	an @param of a Bool type generates a Bool-typed accessor
 pass	an @param of a Float64 type generates a Float64-typed accessor
 pass	an @param site generates a Param accessor a host delegation reads at run time
 pass	an @param with no widget config still generates its typed accessor
+pass	an ABORTING arm applies the CLOSURE STATE for its final answer
 pass	an ABORTING arm derives its answer from an Ast op-arg and discards the continuation
 pass	an ABORTIVE arm whose value is a COMPOUND matches the handle body type and folds
 pass	an ANAGRAM check builds per-string scalar frequency maps and compares them by map equality

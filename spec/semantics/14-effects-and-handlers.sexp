@@ -2877,6 +2877,47 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 26 Int64)))
 
+(case "MUTUALLY recursive helpers BOTH perform against the same handler"
+  (doc    "The recursion pins above are all SINGLE functions; here `evens`/`odds` call each other and BOTH
+           perform `(Cnt.tick)`, with different weights per side (×10 vs ×1) so a dispatch that specializes
+           only one side of the cycle — or re-serves a tick to the wrong caller — lands off the checksum.
+           Ticks walk 5,6,7,8 alternating sides: 10·5 + 6 + 10·7 + 8 = 134. Pins effect-specialization
+           across a mutual-recursion CYCLE, not just self-recursion.")
+  (input  (do
+            (effect Cnt (op tick (-> Unit Int64)))
+            (def (evens (: k Int64))
+              (if (= k 0) 0 (+ (* 10 (Cnt.tick)) (odds (- k 1)))))
+            (def (odds (: k Int64))
+              (if (= k 0) 0 (+ (Cnt.tick) (evens (- k 1)))))
+            (def (main (: n Int64))
+              (handle Cnt n
+                ((tick (u) s (resume s (+ s 1))))
+                (evens 4)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 134 Int64)))
+
+(case "a mutual-recursion pair where each side performs against its OWN handler (two nested frames)"
+  (doc    "The two-frame composition of the mutual-cycle pin above: `pa` performs the OUTER `A`, `pb` the
+           INNER `B`, so every hop around the cycle alternates WHICH live frame serves — and each frame
+           advances independently (A: 5,6 stepped ×1; B: 100,110 stepped ×10). 10·5 + 100 + 10·6 + 110 =
+           320. A cross-frame mixup (either handler serving the other's op, or an advance landing on the
+           wrong state) breaks the place-value sum.")
+  (input  (do
+            (effect A (op a (-> Unit Int64)))
+            (effect B (op b (-> Unit Int64)))
+            (def (pa (: k Int64))
+              (if (= k 0) 0 (+ (* 10 (A.a)) (pb (- k 1)))))
+            (def (pb (: k Int64))
+              (if (= k 0) 0 (+ (B.b) (pa (- k 1)))))
+            (def (main (: n Int64))
+              (handle A n
+                ((a (u) s (resume s (+ s 1))))
+                (handle B 100
+                  ((b (u) t (resume t (+ t 10))))
+                  (pa 4))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 320 Int64)))
+
 (case "a let-bound lambda whose body performs is applied in the handle body"
   (doc    "A LAMBDA VALUE is pure at CONSTRUCTION — its body's effects fire only when it is APPLIED. So a
            `let` binding a performing lambda is a pure binding, and the discharged op surfaces at the
@@ -8172,6 +8213,77 @@
                 (+ (* 100 (Ap.app (fn ((: x Int64)) (* x 3)))) (Ap.app (fn ((: x Int64)) (+ x 7))))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 1513 Int64)))
+
+(case "an ABORTING arm applies the CLOSURE STATE for its final answer"
+  (doc    "The abort face of strategy-as-state (the resumptive faces are pinned above): `(fire (v) f
+           (f v))` never resumes, so the handle's value IS the strategy applied to the op argument —
+           `(*7)` at 6 → 42 — and the pending continuation `(+ 500 …)` is DISCARDED (1000 + 42 = 1042,
+           not 1542). The closure state must be applicable on the abort path exactly as on the resume
+           path. (A closure IN the abort value itself — minted by the aborting arm and applied after —
+           is the not-yet-reducible non-tail-resume boundary; applying the state to produce a SCALAR
+           answer folds.)")
+  (input  (do
+            (effect St (op fire (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (+ 1000
+                (handle St (fn ((: x Int64)) (* x 7))
+                  ((fire (v) f (f v)))
+                  (+ 500 (St.fire n)))))
+            (export main)))
+  (call   main (: 6 Int64)) (output (: 1042 Int64)))
+
+(case "a WRAP-composing closure state (the replacement captures the PREVIOUS closure) folds at two dispatches"
+  (doc    "The self-referential face of strategy-as-state: each dispatch REPLACES the closure state with a
+           lambda that wraps the previous one — `(fn (x) (* (f x) 2))`, so the env chain grows per perform
+           (id → ×2). Two performs fold: eval 5 → 5 (state becomes ×2), eval 3 → 6 → 56. At THREE
+           dispatches this shape declines (the unboundedly-growing env chain is the honest boundary) —
+           this case pins the served depth, its scalar-capturing sibling below pins that the boundary is
+           the CLOSURE-chain env specifically.")
+  (input  (do
+            (effect St (op eval (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle St (fn ((: x Int64)) x)
+                ((eval (v) f (resume (f v) (fn ((: x Int64)) (* (f x) 2)))))
+                (+ (* 10 (St.eval n)) (St.eval 3))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 56 Int64)))
+
+(case "a SCALAR-capturing closure-state replacement folds at three dispatches (no env chain)"
+  (doc    "The discriminating sibling of the wrap-composing pin above: here the replacement captures only
+           the APPLIED RESULT `(let ((r (f v))) … (fn (x) (+ x r)))` — a scalar — so no closure-chain env
+           grows and THREE dispatches fold where the wrap-composing shape declines. id at 5 → r=5 (state
+           x+5), f(3)=8 → r=8 (state x+8), f(4)=12 → 592. Together the pair pins the exact boundary:
+           what the replacement CAPTURES (prior closure vs scalar) decides the fold, not replacement or
+           runtime capture per se.")
+  (input  (do
+            (effect St (op eval (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle St (fn ((: x Int64)) x)
+                ((eval (v) f (let ((r (f v))) (resume r (fn ((: x Int64)) (+ x r))))))
+                (+ (* 100 (St.eval n)) (+ (* 10 (St.eval 3)) (St.eval 4)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 592 Int64)))
+
+(case "a LIST of strategies is walked recursively, each applied to a fresh perform result"
+  (doc    "Closures as COLLECTION elements consumed under a handler: `apply-all` destructures a list of
+           three lambdas and applies each to its own `(Cnt.next)` — the counter walks 5,6,7 while the
+           strategy changes per slot (×10, +100, id → 50 + 106 + 7 = 163). Each element's application
+           and each perform must pair up in order; a re-served perform or a slot skew breaks the sum.
+           (The INDEXED lookup route — `List.at`/`Map.lookup` yielding Option-of-closure with a
+           perform-computed key — is a separate known wasm-codegen defect; this direct-destructure
+           walk is the served face.)")
+  (input  (do
+            (effect Cnt (op next (-> Unit Int64)))
+            (def (apply-all fs)
+              (match fs
+                ((list) 0)
+                ((list f .. r) (+ (f (Cnt.next)) (apply-all r)))))
+            (def (main (: n Int64))
+              (handle Cnt n
+                ((next (u) s (resume s (+ s 1))))
+                (apply-all (list (fn ((: x Int64)) (* x 10)) (fn ((: x Int64)) (+ x 100)) (fn ((: x Int64)) x)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 163 Int64)))
 
 (case "an interposing handler TRANSFORMS the host response before resuming (offset adapter)"
   (doc    "The ADAPTER sibling of the observe interposer (:866 counts + forwards unchanged): the arm transforms the host response before resuming (+1000 each; 30+40 → 2070 — a dropped transform gives 70, a double-apply 3070).")
