@@ -5846,6 +5846,7 @@ todo	a block-wrapped OUTER-effect perform in a non-tail do-statement INSIDE a ne
 todo	a block-wrapped branch perform of the OUTER effect in a let-init INSIDE a nested handler body declines cleanly (adv-69 a4 sub-face)
 todo	a closed literal closure forwarded through const-wrapper hops is not a false reject
 todo	a constant-try helper that fails feeds the None arm's fallback into resume
+todo	a cross-handler foreign-perform op-arg into a MATCH-shaped-resume arm declines cleanly (completeness gap)
 todo	a mutually-recursive group with a BRANCH-PERFORM sharing a strict expr with the mutual call declines cleanly (adv-69 rw4 sub-face)
 todo	a recursive nested-op performer whose resume-VALUE reads the inner state around the outer perform declines cleanly
 todo	a recursive scalar-walk classifies characters across a multibyte String entry arg
