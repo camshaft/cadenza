@@ -914,6 +914,7 @@ pass	a SET of BigInts as a map key matches its construction-order and arithmetic
 pass	a SET of SETS dedups elements by set CONTENT — insertion-order twins collapse
 pass	a SET-valued handler state accumulates uniques across resumes (the visited-set idiom)
 pass	a SINGLE-variant open sum still requires an open-tail arm
+pass	a SIX-deep alternating A-B perform chain threads both nested states through every crossing
 pass	a SLIDING-WINDOW max walks a k=3 window by paired index reads
 pass	a SOLE RECORD closure ARG crosses the direct-call boundary
 pass	a SPLIT on separator slices fields between hits and round-trips through the pinned JOIN
@@ -2727,6 +2728,7 @@ pass	a recursive HOF infers a callback whose RESULT is a sum matched in the body
 pass	a recursive MERGE SORT splits alternately, sorts halves, and merges — duplicates survive
 pass	a recursive RENAME pass rewrites every matching Name leaf at any depth and counts them
 pass	a recursive TLV frame walk over sliced runtime bytes decodes LE payloads per frame
+pass	a recursive builder PERFORMS per step and a recursive pure fold consumes the built list
 pass	a recursive byte fold calling two helpers emits valid wasm (disjoint scratch slots)
 pass	a recursive byte walk sums a runtime sequence via Bytes.at and match
 pass	a recursive byte walk threading a Bytes parameter through a helper infers without annotation
