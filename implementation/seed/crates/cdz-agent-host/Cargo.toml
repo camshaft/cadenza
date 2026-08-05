@@ -66,6 +66,17 @@ metrics-export = []
 # backpressure or a failed POST (guard 2: telemetry is best-effort, must never block/panic the report loop).
 metrics-export-otlp = ["metrics-export", "dep:reqwest", "s2n-quic-dc-metrics/otel"]
 
+# `metrics-export-prometheus` adds the PULL prometheus export backend: the daemon SERVES an HTTP scrape
+# endpoint (`GET /metrics`) rather than pushing. STRICTLY opt-in + separate so the hermetic default (and a
+# statsd/otlp build) NEVER pulls tokio's `net` tree (guard: verify `cargo tree` on the default build shows no
+# tokio net feature via prometheus). It enables tokio's `net` + `io-util` (for the `TcpListener` +
+# `AsyncReadExt`/`AsyncWriteExt` the hand-rolled HTTP/1.1 responder uses) — NO hyper/axum, the responder is
+# hand-rolled (same dep-light pattern as the admin Unix-socket listener). The `PrometheusBackend`/handle live
+# in the always-on s2n-quic-dc-metrics dep (NOT behind a crate feature, unlike otel), so no extra crate
+# feature is needed here. Security posture (concierge): the scrape endpoint binds LOOPBACK by default; a
+# non-loopback bind is warned (a no-auth inbound port is only acceptable loopback-bound).
+metrics-export-prometheus = ["metrics-export", "tokio/net", "tokio/io-util"]
+
 [dependencies]
 # The kernel whose Executor/Authorize traits + effect/event types we implement. Path dep across the
 # workspace boundary (both are their own workspaces). We CONSUME these traits; we never edit its src.

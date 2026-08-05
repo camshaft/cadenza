@@ -227,7 +227,13 @@ async fn main() -> std::process::ExitCode {
         // after the loop returns) and does one final report on the way out. OTLP/prometheus backends push in
         // here too once built (statsd first; a following slice).
         #[cfg(feature = "metrics-export")]
-        let (export_registry, export_reporter, export_interval, otlp_forwarders) = {
+        let (
+            export_registry,
+            export_reporter,
+            export_interval,
+            otlp_forwarders,
+            prometheus_servers,
+        ) = {
             use cdz_agent_host::{MetricsReporter, MetricsTarget, StatsdTarget};
             // Collect the statsd targets. OTLP targets are exportable only when the `metrics-export-otlp`
             // feature is compiled; otherwise they're counted as unexportable so an enabled config with only
@@ -242,7 +248,8 @@ async fn main() -> std::process::ExitCode {
                             endpoint: endpoint.clone(),
                             prefix: prefix.clone(),
                         }),
-                        MetricsTarget::Otlp { .. } => None,
+                        // Non-statsd targets (otlp/prometheus) are collected separately below.
+                        _ => None,
                     })
                     .collect()
             } else {
@@ -266,29 +273,61 @@ async fn main() -> std::process::ExitCode {
                             scope_name: scope_name.clone(),
                             scope_version: scope_version.clone(),
                         }),
-                        MetricsTarget::Statsd { .. } => None,
+                        // Non-otlp targets (statsd/prometheus) are collected in their own passes.
+                        _ => None,
                     })
                     .collect()
             } else {
                 Vec::new()
             };
-            #[cfg(not(feature = "metrics-export-otlp"))]
+            // Prometheus (PULL) targets are exportable with the metrics-export-prometheus feature. Collected
+            // like otlp: with the feature they become backends + scrape servers; without it they count toward
+            // the unexportable diagnostic below.
+            #[cfg(feature = "metrics-export-prometheus")]
+            let prometheus_targets: Vec<cdz_agent_host::PrometheusTarget> =
+                if config.observability.enabled {
+                    config
+                        .observability
+                        .targets
+                        .iter()
+                        .filter_map(|t| match t {
+                            MetricsTarget::Prometheus { bind, prefix } => {
+                                Some(cdz_agent_host::PrometheusTarget {
+                                    bind: bind.clone(),
+                                    prefix: prefix.clone(),
+                                })
+                            }
+                            _ => None,
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+            // Count targets this build can't export (for the enabled-but-nothing-exportable diagnostic): an
+            // OTLP target without metrics-export-otlp, or a prometheus target without metrics-export-prometheus.
             let unexportable = config
                 .observability
                 .targets
                 .iter()
-                .filter(|t| matches!(t, MetricsTarget::Otlp { .. }))
+                .filter(|t| {
+                    (matches!(t, MetricsTarget::Otlp { .. })
+                        && !cfg!(feature = "metrics-export-otlp"))
+                        || (matches!(t, MetricsTarget::Prometheus { .. })
+                            && !cfg!(feature = "metrics-export-prometheus"))
+                })
                 .count();
-            // `mut` only needed when OTLP pushes into the reporter below (statsd-only builds never mutate it).
-            #[cfg(feature = "metrics-export-otlp")]
+            // `mut` only when a push backend (otlp/prometheus) registers into the reporter; a statsd-only build
+            // never mutates it after construction.
+            #[cfg_attr(
+                not(any(feature = "metrics-export-otlp", feature = "metrics-export-prometheus")),
+                allow(unused_mut)
+            )]
             let (mut reporter, failed) = MetricsReporter::from_statsd_targets(&statsd_targets);
-            #[cfg(not(feature = "metrics-export-otlp"))]
-            let (reporter, failed) = MetricsReporter::from_statsd_targets(&statsd_targets);
             for f in &failed {
                 eprintln!("cdz-agent-daemon: metrics export target unavailable at boot: {f}");
             }
-            // Push each OTLP target into the SAME reporter (one drain fans out to statsd + otlp together) and
-            // keep its (endpoint, receiver) so we can spawn a forwarder task per target below.
+            // Push each OTLP target into the SAME reporter (one drain fans out to statsd + otlp + prometheus
+            // together) and keep its (endpoint, receiver) so we can spawn a forwarder task per target below.
             #[cfg(feature = "metrics-export-otlp")]
             let otlp_forwarders: Vec<(String, tokio::sync::mpsc::Receiver<Vec<u8>>)> = otlp_targets
                 .iter()
@@ -296,6 +335,18 @@ async fn main() -> std::process::ExitCode {
                 .collect();
             #[cfg(not(feature = "metrics-export-otlp"))]
             let otlp_forwarders: Vec<((), ())> = Vec::new();
+            // Push each prometheus target's backend into the reporter + keep (bind, handle) so we can spawn a
+            // scrape server per target below (the handle reads the exposition text the backend re-renders).
+            #[cfg(feature = "metrics-export-prometheus")]
+            let prometheus_servers: Vec<(
+                String,
+                s2n_quic_dc_metrics::backend::PrometheusHandle,
+            )> = prometheus_targets
+                .iter()
+                .map(|t| (t.bind.clone(), reporter.push_prometheus(t)))
+                .collect();
+            #[cfg(not(feature = "metrics-export-prometheus"))]
+            let prometheus_servers: Vec<((), ())> = Vec::new();
             // Enabled but NO export backend got set up → warn (never a silent skip). Distinguish the causes so
             // the message is accurate (#2137 review): (a) zero targets configured, (b) targets present but
             // unexportable in THIS build (non-statsd targets without the feature compiled), (c) targets present
@@ -306,21 +357,13 @@ async fn main() -> std::process::ExitCode {
                         "cdz-agent-daemon: [observability] enabled but no targets configured \
                          — nothing will be exported."
                     );
+                } else if unexportable > 0 {
+                    eprintln!(
+                        "cdz-agent-daemon: [observability] enabled but no export backend in this build \
+                         — nothing will be exported ({unexportable} target(s) need an export feature not \
+                         compiled here, e.g. metrics-export-otlp / metrics-export-prometheus)."
+                    );
                 } else {
-                    #[cfg(not(feature = "metrics-export-otlp"))]
-                    if unexportable > 0 {
-                        eprintln!(
-                            "cdz-agent-daemon: [observability] enabled but no export backend in this build \
-                             — nothing will be exported ({unexportable} non-statsd (OTLP) target(s) need the \
-                             metrics-export-otlp feature, not compiled here)."
-                        );
-                    } else {
-                        eprintln!(
-                            "cdz-agent-daemon: [observability] enabled but no export backend could be set up \
-                             — nothing will be exported (all configured targets failed to initialize)."
-                        );
-                    }
-                    #[cfg(feature = "metrics-export-otlp")]
                     eprintln!(
                         "cdz-agent-daemon: [observability] enabled but no export backend could be set up \
                          — nothing will be exported (all configured targets failed to initialize)."
@@ -332,6 +375,7 @@ async fn main() -> std::process::ExitCode {
                 reporter,
                 std::time::Duration::from_secs(config.observability.report_interval_secs),
                 otlp_forwarders,
+                prometheus_servers,
             )
         };
 
@@ -372,6 +416,27 @@ async fn main() -> std::process::ExitCode {
         // Bind the non-otlp placeholder so the value is consumed in a build without the OTLP feature.
         #[cfg(all(feature = "metrics-export", not(feature = "metrics-export-otlp")))]
         let _ = otlp_forwarders;
+        // Spawn one prometheus scrape server per prometheus target. Each binds its (loopback-by-default)
+        // address and serves GET /metrics from its handle until shut down. Collect their shutdown senders so
+        // they're torn down after the host loop returns (before the socket), like the export task.
+        #[cfg(feature = "metrics-export-prometheus")]
+        let mut prometheus_shutdowns: Vec<tokio::sync::oneshot::Sender<()>> = Vec::new();
+        #[cfg(feature = "metrics-export-prometheus")]
+        for (bind, handle) in prometheus_servers {
+            eprintln!("cdz-agent-daemon: metrics export → prometheus scrape server on {bind}");
+            let (sd_tx, sd_rx) = tokio::sync::oneshot::channel::<()>();
+            prometheus_shutdowns.push(sd_tx);
+            tokio::spawn(async move {
+                if let Err(e) =
+                    cdz_agent_host::run_prometheus_scrape_server(bind, handle, sd_rx).await
+                {
+                    eprintln!("cdz-agent-daemon: prometheus scrape server failed to start: {e}");
+                }
+            });
+        }
+        // Consume the placeholder in a build without the prometheus feature.
+        #[cfg(all(feature = "metrics-export", not(feature = "metrics-export-prometheus")))]
+        let _ = prometheus_servers;
         // Spawn the periodic metrics-export task (if built + at least one backend was registered). It reads
         // the cloned registry the host loop increments; its own shutdown oneshot fires after the loop returns
         // so it does a final report on the way out. Skipped (no task) when no backends registered.
@@ -401,6 +466,11 @@ async fn main() -> std::process::ExitCode {
             if let Err(e) = task.await {
                 eprintln!("cdz-agent-daemon: metrics export task failed: {e:?}");
             }
+        }
+        // Shut down the prometheus scrape servers (best-effort; they're detached, we just fire their signals).
+        #[cfg(feature = "metrics-export-prometheus")]
+        for tx in prometheus_shutdowns {
+            let _ = tx.send(());
         }
         // The loop is done — tear down the socket server and await its task so the socket file's Drop
         // cleanup runs before we exit. A JoinError here means the socket server task PANICKED; the exit code
