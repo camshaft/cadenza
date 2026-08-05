@@ -2559,6 +2559,43 @@
             (export main)))
   (output (: 104 Int64)))
 
+(case "a closure capturing perform results escapes to NO handler at all and applies pure"
+  (doc    "The no-outer-handler sibling of the capture cases above (those apply the escapee under an OUTER
+           handler of the same effect; here NOTHING handles the effect at the apply sites): the handle's
+           RESULT is a closure whose captures are two perform results (x = 5, y = 6 under the advancing
+           arm), applied TWICE after the handle fully exits. Both applications must read the captured
+           VALUES — (f 10) = 56 and (f 100) = 506 → 562. A capture compiled as the perform expression
+           would need a handler at apply and could only reject or re-home; the values must live in the
+           closure env, independent of any handler existing.")
+  (input  (do
+            (effect St (op a (-> Unit Int64)))
+            (def (main (: n Int64))
+              (do
+                (def f (handle St n
+                         ((a (u) s (resume s (+ s 1))))
+                         (do
+                           (def x (St.a))
+                           (def y (St.a))
+                           (fn ((: k Int64)) (+ (* k x) y)))))
+                (+ (f 10) (f 100))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 562 Int64)))
+
+(case "a handle's RESULT seeds the NEXT handle of the same effect — explicit state handoff between instances"
+  (doc    "Sequential same-effect handle instances share nothing implicitly (each seeds fresh); the ONLY
+           state transfer is explicit value flow. The first instance's result (its last-read state 8, after
+           a +5 advance) becomes the second instance's SEED, whose doubling arm then serves 8 and 16 →
+           8 + 16 = 24. Pins the instance-lifecycle boundary: a leak of the first instance's live state
+           into the second (rather than the passed value) or a stale-seed re-read would shift both reads.")
+  (input  (do
+            (effect St (op a (-> Unit Int64)))
+            (def (main (: n Int64))
+              (do
+                (def r1 (handle St n ((a (u) s (resume s (+ s 5)))) (+ (* 0 (St.a)) (St.a))))
+                (handle St r1 ((a (u) s (resume s (* s 2)))) (+ (St.a) (St.a)))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 24 Int64)))
+
 (case "a CURRIED closure capturing an inner-handled perform result closes over it through partial application"
   (doc    "A curry sibling of the capture case: the inner handle returns `(fn (a) (fn (b) (+ (+ a b) base)))`
            where `base` is the inner-handled `(Ctr.tick)` = 50. Applied `((f 3) 4)` under `handle Ctr 5`, the
