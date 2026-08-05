@@ -393,9 +393,10 @@ impl MetricsReporter {
 // `tokio::net::TcpListener` (no hyper/axum — same dep-light pattern as the admin Unix-socket listener),
 // gated behind `metrics-export-prometheus` so the default/hermetic build pulls no `tokio/net`.
 //
-// SECURITY POSTURE (concierge ruling): an inbound port is a new exposure. The server binds LOOPBACK by
-// default and a no-auth endpoint is only acceptable loopback-bound; a non-loopback bind is WARNED at boot
-// (auth/allowlist would be a separate decision).
+// SECURITY POSTURE (concierge ruling): an inbound port is a new exposure. The `bind` is REQUIRED (no
+// default); a LOOPBACK bind just works, but a NON-loopback bind is REJECTED at config validation unless
+// `allow_non_loopback = true` (a deliberate opt-in for an unauthenticated public metrics port). Even with the
+// opt-in, this server still WARNS at boot on a non-loopback bind.
 
 /// One resolved prometheus export target — the address the scrape listener binds + an optional metric-name
 /// prefix. OWNED so the daemon holds it for the listener's lifetime.

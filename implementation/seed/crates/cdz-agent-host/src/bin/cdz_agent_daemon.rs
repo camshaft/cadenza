@@ -291,7 +291,9 @@ async fn main() -> std::process::ExitCode {
                         .targets
                         .iter()
                         .filter_map(|t| match t {
-                            MetricsTarget::Prometheus { bind, prefix } => {
+                            MetricsTarget::Prometheus { bind, prefix, .. } => {
+                                // allow_non_loopback is a validation-time gate (already enforced in
+                                // DaemonConfig::validate); the runtime target only needs bind + prefix.
                                 Some(cdz_agent_host::PrometheusTarget {
                                     bind: bind.clone(),
                                     prefix: prefix.clone(),
@@ -416,9 +418,10 @@ async fn main() -> std::process::ExitCode {
         // Bind the non-otlp placeholder so the value is consumed in a build without the OTLP feature.
         #[cfg(all(feature = "metrics-export", not(feature = "metrics-export-otlp")))]
         let _ = otlp_forwarders;
-        // Spawn one prometheus scrape server per prometheus target. Each binds its (loopback-by-default)
-        // address and serves GET /metrics from its handle until shut down. Collect their shutdown senders so
-        // they're torn down after the host loop returns (before the socket), like the export task.
+        // Spawn one prometheus scrape server per prometheus target. Each binds its configured address (a
+        // loopback bind is recommended; a non-loopback bind is warned by the server) and serves GET /metrics
+        // from its handle until shut down. Collect their shutdown senders so they're torn down after the host
+        // loop returns (before the socket), like the export task.
         #[cfg(feature = "metrics-export-prometheus")]
         let mut prometheus_shutdowns: Vec<tokio::sync::oneshot::Sender<()>> = Vec::new();
         #[cfg(feature = "metrics-export-prometheus")]

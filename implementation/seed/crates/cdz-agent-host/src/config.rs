@@ -163,14 +163,21 @@ pub enum MetricsTarget {
     },
     /// The `prometheus` backend — `s2n-quic-dc-metrics`' `PrometheusBackend`. UNLIKE statsd/otlp (outbound
     /// PUSH), prometheus is PULL: the daemon SERVES an HTTP scrape endpoint (`GET /metrics`) that a scraper
-    /// reads, so its config is a `bind` LISTEN address (not a push endpoint). Bound to LOOPBACK by default
-    /// (concierge posture ruling: an inbound port is a new exposure — a no-auth scrape endpoint is only
-    /// acceptable loopback-bound; a non-loopback `bind` is gated + warned at boot). `prefix` optionally
-    /// namespaces every metric name.
+    /// reads, so its config is a `bind` LISTEN address (not a push endpoint). `bind` is REQUIRED (no default),
+    /// forcing a conscious address choice (no silent exposure). This is a NO-AUTH endpoint, so the posture
+    /// (concierge ruling) is: a LOOPBACK bind just works, but a NON-loopback bind is REJECTED at validation
+    /// unless `allow_non_loopback = true` — a deliberate second acknowledgment that you're exposing an
+    /// unauthenticated inbound metrics port. `prefix` optionally namespaces every metric.
     Prometheus {
-        /// The address the scrape listener binds (`host:port`), e.g. `"127.0.0.1:9090"`. Loopback host keeps
-        /// the no-auth endpoint on the local trust boundary; a non-loopback host is warned at boot.
+        /// The address the scrape listener binds (`host:port`), e.g. `"127.0.0.1:9090"`. A loopback host keeps
+        /// the no-auth endpoint on the local trust boundary; a non-loopback host requires `allow_non_loopback`.
         bind: String,
+        /// Opt-in to a NON-loopback `bind` for this unauthenticated scrape endpoint. Default `false`: a
+        /// non-loopback bind without this set is a validation error (an unauthenticated public metrics port
+        /// must be chosen by INTENT, not reachable by omission). A non-loopback bind WITH it set is still
+        /// warned at boot. Loopback binds ignore this flag.
+        #[serde(default)]
+        allow_non_loopback: bool,
         /// Optional metric-name prefix applied to every emitted metric (maps to `PrometheusBackend`'s prefix).
         #[serde(default)]
         prefix: Option<String>,
@@ -387,6 +394,18 @@ impl std::fmt::Display for ConfigError {
 }
 impl std::error::Error for ConfigError {}
 
+/// `true` if `addr` (`host:port`) resolves to a loopback address. FAIL-CLOSED: an unresolvable / unparseable
+/// address returns `false` (treated as non-loopback), so a bind we can't classify still requires the explicit
+/// `allow_non_loopback` opt-in rather than slipping through. Kept in `config` (always-on) so validation can
+/// enforce the prometheus posture without the `metrics-export-prometheus` feature (which has its own runtime
+/// copy for the boot warning).
+fn bind_is_loopback(addr: &str) -> bool {
+    use std::net::ToSocketAddrs;
+    addr.to_socket_addrs()
+        .map(|mut it| it.next().map(|a| a.ip().is_loopback()).unwrap_or(false))
+        .unwrap_or(false)
+}
+
 impl DaemonConfig {
     /// Load + validate the daemon config from a TOML file at `path` — the daemon's single boot input.
     pub fn from_toml_path(path: impl AsRef<Path>) -> Result<Self, ConfigError> {
@@ -457,6 +476,21 @@ impl DaemonConfig {
                     MetricsTarget::Prometheus { bind, .. } if bind.trim().is_empty() => {
                         return Err(ConfigError(format!(
                             "[observability] target {i} (prometheus) needs a non-empty bind address"
+                        )));
+                    }
+                    // A non-loopback bind for this UNAUTHENTICATED scrape endpoint is rejected unless the
+                    // operator explicitly opts in (concierge posture: an unauth public metrics port must be
+                    // chosen by intent, not reachable by omission). A bind that can't be resolved to classify
+                    // is treated as non-loopback (fail-closed) — it still needs the opt-in.
+                    MetricsTarget::Prometheus {
+                        bind,
+                        allow_non_loopback,
+                        ..
+                    } if !allow_non_loopback && !bind_is_loopback(bind) => {
+                        return Err(ConfigError(format!(
+                            "[observability] target {i} (prometheus) binds a non-loopback address {bind:?} \
+                             for an UNAUTHENTICATED scrape endpoint — set allow_non_loopback = true to opt in \
+                             deliberately, or bind a loopback address (e.g. 127.0.0.1:PORT)"
                         )));
                     }
                     _ => {}
@@ -740,6 +774,75 @@ mod tests {
         assert_eq!(cfg.observability.targets.len(), 2);
         assert_eq!(cfg.observability.targets[0].kind(), "statsd");
         assert_eq!(cfg.observability.targets[1].kind(), "otlp");
+    }
+
+    #[test]
+    fn observability_prometheus_loopback_bind_parses() {
+        // A loopback prometheus bind just works — no allow_non_loopback needed.
+        let cfg = DaemonConfig::from_toml_str(
+            r#"
+            [observability]
+            enabled = true
+            [[observability.target]]
+            kind = "prometheus"
+            bind = "127.0.0.1:9090"
+            "#,
+        )
+        .expect("loopback prometheus bind parses");
+        assert_eq!(cfg.observability.targets.len(), 1);
+        assert_eq!(cfg.observability.targets[0].kind(), "prometheus");
+    }
+
+    #[test]
+    fn observability_prometheus_empty_bind_is_rejected() {
+        let err = DaemonConfig::from_toml_str(
+            r#"
+            [observability]
+            enabled = true
+            [[observability.target]]
+            kind = "prometheus"
+            bind = ""
+            "#,
+        )
+        .unwrap_err();
+        assert!(err.0.contains("bind"), "{err}");
+        assert!(err.0.contains("prometheus"), "names the kind: {err}");
+    }
+
+    #[test]
+    fn observability_prometheus_non_loopback_bind_is_rejected_without_opt_in() {
+        // A non-loopback bind for the UNAUTHENTICATED scrape endpoint is rejected unless allow_non_loopback.
+        let err = DaemonConfig::from_toml_str(
+            r#"
+            [observability]
+            enabled = true
+            [[observability.target]]
+            kind = "prometheus"
+            bind = "0.0.0.0:9090"
+            "#,
+        )
+        .unwrap_err();
+        assert!(
+            err.0.contains("allow_non_loopback"),
+            "points at the opt-in: {err}"
+        );
+    }
+
+    #[test]
+    fn observability_prometheus_non_loopback_bind_ok_with_opt_in() {
+        // With the explicit opt-in, a non-loopback bind validates (still warned at boot at runtime).
+        let cfg = DaemonConfig::from_toml_str(
+            r#"
+            [observability]
+            enabled = true
+            [[observability.target]]
+            kind = "prometheus"
+            bind = "0.0.0.0:9090"
+            allow_non_loopback = true
+            "#,
+        )
+        .expect("non-loopback bind with the opt-in validates");
+        assert_eq!(cfg.observability.targets[0].kind(), "prometheus");
     }
 
     #[test]
