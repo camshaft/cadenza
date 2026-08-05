@@ -68149,6 +68149,99 @@ mod stage1 {
     }
 
     #[test]
+    fn a_recursive_advance_observed_by_a_same_effect_abort_arm_declines_not_miscompiles() {
+        use crate::testkit::parse;
+        // BREAKER sr5 (HIGH silent-miscompile, restore-safe-decline). A recursive loop of same-effect
+        // `(Acc.put)` performs advances the handler state; a LATER same-effect `(Acc.fin)` whose arm is
+        // ABORTIVE (`(fin (u) s s)` — no `resume`) reads that state. The caller-observed-out-state machinery
+        // (`mark_caller_observed_outstate`) threads the recursion's advance correctly to a RESUMING observer
+        // (sr4 → 2), but the ABORT collapse materialized fin's arm value against the pre-recursion SEED slot,
+        // so `(do (def _g (grow k)) (Acc.fin))` silently returned 0 instead of the advanced 2 on BOTH
+        // backends. `reduce_handle` now DECLINES this shape (a clean Todo) rather than emit the wrong value;
+        // the correct fold (abort collapse reads the threaded out-state) is a later increment. The guard is
+        // NARROW — a resuming observer (sr4), a plain non-abort observer, and a non-recursive abort all still
+        // fold, verified below — so this restores correctness without over-declining valid programs.
+        let runtime = find_runtime_wasm();
+        let run_k = |bytes: &[u8], k: i64| -> Option<String> {
+            let runtime = runtime.clone()?;
+            let opts = cdz_run::RunOpts {
+                export: Some("main".to_string()),
+                args: vec![k.to_string()],
+                runtime: Some(runtime),
+                runtime_cache_dir: None,
+                host_responses: Vec::new(),
+            };
+            match cdz_run::run(bytes, &opts).expect("run") {
+                cdz_run::Outcome::Value(s) => Some(s),
+                cdz_run::Outcome::Trap(t) => panic!("sr5-family run trapped: {t}"),
+            }
+        };
+
+        // sr5: the miscompile shape — MUST now decline cleanly (uncoded Todo), NOT compile to a wrong value.
+        let sr5 = "(do (effect Acc (op put (-> Unit Int64)) (op fin (-> Unit Int64))) \
+             (def (grow (: n Int64)) (if (= n 0) 0 (+ (Acc.put) (grow (- n 1))))) \
+             (def (main (: k Int64)) (handle Acc 0 ((put (u) s (resume 0 (+ s 1))) (fin (u) s s)) \
+                 (do (def _g (grow k)) (Acc.fin)))) (export main))";
+        let err = compile_component(&crate::codec::encode(&parse(sr5)))
+            .expect_err("sr5 (recursive advance observed by a same-effect ABORT arm) must DECLINE, not miscompile to 0");
+        assert!(
+            err.code.is_none(),
+            "sr5 must be a CLEAN (uncoded) decline — a coded rejection here is a different regression: {:?}",
+            err.code
+        );
+
+        // sr4 CONTROL: the SAME shape but fin RESUMES `(resume s s)` — the advance threads, folds to 2.
+        let sr4 = "(do (effect Acc (op put (-> Unit Int64)) (op fin (-> Unit Int64))) \
+             (def (grow (: n Int64)) (if (= n 0) 0 (+ (Acc.put) (grow (- n 1))))) \
+             (def (main (: k Int64)) (handle Acc 0 ((put (u) s (resume 0 (+ s 1))) (fin (u) s (resume s s))) \
+                 (do (def _g (grow k)) (Acc.fin)))) (export main))";
+        let sr4_bytes = compile_component(&crate::codec::encode(&parse(sr4))).expect(
+            "sr4 (resuming observer of the recursive advance) folds — must NOT be over-declined",
+        );
+        if let Some(v) = run_k(&sr4_bytes, 2) {
+            assert_eq!(
+                v, "2",
+                "sr4 resuming fin reads the advanced state = 2 (put ran k=2 times)"
+            );
+        }
+
+        // CONTROL: a same-effect ABORT arm with NO recursive advance before it (two INLINE puts) — the guard
+        // must NOT fire; it folds. Two puts advance 0→2, the abort reads 2.
+        let inline_abort = "(do (effect Acc (op put (-> Unit Int64)) (op fin (-> Unit Int64))) \
+             (def (main) (handle Acc 0 ((put (u) s (resume 0 (+ s 1))) (fin (u) s s)) \
+                 (do (def _a (Acc.put)) (def _b (Acc.put)) (Acc.fin)))) (export main))";
+        let inline_bytes = compile_component(&crate::codec::encode(&parse(inline_abort)))
+            .expect("a same-effect abort arm with NO recursion before it folds — the guard must not over-fire");
+        if let Some(v) = run_linked(&inline_bytes, "main") {
+            assert_eq!(
+                v, "2",
+                "two inline puts advance 0→2, the abort reads 2 (no recursion → not flagged)"
+            );
+        }
+
+        // CONTROL cx1 (breaker radius addendum): recursive INNER `(B.put)` performs, then an OUTER-effect
+        // `(A.fin)` ABORT reads A's state — A's state is NOT recursion-advanced (a DIFFERENT effect), so the
+        // abort correctly reads its seed 700. The guard keys on THIS handler's abortive arms (`ctx.abortive`),
+        // so an abort of a DIFFERENT effect after the recursion must NOT be swept — it folds. This pins that
+        // the guard's effect-scoping is right: the live silent-wrong band is same-effect only.
+        let cx1 = "(do (effect A (op fin (-> Unit Int64))) \
+             (effect B (op put (-> Unit Int64))) \
+             (def (grow (: n Int64)) (if (= n 0) 0 (+ (B.put) (grow (- n 1))))) \
+             (def (main (: k Int64)) \
+               (handle A 700 ((fin (u) s s)) \
+                 (handle B 0 ((put (u) s (resume 0 (+ s 1)))) \
+                   (do (def _g (grow k)) (A.fin))))) (export main))";
+        let cx1_bytes = compile_component(&crate::codec::encode(&parse(cx1)))
+            .expect("cx1 (outer-effect abort after inner recursion) folds — a DIFFERENT-effect abort must not be swept");
+        if let Some(v) = run_k(&cx1_bytes, 2) {
+            assert_eq!(
+                v, "700",
+                "cx1: A.fin aborts reading A's seed 700 (A's state was never recursion-advanced — different effect)"
+            );
+        }
+    }
+
+    #[test]
     fn a_conditional_resume_arm_folds_with_one_perform_but_declines_cleanly_with_two() {
         use crate::testkit::parse;
         // CONDITIONAL-RESUME ARM × PERFORM-COUNT (breaker ob-family datapoint, 2026-08-05). A handler arm
