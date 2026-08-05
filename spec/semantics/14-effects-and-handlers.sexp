@@ -4238,6 +4238,46 @@
             (export main)))
   (output (: 41 Int64)))
 
+(case "TWO outer op-results as SIBLING args of one inner perform evaluate left-to-right"
+  (doc    "The multi-arg face of the op-arg let-lift: BOTH arguments of the inner `(B.put (A.get) (A.get))`
+           are foreign performs of the ADVANCING outer op, so their evaluation ORDER is observable — the
+           first read returns 7 (state → 8), the second 8 (state → 9), and B's arm sums them (15). A lift
+           that reordered the sibling performs, ran one twice, or batched them against the same state would
+           break the sum. The two-lift companion of the single-arg pin above.")
+  (input  (do
+            (effect A (op get (-> Unit Int64)))
+            (effect B (op put (-> Int64 Int64 Int64)))
+            (def (main (: n Int64))
+              (handle A n
+                ((get (u) s (resume s (+ s 1))))
+                (handle B 0
+                  ((put (v w) s (resume (+ v w) s)))
+                  (B.put (A.get) (A.get)))))
+            (export main)))
+  (call   main (: 7 Int64)) (output (: 15 Int64)))
+
+(case "a DEPTH-3 op-arg chain threads across two handler layers"
+  (doc    "The depth face of the op-arg let-lift: `(C.inn (B.mid (A.get)))` under a 3-deep stack — the
+           innermost perform's argument is itself a perform whose OWN argument is a perform of the outermost
+           op, so the lift must fire at two nesting levels of the SAME expression. A.get reads 7, B.mid adds
+           its state (7+100 = 107), C.inn doubles (214). A lift that flattened only one level, or evaluated
+           the chain against the wrong handler's state, would break a factor. The chain companion of the
+           sibling-args pin above.")
+  (input  (do
+            (effect A (op get (-> Unit Int64)))
+            (effect B (op mid (-> Int64 Int64)))
+            (effect C (op inn (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle A n
+                ((get (u) s (resume s s)))
+                (handle B 100
+                  ((mid (v) s (resume (+ v s) s)))
+                  (handle C 0
+                    ((inn (v) s (resume (* 2 v) s)))
+                    (C.inn (B.mid (A.get)))))))
+            (export main)))
+  (call   main (: 7 Int64)) (output (: 214 Int64)))
+
 (case "two performs as the two ARGUMENTS of a pure USER function thread the state left-to-right"
   (doc    "The performs sit in the argument list of a non-primitive, effect-free USER function, whose call
            evaluates its arguments left-to-right before applying — so the two reads are sequenced by the

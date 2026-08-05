@@ -398,6 +398,7 @@ pass	TWO guarded map arms over a PARTIAL-CONST map fall through, each re-resolvi
 pass	TWO loop-carried ropes each rebind to derived strings every recursion step
 pass	TWO match inits in one let SEQUENCE - the second scrutinizes the first's binding
 pass	TWO modules' recursive performers interleave under ONE handler's shared state
+pass	TWO outer op-results as SIBLING args of one inner perform evaluate left-to-right
 pass	TWO performs in an if condition both fold on the strict-first spine
 pass	TWO prefix scalars then a Tuple then a suffix scalar cross the direct-call boundary
 pass	TWO sequential inner handles seed from the outer's ADVANCING state
@@ -597,6 +598,7 @@ pass	a CROSS-handler op whose inline ARG performs an OUTER handler's op folds (o
 pass	a CURRIED closure capturing an inner-handled perform result closes over it through partial application
 pass	a Char-payload sum value escapes across the boundary in its canonical form
 pass	a DEFERRED resume-thunk escaping to another function re-installs the handler at apply, over a re-performing do-continuation
+pass	a DEPTH-3 op-arg chain threads across two handler layers
 pass	a DERIVED-dimension (velocity) quantity used as a Map key hits by content
 pass	a DIRECT-init branch perform in a let-init threads its state advance (adv-69 control, still computes)
 pass	a DOUBLY-nested Tuple ARG (three levels deep) crosses the direct-call boundary
