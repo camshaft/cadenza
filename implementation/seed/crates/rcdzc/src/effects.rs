@@ -3517,6 +3517,49 @@ fn hoist_once(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> Option<StructId>
 /// Lift a RESUMPTIVE `if`/`match` (whose taken branch performs a discharged op) out of a strict
 /// continuation position, distributing the continuation into both branches to a fixpoint, so the
 /// conditional ends up in TAIL position where the tail-resume fold threads state correctly. See the
+/// Whether `body` is served by the E5 ONE-SHOT refold (the pure-one-hole OR two-hole fold in `reduce_handle`)
+/// — a positive servability check SHARED with the Site-5 `#cv`-lift so the two never contend (specificity
+/// ordering, concierge-steered 2026-08-04). The refold serves a body whose leading discharged perform sits on
+/// a strict spine and whose arm is a NON-tail-resumptive one-shot resumptive arm (a tail-resumptive arm is
+/// served by the `thread` path, NOT the refold). Mirrors the two-hole refold's gate (`reduce_handle`, the
+/// `do_aware_leading_hole` block): a leading hole + a discharged, non-abortive, NON-tail-resumptive,
+/// non-peelable, non-partially-resuming arm. The DECISIVE conjunct separating the ao10 shape from the refold
+/// cases is `is_tail_resumptive_arm`: ao10's outer arm `(tick (u) s (resume s (+ s 1)))` IS tail-resumptive
+/// (refold declines → the `#cv`-lift is the right transform → 111), while the refold-test arm `(+ 1 (resume 10
+/// s))` is NON-tail (refold serves → don't lift, defer → 1/13). When this returns true, the Site-5 5b lift
+/// stands down. (`pure_hole`/`do_aware_leading_hole` alone don't separate them — both shapes have a leading
+/// hole; the arm shape is the separator.)
+fn body_served_by_oneshot_refold(db: &mut Db, body: StructId, ctx: &HandlerCtx) -> bool {
+    let Some(perform) = do_aware_leading_hole(db, body, ctx) else {
+        return false;
+    };
+    let Resolved::Apply { head, .. } = resolved_of(db, perform) else {
+        return false;
+    };
+    let Some((decl, idx)) = is_perform(db, head, ctx) else {
+        return false;
+    };
+    let Some(arm) = ctx.arms.get(&(decl, idx)).cloned() else {
+        return false;
+    };
+    !ctx.abortive.contains(&(decl, idx))
+        && !is_tail_resumptive_arm(db, arm.body)
+        && peel_resume_from_arm_body(db, arm.body).is_none()
+        && !arm_partially_resumes(db, arm.body)
+        // EXACT-MATCH the refold's ONE-SHOT/foreign conjunct (reduce_handle, the two-hole block): the refold
+        // only serves a MULTI-shot arm when the continuation reaches NO foreign perform (a one-shot arm is
+        // always fine — it splices `C` once). Without this, `body_served_by_oneshot_refold` was STRICTLY
+        // LOOSER than the refold: for a multi-shot arm reaching a foreign perform it returned true (Site-5 5b
+        // stood down "refold serves it") while the refold DECLINED → NEITHER transform ran → the lost-advance
+        // ao10 exists to prevent could recur for that shape (github-liaison/Copilot #2147 review, source-
+        // verified). Adding it makes the shared predicate EXACTLY the refold's gate, so the `#cv`-lift and the
+        // refold can never both stand down. `body` is the whole conditional the lift/refold sees (same node
+        // the refold's `body_reaches_foreign_perform(body, ctx)` inspects).
+        && (count_resumes(db, arm.body) == 1 || !body_reaches_foreign_perform(db, body, ctx))
+}
+
+/// Lift a branch-performing conditional out of its strict continuation into TAIL position, one level per
+/// pass, to a fixpoint (see `hoist_resumptive_once` for the per-site transforms). Called from the perform
 /// call site in `reduce_handle` for the value-preservation argument. `None`-free (returns the rewritten
 /// tree, or the input unchanged when no site is found).
 fn hoist_resumptive_conditional(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> StructId {
@@ -3940,8 +3983,25 @@ fn hoist_resumptive_once(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> Optio
             Resolved::Match { scrutinee, .. } => Some(scrutinee),
             _ => None,
         };
+        // 5a: the condition/scrutinee is itself a branch-performing conditional (always lift).
+        // 5b (ao10): the condition performs AND a branch performs AND the one-shot REFOLD does NOT serve this
+        // body. SPECIFICITY ORDERING (concierge-steered 2026-08-04): the E5 refold is the MORE-SPECIFIC
+        // transform for a performing condition (it re-reduces the leading hole, constant-folding the cond to
+        // select a branch), and wins where it applies; the `#cv`-lift is the general branch-advance-
+        // preservation fallback. Gate 5b on `body_served_by_oneshot_refold` being FALSE (the shared
+        // servability predicate, so the two transforms can never both fire): a refold-served body like `(if (<
+        // (Amb.flip) 5) (+ 1 (Amb.flip)) 0)` (non-tail arm `(+ 1 (resume 10 s))`) → refold serves → DON'T lift
+        // → 1/13; ao10's `(if (> (A.tick) 5) (do (A.tick) 99) 5)` (tail-resumptive outer arm `(resume s (+ s
+        // 1))`) → refold declines → LIFT → 111. The DECISIVE separator is `is_tail_resumptive_arm` inside that
+        // predicate. Without this gate, 5b `#cv`-lifted the refold cases before the refold ran, breaking their
+        // leading-hole logic (4 lib-test regression). Pass the WHOLE `node` (the conditional) as the body — the
+        // refold checks the leading hole through it.
+        let refold_serves = body_served_by_oneshot_refold(db, node, ctx);
         if let Some(cs) = cond_scrut
-            && conditional_branch_performs(db, cs, ctx)
+            && (conditional_branch_performs(db, cs, ctx)
+                || (subtree_performs(db, cs, ctx)
+                    && conditional_branch_performs(db, node, ctx)
+                    && !refold_serves))
         {
             // `(if CS t e)` ≡ `(let ((#cv CS)) (if #cv t e))`; `(match CS arms)` ≡ `(let ((#cv CS)) (match
             // #cv arms))`. Rebuild the conditional with the condition/scrutinee replaced by a fresh `#cv`
