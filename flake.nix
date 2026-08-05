@@ -768,6 +768,13 @@
             # effect to https://ok.host/x + correlation step-1) instead of skipping. Same sync
             # apply_handle_lowered path + CDZ_STORE transitive-nfc resolution as b1.
             export REDUCER_CADENZA_B2_COMPONENT="${reducerCadenzaB2}"
+            # B3 climb (seq-144 reducer-e2e tail CLOSE): feed the compiled B3 reducer so
+            # reducer_cadenza_b3_e2e.rs RUNS (drives a 'message' event through async apply_handle_lowered;
+            # asserts kv['count']==[1] — b3's bound handle-ABI kv.get(None→0)+put through the marshalled
+            # boundary, the first real-reducer KV-WRITE e2e — AND one Http effect to ok.host/x correlation
+            # step-1) instead of skipping. Same apply_handle_lowered path + CDZ_STORE transitive-nfc
+            # resolution as b1/b2. Closes the tail: b1+b2+b3+genesis all live in CI.
+            export REDUCER_CADENZA_B3_COMPONENT="${reducerCadenzaB3}"
             export CDZ_STORE="${componentStore}"
             cargo test --locked
             cargo clippy --all-targets --locked -- -D warnings
