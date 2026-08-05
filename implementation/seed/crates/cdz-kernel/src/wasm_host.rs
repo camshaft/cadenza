@@ -513,6 +513,12 @@ pub struct HeapHandle<T: 'static> {
     sum_payload: wasmtime::component::Func,
     vec_get: wasmtime::component::Func,
     get_int: wasmtime::component::Func,
+    // BYTES ops (slice 2b) — build/read a `Bytes` handle for the reducer's `Option<Bytes>` payload/resumes
+    // fields + their effect-request payload result (all u32-shaped: byte value 0..255 rides as a u32).
+    bytes_alloc: wasmtime::component::Func,
+    bytes_set: wasmtime::component::Func,
+    bytes_len: wasmtime::component::Func,
+    bytes_get: wasmtime::component::Func,
 }
 
 /// Classify a heap-op `Func::call`/`post_return` failure (github-liaison #2122/#2133): the SAME 3-way split
@@ -569,6 +575,10 @@ impl<T: 'static> HeapHandle<T> {
         let sum_payload = op("sum-payload")?;
         let vec_get = op("vec-get")?;
         let get_int = op("get-int")?;
+        let bytes_alloc = op("bytes-alloc")?;
+        let bytes_set = op("bytes-set")?;
+        let bytes_len = op("bytes-len")?;
+        let bytes_get = op("bytes-get")?;
         Ok(HeapHandle {
             store,
             fuel_budget: DEFAULT_FOLD_FUEL,
@@ -584,6 +594,10 @@ impl<T: 'static> HeapHandle<T> {
             sum_payload,
             vec_get,
             get_int,
+            bytes_alloc,
+            bytes_set,
+            bytes_len,
+            bytes_get,
         })
     }
 
@@ -758,6 +772,61 @@ impl<T: 'static> HeapHandle<T> {
                 "str-get returned {other:?}, not a string"
             ))),
         }
+    }
+
+    // ── BYTES ops (slice 2b) — build/read a value-heap `Bytes` handle. The reducer's payload/resumes are
+    // `Option<Bytes>`, and an emitted effect-request's payload/correlation are `Option<Bytes>` too, so the
+    // marshalling needs to put arg bytes ON the heap (bytes_from) and read result bytes back (read_bytes).
+    // A byte value rides as a u32 (0..255) — the runtime's frozen `bytes-*` shape (idx 13-16).
+
+    /// `bytes-alloc(len) -> u32` (idx 13): allocate a `len`-byte value-heap buffer.
+    pub fn bytes_alloc(&mut self, len: u32) -> Result<u32, ComponentError> {
+        let f = self.bytes_alloc;
+        self.call_u32s(&f, &[len])
+    }
+
+    /// `bytes-set(buf, index, value) -> buf` (idx 14): set byte `index` of `buf` to `value` (0..255),
+    /// returning the buffer handle for threading.
+    pub fn bytes_set(&mut self, buf: u32, index: u32, value: u8) -> Result<u32, ComponentError> {
+        let f = self.bytes_set;
+        self.call_u32s(&f, &[buf, index, value as u32])
+    }
+
+    /// `bytes-len(buf) -> u32` (idx 16): the length of a value-heap byte buffer.
+    pub fn bytes_len(&mut self, buf: u32) -> Result<u32, ComponentError> {
+        let f = self.bytes_len;
+        self.call_u32s(&f, &[buf])
+    }
+
+    /// `bytes-get(buf, index) -> u32` (idx 15): the byte at `index` of `buf` (0..255, as a u32).
+    pub fn bytes_get(&mut self, buf: u32, index: u32) -> Result<u32, ComponentError> {
+        let f = self.bytes_get;
+        self.call_u32s(&f, &[buf, index])
+    }
+
+    /// Build a value-heap `Bytes` handle from a Rust byte slice — `bytes-alloc(len)` then a `bytes-set` per
+    /// byte (threading the handle). The marshalling convenience for an `Option<Bytes>` payload's Some arm.
+    pub fn bytes_from(&mut self, data: &[u8]) -> Result<u32, ComponentError> {
+        let mut buf = self.bytes_alloc(data.len() as u32)?;
+        for (i, &b) in data.iter().enumerate() {
+            buf = self.bytes_set(buf, i as u32, b)?;
+        }
+        Ok(buf)
+    }
+
+    /// Read a value-heap `Bytes` handle back to a Rust `Vec<u8>` — `bytes-len` then a `bytes-get` per byte.
+    /// The read-dual of [`HeapHandle::bytes_from`]; a byte over 255 is a malformed value-heap byte (Trap).
+    pub fn read_bytes(&mut self, buf: u32) -> Result<Vec<u8>, ComponentError> {
+        let len = self.bytes_len(buf)?;
+        let mut out = Vec::with_capacity(len as usize);
+        for i in 0..len {
+            let b = self.bytes_get(buf, i)?;
+            let byte = u8::try_from(b).map_err(|_| {
+                ComponentError::Trap(format!("bytes-get returned {b}, not a byte (0..255)"))
+            })?;
+            out.push(byte);
+        }
+        Ok(out)
     }
 
     /// The underlying store, for the caller to instantiate/call the reducer against the SAME store (so a
@@ -1941,7 +2010,24 @@ mod tests {
                    (func (export "str-get") (param i32) (result i32)
                      (i32.store (i32.const 4096) (i32.const 8))
                      (i32.store (i32.const 4100) (i32.const 6))
-                     (i32.const 4096)))
+                     (i32.const 4096))
+                   ;; FUNCTIONAL bytes ops (real round-trip, not sentinels): a buffer HANDLE is a memory
+                   ;; offset to [len:i32][bytes…], bump-allocated from 8192. So bytes_from→read_bytes and
+                   ;; the marshalling can actually round-trip a byte payload through the stub.
+                   (global $bnext (mut i32) (i32.const 8192))
+                   (func (export "bytes-alloc") (param $len i32) (result i32)
+                     (local $h i32)
+                     (local.set $h (global.get $bnext))
+                     (i32.store (local.get $h) (local.get $len))            ;; store len at handle
+                     (global.set $bnext (i32.add (global.get $bnext) (i32.add (local.get $len) (i32.const 4))))
+                     (local.get $h))
+                   (func (export "bytes-set") (param $buf i32) (param $i i32) (param $v i32) (result i32)
+                     (i32.store8 (i32.add (i32.add (local.get $buf) (i32.const 4)) (local.get $i)) (local.get $v))
+                     (local.get $buf))                                      ;; thread the handle
+                   (func (export "bytes-len") (param $buf i32) (result i32)
+                     (i32.load (local.get $buf)))
+                   (func (export "bytes-get") (param $buf i32) (param $i i32) (result i32)
+                     (i32.load8_u (i32.add (i32.add (local.get $buf) (i32.const 4)) (local.get $i)))))
                  (core instance $i (instantiate $m))
                  (func $box-int (param "v" s64) (result u32) (canon lift (core func $i "box-int")))
                  (func $arr-alloc (param "len" u32) (result u32) (canon lift (core func $i "arr-alloc")))
@@ -1955,6 +2041,10 @@ mod tests {
                  (func $sum-payload (param "handle" u32) (result u32) (canon lift (core func $i "sum-payload")))
                  (func $get-int (param "handle" u32) (result s64) (canon lift (core func $i "get-int")))
                  (func $str-get (param "handle" u32) (result string) (canon lift (core func $i "str-get") (memory $i "mem") (realloc (func $i "realloc"))))
+                 (func $bytes-alloc (param "len" u32) (result u32) (canon lift (core func $i "bytes-alloc")))
+                 (func $bytes-set (param "buf" u32) (param "index" u32) (param "value" u32) (result u32) (canon lift (core func $i "bytes-set")))
+                 (func $bytes-len (param "buf" u32) (result u32) (canon lift (core func $i "bytes-len")))
+                 (func $bytes-get (param "buf" u32) (param "index" u32) (result u32) (canon lift (core func $i "bytes-get")))
                  (instance $heap
                    (export "box-int" (func $box-int))
                    (export "arr-alloc" (func $arr-alloc))
@@ -1967,7 +2057,11 @@ mod tests {
                    (export "sum-disc" (func $sum-disc))
                    (export "sum-payload" (func $sum-payload))
                    (export "get-int" (func $get-int))
-                   (export "str-get" (func $str-get)))
+                   (export "str-get" (func $str-get))
+                   (export "bytes-alloc" (func $bytes-alloc))
+                   (export "bytes-set" (func $bytes-set))
+                   (export "bytes-len" (func $bytes-len))
+                   (export "bytes-get" (func $bytes-get)))
                  (export "cadenza:runtime/heap" (instance $heap)))"#,
         )
         .expect("assemble heap stub component")
@@ -2049,6 +2143,42 @@ mod tests {
         // Decode an Option/enum-kind discriminant + its payload.
         assert_eq!(heap.sum_disc(300).expect("sum-disc"), 1);
         assert_eq!(heap.sum_payload(300).expect("sum-payload"), 900);
+    }
+
+    // HeapHandle slice-2b BYTES ops: build a value-heap Bytes handle from a Rust slice + read it back —
+    // for the reducer's Option<Bytes> payload/resumes args + emitted effect-request payload/correlation.
+    // The stub's bytes ops are FUNCTIONAL (real memory-backed buffer), so this is a true ROUND-TRIP, not a
+    // sentinel check: bytes_from(data) → read_bytes → data, incl. empty + arbitrary (non-UTF8) bytes.
+    #[test]
+    fn heap_handle_round_trips_bytes() {
+        let bytes = heap_stub_component();
+        let engine = wasmtime::Engine::default();
+        let mut store = wasmtime::Store::new(&engine, ());
+        let linker = wasmtime::component::Linker::<()>::new(&engine);
+        let component =
+            wasmtime::component::Component::new(&engine, &bytes).expect("valid heap stub");
+        let instance = linker
+            .instantiate(&mut store, &component)
+            .expect("heap stub instantiates");
+        let mut heap = match HeapHandle::bind(store, &instance) {
+            Ok(h) => h,
+            Err(e) => panic!("bind HeapHandle: {e:?}"),
+        };
+        // Arbitrary bytes (incl. 0x00 and 0xFF, non-UTF8) round-trip exactly.
+        let payload = [0xDE, 0xAD, 0x00, 0xFF, 0x2A];
+        let h = heap.bytes_from(&payload).expect("bytes_from");
+        assert_eq!(heap.bytes_len(h).expect("bytes-len"), 5);
+        assert_eq!(heap.read_bytes(h).expect("read_bytes"), payload);
+        // Empty bytes round-trip too (an empty payload).
+        let empty = heap.bytes_from(&[]).expect("bytes_from empty");
+        assert_eq!(
+            heap.read_bytes(empty).expect("read empty"),
+            Vec::<u8>::new()
+        );
+        // A distinct second buffer doesn't alias the first (bump-allocated).
+        let other = heap.bytes_from(&[1, 2, 3]).expect("bytes_from other");
+        assert_eq!(heap.read_bytes(other).expect("read other"), [1, 2, 3]);
+        assert_eq!(heap.read_bytes(h).expect("re-read first"), payload); // first still intact
     }
 
     // A runtime that doesn't export cadenza:runtime/heap → a clear Compose error naming it, not a trap.
