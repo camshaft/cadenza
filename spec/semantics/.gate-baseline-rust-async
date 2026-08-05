@@ -3757,6 +3757,7 @@ pass	an Int8 wrapping-add result drives a comparison — the SIGN-EXTENDED maske
 pass	an N suffix lets a huge literal need no annotation
 pass	an N-suffixed integer literal is a BigInt
 pass	an OPEN-sum value stored as a MAP VALUE matches back out with its open-tail arm
+pass	an OPTION handler state TOGGLES its variant per perform
 pass	an OPTION payload quantity renders scaled to its reference in the value form
 pass	an ORDER-PRESERVING dedup threads a seen-Set and an out-List as twin accumulators
 pass	an Ok and an Err decode compose through one shared handler
@@ -3767,6 +3768,7 @@ pass	an Option built by an if with the payload branch first type-checks (the con
 pass	an Option carrying a Result is matched across two different sum types
 pass	an Option pipeline chains the SAME fallible step twice and reports WHICH step failed
 pass	an Option pipeline short-circuits on the first None
+pass	an Option-of-HEAP handler state transitions None to Some and grows the payload
 pass	an Option-of-Option classifies three ways at RUNTIME through one compiled match
 pass	an Option-of-Option survives a Map VALUE cell with its exact nesting
 pass	an Option-producing recursive generic ties its payload to the list element

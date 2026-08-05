@@ -7713,6 +7713,42 @@
   (call   main (: 1 Int64) (: 2 Int64))
   (output (: 12 Int64)))
 
+(case "an OPTION handler state TOGGLES its variant per perform"
+  (doc    "A sum-typed state whose VARIANT changes per dispatch (the state-family pins hold their variant
+           fixed): the arm matches its own state and flips it — `Some v` resumes v and stores None; `None`
+           resumes -1 and stores `Some 99`. Three performs walk Some 7 → None → Some 99, and the place-value
+           checksum (100·7 + 10·(−1) + 99 = 789) breaks if any transition writes the wrong variant or a
+           stale payload. The state slot must carry a full sum value whose constructor differs call-to-call.")
+  (input  (do
+            (effect St (op tog (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St (Option.Some n)
+                ((tog (u) s
+                  (match s
+                    ((Option.Some v) (resume v (Option.None)))
+                    ((Option.None)   (resume -1 (Option.Some 99))))))
+                (+ (* 100 (St.tog)) (+ (* 10 (St.tog)) (St.tog)))))
+            (export main)))
+  (call   main (: 7 Int64)) (output (: 789 Int64)))
+
+(case "an Option-of-HEAP handler state transitions None to Some and grows the payload"
+  (doc    "The heap composition of the variant-transitioning state: `(Option (List Int64))` starts None;
+           the first feed creates `Some (list v)`, later feeds push into the existing payload, and each
+           resume reports the PRIOR length (0, 1, 2 → 12). The transition allocates the list inside the
+           arm on the None path and grows it on the Some path — a sum-wrapped heap payload whose variant
+           AND contents both evolve across performs.")
+  (input  (do
+            (effect St (op feed (-> Int64 Int64)))
+            (def (main (: a Int64))
+              (handle St (Option.None)
+                ((feed (v) s
+                  (match s
+                    ((Option.None) (resume 0 (Option.Some (list v))))
+                    ((Option.Some xs) (resume (List.len xs) (Option.Some (List.push xs v)))))))
+                (+ (* 100 (St.feed a)) (+ (* 10 (St.feed (+ a 1))) (St.feed (+ a 2))))))
+            (export main)))
+  (call   main (: 7 Int64)) (output (: 12 Int64)))
+
 (case "an Ast node as the effect OP ARGUMENT is destructured by the arm"
   (doc    "The op-ARGUMENT direction of the Ast crossing (the resume-value case above is the arm→body
            direction; this is body→arm): the program performs `(Sink.eat (Ast.List …))` and the ARM
