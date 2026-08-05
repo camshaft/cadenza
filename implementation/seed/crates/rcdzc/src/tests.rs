@@ -68218,9 +68218,21 @@ mod stage1 {
              (def (main) (handle A 5 ((get (u) s (resume s (+ s 1)))) \
                (handle B 0 ((step (u) t (resume t (+ t (A.get))))) \
                  (+ (* 100 (B.step)) (+ (* 10 (B.step)) (B.step)))))) (export main))";
-        for (src, name) in [(as2, "as2"), (as1, "as1")] {
+        // asb — the BOTH-PERFORM face (github-liaison/Copilot #2289 review of #2289): the outer perform is in
+        // BOTH the resume VALUE and the NEXT-STATE — `(resume (A.get) (A.get))`. The FIRST guard's
+        // `&& !value-performs-foreign` clause let this slip past the decline (both slots perform, so the
+        // negated conjunct was false) → it silently compiled to 56 while the correct value is 57 (value A.get:
+        // A 5→6, returns 5; next-state A.get: A 6→7; B.step=5; body A.get reads 7 → 50+7). The guard now reads
+        // the RAW resume next-state (`arm_resume_next_states`) and declines whenever IT performs a foreign op,
+        // regardless of the value — closing the gap. as3 (foreign in value only) / as7 (foreign in let-init)
+        // still fold, pinned in the sibling control.
+        let asb = "(do (effect A (op get (-> Unit Int64))) (effect B (op step (-> Unit Int64))) \
+             (def (main) (handle A 5 ((get (u) s (resume s (+ s 1)))) \
+               (handle B 0 ((step (u) t (resume (A.get) (A.get)))) \
+                 (+ (* 10 (B.step)) (A.get))))) (export main))";
+        for (src, name) in [(as2, "as2"), (as1, "as1"), (asb, "asb")] {
             match compile_component(&crate::codec::encode(&parse(src))) {
-                // TODO(as-fold): flip to a value assertion (as2→6, as1→61) when the next-state-slot
+                // TODO(as-fold): flip to a value assertion (as2→6, as1→61, asb→57) when the next-state-slot
                 // outer-perform fold lands. Until then the DECLINE must be CLEAN — never a leaked internal
                 // state-param name, never a wrong value.
                 Err(e) => assert!(
@@ -68229,11 +68241,15 @@ mod stage1 {
                      state-param name, got: {}",
                     e.message
                 ),
-                // If a future increment folds it, the value MUST be correct (as2=6, as1=61) — never the
-                // pre-fix silent miscompile (as2=5, as1=63).
+                // If a future increment folds it, the value MUST be correct — never the pre-fix silent
+                // miscompile (as2=5, as1=63, asb=56).
                 Ok(bytes) => {
                     let v: i64 = run_returns(&bytes, "main");
-                    let want = if name == "as2" { 6 } else { 61 };
+                    let want = match name {
+                        "as2" => 6,
+                        "as1" => 61,
+                        _ => 57,
+                    };
                     assert_eq!(
                         v, want,
                         "{name}: if the next-state-slot outer perform folds it must be {want}"
