@@ -1517,7 +1517,12 @@ impl ComponentReducer {
                         return Err((e, kv));
                     }
                 };
-            if import_name.starts_with("cadenza:runtime/heap") {
+            // Match the runtime dep by its BARE interface name EXACTLY — strip the `@version+hash` suffix
+            // (as the export lookup does in `compose_dep_into_linker`) and compare `== "cadenza:runtime/heap"`,
+            // NOT `starts_with(...)`. A `starts_with` prefix would also match a future sibling like
+            // `cadenza:runtime/heap2@…`, wrongly tripping the exactly-one fail-loud below (or mis-selecting
+            // it if alone). This pairs with the fail-loud so both COUNT and IDENTITY are exact (#2208 c2).
+            if import_name.split('@').next() == Some("cadenza:runtime/heap") {
                 // FAIL LOUD on a second runtime match (#2203 MED): silently overwriting `runtime_instance`
                 // would let a non-deterministic resolved_deps order pick the wrong instance, breaking the
                 // shared-heap invariant. The handle-lowered boundary binds ONE value-heap runtime.
