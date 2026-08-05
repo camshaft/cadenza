@@ -382,6 +382,14 @@ export const CHAPTERS: Chapter[] = [
     section: "The execution model",
     Component: lazy(() => import("./chapters/PlatformExecution.tsx")),
   },
+  {
+    slug: "writing-a-reducer",
+    title: "Writing a reducer",
+    blurb: "The capstone: author a real agent-harness reducer in Cadenza, a pure apply that folds events to effect-requests, with host state reached through effect-and-binding, compiled to a component the kernel loads.",
+    pillar: "platform",
+    section: "Writing a reducer",
+    Component: lazy(() => import("./chapters/WritingAReducer.tsx")),
+  },
 ];
 
 export function chapterAt(slug: string): { chapter: Chapter; index: number } | null {
