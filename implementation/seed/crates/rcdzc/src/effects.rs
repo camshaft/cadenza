@@ -3530,9 +3530,6 @@ fn hoist_once(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> Option<StructId>
     None
 }
 
-/// Lift a RESUMPTIVE `if`/`match` (whose taken branch performs a discharged op) out of a strict
-/// continuation position, distributing the continuation into both branches to a fixpoint, so the
-/// conditional ends up in TAIL position where the tail-resume fold threads state correctly. See the
 /// Whether `body` is served by the E5 ONE-SHOT refold (the pure-one-hole OR two-hole fold in `reduce_handle`)
 /// — a positive servability check SHARED with the Site-5 `#cv`-lift so the two never contend (specificity
 /// ordering, concierge-steered 2026-08-04). The refold serves a body whose leading discharged perform sits on
@@ -3991,7 +3988,8 @@ fn hoist_resumptive_once(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> Optio
     // performing condition/scrutinee to a fresh `let` so the outer conditional reads a plain scalar and the
     // performing conditional becomes a `let`-INIT — exactly the shape Site 4 distributes (which threads each
     // branch's advance through the continuation). One binding away is the WORKING let-bound form (verified:
-    // a hand let-bound connective threads correctly). The bound name is `#cv{…}` (unspellable). Only fires
+    // a hand let-bound connective threads correctly). The bound name is `#cv{…}` (a `#`-prefixed name is
+    // unbindable in source — CDZ0210 — so it can't be captured). Only fires
     // when the condition/scrutinee itself performs in a branch (a pure condition needs no lift).
     {
         let cond_scrut = match resolved_of(db, node) {
@@ -4023,7 +4021,8 @@ fn hoist_resumptive_once(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> Optio
             // #cv arms))`. Rebuild the conditional with the condition/scrutinee replaced by a fresh `#cv`
             // reference, wrapped in a `let` binding `#cv` to the original (performing) condition/scrutinee.
             // The next fixpoint pass sees the `let`-init branch-performing conditional and Site 4 distributes
-            // it. The bound name is a fresh unspellable `#cv{node}` so it cannot collide with a user binder.
+            // it. The bound name is a fresh `#cv{node}` — unbindable in source (a `#`-name is CDZ0210 in binder
+            // position) so it cannot be captured by a user binder.
             let cv_name = format!("#cv{}", node.0);
             let cv_binder = db.push_atom(Leaf::Name(cv_name.clone()));
             let cv_ref = db.push_atom(Leaf::Name(cv_name));
@@ -4562,8 +4561,9 @@ fn thread(
 /// conditional hoist introduces (`(if C t e)` ≡ `(let ((#cv C)) (if #cv t e))`). Such a name is bound by a
 /// `let` that wraps only its own conditional; a branch out-state carrying a `#cv` ref cannot be re-used in
 /// the merged If-arm state position (it would resolve out of scope → CDZ0101). The If-arm branch-out-state
-/// merge skips a slot whose branch out-state contains one. A cheap name-prefix scan (the `#cv` prefix is
-/// unspellable, so a match is unambiguous).
+/// merge skips a slot whose branch out-state contains one. A cheap name-prefix scan (a `#cv`-prefixed name is
+/// unbindable in source — CDZ0210 in binder position — so a user can't introduce a colliding one and the match
+/// is unambiguous).
 fn contains_cv_ref(db: &Db, node: StructId) -> bool {
     if let Some(name) = db.ast.as_name(node)
         && name.starts_with("#cv")
@@ -4713,13 +4713,18 @@ fn thread_bounded(
                 }
                 for i in to_lift {
                     let a = rewritten_args[i];
-                    // `#cv{StructId}` is a globally-unique fresh binder: the `#`-prefix blocks source forgery
-                    // (unspellable), and the StructId is the arena index of the arg node `a` — a MONOTONIC,
-                    // never-reused counter (`push_atom`/`push_list` = `StructId(structure.len())`). So this
-                    // name cannot collide with a user binder NOR with any other `#cv{…}` lift site (the Site-5
-                    // performing-condition hoist keys on its own distinct `if`/`match` node id; two distinct
-                    // nodes always have distinct ids). No centralized gensym needed — the arena id space
-                    // already guarantees uniqueness (github-liaison/Copilot #2120 review: confirmed unique).
+                    // `#cv{StructId}` is a globally-unique fresh binder. Collision-safety rests on TWO facts
+                    // (github-liaison #2156 corrected the earlier "unspellable" claim): (1) the StructId is the
+                    // arena index of the arg node `a` — a MONOTONIC, never-reused counter (`push_atom`/
+                    // `push_list` = `StructId(structure.len())`), so two lift sites never share a `#cv{…}` name
+                    // (the Site-5 performing-condition hoist keys on its own distinct `if`/`match` node id). (2)
+                    // A user can never introduce a `#cv{N}` BINDER to capture/shadow a live lift site: a
+                    // `#`-leading name is a refutable CONSTRUCTOR pattern, illegal in binding position (rejected
+                    // CDZ0210). So `#cv…` is UNBINDABLE, not lexically unspellable — a backtick `` `#cv0` `` DOES
+                    // lex as a REFERENCE, but reference position can't capture; only a binder could, and a
+                    // `#cv…` binder is rejected. Pinned by `the_op_arg_lift_cv_binder_namespace_cannot_be_
+                    // captured_by_a_user_binder`. No centralized gensym needed — arena-id monotonicity + binder-
+                    // position rejection guarantee it (github-liaison/Copilot #2120/#2156 reviews).
                     let cv_name = format!("#cv{}", a.0);
                     let cv_binder = db.push_atom(Leaf::Name(cv_name.clone()));
                     let cv_ref = db.push_atom(Leaf::Name(cv_name));
@@ -6883,8 +6888,9 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
         orig_param_specs.push((name, ty));
     }
 
-    // The specialized NAME — unique per (def, context). The `#` makes it unspellable in source (no user
-    // collision); the def-count suffix keeps distinct specializations distinct.
+    // The specialized NAME — unique per (def, context). The `#` makes it unbindable in source (a `#`-prefixed
+    // name is CDZ0210 in binder position, so no user binder can collide); the def-count suffix keeps distinct
+    // specializations distinct.
     let base = db.defs[callee_def].name.clone();
     let spec_name = format!("{base}#eff{}", db.defs.len());
 
@@ -7118,9 +7124,20 @@ fn node_refs_binder(db: &mut Db, node: StructId, binder: StructId) -> bool {
         Resolved::Param { binder: b } => b == binder,
         Resolved::Ref { value } => {
             let mut target = value;
+            // Bound the Ref-chain walk with a visited-set so a Ref CYCLE that does NOT pass through `binder`
+            // (a→b→a, neither = binder) terminates instead of spinning forever — the resolver CAN represent
+            // Ref cycles (`resolve::value_ref_cycle`), and this predicate is called from recursive subtree
+            // walks, so an unguarded loop would HANG compilation rather than returning false (github-liaison
+            // #2170 MED). A revisit means the chain entered a cycle downstream without reaching `binder`, so
+            // `binder` is not referenced → false. Mirrors `value_ref_cycle`'s bounded walk. FxHashSet (not
+            // std SipHash) — this is a hot subtree-walk path and the crate uses fxhash for internal keys.
+            let mut seen = crate::fxhash::FxHashSet::default();
             loop {
                 if target == binder {
                     break true;
+                }
+                if !seen.insert(target) {
+                    break false;
                 }
                 match resolved_of(db, target) {
                     Resolved::Ref { value: next } => target = next,
