@@ -374,8 +374,11 @@ where
     ///
     /// Returns `Ok(true)` if an authorizer was installed (an `authorizer_hash` was provided + resolved),
     /// `Ok(false)` for a root-only boot (no authorizer recorded — the session keeps its deny-all v0 authorizer).
-    /// `Err` propagates the first failure (a genesis fold error, a malformed/absent/​non-lifting authorizer),
-    /// leaving the session un-booted rather than half-installed. `principal` is the agent's authz principal.
+    /// `Err` propagates the first failure (a genesis fold error, or a malformed/absent/non-lifting authorizer).
+    /// NOT atomic: the seed events are delivered FIRST and are NOT rolled back if the later install step fails —
+    /// so on `Err` the session may be PARTIALLY seeded (some/all `bootstrap/*` KV present, authorizer NOT
+    /// installed). Callers should DISCARD the session on `Err` rather than reuse a half-booted one. `principal`
+    /// is the agent's authz principal.
     ///
     /// Equivalent to `session.seed_genesis(root, authz_hash, ctx).await?;
     /// self.install_genesis_authorizer(session, principal).await` — a convenience so a caller drives the whole
@@ -976,10 +979,14 @@ mod tests {
             err.contains("no authorizer policy component in the blob store"),
             "{err}"
         );
-        // The seed step still ran before the install failed (root + the recorded hash are in KV).
+        // The seed step still ran before the install failed — BOTH the root AND the recorded authorizer-hash
+        // are in KV (the half-seeded state the doc warns about: seed is not rolled back on install Err).
+        let kv = session.session().kv();
+        assert_eq!(kv.get(genesis_ct::KV_ROOT_IDENTITY), Some(&b"root"[..]));
         assert_eq!(
-            session.session().kv().get(genesis_ct::KV_ROOT_IDENTITY),
-            Some(&b"root"[..])
+            kv.get(genesis_ct::KV_AUTHORIZER_HASH),
+            Some(missing.as_bytes().as_slice()),
+            "the authorizer-hash was seeded before the install step failed (half-booted)"
         );
     }
 }
