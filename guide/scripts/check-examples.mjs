@@ -426,7 +426,12 @@ function extractExamples(tsx, file) {
       const isTest = /mode="test"/.test(attrs) || /mode=\{"test"\}/.test(attrs);
       // Default the shared assert prelude ON (matches <Runnable> prelude default); `prelude={false}` opts out.
       const prelude = isTest && !/prelude=\{false\}/.test(attrs);
-      if (source != null) out.push({ file, kind, snippet: source, expect, expected: null, noWrap, isTest, prelude });
+      // `authoredIn` (default s-expr) is the surface the `source` is WRITTEN in — matches the <Runnable>
+      // prop. A chapter snippet authored in ML (e.g. reducer `type`/`def apply` forms that read naturally
+      // only in ML) must be wrapped+compiled in ML FIRST, then render_syntax'd to s-expr for the toggle
+      // pass — the mirror of the default s-expr-first path below.
+      const authoredIn = grab("authoredIn") ?? "sexpr";
+      if (source != null) out.push({ file, kind, snippet: source, expect, expected: null, noWrap, isTest, prelude, authoredIn });
     } else {
       // Exercise: check the SOLUTION (the starter has a `?` hole by design).
       const solution = grab("solution");
@@ -607,6 +612,26 @@ async function checkExample(ex) {
       if (otherFail) return otherFail;
     } catch (e) {
       return `${ex.file} [${ex.kind}] (${other} toggle): render threw — ${String(e.message || e).slice(0, 80)}`;
+    }
+    return null;
+  }
+
+  // An ML-AUTHORED chapter snippet (authoredIn="ml"): the mirror of the default path — wrap+compile in ML
+  // FIRST (the authored surface the reader sees), then render the ML source to s-expr and wrap+compile THAT
+  // for the toggle pass. Reducer forms (`type … | Ctor(Record(…))`, `def apply(…) -> List(…)`) read
+  // naturally only in ML, so the chapter authors them there; both surfaces are still gated.
+  if (!ex.noWrap && ex.authoredIn === "ml") {
+    const mlProgram = wrapModule(ex.snippet, "ml");
+    const mlFail = await checkProgram(mlProgram, "ml", ex, "ML");
+    if (mlFail) return mlFail;
+    try {
+      // Render the WRAPPED ML program to s-expr and compile that — the toggle pass (mirrors line ~89's
+      // renderToMl direction). render_syntax takes a whole module, so feed it the wrapped ML.
+      const sexprProgram = render_syntax(mlProgram, "ml", "sexpr");
+      const sexprFail = await checkProgram(sexprProgram, "sexpr", ex, "s-expr toggle");
+      if (sexprFail) return sexprFail;
+    } catch (e) {
+      return `${ex.file} [${ex.kind}] (s-expr toggle): render threw — ${String(e.message || e).slice(0, 80)}`;
     }
     return null;
   }

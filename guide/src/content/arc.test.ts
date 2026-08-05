@@ -38,6 +38,7 @@ const SECTION_ORDER: Record<Pillar, string[]> = {
     "Events & state",
     "Doing things safely",
     "The execution model",
+    "Writing a reducer",
   ],
 };
 
