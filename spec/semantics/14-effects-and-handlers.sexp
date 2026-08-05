@@ -8825,3 +8825,84 @@
                     (loop 2)))))
             (export main)))
   (output (: 21 Int64)))
+
+
+
+(case "an s-around-k ctl arm that ALSO performs an outer effect in the arm body folds — the two E5 fixes compose"
+  (doc    "The COMPOSITION guard for the two E5 fixes: the s-around-k lexical-`ctl` pin (`pin_refs_to_binders`)
+           and the arm-performs-outer path must compose without re-orphaning the pinned state binder. An inner
+           `G` handler's arm reads the state binder `s` AROUND its `(k x)` continuation application AND performs
+           the OUTER `A` effect in the SAME arm body — `(y (x) s k (+ (+ s (A.get)) (k x)))`. Seeded n=100
+           (runtime param), A seeded 7: `s`=100, `(A.get)`=7, `(k 5)`=5 (the continuation `C = □` returns 5),
+           so `(+ (+ 100 7) 5)` = 112. Pins that s-around-k + an arm-body outer perform fold together (a naive
+           interaction re-detached the arm body after the pin, re-leaking `s` as CDZ0101 — the pre-fix ek1
+           signature; this witness catches that regression). breaker ek8.")
+  (input  (do
+            (effect A (op get (-> Unit Int64)))
+            (effect G (op y (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle A 7
+                ((get (u) s (resume s s)))
+                (handle G n
+                  ((y (x) s k (+ (+ s (A.get)) (k x))))
+                  (G.y 5))))
+            (export main)))
+  (call   main (: 100 Int64)) (output (: 112 Int64)))
+
+(case "an s-around-k ctl arm whose K-ARGUMENT performs an outer effect folds"
+  (doc    "The k-argument face of the composition guard above: the outer perform sits INSIDE the `(k …)`
+           argument rather than beside it — `(y (x) s k (+ s (k (+ x (A.get)))))`. Seeded n=100, A seeded 7:
+           `(A.get)`=7, the k-arg `(+ x (A.get))` = `(+ 5 7)` = 12, `(k 12)` returns 12 into `C = □`, and `s`
+           around it = 100, so `(+ 100 12)` = 112. Pins that the arm-body state binder `s` stays resolved when
+           the `(k v)`→`(resume v s)` rewrite's argument itself performs an outer effect. breaker ek8d.")
+  (input  (do
+            (effect A (op get (-> Unit Int64)))
+            (effect G (op y (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle A 7
+                ((get (u) s (resume s s)))
+                (handle G n
+                  ((y (x) s k (+ s (k (+ x (A.get))))))
+                  (G.y 5))))
+            (export main)))
+  (call   main (: 100 Int64)) (output (: 112 Int64)))
+
+(case "an s-around-k ctl arm whose handle BODY performs an outer effect after the inner perform folds"
+  (doc    "The body-perform face: the s-around-k arm has NO perform of its own — `(y (x) s k (+ s (k (+ x
+           1))))` — but the inner `G` handle's BODY performs the outer `A` effect AFTER the G-perform: `(+
+           (G.y 5) (A.get))`. Seeded n=100, A seeded 7: `(G.y 5)` folds the arm — `(k (+ 5 1))` = `(k 6)` = 6
+           into `C = □`, `s`=100 → `(+ 100 6)` = 106; then the body's `(A.get)`=7, so `(+ 106 7)` = 113. Pins
+           that the pinned state binder survives when the OUTER perform is in the handle body (region-wrapped
+           around the inner handle) rather than in the arm. breaker ek10.")
+  (input  (do
+            (effect A (op get (-> Unit Int64)))
+            (effect G (op y (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle A 7
+                ((get (u) s (resume s s)))
+                (handle G n
+                  ((y (x) s k (+ s (k (+ x 1)))))
+                  (+ (G.y 5) (A.get)))))
+            (export main)))
+  (call   main (: 100 Int64)) (output (: 113 Int64)))
+
+
+
+(case "a nested-handler ctl arm whose continuation-consuming body ALSO performs an OUTER effect folds"
+  (doc    "The confluence of the lexical-`ctl` surface and the nested-handler outer-perform family: an INNER
+           handler `B`'s 5-part arm applies its continuation `k` AND, in the same continuation-consuming
+           body, performs an OUTER handler `A`'s op — `(flip () t k (+ (* (k 2) 10) (A.geta)))` under
+           `handle A(handle B … (B.flip))`. When `k` is applied lexically `(k 2)` = `(resume 2 t)` returning
+           into B's delimited context `C = □` (the whole B body is the flip) = 2, so `(* 2 10)` = 20; then
+           `(A.geta)` reads A's state (seeded 100) = 100, giving `(+ 20 100)` = 120. Pins that the within-
+           activation `ctl`→`resume` rewrite composes with a sibling OUTER perform in the SAME arm body under
+           a nested handler — the lexical-`k` result and the foreign `A.geta` both resolve and thread
+           correctly (a miscompile would drop A's read or mis-thread the continuation). Guards the seam
+           between the lexical-`ctl` fold and the nested-handler outer-perform threading.")
+  (input  (do
+            (effect A (op geta (-> Unit Int64)))
+            (effect B (op flip (-> Unit Int64)))
+            (def (main) (handle A 100 ((geta (u) s (resume s (+ s 1))))
+              (handle B 0 ((flip () t k (+ (* (k 2) 10) (A.geta)))) (B.flip)))) (export main)))
+  (output (: 120 Int64)))
+
