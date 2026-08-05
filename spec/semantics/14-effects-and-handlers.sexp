@@ -438,6 +438,38 @@
             (def (main) (run false)) (export main)))
   (output (: 200 Int64)))
 
+(case "an `and` whose first RESUMING perform is true evaluates the second: both advances land"
+  (doc    "The RESUMPTIVE face of connective sequencing (the Bail pins above cover abortive operands): both
+           operands of `(and (> (St.get) 3) (> (St.get) 10))` perform an ADVANCING op. The first reads 5
+           (true → the right operand runs), the second reads 6 (false), and the trailing observer reads 7 —
+           both advances landed. 10 + 7 = 17. A fold that skipped the second operand despite the first being
+           true, or double-ran either, shifts the observer's read.")
+  (input  (do
+            (effect St (op get (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((get (u) s (resume s (+ s 1))))
+                (+ (if (and (> (St.get) 3) (> (St.get) 10)) 100 10)
+                   (St.get))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 17 Int64)))
+
+(case "an `or` short-circuit SKIPS a resuming perform, and the skip is observable through the state"
+  (doc    "The skip-observability pin: `(or (> (St.get) 3) (> (St.get) 0))` — the first operand reads 5
+           (true), so the second perform MUST NOT run. The proof is the trailing observer: it reads 6 (one
+           advance), not 7 (two). An eager lowering that evaluated both operands and discarded the second's
+           result would still pick the right branch (100) but betray itself in the state — this pins the
+           EFFECT COUNT of short-circuiting, not just the boolean result. 100 + 6 = 106.")
+  (input  (do
+            (effect St (op get (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((get (u) s (resume s (+ s 1))))
+                (+ (if (or (> (St.get) 3) (> (St.get) 0)) 100 10)
+                   (St.get))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 106 Int64)))
+
 (case "a handler arm applies a closure capturing a heap map and the map outlives the handle"
   (doc    "EFFECTS × CAPTURE: the `look` arm applies f — a closure whose capture cell holds main's
            heap map — so the arm runs in the HANDLER's frame while the capture belongs to the
