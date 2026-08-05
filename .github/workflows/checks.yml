@@ -58,11 +58,14 @@ jobs:
           # cache is still visible to candidate branches, so they RESTORE it).
           save: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
           gc-max-store-size-linux: 8000000000 # ~8GB cap (under GHA's 10GB/repo) — GC the store before save.
-          # 🪤 Gate PURGE to the default branch too (same expr as save), NOT every run: purge runs
-          # unconditionally otherwise, and a candidate's key (a different flake.lock → different primary-key)
-          # means purge-primary-key:never won't spare the shared MAIN base — a candidate would purge the very
-          # cache it's meant to restore from (github-liaison #2209 MED). Only the main run purges+saves;
-          # candidates restore-only.
+          # Gate PURGE to the default branch (same expr as save). NOTE: cache-nix-action purges ONLY caches
+          # scoped to the run's current ref (its pinned source lists AND deletes caches with the run's ref;
+          # README: "purges only caches scoped to the current GITHUB_REF"), so a candidate run CANNOT delete
+          # main's cache regardless — the earlier "a candidate purges the shared main base" concern (#2209)
+          # can't actually occur (resolved in #2214). The gate is kept as deliberate belt-and-braces: it
+          # confines purge+save to the one main run (candidates restore-only), so purge-created:0 can't churn
+          # main's OWN fresh same-ref cache within a run either. Purge is a Post-Restore GC of the arch-prefix
+          # caches.
           purge: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
           purge-prefixes: nix-${{ runner.os }}-${{ runner.arch }}-
           purge-created: 0
