@@ -456,4 +456,67 @@ mod tests {
             other => panic!("a bogus option discriminant must hard-Trap, got {other:?}"),
         }
     }
+
+    // Bind a HeapHandle on an ASYNC (`async_support`) engine, so the `*_async` read ops (`call_async`) run
+    // without the per-store "must use call_async" panic. Mirrors `bind_read_stub` but on the async engine +
+    // `instantiate_async` — the store the async unmarshal twins drive.
+    async fn bind_read_stub_async() -> HeapHandle<()> {
+        let bytes = read_heap_stub();
+        let mut config = wasmtime::Config::new();
+        config.async_support(true);
+        let engine = wasmtime::Engine::new(&config).expect("async engine");
+        let mut store = wasmtime::Store::new(&engine, ());
+        let linker = wasmtime::component::Linker::<()>::new(&engine);
+        let component =
+            wasmtime::component::Component::new(&engine, &bytes).expect("valid read stub");
+        let instance = linker
+            .instantiate_async(&mut store, &component)
+            .await
+            .expect("read stub instantiates (async)");
+        match HeapHandle::bind(store, &instance) {
+            Ok(h) => h,
+            Err(e) => panic!("bind HeapHandle to the read stub (async): {e:?}"),
+        }
+    }
+
+    // ASYNC twin of `reads_a_one_element_effect_request_list` (#2256 coverage): the async unmarshal path
+    // (`read_effect_requests_async` → `read_effect_request_async` → `read_option_bytes_async` + the async
+    // heap read ops) must decode the SAME @100 length-1 list to the SAME EffectRequest as the sync path —
+    // pins that the async twins (landed #2285, drive the real async genesis fold) decode identically, not
+    // just that they compile. Same sorted-field order, boxed-enum-disc read, Some/None option decode.
+    #[tokio::test(flavor = "current_thread")]
+    async fn async_reads_a_one_element_effect_request_list_identically() {
+        let mut heap = bind_read_stub_async().await;
+        let effects = read_effect_requests_async(&mut heap, 100)
+            .await
+            .expect("async read effect list");
+        assert_eq!(effects.len(), 1);
+        let e = &effects[0];
+        assert!(
+            matches!(e.kind, EffectKind::Http),
+            "kind = boxed disc 1 = Http"
+        );
+        assert_eq!(e.target, "https://");
+        assert_eq!(
+            e.correlation,
+            Some(b"id7".to_vec()),
+            "correlation = Some(b\"id7\")"
+        );
+        assert_eq!(e.payload, None, "payload = None (disc 1)");
+    }
+
+    // ASYNC twin of the option ABI-drift guard: `read_option_bytes_async` must hard-Trap on a bogus
+    // discriminant (7) exactly like the sync form, driven end-to-end via `read_effect_requests_async` — so
+    // the async path inherits the same fail-loud-on-drift discipline, not a silent default.
+    #[tokio::test(flavor = "current_thread")]
+    async fn async_a_bogus_option_discriminant_hard_traps_not_defaults() {
+        let mut heap = bind_read_stub_async().await;
+        match read_effect_requests_async(&mut heap, 500).await {
+            Err(ComponentError::Trap(msg)) => assert!(
+                msg.contains("discriminant 7"),
+                "expected an option ABI-drift trap naming the bogus discriminant 7, got {msg:?}"
+            ),
+            other => panic!("a bogus option discriminant must hard-Trap (async), got {other:?}"),
+        }
+    }
 }
