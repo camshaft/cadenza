@@ -3605,7 +3605,7 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
             // Ticked recently on its OWN — healthy self-sustaining loop. Clear any consecutive-nudge
             // streak: the agent proved its cron fires (reached this sweep within its stale window
             // without a watchdog poke), so a prior streak must not accrue toward a dead-cron escalation.
-            clear_nudge_streak(fleet, &a.name);
+            clear_nudge_streak(fleet, &a.name, dry_run);
             continue; // ticked recently — healthy.
         }
 
@@ -3703,7 +3703,12 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
             stamp_rearm(fleet, &a.name);
             // Track the consecutive-nudge streak: a `continue` increments it (another poke the cron
             // didn't self-sustain past); a `/loop` re-issue resets it (cron armed fresh).
-            record_nudge_streak(fleet, &a.name, matches!(action, RearmAction::NudgeContinue));
+            record_nudge_streak(
+                fleet,
+                &a.name,
+                matches!(action, RearmAction::NudgeContinue),
+                dry_run,
+            );
             rearmed += 1;
             match action {
                 RearmAction::NudgeContinue => println!(
@@ -4157,7 +4162,13 @@ fn consecutive_nudge_streak(fleet: &Fleet, name: &str) -> u32 {
 /// RESETS it to 0 — the cron is armed fresh, so the streak restarts. The streak is also reset elsewhere
 /// when the agent survives well past its stale window without needing a re-arm (a self-sustained tick
 /// proves the cron fires). Best-effort (a missed write just risks one extra nudge before escalating).
-fn record_nudge_streak(fleet: &Fleet, name: &str, nudged: bool) {
+/// `dry_run` no-ops the write — the watchdog's dry-run must be side-effect-free (github-liaison PR#2250:
+/// a dry sweep must not mutate escalation state), so the guard lives HERE (not just at the call sites)
+/// to stay robust if a future caller forgets it.
+fn record_nudge_streak(fleet: &Fleet, name: &str, nudged: bool, dry_run: bool) {
+    if dry_run {
+        return;
+    }
     let dir = fleet.root.join("nudge-streak");
     std::fs::create_dir_all(&dir).ok();
     let next = if nudged {
@@ -4171,7 +4182,13 @@ fn record_nudge_streak(fleet: &Fleet, name: &str, nudged: bool) {
 /// Clear the consecutive-nudge streak for `name` (delete `.claude/fleet/nudge-streak/<name>`) — called
 /// when the agent is NOT stale this sweep, i.e. it heartbeated within its stale window on its OWN
 /// (a self-sustaining cron), so any prior nudge-streak is stale and must not accrue toward escalation.
-fn clear_nudge_streak(fleet: &Fleet, name: &str) {
+/// `dry_run` no-ops the remove — same side-effect-free-dry-run contract as `record_nudge_streak`; this
+/// call sits in the healthy-branch that runs BEFORE the dry_run guard, so self-guarding here is what
+/// keeps a dry sweep from deleting the file (github-liaison PR#2250).
+fn clear_nudge_streak(fleet: &Fleet, name: &str, dry_run: bool) {
+    if dry_run {
+        return;
+    }
     std::fs::remove_file(fleet.root.join("nudge-streak").join(name)).ok();
 }
 
