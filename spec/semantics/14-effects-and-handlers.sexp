@@ -4258,8 +4258,8 @@
 
 (case "a DEPTH-3 op-arg chain threads across two handler layers"
   (doc    "The depth face of the op-arg let-lift: `(C.inn (B.mid (A.get)))` under a 3-deep stack — the
-           innermost perform's argument is itself a perform whose OWN argument is a perform of the outermost
-           op, so the lift must fire at two nesting levels of the SAME expression. A.get reads 7, B.mid adds
+           OUTERMOST perform's argument is itself a perform, cascading inward to `A.get` (whose argument is
+           Unit, not a perform), so the lift must fire at two nesting levels of the SAME expression. A.get reads 7, B.mid adds
            its state (7+100 = 107), C.inn doubles (214). A lift that flattened only one level, or evaluated
            the chain against the wrong handler's state, would break a factor. The chain companion of the
            sibling-args pin above.")
