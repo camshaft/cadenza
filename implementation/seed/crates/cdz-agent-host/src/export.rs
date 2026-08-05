@@ -244,8 +244,9 @@ impl s2n_quic_dc_metrics::backend::OtlpSink for ChannelOtlpSink {
 /// timestamps OTLP data points need (`start_time_unix_nano`/`time_unix_nano`). The inner backend's timestamp
 /// setters aren't reachable once it's boxed as `dyn Backend` in the reporter, so this wrapper sets them in
 /// [`report_start`](s2n_quic_dc_metrics::backend::Backend::report_start) — the per-report hook — before
-/// delegating every trait method to the inner backend. `start` is the previous report's end (process start for
-/// the first), `time` is now; both Unix nanoseconds (statsd needed no timestamps — this is OTLP-specific).
+/// delegating every trait method to the inner backend. `start` is the previous report's end; the FIRST report
+/// uses a zero-length interval (start == time == now) rather than a stored process-start, so it never emits a
+/// start before the end. `time` is now; both Unix nanoseconds (statsd needed no timestamps — OTLP-specific).
 #[cfg(feature = "metrics-export-otlp")]
 struct TimestampedOtlpBackend {
     inner: s2n_quic_dc_metrics::backend::OtlpBackend<ChannelOtlpSink>,
@@ -266,7 +267,11 @@ impl TimestampedOtlpBackend {
 #[cfg(feature = "metrics-export-otlp")]
 impl s2n_quic_dc_metrics::backend::Backend for TimestampedOtlpBackend {
     fn report_start(&mut self, options: &s2n_quic_dc_metrics::backend::ReportOptions) {
-        let now = Self::now_unix_ns();
+        // Clamp `now` up to the previous report's timestamp so the interval is NEVER inverted: OTLP requires
+        // start_time_unix_nano <= time_unix_nano, but a BACKWARD wall-clock jump (or now_unix_ns's
+        // unwrap_or(0) on a SystemTime error) could make now < last_report_ns → start > time (#2144 review).
+        // max() absorbs both: the emitted interval degenerates to zero-length rather than inverting.
+        let now = Self::now_unix_ns().max(self.last_report_ns);
         // First report: start == now (a zero-length interval) so we never emit a start after the end.
         let start = if self.last_report_ns == 0 {
             now
@@ -318,7 +323,22 @@ impl s2n_quic_dc_metrics::backend::Backend for TimestampedOtlpBackend {
 #[cfg(feature = "metrics-export-otlp")]
 pub async fn run_otlp_forwarder(endpoint: String, mut rx: tokio::sync::mpsc::Receiver<Vec<u8>>) {
     let url = format!("{}/v1/metrics", endpoint.trim_end_matches('/'));
-    let client = reqwest::Client::new();
+    // Build the client with BOTH a connect timeout and an overall request timeout. Without them, a POST to a
+    // BLACKHOLED collector (firewall DROP, not RST) would block INSIDE send().await with no deadline — the
+    // forwarder would be stuck in the network call and never return to rx.recv(), so it could never honor the
+    // channel-close→terminate contract (which is only checked between iterations) (#2144 review). A build
+    // failure returns cleanly (log + stop) rather than unwrapping — a dead forwarder must not panic the host.
+    let client = match reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, url = %url, "metrics-export otlp: could not build HTTP client — forwarder disabled");
+            return;
+        }
+    };
     while let Some(payload) = rx.recv().await {
         let resp = client
             .post(&url)
@@ -590,9 +610,15 @@ mod tests {
         // and a v4-only collector never receives it — the test would fail though connect behaved correctly,
         // #2129 review). Datagram DELIVERY is proven deterministically in the explicit-family test below.
         use std::net::ToSocketAddrs;
-        // Skip cleanly on a runner where `localhost` doesn't resolve at all (unusual sandbox) — the
-        // explicit-family test still covers the connect+deliver path.
-        if "localhost:65000".to_socket_addrs().is_err() {
+        // Only meaningful when `localhost` actually resolves to MULTIPLE addresses (the multi-address case we
+        // mean to exercise). On a single-address-localhost runner this test would pass without covering
+        // iteration at all, so SKIP unless >=2 addresses resolve (#2137 review). The explicit-family test
+        // still covers the single-address connect+deliver path everywhere.
+        let n_addrs = "localhost:65000"
+            .to_socket_addrs()
+            .map(|it| it.count())
+            .unwrap_or(0);
+        if n_addrs < 2 {
             return;
         }
         let sink = UdpStatsdSink::connect("localhost:65000");
@@ -684,6 +710,32 @@ mod tests {
             assert!(
                 payload.map(|p| !p.is_empty()).unwrap_or(false),
                 "the OTLP report enqueued a non-empty payload"
+            );
+        }
+
+        #[test]
+        fn timestamped_backend_never_inverts_the_interval_on_a_backward_clock() {
+            // Guard the #2144 clock-regression fix: report_start clamps now up to last_report_ns, so a
+            // BACKWARD wall-clock jump can't make start > time. Simulate a huge previous timestamp (as if the
+            // clock later reads earlier), drive a report_start, and assert last_report_ns did NOT regress — the
+            // clamp held. (We can't force the real clock backward, so we seed last_report_ns to the far future
+            // and verify a real-`now` report_start keeps it, which is exactly the inversion-preventing path.)
+            let (tx, _rx) = tokio::sync::mpsc::channel::<Vec<u8>>(2);
+            let sink = ChannelOtlpSink { tx };
+            let inner = s2n_quic_dc_metrics::backend::OtlpBackend::new(sink, "cdz-test", "");
+            let mut b = TimestampedOtlpBackend {
+                inner,
+                last_report_ns: u64::MAX - 1, // as if a prior report saw a far-future clock
+            };
+            use s2n_quic_dc_metrics::backend::{Backend, ReportOptions};
+            let before = b.last_report_ns;
+            b.report_start(&ReportOptions::default());
+            // The clamp (now = now.max(last_report_ns)) means now can only stay >= before, so last_report_ns
+            // never regresses → the emitted start (=before) is always <= time (=last_report_ns after).
+            assert!(
+                b.last_report_ns >= before,
+                "clamp kept the timestamp monotonic: {} >= {before}",
+                b.last_report_ns
             );
         }
 

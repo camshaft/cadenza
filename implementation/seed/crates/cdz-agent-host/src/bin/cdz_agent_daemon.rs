@@ -296,23 +296,36 @@ async fn main() -> std::process::ExitCode {
                 .collect();
             #[cfg(not(feature = "metrics-export-otlp"))]
             let otlp_forwarders: Vec<((), ())> = Vec::new();
-            // Enabled but NOTHING we can export → warn (not a silent skip). The common trip is an OTLP-only
-            // config in a build where the OTLP feature isn't compiled (#2129 review).
-            if config.observability.enabled
-                && reporter.backend_count() == 0
-                && !config.observability.targets.is_empty()
-            {
-                #[cfg(not(feature = "metrics-export-otlp"))]
-                eprintln!(
-                    "cdz-agent-daemon: [observability] enabled but no exportable targets in this build \
-                     — nothing will be exported ({unexportable} target(s) need a feature not compiled, e.g. \
-                     metrics-export-otlp)."
-                );
-                #[cfg(feature = "metrics-export-otlp")]
-                eprintln!(
-                    "cdz-agent-daemon: [observability] enabled but no export backend could be set up \
-                     — nothing will be exported (all configured targets failed to initialize)."
-                );
+            // Enabled but NO export backend got set up → warn (never a silent skip). Distinguish the causes so
+            // the message is accurate (#2137 review): (a) zero targets configured, (b) targets present but
+            // unexportable in THIS build (non-statsd targets without the feature compiled), (c) targets present
+            // and exportable-in-principle but all failed to initialize (e.g. every statsd endpoint unresolvable).
+            if config.observability.enabled && reporter.backend_count() == 0 {
+                if config.observability.targets.is_empty() {
+                    eprintln!(
+                        "cdz-agent-daemon: [observability] enabled but no targets configured \
+                         — nothing will be exported."
+                    );
+                } else {
+                    #[cfg(not(feature = "metrics-export-otlp"))]
+                    if unexportable > 0 {
+                        eprintln!(
+                            "cdz-agent-daemon: [observability] enabled but no export backend in this build \
+                             — nothing will be exported ({unexportable} non-statsd (OTLP) target(s) need the \
+                             metrics-export-otlp feature, not compiled here)."
+                        );
+                    } else {
+                        eprintln!(
+                            "cdz-agent-daemon: [observability] enabled but no export backend could be set up \
+                             — nothing will be exported (all configured targets failed to initialize)."
+                        );
+                    }
+                    #[cfg(feature = "metrics-export-otlp")]
+                    eprintln!(
+                        "cdz-agent-daemon: [observability] enabled but no export backend could be set up \
+                         — nothing will be exported (all configured targets failed to initialize)."
+                    );
+                }
             }
             (
                 agent_host.registry().clone(),
