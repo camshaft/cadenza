@@ -7944,6 +7944,23 @@ fn rewrite_resume_to_refolded_context(
         // under the same handler seeded with the resume's next-state — so a further discharged perform in
         // `C` is handled by the recursive fold.
         let filled = splice_context(db, handle_body, perform, value);
+        // RE-ANCHOR the spliced continuation under the ORIGINAL handle body's site before the recursive fold
+        // (breaker pm-family, false-CDZ0101 fix). `splice_context` rebuilds `C[value]` as a DETACHED tree
+        // (`push_list`, parent = None). If `C` references a FREE enclosing binder — the handle BODY reads a
+        // caller param / outer `let` (`(+ n (St.price 1) …)` where `n` is `main`'s param) — that leaf is a
+        // resolve occurrence that resolves by a scope WALK up `parent_of`. Detached, its walk dead-ends before
+        // reaching `(def (main (: n)))` → a spurious CDZ0101 "unbound n" on a VALID program (loud reject). This
+        // shape reaches the detaching refold only via ≥2 performs: a single perform leaves `C` in place, parented.
+        // The recursive `reduce_handle` below CANNOT fix it — its own `reparent_under_handle_site` reads
+        // `parent_of(filled)` = None and returns early (a "top-level handle body, no enclosing scope"), so the
+        // free var stays orphaned through every refold level. Anchor `filled` under the SAME parent the
+        // original `handle_body` sits under (its live lexical chain) so `C`'s free names resolve exactly as
+        // they did before the splice. `handle_body` is the still-parented original; a top-level body (parent
+        // None) leaves `filled` as-is (nothing to anchor — the pre-existing behavior). Mirrors the tail
+        // `reparent_under_handle_site`; done HERE (pre-recursion) because the detachment is introduced HERE.
+        if let Some(anchor) = db.parent_of(handle_body) {
+            db.reparent(filled, Some(anchor), db.child_ix_of(handle_body) as u32);
+        }
         return reduce_handle(db, next_state, arms, filled);
     }
     match db.ast.get(node).clone() {
