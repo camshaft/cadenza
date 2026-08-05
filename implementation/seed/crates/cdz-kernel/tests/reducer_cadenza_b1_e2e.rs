@@ -47,6 +47,20 @@ async fn reducer_cadenza_b1_folds_empty_effects_through_apply_handle_lowered() {
         );
         return;
     };
+    // The real b1 runtime imports the bare `cadenza:nfc/normalize` (its transitive dep), which the §23
+    // compose resolves ONLY from a `CDZ_STORE` (by name via `runtime.toml`). Without CDZ_STORE the fold
+    // would fail DEEP in `apply_handle_lowered` with an opaque "cadenza:nfc/normalize not found in linker"
+    // — so SKIP cleanly + explain here rather than emit a confusing mid-run linker error (a `cargo test`
+    // without the nix env stays green; CI always sets CDZ_STORE). Matches the other env-gated e2es.
+    // (`RUNTIME_HEAP_COMPONENT` supplies the runtime BYTES but no store, so it can't resolve transitive nfc
+    // for a real nfc-importing runtime — CDZ_STORE is the requirement for this e2e.)
+    if std::env::var("CDZ_STORE").is_err() {
+        eprintln!(
+            "SKIP reducer_cadenza_b1_folds_empty_effects_through_apply_handle_lowered: \
+             CDZ_STORE unset — required to resolve the runtime's transitive cadenza:nfc/normalize dep (§23)"
+        );
+        return;
+    }
 
     let reducer = match ComponentReducer::from_component_bytes(&reducer_component) {
         Ok(r) => r,
