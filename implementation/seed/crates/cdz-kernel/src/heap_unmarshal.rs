@@ -143,6 +143,67 @@ pub fn read_effect_requests<T>(
     Ok(out)
 }
 
+// ── ASYNC twins (#2256 / v-ah-host ask 27000): the read direction for a handle-lowered fold on the ASYNC
+// engine. Identical decode to the sync forms above — same sorted-field indices, Some/None convention,
+// DoS-prealloc cap, and ABI-drift hard-Traps (the sync forms' docs are the single source of truth) — but
+// each heap read op is driven via its `*_async` twin (the sync `Func::call` panics per-store on an
+// async_support engine). `T: Send` (an async call may poll across an await point).
+
+/// Async twin of [`read_option_bytes`].
+async fn read_option_bytes_async<T: Send + 'static>(
+    heap: &mut HeapHandle<T>,
+    handle: u32,
+) -> Result<Option<Vec<u8>>, ComponentError> {
+    let disc = i64::from(heap.sum_disc_async(handle).await?);
+    match disc {
+        OPTION_SOME => {
+            let payload = heap.sum_payload_async(handle).await?;
+            Ok(Some(heap.read_bytes_async(payload).await?))
+        }
+        OPTION_NONE => Ok(None),
+        other => Err(ComponentError::Trap(format!(
+            "option<list<u8>> discriminant {other} is neither Some(0) nor None(1) — runtime-ABI drift"
+        ))),
+    }
+}
+
+/// Async twin of [`read_effect_request`].
+async fn read_effect_request_async<T: Send + 'static>(
+    heap: &mut HeapHandle<T>,
+    record: u32,
+) -> Result<EffectRequest, ComponentError> {
+    let correlation_h = heap.arr_get_async(record, FIELD_CORRELATION).await?;
+    let kind_h = heap.arr_get_async(record, FIELD_KIND).await?;
+    let payload_h = heap.arr_get_async(record, FIELD_PAYLOAD).await?;
+    let target_h = heap.arr_get_async(record, FIELD_TARGET).await?;
+
+    let kind = disc_to_effect_kind(heap.get_int_async(kind_h).await?)?;
+    let target = heap.str_get_async(target_h).await?;
+    let payload = read_option_bytes_async(heap, payload_h).await?;
+    let correlation = read_option_bytes_async(heap, correlation_h).await?;
+
+    Ok(EffectRequest {
+        kind,
+        target,
+        payload,
+        correlation,
+    })
+}
+
+/// Async twin of [`read_effect_requests`].
+pub async fn read_effect_requests_async<T: Send + 'static>(
+    heap: &mut HeapHandle<T>,
+    list: u32,
+) -> Result<Vec<EffectRequest>, ComponentError> {
+    let len = heap.vec_len_async(list).await?;
+    let mut out = Vec::with_capacity(len.min(MAX_PREALLOC_EFFECTS) as usize);
+    for i in 0..len {
+        let record = heap.vec_get_async(list, i).await?;
+        out.push(read_effect_request_async(heap, record).await?);
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

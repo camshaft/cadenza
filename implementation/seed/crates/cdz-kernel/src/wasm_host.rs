@@ -1258,6 +1258,287 @@ impl<T: 'static> HeapHandle<T> {
     }
 }
 
+/// ASYNC twins of the [`HeapHandle`] value-heap ops (#2256 / v-ah-host ask 27000). On an `async_support`
+/// engine `Func::call` PANICS ("must use call_async") — the panic is PER-STORE (`store.0.async_support()`),
+/// not per-func — so a handle-lowered fold on the ASYNC engine ([`AsyncComponentReducer`]) cannot drive the
+/// sync ops above; every heap op it touches must go through `call_async`/`post_return_async`. These twins
+/// mirror the sync ops EXACTLY except for that call, so the value-heap semantics (handle shapes, the sorted
+/// arr layout, the bytes u32 convention) have ONE source of truth — the sync ops' doc comments apply
+/// verbatim. Only the ops the async marshalling path actually uses are twinned (the precise set, not all
+/// 30): build (str_new/box_int/arr_alloc/arr_set/sum_new/unit/bytes_from) + read (vec_len/vec_get/arr_get/
+/// sum_disc/sum_payload/get_int/str_get/read_bytes). `T: Send` because an async call may poll across an
+/// await point (the store data must cross it).
+impl<T: Send + 'static> HeapHandle<T> {
+    /// Async twin of [`HeapHandle::call_u32s`] — the common u32-args → u32-handle shape, via `call_async`.
+    async fn call_u32s_async(
+        &mut self,
+        f: &wasmtime::component::Func,
+        args: &[u32],
+    ) -> Result<u32, ComponentError> {
+        use wasmtime::component::Val;
+        let budget = self.fuel_budget;
+        let params: Vec<Val> = args.iter().map(|&a| Val::U32(a)).collect();
+        let mut results = [Val::U32(0)];
+        f.call_async(&mut self.store, &params, &mut results)
+            .await
+            .map_err(|e| classify_heap_call_err(e, budget))?;
+        f.post_return_async(&mut self.store)
+            .await
+            .map_err(|e| classify_heap_call_err(e, budget))?;
+        match results[0] {
+            Val::U32(h) => Ok(h),
+            ref other => Err(ComponentError::Trap(format!(
+                "heap op returned {other:?}, not a u32 handle"
+            ))),
+        }
+    }
+
+    /// Async twin of [`HeapHandle::box_int`].
+    pub async fn box_int_async(&mut self, v: i64) -> Result<u32, ComponentError> {
+        use wasmtime::component::Val;
+        let budget = self.fuel_budget;
+        let f = self.box_int;
+        let mut results = [Val::U32(0)];
+        f.call_async(&mut self.store, &[Val::S64(v)], &mut results)
+            .await
+            .map_err(|e| classify_heap_call_err(e, budget))?;
+        f.post_return_async(&mut self.store)
+            .await
+            .map_err(|e| classify_heap_call_err(e, budget))?;
+        match results[0] {
+            Val::U32(h) => Ok(h),
+            ref other => Err(ComponentError::Trap(format!(
+                "box-int returned {other:?}, not a u32 handle"
+            ))),
+        }
+    }
+
+    /// Async twin of [`HeapHandle::str_new`].
+    pub async fn str_new_async(&mut self, s: &str) -> Result<u32, ComponentError> {
+        use wasmtime::component::Val;
+        let budget = self.fuel_budget;
+        let f = self.str_new;
+        let mut results = [Val::U32(0)];
+        f.call_async(&mut self.store, &[Val::String(s.into())], &mut results)
+            .await
+            .map_err(|e| classify_heap_call_err(e, budget))?;
+        f.post_return_async(&mut self.store)
+            .await
+            .map_err(|e| classify_heap_call_err(e, budget))?;
+        match results[0] {
+            Val::U32(h) => Ok(h),
+            ref other => Err(ComponentError::Trap(format!(
+                "str-new returned {other:?}, not a u32 handle"
+            ))),
+        }
+    }
+
+    /// Async twin of [`HeapHandle::arr_alloc`].
+    pub async fn arr_alloc_async(&mut self, len: u32) -> Result<u32, ComponentError> {
+        let f = self.arr_alloc;
+        self.call_u32s_async(&f, &[len]).await
+    }
+
+    /// Async twin of [`HeapHandle::arr_set`].
+    pub async fn arr_set_async(
+        &mut self,
+        arr: u32,
+        index: u32,
+        elem: u32,
+    ) -> Result<u32, ComponentError> {
+        let f = self.arr_set;
+        self.call_u32s_async(&f, &[arr, index, elem]).await
+    }
+
+    /// Async twin of [`HeapHandle::sum_new`].
+    pub async fn sum_new_async(&mut self, disc: u32, payload: u32) -> Result<u32, ComponentError> {
+        let f = self.sum_new;
+        self.call_u32s_async(&f, &[disc, payload]).await
+    }
+
+    /// Async twin of [`HeapHandle::unit`] (`arr-alloc(0)`).
+    pub async fn unit_async(&mut self) -> Result<u32, ComponentError> {
+        self.arr_alloc_async(0).await
+    }
+
+    /// Async twin of [`HeapHandle::vec_len`].
+    pub async fn vec_len_async(&mut self, v: u32) -> Result<u32, ComponentError> {
+        let f = self.vec_len;
+        self.call_u32s_async(&f, &[v]).await
+    }
+
+    /// Async twin of [`HeapHandle::vec_get`].
+    pub async fn vec_get_async(&mut self, v: u32, index: u32) -> Result<u32, ComponentError> {
+        let f = self.vec_get;
+        self.call_u32s_async(&f, &[v, index]).await
+    }
+
+    /// Async twin of [`HeapHandle::arr_get`].
+    pub async fn arr_get_async(&mut self, arr: u32, index: u32) -> Result<u32, ComponentError> {
+        let f = self.arr_get;
+        self.call_u32s_async(&f, &[arr, index]).await
+    }
+
+    /// Async twin of [`HeapHandle::sum_disc`].
+    pub async fn sum_disc_async(&mut self, handle: u32) -> Result<u32, ComponentError> {
+        let f = self.sum_disc;
+        self.call_u32s_async(&f, &[handle]).await
+    }
+
+    /// Async twin of [`HeapHandle::sum_payload`].
+    pub async fn sum_payload_async(&mut self, handle: u32) -> Result<u32, ComponentError> {
+        let f = self.sum_payload;
+        self.call_u32s_async(&f, &[handle]).await
+    }
+
+    /// Async twin of [`HeapHandle::get_int`].
+    pub async fn get_int_async(&mut self, handle: u32) -> Result<i64, ComponentError> {
+        use wasmtime::component::Val;
+        let budget = self.fuel_budget;
+        let f = self.get_int;
+        let mut results = [Val::S64(0)];
+        f.call_async(&mut self.store, &[Val::U32(handle)], &mut results)
+            .await
+            .map_err(|e| classify_heap_call_err(e, budget))?;
+        f.post_return_async(&mut self.store)
+            .await
+            .map_err(|e| classify_heap_call_err(e, budget))?;
+        match results[0] {
+            Val::S64(v) => Ok(v),
+            ref other => Err(ComponentError::Trap(format!(
+                "get-int returned {other:?}, not an s64"
+            ))),
+        }
+    }
+
+    /// Async twin of [`HeapHandle::str_get`].
+    pub async fn str_get_async(&mut self, handle: u32) -> Result<String, ComponentError> {
+        use wasmtime::component::Val;
+        let budget = self.fuel_budget;
+        let f = self.str_get;
+        let mut results = [Val::Bool(false)];
+        f.call_async(&mut self.store, &[Val::U32(handle)], &mut results)
+            .await
+            .map_err(|e| classify_heap_call_err(e, budget))?;
+        f.post_return_async(&mut self.store)
+            .await
+            .map_err(|e| classify_heap_call_err(e, budget))?;
+        match &results[0] {
+            Val::String(s) => Ok(s.clone()),
+            other => Err(ComponentError::Trap(format!(
+                "str-get returned {other:?}, not a string"
+            ))),
+        }
+    }
+
+    /// Async twin of [`HeapHandle::bytes_alloc`].
+    async fn bytes_alloc_async(&mut self, len: u32) -> Result<u32, ComponentError> {
+        let f = self.bytes_alloc;
+        self.call_u32s_async(&f, &[len]).await
+    }
+
+    /// Async twin of [`HeapHandle::bytes_set`].
+    async fn bytes_set_async(
+        &mut self,
+        buf: u32,
+        index: u32,
+        value: u8,
+    ) -> Result<u32, ComponentError> {
+        let f = self.bytes_set;
+        self.call_u32s_async(&f, &[buf, index, value as u32]).await
+    }
+
+    /// Async twin of [`HeapHandle::bytes_len`].
+    async fn bytes_len_async(&mut self, buf: u32) -> Result<u32, ComponentError> {
+        let f = self.bytes_len;
+        self.call_u32s_async(&f, &[buf]).await
+    }
+
+    /// Async twin of [`HeapHandle::bytes_get`].
+    async fn bytes_get_async(&mut self, buf: u32, index: u32) -> Result<u32, ComponentError> {
+        let f = self.bytes_get;
+        self.call_u32s_async(&f, &[buf, index]).await
+    }
+
+    /// Async twin of [`HeapHandle::bytes_from`] — same up-front `u32` length range-check (#2151) then a
+    /// `bytes-set` per byte, all via the async ops.
+    pub async fn bytes_from_async(&mut self, data: &[u8]) -> Result<u32, ComponentError> {
+        let len = u32::try_from(data.len()).map_err(|_| {
+            ComponentError::Trap(format!(
+                "bytes_from: slice of {} bytes too large for a u32 value-heap length",
+                data.len()
+            ))
+        })?;
+        let mut buf = self.bytes_alloc_async(len).await?;
+        for (i, &b) in data.iter().enumerate() {
+            // i < len ≤ u32::MAX (checked above), so `i as u32` cannot wrap past the buffer.
+            buf = self.bytes_set_async(buf, i as u32, b).await?;
+        }
+        Ok(buf)
+    }
+
+    /// Async twin of [`HeapHandle::read_bytes`] — `bytes-len` then a `bytes-get` per byte, via the async ops;
+    /// same defensive `u8` range-check on each returned byte.
+    pub async fn read_bytes_async(&mut self, buf: u32) -> Result<Vec<u8>, ComponentError> {
+        let len = self.bytes_len_async(buf).await?;
+        let mut out = Vec::with_capacity(len.min(MAX_PREALLOC_BYTES) as usize);
+        for i in 0..len {
+            let b = self.bytes_get_async(buf, i).await?;
+            let byte = u8::try_from(b).map_err(|_| {
+                ComponentError::Trap(format!("bytes-get returned {b}, not a byte (0..255)"))
+            })?;
+            out.push(byte);
+        }
+        Ok(out)
+    }
+
+    /// Async twin of [`HeapHandle::call_apply_lowered`] — call the handle-lowered reducer's
+    /// `apply(ct,payload,resumes) -> list-handle` via `call_async` (same reducer-fold error classification).
+    pub async fn call_apply_lowered_async(
+        &mut self,
+        apply: &wasmtime::component::Func,
+        ct: u32,
+        payload: u32,
+        resumes: u32,
+    ) -> Result<u32, ComponentError> {
+        use wasmtime::component::Val;
+        let budget = self.fuel_budget;
+        let reducer_err = |e: wasmtime::Error| -> ComponentError {
+            if let Some(wasmtime::Trap::OutOfFuel) = e.downcast_ref::<wasmtime::Trap>() {
+                ComponentError::FuelExhausted { budget }
+            } else if e.downcast_ref::<wasmtime::Trap>().is_some() {
+                ComponentError::Trap(e.to_string())
+            } else {
+                ComponentError::InvokeExport {
+                    interface: "cadenza:agent-kernel/fold".to_string(),
+                    func: "apply".to_string(),
+                    reason: format!(
+                        "reducer apply is not func(u32,u32,u32)->u32 (reducer-ABI mismatch?): {e}"
+                    ),
+                }
+            }
+        };
+        let params = [Val::U32(ct), Val::U32(payload), Val::U32(resumes)];
+        let mut results = [Val::U32(0)];
+        apply
+            .call_async(&mut self.store, &params, &mut results)
+            .await
+            .map_err(reducer_err)?;
+        apply
+            .post_return_async(&mut self.store)
+            .await
+            .map_err(reducer_err)?;
+        match results[0] {
+            Val::U32(h) => Ok(h),
+            ref other => Err(ComponentError::InvokeExport {
+                interface: "cadenza:agent-kernel/fold".to_string(),
+                func: "apply".to_string(),
+                reason: format!("reducer apply returned {other:?}, not a u32 list handle"),
+            }),
+        }
+    }
+}
+
 /// Generic MULTI-EXPORT component INVOCATION — the core mechanism of the operator's resolve-name→
 /// component→invoke primitive (Slack seq 107/108, 2026-08-04). Instantiate arbitrary component `bytes`,
 /// call the export named by `interface`#`func` over an AST-encoded arg, and decode its result into a SET
@@ -2119,15 +2400,20 @@ impl AsyncComponentReducer {
         // Pre-instantiate the fold world ONCE (perf) — ONLY for the dependency-FREE path (like the sync
         // ComponentReducer). A dep-bearing reducer's linker is composed PER-FOLD in the fold's store, so it
         // can't reuse a single pre-instantiation; `instance_pre` stays None and `apply` composes per fold.
-        // (A dependency-free component that doesn't export the fold world fails here — a real decline.)
+        // BEST-EFFORT (mirror the sync `ComponentReducer::from_component_bytes`, PR#1270): pre-instantiate
+        // ONLY if it succeeds. A component whose imports `declared_deps` did NOT flag as `+hash` deps — e.g.
+        // a handle-lowered reducer importing the BARE `cadenza:runtime/heap` (no `+hash`, wired explicitly
+        // via `with_resolved_deps` + composed per-fold by `apply_handle_lowered`) — has `deps.is_empty()`
+        // yet can't pre-instantiate against the base linker. `.ok()` leaves `instance_pre = None` and the
+        // per-fold path (structural `apply` or `apply_handle_lowered`) composes what it needs; a genuine
+        // non-fold-exporting component surfaces the SAME error at apply time. Construction stays lenient
+        // (any valid component builds), matching the sync twin exactly — a hard `?` here wrongly rejected a
+        // bare-runtime-import handle-lowered reducer at BUILD time (#2256 async twin regression).
         let instance_pre = if deps.is_empty() {
-            let pre = linker
+            linker
                 .instantiate_pre(&component)
-                .map_err(|e| ComponentError::Instantiate(e.to_string()))?;
-            Some(
-                async_reducer_bindings::ReducerPre::new(pre)
-                    .map_err(|e| ComponentError::Instantiate(e.to_string()))?,
-            )
+                .ok()
+                .and_then(|pre| async_reducer_bindings::ReducerPre::new(pre).ok())
         } else {
             None
         };
@@ -2331,6 +2617,157 @@ impl AsyncComponentReducer {
             })
             .collect();
         Ok((effects, kv))
+    }
+
+    /// ASYNC twin of [`ComponentReducer::apply_handle_lowered`] (§19e / v-ah-host ask 27000): drive a
+    /// HANDLE-LOWERED reducer's `apply(u32,u32,u32)->u32` on the ASYNC engine. The structural async
+    /// [`AsyncComponentReducer::apply`] (bindgen `call_apply`) CANNOT drive a real rcdzc reducer — every
+    /// compound crosses the boundary as an opaque value-heap HANDLE, not a structural WIT value — so a real
+    /// async reducer (e.g. the genesis reducer the host folds through its async path) needs THIS entry: it
+    /// composes the runtime dep async, binds a `HeapHandle`, marshals the fold inputs to handles, calls the
+    /// interface-nested `apply` via `call_async`, and unmarshals the returned effect-list handle. Mirrors the
+    /// sync form EXACTLY (same runtime-instance selection + fail-loud, same error-atomicity: every error path
+    /// hands the base KV back), differing only in the async instantiate/compose/heap-op twins. This is the
+    /// path that carries the guest's KV writes through to the session KV (the sync `apply_handle_lowered`
+    /// commits the `ReducerHost` overlay; so does this) — a structural async fold silently dropped them.
+    pub async fn apply_handle_lowered(
+        &self,
+        kv: Kv,
+        content_type: ContentType,
+        payload: Option<Vec<u8>>,
+        resumes: Option<Vec<u8>>,
+    ) -> Result<(Vec<EffectRequest>, Kv), (ComponentError, Kv)> {
+        let mut store = wasmtime::Store::new(&self.engine, ReducerHost::new(kv));
+        // Cooperative yield + ample instantiation fuel (mirrors the structural async `apply`).
+        if let Err(e) = store.fuel_async_yield_interval(Some(self.fuel_yield_interval)) {
+            let kv = store.into_data().into_kv();
+            return Err((ComponentError::Instantiate(e.to_string()), kv));
+        }
+        if let Err(e) = store.set_fuel(u64::MAX) {
+            let kv = store.into_data().into_kv();
+            return Err((ComponentError::Instantiate(e.to_string()), kv));
+        }
+        // Compose every declared dep into a per-fold linker via the ASYNC composer, capturing the value-heap
+        // RUNTIME instance (the dep exporting `cadenza:runtime/heap`) — the instance the host marshals on.
+        let mut l = self.linker.clone();
+        let mut runtime_instance: Option<wasmtime::component::Instance> = None;
+        for (import_name, bytes) in &self.resolved_deps {
+            let inst = match compose_dep_into_linker_async(
+                &self.engine,
+                &mut store,
+                &mut l,
+                import_name,
+                bytes,
+                self.component_store.as_ref(),
+            )
+            .await
+            {
+                Ok(inst) => inst,
+                Err(e) => {
+                    let kv = store.into_data().into_kv();
+                    return Err((e, kv));
+                }
+            };
+            // Match the runtime dep by its BARE interface name EXACTLY + FAIL LOUD on a second match — the
+            // same COUNT+IDENTITY discipline as the sync path (#2203 MED / #2208 c2 / #2219).
+            if bare_iface_name(import_name) == "cadenza:runtime/heap" {
+                if runtime_instance.is_some() {
+                    let kv = store.into_data().into_kv();
+                    return Err((
+                        ComponentError::Compose {
+                            import_name: import_name.clone(),
+                            reason:
+                                "reducer resolved MORE THAN ONE cadenza:runtime/heap dep — the \
+                                     handle-lowered boundary marshals on exactly one shared runtime"
+                                    .to_string(),
+                        },
+                        kv,
+                    ));
+                }
+                runtime_instance = Some(inst);
+            }
+        }
+        let Some(runtime_instance) = runtime_instance else {
+            let kv = store.into_data().into_kv();
+            return Err((
+                ComponentError::Compose {
+                    import_name: "cadenza:runtime/heap".to_string(),
+                    reason: "no resolved cadenza:runtime/heap dep composed — a handle-lowered reducer \
+                             needs its value-heap runtime resolved (via with_resolved_deps) to marshal on"
+                        .to_string(),
+                },
+                kv,
+            ));
+        };
+        // Instantiate the reducer ASYNC against the composed linker (raw `Instance` — the handle-lowered
+        // `apply` is reached generically, not via the bindgen structural wrapper).
+        let reducer_instance = match l.instantiate_async(&mut store, &self.component).await {
+            Ok(i) => i,
+            Err(e) => {
+                let kv = store.into_data().into_kv();
+                return Err((ComponentError::Instantiate(e.to_string()), kv));
+            }
+        };
+        // Reach the interface-nested `apply` (sync Func LOOKUP — no call, safe on the async store).
+        let apply_func = match reach_fold_apply(&mut store, &reducer_instance) {
+            Ok(f) => f,
+            Err(e) => {
+                let kv = store.into_data().into_kv();
+                return Err((e, kv));
+            }
+        };
+        // Bind a HeapHandle on the shared runtime instance (sync lookups only — safe on the async store),
+        // set the per-fold fuel budget. On bind failure recover the base KV (error-atomicity, #2203 MED).
+        let mut heap = match HeapHandle::bind(store, &runtime_instance) {
+            Ok(h) => h,
+            Err((e, store)) => return Err((e, store.into_data().into_kv())),
+        };
+        heap.set_fuel_budget(self.fuel_budget);
+        if let Err(e) = heap.store_mut().set_fuel(self.fuel_budget) {
+            let kv = heap.into_store().into_data().into_kv();
+            return Err((ComponentError::Instantiate(e.to_string()), kv));
+        }
+        // MARSHAL the inputs into three value-heap handles via the ASYNC marshaller.
+        let (ct_h, payload_h, resumes_h) = match crate::heap_marshal::marshal_fold_inputs_async(
+            &mut heap,
+            (content_type.family.as_str(), content_type.version),
+            payload.as_deref(),
+            resumes.as_deref(),
+        )
+        .await
+        {
+            Ok(hs) => hs,
+            Err(e) => {
+                let kv = heap.into_store().into_data().into_kv();
+                return Err((e, kv));
+            }
+        };
+        // CALL the guest's `apply` over u32 handles via `call_async`.
+        let result_handle = match heap
+            .call_apply_lowered_async(&apply_func, ct_h, payload_h, resumes_h)
+            .await
+        {
+            Ok(h) => h,
+            Err(e) => {
+                let kv = heap.into_store().into_data().into_kv();
+                return Err((e, kv));
+            }
+        };
+        // UNMARSHAL the returned `list<effect-request>` handle via the ASYNC reader.
+        let effects =
+            match crate::heap_unmarshal::read_effect_requests_async(&mut heap, result_handle).await
+            {
+                Ok(es) => es,
+                Err(e) => {
+                    let kv = heap.into_store().into_data().into_kv();
+                    return Err((e, kv));
+                }
+            };
+        // Success: COMMIT the overlay into the base KV (this is what carries the guest's Kv.put through —
+        // the whole point of routing genesis through this path), hand it back.
+        let mut host = heap.into_store().into_data();
+        host.commit();
+        Ok((effects, host.into_kv()))
     }
 }
 
@@ -3472,6 +3909,45 @@ mod tests {
                 effects.len()
             ),
             Err((e, _kv)) => panic!("apply_handle_lowered should drive the reducer, got {e:?}"),
+        }
+    }
+
+    // #2256 / v-ah-host ask 27000 — the ASYNC twin of the drive test above: `AsyncComponentReducer::
+    // apply_handle_lowered` must drive the SAME handle-lowered fixture on the async_support engine, through
+    // the async heap-op twins (call_async/post_return_async) + async marshal/unmarshal. This is the exact
+    // path a real async reducer (the genesis reducer the host folds through its async path) takes; before it
+    // existed, the async reducer drove the STRUCTURAL call_apply and the guest's marshalled boundary (incl.
+    // its Kv.put) no-op'd. The fixture returns arr-alloc(0) (empty list) → zero effects, same as the sync
+    // assertion. That this RUNS (no "must use async instantiation"/"call_async" panic) is the core proof.
+    #[tokio::test(flavor = "current_thread")]
+    async fn async_apply_handle_lowered_drives_a_reducer_on_the_async_engine() {
+        let reducer_bytes = handle_lowered_reducer_component();
+        let runtime_bytes = heap_stub_component();
+        let reducer = match AsyncComponentReducer::from_component_bytes(&reducer_bytes) {
+            Ok(r) => r,
+            Err(e) => panic!("build async handle-lowered reducer: {e:?}"),
+        };
+        let runtime_dep = ComponentDep {
+            import_name: "cadenza:runtime/heap".to_string(),
+            hash: Hash::of(b"heap-stub-runtime"),
+        };
+        let reducer = reducer.with_resolved_deps(vec![(runtime_dep, runtime_bytes)]);
+        let ct = ContentType {
+            family: "message".to_string(),
+            version: 1,
+        };
+        match reducer
+            .apply_handle_lowered(Kv::new(), ct, None, None)
+            .await
+        {
+            Ok((effects, _kv)) => assert!(
+                effects.is_empty(),
+                "the reducer returned arr-alloc(0) (empty list) → zero effects, got {}",
+                effects.len()
+            ),
+            Err((e, _kv)) => {
+                panic!("async apply_handle_lowered should drive the reducer, got {e:?}")
+            }
         }
     }
 

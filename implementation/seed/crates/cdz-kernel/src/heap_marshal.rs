@@ -99,6 +99,56 @@ pub fn marshal_fold_inputs<T>(
     Ok((ct, payload_h, resumes_h))
 }
 
+// ── ASYNC twins (#2256 / v-ah-host ask 27000): the marshalling for a handle-lowered fold on the ASYNC
+// engine ([`AsyncComponentReducer::apply_handle_lowered_async`]). Identical build sequence to the sync
+// forms above — the value-heap agreement (sorted-field record, Some=0/None=1 sum, empty-vs-absent bytes)
+// has ONE source of truth in the sync forms' docs — but each heap op is driven via its `*_async` twin, so
+// the sync `Func::call` per-store async-panic is avoided. `T: Send` (an async call may poll across await).
+
+/// Async twin of [`marshal_content_type`].
+pub async fn marshal_content_type_async<T: Send + 'static>(
+    heap: &mut HeapHandle<T>,
+    family: &str,
+    version: u32,
+) -> Result<u32, ComponentError> {
+    let family_h = heap.str_new_async(family).await?;
+    let version_h = heap.box_int_async(i64::from(version)).await?;
+    let rec = heap.arr_alloc_async(2).await?;
+    let rec = heap.arr_set_async(rec, 0, family_h).await?; // sorted idx 0 = "family"
+    let rec = heap.arr_set_async(rec, 1, version_h).await?; // sorted idx 1 = "version"
+    Ok(rec)
+}
+
+/// Async twin of [`marshal_option_bytes`].
+pub async fn marshal_option_bytes_async<T: Send + 'static>(
+    heap: &mut HeapHandle<T>,
+    data: Option<&[u8]>,
+) -> Result<u32, ComponentError> {
+    match data {
+        Some(bytes) => {
+            let payload = heap.bytes_from_async(bytes).await?;
+            heap.sum_new_async(OPTION_SOME, payload).await
+        }
+        None => {
+            let unit = heap.unit_async().await?;
+            heap.sum_new_async(OPTION_NONE, unit).await
+        }
+    }
+}
+
+/// Async twin of [`marshal_fold_inputs`].
+pub async fn marshal_fold_inputs_async<T: Send + 'static>(
+    heap: &mut HeapHandle<T>,
+    content_type: (&str, u32),
+    payload: Option<&[u8]>,
+    resumes: Option<&[u8]>,
+) -> Result<(u32, u32, u32), ComponentError> {
+    let ct = marshal_content_type_async(heap, content_type.0, content_type.1).await?;
+    let payload_h = marshal_option_bytes_async(heap, payload).await?;
+    let resumes_h = marshal_option_bytes_async(heap, resumes).await?;
+    Ok((ct, payload_h, resumes_h))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
