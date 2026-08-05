@@ -8891,8 +8891,6 @@
             (export main)))
   (output (: 21 Int64)))
 
-
-
 (case "an s-around-k ctl arm that ALSO performs an outer effect in the arm body folds — the two E5 fixes compose"
   (doc    "The COMPOSITION guard for the two E5 fixes: the s-around-k lexical-`ctl` pin (`pin_refs_to_binders`)
            and the arm-performs-outer path must compose without re-orphaning the pinned state binder. An inner
@@ -8950,8 +8948,6 @@
                   (+ (G.y 5) (A.get)))))
             (export main)))
   (call   main (: 100 Int64)) (output (: 113 Int64)))
-
-
 
 (case "a nested-handler ctl arm whose continuation-consuming body ALSO performs an OUTER effect folds"
   (doc    "The confluence of the lexical-`ctl` surface and the nested-handler outer-perform family: an INNER
