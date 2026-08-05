@@ -3597,6 +3597,8 @@ pass	a unary constructor applied to a runtime value is returned as a program res
 pass	a unary constructor is a single-arity function
 pass	a unary variant applied to a wrong-arity tuple payload is a type error
 pass	a unary variant applied to a wrong-type payload is a type error
+pass	a unit MISMATCH in the op argument is rejected — the program cannot perform with a different unit
+pass	a unit MISMATCH in the resume value is rejected — the arm cannot resume a different unit
 pass	a unit multiplied by its own inverse cancels to the dimensionless unit
 pass	a unit raised to the ZEROTH power is the dimensionless identity Unit.one
 pass	a user Name variant does not capture the Ast sum's Name variant
