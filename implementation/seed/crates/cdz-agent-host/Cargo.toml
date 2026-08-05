@@ -73,8 +73,9 @@ metrics-export-otlp = ["metrics-export", "dep:reqwest", "s2n-quic-dc-metrics/ote
 # `AsyncReadExt`/`AsyncWriteExt` the hand-rolled HTTP/1.1 responder uses) — NO hyper/axum, the responder is
 # hand-rolled (same dep-light pattern as the admin Unix-socket listener). The `PrometheusBackend`/handle live
 # in the always-on s2n-quic-dc-metrics dep (NOT behind a crate feature, unlike otel), so no extra crate
-# feature is needed here. Security posture (concierge): the scrape endpoint binds LOOPBACK by default; a
-# non-loopback bind is warned (a no-auth inbound port is only acceptable loopback-bound).
+# feature is needed here. Security posture (concierge): the scrape endpoint's `bind` is required (no default);
+# a LOOPBACK bind just works, but a non-loopback bind for this unauthenticated endpoint is REJECTED at config
+# validation unless `allow_non_loopback = true` (opt-in by intent), and still warned at boot.
 metrics-export-prometheus = ["metrics-export", "tokio/net", "tokio/io-util"]
 
 [dependencies]
