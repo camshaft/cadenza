@@ -238,6 +238,12 @@ pub struct ComponentReducer {
     // kernel (Copilot PR#1009 DoS gap). Enforced by wasmtime's fuel metering (engine `consume_fuel` +
     // `Store::set_fuel` per fold). The budget is a uniform per-fold ceiling.
     fuel_budget: u64,
+    // The component store used to resolve a dep's OWN transitive BARE imports (§23 leaves-first compose —
+    // the value-heap runtime imports `cadenza:nfc/normalize`, resolved by name from this store's
+    // `runtime.toml`). `None` = no transitive resolution (a dep must be a leaf); set via
+    // [`ComponentReducer::with_component_store`] when the reducer's runtime dep itself has deps (the real
+    // nix/CDZ_STORE path). Held so `compose_dep_into_linker` can recurse leaves-first per fold.
+    component_store: Option<crate::component_store::ComponentStore>,
 }
 
 /// Default per-fold fuel ceiling (§22d). Chosen generous enough that a legitimate reducer fold (a bit
@@ -430,6 +436,10 @@ fn compose_dep_into_linker<T: 'static>(
     linker: &mut wasmtime::component::Linker<T>,
     import_name: &str,
     dep_bytes: &[u8],
+    // The store to resolve a dep's OWN transitive bare imports from (§23 leaves-first compose, e.g. the
+    // runtime's `cadenza:nfc/normalize`). `None` = treat the dep as a leaf (the dependency-free WAT test
+    // stubs, and any caller that has no store): the dep instantiates against a fresh empty linker as before.
+    store_provider: Option<&crate::component_store::ComponentStore>,
 ) -> Result<wasmtime::component::Instance, ComponentError> {
     use wasmtime::component::types::ComponentItem;
     use wasmtime::component::Component;
@@ -471,10 +481,14 @@ fn compose_dep_into_linker<T: 'static>(
                  (as {import_name:?})"
             ))
         })?;
-    // Instantiate the dep in the shared store (a dep is dependency-free here; a dep-of-dep chain is a
-    // later hardening slice — see the §23 plan). A fresh linker: the dep declares no host imports we
-    // serve (it's a pure value/logic component).
-    let dep_linker = wasmtime::component::Linker::<T>::new(engine);
+    // Instantiate the dep in the shared store. A dep is NOT necessarily a leaf — the value-heap runtime
+    // itself imports the BARE `cadenza:nfc/normalize` component (FINDING#23). So before instantiating,
+    // TRANSITIVELY compose the dep's OWN bare (store-resolvable) imports into its linker, leaves-first
+    // (nfc → runtime → reducer), mirroring cdz-run's `instantiate_runtime`/`compose_nfc_into_runtime_linker`.
+    // With no store provided (the unit-test stubs, which import nothing), this is a no-op and the dep stays
+    // treated as a leaf against a fresh empty linker.
+    let mut dep_linker = wasmtime::component::Linker::<T>::new(engine);
+    compose_transitive_bare_deps(engine, store, &mut dep_linker, &dep, store_provider)?;
     let dep_instance = dep_linker
         .instantiate(&mut *store, &dep)
         .map_err(|e| compose_err(format!("instantiating the dependency failed: {e}")))?;
@@ -504,6 +518,118 @@ fn compose_dep_into_linker<T: 'static>(
             .map_err(|e| compose_err(format!("binding dep func {fname:?} into the linker: {e}")))?;
     }
     Ok(dep_instance)
+}
+
+/// The BARE inter-runtime interface a runtime component imports as its own dependency (FINDING#23): the
+/// value-heap runtime's world declares `import cadenza:nfc/normalize`, resolved from the store by the
+/// manifest name `nfc`. The interface's leaf (after the last `/`) is the `runtime.toml` manifest key.
+const NFC_IFACE: &str = "cadenza:nfc/normalize";
+
+/// Compose a dep's OWN transitive BARE imports into `dep_linker` before the dep is instantiated — the
+/// leaves-first §23 walk (nfc → runtime → reducer), mirroring cdz-run's `compose_nfc_into_runtime_linker`.
+///
+/// A "bare import" is an interface import with NO `+<hash>` build-metadata that the host doesn't itself
+/// serve — the runtime's `cadenza:nfc/normalize` is the one such today. It's resolved from the store BY
+/// NAME (the interface leaf, e.g. `nfc`) via [`ComponentStore::get_by_manifest_name`] (`runtime.toml`'s
+/// `nfc = "<hash>"` → `<hash>.wasm`), NOT by a `+<hash>` in the name (bare imports carry none). The
+/// resolved component is itself a LEAF (nfc imports nothing) so it instantiates against a fresh empty
+/// linker; its interface funcs are forwarded into `dep_linker` under the import name (verbatim as
+/// [`compose_dep_into_linker`] forwards a dep). `None` store, or a dep with no bare store-resolvable
+/// import, is a no-op (the dep is a leaf). Only the known `NFC_IFACE` is resolved; any OTHER bare import
+/// is left for wasmtime to report as unsatisfied (we don't blindly store-resolve arbitrary names).
+fn compose_transitive_bare_deps<T: 'static>(
+    engine: &wasmtime::Engine,
+    store: &mut wasmtime::Store<T>,
+    dep_linker: &mut wasmtime::component::Linker<T>,
+    dep: &wasmtime::component::Component,
+    store_provider: Option<&crate::component_store::ComponentStore>,
+) -> Result<(), ComponentError> {
+    use wasmtime::component::types::ComponentItem;
+    use wasmtime::component::Component;
+    // Does this dep import the bare NFC interface? Read its component TYPE's imports (not a live instance).
+    let imports_nfc = dep
+        .component_type()
+        .imports(engine)
+        .any(|(name, _)| name == NFC_IFACE);
+    if !imports_nfc {
+        return Ok(()); // leaf dep (or an older runtime that imports nothing) — nothing to compose
+    }
+    let compose_err = |reason: String| ComponentError::Compose {
+        import_name: NFC_IFACE.to_string(),
+        reason,
+    };
+    let store_provider = store_provider.ok_or_else(|| {
+        compose_err(
+            "dependency imports cadenza:nfc/normalize but no component store was provided to resolve it \
+             (the transitive nfc dep — pass a ComponentStore via CDZ_STORE)"
+                .to_string(),
+        )
+    })?;
+    // Resolve the NFC component from the store BY MANIFEST NAME. The `runtime.toml` key is the PACKAGE
+    // name (`nfc`), i.e. the segment between `:` and `/` of `cadenza:nfc/normalize` — NOT the interface
+    // leaf after `/` (`normalize`). (Matches cdz-run's `resolve_nfc_from_store`, which keys on `nfc`.)
+    // Bare imports carry no `+<hash>`, so this is the name path, NOT get_by_hash.
+    let nfc_name = NFC_IFACE
+        .split_once(':')
+        .and_then(|(_ns, rest)| rest.split('/').next())
+        .unwrap_or(NFC_IFACE);
+    let nfc_bytes = store_provider.get_by_manifest_name(nfc_name).map_err(|e| {
+        compose_err(format!(
+            "resolving {NFC_IFACE} ({nfc_name}) from the store: {e:?}"
+        ))
+    })?;
+    let nfc = Component::new(engine, &nfc_bytes).map_err(|e| {
+        compose_err(format!(
+            "nfc component bytes are not a valid component: {e}"
+        ))
+    })?;
+    // NFC is a LEAF (imports nothing) → instantiate against a fresh empty linker.
+    let nfc_linker = wasmtime::component::Linker::<T>::new(engine);
+    let nfc_instance = nfc_linker
+        .instantiate(&mut *store, &nfc)
+        .map_err(|e| compose_err(format!("instantiating the nfc component failed: {e}")))?;
+    // The funcs nfc exports under NFC_IFACE (read off the TYPE for a clear error, as compose_dep does).
+    let func_names: Vec<String> = nfc
+        .component_type()
+        .exports(engine)
+        .find(|(n, _)| *n == NFC_IFACE)
+        .and_then(|(_, item)| match item {
+            ComponentItem::ComponentInstance(inst) => Some(
+                inst.exports(engine)
+                    .filter_map(|(fname, i)| {
+                        matches!(i, ComponentItem::ComponentFunc(_)).then(|| fname.to_string())
+                    })
+                    .collect(),
+            ),
+            _ => None,
+        })
+        .ok_or_else(|| compose_err(format!("nfc component does not export {NFC_IFACE}")))?;
+    let nfc_idx = nfc_instance
+        .get_export_index(&mut *store, None, NFC_IFACE)
+        .ok_or_else(|| compose_err("nfc instance is missing its exported interface".into()))?;
+    let mut iface = dep_linker
+        .instance(NFC_IFACE)
+        .map_err(|e| compose_err(format!("dep_linker.instance({NFC_IFACE:?}): {e}")))?;
+    for fname in &func_names {
+        let fidx = nfc_instance
+            .get_export_index(&mut *store, Some(&nfc_idx), fname)
+            .ok_or_else(|| compose_err(format!("nfc component missing exported func {fname:?}")))?;
+        let f = nfc_instance
+            .get_func(&mut *store, fidx)
+            .ok_or_else(|| compose_err(format!("nfc export {fname:?} is not a func")))?;
+        iface
+            .func_new(fname, move |mut ctx, params, results| {
+                f.call(&mut ctx, params, results)?;
+                f.post_return(&mut ctx)?;
+                Ok(())
+            })
+            .map_err(|e| {
+                compose_err(format!(
+                    "binding nfc func {fname:?} into the dep linker: {e}"
+                ))
+            })?;
+    }
+    Ok(())
 }
 
 /// Parse a component dependency's `+<hash>` content-address build-metadata into a [`Hash`]. Delegates
@@ -1292,7 +1418,20 @@ impl ComponentReducer {
             resolved_deps: Vec::new(),
             instance_pre,
             fuel_budget: DEFAULT_FOLD_FUEL,
+            component_store: None,
         })
+    }
+
+    /// Attach a [`ComponentStore`](crate::component_store::ComponentStore) used to resolve a dep's OWN
+    /// transitive BARE imports (§23 leaves-first compose). The value-heap runtime imports the bare
+    /// `cadenza:nfc/normalize` component; with a store set, `compose_dep_into_linker` resolves it by name
+    /// (`runtime.toml`'s `nfc = "<hash>"`) and composes it into the runtime's linker before instantiating
+    /// the runtime. Without one, a dep that imports nfc fails to compose (a `Compose` error naming it),
+    /// so this is REQUIRED for a real runtime dep whose world imports nfc. (The host reads the store dir
+    /// from `CDZ_STORE` / v-nix's `componentStore`.)
+    pub fn with_component_store(mut self, store: crate::component_store::ComponentStore) -> Self {
+        self.component_store = Some(store);
+        self
     }
 
     /// Attach the resolved bytes of this reducer's declared dependencies (§23), so `apply` COMPOSES each
@@ -1432,6 +1571,7 @@ impl ComponentReducer {
                         &mut l,
                         import_name,
                         bytes,
+                        self.component_store.as_ref(),
                     ) {
                         let kv = store.into_data().into_kv();
                         return Err((e, kv));
@@ -1523,15 +1663,20 @@ impl ComponentReducer {
         let mut l = self.linker.clone();
         let mut runtime_instance: Option<wasmtime::component::Instance> = None;
         for (import_name, bytes) in &self.resolved_deps {
-            let inst =
-                match compose_dep_into_linker(&self.engine, &mut store, &mut l, import_name, bytes)
-                {
-                    Ok(inst) => inst,
-                    Err(e) => {
-                        let kv = store.into_data().into_kv();
-                        return Err((e, kv));
-                    }
-                };
+            let inst = match compose_dep_into_linker(
+                &self.engine,
+                &mut store,
+                &mut l,
+                import_name,
+                bytes,
+                self.component_store.as_ref(),
+            ) {
+                Ok(inst) => inst,
+                Err(e) => {
+                    let kv = store.into_data().into_kv();
+                    return Err((e, kv));
+                }
+            };
             // Match the runtime dep by its BARE interface name EXACTLY (via `bare_iface_name`, which strips
             // both `+<hash>` and `@<semver>` — the SAME parse `declared_deps` uses), NOT `starts_with(...)`.
             // A `starts_with` prefix would also match a future sibling like `cadenza:runtime/heap2@…`,
@@ -2679,8 +2824,15 @@ mod tests {
         let mut linker = wasmtime::component::Linker::<()>::new(&engine);
 
         // Compose the dep into the linker under the interface name the consumer imports.
-        compose_dep_into_linker(&engine, &mut store, &mut linker, "test:dep/api", &dep_bytes)
-            .expect("compose dep into linker");
+        compose_dep_into_linker(
+            &engine,
+            &mut store,
+            &mut linker,
+            "test:dep/api",
+            &dep_bytes,
+            None,
+        )
+        .expect("compose dep into linker");
 
         // The consumer now instantiates (its import is satisfied) and `run()` reaches the dep → 43.
         let consumer = wasmtime::component::Component::new(&engine, &consumer_bytes)
@@ -2703,6 +2855,131 @@ mod tests {
         );
     }
 
+    // §23 TRANSITIVE compose (FINDING#23): a dep that ITSELF imports the bare `cadenza:nfc/normalize`
+    // (as the real value-heap runtime does) composes ONLY when a ComponentStore is provided to resolve nfc
+    // by name (`runtime.toml`'s `nfc = "<hash>"`); WITHOUT a store the same dep fails to compose with a
+    // clear `Compose` error naming nfc. Uses tiny wat components + a real temp store dir.
+    #[test]
+    fn a_dep_importing_bare_nfc_composes_via_the_store_and_fails_loud_without_it() {
+        // NFC leaf: exports `cadenza:nfc/normalize` with `normalize: func(u32) -> u32` (echoes its arg).
+        let nfc_bytes = wat::parse_str(
+            r#"(component
+                 (core module $m (func (export "normalize") (param i32) (result i32) (local.get 0)))
+                 (core instance $i (instantiate $m))
+                 (func $normalize (param "s" u32) (result u32) (canon lift (core func $i "normalize")))
+                 (instance $nfc (export "normalize" (func $normalize)))
+                 (export "cadenza:nfc/normalize" (instance $nfc)))"#,
+        )
+        .expect("assemble nfc leaf component");
+
+        // Runtime-like dep: IMPORTS bare `cadenza:nfc/normalize`, EXPORTS `cadenza:runtime/heap` with
+        // `str-nfc-normalize: func(u32)->u32` that calls the imported nfc (mirrors the real runtime's nfc
+        // dependency). The consumer of THIS dep imports `cadenza:runtime/heap`.
+        let runtime_bytes = wat::parse_str(
+            r#"(component
+                 (import "cadenza:nfc/normalize" (instance $nfc (export "normalize" (func (param "s" u32) (result u32)))))
+                 (core func $nfc_core (canon lower (func $nfc "normalize")))
+                 (core module $m
+                   (import "" "normalize" (func $normalize (param i32) (result i32)))
+                   (func (export "str-nfc-normalize") (param i32) (result i32) (call $normalize (local.get 0))))
+                 (core instance $shim (export "normalize" (func $nfc_core)))
+                 (core instance $i (instantiate $m (with "" (instance $shim))))
+                 (func $snn (param "s" u32) (result u32) (canon lift (core func $i "str-nfc-normalize")))
+                 (instance $heap (export "str-nfc-normalize" (func $snn)))
+                 (export "cadenza:runtime/heap" (instance $heap)))"#,
+        )
+        .expect("assemble runtime-like dep that imports nfc");
+
+        // A real temp store: `<hash>.wasm` for the nfc bytes + a `runtime.toml` with `nfc = "<hash>"`.
+        // The hash is the SHA-256 content address (the store's algorithm — component_store verifies it).
+        let store_dir =
+            std::env::temp_dir().join(format!("cdzstore-nfc-compose-{}", std::process::id()));
+        std::fs::create_dir_all(&store_dir).unwrap();
+        let nfc_hex = {
+            use sha2::{Digest, Sha256};
+            let d = Sha256::digest(&nfc_bytes);
+            let mut s = String::with_capacity(64);
+            for b in d {
+                use std::fmt::Write as _;
+                let _ = write!(s, "{b:02x}");
+            }
+            s
+        };
+        std::fs::write(store_dir.join(format!("{nfc_hex}.wasm")), &nfc_bytes).unwrap();
+        std::fs::write(
+            store_dir.join("runtime.toml"),
+            format!("nfc = \"{nfc_hex}\"\n"),
+        )
+        .unwrap();
+        let comp_store = crate::component_store::ComponentStore::open(&store_dir);
+
+        let engine = wasmtime::Engine::default();
+
+        // WITHOUT a store → compose fails loud, naming the unresolved nfc import.
+        {
+            let mut store = wasmtime::Store::new(&engine, ());
+            let mut linker = wasmtime::component::Linker::<()>::new(&engine);
+            match compose_dep_into_linker(
+                &engine,
+                &mut store,
+                &mut linker,
+                "cadenza:runtime/heap",
+                &runtime_bytes,
+                None,
+            ) {
+                Err(ComponentError::Compose { import_name, .. }) => {
+                    assert_eq!(
+                        import_name, "cadenza:nfc/normalize",
+                        "the error names the unresolved nfc dep"
+                    )
+                }
+                other => {
+                    panic!("expected a Compose error naming nfc without a store, got {other:?}")
+                }
+            }
+        }
+
+        // WITH the store → the runtime dep's nfc import is transitively composed, so it instantiates and
+        // its `str-nfc-normalize` (which calls nfc) is reachable through the composed `cadenza:runtime/heap`.
+        {
+            let mut store = wasmtime::Store::new(&engine, ());
+            let mut linker = wasmtime::component::Linker::<()>::new(&engine);
+            let rt_instance = compose_dep_into_linker(
+                &engine,
+                &mut store,
+                &mut linker,
+                "cadenza:runtime/heap",
+                &runtime_bytes,
+                Some(&comp_store),
+            )
+            .expect("transitive nfc compose should succeed with a store");
+            // Reach str-nfc-normalize on the composed runtime instance → it calls nfc(7) = 7.
+            let idx = rt_instance
+                .get_export_index(&mut store, None, "cadenza:runtime/heap")
+                .expect("runtime exports its heap interface");
+            let fidx = rt_instance
+                .get_export_index(&mut store, Some(&idx), "str-nfc-normalize")
+                .expect("heap exports str-nfc-normalize");
+            let f = rt_instance
+                .get_func(&mut store, fidx)
+                .expect("str-nfc-normalize is a func");
+            let mut results = [wasmtime::component::Val::U32(0)];
+            f.call(
+                &mut store,
+                &[wasmtime::component::Val::U32(7)],
+                &mut results,
+            )
+            .expect("call str-nfc-normalize");
+            f.post_return(&mut store).ok();
+            assert_eq!(
+                results[0],
+                wasmtime::component::Val::U32(7),
+                "str-nfc-normalize(7) reached the transitively-composed nfc component"
+            );
+        }
+        std::fs::remove_dir_all(&store_dir).ok();
+    }
+
     // §23 dep-compose: composing bytes that DON'T export the imported interface fails with a clear
     // `Compose` error naming the interface — not an opaque instantiate trap later.
     #[test]
@@ -2712,7 +2989,14 @@ mod tests {
         let mut linker = wasmtime::component::Linker::<()>::new(&engine);
         // An empty component exports nothing → can't satisfy `test:dep/api`.
         let empty = wat::parse_str("(component)").expect("empty component");
-        match compose_dep_into_linker(&engine, &mut store, &mut linker, "test:dep/api", &empty) {
+        match compose_dep_into_linker(
+            &engine,
+            &mut store,
+            &mut linker,
+            "test:dep/api",
+            &empty,
+            None,
+        ) {
             Err(ComponentError::Compose { import_name, .. }) => {
                 assert_eq!(import_name, "test:dep/api");
             }
@@ -2741,6 +3025,7 @@ mod tests {
             &mut linker,
             "cadenza:runtime/heap",
             &bytes,
+            None,
         ) {
             Ok(inst) => inst,
             Err(e) => panic!("compose the runtime dep: {e:?}"),
@@ -2773,13 +3058,19 @@ mod tests {
         let mut linker = wasmtime::component::Linker::<()>::new(&engine);
         // Import name carries the @version+hash the bare-exporting stub does NOT have in its export name.
         let import_name = "cadenza:runtime/heap@0.0.0+39358be448eac4e8afe25add5977767f814c0f9a6cad714cb778d223839ad739";
-        let runtime_instance =
-            match compose_dep_into_linker(&engine, &mut store, &mut linker, import_name, &bytes) {
-                Ok(inst) => inst,
-                Err(e) => {
-                    panic!("compose must match the bare export against the versioned import: {e:?}")
-                }
-            };
+        let runtime_instance = match compose_dep_into_linker(
+            &engine,
+            &mut store,
+            &mut linker,
+            import_name,
+            &bytes,
+            None,
+        ) {
+            Ok(inst) => inst,
+            Err(e) => {
+                panic!("compose must match the bare export against the versioned import: {e:?}")
+            }
+        };
         let mut heap = match HeapHandle::bind(store, &runtime_instance) {
             Ok(h) => h,
             Err((e, _)) => panic!("bind HeapHandle to the composed runtime: {e:?}"),
