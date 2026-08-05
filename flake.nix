@@ -287,26 +287,45 @@
               let next = pkgs.lib.unique (acc ++ pkgs.lib.concatMap crateDirectDeps acc);
               in if builtins.length next == builtins.length acc then acc else step next;
           in pkgs.lib.sort (a: b: a < b) (step [ start ]);
-        # ALL members' Cargo.toml + src/ (+ build.rs) — the cargo workspace-parse floor (see note above).
-        allMemberSrc = pkgs.lib.concatMap
-          (c:
-            let d = ./. + "/${rootWorkspaceCrates.${c}}"; in
-            [ (d + "/Cargo.toml") ]
-            ++ pkgs.lib.optional (builtins.pathExists (d + "/src")) (d + "/src")
-            ++ pkgs.lib.optional (builtins.pathExists (d + "/build.rs")) (d + "/build.rs"))
-          rootCrateNames;
-        # a per-crate clippy+test check. Fileset = allMemberSrc + ONLY this crate's tests/ + root
-        # manifest/lock/.cargo/toolchain + extraSrc. extraSrc = non-member paths a crate's build/tests read
-        # (spec/semantics corpus, compiler-ml run_ml driver, cdz-runtime/src/bigint.rs which cdz-num
-        # `#[path]`-includes → every crate whose closure has cdz-num needs it). extraInputs = tools.
+        # `cargo -p C` LOADS the whole workspace (target auto-detection needs EVERY member to have a target
+        # entry point present, else "no targets specified in the manifest") but only COMPILES C + its
+        # dep-closure. So a per-crate check's fileset = FULL src/ for C's dep-CLOSURE (crateClosure — what
+        # actually compiles) + ONLY the Cargo.toml of every non-closure member (NOT its src — see below) +
+        # ONLY C's tests/. The buildPhase then MATERIALIZES a synthetic EMPTY target stub (src/lib.rs, +
+        # src/main.rs for a [[bin]] member) for each non-closure member, so cargo can parse the workspace
+        # WITHOUT the real src being in the fileset. This makes crateClosure LOAD-BEARING + delivers true
+        # SRC-ISOLATION: editing an independent crate's src (outside C's closure) does NOT change C's
+        # fileset → does NOT invalidate C's check (github-liaison #2134 review — allMemberSrc gave only
+        # tests/-isolation; a real-src parse-floor still cross-triggered on the stubbed lib.rs edits, so the
+        # stub must be SYNTHETIC/content-fixed, not the real file). No member has build.rs (verified).
+        nonClosureManifests = excludeClosure:
+          map (c: ./. + "/${rootWorkspaceCrates.${c}}/Cargo.toml")
+            (builtins.filter (c: !(builtins.elem c excludeClosure)) rootCrateNames);
+        # shell that writes an empty synthetic target stub for each non-closure member (lib.rs always; main.rs
+        # if its Cargo.toml declares a [[bin]]/[bin]). Content-fixed → invariant to the real src.
+        stubNonClosure = excludeClosure:
+          let others = builtins.filter (c: !(builtins.elem c excludeClosure)) rootCrateNames; in
+          pkgs.lib.concatMapStringsSep "\n"
+            (c:
+              let m = rootWorkspaceCrates.${c}; in ''
+                mkdir -p "${m}/src"
+                [ -f "${m}/src/lib.rs" ] || echo "" > "${m}/src/lib.rs"
+                if grep -qE '^\[\[bin\]\]|^\[bin\]' "${m}/Cargo.toml"; then echo "fn main(){}" > "${m}/src/main.rs"; fi
+              '')
+            others;
+        # a per-crate clippy+test check, src-scoped to C's dep-closure (full src) + non-closure manifests +
+        # synthetic stubs + ONLY C's tests/ + root manifest/lock/.cargo/toolchain + extraSrc. extraSrc =
+        # non-member paths a crate's build/tests read (spec/semantics, compiler-ml, cdz-runtime bigint).
         mkCrateCheck = { crate, extraSrc ? [ ], extraInputs ? [ ] }:
+          let closure = crateClosure crate; in
           pkgs.stdenvNoCC.mkDerivation {
             pname = "cargo-crate-${crate}";
             version = "0.0.0";
             src = pkgs.lib.fileset.toSource {
               root = ./.;
               fileset = pkgs.lib.fileset.unions (
-                allMemberSrc
+                (map (c: ./. + "/${rootWorkspaceCrates.${c}}") closure)  # closure crates: FULL src/
+                ++ nonClosureManifests closure                          # everyone else: Cargo.toml ONLY
                 ++ pkgs.lib.optional
                   (builtins.pathExists (./. + "/${rootWorkspaceCrates.${crate}}/tests"))
                   (./. + "/${rootWorkspaceCrates.${crate}}/tests")
@@ -317,6 +336,10 @@
             buildPhase = ''
               runHook preBuild
               ${mkCargoVendorEnv { vendor = seedCargoVendor; }}
+              # materialize synthetic empty target stubs for non-closure members (the src fileset omits
+              # their real src for isolation; cargo still needs a target to parse the workspace).
+              chmod -R u+w .
+              ${stubNonClosure closure}
               cargo clippy -p ${crate} --all-targets --locked -- -D warnings
               cargo test -p ${crate} --locked
               runHook postBuild
