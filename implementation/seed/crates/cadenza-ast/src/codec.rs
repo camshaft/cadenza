@@ -998,14 +998,16 @@ impl Grafter {
 /// Whether an imported dictionary's WHOLE structure is SAFE to walk from ANY node — i.e. NO node
 /// (reachable or not) lies on a cycle, every structure child id is in range, AND every `Atom`'s leaf id
 /// is in range. This is stronger than `verify_tree`'s root-reachability check ON PURPOSE: a
-/// `TAG_DICT_REF` can target ANY `node_id`, including one unreachable from the dict's own root, so a dict
-/// is only safe to walk (in `encode_with_dict`'s `subtree_arena` match-table build AND
-/// `decode_with_dicts`' graft) if EVERY node is acyclic and every id it touches is in range. A cyclic
-/// dict would make either walk diverge/OOM; an out-of-range structure child OR leaf id would make
-/// `encode`'s `subtree_arena` PANIC (it indexes `dict.structure` via `Arenas::get` and `dict.leaves` via
-/// `Arenas::leaf`) — all on untrusted input, so all are rejected here. Named for the property it now
-/// guarantees (safe-to-walk), not just acyclicity. Iterative DFS with a 3-color (unvisited/on-stack/done)
-/// marking over every node as a potential root; O(nodes+edges).
+/// `TAG_DICT_REF` can target ANY `node_id`, including one unreachable from the dict's own root.
+///
+/// This is the guard for the ENCODE path ONLY. `encode_with_dict` walks each supplied dict via
+/// `subtree_arena` to build its match table, and that walk is INFALLIBLE (it indexes `dict.structure`
+/// via `Arenas::get` and `dict.leaves` via `Arenas::leaf`, both of which PANIC on an out-of-range id,
+/// and would diverge/OOM on a cycle) — so a bad dict must be detected and SKIPPED before it is walked.
+/// `decode_with_dicts` does NOT call this: its graft has its own FALLIBLE seam that enforces the same
+/// invariant inline (out-of-range → `IdOutOfRange`, cycle/shared-subtree → `NotATree`). Named for the
+/// property it guarantees (safe-to-walk), not just acyclicity. Iterative DFS with a 3-color
+/// (unvisited/on-stack/done) marking over every node as a potential root; O(nodes+edges).
 fn dict_is_safe_to_walk(dict: &Arenas) -> bool {
     // 0 = unvisited, 1 = on the current DFS stack (a back-edge to it = cycle), 2 = fully explored.
     let mut color = vec![0u8; dict.structure.len()];
