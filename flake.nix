@@ -772,6 +772,10 @@
             # wiring). Both come from my derivations (already built + validated). v-harness-bootstrap owns the
             # fixture; v-agent-harness owns the test (landed on trunk); the env export is mine.
             export REDUCER_CADENZA_COMPONENT="${reducerCadenzaB1}"
+            # B2 climb: feed the compiled B2 reducer so reducer_cadenza_b2_e2e.rs RUNS (asserts ONE Http
+            # effect to https://ok.host/x + correlation step-1) instead of skipping. Same sync
+            # apply_handle_lowered path + CDZ_STORE transitive-nfc resolution as b1.
+            export REDUCER_CADENZA_B2_COMPONENT="${reducerCadenzaB2}"
             export CDZ_STORE="${componentStore}"
             cargo test --locked
             cargo clippy --all-targets --locked -- -D warnings
