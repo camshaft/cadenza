@@ -31,6 +31,7 @@ use crate::kv::Kv;
 use crate::reducer::{Effect, Reducer};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
+use tracing::{debug, instrument, warn};
 
 /// Errors the kernel surfaces to its driver. Kept small; grows with features.
 #[derive(Debug, PartialEq, Eq)]
@@ -388,6 +389,17 @@ impl Session {
     /// the kernel collects them and hands them back here for the DRIVER to consume (e.g. `fork_for_query`
     /// scrapes the `control/summary` effect's `request.payload`). The common [`Session::deliver`] path drops
     /// them; use this when you need them. See [`crate::effect::ControlEffect`].
+    // Observability (facade only — the kernel never installs a subscriber; v-ah-host owns that). The span
+    // covers a full delivery turn. `skip_all` because the args are trait objects / an opaque event payload
+    // (not `Debug`, and the payload is guest bytes we must not log wholesale — §PII/size); instead record
+    // the event-body VARIANT NAME + the event count, both non-sensitive. A `now`/`http` payload's contents
+    // never enter a span field. With no subscriber registered every span/event is a near-free atomic load.
+    #[instrument(
+        level = "debug",
+        name = "kernel.deliver",
+        skip_all,
+        fields(event = event_body_name(&body), log_len = self.log.len())
+    )]
     pub async fn deliver_control(
         &mut self,
         body: EventBody,
@@ -743,6 +755,16 @@ impl Session {
             // (e.g. `Prefix("system/")`) permits `store/set system/…`; a session without it is denied here,
             // exactly as an unauthorized HTTP host would be. So store effects reuse the ONE authz seam.
             if let Err(reason) = authz.authorize(&req).await {
+                // SEC-F1 denial — WARN (an authorization boundary was hit). The `reason` is authz's own
+                // (non-guest) message; `target` is the security-relevant string the predicate gated. The
+                // effect payload is NOT logged.
+                warn!(
+                    effect_id = id.0,
+                    family = %req.content_type.family,
+                    target = %req.target,
+                    %reason,
+                    "effect authorization denied"
+                );
                 let denial_hash = self
                     .append(EventBody::AuthzDenied { id, reason, token }, Some(cause))
                     .await;
@@ -880,7 +902,13 @@ impl Session {
 
             // Route + execute — awaiting the async executor (a real I/O executor yields here without
             // blocking the single-threaded loop). The Dispatched record is already durable, so ordering
-            // is preserved across the await.
+            // is preserved across the await. DEBUG-trace the dispatch (family + target, no payload).
+            debug!(
+                effect_id = id.0,
+                family = %req.content_type.family,
+                target = %req.target,
+                "dispatching effect to executor"
+            );
             let outcome = executor.perform(&req, idempotency_key).await;
 
             // MONOTONIC `now` clamp (operator ruling): only `now` results are clamped. Keyed on the
@@ -911,6 +939,10 @@ impl Session {
         let out = reducer.fold(&tip, &mut self.kv).await;
         // Error-resilience (§17): a failed fold is captured as a FoldFailed log event, not folded further.
         if let Some(reason) = out.failure {
+            // A fold failure (guest trap / fuel-exhaustion / instantiate error) — WARN, since it's an
+            // error-resilience event a supervisor watches for (the loop can't be bricked, §17, but the
+            // fold produced nothing). `reason` is the host's classification string, not guest data.
+            warn!(%reason, "reducer fold failed — captured as FoldFailed (no effects this turn)");
             self.append(
                 EventBody::FoldFailed {
                     reason,

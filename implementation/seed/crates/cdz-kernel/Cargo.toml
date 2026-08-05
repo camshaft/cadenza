@@ -60,6 +60,13 @@ cadenza-ast = { path = "../cadenza-ast" }
 # events to the shared AST (event_ast.rs). Same major cadenza-ast pins (0.4), so Cargo unifies to one
 # copy — no duplicate num-bigint in the tree.
 num-bigint = "0.4"
+# tracing — the structured-diagnostics FACADE for the kernel's drive loop (observability arc; v-ah-host
+# owns the tracing-subscriber that actually records/exports). The kernel only EMITS spans/events via this
+# facade and NEVER installs a subscriber — with no subscriber registered, every span/event is a cheap
+# no-op (a relaxed atomic load), so this adds observability with zero behavior change + zero cost to a
+# bare kernel. NO new dep floor: `tracing` (+ -core) is ALREADY in the tree transitively via wasmtime, so
+# this only promotes it to a direct dep. Facade only — tracing-subscriber stays out of the kernel.
+tracing = "0.1"
 # url — RFC-3986/WHATWG-compliant URL parser (Servo's) for host_of, which feeds HostIn capability authz
 # (SEC-F1). Operator directive (2026-08-01): STOP hand-rolling the authority parser — a bespoke parser
 # guarding an ALLOW-LIST is the worst place for edge-case bugs (every missed case was an authz BYPASS —
