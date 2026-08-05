@@ -1881,15 +1881,14 @@
   (call   main (: 5 Int64)) (output (: 101 Int64)))
 
 (case "a TWO-resume-site arm branching on a CAPTURED Map folds — the branch reads heap, not state"
-  (doc    "The SERVED face of the multi-resume-site boundary: an arm with two resume sites carrying
+  (doc    "The first-served face of the multi-resume-site family: an arm with two resume sites carrying
            DIFFERENT states per site — the hit path advances the count `(resume v (+ s 1))`, the miss path
-           holds it `(resume 0 s)` — folds through FOUR performs because its branch condition reads a
-           CAPTURED Map (`Map.lookup table k`), not the state binder. The sibling shape whose condition
-           reads STATE declines with ≥2 performs (that decline is pinned as a never-miscompile lib test).
-           Lookups: 1→100 (s→1), 7→miss→0 (s stays 1), 2→250 (s→2), then `hits` reports 2 → 100+0+250+2000
-           = 2350. Pins the captured-table routing idiom — a real-world lookup-with-hit-count handler —
-           as folding today, and pins the boundary conjunct: it is WHAT THE CONDITION READS that gates
-           the fold, not the resume-site count.")
+           holds it `(resume 0 s)` — folds through FOUR performs, branching on a CAPTURED Map
+           (`Map.lookup table k`). (Historically the state-reading sibling declined and this captured-heap
+           face pinned the boundary; the two-hole refold re-anchor now serves state-reading conditions
+           too — the match-arm and state-condition faces are pinned nearby.) Lookups: 1→100 (s→1),
+           7→miss→0 (s stays 1), 2→250 (s→2), then `hits` reports 2 → 100+0+250+2000 = 2350. Pins the
+           captured-table routing idiom — a real-world lookup-with-hit-count handler.")
   (input  (do
             (effect St (op price (-> Int64 Int64)) (op hits (-> Unit Int64)))
             (def (main (: n Int64))
@@ -1904,6 +1903,96 @@
                   (+ (St.price 1) (+ (St.price 7) (+ (St.price 2) (* 1000 (St.hits))))))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 2350 Int64)))
+
+(case "a two-site arm branching on the STATE folds (the refold re-anchor serves state-reading conditions)"
+  (doc    "Historically THE decline face of the multi-site family — `(if (> s 0) …)` reads the state binder
+           and the arm resumes in both branches — now served by the two-hole refold re-anchor (the
+           #2305-era fix; condition-agnostic). Seed 7 never changes (`(resume v s)` / `(resume -1 s)`), so
+           both reads take the true branch: 5 + 10·6 = 65. The never-miscompile lib pin asserts this same
+           fold; the corpus case pins it end-to-end on all three targets.")
+  (input  (do
+            (effect Src (op read (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle Src 7
+                ((read (v) s (if (> s 5) (resume v s) (resume (- 0 1) s))))
+                (+ (Src.read n) (* 10 (Src.read (+ n 1))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 65 Int64)))
+
+(case "a two-site arm branching on the OP ARGUMENT with a hit-count state folds (threshold sift)"
+  (doc    "The op-argument face of the served multi-site family: `(if (> v 10) …)` reads the op PARAM;
+           the pass path resumes the value and counts it, the fail path resumes 0 and holds. Three sifts
+           (20 pass, 5 fail, 30 pass) then the count: 20 + 0 + 30 + 2·1000 = 2050. With the state-reading
+           face above and the captured-heap face before it, the family folds regardless of WHAT the
+           condition reads.")
+  (input  (do
+            (effect St (op sift (-> Int64 Int64)) (op count (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St 0
+                ((sift (v) s (if (> v 10) (resume v (+ s 1)) (resume 0 s)))
+                 (count (u) s (resume s s)))
+                (+ (St.sift 20) (+ (St.sift n) (+ (St.sift 30) (* 1000 (St.count)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 2050 Int64)))
+
+(case "a two-site arm whose condition reads the ARG AND the STATE together folds"
+  (doc    "The compound face: `(> v s)` compares the op argument against the CURRENT state, so the branch
+           decision itself depends on how many hits came before — sift 5 at s=0 passes (s→1), sift 0 at
+           s=1 fails, sift 3 at s=1 passes (s→2): 5 + 0 + 3 + 2·1000 = 2008. The strongest single witness
+           that the refold's re-anchored continuation sees the LIVE state at every dispatch.")
+  (input  (do
+            (effect St (op sift (-> Int64 Int64)) (op count (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St 0
+                ((sift (v) s (if (> v s) (resume v (+ s 1)) (resume 0 s)))
+                 (count (u) s (resume s s)))
+                (+ (St.sift n) (+ (St.sift 0) (+ (St.sift 3) (* 1000 (St.count)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 2008 Int64)))
+
+(case "a multi-site arm folds while the handle BODY reads an enclosing binding (the re-anchored free var)"
+  (doc    "REPRO of the body-free-var orphan (breaker pm-family; fixed by the two-hole refold re-anchor):
+           with a two-site arm and ≥2 performs, the multi-perform continuation-rebuild used to copy the
+           surrounding body WITHOUT re-anchoring `n`, so this valid program hit a false CDZ0101 'unbound
+           name n'. Now `n` resolves up the original chain: 5 + 100 + 111 + 111 = 327. The single-perform
+           and single-site siblings never broke; ≥2 performs × multi-site × a body free-var was the exact
+           conjunct.")
+  (input  (do
+            (effect St (op price (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle St 0
+                ((price (k) s (if (> k 1) (resume 111 (+ s 1)) (resume 100 s))))
+                (+ n (+ (St.price 1) (+ (St.price 7) (St.price 2))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 327 Int64)))
+
+(case "a LET-bound local (not a param) survives the multi-site continuation rebuild"
+  (doc    "The let-binder face of the body-free-var repro above: `m = n·2` is a derived local read after
+           three performs through a two-site arm. The orphan hit ANY enclosing binder (params and lets
+           alike); the re-anchor restores both. 10 + 100 + 111 + 111 = 332.")
+  (input  (do
+            (effect St (op price (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (let ((m (* n 2)))
+                (handle St 0
+                  ((price (k) s (if (> k 1) (resume 111 (+ s 1)) (resume 100 s))))
+                  (+ m (+ (St.price 1) (+ (St.price 7) (St.price 2)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 332 Int64)))
+
+(case "a two-site arm with HEAP resume values (empty vs two-element list) folds"
+  (doc    "The heap-payload face of the served multi-site family: the branches resume DIFFERENT list
+           shapes — `(list v v)` on pass, `(list)` on fail — and the body consumes lengths at place
+           values: grab 5 → len 2, grab 1 → len 0, grab 4 → len 2 → 2 + 0 + 200 = 202. Pins that the
+           refold is not scalar-only: each dispatch's resume value allocates (or not) per its own branch.")
+  (input  (do
+            (effect St (op grab (-> Int64 (List Int64))))
+            (def (main (: n Int64))
+              (handle St 0
+                ((grab (v) s (if (> v 1) (resume (list v v) (+ s 1)) (resume (list) s))))
+                (+ (List.len (St.grab n)) (+ (* 10 (List.len (St.grab 1))) (* 100 (List.len (St.grab 4)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 202 Int64)))
 
 ; A do-local value def in a handle body must stay in scope for a perform's ARGUMENT (breaker FINDING;
 ; v-effects e49c698a1). The handle-body folds dropped non-final do-items and re-spliced only a survivor,

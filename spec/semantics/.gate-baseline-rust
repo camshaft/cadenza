@@ -670,6 +670,7 @@ pass	a LEB128 final byte is the shifted remainder masked to seven bits
 pass	a LEB128 non-final byte composes mask, continuation bit, and truncation
 pass	a LET shadow of a do-def heap binding closes its scope and the do-def survives
 pass	a LET-bound escaping-effect closure returned from a host block cannot cross the host boundary
+pass	a LET-bound local (not a param) survives the multi-site continuation rebuild
 pass	a LET-bound outer perform under an inner handle threads its state advance
 pass	a LIST OF SUMS resumed from a handler feeds an event-sourcing fold in the body
 pass	a LIST built in the handle body from perform results crosses the handle exit live
@@ -2259,6 +2260,7 @@ pass	a multi-payload variant with MIXED-width, MIXED-type payloads deconstructs 
 pass	a multi-payload variant with a scalar AND two recursive payloads escapes flat
 pass	a multi-payload variant with an EMPTY-Map first payload compiles + deconstructs (function[27] regression pin)
 pass	a multi-segment bin concatenates mixed-width signed and unsigned segments in order
+pass	a multi-site arm folds while the handle BODY reads an enclosing binding (the re-anchored free var)
 pass	a multi-step kernel derivation composes several primitive rules into one theorem
 pass	a multi-use rope escapes a select through a Some shell and its twin survives the unwrap
 pass	a multi-use runtime Map do-def escapes an if-select and both CHAMP handles stay live
@@ -3647,6 +3649,10 @@ pass	a two-parameter sum whose variants use the parameters in different orders i
 pass	a two-payload constructor applied in curried form builds the variant
 pass	a two-payload sum escapes its second variant with a bare name
 pass	a two-sided squeeze refines to an exact point and folds an inner comparison — the intersection face of the point fact
+pass	a two-site arm branching on the OP ARGUMENT with a hit-count state folds (threshold sift)
+pass	a two-site arm branching on the STATE folds (the refold re-anchor serves state-reading conditions)
+pass	a two-site arm whose condition reads the ARG AND the STATE together folds
+pass	a two-site arm with HEAP resume values (empty vs two-element list) folds
 pass	a two-step seed sequence advances (successive draws differ)
 pass	a two-variant enum match with constant arms dispatches branchlessly — first variant
 pass	a two-variant enum match with constant arms dispatches branchlessly — second variant
