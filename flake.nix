@@ -692,6 +692,15 @@
             # Feed the pre-built, pre-validated reducer-guest component (my derivation) so the env-gated
             # component-reducer e2e RUNS instead of skipping.
             export REDUCER_GUEST_COMPONENT="${reducerGuest}"
+            # seq-144 last piece: feed the compiled B1 CADENZA reducer component + the value-heap store so
+            # reducer_cadenza_b1_e2e.rs drives a REAL rcdzc-compiled reducer through apply_handle_lowered
+            # (asserts vec-len==0, empty effects) instead of skipping. b1 imports the value-heap runtime, so
+            # CDZ_STORE (my hash-keyed componentStore: <sha256hex>.wasm) is REQUIRED — the test FAILS LOUD if
+            # the reducer needs its heap but no store is provided (a silent skip there would hide broken
+            # wiring). Both come from my derivations (already built + validated). v-harness-bootstrap owns the
+            # fixture; v-agent-harness owns the test (landed on trunk); the env export is mine.
+            export REDUCER_CADENZA_COMPONENT="${reducerCadenzaB1}"
+            export CDZ_STORE="${componentStore}"
             cargo test --locked
             cargo clippy --all-targets --locked -- -D warnings
             cargo fmt --check
