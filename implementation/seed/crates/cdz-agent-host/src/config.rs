@@ -394,16 +394,29 @@ impl std::fmt::Display for ConfigError {
 }
 impl std::error::Error for ConfigError {}
 
-/// `true` if `addr` (`host:port`) resolves to a loopback address. FAIL-CLOSED: an unresolvable / unparseable
-/// address returns `false` (treated as non-loopback), so a bind we can't classify still requires the explicit
-/// `allow_non_loopback` opt-in rather than slipping through. Kept in `config` (always-on) so validation can
-/// enforce the prometheus posture without the `metrics-export-prometheus` feature (which has its own runtime
-/// copy for the boot warning).
+/// `true` only if `addr` (`host:port`) resolves to at least one address and EVERY resolved address is
+/// loopback. FAIL-CLOSED: an unresolvable/unparseable/empty address returns `false` (treated as non-loopback),
+/// and — critically — a name resolving to a MIX of loopback + non-loopback addresses is NOT loopback. Checking
+/// only the FIRST resolved address would let a mixed name (loopback first) pass the gate while
+/// `TcpListener::bind` could still bind the non-loopback address (a bypass of the `allow_non_loopback` opt-in;
+/// same multi-address class as the #2112 IPv6-first bind — #2160 review). Kept in `config` (always-on) so
+/// validation enforces the prometheus posture without the `metrics-export-prometheus` feature (which has its
+/// own runtime copy for the boot warning).
 fn bind_is_loopback(addr: &str) -> bool {
     use std::net::ToSocketAddrs;
-    addr.to_socket_addrs()
-        .map(|mut it| it.next().map(|a| a.ip().is_loopback()).unwrap_or(false))
-        .unwrap_or(false)
+    match addr.to_socket_addrs() {
+        Ok(mut addrs) => {
+            let mut any = false;
+            for a in &mut addrs {
+                any = true;
+                if !a.ip().is_loopback() {
+                    return false; // a mixed name with any non-loopback addr is NOT loopback
+                }
+            }
+            any // all resolved were loopback AND at least one existed
+        }
+        Err(_) => false, // unresolvable → fail-closed (needs the explicit opt-in)
+    }
 }
 
 impl DaemonConfig {
@@ -843,6 +856,32 @@ mod tests {
         )
         .expect("non-loopback bind with the opt-in validates");
         assert_eq!(cfg.observability.targets[0].kind(), "prometheus");
+    }
+
+    #[test]
+    fn bind_is_loopback_requires_all_resolved_addrs_loopback() {
+        // Literal loopback addresses classify loopback.
+        assert!(bind_is_loopback("127.0.0.1:9090"));
+        assert!(bind_is_loopback("[::1]:9090"));
+        // A non-loopback literal is not loopback.
+        assert!(!bind_is_loopback("0.0.0.0:9090"));
+        assert!(!bind_is_loopback("10.0.0.5:9090"));
+        // Fail-closed: unparseable/unresolvable → not loopback (needs the explicit opt-in).
+        assert!(!bind_is_loopback("not-a-bind-addr"));
+        assert!(!bind_is_loopback(""));
+        // The #2160-review invariant: the check is ALL-addrs, not first-addr. `localhost` typically resolves
+        // to both ::1 and 127.0.0.1 (all loopback) → loopback; but if it resolves to a non-loopback addr too,
+        // it must be classified non-loopback. We can only assert the all-loopback direction deterministically
+        // here (localhost → all loopback on a normal host); skip if localhost doesn't resolve.
+        use std::net::ToSocketAddrs;
+        if let Ok(addrs) = "localhost:9090".to_socket_addrs() {
+            let all_lo = {
+                let v: Vec<_> = addrs.collect();
+                !v.is_empty() && v.iter().all(|a| a.ip().is_loopback())
+            };
+            // Our classifier must agree with "all resolved are loopback".
+            assert_eq!(bind_is_loopback("localhost:9090"), all_lo);
+        }
     }
 
     #[test]
