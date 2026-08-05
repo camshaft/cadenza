@@ -68149,6 +68149,54 @@ mod stage1 {
     }
 
     #[test]
+    fn a_conditional_resume_arm_folds_with_one_perform_but_declines_cleanly_with_two() {
+        use crate::testkit::parse;
+        // CONDITIONAL-RESUME ARM × PERFORM-COUNT (breaker ob-family datapoint, 2026-08-05). A handler arm
+        // with a BRANCHING (two-site) resume — `(if (> s 5) (resume v s) (resume -1 s))` — is served by the
+        // tail-resumptive fold when the handle body performs the op ONCE, but currently DECLINES cleanly
+        // when the body performs it TWICE: the refold cannot re-serve a MULTI-SITE resume arm to a SECOND
+        // perform. This pins that the two-perform face is a CLEAN DECLINE, never a wrong value or crash.
+        // Arm: seed s=7, `(> s 5)` true → resumes the op arg `v`; state passed through unchanged (`s`), so
+        // every read sees s=7 and returns its argument. A future increment may fold the two-perform form;
+        // if it ever does, it must equal the value the semantics dictate, never miscompile.
+
+        // ONE perform: `(Src.read 5)` under seed 7 → arm resumes `v` = 5. Folds.
+        let one = "(do (effect Src (op read (-> Int64 Int64))) \
+                   (def (main (: n Int64)) \
+                     (handle Src 7 ((read (v) s (if (> s 5) (resume v s) (resume -1 s)))) \
+                       (Src.read n))) (export main))";
+        let one_bytes = compile_component(&crate::codec::encode(&parse(one)))
+            .expect("a conditional-resume arm with ONE perform folds");
+        assert_eq!(
+            run_returns_with::<i64>(&one_bytes, "main", &[wasmtime::component::Val::S64(5)]),
+            5,
+            "seed 7 > 5 → the arm resumes the op arg v = read's argument 5"
+        );
+
+        // TWO performs in the body, SAME branching arm. Today this declines cleanly (CDZ0101); a future
+        // fold must not miscompile. Guard: it must either decline OR, if it folds, run without crashing.
+        let two = "(do (effect Src (op read (-> Int64 Int64))) \
+                   (def (main (: n Int64)) \
+                     (handle Src 7 ((read (v) s (if (> s 5) (resume v s) (resume -1 s)))) \
+                       (+ (Src.read n) (* 10 (Src.read (+ n 1)))))) (export main))";
+        match compile_component(&crate::codec::encode(&parse(two))) {
+            // Clean decline — the current, expected behavior.
+            Err(e) => assert!(
+                e.code.as_deref() == Some("CDZ0101") || e.code.is_none(),
+                "the two-perform conditional-resume face must decline CLEANLY, got {:?}",
+                e.code
+            ),
+            // If a future increment folds it, both reads see seed 7 (state passed through unchanged), each
+            // resumes its own arg: read(5)=5, read(6)=6 → 5 + 10*6 = 65. Never a different value.
+            Ok(bytes) => assert_eq!(
+                run_returns_with::<i64>(&bytes, "main", &[wasmtime::component::Val::S64(5)]),
+                65,
+                "if the two-perform conditional-resume ever folds it must equal 65, never miscompile"
+            ),
+        }
+    }
+
+    #[test]
     fn a_performing_closure_folds_direct_but_never_miscompiles_through_an_indirect_call() {
         use crate::testkit::parse;
         // PERFORMING-CLOSURE × CALL-SITE (breaker cc-family datapoint, 2026-08-05). A closure that ITSELF
