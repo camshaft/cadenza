@@ -318,11 +318,13 @@ fn resolve_runtime(cli: &RunArgs, req: &crate::RuntimeReq) -> anyhow::Result<Vec
 /// # Store-address contract (the shared seam every store reader/writer must honor)
 ///
 /// This is the one address function for the seed/nix component store. Producers (`xtask`'s store
-/// writer, `cdz`'s `--store` output) and readers (this crate's [`resolve_nfc_from_store`] +
+/// writer, `cdz`'s `--store` output) and readers (this crate's `resolve_nfc_from_store` +
 /// runtime-dep resolver, the kernel's `component_store` per concierge ruling (A)) all address blobs
 /// with THIS function. A reader that content-verifies with a different primitive (e.g. the kernel's
 /// internal BLAKE3 `Hash::of`, which is for events/KV/blobs — NOT the on-disk store) will mismatch
-/// every fetch.
+/// every fetch. ("readers" above: `resolve_nfc_from_store` + the runtime-dep resolver in this crate's
+/// `lib.rs`, and the kernel's `component_store` in the `cdz-kernel` crate — cross-module, so named in
+/// plain code font, not intra-doc links.)
 ///
 /// - **Address:** SHA-256 of the component bytes, lowercase hex (64 chars).
 /// - **Store layout:** `<sha256hex>.wasm` per component + a `runtime.toml` manifest at the store root.
