@@ -522,7 +522,8 @@ fn compose_dep_into_linker<T: 'static>(
 
 /// The BARE inter-runtime interface a runtime component imports as its own dependency (FINDING#23): the
 /// value-heap runtime's world declares `import cadenza:nfc/normalize`, resolved from the store by the
-/// manifest name `nfc`. The interface's leaf (after the last `/`) is the `runtime.toml` manifest key.
+/// manifest name `nfc`. The `runtime.toml` manifest key is the PACKAGE segment (between `:` and `/`) = `nfc`
+/// — NOT the interface leaf after the last `/` (`normalize`).
 const NFC_IFACE: &str = "cadenza:nfc/normalize";
 
 /// Compose a dep's OWN transitive BARE imports into `dep_linker` before the dep is instantiated — the
@@ -530,8 +531,9 @@ const NFC_IFACE: &str = "cadenza:nfc/normalize";
 ///
 /// A "bare import" is an interface import with NO `+<hash>` build-metadata that the host doesn't itself
 /// serve — the runtime's `cadenza:nfc/normalize` is the one such today. It's resolved from the store BY
-/// NAME (the interface leaf, e.g. `nfc`) via [`ComponentStore::get_by_manifest_name`] (`runtime.toml`'s
-/// `nfc = "<hash>"` → `<hash>.wasm`), NOT by a `+<hash>` in the name (bare imports carry none). The
+/// NAME — the PACKAGE segment (between `:` and `/`), `nfc`, NOT the interface leaf `normalize` — via
+/// [`ComponentStore::get_by_manifest_name`] (`runtime.toml`'s `nfc = "<hash>"` → `<hash>.wasm`), NOT by a
+/// `+<hash>` in the name (bare imports carry none). The
 /// resolved component is itself a LEAF (nfc imports nothing) so it instantiates against a fresh empty
 /// linker; its interface funcs are forwarded into `dep_linker` under the import name (verbatim as
 /// [`compose_dep_into_linker`] forwards a dep). `None` store, or a dep with no bare store-resolvable
