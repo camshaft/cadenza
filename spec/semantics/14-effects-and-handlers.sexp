@@ -4310,6 +4310,49 @@
             (export main)))
   (call   main (: 7 Int64)) (output (: 214 Int64)))
 
+(case "the cross-handler op-arg lift fires 100 times inside a recursive accumulator loop"
+  (doc    "The SCALE face of the op-arg let-lift: `(B.put (A.get))` — the single-shot pin above — placed in a
+           100-iteration accumulator loop, with A's arm ADVANCING per read. Every iteration's lift must run
+           the foreign perform exactly once and thread the advance: the sum of A's reads 0..99 = 4950. A lift
+           that dropped an advance under recursion, re-ran a perform, or reordered across iterations shifts
+           the sum. The recursion companion of the sibling-args and depth-3 pins.")
+  (input  (do
+            (effect A (op get (-> Unit Int64)))
+            (effect B (op put (-> Int64 Int64)))
+            (def (loop (: n Int64) (: acc Int64))
+              (if (= n 0) acc (loop (- n 1) (+ acc (B.put (A.get))))))
+            (def (main (: k Int64))
+              (handle A 0
+                ((get (u) s (resume s (+ s 1))))
+                (handle B 0
+                  ((put (v) s (resume v s)))
+                  (loop k 0))))
+            (export main)))
+  (call   main (: 100 Int64)) (output (: 4950 Int64)))
+
+(case "a BRANCHING tree walk performs once per leaf at 200-leaf scale"
+  (doc    "Branching self-recursion × per-node performs (the recursive-perform pins are all LINEAR loops):
+           `walk` recurses into BOTH children of a user-sum tree (`(+ (walk a) (walk b))`), each LEAF
+           performing once in operand position. Over a 200-leaf spine the state must thread through every
+           branch junction: the walk sums the leaves (5 + 199·1 = 204) while 200 advances land, and the
+           trailing perform reads exactly 200 → 10·204 + 200 = 2240. A state fork or drop at any of the
+           199 junctions shifts one of the factors.")
+  (input  (do
+            (type Exp (Lit Int64) (Add Exp Exp))
+            (effect Cnt (op bump (-> Unit Int64)))
+            (def (build (: i Int64) (: e Exp))
+              (if (= i 0) e (build (- i 1) (Exp.Add e (Exp.Lit 1)))))
+            (def (walk (: e Exp))
+              (match e
+                ((Exp.Lit v) (+ v (* 0 (Cnt.bump))))
+                ((Exp.Add a b) (+ (walk a) (walk b)))))
+            (def (main (: n Int64))
+              (handle Cnt 0
+                ((bump (u) s (resume s (+ s 1))))
+                (+ (* 10 (walk (build n (Exp.Lit 5)))) (Cnt.bump))))
+            (export main)))
+  (call   main (: 199 Int64)) (output (: 2240 Int64)))
+
 (case "two performs as the two ARGUMENTS of a pure USER function thread the state left-to-right"
   (doc    "The performs sit in the argument list of a non-primitive, effect-free USER function, whose call
            evaluates its arguments left-to-right before applying — so the two reads are sequenced by the
