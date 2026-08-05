@@ -2012,3 +2012,34 @@
                              (* 10000 (if (< ab abc) 1 0)))))))))
             (export main)))
   (call   main (: 65 Int64)) (output (: 10321 Int64)))
+
+(case "Bytes.slice of a map-looked-up Bytes with perform-threaded start and len threads without a scratch collision"
+  (doc    "A `Bytes.slice` whose BYTES operand is looked up from a Map (an Option-returning lookup yielding a
+           Bytes) and whose START/LEN are perform results, under a resumptive handler. Pins a wasm-codegen
+           miscompile (v-wasm-opt-scouted, breaker-witnessed, 2026-08-05 — the sibling of the #2311
+           closure-CallIndirect scratch-alias): the looked-up-Bytes operand is a dup-site `Core::SumPayload`
+           whose Perceus retain floats its cell into a scratch slot typed i32; the `bytes-slice` emit ran all
+           three operands (bytes i32, start/len i64) at the SAME base (`base + 4`), so a perform-threaded i64
+           start/len materialized into that i32 slot → an i32/i64 collision (a wasm local has one type
+           function-wide) → `bytes-slice`'s function failed to validate (invalid module). Fix: each operand
+           emits at `(*high).max(base + 4)`, disjoint from the retain slot. table[1] = [10,20,30,40,50,60,70,80];
+           the `next` handler threads s=1,2 so start=1,len=2 → slice = [20,30], len 2, first byte 20 → 10·2+20 =
+           40. Correct on rust throughout (fold sound; the defect was purely wasm scratch allocation).")
+  (input  (do
+            (effect St (op next (-> Unit Int64)))
+            (def (main (: n Int64))
+              (do
+                (def table (Map.insert Map.empty 1 (Bytes.of (list 10 20 30 40 50 60 70 80))))
+                (handle St n
+                  ((next (u) s (resume s (+ s 1))))
+                  (match (Map.lookup table 1)
+                    ((Some bs)
+                      (match (Bytes.slice bs (St.next) (St.next))
+                        ((Some sl) (+ (* 10 (Bytes.len sl))
+                                      (match (Bytes.at sl 0)
+                                        ((Some b) (Int64.of b))
+                                        ((None _u) -1))))
+                        ((None _u) -100)))
+                    ((None _u) -200)))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 40 Int64)))
