@@ -131,8 +131,12 @@ def main() = List.len(apply({ family = "message", version = 1 }, None(), None())
       <P>
         A returned effect-request is <em>declarative</em>: the reducer doesn't perform the HTTP call, it
         hands the kernel a description of the work and returns. The kernel schedules it, and when it
-        completes, feeds the result back as a new event, a <em>resume</em>, carrying the <C>correlation</C>{" "}
-        tag. That's how a pure fold reaches the outside world without ever blocking inside the reducer.
+        completes, calls <C>apply</C> again with the <em>resumes</em> field set to that same{" "}
+        <C>correlation</C> tag, echoed back verbatim. The tag is the reducer's <em>own</em> token, not a
+        kernel-assigned id, so a later <C>apply</C> whose <C>resumes</C> matches the token you chose is the
+        completion of the request you made. That guest-chosen token is the only resume mechanism; a{" "}
+        <C>resumes</C> of <C>None</C> means "not a resume", an inbound message, not the answer to an earlier
+        request. That's how a pure fold reaches the outside world without ever blocking inside the reducer.
       </P>
 
       <H2>Deciding by event</H2>
@@ -189,6 +193,13 @@ def main() = List.len(apply({ family = "result", version = 1 }, None(), Some(Str
         <br />
         bind(Kv, "cadenza:agent-kernel/kv")
       </Note>
+      <P>
+        One syntax note if you write this out: a multi-argument operation like <C>put</C> uses the
+        arrow-form <C>{`\`->\`(Bytes, Bytes, Unit)`}</C> in real source, not <C>{`(Bytes, Bytes) -> Unit`}</C>.
+        The tuple-looking form above reads clearly but means <em>one</em> tuple argument; the arrow-form is
+        what makes <C>put</C> a genuine two-argument op (the fixture <C>reducer_b3.cdz</C> writes it that
+        way).
+      </P>
       <P>
         With that in place, the reducer <em>performs</em> the operations inside a <C>host</C> block, the
         scope where the effect may be used. On a message it reads the old counter, writes the new one, and
