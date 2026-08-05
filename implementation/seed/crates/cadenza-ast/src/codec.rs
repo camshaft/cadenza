@@ -1939,9 +1939,10 @@ mod tests {
         out
     }
 
-    /// Parse ONLY the import section (the 32-byte hashes right after the header's import count) of a
-    /// `\x00\x02` transport blob. Lets a test assert EXACTLY which dicts were imported without scanning the
-    /// whole blob for 32-byte windows (which could spuriously match leaf-payload bytes, not the imports).
+    /// Parse ONLY the import section (the `HASH_LEN`-byte hashes right after the header's import count) of
+    /// a `\x00\x02` transport blob. Lets a test assert EXACTLY which dicts were imported without scanning
+    /// the whole blob for `HASH_LEN`-byte windows (which could spuriously match leaf-payload bytes, not the
+    /// imports).
     fn parse_transport_imports(bytes: &[u8]) -> Vec<[u8; HASH_LEN]> {
         assert_eq!(&bytes[..8], &TRANSPORT_HEADER, "not a transport artifact");
         let mut r = leb128::Reader::new(&bytes[8..]);
