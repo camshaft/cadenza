@@ -1227,6 +1227,7 @@ pass	a closure capturing a heap map is applied twice and the map is read once mo
 pass	a closure capturing a runtime String ROPE reads its byte length at call time
 pass	a closure capturing a value computed under a handler may escape the handle applied directly
 pass	a closure capturing an inner-handled perform result is applied under an OUTER handler of the same effect
+pass	a closure capturing perform results escapes to NO handler at all and applies pure
 pass	a closure capturing two enclosing bindings folds through nested arithmetic
 pass	a closure capturing two enclosing bindings threads a multi-slot environment through a recursive HOF
 pass	a closure capturing two values is made and called by the host
@@ -1776,6 +1777,7 @@ pass	a guarded wildcard arm falls through to a tail-recursive call
 pass	a handle body reads an enclosing function parameter
 pass	a handle seeded from a runtime caller argument advances from that seed
 pass	a handle whose head names a value rather than an effect is rejected
+pass	a handle's RESULT seeds the NEXT handle of the same effect — explicit state handoff between instances
 pass	a handle's TUPLE value pairing a scalar with a built list escapes and is destructured
 pass	a handler ARM enumerates a 60-key trie op argument and resumes its fold
 pass	a handler SEEDED with a 40-key trie reads it across resumes
