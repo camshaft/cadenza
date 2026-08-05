@@ -3602,6 +3602,10 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
         }
 
         if hb_age.is_some() && age <= stale_after {
+            // Ticked recently on its OWN — healthy self-sustaining loop. Clear any consecutive-nudge
+            // streak: the agent proved its cron fires (reached this sweep within its stale window
+            // without a watchdog poke), so a prior streak must not accrue toward a dead-cron escalation.
+            clear_nudge_streak(fleet, &a.name);
             continue; // ticked recently — healthy.
         }
 
@@ -3657,7 +3661,11 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
         }
 
         if dry_run {
-            let action = rearm_action(rearm_age_secs(fleet, &a.name, now), hb_age);
+            let action = escalate_repeated_nudge(
+                rearm_action(rearm_age_secs(fleet, &a.name, now), hb_age),
+                consecutive_nudge_streak(fleet, &a.name),
+                REPEATED_NUDGE_ESCALATE_THRESHOLD,
+            );
             let how = match action {
                 RearmAction::NudgeContinue => "nudge `continue`",
                 RearmAction::ReissueLoop => "re-issue `/loop` (prior nudge didn't stick)",
@@ -3677,7 +3685,13 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
         // this agent and it has NOT heartbeated since (the no-cron fresh-mint signature). Passing
         // `hb_age` (not just "ever re-armed") avoids mis-escalating a healthy agent that was nudged once
         // long ago, recovered, and is now merely slow — its rearm marker is never cleared.
-        let action = rearm_action(rearm_age_secs(fleet, &a.name, now), hb_age);
+        // Base decision, then override to ReissueLoop if we've nudged this agent repeatedly without its
+        // cron self-sustaining (dead-cron-masked-by-nudge-heartbeat — see `escalate_repeated_nudge`).
+        let action = escalate_repeated_nudge(
+            rearm_action(rearm_age_secs(fleet, &a.name, now), hb_age),
+            consecutive_nudge_streak(fleet, &a.name),
+            REPEATED_NUDGE_ESCALATE_THRESHOLD,
+        );
         let sent = match action {
             RearmAction::NudgeContinue => rearm_window(&session, &a.name, &a.interval),
             RearmAction::ReissueLoop => {
@@ -3687,6 +3701,9 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
         };
         if sent {
             stamp_rearm(fleet, &a.name);
+            // Track the consecutive-nudge streak: a `continue` increments it (another poke the cron
+            // didn't self-sustain past); a `/loop` re-issue resets it (cron armed fresh).
+            record_nudge_streak(fleet, &a.name, matches!(action, RearmAction::NudgeContinue));
             rearmed += 1;
             match action {
                 RearmAction::NudgeContinue => println!(
@@ -4122,6 +4139,40 @@ fn stamp_rearm(fleet: &Fleet, name: &str) {
     let dir = fleet.root.join("rearm");
     std::fs::create_dir_all(&dir).ok();
     std::fs::write(dir.join(name), "rearm\n").ok();
+}
+
+/// The count of CONSECUTIVE watchdog `continue`-nudges to this agent (contents of
+/// `.claude/fleet/nudge-streak/<name>`, or 0 if absent/unparseable) — the dead-cron-vs-healthy signal
+/// `escalate_repeated_nudge` keys on. Incremented each nudge, RESET to 0 whenever the agent proves its
+/// own cron fires (see `record_nudge_streak`) or when we re-issue `/loop` (the cron is armed fresh).
+fn consecutive_nudge_streak(fleet: &Fleet, name: &str) -> u32 {
+    std::fs::read_to_string(fleet.root.join("nudge-streak").join(name))
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0)
+}
+
+/// Update the consecutive-nudge streak after re-arming `name`. `nudged=true` (a `continue`) INCREMENTS
+/// the streak (another poke the agent didn't self-sustain past); `nudged=false` (a `/loop` re-issue)
+/// RESETS it to 0 — the cron is armed fresh, so the streak restarts. The streak is also reset elsewhere
+/// when the agent survives well past its stale window without needing a re-arm (a self-sustained tick
+/// proves the cron fires). Best-effort (a missed write just risks one extra nudge before escalating).
+fn record_nudge_streak(fleet: &Fleet, name: &str, nudged: bool) {
+    let dir = fleet.root.join("nudge-streak");
+    std::fs::create_dir_all(&dir).ok();
+    let next = if nudged {
+        consecutive_nudge_streak(fleet, name).saturating_add(1)
+    } else {
+        0
+    };
+    std::fs::write(dir.join(name), format!("{next}\n")).ok();
+}
+
+/// Clear the consecutive-nudge streak for `name` (delete `.claude/fleet/nudge-streak/<name>`) — called
+/// when the agent is NOT stale this sweep, i.e. it heartbeated within its stale window on its OWN
+/// (a self-sustaining cron), so any prior nudge-streak is stale and must not accrue toward escalation.
+fn clear_nudge_streak(fleet: &Fleet, name: &str) {
+    std::fs::remove_file(fleet.root.join("nudge-streak").join(name)).ok();
 }
 
 /// Age in seconds since we last notified the concierge that this agent is context-WEDGED (mtime of
@@ -5142,6 +5193,45 @@ fn rearm_action(rearm_age: Option<u64>, hb_age: Option<u64>) -> RearmAction {
         (Some(_), _) => RearmAction::ReissueLoop,
     }
 }
+
+/// Override a `NudgeContinue` verdict to `ReissueLoop` when the agent has been NUDGED REPEATEDLY without
+/// its own `/loop` cron taking over — the DEAD-CRON-MASKED-BY-NUDGE-HEARTBEAT case that `rearm_action`
+/// alone can't see (concierge 2026-08-05: v-lsp/v-discrete-event-sim/v-value-facts re-armed every
+/// ~40min at ~2620s idle, running PURELY on watchdog re-arms).
+///
+/// Why `rearm_action` misses it: its `(Some ra, Some hb) if hb < ra → NudgeContinue` arm reads
+/// "heartbeated since the re-arm" as "healthy self-sustaining loop". But a `continue` nudge ITSELF
+/// stamps a heartbeat + runs one tick, so an agent whose cron genuinely DROPPED always shows
+/// `hb < ra` next sweep → another cheap nudge → forever, its cron never re-armed. The nudge's own
+/// heartbeat masks the dead cron (same class as the `(None,None)` fresh-mint, but slipping through the
+/// recovered-agent arm). The distinguishing signal is CADENCE, not a single (rearm,hb) pair: a healthy
+/// loop ticks on its OWN interval and never reaches the stale window; a dead-cron agent reaches it every
+/// time and only advances when the watchdog pokes it — i.e. it accrues CONSECUTIVE nudges.
+///
+/// So: if this stall would be a `NudgeContinue` AND we've already nudged this agent `>= threshold`
+/// consecutive times (streak not reset by a genuine self-sustained recovery — see
+/// `consecutive_nudge_streak`), escalate to `ReissueLoop` to arm a real cron instead of nudging a
+/// dead one again. Pure so the escalation is unit-tested without fs/tmux.
+fn escalate_repeated_nudge(
+    base: RearmAction,
+    consecutive_nudges: u32,
+    threshold: u32,
+) -> RearmAction {
+    match base {
+        // Only the cheap-nudge verdict is subject to the streak override; an already-escalated
+        // ReissueLoop stays as-is (it arms the cron this sweep, which resets the streak anyway).
+        RearmAction::NudgeContinue if consecutive_nudges >= threshold => RearmAction::ReissueLoop,
+        other => other,
+    }
+}
+
+/// Consecutive-nudge threshold at which `escalate_repeated_nudge` re-issues `/loop` instead of nudging
+/// again. 2 = the second time we'd nudge an agent that a prior nudge already "recovered" (heartbeated)
+/// yet is stale AGAIN at ~one stale-window later ⟹ its cron isn't self-firing (a healthy loop would
+/// have ticked on its own interval and never returned to the stale window). Low enough to arm a real
+/// cron within ~2 sweeps of the dead-cron pattern, high enough that a single genuinely-missed tick
+/// (streak 1) still gets the cheap nudge first.
+const REPEATED_NUDGE_ESCALATE_THRESHOLD: u32 = 2;
 
 /// Build the recurring tick prompt the watchdog passes when it re-issues `/loop` for a stalled agent.
 /// Mirrors `window.sh`'s kickoff TICK recipe (heartbeat → drain inbox → one gated unit of work) so a
@@ -10835,6 +10925,29 @@ mod tests {
         // (hb_age 60 < rearm_age 3600) must get a cheap nudge on a fresh stall — NOT a `/loop` re-issue.
         // The rearm marker is never cleared, so keying on "ever re-armed" would wrongly escalate here.
         assert_eq!(rearm_action(Some(3600), Some(60)), NudgeContinue);
+    }
+
+    #[test]
+    fn repeated_nudge_escalates_a_dead_cron_masked_by_nudge_heartbeats() {
+        use RearmAction::*;
+        let t = REPEATED_NUDGE_ESCALATE_THRESHOLD; // 2
+        // The concierge case (v-lsp/v-des/v-value-facts): rearm_action keeps returning NudgeContinue
+        // (hb < ra, because each nudge stamps a heartbeat), so the base verdict alone loops forever.
+        // Once the CONSECUTIVE-nudge streak reaches the threshold, escalate to arm a real cron.
+        assert_eq!(escalate_repeated_nudge(NudgeContinue, 0, t), NudgeContinue); // first stall → nudge
+        assert_eq!(escalate_repeated_nudge(NudgeContinue, 1, t), NudgeContinue); // one prior nudge → still nudge
+        assert_eq!(escalate_repeated_nudge(NudgeContinue, 2, t), ReissueLoop); // 2nd consecutive → dead cron, re-issue
+        assert_eq!(escalate_repeated_nudge(NudgeContinue, 5, t), ReissueLoop); // well past → re-issue
+        // An already-escalated ReissueLoop is never downgraded, regardless of streak.
+        assert_eq!(escalate_repeated_nudge(ReissueLoop, 0, t), ReissueLoop);
+        assert_eq!(escalate_repeated_nudge(ReissueLoop, 9, t), ReissueLoop);
+        // Boundary: exactly at the threshold escalates; one below stays a nudge (a single genuinely-
+        // missed tick — streak 1 — still gets the cheap nudge first, not an immediate re-issue).
+        assert_eq!(
+            escalate_repeated_nudge(NudgeContinue, t - 1, t),
+            NudgeContinue
+        );
+        assert_eq!(escalate_repeated_nudge(NudgeContinue, t, t), ReissueLoop);
     }
 
     #[test]
