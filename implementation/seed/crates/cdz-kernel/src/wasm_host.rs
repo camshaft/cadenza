@@ -806,8 +806,20 @@ impl<T: 'static> HeapHandle<T> {
 
     /// Build a value-heap `Bytes` handle from a Rust byte slice — `bytes-alloc(len)` then a `bytes-set` per
     /// byte (threading the handle). The marshalling convenience for an `Option<Bytes>` payload's Some arm.
+    ///
+    /// The slice length is range-checked to `u32` UP FRONT (`u32::try_from`): the value-heap's `bytes-*`
+    /// shape carries a `u32` length, so a `> u32::MAX` slice cannot fit. Truncating (`data.len() as u32`)
+    /// would silently under-allocate and then let the `i as u32` loop index wrap and write PAST the buffer,
+    /// corrupting the guest value-heap (#2151). Failing loud here keeps the loop index provably in-bounds
+    /// (`i < len ≤ u32::MAX`) — symmetric with [`HeapHandle::read_bytes`]'s defensive byte check.
     pub fn bytes_from(&mut self, data: &[u8]) -> Result<u32, ComponentError> {
-        let mut buf = self.bytes_alloc(data.len() as u32)?;
+        let len = u32::try_from(data.len()).map_err(|_| {
+            ComponentError::Trap(format!(
+                "bytes_from: slice of {} bytes too large for a u32 value-heap length",
+                data.len()
+            ))
+        })?;
+        let mut buf = self.bytes_alloc(len)?;
         for (i, &b) in data.iter().enumerate() {
             buf = self.bytes_set(buf, i as u32, b)?;
         }
