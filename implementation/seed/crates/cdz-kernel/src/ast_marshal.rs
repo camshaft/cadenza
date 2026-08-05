@@ -1155,7 +1155,7 @@ mod tests {
     // NESTED compound round-trips (v-syntax review F3, LOW): all other round-trips are single-level, so the
     // build_val/build_from_ast recursion is only transitively covered. Lock it in both directions: a record
     // with list + option fields, and a list-of-lists (list<list<string>>) — see the note below on why
-    // list-of-lists rather than list-of-record.
+    // a list-of-lists rather than a list-of-records.
     #[test]
     fn ast_to_val_round_trips_nested_compounds() {
         // `ast_to_val` reconstructs record fields in the target WIT type's FIELD ORDER, so build the
