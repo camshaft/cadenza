@@ -486,80 +486,24 @@ jobs:
         run: nix build .#checks.x86_64-linux.bench-check --print-build-logs
 
   guide-examples:
-    # PRE-MERGE gate for the guide's runnable content. pages.yml runs the SAME checks but only
-    # `on: push:[main]` — i.e. AFTER merge, where a broken example surfaces as a red Pages deploy
-    # that can never block. This job mirrors pages.yml's build (minus the deploy) so a PR that
-    # ships an example which doesn't compile/run — or breaks the guide build — CANNOT merge. Keep it
-    # in lockstep with pages.yml's "Build site" step; if that gains a check, add it here too.
-    #
-    # aarch64 for the same runtime-hash reason as `gate`/`codegen`/pages.yml: the guide bundles the
-    # value-heap runtime whose content hash the compiler pins, reproducible per-arch only.
+    # PRE-MERGE gate for the guide's runnable content (mirrors pages.yml's build, minus the deploy, but
+    # BLOCKS the merge — a PR shipping an example that doesn't compile/run, or breaking the guide build,
+    # can't merge). Full-CI-in-nix cutover (Model A): the body runs the HERMETIC nix `guide-examples`
+    # check, which replicates wasm-pack (cargo build --target wasm32-unknown-unknown + a PINNED
+    # wasm-bindgen CLI + a PINNED wasm-opt from pkgs.binaryen — NO github download) then runs the exact
+    # npm battery (test:unit → prose → diagnostics → examples → calculator → worker-stack →
+    # tuple-collection → cad-preload → music-preload → build → bundle) + stages the value-heap runtime
+    # from the nix component store. Keeping `name: guide examples` leaves the required context
+    # `checks / guide examples` unchanged (no ruleset edit). Pinning binaryen in the flake KILLS the
+    # gate-time binaryen-download flake (operator Slack seq 142: "include binaryen as part of the nix
+    # flake instead of downloading arbitrary binaries at build time").
+    #   aarch64 (ubuntu-24.04-arm): the guide bundles the value-heap runtime whose content hash is
+    #   arch-specific → the nix check is checks.aarch64-linux.guide-examples.
+    #   Keep in lockstep with pages.yml's build; if that gains a check, add it to the nix check too.
     name: guide examples
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v7
-      - uses: ./.github/actions/setup-rust
-        with:
-          wasm-tools: "true"
-          cache-key: guide-examples
-      - name: Install wasm-pack
-        run: cargo binstall -y --force wasm-pack
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: guide/package-lock.json
-      # Build the runtime store + stage the browser compiler wasm the examples run against
-      # (same two steps pages.yml runs before its site build).
-      - name: Build value-heap runtime
-        run: cargo xtask build
-      - name: Build & stage guide wasm
-        run: cargo xtask guide-wasm
-      # Verify every example compiles + every graded exercise runs, the calculator checks pass, and
-      # the site builds — the exact gate pages.yml applies, but here it BLOCKS the merge.
-      - name: Check guide examples + build site
-        working-directory: guide
-        env:
-          VITE_BASE: /${{ github.event.repository.name }}/
-        run: |
-          npm ci
-          # Fast, browser/wasm-free unit tests first (node --test, type-stripping; needs node >=22.6,
-          # which node-version:22 resolves to) — a pure-logic regression (wrap/strip, applyFix byte
-          # splice, offset conversion, share round-trip, calculator classify, chapter-registry sync)
-          # fails the merge here before the slower jco example run.
-          npm run test:unit
-          # Lint the guide PROSE for invented @annotations (the run-every-example harness only validates
-          # <Runnable> code; a fake API named in prose — like the property-testing @property that once
-          # shipped — would otherwise slip). Fast text scan, no wasm.
-          npm run check:prose
-          # Pin the EXACT compiler diagnostics the guide PROSE quotes (e.g. SizedIntegers leans on the
-          # bare-Int CDZ0203 "width constructor … use Int64" wording). expect="error" Runnables assert only
-          # THAT a snippet declines, not WHAT it says, so a diagnostic reword can silently drift chapter
-          # prose (it did, 4x). This asserts the pinned messages still contain their load-bearing phrases.
-          npm run check:diagnostics
-          npm run check:examples
-          npm run check:calculator
-          # Compiler-conformance guards that a per-example check can't cover, each catching a fleet-wide
-          # regression a reader would otherwise hit in the browser:
-          #  - worker-stack: a module-qualified program must compile in a constrained-stack worker (a deep
-          #    recursion that overflows ONLY the browser worker — check:examples runs main-thread + misses it).
-          #  - tuple-collection: a runtime-built collection nested in a tuple must cross the host boundary +
-          #    render (self-activating — SKIPs if the compiler feature regresses to the known decline, ASSERTs
-          #    the rendered value otherwise). Guards the "show data + result" example pattern.
-          #  - cad-preload: the /cad route compiles a bare model against the PRELOADED CAD library
-          #    (compile_with_preloaded) + the preload-aware linter resolves the vocab (diagnostics_with_preloaded).
-          #    check-examples uses self-contained programs, not preloaded; check-visual (browser) isn't in CI.
-          npm run check:worker-stack
-          npm run check:tuple-collection
-          npm run check:cad-preload
-          #  - music-preload: the /music route compiles each bare showcase against the PRELOADED music libs
-          #    (compile_with_preloaded) + runs the piece → asserts a non-empty BALANCED MIDI event stream
-          #    (the no-stuck-keys correctness payoff). Same rationale as cad-preload (self-contained examples
-          #    + the browser page don't cover the preloaded-lib run path in CI).
-          npm run check:music-preload
-          npm run build
-          # First-paint bundle guard (reads the fresh dist/ from the build above): the entry chunk stays
-          # under the size ceiling AND heavy deps (KaTeX) stay lazy (out of the entry). Catches a static
-          # import of a big lib leaking into every reader's first paint — a silent perf regression a
-          # per-example check can't see. MUST run after `npm run build` (needs dist/assets).
-          npm run check:bundle
+      - uses: DeterminateSystems/nix-installer-action@v22
+      - name: guide examples (via nix — hermetic, pinned binaryen/wasm-bindgen)
+        run: nix build .#checks.aarch64-linux.guide-examples --print-build-logs
