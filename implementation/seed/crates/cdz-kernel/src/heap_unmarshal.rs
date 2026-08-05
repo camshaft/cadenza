@@ -3,8 +3,11 @@
 //!
 //! In the option-C handle-lowered MODE, a Cadenza reducer's `fold.apply` returns its `list<effect-request>`
 //! as a single `u32` handle into the shared `cadenza:runtime/heap` value-heap (the spec's handle exchange).
-//! WHEN a reducer is invoked that way, the host projects that handle back into the kernel's
-//! `Vec<EffectRequest>` before authorizing/dispatching — this module is that read-direction bridge, driving
+//! WHEN a reducer is invoked that way, the host projects that handle back into a
+//! `Vec<`[`wasm_host::EffectRequest`](crate::wasm_host::EffectRequest)`>` — the WIT-generated
+//! component-boundary type, NOT the kernel's public [`crate::effect::EffectRequest`] (the two are distinct;
+//! the fold path converts the boundary type to the kernel struct, as `ComponentReducer` already does for
+//! the WIT-structural path). This module is that read-direction bridge, driving
 //! [`HeapHandle`]'s public read ops (vec-len / vec-get / arr-get / get-int / str-get / sum-disc /
 //! sum-payload / read-bytes). Like its build-direction dual [`crate::heap_marshal`], it is a tested helper
 //! staged AHEAD of its wiring: the current live boundary is still [`crate::wasm_host`]'s WIT-structural
@@ -110,9 +113,11 @@ fn read_effect_request<T>(
     })
 }
 
-/// Project a reducer's returned `list<effect-request>` value-heap handle into the kernel's
-/// `Vec<EffectRequest>`. Walks the vec (`vec-len` + `vec-get(i)`) and reads each element record — the whole
-/// read-direction output of the fold-boundary rebind, ready for the drive loop to authorize + dispatch.
+/// Project a reducer's returned `list<effect-request>` value-heap handle into a
+/// `Vec<`[`EffectRequest`]`>` — the WIT-generated [`wasm_host::EffectRequest`](crate::wasm_host::EffectRequest)
+/// component-boundary type (NOT the kernel's [`crate::effect::EffectRequest`]; the fold path converts).
+/// Walks the vec (`vec-len` + `vec-get(i)`) and reads each element record — the whole read-direction output
+/// of the fold-boundary rebind, ready for the drive loop to authorize + dispatch.
 pub fn read_effect_requests<T>(
     heap: &mut HeapHandle<T>,
     list: u32,
