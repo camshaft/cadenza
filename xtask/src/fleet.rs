@@ -3609,7 +3609,7 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
             // unconditional clear reset the streak between every nudge → it never reached the escalation
             // threshold (the trio stayed re-armed forever). Gate the clear on "last re-arm older than a
             // full stale_after window" so a nudge-produced freshness does NOT wipe the accruing streak.
-            if should_clear_nudge_streak(rearm_age_secs(fleet, &a.name, now), stale_after) {
+            if should_clear_nudge_streak(rearm_age_secs(fleet, &a.name, now), hb_age, interval) {
                 clear_nudge_streak(fleet, &a.name, dry_run);
             }
             continue; // ticked recently — healthy.
@@ -5267,21 +5267,29 @@ const REPEATED_NUDGE_ESCALATE_THRESHOLD: u32 = 2;
 /// `escalate_repeated_nudge` can never trip. The trio (v-lsp/v-des/v-value-facts) stayed re-armed forever
 /// for exactly this reason — the streak-clear was too eager, undoing the counter it was meant to feed.
 ///
-/// The discriminator is the STALE WINDOW, not the bare interval: clear only if the last re-arm is OLDER
-/// than one full `stale_after` window (or there's no re-arm at all). Why stale_after and not interval:
-/// a DEAD-CRON agent goes stale (`hb_age` reaches `stale_after`) and gets RE-NUDGED right at the stale
-/// boundary, so its `rearm_age` at any FRESH sweep is always < `stale_after` — it never reaches a fresh
-/// sweep with `rearm_age > stale_after`, so its streak is never cleared and keeps accruing to the
-/// escalation threshold. A genuinely SELF-TICKING agent, by contrast, keeps heartbeating on its own
-/// interval, so its `rearm_age` grows UNBOUNDED past `stale_after` (the nudge recedes into the past)
-/// while it stays fresh → the streak clears, correctly. (An `interval` threshold would wrongly clear a
-/// dead-cron agent during the ~grace window between `rearm_age` crossing the interval and the agent
-/// going stale — the bug the concierge saw.) If never re-armed (`rearm_age` = None), any freshness is
-/// self-produced → clear. Pure so the reset rule is unit-tested without fs.
-fn should_clear_nudge_streak(rearm_age: Option<u64>, stale_after_secs: u64) -> bool {
-    match rearm_age {
-        None => true, // never nudged → any freshness is genuinely self-produced.
-        Some(ra) => ra > stale_after_secs, // nudge receded past a full stale window → the cron self-ticks.
+/// The discriminator (CORRECTED round 3, concierge 2026-08-05 — a `stale_after` threshold STILL cleared
+/// the trio): compare HEARTBEAT age to RE-ARM age. On the idle-re-arm path the re-arm and the heartbeat
+/// are stamped TOGETHER (the nudge ticks the agent), so a dead-cron agent's `hb_age ≈ rearm_age` — they
+/// age in LOCKSTEP. So ANY absolute-rearm-age threshold (interval OR stale_after) is crossed by BOTH at
+/// once → the clear fires right before the next re-arm → streak wiped → never reaches escalation. Only
+/// the DIFFERENCE distinguishes them: a genuinely SELF-TICKING agent heartbeats on its OWN interval, so
+/// its latest heartbeat is meaningfully NEWER than the last re-arm (`rearm_age - hb_age ≳ interval`: a
+/// self-tick landed AFTER the nudge). A dead-cron agent's newest heartbeat IS the nudge's inline tick →
+/// `rearm_age - hb_age ≈ 0`. Clear only if `rearm_age >= hb_age + interval` (self-tick since the nudge),
+/// or never re-armed. Never-heartbeated-since-rearm → keep the streak (not self-sustaining). Pure so the
+/// reset rule is unit-tested without fs.
+fn should_clear_nudge_streak(
+    rearm_age: Option<u64>,
+    hb_age: Option<u64>,
+    interval_secs: u64,
+) -> bool {
+    match (rearm_age, hb_age) {
+        (None, _) => true, // never re-armed → any freshness is genuinely self-produced.
+        (Some(_), None) => false, // re-armed, never heartbeated → not self-sustaining, keep the streak.
+        // Clear only if the heartbeat is ≥ one interval NEWER than the re-arm — i.e. the cron fired on
+        // its OWN after the nudge (a self-tick). A dead-cron agent's hb_age ≈ rearm_age (both from the
+        // nudge's own inline tick, aging in lockstep) → false → the streak stands + accrues to escalate.
+        (Some(ra), Some(hb)) => ra >= hb.saturating_add(interval_secs),
     }
 }
 
@@ -11003,21 +11011,32 @@ mod tests {
     }
 
     #[test]
-    fn nudge_streak_clears_only_on_genuine_self_produced_freshness() {
-        let stale = 2400; // e.g. a 30m agent's stale window
+    fn nudge_streak_clears_only_when_heartbeat_is_a_self_tick_after_the_nudge() {
+        let interval = 1800; // 30m agent
         // Never re-armed → any fresh heartbeat is self-produced → clear.
-        assert!(should_clear_nudge_streak(None, stale));
-        // THE POST-#2250 BUG THIS FIXES: a dead-cron agent nudged recently looks fresh for the whole
-        // ~stale window; its rearm_age at a fresh sweep is always < stale_after (it re-goes-stale + gets
-        // re-nudged AT the boundary), so we must NOT clear — else the streak resets between every nudge
-        // and never reaches the escalation threshold.
-        assert!(!should_clear_nudge_streak(Some(120), stale)); // just nudged (past grace) → don't clear
-        assert!(!should_clear_nudge_streak(Some(1800), stale)); // interval elapsed but < stale → still don't
-        assert!(!should_clear_nudge_streak(Some(2400), stale)); // exactly at stale boundary → not yet
-        // A genuinely SELF-TICKING agent keeps heartbeating on its own, so its last re-arm recedes
-        // UNBOUNDED past the stale window while it stays fresh → clear (streak must not accrue).
-        assert!(should_clear_nudge_streak(Some(2401), stale)); // just past a full stale window → clear
-        assert!(should_clear_nudge_streak(Some(86400), stale)); // nudged a day ago, healthy since → clear
+        assert!(should_clear_nudge_streak(None, Some(60), interval));
+        assert!(should_clear_nudge_streak(None, None, interval));
+
+        // THE ROUND-3 BUG (concierge): on the idle-re-arm path the re-arm + heartbeat are stamped
+        // TOGETHER by the nudge, so a dead-cron agent has hb_age ≈ rearm_age — they age in LOCKSTEP.
+        // The clear must NOT fire for that, else the streak resets between every nudge + never escalates.
+        // hb_age ≈ rearm_age (both from the same nudge, aging together) → DON'T clear, whatever the age:
+        assert!(!should_clear_nudge_streak(Some(120), Some(115), interval)); // just nudged, lockstep
+        assert!(!should_clear_nudge_streak(Some(2400), Some(2395), interval)); // ~stale boundary, still lockstep
+        assert!(!should_clear_nudge_streak(Some(2400), Some(2400), interval)); // exactly equal
+        // The OLD stale_after threshold wrongly cleared this (rearm_age 2400 > stale) — now it correctly
+        // does NOT, because the heartbeat is NOT a self-tick (hb_age tracks rearm_age).
+
+        // GENUINE SELF-TICK: heartbeat ≥ one interval NEWER than the re-arm → the cron fired on its own
+        // AFTER the nudge → clear (streak must not accrue for a healthy agent).
+        assert!(should_clear_nudge_streak(Some(2400), Some(60), interval)); // nudged 40m ago, self-ticked 1m ago
+        assert!(should_clear_nudge_streak(Some(3600), Some(300), interval)); // hb 55m newer than rearm
+        // Boundary: exactly one interval newer → clear; just under → not yet.
+        assert!(should_clear_nudge_streak(Some(1860), Some(60), interval)); // 1860 >= 60+1800 → clear
+        assert!(!should_clear_nudge_streak(Some(1859), Some(60), interval)); // 1859 < 60+1800 → don't
+
+        // Re-armed but NEVER heartbeated since → not self-sustaining → keep the streak.
+        assert!(!should_clear_nudge_streak(Some(300), None, interval));
     }
 
     #[test]
