@@ -8733,3 +8733,27 @@
                     (+ (loop 1) (A.get))))))
             (export main)))
   (output (: 21 Int64)))
+
+(case "a DEPTH-3 nested-op chain WITHOUT a post-observer folds (the no-observer control for the observer-gated guard)"
+  (doc    "The no-observer control (breaker rx6) for the depth-3 decline case above. The SAME recursion ×
+           depth-3 chain — `loop` performs `C.hop`; C's arm resumes `(B.step)`; B's arm resumes `(A.tick)` —
+           but the body is bare `(loop 2)` with NO post-loop observer and a single-op `A`. Without an observer
+           of the recursion's out-state, the accum-redirect never engages, so the between-iteration advance
+           carries through the merge and the chain FOLDS: `loop 2` sums the two `A.tick` pre-advance values 10
+           then 11 = 21. This pins that the observer-GATED depth-3+ guard does NOT over-decline the working
+           no-observer chain — the guard (`caller_observes_outstate && resume_val_op_arm_also_performs_outer`)
+           fires ONLY when the out-state is observed (the decline case above), so this twin is unaffected.
+           #2179's guard briefly over-declined this (fold→decline); the observer gate is what separates the
+           must-decline observer chain from this must-fold no-observer twin.")
+  (input  (do
+            (effect A (op tick (-> Unit Int64)))
+            (effect B (op step (-> Unit Int64)))
+            (effect C (op hop (-> Unit Int64)))
+            (def (loop (: n Int64)) (if (= n 0) 0 (+ (C.hop) (loop (- n 1)))))
+            (def (main)
+              (handle A 10 ((tick (u) s (resume s (+ s 1))))
+                (handle B 0 ((step (u) t (resume (A.tick) t)))
+                  (handle C 0 ((hop (u) w (resume (B.step) w)))
+                    (loop 2)))))
+            (export main)))
+  (output (: 21 Int64)))
