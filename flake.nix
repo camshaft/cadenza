@@ -42,9 +42,14 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     flake-utils.url = "github:numtide/flake-utils";
+    # crane: a cargo-artifact CACHE — `buildDepsOnly` compiles the workspace's DEPENDENCY closure once into a
+    # content-addressed derivation, so each per-crate clippy/test check recompiles only FIRST-PARTY sources
+    # instead of the whole dep tree every run (operator fleet-velocity mandate: push CI as low as possible).
+    # crane is nixpkgs-lib-only → no `inputs.nixpkgs.follows`.
+    crane.url = "github:ipetkov/crane";
   };
 
-  outputs = { self, nixpkgs, rust-overlay, flake-utils }:
+  outputs = { self, nixpkgs, rust-overlay, flake-utils, crane }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         overlays = [ (import rust-overlay) ];
@@ -68,6 +73,10 @@
           (pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml).override {
             targets = [ "wasm32-unknown-unknown" "wasm32-wasip1" ];
           };
+
+        # crane bound to OUR pinned toolchain (NOT crane's default) so its clippy/test match rust-toolchain.toml
+        # exactly — same rustc as the cargo path + the codegen job that records REQUIRED_RUNTIME_HASH.
+        craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
 
         # ── build FRAMEWORK helper (operator seq-126: DRY the per-build boilerplate) ───────────────
         #
@@ -323,6 +332,31 @@
           [ (d + "/Cargo.toml") ]
           ++ pkgs.lib.optional (builtins.pathExists (d + "/src")) (d + "/src")
           ++ pkgs.lib.optional (builtins.pathExists (d + "/build.rs")) (d + "/build.rs");
+        # crane buildDepsOnly (operator fleet-velocity mandate — MR1, additive, NO consumer yet): compile the
+        # workspace's DEPENDENCY closure ONCE into a content-addressed derivation cached in the /nix/store
+        # (which the cache-nix-action rollout now shares across CI runs). Measured: deps are 61% of the
+        # clippy/test compile (~74s of a 116s cold wall) — this caches that layer so a per-crate check (MR2/MR3
+        # will consume it) recompiles only FIRST-PARTY src (~42s tail). depsOnlySrc = every member Cargo.toml +
+        # root Cargo.toml/lock + synthetic stub srcs for ALL members (via `stubNonClosure []` — empty exclude
+        # stubs everyone) so NO real first-party src is in the hash → a first-party edit does NOT invalidate
+        # the dep cache. cargoVendorDir reuses seedCargoVendor (the offline root-lock vendor). This does NOT
+        # touch the runtime-component build (REQUIRED_RUNTIME_HASH unaffected — that stays importCargoLock).
+        cargoArtifactsSrc = pkgs.lib.fileset.toSource {
+          root = ./.;
+          fileset = pkgs.lib.fileset.unions (
+            (map (c: ./. + "/${rootWorkspaceCrates.${c}}/Cargo.toml") rootCrateNames)
+            ++ [ ./Cargo.toml ./Cargo.lock ./.cargo ./rust-toolchain.toml ]);
+        };
+        cargoArtifacts = craneLib.buildDepsOnly {
+          pname = "cadenza-seed-deps";
+          version = "0.0.0";
+          src = cargoArtifactsSrc;
+          cargoVendorDir = seedCargoVendor;
+          # stub EVERY member so cargo can parse the workspace to compile deps, without any real first-party
+          # src in the build (keeps the derivation hash invariant to first-party edits).
+          preBuild = stubNonClosure [ ];
+          doCheck = false; # deps-only: no tests here (per-crate checks run them, MR3)
+        };
         # a per-crate clippy+test check, src-scoped to C's dep-closure (COMPILE src only) + non-closure
         # manifests + synthetic stubs + ONLY C's tests/ + root manifest/lock/.cargo/toolchain + extraSrc.
         # extraSrc = non-member paths a crate's build/tests read (spec/semantics, compiler-ml, cdz-runtime
@@ -1407,6 +1441,12 @@
         # R2: the content-addressed component store — every nix-built component as `<derived-hash>.wasm`
         # in one dir (mirrors target/cadenza-store, but built + addressed by nix). `nix build .#store`.
         packages.store = componentStore;
+
+        # crane MR1 (additive): the cached dependency-compile layer for the per-crate clippy/test checks.
+        # `nix build .#cargo-artifacts` builds it; a main-branch run SAVES it to the shared /nix/store so
+        # MR2/MR3's per-crate checks RESTORE it instead of recompiling the dep closure. No check consumes it
+        # yet — this MR only proves it builds + warms the cache.
+        packages.cargo-artifacts = cargoArtifacts;
 
         # S1: the native seed compiler (cdz + cdz-run). `nix build .#seed-compiler` → result/bin/{cdz,cdz-run}.
         packages.seed-compiler = seedCompiler;
