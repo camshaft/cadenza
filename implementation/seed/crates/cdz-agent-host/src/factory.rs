@@ -375,10 +375,12 @@ where
     /// Returns `Ok(true)` if an authorizer was installed (an `authorizer_hash` was provided + resolved),
     /// `Ok(false)` for a root-only boot (no authorizer recorded — the session keeps its deny-all v0 authorizer).
     /// `Err` propagates the first failure (a genesis fold error, or a malformed/absent/non-lifting authorizer).
-    /// NOT atomic: the seed events are delivered FIRST and are NOT rolled back if the later install step fails —
-    /// so on `Err` the session may be PARTIALLY seeded (some/all `bootstrap/*` KV present, authorizer NOT
-    /// installed). Callers should DISCARD the session on `Err` rather than reuse a half-booted one. `principal`
-    /// is the agent's authz principal.
+    /// NOT atomic: the ceremony's writes are NOT rolled back on ANY later error. The setup events are delivered
+    /// sequentially (root → authorizer → context) and each folds into KV as it lands, then the authorizer
+    /// installs — so a failure at ANY step (a later SEED event's fold, OR the install) leaves the prior writes
+    /// in place. On `Err` the session may be PARTIALLY seeded (some/all `bootstrap/*` KV present, authorizer
+    /// possibly not installed). Callers should DISCARD the session on `Err` rather than reuse a half-booted one.
+    /// `principal` is the agent's authz principal.
     ///
     /// Equivalent to `session.seed_genesis(root, authz_hash, ctx).await?;
     /// self.install_genesis_authorizer(session, principal).await` — a convenience so a caller drives the whole
