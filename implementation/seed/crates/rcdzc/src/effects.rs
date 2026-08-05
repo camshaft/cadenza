@@ -2497,6 +2497,22 @@ pub fn reduce_handle(
     // OWN body, so this caller-side observation must be recorded up front. Purely additive: it only UPGRADES a
     // multi-value-threadable callee — a non-threadable one stays single-return.
     mark_caller_observed_outstate(db, body, &ctx);
+    // CALLER-OBSERVED OUT-STATE via a same-effect ABORT arm (breaker sr5). The task-#15 machinery above
+    // upgrades a recursive-effectful callee to MULTI-VALUE mode when a LATER spine perform observes its
+    // out-state — which threads correctly to a RESUMING observer (sr4 → 2). But when the observing perform's
+    // arm is ABORTIVE (a `(fin (u) s s)` with no `resume`), the abort COLLAPSE materializes the arm value
+    // (reading the state binder `s`) against the pre-recursion SEED slot rather than the callee's threaded
+    // out-state — so `(do (def _g (grow k)) (Acc.fin))` reads 0 instead of the advanced 2: a SILENT
+    // MISCOMPILE on both backends (breaker sr5, HIGH). Folding it correctly needs the abort collapse to read
+    // the multi-value out-state the recursion advanced (a later increment, same family as the resuming
+    // thread). Until then DECLINE cleanly (→ Todo) rather than emit the wrong value. NARROW: fires only when
+    // a recursive-effectful callee advancing THIS handler's state is followed on the body spine by an
+    // ABORTIVE same-handler perform that reads state — the resuming observer (sr4), the observer as the
+    // recursion BASE CASE (sr2), and a plain same-op observer (sr1) all thread/fold correctly and are NOT
+    // flagged.
+    if !ctx.abortive.is_empty() && body_recursive_advance_observed_by_abort(db, body, &ctx) {
+        return None;
+    }
     // SEED LET-LIFT for a NON-CONSTANT init carrying a live CAPTURE. The `thread` perform arm splices the
     // threaded state (which starts as `init`) at every `s` reference and `deep_fresh_copy`s each splice to
     // break value/next-state sharing (the resume(a,a) bug). That fresh copy re-pushes each leaf UNPINNED, so
@@ -6460,6 +6476,90 @@ fn collect_rec_eff_call_defs(db: &mut Db, node: StructId, ctx: &HandlerCtx, out:
         }
         Struct::Atom(_) => {}
     }
+}
+
+/// Whether `node` contains an ABORTIVE same-handler perform — a call to one of this handler's ops whose arm
+/// is in `ctx.abortive` (a `(fin (u) s s)` with no `resume`). Used to detect the breaker-sr5 shape where a
+/// same-effect ABORT arm observes a recursive callee's out-state (which the abort collapse currently reads
+/// from the pre-recursion SEED slot, not the threaded out-state → silent miscompile).
+fn contains_abortive_perform(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> bool {
+    if let Resolved::Apply { head, .. } = resolved_of(db, node)
+        && let Some(id) = is_perform(db, head, ctx)
+        && ctx.abortive.contains(&id)
+    {
+        return true;
+    }
+    match db.ast.get(node).clone() {
+        Struct::List(children) => children
+            .iter()
+            .any(|&c| contains_abortive_perform(db, c, ctx)),
+        Struct::Atom(_) => false,
+    }
+}
+
+/// Whether the handle body has a strict spine on which a recursive-effectful callee (which advances THIS
+/// handler's state, the same shape `mark_caller_observed_outstate` upgrades to multi-value) is followed by an
+/// element containing an ABORTIVE same-handler perform that observes that out-state — breaker sr5. The
+/// multi-value out-state threads correctly to a RESUMING observer (sr4), but the ABORT collapse materializes
+/// its arm value against the pre-recursion seed slot, dropping the recursion-era advances → reads the seed
+/// (0) not the advanced state (2). Declined by `reduce_handle` until the abort collapse can read the threaded
+/// out-state. NARROW — the observing element must contain an abortive perform, so a resuming observer (sr4),
+/// a plain non-abort same-op observer (sr1), and the observer-as-recursion-base-case (sr2) do NOT match.
+fn body_recursive_advance_observed_by_abort(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> bool {
+    fn scan_seq(db: &mut Db, seq: &[StructId], ctx: &HandlerCtx) -> bool {
+        let mut pending: Vec<usize> = Vec::new();
+        for &el in seq {
+            // A recursive-effectful callee is pending, and a LATER spine element aborts observing its
+            // out-state — the sr5 miscompile shape.
+            if !pending.is_empty() && contains_abortive_perform(db, el, ctx) {
+                return true;
+            }
+            collect_rec_eff_call_defs(db, el, ctx, &mut pending);
+        }
+        false
+    }
+    if let Resolved::Apply { args, .. } = resolved_of(db, node)
+        && scan_seq(db, &args, ctx)
+    {
+        return true;
+    }
+    if let Some(items) = db.ast.as_form(node, "do").map(|t| t.to_vec())
+        && scan_seq(db, &items, ctx)
+    {
+        return true;
+    }
+    if let Some(form) = db.ast.as_form(node, "let").map(|t| t.to_vec())
+        && form.len() == 2
+        && let Struct::List(pairs) = db.ast.get(form[0]).clone()
+    {
+        let mut seq: Vec<StructId> = pairs
+            .iter()
+            .filter_map(|&pair| match db.ast.get(pair).clone() {
+                Struct::List(kv) if kv.len() == 2 => Some(kv[1]),
+                _ => None,
+            })
+            .collect();
+        seq.push(form[1]);
+        if scan_seq(db, &seq, ctx) {
+            return true;
+        }
+    }
+    if let Resolved::Match { scrutinee, arms } = resolved_of(db, node) {
+        for &(_, arm_body) in &arms {
+            if scan_seq(db, &[scrutinee, arm_body], ctx) {
+                return true;
+            }
+        }
+    }
+    // Recurse structurally so a spine nested inside a branch/let/operand is scanned too.
+    if let Struct::List(children) = db.ast.get(node).clone() {
+        for c in children {
+            if body_recursive_advance_observed_by_abort(db, c, ctx) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Scan the HANDLE BODY for a recursive-effectful call whose FINAL out-state is OBSERVED by a LATER item on
