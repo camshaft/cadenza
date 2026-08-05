@@ -1619,6 +1619,30 @@
                   (+ b (A.get))))) (export main)))
   (output (: 110 Int64)))
 
+(case "an inner abort preserves BOTH a PERFORMING-CONDITION advance AND an if-branch advance before it (ao10)"
+  (doc    "The performing-condition face — the separate face the if-branch case above flagged. The `if`
+           CONDITION performs the outer `(A.tick)` AND the taken branch performs another `(A.tick)` before the
+           abort: `(if (> (A.tick) 5) (do (A.tick) (B.bail 99)) 5)` under B. BOTH A-advances must survive: the
+           condition `A.tick` reads 10, commits 10→11 (10>5 true → then-branch); the branch `A.tick` reads 11,
+           commits 11→12; then `B.bail` aborts B (b = 99). Outer `(A.get)` reads 12 → `(+ 99 12)` = 111. Before
+           the fix the branch advance was DROPPED (110): the if-arm state-merge skips a performing condition
+           (`cond_pure=false`), so the branch's A-advance never threads to the continuation. Fixed by extending
+           the Site-5 `#cv`-lift to bind a performing condition to `(let ((#cv (> (A.tick) 5))) (if #cv …))`
+           when a branch also performs AND the one-shot refold does not serve the body — making the condition
+           pure so the branch-advance merge proceeds, exactly as a hand let-bound condition already did. The
+           refold-servability gate keeps this off the E5 leading-hole refold shapes (which the more-specific
+           refold serves). Distinct from the pure-condition if-branch face above (which the do-shape gate
+           already handled) — here the CONDITION itself performs.")
+  (input  (do
+            (effect A (op tick (-> Unit Int64)) (op get (-> Unit Int64)))
+            (effect B (op bail (-> Int64 Int64)))
+            (def (main)
+              (handle A 10 ((tick (u) s (resume s (+ s 1))) (get (u) s (resume s s)))
+                (let ((b (handle B 0 ((bail (v) s v))
+                           (if (> (A.tick) 5) (do (A.tick) (B.bail 99)) 5))))
+                  (+ b (A.get))))) (export main)))
+  (output (: 111 Int64)))
+
 (case "an inner abort preserves an OUTER advance committed in a MATCH-ARM body before it (arm do-shape)"
   (doc    "The MATCH-ARM-BODY face of the outer-advance preservation, sharing the branch-local abort helper
            with the if-branch face above. The foreign `(A.tick)` and the abort sit on the strict do-spine of a
