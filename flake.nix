@@ -437,20 +437,23 @@
           };
         # per-crate CLIPPY via crane. cargoClippyExtraArgs mirrors mkCrateCheck's `cargo clippy -p C
         # --all-targets -- -D warnings`; crane's cargoClippy INJECTS --locked (do NOT add it — a 2nd errors
-        # "cannot be used multiple times", #2273).
-        mkCrateClippyCrane = args:
+        # "cannot be used multiple times", #2273). Strict pattern (like craneCrateCommon) so a typo'd key is
+        # caught HERE at the call-contract, not late/silently inside the helper (github-liaison #2282); @args
+        # still forwards the full attrset to craneCrateCommon — no behavior change, just the strict interface back.
+        mkCrateClippyCrane = { crate, extraSrc ? [ ], extraInputs ? [ ] }@args:
           craneLib.cargoClippy ((craneCrateCommon args) // {
-            pname = "cargo-clippy-${args.crate}";
-            cargoClippyExtraArgs = "-p ${args.crate} --all-targets -- -D warnings";
+            pname = "cargo-clippy-${crate}";
+            cargoClippyExtraArgs = "-p ${crate} --all-targets -- -D warnings";
           });
         # per-crate TEST via crane, the TEST-half twin of mkCrateClippyCrane.
         # 🪤 --locked: unlike cargoClippy (which INJECTS --locked), crane's cargoTest does NOT — emits `cargo
         # test --release -p C` (verified). So --locked IS added to cargoExtraArgs for reproducibility parity
-        # with the old `cargo test -p C --locked`. (Opposite of the clippy case — #2273.)
-        mkCrateTestCrane = args:
+        # with the old `cargo test -p C --locked`. (Opposite of the clippy case — #2273.) Strict pattern (same
+        # as mkCrateClippyCrane) so a typo'd key is caught at the call-contract; @args forwards to craneCrateCommon.
+        mkCrateTestCrane = { crate, extraSrc ? [ ], extraInputs ? [ ] }@args:
           craneLib.cargoTest ((craneCrateCommon args) // {
-            pname = "cargo-test-${args.crate}";
-            cargoExtraArgs = "-p ${args.crate} --locked";
+            pname = "cargo-test-${crate}";
+            cargoExtraArgs = "-p ${crate} --locked";
           });
         # CLOSURE guard (concierge mandate): pure-eval assert that the fromTOML walk yields the EXPECTED
         # closures for anchor crates — a Cargo.toml restructure that breaks the walk fails LOUD (throws at
