@@ -383,6 +383,137 @@ impl MetricsReporter {
     }
 }
 
+// ─── Prometheus backend (feature `metrics-export-prometheus`) ──────────────────────────────────────────
+//
+// Prometheus is PULL, not push: the crate's `PrometheusBackend` IS a `Backend` (so it still pushes into the
+// same `MetricsReporter` and rides the one-drain fan-out — no special report path), but each report re-renders
+// the exposition text into a shared cell, and a `PrometheusHandle` is read by an inbound HTTP scrape endpoint
+// the daemon SERVES at `GET /metrics`. It keeps CUMULATIVE series (correct for the pull model; vs statsd/otlp
+// per-interval delta). The scrape server is a MINIMAL hand-rolled HTTP/1.1 responder over
+// `tokio::net::TcpListener` (no hyper/axum — same dep-light pattern as the admin Unix-socket listener),
+// gated behind `metrics-export-prometheus` so the default/hermetic build pulls no `tokio/net`.
+//
+// SECURITY POSTURE (concierge ruling): an inbound port is a new exposure. The server binds LOOPBACK by
+// default and a no-auth endpoint is only acceptable loopback-bound; a non-loopback bind is WARNED at boot
+// (auth/allowlist would be a separate decision).
+
+/// One resolved prometheus export target — the address the scrape listener binds + an optional metric-name
+/// prefix. OWNED so the daemon holds it for the listener's lifetime.
+#[cfg(feature = "metrics-export-prometheus")]
+#[derive(Debug, Clone)]
+pub struct PrometheusTarget {
+    /// The address the scrape HTTP listener binds (`host:port`), e.g. `127.0.0.1:9090`.
+    pub bind: String,
+    /// Optional metric-name prefix (maps to `PrometheusBackend`'s prefix).
+    pub prefix: Option<String>,
+}
+
+#[cfg(feature = "metrics-export-prometheus")]
+impl MetricsReporter {
+    /// Register a `PrometheusBackend` into the reporter and return its
+    /// [`PrometheusHandle`](s2n_quic_dc_metrics::backend::PrometheusHandle) — the daemon hands the handle to
+    /// [`run_prometheus_scrape_server`]. The backend re-renders the exposition text on each report (cumulative
+    /// series); the handle reads the latest published text cheaply on the scrape path.
+    pub fn push_prometheus(
+        &mut self,
+        target: &PrometheusTarget,
+    ) -> s2n_quic_dc_metrics::backend::PrometheusHandle {
+        use s2n_quic_dc_metrics::backend::PrometheusBackend;
+        let (backend, handle) = PrometheusBackend::new(target.prefix.clone());
+        self.backends.push(Box::new(backend));
+        handle
+    }
+}
+
+/// `true` if `addr` is a loopback socket address (127.0.0.0/8 or ::1). Used to enforce the concierge posture:
+/// a no-auth scrape endpoint is only acceptable loopback-bound; a non-loopback bind is warned.
+#[cfg(feature = "metrics-export-prometheus")]
+pub fn is_loopback_bind(addr: &str) -> bool {
+    use std::net::ToSocketAddrs;
+    addr.to_socket_addrs()
+        .map(|mut it| it.next().map(|a| a.ip().is_loopback()).unwrap_or(false))
+        .unwrap_or(false)
+}
+
+/// Serve the prometheus scrape endpoint: bind `bind_addr` and answer each connection's `GET /metrics` with the
+/// latest exposition text from `handle`, until `shutdown` fires. A MINIMAL hand-rolled HTTP/1.1 responder (no
+/// hyper/axum): read the request line, return `200` + the exposition body for `GET /metrics`, `404` for any
+/// other path, `405` for a non-GET method. Every per-connection error is DROP + log — a scrape-serving failure
+/// (malformed request, a slow client) must never take the daemon down. `Err` only if the initial bind fails
+/// (a bad `bind` address is a boot-time config error worth surfacing).
+///
+/// Posture: a NON-loopback `bind_addr` is WARNED (a no-auth inbound port off loopback is a new exposure — the
+/// concierge ruling); the server still binds it (explicit operator config), but the warning is loud.
+#[cfg(feature = "metrics-export-prometheus")]
+pub async fn run_prometheus_scrape_server(
+    bind_addr: String,
+    handle: s2n_quic_dc_metrics::backend::PrometheusHandle,
+    mut shutdown: tokio::sync::oneshot::Receiver<()>,
+) -> Result<(), String> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    if !is_loopback_bind(&bind_addr) {
+        tracing::warn!(
+            bind = %bind_addr,
+            "metrics-export prometheus: scrape endpoint bound to a NON-loopback address with no auth — \
+             this exposes metrics on an inbound port; prefer a loopback bind or add auth/allowlist"
+        );
+    }
+    let listener = tokio::net::TcpListener::bind(&bind_addr)
+        .await
+        .map_err(|e| format!("prometheus scrape server could not bind {bind_addr}: {e}"))?;
+    tracing::info!(bind = %bind_addr, "metrics-export prometheus: scrape endpoint serving GET /metrics");
+
+    loop {
+        tokio::select! {
+            accepted = listener.accept() => {
+                let (mut stream, _peer) = match accepted {
+                    Ok(pair) => pair,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "metrics-export prometheus: accept failed — continuing");
+                        continue;
+                    }
+                };
+                // The exposition snapshot is cheap to read (clones a shared Arc<str>); take it per-connection.
+                let body = handle.encode();
+                // Handle one request then close (scrape clients open a fresh connection per scrape). Best-effort
+                // throughout — any read/write error just drops this connection.
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 1024];
+                    let n = match stream.read(&mut buf).await {
+                        Ok(0) => return, // client closed
+                        Ok(n) => n,
+                        Err(_) => return,
+                    };
+                    let req = String::from_utf8_lossy(&buf[..n]);
+                    let request_line = req.lines().next().unwrap_or("");
+                    let mut parts = request_line.split_whitespace();
+                    let method = parts.next().unwrap_or("");
+                    let path = parts.next().unwrap_or("");
+                    let response = if method != "GET" {
+                        "HTTP/1.1 405 Method Not Allowed\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+                            .to_string()
+                    } else if path == "/metrics" {
+                        format!(
+                            "HTTP/1.1 200 OK\r\ncontent-type: text/plain; version=0.0.4\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                            body.len(),
+                            body
+                        )
+                    } else {
+                        "HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n".to_string()
+                    };
+                    let _ = stream.write_all(response.as_bytes()).await;
+                    let _ = stream.flush().await;
+                });
+            }
+            _ = &mut shutdown => {
+                tracing::debug!(bind = %bind_addr, "metrics-export prometheus: scrape server shut down");
+                return Ok(());
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -756,6 +887,112 @@ mod tests {
                 joined.is_ok(),
                 "forwarder terminated after the channel closed"
             );
+        }
+    }
+
+    #[cfg(feature = "metrics-export-prometheus")]
+    mod prometheus {
+        use super::*;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        #[test]
+        fn is_loopback_bind_classifies_addresses() {
+            assert!(is_loopback_bind("127.0.0.1:9090"));
+            assert!(is_loopback_bind("[::1]:9090"));
+            assert!(!is_loopback_bind("0.0.0.0:9090"));
+            // A bad address is not loopback (the caller warns/handles separately).
+            assert!(!is_loopback_bind("not-an-addr"));
+        }
+
+        #[test]
+        fn push_prometheus_registers_a_backend_and_a_report_renders_exposition() {
+            // Registering a prometheus target adds a backend; after a report the handle's exposition text is
+            // published + non-empty (the backend re-rendered the cumulative series).
+            let target = PrometheusTarget {
+                bind: "127.0.0.1:0".into(),
+                prefix: Some("cdz".into()),
+            };
+            let (mut reporter, _) = MetricsReporter::from_statsd_targets(&[]);
+            let handle = reporter.push_prometheus(&target);
+            assert_eq!(reporter.backend_count(), 1);
+
+            let registry = Registry::new();
+            HostMetrics::new(&registry).record_turn(true);
+            reporter.report(&registry);
+
+            let text = handle.render();
+            assert!(
+                !text.is_empty(),
+                "the report published non-empty exposition text"
+            );
+        }
+
+        #[tokio::test]
+        async fn scrape_server_serves_get_metrics_and_404s_other_paths() {
+            // End-to-end: bind a loopback scrape server, report once so there's exposition text, then connect
+            // as a scrape client — GET /metrics returns 200 + a body, and another path returns 404. Proves the
+            // hand-rolled responder + the handle read path.
+            let target = PrometheusTarget {
+                bind: "127.0.0.1:0".into(), // ephemeral; we read the actual bound port below
+                prefix: None,
+            };
+            let (mut reporter, _) = MetricsReporter::from_statsd_targets(&[]);
+            let handle = reporter.push_prometheus(&target);
+            let registry = Registry::new();
+            HostMetrics::new(&registry).record_turn(true);
+            reporter.report(&registry);
+
+            // Bind our own listener to learn a free loopback port, then hand its addr to the server after
+            // dropping it (small race window, acceptable in a test).
+            let probe = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let addr = probe.local_addr().unwrap().to_string();
+            drop(probe);
+
+            let (sd_tx, sd_rx) = tokio::sync::oneshot::channel();
+            let server = tokio::spawn(run_prometheus_scrape_server(addr.clone(), handle, sd_rx));
+            // Give the server a moment to bind.
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+            // GET /metrics → 200 + body.
+            let got = scrape(&addr, "GET /metrics HTTP/1.1\r\nhost: x\r\n\r\n").await;
+            assert!(got.starts_with("HTTP/1.1 200"), "metrics 200: {got:.40}");
+            assert!(
+                got.contains("text/plain"),
+                "content-type present: {got:.80}"
+            );
+
+            // GET /nope → 404.
+            let got404 = scrape(&addr, "GET /nope HTTP/1.1\r\nhost: x\r\n\r\n").await;
+            assert!(
+                got404.starts_with("HTTP/1.1 404"),
+                "other path 404: {got404:.40}"
+            );
+
+            let _ = sd_tx.send(());
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), server).await;
+        }
+
+        // Minimal scrape client: connect, send `request`, read the whole response to a string.
+        async fn scrape(addr: &str, request: &str) -> String {
+            let mut s = tokio::net::TcpStream::connect(addr).await.expect("connect");
+            s.write_all(request.as_bytes()).await.expect("write");
+            s.flush().await.unwrap();
+            let mut buf = Vec::new();
+            let _ = s.read_to_end(&mut buf).await;
+            String::from_utf8_lossy(&buf).into_owned()
+        }
+
+        #[tokio::test]
+        async fn scrape_server_bad_bind_is_a_clean_err() {
+            // An unbindable address is a clean Err (not a panic) — surfaces as a boot diagnostic.
+            let (_tx, rx) = tokio::sync::oneshot::channel();
+            let (mut reporter, _) = MetricsReporter::from_statsd_targets(&[]);
+            let handle = reporter.push_prometheus(&PrometheusTarget {
+                bind: "127.0.0.1:0".into(),
+                prefix: None,
+            });
+            let err = run_prometheus_scrape_server("not-a-bind-addr".into(), handle, rx).await;
+            assert!(err.is_err(), "a bad bind address is a clean Err");
         }
     }
 }

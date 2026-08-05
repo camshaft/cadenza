@@ -85,6 +85,8 @@ pub use config::{
     AdminConfig, BlobConfig, DaemonConfig, LogConfig, MetricsTarget, ObservabilityConfig,
     RetryConfig, TracingConfig, TracingFormat, TracingOutput,
 };
+#[cfg(feature = "metrics-export-prometheus")]
+pub use export::{is_loopback_bind, run_prometheus_scrape_server, PrometheusTarget};
 #[cfg(feature = "metrics-export")]
 pub use export::{run_export_loop, MetricsReporter, StatsdTarget, UdpStatsdSink};
 #[cfg(feature = "metrics-export-otlp")]

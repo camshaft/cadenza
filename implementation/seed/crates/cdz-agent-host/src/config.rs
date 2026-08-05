@@ -161,6 +161,20 @@ pub enum MetricsTarget {
         #[serde(default)]
         scope_version: Option<String>,
     },
+    /// The `prometheus` backend — `s2n-quic-dc-metrics`' `PrometheusBackend`. UNLIKE statsd/otlp (outbound
+    /// PUSH), prometheus is PULL: the daemon SERVES an HTTP scrape endpoint (`GET /metrics`) that a scraper
+    /// reads, so its config is a `bind` LISTEN address (not a push endpoint). Bound to LOOPBACK by default
+    /// (concierge posture ruling: an inbound port is a new exposure — a no-auth scrape endpoint is only
+    /// acceptable loopback-bound; a non-loopback `bind` is gated + warned at boot). `prefix` optionally
+    /// namespaces every metric name.
+    Prometheus {
+        /// The address the scrape listener binds (`host:port`), e.g. `"127.0.0.1:9090"`. Loopback host keeps
+        /// the no-auth endpoint on the local trust boundary; a non-loopback host is warned at boot.
+        bind: String,
+        /// Optional metric-name prefix applied to every emitted metric (maps to `PrometheusBackend`'s prefix).
+        #[serde(default)]
+        prefix: Option<String>,
+    },
 }
 
 impl MetricsTarget {
@@ -169,6 +183,7 @@ impl MetricsTarget {
         match self {
             MetricsTarget::Statsd { .. } => "statsd",
             MetricsTarget::Otlp { .. } => "otlp",
+            MetricsTarget::Prometheus { .. } => "prometheus",
         }
     }
 }
@@ -436,6 +451,12 @@ impl DaemonConfig {
                         return Err(ConfigError(format!(
                             "[observability] target {i} ({}) needs a non-empty endpoint",
                             t.kind()
+                        )));
+                    }
+                    // The PULL backend requires a non-empty bind (LISTEN) address.
+                    MetricsTarget::Prometheus { bind, .. } if bind.trim().is_empty() => {
+                        return Err(ConfigError(format!(
+                            "[observability] target {i} (prometheus) needs a non-empty bind address"
                         )));
                     }
                     _ => {}
