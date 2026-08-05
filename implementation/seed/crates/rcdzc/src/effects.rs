@@ -6947,12 +6947,45 @@ fn tail_resume(db: &mut Db, node: StructId) -> Option<(StructId, StructId)> {
 /// binder (which the lift's `params↦args`-only substitution does not rebind, so lifting would orphan it).
 /// A structural walk; the binder-position occurrence of `binder` itself is not a value reference, but the
 /// lift only inspects a resume VALUE (never the binder slot), so any match here is a genuine read.
+/// Whether THIS ONE node is a value reference reaching `binder` — a `Param { binder }` whose binder IS it,
+/// or a `Ref` whose chain reaches it transitively (matching how `beta_reduce` substitutes: an op-arm param
+/// `p` used as `(. p 0)` resolves to a `Ref` reaching `p`'s declaration occurrence, not a `Param`). The
+/// SINGLE SOURCE OF TRUTH for "what counts as a reference to `binder`", shared by `subtree_references_binder`
+/// (a short-circuit boolean walk) and `count_param_refs` (a counting walk) so the two can never diverge on
+/// the ref-chain rule (github-liaison/Copilot #2102/#2128 review).
+fn node_refs_binder(db: &mut Db, node: StructId, binder: StructId) -> bool {
+    match resolved_of(db, node) {
+        Resolved::Param { binder: b } => b == binder,
+        Resolved::Ref { value } => {
+            let mut target = value;
+            loop {
+                if target == binder {
+                    break true;
+                }
+                match resolved_of(db, target) {
+                    Resolved::Ref { value: next } => target = next,
+                    _ => break false,
+                }
+            }
+        }
+        _ => false,
+    }
+}
+
 fn subtree_references_binder(db: &mut Db, node: StructId, binder: StructId) -> bool {
-    // Existence is "at least one reference" — delegate to `count_param_refs` (the single source of truth for
-    // "what counts as a reference reaching `binder`": a `Param { binder }` or a `Ref` whose chain reaches it,
-    // matching how `beta_reduce` substitutes). Sharing the traversal avoids the divergence risk of two copies
-    // of the ref-chain logic drifting apart (github-liaison/Copilot #2102 review).
-    count_param_refs(db, node, binder) > 0
+    // Existence check: SHORT-CIRCUIT on the first hit (unlike `count_param_refs`, which counts the whole
+    // tree). Reuses `node_refs_binder` — the same ref-chain predicate `count_param_refs` uses — so the two
+    // stay single-source-of-truth AND this keeps its early-exit (github-liaison/Copilot #2128 review: the
+    // earlier `count_param_refs(...) > 0` dedup lost the short-circuit, walking the entire subtree).
+    if node_refs_binder(db, node, binder) {
+        return true;
+    }
+    match db.ast.get(node).clone() {
+        Struct::List(children) => children
+            .iter()
+            .any(|&c| subtree_references_binder(db, c, binder)),
+        Struct::Atom(_) => false,
+    }
 }
 
 fn performs_discharged_op_other_than(
@@ -7809,28 +7842,10 @@ fn collect_captures(
 }
 
 fn count_param_refs(db: &mut Db, node: StructId, binder: StructId) -> u32 {
-    // A reference matches the way `beta_reduce` substitutes: either a `Param { binder }` whose binder IS
-    // the arm param, OR a `Ref { value }` whose chain reaches that binder transitively (an op-arm param
-    // `p` used as `(. p 0)` resolves to a `Ref` reaching `p`'s declaration occurrence, not a `Param`).
-    let here = match resolved_of(db, node) {
-        Resolved::Param { binder: b } => u32::from(b == binder),
-        Resolved::Ref { value } => {
-            let mut target = value;
-            let mut hit = false;
-            loop {
-                if target == binder {
-                    hit = true;
-                    break;
-                }
-                match resolved_of(db, target) {
-                    Resolved::Ref { value: next } => target = next,
-                    _ => break,
-                }
-            }
-            u32::from(hit)
-        }
-        _ => 0,
-    };
+    // Per-node "is this a reference to `binder`" uses the shared `node_refs_binder` predicate (a `Param`
+    // binder-match or a `Ref` chain reaching it) — the same rule `subtree_references_binder` uses, so the
+    // two never diverge. This walk COUNTS every reference (no short-circuit — callers need 0/1/many).
+    let here = u32::from(node_refs_binder(db, node, binder));
     let below = match db.ast.get(node).clone() {
         Struct::List(children) => children
             .iter()
