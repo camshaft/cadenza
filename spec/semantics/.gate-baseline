@@ -3841,6 +3841,8 @@ pass	an UNSIGNED branch refinement decides a nested comparison and its soundness
 pass	an UNSIGNED lower-bound refinement must not fabricate an i64::MAX ceiling for a UInt64 above it
 pass	an UNZIP walk splits a list of pairs into two parallel lists that re-zip to the original
 pass	an UPSERT into a Map of Lists creates the fresh entry on miss and appends on hit
+pass	an `and` whose first RESUMING perform is true evaluates the second: both advances land
+pass	an `or` short-circuit SKIPS a resuming perform, and the skip is observable through the state
 pass	an abort abandons a pending borrowed map lookup and the map survives
 pass	an abort abandons a pending consuming op and the shared binding survives
 pass	an abortive arm yields a RECURSIVE-SUM spine as the handle's value
