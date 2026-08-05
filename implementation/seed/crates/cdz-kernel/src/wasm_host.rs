@@ -1835,9 +1835,9 @@ fn reach_fold_apply(
 impl crate::reducer::Reducer for ComponentReducer {
     /// Native `Reducer` — but NOTE: `ComponentReducer` runs a SYNC wasm engine, so `fold` calls
     /// the sync `apply` with no `.await` (it does not cooperatively yield mid-fold). The fuel-yielding
-    /// async wasm path is [`AsyncComponentReducer`]. `ComponentReducer` remains because it is the only
-    /// dep-CAPABLE wasm reducer today (§23 dep-compose; `AsyncComponentReducer` declines deps pending async
-    /// dep-compose). Once async dep-compose lands, `ComponentReducer` collapses into `AsyncComponentReducer`.
+    /// async wasm path is [`AsyncComponentReducer`], which now ALSO composes §23 deps per-fold (same as
+    /// this sync path). `ComponentReducer` remains for callers on the sync engine; a future consolidation
+    /// can collapse it into `AsyncComponentReducer` now that both are dep-capable.
     async fn fold(&self, event: &Event, kv: &mut Kv) -> crate::reducer::FoldOutput {
         // Map the kernel event → the guest's (content_type, payload, resumes) inputs.
         let (content_type, payload, resumes) = event_to_guest_inputs(&event.body);
@@ -1891,18 +1891,35 @@ impl crate::reducer::Reducer for ComponentReducer {
 /// `bindgen!` lowering (`async_reducer_bindings`). During the sync→async migration both coexist; the sync
 /// [`ComponentReducer`] is removed once every caller is async (the operator's "no sync path remains").
 ///
-/// v1 scope: the dependency-FREE path (the reducer fixture + the near-term agent reducer). A reducer that
-/// declares component deps (§23) is a follow-up on the async path — [`AsyncComponentReducer::from_component_bytes`]
-/// declines one with [`ComponentError::Instantiate`] rather than silently ignoring its deps (the sync
-/// [`ComponentReducer`] carries the dep-compose machinery; porting it to the async instantiate is deferred,
-/// tracked, and not needed until an async reducer ships deps).
+/// Handles BOTH the dependency-free path (cached `instance_pre` fast path) AND §23 dep-bearing reducers:
+/// the latter compose their resolved deps (plus transitive bare imports like the runtime's
+/// `cadenza:nfc/normalize`) into a per-fold linker in the fold's store, then `instantiate_async` — the
+/// async twin of the sync [`ComponentReducer`]'s per-fold dep-compose. Attach deps via
+/// [`AsyncComponentReducer::with_resolved_deps`] and [`AsyncComponentReducer::with_component_store`]. (This
+/// is what unblocks the host genesis E2E, which drives a dep-bearing genesis reducer through async `apply`.)
 pub struct AsyncComponentReducer {
     engine: wasmtime::Engine,
     // Pre-instantiation artifact (perf, same rationale as ComponentReducer::instance_pre): the async
-    // world's `ReducerPre`, built once at construction for the dependency-free fold-exporting reducer.
-    // (The dependency-free path needs no per-fold `Component` — `instance_pre` holds the type-checked
-    // linkage; the dep path, which would, is a deferred follow-up on the async reducer.)
-    instance_pre: async_reducer_bindings::ReducerPre<ReducerHost>,
+    // world's `ReducerPre`, built once at construction for the DEPENDENCY-FREE fold-exporting reducer.
+    // `None` for a reducer WITH declared deps — that path composes its deps into a per-fold linker in the
+    // fold's store (the dep instances can't outlive a fold's store, so no single pre-instantiation can be
+    // reused), exactly as the sync `ComponentReducer` does. So `instance_pre.is_some()` iff the fast path
+    // applies (dependency-free AND deps not force-detached via `with_resolved_deps`).
+    instance_pre: Option<async_reducer_bindings::ReducerPre<ReducerHost>>,
+    // The component + base linker (with the `kv` host import), kept for the DEP path: `apply` clones the
+    // linker per fold, composes the resolved deps into it (via `compose_dep_into_linker`), and instantiates
+    // `component` against it in the fold's store. Unused by the dependency-free `instance_pre` fast path.
+    component: wasmtime::component::Component,
+    linker: wasmtime::component::Linker<ReducerHost>,
+    // The component deps this reducer DECLARES by content hash (§23), detected at construction. Mirrors
+    // `ComponentReducer::deps`: exposed via `deps()` so a caller can discover → `resolve_deps()` from CAS →
+    // `with_resolved_deps` (the §23 flow). Empty = dependency-free.
+    deps: Vec<ComponentDep>,
+    // Resolved dependency bytes (§23) paired with the import name each satisfies, + the store to resolve a
+    // dep's OWN transitive bare imports (the runtime's `cadenza:nfc/normalize`). Mirrors ComponentReducer's
+    // `resolved_deps`/`component_store`. Attached via `with_resolved_deps`/`with_component_store`.
+    resolved_deps: Vec<(String, Vec<u8>)>,
+    component_store: Option<crate::component_store::ComponentStore>,
     fuel_budget: u64,
     // How much fuel the guest may burn between cooperative yields (§ async directive): the store yields
     // control every this-many fuel units so a long fold doesn't monopolize the single-threaded loop. The
@@ -1919,9 +1936,10 @@ pub const DEFAULT_FUEL_YIELD_INTERVAL: u64 = 1_000_000;
 impl AsyncComponentReducer {
     /// Build an async reducer from a compiled component's bytes. Like
     /// [`ComponentReducer::from_component_bytes`] but the engine is `async_support`-enabled and the guest
-    /// export is lowered async. Pre-instantiates the dependency-free fold world once (perf). Declines a
-    /// component that declares deps (§23 async dep-compose is a follow-up) or that doesn't export the
-    /// `fold` world, both as [`ComponentError::Instantiate`]/[`ComponentError::InvalidComponent`].
+    /// export is lowered async. Pre-instantiates the dependency-FREE fold world once (perf); a component that
+    /// declares §23 deps skips pre-instantiation (`instance_pre = None`) and composes per-fold instead —
+    /// attach its resolved deps via [`AsyncComponentReducer::with_resolved_deps`]. A dependency-free component
+    /// that doesn't export the `fold` world is declined (`Instantiate`/`InvalidComponent`).
     pub fn from_component_bytes(bytes: &[u8]) -> Result<Self, ComponentError> {
         let mut config = wasmtime::Config::new();
         config.consume_fuel(true);
@@ -1932,36 +1950,88 @@ impl AsyncComponentReducer {
             .map_err(|e| ComponentError::Instantiate(e.to_string()))?;
         let component = wasmtime::component::Component::new(&engine, bytes)
             .map_err(|e| ComponentError::InvalidComponent(e.to_string()))?;
-        // A reducer with declared deps needs per-fold linker composition (async instantiate) — deferred;
-        // decline rather than instantiate a reducer whose deps we'd silently drop.
+        // §23 async dep-compose: a reducer with declared deps composes them into a per-fold linker (in the
+        // fold's store) exactly as the sync path does — NO longer declined. Detect the declared set now so
+        // `apply` knows whether to take the dep-compose branch; the resolved bytes arrive via
+        // `with_resolved_deps` (a real dep-bearing reducer needs them wired before folding).
         let deps = declared_deps(&component, &engine)?;
-        if !deps.is_empty() {
-            return Err(ComponentError::Instantiate(
-                "async reducer with component dependencies is not yet supported (§23 async \
-                 dep-compose is a follow-up); use the sync ComponentReducer path meanwhile"
-                    .to_string(),
-            ));
-        }
         let mut linker = wasmtime::component::Linker::<ReducerHost>::new(&engine);
         async_reducer_bindings::Reducer::add_to_linker::<
             _,
             wasmtime::component::HasSelf<ReducerHost>,
         >(&mut linker, |h: &mut ReducerHost| h)
         .map_err(|e| ComponentError::Link(e.to_string()))?;
-        // Pre-instantiate the fold world ONCE (perf). Unlike the sync path this is REQUIRED here (not
-        // best-effort): a component that doesn't export the fold world can't be an async reducer, so a
-        // pre-instantiation failure is a real decline, not a fallback.
-        let pre = linker
-            .instantiate_pre(&component)
-            .map_err(|e| ComponentError::Instantiate(e.to_string()))?;
-        let instance_pre = async_reducer_bindings::ReducerPre::new(pre)
-            .map_err(|e| ComponentError::Instantiate(e.to_string()))?;
+        // Pre-instantiate the fold world ONCE (perf) — ONLY for the dependency-FREE path (like the sync
+        // ComponentReducer). A dep-bearing reducer's linker is composed PER-FOLD in the fold's store, so it
+        // can't reuse a single pre-instantiation; `instance_pre` stays None and `apply` composes per fold.
+        // (A dependency-free component that doesn't export the fold world fails here — a real decline.)
+        let instance_pre = if deps.is_empty() {
+            let pre = linker
+                .instantiate_pre(&component)
+                .map_err(|e| ComponentError::Instantiate(e.to_string()))?;
+            Some(
+                async_reducer_bindings::ReducerPre::new(pre)
+                    .map_err(|e| ComponentError::Instantiate(e.to_string()))?,
+            )
+        } else {
+            None
+        };
         Ok(AsyncComponentReducer {
             engine,
             instance_pre,
+            component,
+            linker,
+            deps,
+            resolved_deps: Vec::new(),
+            component_store: None,
             fuel_budget: DEFAULT_FOLD_FUEL,
             fuel_yield_interval: DEFAULT_FUEL_YIELD_INTERVAL,
         })
+    }
+
+    /// The component dependencies this async reducer DECLARES by content hash (§23). Empty = dependency-free.
+    /// A caller composes each by fetching its bytes from CAS (see [`AsyncComponentReducer::resolve_deps`]),
+    /// then attaches via [`AsyncComponentReducer::with_resolved_deps`]. Mirrors [`ComponentReducer::deps`].
+    pub fn deps(&self) -> &[ComponentDep] {
+        &self.deps
+    }
+
+    /// Resolve ALL declared dependency bytes from a blob store (§23), each paired with the import name the
+    /// linker binds it under — the async twin of [`ComponentReducer::resolve_deps`]. Empty vec if
+    /// dependency-free. `Err(DepMissing)`/`Err(DepStoreError)` split as in the sync path (PR#1013 #3).
+    pub async fn resolve_deps(
+        &self,
+        blobs: &dyn crate::blob::BlobStore,
+    ) -> Result<Vec<(ComponentDep, Vec<u8>)>, ComponentError> {
+        let mut out = Vec::with_capacity(self.deps.len());
+        for dep in &self.deps {
+            let bytes = resolve_dep_bytes(dep, blobs).await?;
+            out.push((dep.clone(), bytes));
+        }
+        Ok(out)
+    }
+
+    /// Attach the resolved bytes of this reducer's declared deps (§23), so async `apply` composes each into
+    /// its per-fold linker before instantiating. Mirrors [`ComponentReducer::with_resolved_deps`]. Passing a
+    /// non-empty set for a component whose `instance_pre` was cached (dependency-free) forces the per-fold
+    /// path (`instance_pre = None`) — deps must compose in the fold's store.
+    pub fn with_resolved_deps(mut self, resolved: Vec<(ComponentDep, Vec<u8>)>) -> Self {
+        self.resolved_deps = resolved
+            .into_iter()
+            .map(|(dep, bytes)| (dep.import_name, bytes))
+            .collect();
+        if !self.resolved_deps.is_empty() {
+            self.instance_pre = None;
+        }
+        self
+    }
+
+    /// Attach a [`ComponentStore`](crate::component_store::ComponentStore) to resolve a dep's OWN transitive
+    /// bare imports (the runtime's `cadenza:nfc/normalize`), mirroring
+    /// [`ComponentReducer::with_component_store`]. Required for a runtime dep whose world imports nfc.
+    pub fn with_component_store(mut self, store: crate::component_store::ComponentStore) -> Self {
+        self.component_store = Some(store);
+        self
     }
 
     /// Fold ONE event through the wasm guest ASYNCHRONOUSLY (the async twin of [`ComponentReducer::apply`]).
@@ -1997,11 +2067,60 @@ impl AsyncComponentReducer {
             let kv = store.into_data().into_kv();
             return Err((ComponentError::Instantiate(e.to_string()), kv));
         }
-        let instance = match self.instance_pre.instantiate_async(&mut store).await {
-            Ok(i) => i,
-            Err(e) => {
-                let kv = store.into_data().into_kv();
-                return Err((ComponentError::Instantiate(e.to_string()), kv));
+        // Instantiate the guest. FAST PATH (dependency-free): the cached `instance_pre`. DEP PATH: clone the
+        // base linker, compose each resolved dep into it per-fold (with transitive nfc via the store), then
+        // `instantiate_async` against the composed linker — the async twin of the sync `apply`'s None-branch
+        // (dep instances live in THIS fold's store, so no single pre-instantiation can be reused).
+        let instance = match &self.instance_pre {
+            Some(pre) => match pre.instantiate_async(&mut store).await {
+                Ok(i) => i,
+                Err(e) => {
+                    let kv = store.into_data().into_kv();
+                    return Err((ComponentError::Instantiate(e.to_string()), kv));
+                }
+            },
+            None => {
+                // A dep-bearing reducer whose deps were never attached would fail with an opaque wasmtime
+                // "missing imports" linker error — surface an ACTIONABLE one naming the builders instead
+                // (reviewer #2253, same class as #2203 c4 / #2244).
+                if self.resolved_deps.is_empty() && !self.deps.is_empty() {
+                    let kv = store.into_data().into_kv();
+                    return Err((
+                        ComponentError::Instantiate(format!(
+                            "async reducer declares {} component dep(s) but none are attached — call \
+                             with_resolved_deps (from resolve_deps) + with_component_store before folding",
+                            self.deps.len()
+                        )),
+                        kv,
+                    ));
+                }
+                let mut l = self.linker.clone();
+                for (import_name, bytes) in &self.resolved_deps {
+                    if let Err(e) = compose_dep_into_linker(
+                        &self.engine,
+                        &mut store,
+                        &mut l,
+                        import_name,
+                        bytes,
+                        self.component_store.as_ref(),
+                    ) {
+                        let kv = store.into_data().into_kv();
+                        return Err((e, kv));
+                    }
+                }
+                match async_reducer_bindings::Reducer::instantiate_async(
+                    &mut store,
+                    &self.component,
+                    &l,
+                )
+                .await
+                {
+                    Ok(i) => i,
+                    Err(e) => {
+                        let kv = store.into_data().into_kv();
+                        return Err((ComponentError::Instantiate(e.to_string()), kv));
+                    }
+                }
             }
         };
         // A `set_fuel` failure is a HOST-setup error (fuel metering not enabled on the engine), NOT a guest
