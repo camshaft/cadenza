@@ -332,23 +332,25 @@ where
         session: &mut HostedSession,
         principal: impl Into<String>,
     ) -> Result<bool, String> {
-        // Read the recorded hash bytes out of the session KV, copying them so the KV borrow ends before the
-        // &mut-session reload call below.
-        let hash_bytes: Vec<u8> = match session
+        // Read the recorded hash out of the session KV. Copy the 32 bytes to the STACK directly (no
+        // intermediate Vec heap-alloc) — try_into ends the KV borrow before the &mut-session reload below. A
+        // wrong length is a clean error (the raw-32 contract enforced at resolve).
+        let hash = match session
             .session()
             .kv()
             .get(crate::genesis_ct::KV_AUTHORIZER_HASH)
         {
-            Some(b) => b.to_vec(),
+            Some(b) => {
+                let len = b.len();
+                let arr: [u8; 32] = b.try_into().map_err(|_| {
+                    format!(
+                        "genesis authorizer-hash is {len} bytes, expected a raw 32-byte content hash"
+                    )
+                })?;
+                cdz_kernel::hash::Hash::from_bytes(arr)
+            }
             None => return Ok(false), // root-only genesis: no authorizer to install
         };
-        let arr: [u8; 32] = hash_bytes.as_slice().try_into().map_err(|_| {
-            format!(
-                "genesis authorizer-hash is {} bytes, expected a raw 32-byte content hash",
-                hash_bytes.len()
-            )
-        })?;
-        let hash = cdz_kernel::hash::Hash::from_bytes(arr);
         let bytes = self
             .blob
             .get(&hash)
@@ -824,6 +826,60 @@ mod tests {
             .await
             .expect_err("a non-32-byte hash is rejected");
         assert!(err.contains("32-byte"), "{err}");
+    }
+
+    /// A real Cedar policy COMPONENT's bytes, if `CEDAR_POLICY_COMPONENT` points at one (CI builds + exports
+    /// it; absent locally → the test skips). Same var-set-but-unreadable → PANIC discipline as
+    /// [`reducer_component_bytes`] (#1979): a set-to-bad-path must not read as a green skip.
+    fn policy_component_bytes() -> Option<Vec<u8>> {
+        let path = std::env::var("CEDAR_POLICY_COMPONENT").ok()?;
+        Some(std::fs::read(&path).unwrap_or_else(|e| {
+            panic!("CEDAR_POLICY_COMPONENT is set to {path} but the component is unreadable: {e}")
+        }))
+    }
+
+    #[tokio::test]
+    async fn install_genesis_authorizer_happy_path_installs_a_real_policy() {
+        // The SUCCESS path (#2184 review): a genesis session records a REAL policy component's hash → install
+        // resolves it, lifts it, and installs the authorizer (Ok(true)), flipping the session off deny-all.
+        // Env-gated on a built Cedar policy component (skips locally, like the reducer-component test); the
+        // resolve/error paths above cover the rest deterministically.
+        let Some(bytes) = policy_component_bytes() else {
+            eprintln!(
+                "CEDAR_POLICY_COMPONENT unset — skipping the real-policy genesis install test"
+            );
+            return;
+        };
+        let mut blob = MemBlobStore::new();
+        let policy_hash = blob.put(&bytes).await.unwrap();
+        let factory = ComponentSessionFactory::new(blob, hermetic_executors, deny_all_authz);
+
+        let mut session = genesis_session();
+        // Seed genesis recording the real policy component's hash (raw 32 bytes) as the authorizer pointer.
+        session
+            .seed_genesis(b"root", Some(policy_hash.as_bytes()), None)
+            .await
+            .expect("seed ok");
+
+        let installed = factory
+            .install_genesis_authorizer(&mut session, "agent://genesis-test")
+            .await
+            .expect("a real policy component resolves + lifts + installs");
+        assert!(installed, "Ok(true): an authorizer was installed");
+        // Observable post-condition: the session is intact + renders post-install (the reload swapped the
+        // authorizer + ran push_capabilities_changed without erroring). A finer manifest-diff assertion would
+        // need the real policy's grant set; this env-gated test proves the resolve→lift→install→push path is
+        // total against a real component, complementing the deterministic error-path tests above.
+        let status = crate::status::session_status_json(
+            &SessionId::new("genesis-test"),
+            &session,
+            None,
+            crate::status::DEFAULT_STALL_AFTER_MS,
+        );
+        assert!(
+            !status.is_empty(),
+            "post-install session status renders (authorizer installed, not a broken session)"
+        );
     }
 
     #[tokio::test]
