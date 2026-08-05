@@ -534,6 +534,14 @@
               cp component.wasm "$out"
               runHook postInstall
             '';
+            # 🪤 dontFixup: $out is a single wasm FILE. stdenv's fixupPhase runs `strip` on file outputs,
+            # which truncates a wasm to ~54 bytes → a corrupt component in the store (the SAME trap rcdzcWasm
+            # guards; see its note "with fixup out=54B"). It's currently latent here — nativeBuildInputs is
+            # seedCompiler-only, no binutils strip in PATH, so fixup's strip is a no-op (components build
+            # intact: b1=497B). But that's INCIDENTAL: add a toolchain to nativeBuildInputs (or a stdenv
+            # default shift) and strip silently corrupts. Make the guard explicit, same as rcdzcWasm
+            # (github-liaison #2196 review).
+            dontFixup = true;
           };
         reducerCadenzaB1 = mkCadenzaComponent { name = "reducer-cadenza-b1"; cdzFile = "reducer_b1.cdz"; };
         reducerCadenzaB2 = mkCadenzaComponent { name = "reducer-cadenza-b2"; cdzFile = "reducer_b2.cdz"; };
