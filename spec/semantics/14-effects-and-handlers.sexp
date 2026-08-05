@@ -7615,6 +7615,40 @@
   (call   main (: 1 Int64) (: 2 Int64))
   (output (: 12 Int64)))
 
+(case "an Ast node as the effect OP ARGUMENT is destructured by the arm"
+  (doc    "The op-ARGUMENT direction of the Ast crossing (the resume-value case above is the arm→body
+           direction; this is body→arm): the program performs `(Sink.eat (Ast.List …))` and the ARM
+           pattern-matches the node, resuming with its element count — a 2-element list then an empty
+           one (2 + 0 = 2). The op-arg marshal must carry the recursive sum into the arm intact, the
+           analyzer-handler idiom (a handler that inspects syntax it is handed).")
+  (input  (do
+            (effect Sink (op eat (-> Ast Int64)))
+            (def (main (: n Int64))
+              (handle Sink 0
+                ((eat (a) s (match a
+                              ((Ast.List els) (resume (List.len els) s))
+                              (_ (resume -1 s)))))
+                (+ (Sink.eat (Ast.List (list (Ast.Int (BigInt.of n)) (Ast.Name "x"))))
+                   (Sink.eat (Ast.List (list))))))
+            (export main)))
+  (call   main (: 7 Int64)) (output (: 2 Int64)))
+
+(case "an ABORTING arm derives its answer from an Ast op-arg and discards the continuation"
+  (doc    "The abort composition of the Ast op-arg: the arm never resumes, so the handle's value IS the
+           arm's — `(Int64.of b)` on the node's BigInt payload plus the state — and the continuation's
+           pending `(+ 500 …)` is DISCARDED (1000 + 25 + 0 = 1025, not 1525). Composes the Ast crossing
+           with the abort shape: the payload extraction must happen on the discard path exactly as on
+           the resume path.")
+  (input  (do
+            (effect Halt (op stop (-> Ast Int64)))
+            (def (main (: n Int64))
+              (+ 1000
+                 (handle Halt 0
+                   ((stop (a) s (match a ((Ast.Int b) (+ (Int64.of b) s)) (_ -1))))
+                   (+ 500 (Halt.stop (Ast.Int (BigInt.of n)))))))
+            (export main)))
+  (call   main (: 25 Int64)) (output (: 1025 Int64)))
+
 ; --- Effects/try leftovers: the closure-resume factory, the response-transforming adapter
 ; interposer (wasm-first; rust todo rides the host-effect family), and the try-composition
 ; faces (const folds through arm/ctor positions; runtime operand + failing fold are pending
