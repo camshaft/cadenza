@@ -394,6 +394,7 @@ pass	TWO Tuple args with a scalar BETWEEN them (tuple, scalar, tuple)
 pass	TWO closures capture DIFFERENT generations of one shadowed name and each sees its own
 pass	TWO closures capture the SAME heap map and the map outlives both applications
 pass	TWO closures escaping one handle carry DISTINCT captured state reads
+pass	TWO closures minted by the same op at DIFFERENT states each keep their own snapshot
 pass	TWO distinct nonzero BigInt literal probes dispatch in one recursive fn
 pass	TWO guarded map arms over a PARTIAL-CONST map fall through, each re-resolving its value binder
 pass	TWO loop-carried ropes each rebind to derived strings every recursion step
@@ -560,6 +561,8 @@ pass	a CBOR simple value that is not a known boolean is classified as not-a-bool
 pass	a CBOR skip steps over a tagged item to the value it wraps
 pass	a CBOR skip walks past a whole nested item to the next offset
 pass	a CLASSIFY-and-BUILD fold maps ints to letter pieces and the built rope equals the literal
+pass	a CLOSURE as the op ARGUMENT — the arm applies the caller's strategy to its own state
+pass	a CLOSURE state whose body performs an OUTER effect when the arm applies it
 pass	a COMPOUND generated value is reproducible from its seed (a tuple draws identically twice)
 pass	a COMPOUND map key with a Rational leaf hashes+matches by the leaf's normalized form
 pass	a CONCRETELY-exported error sum flows back through two call layers and dispatches at the entry
@@ -820,6 +823,7 @@ pass	a RECURSIVE tree evaluator resolves variables through a READER effect with 
 pass	a RECURSIVE-sum value of runtime depth rides a handler resume
 pass	a REFL tactic closes a reflexivity goal by driving the kernel, and cannot close a false goal
 pass	a RELATIONAL @requires over two parameters enforces their order at entry
+pass	a RESULT handler state is matched per variant with one resume per arm (Ok accumulates, Err echoes)
 pass	a RESULT-returning effect op is matched on Ok / Err — the fallible-step idiom
 pass	a RESUMING handler around a contracted body still enforces @ensures on the resumed-through value
 pass	a ROMAN DECODER subtracts on lookahead and round-trips through the pinned renderer
@@ -5333,6 +5337,7 @@ pass	the generator is a deterministic function of its seed (same seed, same valu
 pass	the generator reproduces its stream from a runtime seed (same seed, same value) — runs
 pass	the greater-than operator on chars follows scalar order
 pass	the guarded-let conditional takes its else-branch when the conjunction is false
+pass	the handler STATE is a CLOSURE the arm replaces with one capturing the perform-time op argument
 pass	the heap list a handle BUILDS escapes the handle and is consumed outside it
 pass	the hygiene rename recurses into a NESTED compound match pattern
 pass	the idempotent bitwise collapse holds on a repeated RUNTIME operand

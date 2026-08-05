@@ -8035,6 +8035,26 @@
             (export main)))
   (call   main (: 7 Int64)) (output (: 12 Int64)))
 
+(case "a RESULT handler state is matched per variant with one resume per arm (Ok accumulates, Err echoes)"
+  (doc    "The Result sibling of the Option variant pins above: the state is `(Result Int64 Int64)` and the
+           arm matches it — the Ok path accumulates `(resume (+ acc v) (Ok (+ acc v)))`, the Err path
+           echoes its payload unchanged. Each match ARM has exactly ONE resume site, so the shape folds
+           (the latching Ok→Err transition, whose if branches on the accumulator READ FROM THE STATE
+           binder inside one arm, is the pinned condition-reads-state decline). This run stays on the Ok
+           path: 3, 3+4=7, 7+2=9 → 379. Pins per-variant dispatch over a two-payload sum state where both
+           constructors carry data (Option's None carries none).")
+  (input  (do
+            (effect St (op add (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle St (Result.Ok 0)
+                ((add (v) s
+                  (match s
+                    ((Result.Ok acc) (resume (+ acc v) (Result.Ok (+ acc v))))
+                    ((Result.Err e) (resume e (Result.Err e))))))
+                (+ (* 100 (St.add n)) (+ (* 10 (St.add 4)) (St.add 2)))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 379 Int64)))
+
 (case "an Ast node as the effect OP ARGUMENT is destructured by the arm"
   (doc    "The op-ARGUMENT direction of the Ast crossing (the resume-value case above is the arm→body
            direction; this is body→arm): the program performs `(Sink.eat (Ast.List …))` and the ARM
@@ -8086,6 +8106,78 @@
             (export main)))
   (call   main (: 5 Int64))
   (output (: 38 Int64)))
+
+(case "the handler STATE is a CLOSURE the arm replaces with one capturing the perform-time op argument"
+  (doc    "Strategy-as-state: the state slot carries a closure the arm APPLIES for its answer and REPLACES
+           per dispatch — and the replacement `(fn (x) (+ x v))` closes over the op argument `v`, so the
+           state closes over RUNTIME data from the previous perform. Seed is the identity: eval 4 → 4,
+           next state adds 4; eval 3 → 7 → 407. A stale strategy (804→wrong) or a late-bound capture
+           breaks the checksum. The closure sits in the STATE slot proper — the closure-in-tuple pin
+           above crosses one through a RESUME value instead.")
+  (input  (do
+            (effect St (op eval (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle St (fn ((: x Int64)) x)
+                ((eval (v) f (resume (f v) (fn ((: x Int64)) (+ x v)))))
+                (+ (* 100 (St.eval n)) (St.eval 3))))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: 407 Int64)))
+
+(case "a CLOSURE state whose body performs an OUTER effect when the arm applies it"
+  (doc    "The cross-frame face of strategy-as-state: the inner handler's closure state has `(+ x
+           (Aux.base))` as its body, so APPLYING the state inside the inner arm performs the OUTER
+           effect — the application crosses a live handler frame. Aux seeds 50 and advances per read:
+           eval 4 → 4+50 = 54 (Aux → 51), eval 3 → 3+51 = 54 → 5454. Pins that a perform fired from a
+           closure applied inside another handler's ARM homes against the outer frame and its advance
+           is observed by the next application.")
+  (input  (do
+            (effect Aux (op base (-> Unit Int64)))
+            (effect St (op eval (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle Aux 50
+                ((base (u) b (resume b (+ b 1))))
+                (handle St (fn ((: x Int64)) (+ x (Aux.base)))
+                  ((eval (v) f (resume (f v) f)))
+                  (+ (* 100 (St.eval n)) (St.eval 3)))))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: 5454 Int64)))
+
+(case "TWO closures minted by the same op at DIFFERENT states each keep their own snapshot"
+  (doc    "The aliasing probe of the closure-factory pin above: `mk` is performed twice with a state
+           advance between, so two distinct closures exist whose envs captured DIFFERENT values of the
+           same state binder. `f` captures 5, `bump` advances to 15, `g` captures 15; `(f 0)`=5 and
+           `(g 0)`=15 → 515. A shared or late-bound environment gives 1515 (both see the advance) or
+           15 (both see the seed) — the checksum separates all three worlds. Each resume-crossed
+           closure env must be a private snapshot, not a reference into the handler frame.")
+  (input  (do
+            (effect St (op mk (-> Unit (Tuple (-> Int64 Int64) Int64))) (op bump (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((mk (u) s (resume (tuple (fn ((: x Int64)) (+ x s)) 0) s))
+                 (bump (u) s (resume s (+ s 10))))
+                (match (St.mk)
+                  ((tuple f _z)
+                    (do (St.bump)
+                        (match (St.mk)
+                          ((tuple g _w) (+ (* 100 (f 0)) (g 0)))))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 515 Int64)))
+
+(case "a CLOSURE as the op ARGUMENT — the arm applies the caller's strategy to its own state"
+  (doc    "The body→arm direction of the closure crossing (the factory pins are arm→body): the op's
+           PARAMETER type is `(-> Int64 Int64)` and the body passes a different lambda per perform. The
+           arm answers `(f s)` — the caller's strategy applied to the handler's CURRENT state — and
+           advances. `(*3)` at s=5 → 15, then `(+7)` at s=6 → 13 → 1513. Unlike the result direction
+           (which curried-flattens and needs the tuple crossing), a fn-typed op ARGUMENT is direct.
+           Pins the visitor idiom: the handler owns the data, callers send the computation.")
+  (input  (do
+            (effect Ap (op app (-> (-> Int64 Int64) Int64)))
+            (def (main (: n Int64))
+              (handle Ap n
+                ((app (f) s (resume (f s) (+ s 1))))
+                (+ (* 100 (Ap.app (fn ((: x Int64)) (* x 3)))) (Ap.app (fn ((: x Int64)) (+ x 7))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 1513 Int64)))
 
 (case "an interposing handler TRANSFORMS the host response before resuming (offset adapter)"
   (doc    "The ADAPTER sibling of the observe interposer (:866 counts + forwards unchanged): the arm transforms the host response before resuming (+1000 each; 30+40 → 2070 — a dropped transform gives 70, a double-apply 3070).")
