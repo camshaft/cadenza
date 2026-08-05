@@ -1599,19 +1599,55 @@
               (perCrateClippyCrane // { inherit crateCdzCheck; }) ''
               echo "ok: clippy aggregate — all per-crate crane cargoClippy checks + cdz (crane MR2)" > $out
             '';
+            # flakeReproBackstop: the REPRODUCIBILITY-BACKSTOP subset — the checks the `nix-flake (advisory)`
+            # CI job should run INSTEAD of a whole `nix flake check`. Data-driven CI-speed (operator standing
+            # mandate + v-ft queue-wait ranking, 2026-08-05): `nix flake check` was the biggest runner-cost
+            # (~48.6m advisory) because it rebuilds the UNION of ALL flake outputs — clippy/test/codegen/gate/
+            # bench/guide/roundtrip/fmt/kernel+host-native/rcdzc-wasm/cad — i.e. it REDUNDANTLY re-runs the whole
+            # required-job set (each already run individually WITH the /nix/store cache by its own required job),
+            # gating nothing. That redundant rebuild is pure runner-waste + eats slots (queue-wait median 5.3m/
+            # p90 12m → freeing slots cuts time-to-merge fleet-wide). This aggregate keeps ONLY the coverage the
+            # advisory UNIQUELY provides — nothing else in checks.yml builds these:
+            #   · the 3 end-to-end HASH-PARITY checks (nix-built component bytes' sha256 == the committed
+            #     REQUIRED_RUNTIME_HASH / DEBUG_RUNTIME_HASH / REQUIRED_NFC_HASH). codegen enforces source-
+            #     staleness natively, but NOT the through-nix hash-from-bytes reproduction — that's this.
+            #   · component VALIDITY (guest + reducer-cadenza components are well-formed wasm components).
+            #   · the project @test suites run through nix (example-project + reducer-cadenza b1-b4/genesis).
+            #   · the pure-eval closure-assert guard.
+            # The advisory job runs `nix build .#checks.<sys>.flake-repro-backstop` (minutes, cache-warm) instead
+            # of `nix flake check` (48m). Coverage of the required set is unchanged (those jobs still run); only
+            # the redundant re-run is dropped. `nix flake check` locally/in devShell still builds everything.
+            flakeReproBackstop = pkgs.runCommand "flake-repro-backstop"
+              {
+                inherit runtimeHashParity runtimeDebugHashParity nfcHashParity
+                  reducerGuestValid cedarGuestValid
+                  reducerCadenzaB1Valid reducerCadenzaB2Valid reducerCadenzaB3Valid reducerCadenzaGenesisValid
+                  exampleProjectTests reducerCadenzaTests crateClosureAssert;
+              } ''
+              echo "ok: flake reproducibility-backstop — hash-parity + component-validity + project-@tests + closure-assert" > $out
+            '';
+            # bindings the backstop aggregate references (kept as `let` so both the aggregate + the individual
+            # `checks.*` attrs below share ONE derivation each — no rebuild).
+            runtimeHashParity = parity { name = "runtime"; drv = runtime; constName = "REQUIRED_RUNTIME_HASH"; };
+            runtimeDebugHashParity = parity { name = "runtime-debug"; drv = runtimeDebug; constName = "DEBUG_RUNTIME_HASH"; };
+            nfcHashParity = parity { name = "nfc"; drv = nfc; constName = "REQUIRED_NFC_HASH"; };
+            reducerGuestValid = validComponent { name = "reducer-guest"; drv = reducerGuest; };
+            cedarGuestValid = validComponent { name = "cedar-guest"; drv = cedarGuest; };
+            reducerCadenzaB1Valid = validComponent { name = "reducer-cadenza-b1"; drv = reducerCadenzaB1; };
+            reducerCadenzaB2Valid = validComponent { name = "reducer-cadenza-b2"; drv = reducerCadenzaB2; };
+            reducerCadenzaB3Valid = validComponent { name = "reducer-cadenza-b3"; drv = reducerCadenzaB3; };
+            reducerCadenzaGenesisValid = validComponent { name = "reducer-cadenza-genesis"; drv = reducerCadenzaGenesis; };
           in
           {
-            runtime-hash-parity = parity {
-              name = "runtime"; drv = runtime; constName = "REQUIRED_RUNTIME_HASH";
-            };
-            runtime-debug-hash-parity = parity {
-              name = "runtime-debug"; drv = runtimeDebug; constName = "DEBUG_RUNTIME_HASH";
-            };
-            nfc-hash-parity = parity {
-              name = "nfc"; drv = nfc; constName = "REQUIRED_NFC_HASH";
-            };
-            reducer-guest-valid = validComponent { name = "reducer-guest"; drv = reducerGuest; };
-            cedar-guest-valid = validComponent { name = "cedar-guest"; drv = cedarGuest; };
+            # the reproducibility-backstop subset the advisory `nix-flake` CI job runs (INSTEAD of a whole
+            # `nix flake check`) — see the flakeReproBackstop note above. Individual attrs kept too (so
+            # `nix flake check` locally still runs them + they stay independently buildable).
+            flake-repro-backstop = flakeReproBackstop;
+            runtime-hash-parity = runtimeHashParity;
+            runtime-debug-hash-parity = runtimeDebugHashParity;
+            nfc-hash-parity = nfcHashParity;
+            reducer-guest-valid = reducerGuestValid;
+            cedar-guest-valid = cedarGuestValid;
             # S3: the example project's @tests run through nix — a cache HIT when its sources are
             # unchanged (the "skip tests that haven't changed" win), a re-run + fail on a red test.
             example-project-tests = exampleProjectTests;
@@ -1619,10 +1655,10 @@
             reducer-cadenza-tests = reducerCadenzaTests;
             # seq-144 Part 2: each B1-B4 reducer component is a valid wasm component (b3/genesis import kv
             # host-served/unresolved — validate checks STRUCTURE not import-satisfaction, so still green).
-            reducer-cadenza-b1-valid = validComponent { name = "reducer-cadenza-b1"; drv = reducerCadenzaB1; };
-            reducer-cadenza-b2-valid = validComponent { name = "reducer-cadenza-b2"; drv = reducerCadenzaB2; };
-            reducer-cadenza-b3-valid = validComponent { name = "reducer-cadenza-b3"; drv = reducerCadenzaB3; };
-            reducer-cadenza-genesis-valid = validComponent { name = "reducer-cadenza-genesis"; drv = reducerCadenzaGenesis; };
+            reducer-cadenza-b1-valid = reducerCadenzaB1Valid;
+            reducer-cadenza-b2-valid = reducerCadenzaB2Valid;
+            reducer-cadenza-b3-valid = reducerCadenzaB3Valid;
+            reducer-cadenza-genesis-valid = reducerCadenzaGenesisValid;
 
             # Full-CI-in-nix increment 1: the LINT pair, mirroring checks.yml `fmt` + `clippy` exactly.
             # `nix flake check` now runs them; the checks.yml jobs stay in place (advisory overlap) until
