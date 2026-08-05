@@ -364,6 +364,36 @@ where
             .await?;
         Ok(true)
     }
+
+    /// Run the FULL genesis ceremony on a freshly-`genesis`'d session in ONE call: deliver the genesis-setup
+    /// events ([`seed_genesis`](crate::HostedSession::seed_genesis)) then resolve + install the recorded
+    /// authorizer ([`install_genesis_authorizer`](Self::install_genesis_authorizer)). This is the single
+    /// host-side entry point for booting a session's authz from its bootstrap inputs — the caller supplies the
+    /// established trust-root identity and (optionally) the authorizer-component hash + context, and this
+    /// seeds them into the reducer's KV and turns the recorded authorizer pointer into an installed policy.
+    ///
+    /// Returns `Ok(true)` if an authorizer was installed (an `authorizer_hash` was provided + resolved),
+    /// `Ok(false)` for a root-only boot (no authorizer recorded — the session keeps its deny-all v0 authorizer).
+    /// `Err` propagates the first failure (a genesis fold error, a malformed/absent/​non-lifting authorizer),
+    /// leaving the session un-booted rather than half-installed. `principal` is the agent's authz principal.
+    ///
+    /// Equivalent to `session.seed_genesis(root, authz_hash, ctx).await?;
+    /// self.install_genesis_authorizer(session, principal).await` — a convenience so a caller drives the whole
+    /// ceremony without threading the two steps (+ the KV-key contract) itself.
+    pub async fn run_genesis_ceremony(
+        &self,
+        session: &mut HostedSession,
+        root_identity: &[u8],
+        authorizer_hash: Option<&[u8]>,
+        context: Option<&[u8]>,
+        principal: impl Into<String>,
+    ) -> Result<bool, String> {
+        session
+            .seed_genesis(root_identity, authorizer_hash, context)
+            .await
+            .map_err(|e| format!("genesis seed failed: {e:?}"))?;
+        self.install_genesis_authorizer(session, principal).await
+    }
 }
 
 #[async_trait::async_trait(?Send)]
@@ -901,6 +931,55 @@ mod tests {
         assert!(
             err.contains("no authorizer policy component in the blob store"),
             "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_genesis_ceremony_root_only_seeds_kv_and_returns_ok_false() {
+        // The one-call ceremony on a root-only boot: seeds the root into KV + returns Ok(false) (no authorizer
+        // recorded → nothing installed, deny-all stays). Proves the wrapper drives seed_genesis then
+        // install_genesis_authorizer in one call.
+        let factory =
+            ComponentSessionFactory::new(MemBlobStore::new(), hermetic_executors, deny_all_authz);
+        let mut session = genesis_session();
+        let installed = factory
+            .run_genesis_ceremony(&mut session, b"root-id", None, None, "agent://x")
+            .await
+            .expect("root-only ceremony is a clean Ok");
+        assert!(!installed, "no authorizer-hash → nothing installed");
+        // The seed step ran: the root identity landed in KV.
+        assert_eq!(
+            session.session().kv().get(genesis_ct::KV_ROOT_IDENTITY),
+            Some(&b"root-id"[..])
+        );
+    }
+
+    #[tokio::test]
+    async fn run_genesis_ceremony_propagates_the_install_error() {
+        // A ceremony with an authorizer-hash absent from the blob store: seed succeeds, then the install step
+        // errors — the wrapper propagates it (a half-booted session is surfaced, not swallowed).
+        let factory =
+            ComponentSessionFactory::new(MemBlobStore::new(), hermetic_executors, deny_all_authz);
+        let mut session = genesis_session();
+        let missing = Hash::of(b"policy-never-stored");
+        let err = factory
+            .run_genesis_ceremony(
+                &mut session,
+                b"root",
+                Some(missing.as_bytes()),
+                None,
+                "agent://x",
+            )
+            .await
+            .expect_err("the absent-authorizer install error propagates through the ceremony");
+        assert!(
+            err.contains("no authorizer policy component in the blob store"),
+            "{err}"
+        );
+        // The seed step still ran before the install failed (root + the recorded hash are in KV).
+        assert_eq!(
+            session.session().kv().get(genesis_ct::KV_ROOT_IDENTITY),
+            Some(&b"root"[..])
         );
     }
 }
