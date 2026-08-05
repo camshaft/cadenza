@@ -106,8 +106,8 @@ impl DictSet {
     ///
     /// The `hash` is the artifact's content address; the CALLER computes it (this bottom crate stores +
     /// compares hashes but never COMPUTES one — the digest lives in exactly one place, `cdz-kernel`, §9.1).
-    /// A `resolve` graft keys on this exact hash, so the caller MUST pass the content-address of the SAME
-    /// canonical bytes it (or `encode_with_dict`) will reference. A duplicate hash keeps the FIRST artifact
+    /// [`resolve`] grafts a dict-ref by this exact hash, so the caller MUST pass the content-address of
+    /// the SAME canonical bytes it (or `encode_with_dict`) will reference. A duplicate hash keeps the FIRST artifact
     /// (later duplicates of an already-registered hash are ignored — content-addressed, so equal-hash
     /// artifacts are equal by construction).
     pub fn from_artifacts<'a, I>(artifacts: I) -> Result<DictSet, DictError>
@@ -180,10 +180,10 @@ mod tests {
     /// The shared subtree a dictionary exports: `(pair a b)`.
     fn dict_arena() -> Arenas {
         let mut b = Builder::new();
-        let p = b.name("pair");
-        let a = b.name("a");
-        let c = b.name("b");
-        let root = b.list(vec![p, a, c]);
+        let pair = b.name("pair");
+        let sym_a = b.name("a");
+        let sym_b = b.name("b");
+        let root = b.list(vec![pair, sym_a, sym_b]);
         b.finish(root)
     }
 
@@ -192,10 +192,10 @@ mod tests {
     fn program_using_dict() -> Arenas {
         let mut b = Builder::new();
         let f = b.name("f");
-        let p = b.name("pair");
-        let a = b.name("a");
-        let c = b.name("b");
-        let inner = b.list(vec![p, a, c]);
+        let pair = b.name("pair");
+        let sym_a = b.name("a");
+        let sym_b = b.name("b");
+        let inner = b.list(vec![pair, sym_a, sym_b]);
         let root = b.list(vec![f, inner]);
         b.finish(root)
     }
@@ -227,9 +227,8 @@ mod tests {
         let dict_hash = Hash([0x11u8; 32]);
         let base = DictSet::from_artifacts([(dict_hash, encode(&dict).as_slice())]).unwrap();
         let transport = encode_with_dict(&program_using_dict(), &base);
-        assert_eq!(
-            &transport[..8],
-            b"cdzast\x00\x02",
+        assert!(
+            is_transport_header(&transport),
             "sanity: encode_with_dict produced a transport artifact"
         );
 
@@ -279,9 +278,8 @@ mod tests {
 
         let dicts = DictSet::from_artifacts([(dict_hash, encode(&dict).as_slice())]).unwrap();
         let transport = encode_with_dict(&program, &dicts);
-        assert_eq!(
-            &transport[..8],
-            b"cdzast\x00\x02",
+        assert!(
+            is_transport_header(&transport),
             "sanity: is a transport artifact"
         );
 
