@@ -1937,6 +1937,23 @@ mod tests {
         out
     }
 
+    /// Parse ONLY the import section (the 32-byte hashes right after the header's import count) of a
+    /// `\x00\x02` transport blob. Lets a test assert EXACTLY which dicts were imported without scanning the
+    /// whole blob for 32-byte windows (which could spuriously match leaf-payload bytes, not the imports).
+    fn parse_transport_imports(bytes: &[u8]) -> Vec<[u8; 32]> {
+        assert_eq!(&bytes[..8], &TRANSPORT_HEADER, "not a transport artifact");
+        let mut r = leb128::Reader::new(&bytes[8..]);
+        let count = r.read_var_len_checked().expect("import count");
+        (0..count)
+            .map(|_| {
+                let raw = r.take(HASH_LEN).expect("import hash");
+                let mut h = [0u8; HASH_LEN];
+                h.copy_from_slice(raw);
+                h
+            })
+            .collect()
+    }
+
     #[test]
     fn decode_with_dicts_on_a_v1_artifact_is_exactly_decode() {
         // A canonical `\x00\x01` input decodes IDENTICALLY through decode_with_dicts (dicts unused) — the
@@ -2431,9 +2448,9 @@ mod tests {
         };
         let mut gb = Builder::new();
         let p = gb.name("pair");
-        let ga = gb.name("a");
-        let gbb = gb.name("b");
-        let groot = gb.list(vec![p, ga, gbb]);
+        let good_a = gb.name("a");
+        let good_b = gb.name("b");
+        let groot = gb.list(vec![p, good_a, good_b]);
         let good = gb.finish(groot);
 
         let mut dicts = DictSet::new();
@@ -2456,13 +2473,12 @@ mod tests {
             &TRANSPORT_HEADER,
             "the sound dict must still be used for compaction despite the cyclic one"
         );
-        assert!(
-            bytes.windows(32).any(|w| w == [0x02u8; 32]),
-            "the good dict (0x02) must be the imported one"
-        );
-        assert!(
-            !bytes.windows(32).any(|w| w == [0x01u8; 32]),
-            "the skipped cyclic dict (0x01) must NOT be imported"
+        // Parse the import SECTION precisely (not a whole-blob 32-byte scan, which could match leaf-payload
+        // bytes): the imports must be EXACTLY the good dict's hash — the skipped cyclic one is never listed.
+        assert_eq!(
+            parse_transport_imports(&bytes),
+            vec![[0x02u8; 32]],
+            "imports must be exactly the good dict (0x02); the cyclic dict (0x01) must be absent"
         );
         // And it round-trips back to the inline arena through decode_with_dicts.
         let got = decode_with_dicts(&bytes, &dicts).expect("compacted transport round-trips");
