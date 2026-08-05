@@ -26,6 +26,25 @@ use cdz_kernel::kernel::{KernelError, Session};
 use cdz_kernel::reducer::Reducer;
 use std::collections::HashMap;
 
+/// The host-emitted GENESIS-SETUP content-type families — the guest↔host bootstrap contract agreed with
+/// v-harness-bootstrap (whose `reducer_genesis.cdz` folds each into session KV, requesting no effects). After
+/// a session's reducer-hash genesis, the host seed path delivers these as ORDINARY early inbound events
+/// (content-as-events, design §3 — NOT a side channel); the reducer recognizes the family and folds the
+/// payload to a well-known KV key. Same `family` namespacing as the effect content-types
+/// ([`cdz_kernel::effect::effect_ct`]).
+pub mod genesis_ct {
+    /// The trust-ROOT identity — arrives as this event's PAYLOAD, never baked (operator seq-129). Reducer
+    /// folds to KV `bootstrap/root-identity`.
+    pub const ROOT: &str = "genesis/root";
+    /// The authorizer component's HASH pointer (§20b install-authorizer-by-hash). Reducer folds to KV
+    /// `bootstrap/authorizer-hash`; the host's reload-policy path later resolves it to install the real authorizer.
+    pub const AUTHORIZER: &str = "genesis/authorizer";
+    /// Free-form bootstrap CONTEXT. Reducer folds to KV `bootstrap/context`.
+    pub const CONTEXT: &str = "genesis/context";
+    /// The content-type version stamped on genesis-setup events (v1 of the bootstrap contract).
+    pub const VERSION: u32 = 1;
+}
+
 /// A session's identity in the host registry. A short opaque string the operator/driver assigns (e.g.
 /// `"concierge"`, `"builder-42"`) — distinct from the kernel's per-effect `EffectId` and from the
 /// content `Hash` of the reducer. Owned so the registry key needs no lifetime.
@@ -229,6 +248,38 @@ impl HostedSession {
             .await
     }
 
+    /// Seed the GENESIS-SETUP events into a freshly-`genesis`'d session — the host side of the bootstrap
+    /// ceremony (contract with v-harness-bootstrap). Delivers, in order, a [`genesis/root`](genesis_ct::ROOT)
+    /// event carrying the established trust-root identity, an optional [`genesis/authorizer`](genesis_ct::AUTHORIZER)
+    /// event carrying the authorizer component's hash, and an optional [`genesis/context`](genesis_ct::CONTEXT)
+    /// event — each as an ordinary early inbound [`deliver`](Self::deliver) (content-as-events, §3), which the
+    /// genesis reducer folds into session KV (`bootstrap/root-identity` / `bootstrap/authorizer-hash` /
+    /// `bootstrap/context`). These setup events request NO effects, so the session's deny-all v0 authorizer
+    /// doesn't gate them; the recorded `authorizer-hash` is the pointer a later reload-policy step resolves to
+    /// install the real authorizer.
+    ///
+    /// Stops at the FIRST delivery error (a genesis fold failure is fatal to the ceremony — the caller surfaces
+    /// it rather than booting a half-seeded session). `authorizer_hash`/`context` are optional (a minimal boot
+    /// seeds only the root).
+    pub async fn seed_genesis(
+        &mut self,
+        root_identity: &[u8],
+        authorizer_hash: Option<&[u8]>,
+        context: Option<&[u8]>,
+    ) -> Result<(), KernelError> {
+        self.deliver(genesis_event(genesis_ct::ROOT, root_identity), None)
+            .await?;
+        if let Some(h) = authorizer_hash {
+            self.deliver(genesis_event(genesis_ct::AUTHORIZER, h), None)
+                .await?;
+        }
+        if let Some(c) = context {
+            self.deliver(genesis_event(genesis_ct::CONTEXT, c), None)
+                .await?;
+        }
+        Ok(())
+    }
+
     /// Fire every armed timer whose deadline has passed `now_ms`, waking the reducer (§9c). The host's
     /// scheduler calls this on a tick; returns how many fired.
     pub async fn fire_due_timers(&mut self, now_ms: u64) -> usize {
@@ -307,6 +358,20 @@ impl HostedSession {
                 }
                 _ => None,
             })
+    }
+}
+
+/// Build a genesis-setup inbound event: an [`EventBody::Inbound`] with the given `family` content-type (at
+/// [`genesis_ct::VERSION`]) carrying `payload` inline. The `payload` bytes are the setup value the genesis
+/// reducer folds into KV (e.g. the root identity / the authorizer hash / the context blob).
+fn genesis_event(family: &'static str, payload: &[u8]) -> EventBody {
+    EventBody::Inbound {
+        content_type: cdz_kernel::event::ContentType {
+            // The genesis families are `&'static str` consts → a borrowed Cow, no allocation.
+            family: std::borrow::Cow::Borrowed(family),
+            version: genesis_ct::VERSION,
+        },
+        payload: cdz_kernel::effect::Payload::Inline(payload.to_vec().into()),
     }
 }
 
@@ -729,6 +794,83 @@ mod tests {
         let hosted = host.get(&id).expect("session registered");
         assert_eq!(hosted.session().kv().get(b"status"), Some(&b"ran"[..]));
         assert_eq!(hosted.open_effects(), 0);
+    }
+
+    /// A stand-in genesis reducer (mirrors v-harness-bootstrap's reducer_genesis.cdz contract): folds each
+    /// well-known genesis-setup family's payload into the contracted KV key, requesting no effects.
+    struct GenesisRecordingReducer;
+    #[async_trait::async_trait(?Send)]
+    impl Reducer for GenesisRecordingReducer {
+        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+            if let EventBody::Inbound {
+                content_type,
+                payload: Payload::Inline(bytes),
+            } = &event.body
+            {
+                let key = match content_type.family.as_ref() {
+                    genesis_ct::ROOT => Some(b"bootstrap/root-identity".to_vec()),
+                    genesis_ct::AUTHORIZER => Some(b"bootstrap/authorizer-hash".to_vec()),
+                    genesis_ct::CONTEXT => Some(b"bootstrap/context".to_vec()),
+                    _ => None,
+                };
+                if let Some(k) = key {
+                    kv.put(k, bytes.to_vec());
+                }
+            }
+            FoldOutput::none()
+        }
+    }
+
+    #[tokio::test]
+    async fn seed_genesis_folds_the_setup_events_into_kv() {
+        // seed_genesis delivers genesis/root|authorizer|context as ordinary inbound events; the genesis
+        // reducer folds each into its contracted KV key. Deny-all authz is fine — the setup events request no
+        // effects. Proves the host side of the bootstrap contract with v-harness-bootstrap.
+        let mut session = HostedSession::genesis(
+            Hash::of(b"genesis-reducer-v1"),
+            Box::new(GenesisRecordingReducer),
+            Box::new(Authorizer::deny_all()),
+            CompositeExecutor::new(),
+        );
+
+        session
+            .seed_genesis(
+                b"root-identity-bytes",
+                Some(b"authz-hash-bytes"),
+                Some(b"ctx"),
+            )
+            .await
+            .expect("genesis seed folds without error");
+
+        let kv = session.session().kv();
+        assert_eq!(
+            kv.get(b"bootstrap/root-identity"),
+            Some(&b"root-identity-bytes"[..])
+        );
+        assert_eq!(
+            kv.get(b"bootstrap/authorizer-hash"),
+            Some(&b"authz-hash-bytes"[..])
+        );
+        assert_eq!(kv.get(b"bootstrap/context"), Some(&b"ctx"[..]));
+    }
+
+    #[tokio::test]
+    async fn seed_genesis_root_only_leaves_optional_keys_absent() {
+        // A minimal boot seeds only the root; the optional authorizer/context keys stay absent.
+        let mut session = HostedSession::genesis(
+            Hash::of(b"genesis-reducer-v1"),
+            Box::new(GenesisRecordingReducer),
+            Box::new(Authorizer::deny_all()),
+            CompositeExecutor::new(),
+        );
+        session
+            .seed_genesis(b"just-root", None, None)
+            .await
+            .expect("root-only seed ok");
+        let kv = session.session().kv();
+        assert_eq!(kv.get(b"bootstrap/root-identity"), Some(&b"just-root"[..]));
+        assert_eq!(kv.get(b"bootstrap/authorizer-hash"), None);
+        assert_eq!(kv.get(b"bootstrap/context"), None);
     }
 
     #[tokio::test]

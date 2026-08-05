@@ -99,7 +99,7 @@ pub use factory::{
 };
 #[cfg(feature = "live-net")]
 pub use host::live_executor_set;
-pub use host::{AgentHost, HostedSession, SessionId};
+pub use host::{genesis_ct, AgentHost, HostedSession, SessionId};
 #[cfg(feature = "live-net")]
 pub use http::ReqwestHttpTransport;
 pub use http::{HttpExecutor, HttpMethod, HttpResponse, HttpTransport};
