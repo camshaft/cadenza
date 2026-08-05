@@ -759,12 +759,15 @@ impl Session {
                 // metadata: `target` is GUEST-controlled (a URL with a token/query, a PII path) and
                 // `reason` is formatted FROM it (authz.rs), so neither goes into the tracing stream —
                 // tracing ships off-box (v-ah-host owns the subscriber/export), and a guest secret must
-                // not leak into telemetry (#2169 MED, same untrusted-input-in-output class as #2050/#2090).
-                // The full target + reason are already captured in the DURABLE `EventBody::AuthzDenied`
-                // below (the audit record), which never leaves the box; here we emit id/family/target LEN.
+                // not leak into telemetry (#2169/#2180 MED, untrusted-input-in-output class as #2050/#2090).
+                // `family` is ALSO guest-controllable for an extension family (a `Cow::Owned` register-by-
+                // string name), so it goes through `loggable_family` (well-known static name verbatim,
+                // extension → "<extension>" + its length) — #2180 residual. The full target + reason are in
+                // the DURABLE `EventBody::AuthzDenied` below (on-box audit), which never leaves the box.
                 warn!(
                     effect_id = id.0,
-                    family = %req.content_type.family,
+                    family = loggable_family(&req.content_type.family),
+                    family_len = req.content_type.family.len(),
                     target_len = req.target.len(),
                     "effect authorization denied"
                 );
@@ -906,12 +909,14 @@ impl Session {
             // Route + execute — awaiting the async executor (a real I/O executor yields here without
             // blocking the single-threaded loop). The Dispatched record is already durable, so ordering
             // is preserved across the await. DEBUG-trace only NON-SENSITIVE metadata: `target` is
-            // guest-controlled (may carry a secret/PII) and tracing ships off-box, so we emit id/family/
-            // target LEN, never the raw target (#2169 MED). The full target is in the durable Dispatched
-            // event above, which stays on-box.
+            // guest-controlled (may carry a secret/PII) and `family` is guest-controllable for an extension
+            // family, and tracing ships off-box — so `target`→len, `family`→`loggable_family` (static name
+            // or "<extension>")+len, never the raw guest bytes (#2169/#2180). The full target is in the
+            // durable Dispatched event above, which stays on-box.
             debug!(
                 effect_id = id.0,
-                family = %req.content_type.family,
+                family = loggable_family(&req.content_type.family),
+                family_len = req.content_type.family.len(),
                 target_len = req.target.len(),
                 "dispatching effect to executor"
             );
@@ -1405,6 +1410,19 @@ pub struct InFlight {
 /// OUTCOMES — inbound messages, effect results, timer fires, authorization denials (a denial is recovery
 /// feedback, §9d) — but NOT the kernel's internal bookkeeping (`Dispatched`/`TimerArmed` exist only to
 /// drive the crash-recovery obligation sets) nor `Genesis` (session setup, not a fold input).
+/// A tracing-SAFE rendering of an effect's content-type `family` (github-liaison #2180 residual): a
+/// well-known static family (a built-in effect verb / exact `control/*` / exact `store/*`) is a fixed
+/// kernel-defined string, safe to emit into a span/event; an EXTENSION family carries the guest's own
+/// `Cow::Owned` bytes, so emitting it verbatim would leak guest-controlled data off-box via the tracing
+/// subscriber (the same class as the effect `target`, redacted by #2180). For an extension family we
+/// return a fixed marker instead of the bytes — the drive loop pairs it with the family LENGTH so a
+/// diagnostic still distinguishes families without exposing content. Gated on the EXACT static vocabulary
+/// ([`crate::effect::effect_ct::wellknown_static_str`]), NOT a prefix check (a guest can craft
+/// `store/<secret>` inside the "trusted" namespace).
+fn loggable_family(family: &str) -> &'static str {
+    crate::effect::effect_ct::wellknown_static_str(family).unwrap_or("<extension>")
+}
+
 /// The variant name of an event body, for a [`StatusSnapshot`]'s human-readable "last event kind" (a
 /// debug label, not a wire tag — `event_ast`/`event` own the canonical encodings).
 fn event_body_name(body: &EventBody) -> &'static str {

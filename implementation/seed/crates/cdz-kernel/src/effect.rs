@@ -130,6 +130,32 @@ pub mod effect_ct {
     /// above (they're the single source; this just lists them for enumeration).
     pub const ALL: &[&str] = &[SHELL, HTTP, MODEL, NOW, TIMER, EMIT];
 
+    /// If `family` is a WELL-KNOWN family whose string is a FIXED, kernel-defined `&'static` — one of the
+    /// built-in effect verbs ([`ALL`], via [`super::EffectKind::from_family`]) or the exact control/store
+    /// families (`control/capabilities`, `control/summary`, `store/set`, `store/resolve`) — return that
+    /// canonical `&'static str`. `None` for an EXTENSION family (register-by-string).
+    ///
+    /// The distinction matters for LOGGING (github-liaison #2180 residual): `ContentType.family` is a
+    /// `Cow<'static, str>` and for an extension family it carries the CALLER's `Cow::Owned` verbatim — i.e.
+    /// guest-controlled bytes that would leak off-box via the tracing subscriber (same class as the effect
+    /// `target`, which #2180 already redacts). Only an EXACT well-known string is safe to emit; a PREFIX
+    /// match (`is_control_family` / `is_store_family`) is NOT sufficient here — a guest can emit
+    /// `store/<secret>` or `control/<secret>` that passes the prefix check while carrying guest bytes. So
+    /// this matches the fixed strings exactly; the logger emits `Some(name)` verbatim and redacts a `None`
+    /// family to its length.
+    pub fn wellknown_static_str(family: &str) -> Option<&'static str> {
+        if let Some(kind) = super::EffectKind::from_family(family) {
+            return Some(kind.family());
+        }
+        match family {
+            CAPABILITIES => Some(CAPABILITIES),
+            SUMMARY => Some(SUMMARY),
+            STORE_SET => Some(STORE_SET),
+            STORE_RESOLVE => Some(STORE_RESOLVE),
+            _ => None,
+        }
+    }
+
     /// The DEFAULT resolved target to PROBE a family's policy with, when building a capability manifest
     /// (host-capability-discovery I3). The manifest asks the authorizer `may this session use <family> at
     /// <probe_target>` per family — so the probe needs *some* target. These defaults are chosen (with
@@ -655,6 +681,25 @@ fn host_eq(allowed: &str, actual: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // #2180 residual tracing redaction: only EXACT well-known families resolve to a fixed &'static (safe to
+    // log); an extension family — or a guest string that merely SHARES a control/store PREFIX — returns None
+    // so the logger redacts it (a prefix like `store/<secret>` must NOT be treated as safe).
+    #[test]
+    fn wellknown_static_str_matches_exact_families_and_rejects_extensions() {
+        use effect_ct::*;
+        assert_eq!(wellknown_static_str(HTTP), Some(HTTP));
+        assert_eq!(wellknown_static_str(SHELL), Some(SHELL));
+        assert_eq!(wellknown_static_str(EMIT), Some(EMIT));
+        assert_eq!(wellknown_static_str(CAPABILITIES), Some(CAPABILITIES));
+        assert_eq!(wellknown_static_str(STORE_SET), Some(STORE_SET));
+        // Extension families (register-by-string, guest-controlled) → None (redacted).
+        assert_eq!(wellknown_static_str("my/custom-effect"), None);
+        assert_eq!(wellknown_static_str("weather"), None);
+        // A guest string sharing a control/store PREFIX is STILL guest bytes → None (prefix ≠ safe).
+        assert_eq!(wellknown_static_str("store/secret-token-abc123"), None);
+        assert_eq!(wellknown_static_str("control/leak-me"), None);
+    }
 
     fn http(target: &str) -> EffectRequest {
         // Exercises the canonical constructor (the effect-schema-arc migration path).
