@@ -1278,6 +1278,42 @@
                   (+ (helper) (A.get))))) (export main)))
   (output (: 21 Int64)))
 
+(case "a HOST-delegated perform in a nested arm's NEXT-STATE slot is served (sequences at the boundary)"
+  (doc    "The host-routing boundary of the next-state-slot outer-perform family (v-effects self-probe, breaker
+           as-class radius). The IN-PROGRAM sibling — an outer HANDLER's effect performed directly in a nested
+           arm's next-state expr, `(step (u) t (resume t (+ t (A.get))))` — is a not-yet-foldable safe-decline:
+           the next-state threads forward as a state EXPRESSION, so a handler-routed perform embedded there
+           would be dropped or duplicated by the fold (the honest todo; the correct fold is a later increment).
+           But when that same slot performs a HOST-delegated op — `(resume t (+ t (ask.ask)))` under an
+           entrypoint `(host (ask) …)` — it is SERVED, because a host call is a plain boundary function call
+           sequenced at its evaluation point, NOT threaded through the state-expression the fold rewrites — so
+           it never had the drop/duplicate hazard and folds strict.
+           Trace: `B` seeds 0. The arm resumes the PRE-advance `t` as the value, and advances the slot to
+           `(+ t (ask.ask))`. Body `(+ (* 10 (B.step)) (B.step))`: the first `B.step` reads t=0 → value 0,
+           advancing the slot to `(+ 0 (ask.ask))` = 100 (this is the ONE host call — `ask.ask`=100); the
+           second `B.step` reads the advanced 100 → value 100. Its own next-state `(+ 100 (ask.ask))` is never
+           evaluated (nothing after the last step reads the state), so NO second host call fires. Result
+           `(+ (* 10 0) 100)` = 100, exactly ONE `ask.ask`. Pins the host-vs-in-program ROUTING discriminator
+           on the next-state slot: the fold's decline is scoped to IN-PROGRAM foreign performs; a host-delegated
+           slot perform is served (and a dead trailing next-state fires no spurious host call).")
+  (input  (do
+            (effect ask (op ask (-> Unit Int64)))
+            (effect B (op step (-> Unit Int64)))
+            (def (main)
+              (host (ask)
+                (handle B 0 ((step (u) t (resume t (+ t (ask.ask)))))
+                  (+ (* 10 (B.step)) (B.step)))))
+            (export main)))
+  (host-responses (respond ask.ask (: 100 Int64)))
+  (host-calls (call ask.ask))
+  (output (: 100 Int64)))
+
+
+
+
+
+
+
 (case "a handler arm forwarding an effect its enclosing scope does not hold is rejected"
   (doc    "Witnesses capabilities-and-effects.md #Capabilities Attenuate: A Handler Forwards A Narrower Row
            (2nd sentence — attenuation never WIDENS): a handler MUST NOT grant its sub-computation an effect
