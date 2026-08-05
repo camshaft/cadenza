@@ -982,6 +982,7 @@ pass	a TWICE combinator stacks — a closure capturing a closure capturing a clo
 pass	a TWO-LIST FIFO queue reverses the back list exactly when the front drains
 pass	a TWO-field open-row projection instantiates at three widths with slot-shifting extras
 pass	a TWO-of-THREE partial application binds a prefix and the LET-BOUND residual completes
+pass	a TWO-resume-site arm branching on a CAPTURED Map folds — the branch reads heap, not state
 pass	a Thm rides a MAP value through outside code and comes back to the kernel accessor
 pass	a Thm rides a collection through outside code without destructure rights
 pass	a Tuple ARG AFTER a scalar arg crosses the direct-call boundary (scalar, then tuple)
@@ -1805,6 +1806,7 @@ pass	a handle whose head names a value rather than an effect is rejected
 pass	a handle's RESULT seeds the NEXT handle of the same effect — explicit state handoff between instances
 pass	a handle's TUPLE value pairing a scalar with a built list escapes and is destructured
 pass	a handler ARM enumerates a 60-key trie op argument and resumes its fold
+pass	a handler ARM gates its answer on a CAPTURED Set from the enclosing scope
 pass	a handler SEEDED with a 40-key trie reads it across resumes
 pass	a handler STATE that is a recursive sum GROWS one constructor per operation
 pass	a handler accumulates into a list and a read-out operation reads it back
