@@ -231,6 +231,20 @@
             (export main)))
   (output (: 4.0 Float64)))
 
+(case "eval of a quasiquote-built form with a byte-string unquote folds"
+  (doc    "The BYTES companion of the eval-splice idiom, closing the leaf-lift family for the `Ast.Bytes`
+           variant this vertical realized (operator seq 113 — added AFTER the Int/Float/String/Name lift
+           cases were pinned). `(let ((b b\"hi\")) (eval `(Bytes.concat ,b b\"x\")))` lifts the live byte-string
+           `b` into the reconstructed `(Bytes.concat b b\"x\")` — the active unquote reifies its operand into an
+           `(Ast.Bytes …)` node, which `eval`'s source reconstruction unwraps back to `b` in the enclosing
+           scope, exactly as the integer/float/string lifts do. The result `b\"hix\"` has `Bytes.len` 3. A
+           lift path that had no `Ast.Bytes` arm would leave the eval un-desugared (a misleading 'unbound
+           name eval') or fail to reconstruct the byte operand.")
+  (input  (do
+            (def (main) (let ((b b"hi")) (Bytes.len (eval (quasiquote (Bytes.concat (unquote b) b"x"))))))
+            (export main)))
+  (output (: 3 Int64)))
+
 (case "eval of a quasiquote with TWO unquotes splices a bound and a computed value in one form"
   (doc    "The eval-splice pins above are SINGLE-unquote; this reconstructs a form with TWO active
            unquotes at different nesting depths — one LET-BOUND (a=5) and one COMPUTED ((+ 3 4)) —
