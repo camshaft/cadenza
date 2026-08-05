@@ -9354,3 +9354,31 @@
               (handle B 0 ((flip () t k (+ (* (k 2) 10) (A.geta)))) (B.flip)))) (export main)))
   (output (: 120 Int64)))
 
+
+(case "a closure looked up from a map by a perform result, applied to a perform result, threads through call_indirect"
+  (doc    "A Map of CLOSURES indexed by a perform-computed key, the selected closure applied to a
+           perform-fed argument, under a resumptive handler: `(match (Map.lookup ops (St.pick)) ((Some f)
+           (f (St.feed))) ((None _u) -1))`. This is the closure-from-collection × effects-threaded-operands
+           shape — the looked-up closure is the funcref-table callee (`call_indirect`) and BOTH its selector
+           key and its applied argument are perform results the handler fold splices in. Pins a wasm-codegen
+           miscompile (breaker-found, v-effects-routed, 2026-08-05): the closure operand is a dup-site
+           `Core::SumPayload` (the `Some` payload) whose Perceus retain floats its cell into a scratch slot
+           typed i32; the perform-threaded i64 argument was materialized into that SAME slot (the closure and
+           the arg both emitted at `cell_slot + 1`), and a wasm local has one type function-wide → an i32/i64
+           collision → `call_indirect`'s function failed to validate (invalid module, wasmtime rejected at
+           compile). The rust backend always ran it correctly (the fold is sound; the defect was purely the
+           wasm scratch-slot allocation). ops = {0: x↦x*2, 1: x↦x+1000}; the pick/feed handler threads s=5,6,…
+           so pick→5%2=1 selects the +1000 closure, feed→6, giving 6+1000 = 1006.")
+  (input  (do
+            (effect St (op pick (-> Unit Int64)) (op feed (-> Unit Int64)))
+            (def (main (: n Int64))
+              (do
+                (def ops (Map.insert (Map.insert Map.empty 0 (fn ((: x Int64)) (* x 2))) 1 (fn ((: x Int64)) (+ x 1000))))
+                (handle St n
+                  ((pick (u) s (resume (% s 2) (+ s 1)))
+                   (feed (u) s (resume s (+ s 1))))
+                  (match (Map.lookup ops (St.pick))
+                    ((Some f) (f (St.feed)))
+                    ((None _u) -1)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 1006 Int64)))
