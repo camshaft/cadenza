@@ -371,3 +371,37 @@ async fn a_failed_wasm_fold_records_a_foldfailed_event_on_the_log() {
     // The guest never dispatched an effect (it trapped before returning), so the executor saw nothing.
     assert_eq!(exec.seen.len(), 0);
 }
+
+// The sync dep-path guard (parity with the async twin's #2253 fix): a ComponentReducer that DECLARES a
+// `+<hash>` dep builds fine, deps() reports it, and folding through the STRUCTURAL `apply` WITHOUT
+// attaching the resolved deps fails with an ACTIONABLE error naming the builders — not an opaque wasmtime
+// linker "missing imports" error. (Self-contained synthetic WAT: no fold world needed — the no-attach
+// guard fires before instantiation. A full green dep-bearing fold is proven by reducer_cadenza_b1_e2e.)
+#[tokio::test(flavor = "current_thread")]
+async fn sync_reducer_declaring_a_dep_folds_loud_without_attach() {
+    let hex = "b".repeat(64);
+    let src = format!(
+        r#"(component
+             (import "cadenza:runtime/heap@0.0.0+{hex}" (instance
+               (export "box-int" (func (param "v" s64) (result u32))))))"#
+    );
+    let bytes = wat::parse_str(&src).expect("assemble dep-declaring component");
+
+    let reducer =
+        ComponentReducer::from_component_bytes(&bytes).expect("dep-bearing sync reducer builds");
+    assert_eq!(reducer.deps().len(), 1, "declares one +hash dep");
+
+    let ct = ContentType {
+        family: "message".into(),
+        version: 1,
+    };
+    match reducer.apply(Kv::new(), ct, None, None) {
+        Err((ComponentError::Instantiate(msg), _kv)) => assert!(
+            msg.contains("with_resolved_deps") && msg.contains("declares"),
+            "expected an actionable no-deps-attached error naming the builders, got {msg:?}"
+        ),
+        other => {
+            panic!("expected an actionable Instantiate error for unattached deps, got {other:?}")
+        }
+    }
+}

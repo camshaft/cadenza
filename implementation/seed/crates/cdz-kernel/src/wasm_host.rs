@@ -1570,6 +1570,20 @@ impl ComponentReducer {
                 }
             },
             None => {
+                // A dep-bearing reducer whose deps were never attached would fail with an opaque wasmtime
+                // "missing imports" linker error — surface an ACTIONABLE one naming the builders instead
+                // (parity with the async twin's guard; same class as #2203 c4 / #2244 / #2253).
+                if self.resolved_deps.is_empty() && !self.deps.is_empty() {
+                    let kv = store.into_data().into_kv();
+                    return Err((
+                        ComponentError::Instantiate(format!(
+                            "reducer declares {} component dep(s) but none are attached — call \
+                             with_resolved_deps (from resolve_deps) + with_component_store before folding",
+                            self.deps.len()
+                        )),
+                        kv,
+                    ));
+                }
                 let mut l = self.linker.clone();
                 for (import_name, bytes) in &self.resolved_deps {
                     if let Err(e) = compose_dep_into_linker(
