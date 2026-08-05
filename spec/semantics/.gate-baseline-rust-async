@@ -34,6 +34,7 @@ pass	@requires over a HEAP argument reads the list's content at body entry
 pass	@requires over a MAP argument walks the CHAMP at body entry
 pass	@requires stacked OVER @ensures: the precondition is still enforced when an @ensures wrapper sits between it and the def
 pass	ACKERMANN evaluates — a recursive call in the ARGUMENT of a recursive call (not primitive-recursive)
+pass	Ast nodes as Map keys: equal nodes collide to an overwrite, different node KINDS stay distinct
 pass	Ast values key a map across quote and Ast.* construction routes
 pass	Ast.decode converts bytes to an AST sum type value
 pass	Ast.decode decodes bytes that arrive as a function argument
@@ -2571,6 +2572,7 @@ pass	a quote pattern's literal operand is position-sensitive
 pass	a quote pattern's literal operand matches only the exact literal
 pass	a quote-built and constructor-built AST of the same tree encode to identical bytes
 pass	a quote-built and constructor-built FLOAT AST encode to identical bytes
+pass	a quote-built and ctor-built equal Ast collide as ONE Set element among 40 at CHAMP depth
 pass	a quote-pattern match with no catch-all is non-exhaustive
 pass	a quoted boolean equals the same node built by the Ast.Bool constructor
 pass	a quoted compound form containing a boolean reifies with an Ast.Bool element
