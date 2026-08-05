@@ -400,6 +400,38 @@
               runHook postInstall
             '';
           };
+        # crane MR2: per-crate CLIPPY via crane, consuming the shared cargoArtifacts (deps pre-compiled) so
+        # only C's first-party src recompiles — NOT the whole dep closure every run (the ~14m→~6-7m win).
+        # SAME per-crate isolation fileset + stub machinery as mkCrateCheck (a crate's clippy invalidates only
+        # on its closure's src). craneLib is already toolchain-pinned (overrideToolchain). preBuild chmod +
+        # stubs the non-closure members so `cargo -p C` parses the workspace (crane restores cargoArtifacts'
+        # target/ before this). cargoClippyExtraArgs mirrors the old `cargo clippy -p C --all-targets -- -D warnings`.
+        mkCrateClippyCrane = { crate, extraSrc ? [ ], extraInputs ? [ ] }:
+          let closure = crateClosure crate; in
+          craneLib.cargoClippy {
+            pname = "cargo-clippy-${crate}";
+            version = "0.0.0";
+            inherit cargoArtifacts;
+            cargoVendorDir = seedCargoVendor;
+            src = pkgs.lib.fileset.toSource {
+              root = ./.;
+              fileset = pkgs.lib.fileset.unions (
+                (pkgs.lib.concatMap crateCompileSrc closure)
+                ++ nonClosureManifests closure
+                ++ pkgs.lib.optional
+                  (builtins.pathExists (./. + "/${rootWorkspaceCrates.${crate}}/tests"))
+                  (./. + "/${rootWorkspaceCrates.${crate}}/tests")
+                ++ [ ./Cargo.toml ./Cargo.lock ./.cargo ./rust-toolchain.toml ]
+                ++ extraSrc);
+            };
+            nativeBuildInputs = extraInputs;
+            preBuild = ''
+              chmod -R u+w .
+              ${stubNonClosure closure}
+            '';
+            cargoClippyExtraArgs = "-p ${crate} --all-targets -- -D warnings";
+            doInstallCargoArtifacts = false;
+          };
         # CLOSURE guard (concierge mandate): pure-eval assert that the fromTOML walk yields the EXPECTED
         # closures for anchor crates — a Cargo.toml restructure that breaks the walk fails LOUD (throws at
         # eval → fails `nix flake check`) rather than silently under-scoping a crate's inputs.
@@ -1563,6 +1595,30 @@
               (perCrateChecks // { inherit crateCdzCheck; }) ''
               echo "ok: aggregate — all per-crate clippy+test checks built (seq-126 Part B)" > $out
             '';
+            # crane MR2: the CLIPPY half via crane (per-crate cargoClippy consuming the shared cargoArtifacts →
+            # deps NOT recompiled each run). Mirrors perCrateChecks' crate/extraSrc/extraInputs exactly. cdz
+            # stays workspace-src (crateCdzCheck, different shape — its clippy is inside cargoWorkspaceCheck).
+            # `checks.clippy` repoints here; `checks.test` stays on crateCheckAggregate until MR3 (test half).
+            perCrateClippyCrane = {
+              clippy-cadenza-ast = mkCrateClippyCrane { crate = "cadenza-ast"; };
+              clippy-cadenza-syntax = mkCrateClippyCrane { crate = "cadenza-syntax"; extraSrc = [ ./spec/semantics ]; };
+              clippy-cdz-calc = mkCrateClippyCrane { crate = "cdz-calc"; extraSrc = [ ./implementation/seed/crates/cdz-runtime/src/bigint.rs ]; };
+              clippy-cdz-corpus = mkCrateClippyCrane { crate = "cdz-corpus"; extraSrc = [ ./spec/semantics ]; };
+              clippy-cdz-num = mkCrateClippyCrane { crate = "cdz-num"; extraSrc = [ ./implementation/seed/crates/cdz-runtime/src/bigint.rs ]; };
+              clippy-cdz-rt = mkCrateClippyCrane { crate = "cdz-rt"; };
+              clippy-cdz-run = mkCrateClippyCrane { crate = "cdz-run"; extraSrc = [ ./implementation/compiler-ml ]; };
+              clippy-cdz-rust-render = mkCrateClippyCrane { crate = "cdz-rust-render"; };
+              clippy-rcdzc = mkCrateClippyCrane {
+                crate = "rcdzc";
+                extraSrc = [ ./spec/semantics ./implementation/compiler-ml ./implementation/seed/crates/cdz-runtime/src/bigint.rs ];
+              };
+              clippy-xtask = mkCrateClippyCrane { crate = "xtask"; extraSrc = [ ./spec/semantics ./implementation/compiler-ml ]; extraInputs = [ pkgs.git ]; };
+            };
+            # cdz's clippy stays in its workspace-src check (crateCdzCheck runs `cargo clippy -p cdz` inside).
+            clippyCraneAggregate = pkgs.runCommand "cargo-clippy-crane-aggregate"
+              (perCrateClippyCrane // { inherit crateCdzCheck; }) ''
+              echo "ok: clippy aggregate — all per-crate crane cargoClippy checks + cdz (crane MR2)" > $out
+            '';
           in
           {
             runtime-hash-parity = parity {
@@ -1618,12 +1674,13 @@
             # list to keep it closure-scoped would silently drop a new cdz test (the coverage regression the
             # parity guard forbids). Do NOT "fix" this back to a split.
             crate-cdz = crateCdzCheck;
-            # `clippy` + `test` = the AGGREGATE (retained so the cutover context `checks / clippy` — swapped
-            # to `nix build .#checks.<sys>.clippy` — still resolves; the #2130 reject was that name going
-            # missing when Part B replaced the whole-workspace clippy). Both alias the same node (all
-            # per-crate checks + crateCdzCheck built); `test` kept for symmetry + a future test-ubuntu
-            # nix-swap. Granularity preserved (per-crate derivations rebuild independently; zero-cost node).
-            clippy = crateCheckAggregate;
+            # crane MR2: `checks.clippy` now = the CRANE clippy aggregate (per-crate cargoClippy consuming the
+            # shared cargoArtifacts → deps compiled ONCE, only first-party src recompiles = the CI-throughput
+            # win). `checks.test` STILL = crateCheckAggregate (the old clippy+test node) until MR3 rewires the
+            # test half to crane; its redundant clippy is harmless short-term. Both context NAMES unchanged
+            # (`checks / clippy`, `checks / test (ubuntu-latest)`) → no ruleset edit. Per-crate granularity +
+            # isolation preserved (each crane check rebuilds only on its closure's src).
+            clippy = clippyCraneAggregate;
             test = crateCheckAggregate;
             # Full-CI-in-nix increment 3: the native half of the GHA rcdzc-wasm job (the wasm build half
             # is the rcdzcWasm derivation / rcdzc-wasm-hash, already covered).
