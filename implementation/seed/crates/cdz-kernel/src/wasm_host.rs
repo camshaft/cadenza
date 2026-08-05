@@ -2649,6 +2649,25 @@ impl AsyncComponentReducer {
         payload: Option<Vec<u8>>,
         resumes: Option<Vec<u8>>,
     ) -> Result<(Vec<EffectRequest>, Kv), (ComponentError, Kv)> {
+        // DISPATCH handle-lowered vs structural (v-ah-host ask 27094 — the routing gap): a REAL rcdzc
+        // reducer lowers its `fold.apply` to the handle-ABI `apply(u32,u32,u32)->u32` and crosses every
+        // compound as a value-heap handle, so it declares a `cadenza:runtime/heap` dep to marshal on; a
+        // WIT-STRUCTURAL guest (wit-bindgen) has no such dep and its `fold.apply` lifts structural WIT
+        // types directly. The presence of a resolved runtime-heap dep is therefore the discriminator: route
+        // it to `apply_handle_lowered` (which marshals the inputs to handles, drives the u32x3->u32 apply,
+        // AND serves the bound handle-ABI kv the reducer imports — #2290). Without this dispatch, a
+        // handle-lowered reducer driven through `fold` hit the structural `call_apply` below, which neither
+        // drives the handle boundary nor serves the handle-ABI kv → the guest's Kv.put no-op'd (the genesis
+        // round-trip's red assert). A structural reducer (no runtime dep) falls through unchanged.
+        let is_handle_lowered = self
+            .resolved_deps
+            .iter()
+            .any(|(import_name, _)| bare_iface_name(import_name) == "cadenza:runtime/heap");
+        if is_handle_lowered {
+            return self
+                .apply_handle_lowered(kv, content_type, payload, resumes)
+                .await;
+        }
         // Bridge the PUBLIC (sync-module re-exported) `ContentType` to the async bindgen module's own
         // generated type — the two `bindgen!`s produce distinct structs, so the async guest call needs its
         // module's `ContentType`. Same fields; a trivial field copy at the boundary.
@@ -4337,6 +4356,57 @@ mod tests {
             }
             Err((e, _kv)) => panic!("kv-writing fold should succeed, got {e:?}"),
         }
+    }
+
+    // ROUTING (v-ah-host ask 27094 — the THIRD gap): the kv-serving lives on apply_handle_lowered, but the
+    // PRODUCTION path a host session takes is Reducer::fold → self.apply. Before the dispatch, apply always
+    // ran the STRUCTURAL call_apply, so a real handle-lowered reducer driven through fold never reached
+    // apply_handle_lowered → its bound kv.put no-op'd (the genesis round-trip's red assert at host.rs:1002).
+    // This drives the SAME kv-writing reducer through the `Reducer::fold` trait method (NOT apply_handle_
+    // lowered directly), so it exercises the dispatch: apply sees a resolved cadenza:runtime/heap dep →
+    // routes to apply_handle_lowered → the guest's kv.put lands. Asserts the write reached the session KV
+    // AND fold reported success — the end-to-end proof the host's fold path now persists a handle-lowered
+    // reducer's KV writes (what unblocks the genesis round-trip).
+    #[tokio::test(flavor = "current_thread")]
+    async fn reducer_fold_routes_a_handle_lowered_reducer_to_apply_handle_lowered() {
+        use crate::effect::Payload;
+        use crate::event::{ContentType as KernelCt, Event, EventBody};
+        use crate::reducer::Reducer;
+        let reducer_bytes = kv_writing_reducer_component();
+        let runtime_bytes = heap_stub_component();
+        let reducer = match AsyncComponentReducer::from_component_bytes(&reducer_bytes) {
+            Ok(r) => r,
+            Err(e) => panic!("build kv-writing async reducer: {e:?}"),
+        };
+        let runtime_dep = ComponentDep {
+            import_name: "cadenza:runtime/heap".to_string(),
+            hash: Hash::of(b"heap-stub-runtime"),
+        };
+        let reducer = reducer.with_resolved_deps(vec![(runtime_dep, runtime_bytes)]);
+        // An inbound event through the REAL fold entry point (what HostedSession::deliver drives).
+        let event = Event {
+            seq: 1,
+            cause: None,
+            body: EventBody::Inbound {
+                content_type: KernelCt {
+                    family: "genesis/root".into(),
+                    version: 1,
+                },
+                payload: Payload::Inline(b"seed".to_vec().into()),
+            },
+        };
+        let mut kv = Kv::new();
+        let out = reducer.fold(&event, &mut kv).await;
+        assert!(
+            out.failure.is_none(),
+            "fold must route the handle-lowered reducer + succeed, got {out:?}"
+        );
+        assert_eq!(
+            kv.get(b"k1").map(|v| v.to_vec()),
+            Some(b"v9".to_vec()),
+            "driving the handle-lowered reducer through Reducer::fold must route to apply_handle_lowered \
+             so the guest's kv.put lands in the session KV"
+        );
     }
 
     // The generic multi-export invoke fixture (operator invoke-ABI ruling seq 107/108): a component whose
