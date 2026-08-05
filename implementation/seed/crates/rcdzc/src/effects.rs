@@ -7956,11 +7956,18 @@ fn rewrite_resume_to_refolded_context(
         // free var stays orphaned through every refold level. Anchor `filled` under the SAME parent the
         // original `handle_body` sits under (its live lexical chain) so `C`'s free names resolve exactly as
         // they did before the splice. `handle_body` is the still-parented original; a top-level body (parent
-        // None) leaves `filled` as-is (nothing to anchor — the pre-existing behavior). Mirrors the tail
-        // `reparent_under_handle_site`; done HERE (pre-recursion) because the detachment is introduced HERE.
-        if let Some(anchor) = db.parent_of(handle_body) {
-            db.reparent(filled, Some(anchor), db.child_ix_of(handle_body) as u32);
-        }
+        // None) leaves `filled` as-is (nothing to anchor — the pre-existing behavior). Done HERE (pre-recursion)
+        // because the detachment is introduced HERE. Route through `reparent_under_handle_site` (NOT a raw
+        // `db.reparent`) so a `handle_body` sitting in a 2-element PAIR body position — a `match` arm `(pattern
+        // body)` or a `let` binding `(name init)`, when the handle is distributed into such an arm — rebuilds a
+        // fresh `(pattern filled)` pair: resolve's binder helpers (`match_arm_binds`, resolve.rs:1880/1941/2005)
+        // require the scope-walk `from` to be EXACTLY the pair's recorded body child, so parenting `filled`
+        // directly under the pair (leaving `pb[1]` = the old `handle_body`) would leave a pattern/let binder
+        // referenced inside `filled` unresolvable — re-introducing this very false-CDZ0101 class for that
+        // sub-case (github-liaison/Copilot #2305 review). `reparent_under_handle_site` handles the pair rebuild
+        // AND the plain (non-pair, list/handle-node) parent identically to the raw reparent, so it is strictly
+        // safer; a parentless `handle_body` is a no-op (leaves `filled` as-is), matching the prior guard.
+        reparent_under_handle_site(db, filled, handle_body);
         return reduce_handle(db, next_state, arms, filled);
     }
     match db.ast.get(node).clone() {

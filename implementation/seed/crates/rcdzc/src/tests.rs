@@ -68656,6 +68656,26 @@ mod stage1 {
             "105",
             "pm3: the single-site body-reads-param path stays folding at 105"
         );
+
+        // PAIR-BODY case (github-liaison/Copilot #2305 review): the re-anchor routes through
+        // `reparent_under_handle_site` (NOT a raw `db.reparent`), so a handle DISTRIBUTED into a match arm —
+        // where the handle body sits in the arm's `(pattern body)` PAIR-body position — rebuilds a fresh
+        // `(pattern filled)` pair. The arm body reads the PATTERN BINDER `x` while a two-hole refold rewrites
+        // three `E.op` performs; without the pair rebuild, resolve's `match_arm_binds` (which requires the
+        // scope-walk `from` == the pair's recorded body child) would leave `x` unresolvable → the same false
+        // CDZ0101 for the pair-body sub-case. E seed 0: op1=0 (s→1), op2=1 (s→2), op3=2; `(* 100 0)+(* 10 1)+2`
+        // = 12, `+ x` (x=5) = 17. Pins that a pattern binder resolves through the distributed-handle refold.
+        let pm_pair = "(do (effect E (op op (-> Unit Int64))) \
+             (def (main (: n Int64)) \
+               (match (Some n) \
+                 ((Some x) (handle E 0 ((op (u) s (resume s (+ s 1)))) \
+                   (+ x (+ (* 100 (E.op)) (+ (* 10 (E.op)) (E.op)))))) \
+                 ((None _u) -1))) (export main))";
+        assert_eq!(
+            run(pm_pair, 5, "pm_pair distributed-handle pattern-binder"),
+            "17",
+            "pm_pair: a pattern binder x resolves through the two-hole refold in a pair-body-position handle"
+        );
     }
 
     #[test]
