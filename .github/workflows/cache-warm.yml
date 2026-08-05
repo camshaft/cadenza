@@ -1,0 +1,58 @@
+# Scheduled /nix/store cache-warm — the warm-save STARVATION fix.
+#
+# PROBLEM (v-fleet-tooling + v-nix): cache-nix-action saves the /nix/store (incl. crane's cargoArtifacts
+# dep-cache) ONLY on a COMPLETING run on the default branch. During busy main-push bursts, GitHub concurrency
+# SUPERSEDES queued/pending main ci runs (independent of ci.yml's cancel-in-progress) before they start — so
+# no main run completes → no warm-save → candidates cold-restore + the crane dep-cache never warms for anyone,
+# exactly when throughput matters. (Observed: 8/10 main runs die QUEUED during a push flurry.)
+#
+# FIX: this job runs in its OWN concurrency group (NOT ci's push-supersede group), so a scheduled fire always
+# survives to complete + save. Every 30min it (re)builds the crane dep-cache (.#cargo-artifacts) + the
+# component store on the default branch → cache-nix-action's save (gated to the default branch in the
+# nix-store-cache composite) lands a fresh warm cache on the current flake key. Candidate runs then RESTORE it
+# warm regardless of push cadence. workflow_dispatch allows an on-demand warm (e.g. for a clean before/after
+# measurement after a flake-key rotation).
+name: cache-warm
+
+on:
+  schedule:
+    - cron: "*/30 * * * *" # every 30min — keeps the dep-cache fresh vs GHA's 7-day eviction + key rotations
+  workflow_dispatch: {} # manual on-demand warm
+
+# FIXED group (NO github.ref): fully outside ci's `ci-<workflow>-<ref>` push-supersede group, AND two warm
+# runs (a scheduled fire + a manual dispatch) coalesce — cancel-in-progress:false means a second queues behind
+# the first rather than killing it, so a warm run always finishes to SAVE.
+concurrency:
+  group: cache-warm
+  cancel-in-progress: false
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_NET_RETRY: "10"
+  RUSTUP_MAX_RETRIES: "10"
+
+jobs:
+  warm:
+    # Advisory / NON-required — this workflow reports no gate context (ruleset 10560470 lists only checks.yml
+    # jobs); a warm failure just means "cold like today", never reds a PR. Step names are distinct ('warm …')
+    # so nothing shadows a required 'checks / …' context.
+    name: warm nix store (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # x86 warms the Linux-X64 cache the clippy + test-ubuntu required jobs restore.
+          - { arch: x86_64, runs-on: ubuntu-latest }
+          # aarch64 warms the Linux-ARM64 cache the codegen/gate/bench/guide-examples required jobs restore.
+          - { arch: aarch64, runs-on: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.runs-on }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: DeterminateSystems/nix-installer-action@v22
+      # SAVE-enabled: this workflow runs on the default branch, so the composite's github.ref==default_branch
+      # gate is TRUE → it saves+purges the warmed store on the current flake key.
+      - uses: ./.github/actions/nix-store-cache
+      - name: warm cargo-artifacts (crane dep-cache)
+        run: nix build .#packages.${{ matrix.arch }}-linux.cargo-artifacts --print-build-logs
+      - name: warm component store
+        run: nix build .#packages.${{ matrix.arch }}-linux.store --print-build-logs
