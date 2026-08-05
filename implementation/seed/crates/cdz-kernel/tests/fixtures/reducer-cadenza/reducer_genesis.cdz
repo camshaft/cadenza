@@ -1,0 +1,102 @@
+// reducer_genesis.cdz — B4: the agent-harness GENESIS / bootstrap reducer program (ML surface).
+//
+// design/agent-harness-kernel.md §3 (genesis + context-as-events) + §20b (genesis bootstrap installs
+// the authorizer + initial policies as its FIRST events). A session's setup is NOT kernel state — it's
+// HISTORY: the reducer folds early "setup" events into its KV, so config is auditable/replayable.
+//
+// This is the genesis half of the bootstrap programs: it recognizes a few well-known setup content-type
+// FAMILIES and folds each event's payload into KV under a well-known key. It requests NO effects (setup
+// writes STATE, it doesn't act). Ordinary message events (or anything unrecognized) fold to nothing —
+// the real session reducer (reducer_b1/b2/b3) handles those; a deployment composes genesis-then-session
+// or a session reducer that also folds these setup families.
+//
+// 🔑 TRUST-ROOT SEAM (operator ruling seq-129): the root identity arrives as a genesis INPUT (the
+// "genesis/root" event's payload), NEVER baked as a constant here. When the operator designs the
+// first-hub trust-root ceremony, it becomes the PRODUCER of that event — this reducer consumes it
+// unchanged. So the assumed-root boundary is exactly `Kv.put("bootstrap/root-identity", <payload>)`.
+//
+// §20b Q1=(c) ruling: genesis installs the authorizer BY HASH (a set(name,hash) pointer recorded on the
+// log/KV); the interim in-kernel authz is the stand-in until a real Cedar-engine component exists (owned
+// by v-agent-harness-host). This reducer records the authorizer-hash POINTER; it does not know or run
+// Cedar — the kernel/host resolves whatever authorizer component the pointer names.
+//
+// BUILD: cdz compile reducer_genesis.cdz --target wasm --component-name cadenza:agent-kernel/fold
+//   -> apply: func(u32,u32,u32)->u32 + imports cadenza:agent-kernel/kv + cadenza:runtime/heap; VALID.
+
+type EffectKind =
+  | Shell()
+  | Http()
+  | Model()
+  | Now()
+  | Timer()
+  | Emit()
+
+type EffectRequest =
+  | Mk(Record(kind(EffectKind), target(String), payload(Option(Bytes)), correlation(Option(Bytes))))
+
+// kv host import (bound peer iface over the shared value-heap runtime — handle ABI): only put is needed
+// (genesis WRITES setup state; it never reads to decide an action).
+effect Kv =
+  | put : `->`(Bytes, Bytes, Unit)
+
+bind(Kv, "cadenza:agent-kernel/kv")
+
+// Which well-known KV key a setup content-type family folds into. `None` = not a setup event this
+// genesis reducer recognizes (fold to nothing). The families are the genesis-event contract with the
+// host that seeds the session (coordinated with v-agent-harness-host); the keys are this reducer's own
+// KV schema (opaque to the kernel — §4).
+def setup-key(family: String) -> Option(Bytes) =
+  if family == "genesis/root" then Some(String.to-bytes("bootstrap/root-identity"))       // the SEAM
+  else if family == "genesis/authorizer" then Some(String.to-bytes("bootstrap/authorizer-hash"))
+  else if family == "genesis/context" then Some(String.to-bytes("bootstrap/context"))
+  else None()
+
+def apply(
+  ct: Record(family(String), version(UInt(32))),
+  payload: Option(Bytes),
+  resumes: Option(Bytes),
+) -> List(EffectRequest) = match resumes with
+  // Genesis has no effects to await; a resume event is not part of setup — ignore.
+  | Some(_) => []
+  | None() =>
+    match setup-key(ct.family) with
+      // A recognized setup event WITH a payload: fold it into KV under its well-known key. No effects.
+      | Some(key) => (match payload with
+          | Some(value) => host Kv in ( Kv.put(key, value); [] )
+          | None() => [])
+      // Not a setup event this genesis reducer folds → nothing.
+      | None() => []
+
+// Behavioral coverage (seed compiler via `cdz test`, INDEPENDENT of the kernel host adapter; plain
+// `cdz compile` ignores @test). The KV-writing branches need a host handler (v-agent-harness's adapter
+// drives that E2E); these @tests cover the pure `setup-key` routing + the no-effect invariants that are
+// testable standalone.
+@test
+def genesis_recognizes_root_family() =
+  match setup-key("genesis/root") with
+    | Some(k) => (if k == String.to-bytes("bootstrap/root-identity") then unit else trap("root key wrong"))
+    | None() => trap("genesis/root must be a recognized setup family (the trust-root seam)")
+
+@test
+def genesis_recognizes_authorizer_family() =
+  match setup-key("genesis/authorizer") with
+    | Some(k) => (if k == String.to-bytes("bootstrap/authorizer-hash") then unit else trap("authorizer key wrong"))
+    | None() => trap("genesis/authorizer must be a recognized setup family (install-by-hash)")
+
+@test
+def genesis_ignores_unknown_family() =
+  match setup-key("message") with
+    | Some(_) => trap("a non-setup family must not be a genesis setup key")
+    | None() => unit
+
+@test
+def genesis_emits_no_effects_on_unknown() =
+  if List.len(apply({ family = "message", version = 1 }, None(), None())) == 0
+  then unit else trap("genesis must request no effects for a non-setup event")
+
+@test
+def genesis_emits_no_effects_on_resume() =
+  if List.len(apply({ family = "genesis/root", version = 1 }, None(), Some(String.to-bytes("tok")))) == 0
+  then unit else trap("genesis must request no effects on a resume event")
+
+export { apply }

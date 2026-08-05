@@ -44,7 +44,7 @@ def http-effect() =
 // the prior value (or 0 if absent/empty), wrapping_add(1), write it back as a one-byte Bytes.
 //   Rust: let prev = kv::get(b"count").and_then(|v| v.first().copied()).unwrap_or(0);
 //         kv::put(b"count", &[prev.wrapping_add(1)]);
-// Bytes.at : Bytes -> Int64 -> Option(Int64); Bytes.of : List(Int64) -> Bytes; UInt8.wrap : Int64 -> byte.
+// Bytes.at : Bytes -> Int64 -> Option(Int64); Bytes.of : List(UInt8) -> Bytes; UInt8.wrap : Int64 -> UInt8.
 def bump-count(prev: Option(Bytes)) -> Bytes =
   let prev-byte = match prev with
     | Some(b) => (match Bytes.at(b, 0) with | Some(v) => v | None() => 0)
