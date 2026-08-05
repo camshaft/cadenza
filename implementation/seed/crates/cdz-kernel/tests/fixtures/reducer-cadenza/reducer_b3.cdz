@@ -130,4 +130,12 @@ def b3_http_effect_correlation_is_pinned() =
       if r.correlation == Some(String.to-bytes("step-1")) then unit
       else trap("B3's http-effect correlation must be Some(\"step-1\")")
 
+@test
+def b3_http_effect_payload_is_none() =
+  match http-effect() with
+    | EffectRequest.Mk(r) =>
+      (match r.payload with
+        | None() => unit
+        | Some(_) => trap("B3's http-effect payload must be None"))
+
 export { apply }
