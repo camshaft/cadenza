@@ -42,6 +42,9 @@ def b2_emits_exactly_one_effect() =
   then unit
   else trap("B2 must emit exactly one effect-request")
 
+// Pin ALL of the one effect-request's fields — not just the kind. The host marshals target via str-get,
+// correlation via sum-payload, payload via sum-disc; a silent change to any (a different URL, a dropped
+// token) would break the round-trip with no other test catching it. Each field pinned:
 @test
 def b2_the_effect_is_http() =
   match List.at(apply({ family = "message", version = 1 }, None(), None()), 0) with
@@ -49,6 +52,24 @@ def b2_the_effect_is_http() =
       (match r.kind with
         | EffectKind.Http() => unit
         | _ => trap("B2's effect kind must be Http"))
+    | None() => trap("B2 must have an effect at index 0")
+
+@test
+def b2_effect_target_is_pinned() =
+  match List.at(apply({ family = "message", version = 1 }, None(), None()), 0) with
+    | Some(EffectRequest.Mk(r)) => (if r.target == "https://ok.host/x" then unit else trap("B2's effect target must be https://ok.host/x"))
+    | None() => trap("B2 must have an effect at index 0")
+
+@test
+def b2_effect_correlation_is_pinned() =
+  match List.at(apply({ family = "message", version = 1 }, None(), None()), 0) with
+    | Some(EffectRequest.Mk(r)) => (if r.correlation == Some(String.to-bytes("step-1")) then unit else trap("B2's effect correlation token must be Some(\"step-1\")"))
+    | None() => trap("B2 must have an effect at index 0")
+
+@test
+def b2_effect_payload_is_none() =
+  match List.at(apply({ family = "message", version = 1 }, None(), None()), 0) with
+    | Some(EffectRequest.Mk(r)) => (match r.payload with | None() => unit | Some(_) => trap("B2's effect payload must be None"))
     | None() => trap("B2 must have an effect at index 0")
 
 export { apply }
