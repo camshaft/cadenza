@@ -755,14 +755,17 @@ impl Session {
             // (e.g. `Prefix("system/")`) permits `store/set system/…`; a session without it is denied here,
             // exactly as an unauthorized HTTP host would be. So store effects reuse the ONE authz seam.
             if let Err(reason) = authz.authorize(&req).await {
-                // SEC-F1 denial — WARN (an authorization boundary was hit). The `reason` is authz's own
-                // (non-guest) message; `target` is the security-relevant string the predicate gated. The
-                // effect payload is NOT logged.
+                // SEC-F1 denial — WARN (an authorization boundary was hit). Log only NON-SENSITIVE
+                // metadata: `target` is GUEST-controlled (a URL with a token/query, a PII path) and
+                // `reason` is formatted FROM it (authz.rs), so neither goes into the tracing stream —
+                // tracing ships off-box (v-ah-host owns the subscriber/export), and a guest secret must
+                // not leak into telemetry (#2169 MED, same untrusted-input-in-output class as #2050/#2090).
+                // The full target + reason are already captured in the DURABLE `EventBody::AuthzDenied`
+                // below (the audit record), which never leaves the box; here we emit id/family/target LEN.
                 warn!(
                     effect_id = id.0,
                     family = %req.content_type.family,
-                    target = %req.target,
-                    %reason,
+                    target_len = req.target.len(),
                     "effect authorization denied"
                 );
                 let denial_hash = self
@@ -902,11 +905,14 @@ impl Session {
 
             // Route + execute — awaiting the async executor (a real I/O executor yields here without
             // blocking the single-threaded loop). The Dispatched record is already durable, so ordering
-            // is preserved across the await. DEBUG-trace the dispatch (family + target, no payload).
+            // is preserved across the await. DEBUG-trace only NON-SENSITIVE metadata: `target` is
+            // guest-controlled (may carry a secret/PII) and tracing ships off-box, so we emit id/family/
+            // target LEN, never the raw target (#2169 MED). The full target is in the durable Dispatched
+            // event above, which stays on-box.
             debug!(
                 effect_id = id.0,
                 family = %req.content_type.family,
-                target = %req.target,
+                target_len = req.target.len(),
                 "dispatching effect to executor"
             );
             let outcome = executor.perform(&req, idempotency_key).await;

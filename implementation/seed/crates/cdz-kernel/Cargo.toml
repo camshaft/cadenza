@@ -64,8 +64,10 @@ num-bigint = "0.4"
 # owns the tracing-subscriber that actually records/exports). The kernel only EMITS spans/events via this
 # facade and NEVER installs a subscriber — with no subscriber registered, every span/event is a cheap
 # no-op (a relaxed atomic load), so this adds observability with zero behavior change + zero cost to a
-# bare kernel. NO new dep floor: `tracing` (+ -core) is ALREADY in the tree transitively via wasmtime, so
-# this only promotes it to a direct dep. Facade only — tracing-subscriber stays out of the kernel.
+# bare kernel. This IS a NEW (intentional) dep for the observability facade: wasmtime pulls the `log`
+# facade, NOT `tracing` — they're different facades — so tracing (+ tracing-core / tracing-attributes)
+# are new lock entries introduced here (#2169, lock-verified). A tiny facade crate (proc-macro +
+# core), justified by the observability arc. Facade ONLY — tracing-subscriber stays out of the kernel.
 tracing = "0.1"
 # url — RFC-3986/WHATWG-compliant URL parser (Servo's) for host_of, which feeds HostIn capability authz
 # (SEC-F1). Operator directive (2026-08-01): STOP hand-rolling the authority parser — a bespoke parser
