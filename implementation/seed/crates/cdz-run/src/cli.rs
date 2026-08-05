@@ -313,7 +313,29 @@ fn resolve_runtime(cli: &RunArgs, req: &crate::RuntimeReq) -> anyhow::Result<Vec
     Ok(bytes)
 }
 
-/// SHA-256 of `bytes`, lowercase hex — the store's content-address function (matches xtask).
+/// SHA-256 of `bytes`, lowercase hex — the CANONICAL content-address of a Cadenza component store.
+///
+/// # Store-address contract (the shared seam every store reader/writer must honor)
+///
+/// This is the one address function for the seed/nix component store. Producers (`xtask`'s store
+/// writer, `cdz`'s `--store` output) and readers (this crate's [`resolve_nfc_from_store`] +
+/// runtime-dep resolver, the kernel's `component_store` per concierge ruling (A)) all address blobs
+/// with THIS function. A reader that content-verifies with a different primitive (e.g. the kernel's
+/// internal BLAKE3 `Hash::of`, which is for events/KV/blobs — NOT the on-disk store) will mismatch
+/// every fetch.
+///
+/// - **Address:** SHA-256 of the component bytes, lowercase hex (64 chars).
+/// - **Store layout:** `<sha256hex>.wasm` per component + a `runtime.toml` manifest at the store root.
+/// - **`runtime.toml`:** maps the runtime's BARE inter-runtime imports by NAME→hash —
+///   `runtime = "<hash>"`, `debug_runtime = "<hash>"`, `nfc = "<hash>"`. This is how a bare
+///   `cadenza:nfc/normalize` import is resolved (name→hash→`<hash>.wasm`, then content-verified here),
+///   as distinct from a program's OWN runtime dep which carries the hash IN the import name
+///   (`cadenza:runtime/heap@0.0.0+<hash>`) and resolves directly.
+/// - **`REQUIRED_RUNTIME_HASH`** (`rcdzc::backend::wasm::runtime_abi`) IS this SHA-256 of the built
+///   runtime bytes, pinned into the generated ABI by `xtask` codegen and keyed by every program's
+///   runtime import. Changing this address function would re-hash that constant fleet-wide and break
+///   the runtime `*-hash-parity` gates until re-pinned — so SHA-256 is the DURABLE store address
+///   (concierge ruling (A), 2026-08-05; a store-wide BLAKE3 move was declined).
 pub fn content_address(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(bytes);
