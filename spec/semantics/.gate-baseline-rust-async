@@ -4876,12 +4876,14 @@ pass	partial application captures a let-bound value in the residual lambda
 pass	partial application captures a runtime parameter in the residual lambda
 pass	passing one newtype where a different newtype is expected names both nominal types
 pass	pattern matching over AST distinguishes forms
+pass	perform RESULTS as Map keys: each key a distinct state read, lookup by the computed key
 pass	performing a string-parameter operation with a non-string argument is a type error
 pass	performing an operation with a wrong-type argument for a compound parameter is a type error
 pass	performing an operation with an argument of the wrong type is a type error
 pass	performs as Set.of elements build the set with stepping state and dedup applies to the RESULTS
 pass	performs as list-literal elements land at their POSITIONS in perform order
 pass	performs in BOTH operands of an or consume state only on the reached paths
+pass	performs in DISCARDED do positions still run — the effect count is the observable
 pass	performs in match-arm bodies fire ONLY for the selected arm — counter witnesses the count
 pass	performs in the ELEMENTS of a tuple / list CONSTRUCTOR thread left-to-right
 pass	performs in the FIELD VALUES of a RECORD constructor thread in written order
