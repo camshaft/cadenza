@@ -903,6 +903,34 @@ mod tests {
         assert_eq!(genesis_ct::KV_CONTEXT, b"bootstrap/context");
     }
 
+    /// Env-gate for a REAL-reducer E2E: require BOTH a reducer-component-path env (`reducer_env`) AND
+    /// `CDZ_STORE` (the handle-lowered reducer's value-heap runtime + transitive nfc resolve from it).
+    /// Returns `Some((reducer_path, store_dir))` when both are set; `None` (clean SKIP, printed) when NEITHER
+    /// is — a bare `cargo test` with no nix env stays green. A HALF-wired env (exactly one set) PANICS: a
+    /// broken CI setup must fail loud, never masquerade as a clean skip. Single-sources this skip/fail-loud
+    /// contract across the real-reducer E2Es so they can't drift (#2315 review).
+    fn require_reducer_and_store_or_skip(
+        test_name: &str,
+        reducer_env: &str,
+    ) -> Option<(String, String)> {
+        let reducer_path = std::env::var(reducer_env).ok();
+        let store_dir = std::env::var("CDZ_STORE").ok();
+        match (reducer_path, store_dir) {
+            (None, None) => {
+                eprintln!("SKIP {test_name}: {reducer_env} + CDZ_STORE unset");
+                None
+            }
+            (Some(_), None) => panic!(
+                "{reducer_env} is set but CDZ_STORE is not — the handle-lowered reducer's runtime dep \
+                 needs the component store to resolve its transitive cadenza:nfc/normalize (§23)"
+            ),
+            (None, Some(_)) => {
+                panic!("CDZ_STORE is set but {reducer_env} is not — nothing to drive")
+            }
+            (Some(r), Some(s)) => Some((r, s)),
+        }
+    }
+
     /// END-TO-END: drive the REAL rcdzc-compiled genesis reducer (v-harness-bootstrap's
     /// `reducer_genesis.cdz`) through the HOST's async path — `HostedSession::seed_genesis` → the async
     /// `AsyncComponentReducer` fold (§23 dep-compose, landed #2256) → session KV — and assert every seeded
@@ -922,28 +950,12 @@ mod tests {
     async fn real_genesis_reducer_folds_setup_events_through_the_host_async_path() {
         use cdz_kernel::wasm_host::AsyncComponentReducer;
 
-        let reducer_path = std::env::var("GENESIS_REDUCER_COMPONENT").ok();
-        let store_dir = std::env::var("CDZ_STORE").ok();
-        match (&reducer_path, &store_dir) {
-            (None, None) => {
-                eprintln!(
-                    "SKIP real_genesis_reducer_folds_setup_events_through_the_host_async_path: \
-                     GENESIS_REDUCER_COMPONENT + CDZ_STORE unset"
-                );
-                return;
-            }
-            // Half-wired env is a broken CI setup, not a clean skip — fail loud so it can't hide.
-            (Some(_), None) => panic!(
-                "GENESIS_REDUCER_COMPONENT is set but CDZ_STORE is not — the genesis reducer's runtime dep \
-                 needs the component store to resolve its transitive cadenza:nfc/normalize (§23)"
-            ),
-            (None, Some(_)) => panic!(
-                "CDZ_STORE is set but GENESIS_REDUCER_COMPONENT is not — nothing to drive"
-            ),
-            (Some(_), Some(_)) => {}
-        }
-        let reducer_path = reducer_path.unwrap();
-        let store_dir = store_dir.unwrap();
+        let Some((reducer_path, store_dir)) = require_reducer_and_store_or_skip(
+            "real_genesis_reducer_folds_setup_events_through_the_host_async_path",
+            "GENESIS_REDUCER_COMPONENT",
+        ) else {
+            return;
+        };
 
         let bytes = std::fs::read(&reducer_path).unwrap_or_else(|e| {
             panic!("GENESIS_REDUCER_COMPONENT={reducer_path:?} set but unreadable: {e}")
@@ -1033,27 +1045,12 @@ mod tests {
         use cdz_kernel::wasm_host::AsyncComponentReducer;
         use std::sync::{Arc, Mutex};
 
-        let reducer_path = std::env::var("REDUCER_CADENZA_B2_COMPONENT").ok();
-        let store_dir = std::env::var("CDZ_STORE").ok();
-        match (&reducer_path, &store_dir) {
-            (None, None) => {
-                eprintln!(
-                    "SKIP real_effect_reducer_runs_a_full_http_turn_through_the_host: \
-                     REDUCER_CADENZA_B2_COMPONENT + CDZ_STORE unset"
-                );
-                return;
-            }
-            (Some(_), None) => panic!(
-                "REDUCER_CADENZA_B2_COMPONENT is set but CDZ_STORE is not — the handle-lowered reducer's \
-                 runtime dep needs the component store to resolve its transitive cadenza:nfc/normalize (§23)"
-            ),
-            (None, Some(_)) => {
-                panic!("CDZ_STORE is set but REDUCER_CADENZA_B2_COMPONENT is not — nothing to drive")
-            }
-            (Some(_), Some(_)) => {}
-        }
-        let reducer_path = reducer_path.unwrap();
-        let store_dir = store_dir.unwrap();
+        let Some((reducer_path, store_dir)) = require_reducer_and_store_or_skip(
+            "real_effect_reducer_runs_a_full_http_turn_through_the_host",
+            "REDUCER_CADENZA_B2_COMPONENT",
+        ) else {
+            return;
+        };
 
         let bytes = std::fs::read(&reducer_path).unwrap_or_else(|e| {
             panic!("REDUCER_CADENZA_B2_COMPONENT={reducer_path:?} set but unreadable: {e}")
