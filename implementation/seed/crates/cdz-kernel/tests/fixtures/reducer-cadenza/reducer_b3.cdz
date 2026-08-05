@@ -40,6 +40,18 @@ def http-effect() =
     correlation = Some(String.to-bytes("step-1")),
   })
 
+// Bump the single-byte "count" counter, mirroring the Rust reducer-guest EXACTLY: read the first byte of
+// the prior value (or 0 if absent/empty), wrapping_add(1), write it back as a one-byte Bytes.
+//   Rust: let prev = kv::get(b"count").and_then(|v| v.first().copied()).unwrap_or(0);
+//         kv::put(b"count", &[prev.wrapping_add(1)]);
+// Bytes.at : Bytes -> Int64 -> Option(Int64); Bytes.of : List(Int64) -> Bytes; UInt8.wrap : Int64 -> byte.
+def bump-count(prev: Option(Bytes)) -> Bytes =
+  let prev-byte = match prev with
+    | Some(b) => (match Bytes.at(b, 0) with | Some(v) => v | None() => 0)
+    | None() => 0
+  in
+  Bytes.of([UInt8.wrap(prev-byte + 1)])
+
 def apply(
   ct: Record(family(String), version(UInt(32))),
   payload: Option(Bytes),
@@ -49,11 +61,10 @@ def apply(
   | Some(_) => []
   | None() =>
     if ct.family == "message" then
-      // Inbound message: bump the KV counter (read old, write new) + emit one Http effect.
+      // Inbound message: bump the KV "count" counter (read old byte, wrapping_add 1, write new) + emit
+      // one Http effect — byte-for-byte the Rust reducer-guest's behavior.
       host Kv in (
-        Kv.put(String.to-bytes("count"), match Kv.get(String.to-bytes("count")) with
-          | Some(prev) => prev
-          | None() => String.to-bytes("1"));
+        Kv.put(String.to-bytes("count"), bump-count(Kv.get(String.to-bytes("count"))));
         [http-effect()]
       )
     else
@@ -61,9 +72,10 @@ def apply(
 
 // Behavioral coverage (runs on the seed compiler via `cdz test`, INDEPENDENT of the kernel host adapter;
 // a plain `cdz compile` ignores @test). The `message` branch performs the `kv` effect, which needs a
-// host handler (v-agent-harness's adapter drives that E2E); so these @tests cover the two NON-kv branches
-// that are testable standalone — the resume-stops and the non-message-ignored invariants. The message->
-// one-Http-effect behavior is covered by the kernel-side E2E (behavioral parity vs the Rust reducer-guest).
+// host handler (v-agent-harness's adapter drives that full E2E); so these @tests cover what's testable
+// standalone — the resume-stops + non-message-ignored invariants, AND the pure `bump-count` counter
+// semantics (byte-for-byte parity with the Rust reducer-guest). The message->one-Http-effect wiring is
+// covered by the kernel-side E2E (behavioral parity vs the Rust reducer-guest).
 @test
 def b3_resume_event_emits_nothing() =
   if List.len(apply({ family = "message", version = 1 }, None(), Some(String.to-bytes("tok")))) == 0
@@ -75,5 +87,22 @@ def b3_non_message_family_emits_nothing() =
   if List.len(apply({ family = "control", version = 1 }, None(), None())) == 0
   then unit
   else trap("B3 must emit nothing for a non-message content-type family")
+
+// The counter mirrors the Rust guest byte-for-byte: absent/empty -> byte 1; a prior byte N -> N+1;
+// wrapping at 255 -> 0 (matches prev.wrapping_add(1)).
+@test
+def b3_counter_absent_gives_byte_one() =
+  if Bytes.at(bump-count(None()), 0) == Some(1) then unit
+  else trap("bump-count(None) must be the single byte 1")
+
+@test
+def b3_counter_increments_prior_byte() =
+  if Bytes.at(bump-count(Some(Bytes.of([5]))), 0) == Some(6) then unit
+  else trap("bump-count of byte 5 must be byte 6")
+
+@test
+def b3_counter_wraps_at_max() =
+  if Bytes.at(bump-count(Some(Bytes.of([UInt8.wrap(255)]))), 0) == Some(0) then unit
+  else trap("bump-count of byte 255 must wrap to byte 0")
 
 export { apply }
