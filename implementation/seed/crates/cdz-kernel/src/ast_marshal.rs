@@ -1077,4 +1077,113 @@ mod tests {
             }
         );
     }
+
+    // TOTALITY (v-syntax review F1, MED): `ast_to_val` must NEVER panic on ANY input — only `Ok` or a
+    // `MarshalError`. `build_from_ast` recursion is TYPE-directed (depth bounded by the finite, caller-
+    // supplied WIT type, not untrusted AST depth), so this guards the READERS (indexing, int/char
+    // conversions, name lookups) against a well-formed-but-wrong-shape or garbage AST. Two feeds: (a) raw
+    // arbitrary bytes (mostly bounce off `codec::decode` → Undecodable), and (b) the MORE valuable half —
+    // real marshalled ASTs (from `val_to_ast` of assorted Vals) fed against a MISMATCHED target type, which
+    // drives `build_from_ast`'s reader arms rather than the decode gate. A xorshift PRNG (no rng dep; the
+    // Date/rand-free constraint) keeps it deterministic + replayable.
+    #[test]
+    fn ast_to_val_is_total_over_arbitrary_and_mismatched_input() {
+        let tys: Vec<Type> = [
+            "u8",
+            "bool",
+            "string",
+            "(list u8)",
+            "(list u32)",
+            r#"(record (field "k" string))"#,
+            "(option u8)",
+            "(result bool (error string))",
+            "(tuple bool u8)",
+            r#"(variant (case "a" u32) (case "b"))"#,
+            r#"(enum "x" "y")"#,
+            r#"(flags "p" "q")"#,
+        ]
+        .iter()
+        .map(|d| param_type(&probe_component(d)))
+        .collect();
+
+        // A pool of real marshalled ASTs — feeding these against a MISMATCHED type is the reader-driving
+        // half (they decode fine, then build_from_ast reads them under the wrong shape).
+        let valid_asts: Vec<Vec<u8>> = vec![
+            val_to_ast(&Val::Bool(true)).unwrap(),
+            val_to_ast(&Val::U32(70000)).unwrap(),
+            val_to_ast(&Val::String("hi".into())).unwrap(),
+            val_to_ast(&Val::List(vec![Val::U8(1), Val::U8(2)])).unwrap(),
+            val_to_ast(&Val::Record(vec![("k".into(), Val::String("v".into()))])).unwrap(),
+            val_to_ast(&Val::Option(Some(Box::new(Val::U8(9))))).unwrap(),
+            val_to_ast(&Val::Variant("a".into(), Some(Box::new(Val::U32(3))))).unwrap(),
+            val_to_ast(&Val::Enum("x".into())).unwrap(),
+            val_to_ast(&Val::Flags(vec!["p".into()])).unwrap(),
+        ];
+        for bytes in &valid_asts {
+            for ty in &tys {
+                // Must return Ok or Err — never panic.
+                let _ = ast_to_val(bytes, ty);
+            }
+        }
+
+        // Random raw bytes: mostly Undecodable, but exercises the decode gate + any lengths it accepts.
+        let mut seed = 0x1234_5678u64;
+        for _ in 0..20_000 {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            let n = (seed as usize) % 48;
+            let bytes: Vec<u8> = (0..n).map(|i| (seed >> ((i % 8) * 8)) as u8).collect();
+            for ty in &tys {
+                let _ = ast_to_val(&bytes, ty);
+            }
+        }
+    }
+
+    // Val::Flags round-trip (v-syntax review F2, LOW): built (string-head `(flags a c …)`) + read
+    // (Type::Flags), but the pair was untested. Non-empty + empty.
+    #[test]
+    fn ast_to_val_round_trips_flags() {
+        let v = Val::Flags(vec!["a".into(), "c".into()]);
+        assert_eq!(round_trip(v.clone(), r#"(flags "a" "b" "c")"#), v);
+        assert_eq!(
+            round_trip(Val::Flags(vec![]), r#"(flags "a" "b")"#),
+            Val::Flags(vec![])
+        );
+    }
+
+    // NESTED compound round-trips (v-syntax review F3, LOW): all other round-trips are single-level, so the
+    // build_val/build_from_ast recursion is only transitively covered. Lock it in both directions: a record
+    // with list + option fields, and a list-of-records.
+    #[test]
+    fn ast_to_val_round_trips_nested_compounds() {
+        // `ast_to_val` reconstructs record fields in the target WIT type's FIELD ORDER, so build the
+        // expected Val + the WIT decl in the SAME order (tags, then opt).
+        let rec = Val::Record(vec![
+            (
+                "tags".into(),
+                Val::List(vec![Val::String("a".into()), Val::String("b".into())]),
+            ),
+            ("opt".into(), Val::Option(Some(Box::new(Val::U32(7))))),
+        ]);
+        assert_eq!(
+            round_trip(
+                rec.clone(),
+                r#"(record (field "tags" (list string)) (field "opt" (option u32)))"#
+            ),
+            rec
+        );
+        // Nested LISTS (list<list<string>>) — the other recursion direction. (A list-of-RECORD would need
+        // the record type EXPORTED as a named type through the probe helper — the WAT "type not valid to be
+        // used as export" rule; nested inline lists reflect through the probe cleanly and still drive the
+        // list→list recursion in both build_val + build_from_ast.)
+        let list_of_list = Val::List(vec![
+            Val::List(vec![Val::String("a".into()), Val::String("b".into())]),
+            Val::List(vec![Val::String("c".into())]),
+        ]);
+        assert_eq!(
+            round_trip(list_of_list.clone(), "(list (list string))"),
+            list_of_list
+        );
+    }
 }
