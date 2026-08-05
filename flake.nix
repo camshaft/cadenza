@@ -360,7 +360,17 @@
             chmod -R u+w .
             ${stubNonClosure [ ]}
           '';
-          doCheck = false; # deps-only: no tests here (per-crate checks run them, MR3)
+          # doCheck = true (crane's DEFAULT — do NOT set false). #2282-review/v-ft crane measurement: with
+          # doCheck=false, buildDepsOnly (a) sets cargoCheckExtraArgs="" instead of "--all-targets" so the dep
+          # check never compiles test-target / dev-dependency artifacts, and (b) SKIPS its `cargo test --no-run`
+          # check phase — crane's own comment on the default is "Run tests by default to ensure we cache any
+          # dev-dependencies". So a doCheck=false cache holds ONLY the normal (non-dev) dep closure: clippy
+          # restores it + wins (16→7-8m, it needs only those deps), but cargoTest must recompile the ENTIRE
+          # dev-dep + test-harness closure from scratch on top of the first-party test build → it did MORE than
+          # the old `cargo test`, reused LESS of the warm cache → test-ubuntu REGRESSED 16→23m. Letting doCheck
+          # default to true warms the dev-dep/test-target layer too (a superset cache; clippy still restores its
+          # subset + wins), so per-crate cargoTest reuses the warm deps like clippy does. Deps-only still: the
+          # dummy-src `cargo test --no-run` compiles dev-deps but NO first-party tests (all members are stubbed).
         };
         # a per-crate clippy+test check, src-scoped to C's dep-closure (COMPILE src only) + non-closure
         # manifests + synthetic stubs + ONLY C's tests/ + root manifest/lock/.cargo/toolchain + extraSrc.
