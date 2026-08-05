@@ -10,10 +10,16 @@ on:
   pull_request:
     branches: [main]
 
-# Cancel superseded runs on the same ref — a new push to a PR obsoletes the in-flight one.
+# Cancel superseded PR runs (a new push to a PR obsoletes the in-flight gate) — but NEVER cancel a
+# `main` run. Main runs are what SAVE the shared /nix/store cache (cache-nix-action saves only on the
+# default branch); if a rapid series of main pushes cancels each in-flight main run before it finishes,
+# the cache never warms and every candidate keeps cold-rebuilding the store (~31min/job, the ~1hr/PR
+# regression). So gate cancel-in-progress on the PR event: PR runs cancel-supersede (cheap + desirable),
+# main runs always run to completion so the cache save lands. (The per-ref group still coalesces, so at
+# most one main run is queued behind the running one — they serialize, not pile up.)
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
