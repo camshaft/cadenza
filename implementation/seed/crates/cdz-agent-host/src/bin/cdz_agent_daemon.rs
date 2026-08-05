@@ -227,11 +227,11 @@ async fn main() -> std::process::ExitCode {
         // after the loop returns) and does one final report on the way out. OTLP/prometheus backends push in
         // here too once built (statsd first; a following slice).
         #[cfg(feature = "metrics-export")]
-        let (export_registry, export_reporter, export_interval) = {
+        let (export_registry, export_reporter, export_interval, otlp_forwarders) = {
             use cdz_agent_host::{MetricsReporter, MetricsTarget, StatsdTarget};
-            // How many configured targets we CAN'T export yet (OTLP etc.) — so an observability config that is
-            // enabled but has ONLY unexportable targets gets a loud diagnostic instead of a silent no-op.
-            let mut unexportable = 0usize;
+            // Collect the statsd targets. OTLP targets are exportable only when the `metrics-export-otlp`
+            // feature is compiled; otherwise they're counted as unexportable so an enabled config with only
+            // such targets warns instead of silently no-op'ing.
             let statsd_targets: Vec<StatsdTarget> = if config.observability.enabled {
                 config
                     .observability
@@ -242,33 +242,83 @@ async fn main() -> std::process::ExitCode {
                             endpoint: endpoint.clone(),
                             prefix: prefix.clone(),
                         }),
-                        // OTLP (+ future pull/file backends) aren't exported yet — statsd first.
-                        MetricsTarget::Otlp { .. } => {
-                            unexportable += 1;
-                            None
-                        }
+                        MetricsTarget::Otlp { .. } => None,
                     })
                     .collect()
             } else {
                 Vec::new()
             };
-            // Enabled but nothing we can export → warn (not a silent skip). The common trip is an OTLP-only
-            // config in a build where OTLP export isn't wired yet (#2129 review).
-            if config.observability.enabled && statsd_targets.is_empty() {
-                eprintln!(
-                    "cdz-agent-daemon: [observability] enabled but no exportable (statsd) targets configured \
-                     — nothing will be exported ({unexportable} non-statsd target(s) present; OTLP export not \
-                     yet wired)."
-                );
-            }
+            // OTLP targets are exportable with the feature, unexportable without it. Counted (not per-loop
+            // mutated) so the warning below can name how many targets this build can't handle.
+            #[cfg(feature = "metrics-export-otlp")]
+            let otlp_targets: Vec<cdz_agent_host::OtlpTarget> = if config.observability.enabled {
+                config
+                    .observability
+                    .targets
+                    .iter()
+                    .filter_map(|t| match t {
+                        MetricsTarget::Otlp {
+                            endpoint,
+                            scope_name,
+                            scope_version,
+                        } => Some(cdz_agent_host::OtlpTarget {
+                            endpoint: endpoint.clone(),
+                            scope_name: scope_name.clone(),
+                            scope_version: scope_version.clone(),
+                        }),
+                        MetricsTarget::Statsd { .. } => None,
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            #[cfg(not(feature = "metrics-export-otlp"))]
+            let unexportable = config
+                .observability
+                .targets
+                .iter()
+                .filter(|t| matches!(t, MetricsTarget::Otlp { .. }))
+                .count();
+            // `mut` only needed when OTLP pushes into the reporter below (statsd-only builds never mutate it).
+            #[cfg(feature = "metrics-export-otlp")]
+            let (mut reporter, failed) = MetricsReporter::from_statsd_targets(&statsd_targets);
+            #[cfg(not(feature = "metrics-export-otlp"))]
             let (reporter, failed) = MetricsReporter::from_statsd_targets(&statsd_targets);
             for f in &failed {
                 eprintln!("cdz-agent-daemon: metrics export target unavailable at boot: {f}");
+            }
+            // Push each OTLP target into the SAME reporter (one drain fans out to statsd + otlp together) and
+            // keep its (endpoint, receiver) so we can spawn a forwarder task per target below.
+            #[cfg(feature = "metrics-export-otlp")]
+            let otlp_forwarders: Vec<(String, tokio::sync::mpsc::Receiver<Vec<u8>>)> = otlp_targets
+                .iter()
+                .map(|t| (t.endpoint.clone(), reporter.push_otlp(t)))
+                .collect();
+            #[cfg(not(feature = "metrics-export-otlp"))]
+            let otlp_forwarders: Vec<((), ())> = Vec::new();
+            // Enabled but NOTHING we can export → warn (not a silent skip). The common trip is an OTLP-only
+            // config in a build where the OTLP feature isn't compiled (#2129 review).
+            if config.observability.enabled
+                && reporter.backend_count() == 0
+                && !config.observability.targets.is_empty()
+            {
+                #[cfg(not(feature = "metrics-export-otlp"))]
+                eprintln!(
+                    "cdz-agent-daemon: [observability] enabled but no exportable targets in this build \
+                     — nothing will be exported ({unexportable} target(s) need a feature not compiled, e.g. \
+                     metrics-export-otlp)."
+                );
+                #[cfg(feature = "metrics-export-otlp")]
+                eprintln!(
+                    "cdz-agent-daemon: [observability] enabled but no export backend could be set up \
+                     — nothing will be exported (all configured targets failed to initialize)."
+                );
             }
             (
                 agent_host.registry().clone(),
                 reporter,
                 std::time::Duration::from_secs(config.observability.report_interval_secs),
+                otlp_forwarders,
             )
         };
 
@@ -297,6 +347,18 @@ async fn main() -> std::process::ExitCode {
         // only), so a loop error left join! blocked on the socket forever, swallowing the error (#1977
         // review). Now the loop's return drives socket teardown, and the loop's Err reaches the exit code.
         let socket_task = tokio::spawn(socket.serve(admin_channel, sock_sd_rx));
+        // Spawn one async OTLP forwarder per OTLP target. Each drains its bounded channel + POSTs off the
+        // report path (the sink's send only enqueues). A forwarder self-terminates when its channel closes —
+        // which happens when the reporter (owning the sinks) is dropped as run_export_loop returns at
+        // shutdown. Detached: they hold only a Receiver, so we don't need to join them (best-effort telemetry).
+        #[cfg(feature = "metrics-export-otlp")]
+        for (endpoint, rx) in otlp_forwarders {
+            eprintln!("cdz-agent-daemon: metrics export → OTLP forwarder for {endpoint}");
+            tokio::spawn(cdz_agent_host::run_otlp_forwarder(endpoint, rx));
+        }
+        // Bind the non-otlp placeholder so the value is consumed in a build without the OTLP feature.
+        #[cfg(all(feature = "metrics-export", not(feature = "metrics-export-otlp")))]
+        let _ = otlp_forwarders;
         // Spawn the periodic metrics-export task (if built + at least one backend was registered). It reads
         // the cloned registry the host loop increments; its own shutdown oneshot fires after the loop returns
         // so it does a final report on the way out. Skipped (no task) when no backends registered.
