@@ -883,6 +883,26 @@ mod tests {
         assert_eq!(kv.get(b"bootstrap/context"), None);
     }
 
+    #[test]
+    fn genesis_ct_contract_constants_are_pinned_to_their_wire_literals() {
+        // A DRIFT TRIPWIRE for the guest↔host bootstrap contract (contract with v-harness-bootstrap's
+        // reducer_genesis.cdz). The behavioral seed_genesis tests above route through GenesisRecordingReducer,
+        // which matches these families SYMBOLICALLY (genesis_ct::ROOT => genesis_ct::KV_ROOT_IDENTITY), so a
+        // rename of the literal (e.g. "genesis/root" → "genesis/boot") moves BOTH sides together and those
+        // tests STILL PASS — yet the real v-harness-bootstrap reducer hard-codes the literal family strings +
+        // KV keys, so it would silently stop recognizing the event and genesis would break with nothing in the
+        // gate to catch it. Pin the literal bytes here so any change to a wire value is a loud test failure
+        // that forces a coordinated bump on BOTH sides. If you MUST change a literal, bump VERSION and
+        // coordinate with v-harness-bootstrap first.
+        assert_eq!(genesis_ct::ROOT, "genesis/root");
+        assert_eq!(genesis_ct::AUTHORIZER, "genesis/authorizer");
+        assert_eq!(genesis_ct::CONTEXT, "genesis/context");
+        assert_eq!(genesis_ct::VERSION, 1);
+        assert_eq!(genesis_ct::KV_ROOT_IDENTITY, b"bootstrap/root-identity");
+        assert_eq!(genesis_ct::KV_AUTHORIZER_HASH, b"bootstrap/authorizer-hash");
+        assert_eq!(genesis_ct::KV_CONTEXT, b"bootstrap/context");
+    }
+
     #[tokio::test]
     async fn with_sink_persists_a_sessions_events_durably() {
         // with_sink attaches a durable LogStore: the events a session appends during a turn are persisted,
