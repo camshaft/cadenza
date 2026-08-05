@@ -39,6 +39,28 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@v22
+      # PILOT (rustfmt only) of the /nix/store cache — GHA-cache-backed, keyed off flake.lock. SAVE + PURGE
+      # only on the default branch (main) so candidate runs RESTORE a shared base without either writing a
+      # capped cache OR purging the base they restore from. Rolls out to the other 7 nix jobs once this pilot
+      # shows a restore-HIT + a clean save (can't be tested locally — a GHA action). v-fleet-tooling blessed
+      # the mechanism (their cutover pipeline).
+      - uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7 (resolved 2026-08-04)
+        with:
+          primary-key: nix-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('flake.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-${{ runner.arch }}-
+          # No built-in save-on-default-branch flag → gate `save` with a github.ref expression (the main
+          # cache is still visible to candidate branches, so they RESTORE it).
+          save: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+          gc-max-store-size-linux: 8000000000 # ~8GB cap (under GHA's 10GB/repo) — GC the store before save.
+          # 🪤 Gate PURGE to the default branch too (same expr as save), NOT every run: purge runs
+          # unconditionally otherwise, and a candidate's key (a different flake.lock → different primary-key)
+          # means purge-primary-key:never won't spare the shared MAIN base — a candidate would purge the very
+          # cache it's meant to restore from (github-liaison #2209 MED). Only the main run purges+saves;
+          # candidates restore-only.
+          purge: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+          purge-prefixes: nix-${{ runner.os }}-${{ runner.arch }}-
+          purge-created: 0
+          purge-primary-key: never
       - name: cargo fmt (via nix)
         run: nix build .#checks.x86_64-linux.fmt --print-build-logs
 
