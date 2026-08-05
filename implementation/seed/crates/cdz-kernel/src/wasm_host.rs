@@ -341,6 +341,20 @@ pub struct ComponentDep {
     pub hash: Hash,
 }
 
+/// The BARE interface name of a content-addressed import — the import name with its `+<hash>`
+/// build-metadata AND its `@<semver>` version stripped, e.g. `cadenza:runtime/heap@0.0.0+<hash>` →
+/// `cadenza:runtime/heap` (and `cadenza:runtime/heap+<hash>` with NO `@` → `cadenza:runtime/heap` too).
+///
+/// Strip `+<hash>` FIRST (via `rsplit_once('+')`, exactly as [`declared_deps`] recognizes a dep), THEN the
+/// `@<semver>` — so the runtime-dep SELECTION and the dep PARSER agree on the same bare name. A `split('@')`
+/// alone under-matches the `+<hash>`-with-no-`@` form (the `+hash` would survive), which was the #2219 bug.
+fn bare_iface_name(import_name: &str) -> &str {
+    let no_hash = import_name
+        .rsplit_once('+')
+        .map_or(import_name, |(iface, _hash)| iface);
+    no_hash.split('@').next().unwrap_or(no_hash)
+}
+
 /// The declared component dependencies of a component (§23): EVERY import whose name carries a
 /// `+<hash>` content-address build-metadata is a declared dep, resolved generically — NOT a name-matched
 /// "the runtime" (the kernel has zero knowledge of any specific dependency). Imports the host itself
@@ -433,7 +447,7 @@ fn compose_dep_into_linker<T: 'static>(
     // `import_name` it imports (below). A bare name with no suffix is unchanged. (Earlier this used
     // `import_name` for both sides — it only worked because the WAT test stubs happened to export the same
     // full string; a real content-addressed dep exposed the mismatch.)
-    let dep_iface_name = import_name.split('@').next().unwrap_or(import_name);
+    let dep_iface_name = bare_iface_name(import_name);
     // The func names the dep exports under `dep_iface_name`. Read them off the component TYPE, not a live
     // instance, so a dep that exports the wrong shape is caught with a clear message rather than an opaque
     // trap at call time.
@@ -1518,12 +1532,13 @@ impl ComponentReducer {
                         return Err((e, kv));
                     }
                 };
-            // Match the runtime dep by its BARE interface name EXACTLY — strip the `@version+hash` suffix
-            // (as the export lookup does in `compose_dep_into_linker`) and compare `== "cadenza:runtime/heap"`,
-            // NOT `starts_with(...)`. A `starts_with` prefix would also match a future sibling like
-            // `cadenza:runtime/heap2@…`, wrongly tripping the exactly-one fail-loud below (or mis-selecting
-            // it if alone). This pairs with the fail-loud so both COUNT and IDENTITY are exact (#2208 c2).
-            if import_name.split('@').next() == Some("cadenza:runtime/heap") {
+            // Match the runtime dep by its BARE interface name EXACTLY (via `bare_iface_name`, which strips
+            // both `+<hash>` and `@<semver>` — the SAME parse `declared_deps` uses), NOT `starts_with(...)`.
+            // A `starts_with` prefix would also match a future sibling like `cadenza:runtime/heap2@…`,
+            // wrongly tripping the exactly-one fail-loud below (or mis-selecting it if alone). And a
+            // `split('@')`-only strip UNDER-matches the `cadenza:runtime/heap+<hash>` (no `@`) form (the
+            // `+hash` survives). This pairs with the fail-loud so both COUNT and IDENTITY are exact (#2208 c2 / #2219).
+            if bare_iface_name(import_name) == "cadenza:runtime/heap" {
                 // FAIL LOUD on a second runtime match (#2203 MED): silently overwriting `runtime_instance`
                 // would let a non-deterministic resolved_deps order pick the wrong instance, breaking the
                 // shared-heap invariant. The handle-lowered boundary binds ONE value-heap runtime.
@@ -2159,6 +2174,37 @@ fn guest_effect_to_kernel_effect(g: EffectRequest) -> crate::reducer::Effect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // `bare_iface_name` strips BOTH `+<hash>` and `@<semver>`, and the runtime-dep selection must agree with
+    // `declared_deps`' `rsplit_once('+')` parse for EVERY import-name form — including the `+<hash>`-with-no-`@`
+    // form that a `split('@')`-only strip under-matched (#2219). Pins all forms + a sibling non-match.
+    #[test]
+    fn bare_iface_name_strips_hash_and_version_for_every_form() {
+        assert_eq!(
+            bare_iface_name("cadenza:runtime/heap@0.0.0+abc123"),
+            "cadenza:runtime/heap"
+        );
+        // `+<hash>` with NO `@<semver>` — the form the #2219 fix targets (split('@') alone left `+abc123`).
+        assert_eq!(
+            bare_iface_name("cadenza:runtime/heap+abc123"),
+            "cadenza:runtime/heap"
+        );
+        // `@<semver>` with no `+<hash>`.
+        assert_eq!(
+            bare_iface_name("cadenza:runtime/heap@0.0.0"),
+            "cadenza:runtime/heap"
+        );
+        // Already bare — unchanged.
+        assert_eq!(
+            bare_iface_name("cadenza:runtime/heap"),
+            "cadenza:runtime/heap"
+        );
+        // A sibling interface must NOT collapse to the runtime name (the over-match `starts_with` allowed).
+        assert_eq!(
+            bare_iface_name("cadenza:runtime/heap2@0.0.0+def456"),
+            "cadenza:runtime/heap2"
+        );
+    }
 
     // The shared WIT-boundary → kernel Effect converter (extracted from both fold impls; #2166). Pins the
     // full mapping: kind translated, a Some payload → an Inline kernel payload with the same bytes, and the
