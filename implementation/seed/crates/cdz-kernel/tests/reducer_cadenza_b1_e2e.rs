@@ -32,8 +32,9 @@ use cdz_kernel::wasm_host::{ComponentDep, ComponentReducer, ContentType};
 fn reducer_bytes() -> Option<Vec<u8>> {
     let p = std::env::var("REDUCER_CADENZA_COMPONENT").ok()?;
     Some(
-        std::fs::read(&p)
-            .unwrap_or_else(|e| panic!("REDUCER_CADENZA_COMPONENT={p:?} is set but unreadable: {e}")),
+        std::fs::read(&p).unwrap_or_else(|e| {
+            panic!("REDUCER_CADENZA_COMPONENT={p:?} is set but unreadable: {e}")
+        }),
     )
 }
 
