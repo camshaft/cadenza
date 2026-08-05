@@ -55,18 +55,34 @@ jobs:
       - name: cargo clippy (via nix)
         run: nix build .#checks.x86_64-linux.clippy --print-build-logs
 
-  test:
-    name: test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
+  test-ubuntu:
+    # Full-CI-in-nix cutover (Model A): the `test (ubuntu-latest)` required context, body-swapped to the
+    # hermetic nix aggregate check (`checks.test` = all per-crate clippy+test derivations + crate-cdz —
+    # coverage-equal to `cargo test --workspace`: every workspace test binary maps to one member crate, so
+    # the union == the old whole-workspace run, verified via `cargo test --workspace --no-run`). Keeping the
+    # EXACT context name `test (ubuntu-latest)` leaves ruleset 10560470 unchanged. x86 (the context name
+    # promises ubuntu/x86; the flake exports x86 via eachDefaultSystem; the per-crate tests are arch-agnostic
+    # native rust). This was a matrix leg of the old `test` job — split out so ubuntu goes nix while macos
+    # stays native cargo (below), since a matrix can't body-swap one leg differently.
+    name: test (ubuntu-latest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: DeterminateSystems/nix-installer-action@v22
+      - name: test (via nix — per-crate aggregate, hermetic)
+        run: nix build .#checks.x86_64-linux.test --print-build-logs
+
+  test-macos:
+    # `test (macos-latest)` STAYS native cargo-on-macOS (intentional non-swap): it provides macOS PLATFORM
+    # coverage a linux-nix check can't — a body-swap is valid only when the nix check runs on the platform
+    # the context name promises (v-fleet-tooling ruling). Same context name as the old matrix leg.
+    name: test (macos-latest)
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-rust
         with:
-          cache-key: test-${{ matrix.os }}
+          cache-key: test-macos-latest
       - run: cargo test --workspace
 
   # ── standalone-crate gate ───────────────────────────────────────────────────
@@ -486,20 +502,27 @@ jobs:
         run: nix build .#checks.x86_64-linux.bench-check --print-build-logs
 
   guide-examples:
-    # PRE-MERGE gate for the guide's runnable content (mirrors pages.yml's build, minus the deploy, but
-    # BLOCKS the merge — a PR shipping an example that doesn't compile/run, or breaking the guide build,
-    # can't merge). Full-CI-in-nix cutover (Model A): the body runs the HERMETIC nix `guide-examples`
-    # check, which replicates wasm-pack (cargo build --target wasm32-unknown-unknown + a PINNED
-    # wasm-bindgen CLI + a PINNED wasm-opt from pkgs.binaryen — NO github download) then runs the exact
-    # npm battery (test:unit → prose → diagnostics → examples → calculator → worker-stack →
-    # tuple-collection → cad-preload → music-preload → build → bundle) + stages the value-heap runtime
-    # from the nix component store. Keeping `name: guide examples` leaves the required context
+    # PRE-MERGE gate for the guide's runnable content — BLOCKS the merge (a PR shipping an example that
+    # doesn't compile/run, or breaking the guide build, can't merge). Full-CI-in-nix cutover (Model A): the
+    # body runs the HERMETIC nix `guide-examples` check, which replicates wasm-pack (cargo build --target
+    # wasm32-unknown-unknown + a PINNED wasm-bindgen CLI + a PINNED wasm-opt from pkgs.binaryen — NO github
+    # download) then runs the exact npm battery (test:unit → prose → diagnostics → examples → calculator →
+    # worker-stack → tuple-collection → cad-preload → music-preload → build → bundle) + stages the value-heap
+    # runtime from the nix component store. Keeping `name: guide examples` leaves the required context
     # `checks / guide examples` unchanged (no ruleset edit). Pinning binaryen in the flake KILLS the
     # gate-time binaryen-download flake (operator Slack seq 142: "include binaryen as part of the nix
     # flake instead of downloading arbitrary binaries at build time").
     #   aarch64 (ubuntu-24.04-arm): the guide bundles the value-heap runtime whose content hash is
     #   arch-specific → the nix check is checks.aarch64-linux.guide-examples.
-    #   Keep in lockstep with pages.yml's build; if that gains a check, add it to the nix check too.
+    #
+    # RELATION TO pages.yml (INTENTIONAL divergence — NOT lockstep): this pre-merge gate is the HERMETIC
+    # NIX check; pages.yml's post-merge deploy still runs the NON-nix flow (pinned rust-toolchain + cargo
+    # binstall wasm-pack + cargo xtask build/guide-wasm + npm). Different engines by design — the nix check
+    # is the authoritative pre-merge gate (hermetic + pinned-binaryen); pages.yml is the deploy-time build.
+    # They cover the same guide-example CONTENT (a broken example fails both) but are NOT byte-for-byte
+    # mirrors and should NOT be kept step-for-step in sync. If pages.yml's build gains a NEW check a reader
+    # would hit, add the equivalent to the NIX guide-examples check (the `guideExamplesCheck` derivation in
+    # flake.nix), not here. (pages.yml moving to nix too is a possible future step, not planned yet.)
     name: guide examples
     runs-on: ubuntu-24.04-arm
     steps:
