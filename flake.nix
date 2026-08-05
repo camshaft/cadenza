@@ -354,7 +354,12 @@
           cargoVendorDir = seedCargoVendor;
           # stub EVERY member so cargo can parse the workspace to compile deps, without any real first-party
           # src in the build (keeps the derivation hash invariant to first-party edits).
-          preBuild = stubNonClosure [ ];
+          # chmod first: fileset.toSource copies can be read-only, so the stub mkdir/echo would fail on the
+          # tree without this (same guard mkCrateCheck's buildPhase uses before stubNonClosure).
+          preBuild = ''
+            chmod -R u+w .
+            ${stubNonClosure [ ]}
+          '';
           doCheck = false; # deps-only: no tests here (per-crate checks run them, MR3)
         };
         # a per-crate clippy+test check, src-scoped to C's dep-closure (COMPILE src only) + non-closure
