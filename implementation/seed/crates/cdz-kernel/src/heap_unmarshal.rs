@@ -1,0 +1,289 @@
+//! heap_unmarshal — the reducer-boundary READ direction (operator ruling C, §19e), dual of
+//! [`crate::heap_marshal`].
+//!
+//! In the option-C handle-lowered MODE, a Cadenza reducer's `fold.apply` returns its `list<effect-request>`
+//! as a single `u32` handle into the shared `cadenza:runtime/heap` value-heap (the spec's handle exchange).
+//! WHEN a reducer is invoked that way, the host projects that handle back into the kernel's
+//! `Vec<EffectRequest>` before authorizing/dispatching — this module is that read-direction bridge, driving
+//! [`HeapHandle`]'s public read ops (vec-len / vec-get / arr-get / get-int / str-get / sum-disc /
+//! sum-payload / read-bytes). Like its build-direction dual [`crate::heap_marshal`], it is a tested helper
+//! staged AHEAD of its wiring: the current live boundary is still [`crate::wasm_host`]'s WIT-structural
+//! `bindgen!` `fold.apply` (which lifts the structural `list<effect-request>` directly), and the
+//! fold-boundary handle-ABI rebind is the slice that puts this on the call path.
+//!
+//! ## The value-heap layout this DECODES (verified against rcdzc's wasm backend)
+//! - The returned value is a `list<effect-request>` — a value-heap VEC read by `vec-len` + `vec-get(i)`.
+//! - Each element is an `effect-request` RECORD: a SORTED-field-NAME array (`Core::Proj`). The four fields
+//!   `{correlation, kind, payload, target}` sort alphabetically to **arr[0]=correlation, arr[1]=kind,
+//!   arr[2]=payload, arr[3]=target**.
+//! - `correlation` / `payload` are `option<list<u8>>`: a `sum-new(disc, …)` read by `sum-disc`
+//!   (**`Some=0`, `None=1`** — the prelude `Option`'s variant-declaration order, sums.rs:80) then, for
+//!   `Some`, `sum-payload` → a bytes handle → `read-bytes`.
+//! - `kind` is an `effect-kind` ENUM (all-nullary `shell=0`…`emit=5`). A standalone enum-disc is a bare
+//!   i32, but as a RECORD FIELD it BOXES exactly like an int (v-rust-backend, authoritative — select.rs
+//!   `box_op_ty`:2305: "an enum-discriminant sum … as a nested element boxes exactly like an integer").
+//!   So arr[1] is read via `get-int` → the discriminant as an `i64`, NOT `sum-disc`.
+//! - `target` is a `string`, read by `str-get`.
+//!
+//! An unknown `kind` discriminant is a hard [`ComponentError`] (a runtime-ABI drift the host must not
+//! silently coerce), not a defaulted kind — fail loud, the same discipline as the marshalling's guards.
+
+use crate::wasm_host::{ComponentError, EffectKind, EffectRequest, HeapHandle};
+
+/// The prelude `Option` discriminants (variant-declaration order, `Some` first) — the SAME convention the
+/// build side ([`crate::heap_marshal`]) writes, kept local so this read module carries no dependency on the
+/// (separately-queued) build module.
+const OPTION_SOME: i64 = 0;
+const OPTION_NONE: i64 = 1;
+
+/// The effect-request record's SORTED-field-name indices: `{correlation, kind, payload, target}` sorted
+/// alphabetically. Naming them keeps the field↔index mapping in one auditable place (a silent off-by-one
+/// here would mis-decode every effect).
+const FIELD_CORRELATION: u32 = 0;
+const FIELD_KIND: u32 = 1;
+const FIELD_PAYLOAD: u32 = 2;
+const FIELD_TARGET: u32 = 3;
+
+/// Map an `effect-kind` discriminant (0..=5, the WIT enum's declaration order) to the generated
+/// [`EffectKind`]. An out-of-range discriminant is a runtime-ABI drift (the guest/runtime emitted a
+/// discriminant this host build doesn't know) — a hard error, never a silent default.
+fn disc_to_effect_kind(disc: i64) -> Result<EffectKind, ComponentError> {
+    match disc {
+        0 => Ok(EffectKind::Shell),
+        1 => Ok(EffectKind::Http),
+        2 => Ok(EffectKind::Model),
+        3 => Ok(EffectKind::Now),
+        4 => Ok(EffectKind::Timer),
+        5 => Ok(EffectKind::Emit),
+        other => Err(ComponentError::Trap(format!(
+            "effect-request kind discriminant {other} is out of range 0..=5 (unknown effect-kind — \
+             runtime-ABI drift)"
+        ))),
+    }
+}
+
+/// Read an `option<list<u8>>` value-heap sum handle back to `Option<Vec<u8>>`: `sum-disc` selects the arm
+/// (`0=Some`/`1=None`), and `Some` reads its `sum-payload` bytes handle via `read-bytes`. An unknown
+/// discriminant is a hard error (ABI drift). `Some([])` (an empty-but-present payload) round-trips as
+/// `Some(vec![])`, distinct from `None`.
+fn read_option_bytes<T>(
+    heap: &mut HeapHandle<T>,
+    handle: u32,
+) -> Result<Option<Vec<u8>>, ComponentError> {
+    let disc = i64::from(heap.sum_disc(handle)?);
+    match disc {
+        OPTION_SOME => {
+            let payload = heap.sum_payload(handle)?;
+            Ok(Some(heap.read_bytes(payload)?))
+        }
+        OPTION_NONE => Ok(None),
+        other => Err(ComponentError::Trap(format!(
+            "option<list<u8>> discriminant {other} is neither Some(0) nor None(1) — runtime-ABI drift"
+        ))),
+    }
+}
+
+/// Read ONE `effect-request` record handle back to an [`EffectRequest`]. The record is a sorted-field-name
+/// array; each field is projected by its sorted index (see the `FIELD_*` constants) and decoded by its
+/// type: `kind` via `get-int` (a boxed enum-disc), `target` via `str-get`, `correlation`/`payload` via
+/// [`read_option_bytes`].
+fn read_effect_request<T>(
+    heap: &mut HeapHandle<T>,
+    record: u32,
+) -> Result<EffectRequest, ComponentError> {
+    let correlation_h = heap.arr_get(record, FIELD_CORRELATION)?;
+    let kind_h = heap.arr_get(record, FIELD_KIND)?;
+    let payload_h = heap.arr_get(record, FIELD_PAYLOAD)?;
+    let target_h = heap.arr_get(record, FIELD_TARGET)?;
+
+    // `kind` is a BOXED enum-disc (v-rust-backend authoritative): read the discriminant as an i64.
+    let kind = disc_to_effect_kind(heap.get_int(kind_h)?)?;
+    let target = heap.str_get(target_h)?;
+    let payload = read_option_bytes(heap, payload_h)?;
+    let correlation = read_option_bytes(heap, correlation_h)?;
+
+    Ok(EffectRequest {
+        kind,
+        target,
+        payload,
+        correlation,
+    })
+}
+
+/// Project a reducer's returned `list<effect-request>` value-heap handle into the kernel's
+/// `Vec<EffectRequest>`. Walks the vec (`vec-len` + `vec-get(i)`) and reads each element record — the whole
+/// read-direction output of the fold-boundary rebind, ready for the drive loop to authorize + dispatch.
+pub fn read_effect_requests<T>(
+    heap: &mut HeapHandle<T>,
+    list: u32,
+) -> Result<Vec<EffectRequest>, ComponentError> {
+    let len = heap.vec_len(list)?;
+    let mut out = Vec::with_capacity(len as usize);
+    for i in 0..len {
+        let record = heap.vec_get(list, i)?;
+        out.push(read_effect_request(heap, record)?);
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // A synthetic `cadenza:runtime/heap` stub whose READ ops decode a FUNCTIONAL, test-authored value-heap
+    // (not sentinels), so a test can lay out a real effect-request list in guest memory and assert the host
+    // reads it back field-for-field. Layout in linear memory (all i32 cells, little-endian):
+    //  - a VEC handle points at [len:i32][elem0-handle:i32][elem1-handle:i32]…
+    //  - a RECORD (arr) handle points at [len:i32][field0:i32][field1:i32]… (sorted-field order)
+    //  - a SUM handle points at [disc:i32][payload-handle:i32]
+    //  - a BYTES handle points at [len:i32][bytes…]
+    //  - a boxed INT handle points at [value:i64]  (get-int reads the i64)
+    //  - a STRING handle points at [len:i32][utf8…]; str-get returns (ptr+4, len) via the retptr ABI
+    // The test writes these structures into a `(data …)` image at fixed offsets and hands the top-level vec
+    // handle to `read_effect_requests`. Ops are thin readers over that image.
+    fn read_heap_stub() -> Vec<u8> {
+        wat::parse_str(
+            r#"(component
+                 (core module $m
+                   (memory (export "mem") 1)
+                   (func (export "realloc") (param i32 i32 i32 i32) (result i32) (local.get 0))
+                   ;; vec-len / arr-len share the [len:i32] header at the handle.
+                   (func (export "vec-len") (param $h i32) (result i32) (i32.load (local.get $h)))
+                   ;; vec-get(h, i) → i32 element at [h + 4 + 4*i].
+                   (func (export "vec-get") (param $h i32) (param $i i32) (result i32)
+                     (i32.load (i32.add (local.get $h) (i32.add (i32.const 4) (i32.mul (local.get $i) (i32.const 4))))))
+                   ;; arr-get(h, i) → same layout as vec-get (a record is a sorted-field array).
+                   (func (export "arr-get") (param $h i32) (param $i i32) (result i32)
+                     (i32.load (i32.add (local.get $h) (i32.add (i32.const 4) (i32.mul (local.get $i) (i32.const 4))))))
+                   ;; sum-disc → [h+0]; sum-payload → [h+4].
+                   (func (export "sum-disc") (param $h i32) (result i32) (i32.load (local.get $h)))
+                   (func (export "sum-payload") (param $h i32) (result i32) (i32.load (i32.add (local.get $h) (i32.const 4))))
+                   ;; get-int → the i64 at the boxed-int handle.
+                   (func (export "get-int") (param $h i32) (result i64) (i64.load (local.get $h)))
+                   ;; bytes-len → [h+0]; bytes-get(h,i) → byte at [h+4+i].
+                   (func (export "bytes-len") (param $h i32) (result i32) (i32.load (local.get $h)))
+                   (func (export "bytes-get") (param $h i32) (param $i i32) (result i32)
+                     (i32.load8_u (i32.add (i32.add (local.get $h) (i32.const 4)) (local.get $i))))
+                   ;; str-get(h) → (ptr,len) via the retptr the canon ABI passes: write ptr=h+4, len=[h] to
+                   ;; the two i32s at retptr, and lift reads the string from there.
+                   (func (export "str-get") (param $h i32) (result i32)
+                     (i32.store (i32.const 60000) (i32.add (local.get $h) (i32.const 4)))
+                     (i32.store (i32.const 60004) (i32.load (local.get $h)))
+                     (i32.const 60000))
+                   ;; BUILD ops unused by the read path — bare sentinels (bind needs all 16 present).
+                   (func (export "box-int") (param i64) (result i32) (i32.const 0))
+                   (func (export "arr-alloc") (param i32) (result i32) (i32.const 0))
+                   (func (export "arr-set") (param i32 i32 i32) (result i32) (local.get 0))
+                   (func (export "sum-new") (param i32 i32) (result i32) (i32.const 0))
+                   (func (export "str-new") (param i32 i32) (result i32) (i32.const 0))
+                   (func (export "bytes-alloc") (param i32) (result i32) (i32.const 0))
+                   (func (export "bytes-set") (param i32 i32 i32) (result i32) (local.get 0))
+                   ;; ── The test image: ONE effect-request in a length-1 list. ────────────────────────────
+                   ;; Offsets chosen disjoint. All multi-byte values little-endian.
+                   ;; @100 vec: [len=1][elem0 = record@120]
+                   (data (i32.const 100) "\01\00\00\00\78\00\00\00")
+                   ;; @120 record (4 sorted fields): [len=4][correlation@200][kind@160][payload@240][target@180]
+                   (data (i32.const 120) "\04\00\00\00\c8\00\00\00\a0\00\00\00\f0\00\00\00\b4\00\00\00")
+                   ;; @160 boxed kind disc = 1 (Http), as an i64.
+                   (data (i32.const 160) "\01\00\00\00\00\00\00\00")
+                   ;; @180 target string: [len=8]"https://" — header then bytes.
+                   (data (i32.const 180) "\08\00\00\00https://")
+                   ;; @200 correlation = Some(@220): [disc=0][payload=@220]
+                   (data (i32.const 200) "\00\00\00\00\dc\00\00\00")
+                   ;; @220 bytes "id7": [len=3]"id7"
+                   (data (i32.const 220) "\03\00\00\00id7")
+                   ;; @240 payload = None: [disc=1][payload ignored=0]
+                   (data (i32.const 240) "\01\00\00\00\00\00\00\00"))
+                 (core instance $i (instantiate $m))
+                 (func $box-int (param "v" s64) (result u32) (canon lift (core func $i "box-int")))
+                 (func $arr-alloc (param "len" u32) (result u32) (canon lift (core func $i "arr-alloc")))
+                 (func $arr-set (param "arr" u32) (param "index" u32) (param "elem" u32) (result u32) (canon lift (core func $i "arr-set")))
+                 (func $sum-new (param "disc" u32) (param "payload" u32) (result u32) (canon lift (core func $i "sum-new")))
+                 (func $vec-len (param "v" u32) (result u32) (canon lift (core func $i "vec-len")))
+                 (func $str-new (param "s" string) (result u32) (canon lift (core func $i "str-new") (memory $i "mem") (realloc (func $i "realloc"))))
+                 (func $vec-get (param "v" u32) (param "index" u32) (result u32) (canon lift (core func $i "vec-get")))
+                 (func $arr-get (param "arr" u32) (param "index" u32) (result u32) (canon lift (core func $i "arr-get")))
+                 (func $sum-disc (param "handle" u32) (result u32) (canon lift (core func $i "sum-disc")))
+                 (func $sum-payload (param "handle" u32) (result u32) (canon lift (core func $i "sum-payload")))
+                 (func $get-int (param "handle" u32) (result s64) (canon lift (core func $i "get-int")))
+                 (func $str-get (param "handle" u32) (result string) (canon lift (core func $i "str-get") (memory $i "mem") (realloc (func $i "realloc"))))
+                 (func $bytes-alloc (param "len" u32) (result u32) (canon lift (core func $i "bytes-alloc")))
+                 (func $bytes-set (param "buf" u32) (param "index" u32) (param "value" u32) (result u32) (canon lift (core func $i "bytes-set")))
+                 (func $bytes-len (param "buf" u32) (result u32) (canon lift (core func $i "bytes-len")))
+                 (func $bytes-get (param "buf" u32) (param "index" u32) (result u32) (canon lift (core func $i "bytes-get")))
+                 (instance $heap
+                   (export "box-int" (func $box-int))
+                   (export "arr-alloc" (func $arr-alloc))
+                   (export "arr-set" (func $arr-set))
+                   (export "sum-new" (func $sum-new))
+                   (export "vec-len" (func $vec-len))
+                   (export "str-new" (func $str-new))
+                   (export "vec-get" (func $vec-get))
+                   (export "arr-get" (func $arr-get))
+                   (export "sum-disc" (func $sum-disc))
+                   (export "sum-payload" (func $sum-payload))
+                   (export "get-int" (func $get-int))
+                   (export "str-get" (func $str-get))
+                   (export "bytes-alloc" (func $bytes-alloc))
+                   (export "bytes-set" (func $bytes-set))
+                   (export "bytes-len" (func $bytes-len))
+                   (export "bytes-get" (func $bytes-get)))
+                 (export "cadenza:runtime/heap" (instance $heap)))"#,
+        )
+        .expect("assemble read-ops heap stub")
+    }
+
+    fn bind_read_stub() -> HeapHandle<()> {
+        let bytes = read_heap_stub();
+        let engine = wasmtime::Engine::default();
+        let mut store = wasmtime::Store::new(&engine, ());
+        let linker = wasmtime::component::Linker::<()>::new(&engine);
+        let component =
+            wasmtime::component::Component::new(&engine, &bytes).expect("valid read stub");
+        let instance = linker
+            .instantiate(&mut store, &component)
+            .expect("read stub instantiates");
+        match HeapHandle::bind(store, &instance) {
+            Ok(h) => h,
+            Err(e) => panic!("bind HeapHandle to the read stub: {e:?}"),
+        }
+    }
+
+    // The end-to-end read: a length-1 effect-request list at @100 decodes to one EffectRequest with kind
+    // Http (boxed disc 1 via get-int, NOT sum-disc), target "https://", correlation Some(b"id7"), payload
+    // None. Pins the sorted-field ORDER, the boxed-enum-disc read op, and the option Some/None decode.
+    #[test]
+    fn reads_a_one_element_effect_request_list() {
+        let mut heap = bind_read_stub();
+        let effects = read_effect_requests(&mut heap, 100).expect("read effect list");
+        assert_eq!(effects.len(), 1);
+        let e = &effects[0];
+        assert!(
+            matches!(e.kind, EffectKind::Http),
+            "kind = boxed disc 1 = Http"
+        );
+        assert_eq!(e.target, "https://");
+        assert_eq!(
+            e.correlation,
+            Some(b"id7".to_vec()),
+            "correlation = Some(b\"id7\")"
+        );
+        assert_eq!(e.payload, None, "payload = None (disc 1)");
+    }
+
+    // Every effect-kind discriminant 0..=5 maps to the right variant; 6 (out of range) is a hard error, not
+    // a silent default — a runtime-ABI drift must surface.
+    #[test]
+    fn effect_kind_discriminants_map_and_reject_out_of_range() {
+        assert!(matches!(disc_to_effect_kind(0), Ok(EffectKind::Shell)));
+        assert!(matches!(disc_to_effect_kind(1), Ok(EffectKind::Http)));
+        assert!(matches!(disc_to_effect_kind(2), Ok(EffectKind::Model)));
+        assert!(matches!(disc_to_effect_kind(3), Ok(EffectKind::Now)));
+        assert!(matches!(disc_to_effect_kind(4), Ok(EffectKind::Timer)));
+        assert!(matches!(disc_to_effect_kind(5), Ok(EffectKind::Emit)));
+        match disc_to_effect_kind(6) {
+            Err(ComponentError::Trap(msg)) => assert!(msg.contains("out of range")),
+            other => panic!("disc 6 must be a hard Trap, got {other:?}"),
+        }
+    }
+}

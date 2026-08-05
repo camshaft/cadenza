@@ -4,11 +4,19 @@
 //! `option<list<u8>>`, `list<effect-request>`), but a Cadenza reducer compiled by `rcdzc` lowers its
 //! `fold.apply` to `apply(u32, u32, u32) -> u32` over the SHARED `cadenza:runtime/heap` value-heap: every
 //! structural argument crosses as an OPAQUE `u32` handle into that heap (the spec's "components composed
-//! against a shared runtime exchange values as handles"). So the HOST must marshal the kernel's
-//! `(content_type, payload, resumes)` fold inputs INTO value-heap handles before the call — this module is
-//! that build-direction bridge, driving [`HeapHandle`]'s public build ops (str-new / box-int / arr-alloc /
-//! arr-set / sum-new / bytes-from / unit). The READ-direction dual (projecting the returned
-//! `list<effect-request>` handle back to `Vec<EffectRequest>`) is a sibling slice.
+//! against a shared runtime exchange values as handles").
+//!
+//! ## When this module is on the call path (NOT the current live boundary yet)
+//! This module is the marshalling helper for that **option-C handle-lowered MODE**: WHEN a reducer is
+//! invoked via the `apply(u32, u32, u32)` handle-ABI, the host marshals the kernel's `(content_type,
+//! payload, resumes)` fold inputs INTO value-heap handles first, using this module. It is NOT yet the live
+//! boundary — [`crate::wasm_host`]'s [`ComponentReducer`](crate::wasm_host::ComponentReducer) still calls
+//! the WIT-STRUCTURAL `fold.apply` via wasmtime's `bindgen!` (auto canon lift/lower of the structural WIT
+//! types), and that stays the path until the handle-ABI fold-boundary rebind lands. So this is a correct,
+//! tested helper staged AHEAD of its wiring — the fold-boundary rebind is the slice that puts it on the
+//! call path. It drives [`HeapHandle`]'s public build ops (str-new / box-int / arr-alloc / arr-set /
+//! sum-new / bytes-from / unit); the READ-direction dual (projecting the returned `list<effect-request>`
+//! handle back to `Vec<EffectRequest>`) is [`crate::heap_unmarshal`].
 //!
 //! ## The value-heap layout this encodes (verified against rcdzc's wasm backend)
 //! - A **record** is a SORTED-field-NAME array (`Core::Proj` layout — the fields laid out in field-name
