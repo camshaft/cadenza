@@ -280,6 +280,76 @@ mod tests {
     }
 
     #[test]
+    fn remaining_command_tags_are_pinned_to_their_wire_literals() {
+        // Golden-pin the two command tags the shape tests above DON'T cover (install-session + list-sessions
+        // are pinned; session-status + stop-session were only exercised symbolically by the round-trip test,
+        // which moves both sides together — a `rename_all`/variant rename would silently drift the tag an
+        // external admin client authors against and the round-trip would still pass). Pin the literal `cmd`
+        // string (+ the id field) so any wire-tag drift is a loud failure.
+        let status = serde_json::to_value(AdminCommandWire::from(&AdminCommand::SessionStatus {
+            id: SessionId::new("s1"),
+        }))
+        .unwrap();
+        assert_eq!(
+            status,
+            serde_json::json!({"cmd": "session-status", "id": "s1"})
+        );
+
+        let stop = serde_json::to_value(AdminCommandWire::from(&AdminCommand::StopSession {
+            id: SessionId::new("victim"),
+        }))
+        .unwrap();
+        assert_eq!(
+            stop,
+            serde_json::json!({"cmd": "stop-session", "id": "victim"})
+        );
+    }
+
+    #[test]
+    fn response_tags_are_pinned_to_their_wire_literals() {
+        // Golden-pin the response `result` tags (only `status` was pinned above). These are the wire contract
+        // an external admin client PARSES; a rename would silently break clients with the round-trip green.
+        let installed =
+            serde_json::to_value(AdminResponseWire::from_domain(&AdminResponse::Installed {
+                id: SessionId::new("w"),
+            }))
+            .unwrap();
+        assert_eq!(
+            installed,
+            serde_json::json!({"result": "installed", "id": "w"})
+        );
+
+        let sessions =
+            serde_json::to_value(AdminResponseWire::from_domain(&AdminResponse::Sessions {
+                ids: vec![SessionId::new("a"), SessionId::new("b")],
+            }))
+            .unwrap();
+        assert_eq!(
+            sessions,
+            serde_json::json!({"result": "sessions", "ids": ["a", "b"]})
+        );
+
+        let stopped =
+            serde_json::to_value(AdminResponseWire::from_domain(&AdminResponse::Stopped {
+                id: SessionId::new("gone"),
+            }))
+            .unwrap();
+        assert_eq!(
+            stopped,
+            serde_json::json!({"result": "stopped", "id": "gone"})
+        );
+
+        let error = serde_json::to_value(AdminResponseWire::from_domain(&AdminResponse::Error {
+            message: "boom".into(),
+        }))
+        .unwrap();
+        assert_eq!(
+            error,
+            serde_json::json!({"result": "error", "message": "boom"})
+        );
+    }
+
+    #[test]
     fn a_goalless_install_omits_the_goal_field() {
         let wire = AdminCommandWire::from(&AdminCommand::InstallSession(InstallSpec {
             id: SessionId::new("w"),
