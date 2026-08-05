@@ -403,13 +403,20 @@ async fn resolve_dep_bytes(
 ///
 /// `T` is the store data type (the reducer host); the dep's funcs don't touch it — they're pure
 /// component-to-component calls forwarded verbatim — so this is generic over the store type.
+///
+/// Returns the dep's own [`Instance`](wasmtime::component::Instance) in `store` — the SAME instance whose
+/// funcs were forwarded into `linker`. For the value-heap runtime dep this is what the host binds a
+/// [`HeapHandle`] on (§19e fold-boundary rebind): the reducer's lowered `apply` calls the runtime through
+/// the linker while the host marshals its `apply` args by driving the very SAME instance's heap ops, so
+/// every handle indexes one shared heap. Callers that only need the linker wiring (the WIT-structural
+/// path) ignore the returned instance.
 fn compose_dep_into_linker<T: 'static>(
     engine: &wasmtime::Engine,
     store: &mut wasmtime::Store<T>,
     linker: &mut wasmtime::component::Linker<T>,
     import_name: &str,
     dep_bytes: &[u8],
-) -> Result<(), ComponentError> {
+) -> Result<wasmtime::component::Instance, ComponentError> {
     use wasmtime::component::types::ComponentItem;
     use wasmtime::component::Component;
     let compose_err = |reason: String| ComponentError::Compose {
@@ -471,7 +478,7 @@ fn compose_dep_into_linker<T: 'static>(
             })
             .map_err(|e| compose_err(format!("binding dep func {fname:?} into the linker: {e}")))?;
     }
-    Ok(())
+    Ok(dep_instance)
 }
 
 /// Parse a component dependency's `+<hash>` content-address build-metadata into a [`Hash`]. Delegates
@@ -2384,6 +2391,44 @@ mod tests {
             }
             other => panic!("expected Compose error naming the interface, got {other:?}"),
         }
+    }
+
+    // §19e fold-boundary rebind FOUNDATION: `compose_dep_into_linker` returns the dep's live `Instance`, and
+    // for the value-heap runtime dep that returned instance is exactly what the host binds a `HeapHandle`
+    // on — so the reducer (which calls the runtime through the linker) and the host's marshalling drive the
+    // SAME heap instance. This composes the heap stub as a `cadenza:runtime/heap` dep, binds a HeapHandle on
+    // the RETURNED instance, and drives an op — proving the returned instance is a usable, bindable runtime
+    // (the store-sharing the handle-lowered `apply` relies on: build arg handles on this instance, then the
+    // reducer's `apply` reads them off the same heap). No reducer here — that's the next slice; this pins
+    // that the compose→bind seam works end to end.
+    #[test]
+    fn compose_returns_a_bindable_runtime_instance_for_the_heap_handle() {
+        let bytes = heap_stub_component();
+        let engine = wasmtime::Engine::default();
+        let mut store = wasmtime::Store::new(&engine, ());
+        let mut linker = wasmtime::component::Linker::<()>::new(&engine);
+        // Compose the heap stub under the runtime interface name a reducer imports.
+        let runtime_instance = match compose_dep_into_linker(
+            &engine,
+            &mut store,
+            &mut linker,
+            "cadenza:runtime/heap",
+            &bytes,
+        ) {
+            Ok(inst) => inst,
+            Err(e) => panic!("compose the runtime dep: {e:?}"),
+        };
+        // Bind a HeapHandle on the SAME composed instance + store, then drive a build op — proving the
+        // returned instance is the usable runtime the host marshals on (the stub's box-int → sentinel 100).
+        let mut heap = match HeapHandle::bind(store, &runtime_instance) {
+            Ok(h) => h,
+            Err(e) => panic!("bind HeapHandle to the composed runtime instance: {e:?}"),
+        };
+        assert_eq!(
+            heap.box_int(7).expect("box-int on the composed runtime"),
+            100,
+            "the composed runtime instance's heap ops are drivable via HeapHandle"
+        );
     }
 
     // The generic multi-export invoke fixture (operator invoke-ABI ruling seq 107/108): a component whose
