@@ -68149,6 +68149,34 @@ mod stage1 {
     }
 
     #[test]
+    fn a_performing_condition_advance_survives_an_inner_abort_and_is_read_by_a_post_handle_observer()
+     {
+        use crate::testkit::parse;
+        // ao10 ESCALATION (breaker ae1, 2026-08-05). A performing CONDITION on the outer effect `A`
+        // (`(if (> (A.tick) 0) …)`) sits in the guard of an `if` whose taken branch ABORTS the INNER `B`
+        // handle (`(B.bail)`, arm value 99). The Site-5 `#cv`-lift for the performing cond must COMPOSE with
+        // the outer advance: `A.tick` in the cond reads the seed and advances A by 1; the inner B-abort
+        // collapses the inner handle to 99; then a SECOND `(A.tick)` — OUTSIDE the B handle, as the `+`
+        // sibling — must read the ADVANCED A state (not the seed). Pins that the cond-advance SURVIVES the
+        // inner abort and is observed post-handle: for `n=5`, cond `A.tick` reads 5 (A→6), branch aborts
+        // inner=99, outer `A.tick` reads 6 → 99 + 6 = 105. A regression that dropped the cond-advance (the
+        // outer observer reading the seed 5) would give 104; a re-perform would double-advance. Distinct from
+        // the abort-DISCARDS-the-body-suffix shape (observer INSIDE the aborted handle) — that's the #2026
+        // dead-suffix family.
+        let ae1 = "(do (effect A (op tick (-> Unit Int64))) (effect B (op bail (-> Unit Int64))) \
+             (def (main (: n Int64)) \
+               (handle A n ((tick (u) s (resume s (+ s 1)))) \
+                 (+ (handle B 0 ((bail (u) t 99)) (if (> (A.tick) 0) (B.bail) -1)) (A.tick)))) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(ae1)))
+            .expect("the performing-cond advance composes with the inner abort + post-handle observer (folds)");
+        assert_eq!(
+            run_returns_with::<i64>(&bytes, "main", &[wasmtime::component::Val::S64(5)]),
+            105,
+            "cond A.tick reads 5 (A→6); branch aborts inner B-handle=99; outer A.tick reads the advanced 6 → 99+6 = 105"
+        );
+    }
+
+    #[test]
     fn a_multishot_arm_folds_flat_but_declines_inside_recursion_never_miscompiles() {
         use crate::testkit::parse;
         // MULTI-SHOT ARM × RECURSION (breaker ms-family datapoint, 2026-08-05). A MULTI-SHOT handler arm
