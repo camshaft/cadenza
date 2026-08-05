@@ -100,7 +100,7 @@ pub fn marshal_fold_inputs<T>(
 }
 
 // ── ASYNC twins (#2256 / v-ah-host ask 27000): the marshalling for a handle-lowered fold on the ASYNC
-// engine ([`AsyncComponentReducer::apply_handle_lowered_async`]). Identical build sequence to the sync
+// engine ([`AsyncComponentReducer::apply_handle_lowered`]). Identical build sequence to the sync
 // forms above — the value-heap agreement (sorted-field record, Some=0/None=1 sum, empty-vs-absent bytes)
 // has ONE source of truth in the sync forms' docs — but each heap op is driven via its `*_async` twin, so
 // the sync `Func::call` per-store async-panic is avoided. `T: Send` (an async call may poll across await).
