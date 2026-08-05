@@ -1415,8 +1415,11 @@ pub struct InFlight {
 /// kernel-defined string, safe to emit into a span/event; an EXTENSION family carries the guest's own
 /// `Cow::Owned` bytes, so emitting it verbatim would leak guest-controlled data off-box via the tracing
 /// subscriber (the same class as the effect `target`, redacted by #2180). For an extension family we
-/// return a fixed marker instead of the bytes — the drive loop pairs it with the family LENGTH so a
-/// diagnostic still distinguishes families without exposing content. Gated on the EXACT static vocabulary
+/// return a fixed marker instead of the bytes — the drive loop pairs it with the family LENGTH so the log
+/// still carries a diagnostic signal (a well-known name, or `<extension>` + length) WITHOUT leaking guest
+/// bytes. (Two distinct extension families both render `<extension>`, so this identifies the well-known set
+/// exactly and marks the rest as opaque — it does not distinguish one extension family from another; that's
+/// the point.) Gated on the EXACT static vocabulary
 /// ([`crate::effect::effect_ct::wellknown_static_str`]), NOT a prefix check (a guest can craft
 /// `store/<secret>` inside the "trusted" namespace).
 fn loggable_family(family: &str) -> &'static str {
