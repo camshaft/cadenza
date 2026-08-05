@@ -27,8 +27,9 @@
 //! lowercase-hex of the component bytes; `<sha256hex>.wasm` + `runtime.toml` layout; `runtime.toml` maps the
 //! runtime's BARE inter-runtime deps by name→hash, distinct from a program's own `+hash`-in-import dep.
 //!
-//! Every fetch CONTENT-VERIFIES ([`sha256_digest(bytes)`](sha256_digest) `== hash.as_bytes()`, a raw
-//! byte-compare) before returning — a corrupt or substituted blob can never compose silently. The two paths
+//! Every fetch CONTENT-VERIFIES ([`sha256_digest(bytes)`](sha256_digest) `== *hash.as_bytes()`, a raw
+//! `[u8; 32]` byte-compare — `as_bytes()` returns `&[u8; 32]`, so the check derefs) before returning — a
+//! corrupt or substituted blob can never compose silently. The two paths
 //! differ only in how the hash is obtained: a `+<hash>` dep carries it in the import name; a bare dep looks
 //! it up by name in `runtime.toml`.
 //!
