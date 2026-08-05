@@ -3607,8 +3607,8 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
             // `should_clear_nudge_streak`. Clearing on ANY fresh sweep was the post-#2250 bug: a
             // dead-cron agent looks fresh for the whole ~stale-window after each nudge, so an
             // unconditional clear reset the streak between every nudge → it never reached the escalation
-            // threshold (the trio stayed re-armed forever). Gate the clear on "last re-arm older than
-            // the agent's interval" so a nudge-produced freshness does NOT wipe the accruing streak.
+            // threshold (the trio stayed re-armed forever). Gate the clear on "last re-arm older than a
+            // full stale_after window" so a nudge-produced freshness does NOT wipe the accruing streak.
             if should_clear_nudge_streak(rearm_age_secs(fleet, &a.name, now), stale_after) {
                 clear_nudge_streak(fleet, &a.name, dry_run);
             }
