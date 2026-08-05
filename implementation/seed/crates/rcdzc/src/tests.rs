@@ -68585,6 +68585,80 @@ mod stage1 {
     }
 
     #[test]
+    fn a_multi_site_resume_arm_with_a_body_free_var_folds_across_many_performs_not_orphans_it() {
+        // pm-FAMILY FIX (breaker, 2026-08-05). A TWO-resume-site arm `(if (> k 1) (resume 111 (+ s 1))
+        // (resume 100 s))` (both branches resume — non-partial, non-peelable) is served by the two-hole
+        // refold when the continuation reaches no foreign perform. The refold rewrites each `resume` to
+        // `reduce_handle(next-state, arms, C[value])` where `C` = the handle BODY. `splice_context` builds
+        // that filled continuation as a DETACHED tree (parent = None); if the body reads a FREE enclosing
+        // binder — a caller param `n`, or a `let`-bound `m` — that leaf's scope-walk dead-ended before
+        // reaching its binder → a spurious CDZ0101 "unbound n" on a VALID program (breaker pm1/pm2/pm4;
+        // rust-backend PASSED, isolating it to the fold's re-anchoring, not a backend). The fix re-anchors the
+        // spliced continuation under the ORIGINAL handle body's parent before the recursive fold. Only bites
+        // at ≥2 performs (one perform leaves the body in place, parented — pm7). Needs the composed runtime.
+        use crate::testkit::parse;
+        let Some(runtime) = find_runtime_wasm() else {
+            eprintln!(
+                "runtime wasm not found (run `cargo xtask build`); skipping pm body-free-var run"
+            );
+            return;
+        };
+        let run = |src: &str, n: i64, what: &str| -> String {
+            let bytes = compile_component(&crate::codec::encode(&parse(src))).unwrap_or_else(|e| {
+                panic!("{what} must compile (body free var must not orphan): {e:?}")
+            });
+            let opts = cdz_run::RunOpts {
+                export: Some("main".to_string()),
+                args: vec![n.to_string()],
+                runtime: Some(runtime.clone()),
+                runtime_cache_dir: None,
+                host_responses: Vec::new(),
+            };
+            match cdz_run::run(&bytes, &opts).expect("run") {
+                cdz_run::Outcome::Value(s) => s,
+                cdz_run::Outcome::Trap(t) => panic!("{what} trapped: {t}"),
+            }
+        };
+        // pm1: body reads main's param `n`, THREE performs. price(1)=100 (k=1 not>1 → resume 100, s→? ),
+        // price(7)=111, price(2)=111; the arm advances s by 1 per perform. n=5 → 5 + (100+111+111)... the
+        // exact fold value is 327 (breaker hand-computed); the pin asserts it compiles + runs to 327 (was a
+        // false CDZ0101 before the re-anchor fix).
+        let pm1 = "(do (effect St (op price (-> Int64 Int64))) \
+             (def (main (: n Int64)) \
+               (handle St 0 ((price (k) s (if (> k 1) (resume 111 (+ s 1)) (resume 100 s)))) \
+                 (+ n (+ (St.price 1) (+ (St.price 7) (St.price 2)))))) (export main))";
+        assert_eq!(
+            run(pm1, 5, "pm1 body reads param n"),
+            "327",
+            "pm1: body-free-var n must resolve (was false CDZ0101 unbound n before the re-anchor fix)"
+        );
+
+        // pm4: the free var is a `let`-bound `m` OUTSIDE the handle — same orphan class, any enclosing binder.
+        let pm4 = "(do (effect St (op price (-> Int64 Int64))) \
+             (def (main (: n Int64)) \
+               (let ((m (* n 2))) \
+                 (handle St 0 ((price (k) s (if (> k 1) (resume 111 (+ s 1)) (resume 100 s)))) \
+                   (+ m (+ (St.price 1) (+ (St.price 7) (St.price 2))))))) (export main))";
+        assert_eq!(
+            run(pm4, 5, "pm4 body reads let-bound m"),
+            "332",
+            "pm4: a let-bound enclosing binder must also resolve through the refold"
+        );
+
+        // pm3 CONTROL: a SINGLE-site arm with the same body-reads-n + three performs already folded (the
+        // existing body-reads-enclosing-parameter path) — must stay 105, proving the fix didn't regress it.
+        let pm3 = "(do (effect St (op price (-> Int64 Int64))) \
+             (def (main (: n Int64)) \
+               (handle St 0 ((price (k) s (resume (* k 10) (+ s 1)))) \
+                 (+ n (+ (St.price 1) (+ (St.price 7) (St.price 2)))))) (export main))";
+        assert_eq!(
+            run(pm3, 5, "pm3 single-site control"),
+            "105",
+            "pm3: the single-site body-reads-param path stays folding at 105"
+        );
+    }
+
+    #[test]
     fn a_performing_closure_folds_direct_but_never_miscompiles_through_an_indirect_call() {
         use crate::testkit::parse;
         // PERFORMING-CLOSURE × CALL-SITE (breaker cc-family datapoint, 2026-08-05). A closure that ITSELF
