@@ -1892,8 +1892,14 @@ mod tests {
         };
         let e = guest_effect_to_kernel_effect(g);
         assert_eq!(e.request.kind, crate::effect::EffectKind::Emit);
-        assert!(e.request.payload.is_none(), "None payload must stay None (not empty-Inline)");
-        assert!(e.token.is_none(), "None correlation must stay None (fire-and-forget)");
+        assert!(
+            e.request.payload.is_none(),
+            "None payload must stay None (not empty-Inline)"
+        );
+        assert!(
+            e.token.is_none(),
+            "None correlation must stay None (fire-and-forget)"
+        );
     }
 
     // The host `kv` import is backed by the kernel KV THROUGH the transactional overlay: reads see the
