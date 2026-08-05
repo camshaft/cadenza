@@ -414,6 +414,33 @@ async fn resolve_dep_bytes(
     }
 }
 
+/// Read the func names a component exports under `iface_name` (an exported INSTANCE). Read off the
+/// component TYPE (not a live instance) so a wrong-shape dep is caught with a clear message rather than
+/// an opaque call-time trap. Sync + store-free — the piece SHARED verbatim by the sync compose helpers
+/// AND their async twins (`*_async`), so the func-name discovery has ONE home. `None` = the component
+/// doesn't export `iface_name` as an interface (the caller turns that into the actionable Compose error).
+fn read_iface_func_names(
+    engine: &wasmtime::Engine,
+    component: &wasmtime::component::Component,
+    iface_name: &str,
+) -> Option<Vec<String>> {
+    use wasmtime::component::types::ComponentItem;
+    component
+        .component_type()
+        .exports(engine)
+        .find(|(n, _)| *n == iface_name)
+        .and_then(|(_, item)| match item {
+            ComponentItem::ComponentInstance(inst) => Some(
+                inst.exports(engine)
+                    .filter_map(|(fname, i)| {
+                        matches!(i, ComponentItem::ComponentFunc(_)).then(|| fname.to_string())
+                    })
+                    .collect(),
+            ),
+            _ => None,
+        })
+}
+
 /// Compose a resolved dependency COMPONENT into `linker` so a consumer that imports `import_name` can
 /// instantiate against it (§23 — the runtime-agnostic dep-compose the kernel does uniformly for EVERY
 /// declared dep, the value-heap runtime being just one). Mirrors the sibling `cdz-run::run_with_peers`
@@ -446,7 +473,6 @@ fn compose_dep_into_linker<T: 'static>(
     // stubs, and any caller that has no store): the dep instantiates against a fresh empty linker as before.
     store_provider: Option<&crate::component_store::ComponentStore>,
 ) -> Result<wasmtime::component::Instance, ComponentError> {
-    use wasmtime::component::types::ComponentItem;
     use wasmtime::component::Component;
     let compose_err = |reason: String| ComponentError::Compose {
         import_name: import_name.to_string(),
@@ -463,29 +489,13 @@ fn compose_dep_into_linker<T: 'static>(
     // `import_name` for both sides — it only worked because the WAT test stubs happened to export the same
     // full string; a real content-addressed dep exposed the mismatch.)
     let dep_iface_name = bare_iface_name(import_name);
-    // The func names the dep exports under `dep_iface_name`. Read them off the component TYPE, not a live
-    // instance, so a dep that exports the wrong shape is caught with a clear message rather than an opaque
-    // trap at call time.
-    let func_names: Vec<String> = dep
-        .component_type()
-        .exports(engine)
-        .find(|(n, _)| *n == dep_iface_name)
-        .and_then(|(_, item)| match item {
-            ComponentItem::ComponentInstance(inst) => Some(
-                inst.exports(engine)
-                    .filter_map(|(fname, i)| {
-                        matches!(i, ComponentItem::ComponentFunc(_)).then(|| fname.to_string())
-                    })
-                    .collect(),
-            ),
-            _ => None,
-        })
-        .ok_or_else(|| {
-            compose_err(format!(
-                "dependency does not export the interface {dep_iface_name:?} the consumer imports \
-                 (as {import_name:?})"
-            ))
-        })?;
+    // The func names the dep exports under `dep_iface_name` (read off the TYPE — see `read_iface_func_names`).
+    let func_names = read_iface_func_names(engine, &dep, dep_iface_name).ok_or_else(|| {
+        compose_err(format!(
+            "dependency does not export the interface {dep_iface_name:?} the consumer imports \
+             (as {import_name:?})"
+        ))
+    })?;
     // Instantiate the dep in the shared store. A dep is NOT necessarily a leaf — the value-heap runtime
     // itself imports the BARE `cadenza:nfc/normalize` component (FINDING#23). So before instantiating,
     // TRANSITIVELY compose the dep's OWN bare (store-resolvable) imports into its linker, leaves-first
@@ -551,66 +561,18 @@ fn compose_transitive_bare_deps<T: 'static>(
     dep: &wasmtime::component::Component,
     store_provider: Option<&crate::component_store::ComponentStore>,
 ) -> Result<(), ComponentError> {
-    use wasmtime::component::types::ComponentItem;
-    use wasmtime::component::Component;
-    // Does this dep import the bare NFC interface? Read its component TYPE's imports (not a live instance).
-    let imports_nfc = dep
-        .component_type()
-        .imports(engine)
-        .any(|(name, _)| name == NFC_IFACE);
-    if !imports_nfc {
-        return Ok(()); // leaf dep (or an older runtime that imports nothing) — nothing to compose
-    }
     let compose_err = |reason: String| ComponentError::Compose {
         import_name: NFC_IFACE.to_string(),
         reason,
     };
-    let store_provider = store_provider.ok_or_else(|| {
-        compose_err(
-            "dependency imports cadenza:nfc/normalize but no component store was provided to resolve it \
-             (the transitive nfc dep — pass a ComponentStore via CDZ_STORE)"
-                .to_string(),
-        )
-    })?;
-    // Resolve the NFC component from the store BY MANIFEST NAME. The `runtime.toml` key is the PACKAGE
-    // name (`nfc`), i.e. the segment between `:` and `/` of `cadenza:nfc/normalize` — NOT the interface
-    // leaf after `/` (`normalize`). (Matches cdz-run's `resolve_nfc_from_store`, which keys on `nfc`.)
-    // Bare imports carry no `+<hash>`, so this is the name path, NOT get_by_hash.
-    let nfc_name = NFC_IFACE
-        .split_once(':')
-        .and_then(|(_ns, rest)| rest.split('/').next())
-        .unwrap_or(NFC_IFACE);
-    let nfc_bytes = store_provider.get_by_manifest_name(nfc_name).map_err(|e| {
-        compose_err(format!(
-            "resolving {NFC_IFACE} ({nfc_name}) from the store: {e:?}"
-        ))
-    })?;
-    let nfc = Component::new(engine, &nfc_bytes).map_err(|e| {
-        compose_err(format!(
-            "nfc component bytes are not a valid component: {e}"
-        ))
-    })?;
+    let Some((nfc, func_names)) = resolve_transitive_nfc(engine, dep, store_provider)? else {
+        return Ok(()); // leaf dep — nothing to compose
+    };
     // NFC is a LEAF (imports nothing) → instantiate against a fresh empty linker.
     let nfc_linker = wasmtime::component::Linker::<T>::new(engine);
     let nfc_instance = nfc_linker
         .instantiate(&mut *store, &nfc)
         .map_err(|e| compose_err(format!("instantiating the nfc component failed: {e}")))?;
-    // The funcs nfc exports under NFC_IFACE (read off the TYPE for a clear error, as compose_dep does).
-    let func_names: Vec<String> = nfc
-        .component_type()
-        .exports(engine)
-        .find(|(n, _)| *n == NFC_IFACE)
-        .and_then(|(_, item)| match item {
-            ComponentItem::ComponentInstance(inst) => Some(
-                inst.exports(engine)
-                    .filter_map(|(fname, i)| {
-                        matches!(i, ComponentItem::ComponentFunc(_)).then(|| fname.to_string())
-                    })
-                    .collect(),
-            ),
-            _ => None,
-        })
-        .ok_or_else(|| compose_err(format!("nfc component does not export {NFC_IFACE}")))?;
     let nfc_idx = nfc_instance
         .get_export_index(&mut *store, None, NFC_IFACE)
         .ok_or_else(|| compose_err("nfc instance is missing its exported interface".into()))?;
@@ -637,6 +599,180 @@ fn compose_transitive_bare_deps<T: 'static>(
             })?;
     }
     Ok(())
+}
+
+/// Resolve the transitive NFC component a dep needs, if any — the store-only PREAMBLE shared by
+/// [`compose_transitive_bare_deps`] (sync) and [`compose_transitive_bare_deps_async`]. Returns
+/// `Ok(None)` when the dep is a LEAF (doesn't import `NFC_IFACE`) → nothing to compose. Returns the
+/// compiled NFC [`Component`] + its exported func names otherwise. Touches no store handle, so it's
+/// identical for both engines — only the INSTANTIATE differs downstream (sync `instantiate` vs
+/// `instantiate_async`), which is the whole reason the async twin exists (#2256 async dep-compose).
+fn resolve_transitive_nfc(
+    engine: &wasmtime::Engine,
+    dep: &wasmtime::component::Component,
+    store_provider: Option<&crate::component_store::ComponentStore>,
+) -> Result<Option<(wasmtime::component::Component, Vec<String>)>, ComponentError> {
+    use wasmtime::component::Component;
+    let imports_nfc = dep
+        .component_type()
+        .imports(engine)
+        .any(|(name, _)| name == NFC_IFACE);
+    if !imports_nfc {
+        return Ok(None); // leaf dep (or an older runtime that imports nothing) — nothing to compose
+    }
+    let compose_err = |reason: String| ComponentError::Compose {
+        import_name: NFC_IFACE.to_string(),
+        reason,
+    };
+    let store_provider = store_provider.ok_or_else(|| {
+        compose_err(
+            "dependency imports cadenza:nfc/normalize but no component store was provided to resolve it \
+             (the transitive nfc dep — pass a ComponentStore via CDZ_STORE)"
+                .to_string(),
+        )
+    })?;
+    // Resolve NFC from the store BY MANIFEST NAME (the `runtime.toml` PACKAGE segment `nfc`, not the
+    // interface leaf `normalize`; bare imports carry no `+<hash>`, so name path not get_by_hash).
+    let nfc_name = NFC_IFACE
+        .split_once(':')
+        .and_then(|(_ns, rest)| rest.split('/').next())
+        .unwrap_or(NFC_IFACE);
+    let nfc_bytes = store_provider.get_by_manifest_name(nfc_name).map_err(|e| {
+        compose_err(format!(
+            "resolving {NFC_IFACE} ({nfc_name}) from the store: {e:?}"
+        ))
+    })?;
+    let nfc = Component::new(engine, &nfc_bytes).map_err(|e| {
+        compose_err(format!(
+            "nfc component bytes are not a valid component: {e}"
+        ))
+    })?;
+    let func_names = read_iface_func_names(engine, &nfc, NFC_IFACE)
+        .ok_or_else(|| compose_err(format!("nfc component does not export {NFC_IFACE}")))?;
+    Ok(Some((nfc, func_names)))
+}
+
+/// ASYNC twin of [`compose_transitive_bare_deps`] — identical resolution + forwarding, but the inner NFC
+/// instantiate uses `instantiate_async` and each forwarded func is bound with `func_new_async` (calling
+/// `call_async`/`post_return_async`). On an `async_support` engine BOTH the sync `Linker::instantiate`
+/// AND a forwarded sync `Func::call` PANIC ("must use async instantiation" / "must use call_async") —
+/// so the async fold path (`AsyncComponentReducer::apply`) cannot reuse the sync composer (#2256 async
+/// twin; the panic v-ah-host's live genesis E2E hit). The store data type `T` must be `Send` because an
+/// async host func may be polled across an await point.
+async fn compose_transitive_bare_deps_async<T: Send + 'static>(
+    engine: &wasmtime::Engine,
+    store: &mut wasmtime::Store<T>,
+    dep_linker: &mut wasmtime::component::Linker<T>,
+    dep: &wasmtime::component::Component,
+    store_provider: Option<&crate::component_store::ComponentStore>,
+) -> Result<(), ComponentError> {
+    let compose_err = |reason: String| ComponentError::Compose {
+        import_name: NFC_IFACE.to_string(),
+        reason,
+    };
+    let Some((nfc, func_names)) = resolve_transitive_nfc(engine, dep, store_provider)? else {
+        return Ok(()); // leaf dep — nothing to compose
+    };
+    // NFC is a LEAF (imports nothing) → instantiate ASYNC against a fresh empty linker.
+    let nfc_linker = wasmtime::component::Linker::<T>::new(engine);
+    let nfc_instance = nfc_linker
+        .instantiate_async(&mut *store, &nfc)
+        .await
+        .map_err(|e| compose_err(format!("instantiating the nfc component failed: {e}")))?;
+    let nfc_idx = nfc_instance
+        .get_export_index(&mut *store, None, NFC_IFACE)
+        .ok_or_else(|| compose_err("nfc instance is missing its exported interface".into()))?;
+    let mut iface = dep_linker
+        .instance(NFC_IFACE)
+        .map_err(|e| compose_err(format!("dep_linker.instance({NFC_IFACE:?}): {e}")))?;
+    for fname in &func_names {
+        let fidx = nfc_instance
+            .get_export_index(&mut *store, Some(&nfc_idx), fname)
+            .ok_or_else(|| compose_err(format!("nfc component missing exported func {fname:?}")))?;
+        let f = nfc_instance
+            .get_func(&mut *store, fidx)
+            .ok_or_else(|| compose_err(format!("nfc export {fname:?} is not a func")))?;
+        iface
+            .func_new_async(fname, move |mut ctx, params, results| {
+                Box::new(async move {
+                    f.call_async(&mut ctx, params, results).await?;
+                    f.post_return_async(&mut ctx).await?;
+                    Ok(())
+                })
+            })
+            .map_err(|e| {
+                compose_err(format!(
+                    "binding nfc func {fname:?} into the dep linker: {e}"
+                ))
+            })?;
+    }
+    Ok(())
+}
+
+/// ASYNC twin of [`compose_dep_into_linker`] — same dep-compose (read func names off the TYPE, compose the
+/// dep's OWN transitive bare deps, forward its funcs into the consumer's linker), but the dep instantiate
+/// uses `instantiate_async` and forwarded funcs are bound with `func_new_async` (see
+/// [`compose_transitive_bare_deps_async`] for WHY sync panics on the async engine). Returns the dep's live
+/// `Instance` (same as the sync form — the value-heap runtime instance the async host would bind a
+/// `HeapHandle` on). `T: Send` for the async host-func poll-across-await requirement.
+async fn compose_dep_into_linker_async<T: Send + 'static>(
+    engine: &wasmtime::Engine,
+    store: &mut wasmtime::Store<T>,
+    linker: &mut wasmtime::component::Linker<T>,
+    import_name: &str,
+    dep_bytes: &[u8],
+    store_provider: Option<&crate::component_store::ComponentStore>,
+) -> Result<wasmtime::component::Instance, ComponentError> {
+    use wasmtime::component::Component;
+    let compose_err = |reason: String| ComponentError::Compose {
+        import_name: import_name.to_string(),
+        reason,
+    };
+    let dep = Component::new(engine, dep_bytes)
+        .map_err(|e| compose_err(format!("dependency bytes are not a valid component: {e}")))?;
+    // Look the dep's exported interface up by the BARE name (strip @version+hash); register into the
+    // CONSUMER's linker under the full `import_name` (see the sync `compose_dep_into_linker` for the why).
+    let dep_iface_name = bare_iface_name(import_name);
+    let func_names = read_iface_func_names(engine, &dep, dep_iface_name).ok_or_else(|| {
+        compose_err(format!(
+            "dependency does not export the interface {dep_iface_name:?} the consumer imports \
+             (as {import_name:?})"
+        ))
+    })?;
+    // Compose the dep's OWN transitive bare deps (nfc) ASYNC, then instantiate the dep ASYNC.
+    let mut dep_linker = wasmtime::component::Linker::<T>::new(engine);
+    compose_transitive_bare_deps_async(engine, store, &mut dep_linker, &dep, store_provider)
+        .await?;
+    let dep_instance = dep_linker
+        .instantiate_async(&mut *store, &dep)
+        .await
+        .map_err(|e| compose_err(format!("instantiating the dependency failed: {e}")))?;
+    let iface_idx = dep_instance
+        .get_export_index(&mut *store, None, dep_iface_name)
+        .ok_or_else(|| {
+            compose_err("dependency instance is missing its exported interface".into())
+        })?;
+    let mut iface = linker
+        .instance(import_name)
+        .map_err(|e| compose_err(format!("linker.instance({import_name:?}): {e}")))?;
+    for fname in &func_names {
+        let fidx = dep_instance
+            .get_export_index(&mut *store, Some(&iface_idx), fname)
+            .ok_or_else(|| compose_err(format!("dependency missing exported func {fname:?}")))?;
+        let f = dep_instance
+            .get_func(&mut *store, fidx)
+            .ok_or_else(|| compose_err(format!("dependency export {fname:?} is not a func")))?;
+        iface
+            .func_new_async(fname, move |mut ctx, params, results| {
+                Box::new(async move {
+                    f.call_async(&mut ctx, params, results).await?;
+                    f.post_return_async(&mut ctx).await?;
+                    Ok(())
+                })
+            })
+            .map_err(|e| compose_err(format!("binding dep func {fname:?} into the linker: {e}")))?;
+    }
+    Ok(dep_instance)
 }
 
 /// Parse a component dependency's `+<hash>` content-address build-metadata into a [`Hash`]. Delegates
@@ -2115,14 +2251,19 @@ impl AsyncComponentReducer {
                 }
                 let mut l = self.linker.clone();
                 for (import_name, bytes) in &self.resolved_deps {
-                    if let Err(e) = compose_dep_into_linker(
+                    // ASYNC composer: on the async_support engine the sync compose_dep_into_linker's inner
+                    // `.instantiate` (and its forwarded sync `Func::call`) PANIC — use the async twin
+                    // (#2256 async dep-compose; the panic v-ah-host's live genesis E2E hit).
+                    if let Err(e) = compose_dep_into_linker_async(
                         &self.engine,
                         &mut store,
                         &mut l,
                         import_name,
                         bytes,
                         self.component_store.as_ref(),
-                    ) {
+                    )
+                    .await
+                    {
                         let kv = store.into_data().into_kv();
                         return Err((e, kv));
                     }
@@ -3180,6 +3321,59 @@ mod tests {
             heap.box_int(7).expect("box-int on the composed runtime"),
             100,
             "the composed runtime instance's heap ops are drivable via HeapHandle"
+        );
+    }
+
+    // #2256 ASYNC dep-compose regression: `compose_dep_into_linker_async` must compose a dep on an
+    // `async_support` ENGINE without panicking. Before the async twins existed, the async fold path
+    // (`AsyncComponentReducer::apply`) reused the SYNC composer, whose inner `Linker::instantiate` (and its
+    // forwarded sync `Func::call`) PANIC on an async store ("must use async instantiation" / "must use
+    // call_async") — the exact panic v-ah-host's live genesis E2E hit. This mirrors the sync
+    // `compose_returns_a_bindable_runtime_instance_for_the_heap_handle` but on an async engine + the async
+    // composer: compose the heap stub, then drive an op through the returned instance to prove it's usable.
+    #[tokio::test(flavor = "current_thread")]
+    async fn compose_dep_into_linker_async_composes_on_an_async_engine() {
+        let bytes = heap_stub_component();
+        // An async_support engine — the whole point (a sync compose would panic here).
+        let mut config = wasmtime::Config::new();
+        config.async_support(true);
+        let engine = wasmtime::Engine::new(&config).expect("async engine");
+        let mut store = wasmtime::Store::new(&engine, ());
+        let mut linker = wasmtime::component::Linker::<()>::new(&engine);
+        let runtime_instance = match compose_dep_into_linker_async(
+            &engine,
+            &mut store,
+            &mut linker,
+            "cadenza:runtime/heap",
+            &bytes,
+            None,
+        )
+        .await
+        {
+            Ok(inst) => inst,
+            Err(e) => panic!("async-compose the runtime dep: {e:?}"),
+        };
+        // The returned instance is a usable runtime: drive one of its heap ops (box-int → stub sentinel 100)
+        // via a plain async call, proving instantiate_async produced a live, callable instance.
+        use wasmtime::component::Val;
+        let idx = runtime_instance
+            .get_export_index(&mut store, None, "cadenza:runtime/heap")
+            .expect("heap iface export");
+        let op_idx = runtime_instance
+            .get_export_index(&mut store, Some(&idx), "box-int")
+            .expect("box-int export");
+        let box_int = runtime_instance
+            .get_func(&mut store, op_idx)
+            .expect("box-int func");
+        let mut results = [Val::U32(0)];
+        box_int
+            .call_async(&mut store, &[Val::S64(7)], &mut results)
+            .await
+            .expect("call box-int on the async-composed runtime");
+        assert_eq!(
+            results[0],
+            Val::U32(100),
+            "the async-composed runtime instance's heap ops are drivable"
         );
     }
 
