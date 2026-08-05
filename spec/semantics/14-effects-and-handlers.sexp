@@ -3193,6 +3193,35 @@
                 (Qty.value (Env.width)))) (export main)))
   (output (: 5 Int64)))
 
+(case "a unit MISMATCH in the resume value is rejected — the arm cannot resume a different unit"
+  (doc    "The NEGATIVE twin of the Qty-result pin above: the op declares `(Qty Int64 meter)` but the arm
+           resumes a SECOND-typed quantity → CDZ0201. The compile-time unit discipline (units-of-measure's
+           no-solver contract) must hold through the resume crossing — a marshalling path that erased the
+           unit to a raw scalar at the boundary would let the wrong dimension through silently. The reject
+           is at the RESULT position (0201), the resume-side twin of the arg-side reject below.")
+  (input  (do
+            (effect St (op read (-> Unit (Qty Int64 (Unit.base #"meter")))))
+            (def (main (: n Int64))
+              (handle St n
+                ((read (u) s (resume (Qty.of n (Unit.base #"second")) s)))
+                (Qty.value (St.read))))
+            (export main)))
+  (error  CDZ0201))
+
+(case "a unit MISMATCH in the op argument is rejected — the program cannot perform with a different unit"
+  (doc    "The op-ARG direction of the unit-safety pair: the op takes `(Qty Int64 meter)` but the program
+           performs with a SECOND-typed quantity → CDZ0203 (the ARGUMENT-position code, vs the resume-side
+           0201 above — the same result-vs-arg code split as ordinary typing). Neither effect-boundary
+           direction erases units: the dimension is part of the op's contract both ways.")
+  (input  (do
+            (effect St (op put (-> (Qty Int64 (Unit.base #"meter")) Int64)))
+            (def (main (: n Int64))
+              (handle St 0
+                ((put (q) s (resume (Qty.value q) s)))
+                (St.put (Qty.of n (Unit.base #"second")))))
+            (export main)))
+  (error  CDZ0203))
+
 (case "a narrow-width overflow in a handler arm resume value under a narrow annotation is rejected"
   (doc    "The EFFECTS face of the width fit-check: the whole `handle` sits under a `UInt8` annotation, so
            the narrow width must propagate through the handle's result — the op's resume site — into the
