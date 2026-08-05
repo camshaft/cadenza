@@ -43,7 +43,7 @@
 //!   live path is still `wasm_host`'s WIT-structural `bindgen!` fold.apply. Sorted-field records + sums.
 //! - [`heap_unmarshal`] — the READ dual of [`heap_marshal`], same option-C handle-lowered MODE (§19e): WHEN
 //!   a reducer is invoked via the handle-ABI, projects its returned `list<effect-request>` value-heap handle
-//!   back into `Vec<`[`wasm_host::EffectRequest`]`>` (the WIT-boundary type, not the kernel's
+//!   back into a `Vec` of [`wasm_host::EffectRequest`] (the WIT-boundary type, not the kernel's
 //!   [`effect::EffectRequest`]) via [`wasm_host::HeapHandle`]'s read ops. Also staged ahead of wiring.
 //!   The `kind` enum-disc field boxes like an int (→ `get-int`), NOT a sum handle (v-rust-backend
 //!   authoritative); sorted-field records + `Some=0`/`None=1` option decode.

@@ -3,8 +3,8 @@
 //!
 //! In the option-C handle-lowered MODE, a Cadenza reducer's `fold.apply` returns its `list<effect-request>`
 //! as a single `u32` handle into the shared `cadenza:runtime/heap` value-heap (the spec's handle exchange).
-//! WHEN a reducer is invoked that way, the host projects that handle back into a
-//! `Vec<`[`wasm_host::EffectRequest`](crate::wasm_host::EffectRequest)`>` — the WIT-generated
+//! WHEN a reducer is invoked that way, the host projects that handle back into
+//! a `Vec` of [`wasm_host::EffectRequest`](crate::wasm_host::EffectRequest) — the WIT-generated
 //! component-boundary type, NOT the kernel's public [`crate::effect::EffectRequest`] (the two are distinct;
 //! the fold path converts the boundary type to the kernel struct, as `ComponentReducer` already does for
 //! the WIT-structural path). This module is that read-direction bridge, driving
@@ -38,6 +38,15 @@ use crate::wasm_host::{ComponentError, EffectKind, EffectRequest, HeapHandle};
 /// (separately-queued) build module.
 const OPTION_SOME: i64 = 0;
 const OPTION_NONE: i64 = 1;
+
+/// Cap on the effect-list length we PRE-RESERVE for (reviewer, #2166 read-side DoS). `vec-len` returns a
+/// raw unbounded `u32` reported BY the (untrusted) reducer's returned handle — a bogus large value (up to
+/// `u32::MAX`) fed straight into `Vec::with_capacity` reserves hundreds of GB UP FRONT and aborts the host
+/// via the alloc-error handler, BEFORE the per-element loop can fail-loud on the missing elements. Reserving
+/// at most this many keeps the fast path for realistic effect counts while a bogus length just grows the
+/// Vec with amortized reallocations and then Traps CHEAPLY on the first missing `vec-get`. A real fold emits a handful of
+/// effects; 4096 is far above any legitimate turn. (Read-side analog of the #2151 write-side length guard.)
+const MAX_PREALLOC_EFFECTS: u32 = 4096;
 
 /// The effect-request record's SORTED-field-name indices: `{correlation, kind, payload, target}` sorted
 /// alphabetically. Naming them keeps the field↔index mapping in one auditable place (a silent off-by-one
@@ -113,8 +122,8 @@ fn read_effect_request<T>(
     })
 }
 
-/// Project a reducer's returned `list<effect-request>` value-heap handle into a
-/// `Vec<`[`EffectRequest`]`>` — the WIT-generated [`wasm_host::EffectRequest`](crate::wasm_host::EffectRequest)
+/// Project a reducer's returned `list<effect-request>` value-heap handle into
+/// a `Vec` of [`wasm_host::EffectRequest`](crate::wasm_host::EffectRequest) — the WIT-generated
 /// component-boundary type (NOT the kernel's [`crate::effect::EffectRequest`]; the fold path converts).
 /// Walks the vec (`vec-len` + `vec-get(i)`) and reads each element record — the whole read-direction output
 /// of the fold-boundary rebind, ready for the drive loop to authorize + dispatch.
@@ -123,7 +132,10 @@ pub fn read_effect_requests<T>(
     list: u32,
 ) -> Result<Vec<EffectRequest>, ComponentError> {
     let len = heap.vec_len(list)?;
-    let mut out = Vec::with_capacity(len as usize);
+    // Reserve for at most MAX_PREALLOC_EFFECTS — `len` is an unbounded guest-reported u32, so a bogus large
+    // value must NOT drive an eager multi-GB reservation (alloc-abort DoS, #2166 read-side). A truthful
+    // large len just grows the Vec with amortized reallocations; a bogus one Traps on the first missing `vec-get` below.
+    let mut out = Vec::with_capacity(len.min(MAX_PREALLOC_EFFECTS) as usize);
     for i in 0..len {
         let record = heap.vec_get(list, i)?;
         out.push(read_effect_request(heap, record)?);
@@ -198,7 +210,12 @@ mod tests {
                    ;; @220 bytes "id7": [len=3]"id7"
                    (data (i32.const 220) "\03\00\00\00id7")
                    ;; @240 payload = None: [disc=1][payload ignored=0]
-                   (data (i32.const 240) "\01\00\00\00\00\00\00\00"))
+                   (data (i32.const 240) "\01\00\00\00\00\00\00\00")
+                   ;; @300 a BOGUS vec: header reports len=0xFFFFFFFF but there are NO element slots. The
+                   ;; DoS-guard test hands this handle to read_effect_requests: with the MAX_PREALLOC cap the
+                   ;; host does NOT eager-reserve ~4G*sizeof — it reserves the cap, then vec-get walks past
+                   ;; the single-page memory and TRAPS (clean Err), never an alloc-abort.
+                   (data (i32.const 300) "\ff\ff\ff\ff"))
                  (core instance $i (instantiate $m))
                  (func $box-int (param "v" s64) (result u32) (canon lift (core func $i "box-int")))
                  (func $arr-alloc (param "len" u32) (result u32) (canon lift (core func $i "arr-alloc")))
@@ -289,6 +306,22 @@ mod tests {
         match disc_to_effect_kind(6) {
             Err(ComponentError::Trap(msg)) => assert!(msg.contains("out of range")),
             other => panic!("disc 6 must be a hard Trap, got {other:?}"),
+        }
+    }
+
+    // DoS guard (reviewer, #2166 read-side): a reducer-returned list handle whose vec-len reports a bogus
+    // huge length (0xFFFFFFFF) with no real element slots must NOT abort the host via an eager multi-GB
+    // Vec::with_capacity — the cap bounds the reservation, then vec-get walks past memory and Traps cleanly.
+    // The test PASSING (returns, doesn't abort/OOM the process) is itself the proof the cap works.
+    #[test]
+    fn a_bogus_huge_vec_len_traps_cleanly_not_an_alloc_abort() {
+        let mut heap = bind_read_stub();
+        match read_effect_requests(&mut heap, 300) {
+            Err(_) => {} // clean fail-loud (a vec-get memory Trap), NOT a process abort
+            Ok(v) => panic!(
+                "a bogus u32::MAX vec-len must not read as a real {}-element list",
+                v.len()
+            ),
         }
     }
 }
