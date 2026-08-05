@@ -26,6 +26,11 @@ concurrency:
   group: cache-warm
   cancel-in-progress: false
 
+# Least-privilege, matching ci.yml/pages: this job only READS the repo + reads/writes the GHA cache (the
+# cache API works under contents:read — the actions: scope gates workflow-RUN management, not cache r/w).
+permissions:
+  contents: read
+
 env:
   CARGO_INCREMENTAL: "0"
   CARGO_NET_RETRY: "10"
