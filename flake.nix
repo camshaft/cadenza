@@ -839,6 +839,17 @@
             # authz + ComponentSessionFactory e2es RUN instead of skipping.
             export CEDAR_POLICY_COMPONENT="${cedarGuest}"
             export CDZ_REDUCER_COMPONENT="${reducerGuest}"
+            # seq-144 genesis tail: feed the compiled GENESIS Cadenza reducer component + the value-heap store
+            # so v-ah-host's genesis round-trip E2E (host.rs real_genesis_reducer_folds_setup_events…,
+            # skip-on-unset) RUNS instead of skipping. It drives the real reducer_genesis through the full async
+            # fold path, which now (kernel #2285 drive + #2290 kv-serving + #2298 fold→apply_handle_lowered
+            # routing, all on trunk) carries the guest's Kv.put through to session KV — so it asserts each setup
+            # payload lands under its genesis_ct KV key. The genesis reducer imports the value-heap runtime +
+            # transitive nfc, resolved by hash/name from CDZ_STORE (my hash-keyed componentStore ROOT DIR:
+            # <sha256hex>.wasm blobs + runtime.toml), same resolution as the b1/b2 kernel e2es. Distinct var from
+            # CDZ_REDUCER_COMPONENT (the Rust reducerGuest above); both set — the genesis test keys on GENESIS_REDUCER_COMPONENT.
+            export GENESIS_REDUCER_COMPONENT="${reducerCadenzaGenesis}"
+            export CDZ_STORE="${componentStore}"
             cargo test --locked
             cargo clippy --all-targets --locked -- -D warnings
             cargo fmt --check
