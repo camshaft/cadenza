@@ -943,7 +943,7 @@ fn map_take_type_lambda(ast: &mut Arenas) -> StructId {
 /// `Bytes` in type position is `Ty::Bytes`) AND a field per byte-sequence OPERATION (reached by member
 /// access `(. Bytes of)`). Unlike `List`, `Bytes` is NOT a type constructor (it is a non-parametric
 /// leaf), so its operations are MONOMORPHIC — each `(meta t)` is a plain arrow type, not a `(fn (a) …)`
-/// type-lambda. This increment realizes `of : (List Int64) → Bytes` and `len : Bytes → Int64`; concat/
+/// type-lambda. This increment realizes `of : (List (UInt 8)) → Bytes` and `len : Bytes → Int64`; concat/
 /// at/slice/compact arrive in later increments (a projected-but-unrealized field DECLINES, the closed-
 /// module rule every prelude module follows).
 fn bytes_module(ast: &mut Arenas) -> StructId {
@@ -953,7 +953,7 @@ fn bytes_module(ast: &mut Arenas) -> StructId {
     let ty_val = intrinsic_node(ast, "bytes-ty");
     let t_field = meta_field(ast, "t", ty_val);
     // One field per realized operation — each an operator record `(name <op-record>)` whose `(meta t)`
-    // is a monomorphic arrow type. `of : (List Int64) → Bytes`; `len : Bytes → Int64`; `at : Bytes →
+    // is a monomorphic arrow type. `of : (List (UInt 8)) → Bytes`; `len : Bytes → Int64`; `at : Bytes →
     // Int64 → (Option Int64)` (the FALLIBLE indexed byte read — the byte companion of `List.at`).
     let of_type = bytes_of_type(ast);
     let len_type = bytes_len_type(ast);
