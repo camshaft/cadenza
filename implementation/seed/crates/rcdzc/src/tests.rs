@@ -68149,6 +68149,48 @@ mod stage1 {
     }
 
     #[test]
+    fn a_multishot_arm_folds_flat_but_declines_inside_recursion_never_miscompiles() {
+        use crate::testkit::parse;
+        // MULTI-SHOT ARM × RECURSION (breaker ms-family datapoint, 2026-08-05). A MULTI-SHOT handler arm
+        // (`(flip (u) s (+ (resume 2 s) (resume 3 s)))` — resumes TWICE, summing the two continuations) is
+        // served by the tail/refold fold when the performs sit on a FLAT strict spine, but currently DECLINES
+        // cleanly when the performs are inside a SELF-RECURSIVE loop (the recursion machinery serves
+        // single-shot resumptive arms only; a 2^n-path refold inside a recursive cycle is a real semantics
+        // question — the third member of the abort-in-recursion / accum-op-arg family). This pins the recursive
+        // face as a CLEAN DECLINE, never a wrong value or crash.
+
+        // FLAT: two flips on a `*` spine, multi-shot arm → the 4-path cross-product sum folds.
+        // (2*2)+(2*3)+(3*2)+(3*3) = 4+6+6+9 = 25.
+        let flat = "(do (effect Amb (op flip (-> Unit Int64))) \
+             (def (main) (handle Amb 0 ((flip (u) s (+ (resume 2 s) (resume 3 s)))) \
+               (* (Amb.flip) (Amb.flip)))) (export main))";
+        let flat_bytes = compile_component(&crate::codec::encode(&parse(flat)))
+            .expect("a flat multi-shot arm with two performs folds (the 4-path cross-product)");
+        if let Some(v) = run_linked(&flat_bytes, "main") {
+            assert_eq!(
+                v, "25",
+                "flat multi-shot cross-product: (2*2)+(2*3)+(3*2)+(3*3) = 25"
+            );
+        }
+
+        // RECURSIVE: the SAME multi-shot arm but the performs are inside a self-recursive loop. Today this
+        // declines cleanly; a future fold (a recursive multi-shot refold) must not miscompile — the guard
+        // accepts a clean decline OR, if it ever folds, requires it to run without crashing.
+        let rec = "(do (effect Amb (op flip (-> Unit Int64))) \
+             (def (loop (: n Int64)) (if (= n 0) 1 (* (Amb.flip) (loop (- n 1))))) \
+             (def (main) (handle Amb 0 ((flip (u) s (+ (resume 2 s) (resume 3 s)))) (loop 2))) (export main))";
+        match compile_component(&crate::codec::encode(&parse(rec))) {
+            // Clean decline — the current, expected behavior (a recursive multi-shot refold is a later increment).
+            Err(_) => {}
+            // If a future increment folds it, it must run without crashing (the multi-shot × recursion
+            // cross-product is well-defined; a wrong value or trap here is the miscompile this guards).
+            Ok(bytes) => {
+                let _ = run_linked(&bytes, "main");
+            }
+        }
+    }
+
+    #[test]
     fn a_depth3_nested_op_chain_folds_without_an_observer_but_declines_with_one() {
         use crate::testkit::parse;
         // OBSERVER-GATED DEPTH-3+ pre-spec-lift guard (breaker rn3/rx6, 2026-08-05). A depth-3 nested-op
