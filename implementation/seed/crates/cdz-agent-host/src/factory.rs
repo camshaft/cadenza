@@ -309,6 +309,59 @@ where
         self.log_sink = Some(log_sink);
         self
     }
+
+    /// Complete the genesis ceremony's AUTHORIZER step: resolve the authorizer-component hash the genesis
+    /// reducer recorded at [`KV_AUTHORIZER_HASH`](crate::genesis_ct::KV_AUTHORIZER_HASH) and LIVE-INSTALL the
+    /// real authorizer on `session`. This is the host side of §20b install-authorizer-by-hash: after
+    /// [`HostedSession::seed_genesis`](crate::HostedSession::seed_genesis) folds `genesis/authorizer` into KV,
+    /// the host (which holds the blob store — [`HostedSession`] stays blob-store-free) calls this to turn the
+    /// recorded POINTER into an installed policy.
+    ///
+    /// Steps: read the raw 32-byte hash from the session's KV (the reducer stored the event payload verbatim,
+    /// so the bytes are exactly what the host put in the `genesis/authorizer` event) → [`BlobStore::get`] the
+    /// policy component by that hash → [`reload_policy_from_component_bytes`](crate::HostedSession::reload_policy_from_component_bytes)
+    /// to lift + install it (which also pushes a `capabilities-changed` to the now-authorized agent).
+    ///
+    /// Returns `Ok(true)` when an authorizer was installed, `Ok(false)` when the session recorded NO
+    /// authorizer-hash (a root-only genesis — nothing to install, the deny-all v0 authorizer stays). `Err` on a
+    /// malformed hash (not 32 bytes), a blob-store miss/error (the recorded component isn't in the store), or a
+    /// policy that doesn't lift — each a clean error the caller surfaces, never a panic. `principal` is the
+    /// agent's authz principal, the same value the session's authorizer is built with.
+    pub async fn install_genesis_authorizer(
+        &self,
+        session: &mut HostedSession,
+        principal: impl Into<String>,
+    ) -> Result<bool, String> {
+        // Read the recorded hash bytes out of the session KV, copying them so the KV borrow ends before the
+        // &mut-session reload call below.
+        let hash_bytes: Vec<u8> = match session
+            .session()
+            .kv()
+            .get(crate::genesis_ct::KV_AUTHORIZER_HASH)
+        {
+            Some(b) => b.to_vec(),
+            None => return Ok(false), // root-only genesis: no authorizer to install
+        };
+        let arr: [u8; 32] = hash_bytes.as_slice().try_into().map_err(|_| {
+            format!(
+                "genesis authorizer-hash is {} bytes, expected a raw 32-byte content hash",
+                hash_bytes.len()
+            )
+        })?;
+        let hash = cdz_kernel::hash::Hash::from_bytes(arr);
+        let bytes = self
+            .blob
+            .get(&hash)
+            .await
+            .map_err(|e| format!("blob store error fetching genesis authorizer {hash}: {e}"))?
+            .ok_or_else(|| {
+                format!("no authorizer policy component in the blob store for genesis hash {hash}")
+            })?;
+        session
+            .reload_policy_from_component_bytes(&bytes, principal)
+            .await?;
+        Ok(true)
+    }
 }
 
 #[async_trait::async_trait(?Send)]
@@ -689,6 +742,109 @@ mod tests {
         assert!(
             registry.try_take_current_metrics_line().is_some(),
             "the shared registry reports over both families' recorded effects"
+        );
+    }
+
+    // ─── install_genesis_authorizer (the genesis-completion glue) ───────────────────────────────────────
+
+    use crate::genesis_ct;
+    use crate::host::HostedSession;
+    use cdz_kernel::event::{Event, EventBody};
+    use cdz_kernel::kv::Kv;
+    use cdz_kernel::reducer::{FoldOutput, Reducer};
+
+    /// A stand-in genesis reducer (mirrors reducer_genesis.cdz): folds each genesis-setup family's payload
+    /// VERBATIM into its contracted KV key.
+    struct GenesisRecordingReducer;
+    #[async_trait::async_trait(?Send)]
+    impl Reducer for GenesisRecordingReducer {
+        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+            if let EventBody::Inbound {
+                content_type,
+                payload: cdz_kernel::effect::Payload::Inline(bytes),
+            } = &event.body
+            {
+                let key: Option<&[u8]> = match content_type.family.as_ref() {
+                    genesis_ct::ROOT => Some(genesis_ct::KV_ROOT_IDENTITY),
+                    genesis_ct::AUTHORIZER => Some(genesis_ct::KV_AUTHORIZER_HASH),
+                    genesis_ct::CONTEXT => Some(genesis_ct::KV_CONTEXT),
+                    _ => None,
+                };
+                if let Some(k) = key {
+                    kv.put(k.to_vec(), bytes.to_vec());
+                }
+            }
+            FoldOutput::none()
+        }
+    }
+
+    fn genesis_session() -> HostedSession {
+        HostedSession::genesis(
+            Hash::of(b"genesis-reducer-v1"),
+            Box::new(GenesisRecordingReducer),
+            Box::new(Authorizer::deny_all()),
+            hermetic_executors(),
+        )
+    }
+
+    #[tokio::test]
+    async fn install_genesis_authorizer_root_only_is_ok_false() {
+        // A root-only genesis records no authorizer-hash → install is a clean Ok(false) (nothing to install,
+        // the deny-all authorizer stays), NOT an error.
+        let factory =
+            ComponentSessionFactory::new(MemBlobStore::new(), hermetic_executors, deny_all_authz);
+        let mut session = genesis_session();
+        session
+            .seed_genesis(b"just-root", None, None)
+            .await
+            .expect("seed ok");
+        let installed = factory
+            .install_genesis_authorizer(&mut session, "agent://x")
+            .await
+            .expect("root-only is a clean Ok");
+        assert!(
+            !installed,
+            "no authorizer-hash recorded → nothing installed"
+        );
+    }
+
+    #[tokio::test]
+    async fn install_genesis_authorizer_bad_length_hash_is_a_clean_err() {
+        // A recorded authorizer-hash that isn't 32 bytes is a clean Err (not a panic) — the raw-32 contract is
+        // enforced at resolve.
+        let factory =
+            ComponentSessionFactory::new(MemBlobStore::new(), hermetic_executors, deny_all_authz);
+        let mut session = genesis_session();
+        session
+            .seed_genesis(b"root", Some(b"too-short"), None)
+            .await
+            .expect("seed ok");
+        let err = factory
+            .install_genesis_authorizer(&mut session, "agent://x")
+            .await
+            .expect_err("a non-32-byte hash is rejected");
+        assert!(err.contains("32-byte"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn install_genesis_authorizer_absent_blob_is_a_clean_err() {
+        // A valid 32-byte hash that isn't in the blob store → clean Err (the recorded component is missing),
+        // no panic. Uses a well-formed 32-byte hash for a component never put into the store.
+        let factory =
+            ComponentSessionFactory::new(MemBlobStore::new(), hermetic_executors, deny_all_authz);
+        let mut session = genesis_session();
+        let missing = Hash::of(b"a-policy-component-never-stored");
+        session
+            .seed_genesis(b"root", Some(missing.as_bytes()), None)
+            .await
+            .expect("seed ok");
+        let err = factory
+            .install_genesis_authorizer(&mut session, "agent://x")
+            .await
+            .expect_err("a hash absent from the blob store is an error");
+        assert!(
+            err.contains("no authorizer policy component in the blob store"),
+            "{err}"
         );
     }
 }
