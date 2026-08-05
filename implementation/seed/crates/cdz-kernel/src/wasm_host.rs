@@ -1510,7 +1510,8 @@ impl ComponentReducer {
         let mut runtime_instance: Option<wasmtime::component::Instance> = None;
         for (import_name, bytes) in &self.resolved_deps {
             let inst =
-                match compose_dep_into_linker(&self.engine, &mut store, &mut l, import_name, bytes) {
+                match compose_dep_into_linker(&self.engine, &mut store, &mut l, import_name, bytes)
+                {
                     Ok(inst) => inst,
                     Err(e) => {
                         let kv = store.into_data().into_kv();
@@ -1531,9 +1532,10 @@ impl ComponentReducer {
                     return Err((
                         ComponentError::Compose {
                             import_name: import_name.clone(),
-                            reason: "reducer resolved MORE THAN ONE cadenza:runtime/heap dep — the \
+                            reason:
+                                "reducer resolved MORE THAN ONE cadenza:runtime/heap dep — the \
                                      handle-lowered boundary marshals on exactly one shared runtime"
-                                .to_string(),
+                                    .to_string(),
                         },
                         kv,
                     ));
@@ -2728,7 +2730,9 @@ mod tests {
         let runtime_instance =
             match compose_dep_into_linker(&engine, &mut store, &mut linker, import_name, &bytes) {
                 Ok(inst) => inst,
-                Err(e) => panic!("compose must match the bare export against the versioned import: {e:?}"),
+                Err(e) => {
+                    panic!("compose must match the bare export against the versioned import: {e:?}")
+                }
             };
         let mut heap = match HeapHandle::bind(store, &runtime_instance) {
             Ok(h) => h,
