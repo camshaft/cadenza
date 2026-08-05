@@ -43,6 +43,16 @@ pub mod genesis_ct {
     pub const CONTEXT: &str = "genesis/context";
     /// The content-type version stamped on genesis-setup events (v1 of the bootstrap contract).
     pub const VERSION: u32 = 1;
+
+    /// The well-known session-KV KEYS the genesis reducer folds each setup family's payload into (the reducer
+    /// stores the event payload VERBATIM — v-harness-bootstrap confirmed, so the byte-form is the host's choice
+    /// on both write and read). The host's genesis-completion glue reads these to resolve the recorded pointers.
+    pub const KV_ROOT_IDENTITY: &[u8] = b"bootstrap/root-identity";
+    /// KV key holding the authorizer component's content hash (raw 32 bytes) — the host resolves this to the
+    /// policy component + installs the real authorizer.
+    pub const KV_AUTHORIZER_HASH: &[u8] = b"bootstrap/authorizer-hash";
+    /// KV key holding the free-form bootstrap context blob.
+    pub const KV_CONTEXT: &[u8] = b"bootstrap/context";
 }
 
 /// A session's identity in the host registry. A short opaque string the operator/driver assigns (e.g.
@@ -808,9 +818,9 @@ mod tests {
             } = &event.body
             {
                 let key = match content_type.family.as_ref() {
-                    genesis_ct::ROOT => Some(b"bootstrap/root-identity".to_vec()),
-                    genesis_ct::AUTHORIZER => Some(b"bootstrap/authorizer-hash".to_vec()),
-                    genesis_ct::CONTEXT => Some(b"bootstrap/context".to_vec()),
+                    genesis_ct::ROOT => Some(genesis_ct::KV_ROOT_IDENTITY.to_vec()),
+                    genesis_ct::AUTHORIZER => Some(genesis_ct::KV_AUTHORIZER_HASH.to_vec()),
+                    genesis_ct::CONTEXT => Some(genesis_ct::KV_CONTEXT.to_vec()),
                     _ => None,
                 };
                 if let Some(k) = key {
