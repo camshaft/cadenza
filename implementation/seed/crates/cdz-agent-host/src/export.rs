@@ -184,6 +184,185 @@ pub async fn run_export_loop(
     }
 }
 
+// ─── OTLP backend (feature `metrics-export-otlp`) ──────────────────────────────────────────────────────
+//
+// OTLP is a PUSH backend like statsd, but its payload is an OTLP protobuf `ExportMetricsServiceRequest` that
+// must be sent over HTTP — and the crate's `OtlpSink::send(&[u8])` is SYNCHRONOUS, called inside
+// `Backend::report_end`, which runs inside the SYNC `MetricsReporter::report`. So the sink CANNOT block or
+// `.await` on the report path. The shape (concierge-approved): the sink's `send` does a NON-BLOCKING push of
+// the payload onto a BOUNDED channel and returns immediately; a separate async FORWARDER task drains the
+// channel and does the HTTP POST off the report path. Backpressure / a failed POST is DROP + log — telemetry
+// is best-effort and must never block or crash the agent host (guard 2).
+
+/// One resolved OTLP export target. OWNED so the reporter/forwarder hold it for the daemon's lifetime.
+#[cfg(feature = "metrics-export-otlp")]
+#[derive(Debug, Clone)]
+pub struct OtlpTarget {
+    /// The OTLP collector base endpoint; the forwarder POSTs to `{endpoint}/v1/metrics`.
+    pub endpoint: String,
+    /// OTLP `InstrumentationScope` name embedded in every payload (falls back to the crate name if empty).
+    pub scope_name: Option<String>,
+    /// OTLP `InstrumentationScope` version (falls back to empty if unset).
+    pub scope_version: Option<String>,
+}
+
+/// The bound on the OTLP hand-off channel. Small: a report every `report_interval_secs` produces one payload,
+/// so a healthy forwarder keeps this near-empty; the bound only matters when the collector is down/slow, and
+/// then we WANT to drop (best-effort) rather than grow unbounded. Holds a few intervals of slack.
+#[cfg(feature = "metrics-export-otlp")]
+const OTLP_CHANNEL_BOUND: usize = 8;
+
+/// A synchronous [`OtlpSink`](s2n_quic_dc_metrics::backend::OtlpSink) that hands each protobuf payload off to
+/// the async forwarder over a BOUNDED channel WITHOUT blocking. `send` runs inside the sync report cycle, so
+/// it must return immediately: it `try_send`s and, if the channel is full (the collector is backpressured) or
+/// closed (forwarder gone), DROPS the payload + logs — never blocks, never panics (guard 2).
+#[cfg(feature = "metrics-export-otlp")]
+pub struct ChannelOtlpSink {
+    tx: tokio::sync::mpsc::Sender<Vec<u8>>,
+}
+
+#[cfg(feature = "metrics-export-otlp")]
+impl s2n_quic_dc_metrics::backend::OtlpSink for ChannelOtlpSink {
+    fn send(&mut self, payload: &[u8]) {
+        // Non-blocking hand-off. `try_send` never awaits; on Full/Closed we drop + log (best-effort telemetry
+        // must not stall the report cycle waiting on a slow/down collector).
+        match self.tx.try_send(payload.to_vec()) {
+            Ok(()) => {}
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                tracing::warn!(
+                    "metrics-export otlp: forwarder channel full — dropping this report's payload"
+                );
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                tracing::debug!("metrics-export otlp: forwarder gone — dropping payload");
+            }
+        }
+    }
+}
+
+/// An [`OtlpBackend`](s2n_quic_dc_metrics::backend::OtlpBackend) wrapper that stamps the per-report wall-clock
+/// timestamps OTLP data points need (`start_time_unix_nano`/`time_unix_nano`). The inner backend's timestamp
+/// setters aren't reachable once it's boxed as `dyn Backend` in the reporter, so this wrapper sets them in
+/// [`report_start`](s2n_quic_dc_metrics::backend::Backend::report_start) — the per-report hook — before
+/// delegating every trait method to the inner backend. `start` is the previous report's end (process start for
+/// the first), `time` is now; both Unix nanoseconds (statsd needed no timestamps — this is OTLP-specific).
+#[cfg(feature = "metrics-export-otlp")]
+struct TimestampedOtlpBackend {
+    inner: s2n_quic_dc_metrics::backend::OtlpBackend<ChannelOtlpSink>,
+    /// End of the PREVIOUS report interval (Unix ns) → the next report's start. 0 until the first report.
+    last_report_ns: u64,
+}
+
+#[cfg(feature = "metrics-export-otlp")]
+impl TimestampedOtlpBackend {
+    fn now_unix_ns() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX))
+            .unwrap_or(0)
+    }
+}
+
+#[cfg(feature = "metrics-export-otlp")]
+impl s2n_quic_dc_metrics::backend::Backend for TimestampedOtlpBackend {
+    fn report_start(&mut self, options: &s2n_quic_dc_metrics::backend::ReportOptions) {
+        let now = Self::now_unix_ns();
+        // First report: start == now (a zero-length interval) so we never emit a start after the end.
+        let start = if self.last_report_ns == 0 {
+            now
+        } else {
+            self.last_report_ns
+        };
+        self.inner.set_start_time_ns(start);
+        self.inner.set_time_ns(now);
+        self.last_report_ns = now;
+        self.inner.report_start(options);
+    }
+    fn record_counter(&mut self, info: &s2n_quic_dc_metrics::backend::MetricInfo<'_>, value: u64) {
+        self.inner.record_counter(info, value);
+    }
+    fn record_gauge(&mut self, info: &s2n_quic_dc_metrics::backend::MetricInfo<'_>, value: i64) {
+        self.inner.record_gauge(info, value);
+    }
+    fn record_bool(
+        &mut self,
+        info: &s2n_quic_dc_metrics::backend::MetricInfo<'_>,
+        true_count: u64,
+        false_count: u64,
+    ) {
+        self.inner.record_bool(info, true_count, false_count);
+    }
+    fn record_histogram(
+        &mut self,
+        info: &s2n_quic_dc_metrics::backend::MetricInfo<'_>,
+        hist: s2n_quic_dc_metrics::backend::Histogram<'_>,
+    ) {
+        self.inner.record_histogram(info, hist);
+    }
+    fn record_callback(
+        &mut self,
+        info: &s2n_quic_dc_metrics::backend::MetricInfo<'_>,
+        values: &[&dyn s2n_quic_dc_metrics::backend::CallbackValue],
+    ) {
+        self.inner.record_callback(info, values);
+    }
+    fn report_end(&mut self) {
+        self.inner.report_end();
+    }
+}
+
+/// The async OTLP forwarder: drains the bounded channel and POSTs each protobuf payload to `endpoint`'s
+/// `/v1/metrics` as `application/x-protobuf`. A failed/timed-out POST is DROPPED + logged (best-effort). Runs
+/// until the channel closes (all sinks dropped, i.e. the reporter is gone at daemon shutdown). Spawned by the
+/// daemon alongside the export loop.
+#[cfg(feature = "metrics-export-otlp")]
+pub async fn run_otlp_forwarder(endpoint: String, mut rx: tokio::sync::mpsc::Receiver<Vec<u8>>) {
+    let url = format!("{}/v1/metrics", endpoint.trim_end_matches('/'));
+    let client = reqwest::Client::new();
+    while let Some(payload) = rx.recv().await {
+        let resp = client
+            .post(&url)
+            .header("content-type", "application/x-protobuf")
+            .body(payload)
+            .send()
+            .await;
+        match resp {
+            Ok(r) if r.status().is_success() => {}
+            Ok(r) => {
+                tracing::warn!(status = %r.status(), url = %url, "metrics-export otlp: POST rejected — dropping")
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, url = %url, "metrics-export otlp: POST failed — dropping")
+            }
+        }
+    }
+    tracing::debug!(url = %url, "metrics-export otlp: forwarder shut down (channel closed)");
+}
+
+#[cfg(feature = "metrics-export-otlp")]
+impl MetricsReporter {
+    /// Register an OTLP backend into the reporter and return the channel receiver the daemon hands to
+    /// [`run_otlp_forwarder`]. The backend's sink pushes each report's protobuf payload onto a bounded channel
+    /// (non-blocking); the forwarder POSTs them. One call per OTLP target (each gets its own channel +
+    /// forwarder task, so a slow collector on one target can't backpressure another).
+    pub fn push_otlp(&mut self, target: &OtlpTarget) -> tokio::sync::mpsc::Receiver<Vec<u8>> {
+        use s2n_quic_dc_metrics::backend::OtlpBackend;
+        let (tx, rx) = tokio::sync::mpsc::channel(OTLP_CHANNEL_BOUND);
+        let sink = ChannelOtlpSink { tx };
+        let scope_name = target
+            .scope_name
+            .clone()
+            .unwrap_or_else(|| "cdz-agent-host".to_string());
+        let scope_version = target.scope_version.clone().unwrap_or_default();
+        let inner = OtlpBackend::new(sink, scope_name, scope_version);
+        self.backends.push(Box::new(TimestampedOtlpBackend {
+            inner,
+            last_report_ns: 0,
+        }));
+        rx
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -451,5 +630,80 @@ mod tests {
         // at export setup.
         let err = UdpStatsdSink::connect("not a socket addr").unwrap_err();
         assert!(err.contains("statsd sink"), "{err}");
+    }
+
+    #[cfg(feature = "metrics-export-otlp")]
+    mod otlp {
+        use super::*;
+        use s2n_quic_dc_metrics::backend::OtlpSink;
+
+        #[test]
+        fn otlp_sink_send_is_nonblocking_and_drops_when_channel_full() {
+            // Guard 2: the sink's send runs inside the sync report cycle, so it must NEVER block. Build a
+            // sink over a tiny channel, DON'T drain it, and push more than the bound — every send must return
+            // immediately (dropping on full), never block or panic. (A blocking send here would hang the test
+            // + prove the report cycle could stall on a slow collector.)
+            let (tx, _rx) = tokio::sync::mpsc::channel::<Vec<u8>>(2);
+            let mut sink = ChannelOtlpSink { tx };
+            // Push well past the bound of 2 — all return immediately, extras dropped.
+            for _ in 0..10 {
+                sink.send(b"otlp-payload");
+            }
+            // Reaching here without hanging is the assertion (send never blocks).
+        }
+
+        #[test]
+        fn otlp_sink_send_after_receiver_dropped_is_a_clean_drop() {
+            // If the forwarder is gone (receiver dropped), send must be a clean no-op drop (Closed), not a
+            // panic — the report cycle keeps going even after the forwarder dies.
+            let (tx, rx) = tokio::sync::mpsc::channel::<Vec<u8>>(2);
+            drop(rx);
+            let mut sink = ChannelOtlpSink { tx };
+            sink.send(b"otlp-payload"); // no panic
+        }
+
+        #[tokio::test]
+        async fn otlp_backend_registers_and_a_report_enqueues_without_blocking() {
+            // Push an OTLP target into the reporter + drive a report: the report cycle must complete without
+            // blocking on the (undrained) channel, and a payload must be enqueued for the forwarder.
+            let target = OtlpTarget {
+                endpoint: "http://127.0.0.1:65001".into(),
+                scope_name: Some("cdz-test".into()),
+                scope_version: None,
+            };
+            let (mut reporter, _) = MetricsReporter::from_statsd_targets(&[]);
+            let mut rx = reporter.push_otlp(&target);
+            assert_eq!(reporter.backend_count(), 1);
+
+            let registry = Registry::new();
+            HostMetrics::new(&registry).record_turn(true);
+            reporter.report(&registry); // must not block on the undrained channel
+
+            // A protobuf payload was enqueued for the forwarder.
+            let payload = rx.try_recv();
+            assert!(
+                payload.map(|p| !p.is_empty()).unwrap_or(false),
+                "the OTLP report enqueued a non-empty payload"
+            );
+        }
+
+        #[tokio::test]
+        async fn otlp_forwarder_against_a_dead_endpoint_drops_and_terminates() {
+            // Guard 2 end-to-end: a forwarder pointed at a dead endpoint must DROP the payload (POST fails)
+            // and, when the channel closes, TERMINATE — never hang. Send one payload, close the channel, and
+            // assert the forwarder task joins (doesn't block forever on the failed POST).
+            let (tx, rx) = tokio::sync::mpsc::channel::<Vec<u8>>(2);
+            // 127.0.0.1:1 — nothing listens; the POST fails fast (conn refused), the forwarder logs + drops.
+            let handle = tokio::spawn(run_otlp_forwarder("http://127.0.0.1:1".into(), rx));
+            tx.send(b"otlp-payload".to_vec()).await.expect("enqueue");
+            drop(tx); // close the channel → forwarder drains the one payload, then returns
+                      // The forwarder must terminate (a dead endpoint doesn't wedge it). Bound the wait so a hang fails
+                      // the test rather than hanging CI.
+            let joined = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
+            assert!(
+                joined.is_ok(),
+                "forwarder terminated after the channel closed"
+            );
+        }
     }
 }

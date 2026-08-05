@@ -87,6 +87,8 @@ pub use config::{
 };
 #[cfg(feature = "metrics-export")]
 pub use export::{run_export_loop, MetricsReporter, StatsdTarget, UdpStatsdSink};
+#[cfg(feature = "metrics-export-otlp")]
+pub use export::{run_otlp_forwarder, ChannelOtlpSink, OtlpTarget};
 #[cfg(feature = "live-net")]
 pub use factory::LiveExecutorSet;
 pub use factory::{

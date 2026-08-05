@@ -52,8 +52,19 @@ admin = ["tokio/net", "tokio/io-util", "tokio/signal"]
 # the periodic EXPORT to a collector is feature-gated. The statsd sink uses std::net::UdpSocket (a blocking
 # send off the periodic timer tick — not hot-path — so no tokio `net` is needed). No extra deps: the
 # s2n-quic-dc-metrics StatsdBackend is already in the always-on dep; this feature just compiles the sink +
-# the report task. (OTLP/prometheus backends slot in behind this same feature later.)
+# the report task. The BASE feature stays DEP-FREE — the statsd path pulls nothing beyond std.
 metrics-export = []
+
+# `metrics-export-otlp` adds the OTLP export backend on top of `metrics-export`. STRICTLY opt-in + kept
+# SEPARATE from the base so the hermetic default (and a statsd-only `metrics-export` build) NEVER links the
+# HTTP tree (concierge guard 1: verify `cargo tree` on the default build shows no reqwest AND no prost). It
+# enables (a) `dep:reqwest` — the async HTTP client the OTLP forwarder POSTs protobuf payloads with (already
+# optional for `live-net`, so this is additive), and (b) `s2n-quic-dc-metrics/otel` — the metrics crate's own
+# OTLP feature (`otel = ["dep:prost"]`, OFF by default) that unlocks `backend::OtlpBackend`/`OtlpSink`. The
+# OTLP sink is a NON-blocking channel push (its `send` runs inside the sync report cycle, so it must not
+# block); a separate async forwarder task drains the bounded channel and POSTs, dropping + logging on
+# backpressure or a failed POST (guard 2: telemetry is best-effort, must never block/panic the report loop).
+metrics-export-otlp = ["metrics-export", "dep:reqwest", "s2n-quic-dc-metrics/otel"]
 
 [dependencies]
 # The kernel whose Executor/Authorize traits + effect/event types we implement. Path dep across the
