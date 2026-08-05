@@ -68205,7 +68205,7 @@ mod stage1 {
     fn a_recursive_advance_observed_by_a_same_effect_abort_arm_declines_not_miscompiles() {
         use crate::testkit::parse;
         // BREAKER sr5 (HIGH silent-miscompile, restore-safe-decline). A recursive loop of same-effect
-        // `(Acc.put)` performs advances the handler state; a LATER same-effect `(Acc.fin)` whose arm is
+        // `(Acc.put)` performs, each advancing the handler state; a LATER same-effect `(Acc.fin)` whose arm is
         // ABORTIVE (`(fin (u) s s)` — no `resume`) reads that state. The caller-observed-out-state machinery
         // (`mark_caller_observed_outstate`) threads the recursion's advance correctly to a RESUMING observer
         // (sr4 → 2), but the ABORT collapse materialized fin's arm value against the pre-recursion SEED slot,
@@ -68319,8 +68319,10 @@ mod stage1 {
             "seed 7 > 5 → the arm resumes the op arg v = read's argument 5"
         );
 
-        // TWO performs in the body, SAME branching arm. Today this declines cleanly (CDZ0101); a future
-        // fold must not miscompile. Guard: it must either decline OR, if it folds, run without crashing.
+        // TWO performs in the body, SAME branching arm. Today this declines cleanly (uncoded, or the
+        // imprecise CDZ0101 unbound-name — the not-yet-foldable multi-site-resume path currently surfaces as
+        // unbound-name; a cleaner diagnostic is a separate LOW follow-up); a future fold must not miscompile.
+        // Guard: it must either decline OR, if it folds, run without crashing.
         let two = "(do (effect Src (op read (-> Int64 Int64))) \
                    (def (main (: n Int64)) \
                      (handle Src 7 ((read (v) s (if (> s 5) (resume v s) (resume -1 s)))) \
