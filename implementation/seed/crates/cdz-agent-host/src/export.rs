@@ -426,14 +426,27 @@ impl MetricsReporter {
     }
 }
 
-/// `true` if `addr` is a loopback socket address (127.0.0.0/8 or ::1). Used to enforce the concierge posture:
-/// a no-auth scrape endpoint is only acceptable loopback-bound; a non-loopback bind is warned.
+/// `true` only if `addr` resolves to at least one address and EVERY resolved address is loopback (127.0.0.0/8
+/// or ::1). Used for the concierge posture WARN: a no-auth scrape endpoint is only appropriate loopback-bound.
+/// Checks ALL resolved addresses (not just the first) so a mixed loopback+non-loopback name is correctly
+/// treated as non-loopback — matching the config-side validation gate (#2160 review); an
+/// unresolvable/empty addr is non-loopback (fail-closed → the warning fires).
 #[cfg(feature = "metrics-export-prometheus")]
 pub fn is_loopback_bind(addr: &str) -> bool {
     use std::net::ToSocketAddrs;
-    addr.to_socket_addrs()
-        .map(|mut it| it.next().map(|a| a.ip().is_loopback()).unwrap_or(false))
-        .unwrap_or(false)
+    match addr.to_socket_addrs() {
+        Ok(mut addrs) => {
+            let mut any = false;
+            for a in &mut addrs {
+                any = true;
+                if !a.ip().is_loopback() {
+                    return false;
+                }
+            }
+            any
+        }
+        Err(_) => false,
+    }
 }
 
 /// Serve the prometheus scrape endpoint: bind `bind_addr` and answer each connection's `GET /metrics` with the
@@ -481,10 +494,22 @@ pub async fn run_prometheus_scrape_server(
                 // throughout — any read/write error just drops this connection.
                 tokio::spawn(async move {
                     let mut buf = [0u8; 1024];
-                    let n = match stream.read(&mut buf).await {
-                        Ok(0) => return, // client closed
-                        Ok(n) => n,
-                        Err(_) => return,
+                    // Bound the request read with a timeout: a scrape client sends its request line immediately,
+                    // so a connection that opens and then sends NOTHING must not leave this read().await pending
+                    // forever — that would leak the task + FD per idle/half-open connection (a slow-loris-style
+                    // resource exhaustion, reachable by any client on a non-loopback bind or a buggy local
+                    // scraper on loopback). On timeout (or read error / clean close) we just drop the connection
+                    // (#2155 review; mirrors the OTLP forwarder's outbound connect/request timeouts).
+                    let read = tokio::time::timeout(
+                        std::time::Duration::from_secs(5),
+                        stream.read(&mut buf),
+                    )
+                    .await;
+                    let n = match read {
+                        Ok(Ok(0)) => return,     // client closed
+                        Ok(Ok(n)) => n,          // got the request bytes
+                        Ok(Err(_)) => return,    // read error
+                        Err(_elapsed) => return, // idle client — drop rather than leak the task/FD
                     };
                     let req = String::from_utf8_lossy(&buf[..n]);
                     let request_line = req.lines().next().unwrap_or("");
@@ -994,6 +1019,51 @@ mod tests {
             });
             let err = run_prometheus_scrape_server("not-a-bind-addr".into(), handle, rx).await;
             assert!(err.is_err(), "a bad bind address is a clean Err");
+        }
+
+        #[tokio::test]
+        async fn scrape_server_idle_client_does_not_block_the_accept_loop() {
+            // #2155 review (slow-loris): a client that opens a connection and SENDS NOTHING must not wedge the
+            // server. The per-connection handler has a read timeout, and the accept loop is decoupled by the
+            // per-connection spawn — so a concurrent normal scrape still succeeds IMMEDIATELY while the idle
+            // connection sits there. We assert responsiveness (the property that matters) without waiting out
+            // the full read timeout: the normal scrape returns 200 well before the idle handler's timeout.
+            let (mut reporter, _) = MetricsReporter::from_statsd_targets(&[]);
+            let handle = reporter.push_prometheus(&PrometheusTarget {
+                bind: "127.0.0.1:0".into(),
+                prefix: None,
+            });
+            let registry = Registry::new();
+            HostMetrics::new(&registry).record_turn(true);
+            reporter.report(&registry);
+
+            let probe = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let addr = probe.local_addr().unwrap().to_string();
+            drop(probe);
+
+            let (sd_tx, sd_rx) = tokio::sync::oneshot::channel();
+            let server = tokio::spawn(run_prometheus_scrape_server(addr.clone(), handle, sd_rx));
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+            // Open an IDLE connection that never sends a request line, and hold it open.
+            let _idle = tokio::net::TcpStream::connect(&addr)
+                .await
+                .expect("idle connect");
+
+            // A normal scrape must still succeed promptly (the idle connection didn't block the accept loop).
+            let got = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                scrape(&addr, "GET /metrics HTTP/1.1\r\nhost: x\r\n\r\n"),
+            )
+            .await
+            .expect("a normal scrape completes while an idle client is connected");
+            assert!(
+                got.starts_with("HTTP/1.1 200"),
+                "scrape still served: {got:.40}"
+            );
+
+            let _ = sd_tx.send(());
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), server).await;
         }
     }
 }
