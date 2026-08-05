@@ -2943,10 +2943,12 @@ impl AsyncComponentReducer {
                                 // ComponentError is Debug-only (no Display/Error) → map to wasmtime::Error.
                                 let to_err =
                                     |e: ComponentError| wasmtime::Error::msg(format!("{e:?}"));
-                                let (Val::U32(key_h), Val::U32(val_h)) = (&params[0], &params[1])
-                                else {
+                                // Slice-pattern the params: guards ARITY and TYPE together, so a call with
+                                // the wrong arg count returns the structured error instead of index-OOB
+                                // panicking (reviewer #2290 — defense-in-depth on this guest-driven boundary).
+                                let [Val::U32(key_h), Val::U32(val_h)] = params else {
                                     return Err(wasmtime::Error::msg(
-                                        "kv.put expects (u32, u32) handle args",
+                                        "kv.put expects exactly (u32, u32) handle args",
                                     ));
                                 };
                                 let (key_h, val_h) = (*key_h, *val_h);
@@ -2976,9 +2978,10 @@ impl AsyncComponentReducer {
                                 use wasmtime::AsContextMut;
                                 let to_err =
                                     |e: ComponentError| wasmtime::Error::msg(format!("{e:?}"));
-                                let Val::U32(key_h) = &params[0] else {
+                                // Slice-pattern: guards ARITY + TYPE together (see kv.put — reviewer #2290).
+                                let [Val::U32(key_h)] = params else {
                                     return Err(wasmtime::Error::msg(
-                                        "kv.get expects a (u32) handle arg",
+                                        "kv.get expects exactly a (u32) handle arg",
                                     ));
                                 };
                                 let key_h = *key_h;
