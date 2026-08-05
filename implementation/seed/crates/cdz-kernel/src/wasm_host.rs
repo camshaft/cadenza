@@ -358,7 +358,12 @@ fn bare_iface_name(import_name: &str) -> &str {
     let no_hash = import_name
         .rsplit_once('+')
         .map_or(import_name, |(iface, _hash)| iface);
-    no_hash.split('@').next().unwrap_or(no_hash)
+    // `split_once('@')` (only the first `@` matters), mirroring the `rsplit_once('+')` above — an
+    // unsuffixed name maps to itself. (NOT `split('@').next().unwrap_or(...)`: `next()` is infallible so
+    // the `unwrap_or` was dead code — #2237 review.)
+    no_hash
+        .split_once('@')
+        .map_or(no_hash, |(iface, _ver)| iface)
 }
 
 /// The declared component dependencies of a component (§23): EVERY import whose name carries a
