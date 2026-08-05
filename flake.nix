@@ -313,9 +313,20 @@
                 if grep -qE '^\[\[bin\]\]|^\[bin\]' "${m}/Cargo.toml"; then echo "fn main(){}" > "${m}/src/main.rs"; fi
               '')
             others;
-        # a per-crate clippy+test check, src-scoped to C's dep-closure (full src) + non-closure manifests +
-        # synthetic stubs + ONLY C's tests/ + root manifest/lock/.cargo/toolchain + extraSrc. extraSrc =
-        # non-member paths a crate's build/tests read (spec/semantics, compiler-ml, cdz-runtime bigint).
+        # the COMPILE inputs of a closure member: Cargo.toml + src/ (+ build.rs) — NOT its tests/ or
+        # benches/. Scoping closure members to src/ (not the whole dir) means editing a DEPENDENCY crate's
+        # tests/ does NOT invalidate a dependent's check (it never runs them) — github-liaison #2154: a
+        # whole-dir closure member leaked its tests/ into the fileset. Only the UNDER-TEST crate's tests/
+        # belongs in its check (added separately below).
+        crateCompileSrc = c:
+          let d = ./. + "/${rootWorkspaceCrates.${c}}"; in
+          [ (d + "/Cargo.toml") ]
+          ++ pkgs.lib.optional (builtins.pathExists (d + "/src")) (d + "/src")
+          ++ pkgs.lib.optional (builtins.pathExists (d + "/build.rs")) (d + "/build.rs");
+        # a per-crate clippy+test check, src-scoped to C's dep-closure (COMPILE src only) + non-closure
+        # manifests + synthetic stubs + ONLY C's tests/ + root manifest/lock/.cargo/toolchain + extraSrc.
+        # extraSrc = non-member paths a crate's build/tests read (spec/semantics, compiler-ml, cdz-runtime
+        # bigint).
         mkCrateCheck = { crate, extraSrc ? [ ], extraInputs ? [ ] }:
           let closure = crateClosure crate; in
           pkgs.stdenvNoCC.mkDerivation {
@@ -324,11 +335,11 @@
             src = pkgs.lib.fileset.toSource {
               root = ./.;
               fileset = pkgs.lib.fileset.unions (
-                (map (c: ./. + "/${rootWorkspaceCrates.${c}}") closure)  # closure crates: FULL src/
-                ++ nonClosureManifests closure                          # everyone else: Cargo.toml ONLY
+                (pkgs.lib.concatMap crateCompileSrc closure)  # closure crates: Cargo.toml + src/ (NO tests/)
+                ++ nonClosureManifests closure                # everyone else: Cargo.toml ONLY
                 ++ pkgs.lib.optional
                   (builtins.pathExists (./. + "/${rootWorkspaceCrates.${crate}}/tests"))
-                  (./. + "/${rootWorkspaceCrates.${crate}}/tests")
+                  (./. + "/${rootWorkspaceCrates.${crate}}/tests")  # ONLY the under-test crate's tests/
                 ++ [ ./Cargo.toml ./Cargo.lock ./.cargo ./rust-toolchain.toml ]
                 ++ extraSrc);
             };
