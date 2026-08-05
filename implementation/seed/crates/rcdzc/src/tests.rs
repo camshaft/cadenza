@@ -68149,6 +68149,50 @@ mod stage1 {
     }
 
     #[test]
+    fn an_outer_perform_in_the_resume_value_slot_is_served_and_the_let_lifted_state_slot_folds_strict()
+     {
+        use crate::testkit::parse;
+        // as-family CONTROLS (breaker, 2026-08-05) — two RULING-INDEPENDENT correct-and-served faces, pinned
+        // as regression guards while the DISPUTED as2 (outer perform in the next-STATE slot, eval-order under
+        // a concierge spec ruling) is held. Both fold correctly TODAY regardless of how as2 resolves:
+        //
+        // as3 — an outer perform in the RESUME-VALUE slot (`(resume (+ t (A.get)) t)`): served correctly.
+        // B.step reads t=0; the resume value `(+ t (A.get))` runs A.get (5, A→6); B.step returns 5; body
+        // A.get reads the advanced 6; `(+ (* 10 5) 6)` = 56.
+        let as3 = "(do (effect A (op get (-> Unit Int64))) (effect B (op step (-> Unit Int64))) \
+             (def (main) (handle A 5 ((get (u) s (resume s (+ s 1)))) \
+               (handle B 0 ((step (u) t (resume (+ t (A.get)) t))) \
+                 (+ (* 10 (B.step)) (A.get))))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(as3)))
+                    .expect("an outer perform in the resume-VALUE slot is served"),
+                "main"
+            ),
+            56,
+            "resume-value-slot A.get runs at dispatch (A→6), body A.get reads 6 → (10*5)+6 = 56"
+        );
+
+        // as7 — the state-slot perform LET-LIFTED (`(let ((x (A.get))) (resume t (+ t x)))`): folds STRICT
+        // → 6. This is the user workaround AND pins the let-lift SEMANTICS-PRESERVING equivalence that the
+        // op-arg-lift (#2120) rests on: the explicit lift makes the outer perform run at dispatch (A→6), so
+        // body A.get reads 6, B.step returns 0 → (10*0)+6 = 6. A regression here would break the equivalence.
+        let as7 = "(do (effect A (op get (-> Unit Int64))) (effect B (op step (-> Unit Int64))) \
+             (def (main) (handle A 5 ((get (u) s (resume s (+ s 1)))) \
+               (handle B 0 ((step (u) t (let ((x (A.get))) (resume t (+ t x))))) \
+                 (+ (* 10 (B.step)) (A.get))))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(as7)))
+                    .expect("the let-lifted state-slot perform folds strict"),
+                "main"
+            ),
+            6,
+            "let-lifted state-slot A.get runs at dispatch (A→6), body A.get reads 6, B.step=0 → (10*0)+6 = 6"
+        );
+    }
+
+    #[test]
     fn a_performing_condition_advance_survives_an_inner_abort_and_is_read_by_a_post_handle_observer()
      {
         use crate::testkit::parse;
