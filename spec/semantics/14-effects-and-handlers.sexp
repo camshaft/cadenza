@@ -1308,12 +1308,6 @@
   (host-calls (call ask.ask))
   (output (: 100 Int64)))
 
-
-
-
-
-
-
 (case "a handler arm forwarding an effect its enclosing scope does not hold is rejected"
   (doc    "Witnesses capabilities-and-effects.md #Capabilities Attenuate: A Handler Forwards A Narrower Row
            (2nd sentence — attenuation never WIDENS): a handler MUST NOT grant its sub-computation an effect
