@@ -484,6 +484,57 @@
           src = exampleProjectSrc;
         };
 
+        # Operator seq-144 ("get ALL the reducer stuff set up on nix"): run the agent-harness bootstrap
+        # reducers' behavioral @tests through nix, per-input-cached. v-harness-bootstrap owns the fixtures
+        # (implementation/seed/crates/cdz-kernel/tests/fixtures/reducer-cadenza — reducer_b{1,2,3}.cdz +
+        # reducer_genesis.cdz [=B4] + Project.cdz, tests list = all 4). This is the SEED-COMPILER path (cdz
+        # test on the project), INDEPENDENT of the kernel host adapter — the heap-value @tests (b2/b3/genesis)
+        # resolve the value-heap runtime by hash from my componentStore via CDZ_STORE (set by
+        # testCadenzaProject). Verified: 14 @tests pass (b1=2/b2=2/b3=5/genesis=5). The wit/ dir is included
+        # so cdz's project resolution + any component-target metadata resolves. (The packages.reducer-cadenza
+        # COMPONENT build + REDUCER_CADENZA_COMPONENT env — the kernel-e2e half — is a separate increment,
+        # coordinated with v-harness-bootstrap on the per-reducer component-names.)
+        reducerCadenzaSrc = pkgs.lib.fileset.toSource {
+          root = ./.;
+          fileset = pkgs.lib.fileset.unions [
+            ./implementation/seed/crates/cdz-kernel/tests/fixtures/reducer-cadenza
+            ./implementation/seed/crates/cdz-kernel/wit
+          ];
+        };
+        reducerCadenzaTests = testCadenzaProject {
+          pname = "cdz-reducer-cadenza-tests";
+          src = reducerCadenzaSrc;
+        };
+
+        # seq-144 Part 2: compile a single Cadenza reducer .cdz to a wasm COMPONENT via the seed compiler.
+        # `cdz compile --target wasm --component-name <name>` emits a component DIRECTLY (no cargo / no
+        # vendor / no `wasm-tools component new` lift — unlike the Rust guests) — so this is seedCompiler-only
+        # + fully hermetic (compile records the runtime import BY HASH; it does NOT need the store at build,
+        # only at RUN — v-harness-bootstrap verified). The content hash falls out of the built bytes (same
+        # shape as reducer-guest/cedar-guest: no committed pin). All B1-B4 reducers export
+        # `cadenza:agent-kernel/fold` (genesis is an ordinary fold, not a separate world — v-hb confirmed).
+        # b1/b2 import just the value-heap runtime by hash; b3/genesis also import cadenza:agent-kernel/kv
+        # (host-served, unresolved at build — `wasm-tools validate` still passes, verified).
+        mkCadenzaComponent = { name, cdzFile, componentName ? "cadenza:agent-kernel/fold" }:
+          pkgs.stdenvNoCC.mkDerivation {
+            pname = name;
+            version = "0.0.0";
+            src = reducerCadenzaSrc;
+            nativeBuildInputs = [ seedCompiler ];
+            buildPhase = ''
+              runHook preBuild
+              export HOME="$TMPDIR/home"; mkdir -p "$HOME"
+              cdz compile implementation/seed/crates/cdz-kernel/tests/fixtures/reducer-cadenza/${cdzFile} \
+                --target wasm --component-name ${componentName} -o "$out"
+              runHook postBuild
+            '';
+            dontInstall = true; # `-o "$out"` writes the component file directly (like the seedCompiler outputs).
+          };
+        reducerCadenzaB1 = mkCadenzaComponent { name = "reducer-cadenza-b1"; cdzFile = "reducer_b1.cdz"; };
+        reducerCadenzaB2 = mkCadenzaComponent { name = "reducer-cadenza-b2"; cdzFile = "reducer_b2.cdz"; };
+        reducerCadenzaB3 = mkCadenzaComponent { name = "reducer-cadenza-b3"; cdzFile = "reducer_b3.cdz"; };
+        reducerCadenzaGenesis = mkCadenzaComponent { name = "reducer-cadenza-genesis"; cdzFile = "reducer_genesis.cdz"; };
+
         # Full-CI-in-nix increment 6e: the GHA `cad-tests` job — `cdz test` on the 4 committed
         # in-tree Cadenza PROJECTS (implementation/{cad,compiler-ml,choreography,iterators}). These are
         # pure-Cadenza (Project.cdz + src/*.cdz), NOT the excluded Rust cdz-cad crate — so no cmake/C++,
@@ -1352,6 +1403,20 @@
         # is the witness (built by `testCadenzaProject`). Also a `checks` entry so `nix flake check` runs it.
         packages.example-project-tests = exampleProjectTests;
 
+        # seq-144: the agent-harness bootstrap reducers' @tests through nix (`.#reducer-cadenza-tests`).
+        packages.reducer-cadenza-tests = reducerCadenzaTests;
+
+        # seq-144 Part 2: the B1-B4 reducer wasm COMPONENTS (cdz-compiled) + their derived content hashes.
+        # `.#reducer-cadenza-b1` … `-genesis`; `-hash` each (the address the kernel store/e2e loads by).
+        packages.reducer-cadenza-b1 = reducerCadenzaB1;
+        packages.reducer-cadenza-b2 = reducerCadenzaB2;
+        packages.reducer-cadenza-b3 = reducerCadenzaB3;
+        packages.reducer-cadenza-genesis = reducerCadenzaGenesis;
+        packages.reducer-cadenza-b1-hash = hashOf reducerCadenzaB1 "reducer-cadenza-b1-hash";
+        packages.reducer-cadenza-b2-hash = hashOf reducerCadenzaB2 "reducer-cadenza-b2-hash";
+        packages.reducer-cadenza-b3-hash = hashOf reducerCadenzaB3 "reducer-cadenza-b3-hash";
+        packages.reducer-cadenza-genesis-hash = hashOf reducerCadenzaGenesis "reducer-cadenza-genesis-hash";
+
         # PARITY CHECK (not a pin): assert the DERIVED hash of the nix-built runtime equals the hash
         # `xtask codegen` already recorded in runtime_abi.rs. This reads the committed value only to
         # COMPARE — the flake never uses it as the build's asserted output. It catches a divergence
@@ -1446,6 +1511,14 @@
             # S3: the example project's @tests run through nix — a cache HIT when its sources are
             # unchanged (the "skip tests that haven't changed" win), a re-run + fail on a red test.
             example-project-tests = exampleProjectTests;
+            # seq-144: agent-harness bootstrap reducer @tests through nix (b1/b2/b3/genesis — 14 @tests).
+            reducer-cadenza-tests = reducerCadenzaTests;
+            # seq-144 Part 2: each B1-B4 reducer component is a valid wasm component (b3/genesis import kv
+            # host-served/unresolved — validate checks STRUCTURE not import-satisfaction, so still green).
+            reducer-cadenza-b1-valid = validComponent { name = "reducer-cadenza-b1"; drv = reducerCadenzaB1; };
+            reducer-cadenza-b2-valid = validComponent { name = "reducer-cadenza-b2"; drv = reducerCadenzaB2; };
+            reducer-cadenza-b3-valid = validComponent { name = "reducer-cadenza-b3"; drv = reducerCadenzaB3; };
+            reducer-cadenza-genesis-valid = validComponent { name = "reducer-cadenza-genesis"; drv = reducerCadenzaGenesis; };
 
             # Full-CI-in-nix increment 1: the LINT pair, mirroring checks.yml `fmt` + `clippy` exactly.
             # `nix flake check` now runs them; the checks.yml jobs stay in place (advisory overlap) until
