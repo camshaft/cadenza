@@ -17,8 +17,9 @@
 //!   no nix build stays green), same contract as `REDUCER_GUEST_COMPONENT`.
 //! - The b1 component imports `cadenza:runtime/heap@…+<hash>` (a content-addressed dep). The runtime bytes
 //!   are supplied by EITHER `RUNTIME_HEAP_COMPONENT` (a direct path to the runtime component, composed
-//!   without a hash lookup) OR `CDZ_STORE` (a content-addressed blob store dir — hash-named files, the
-//!   [`DiskBlobStore`] layout — the declared dep is resolved from by its `+<hash>`).
+//!   without a hash lookup) OR `CDZ_STORE` (a content-addressed blob store dir whose blobs are named
+//!   `<hash>.wasm` — v-nix's `componentStore` layout, NOT the kernel's bare-`<hash>` `DiskBlobStore`
+//!   layout — the declared dep is resolved from it by its `+<hash>`; see `resolve_runtime_deps` below).
 //!
 //! Whichever v-nix wires: the test tries the direct path first, then the store. If the reducer declares a
 //! runtime dep but NEITHER is provided, the test FAILS LOUD (a real b1 needs its heap — a silent skip there
