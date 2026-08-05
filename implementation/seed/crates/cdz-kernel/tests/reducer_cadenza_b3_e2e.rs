@@ -133,7 +133,18 @@ async fn reducer_cadenza_b3_bumps_kv_count_and_emits_one_http_effect() {
 /// `ComponentStore::get_by_hash` — the SHA-256-verified content-address path the fold uses) — identical to
 /// the b1/b2 e2e's resolver.
 async fn resolve_runtime_deps(deps: &[ComponentDep]) -> Vec<(ComponentDep, Vec<u8>)> {
+    // Direct-path override supplies ONE component's bytes → only valid for a single-dep reducer (b3
+    // declares exactly one, its cadenza:runtime/heap). FAIL LOUD on >1 dep (github-liaison #2312) — mapping
+    // the same heap bytes to every dep would silently mis-supply an unrelated dep; use CDZ_STORE for a
+    // multi-dep reducer. (Mirrors apply_handle_lowered's "MORE THAN ONE cadenza:runtime/heap dep" fail-loud.)
     if let Ok(path) = std::env::var("RUNTIME_HEAP_COMPONENT") {
+        assert_eq!(
+            deps.len(),
+            1,
+            "RUNTIME_HEAP_COMPONENT override supplies ONE component but the reducer declares {} deps — \
+             use CDZ_STORE (content-addressed, per-dep) for a multi-dep reducer",
+            deps.len()
+        );
         let bytes = std::fs::read(&path)
             .unwrap_or_else(|e| panic!("RUNTIME_HEAP_COMPONENT={path:?} set but unreadable: {e}"));
         return deps.iter().cloned().map(|d| (d, bytes.clone())).collect();
