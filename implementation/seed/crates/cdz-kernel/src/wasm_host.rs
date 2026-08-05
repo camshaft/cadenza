@@ -1390,24 +1390,11 @@ impl crate::reducer::Reducer for ComponentReducer {
         match self.apply(taken, content_type, payload, resumes) {
             Ok((guest_effects, new_kv)) => {
                 *kv = new_kv;
+                // Map each WIT-boundary effect-request → the kernel Effect via the ONE shared converter
+                // (see `guest_effect_to_kernel_effect`; #2166 — the two EffectRequest types).
                 let effects = guest_effects
                     .into_iter()
-                    .map(|g| crate::reducer::Effect {
-                        request: crate::effect::EffectRequest::new(
-                            guest_kind_to_kernel(&g.kind),
-                            g.target,
-                            // The guest's payload is opaque bytes → an Inline kernel payload; None stays
-                            // None. `g.payload` is a Vec<u8> from the guest; freeze it into `Bytes` (the
-                            // ref-counted Inline body) via `.into()`.
-                            g.payload.map(|p| crate::effect::Payload::Inline(p.into())),
-                            // Guest effects are Interactive: timeliness is not part of the reducer WIT
-                            // surface, so a guest can't declare per-effect batchability (a guest-declared
-                            // timeliness would be a WIT-surface extension).
-                            crate::effect::Timeliness::Interactive,
-                        ),
-                        // The guest's continuation token rides into the kernel Effect (→ Dispatched frame).
-                        token: g.correlation,
-                    })
+                    .map(guest_effect_to_kernel_effect)
                     .collect();
                 crate::reducer::FoldOutput::with_effects(effects)
             }
@@ -1613,17 +1600,10 @@ impl crate::reducer::Reducer for AsyncComponentReducer {
         match self.apply(taken, content_type, payload, resumes).await {
             Ok((guest_effects, new_kv)) => {
                 *kv = new_kv;
+                // Same WIT-boundary → kernel Effect conversion as the sync path, via the shared converter.
                 let effects = guest_effects
                     .into_iter()
-                    .map(|g| crate::reducer::Effect {
-                        request: crate::effect::EffectRequest::new(
-                            guest_kind_to_kernel(&g.kind),
-                            g.target,
-                            g.payload.map(|p| crate::effect::Payload::Inline(p.into())),
-                            crate::effect::Timeliness::Interactive,
-                        ),
-                        token: g.correlation,
-                    })
+                    .map(guest_effect_to_kernel_effect)
                     .collect();
                 crate::reducer::FoldOutput::with_effects(effects)
             }
@@ -1849,9 +1829,72 @@ fn guest_kind_to_kernel(k: &EffectKind) -> crate::effect::EffectKind {
     }
 }
 
+/// Convert a guest `effect-request` (the WIT component-boundary [`EffectRequest`], as returned by a fold)
+/// into the kernel's [`crate::reducer::Effect`] — the ONE place the boundary→kernel translation lives.
+///
+/// The two `EffectRequest` types are distinct (github-liaison #2166): [`EffectRequest`] here is the
+/// WIT-generated type a `fold.apply` returns; [`crate::effect::EffectRequest`] is the kernel's own struct.
+/// This maps between them: the kind via [`guest_kind_to_kernel`], the opaque payload bytes → an
+/// `Inline` kernel payload (`None` stays `None`; a `Vec<u8>` freezes into ref-counted `Bytes` via `.into()`),
+/// and the guest's `correlation` token → the kernel `Effect`'s continuation `token` (→ the `Dispatched`
+/// frame). Guest effects are always `Timeliness::Interactive` — per-effect batchability is not on the
+/// reducer WIT surface, so a guest cannot declare it (that would be a WIT-surface extension).
+///
+/// Extracted from the two `Reducer::fold` impls ([`ComponentReducer`] + [`AsyncComponentReducer`]), which
+/// built this inline identically; the fold-boundary handle-ABI rebind reuses it too, so the boundary→kernel
+/// mapping is defined once (no drift between the WIT-structural path and the handle-lowered path).
+fn guest_effect_to_kernel_effect(g: EffectRequest) -> crate::reducer::Effect {
+    crate::reducer::Effect {
+        request: crate::effect::EffectRequest::new(
+            guest_kind_to_kernel(&g.kind),
+            g.target,
+            g.payload.map(|p| crate::effect::Payload::Inline(p.into())),
+            crate::effect::Timeliness::Interactive,
+        ),
+        token: g.correlation,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The shared WIT-boundary → kernel Effect converter (extracted from both fold impls; #2166). Pins the
+    // full mapping: kind translated, a Some payload → an Inline kernel payload with the same bytes, and the
+    // guest correlation token → the kernel Effect's continuation token. A companion case pins that a None
+    // payload / None correlation stay None (fire-and-forget), so the Some/None distinction isn't collapsed.
+    #[test]
+    fn guest_effect_converts_to_kernel_effect_with_payload_and_token() {
+        let g = EffectRequest {
+            kind: EffectKind::Http,
+            target: "https://example.test".to_string(),
+            payload: Some(b"body".to_vec()),
+            correlation: Some(b"tok-1".to_vec()),
+        };
+        let e = guest_effect_to_kernel_effect(g);
+        assert_eq!(e.request.kind, crate::effect::EffectKind::Http);
+        assert_eq!(e.request.target.as_ref(), "https://example.test");
+        assert_eq!(e.request.timeliness, crate::effect::Timeliness::Interactive);
+        match &e.request.payload {
+            Some(crate::effect::Payload::Inline(b)) => assert_eq!(b.as_ref(), b"body"),
+            other => panic!("expected an Inline payload with the guest bytes, got {other:?}"),
+        }
+        assert_eq!(e.token.as_deref(), Some(&b"tok-1"[..]));
+    }
+
+    #[test]
+    fn guest_effect_none_payload_and_token_stay_none() {
+        let g = EffectRequest {
+            kind: EffectKind::Emit,
+            target: "peer-session".to_string(),
+            payload: None,
+            correlation: None,
+        };
+        let e = guest_effect_to_kernel_effect(g);
+        assert_eq!(e.request.kind, crate::effect::EffectKind::Emit);
+        assert!(e.request.payload.is_none(), "None payload must stay None (not empty-Inline)");
+        assert!(e.token.is_none(), "None correlation must stay None (fire-and-forget)");
+    }
 
     // The host `kv` import is backed by the kernel KV THROUGH the transactional overlay: reads see the
     // guest's own uncommitted writes (read-your-writes), but the base isn't mutated until `commit`.
