@@ -217,10 +217,12 @@
             (export main)))
   (output (: 7 Int64)))
 
-; The eval-of-quasiquote macro idiom composes with the FLOAT and STRING leaves, and `print` renders a
-; quoted float re-readably — pinning that the eval/print paths handle the leaves this vertical realized,
-; not only integers/names. A float unquote lifts + reconstructs + folds like an integer one; a string
-; splices through ordinary String ops; and `print` of a quoted float carries a `.` so it re-reads.
+; The eval-of-quasiquote macro idiom composes with the FLOAT, STRING, and BYTES leaves, and `print`
+; renders a quoted float re-readably — pinning that the eval/print paths handle the leaves this vertical
+; realized, not only integers/names. A float unquote lifts + reconstructs + folds like an integer one; a
+; string splices through ordinary String ops; a byte-string unquote lifts + reconstructs + folds through
+; Bytes ops the same way (case "eval of a quasiquote-built form with a byte-string unquote folds"); and
+; `print` of a quoted float carries a `.` so it re-reads.
 
 (case "eval of a quasiquote-built form with a float unquote folds"
   (doc    "The float companion of the eval-splice idiom: `(let ((x 2.5)) (eval `(+ ,x 1.5)))` lifts the
