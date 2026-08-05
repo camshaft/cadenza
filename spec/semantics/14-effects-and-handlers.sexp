@@ -1217,6 +1217,27 @@
                   (+ (B.step) (A.get))))) (export main)))
   (output (: 21 Int64)))
 
+(case "a SIX-deep alternating A-B perform chain threads both nested states through every crossing"
+  (doc    "The deep-interleave stress of the two-frame nesting above: six performs alternate A-B-A-B-A-B
+           where each perform's ARGUMENT is the previous perform's result — `(B.b (A.a (B.b (A.a (B.b
+           (A.a 0))))))`. Both arms fold the argument into the resume value AND advance their own state
+           (`a` adds s then s+=1; `b` adds t then t+=10), so every crossing must read the value produced
+           under the OTHER handler's frame and its own CURRENT state: 0→5→105→111→221→228→348 (s walks
+           5,6,7; t walks 100,110,120). One wrong state snapshot or one stale intermediate anywhere in
+           the six-step chain lands off the checksum. Pins the data-dependency chain BETWEEN two live
+           handler frames at depth six — prior nesting pins cross at most twice.")
+  (input  (do
+            (effect A (op a (-> Int64 Int64)))
+            (effect B (op b (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle A n
+                ((a (v) s (resume (+ v s) (+ s 1))))
+                (handle B 100
+                  ((b (v) t (resume (+ v t) (+ t 10))))
+                  (B.b (A.a (B.b (A.a (B.b (A.a 0)))))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 348 Int64)))
+
 (case "a recursive nested-op performer whose resume-VALUE reads the inner state around the outer perform declines cleanly"
   (doc    "The state-reading companion of the fold above. Here the inner `B.step` arm's resume VALUE reads the
            inner state binder `t` around the outer perform — `(step (u) t (resume (A.tick (+ t u)) t))`. The
@@ -2801,6 +2822,30 @@
               (handle Cfg 0 ((limit (u) s (resume 4 s)))
                 (sum-to (Cfg.limit)))) (export main)))
   (output (: 10 Int64)))
+
+(case "a recursive builder PERFORMS per step and a recursive pure fold consumes the built list"
+  (doc    "The two recursive helpers above composed, with the effect in the OPPOSITE one: here the
+           recursion that performs is the BUILDER — `(grab k acc)` pushes one `(Cnt.bump)` result per
+           step for four steps — and the CONSUMER `(suml xs)` is a pure generic match-recursion over the
+           result. The counter arm resumes the current count and advances (seed 5 → resumes 5,6,7,8), so
+           the built list is [5 6 7 8] and the pure fold sums it to 26. Pins the build-then-fold pipeline
+           under ONE handle: an effect-specialized recursion hands a heap list across to an effect-FREE
+           recursion, and each `bump`'s resume value must land in its own list slot (a re-served or
+           re-ordered perform shifts a slot and breaks the sum).")
+  (input  (do
+            (effect Cnt (op bump (-> Unit Int64)))
+            (def (suml xs)
+              (match xs
+                ((list) 0)
+                ((list h .. t) (+ h (suml t)))))
+            (def (grab (: k Int64) (: acc (List Int64)))
+              (if (= k 0) acc (grab (- k 1) (List.push acc (Cnt.bump)))))
+            (def (main (: n Int64))
+              (handle Cnt n
+                ((bump (u) s (resume s (+ s 1))))
+                (suml (grab 4 (list)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 26 Int64)))
 
 (case "a let-bound lambda whose body performs is applied in the handle body"
   (doc    "A LAMBDA VALUE is pure at CONSTRUCTION — its body's effects fire only when it is APPLIED. So a
