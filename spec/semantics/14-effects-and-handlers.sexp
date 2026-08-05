@@ -4312,10 +4312,12 @@
 
 (case "the cross-handler op-arg lift fires 100 times inside a recursive accumulator loop"
   (doc    "The SCALE face of the op-arg let-lift: `(B.put (A.get))` — the single-shot pin above — placed in a
-           100-iteration accumulator loop, with A's arm ADVANCING per read. Every iteration's lift must run
-           the foreign perform exactly once and thread the advance: the sum of A's reads 0..99 = 4950. A lift
-           that dropped an advance under recursion, re-ran a perform, or reordered across iterations shifts
-           the sum. The recursion companion of the sibling-args and depth-3 pins.")
+           100-iteration accumulator loop, with A's arm ADVANCING per read. B's arm reads its param THREE
+           times (`(/ (+ (+ v v) v) 3)` = v exactly), so each iteration's lift must bind the foreign perform
+           ONCE and serve the pure ref thrice — a lift that re-ran the perform per read would see A advance
+           between reads (v, v+1, v+2) and shift the quotient. Every advance must also thread across
+           iterations: the sum of A's reads 0..99 = 4950. The recursion companion of the sibling-args and
+           depth-3 pins, with the arm shaped to force the lift's duplication handling.")
   (input  (do
             (effect A (op get (-> Unit Int64)))
             (effect B (op put (-> Int64 Int64)))
@@ -4325,7 +4327,7 @@
               (handle A 0
                 ((get (u) s (resume s (+ s 1))))
                 (handle B 0
-                  ((put (v) s (resume v s)))
+                  ((put (v) s (resume (/ (+ (+ v v) v) 3) s)))
                   (loop k 0))))
             (export main)))
   (call   main (: 100 Int64)) (output (: 4950 Int64)))
