@@ -55,9 +55,16 @@ async fn reducer_cadenza_b2_folds_one_http_effect_through_apply_handle_lowered()
     // value-heap handles, so it imports cadenza:runtime/heap). Resolve + attach so apply_handle_lowered
     // can compose the runtime (and its transitive nfc, via the store) + bind a HeapHandle.
     let deps = reducer.deps().to_vec();
+    // Assert the HEAP dep SPECIFICALLY (not just any dep): strip the `@version` / `+hash` build-metadata
+    // off each import name and match the bare interface — so the check actually verifies what its message
+    // claims (a non-heap dep alone must NOT satisfy it, else the fold fails later with an opaque error).
     assert!(
-        !deps.is_empty(),
-        "a real Cadenza reducer_b2 must declare a cadenza:runtime/heap dep (it can't fold without a heap)"
+        deps.iter().any(|d| {
+            d.import_name.split(['@', '+']).next().map(str::trim) == Some("cadenza:runtime/heap")
+        }),
+        "a real Cadenza reducer_b2 must declare a cadenza:runtime/heap dep (it can't fold without a heap); \
+         declared deps: {:?}",
+        deps.iter().map(|d| &d.import_name).collect::<Vec<_>>()
     );
     let resolved = resolve_runtime_deps(&deps).await;
     let mut reducer = reducer.with_resolved_deps(resolved);
@@ -114,13 +121,17 @@ async fn resolve_runtime_deps(deps: &[ComponentDep]) -> Vec<(ComponentDep, Vec<u
              — the e2e can't supply the value-heap runtime to compose"
         )
     });
+    // Resolve each dep through the REAL ComponentStore reader (`get_by_hash`) — the SAME production path the
+    // fold uses — NOT a manual `std::fs::read`. This exercises the #2210 SHA-256 content-address verify, so a
+    // corrupted/substituted store blob surfaces as `ContentAddressMismatch` here instead of composing
+    // silently (reviewer + github-liaison note; mirrors #2269's genesis-e2e fix). Open the store ONCE + reuse.
+    let store = cdz_kernel::component_store::ComponentStore::open(&store_dir);
     let mut out = Vec::with_capacity(deps.len());
     for dep in deps {
-        let path = std::path::Path::new(&store_dir).join(format!("{}.wasm", dep.hash.to_hex()));
-        let bytes = std::fs::read(&path).unwrap_or_else(|e| {
+        let bytes = store.get_by_hash(&dep.hash).unwrap_or_else(|e| {
             panic!(
-                "CDZ_STORE has no blob {path:?} for runtime dep {:?} (hash {}): {e} — is componentStore \
-                 hash-keyed with <hash>.wasm naming?",
+                "CDZ_STORE has no valid blob for runtime dep {:?} (hash {}): {e:?} — is componentStore \
+                 hash-keyed with <hash>.wasm naming + content-address intact?",
                 dep.import_name,
                 dep.hash.to_hex()
             )
