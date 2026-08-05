@@ -68149,6 +68149,64 @@ mod stage1 {
     }
 
     #[test]
+    fn the_op_arg_lift_cv_binder_namespace_cannot_be_captured_by_a_user_binder() {
+        // OP-ARG LET-LIFT capture-safety (settles the #2156/#2120 `#cv`-uniqueness review question).
+        //
+        // The op-arg let-lift mints a fresh binder `#cv{StructId}` (see effects.rs, `arg_lifts`) to hold a
+        // foreign-performing arg exactly once. Its collision-safety rests on TWO facts, and it is worth being
+        // precise about WHICH — a reviewer (github-liaison #2156) correctly noted that `#cv0` is NOT
+        // "unspellable" at the lexer level: a backtick name `` `#cv0` `` lexes to a plain BacktickName token,
+        // so it can be MENTIONED in source. The real guarantee is:
+        //   1. The `StructId` is the arg node's arena index — a MONOTONIC, never-reused counter — so two
+        //      distinct lift sites never share a `#cv{…}` name (covered by the fold tests below/around).
+        //   2. A user can never introduce a `#cv{N}` BINDER to capture/shadow a live lift site: a
+        //      `#`-leading name is a CONSTRUCTOR pattern, which is refutable and thus illegal in a binding
+        //      position — rejected CDZ0210. So a `#cv…` name is unspellable *as a binder*, which is the only
+        //      position from which it could capture. (A bare ident like `Foo`/`xy` binds fine; the `#` is
+        //      what makes it a refutable pattern head — see the D control.)
+        // Together these mean no user program can collide with, capture, or shadow the lift's `#cv` slot —
+        // the safety conclusion in the code comment holds, via binder-position rejection, not lexer magic.
+
+        // A `#cv0` LET binder is rejected — a `#`-leading name is a refutable constructor pattern.
+        let let_binder = "(do (def (main) (let ((`#cv0` 5)) `#cv0`)) (export main))";
+        let err = compile_component(&crate::codec::encode(&parse(let_binder))).expect_err(
+            "a `#cv0` let binder must be rejected (refutable ctor pattern in binding position)",
+        );
+        assert_eq!(
+            err.code.as_deref(),
+            Some("CDZ0210"),
+            "a `#cv0` LET binder is a refutable constructor pattern, illegal in binding position: {}",
+            err.message
+        );
+
+        // The same holds for a `#cv0` PARAMETER binder — the other position a user could try.
+        let param_binder =
+            "(do (def (f (: `#cv0` Int64)) `#cv0`) (def (main) (f 7)) (export main))";
+        let perr = compile_component(&crate::codec::encode(&parse(param_binder)))
+            .expect_err("a `#cv0` param binder must be rejected too");
+        assert_eq!(
+            perr.code.as_deref(),
+            Some("CDZ0210"),
+            "a `#cv0` PARAM binder is likewise a refutable ctor pattern, illegal in binding position: {}",
+            perr.message
+        );
+
+        // CONTROL: a bare (non-`#`) name binds fine in the SAME position, so it is the `#` prefix — not
+        // backtick-ness or the position — that makes `#cv…` unbindable. If this control ever declines, the
+        // CDZ0210 above is a false witness and this pin is meaningless.
+        let control = "(do (def (main) (let ((notcv 5)) notcv)) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(control)))
+                    .expect("a bare-ident binder in the same position binds fine (control)"),
+                "main"
+            ),
+            5,
+            "control: a non-`#` binder in the same position must bind"
+        );
+    }
+
+    #[test]
     fn a_perform_arg_with_a_foreign_effect_used_twice_in_the_arm_folds_running_the_effect_once() {
         // OP-ARG LET-LIFT (c4ea51302). An operation whose ARGUMENT carries a FOREIGN perform, bound to an arm
         // parameter the arm uses MORE THAN ONCE, now FOLDS — binding the arg to a fresh `#cv` let ONCE and
