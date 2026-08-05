@@ -246,6 +246,15 @@ pub struct ComponentReducer {
 /// [`ComponentReducer::with_fuel_budget`]; the real per-session budget lands with gas (§22a).
 pub const DEFAULT_FOLD_FUEL: u64 = 1_000_000_000;
 
+/// Cap on the byte-buffer length [`HeapHandle::read_bytes`] will PRE-RESERVE for (reviewer, #2166 read-side
+/// DoS). `bytes-len` returns a raw unbounded `u32` reported by the untrusted guest value-heap; feeding it
+/// straight into `Vec::with_capacity` lets a bogus large length (up to `u32::MAX` ≈ 4 GiB) reserve up front
+/// and abort the host via the alloc-error handler before the read loop can fail-loud. 1 MiB is generous for
+/// a real inline payload/token (larger bodies are content-addressed blobs, not inline value-heap bytes)
+/// while bounding the eager reservation; a truthful larger buffer still reads correctly (the Vec just grows
+/// amortively past the cap), and a bogus length Traps cheaply on the first missing `bytes-get`.
+const MAX_PREALLOC_BYTES: u32 = 1 << 20;
+
 /// Errors constructing or running a component reducer. Kept small; grows as the fold path lands.
 #[derive(Debug)]
 pub enum ComponentError {
@@ -828,9 +837,15 @@ impl<T: 'static> HeapHandle<T> {
 
     /// Read a value-heap `Bytes` handle back to a Rust `Vec<u8>` — `bytes-len` then a `bytes-get` per byte.
     /// The read-dual of [`HeapHandle::bytes_from`]; a byte over 255 is a malformed value-heap byte (Trap).
+    ///
+    /// The pre-reservation is CAPPED at [`MAX_PREALLOC_BYTES`]: `bytes-len` returns a raw unbounded `u32`
+    /// reported by the untrusted guest value-heap, so a bogus large length must NOT drive an eager multi-GB
+    /// `Vec::with_capacity` (which aborts the host via the alloc-error handler BEFORE the loop can fail-loud
+    /// on the missing bytes — reviewer, #2166 read-side DoS). A truthful large buffer just grows the Vec
+    /// amortively; a bogus length Traps CHEAPLY on the first missing `bytes-get`.
     pub fn read_bytes(&mut self, buf: u32) -> Result<Vec<u8>, ComponentError> {
         let len = self.bytes_len(buf)?;
-        let mut out = Vec::with_capacity(len as usize);
+        let mut out = Vec::with_capacity(len.min(MAX_PREALLOC_BYTES) as usize);
         for i in 0..len {
             let b = self.bytes_get(buf, i)?;
             let byte = u8::try_from(b).map_err(|_| {
@@ -2062,6 +2077,10 @@ mod tests {
                    (func (export "get-int") (param i32) (result i64) (i64.const 42))
                    ;; str-get returns "target" (6 bytes) — write to a fixed area, return (ptr,len).
                    (data (i32.const 8) "target")
+                   ;; @100 a BOGUS bytes handle: header reports len=0xFFFFFFFF, no real bytes. read_bytes(100)
+                   ;; must NOT eager-reserve ~4GB (alloc-abort) — the cap bounds it, then bytes-get walks past
+                   ;; the single page and Traps cleanly (#2166 read-side DoS guard).
+                   (data (i32.const 100) "\ff\ff\ff\ff")
                    (func (export "str-get") (param i32) (result i32)
                      (i32.store (i32.const 4096) (i32.const 8))
                      (i32.store (i32.const 4100) (i32.const 6))
@@ -2234,6 +2253,32 @@ mod tests {
         let other = heap.bytes_from(&[1, 2, 3]).expect("bytes_from other");
         assert_eq!(heap.read_bytes(other).expect("read other"), [1, 2, 3]);
         assert_eq!(heap.read_bytes(h).expect("re-read first"), payload); // first still intact
+    }
+
+    // DoS guard (reviewer, #2166 read-side): a bytes handle whose bytes-len reports a bogus huge length
+    // (the forged @100 handle = 0xFFFFFFFF, no real bytes) must NOT abort the host via an eager ~4GB
+    // Vec::with_capacity — the MAX_PREALLOC_BYTES cap bounds the reservation, then bytes-get walks past the
+    // single-page memory and Traps cleanly. The test returning (not OOM-aborting) is the proof.
+    #[test]
+    fn read_bytes_with_bogus_huge_len_traps_cleanly_not_an_alloc_abort() {
+        let bytes = heap_stub_component();
+        let engine = wasmtime::Engine::default();
+        let mut store = wasmtime::Store::new(&engine, ());
+        let linker = wasmtime::component::Linker::<()>::new(&engine);
+        let component =
+            wasmtime::component::Component::new(&engine, &bytes).expect("valid heap stub");
+        let instance = linker
+            .instantiate(&mut store, &component)
+            .expect("heap stub instantiates");
+        let mut heap = match HeapHandle::bind(store, &instance) {
+            Ok(h) => h,
+            Err(e) => panic!("bind HeapHandle: {e:?}"),
+        };
+        // Handle @100 reports bytes-len = 0xFFFFFFFF with no real bytes.
+        match heap.read_bytes(100) {
+            Err(_) => {} // clean fail-loud (a bytes-get memory Trap), NOT a process abort
+            Ok(v) => panic!("a bogus u32::MAX bytes-len must not read as a real {}-byte buffer", v.len()),
+        }
     }
 
     // A runtime that doesn't export cadenza:runtime/heap → a clear Compose error naming it, not a trap.
