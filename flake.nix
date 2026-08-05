@@ -402,14 +402,18 @@
           };
         # crane MR2: per-crate CLIPPY via crane, consuming the shared cargoArtifacts (deps pre-compiled) so
         # only C's first-party src recompiles — NOT the whole dep closure every run (the ~14m→~6-7m win).
-        # SAME per-crate isolation fileset + stub machinery as mkCrateCheck (a crate's clippy invalidates only
-        # on its closure's src). craneLib is already toolchain-pinned (overrideToolchain). preBuild chmod +
-        # stubs the non-closure members so `cargo -p C` parses the workspace (crane restores cargoArtifacts'
-        # target/ before this). cargoClippyExtraArgs mirrors the old `cargo clippy -p C --all-targets -- -D warnings`.
-        mkCrateClippyCrane = { crate, extraSrc ? [ ], extraInputs ? [ ] }:
+        #
+        # craneCrateCommon: the SHARED per-crate crane inputs both the clippy + test makers compose with — the
+        # SAME per-crate isolation fileset + stub machinery as mkCrateCheck (a crate's check invalidates only on
+        # its closure's src). ONE home for these invariants (fileset scoping, chmod+stub preBuild, cargoArtifacts,
+        # pinned vendor) so a future closure/stub tweak can't land in one maker but not the other — that
+        # duplication was the ROOT of the earlier crane divergences (chmod #2262, --locked #2273; github-liaison
+        # #2279). craneLib is already toolchain-pinned (overrideToolchain). preBuild chmod's the (read-only)
+        # fileset.toSource copy + stubs the non-closure members so `cargo -p C` parses the workspace (crane
+        # restores cargoArtifacts' target/ before this).
+        craneCrateCommon = { crate, extraSrc ? [ ], extraInputs ? [ ] }:
           let closure = crateClosure crate; in
-          craneLib.cargoClippy {
-            pname = "cargo-clippy-${crate}";
+          {
             version = "0.0.0";
             inherit cargoArtifacts;
             cargoVendorDir = seedCargoVendor;
@@ -429,42 +433,25 @@
               chmod -R u+w .
               ${stubNonClosure closure}
             '';
-            cargoClippyExtraArgs = "-p ${crate} --all-targets -- -D warnings";
             doInstallCargoArtifacts = false;
           };
-        # crane MR3: per-crate TEST via crane, consuming the shared cargoArtifacts (deps pre-compiled) — the
-        # TEST-half twin of mkCrateClippyCrane. SAME per-crate isolation fileset + stub machinery.
-        # 🪤 --locked: unlike cargoClippy (which INJECTS --locked), crane's cargoTest does NOT — the emitted
-        # command is `cargo test --release -p C` (verified in the probe log). So --locked IS added to
-        # cargoExtraArgs here for reproducibility parity with the old `cargo test -p C --locked` (mkCrateCheck)
-        # + every other test invocation. (Opposite of the clippy case, where crane's --locked meant NOT adding
-        # a duplicate — #2273.)
-        mkCrateTestCrane = { crate, extraSrc ? [ ], extraInputs ? [ ] }:
-          let closure = crateClosure crate; in
-          craneLib.cargoTest {
-            pname = "cargo-test-${crate}";
-            version = "0.0.0";
-            inherit cargoArtifacts;
-            cargoVendorDir = seedCargoVendor;
-            src = pkgs.lib.fileset.toSource {
-              root = ./.;
-              fileset = pkgs.lib.fileset.unions (
-                (pkgs.lib.concatMap crateCompileSrc closure)
-                ++ nonClosureManifests closure
-                ++ pkgs.lib.optional
-                  (builtins.pathExists (./. + "/${rootWorkspaceCrates.${crate}}/tests"))
-                  (./. + "/${rootWorkspaceCrates.${crate}}/tests")
-                ++ [ ./Cargo.toml ./Cargo.lock ./.cargo ./rust-toolchain.toml ]
-                ++ extraSrc);
-            };
-            nativeBuildInputs = extraInputs;
-            preBuild = ''
-              chmod -R u+w .
-              ${stubNonClosure closure}
-            '';
-            cargoExtraArgs = "-p ${crate} --locked";
-            doInstallCargoArtifacts = false;
-          };
+        # per-crate CLIPPY via crane. cargoClippyExtraArgs mirrors mkCrateCheck's `cargo clippy -p C
+        # --all-targets -- -D warnings`; crane's cargoClippy INJECTS --locked (do NOT add it — a 2nd errors
+        # "cannot be used multiple times", #2273).
+        mkCrateClippyCrane = args:
+          craneLib.cargoClippy ((craneCrateCommon args) // {
+            pname = "cargo-clippy-${args.crate}";
+            cargoClippyExtraArgs = "-p ${args.crate} --all-targets -- -D warnings";
+          });
+        # per-crate TEST via crane, the TEST-half twin of mkCrateClippyCrane.
+        # 🪤 --locked: unlike cargoClippy (which INJECTS --locked), crane's cargoTest does NOT — emits `cargo
+        # test --release -p C` (verified). So --locked IS added to cargoExtraArgs for reproducibility parity
+        # with the old `cargo test -p C --locked`. (Opposite of the clippy case — #2273.)
+        mkCrateTestCrane = args:
+          craneLib.cargoTest ((craneCrateCommon args) // {
+            pname = "cargo-test-${args.crate}";
+            cargoExtraArgs = "-p ${args.crate} --locked";
+          });
         # CLOSURE guard (concierge mandate): pure-eval assert that the fromTOML walk yields the EXPECTED
         # closures for anchor crates — a Cargo.toml restructure that breaks the walk fails LOUD (throws at
         # eval → fails `nix flake check`) rather than silently under-scoping a crate's inputs.
