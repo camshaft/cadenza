@@ -68289,14 +68289,14 @@ mod stage1 {
             runtime: Some(runtime),
             runtime_cache_dir: None,
             host_responses: vec![cdz_run::HostResponse {
-                op: "ask".to_string(),
+                op: "ask.ask".to_string(),
                 value: "100".to_string(),
             }],
         };
         match cdz_run::run(&bytes, &opts).expect("run") {
-            // B.step reads t=n=5, next-state `(+ t (ask.ask))` = 5+100 (state→105); B.step returns 5 twice
-            // (state passes 5→105→? but the value each read resumes is the pre-advance t); body
-            // `(+ (* 10 (B.step)) (B.step))`: first B.step=5 (state 5→105), second B.step=105 → 10*5 + 105 = 155.
+            // B.step reads t=n=5, next-state `(+ t (ask.ask))` = 5+100 (state→105). Each read resumes the
+            // PRE-advance state as its value: body `(+ (* 10 (B.step)) (B.step))` — first B.step=5 (state
+            // 5→105, the ONE host call), second B.step reads the advanced 105 → 10*5 + 105 = 155.
             cdz_run::Outcome::Value(s) => {
                 assert_eq!(s, "155", "as6 host-slot perform folds strict → 155")
             }
