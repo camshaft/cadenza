@@ -1,0 +1,39 @@
+# Composite action: a GHA-cache-backed /nix/store so hermetic nix checks RESTORE a shared base instead of
+# rebuilding cold every run. Every nix-using job in checks.yml drops this in right after the nix installer
+# (before its `nix build`), so the config + rationale live in ONE place rather than copied per job.
+#
+# Piloted on rustfmt (#2214), then rolled out fleet-wide when the cold nix store became the CI throughput
+# bottleneck (~1hr/PR post-full-CI-in-nix cutover). cache-nix-action mechanism blessed by v-fleet-tooling.
+name: nix-store-cache
+description: Restore/save the /nix/store via GHA cache, keyed off the flake, save+purge gated to the default branch.
+
+runs:
+  using: composite
+  steps:
+    - uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7 (resolved 2026-08-04)
+      with:
+        # Key off BOTH flake.lock AND flake.nix: GHA caches are immutable per key (a saved key restores,
+        # never overwrites), so keying on flake.lock alone would leave main restoring a STALE /nix/store
+        # forever after a closure-changing flake.nix edit that doesn't bump the lock (a changed
+        # mkDerivation / build input / dep expr). Hashing flake.nix too rotates the key on any such edit so
+        # main saves fresh (github-liaison #2211). flake.nix is the whole nix expression here (no imported
+        # .nix). runner.arch keeps x86 and aarch64 caches distinct (different store paths).
+        # restore-prefixes-first-match still gives a warm start from the newest same-arch cache.
+        primary-key: nix-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('flake.lock', 'flake.nix') }}
+        restore-prefixes-first-match: nix-${{ runner.os }}-${{ runner.arch }}-
+        # No built-in save-on-default-branch flag → gate `save` with a github.ref expression (the main
+        # cache is still visible to candidate branches, so they RESTORE it without each writing a capped one).
+        save: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+        gc-max-store-size-linux: 8000000000 # ~8GB cap (under GHA's 10GB/repo) — GC the store before save.
+        # Gate PURGE to the default branch (same expr as save). NOTE: cache-nix-action purges ONLY caches
+        # scoped to the run's current ref (its pinned source lists AND deletes caches with the run's ref;
+        # README: "purges only caches scoped to the current GITHUB_REF"), so a candidate run CANNOT delete
+        # main's cache regardless — the earlier "a candidate purges the shared main base" concern (#2209)
+        # can't actually occur (resolved in #2214). The gate is kept as deliberate belt-and-braces: it
+        # confines purge+save to the one main run (candidates restore-only), so purge-created:0 can't churn
+        # main's OWN fresh same-ref cache within a run either. Purge is a Post-Restore GC of the arch-prefix
+        # caches.
+        purge: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+        purge-prefixes: nix-${{ runner.os }}-${{ runner.arch }}-
+        purge-created: 0
+        purge-primary-key: never
