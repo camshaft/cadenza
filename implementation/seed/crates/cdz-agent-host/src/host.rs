@@ -1016,6 +1016,137 @@ mod tests {
         );
     }
 
+    /// END-TO-END: drive the REAL rcdzc-compiled effect-emitting reducer (`reducer_b2`, which requests one
+    /// Http effect to `https://ok.host/x` on any event) through the FULL host agent loop — `HostedSession::deliver`
+    /// → fold → the emitted Http effect is AUTHORIZED → DISPATCHED via a stub [`HttpExecutor`] → the response
+    /// folds back — and assert the turn runs to completion (no open effects) and the executor was actually
+    /// reached with the reducer's URL. Where `real_genesis_reducer_folds_setup_events_through_the_host_async_path`
+    /// proves a real reducer folds SETUP events (which emit NO effects), THIS proves the full agent cycle
+    /// (deliver → fold → emit → authorize → dispatch → fold-result) through the host against a real reducer that
+    /// EMITS an effect — the headline "an agent runs" path, end to end.
+    ///
+    /// Env-gated skip-on-unset (same contract as the genesis + b1/b2 kernel e2es): `REDUCER_CADENZA_B2_COMPONENT`
+    /// (the compiled reducer_b2 bytes) + `CDZ_STORE` (the hash-keyed store the handle-lowered reducer's
+    /// value-heap runtime dep + its transitive nfc resolve from). Both-or-fail-loud; a bare `cargo test` skips.
+    #[tokio::test]
+    async fn real_effect_reducer_runs_a_full_http_turn_through_the_host() {
+        use cdz_kernel::wasm_host::AsyncComponentReducer;
+        use std::sync::{Arc, Mutex};
+
+        let reducer_path = std::env::var("REDUCER_CADENZA_B2_COMPONENT").ok();
+        let store_dir = std::env::var("CDZ_STORE").ok();
+        match (&reducer_path, &store_dir) {
+            (None, None) => {
+                eprintln!(
+                    "SKIP real_effect_reducer_runs_a_full_http_turn_through_the_host: \
+                     REDUCER_CADENZA_B2_COMPONENT + CDZ_STORE unset"
+                );
+                return;
+            }
+            (Some(_), None) => panic!(
+                "REDUCER_CADENZA_B2_COMPONENT is set but CDZ_STORE is not — the handle-lowered reducer's \
+                 runtime dep needs the component store to resolve its transitive cadenza:nfc/normalize (§23)"
+            ),
+            (None, Some(_)) => {
+                panic!("CDZ_STORE is set but REDUCER_CADENZA_B2_COMPONENT is not — nothing to drive")
+            }
+            (Some(_), Some(_)) => {}
+        }
+        let reducer_path = reducer_path.unwrap();
+        let store_dir = store_dir.unwrap();
+
+        let bytes = std::fs::read(&reducer_path).unwrap_or_else(|e| {
+            panic!("REDUCER_CADENZA_B2_COMPONENT={reducer_path:?} set but unreadable: {e}")
+        });
+        let reducer = AsyncComponentReducer::from_component_bytes(&bytes)
+            .unwrap_or_else(|e| panic!("reducer_b2 must be a valid component: {e:?}"));
+        // b2 lowers compounds to value-heap handles → declares a cadenza:runtime/heap dep. Resolve every dep
+        // from the store (content-verified via get_by_hash, matching the genesis E2E) + attach the store so
+        // the §23 compose resolves the runtime's own transitive nfc.
+        let store = cdz_kernel::component_store::ComponentStore::open(&store_dir);
+        let deps = reducer.deps().to_vec();
+        assert!(
+            !deps.is_empty(),
+            "a real effect-emitting reducer_b2 must declare a cadenza:runtime/heap dep"
+        );
+        let mut resolved = Vec::with_capacity(deps.len());
+        for dep in &deps {
+            let dep_bytes = store.get_by_hash(&dep.hash).unwrap_or_else(|e| {
+                panic!(
+                    "CDZ_STORE={store_dir:?} could not resolve reducer_b2 dep {:?} (hash {}): {e:?}",
+                    dep.import_name,
+                    dep.hash.to_hex()
+                )
+            });
+            resolved.push((dep.clone(), dep_bytes));
+        }
+        let reducer = reducer
+            .with_resolved_deps(resolved)
+            .with_component_store(store);
+
+        // A stub Http transport that RECORDS the URL it was called with (proving the effect reached the
+        // executor) and returns a canned 200. `?Send` single-threaded, like the real transport.
+        struct RecordingHttp {
+            called_url: Arc<Mutex<Option<String>>>,
+        }
+        #[async_trait::async_trait(?Send)]
+        impl crate::http::HttpTransport for RecordingHttp {
+            async fn request(
+                &self,
+                _method: crate::http::HttpMethod,
+                url: &str,
+                _headers: &[(String, String)],
+                _body: Option<&[u8]>,
+                _key: Hash,
+            ) -> Result<crate::http::HttpResponse, String> {
+                *self.called_url.lock().unwrap() = Some(url.to_string());
+                Ok(crate::http::HttpResponse {
+                    status: 200,
+                    headers: vec![],
+                    body: Vec::new().into(),
+                })
+            }
+        }
+        let called_url = Arc::new(Mutex::new(None));
+        let executor = CompositeExecutor::new().with_effect(
+            effect_ct::HTTP,
+            Box::new(crate::http::HttpExecutor::new(RecordingHttp {
+                called_url: called_url.clone(),
+            })),
+        );
+        // The authorizer must PERMIT the Http effect the reducer emits, or the kernel folds a deny (SEC-F1)
+        // and the executor is never reached — this test proves the AUTHORIZED path.
+        let authz = Authorizer::new(vec![Capability {
+            kind: EffectKind::Http,
+            predicate: ResourcePredicate::Any,
+        }]);
+        let mut session = HostedSession::genesis(
+            Hash::of(b"real-b2-effect-reducer"),
+            Box::new(reducer),
+            Box::new(authz),
+            executor,
+        );
+
+        // ONE turn: deliver an inbound event → b2 folds → emits the Http effect → authorized → dispatched via
+        // the stub → response folds back. `deliver` runs the whole cycle to completion.
+        session.deliver(inbound_go(), None).await.expect(
+            "the real b2 reducer runs a full Http turn through the host without a kernel error",
+        );
+
+        // The turn completed with nothing left open, and the effect actually reached the executor with b2's
+        // documented URL — the full deliver→fold→emit→authorize→dispatch→fold-result cycle ran end to end.
+        assert_eq!(
+            session.open_effects(),
+            0,
+            "the Http effect was dispatched + its result folded back (no effect left open)"
+        );
+        assert_eq!(
+            called_url.lock().unwrap().as_deref(),
+            Some("https://ok.host/x"),
+            "the reducer's Http effect reached the executor with b2's documented URL"
+        );
+    }
+
     #[tokio::test]
     async fn with_sink_persists_a_sessions_events_durably() {
         // with_sink attaches a durable LogStore: the events a session appends during a turn are persisted,
