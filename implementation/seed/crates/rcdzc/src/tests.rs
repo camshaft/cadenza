@@ -68193,6 +68193,57 @@ mod stage1 {
     }
 
     #[test]
+    fn an_outer_perform_directly_in_a_resume_next_state_slot_declines_not_miscompiles() {
+        use crate::testkit::parse;
+        // as2/as1 SAFE-DECLINE (breaker as-family, 2026-08-05). An inner handler arm whose NEXT-STATE slot
+        // performs an OUTER effect DIRECTLY — `(step (u) t (resume t (+ t (A.get))))` — was a CONFIRMED
+        // SILENT MISCOMPILE: the next-state threads forward as a state EXPRESSION, so the embedded `(A.get)`
+        // is either DROPPED (a single B.step discards the final slot state — as2 returned 5, must be 6) or
+        // DUPLICATED across dispatches (a multi-step body re-splices the state expr — as1 returned 63, a
+        // value that fits NO evaluation model). Both wrong, both backends, all opt levels. The fold now
+        // DECLINES cleanly (`next_state_directly_performs_foreign` gate in effects.rs's tail-resume arm) —
+        // never a wrong value. The correct FOLD (run the next-state foreign once at dispatch, thread its pure
+        // result — the inline analogue of as7's let-lift) is a deeper eval-order arc; this pin flips
+        // decline→value when it lands (as2→6, as1→61). The proven-correct as3 (value slot) / as7 (let-lift)
+        // faces STAY folding — pinned in the sibling control above; the gate fires ONLY on a DIRECT outer
+        // perform exclusive to the next-state slot, so it does not sweep the recursive-fold surface (which
+        // threads outer effects through self-call/specialized callees, never a literal perform in the arm's
+        // own next-state). The user WORKAROUND meanwhile is the let-lift (as7).
+        let as2 = "(do (effect A (op get (-> Unit Int64))) (effect B (op step (-> Unit Int64))) \
+             (def (main) (handle A 5 ((get (u) s (resume s (+ s 1)))) \
+               (handle B 0 ((step (u) t (resume t (+ t (A.get))))) \
+                 (+ (* 10 (B.step)) (A.get))))) (export main))";
+        // as1 — three chained B.step performs (multi-step): the drop/duplicate manifests as 63 (no model).
+        let as1 = "(do (effect A (op get (-> Unit Int64))) (effect B (op step (-> Unit Int64))) \
+             (def (main) (handle A 5 ((get (u) s (resume s (+ s 1)))) \
+               (handle B 0 ((step (u) t (resume t (+ t (A.get))))) \
+                 (+ (* 100 (B.step)) (+ (* 10 (B.step)) (B.step)))))) (export main))";
+        for (src, name) in [(as2, "as2"), (as1, "as1")] {
+            match compile_component(&crate::codec::encode(&parse(src))) {
+                // TODO(as-fold): flip to a value assertion (as2→6, as1→61) when the next-state-slot
+                // outer-perform fold lands. Until then the DECLINE must be CLEAN — never a leaked internal
+                // state-param name, never a wrong value.
+                Err(e) => assert!(
+                    !e.message.contains("#eff") && !e.message.contains("$s"),
+                    "{name}: the next-state-slot outer-perform decline must not leak an internal \
+                     state-param name, got: {}",
+                    e.message
+                ),
+                // If a future increment folds it, the value MUST be correct (as2=6, as1=61) — never the
+                // pre-fix silent miscompile (as2=5, as1=63).
+                Ok(bytes) => {
+                    let v: i64 = run_returns(&bytes, "main");
+                    let want = if name == "as2" { 6 } else { 61 };
+                    assert_eq!(
+                        v, want,
+                        "{name}: if the next-state-slot outer perform folds it must be {want}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn a_performing_condition_advance_survives_an_inner_abort_and_is_read_by_a_post_handle_observer()
      {
         use crate::testkit::parse;

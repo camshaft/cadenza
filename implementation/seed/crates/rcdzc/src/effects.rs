@@ -4791,6 +4791,33 @@ fn thread_bounded(
             //     handler / emitted as host calls), then the resume value. This is what lets an inner
             //     handler INTERPOSE on a delegated effect — count it via an outer effect, then forward.
             let (value, next_state) = peel_resume_from_arm_body(db, arm_body)?;
+            // SAFE-DECLINE: a FOREIGN perform embedded ONLY in the threaded NEXT-STATE (as2/as1, breaker
+            // 2026-08-05). An arm `(resume t (+ t (A.get)))` performing an OUTER effect `A.get` in its
+            // next-state expr is unsound as a fold: the next-state threads forward as a state EXPRESSION, so
+            // the embedded `A.get` is either DROPPED (a single perform discards the final slot state — as2:
+            // `(+ 10 0) + seed = 5`, should be 6) or DUPLICATED across dispatches (multi-perform re-splices
+            // the state expr — as1: 63, fits no model). Both are SILENT wrong values, both backends, O0-O3.
+            // The proven-correct forms already fold and MUST stay folding: the foreign perform in the VALUE
+            // slot (`(resume (+ t (A.get)) t)` — as3=56, served on the live spine), the manual let-lift
+            // (`(let ((x (A.get))) (resume t (+ t x)))` — as7=6, its foreign runs in the value-wrapper too),
+            // and the interposing `(do (A.tick) (resume v s))` (the foreign is a do-STATEMENT the value's
+            // `(do … v)` runs). So decline ONLY when the foreign perform is EXCLUSIVE to `next_state` — a
+            // DIRECT `(Outer.op …)` in the threaded-state position that is NOT in the value. The check runs
+            // over the ORIGINAL PARENTED arm (`peel_resume_from_arm_body(arm.body)`) — NOT the post-peel
+            // `value`/`next_state`, whose `deep_fresh_copy` orphans (dead parent chain) would POISON spec-name
+            // resolution (`effect_op_of` resolves the decl-literal; resolving an orphan leaked a
+            // `loop#eff3$s1` CDZ0101 into the recursive-fold surface). The structural (non-call-following)
+            // `next_state_directly_performs_foreign` distinguishes as2's literal `(A.get)` in the arm's own
+            // next-state from a recursive fold that threads an outer effect through a self-call/specialized
+            // CALLEE body (never a direct perform in the arm's next-state), so the recursive-fold suite stays
+            // folding. The correct FOLD (run the next-state foreign once at dispatch, thread its pure result —
+            // the inline analogue of as7's let-lift) is a deeper eval-order arc; decline is the safe floor.
+            if let Some((orig_value, orig_next_state)) = peel_resume_from_arm_body(db, arm.body)
+                && next_state_directly_performs_foreign(db, orig_next_state, ctx)
+                && !next_state_directly_performs_foreign(db, orig_value, ctx)
+            {
+                return None;
+            }
             // `value`/`next_state` are the resume node's own CHILDREN, so their `parent_of` still points at
             // that (now-discarded) `resume` node — an orphan whose parent chain does NOT reach the threaded
             // body's enclosing `(def …)`. If either carries a NAME reference (e.g. a state-threading arm's
@@ -8274,6 +8301,29 @@ fn body_reaches_foreign_perform(db: &mut Db, node: StructId, ctx: &HandlerCtx) -
         }
     }
     walk(db, node, ctx, 0)
+}
+
+/// Whether `node` performs a FOREIGN op (an effect op NOT in this handler's arms — an outer handler's
+/// effect) DIRECTLY, as a literal `(Outer.op …)` Apply somewhere in the expression tree — WITHOUT
+/// following user calls into their bodies. This is the NARROW twin of `body_reaches_foreign_perform`
+/// (which over-reports through recursive/unresolvable heads, sweeping the whole recursive-fold surface).
+/// Used to gate the as2/as1 safe-decline: an inner arm's NEXT-STATE `(+ t (A.get))` literally performs the
+/// OUTER effect in the threaded-state position (dropped/duplicated → silent wrong). A recursive fold that
+/// threads an outer effect does so through a self-call/specialized CALLEE body, never a direct `(A.get)` in
+/// the arm's own next-state — so NOT following calls is exactly the discriminator that spares those folds.
+fn next_state_directly_performs_foreign(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> bool {
+    if let Resolved::Apply { head, .. } = resolved_of(db, node)
+        && let Some((decl, idx)) = crate::eval::effect_op_of(db, head)
+        && !ctx.arms.contains_key(&(decl.0, idx))
+    {
+        return true;
+    }
+    match db.ast.get(node).clone() {
+        Struct::List(children) => children
+            .iter()
+            .any(|&c| next_state_directly_performs_foreign(db, c, ctx)),
+        Struct::Atom(_) => false,
+    }
 }
 
 /// Whether `param` is the unit placeholder `()` (a nullary operation's single "parameter", which binds
