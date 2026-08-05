@@ -485,25 +485,24 @@
         };
 
         # Operator seq-144 ("get ALL the reducer stuff set up on nix"): run the agent-harness bootstrap
-        # reducers' behavioral @tests through nix, per-input-cached. v-harness-bootstrap owns the fixtures
-        # (implementation/seed/crates/cdz-kernel/tests/fixtures/reducer-cadenza — reducer_b{1,2,3}.cdz +
-        # reducer_genesis.cdz [=B4] + Project.cdz, tests list = all 4). This is the SEED-COMPILER path (cdz
-        # test on the project), INDEPENDENT of the kernel host adapter — the heap-value @tests (b2/b3/genesis)
-        # resolve the value-heap runtime by hash from my componentStore via CDZ_STORE (set by
-        # testCadenzaProject). Verified: 14 @tests pass (b1=2/b2=2/b3=5/genesis=5). The wit/ dir is included
-        # so cdz's project resolution + any component-target metadata resolves. (The packages.reducer-cadenza
-        # COMPONENT build + REDUCER_CADENZA_COMPONENT env — the kernel-e2e half — is a separate increment,
-        # coordinated with v-harness-bootstrap on the per-reducer component-names.)
-        reducerCadenzaSrc = pkgs.lib.fileset.toSource {
-          root = ./.;
-          fileset = pkgs.lib.fileset.unions [
-            ./implementation/seed/crates/cdz-kernel/tests/fixtures/reducer-cadenza
-            ./implementation/seed/crates/cdz-kernel/wit
-          ];
+        # reducers' behavioral @tests through nix, per-input-cached (v-harness-bootstrap owns the fixtures).
+        # SEED-COMPILER path (`cdz test` on the project), INDEPENDENT of the kernel host adapter — the
+        # heap-value @tests resolve the value-heap runtime by hash from my componentStore via CDZ_STORE
+        # (set by testCadenzaProject). (The COMPONENT build + REDUCER_CADENZA_COMPONENT env — the
+        # kernel-e2e half — is separate; the env wiring is adapter-gated on v-agent-harness.)
+        #   🪤 ROOT AT THE PROJECT DIR: testCadenzaProject runs `cdz test .` at the unpacked-src cwd with
+        #   the explicit "no upward manifest search" guard — so Project.cdz MUST be at the src root. A
+        #   repo-root fileset.toSource would nest it 6 dirs down (Project.cdz not at `.` → the guarded
+        #   search, github-liaison #2182). So root reducerCadenzaTestSrc AT the fixture dir (Project.cdz +
+        #   the reducer .cdz land at top level) — same rooting as exampleProjectTests. `cdz test` needs no
+        #   wit/ (the @tests are pure cdz-test, no component-target metadata — Project.cdz names no wit).
+        reducerCadenzaTestSrc = pkgs.lib.fileset.toSource {
+          root = ./implementation/seed/crates/cdz-kernel/tests/fixtures/reducer-cadenza;
+          fileset = ./implementation/seed/crates/cdz-kernel/tests/fixtures/reducer-cadenza;
         };
         reducerCadenzaTests = testCadenzaProject {
           pname = "cdz-reducer-cadenza-tests";
-          src = reducerCadenzaSrc;
+          src = reducerCadenzaTestSrc;
         };
 
         # seq-144 Part 2: compile a single Cadenza reducer .cdz to a wasm COMPONENT via the seed compiler.
@@ -519,16 +518,22 @@
           pkgs.stdenvNoCC.mkDerivation {
             pname = name;
             version = "0.0.0";
-            src = reducerCadenzaSrc;
+            src = reducerCadenzaTestSrc; # fixture-dir-rooted → the reducer .cdz are at the src top level.
             nativeBuildInputs = [ seedCompiler ];
             buildPhase = ''
               runHook preBuild
               export HOME="$TMPDIR/home"; mkdir -p "$HOME"
-              cdz compile implementation/seed/crates/cdz-kernel/tests/fixtures/reducer-cadenza/${cdzFile} \
-                --target wasm --component-name ${componentName} -o "$out"
+              # compile the single reducer .cdz → a wasm component (emitted to component.wasm in the cwd).
+              cdz compile ${cdzFile} --target wasm --component-name ${componentName} -o component.wasm
               runHook postBuild
             '';
-            dontInstall = true; # `-o "$out"` writes the component file directly (like the seedCompiler outputs).
+            # match the flake's other single-wasm derivations (reducer-guest/rcdzc-wasm): write $out in
+            # installPhase, not the buildPhase (github-liaison #2182 consistency).
+            installPhase = ''
+              runHook preInstall
+              cp component.wasm "$out"
+              runHook postInstall
+            '';
           };
         reducerCadenzaB1 = mkCadenzaComponent { name = "reducer-cadenza-b1"; cdzFile = "reducer_b1.cdz"; };
         reducerCadenzaB2 = mkCadenzaComponent { name = "reducer-cadenza-b2"; cdzFile = "reducer_b2.cdz"; };
