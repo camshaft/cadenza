@@ -102,15 +102,59 @@ async fn async_reducer_drives_via_the_async_reducer_trait() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn async_reducer_declines_a_component_with_dependencies() {
-    // The async path doesn't yet compose §23 component deps (a follow-up); it must DECLINE such a
-    // component loudly, not instantiate one whose deps it would silently drop. A non-reducer blob also
-    // declines. (Here: garbage bytes are an InvalidComponent — the nearest available negative fixture.)
+async fn async_reducer_from_component_bytes_rejects_garbage() {
+    // Garbage bytes are an InvalidComponent at construction. (The async path now COMPOSES §23 component
+    // deps per-fold like the sync ComponentReducer — it no longer DECLINES a dep-bearing reducer; a
+    // dep-bearing component builds fine and composes at fold time. This test is the invalid-bytes guard.)
     match AsyncComponentReducer::from_component_bytes(b"not a component") {
         Err(ComponentError::InvalidComponent(_)) => {}
         Err(e) => {
             panic!("expected InvalidComponent for garbage bytes, got a different error: {e:?}")
         }
         Ok(_) => panic!("garbage bytes must not build an async reducer"),
+    }
+}
+
+// The async dep-path API + guard (reviewer #2253): a component that declares a `+<hash>` dep builds fine
+// (no longer declined), `deps()` reports it, and folding WITHOUT attaching the resolved deps fails with an
+// ACTIONABLE error naming the builders — not an opaque wasmtime linker error. (A full green dep-bearing
+// async fold is proven downstream by v-ah-host's genesis E2E, the async twin of the sync b1 e2e.)
+#[tokio::test(flavor = "current_thread")]
+async fn async_reducer_declaring_a_dep_reports_it_and_folds_loud_without_attach() {
+    // A minimal component that IMPORTS a content-addressed dep (`+<64-hex>`). declared_deps recognizes the
+    // `+<hash>` build-metadata → this is a dep-bearing reducer (no fold world needed: the actionable
+    // no-deps-attached guard fires before instantiation).
+    let hex = "a".repeat(64);
+    let src = format!(
+        r#"(component
+             (import "cadenza:runtime/heap@0.0.0+{hex}" (instance
+               (export "box-int" (func (param "v" s64) (result u32))))))"#
+    );
+    let bytes = wat::parse_str(&src).expect("assemble dep-declaring component");
+
+    let reducer = AsyncComponentReducer::from_component_bytes(&bytes)
+        .expect("dep-bearing async reducer builds");
+    // deps() reports the declared dep (API parity with the sync path).
+    assert_eq!(reducer.deps().len(), 1, "declares one +hash dep");
+    assert!(
+        reducer.deps()[0]
+            .import_name
+            .starts_with("cadenza:runtime/heap@0.0.0+"),
+        "deps() surfaces the declared import name"
+    );
+
+    // Fold WITHOUT with_resolved_deps → actionable error naming the builders (not an opaque linker error).
+    let ct = ContentType {
+        family: "message".into(),
+        version: 1,
+    };
+    match reducer.apply(Kv::new(), ct, None, None).await {
+        Err((ComponentError::Instantiate(msg), _kv)) => assert!(
+            msg.contains("with_resolved_deps") && msg.contains("declares"),
+            "expected an actionable no-deps-attached error naming the builders, got {msg:?}"
+        ),
+        other => {
+            panic!("expected an actionable Instantiate error for unattached deps, got {other:?}")
+        }
     }
 }
