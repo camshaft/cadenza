@@ -625,7 +625,7 @@ async function checkExample(ex) {
     const mlFail = await checkProgram(mlProgram, "ml", ex, "ML");
     if (mlFail) return mlFail;
     try {
-      // Toggle pass — the EXACT mirror of renderToMl (line ~89) in the ml→s-expr direction, so both toggle
+      // Toggle pass — the EXACT mirror of renderToMl in the ml→s-expr direction, so both toggle
       // directions exercise identical wrap → render → STRIP → rewrap. The reader's real toggle re-renders
       // the wrapped ML to s-expr, STRIPS back to the bare displayed snippet, then REWRAPS to compile/run;
       // compiling the un-stripped render output would gate a shape the reader never runs and let a

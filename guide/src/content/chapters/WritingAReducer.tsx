@@ -189,7 +189,7 @@ def main() = List.len(apply({ family = "result", version = 1 }, None(), Some(Str
         it to the host interface by name:
       </P>
       <Note>
-        effect Kv = | get : Bytes → Option(Bytes) | put : (Bytes, Bytes) → Unit
+        effect Kv = | get : Bytes {"->"} Option(Bytes) | put : (Bytes, Bytes) {"->"} Unit
         <br />
         bind(Kv, "cadenza:agent-kernel/kv")
       </Note>
