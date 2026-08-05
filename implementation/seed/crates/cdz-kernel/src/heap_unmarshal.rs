@@ -215,7 +215,26 @@ mod tests {
                    ;; DoS-guard test hands this handle to read_effect_requests: with the MAX_PREALLOC cap the
                    ;; host does NOT eager-reserve ~4G*sizeof — it reserves the cap, then vec-get walks past
                    ;; the single-page memory and TRAPS (clean Err), never an alloc-abort.
-                   (data (i32.const 300) "\ff\ff\ff\ff"))
+                   (data (i32.const 300) "\ff\ff\ff\ff")
+                   ;; @400 an EMPTY vec: [len=0], no element slots. read_effect_requests must return an
+                   ;; empty Vec (the B1 empty-effects fold shape) without ever calling vec-get.
+                   (data (i32.const 400) "\00\00\00\00")
+                   ;; @420 a record whose correlation = Some(EMPTY bytes) and payload = None — pins that a
+                   ;; present-but-empty payload round-trips as Some(vec![]), DISTINCT from None. Reuses the
+                   ;; @160 kind (Http) + @180 target. [len=4][correlation@452][kind@160][payload@240][target@180]
+                   (data (i32.const 420) "\04\00\00\00\c4\01\00\00\a0\00\00\00\f0\00\00\00\b4\00\00\00")
+                   ;; @452 correlation = Some(@464): [disc=0][payload=@464]. (Kept clear of @440's field span.)
+                   (data (i32.const 452) "\00\00\00\00\d0\01\00\00")
+                   ;; @464 EMPTY bytes: [len=0], no bytes — read_bytes returns vec![].
+                   (data (i32.const 464) "\00\00\00\00")
+                   ;; @500 a length-1 vec whose element record@520 carries a BOGUS option discriminant in its
+                   ;; correlation sum (disc=7, neither Some(0) nor None(1)) — read_option_bytes must hard-Trap
+                   ;; (ABI drift), not silently default. [len=1][elem0=record@520]
+                   (data (i32.const 500) "\01\00\00\00\14\02\00\00")
+                   ;; @532 record: [len=4][correlation@560][kind@160][payload@240][target@180]
+                   (data (i32.const 532) "\04\00\00\00\30\02\00\00\a0\00\00\00\f0\00\00\00\b4\00\00\00")
+                   ;; @560 correlation sum with a BOGUS disc=7: [disc=7][payload ignored=0]
+                   (data (i32.const 560) "\07\00\00\00\00\00\00\00"))
                  (core instance $i (instantiate $m))
                  (func $box-int (param "v" s64) (result u32) (canon lift (core func $i "box-int")))
                  (func $arr-alloc (param "len" u32) (result u32) (canon lift (core func $i "arr-alloc")))
@@ -322,6 +341,52 @@ mod tests {
                 "a bogus u32::MAX vec-len must not read as a real {}-element list",
                 v.len()
             ),
+        }
+    }
+
+    // An EMPTY effect-request list (vec-len == 0) reads back as an empty Vec — the B1 empty-effects fold
+    // shape. Pins that the zero-length path returns Ok(vec![]) (never calls vec-get, never errors), so a
+    // reducer that emits no effects is decoded as "no effects", not a spurious read failure.
+    #[test]
+    fn reads_an_empty_effect_request_list_as_empty_vec() {
+        let mut heap = bind_read_stub();
+        let effects = read_effect_requests(&mut heap, 400).expect("read empty effect list");
+        assert!(
+            effects.is_empty(),
+            "an empty (len-0) list must decode to an empty Vec, got {} effects",
+            effects.len()
+        );
+    }
+
+    // `Some([])` (a present-but-empty payload) round-trips DISTINCT from `None` — read_option_bytes must
+    // return Some(vec![]) for disc 0 with empty bytes, not collapse it to None. Guards the documented
+    // "empty-but-present" distinction the fold boundary depends on (an emitted effect with an explicit
+    // empty correlation is not the same as no correlation).
+    #[test]
+    fn reads_some_empty_bytes_distinct_from_none() {
+        let mut heap = bind_read_stub();
+        let e =
+            read_effect_request(&mut heap, 420).expect("read record with Some(empty) correlation");
+        assert_eq!(
+            e.correlation,
+            Some(Vec::new()),
+            "Some(empty bytes) must decode to Some(vec![]), distinct from None"
+        );
+        assert_eq!(e.payload, None, "payload is still None (disc 1)");
+    }
+
+    // A bogus option<list<u8>> discriminant (7 — neither Some(0) nor None(1)) is a hard Trap, NOT a silent
+    // default. This is read_option_bytes's ABI-drift guard, the option-side analog of the effect-kind
+    // discriminant reject; walked end-to-end via read_effect_requests so the whole read path surfaces it.
+    #[test]
+    fn a_bogus_option_discriminant_hard_traps_not_defaults() {
+        let mut heap = bind_read_stub();
+        match read_effect_requests(&mut heap, 500) {
+            Err(ComponentError::Trap(msg)) => assert!(
+                msg.contains("neither Some(0) nor None(1)"),
+                "expected the option ABI-drift trap message, got {msg:?}"
+            ),
+            other => panic!("a bogus option discriminant must hard-Trap, got {other:?}"),
         }
     }
 }
