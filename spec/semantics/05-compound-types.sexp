@@ -3255,6 +3255,41 @@
   (call   main (: 3 Int64)) (output (: 42 Int64))
   (call   main (: 2 Int64)) (output (: -1 Int64)))
 
+(case "Ast nodes as Map keys: equal nodes collide to an overwrite, different node KINDS stay distinct"
+  (doc    "The BUILT-IN recursive sum as a map key (the Nat case above pins a user-declared one): re-inserting
+           `(Ast.Int 5N)` OVERWRITES (len stays 2, lookup reads the last value 300), while `(Ast.Name \"5\")` —
+           whose TEXT spells the same digit — stays a DISTINCT key. The key hash/eq must include the variant
+           tag (kind) and compare the BigInt payload by value; a text- or payload-only key would collapse the
+           Name with the Int, and an identity-keyed insert would duplicate instead of overwriting: 10·2 + 3.")
+  (input  (do
+            (def (main)
+              (do
+                (def m (Map.insert (Map.insert (Map.insert Map.empty (Ast.Int 5N) 100)
+                                               (Ast.Name "5") 200)
+                                   (Ast.Int 5N) 300))
+                (+ (* 10 (Map.len m))
+                   (match (Map.lookup m (Ast.Int 5N)) ((Some v) (/ v 100)) ((None _u) -1)))))
+            (export main)))
+  (output (: 23 Int64)))
+
+(case "a quote-built and ctor-built equal Ast collide as ONE Set element among 40 at CHAMP depth"
+  (doc    "The construction-provenance face of the Ast-key family: `(quote 25)` and `(Ast.Int 25N)` are the
+           same AST value: the loop builds `(Ast.Int i)` for i = 1..40 (25 INCLUDED), so inserting the
+           quote-built `(quote 25)` must COLLIDE with the loop-built ctor node — len stays 40, never 41 —
+           and the ctor-built `contains` probe answers true: 10·40 + 1 = 401. One value, one key, regardless
+           of how each side was constructed — the Ast twin of the rope-vs-flat String key pins, exercised
+           through a populated multi-level CHAMP descent.")
+  (input  (do
+            (def (fill (: i Int64) (: s (Set Ast)))
+              (if (= i 0) s (fill (- i 1) (Set.insert s (Ast.Int (BigInt.of i))))))
+            (def (main (: n Int64))
+              (do
+                (def s (Set.insert (fill n (Set.of (list))) (quote 25)))
+                (+ (* 10 (Set.len s))
+                   (if (Set.contains s (Ast.Int 25N)) 1 0))))
+            (export main)))
+  (call   main (: 40 Int64)) (output (: 401 Int64)))
+
 (case "a SET as a Map key hits by ORDER-INDEPENDENT inner-set content"
   (doc    "The set-KEY face of the exotic-key family (the fresh Set-of-Sets pin covers a set as a SET
            element; this keys a MAP by one): a map keyed by `(Set.of (list 1 n))` at `n = 2` is found by
