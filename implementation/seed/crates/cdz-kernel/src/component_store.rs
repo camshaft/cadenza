@@ -5,16 +5,32 @@
 //! (the runtime's own bare inter-runtime imports like `cadenza:nfc/normalize`, mapped in `runtime.toml`).
 //!
 //! ## Store layout (v-nix-confirmed, mirrors cdz-run's `resolve_nfc_from_store`)
-//! - `<store>/<hash>.wasm` — one component per file, named by its blake3 content address.
+//! - `<store>/<sha256hex>.wasm` — one component per file, named by its SHA-256 content address.
 //! - `<store>/runtime.toml` — a `name = "<hash>"` manifest mapping the well-known runtime-internal
 //!   components (`runtime`, `debug_runtime`, `nfc`, …) to their content hashes. This is how a BARE
 //!   interface import (no `+<hash>` build-metadata) is resolved: the importer names the interface, the
 //!   manifest names the providing component's hash.
 //!
-//! Every fetch CONTENT-VERIFIES (`Hash::of(bytes) == hash`) before returning — a corrupt or substituted
-//! blob can never compose silently (the same integrity gate `blob::DiskBlobStore` and cdz-run apply). The
-//! two resolution paths differ only in how the hash is obtained: a `+<hash>` dep carries it in the import
-//! name; a bare dep looks it up by name in `runtime.toml`.
+//! ## The dual-hash boundary (operator ruling A, concierge answer 2026-08-05)
+//! This reader is the ONE place two content-address algorithms meet, so it is documented explicitly rather
+//! than left implicit (a silent dual-hash system is where someone later assumes uniformity and reintroduces
+//! a mismatch):
+//! - The EXTERNAL seed/nix component store is **SHA-256**-addressed — by ALL its producers: `xtask`'s
+//!   `content_address`, `cdz-run::cli::content_address` (the canonical impl, `+ resolve_nfc_from_store`),
+//!   and v-nix's `componentStore` (`flake.nix`, `sha256sum → <hash>.wasm`). `REQUIRED_RUNTIME_HASH` IS this
+//!   SHA-256. So THIS reader content-verifies each fetched blob with SHA-256 (see [`sha256_content_address`])
+//!   to MATCH the store it reads — NOT the kernel's blake3 [`Hash::of`], which would mismatch every fetch.
+//! - Kernel-INTERNAL durable state (events, KV nodes, blobs — `blob::DiskBlobStore`) stays **blake3**
+//!   ([`crate::hash::Hash::of`]). That address never crosses into this external store and vice versa.
+//!
+//! The full SHA-256 store contract is anchored on `cdz-run::cli::content_address` (v-nix owns it): SHA-256
+//! lowercase-hex of the component bytes; `<sha256hex>.wasm` + `runtime.toml` layout; `runtime.toml` maps the
+//! runtime's BARE inter-runtime deps by name→hash, distinct from a program's own `+hash`-in-import dep.
+//!
+//! Every fetch CONTENT-VERIFIES ([`sha256_content_address(bytes)`](sha256_content_address) `== <hash>`)
+//! before returning — a corrupt or substituted blob can never compose silently. The two resolution paths
+//! differ only in how the hash is obtained: a `+<hash>` dep carries it in the import name; a bare dep looks
+//! it up by name in `runtime.toml`.
 //!
 //! This module is pure resolution (filesystem reads + hashing) — no wasmtime, no compose. The
 //! transitive-dep compose in [`crate::wasm_host`] consumes it to supply a dep's own dep bytes.
@@ -73,7 +89,9 @@ impl ComponentStore {
             }
         })?;
         // Integrity gate: the bytes MUST hash to their key, or a corrupt/substituted blob would compose.
-        if Hash::of(&bytes) != *hash {
+        // Verify with SHA-256 — the EXTERNAL store's address algorithm (see the dual-hash boundary note at
+        // the module head) — NOT the kernel's blake3 `Hash::of`, which would mismatch every real blob.
+        if sha256_content_address(&bytes) != hex {
             return Err(StoreError::ContentAddressMismatch { hash: hex });
         }
         Ok(bytes)
@@ -100,6 +118,22 @@ impl ComponentStore {
     }
 }
 
+/// SHA-256 of `bytes`, lowercase hex — the EXTERNAL component store's content-address function. This is a
+/// verbatim mirror of the canonical impl `cdz-run::cli::content_address` (which carries the full store
+/// content-address contract v-nix owns); the seed store (`xtask`), the reference resolver (`cdz-run`), and
+/// v-nix's `componentStore` (`flake.nix`, `sha256sum`) all key on THIS, and `REQUIRED_RUNTIME_HASH` IS this
+/// value. The store reader verifies with this — NOT the kernel-internal blake3 [`Hash::of`] — because the
+/// on-disk blobs are SHA-256-addressed (the dual-hash boundary; see the module head).
+fn sha256_content_address(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(bytes);
+    let mut s = String::with_capacity(64);
+    for b in digest {
+        s.push_str(&format!("{b:02x}"));
+    }
+    s
+}
+
 /// Parse a `runtime.toml` for a `<name> = "<hash>"` line, returning the hash string. A minimal line-based
 /// scan (the manifest is a flat `key = "value"` map — `runtime`/`debug_runtime`/`nfc`); we avoid a full
 /// TOML-parser dep for a two-field manifest. Matches the KEY exactly (so `nfc` doesn't match `nfc_extra`).
@@ -122,18 +156,26 @@ mod tests {
         std::fs::write(dir.join(name), bytes).unwrap();
     }
 
+    /// The store's content address for `bytes` as a `Hash` key — built from the SHA-256 address (the
+    /// EXTERNAL store's algorithm), the same way production derives it from a dep's `+<sha256hex>` import
+    /// name. NOT `Hash::of` (blake3), which would name a file the reader's sha256 verify rejects.
+    fn store_hash(bytes: &[u8]) -> Hash {
+        Hash::from_hex(&sha256_content_address(bytes))
+            .expect("sha256 hex is a valid 64-char content address")
+    }
+
     // A hash-addressed fetch round-trips + content-verifies. Uses a real temp dir with a `<hash>.wasm` file.
     #[test]
     fn get_by_hash_reads_and_verifies() {
         let dir = std::env::temp_dir().join(format!("cdzstore-hash-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let bytes = b"component-bytes-abc".to_vec();
-        let hash = Hash::of(&bytes);
+        let hash = store_hash(&bytes);
         write(&dir, &format!("{}.wasm", hash.to_hex()), &bytes);
         let store = ComponentStore::open(&dir);
         assert_eq!(store.get_by_hash(&hash).unwrap(), bytes);
         // A hash with no blob → BlobMissing.
-        let absent = Hash::of(b"nope");
+        let absent = store_hash(b"nope");
         assert!(matches!(
             store.get_by_hash(&absent),
             Err(StoreError::BlobMissing { .. })
@@ -147,7 +189,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("cdzstore-corrupt-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let good = b"the-real-bytes".to_vec();
-        let hash = Hash::of(&good);
+        let hash = store_hash(&good);
         // Write DIFFERENT bytes under the good hash's name → integrity failure.
         write(&dir, &format!("{}.wasm", hash.to_hex()), b"tampered");
         let store = ComponentStore::open(&dir);
@@ -164,9 +206,9 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("cdzstore-nfc-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let nfc_bytes = b"nfc-component".to_vec();
-        let nfc_hash = Hash::of(&nfc_bytes);
+        let nfc_hash = store_hash(&nfc_bytes);
         let rt_bytes = b"runtime-component".to_vec();
-        let rt_hash = Hash::of(&rt_bytes);
+        let rt_hash = store_hash(&rt_bytes);
         write(&dir, &format!("{}.wasm", nfc_hash.to_hex()), &nfc_bytes);
         write(&dir, &format!("{}.wasm", rt_hash.to_hex()), &rt_bytes);
         write(

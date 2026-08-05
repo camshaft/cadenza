@@ -1,10 +1,17 @@
 //! Content addressing — the one hashing primitive the whole kernel is built on.
 //!
-//! Everything durable (events, KV nodes, blobs, reducer wasm, snapshots) is addressed by the blake3
-//! hash of its canonical bytes. Design invariant (§4/§16c-S3/S8): the *encoding* that feeds this hash
-//! must be **canonical and frozen** — the same logical value must always produce the same bytes, or
-//! replay/snapshot verification silently rots. For v0 we don't claim cross-version replay, but we DO
+//! Everything KERNEL-INTERNAL and durable (events, KV nodes, blobs, reducer wasm, snapshots) is addressed
+//! by the blake3 hash of its canonical bytes. Design invariant (§4/§16c-S3/S8): the *encoding* that feeds
+//! this hash must be **canonical and frozen** — the same logical value must always produce the same bytes,
+//! or replay/snapshot verification silently rots. For v0 we don't claim cross-version replay, but we DO
 //! fix the encoding now so we never have to migrate it later.
+//!
+//! ONE exception, documented so it isn't mistaken for uniformity: the EXTERNAL on-disk component store
+//! (the seed/nix `CDZ_STORE`) is **SHA-256**-addressed by its producers (`xtask`, `cdz-run`, v-nix's
+//! `componentStore`), and `REQUIRED_RUNTIME_HASH` IS that SHA-256. So [`crate::component_store`] — the ONE
+//! reader of that external store — content-verifies with SHA-256 to match it, NOT with [`Hash::of`]. That
+//! is the single dual-hash boundary; `Hash::of` (blake3) is for kernel-internal durable state only, and
+//! the two address spaces never cross except at that one reader.
 
 use core::fmt;
 
