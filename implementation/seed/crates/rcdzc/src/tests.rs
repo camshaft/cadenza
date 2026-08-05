@@ -68175,8 +68175,12 @@ mod stage1 {
         );
 
         // RECURSIVE: the SAME multi-shot arm but the performs are inside a self-recursive loop. Today this
-        // declines cleanly; a future fold (a recursive multi-shot refold) must equal the SAME 25 — `(loop 1)`
-        // returns 1, so `(* flip1 (* flip2 1))` = `(* flip1 flip2)` = the identical 4-path cross-product.
+        // declines cleanly; a future fold (a recursive multi-shot refold) must equal the SAME 25. Reasoning:
+        // `(loop 0)` = 1, so `(loop 2)` = `(* flipA (* flipB 1))`; the `* 1` is IDENTITY, so this is
+        // STRUCTURALLY `(* flipA flipB)` — the identical 2-flip shape as the flat case → the same 4-path
+        // cross-product (2·2)+(2·3)+(3·2)+(3·3) = 25. (NB: `(loop 1)` as a STANDALONE program totals 2+3=5, its
+        // continuation being a bare `* 1`; but nested UNDER flipA that `* 1` collapses, so `(loop 2)` matches
+        // the flat product — github-liaison #2245 flagged the earlier "returns 1" gloss.)
         let rec = "(do (effect Amb (op flip (-> Unit Int64))) \
              (def (loop (: n Int64)) (if (= n 0) 1 (* (Amb.flip) (loop (- n 1))))) \
              (def (main) (handle Amb 0 ((flip (u) s (+ (resume 2 s) (resume 3 s)))) (loop 2))) (export main))";
@@ -68190,7 +68194,8 @@ mod stage1 {
                 e.code
             ),
             // If a future recursive-multi-shot-refold increment folds it, the value MUST be 25 (same
-            // cross-product as flat, since `(loop 1)` = 1), never a wrong value.
+            // cross-product as flat — `(loop 2)` = `(* flipA (* flipB 1))`, the `* 1` collapsing to
+            // `(* flipA flipB)`), never a wrong value.
             Ok(bytes) => assert_eq!(
                 run_returns::<i64>(&bytes, "main"),
                 25,
