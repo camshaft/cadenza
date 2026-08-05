@@ -102,10 +102,10 @@ async fn async_reducer_drives_via_the_async_reducer_trait() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn async_reducer_declines_a_component_with_dependencies() {
-    // The async path doesn't yet compose §23 component deps (a follow-up); it must DECLINE such a
-    // component loudly, not instantiate one whose deps it would silently drop. A non-reducer blob also
-    // declines. (Here: garbage bytes are an InvalidComponent — the nearest available negative fixture.)
+async fn async_reducer_from_component_bytes_rejects_garbage() {
+    // Garbage bytes are an InvalidComponent at construction. (The async path now COMPOSES §23 component
+    // deps per-fold like the sync ComponentReducer — it no longer DECLINES a dep-bearing reducer; a
+    // dep-bearing component builds fine and composes at fold time. This test is the invalid-bytes guard.)
     match AsyncComponentReducer::from_component_bytes(b"not a component") {
         Err(ComponentError::InvalidComponent(_)) => {}
         Err(e) => {
