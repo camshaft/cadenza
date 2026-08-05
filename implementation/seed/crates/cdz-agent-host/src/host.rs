@@ -952,9 +952,13 @@ mod tests {
             .unwrap_or_else(|e| panic!("reducer_genesis must be a valid component: {e:?}"));
 
         // The genesis reducer lowers compounds to value-heap handles, so it declares a `cadenza:runtime/heap`
-        // dep — resolve every declared dep's bytes from the hash-keyed store (`<hash>.wasm`, matching the b1
-        // e2e's componentStore layout), then attach the store so the §23 compose can also resolve the
-        // runtime's OWN transitive `cadenza:nfc/normalize` by name.
+        // dep — resolve every declared dep's bytes from the store, then attach the store so the §23 compose
+        // can also resolve the runtime's OWN transitive `cadenza:nfc/normalize` by name. Resolve via
+        // `ComponentStore::get_by_hash` (NOT a manual `<store>/<hash>.wasm` read): it's the production store
+        // reader the fold itself uses, so the test exercises the same content-address SHA-256 verify (#2210)
+        // — a corrupted/substituted blob is a host-side error (ContentAddressMismatch → a Compose error in
+        // production), not composed silently (#2261 review).
+        let store = cdz_kernel::component_store::ComponentStore::open(&store_dir);
         let deps = reducer.deps().to_vec();
         assert!(
             !deps.is_empty(),
@@ -962,19 +966,18 @@ mod tests {
         );
         let mut resolved = Vec::with_capacity(deps.len());
         for dep in &deps {
-            let path = std::path::Path::new(&store_dir).join(format!("{}.wasm", dep.hash.to_hex()));
-            let dep_bytes = std::fs::read(&path).unwrap_or_else(|e| {
+            let dep_bytes = store.get_by_hash(&dep.hash).unwrap_or_else(|e| {
                 panic!(
-                    "CDZ_STORE has no blob {path:?} for genesis reducer dep {:?} (hash {}): {e}",
+                    "CDZ_STORE={store_dir:?} could not resolve genesis reducer dep {:?} (hash {}): {e:?}",
                     dep.import_name,
                     dep.hash.to_hex()
                 )
             });
             resolved.push((dep.clone(), dep_bytes));
         }
-        let reducer = reducer.with_resolved_deps(resolved).with_component_store(
-            cdz_kernel::component_store::ComponentStore::open(&store_dir),
-        );
+        let reducer = reducer
+            .with_resolved_deps(resolved)
+            .with_component_store(store);
 
         // Drive the HOST path: a genesis session over the REAL reducer, then seed the three setup events.
         // Deny-all authz is fine — genesis setup events request no effects.
