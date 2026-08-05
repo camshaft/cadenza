@@ -473,8 +473,18 @@ jobs:
       # supply-chain caution). Matches the repo's tag-pinning convention for third-party actions.
       - uses: DeterminateSystems/nix-installer-action@v22
       - uses: ./.github/actions/nix-store-cache
-      - name: nix flake check
-        run: nix flake check --print-build-logs
+      # SCOPED to the reproducibility-BACKSTOP subset (v-nix + v-ft data-driven CI-speed, 2026-08-05): a full
+      # `nix flake check` rebuilt the UNION of ALL flake outputs (~48.6m advisory) — redundantly re-running the
+      # whole required-job set (clippy/test/codegen/gate/bench/guide/roundtrip/fmt/kernel+host-native/rcdzc-wasm/
+      # cad — each already run WITH the cache by its own required job), gating nothing + eating runner slots
+      # (queue-wait median 5.3m/p90 12m fleet-wide). `checks.flake-repro-backstop` keeps ONLY the coverage this
+      # advisory job UNIQUELY provides — the 3 through-nix hash-parity checks (nix-built bytes' sha256 == the
+      # committed REQUIRED_RUNTIME_HASH/DEBUG_RUNTIME_HASH/REQUIRED_NFC_HASH), component validity, the project
+      # @test suites, + the closure-assert — dropping the redundant rebuild. Required-set coverage is unchanged
+      # (those jobs still run); this just stops re-doing their work cold. (`nix flake check` locally still runs
+      # everything.) Advisory + continue-on-error retained.
+      - name: nix reproducibility backstop (scoped from full flake check)
+        run: nix build .#checks.aarch64-linux.flake-repro-backstop --print-build-logs
 
   roundtrip:
     # Every corpus program must round-trip through the syntax surfaces — guards cadenza-syntax
