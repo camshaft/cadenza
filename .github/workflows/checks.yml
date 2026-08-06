@@ -210,25 +210,25 @@ jobs:
     # by content address from the store, so this job (like `gate`) builds the store first and puts
     # `cdz`+`cdz-run` in the same release dir. aarch64 for the same runtime-hash reason as `gate`.
     name: cadenza @test suites
+    # Full-CI-in-nix Model-A body-swap (v-nix + v-ft data-driven CI-speed, 2026-08-06): the hand-wired body
+    # (setup-rust + `cargo xtask build` store + `cargo build --release -p cdz -p cdz-run` + `cdz test` on the 4
+    # Cadenza libraries) rebuilt cold every candidate (~12.1m) with NO /nix/store cache — the next advisory
+    # runner-cost slot-hog after C (nix-flake 48m) + cdz-agent-host (x86, held on v-ah-host's hang fix). The nix
+    # check `checks.<sys>.cad-tests` (cdzCadTestsCheck) runs the IDENTICAL `cdz test` loop on the SAME 4 dirs
+    # (implementation/cad + compiler-ml + choreography + iterators) resolving the value-heap runtime by content
+    # address from the cached store. Body-swap: keep the job NAME (advisory context `checks / cadenza @test
+    # suites` — verified NOT in ruleset 10560470's 10 required, so no ruleset edit; a red can't block merge),
+    # swap cold→cache-warm. STAYS aarch64 (ubuntu-24.04-arm): the check builds the value-heap runtime whose
+    # content hash is per-arch (same reason gate/codegen are aarch64) → `.#checks.aarch64-linux.cad-tests`. Frees
+    # an arm64 slot (pure runner-cost, same axis as C; lower queue-leverage than the x86 cdz-agent-host but
+    # available now + independent). Same pattern as clippy/test/codegen (#2171).
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v7
-      - uses: ./.github/actions/setup-rust
-        with:
-          wasm-tools: "true"
-          cache-key: cad-tests
-      - name: Build the runtime store
-        run: cargo xtask build
-      - name: Build cdz + cdz-run
-        run: cargo build --release -p cdz -p cdz-run
-      - name: Run the CAD library @test suite
-        run: ./target/release/cdz test implementation/cad
-      - name: Run the compiler-ml @test suite
-        run: ./target/release/cdz test implementation/compiler-ml
-      - name: Run the choreography @test suite
-        run: ./target/release/cdz test implementation/choreography
-      - name: Run the iterators @test suite
-        run: ./target/release/cdz test implementation/iterators
+      - uses: DeterminateSystems/nix-installer-action@v22
+      - uses: ./.github/actions/nix-store-cache
+      - name: cadenza @test suites — cdz test on cad/compiler-ml/choreography/iterators (via nix)
+        run: nix build .#checks.aarch64-linux.cad-tests --print-build-logs
 
   cdz-cad:
     # The NATIVE CAD mesh driver crate (implementation/seed/crates/cdz-cad, GH #400 increment G2). It is
