@@ -1799,6 +1799,8 @@ pass	a guard-elided signed division by a provably-non-neg-one divisor computes i
 pass	a guard-nested BARE pattern on a withheld constructor is also rejected (encapsulation soundness, guard-desugar route)
 pass	a guarded arm among same-constructor match arms keeps first-match-wins
 pass	a guarded arm is selected when its guard holds
+pass	a guarded arm over a perform-result scrutinee with a PURE fallback folds (ag5 control g1)
+pass	a guarded arm whose CONDITION performs (pure scrutinee) folds (ag5 control g3)
 pass	a guarded bin arm with a CONST leading segment reads a binder from a LATER segment
 pass	a guarded bin-match arm over a CONSTANT scrutinee folds the guard and selects the arm
 pass	a guarded bin-match arm over a CONSTANT scrutinee whose guard fails falls to the next arm
@@ -1812,9 +1814,11 @@ pass	a guarded map-match arm over a CONSTANT map folds the guard and selects the
 pass	a guarded map-match arm over a CONSTANT map whose guard fails falls to the next arm
 pass	a guarded map-match arm reads its value binder in the guard and falls through when it fails
 pass	a guarded match on a perform-result scrutinee with a PERFORMING fallback arm folds
+pass	a guarded match on a perform-result scrutinee with a performing fallback arm folds (guard-desugar #seed-preservation)
 pass	a guarded match over a runtime scrutinee whose guard fails takes the wildcard
 pass	a guarded match over a runtime scrutinee with constant arms computes correctly
 pass	a guarded out-of-bounds indexed read is not hoisted by the sharing
+pass	a guarded perform-result scrutinee that PASSES the guard folds (ag5 control g4, no fallback entry)
 pass	a guarded record match arm gates the fields it binds and falls through on a failing guard
 pass	a guarded variant arm falls through when the guard fails
 pass	a guarded wildcard arm falls through to a tail-recursive call
@@ -2567,6 +2571,7 @@ pass	a performing match SCRUTINEE threads its state into a performing arm body
 pass	a performing match-arm guard folds with WILDCARD patterns (no binder to let-bind)
 pass	a pipeline chain applies its stages left to right
 pass	a pipeline chain threads handler STATE left-to-right through effectful stages
+pass	a plain (unguarded) match on a perform-result scrutinee with a performing fallback folds (ag5 control g2)
 pass	a plain number def is unaffected by a following statement (the `as` sugar stays in its statement)
 pass	a plain quote does not evaluate a quasiquote's unquote nested inside it
 pass	a plain record compared to a nominal record of the same shape is a type error

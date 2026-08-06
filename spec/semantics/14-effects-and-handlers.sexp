@@ -2607,6 +2607,87 @@
               (handle St 0 ((tick (u) s (+ 100 (resume s (+ s 1))))) (match (St.tick) (0 (+ 7 (St.tick))) (_ 222)))) (export main)))
   (output (: 208 Int64)))
 
+(case "a guarded match on a perform-result scrutinee with a performing fallback arm folds (guard-desugar #seed-preservation)"
+  (doc    "The guarded-match-over-a-perform-result family (breaker ag5, fixed by the guard-desugar arm-body
+           pin — v-inference #2333). A handler body matches a perform result with a GUARDED arm, and the
+           non-guard FALLBACK arm ALSO performs: `(match (St.roll) ((guard v (> v 6)) (* v 100)) (v (+ (* 10
+           (St.roll)) v)))`. The guard desugar rewrites the match into an if-chain, reusing the arm bodies —
+           which carry the fold-synthesized `#seed` state binder (main's seed `n` is non-constant → let-lifted
+           to `#seed`). Before the fix, the desugar's `push_list` reparent DETACHED the reused fallback body's
+           `#seed` reference from its enclosing seed-let (the ref's parent chain topped out at the desugar's own
+           wildcard-binder let) → a spurious CDZ0101 'unbound #seed' on a VALID program. Fixed by pinning the
+           reused arm bodies' resolution at desugar entry (while the #seed-let ancestry is intact) so the Ref
+           survives the reparent. main 5: roll=5 fails the guard, fallback `(+ (* 10 (St.roll)) v)` with the
+           2nd roll=8 (state advanced +3) → `(* 10 8) + 5` = 85. Regression pin for the fixed false-reject.")
+  (input  (do
+            (effect St (op roll (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((roll (u) s (resume s (+ s 3))))
+                (match (St.roll)
+                  ((guard v (> v 6)) (* v 100))
+                  (v (+ (* 10 (St.roll)) v)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 85 Int64)))
+
+(case "a guarded arm over a perform-result scrutinee with a PURE fallback folds (ag5 control g1)"
+  (doc    "Control: the same guarded match but the fallback arm is PURE (`(v v)`) — folds regardless, isolating
+           that the ag5 fix is about the fold-synth #seed surviving the guard-desugar reparent, not the guard
+           itself. main 5: roll=5 fails `(> v 6)`, fallback returns v=5.")
+  (input  (do
+            (effect St (op roll (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((roll (u) s (resume s (+ s 3))))
+                (match (St.roll)
+                  ((guard v (> v 6)) (* v 100))
+                  (v v))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 5 Int64)))
+
+(case "a plain (unguarded) match on a perform-result scrutinee with a performing fallback folds (ag5 control g2)"
+  (doc    "Control: the SAME performing fallback but NO guard — folds. Isolates that removing the guard removes
+           the desugar path; the performing fallback alone is fine. main 5: roll=5, fallback `(+ (* 10 (St.roll))
+           v)` with 2nd roll=8 → `(* 10 8) + 5` = 85.")
+  (input  (do
+            (effect St (op roll (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((roll (u) s (resume s (+ s 3))))
+                (match (St.roll)
+                  (v (+ (* 10 (St.roll)) v)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 85 Int64)))
+
+(case "a guarded arm whose CONDITION performs (pure scrutinee) folds (ag5 control g3)"
+  (doc    "Control: the guard CONDITION performs `(> (St.roll) 4)` while the scrutinee `n` is pure — folds.
+           Isolates that a performing guard-cond over a pure scrutinee is the served side. main 5: scrutinee n=5,
+           guard `(> (St.roll) 4)` with roll=5 → true → `(* v 100)` = 500.")
+  (input  (do
+            (effect St (op roll (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((roll (u) s (resume s (+ s 3))))
+                (match n
+                  ((guard v (> (St.roll) 4)) (* v 100))
+                  (v v))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 500 Int64)))
+
+(case "a guarded perform-result scrutinee that PASSES the guard folds (ag5 control g4, no fallback entry)"
+  (doc    "Control: the guard-TRUE path (input passes the guard, so the fallback is never entered) — folds,
+           pinning the served runtime path of the same shape. main 9: roll=9 passes `(> v 6)` → `(* v 100)` = 900.")
+  (input  (do
+            (effect St (op roll (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((roll (u) s (resume s (+ s 3))))
+                (match (St.roll)
+                  ((guard v (> v 6)) (* v 100))
+                  (v v))))
+            (export main)))
+  (call   main (: 9 Int64)) (output (: 900 Int64)))
+
 (case "a MULTI-shot handler arm folds a two-hole body by re-reducing per resume"
   (doc    "The re-reducing fold extends to a MULTI-shot arm — one that resumes more than once — when the
            body's performs are all discharged BY THIS handler (no effect escapes to be re-issued). The fold
