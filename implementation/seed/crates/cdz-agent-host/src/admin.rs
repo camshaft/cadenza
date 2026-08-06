@@ -195,6 +195,29 @@ pub trait SessionFactory {
     /// a policy that forbids the session, a malformed component). The error becomes an
     /// [`AdminResponse::Error`]; the registry is left untouched on failure.
     async fn build(&mut self, spec: &InstallSpec) -> Result<HostedSession, String>;
+
+    /// Build a SPAWNED CHILD session (§lifecycle I3): materialize the reducer for `reducer_hash` + the
+    /// executor/authorizer set, then wrap them with PARENT-PROVENANCE via
+    /// [`HostedSession::genesis_spawned_with_nonce`](crate::HostedSession::genesis_spawned_with_nonce) using
+    /// the CALLER-supplied `spawn_nonce` (so the child's genesis-hash id matches the `lifecycle/spawn`
+    /// executor's pre-computation — see [`LifecycleOp::Spawn`](crate::LifecycleOp)). Same load path as
+    /// [`build`](Self::build) but `genesis_spawned_with_nonce` instead of the root `genesis`, and a
+    /// deny-all child authorizer by default (the kernel's deny-by-default posture — a spawned child earns
+    /// capabilities via an explicit later grant, not by inheriting the parent's).
+    ///
+    /// DEFAULT: not supported — a factory that only serves admin `install-session` (or a test stub) returns
+    /// an error, so a `lifecycle/spawn` against it declines cleanly rather than the trait forcing every impl
+    /// to grow a spawn path. The real [`ComponentSessionFactory`](crate::ComponentSessionFactory) overrides.
+    async fn build_spawned(
+        &mut self,
+        reducer_hash: Hash,
+        _parent_genesis: Hash,
+        _spawn_nonce: Hash,
+    ) -> Result<HostedSession, String> {
+        Err(format!(
+            "this SessionFactory does not support lifecycle/spawn (reducer {reducer_hash})"
+        ))
+    }
 }
 
 impl AgentHost {

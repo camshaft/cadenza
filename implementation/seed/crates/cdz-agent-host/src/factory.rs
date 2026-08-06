@@ -455,6 +455,44 @@ where
         }
         Ok(hosted)
     }
+
+    async fn build_spawned(
+        &mut self,
+        reducer_hash: Hash,
+        parent_genesis: Hash,
+        spawn_nonce: Hash,
+    ) -> Result<HostedSession, String> {
+        // Same reducer-load path as `build` (blob-get → lift → executor set), but wrapped with
+        // parent-provenance + the caller's nonce (so the child's id matches the spawn executor's
+        // pre-computation), and a DENY-ALL child authorizer (kernel deny-by-default — a spawned child earns
+        // caps via an explicit grant, not by inheriting the parent's policy).
+        let bytes = self
+            .blob
+            .get(&reducer_hash)
+            .await
+            .map_err(|e| format!("blob store error fetching child reducer {reducer_hash}: {e}"))?
+            .ok_or_else(|| {
+                format!("no reducer component in the blob store for child hash {reducer_hash}")
+            })?;
+        let reducer = AsyncComponentReducer::from_component_bytes(&bytes).map_err(|e| {
+            format!("child reducer component for {reducer_hash} did not lift: {e:?}")
+        })?;
+        let executors = self.executors.build().await;
+        // DENY-ALL child authorizer (NOT self.authz.build() — a spawned child does not inherit the install
+        // policy; it starts deny-by-default and earns caps via a later explicit grant).
+        let hosted = HostedSession::genesis_spawned_with_nonce(
+            reducer_hash,
+            spawn_nonce,
+            parent_genesis,
+            Box::new(reducer),
+            Box::new(cdz_kernel::authz::Authorizer::deny_all()),
+            executors,
+        );
+        // NOTE: a per-session durable log sink (the `[log].backend = file` path in `build`) is intentionally
+        // NOT attached here — a spawned child's log path would need its child id, which the loop assigns; the
+        // in-memory log is correct for the spawn v0 (a durable-log-for-spawned-children slice is a follow-on).
+        Ok(hosted)
+    }
 }
 
 #[cfg(test)]

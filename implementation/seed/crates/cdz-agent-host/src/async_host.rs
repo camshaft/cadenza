@@ -146,7 +146,11 @@ async fn bounce_delivery_failure(
 async fn apply_lifecycle_ops(
     host: &mut AgentHost,
     lifecycle_rx: &mut mpsc::UnboundedReceiver<LifecycleOp>,
+    factory: Option<&mut (dyn SessionFactory + '_)>,
 ) -> Result<(), KernelError> {
+    // The factory is consumed by at most one Spawn op per drain in practice, but a single drain can carry
+    // several ops; re-borrow per Spawn via `as_deref_mut` on an Option we hold across the loop.
+    let mut factory = factory;
     while let Ok(op) = lifecycle_rx.try_recv() {
         match op {
             LifecycleOp::Terminate { target, by, reason } => {
@@ -170,27 +174,73 @@ async fn apply_lifecycle_ops(
                 host.resume(&target);
             }
             // Spawn: register the child the executor pre-computed. The executor already minted the nonce +
-            // derived the child id (returned to the parent's reducer); the loop builds + registers the child
-            // with the SAME nonce so the id matches. REDUCER MATERIALIZATION (reducer_hash → a live
-            // Box<dyn Reducer> via the session factory) is the NEXT slice — `apply_lifecycle_ops` doesn't yet
-            // hold the factory. Until then this arm is a LOUD no-op: it does NOT register the child (so it
-            // never spawns a bogus session), and warns so the gap is visible — NOT a silent drop. The
-            // executor's returned id is still deterministically correct; only the registration awaits the
-            // factory-resolve slice. (Tracked: spawn executor-half landed; loop-apply factory-resolve next.)
+            // derived + returned the child id to the parent's reducer; the loop MATERIALIZES the reducer via
+            // the session factory (build_spawned: reducer_hash → live reducer + deny-all child authz + the
+            // SAME nonce) and registers it via AgentHost::spawn_child_with_nonce — so the registered id
+            // matches the pre-computed one byte-for-byte + the parent→child edge is recorded.
             LifecycleOp::Spawn {
                 parent,
                 reducer_hash,
-                spawn_nonce: _,
+                spawn_nonce,
                 child_id,
             } => {
-                tracing::warn!(
-                    parent = %parent.as_str(),
-                    child_id = %child_id.as_str(),
-                    reducer_hash = %reducer_hash.to_hex(),
-                    "lifecycle/spawn: child id pre-computed + returned to the parent, but registration awaits \
-                     the loop-apply factory-resolve slice (reducer_hash → live reducer) — child NOT yet \
-                     registered (loud no-op, not a silent drop)"
-                );
+                let Some(factory) = factory.as_deref_mut() else {
+                    // No factory configured (a pure control-plane host with no reducer-load seam) → can't
+                    // materialize a child. Loud no-op, not a silent drop; the parent already has the id but
+                    // no session backs it. A deployed daemon always has a factory.
+                    tracing::warn!(
+                        parent = %parent.as_str(), child_id = %child_id.as_str(),
+                        "lifecycle/spawn: no session factory configured — cannot materialize the child reducer (child NOT registered)"
+                    );
+                    continue;
+                };
+                // The parent genesis hash = the parent SessionId parsed back to a Hash (its id IS its
+                // genesis-hash-hex). A non-hex parent can't provide provenance → skip loud (the executor
+                // already rejects this, so it shouldn't reach here).
+                let Some(parent_genesis) = Hash::from_hex(parent.as_str()) else {
+                    tracing::warn!(parent = %parent.as_str(), "lifecycle/spawn: parent id not genesis-hash-hex — skipping");
+                    continue;
+                };
+                match factory
+                    .build_spawned(reducer_hash, parent_genesis, spawn_nonce)
+                    .await
+                {
+                    Ok(child) => {
+                        // Register under the parent→child edge with the SAME nonce (the id matches the
+                        // executor's pre-computed child_id). None = parent absent, Some(Err(FoldRefused)) =
+                        // parent terminated — both benign (no child registered); a real KernelError fails fast.
+                        match host
+                            .spawn_child_prebuilt_with_nonce(
+                                &parent,
+                                reducer_hash,
+                                spawn_nonce,
+                                child,
+                            )
+                            .await
+                        {
+                            Some(Ok(registered_id)) => {
+                                debug_assert_eq!(
+                                    registered_id, child_id,
+                                    "registered id == pre-computed"
+                                );
+                            }
+                            Some(Err(KernelError::FoldRefused)) | None => {
+                                tracing::warn!(parent = %parent.as_str(), "lifecycle/spawn: parent gone/terminated — child not spawned (benign)");
+                            }
+                            Some(Err(e)) => return Err(e),
+                        }
+                    }
+                    Err(reason) => {
+                        // A malformed/absent reducer, or a factory that doesn't support spawn — loud, not a
+                        // silent drop. The parent has the id but no live child (a Failure-to-parent is a
+                        // follow-on refinement; v0 logs).
+                        tracing::warn!(
+                            parent = %parent.as_str(), reducer_hash = %reducer_hash.to_hex(),
+                            reason = %reason,
+                            "lifecycle/spawn: factory could not build the child reducer — child NOT registered"
+                        );
+                    }
+                }
             }
         }
     }
@@ -569,7 +619,7 @@ impl AsyncAgentHost {
             // (§lifecycle I5 defer-to-loop): the executor couldn't mutate the registry from inside `perform`
             // (registry borrowed for the driven session), so it enqueued the op here — now `&mut host` is
             // free. Drained synchronously (the ops were produced on THIS task, so there's nothing to await).
-            apply_lifecycle_ops(&mut host, &mut lifecycle_rx).await?;
+            apply_lifecycle_ops(&mut host, &mut lifecycle_rx, factory.as_deref_mut()).await?;
 
             // A lifecycle op may have RESUMED a session (§lifecycle I4): replay any inbound held for a
             // now-un-suspended target. Deliver each in-place (still-suspended ones stay held). Partition:
@@ -829,6 +879,38 @@ mod tests {
                         Some(Payload::Inline(b"kill".to_vec().into())),
                         Timeliness::Interactive,
                     )])
+                }
+                _ => FoldOutput::none(),
+            }
+        }
+    }
+
+    /// A parent that SPAWNS a child on inbound: performs `lifecycle/spawn` with `reducer_hash` as the 32-byte
+    /// inline payload, and records the returned child id (the effect result) into KV["child"].
+    struct SpawnerAgent {
+        child_reducer: Hash,
+    }
+    #[async_trait::async_trait(?Send)]
+    impl Reducer for SpawnerAgent {
+        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+            match &event.body {
+                EventBody::Inbound { .. } => {
+                    FoldOutput::with(vec![EffectRequest::new_with_family(
+                        effect_ct::LIFECYCLE_SPAWN,
+                        String::new(), // spawn has no peer target
+                        Some(Payload::Inline(
+                            self.child_reducer.as_bytes().to_vec().into(),
+                        )),
+                        Timeliness::Interactive,
+                    )])
+                }
+                // The spawn effect result carries the child SessionId (the pre-computed id) — record it.
+                EventBody::EffectResult {
+                    result: EffectOutcome::Ok(Some(Payload::Inline(bytes))),
+                    ..
+                } => {
+                    kv.put(b"child".to_vec(), bytes.to_vec());
+                    FoldOutput::none()
                 }
                 _ => FoldOutput::none(),
             }
@@ -1153,6 +1235,90 @@ mod tests {
         );
         // The controller itself is untouched (it terminated a PEER, not itself).
         assert!(host.contains(&SessionId::new("controller")));
+    }
+
+    #[tokio::test]
+    async fn lifecycle_spawn_e2e_a_parent_spawns_a_child_through_the_loop() {
+        // §lifecycle I3 FULL E2E: a parent performs lifecycle/spawn → the executor pre-computes + returns the
+        // child id (parent folds it) + records LifecycleOp::Spawn → the loop's apply-step materializes the
+        // child via the factory's build_spawned + registers it via spawn_child_prebuilt_with_nonce. Asserts:
+        // the child is registered under the pre-computed id, the parent→child edge is on the parent's log,
+        // and the id the parent folded == the registered child id (the sync-return contract holds end-to-end).
+        let child_reducer = Hash::of(b"child-reducer-v1");
+        // The parent's genesis hash is deterministic from its reducer + nonce; but the lifecycle executor
+        // needs the parent's SessionId (= its genesis-hash-hex) at WIRING time, and the session needs that
+        // executor — a chicken/egg. Resolve it: derive the parent id first (root genesis, parent=None) from a
+        // FIXED nonce, wire the executor with it, then build the parent with the SAME fixed nonce so its
+        // actual genesis-hash matches the id we wired.
+        let parent_reducer = Hash::of(b"spawner-parent-v1");
+        let parent_nonce = Hash::of(b"spawner-parent-nonce");
+        let parent_id = SessionId::new(
+            cdz_kernel::kernel::Session::derive_genesis_hash(parent_reducer, parent_nonce, None)
+                .to_hex(),
+        );
+
+        let mut async_host = AsyncAgentHost::with_factory(AgentHost::new(), Box::new(StubFactory));
+        let parent_session = HostedSession::genesis_with_nonce(
+            parent_reducer,
+            parent_nonce,
+            Box::new(SpawnerAgent { child_reducer }),
+            Box::new(
+                Authorizer::new(vec![]).with_family_grants(vec![Capability::for_family(
+                    effect_ct::LIFECYCLE_SPAWN,
+                    ResourcePredicate::Any,
+                )]),
+            ),
+            CompositeExecutor::new().with_effect(
+                effect_ct::LIFECYCLE_SPAWN,
+                Box::new(crate::LifecycleExecutor::new(
+                    async_host.lifecycle_channel(),
+                    parent_id.clone(),
+                )),
+            ),
+        );
+        async_host
+            .host_mut()
+            .spawn(parent_id.clone(), parent_session);
+
+        let inbox = async_host.inbox();
+        let (_sd_tx, sd_rx) = tokio::sync::oneshot::channel();
+        inbox
+            .send(Inbound {
+                session: parent_id.clone(),
+                body: go(),
+                cause: None,
+                reply_to: None,
+            })
+            .unwrap();
+        drop(inbox);
+        let host = async_host
+            .run(sd_rx, || 0)
+            .await
+            .expect("clean shutdown, no kernel error");
+
+        // The parent folded the child id the executor returned.
+        let folded = host
+            .get(&parent_id)
+            .unwrap()
+            .session()
+            .kv()
+            .get(b"child")
+            .map(|v| String::from_utf8(v.to_vec()).unwrap())
+            .expect("parent folded the returned child id");
+        let child_id = SessionId::new(folded.clone());
+        // The child is REGISTERED (the loop materialized + registered it via the factory) under that id.
+        assert!(
+            host.contains(&child_id),
+            "the spawned child is registered under the pre-computed id the parent folded"
+        );
+        // The parent's log carries the parent→child edge, whose child_hash is the child's genesis hash (= id).
+        let edges = host.get(&parent_id).unwrap().spawned_children();
+        assert_eq!(edges.len(), 1, "parent recorded exactly one spawn edge");
+        assert_eq!(
+            edges[0].to_hex(),
+            folded,
+            "the edge's child_hash is the registered child id (sync-return contract holds end to end)"
+        );
     }
 
     /// A controller that suspends OR resumes `target` depending on the trigger payload: an Inbound carrying
@@ -1757,6 +1923,23 @@ mod tests {
     impl SessionFactory for StubFactory {
         async fn build(&mut self, _spec: &InstallSpec) -> Result<HostedSession, String> {
             Ok(mark_host())
+        }
+        // Spawn support: build a live child session with parent-provenance + the caller's nonce (a ReceiverAgent
+        // so a test can drive it), mirroring the real ComponentSessionFactory::build_spawned shape.
+        async fn build_spawned(
+            &mut self,
+            reducer_hash: Hash,
+            parent_genesis: Hash,
+            spawn_nonce: Hash,
+        ) -> Result<HostedSession, String> {
+            Ok(HostedSession::genesis_spawned_with_nonce(
+                reducer_hash,
+                spawn_nonce,
+                parent_genesis,
+                Box::new(ReceiverAgent),
+                Box::new(Authorizer::deny_all()),
+                CompositeExecutor::new(),
+            ))
         }
     }
 

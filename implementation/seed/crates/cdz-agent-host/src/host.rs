@@ -144,8 +144,24 @@ impl HostedSession {
         authz: Box<dyn Authorize>,
         executor: CompositeExecutor,
     ) -> Self {
+        Self::genesis_with_nonce(reducer_hash, mint_spawn_nonce(), reducer, authz, executor)
+    }
+
+    /// Like [`genesis`](Self::genesis) but the caller SUPPLIES the root `spawn_nonce` instead of minting a
+    /// fresh one. Useful when a caller must know the resulting `genesis_hash` (= SessionId) BEFORE building
+    /// the session — e.g. to wire a self-referencing collaborator (a lifecycle executor whose `owner` is this
+    /// session's own id): derive the id via [`Session::derive_genesis_hash`]`(reducer, nonce, None)` first,
+    /// then build with the SAME nonce so the actual genesis-hash matches. `genesis` (mint-internally) stays
+    /// the common path.
+    pub fn genesis_with_nonce(
+        reducer_hash: Hash,
+        spawn_nonce: Hash,
+        reducer: Box<dyn Reducer>,
+        authz: Box<dyn Authorize>,
+        executor: CompositeExecutor,
+    ) -> Self {
         HostedSession {
-            session: Session::genesis(reducer_hash, mint_spawn_nonce()),
+            session: Session::genesis(reducer_hash, spawn_nonce),
             reducer,
             authz,
             executor,
@@ -723,7 +739,32 @@ impl AgentHost {
             authz,
             executor,
         );
+        self.spawn_child_prebuilt_with_nonce(parent, reducer_hash, spawn_nonce, child)
+            .await
+    }
+
+    /// Register an ALREADY-BUILT spawned child under `parent` (§lifecycle I3 loop-apply). Same edge-first /
+    /// terminated-parent-refused / phantom-parent-None contract as [`spawn_child_with_nonce`], but the caller
+    /// (the loop, via the session factory's `build_spawned`) already materialized the child `HostedSession`
+    /// — so this only records the edge + registers it, no rebuild. `reducer_hash`/`spawn_nonce` are accepted
+    /// for signature symmetry + a debug check that `child`'s id is the expected provenance-derived one (the
+    /// factory built it with the same triple, so they agree).
+    pub async fn spawn_child_prebuilt_with_nonce(
+        &mut self,
+        parent: &SessionId,
+        reducer_hash: Hash,
+        spawn_nonce: Hash,
+        child: HostedSession,
+    ) -> Option<Result<SessionId, KernelError>> {
+        let parent_genesis = self.sessions.get(parent)?.genesis_hash();
         let child_hash = child.genesis_hash();
+        // The pre-built child MUST carry the same provenance the caller pre-computed from — a mismatch means
+        // the factory built with a different reducer/nonce/parent than the op recorded (a wiring bug).
+        debug_assert_eq!(
+            child_hash,
+            Session::derive_genesis_hash(reducer_hash, spawn_nonce, Some(parent_genesis)),
+            "pre-built child's genesis hash must match its (reducer, nonce, parent) provenance"
+        );
         let child_id = SessionId::new(child_hash.to_hex());
 
         // Record the durable parent→child edge FIRST: a terminated parent refuses the append (FoldRefused),
