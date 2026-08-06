@@ -1212,6 +1212,35 @@ fn an_empty_map_used_get_only_grounds_its_annotation_but_an_inserted_base_stays_
 }
 
 #[test]
+fn an_empty_map_get_only_with_a_solved_string_key_annotates_string_not_the_default() {
+    // REGRESSION (breaker ms9, 2026-08-06): a let-bound `Map.empty` used GET-ONLY, whose key type is fixed
+    // NOT at construction but by the lookup's KEY (`(Map.lookup m "k")` → String) — the map operand's own
+    // `type_of` at the lookup is `Map(Var, Var)` (fully open; K/V flow through the key + downstream match
+    // arms, invisible at the node), so it USED to ground to the DEFAULT `BTreeMap<i64, i64>` while the use
+    // emitted `.get(&"k".to_string())` → rust E0308 (a SILENT MISCOMPILE — wasm ran it correct, folding the
+    // String key). The fix RECONSTRUCTS the map type at `Core::MapLookup` from the SOLVED key type + the
+    // lookup-result `Option<V>` payload, grounds any still-open var (the value), and threads it as
+    // `expected_ty` — so `Core::MapNew` annotates `BTreeMap<String, i64>` (correct key, safely-grounded
+    // value). Distinct from the get-only test above (there the key IS the default i64; here it is String).
+    let m = compile_rust(
+        "(module m (def (main (: n Int64)) \
+           (let ((m Map.empty)) (match (Map.lookup m \"k\") ((Some x) x) ((None _u) n)))) (export main))",
+    );
+    assert!(
+        m.contains("BTreeMap<String, i64> = std::collections::BTreeMap::new()"),
+        "the get-only empty map annotates its SOLVED String key (not the default i64):\n{m}"
+    );
+    // e2e: compiles + runs to 5 (lookup misses the empty map → the None arm returns n=5), matching wasm.
+    let driver = "fn main() { println!(\"{}\", prog::main(5)); }";
+    if let Some(out) = rustc_run_driver(&m, driver) {
+        assert_eq!(
+            out, "5",
+            "empty-map lookup misses → None arm returns n=5:\n{m}"
+        );
+    }
+}
+
+#[test]
 fn a_bare_float_set_or_map_key_uses_the_cdz_f64_total_order_wrapper() {
     // A bare `Float` Set element / Map key is NOT `Ord` as a raw `f64` (NaN breaks totality), so it maps to
     // the `CdzF64` total-order wrapper (bit-canonical, NaN→one quiet NaN — the runtime's `box-float`). The
