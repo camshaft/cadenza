@@ -18,7 +18,7 @@
 //! layer is a later slice that preserves this shape — a tokio task per session driving the same loop.
 
 use cdz_kernel::authz::Authorize;
-use cdz_kernel::effect::effect_ct;
+use cdz_kernel::effect::{effect_ct, ResourcePredicate};
 use cdz_kernel::event::EventBody;
 use cdz_kernel::executor::{CompositeExecutor, Executor};
 use cdz_kernel::hash::Hash;
@@ -93,6 +93,15 @@ fn mint_spawn_nonce() -> Hash {
     let mut bytes = [0u8; 32];
     getrandom::getrandom(&mut bytes).expect("OS entropy (getrandom) for a session spawn nonce");
     Hash::of(&bytes)
+}
+
+/// A session's DIRECT spawn-children as [`SessionId`]s (§lifecycle I6): each `Spawned` edge records the
+/// child's genesis `Hash`, and a child's SessionId IS its genesis-hash-hex, so map hash → hex → SessionId.
+fn child_ids(s: &HostedSession) -> Vec<SessionId> {
+    s.spawned_children()
+        .iter()
+        .map(|h| SessionId::new(h.to_hex()))
+        .collect()
 }
 
 /// One running agent: the kernel `Session` plus the collaborators that drive its loop. The host owns all
@@ -705,6 +714,43 @@ impl AgentHost {
     /// Read-only access to a hosted session (for a status query / inspection). `None` = unknown id.
     pub fn get(&self, id: &SessionId) -> Option<&HostedSession> {
         self.sessions.get(id)
+    }
+
+    /// FREEZE `controller`'s transitive spawn-descendant set into a concrete [`ResourcePredicate::OneOf`]
+    /// (§lifecycle I6): the authority a session has to `lifecycle/*` (spawn/suspend/resume/terminate) a
+    /// target is "target ∈ my transitive Spawned-descendants" — but the kernel's declarative
+    /// [`ResourcePredicate::DescendantOf`] fails closed (it can't walk the registry at authorize-time,
+    /// §4b replay-safety). So the HOST computes the descendant set HERE (it has the registry + each session's
+    /// [`spawned_children`](HostedSession::spawned_children)) and bakes it into a `OneOf` grant the authorizer
+    /// CAN evaluate. Re-compute + re-install after each new `Spawned` edge (a spawn changes the tree).
+    ///
+    /// Walks the durable spawn-edge tree breadth-first from `controller`: each edge's `child_hash` IS the
+    /// child's SessionId (genesis-hash-hex), so the descendant set is those hex ids. A child not currently
+    /// registered (terminated + removed) contributes its own id but no further descendants (its subtree is
+    /// gone with it). Cycle-safe (a `visited` set) though the spawn DAG is acyclic by construction (a child's
+    /// id is provenance-derived from its parent, so it can't be its own ancestor). Returns `OneOf(∅)` (admits
+    /// nothing) for a controller with no descendants — correctly denying lifecycle control of any peer.
+    pub fn descendant_set_of(&self, controller: &SessionId) -> ResourcePredicate {
+        let mut out: Vec<std::sync::Arc<str>> = Vec::new();
+        let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
+        // Seed the frontier with the controller's DIRECT children (the controller itself is not its own
+        // descendant — a session can't lifecycle-control itself via this authority).
+        let mut frontier: Vec<SessionId> = self
+            .sessions
+            .get(controller)
+            .map(child_ids)
+            .unwrap_or_default();
+        while let Some(id) = frontier.pop() {
+            if !visited.insert(id.as_str().to_string()) {
+                continue; // already recorded (cycle-guard / diamond)
+            }
+            out.push(std::sync::Arc::from(id.as_str()));
+            // Descend into this child's own children (transitive), if it's still registered.
+            if let Some(child) = self.sessions.get(&id) {
+                frontier.extend(child_ids(child));
+            }
+        }
+        ResourcePredicate::OneOf(out)
     }
 
     /// The ids of all running sessions (for a "list sessions" surface), sorted for a deterministic
@@ -1577,6 +1623,88 @@ mod tests {
             host.len(),
             before,
             "no child registered — a terminated parent spawns no orphan"
+        );
+    }
+
+    // Extract the sorted hex-id set from a ResourcePredicate::OneOf (for descendant-set assertions).
+    fn oneof_set(p: &ResourcePredicate) -> Vec<String> {
+        match p {
+            ResourcePredicate::OneOf(v) => {
+                let mut s: Vec<String> = v.iter().map(|a| a.as_ref().to_string()).collect();
+                s.sort();
+                s
+            }
+            other => panic!("expected OneOf, got {other:?}"),
+        }
+    }
+
+    // Spawn a child of `parent` (deny-all child, no executors) and return its SessionId.
+    async fn spawn_kid(host: &mut AgentHost, parent: &SessionId, reducer_tag: &[u8]) -> SessionId {
+        match host
+            .spawn_child(
+                parent,
+                Hash::of(reducer_tag),
+                Box::new(GenesisRecordingReducer),
+                Box::new(Authorizer::deny_all()),
+                CompositeExecutor::new(),
+            )
+            .await
+        {
+            Some(Ok(id)) => id,
+            other => panic!("spawn_child({reducer_tag:?}) failed: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn descendant_set_of_freezes_the_transitive_spawn_subtree() {
+        // §lifecycle I6: descendant_set_of walks the spawn-edge tree TRANSITIVELY (children + grandchildren)
+        // and freezes it into a OneOf(hex-id set). Build root → child → grandchild + a second child, assert
+        // root's descendant set = {child, child2, grandchild} (all 3, transitively), NOT just direct children.
+        let mut host = AgentHost::new();
+        let root = SessionId::new("root");
+        host.spawn(root.clone(), now_host());
+        let child = spawn_kid(&mut host, &root, b"child-1").await;
+        let child2 = spawn_kid(&mut host, &root, b"child-2").await;
+        let grandchild = spawn_kid(&mut host, &child, b"grandchild-1").await;
+
+        let mut want = vec![
+            child.as_str().to_string(),
+            child2.as_str().to_string(),
+            grandchild.as_str().to_string(),
+        ];
+        want.sort();
+        assert_eq!(
+            oneof_set(&host.descendant_set_of(&root)),
+            want,
+            "root's frozen descendant set is its full transitive subtree (children + grandchild)"
+        );
+        // A leaf (grandchild) has no descendants → empty OneOf (admits nothing — can't lifecycle-control anyone).
+        assert_eq!(
+            oneof_set(&host.descendant_set_of(&grandchild)),
+            Vec::<String>::new(),
+            "a leaf session has an empty descendant set"
+        );
+        // The intermediate child's set = just its own child (the grandchild), NOT root or its sibling.
+        assert_eq!(
+            oneof_set(&host.descendant_set_of(&child)),
+            vec![grandchild.as_str().to_string()],
+            "an intermediate session's descendant set is only ITS subtree"
+        );
+    }
+
+    #[test]
+    fn descendant_set_of_an_absent_or_childless_controller_is_empty() {
+        let mut host = AgentHost::new();
+        host.spawn(SessionId::new("lonely"), now_host());
+        // A registered session with no spawns → empty; admits no target (denies all lifecycle control).
+        assert_eq!(
+            oneof_set(&host.descendant_set_of(&SessionId::new("lonely"))),
+            Vec::<String>::new()
+        );
+        // An absent controller → empty (no tree to walk), fail-closed.
+        assert_eq!(
+            oneof_set(&host.descendant_set_of(&SessionId::new("ghost"))),
+            Vec::<String>::new()
         );
     }
 
