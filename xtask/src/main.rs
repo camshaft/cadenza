@@ -1050,15 +1050,15 @@ fn run_program(
         GateTarget::Wasm => {
             run_program_wasm(tools, store, program, modules, call, host_responses, None)
         }
-        // The ASYNC Rust backend has no host-boundary path yet — a host-delegating case declines (Todo). The
-        // SYNC Rust backend renders a no-arg integer-result host call (H1): the emitted `mod prog` calls
+        // Both Rust backends render a host call the SAME way: the emitted `mod prog` calls
         // `crate::__cdz_host_<key>()` and `run_program_rust` generates those shim fns from `host_responses`
-        // (a non-host case passes an empty slice → byte-identical to before). A UNIT-result effect op has no
-        // response but IS in host_calls (H8), so thread host_calls through too — an async host case still
-        // declines (it must have SOME host protocol), keyed on responses-or-calls being non-empty.
-        GateTarget::RustAsync if !host_responses.is_empty() || !host_calls.is_empty() => {
-            Ran::Declined { code: None }
-        }
+        // (a non-host case passes empty slices → byte-identical to before). A UNIT-result effect op has no
+        // response but IS in host_calls (H8), so thread host_calls through too. The host SHIMS are ordinary
+        // sync fns; an emitted async fn calls them synchronously (a host op charges no gas — only the
+        // enclosing async fn's entry `consume_boxed` does), so the async path needs NO async-shim variant —
+        // the SAME `host_responses`/`host_calls` protocol threads through with `async_mode=true`. (Option A's
+        // uniform-env emit already renders the async `Core::HostCall`; this just lets the harness DRIVE it,
+        // instead of the prior blanket async-host decline that todo'd the whole host/@param async frontier.)
         GateTarget::Rust => run_program_rust(
             tools,
             program,
@@ -1069,9 +1069,16 @@ fn run_program(
             host_responses,
             host_calls,
         ),
-        GateTarget::RustAsync => {
-            run_program_rust(tools, program, modules, call, true, None, &[], &[])
-        }
+        GateTarget::RustAsync => run_program_rust(
+            tools,
+            program,
+            modules,
+            call,
+            true,
+            None,
+            host_responses,
+            host_calls,
+        ),
         // The ML compiler has no package/host path today — a multi-file or host-delegating case is
         // simply not-yet-supported there, which is a decline (coverage-not-yet), never a disagreement.
         GateTarget::CadenzaMl
@@ -2437,10 +2444,12 @@ fn cdz_render_bytes_list(ty: &str) -> String {
 ///
 /// Nesting is balanced over `()`, `[]`, `{}` (block/struct-literal args), AND `<>` — EXCEPT a `>` that is
 /// the tail of a `->` return arrow (a closure-typed arg `Rc<dyn Fn(i64) -> i64>` contains a `->` whose `>`
-/// must NOT close a `<` group, or depth underflows and an inner comma leaks as top-level). Today the gate's
-/// `applied` args are corpus call VALUES (scalars, `(tuple …)`, bignum exprs) — no block/struct-literal/
-/// closure-sig arg reaches here — so the `{}`/`->` handling is DEFENSIVE (github-liaison #2391 c1): it keeps
-/// the splitter correct if the emit surface ever grows such an arg, rather than silently mis-tupling.
+/// must NOT close a `<` group, or the `<>` depth would decrement one step too EARLY — dropping back to 0
+/// before the type's real closing `>`, so a comma AFTER the arrow leaks as top-level and the arg mis-tuples;
+/// the depth uses `saturating_sub`, so it never underflows, it just closes the group prematurely). Today the
+/// gate's `applied` args are corpus call VALUES (scalars, `(tuple …)`, bignum exprs) — no block/struct-
+/// literal/closure-sig arg reaches here — so the `{}`/`->` handling is DEFENSIVE (github-liaison #2391 c1):
+/// it keeps the splitter correct if the emit surface ever grows such an arg, rather than silently mis-tupling.
 fn env_closure_call_arg(applied: &str) -> String {
     let applied = applied.trim();
     if applied.is_empty() {
