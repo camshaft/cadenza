@@ -53,14 +53,13 @@ impl EmitExecutor {
 #[async_trait::async_trait(?Send)]
 impl Executor for EmitExecutor {
     async fn perform(&mut self, req: &EffectRequest, _idempotency_key: Hash) -> EffectOutcome {
-        // `_idempotency_key` is DELIBERATELY dropped in v0 (#2351 review c2): the dedup/provenance it exists
-        // for lives at the PERSISTENCE layer (a durable inbox de-duping a redelivered emit across a
-        // crash-recovery re-drive), which this in-memory-`Inbox` routing has no way to consult — there's no
-        // durable peer-inbox to check the key against yet. So using it here would be a no-op today. When the
-        // peer inbox becomes durable (the delivery-confirmation / at-least-once v2), the key threads into
-        // that dedup — a routed Inbound stamped with the key, deduped on the peer's persisted log. Until
-        // then a re-driven emit CAN double-deliver on crash-recovery; that's an accepted v0 property (the
-        // routing is in-memory + the daemon's durable-restart path is a later slice), not an oversight.
+        // `_idempotency_key` is deliberately unused (#2351 review c2, present-tense per #2356 review B): the
+        // dedup it exists for lives at the PERSISTENCE layer — de-duping a redelivered emit requires a
+        // durable peer-inbox to check the key against, which in-memory `Inbox` routing has none of, so the
+        // key has nothing to consult here and using it would be a no-op. A consequence: routing is
+        // at-most-effort in-memory — a redelivered emit is not deduped by this executor (the durable inbox
+        // that would key on it is where that dedup belongs). Dropping the key is the correct behavior given
+        // the routing target, not an oversight.
         // Family-keyed (seq-39), matching the router + authz decision. A non-Emit family is structural →
         // PERMANENT (§17: observable Err, never a panic).
         if !req.content_type.matches_family(effect_ct::EMIT) {
