@@ -78,6 +78,17 @@ metrics-export-otlp = ["metrics-export", "dep:reqwest", "s2n-quic-dc-metrics/ote
 # validation unless `allow_non_loopback = true` (opt-in by intent), and still warned at boot.
 metrics-export-prometheus = ["metrics-export", "tokio/net", "tokio/io-util"]
 
+# `dogwood` gates the TEMPORAL Cedar policy extension (operator: "include dogwood as part of our cedar auth
+# stack — a temporal extension to cedar, integrate the same way"). OFF by default: it pulls a HEAVY native
+# tree (amzn-dogwood-language → rhai + pest + cedar-policy-mcp-schema-generator + logos + pretty), and — key
+# — that tree does NOT compile to wasm32-unknown-unknown (a transitive getrandom 0.3 rejects it without the
+# wasm_js backend), so dogwood runs HOST-SIDE only, NOT inside the `cedar-policy-guest` wasm component.
+# Architecture (dogwood's own design): a dogwood policy LOWERS to a plain `cedar_policy::PolicySet` where
+# temporal operators (`since`/`formerly`/`once`) become `context.<id>` bool slots a stateful temporal engine
+# fills per-decision from the session's event history — then PLAIN Cedar evaluates. So this is an ADDITIVE
+# host lowering stage in front of the unchanged Cedar evaluator; the kernel stays mechanism-only.
+dogwood = ["dep:amzn-dogwood-language"]
+
 [dependencies]
 # The kernel whose Executor/Authorize traits + effect/event types we implement. Path dep across the
 # workspace boundary (both are their own workspaces). We CONSUME these traits; we never edit its src.
@@ -169,3 +180,10 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 # also work out of the box, SSO would need `sso` added.
 aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "rustls", "default-https-client", "rt-tokio"], optional = true }
 aws-sdk-bedrockruntime = { version = "1", default-features = false, features = ["rustls", "default-https-client", "rt-tokio"], optional = true }
+# amzn-dogwood-language — the TEMPORAL Cedar extension (operator directive; gated behind `dogwood`). Git-only
+# (no published version), so PINNED to an exact rev for reproducibility. OPTIONAL: it lowers a temporal
+# policy to a plain `cedar_policy::PolicySet` (the artifact my Cedar path already evaluates) + exposes the
+# `context.<id>` temporal leaves a host engine fills from event history. Heavy native tree (rhai/pest/…),
+# host-side ONLY — does NOT go in the wasm policy guest (won't compile to wasm32). The `dep:` binding ties it
+# to the `dogwood` feature; the default build never compiles it.
+amzn-dogwood-language = { git = "https://github.com/dogwood-policy/dogwood.git", rev = "1fcba6cdf891a3ce703b5ba54d322a45184c5e7a", optional = true }

@@ -60,6 +60,8 @@ pub mod admin_wire;
 pub mod async_host;
 pub mod clock;
 pub mod config;
+#[cfg(feature = "dogwood")]
+pub mod dogwood;
 pub mod emit;
 #[cfg(feature = "metrics-export")]
 pub mod export;
