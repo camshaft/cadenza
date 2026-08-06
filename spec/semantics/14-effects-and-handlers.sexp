@@ -3540,6 +3540,93 @@
             (export main)))
   (error  CDZ0301))
 
+(case "a FULL handle expression in the resume-value slot — the arm runs a nested handler per dispatch"
+  (doc    "Arms performing INTO enclosing handlers is well-pinned; here the arm INSTANTIATES its own
+           complete handler: `(resume (handle In 100 … (In.small (* v 2))) s)` — the nested handle
+           runs to completion inside the arm and its result becomes the resume value (10 + 100 →
+           110).")
+  (input  (do
+            (effect Out (op big (-> Int64 Int64)))
+            (effect In (op small (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle Out 0
+                ((big (v) s
+                  (resume (handle In 100
+                            ((small (w) t (resume (+ w t) t)))
+                            (In.small (* v 2)))
+                          s)))
+                (Out.big n)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 110 Int64)))
+
+(case "the arm's nested handler is instantiated FRESH per dispatch — independent inner state"
+  (doc    "The per-dispatch lifecycle of an arm-instantiated handler: each outer dispatch seeds a NEW
+           inner handler from its op argument (v=5 → inner 5+6=11; v=20 → inner 20+21=41) → 100·11 +
+           41 = 1141. No inner state survives between the arm's instantiations.")
+  (input  (do
+            (effect Out (op big (-> Int64 Int64)))
+            (effect In (op small (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle Out 0
+                ((big (v) s
+                  (resume (handle In v
+                            ((small (u) t (resume t (+ t 1))))
+                            (+ (In.small) (In.small)))
+                          s)))
+                (+ (* 100 (Out.big n)) (Out.big 20))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 1141 Int64)))
+
+; ============ Multi-shot × enclosing-param capture (breaker FINDING mv, fixed in two slices: the
+; continuation's captures pinned before the per-resume splice, then the ARM BODY's captures pinned
+; before beta-reduce for the resume-value face + after substitution for the seed face). The class
+; was [multi-shot arm] × [any let/def binding in the handle body] × [an enclosing-param reference] →
+; false CDZ0101; match-binder consumers and no-binding bodies were always immune. These pin the
+; VALUE-verified faces: param in the resume value, param as the handle seed, and the always-immune
+; match-binder control. ============
+
+(case "a multi-shot arm's resume VALUE reads the enclosing param — the let-bound body folds correctly"
+  (doc    "FINDING repro (mv7, fixed): `(pick (u) s (+ (resume (+ n 1) s) (resume 2 s)))` with the
+           body let-binding the perform result — the resume-value's `n` is spliced into the
+           continuation's hole per resume site and used to orphan. Now folds with the right VALUES:
+           k(v) = 11v, so 11·6 + 11·2 = 88.")
+  (input  (do
+            (effect Amb (op pick (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle Amb 0
+                ((pick (u) s (+ (resume (+ n 1) s) (resume 2 s))))
+                (let ((x (Amb.pick)))
+                  (+ (* 10 x) x))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 88 Int64)))
+
+(case "a multi-shot handle SEEDED by the enclosing param folds with a let-bound body"
+  (doc    "The seed face (mv11, fixed): `(handle Amb n …)` where the param enters the arm via the
+           state binder substitution — the second capture path of the mv class. Same fold values:
+           seed 5, resume (s+1)=6 then 2 → 11·6 + 11·2 = 88.")
+  (input  (do
+            (effect Amb (op pick (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle Amb n
+                ((pick (u) s (+ (resume (+ s 1) s) (resume 2 s))))
+                (let ((x (Amb.pick)))
+                  (+ (* 10 x) x))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 88 Int64)))
+
+(case "a multi-shot arm with an enclosing-param resume value and a MATCH-binder consumer folds"
+  (doc    "The always-immune control of the mv class: a match BINDER consumes the perform result
+           (binding without a let) — this shape never orphaned, and it must keep folding identically
+           now that the let shapes are fixed: 88.")
+  (input  (do
+            (effect Amb (op pick (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle Amb 0
+                ((pick (u) s (+ (resume (+ n 1) s) (resume 2 s))))
+                (match (Amb.pick) (v (+ (* 10 v) v)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 88 Int64)))
+
 ; ============ Guarded match × effects (breaker FINDING, ag5 → fixed #2333). A guarded match on a
 ; perform-result scrutinee whose FALLBACK arm also performs used to leak the fold-synthesized #seed
 ; binder as a false CDZ0101: the guard desugar's arm-body copy reparented a reused (shared) body

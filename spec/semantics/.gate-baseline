@@ -6034,3 +6034,8 @@ pass	an OVERFLOWING literal to a narrow effect-op parameter is rejected
 pass	an arm resuming an OVERFLOWING literal into a narrow op RESULT is rejected
 pass	an overflowing literal in a RECORD op argument's narrow field is rejected
 pass	a RUNTIME Int64 argument to a narrow effect-op parameter is rejected as a type mismatch
+pass	a FULL handle expression in the resume-value slot — the arm runs a nested handler per dispatch
+pass	the arm's nested handler is instantiated FRESH per dispatch — independent inner state
+pass	a multi-shot arm's resume VALUE reads the enclosing param — the let-bound body folds correctly
+pass	a multi-shot handle SEEDED by the enclosing param folds with a let-bound body
+pass	a multi-shot arm with an enclosing-param resume value and a MATCH-binder consumer folds
