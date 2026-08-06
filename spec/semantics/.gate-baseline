@@ -2279,6 +2279,7 @@ pass	a multi-payload variant with MIXED-width, MIXED-type payloads deconstructs 
 pass	a multi-payload variant with a scalar AND two recursive payloads escapes flat
 pass	a multi-payload variant with an EMPTY-Map first payload compiles + deconstructs (function[27] regression pin)
 pass	a multi-segment bin concatenates mixed-width signed and unsigned segments in order
+pass	a multi-shot continuation contains a NESTED handler — each re-reduction re-enters it fresh
 pass	a multi-site arm folds while the handle BODY reads an enclosing binding (the re-anchored free var)
 pass	a multi-site arm's resume value routes through a pure helper call
 pass	a multi-step kernel derivation composes several primitive rules into one theorem
@@ -4009,7 +4010,9 @@ pass	an argument bound to a used parameter IS observed, so its trap occurs (the 
 pass	an argument bound to an unused parameter is not evaluated, so its trap does not occur
 pass	an argument swap weaves with perform results through a recursive handler body
 pass	an arithmetic operator with a single operand is rejected, not a crash
+pass	an arm CONDITIONS its shot count — the multi-shot branch
 pass	an arm REPLACES the trie state wholesale and the next op reads the replacement
+pass	an arm SUMS one resumption with a constant (the 1.5-shot shape)
 pass	an arm binder SHADOWS an outer heap list and the outer survives the shadow's scope
 pass	an arm chooses its resume value by an if on the handler state
 pass	an arm performs the outer effect TWICE and the results feed the resume value
@@ -4641,6 +4644,7 @@ pass	distinct-signature capturing producers
 pass	distinct-signature closures alongside a plain export — the Int64->Bool closure runs
 pass	distinct-signature closures alongside a plain export — the Int64->Int64 closure runs
 pass	distinct-signature closures alongside a plain export — the plain export runs
+pass	divergent multi-shot STRING lineages — each branch observes its own byte-length
 pass	divergent multi-shot states carry HEAP lineages — each branch grows its own list
 pass	dividing a quantity by a bare number keeps its dimension
 pass	dividing a rational by a negative rational normalizes the quotient's sign
@@ -5439,6 +5443,7 @@ pass	the complement laws fold x-and-not-x to zero and x-or-not-x to all-ones on 
 pass	the composed multibyte slice view equals its literal twin and keys a Map
 pass	the composed slice view EQUALS its flat twin and keys a Map by canonical content
 pass	the compound comparator drives a full INSERTION SORT over runtime tuples
+pass	the conditional-shot-count arm's SINGLE-shot branch (same program, other input)
 pass	the cross-handler op-arg lift fires 100 times inside a recursive accumulator loop
 pass	the decode error's kind is matchable
 pass	the default-integer pragma is definition-site scoped, not use-site

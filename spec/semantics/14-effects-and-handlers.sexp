@@ -2996,12 +2996,14 @@
   (call   main (: 5 Int64)) (output (: 60 Int64)))
 
 (case "divergent multi-shot states carry HEAP lineages — each branch grows its own list"
-  (doc    "The Perceus-critical face: the two resumes push DIFFERENT elements onto the list state, so
+  (doc    "The Perceus-critical SHAPE: the two resumes push DIFFERENT elements onto the list state, so
            each branch of the 2×2 tree owns an independent heap lineage. The body is `(+ (* 10 flip₁)
            flip₂)`: the outer flip branches k(1) and k(2), and inside each, the second flip re-branches
-           to (1 + 2) = 3 — so k(v) = 10v + 10v + 3 = 20v + 3; k(1) = 23, k(2) = 43 → 66. An FBIP
-           in-place grow shared across branches (one list mutated by both) breaks the tree's
-           independence and the checksum.")
+           to (1 + 2) = 3 — so k(v) = 10v + 10v + 3 = 20v + 3; k(1) = 23, k(2) = 43 → 66. NOTE this
+           case's resumed values are constants and nothing here reads the list, so its checksum alone
+           cannot detect a shared in-place list — it pins the divergent-push shape compiling and
+           running; the SIBLING below (per-branch `size`) is the case that OBSERVES the lineage
+           separation.")
   (input  (do
             (effect Amb (op flip (-> Unit Int64)))
             (def (main (: n Int64))
@@ -3024,6 +3026,83 @@
                 (+ (* 10 (Amb.flip)) (Amb.size))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 32 Int64)))
+
+(case "divergent multi-shot STRING lineages — each branch observes its own byte-length"
+  (doc    "The rope-representation twin of the list-lineage pins above (Strings are rope-backed, a
+           DIFFERENT heap representation from RRB lists): branch k(1) concats \\\"a\\\" (byte-len 1),
+           k(2) concats \\\"bb\\\" (byte-len 2), and each branch's trailing `len` reads ITS OWN —
+           10·1 + 1 = 11 and 10·2 + 2 = 22 → 33. A rope in-place append shared across branches would
+           read 3 on the sibling; the divergence property needs its own witness per representation.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)) (op len (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle Amb ""
+                ((flip (u) s (+ (resume 1 (String.concat s "a")) (resume 2 (String.concat s "bb"))))
+                 (len (u) s (resume (String.byte-len s) s)))
+                (+ (* 10 (Amb.flip)) (Amb.len))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 33 Int64)))
+
+(case "an arm SUMS one resumption with a constant (the 1.5-shot shape)"
+  (doc    "Between single-shot and multi-shot: the arm's value mixes ONE continuation result with a
+           non-continuation term — `(+ (resume 1 s) 100)`. k(1) = 1 + 5 = 6, arm value 6 + 100 = 106.
+           Pins that the arm's value expression composes a resumption result with ordinary arithmetic
+           (the resume is not required to be the whole arm value).")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle Amb 0
+                ((flip (u) s (+ (resume 1 s) 100)))
+                (+ (Amb.flip) 5)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 106 Int64)))
+
+(case "an arm CONDITIONS its shot count — the multi-shot branch"
+  (doc    "Every multi-shot pin above has a STATIC shot count; here the arm chooses AT RUN TIME —
+           `(if (> s 3) (+ (resume 1 s) (resume 2 s)) (resume 9 s))` — two resumptions on one branch,
+           one on the other. Seed 5 takes the multi-shot branch: k(1) = 6, k(2) = 7 → 13. The
+           single-shot branch of the SAME program is pinned below; a dynamically-chosen shot count is
+           the real shape of backtracking search.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle Amb n
+                ((flip (u) s (if (> s 3) (+ (resume 1 s) (resume 2 s)) (resume 9 s))))
+                (+ (Amb.flip) 5)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 13 Int64)))
+
+(case "the conditional-shot-count arm's SINGLE-shot branch (same program, other input)"
+  (doc    "The other runtime path of the conditional-count arm above: seed 2 fails `(> s 3)`, so the
+           arm resumes ONCE with 9 → 9 + 5 = 14. Together the pair pins both dynamic outcomes of one
+           compiled handler — the shot count is a runtime property of the dispatch, not a static
+           property of the arm.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle Amb n
+                ((flip (u) s (if (> s 3) (+ (resume 1 s) (resume 2 s)) (resume 9 s))))
+                (+ (Amb.flip) 5)))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 14 Int64)))
+
+(case "a multi-shot continuation contains a NESTED handler — each re-reduction re-enters it fresh"
+  (doc    "The continuation being re-reduced holds a whole nested `handle In` (a separate effect,
+           seed 7): each of the two re-reductions must RE-INSTANTIATE the nested frame from its seed —
+           both branches read 7 (k(10) = 17, k(20) = 27 → 44), never an 8 leaked from the sibling's
+           instance. Pins per-re-reduction frame re-instantiation.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (effect In (op get (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle Amb 0
+                ((flip (u) s (+ (resume 10 s) (resume 20 s))))
+                (+ (Amb.flip)
+                   (handle In 7
+                     ((get (u) t (resume t (+ t 1))))
+                     (In.get)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 44 Int64)))
 
 (case "a MULTI-shot continuation APPLIES a captured closure per re-reduction"
   (doc    "The closure composition of the captured-heap multi-shot cases above: the re-reduced continuation
