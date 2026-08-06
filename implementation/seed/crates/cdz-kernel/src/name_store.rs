@@ -62,15 +62,16 @@ impl SetEntry {
 /// tag is what makes the merge idempotent + a `remove` precise (a remove carries the tags it observed, so a
 /// concurrent re-add with a FRESH tag survives — add-wins). The tag is DETERMINISTIC (never random/clock) so
 /// replay reproduces it. This is the pure in-memory model; the durable add/remove-frame codec is I2.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct MemberOp {
     /// `true` = add this member, `false` = remove the add-tags this op observed.
     pub add: bool,
     /// The member hash (a session's genesis hash = its SessionId, for a session group).
     pub member: Hash,
     /// The unique add-tag `(origin, seq)`: origin = emitting session's identity, seq = its local op counter.
-    /// For a `remove`, this identifies the specific add being retracted (add-wins: only tags ≤ this remove
-    /// are cleared; a later add with a new tag survives).
+    /// For a `remove`, this identifies the SPECIFIC add-tag being retracted (observed-remove: EXACTLY the
+    /// add carrying this tag is cleared — not a range; a later re-add with a DIFFERENT tag survives, which
+    /// is the add-wins property).
     pub tag: (Hash, u64),
 }
 
@@ -84,8 +85,8 @@ impl MemberOp {
         }
     }
 
-    /// A `remove(member)` carrying the tag it observed — the leave/evict op (add-wins: retracts adds up to
-    /// this tag; a concurrent re-add with a fresh tag is NOT retracted).
+    /// A `remove(member)` carrying the tag it observed — the leave/evict op (add-wins: retracts EXACTLY the
+    /// add carrying this tag; a concurrent re-add with a fresh tag is NOT retracted).
     pub fn remove(member: Hash, origin: Hash, seq: u64) -> Self {
         MemberOp {
             add: false,
@@ -211,8 +212,13 @@ impl NameStore {
 
     /// Resolve a name to its CURRENT hash = the latest `set` (§4c point 3: a resolver freezes THIS hash
     /// into its own log, so a later hijacking `set` can't retroactively change what this resolve returned).
-    /// `Err(NoSuchName)` if the name was never set.
+    /// `Err(NoSuchName)` if the name was never set; `Err(NameModeMismatch)` if it's a GROUP name (use
+    /// [`resolve_all`](Self::resolve_all)) — the mode-guard mirrors [`set`](Self::set), so a group can't be
+    /// silently mis-read as a single-value pointer (D7).
     pub fn resolve(&self, name: &str) -> Result<Hash, NameStoreError> {
+        if self.groups.contains_key(name) {
+            return Err(NameStoreError::NameModeMismatch);
+        }
         self.names
             .get(name)
             .and_then(|log| log.last())
@@ -480,8 +486,13 @@ impl NameStore {
     /// `applied_set_keys` is untouched: those are per-live-dispatch crash-dedup keys, not shared state.
     pub fn merge_appends_from(&mut self, other: &NameStore) {
         // Single-value pointer names: the EXACT prior path, BYTE-IDENTICAL (longer-log-wins tail-append —
-        // correct because a pointer name is single-writer, so the logs are prefixes of each other).
+        // correct because a pointer name is single-writer, so the logs are prefixes of each other). A name
+        // that's a GROUP on either side is NOT a pointer — skip it here (the XOR-invariant guard, c3):
+        // never let a merge admit a name into BOTH maps.
         for (name, other_log) in &other.names {
+            if self.groups.contains_key(name) || other.groups.contains_key(name) {
+                continue; // pointer-XOR-group: this name is a group somewhere → not a pointer merge
+            }
             let mine = self.names.entry(name.clone()).or_default();
             if other_log.len() > mine.len() {
                 mine.extend_from_slice(&other_log[mine.len()..]);
@@ -489,16 +500,23 @@ impl NameStore {
         }
         // GROUP names: the OR-set CRDT merge (§4c D2) — a group is MULTI-writer, so the logs are NOT prefixes
         // of each other and the prefix-append above would DROP a concurrent writer's ops. Instead union by
-        // TAG: append every op from `other` whose (add, member, tag) isn't already present. Commutative +
-        // idempotent + order-independent (the tag makes each add unique + a remove precise), so a name's
-        // membership converges regardless of merge order — exactly what multi-writer reconcile needs.
+        // TAG: append every op from `other` not already present. Commutative + idempotent + order-independent
+        // (the tag makes each add unique + a remove precise), so a name's membership converges regardless of
+        // merge order. A name that's a POINTER on either side is skipped (XOR-invariant, c3). Dedup via a
+        // HashSet of the ops already present (O(n) merge, not O(n²) repeated Vec::contains).
         for (name, other_ops) in &other.groups {
-            let mine = self.groups.entry(name.clone()).or_default();
-            for op in other_ops {
-                if !mine.contains(op) {
-                    mine.push(op.clone());
-                }
+            if self.names.contains_key(name) || other.names.contains_key(name) {
+                continue; // pointer-XOR-group: this name is a pointer somewhere → not a group merge
             }
+            let mine = self.groups.entry(name.clone()).or_default();
+            let mut seen: std::collections::HashSet<&MemberOp> = mine.iter().collect();
+            // Collect the ops to append first (can't borrow `mine` mutably while `seen` borrows it).
+            let to_add: Vec<MemberOp> = other_ops
+                .iter()
+                .filter(|op| seen.insert(op))
+                .cloned()
+                .collect();
+            mine.extend(to_add);
         }
     }
 }

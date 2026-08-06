@@ -361,6 +361,79 @@ pub fn decode_name_set(bytes: &[u8]) -> Result<(String, Hash), EventAstError> {
     Ok((name, hash))
 }
 
+/// Encode a §4c session-directory GROUP add/remove op (I2 durable frame) as canonical AST:
+///
+///   `(member-op (name <str>) (add <0|1>) (member <hash>) (tag <origin-hash> <seq-u64>))`
+///
+/// The durable counterpart to a [`crate::name_store::MemberOp`] — a group name's log persists these frames
+/// (one per add/remove), and snapshot/replay round-trips the whole OR-set through them. `add` is a 0/1 flag
+/// (no bool-leaf in this codec); `tag` is the `(origin, seq)` that makes each add unique + a remove precise.
+/// Same shared-codec + total-decode discipline as [`encode_name_set`] (the bytes ride a durable log).
+pub fn encode_member_op(name: &str, add: bool, member: &Hash, tag: &(Hash, u64)) -> Vec<u8> {
+    let mut b = Builder::new();
+    let head = b.name("member-op");
+    let name_form = {
+        let h = b.name("name");
+        let v = str_leaf(&mut b, name);
+        b.list(vec![h, v])
+    };
+    let add_form = {
+        let h = b.name("add");
+        let v = u64_leaf(&mut b, add as u64);
+        b.list(vec![h, v])
+    };
+    let member_form = {
+        let h = b.name("member");
+        let mf = hash_form(&mut b, member);
+        b.list(vec![h, mf])
+    };
+    let tag_form = {
+        let h = b.name("tag");
+        let origin = hash_form(&mut b, &tag.0);
+        let seq = u64_leaf(&mut b, tag.1);
+        b.list(vec![h, origin, seq])
+    };
+    let root = b.list(vec![head, name_form, add_form, member_form, tag_form]);
+    codec::encode(&b.finish(root))
+}
+
+/// Decode a `member-op` frame encoded by [`encode_member_op`] → `(name, add, member, tag)`. Total:
+/// non-conforming bytes are a clean `Shape` error, never a panic (durable-log / untrusted-store bytes).
+pub fn decode_member_op(bytes: &[u8]) -> Result<(String, bool, Hash, (Hash, u64)), EventAstError> {
+    let a = codec::decode_detailed(bytes).map_err(EventAstError::Codec)?;
+    let [name_f, add_f, member_f, tag_f] = a
+        .as_form(a.root, "member-op")
+        .ok_or(shape("member-op head"))?
+    else {
+        return Err(shape("member-op arity"));
+    };
+    let name = {
+        let [nv] = a.as_form(*name_f, "name").ok_or(shape("name form"))? else {
+            return Err(shape("name arity"));
+        };
+        read_str(&a, *nv)?
+    };
+    let add = {
+        let [av] = a.as_form(*add_f, "add").ok_or(shape("add form"))? else {
+            return Err(shape("add arity"));
+        };
+        read_u64(&a, *av)? != 0
+    };
+    let member = {
+        let [mv] = a.as_form(*member_f, "member").ok_or(shape("member form"))? else {
+            return Err(shape("member arity"));
+        };
+        read_hash(&a, *mv)?
+    };
+    let tag = {
+        let [ov, sv] = a.as_form(*tag_f, "tag").ok_or(shape("tag form"))? else {
+            return Err(shape("tag arity"));
+        };
+        (read_hash(&a, *ov)?, read_u64(&a, *sv)?)
+    };
+    Ok((name, add, member, tag))
+}
+
 /// Encode a `(none)` | `(some <bytes>)` optional body form (shared by the request encoders).
 fn encode_opt_body(b: &mut Builder, body: Option<&[u8]>) -> StructId {
     match body {
@@ -1433,6 +1506,48 @@ mod tests {
             decode_name_set(&encode_name_set("session/abc-123/scratch", &Hash::of(b"x"))).unwrap();
         assert_eq!(name2, "session/abc-123/scratch");
         assert_eq!(hash2, Hash::of(b"x"));
+    }
+
+    #[test]
+    fn member_op_frame_round_trips_add_and_remove_with_tag() {
+        // §4c session-directory I2 durable frame: a group add/remove op — name + add-flag + member hash +
+        // (origin, seq) tag — round-trips through the shared codec (both add and remove arms).
+        let member = Hash::of(b"member-session");
+        let origin = Hash::of(b"origin-session");
+        // ADD arm.
+        let (n, add, m, tag) = decode_member_op(&encode_member_op(
+            "session/room/lobby",
+            true,
+            &member,
+            &(origin, 7),
+        ))
+        .expect("add frame round-trips");
+        assert_eq!(n, "session/room/lobby");
+        assert!(add, "the add flag round-trips as true");
+        assert_eq!(m, member);
+        assert_eq!(tag, (origin, 7));
+        // REMOVE arm (add=false) round-trips identically.
+        let (_n, add2, _m, tag2) = decode_member_op(&encode_member_op(
+            "session/room/lobby",
+            false,
+            &member,
+            &(origin, 7),
+        ))
+        .expect("remove frame round-trips");
+        assert!(!add2, "the remove flag round-trips as false");
+        assert_eq!(tag2, (origin, 7));
+    }
+
+    #[test]
+    fn malformed_member_op_frame_is_a_clean_error_not_a_panic() {
+        // Totality: a truncated/garbage member-op frame is a clean Shape/Codec error (durable-log bytes).
+        assert!(decode_member_op(b"not a valid frame at all").is_err());
+        // A valid name-set frame is NOT a member-op (wrong head) → clean error, no cross-decode.
+        let name_set = encode_name_set("session/room/lobby", &Hash::of(b"x"));
+        assert!(
+            decode_member_op(&name_set).is_err(),
+            "a name-set frame must not decode as a member-op"
+        );
     }
 
     #[test]
