@@ -2531,6 +2531,85 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 608 Int64)))
 
+(case "constant conditions simplify around performs — kept branches dispatch, dropped ones do not"
+  (doc    "Constant folding × effects: `(if true (St.next) 999)` and `(if false 999 (St.next))` both
+           have compile-time-constant conditions — the simplification keeps each surviving branch's
+           dispatch, in order: 5 + 6 = 11. (Dropped branches here carry no performs; the
+           dropped-branch-with-perform elisions are the short-circuit and if-gate pins above.)")
+  (input  (do
+            (effect St (op next (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next (u) s (resume s (+ s 1))))
+                (+ (if true (St.next) 999) (if false 999 (St.next)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 11 Int64)))
+
+(case "a String op RESULT selected by the op argument, composed via concat"
+  (doc    "String-valued op results beyond the interner pins: the arm selects between literals by the
+           op argument (positive → \\\"hi\\\", zero → \\\"lo\\\"), two dispatches compose through a concat
+           chain, and the byte-length consumes the assembled \\\"hi-lo\\\" → 5. The message-building
+           idiom.")
+  (input  (do
+            (effect St (op word (-> Int64 String)))
+            (def (main (: n Int64))
+              (handle St 0
+                ((word (k) s (resume (if (> k 0) "hi" "lo") (+ s 1))))
+                (String.byte-len (String.concat (St.word n) (String.concat "-" (St.word 0))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 5 Int64)))
+
+(case "a heterogeneous TUPLE as op ARGUMENT — the arm destructures both components"
+  (doc    "The argument-direction twin of the heterogeneous-tuple RESULT pin: `(Tuple String Int64)`
+           in the op signature's argument position, destructured by the arm — byte-len \\\"abc\\\" +
+           10·5 = 53. Mixed-type tuples now carry witnesses in both marshal directions, like records
+           and user sums.")
+  (input  (do
+            (effect St (op score (-> (Tuple String Int64) Int64)))
+            (def (main (: n Int64))
+              (handle St 0
+                ((score (p) s (match p ((tuple name pts) (resume (+ (String.byte-len name) (* pts 10)) s)))))
+                (St.score (tuple "abc" n))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 53 Int64)))
+
+(case "one perform result flows through let, record, projection, tuple, destructure, and match"
+  (doc    "The deep-composition smoke: a single effect-derived value travels the full consumer
+           gauntlet — bound (v = 5), stored in a record field, projected twice, packed into a tuple
+           with a derived companion (5, 15), destructured, compared (15 > 10), summed → 20. Each
+           consumer kind is individually pinned; this chains them all on one dispatch's result to
+           catch composition seams between the verified paths.")
+  (input  (do
+            (effect St (op seed (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((seed (u) s (resume s (+ s 1))))
+                (let ((v (St.seed)))
+                  (let ((r (record (base v) (scale 3))))
+                    (let ((p (tuple (. r base) (* (. r base) (. r scale)))))
+                      (match p
+                        ((tuple lo hi)
+                          (match (> hi 10)
+                            (true (+ lo hi))
+                            (false 0)))))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 20 Int64)))
+
+(case "a pure HELPER's arguments evaluate left-to-right when each performs"
+  (doc    "The calling-convention face of dispatch order: a pure place-value function called with
+           THREE performing arguments — they evaluate strictly left-to-right (5, 6, 7 → 567). The
+           positional pins cover effect-OP operands; this pins a plain function call's argument
+           evaluation order where each argument's dispatch makes the order observable.")
+  (input  (do
+            (effect St (op next (-> Unit Int64)))
+            (def (place (: a Int64) (: b Int64) (: c Int64)) (+ (* 100 a) (+ (* 10 b) c)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next (u) s (resume s (+ s 1))))
+                (place (St.next) (St.next) (St.next))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 567 Int64)))
+
 ; ============ Guarded match × effects (breaker FINDING, ag5 → fixed #2333). A guarded match on a
 ; perform-result scrutinee whose FALLBACK arm also performs used to leak the fold-synthesized #seed
 ; binder as a false CDZ0101: the guard desugar's arm-body copy reparented a reused (shared) body

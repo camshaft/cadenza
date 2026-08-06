@@ -5966,3 +5966,8 @@ todo	read of malformed text is a coded reject, not a wrong value
 todo	two runtime String entry args compare by content including multibyte
 pass	a closure looked up from a map by a perform result, applied to a perform result, threads through call_indirect
 pass	Bytes.slice of a map-looked-up Bytes with perform-threaded start and len threads without a scratch collision
+pass	constant conditions simplify around performs — kept branches dispatch, dropped ones do not
+pass	a String op RESULT selected by the op argument, composed via concat
+pass	a heterogeneous TUPLE as op ARGUMENT — the arm destructures both components
+pass	one perform result flows through let, record, projection, tuple, destructure, and match
+pass	a pure HELPER's arguments evaluate left-to-right when each performs
