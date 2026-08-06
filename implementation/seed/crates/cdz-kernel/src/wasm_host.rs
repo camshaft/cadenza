@@ -310,7 +310,7 @@ pub enum ComponentError {
     /// A generic [`invoke_component_with_dicts`] call's AST `arg` couldn't be resolved against the supplied
     /// dictionaries (I4 invoke-wire, design-binary-ast-dictionary §I4): either a supplied dict artifact was
     /// malformed / not flat ([`cadenza_ast::dict::DictError`]), or the arg was a `cdzast\x00\x02` dict-bearing
-    /// transport that references a dict hash ABSENT from the supplied set ([`DecodeError::MissingDict`]), or the
+    /// transport that references a dict hash ABSENT from the supplied set ([`cadenza_ast::codec::DecodeError::MissingDict`]), or the
     /// arg bytes weren't a decodable AST at all. A CLEAN host-level error (the design gate: "a missing dict is a
     /// clean host-level error, not a panic") — DISTINCT from [`ComponentError::InvalidComponent`] (the wasm bytes)
     /// and [`ComponentError::Trap`] (the guest ran + trapped): here the fault is in the INVOKE ARG / its dicts,
@@ -1812,7 +1812,7 @@ impl KvHeapOps {
 ///
 /// Every failure is a CLEAN [`ComponentError::InvalidInvokeArg`], never a panic (the design gate: "a missing
 /// dict is a clean host-level error"): a malformed / non-flat dict artifact ([`cadenza_ast::dict::DictError`]),
-/// a `TAG_DICT_REF` naming a hash absent from the supplied set ([`DecodeError::MissingDict`]), or an arg that
+/// a `TAG_DICT_REF` naming a hash absent from the supplied set ([`cadenza_ast::codec::DecodeError::MissingDict`]), or an arg that
 /// isn't a decodable AST.
 fn resolve_dict_bearing_arg(
     arg: &[u8],
@@ -1837,7 +1837,7 @@ fn resolve_dict_bearing_arg(
 }
 
 /// The I4 dict-aware form of [`invoke_component`]: resolve a possibly-dict-bearing `arg` against supplied
-/// dictionary artifacts (see [`resolve_dict_bearing_arg`]) to canonical inline AST bytes FIRST, then invoke
+/// dictionary artifacts (see `resolve_dict_bearing_arg`) to canonical inline AST bytes FIRST, then invoke
 /// exactly as [`invoke_component`] does — so the guest sees the same inline arg whether the caller sent it
 /// inline or dict-compacted (the design gate). `dict_artifacts` empty = a plain passthrough (a `\x00\x01`
 /// arg is unchanged), i.e. this is a strict superset of [`invoke_component`].
@@ -4833,12 +4833,33 @@ mod tests {
             "sanity: the dict-bearing encoding must actually differ from inline (it compacted a subtree)"
         );
 
+        // NON-VACUOUS core (reviewer #2328 c1): assert DIRECTLY that resolve_dict_bearing_arg EXPANDS the
+        // \x00\x02 arg to the EXACT canonical inline \x00\x01 bytes — i.e. the resolution genuinely ran, not
+        // just that two arg-ignoring invocations happened to match. This is the real I4 identical-result
+        // proof (`encode(resolve(encode_with_dict(a,d), d)) == encode(a)`, byte-identical).
+        let dict_artifacts = vec![(Hash::from_bytes(dict_hash_bytes), dict_bytes.clone())];
+        let resolved = resolve_dict_bearing_arg(&dict_bearing_arg, &dict_artifacts)
+            .expect("dict-bearing arg resolves");
+        assert_eq!(
+            resolved, inline_arg,
+            "resolve_dict_bearing_arg must expand the \\x00\\x02 dict-bearing arg to the SAME canonical \
+             inline \\x00\\x01 bytes the un-compacted program encodes to (the I4 deref transform)"
+        );
+        // And a dict-FREE \x00\x01 arg with no dicts is byte-identical passthrough.
+        let passthrough =
+            resolve_dict_bearing_arg(&inline_arg, &[]).expect("inline arg passes through");
+        assert_eq!(
+            passthrough, inline_arg,
+            "a \\x00\\x01 arg with no dicts is unchanged passthrough"
+        );
+
         let bytes = two_artifact_component();
-        // INLINE arg (no dicts needed) + DICT-BEARING arg (its one dict supplied) → identical artifacts.
+        // End-to-end: INLINE arg (no dicts) + DICT-BEARING arg (its one dict supplied) → identical artifacts.
+        // (two_artifact_component ignores its arg, so this pins the invoke WIRING; the byte-equality asserts
+        // above are what pin the actual RESOLUTION.)
         let via_inline =
             invoke_component_with_dicts(&bytes, "", "run", &inline_arg, &[], DEFAULT_FOLD_FUEL)
                 .expect("inline-arg invoke");
-        let dict_artifacts = vec![(Hash::from_bytes(dict_hash_bytes), dict_bytes.clone())];
         let via_dicts = invoke_component_with_dicts(
             &bytes,
             "",
