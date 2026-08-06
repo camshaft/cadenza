@@ -5873,6 +5873,7 @@ todo	a recursive scalar-walk classifies characters across a multibyte String ent
 todo	a runtime bin match decodes a FINAL constant-size utf8 segment
 todo	a runtime-DISC `?` inside a stored closure applies per-call once BRICK 3b lands
 todo	a runtime-operand try as a list element declines pending brick 3b
+todo	a two-site arm with a second op that REPLACES the state mid-chain declines cleanly
 todo	an Option (sum) entry argument is marshalled as a native Option
 todo	an abortive perform in a recursive callee with a PENDING continuation in the handle body abandons it
 todo	an exported entry with a String parameter is called with a string argument
