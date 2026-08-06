@@ -5504,6 +5504,29 @@ fn archive(fleet: &Fleet, no_commit: bool) {
         println!("  --no-commit: changes left in the working tree, not committed.");
         return;
     }
+    // TRUNK-ONLY commit guard: the archive-mirror commit is ONLY correct on `trunk` (pr-sync's worktree),
+    // which is where `pr-sync.md` step 4 invokes this. If `fleet archive` is ever run from an AGENT's
+    // worktree (a stray invocation / a mis-fired cron — concierge observed this landing the mirror on
+    // tracker's + other `fleet/<agent>` branches, 2026-08-06), a commit here lands the mirror on that
+    // agent's branch, where it then trips the sync-carry warning for EVERY non-authoring role every tick
+    // (each must `git reset --hard trunk` to shed a commit they never authored). So refuse to commit off
+    // trunk: leave the mirror staged (the work isn't lost — the next on-trunk pr-sync run commits it) and
+    // warn. This makes the archive STRUCTURALLY unable to pollute an agent branch, regardless of caller.
+    let current_branch = Command::new("git")
+        .current_dir(&cwd)
+        .args(["branch", "--show-current"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .unwrap_or_default();
+    if !archive_commit_allowed(&current_branch) {
+        eprintln!(
+            "  ! fleet archive: NOT on the `{TRUNK}` branch — refusing to commit the mirror (it would land \
+             on this agent's branch + trip sync-carry for every non-authoring role). The mirror is staged; \
+             an on-trunk pr-sync run will commit it. `fleet archive` is a pr-sync/trunk-only step."
+        );
+        return;
+    }
     // Stage the tracked mirrors and commit if anything changed. Run git in the cwd worktree.
     let run_git = |args: &[&str]| {
         Command::new("git")
@@ -6998,6 +7021,17 @@ const ARCHIVE_MIRROR_SUBJECT: &str =
 /// they don't get re-adopted as an agent's "unlanded" commit every tick. Pure so it's unit-testable.
 fn commit_is_archive_mirror(subject: &str) -> bool {
     subject.trim() == ARCHIVE_MIRROR_SUBJECT
+}
+
+/// May `fleet archive` COMMIT the mirror on this `current_branch`? Only on `trunk` (pr-sync's worktree).
+/// The archive-mirror commit is meaningful only on trunk; if `fleet archive` runs from an agent's worktree
+/// (a stray/mis-fired invocation), committing lands the mirror on that `fleet/<agent>` branch, where it
+/// then trips the sync-carry warning for every non-authoring role every tick (concierge 2026-08-06:
+/// observed on tracker's + other agent branches). So the commit is gated to trunk; off-trunk it stays
+/// staged (work not lost — the next on-trunk pr-sync run commits it). A blank/detached branch (empty
+/// string from `git branch --show-current`) is NOT trunk → refuse. Pure so the gate is unit-tested.
+fn archive_commit_allowed(current_branch: &str) -> bool {
+    current_branch.trim() == TRUNK
 }
 
 /// Drop archive-mirror commits from a `replay` list, given the RAW batched output of
@@ -11809,6 +11843,21 @@ mod tests {
             "xtask/fleet: archive commits ONLY its own pathspec"
         ));
         assert!(!commit_is_archive_mirror("")); // empty subject never matches
+    }
+
+    #[test]
+    fn archive_commit_allowed_only_on_trunk() {
+        // The mirror commit is trunk-only (pr-sync's worktree). On trunk → allowed.
+        assert!(archive_commit_allowed("trunk"));
+        assert!(archive_commit_allowed("  trunk  ")); // git may pad --show-current output
+        // On ANY agent branch → refuse (committing there lands the mirror on the agent's branch + trips
+        // sync-carry for every non-authoring role — the concierge-observed 2026-08-06 papercut).
+        assert!(!archive_commit_allowed("fleet/tracker"));
+        assert!(!archive_commit_allowed("fleet/v-fleet-tooling"));
+        assert!(!archive_commit_allowed("main"));
+        // A detached HEAD / no-branch (git branch --show-current prints an empty line) is NOT trunk → refuse.
+        assert!(!archive_commit_allowed(""));
+        assert!(!archive_commit_allowed("   "));
     }
 
     #[test]
