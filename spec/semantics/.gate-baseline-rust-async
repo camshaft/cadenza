@@ -5866,6 +5866,7 @@ todo	a runtime Bytes host-arg BEFORE a scalar arg keeps distinct core slots (no 
 todo	a runtime Bytes value crosses a host op boundary as list<u8> (H-bytes-arg)
 todo	a runtime bin match decodes a FINAL constant-size utf8 segment
 todo	a runtime branch selects WHICH host op consumes the first response row
+pass	a runtime closure whose body calls a recursive top-level function
 todo	a runtime-DISC `?` inside a stored closure applies per-call once BRICK 3b lands
 todo	a runtime-operand try as a list element declines pending brick 3b
 todo	a two-site arm with a second op that REPLACES the state mid-chain declines cleanly
@@ -5926,5 +5927,8 @@ todo	two adapter records with different state types drive a take-while fold in o
 todo	two host calls consume their responses in order
 todo	two host responses combine in call order through a non-commutative operator
 todo	two same-unit Qty host results combine guest-side as a same-dimension add
+pass	two nested recursive const-closure drivers (filter under fold) emit valid wasm and compute correctly
+todo	two same-unit Qty host results combine guest-side as a same-dimension add
+pass	two specializations of one driver on different closures do not collide in the spec memo
 pass	a closure looked up from a map by a perform result, applied to a perform result, threads through call_indirect
 pass	Bytes.slice of a map-looked-up Bytes with perform-threaded start and len threads without a scratch collision
