@@ -837,6 +837,7 @@ pass	a RECORD closure ARG with a LIST result
 pass	a RECORD closure ARG with a narrow Bool field, among scalars
 pass	a RECORD field built from a runtime param boxes its Map handle correctly (function[27] record-path twin)
 pass	a RECORD handler state evolves a table and a counter that genuinely DIVERGE
+pass	a RECORD handler state — the arm projects one field and rebuilds the record
 pass	a RECORD used as a map key hashes and matches by its field SET, independent of written order
 pass	a RECORD with a closure field as a map key is rejected (the record face of the compound descent)
 pass	a RECORD with a nested TUPLE field crosses the direct-call boundary
@@ -997,6 +998,8 @@ pass	a TWO-LIST FIFO queue reverses the back list exactly when the front drains
 pass	a TWO-field open-row projection instantiates at three widths with slot-shifting extras
 pass	a TWO-of-THREE partial application binds a prefix and the LET-BOUND residual completes
 pass	a TWO-resume-site arm branching on a CAPTURED Map folds — the branch reads heap, not state
+pass	a TWO-site arm over a BigInt state (heap-scalar state through the refold)
+pass	a TWO-site arm over a Qty state gates on the unwrapped magnitude
 pass	a Thm rides a MAP value through outside code and comes back to the kernel accessor
 pass	a Thm rides a collection through outside code without destructure rights
 pass	a Tuple ARG AFTER a scalar arg crosses the direct-call boundary (scalar, then tuple)
@@ -2207,6 +2210,7 @@ pass	a mixed-scale equality finds GENUINE equality after a whole-ratio conversio
 pass	a mixed-scale equality is FALSE when the converted values differ (5000 m ≠ 6 km)
 pass	a mixed-scale narrow-width Int quantity combine that overflows the inner width traps
 pass	a mixed-width float tuple with a computed f32 NaN dedupes against the canonical spelling
+pass	a mode-REPLACING arm swaps the Symbol state; a conditional-value arm reads it
 pass	a model-oracle property — CHAMP Map.len agrees with a counting model over generated inserts
 pass	a module declaration binds its name in the enclosing scope
 pass	a module export is a CLOSURE FACTORY capturing a private sibling
@@ -3647,8 +3651,10 @@ pass	a two-parameter sum whose variants use the parameters in different orders i
 pass	a two-payload constructor applied in curried form builds the variant
 pass	a two-payload sum escapes its second variant with a bare name
 pass	a two-sided squeeze refines to an exact point and folds an inner comparison — the intersection face of the point fact
+pass	a two-site arm branches on SYMBOL equality of the state
 pass	a two-site arm branching on the OP ARGUMENT with a hit-count state folds (threshold sift)
 pass	a two-site arm branching on the STATE folds (the refold re-anchor serves state-reading conditions)
+pass	a two-site arm gates on a PROJECTED field of the record state (rate limiter)
 pass	a two-site arm whose condition reads the ARG AND the STATE together folds
 pass	a two-site arm with HEAP resume values (empty vs two-element list) folds
 pass	a two-step seed sequence advances (successive draws differ)
@@ -3847,6 +3853,7 @@ pass	an Int8 sum-payload literal-match misses, binds the payload widened to Int6
 pass	an Int8 wrapping-add result drives a comparison — the SIGN-EXTENDED masked value is compared
 pass	an N suffix lets a huge literal need no annotation
 pass	an N-suffixed integer literal is a BigInt
+pass	an OPEN-ROW helper projects from the record state INSIDE the arm
 pass	an OPEN-sum value stored as a MAP VALUE matches back out with its open-tail arm
 pass	an OPTION handler state TOGGLES its variant per perform
 pass	an OPTION payload quantity renders scaled to its reference in the value form
