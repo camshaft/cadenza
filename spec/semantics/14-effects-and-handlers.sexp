@@ -8260,7 +8260,7 @@
 (case "a TWO-site arm over a Qty state gates on the unwrapped magnitude"
   (doc    "The two-site refold face of the Qty-state family above: the arm's branch condition reads the
            op ARGUMENT (`(> v 10)`), the pass path folds the unwrapped state into its answer and
-           advances by re-wrap (`(Qty.of (+ (Qty.value s) 1) meter)`), the fail path holds. feed 20 →
+           advances by re-wrap (`(Qty.of (+ (Qty.value s) 1) (Unit.base #\"meter\"))`), the fail path holds. feed 20 →
            20+5 = 25 (state 6m), feed 3 → 0, feed 30 → 30+6 = 36 → 2536. Pins the served multi-site
            family over a UNIT-CARRYING state — the erased-unit representation must survive the
            refold's continuation rebuild on both branches.")
@@ -8298,7 +8298,7 @@
             (effect St (op hit (-> Unit Int64)))
             (def (main (: n Int64))
               (handle St (record (count n) (tag 7))
-                ((hit (u) s (resume (. s count) (record (count (+ (. s count) 1)) (tag (. s tag))))))
+                ((hit (_u) s (resume (. s count) (record (count (+ (. s count) 1)) (tag (. s tag))))))
                 (+ (* 10 (St.hit)) (St.hit))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 56 Int64)))
@@ -8314,7 +8314,7 @@
             (def (get-count r) (. r count))
             (def (main (: n Int64))
               (handle St (record (count n) (tag 7))
-                ((hit (u) s (resume (get-count s) (record (count (+ (get-count s) 1)) (tag 9)))))
+                ((hit (_u) s (resume (get-count s) (record (count (+ (get-count s) 1)) (tag 9)))))
                 (+ (* 10 (St.hit)) (St.hit))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 56 Int64)))
