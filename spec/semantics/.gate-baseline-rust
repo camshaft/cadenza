@@ -133,6 +133,7 @@ pass	IDIOMATIC HeadOp-sum encoding discharges no-overflow: for x<=100, (x+1)<=MA
 pass	INTERLEAVE alternates two spines and drains the longer tail after the shorter empties
 pass	INTERLEAVED pops and inserts keep the event queue min-ordered across live mutation
 pass	INVERSION COUNT pairs every element with its successors, zero when sorted and maximal when reversed
+pass	Int64 MAX threads the handler state intact (representation at the boundary)
 pass	Int64.min crosses the parameter boundary and back unchanged
 pass	Int64.min crossing the boundary is still negative
 pass	Int64.of over a runtime Float64 operand rejects — no float-to-int narrowing is blessed
@@ -244,6 +245,7 @@ pass	Map.to-list over a RUNTIME-built map enumerates entries in canonical key or
 pass	Map.to-list over runtime STRING keys enumerates in content byte order (first is byte-smallest)
 pass	McCarthy 91 — a self-call nested INSIDE the argument of another self-call
 pass	N-suffixed literals compose under BigInt arithmetic
+pass	NEGATIVE values thread every effect slot — state, argument, and result stay signed
 pass	NESTED CONTRACT: an @ensures predicate that CALLS a @requires-guarded helper enforces the HELPER's precondition during postcondition eval
 pass	NaN equality survives the hoisted float compare by canonical byte form
 pass	ONE inner map shared under TWO outer keys updates independently (no aliasing cross-talk)
@@ -458,6 +460,7 @@ pass	Unit.in to a unit of a different dimension is a compile-time error
 pass	WAVE reorder alternates <= and >= by index parity through a carried-element walk
 pass	XOR cancellation returns the original runtime value (constant key)
 pass	XOR cancellation returns the original value even when the key is a runtime value
+pass	ZERO threads every effect slot (zero seed, zero args, zero results)
 pass	`?` on the failure variant short-circuits the boundary (Option, None path)
 pass	`?` on the success variant unwraps the payload (Option, happy path)
 pass	`?` unwraps a COMPOUND (tuple) payload
@@ -1866,6 +1869,7 @@ pass	a guarded variant arm falls through when the guard fails
 pass	a guarded wildcard arm falls through to a tail-recursive call
 pass	a handle body reads an enclosing function parameter
 pass	a handle seeded from a runtime caller argument advances from that seed
+pass	a handle whose body NEVER performs is exactly its body (zero dispatches)
 pass	a handle whose head names a value rather than an effect is rejected
 pass	a handle's RESULT seeds the NEXT handle of the same effect — explicit state handoff between instances
 pass	a handle's TUPLE value pairing a scalar with a built list escapes and is destructured
