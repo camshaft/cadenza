@@ -5981,3 +5981,8 @@ pass	a record with a SET field as op ARGUMENT — the arm probes the collection 
 pass	a 40-element list op RESULT crosses resume — a multi-leaf RRB payload survives the marshal
 pass	a 40-element list as op ARGUMENT — the arm folds a multi-leaf RRB payload
 pass	a 40-element SET op result — a multi-node CHAMP payload crosses resume
+pass	a LIST OF STRINGS op result — the body indexes and measures rope elements after the marshal
+pass	a LIST OF BIGINTS as op ARGUMENT — the arm folds heap-numeric elements it is handed
+pass	a list of RATIONALS op result — exact fractions cross resume and fold to a canonical sum
+pass	a list-to-list TRANSFORMER op — heap payloads cross BOTH slots of one dispatch
+pass	a map-to-map transformer op CHAINED — the second dispatch receives the first's result
