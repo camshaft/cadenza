@@ -1228,6 +1228,7 @@ pass	a capturing closure whose body uses the capture after an inner computation
 pass	a capturing closure whose surviving map store and direct call both feed the result
 pass	a capturing closure with a let binding in its body
 pass	a capturing unannotated closure in a payload is typed from the declared arrow
+pass	a chain of perform-fed let inits — each binding feeds the next perform's argument
 pass	a chained Option.expect(Option.expect s) payload consumed per iteration accumulates stably
 pass	a chained access through an if-of-records composes and shields the untaken branch's trap
 pass	a chained float ordering is not foldable by transitivity — a NaN middle breaks the chain
@@ -2550,6 +2551,7 @@ pass	a perform crosses TWO module boundaries to the entry's handler through a re
 pass	a perform in a match-arm guard is discharged by the enclosing handle
 pass	a perform in a taken if-branch threads its state to the continuation after the if
 pass	a perform in a taken match-arm threads its state to the continuation after the match
+pass	a perform in the body's IF CONDITION gates a second perform in the branch
 pass	a perform in the scrutinee fires exactly ONCE whichever of three arms is selected
 pass	a perform result LET-bound then fed to a bin segment builds Bytes under a handler
 pass	a perform's result flowing as the ARGUMENT of an enclosing perform threads state inner-to-outer
@@ -5420,6 +5422,7 @@ pass	the exact Float32 finite max fits in a runtime branch
 pass	the expander rewrites a directly-written node even when chunks != holes+1 (no re-check)
 pass	the expander threads the hole list to the tag even with zero chunks and zero holes
 pass	the exponent marker is case-insensitive
+pass	the false branch: the condition's perform fires, the branch's does NOT (same program)
 pass	the false-literal coercion negates a float ordering compare, turning an unordered pair true
 pass	the filtered rebuild EQUALS the direct selection build (selection is canonical)
 pass	the first failing `?` short-circuits; a later `?` never runs
