@@ -3606,6 +3606,7 @@ pass	a two-site arm branching on the OP ARGUMENT with a hit-count state folds (t
 pass	a two-site arm branching on the STATE folds (the refold re-anchor serves state-reading conditions)
 pass	a two-site arm gates on a PROJECTED field of the record state (rate limiter)
 pass	a two-site arm whose condition reads the ARG AND the STATE together folds
+pass	a two-site arm over a HEAP STATE with a body free-var and a second state-reading op folds
 pass	a two-site arm with HEAP resume values (empty vs two-element list) folds
 pass	a two-step seed sequence advances (successive draws differ)
 pass	a two-variant enum match with constant arms dispatches branchlessly — first variant
