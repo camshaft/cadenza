@@ -9232,8 +9232,9 @@
            iff the guard holds, so `reduce_handle` desugars it to `(if <guard> <arm-body> <catch-all-body>)`
            (each binder let-bound to the scrutinee), where the guard is an `if` CONDITION — a strict-first
            position the if-condition fold routes through the enclosing handle. The guard reads the seed 5,
-           `5 > 3` holds, so the first arm fires → 100. (A REFUTABLE guarded pattern, or MULTIPLE guarded
-           arms — which sequence handler state per arm-test — is not this narrow shape and still declines
+           `5 > 3` holds, so the first arm fires → 100. (A REFUTABLE guarded pattern now ALSO folds — via a
+           match that keeps the pattern and hoists the guard into an inner `if`, see the cases below. MULTIPLE
+           guarded arms — which sequence handler state per arm-test — remain not-this-shape and decline
            cleanly, an honest 'not yet reducible' todo, never the misleading 'no enclosing handler'.)")
   (input  (do
             (effect Ask (op get (-> Int64)))
@@ -9260,6 +9261,65 @@
                   (_ 200))))
             (export main)))
   (output (: 100 Int64)))
+
+(case "a performing match-arm guard on a REFUTABLE pattern folds (keeps the match, hoists the guard)"
+  (doc    "The refutable-pattern face of the performing guard-desugar (breaker bg-family). When the guarded
+           arm's inner pattern is REFUTABLE — a literal, ctor, `(bin …)`, or `(tuple …)` — the irrefutable
+           rewrite (`(if g b b2)`) would be UNSOUND: it drops the pattern-match, so a scrutinee FAILING the
+           pattern would still run the guard `g`. The sound rewrite KEEPS the pattern and hoists the
+           performing guard into an `if` INSIDE the matched arm: `(match k ((guard P g) b) (_ b2))` ≡
+           `(match k (P (if g b b2)) (_ b2))`. Here the bit-pattern `(bin (u8 tag) (u8 val))` matches the
+           two-byte scrutinee (tag=7, val=42), the guard `(> val (St.quota))` reads the seed (n) and holds
+           for n<42, so the arm yields `(+ (* 100 tag) val)` = 742; for n≥42 the guard fails and the arm's
+           inner `if` falls to the catch-all -1. A scrutinee that FAILS the pattern reaches the catch-all
+           WITHOUT running the guard perform (the match, not the guard, gates it). Seeded n=5 → 742.")
+  (input  (do
+            (effect St (op quota (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((quota (u) s (resume s (+ s 1))))
+                (match (bin (u8 (UInt8.wrap 7)) (u8 (UInt8.wrap 42)))
+                  ((guard (bin (u8 tag) (u8 val)) (> val (St.quota)))
+                    (+ (* 100 tag) val))
+                  (_other -1))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 742 Int64)))
+
+(case "a performing guard on a refutable pattern whose guard FAILS falls to the catch-all"
+  (doc    "The guard-fails path of the refutable performing-guard fold: same shape as above but seeded so the
+           guard is false — `(> val (St.quota))` with `val`=42 and the seed n=50, so `42 > 50` is FALSE. The
+           pattern still matches (tag=7, val=42), the hoisted inner `if` evaluates the guard (which reads the
+           seed 50) and takes the else branch → the catch-all -1. Pins that a matched pattern with a failing
+           performing guard folds to the fall-through, not the guarded body.")
+  (input  (do
+            (effect St (op quota (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((quota (u) s (resume s (+ s 1))))
+                (match (bin (u8 (UInt8.wrap 7)) (u8 (UInt8.wrap 42)))
+                  ((guard (bin (u8 tag) (u8 val)) (> val (St.quota)))
+                    (+ (* 100 tag) val))
+                  (_other -1))))
+            (export main)))
+  (call   main (: 50 Int64)) (output (: -1 Int64)))
+
+(case "a performing guard on a TUPLE-destructuring pattern folds"
+  (doc    "The tuple-pattern spelling of the refutable performing-guard fold: `(guard (tuple tag val) (> val
+           (St.quota)))` destructures a tuple scrutinee, and the performing guard hoists into the matched
+           arm's inner `if` exactly as for the bit-pattern. `(tuple 7 42)` matches (tag=7, val=42), guard
+           `42 > 5` holds → `(+ 700 42)` = 742. Confirms the refutable-pattern guard-desugar is
+           pattern-shape-agnostic (bit patterns, tuples, and by extension ctor patterns all route).")
+  (input  (do
+            (effect St (op quota (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((quota (u) s (resume s (+ s 1))))
+                (match (tuple 7 42)
+                  ((guard (tuple tag val) (> val (St.quota)))
+                    (+ (* 100 tag) val))
+                  (_other -1))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 742 Int64)))
 
 (case "an effectful condition of a same-constructor if is performed exactly once"
   (doc    "The evaluate-ONCE pin for the common-constructor if-arm hoist, observable through handler

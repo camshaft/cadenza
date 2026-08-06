@@ -6039,3 +6039,6 @@ pass	the arm's nested handler is instantiated FRESH per dispatch — independent
 pass	a multi-shot arm's resume VALUE reads the enclosing param — the let-bound body folds correctly
 pass	a multi-shot handle SEEDED by the enclosing param folds with a let-bound body
 pass	a multi-shot arm with an enclosing-param resume value and a MATCH-binder consumer folds
+pass	a performing match-arm guard on a REFUTABLE pattern folds (keeps the match, hoists the guard)
+pass	a performing guard on a refutable pattern whose guard FAILS falls to the catch-all
+pass	a performing guard on a TUPLE-destructuring pattern folds

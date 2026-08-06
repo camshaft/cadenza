@@ -2835,6 +2835,39 @@ fn desugar_performing_guard_match(
             let bindings = db.push_list(binders);
             return Some(db.push_list(vec![let_head, bindings, if_node]));
         }
+        // REFUTABLE first-arm pattern (a destructuring `(bin …)`/`(tuple …)`/ctor pattern) guarded by a
+        // PERFORMING cond, with an irrefutable catch-all second arm. The irrefutable rewrite above (→ `(if g
+        // b b2)`) is UNSOUND here: it drops the pattern-match, so a scrutinee that FAILS `P` would still run
+        // the guard `g` and pick `b`/`b2` on `g` alone. The sound rewrite KEEPS the pattern match and hoists
+        // the performing guard into an `if` INSIDE the matched arm: `(match k ((guard P g) b) (_ b2))` ≡
+        // `(match k (P (if g b b2)) (_ b2))`. When `P` matches, `g` runs and selects `b` (guard holds) or
+        // `b2` (guard fails); when `P` does not match, the catch-all yields `b2` WITHOUT running `g` — exactly
+        // the guarded-match semantics. `g` is now an if-condition WITHIN a match arm, a strict-first position
+        // the arm-body fold routes through the enclosing handle (the match-scrutinee/arm fold already
+        // descends arm bodies). The catch-all `b2` is copied into the matched arm's else so a failed guard
+        // falls through to the same value. Gated identically: second arm irrefutable + no guard, first-arm
+        // guard cond performs. (breaker bg-family, refutable-pattern face.)
+        if let Some(g) = db.ast.as_form(pat0, "guard").map(|t| t.to_vec())
+            && g.len() == 2
+            && !is_irrefutable_pattern(db, g[0])
+            && subtree_performs(db, g[1], ctx)
+            && db.ast.as_form(pat1, "guard").is_none()
+            && is_irrefutable_pattern(db, pat1)
+        {
+            let inner_pat = g[0];
+            let cond = g[1];
+            // `(if g b0 <copy of b2>)` — the matched arm's body: guard holds → b0, else the catch-all value.
+            let if_head = db.push_name("if");
+            let b2_for_else = copy_pure(db, body1);
+            let if_node = db.push_list(vec![if_head, cond, body0, b2_for_else]);
+            // Rebuild the match: first arm keeps the REFUTABLE pattern with the guard-hoisted `if` body; the
+            // catch-all is unchanged. `(match scrut (inner_pat if_node) (pat1 body1))`.
+            let match_head = db.push_name("match");
+            let scrut_copy = copy_pure(db, scrutinee);
+            let arm0 = db.push_list(vec![inner_pat, if_node]);
+            let arm1 = db.push_list(vec![pat1, body1]);
+            return Some(db.push_list(vec![match_head, scrut_copy, arm0, arm1]));
+        }
     }
     // Recurse structurally: the match may be nested inside the body.
     match db.ast.get(node).clone() {

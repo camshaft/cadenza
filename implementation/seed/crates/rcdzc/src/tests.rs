@@ -64240,22 +64240,21 @@ mod stage1 {
             "an irrefutable-guarded performing arm under a handle now folds (desugars to an if): {:?}",
             msg(guard_src)
         );
-        // A shape the desugar does NOT cover — a REFUTABLE guarded inner pattern (the literal `9`, not a
-        // bare name) — still DECLINES, and CLEANLY: the honest "not yet reducible" todo, NOT the misleading
-        // "no enclosing handler" (the handle plainly encloses the guard perform).
+        // A REFUTABLE guarded inner pattern (the literal `9`, not a bare name) is now ALSO ROUTED: the
+        // desugar keeps the pattern match and hoists the performing guard into an `if` INSIDE the matched
+        // arm — `(match 9 ((guard 9 g) 100) (n 200))` ≡ `(match 9 (9 (if g 100 200)) (n 200))` — so it FOLDS
+        // (→100: scrutinee 9 matches, guard `(Ask.get)=5 > 3` holds). A scrutinee that FAILS the pattern
+        // yields the catch-all WITHOUT running the guard perform (verified separately: `(match 7 …)` → 200).
+        // (Updated from the interim refutable-decline behavior once the refutable-pattern face landed —
+        // breaker bg-family.)
         let refutable_guard = "(do (effect Ask (op get (-> Int64))) \
                          (def (main) (handle Ask 5 ((get () s (resume s (- s 1)))) \
                            (match 9 ((guard 9 (> (Ask.get) 3)) 100) (n 200)))) (export main))";
-        let ms = msg(refutable_guard);
         assert!(
-            !ms.iter()
-                .any(|m| *m == crate::diag::NO_HOME_STANDALONE_DECLINE),
-            "a guard perform UNDER a handle must NOT report 'no enclosing handler' — the handle encloses it: {ms:?}"
-        );
-        assert!(
-            ms.iter()
-                .any(|m| *m == crate::diag::HANDLER_NOT_REDUCIBLE_DECLINE),
-            "expected the honest not-yet-reducible decline for a refutable guarded-pattern perform: {ms:?}"
+            msg(refutable_guard).is_empty(),
+            "a refutable-guarded performing arm under a handle now folds (desugars to a match with a \
+             guard-hoisted if): {:?}",
+            msg(refutable_guard)
         );
         // NO REGRESSION: a NON-performing guard under the same handle still COMPILES (my detection fires
         // ONLY on a guard cond that performs a discharged op — a `(guard n (> n 3))` performs nothing).
