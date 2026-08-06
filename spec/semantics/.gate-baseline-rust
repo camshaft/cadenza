@@ -714,6 +714,7 @@ pass	a MONOTONE BISECTION finds the least r with r*r >= n over answer space, cer
 pass	a MULTI-LEVEL concat-built list SET element (n>=33) is found by a push-built equal element
 pass	a MULTI-LEVEL concat-built list map key (n>=33) is found by a push-built equal key
 pass	a MULTI-PAYLOAD variant with a nested same-sum variant reads the right payload depth (known outer disc)
+pass	a MULTI-guard chain on a perform-result scrutinee with a performing fallback folds
 pass	a MULTI-parameter user generic resolves by name in a type annotation applied with two arguments
 pass	a MULTI-payload struct newtype escapes as its payload tuple under the type header
 pass	a MULTI-shot arm folds a perform in a let-bound lambda applied in the body
@@ -1799,6 +1800,7 @@ pass	a guard reads payload binders from two ctor list elements
 pass	a guard reads the payload binder and an enclosing parameter together
 pass	a guard runs a NESTED MATCH on the quote-bound subtree — value-dependent rewriting
 pass	a guard sees the names its pattern binds and arms are tried in order
+pass	a guard whose CONDITION itself performs (pure scrutinee) folds
 pass	a guard-elided FLOW-REFINED add computes identically on both backends
 pass	a guard-elided masked add at a NARROW width computes identically on both backends
 pass	a guard-elided masked add computes inline over runtime operands
@@ -1821,6 +1823,7 @@ pass	a guarded map arm over a PARTIAL-CONST map resolves its value binder in bot
 pass	a guarded map-match arm over a CONSTANT map folds the guard and selects the arm
 pass	a guarded map-match arm over a CONSTANT map whose guard fails falls to the next arm
 pass	a guarded map-match arm reads its value binder in the guard and falls through when it fails
+pass	a guarded match on a perform-result scrutinee with a PERFORMING fallback arm folds
 pass	a guarded match over a runtime scrutinee whose guard fails takes the wildcard
 pass	a guarded match over a runtime scrutinee with constant arms computes correctly
 pass	a guarded out-of-bounds indexed read is not hoisted by the sharing
@@ -5455,6 +5458,7 @@ pass	the generated-set convergence property has discriminating power — two dif
 pass	the generator is a deterministic function of its seed (same seed, same value) — folds
 pass	the generator reproduces its stream from a runtime seed (same seed, same value) — runs
 pass	the greater-than operator on chars follows scalar order
+pass	the guard-TRUE path of the perform-scrutinee match (no fallback entry)
 pass	the guarded-let conditional takes its else-branch when the conjunction is false
 pass	the handler STATE is a CLOSURE the arm replaces with one capturing the perform-time op argument
 pass	the heap list a handle BUILDS escapes the handle and is consumed outside it
