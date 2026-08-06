@@ -3794,6 +3794,20 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 1123 Int64)))
 
+(case "an empty MAP fallback beside an unsolved-Var arm grounds — the Map-of-Maps face"
+  (doc    "The last face of the empty-collection join class (fixed after the sibling pins above):
+           when the joined collection is itself a MAP, the enclosing `Map.insert` types the JOIN
+           result — the scrutinee's own lookup map must not inherit that typing (the leak sent its
+           constructor down an unannotated branch → E0282). Now the lookup map annotates its outer
+           key with the inner map holed for the downstream insert — runs 1.")
+  (input  (do
+            (def (main (: n Int64))
+              (let ((m Map.empty))
+                (let ((inner (match (Map.lookup m "k") ((Some ys) ys) ((None _u) Map.empty))))
+                  (Map.len (Map.insert inner "x" n)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 1 Int64)))
+
 ; ============ Guarded match × effects (breaker FINDING, ag5 → fixed #2333). A guarded match on a
 ; perform-result scrutinee whose FALLBACK arm also performs used to leak the fold-synthesized #seed
 ; binder as a false CDZ0101: the guard desugar's arm-body copy reparented a reused (shared) body

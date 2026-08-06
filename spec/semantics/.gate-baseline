@@ -6052,3 +6052,4 @@ pass	an empty (list) match-fallback beside an unsolved-Var arm grounds to the jo
 pass	an empty SET literal in a match-Option fallback grounds through the join
 pass	an IF-join with an unsolved-Var arm and an empty-list sibling grounds like a match join
 pass	a MAP-OF-LISTS handler state accumulates per dispatch — the upsert idiom end to end
+pass	an empty MAP fallback beside an unsolved-Var arm grounds — the Map-of-Maps face
