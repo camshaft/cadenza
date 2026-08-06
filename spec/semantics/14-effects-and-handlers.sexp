@@ -2906,6 +2906,152 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 356 Int64)))
 
+(case "a TUPLE-keyed Map op result — the body looks up by a reconstructed compound key"
+  (doc    "Compound STRUCTURAL keys across the boundary (tuple-keyed collections exist only in pure
+           pins): the arm resumes a `(Map (Tuple Int64 Int64) Int64)`; the body reconstructs compound
+           keys to look up — `(tuple 1 2)` hits (50), the order-flipped `(tuple 4 3)` misses (-1),
+           len 2 → 249. Structural key equality must survive the marshal.")
+  (input  (do
+            (effect St (op grid (-> Int64 (Map (Tuple Int64 Int64) Int64))))
+            (def (main (: n Int64))
+              (handle St 0
+                ((grid (k) s (resume (Map.insert (Map.insert Map.empty (tuple 1 2) (* k 10)) (tuple 3 4) 7) s)))
+                (let ((m (St.grid n)))
+                  (+ (* 100 (Map.len m))
+                     (+ (match (Map.lookup m (tuple 1 2)) ((Some a) a) ((None _u) -1))
+                        (match (Map.lookup m (tuple 4 3)) ((Some b) b) ((None _u) -1)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 249 Int64)))
+
+(case "a SET of tuples as op ARGUMENT — the arm probes compound membership including order sensitivity"
+  (doc    "The argument-direction compound-key face: a body-built `(Set (Tuple Int64 Int64))` rides
+           into the arm, which probes `(tuple 1 n)` (hit, 100) and the order-flipped `(tuple n 1)`
+           (miss, 0) plus len 2 → 102. Tuple component ORDER must survive as part of the key's
+           identity through the crossing.")
+  (input  (do
+            (effect St (op check (-> (Set (Tuple Int64 Int64)) Int64)))
+            (def (main (: n Int64))
+              (handle St 0
+                ((check (xs) s
+                  (resume (+ (* 100 (if (Set.contains xs (tuple 1 n)) 1 0))
+                             (+ (* 10 (if (Set.contains xs (tuple n 1)) 1 0))
+                                (Set.len xs)))
+                          s)))
+                (St.check (Set.of (list (tuple 1 n) (tuple 2 8))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 102 Int64)))
+
+(case "a two-op composition where the second op's String argument is BUILT from the first's result"
+  (doc    "An effect-derived key crossing back in: op-1 returns a String (branch-selected \\\"hot\\\"),
+           the body concat-extends it, and op-2 receives the assembled \\\"hot-path\\\" as its
+           argument — byte-len 8 + 10·(state 1) → 18. A dispatch's result feeding the next
+           dispatch's compound-built argument.")
+  (input  (do
+            (effect St (op tag (-> Int64 String)) (op fetch (-> String Int64)))
+            (def (main (: n Int64))
+              (handle St 0
+                ((tag (k) s (resume (if (> k 0) "hot" "cold") (+ s 1)))
+                 (fetch (name) s (resume (+ (String.byte-len name) (* s 10)) (+ s 1))))
+                (St.fetch (String.concat (St.tag n) "-path"))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 18 Int64)))
+
+(case "a SYMBOL as op ARGUMENT — the arm compares interned identity against its own intern"
+  (doc    "Symbol's ARGUMENT direction (the interner/gensym pins cover only `-> String Symbol`
+           results): a rope-built `(Symbol.of (String.concat …))` and a flat intern each cross as op
+           arguments; the arm interns its own comparators — content equality must hold across the
+           boundary (100 for alpha, 10 for beta → 110).")
+  (input  (do
+            (effect St (op classify (-> Symbol Int64)))
+            (def (main (: n Int64))
+              (handle St 0
+                ((classify (sym) s
+                  (resume (+ (* 100 (if (= sym (Symbol.of "alpha")) 1 0))
+                             (* 10 (if (= sym (Symbol.of "beta")) 1 0)))
+                          s)))
+                (+ (St.classify (Symbol.of (String.concat "al" "pha")))
+                   (St.classify (Symbol.of "beta")))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 110 Int64)))
+
+(case "a SYMBOL handler STATE threads dispatches — each resume reads the prior symbol's identity"
+  (doc    "Symbol's STATE slot (completing its three effect positions, like records and sums): the
+           state starts as the `start` symbol; each dispatch compares the PRIOR symbol's identity
+           (10 for start, 20 otherwise) and swaps in the next — 100·10 + 20 → 1020.")
+  (input  (do
+            (effect St (op swap (-> Symbol Int64)))
+            (def (main (: n Int64))
+              (handle St (Symbol.of "start")
+                ((swap (next) prev (resume (if (= prev (Symbol.of "start")) 10 20) next)))
+                (+ (* 100 (St.swap (Symbol.of "mid")))
+                   (St.swap (Symbol.of "end")))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 1020 Int64)))
+
+(case "a fallible helper with a `?` called from INSIDE a handler ARM (success path)"
+  (doc    "The 23-try corpus pins `?` composition from the handle-BODY side; here the fallible
+           helper runs inside the ARM — the `?` desugar's abortive Core::Block boundary nests while
+           the dispatch machinery is live mid-arm. Two dispatches: bump(5)=105 then bump(6)=106 →
+           10·105 + 106 = 1156. The two abortive machineries must not confuse their exit paths in
+           arm position.")
+  (input  (do
+            (effect St (op next (-> Unit Int64)))
+            (def (bump (: v Int64))
+              (let ((x (try (Some v))))
+                (Some (+ x 100))))
+            (def (main (: n Int64))
+              (handle St n
+                ((next (u) s (resume (match (bump s) ((Some v) v) ((None _u) -1)) (+ s 1))))
+                (+ (* 10 (St.next)) (St.next))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 1156 Int64)))
+
+(case "a CONSTANT-failure `?` inside the arm's helper — the cut stays in the helper, dispatch unharmed"
+  (doc    "The failure face of the arm-side `?`: the helper's `(try (None unit))` short-circuits the
+           HELPER (returning None), not the arm or the dispatch — both dispatches observe the -1
+           fallback and the state advance is unharmed → 10·(-1) + (-1) = -11. (A runtime-disc `?`
+           here hits the BRICK-3b constant-operand boundary, pinned in 23-try.)")
+  (input  (do
+            (effect St (op next (-> Unit Int64)))
+            (def (probe (: v Int64))
+              (let ((x (try (None unit))))
+                (Some (+ x v))))
+            (def (main (: n Int64))
+              (handle St n
+                ((next (u) s (resume (match (probe s) ((Some v) v) ((None _u) -1)) (+ s 7))))
+                (+ (* 10 (St.next)) (St.next))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: -11 Int64)))
+
+(case "a FLOAT64 as op ARGUMENT — the arm accumulates fractional values into Float64 state"
+  (doc    "Float64's ARGUMENT direction (result + state are pinned): fractional literals cross as op
+           arguments and accumulate into Float64 state across two dispatches — a = 1.25+0.5 = 1.75,
+           b = 0.25+1.75 = 2.0 → 3.75, read back as a Float64 (Int64.of over a runtime Float64
+           rejects by design, per the numeric model).")
+  (input  (do
+            (effect St (op weigh (-> Float64 Float64)))
+            (def (main (: n Int64))
+              (handle St 0.5
+                ((weigh (x) s (resume (+ x s) (+ s x))))
+                (let ((a (St.weigh 1.25)))
+                  (let ((b (St.weigh 0.25)))
+                    (+ a b)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 3.75 Float64)))
+
+(case "a TUPLE mixing Float64 and Int64 crosses as op ARGUMENT — the arm scales by the int"
+  (doc    "The mixed-width marshal box: an f64 and an i64 in ONE tuple op argument, destructured by
+           the arm and combined via Float64.of-int — 2.5 · 10 → 25.0. The two lanes must not
+           corrupt each other through the crossing.")
+  (input  (do
+            (effect St (op scale (-> (Tuple Float64 Int64) Float64)))
+            (def (main (: n Int64))
+              (handle St 0.0
+                ((scale (p) s (match p ((tuple f k) (resume (* f (Float64.of-int k)) s)))))
+                (St.scale (tuple 2.5 (* n 2)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 25.0 Float64)))
+
 ; ============ Guarded match × effects (breaker FINDING, ag5 → fixed #2333). A guarded match on a
 ; perform-result scrutinee whose FALLBACK arm also performs used to leak the fold-synthesized #seed
 ; binder as a false CDZ0101: the guard desugar's arm-body copy reparented a reused (shared) body

@@ -5988,3 +5988,12 @@ pass	a LIST OF BIGINTS as op ARGUMENT — the arm folds heap-numeric elements it
 pass	a list of RATIONALS op result — exact fractions cross resume and fold to a canonical sum
 pass	a list-to-list TRANSFORMER op — heap payloads cross BOTH slots of one dispatch
 pass	a map-to-map transformer op CHAINED — the second dispatch receives the first's result
+pass	a TUPLE-keyed Map op result — the body looks up by a reconstructed compound key
+pass	a SET of tuples as op ARGUMENT — the arm probes compound membership including order sensitivity
+pass	a two-op composition where the second op's String argument is BUILT from the first's result
+pass	a SYMBOL as op ARGUMENT — the arm compares interned identity against its own intern
+pass	a SYMBOL handler STATE threads dispatches — each resume reads the prior symbol's identity
+pass	a fallible helper with a `?` called from INSIDE a handler ARM (success path)
+pass	a CONSTANT-failure `?` inside the arm's helper — the cut stays in the helper, dispatch unharmed
+pass	a FLOAT64 as op ARGUMENT — the arm accumulates fractional values into Float64 state
+pass	a TUPLE mixing Float64 and Int64 crosses as op ARGUMENT — the arm scales by the int
