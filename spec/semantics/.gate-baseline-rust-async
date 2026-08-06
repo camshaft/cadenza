@@ -5765,6 +5765,7 @@ todo	a closure capturing a build-time host effect preserves the order of two hos
 todo	a conditional performs only the taken branch's effect — else
 todo	a conditional performs only the taken branch's effect — then
 todo	a constant-try helper that fails feeds the None arm's fallback into resume
+todo	a cross-handler foreign-perform op-arg into a MATCH-shaped-resume arm declines cleanly (completeness gap)
 todo	a deep trie built BETWEEN two host calls reads correctly after the second
 todo	a delegated effect performed in a closure passed to a HOF is reached and fires
 todo	a delegated effect performed inside an intra-program handler

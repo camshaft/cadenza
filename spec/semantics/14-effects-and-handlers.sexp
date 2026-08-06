@@ -4665,6 +4665,33 @@
             (export main)))
   (call   main (: 100 Int64)) (output (: 4950 Int64)))
 
+(case "a cross-handler foreign-perform op-arg into a MATCH-shaped-resume arm declines cleanly (completeness gap)"
+  (doc    "The completeness boundary where the op-arg lift meets the match-shaped-resume peel (breaker nv1f).
+           The inner `B.cut`'s ARG is a CROSS-HANDLER foreign perform `(A.src)` AND B's arm RESUMES through a
+           MATCH on a slice of its param — `(cut (b) t (match (Bytes.slice b 1 2) ((Some w) (resume w t)) ((None
+           _x) (resume (Bytes.of (list)) t))))`. Each half folds ALONE: a cross-handler foreign-perform arg with
+           a BARE-resume arm folds (nv1c/nv1d: `(cut (b) t (resume (Bytes.len b) t))`), and a match-shaped-resume
+           arm with a LITERAL arg folds (nv1e). But their CONJUNCTION declines: `b` is single-use so `(A.src)`
+           substitutes directly into the match SCRUTINEE `(Bytes.slice (A.src) 1 2)`, and threading a foreign
+           perform embedded in a peeled match-value's scrutinee across the outer `A` fold is not yet composed.
+           DECLINE, never a wrong value (an honest not-yet-reducible todo). When the op-arg-lift × match-peel
+           composition lands, this FOLDS to 14: `A.src` = bytes[20,30,40]; `Bytes.slice … 1 2` = [30,40] (Some);
+           `B.cut` resumes that view; `Bytes.len` = 2; `(+ 2 12)` = 14. Flip this todo→14 then.")
+  (input  (do
+            (effect A (op src (-> Unit Bytes)))
+            (effect B (op cut (-> Bytes Bytes)))
+            (def (main (: a Int64))
+              (handle A 0
+                ((src (u) s (resume (Bytes.of (list 20 30 40)) s)))
+                (handle B 0
+                  ((cut (b) t
+                    (match (Bytes.slice b 1 2)
+                      ((Some w) (resume w t))
+                      ((None _x) (resume (Bytes.of (list)) t)))))
+                  (+ (Bytes.len (B.cut (A.src))) a))))
+            (export main)))
+  (call   main (: 12 Int64)) (output (: 14 Int64)))
+
 (case "a BRANCHING tree walk performs once per leaf at 200-leaf scale"
   (doc    "Branching self-recursion × per-node performs (the recursive-perform pins are all LINEAR loops):
            `walk` recurses into BOTH children of a user-sum tree (`(+ (walk a) (walk b))`), each LEAF
