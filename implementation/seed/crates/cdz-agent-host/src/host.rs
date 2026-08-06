@@ -1498,6 +1498,33 @@ mod tests {
         );
     }
 
+    #[test]
+    fn genesis_spawned_threads_parent_into_the_child_id_the_load_bearing_provenance_guarantee() {
+        // The CENTRAL guarantee of genesis_spawned vs genesis (Copilot #2417): the child's genesis_hash (=
+        // its SessionId) is PROVENANCE-dependent — it self-certifies its parent. Proven at the Session level
+        // with a FIXED reducer + FIXED nonce so ONLY `parent` varies: a spawned child (parent=Some) and a
+        // root (parent=None) with identical reducer+nonce get DIFFERENT genesis_hashes. Without this, a bug
+        // that dropped parent (used None) would go unnoticed — the registry/edge tests above would still pass
+        // (they never inspect the child's own genesis provenance). This pins that `parent` is threaded in.
+        let reducer = Hash::of(b"same-reducer");
+        let nonce = Hash::of(b"same-nonce");
+        let parent = Hash::of(b"parent-genesis-hash");
+        let as_root = Session::genesis_spawned(reducer, nonce, None).genesis_hash();
+        let as_child = Session::genesis_spawned(reducer, nonce, Some(parent)).genesis_hash();
+        assert_ne!(
+            as_root, as_child,
+            "same reducer+nonce but different parent ⇒ different genesis_hash — parent IS threaded into \
+             the child id (the provenance guarantee genesis_spawned exists for)"
+        );
+        // And it is DETERMINISTIC in the parent: the same (reducer, nonce, parent) reproduces the same id
+        // (replay-stable — the host derives the child SessionId from this).
+        let as_child_again = Session::genesis_spawned(reducer, nonce, Some(parent)).genesis_hash();
+        assert_eq!(
+            as_child, as_child_again,
+            "genesis_hash is deterministic in (reducer, nonce, parent) — replay-stable child id"
+        );
+    }
+
     #[tokio::test]
     async fn spawn_child_under_an_absent_parent_is_a_none_noop() {
         let mut host = AgentHost::new();
