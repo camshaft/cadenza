@@ -89,7 +89,17 @@ async fn bounce_delivery_failure(
     // Guest-opaque payload: the sender defined the message schema, so we echo its own bytes back for
     // correlation (§4 — the host never interprets it). The `reason` rides the log's tracing, not the guest
     // payload (guest sees its own message came back under the delivery-failure family).
-    let _ = (failed_target, reason); // recorded via tracing at the call site's span; not in the guest payload
+    //
+    // Trace the failure for operator diagnosis (#2409 Copilot c1). SAFE to log: `sender`/`failed_target` are
+    // SessionIds (genesis-hash hex, host-authored identity) and `reason` is a host-authored delivery-failure
+    // cause (absent-target / FoldRefused) — none is guest-controlled payload, so no guest-string-logging
+    // concern (§4 keeps the echoed payload out of the log entirely).
+    tracing::warn!(
+        sender = %sender.as_str(),
+        failed_target = %failed_target.as_str(),
+        reason = %reason,
+        "delivery-failure: bouncing an undeliverable cross-session Emit back to its sender"
+    );
     let body = EventBody::Inbound {
         content_type: ContentType {
             family: DELIVERY_FAILURE_FAMILY.into(),
@@ -413,7 +423,9 @@ impl AsyncAgentHost {
                             // A bounce is only ever needed for a cross-session Emit (reply_to set); an
                             // ordinary external inbound (reply_to None — the common case) never bounces. So
                             // capture the return-address + the echo payload ONLY when reply_to is set — an
-                            // external inbound pays no clone on the delivery hot path (Copilot #2408 c2).
+                            // external inbound pays no PAYLOAD clone on the delivery hot path (Copilot #2408
+                            // c2). (The `target` session-id clone just below is unconditional — it's the
+                            // deliver-call handle, unavoidable since `msg.session` moves into `deliver`.)
                             // These must be taken BEFORE `msg.body` moves into deliver.
                             let bounce_ctx = msg
                                 .reply_to
