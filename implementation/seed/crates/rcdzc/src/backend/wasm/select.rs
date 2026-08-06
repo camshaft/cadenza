@@ -9430,11 +9430,22 @@ fn emit(
             scratch_ty.insert(start_slot, ValType::I64);
             scratch_ty.insert(len_slot, ValType::I64);
             scratch_ty.insert(bytelen_slot, ValType::I64);
-            emit(db, bytes, slots, base + 4, high, scratch_ty, layout, out)?; // [bytes]
+            // Each operand emits at a base ABOVE both `base + 4` (the four reserved slots) AND every scratch
+            // slot a PRIOR operand's own emit consumed — `(*high).max(base + 4)`, NOT a bare `base + 4`. A
+            // `bytes` operand that is a dup-site `Core::SumPayload` (the collection-lookup shape: `(match
+            // (Map.lookup …) ((Some bs) (Bytes.slice bs …)))`) floats its Perceus retain child into a slot at
+            // `*high` typed I32; a bare `base + 4` base then lets a following perform-threaded i64 `start`/`len`
+            // materialize into that SAME index, and a wasm local has ONE type function-wide → i32/i64 collision
+            // → an invalid module (the #2311 CallClosure scratch-alias, here at `bytes-slice`). Threading the
+            // base past `*high` keeps each operand's scratch DISJOINT.
+            let opnd_base = (*high).max(base + 4);
+            emit(db, bytes, slots, opnd_base, high, scratch_ty, layout, out)?; // [bytes]
             out.push(Lir::LocalSet(bytes_slot));
-            emit(db, start, slots, base + 4, high, scratch_ty, layout, out)?; // [start:i64]
+            let opnd_base = (*high).max(base + 4);
+            emit(db, start, slots, opnd_base, high, scratch_ty, layout, out)?; // [start:i64]
             out.push(Lir::LocalSet(start_slot));
-            emit(db, len, slots, base + 4, high, scratch_ty, layout, out)?; // [len:i64]
+            let opnd_base = (*high).max(base + 4);
+            emit(db, len, slots, opnd_base, high, scratch_ty, layout, out)?; // [len:i64]
             out.push(Lir::LocalSet(len_slot));
             // Materialize the byte-count ONCE (i64, u32-extended — read three times below).
             out.push(Lir::LocalGet(bytes_slot));

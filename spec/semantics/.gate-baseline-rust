@@ -5862,3 +5862,4 @@ todo	expect traps on the absent case of a runtime optional
 todo	read of malformed text is a coded reject, not a wrong value
 todo	two adapter records with different state types drive a take-while fold in one program
 pass	a closure looked up from a map by a perform result, applied to a perform result, threads through call_indirect
+pass	Bytes.slice of a map-looked-up Bytes with perform-threaded start and len threads without a scratch collision
