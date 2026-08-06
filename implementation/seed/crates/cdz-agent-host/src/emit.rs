@@ -1,4 +1,4 @@
-//! [`EmitExecutor`] — the REAL `Emit` effect executor: cross-session messaging (operator's "next").
+//! [`EmitExecutor`] — the `Emit` effect executor: cross-session messaging (one agent signals another).
 //!
 //! A reducer in session A performs an `Emit` effect (`EffectKind::Emit` / [`effect_ct::EMIT`]) whose
 //! `target` names a PEER session id and whose `payload` is the message. The kernel authorizes it (SEC-F1 —
@@ -53,6 +53,14 @@ impl EmitExecutor {
 #[async_trait::async_trait(?Send)]
 impl Executor for EmitExecutor {
     async fn perform(&mut self, req: &EffectRequest, _idempotency_key: Hash) -> EffectOutcome {
+        // `_idempotency_key` is DELIBERATELY dropped in v0 (#2351 review c2): the dedup/provenance it exists
+        // for lives at the PERSISTENCE layer (a durable inbox de-duping a redelivered emit across a
+        // crash-recovery re-drive), which this in-memory-`Inbox` routing has no way to consult — there's no
+        // durable peer-inbox to check the key against yet. So using it here would be a no-op today. When the
+        // peer inbox becomes durable (the delivery-confirmation / at-least-once v2), the key threads into
+        // that dedup — a routed Inbound stamped with the key, deduped on the peer's persisted log. Until
+        // then a re-driven emit CAN double-deliver on crash-recovery; that's an accepted v0 property (the
+        // routing is in-memory + the daemon's durable-restart path is a later slice), not an oversight.
         // Family-keyed (seq-39), matching the router + authz decision. A non-Emit family is structural →
         // PERMANENT (§17: observable Err, never a panic).
         if !req.content_type.matches_family(effect_ct::EMIT) {
@@ -70,7 +78,9 @@ impl Executor for EmitExecutor {
                 "EmitExecutor: an Emit effect requires a non-empty target (the peer session id to route to)",
             ));
         }
-        let target = SessionId::new(req.target.as_ref());
+        // Clone the `Arc<str>` (O(1) refcount bump) rather than round-tripping `as_ref()` → a fresh alloc
+        // (#2351 review c3): `SessionId` IS an `Arc<str>` and `req.target` already is one.
+        let target = SessionId::new(req.target.clone());
 
         // The message payload rides VERBATIM into the peer's Inbound (opaque — the reducer defines the
         // schema). A payload-less emit routes an empty-payload message (a bare signal is legitimate); a
