@@ -597,10 +597,13 @@ mod tests {
             "session-b",
             "routed to the target peer session"
         );
-        drop(tx); // no more producers; the channel is now empty (exactly one message routed)
+        // Exactly one message was routed: the channel is now EMPTY (not disconnected — the EmitExecutor
+        // still holds a cloned sender, and so does this test's `tx`). Assert on `Empty` specifically so a
+        // future spurious extra emit (a second queued message) is caught, distinct from a Disconnected
+        // channel (#2356 review — `is_err()` blurred the two).
         assert!(
-            rx.try_recv().is_err(),
-            "exactly one message routed (no spurious extra)"
+            matches!(rx.try_recv(), Err(mpsc::error::TryRecvError::Empty)),
+            "exactly one message routed (channel empty, no spurious extra)"
         );
 
         // Deliver the routed Inbound to B (the loop's routing step) → B folds it.
