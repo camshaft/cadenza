@@ -2477,6 +2477,20 @@ pub fn reduce_handle(
         }
         subst.insert(arm.state, init);
         let substituted = crate::eval::beta_reduce(db, arm.body, &subst);
+        // PIN the substituted arm body's resolution before the refold rebuilds it (breaker ts1, false-CDZ0101
+        // unbound body-free-var). A two-site arm whose op-ARG is an enclosing binder — the body performs
+        // `(St.feed n)`, `n` = main's param, substituted for `v` into the arm's `(if (> v 10) …)` CONDITION —
+        // carries that `n` in the condition. `rewrite_resume_to_refolded_context` rebuilds the `if`-shaped arm
+        // via `push_list` (recursing every child, incl. the condition), which OVERWRITES the shared `n` node's
+        // parent to the fresh `>` → detaches `n` from main (single-parent arena) → the rebuilt `(if (> n 10) …)`
+        // is a root, `n`'s chain dead-ends → spurious CDZ0101 'unbound n' on a VALID program. Anchor
+        // `substituted` under the handle site FIRST so `n` resolves up the live chain to main, THEN
+        // `resolve_subtree` memoizes every node's resolution against that CURRENT position — so the rebuild
+        // can't change how `n` resolves (the apply_lambda pin-before-copy idiom, resolve.rs; the same fix
+        // v-inference used for the guard-desugar arm-copy sibling ag5). Idempotent → no hang; a constant-arg
+        // arm (no enclosing-binder ref) is byte-identical.
+        reparent_under_handle_site(db, substituted, body);
+        crate::resolve::resolve_subtree(db, substituted);
         // Rewrite the arm's single `(resume v s')` to `reduce_handle(s', arms, C[v])` — the re-reduced
         // continuation (a further discharged perform in `C` is folded by the recursive call). Declines
         // cleanly (`?`) if any recursive refold cannot be served.
