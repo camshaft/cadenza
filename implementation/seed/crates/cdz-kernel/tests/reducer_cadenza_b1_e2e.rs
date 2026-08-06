@@ -119,9 +119,20 @@ async fn reducer_cadenza_b1_folds_empty_effects_through_apply_handle_lowered() {
 /// content-addressed `ComponentStore`, read via `get_by_hash` — the SHA-256-verified content-address
 /// path the fold itself uses). A declared dep with neither source available FAILS LOUD.
 async fn resolve_runtime_deps(deps: &[ComponentDep]) -> Vec<(ComponentDep, Vec<u8>)> {
-    // Direct-path override: compose the runtime component from a path env, no hash lookup. b1 declares a
-    // single runtime dep, so a single direct path satisfies it.
+    // Direct-path override: compose the runtime component from a path env, no hash lookup. The override
+    // supplies ONE component's bytes, so it only makes sense for a single-dep reducer — b1 declares exactly
+    // one (its cadenza:runtime/heap). FAIL LOUD if a future reducer declares >1 dep (github-liaison #2312):
+    // mapping the same heap bytes to every dep would silently hand an unrelated dep the wrong component →
+    // a deep compose/link failure instead of this targeted error. (Mirrors apply_handle_lowered's
+    // "MORE THAN ONE cadenza:runtime/heap dep" fail-loud.) Use CDZ_STORE for a genuine multi-dep reducer.
     if let Ok(path) = std::env::var("RUNTIME_HEAP_COMPONENT") {
+        assert_eq!(
+            deps.len(),
+            1,
+            "RUNTIME_HEAP_COMPONENT override supplies ONE component but the reducer declares {} deps — \
+             use CDZ_STORE (content-addressed, per-dep) for a multi-dep reducer",
+            deps.len()
+        );
         let bytes = std::fs::read(&path)
             .unwrap_or_else(|e| panic!("RUNTIME_HEAP_COMPONENT={path:?} set but unreadable: {e}"));
         return deps.iter().cloned().map(|d| (d, bytes.clone())).collect();
