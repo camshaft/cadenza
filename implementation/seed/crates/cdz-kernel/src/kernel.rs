@@ -284,7 +284,12 @@ impl Session {
     /// guards (a `Session` only exists via `genesis()`/`replay()`, both of which guarantee it).
     pub fn genesis_hash(&self) -> Hash {
         match self.log.first() {
-            Some(e @ Event { body: EventBody::Genesis { .. }, .. }) => e.hash(),
+            Some(
+                e @ Event {
+                    body: EventBody::Genesis { .. },
+                    ..
+                },
+            ) => e.hash(),
             _ => panic!(
                 "cdz-kernel invariant violated: session log's first event is not Genesis \
                  (a Session is only constructed via genesis()/replay(), both of which guarantee it)"
