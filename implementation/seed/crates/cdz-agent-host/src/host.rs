@@ -303,6 +303,17 @@ impl HostedSession {
         &self.session
     }
 
+    /// This session's GENESIS HASH — the content hash of its genesis event ([`Session::genesis_hash`]),
+    /// derived from the reducer hash + the genesis events. This is the host's canonical SessionId primitive:
+    /// the operator ruled a session's identity IS its genesis-hash-hex (a content hash with entropy —
+    /// distinct even for two sessions over the SAME reducer, since their genesis events differ), which the
+    /// naming layer resolves a name to (name → genesis-hash = the SessionId directly, so cross-session
+    /// routing needs no separate hash→id map — the resolved hash-hex is the routable id). A caller
+    /// assigns/validates a [`SessionId`] against `hex(this)`.
+    pub fn genesis_hash(&self) -> Hash {
+        self.session.genesis_hash()
+    }
+
     /// The earliest armed-timer deadline, if any — lets the host's scheduler know when to next tick.
     pub fn next_timer_deadline(&self) -> Option<u64> {
         self.session.next_timer_deadline()
@@ -901,6 +912,55 @@ mod tests {
         assert_eq!(genesis_ct::KV_ROOT_IDENTITY, b"bootstrap/root-identity");
         assert_eq!(genesis_ct::KV_AUTHORIZER_HASH, b"bootstrap/authorizer-hash");
         assert_eq!(genesis_ct::KV_CONTEXT, b"bootstrap/context");
+    }
+
+    #[test]
+    fn hosted_session_genesis_hash_delegates_and_is_stable() {
+        // HostedSession::genesis_hash() is the host's SessionId primitive (operator ruling: SessionId =
+        // genesis-hash-hex). Pin that it delegates to the underlying Session + is stable across calls.
+        let s = HostedSession::genesis(
+            Hash::of(b"reducer-A"),
+            Box::new(GenesisRecordingReducer),
+            Box::new(Authorizer::deny_all()),
+            CompositeExecutor::new(),
+        );
+        assert_eq!(
+            s.genesis_hash(),
+            s.session().genesis_hash(),
+            "delegates to Session"
+        );
+        assert_eq!(s.genesis_hash(), s.genesis_hash(), "stable across calls");
+    }
+
+    #[test]
+    fn genesis_hash_of_two_same_reducer_sessions_collides_uniqueness_gap() {
+        // ⚠️ SURFACED (flagged to v-agent-harness): the operator's SessionId=genesis-hash ruling assumes a
+        // genesis hash is per-session-UNIQUE, but Session::genesis(reducer) builds a Genesis{reducer} event
+        // with NO entropy — so two sessions over the SAME reducer_hash produce IDENTICAL genesis events →
+        // IDENTICAL genesis_hash. This test PINS that collision as the current (gap) behavior: under
+        // SessionId=hex(genesis_hash), spawning a second same-reducer session would COLLIDE on the registry
+        // key (replace the first). The naming increment needs genesis to carry entropy (spawn-time/nonce, per
+        // the operator's original "hash of spawn-time + entropy" instinct) OR a rule that same-reducer
+        // sessions can't coexist. If this assert_eq ever flips to assert_ne (genesis gains entropy), the gap
+        // is closed — update it then.
+        let a = HostedSession::genesis(
+            Hash::of(b"same-reducer"),
+            Box::new(GenesisRecordingReducer),
+            Box::new(Authorizer::deny_all()),
+            CompositeExecutor::new(),
+        );
+        let b = HostedSession::genesis(
+            Hash::of(b"same-reducer"),
+            Box::new(GenesisRecordingReducer),
+            Box::new(Authorizer::deny_all()),
+            CompositeExecutor::new(),
+        );
+        assert_eq!(
+            a.genesis_hash(),
+            b.genesis_hash(),
+            "two same-reducer sessions collide on genesis_hash today (no genesis entropy) — the \
+             SessionId=genesis-hash uniqueness gap, flagged to v-agent-harness"
+        );
     }
 
     /// Env-gate for a REAL-reducer E2E: require BOTH a reducer-component-path env (`reducer_env`) AND
