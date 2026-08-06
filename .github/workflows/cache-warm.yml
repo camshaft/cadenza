@@ -8,10 +8,15 @@
 #
 # FIX: this job runs in its OWN concurrency group (NOT ci's push-supersede group), so a scheduled fire always
 # survives to complete + save. Every 30min it (re)builds the crane dep-cache (.#cargo-artifacts) + the
-# component store on the default branch → cache-nix-action's save (gated to the default branch in the
-# nix-store-cache composite) lands a fresh warm cache on the current flake key. Candidate runs then RESTORE it
-# warm regardless of push cadence. workflow_dispatch allows an on-demand warm (e.g. for a clean before/after
-# measurement after a flake-key rotation).
+# component store on the default branch → a fresh warm cache lands on the current flake key. Candidate runs
+# then RESTORE it warm regardless of push cadence. workflow_dispatch allows an on-demand warm (e.g. for a clean
+# before/after measurement after a flake-key rotation).
+#
+# SAVE-ON-SUCCESS SPLIT (v-nix+v-ft 2026-08-06): this workflow does NOT use the shared nix-store-cache composite
+# (which the checks.yml jobs use for combined restore+save). It splits restore + a trailing save gated
+# `if: success()` at the JOB level, so a warm run that FAILS a later step (e.g. a fmt-red in the warm-checks
+# step) does NOT poison the key with a stale/partial store. See the restore/save steps below for the full
+# rationale (the composite's embedded post-if:success() only sees the composite's own steps, not the job's).
 name: cache-warm
 
 on:
@@ -54,9 +59,24 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@v22
-      # SAVE-enabled: this workflow runs on the default branch, so the composite's github.ref==default_branch
-      # gate is TRUE → it saves+purges the warmed store on the current flake key.
-      - uses: ./.github/actions/nix-store-cache
+      # SAVE-ON-SUCCESS SPLIT (v-nix+v-ft 2026-08-06): cache-warm does NOT use the shared nix-store-cache
+      # composite (which the 10 checks.yml jobs use for combined restore+save) — it splits restore + save so
+      # the SAVE can be gated on JOB success. WHY: a cache-warm run that FAILS a later step (e.g. the 10:01
+      # fmt-red at the 'warm the aarch64-only nix checks' step) would otherwise still POISON the key — the
+      # composite embeds cache-nix-action whose `post-if: success()` evaluates in the COMPOSITE's own step
+      # context (all its steps ok), NOT the outer job's later failure, so the save fired despite the job
+      # failing and seeded a stale/partial store. At the JOB level, `if: success()` DOES see every prior step
+      # incl. the warm-checks step → a failed warm run genuinely SKIPS the save = structural poison-fix, no
+      # eventually-consistent purge-then-save race (why we did NOT take purge-primary-key:0). The primary-key
+      # MUST mirror the composite (same c2 salt, same hashFiles) so cache-warm SAVES the exact key the
+      # checks.yml jobs RESTORE. The restore-prefix here is intentionally c2-scoped (tighter than the
+      # composite's bare `nix-<os>-<arch>-`) so a warm-start never picks up a PRE-c2 stale cache. The composite
+      # is untouched → zero blast radius on the other 10 callers.
+      - name: restore /nix/store (no save — the trailing step saves on success)
+        uses: nix-community/cache-nix-action/restore@7df957e333c1e5da7721f60227dbba6d06080569 # v7 (pin matches composite)
+        with:
+          primary-key: nix-${{ runner.os }}-${{ runner.arch }}-c2-${{ hashFiles('flake.lock', 'flake.nix') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-${{ runner.arch }}-c2-
       - name: warm cargo-artifacts (crane dep-cache)
         run: nix build .#packages.${{ matrix.arch }}-linux.cargo-artifacts --print-build-logs
       - name: warm component store
@@ -77,3 +97,18 @@ jobs:
         run: |
           nix build .#checks.aarch64-linux.cdz-agent-host-native --print-build-logs
           nix build .#checks.aarch64-linux.cad-tests --print-build-logs
+      # SAVE the warmed store — gated `if: success()` at the JOB level so a run that FAILED any prior step
+      # (incl. the warm-checks step above) does NOT save a stale/partial store (the poison-fix; see the restore
+      # step's rationale). Params mirror the old composite's save side: gc the store to ~8GB before upload,
+      # purge stale same-arch caches (purge-created:0), but purge-primary-key:never so this run's own fresh save
+      # is protected from its own GC. Runs on the default branch only (this workflow only fires on main).
+      - name: save /nix/store (only if the whole warm job succeeded)
+        if: success() && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        uses: nix-community/cache-nix-action/save@7df957e333c1e5da7721f60227dbba6d06080569 # v7 (pin matches composite)
+        with:
+          primary-key: nix-${{ runner.os }}-${{ runner.arch }}-c2-${{ hashFiles('flake.lock', 'flake.nix') }}
+          gc-max-store-size-linux: 8000000000
+          purge: true
+          purge-prefixes: nix-${{ runner.os }}-${{ runner.arch }}-c2-
+          purge-created: 0
+          purge-primary-key: never
