@@ -57,6 +57,28 @@ impl<E: CdzEnv> DynCdzEnv for E {
     }
 }
 
+/// An object-safe, callable-repeatedly async closure whose returned future BORROWS the `&mut env` passed at
+/// the call — the rust-async lambda-lifted-closure value representation. A bare `dyn Fn(&mut dyn DynCdzEnv, A)
+/// -> Pin<Box<dyn Future<Output = R> + '_>>` CANNOT express this: a closure cannot be generic/HRTB over its
+/// OWN parameter lifetimes, so the `'_` on the boxed future can't be tied to the call's `&'a mut env` borrow
+/// (E0271 / "lifetime may not live long enough"). A trait with a GENERIC METHOD `call<'a>` can — `'a` ties the
+/// returned future to the env borrow — and is object-safe, so an emitted closure is `Rc<dyn EnvClosure<A, R>>`.
+/// The backend emits a small per-closure struct (its captures as fields) with an `EnvClosure` impl whose
+/// `call` boxes the lifted body's future; `A`/`R` are the closure's (single) argument and result machine types
+/// (a multi-arg closure tuples its args into `A`, matching the lifted-lambda calling convention).
+///
+/// Additive like [`DynCdzEnv`]: rust-backend rlib only, NO change to `CdzEnv`, and it does NOT touch the wasm
+/// value-heap `cdz-runtime` component, so `REQUIRED_RUNTIME_HASH` is unaffected (no `xtask codegen`).
+pub trait EnvClosure<A, R> {
+    /// Apply the closure to `arg` with the ambient `env`; the returned future may `await` through `env` and
+    /// borrows it for `'a`. Callable repeatedly (`&self`), unlike an `FnOnce`.
+    fn call<'a>(
+        &self,
+        env: &'a mut dyn DynCdzEnv,
+        arg: A,
+    ) -> core::pin::Pin<Box<dyn core::future::Future<Output = R> + 'a>>;
+}
+
 #[cfg(test)]
 mod dyn_env_tests {
     use super::*;
@@ -101,6 +123,62 @@ mod dyn_env_tests {
         assert_eq!(
             counter.used, 12,
             "consume_boxed threads gas through the underlying CdzEnv"
+        );
+    }
+
+    /// Poll an `R`-yielding `'_`-borrowing future to completion (the EnvClosure result variant of `block_on`).
+    fn block_on_val<R>(
+        mut fut: core::pin::Pin<Box<dyn core::future::Future<Output = R> + '_>>,
+    ) -> R {
+        use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+        const VT: RawWakerVTable = RawWakerVTable::new(
+            |_| RawWaker::new(core::ptr::null(), &VT),
+            |_| {},
+            |_| {},
+            |_| {},
+        );
+        let waker = unsafe { Waker::from_raw(RawWaker::new(core::ptr::null(), &VT)) };
+        let mut cx = Context::from_waker(&waker);
+        loop {
+            if let Poll::Ready(v) = fut.as_mut().poll(&mut cx) {
+                return v;
+            }
+        }
+    }
+
+    /// A lambda-lifted async closure: captures `base`, its future BORROWS the call's `&mut env` (awaits gas
+    /// through it) — the exact shape a bare `dyn Fn` cannot express.
+    struct Adder {
+        base: i64,
+    }
+    impl EnvClosure<i64, i64> for Adder {
+        fn call<'a>(
+            &self,
+            env: &'a mut dyn DynCdzEnv,
+            arg: i64,
+        ) -> core::pin::Pin<Box<dyn core::future::Future<Output = i64> + 'a>> {
+            let base = self.base;
+            Box::pin(async move {
+                env.consume_boxed(1).await; // the returned future borrows env for 'a — the whole point
+                base + arg
+            })
+        }
+    }
+
+    #[test]
+    fn env_closure_is_object_safe_and_its_future_borrows_the_call_env() {
+        // Stored as a trait object, called repeatedly through a `&mut dyn DynCdzEnv`; the returned future ties
+        // to the env borrow and awaits through it. A `dyn Fn` returning such a future does NOT type-check.
+        use std::rc::Rc;
+        let c: Rc<dyn EnvClosure<i64, i64>> = Rc::new(Adder { base: 100 });
+        let mut counter = Counter { used: 0 };
+        let r1 = block_on_val(c.call(&mut counter, 5));
+        let r2 = block_on_val(c.call(&mut counter, 40));
+        assert_eq!(r1, 105);
+        assert_eq!(r2, 140);
+        assert_eq!(
+            counter.used, 2,
+            "each call awaited one gas unit through the borrowed env"
         );
     }
 }
