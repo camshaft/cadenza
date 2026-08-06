@@ -2935,6 +2935,19 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
     let reg = fleet.load();
     let now = now_unix();
 
+    // Self-staleness guard: the watchdog is only as good as the binary running it, and that binary is
+    // built from THIS worktree's `xtask` source. If the worktree lags trunk, the watchdog can silently
+    // run OLD self-heal logic (the dead-cron escalation was chased across 3 fix rounds while the real
+    // cause was a 12-commits-behind watchdog binary that lacked the fix entirely — see
+    // `stale_watchdog_warning`). Warn loudly + up front so a stale watchdog is self-evident, not a
+    // phantom logic bug. Advisory only (never blocks the sweep) — a worktree that can't answer git stays
+    // quiet rather than false-alarming.
+    if let Some(behind) = xtask_commits_behind_trunk(&fleet.repo)
+        && let Some(warning) = stale_watchdog_warning(behind)
+    {
+        eprintln!("  ! {warning}");
+    }
+
     let mut rearmed = 0usize;
     // Of the re-arms, how many ESCALATED to re-issuing `/loop` (a prior nudge didn't stick → the agent's
     // recurring cron is presumed DEAD, not merely a missed tick). This split is the loop-liveness signal:
@@ -7318,6 +7331,48 @@ fn last_commit_age_secs(repo: &Path, refname: &str) -> Option<u64> {
     Some(now_unix().saturating_sub(ct))
 }
 
+/// How many commits on `trunk` touch `xtask/` but are NOT in this worktree's `HEAD` — i.e. how far the
+/// worktree's `xtask` SOURCE lags trunk. `None` if git can't answer (detached/no trunk ref/error), which
+/// the caller treats as "can't prove stale" (silent, not a false alarm). Used by the watchdog to detect
+/// that IT was built from stale source (see [`stale_watchdog_warning`]).
+fn xtask_commits_behind_trunk(repo: &Path) -> Option<usize> {
+    let out = Command::new("git")
+        .current_dir(repo)
+        .args(["rev-list", "--count", "HEAD..trunk", "--", "xtask"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8(out.stdout).ok()?.trim().parse().ok()
+}
+
+/// The loud warning to emit when the watchdog is running from a worktree whose `xtask` source lags trunk
+/// by `behind` commits — meaning the compiled binary may PREDATE recent self-heal fixes and silently run
+/// old behavior. `None` when up to date (`behind == 0`), so a healthy run stays quiet. Pure so the
+/// message + the fire/quiet gate are unit-tested without git.
+///
+/// WHY THIS EXISTS (concierge dead-cron saga, 2026-08-05): the trio's escalation "still didn't trip"
+/// across THREE landed fix rounds — but the real cause was that the concierge's watchdog binary was built
+/// from a worktree 12 commits behind trunk on `xtask/`, so it lacked the streak code ENTIRELY (the
+/// `nudge-streak/` dir was never created across 3000+ sweeps — dispositive). Rebuild-mtime being newer
+/// than the fix commit does NOT prove the SOURCE contained the fix: `cargo build` compiles whatever the
+/// worktree checked out, stale or not. This guard converts that silent failure into a loud, self-serve
+/// signal: sync + rebuild before trusting the watchdog's self-heal behavior.
+fn stale_watchdog_warning(behind: usize) -> Option<String> {
+    if behind == 0 {
+        return None;
+    }
+    Some(format!(
+        "fleet watchdog: this worktree's `xtask` source is {behind} commit(s) BEHIND trunk — the \
+         running watchdog binary may PREDATE recent self-heal fixes (a rebuild whose mtime is newer \
+         than a fix commit does NOT prove the source contained it; cargo compiles the checked-out \
+         source, stale or not). Self-heal behavior (dead-cron escalation, drain-stall nudges, wedge \
+         restarts) may silently be OLD. Fix: sync this worktree onto trunk + rebuild xtask before \
+         trusting the watchdog. (git rev-list --count HEAD..trunk -- xtask = {behind})"
+    ))
+}
+
 // ── gate-batch: optimistic-batch + bisect integration planner ───────────────────────────────────
 
 /// One queued merge-request considered for the round.
@@ -11039,6 +11094,23 @@ mod tests {
 
         // Re-armed but NEVER heartbeated since → not self-sustaining → keep the streak.
         assert!(!should_clear_nudge_streak(Some(300), None, interval));
+    }
+
+    #[test]
+    fn stale_watchdog_warning_fires_only_when_the_xtask_source_lags_trunk() {
+        // Up to date → quiet (a healthy sweep must not spam the warning).
+        assert!(stale_watchdog_warning(0).is_none());
+        // Behind by ANY amount → warn, and the message must name the lag + the self-serve remedy so a
+        // reader (or the concierge) knows to sync+rebuild — this is the whole point of the guard (the
+        // dead-cron saga's real cause was a 12-behind watchdog binary that silently ran old logic).
+        let w = stale_watchdog_warning(12).expect("12 behind → warns");
+        assert!(w.contains("12"), "warning must state how far behind: {w}");
+        assert!(
+            w.contains("BEHIND") && w.contains("rebuild"),
+            "warning must flag staleness + the rebuild remedy: {w}"
+        );
+        // Single-commit lag still fires (no silent tolerance band — one missing fix is enough).
+        assert!(stale_watchdog_warning(1).is_some());
     }
 
     #[test]
