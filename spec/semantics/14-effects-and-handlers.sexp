@@ -1962,6 +1962,39 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 65 Int64)))
 
+(case "a state-REPLACING second op AFTER a two-site arm's performs is served (prefix rule)"
+  (doc    "The second-op PREFIX boundary, served face: a handler with a two-site sift AND a
+           state-REPLACING reset serves the program when the sift performs form a contiguous PREFIX of
+           the dispatch sequence and reset comes AFTER — sift 20 → 20 (s 1), sift 30 → 30 (s 2),
+           reset → 2 (state becomes 100, unobserved) → 52. Any different-op dispatch BEFORE or BETWEEN
+           the two-site performs declines (the interleaved decline face is pinned as a todo-witness
+           nearby): the two-hole refold cannot yet thread another op's dispatch through the middle of
+           a multi-site continuation chain — trailing dispatches are outside the chain and fold.")
+  (input  (do
+            (effect St (op sift (-> Int64 Int64)) (op reset (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St 0
+                ((sift (v) s (if (> v 10) (resume v (+ s 1)) (resume 0 s)))
+                 (reset (u) s (resume s 100)))
+                (+ (St.sift 20) (+ (St.sift n) (St.reset)))))
+            (export main)))
+  (call   main (: 30 Int64)) (output (: 52 Int64)))
+
+(case "a state-READING second op after a SINGLE two-site perform is served (minimal prefix)"
+  (doc    "The minimal serving of the prefix rule: ONE two-site sift then a trailing state-reading
+           peek — sift 20 passes (s → 1), peek reads 1 → 21. With the multi-perform sibling above,
+           pins that the prefix rule is about POSITION, not perform count: even a single leading
+           different-op dispatch (peek FIRST) declines, while any number of trailing ones fold.")
+  (input  (do
+            (effect St (op sift (-> Int64 Int64)) (op peek (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St 0
+                ((sift (v) s (if (> v 10) (resume v (+ s 1)) (resume 0 s)))
+                 (peek (u) s (resume s s)))
+                (+ (St.sift 20) (St.peek))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 21 Int64)))
+
 (case "a two-site arm branching on the OP ARGUMENT with a hit-count state folds (threshold sift)"
   (doc    "The op-argument face of the served multi-site family: `(if (> v 10) …)` reads the op PARAM;
            the pass path resumes the value and counts it, the fail path resumes 0 and holds. Three sifts
