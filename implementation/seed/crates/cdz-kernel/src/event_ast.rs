@@ -489,6 +489,73 @@ pub fn decode_members(bytes: &[u8]) -> Result<Vec<Hash>, EventAstError> {
     Ok(out)
 }
 
+/// Encode a §lifecycle-I7 `ChildExited` supervision signal as canonical AST — the payload the HOST emits into
+/// a terminated/closed child's PARENT inbox (`(child, CloseOutcome)`), for the parent's userspace supervisor
+/// reducer to fold (restart/escalate). Shape:
+///
+///   `(child-exited (child <hash>) <close-outcome>)`
+///
+/// where `<close-outcome>` is the SAME form the `Closed` event uses (§6 supervision slice-1): a bare payload
+/// form (`(inline …)`/`(blob …)`) for `Success`, or `(failure <str>)` for `Failure` — decoded by the shared
+/// `read_close_outcome`. Giving the prelude ONE authoritative encode/decode pair (like [`encode_member_op`]/
+/// [`encode_name_set`]) keeps the host emit + prelude consume in lockstep on a stable wire, rather than an
+/// ad-hoc host-side framing the prelude would have to duplicate. Same shared-codec + total-decode discipline.
+///
+/// This codec is FAMILY-AGNOSTIC — it encodes only the payload. The host emits it as an INBOUND (host-as-
+/// sender, reusing the Emit/inbox path) into the parent's inbox with content-type family
+/// `"lifecycle/child-exited"` (confirmed with v-agent-harness-host — parallels the `lifecycle/*` session-
+/// control partition, clearer than bare "supervision"). NOTE it is NOT an authz-gated `lifecycle/*` EFFECT
+/// the parent performs (no [`is_lifecycle_family`](crate::effect::effect_ct::is_lifecycle_family) authz path):
+/// the family string is just the Inbound content-type the prelude supervisor matches on before calling
+/// [`decode_child_exited`]. So: `Inbound{ family="lifecycle/child-exited", version=1, payload=encode_child_exited(child, outcome) }`.
+pub fn encode_child_exited(child: &Hash, outcome: &crate::event::CloseOutcome) -> Vec<u8> {
+    let mut b = Builder::new();
+    let head = b.name("child-exited");
+    let child_form = {
+        let h = b.name("child");
+        let hf = hash_form(&mut b, child);
+        b.list(vec![h, hf])
+    };
+    // The close-outcome form — byte-identical to the `Closed` event's outcome encoding (bare payload for
+    // Success, `(failure <str>)` for Failure), so the ONE `read_close_outcome` decodes both.
+    let outcome_form = match outcome {
+        crate::event::CloseOutcome::Success(p) => payload_form(&mut b, p),
+        crate::event::CloseOutcome::Failure(reason) => {
+            let h = b.name("failure");
+            let r = str_leaf(&mut b, reason);
+            b.list(vec![h, r])
+        }
+    };
+    let root = b.list(vec![head, child_form, outcome_form]);
+    codec::encode(&b.finish(root))
+}
+
+/// Decode a `child-exited` frame encoded by [`encode_child_exited`] → `(child, CloseOutcome)`. Total, and it
+/// distinguishes the two [`EventAstError`] classes (per the contract at the top of this file): bytes that
+/// don't parse as a canonical codec frame → [`EventAstError::Codec`]; a well-formed frame whose SHAPE is
+/// wrong (bad head/arity, a non-32-byte hash, an unknown close-outcome head) → [`EventAstError::Shape`].
+/// Never a panic — the bytes ride the durable inbox / an untrusted sender. Reuses `read_close_outcome` so
+/// the outcome accepts the SAME shapes the `Closed` event does.
+pub fn decode_child_exited(
+    bytes: &[u8],
+) -> Result<(Hash, crate::event::CloseOutcome), EventAstError> {
+    let a = codec::decode_detailed(bytes).map_err(EventAstError::Codec)?;
+    let [child_f, outcome_f] = a
+        .as_form(a.root, "child-exited")
+        .ok_or(shape("child-exited head"))?
+    else {
+        return Err(shape("child-exited arity"));
+    };
+    let child = {
+        let [hv] = a.as_form(*child_f, "child").ok_or(shape("child form"))? else {
+            return Err(shape("child arity"));
+        };
+        read_hash(&a, *hv)?
+    };
+    let outcome = read_close_outcome(&a, *outcome_f)?;
+    Ok((child, outcome))
+}
+
 /// A decoded §4c store-snapshot frame — either a single-value `name-set` pointer or a group `member-op`.
 /// This is the durable-snapshot restore discriminant: [`decode_store_frame`] decodes the shared codec
 /// ONCE and routes on the frame's self-describing AST head, so [`crate::name_store::NameStore::from_snapshot_bytes`]
@@ -1711,6 +1778,43 @@ mod tests {
         assert!(
             decode_members(&encode_member_op("session/g", true, &m, &(o, 0))).is_err(),
             "a member-op frame is not a members frame"
+        );
+    }
+
+    #[test]
+    fn child_exited_frame_round_trips_success_and_failure_and_rejects_malformed() {
+        // §lifecycle I7: the ChildExited supervision signal (child + CloseOutcome) round-trips through the
+        // canonical codec both arms — Success(payload) and Failure(reason) — so the prelude supervisor decodes
+        // exactly what the host emits. CloseOutcome reuses the shared Closed-event outcome shape.
+        use crate::effect::Payload;
+        use crate::event::CloseOutcome;
+        let child = Hash::of(b"child-session");
+        // SUCCESS arm (payload rides).
+        let ok = encode_child_exited(
+            &child,
+            &CloseOutcome::Success(Payload::Inline(b"result".to_vec().into())),
+        );
+        match decode_child_exited(&ok).expect("success child-exited round-trips") {
+            (c, CloseOutcome::Success(Payload::Inline(p))) => {
+                assert_eq!(c, child);
+                assert_eq!(p.as_ref(), b"result");
+            }
+            other => panic!("expected Success(Inline), got {other:?}"),
+        }
+        // FAILURE arm (reason string rides).
+        let fail = encode_child_exited(&child, &CloseOutcome::Failure("boom".to_string()));
+        match decode_child_exited(&fail).expect("failure child-exited round-trips") {
+            (c, CloseOutcome::Failure(reason)) => {
+                assert_eq!(c, child);
+                assert_eq!(reason, "boom");
+            }
+            other => panic!("expected Failure, got {other:?}"),
+        }
+        // Non-conforming bytes / a wrong-head frame are clean Shape errors, never a panic.
+        assert!(decode_child_exited(b"not a child-exited frame").is_err());
+        assert!(
+            decode_child_exited(&encode_members([&child])).is_err(),
+            "a members frame is not a child-exited frame"
         );
     }
 
