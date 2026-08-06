@@ -715,8 +715,11 @@ pub fn emit(db: &mut Db, layout: &Layout, mode: Mode) -> Result<Vec<u8>, Reject>
 //   - `EnvClosure` — only a module that emits an async CLOSURE value (its per-closure struct `impl
 //     EnvClosure`) names it directly.
 //   - `CdzEnv` — the base trait an APPLICATION/the gate harness impls for its concrete env; an emitted
-//     module no longer names it directly (async fns take `dyn DynCdzEnv`, not a generic `<__CdzE: CdzEnv>`),
-//     but it stays in the `use` so the blanket `impl<E: CdzEnv> DynCdzEnv for E` (cdz-rt) is in scope.
+//     module no longer names it directly (async fns take `dyn DynCdzEnv`, not a generic `<__CdzE: CdzEnv>`).
+//     It is kept in the `use` only to avoid conditionalizing the preamble on which traits a given module
+//     references (simpler to always import all three); its presence does NOT affect the cdz-rt blanket
+//     `impl<E: CdzEnv> DynCdzEnv for E` — a blanket impl applies regardless of whether the trait is imported
+//     at the use site. Harmless under the `#[allow(unused_imports)]` below.
 // A closure-free (or trait-unreferencing) async program imports some of these unused, which `-D warnings`
 // (`unused_imports`) would reject — so `#[allow(unused_imports)]` the whole `use` (a mechanically-emitted
 // preamble import, like the backend's other synthesized `#[allow(dead_code)]` helpers). Simpler + robust
