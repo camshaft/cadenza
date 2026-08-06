@@ -585,6 +585,23 @@ pub(crate) fn value_ref_cycle(db: &mut Db, body: StructId) -> bool {
 }
 
 fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
+    // KNOWN-LOW-EDGE — the `__`-synth namespace is DELIBERATELY NOT reserved here. A `__`-prefixed name
+    // (`__invariant_construct_<T>`, `__invariant_check_<T>`, `__inv_p`, …) denotes a compiler-SYNTHESIZED
+    // def; a user CAN hand-write `(__invariant_construct_Percent x)` and it resolves + lowers, and a direct
+    // such call with a PERFORM-derived arg UNDER A HANDLE hits an internal "parameter reference has no local
+    // slot" (the effects thread-rebuild orphans the synth def's inlined `__inv_p`). It is TEMPTING to reserve
+    // the `__` namespace (reject a user ref → clean CDZ0101), but that BREAKS a DELIBERATELY-PINNED corpus
+    // contract: `spec/semantics/26-program-conditions.sexp` case "@invariant ESTABLISH Part 2" calls
+    // `__invariant_construct_Percent` BY NAME on purpose (its doc: "synthesized UNWIRED here (called by
+    // name); wiring `lower_sum_new` to route every `(Percent.Pct x)` through it is the follow-up sub-slice")
+    // to pin run-time establish enforcement (mk 50→50, mk 150→trap). A blanket reservation flips that case
+    // pass→todo. No NATURAL program reaches the leaked-internal (only a hand-spelled `__`-call does), so per
+    // the concierge ruling (2026-08-06) this stays a documented low-edge, NOT a reservation. The REAL fix is
+    // to WIRE the `lower_sum_new` establish-divert so `(Percent.Pct x)` always routes through the checked
+    // ctor — then the `__`-name call is unnecessary AND reservable, and case 26 updates to the natural path.
+    // That is a future establish-wiring slice (shared lower); until then the `__`-perform-under-handle edge
+    // is WONTFIX-low. Do NOT re-add a `__`-namespace reject without doing the divert-wiring + corpus update.
+    //
     // 1. Lexical scope — nearest enclosing binder. A binder yields a `Ref` to its value occurrence
     // (a `let`/param/scalar-match binder) OR a `SumPayload` (a variant-pattern binder binds the sum's
     // payload, not a plain occurrence) — `binder_in` returns the full resolved form.
