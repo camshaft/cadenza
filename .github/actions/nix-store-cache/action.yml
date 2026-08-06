@@ -19,7 +19,20 @@ runs:
         # main saves fresh (github-liaison #2211). flake.nix is the whole nix expression here (no imported
         # .nix). runner.arch keeps x86 and aarch64 caches distinct (different store paths).
         # restore-prefixes-first-match still gives a warm start from the newest same-arch cache.
-        primary-key: nix-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('flake.lock', 'flake.nix') }}
+        #
+        # CACHE-SALT (`c2`): a manual key-rotation lever, INDEPENDENT of the flake hash. GHA caches are
+        # per-key immutable — a key populated ONCE is never overwritten, only restored. So when a
+        # cache-warm.yml CHANGE adds a new artifact to the warm SET (e.g. #2385 added the seed-compiler +
+        # cdz-agent-host/cad-tests builds) WITHOUT touching flake.lock/flake.nix, the key does NOT rotate:
+        # cache-warm keeps restoring the pre-existing snapshot (seeded before that artifact existed), builds
+        # the new artifact, then the save is a NO-OP against the occupied key → candidates forever restore
+        # the artifact-less snapshot and rebuild it cold (v-ft 3-point verify 2026-08-06: seed-compiler drv
+        # STABLE `fblbgdd2yy` but never saved → cdz-agent-host stuck at 17m). BUMP this salt (c2→c3…) whenever
+        # you widen the cache-warm build SET so the NEXT default-branch run saves a fresh key WITH the new
+        # artifact; the arch-prefix `purge` step below (purge-primary-key: never) evicts the stale key in the
+        # same run, so it self-heals in one cache-warm fire. Do NOT bump for flake edits — hashFiles already
+        # rotates those.
+        primary-key: nix-${{ runner.os }}-${{ runner.arch }}-c2-${{ hashFiles('flake.lock', 'flake.nix') }}
         restore-prefixes-first-match: nix-${{ runner.os }}-${{ runner.arch }}-
         # No built-in save-on-default-branch flag → gate `save` with a github.ref expression (the main
         # cache is still visible to candidate branches, so they RESTORE it without each writing a capped one).
