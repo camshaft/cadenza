@@ -340,6 +340,19 @@ impl Session {
         }
     }
 
+    /// This session's PARENT — the spawning session's [`genesis_hash`](Self::genesis_hash) (= its SessionId),
+    /// or `None` for a ROOT session (spawned by no one). Read from the Genesis event's parent-provenance
+    /// (§lifecycle I2); the pub read-accessor dual of the private `genesis_provenance`, mirroring
+    /// [`genesis_hash`](Self::genesis_hash)/[`name_store`](Self::name_store). Read-only, no behavior change.
+    ///
+    /// The HOST uses this to route a terminated child's terminal-outcome signal (`ChildExited`, §lifecycle
+    /// I7 "parent observes a child's terminal outcome") back to its parent's inbox: on terminate, look up the
+    /// dead child's `parent()` and, if `Some`, emit a supervision Inbound to it (the parent's userspace
+    /// supervisor reducer then folds it — restart/escalate). `None` = a root with no parent to notify.
+    pub fn parent(&self) -> Option<Hash> {
+        self.genesis_provenance().1
+    }
+
     /// The genesis event a fresh session over `(reducer, spawn_nonce, parent)` WOULD carry as `log[0]` —
     /// the single construction site both [`genesis_spawned`](Self::genesis_spawned) (which pushes it) and
     /// [`derive_genesis_hash`](Self::derive_genesis_hash) (which hashes it) route through, so the two can
@@ -3646,6 +3659,26 @@ mod lifecycle_tests {
         assert_ne!(
             Session::derive_genesis_hash(reducer, nonce, None),
             Session::derive_genesis_hash(reducer, nonce, Some(parent)),
+        );
+    }
+
+    #[test]
+    fn parent_returns_the_spawning_session_for_a_child_and_none_for_a_root() {
+        // §lifecycle I7 host seam: the host reads a terminated child's parent() to route a ChildExited signal
+        // back to it. A ROOT session (genesis, no parent) → None; a SPAWNED child (genesis_spawned with
+        // parent=Some) → exactly that parent hash. Read-only, from the Genesis provenance.
+        let reducer = Hash::of(b"child-reducer");
+        let nonce = Hash::of(b"spawn-nonce");
+        let parent_id = Hash::of(b"parent-session-id");
+        assert_eq!(
+            Session::genesis(reducer, nonce).parent(),
+            None,
+            "a root session has no parent"
+        );
+        assert_eq!(
+            Session::genesis_spawned(reducer, nonce, Some(parent_id)).parent(),
+            Some(parent_id),
+            "a spawned child's parent() is the spawning session's id"
         );
     }
 
