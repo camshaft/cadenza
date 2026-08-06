@@ -9050,6 +9050,41 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 14 Int64)))
 
+(case "a @requires-guarded def PERFORMS in its body — contract check and effect specialization compose"
+  (doc    "@requires × effects: the enforcement rewrite injects `(if (>= x 0) BODY (trap …))` at
+           body-entry AND the body performs `(St.bump)`, so the def is both contract-checked and
+           effect-specialized. Two satisfying calls observe the advancing state: f 5 → 5+100 = 105
+           (s → 101), f 2 → 2+101 = 103 → 208. The two body rewrites (contract if-wrap, effect
+           specialization) must not fight over the same def.")
+  (input  (do
+            (effect St (op bump (-> Unit Int64)))
+            (@ (requires (>= x 0)) (def (f (: x Int64)) (+ x (St.bump))))
+            (def (main (: n Int64))
+              (handle St 100
+                ((bump (u) s (resume s (+ s 1))))
+                (+ (f n) (f 2))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 208 Int64)))
+
+(case "a VIOLATED @requires traps at body-entry BEFORE the body's perform fires"
+  (doc    "The enforcement-order guarantee of the pair, made OBSERVABLE by an ABORTIVE arm: `(f -5)`
+           violates `(>= x 0)`, and the handler's `bump` arm never resumes — it ABORTS the handle with
+           999. So if the rewrite order were wrong (perform first, check second), `(St.bump)` would
+           dispatch, the abort would win, and the program would RETURN 999 instead of trapping — this
+           case would fail its trap expectation. The trap firing proves the injected check runs at
+           body-entry, before the perform. (A resuming arm could not distinguish the two orders —
+           both end in the same trap.)")
+  (input  (do
+            (effect St (op bump (-> Unit Int64)))
+            (@ (requires (>= x 0)) (def (f (: x Int64)) (+ x (St.bump))))
+            (def (main (: n Int64))
+              (handle St 100
+                ((bump (u) s 999))
+                (f (- 0 n))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (trap   "unreachable"))
+
 (case "an ABORTING arm derives its answer from an Ast op-arg and discards the continuation"
   (doc    "The abort composition of the Ast op-arg: the arm never resumes, so the handle's value IS the
            arm's — `(Int64.of b)` on the node's BigInt payload plus the state — and the continuation's

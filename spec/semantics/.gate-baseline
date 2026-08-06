@@ -519,6 +519,7 @@ pass	a @requires predicate that MATCHES on a sum-typed parameter dispatches and 
 pass	a @requires predicate that itself traps keeps its own trap kind
 pass	a @requires predicate that references `ret` is REJECTED CDZ0101 — only @ensures binds the result
 pass	a @requires relating TWO heap params enforces the zip precondition at runtime
+pass	a @requires-guarded def PERFORMS in its body — contract check and effect specialization compose
 pass	a @test-stacked @requires+@ensures def keeps full contract enforcement for a direct call
 pass	a BARE (unqualified) constructor pattern over an abstract proof type outside the kernel is also a withheld-constructor rejection
 pass	a BARE pattern on a withheld constructor is rejected like the qualified spelling (encapsulation soundness)
@@ -1045,6 +1046,7 @@ pass	a Unit.^ at the wrong arity is rejected
 pass	a Unit.of named with a non-symbol value is rejected
 pass	a VARIABLE catch-all arm binds the whole runtime scrutinee as a Bytes value
 pass	a VIOLATED @ensures traps when the def arrives through a runtime branch
+pass	a VIOLATED @requires traps at body-entry BEFORE the body's perform fires
 pass	a WIDE integer literal pattern (beyond ±2^31) matches a runtime scrutinee by equality
 pass	a WORD COUNT threads an in-word flag through a scalar scan, counting entries not characters
 pass	a WRAP-composing closure state (the replacement captures the PREVIOUS closure) folds at two dispatches
