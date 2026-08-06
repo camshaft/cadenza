@@ -5256,6 +5256,63 @@ fn main() {
 }
 
 #[test]
+fn rustc_roundtrip_async_closures_stored_as_map_values_dispatch_and_run() {
+    // COVERAGE PIN for the async CLOSURE-VALUE-IN-A-COLLECTION emit (Option A + the Core::MapNew
+    // async_closure_type annotation fix): closures stored as `BTreeMap` VALUES cross as `Rc<dyn
+    // EnvClosure<A,R>>`, so the map's value-type ANNOTATION must be the EnvClosure form (a `Rc<dyn Fn>`
+    // annotation would E0308 against the boxed-future values — the exact bug the enum/collection mode-
+    // threading fixed). Each looked-up closure is applied `.call(env, arg).await`. This pins that a
+    // collection-of-closures emits a consistent value-type + runs, independent of the flippable corpus row.
+    let module = compile_rust_async(
+        "(module m (def (main (: y Int64)) (do \
+         (def m ((. Map insert) ((. Map insert) (. Map empty) 1 (fn ((: v Int64)) (* v 2))) 2 (fn ((: v Int64)) (+ v 100)))) \
+         (def (app (: k Int64)) (match ((. Map lookup) m k) ((Some f) (f y)) ((None _u) -1))) \
+         (+ (* 1000 (app 1)) (app 2)))) (export main))",
+    );
+    // The map's VALUE type is the EnvClosure form (NOT a sync `Rc<dyn Fn>`), and a looked-up closure is
+    // applied via `.call(env, arg).await`.
+    assert!(
+        module.contains(
+            "std::collections::BTreeMap<i64, std::rc::Rc<dyn cdz_rt::EnvClosure<i64, i64>>>"
+        ),
+        "map value type is the EnvClosure boxed-future form:\n{module}"
+    );
+    assert!(
+        module.contains(".call(__cdz_env, y)"),
+        "a looked-up closure is applied via .call(env, arg):\n{module}"
+    );
+    let driver = r#"
+struct Meter { spent: u64 }
+impl cdz_rt::CdzEnv for Meter {
+    async fn consume(&mut self, g: u64) { self.spent += g; }
+}
+fn block_on<F: core::future::Future>(mut f: F) -> F::Output {
+    use core::task::*;
+    fn n(_: *const ()) {} fn c(_: *const ()) -> RawWaker { r() }
+    fn r() -> RawWaker { RawWaker::new(core::ptr::null(), &V) }
+    static V: RawWakerVTable = RawWakerVTable::new(c, n, n, n);
+    let w = unsafe { Waker::from_raw(r()) };
+    let mut cx = Context::from_waker(&w);
+    let mut f = unsafe { core::pin::Pin::new_unchecked(&mut f) };
+    loop { if let Poll::Ready(v) = f.as_mut().poll(&mut cx) { return v; } }
+}
+fn main() {
+    let mut e = Meter { spent: 0 };
+    // key 1 → (fn v (* v 2)) applied to 5 = 10; key 2 → (fn v (+ v 100)) applied to 5 = 105.
+    // 1000 * 10 + 105 = 10105. gas metered across the dispatched closure calls.
+    let v = block_on(prog::main(&mut e, 5));
+    println!("{v} {}", e.spent > 0);
+}
+"#;
+    if let Some(out) = rustc_run_driver(&module, driver) {
+        assert_eq!(
+            out, "10105 true",
+            "async map-of-closures dispatch+run (1000*10 + 105 = 10105, gas metered):\n{module}"
+        );
+    }
+}
+
+#[test]
 fn rustc_roundtrip_async_mutually_recursive_sums_fold() {
     // Async recursion + MUTUAL sum recursion: `(type A (AN B))` / `(type B (BN A))` — neither variant
     // mentions its own decl, so the box decision must follow the A→B→A cycle (reaches_decl) to box both
