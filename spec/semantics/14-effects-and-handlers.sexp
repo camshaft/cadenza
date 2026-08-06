@@ -8523,6 +8523,64 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 210 Int64)))
 
+(case "a SYMBOL-keyed Map state routes hits to different keys (route-table accumulator)"
+  (doc    "Interned-symbol keys × the refold: the two-site arm routes each hit to a DIFFERENT symbol
+           key — passes accumulate under `(Symbol.of \\\"a\\\")`, fails under `(Symbol.of \\\"b\\\")` — and a
+           trailing total reads BOTH keys back. hit 20 → a=20, hit 3 → b=3, total → 23 → 20 + 0 +
+           2300 = 2320. The symbol lookups must intern to the SAME keys the arm's inserts used across
+           dispatches.")
+  (input  (do
+            (effect St (op hit (-> Int64 Int64)) (op total (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St (Map.insert (Map.insert Map.empty (Symbol.of "a") 0) (Symbol.of "b") 0)
+                ((hit (v) s
+                  (if (> v 10)
+                    (resume v (Map.insert s (Symbol.of "a") v))
+                    (resume 0 (Map.insert s (Symbol.of "b") v))))
+                 (total (u) s
+                  (resume (+ (match (Map.lookup s (Symbol.of "a")) ((Some x) x) ((None _u) -1))
+                            (match (Map.lookup s (Symbol.of "b")) ((Some y) y) ((None _u) -1))) s)))
+                (+ (St.hit 20) (+ (St.hit n) (* 100 (St.total))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 2320 Int64)))
+
+(case "a NESTED Map-of-Map state — the arm updates the inner map through the outer per dispatch"
+  (doc    "Two-level heap-state rebuild through the fold: every `put` reads the inner map through the
+           outer (`Map.lookup s 1`), accumulates into it, and rebuilds BOTH levels (`Map.insert s 1
+           (Map.insert inner 2 …)`); the trailing `get` traverses the nesting. inner[2] starts 10:
+           put 5 → 15, put 7 → 22, get → 22 → 5 + 7 + 2200 = 2212. Two-level CHAMP persistence per
+           dispatch — a dropped rebuild level or a stale inner read breaks the accumulation.")
+  (input  (do
+            (effect St (op put (-> Int64 Int64)) (op get (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St (Map.insert Map.empty 1 (Map.insert Map.empty 2 10))
+                ((put (v) s
+                  (resume v
+                    (match (Map.lookup s 1)
+                      ((Some inner) (Map.insert s 1 (Map.insert inner 2 (+ v (match (Map.lookup inner 2) ((Some x) x) ((None _u) 0))))))
+                      ((None _u) s))))
+                 (get (u) s
+                  (resume (match (Map.lookup s 1)
+                            ((Some inner) (match (Map.lookup inner 2) ((Some x) x) ((None _u) -1)))
+                            ((None _u) -2)) s)))
+                (+ (St.put n) (+ (St.put 7) (* 100 (St.get))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 2212 Int64)))
+
+(case "triple-nested same-op performs — each argument is the inner perform's result"
+  (doc    "Perform-in-ARGUMENT-position chains freely with a single-site arm: `(St.dbl (St.dbl
+           (St.dbl n)))` doubles thrice with the state counting dispatches — 5 → 10 → 20 → 40. (A
+           MULTI-site perform in another multi-site perform's argument declines: the argument
+           dispatch is inherently mid-chain, the arm-shape mixing rule's interleaved case.)")
+  (input  (do
+            (effect St (op dbl (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle St 0
+                ((dbl (v) s (resume (* v 2) (+ s 1))))
+                (St.dbl (St.dbl (St.dbl n)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 40 Int64)))
+
 (case "a multi-site arm's resume value routes through a pure helper call"
   (doc    "The pass branch's resume VALUE is `(triple v)` — a named pure helper call — rather than an
            inline expression: sift 20 → 60 (s 1), sift 5 → 0, sift 30 → 90 (s 2) → 150. Pins that the
@@ -8849,8 +8907,9 @@
            compile-time-visible quote — sits between two performs and folds to its 3 while the
            performs discharge normally: 5 + 3 + 6 = 14. Both features rewrite the handle body (the
            eval reconstructs-and-compiles, the fold discharges performs); this pins that they
-           compose. (An arm-built RUNTIME Ast fed to eval is rejected by design — eval executes
-           only compile-time-visible AST constructions, with a diagnostic saying exactly that.)")
+           compose. (An arm-built RUNTIME Ast fed to eval is rejected by design with CDZ0101:
+           'eval executes only a COMPILE-TIME-VISIBLE AST construction (a (quote ...) or literal
+           Ast.*)' — the compiler builds and analyzes AST but does not run a dynamically-built one.)")
   (input  (do
             (effect St (op next (-> Unit Int64)))
             (def (main (: n Int64))
