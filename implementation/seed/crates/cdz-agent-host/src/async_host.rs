@@ -1044,6 +1044,301 @@ mod tests {
         assert!(host.contains(&SessionId::new("controller")));
     }
 
+    /// A controller that suspends OR resumes `target` depending on the trigger payload: an Inbound carrying
+    /// `b"suspend"` emits `lifecycle/suspend(target)`, `b"resume"` emits `lifecycle/resume(target)` (any other
+    /// payload is a no-op). Lets one controller drive a full suspend→(held)→resume arc through the loop.
+    struct SuspendResumeController {
+        target: String,
+    }
+    #[async_trait::async_trait(?Send)]
+    impl Reducer for SuspendResumeController {
+        async fn fold(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+            if let EventBody::Inbound {
+                payload: Payload::Inline(bytes),
+                ..
+            } = &event.body
+            {
+                let family = match bytes.as_ref() {
+                    b"suspend" => effect_ct::LIFECYCLE_SUSPEND,
+                    b"resume" => effect_ct::LIFECYCLE_RESUME,
+                    _ => return FoldOutput::none(),
+                };
+                return FoldOutput::with(vec![EffectRequest::new_with_family(
+                    family,
+                    self.target.clone(),
+                    None,
+                    Timeliness::Interactive,
+                )]);
+            }
+            FoldOutput::none()
+        }
+    }
+
+    /// Build a controller session wired to suspend/resume `target` through THIS loop's lifecycle channel,
+    /// authorized on both families for exactly that target.
+    fn suspend_resume_controller(async_host: &AsyncAgentHost, target: &str) -> HostedSession {
+        HostedSession::genesis(
+            Hash::of(b"suspend-resume-controller-v1"),
+            Box::new(SuspendResumeController {
+                target: target.to_string(),
+            }),
+            Box::new(Authorizer::new(vec![]).with_family_grants(vec![
+                Capability::for_family(
+                    effect_ct::LIFECYCLE_SUSPEND,
+                    ResourcePredicate::Exact(target.into()),
+                ),
+                Capability::for_family(
+                    effect_ct::LIFECYCLE_RESUME,
+                    ResourcePredicate::Exact(target.into()),
+                ),
+            ])),
+            // One LifecycleExecutor per family key (CompositeExecutor dispatches by family string); both feed
+            // the same loop channel.
+            CompositeExecutor::new()
+                .with_effect(
+                    effect_ct::LIFECYCLE_SUSPEND,
+                    Box::new(crate::LifecycleExecutor::new(
+                        async_host.lifecycle_channel(),
+                        SessionId::new("controller"),
+                    )),
+                )
+                .with_effect(
+                    effect_ct::LIFECYCLE_RESUME,
+                    Box::new(crate::LifecycleExecutor::new(
+                        async_host.lifecycle_channel(),
+                        SessionId::new("controller"),
+                    )),
+                ),
+        )
+    }
+
+    /// A message Inbound to a target session (external producer — no reply_to), carrying `payload`.
+    fn message_to(target: &str, payload: &[u8]) -> Inbound {
+        Inbound {
+            session: SessionId::new(target),
+            body: EventBody::Inbound {
+                content_type: ContentType {
+                    family: "message".into(),
+                    version: 1,
+                },
+                payload: Payload::Inline(payload.to_vec().into()),
+            },
+            cause: None,
+            reply_to: None,
+        }
+    }
+
+    /// A controller-trigger Inbound (`b"suspend"` / `b"resume"`) delivered to the controller session.
+    fn control_trigger(payload: &[u8]) -> Inbound {
+        Inbound {
+            session: SessionId::new("controller"),
+            body: EventBody::Inbound {
+                content_type: ContentType {
+                    family: "message".into(),
+                    version: 1,
+                },
+                payload: Payload::Inline(payload.to_vec().into()),
+            },
+            cause: None,
+            reply_to: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn lifecycle_suspend_e2e_a_suspended_targets_inbound_is_held_not_folded() {
+        // §lifecycle I4 gate (first half): while a target is SUSPENDED its inbound is HELD by the loop — not
+        // delivered, not dropped. Drive: controller suspends the victim, THEN a message arrives for the
+        // victim (FIFO after the suspend applies) → the loop holds it. No resume → the victim never folds it.
+        let mut async_host = AsyncAgentHost::new(AgentHost::new());
+        async_host.host_mut().spawn(
+            SessionId::new("victim"),
+            HostedSession::genesis(
+                Hash::of(b"receiver-v1"),
+                Box::new(ReceiverAgent),
+                Box::new(Authorizer::deny_all()),
+                CompositeExecutor::new(),
+            ),
+        );
+        let controller = suspend_resume_controller(&async_host, "victim");
+        async_host
+            .host_mut()
+            .spawn(SessionId::new("controller"), controller);
+
+        let inbox = async_host.inbox();
+        let (_sd_tx, sd_rx) = tokio::sync::oneshot::channel();
+        // FIFO: suspend the victim, THEN a message for it (held while suspended). No resume.
+        inbox.send(control_trigger(b"suspend")).unwrap();
+        inbox.send(message_to("victim", b"held-msg")).unwrap();
+        drop(inbox);
+        let host = async_host
+            .run(sd_rx, || 0)
+            .await
+            .expect("clean shutdown, no kernel error");
+
+        // The victim is still registered (suspend does not remove it) but NEVER folded the held message —
+        // its KV["inbox"] is unset (held, not delivered, not dropped).
+        assert!(host.contains(&SessionId::new("victim")));
+        assert_eq!(
+            host.get(&SessionId::new("victim"))
+                .unwrap()
+                .session()
+                .kv()
+                .get(b"inbox"),
+            None,
+            "a suspended target's inbound is HELD, not folded (KV unchanged while suspended)"
+        );
+    }
+
+    #[tokio::test]
+    async fn lifecycle_resume_e2e_held_inbound_replays_on_resume_not_dropped() {
+        // §lifecycle I4 gate (second half): a message held during suspension REPLAYS when the target resumes
+        // (not dropped). Drive: suspend → message (held) → resume → the loop replays the held inbound and the
+        // victim folds it. Same FIFO one-loop-run arc as the terminate E2E.
+        let mut async_host = AsyncAgentHost::new(AgentHost::new());
+        async_host.host_mut().spawn(
+            SessionId::new("victim"),
+            HostedSession::genesis(
+                Hash::of(b"receiver-v1"),
+                Box::new(ReceiverAgent),
+                Box::new(Authorizer::deny_all()),
+                CompositeExecutor::new(),
+            ),
+        );
+        let controller = suspend_resume_controller(&async_host, "victim");
+        async_host
+            .host_mut()
+            .spawn(SessionId::new("controller"), controller);
+
+        let inbox = async_host.inbox();
+        let (_sd_tx, sd_rx) = tokio::sync::oneshot::channel();
+        // FIFO: suspend → message (held) → resume (releases the held message → victim folds it).
+        inbox.send(control_trigger(b"suspend")).unwrap();
+        inbox.send(message_to("victim", b"resumed-msg")).unwrap();
+        inbox.send(control_trigger(b"resume")).unwrap();
+        drop(inbox);
+        let host = async_host
+            .run(sd_rx, || 0)
+            .await
+            .expect("clean shutdown, no kernel error");
+
+        // The held message replayed on resume and the victim folded it (not dropped): KV["inbox"] now carries
+        // the held payload verbatim.
+        assert_eq!(
+            host.get(&SessionId::new("victim"))
+                .unwrap()
+                .session()
+                .kv()
+                .get(b"inbox"),
+            Some(&b"resumed-msg"[..]),
+            "the inbound held during suspension replays on resume + is folded (not dropped)"
+        );
+        assert!(
+            !host.is_suspended(&SessionId::new("victim")),
+            "the victim is no longer suspended after resume"
+        );
+    }
+
+    #[tokio::test]
+    async fn lifecycle_resume_e2e_replay_drain_partitions_released_from_still_held() {
+        // §lifecycle I4 gate (reviewer #2452 coverage note): the replay-drain PARTITIONS — when a lifecycle op
+        // resumes ONE target, its held inbound replays while a DIFFERENT still-suspended target's held inbound
+        // STAYS held (not leaked out, not dropped). This is the subtle loop branch (still_held vs deliver) a
+        // refactor could silently break. Two victims A + B, both suspended + messaged; resume ONLY A.
+        let mut async_host = AsyncAgentHost::new(AgentHost::new());
+        for v in ["victim-a", "victim-b"] {
+            async_host.host_mut().spawn(
+                SessionId::new(v),
+                HostedSession::genesis(
+                    Hash::of(b"receiver-v1"),
+                    Box::new(ReceiverAgent),
+                    Box::new(Authorizer::deny_all()),
+                    CompositeExecutor::new(),
+                ),
+            );
+        }
+        // Two controllers: one suspends+resumes A, one suspends B (B never resumes). Build both BEFORE the
+        // host_mut() spawn — they borrow `&async_host` (for the lifecycle channel), which can't overlap the
+        // `&mut` from host_mut().
+        let controller_a = suspend_resume_controller(&async_host, "victim-a");
+        let controller_b = HostedSession::genesis(
+            Hash::of(b"suspend-b-controller-v1"),
+            Box::new(SuspendResumeController {
+                target: "victim-b".to_string(),
+            }),
+            Box::new(
+                Authorizer::new(vec![]).with_family_grants(vec![Capability::for_family(
+                    effect_ct::LIFECYCLE_SUSPEND,
+                    ResourcePredicate::Exact("victim-b".into()),
+                )]),
+            ),
+            CompositeExecutor::new().with_effect(
+                effect_ct::LIFECYCLE_SUSPEND,
+                Box::new(crate::LifecycleExecutor::new(
+                    async_host.lifecycle_channel(),
+                    SessionId::new("controller-b"),
+                )),
+            ),
+        );
+        async_host
+            .host_mut()
+            .spawn(SessionId::new("controller"), controller_a);
+        async_host
+            .host_mut()
+            .spawn(SessionId::new("controller-b"), controller_b);
+
+        let inbox = async_host.inbox();
+        let (_sd_tx, sd_rx) = tokio::sync::oneshot::channel();
+        // FIFO: suspend A, suspend B, message both (both held), resume ONLY A.
+        inbox.send(control_trigger(b"suspend")).unwrap(); // controller → suspend victim-a
+        inbox
+            .send(Inbound {
+                session: SessionId::new("controller-b"),
+                body: EventBody::Inbound {
+                    content_type: ContentType {
+                        family: "message".into(),
+                        version: 1,
+                    },
+                    payload: Payload::Inline(b"suspend".to_vec().into()),
+                },
+                cause: None,
+                reply_to: None,
+            })
+            .unwrap(); // controller-b → suspend victim-b
+        inbox.send(message_to("victim-a", b"msg-a")).unwrap();
+        inbox.send(message_to("victim-b", b"msg-b")).unwrap();
+        inbox.send(control_trigger(b"resume")).unwrap(); // controller → resume victim-a ONLY
+        drop(inbox);
+        let host = async_host
+            .run(sd_rx, || 0)
+            .await
+            .expect("clean shutdown, no kernel error");
+
+        // A resumed → its held inbound replayed + folded.
+        assert_eq!(
+            host.get(&SessionId::new("victim-a"))
+                .unwrap()
+                .session()
+                .kv()
+                .get(b"inbox"),
+            Some(&b"msg-a"[..]),
+            "resumed target A's held inbound replays + folds (partition RELEASED it)"
+        );
+        // B still suspended → its held inbound stays held (NOT leaked to it, NOT dropped): KV unset + still suspended.
+        assert!(
+            host.is_suspended(&SessionId::new("victim-b")),
+            "B is still suspended (never resumed)"
+        );
+        assert_eq!(
+            host.get(&SessionId::new("victim-b"))
+                .unwrap()
+                .session()
+                .kv()
+                .get(b"inbox"),
+            None,
+            "still-suspended target B's held inbound stays held (partition KEPT it — not leaked, not dropped)"
+        );
+    }
+
     /// A timer agent: arms a timer at `deadline_ms` on "go"; records "woke" when it fires (PR#1303 fix).
     struct TimerAgent {
         deadline_ms: u64,
