@@ -2056,6 +2056,30 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 2050 Int64)))
 
+(case "a two-site arm with a second op that REPLACES the state mid-chain declines cleanly"
+  (doc    "The decline BOUNDARY of the served two-site family (breaker sy1). ts1 above FOLDS because its
+           second op (`tally`) READS the threaded state; here the second op (`flip`) REPLACES the handler
+           state with a DIFFERENT value — `(flip (u) s (resume 0 (Symbol.of \"quiet\")))` — a mode-switch
+           dispatched BETWEEN the two `emit` performs. breaker's position-sharpened rule is a PREFIX rule
+           (not merely interleaved-between): the two-site arm's performs must form a CONTIGUOUS PREFIX of
+           the handler's dispatch sequence; any different-op dispatch BEFORE or between them breaks the
+           two-hole refold — only TRAILING second ops are served (every served case sg2/ts1/rp5/ic1 has the
+           two-site performs first; the leading control ic2 `(+ (St.peek) (St.sift 20))` also declines).
+           The two-hole refold cannot yet thread a DIFFERENT op through the middle of a multi-site
+           continuation chain. This is an HONEST decline (a fold-capability gap, never a wrong value), NOT
+           the ts1/ag5 false-CDZ0101 orphan (those were bugs, fixed). The eventual fold: emit(5) sees `loud`
+           → 5·100 = 500, flip sets state `quiet` and resumes 0, emit(3) sees `quiet` → 3 → 500 + 0 + 3 =
+           503. Pins the boundary as a clean todo, not a leak.")
+  (input  (do
+            (effect St (op emit (-> Int64 Int64)) (op flip (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St (Symbol.of "loud")
+                ((emit (v) s (if (= s (Symbol.of "loud")) (resume (* v 100) s) (resume v s)))
+                 (flip (u) s (resume 0 (Symbol.of "quiet"))))
+                (+ (St.emit n) (+ (St.flip) (St.emit 3)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 503 Int64)))
+
 ; A do-local value def in a handle body must stay in scope for a perform's ARGUMENT (breaker FINDING;
 ; v-effects e49c698a1). The handle-body folds dropped non-final do-items and re-spliced only a survivor,
 ; orphaning a `(def v e)` that a later perform arg referenced → a false CDZ0101 'unbound name'; the

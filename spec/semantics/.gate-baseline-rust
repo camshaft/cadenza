@@ -5876,6 +5876,7 @@ todo	a recursive nested-op performer whose resume-VALUE reads the inner state ar
 todo	a runtime bin match decodes a FINAL constant-size utf8 segment
 todo	a runtime-DISC `?` inside a stored closure applies per-call once BRICK 3b lands
 todo	a runtime-operand try as a list element declines pending brick 3b
+todo	a two-site arm with a second op that REPLACES the state mid-chain declines cleanly
 todo	an abortive perform in a recursive callee with a PENDING continuation in the handle body abandons it
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional

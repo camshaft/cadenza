@@ -5822,6 +5822,7 @@ todo	a runtime branch selects WHICH host op consumes the first response row
 todo	a runtime closure whose body calls a recursive top-level function
 todo	a runtime-DISC `?` inside a stored closure applies per-call once BRICK 3b lands
 todo	a runtime-operand try as a list element declines pending brick 3b
+todo	a two-site arm with a second op that REPLACES the state mid-chain declines cleanly
 todo	a unit-result host op consumes its response row so the next value op reads its own (adv-65)
 todo	a value-leaving host-call statement in a do-body runs and its result is dropped (dead-init sibling)
 todo	an @param of a Bool type generates a Bool-typed accessor
