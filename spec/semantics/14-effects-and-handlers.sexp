@@ -2437,6 +2437,100 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 200 Int64)))
 
+; ============ Optimizer-exclusion chapter: LICM / CSE / DCE / inlining each have extensive pins
+; for PURE code; these six pin the EFFECT-dispatch exclusion boundary that keeps those
+; optimizations sound — a perform is never invariant, never a common subexpression, never dead,
+; and never shared across inlined call sites. ============
+
+(case "a recursive loop whose CONDITION performs — each iteration RE-dispatches (never hoisted)"
+  (doc    "The LICM exclusion: the loop bound is a perform against a SHRINKING quota (the arm
+           decrements per read: 5, 4, 3, 2), so the loop terminates when i catches the falling bound
+           — acc 0+1+2 = 3. A hoist that treated the 'invariant-looking' condition as pure would
+           read the quota once (5) and run five iterations (acc 10). The pure-invariant LICM pins
+           (incl. trap-equivalence) live in 02-binding; this is their effect-side boundary.")
+  (input  (do
+            (effect St (op quota (-> Unit Int64)))
+            (def (go (: i Int64) (: acc Int64))
+              (if (< i (St.quota)) (go (+ i 1) (+ acc i)) acc))
+            (def (main (: n Int64))
+              (handle St n
+                ((quota (u) s (resume s (- s 1))))
+                (go 0 0)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 3 Int64)))
+
+(case "two IDENTICAL performs are distinct dispatches — never CSE'd into one"
+  (doc    "The CSE exclusion, minimal form: `(+ (St.next) (St.next))` — two textually identical
+           performs read 5 then 6 → 11. A common-subexpression merge would compute one dispatch and
+           double it (10).")
+  (input  (do
+            (effect St (op next (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next (u) s (resume s (+ s 1))))
+                (+ (St.next) (St.next))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 11 Int64)))
+
+(case "identical PURE subterms around distinct performs — pure sharing must not merge dispatches"
+  (doc    "The subtler CSE face: `(+ n 1)` appears identically in both products and is legitimately
+           shareable — but the sharing must not merge or reorder the two dispatches between them:
+           6·5 + 6·6 = 66. Pure value-numbering composes with effect sequencing.")
+  (input  (do
+            (effect St (op next (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next (u) s (resume s (+ s 1))))
+                (+ (* (+ n 1) (St.next)) (* (+ n 1) (St.next)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 66 Int64)))
+
+(case "a perform bound to an UNUSED binding still dispatches (DCE must not eliminate it)"
+  (doc    "The DCE exclusion: `_unused`'s VALUE is dead but its dispatch is not — the bump advances
+           the state and the peek observes 6. A use-count-based eliminator that removed the dead-bound
+           perform would read 5. (The do-spine discard pins cover syntactic discard; this is the
+           bound-but-dead face DCE actually inspects.)")
+  (input  (do
+            (effect St (op bump (-> Unit Int64)) (op peek (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((bump (u) s (resume s (+ s 1)))
+                 (peek (u) s (resume s s)))
+                (let ((_unused (St.bump)))
+                  (St.peek))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 6 Int64)))
+
+(case "a PURE dead binding beside a perform is harmless (the eliminable control)"
+  (doc    "The control for the DCE exclusion above: `_dead = n·999` is pure and genuinely
+           eliminable — removing it changes nothing observable; the peek reads the untouched seed
+           (5). The exclusion is about effects, not dead bindings generally.")
+  (input  (do
+            (effect St (op peek (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((peek (u) s (resume s s)))
+                (let ((_dead (* n 999)))
+                  (St.peek))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 5 Int64)))
+
+(case "a performing helper called from TWO sites — each call site is its own dispatch"
+  (doc    "The inlining exclusion: `step k = k + (St.next)` is called twice; inline duplication of
+           the performing body must keep PER-SITE dispatch — 1+5 = 6 (state → 6), then 2+6 = 8 →
+           608. Sharing one dispatch across the inlined sites would read 5 twice (606). (The crash
+           face of this shape — the eval-once inline's binder orphans — is the en1 family, tracked
+           separately; this pins the VALUES when the inline works.)")
+  (input  (do
+            (effect St (op next (-> Unit Int64)))
+            (def (step (: k Int64)) (+ k (St.next)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next (u) s (resume s (+ s 1))))
+                (+ (* 100 (step 1)) (step 2))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 608 Int64)))
+
 ; ============ Guarded match × effects (breaker FINDING, ag5 → fixed #2333). A guarded match on a
 ; perform-result scrutinee whose FALLBACK arm also performs used to leak the fold-synthesized #seed
 ; binder as a false CDZ0101: the guard desugar's arm-body copy reparented a reused (shared) body

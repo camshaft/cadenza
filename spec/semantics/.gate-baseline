@@ -833,6 +833,7 @@ pass	a PREFIX-SUM scan emits a running total whose each element feeds the next
 pass	a PRIME LIST accumulates by testing each candidate against earlier primes up to its square root
 pass	a PRIORITY insert orders by key with FIFO tie-break carried as a sequence number
 pass	a PURE closure iterated by a recursive combinator composes with a perform in the same body
+pass	a PURE dead binding beside a perform is harmless (the eliminable control)
 pass	a QUICKSELECT finds the kth smallest by partitioning and recursing into ONE side
 pass	a Qty handler state advances via Qty.value / re-wrap in the next-state slot
 pass	a Qty payload with a GENERIC inner type rejects a bare use with no type argument
@@ -2586,6 +2587,7 @@ pass	a peer-bound operation takes a String argument (it crosses as a runtime han
 pass	a perform BETWEEN two `?`s advances state that survives the second's cut
 pass	a perform BETWEEN two sibling recursive calls threads the intervening state
 pass	a perform SHORT-CIRCUITED out of an or's right operand is NOT executed (empty host-calls)
+pass	a perform bound to an UNUSED binding still dispatches (DCE must not eliminate it)
 pass	a perform composes as the SOURCE of a pipeline
 pass	a perform crosses TWO module boundaries to the entry's handler through a re-export chain
 pass	a perform in a match-arm guard is discharged by the enclosing handle
@@ -2609,6 +2611,7 @@ pass	a performing closure homed TRANSITIVELY through a pass-through function is 
 pass	a performing closure passed to a function that applies it UNDER a handler is homed at the apply site
 pass	a performing closure stored in a TUPLE and applied IN-GUEST fires normally
 pass	a performing do-def feeding a bin-construction operand under a handler stays bound (F2)
+pass	a performing helper called from TWO sites — each call site is its own dispatch
 pass	a performing match SCRUTINEE threads its state into a performing arm body
 pass	a performing match-arm guard folds with WILDCARD patterns (no binder to let-bind)
 pass	a pipeline chain applies its stages left to right
@@ -2833,6 +2836,7 @@ pass	a recursive list-match in an arm returning a tuple of TWO lists (no scalar)
 pass	a recursive list-match in an arm returning a tuple of a scalar and two lists builds on all backends
 pass	a recursive list-match in an arm whose arms return a LIST builds on all backends
 pass	a recursive loop performs to TWO handlers per iteration with independent states
+pass	a recursive loop whose CONDITION performs — each iteration RE-dispatches (never hoisted)
 pass	a recursive lower from a sum to Bytes assembles its output in match arms
 pass	a recursive map rebuilding a sum list infers its unannotated callback
 pass	a recursive parameter used only as a call argument infers from the callee's parameter type
@@ -4837,6 +4841,7 @@ pass	hygiene fix does not over-reach: a different-named template binder needs no
 pass	hygiene: a spliced unquote sits beside the template's own use of the renamed binder
 pass	hygiene: an unquote is uncaptured through two nested same-named template binders
 pass	hygiene: two distinct unquotes each colliding with a different template binder are both renamed
+pass	identical PURE subterms around distinct performs — pure sharing must not merge dispatches
 pass	identical negative zeros nested in a tuple compare equal
 pass	identically-built ropes on both sides of a nested compare are equal (control)
 pass	importing a name a module does not export is rejected
@@ -5733,6 +5738,7 @@ pass	two BigInts differing only PAST BIT 64 stay distinct as set elements
 pass	two COMPOUND keys sharing a full hash collide via the nested champ_eq walk in one collision node
 pass	two DISTINCT let-bound host calls each captured by its own escaping closure fire once each in order (adv-62)
 pass	two Float32 literals that demote to the same bits const-fold equal
+pass	two IDENTICAL performs are distinct dispatches — never CSE'd into one
 pass	two LEXICALLY-NESTED handlers of the same effect partition the performs by region
 pass	two MUTUALLY-recursive functions dispatching on a recursive sum compute its parity
 pass	two MUTUALLY-recursive sum types fold across their boundary
