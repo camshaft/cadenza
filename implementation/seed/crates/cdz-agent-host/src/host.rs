@@ -342,6 +342,28 @@ impl HostedSession {
         self.session.genesis_hash()
     }
 
+    /// TERMINATE this session (§lifecycle I5): install the durable [`EventBody::Terminated`] marker as the
+    /// log tail via the kernel's fold-free [`Session::terminate`] seam. `by` is the terminating controller's
+    /// identity (its genesis hash = its SessionId); `reason` is a diagnostic string. Returns the marker's
+    /// event hash (for cause-linking / logging). AFTER this the session is [`is_terminated`](Self::is_terminated)
+    /// and the kernel refuses every further fold ([`KernelError::FoldRefused`]) — a frozen, queryable
+    /// tombstone (log + KV retained). The host's `lifecycle/terminate` executor drives this, then REMOVES the
+    /// session from the [`AgentHost`] registry (see [`AgentHost::terminate`]); an in-flight `Emit` to the
+    /// now-terminated/absent target bounces as a `delivery-failure` at the loop routing arm (the I5 bounce).
+    ///
+    /// IDEMPOTENT-BY-REJECTION: terminating an already-terminated session returns [`KernelError::FoldRefused`]
+    /// (the kernel's contract) — never a second marker. Terminal: there is no un-terminate.
+    pub async fn terminate(&mut self, by: Hash, reason: String) -> Result<Hash, KernelError> {
+        self.session.terminate(by, reason).await
+    }
+
+    /// Is this session TERMINATED — its log tail is the durable [`EventBody::Terminated`] marker (§lifecycle
+    /// I1). Delegates to [`Session::is_terminated`]; the host consults it to distinguish a terminated target
+    /// (bounce an `Emit` as `delivery-failure`) from a live one, and to guard against re-driving a tombstone.
+    pub fn is_terminated(&self) -> bool {
+        self.session.is_terminated()
+    }
+
     /// The earliest armed-timer deadline, if any — lets the host's scheduler know when to next tick.
     pub fn next_timer_deadline(&self) -> Option<u64> {
         self.session.next_timer_deadline()
@@ -617,6 +639,38 @@ impl AgentHost {
             self.metrics.record_session_removed();
         }
         removed
+    }
+
+    /// TERMINATE a registered session by id (§lifecycle I5): install the durable `Terminated` marker on its
+    /// log (via [`HostedSession::terminate`] → [`Session::terminate`]) AND remove it from the registry, so it
+    /// no longer schedules or accepts deliveries. Returns:
+    /// - `Some(Ok(hash))` — terminated; `hash` is the marker event hash (for cause-link / audit). The session
+    ///   is dropped from the registry (its final terminated state is discarded here; a caller that needs the
+    ///   tombstone should snapshot it first — a durable-store retention pass is a later slice).
+    /// - `Some(Err(FoldRefused))` — the session was ALREADY terminated (idempotent-by-rejection); it is left
+    ///   as-is (NOT removed a second time — it was already handled by the first terminate).
+    /// - `None` — no such session id (already gone / never registered) — a no-op, matching [`remove`](Self::remove).
+    ///
+    /// `by` is the terminating controller's identity (its genesis hash = its SessionId), recorded in the
+    /// marker. This is the registry-mutation half of the `lifecycle/terminate` effect; the in-flight-`Emit`
+    /// BOUNCE (a terminated/absent target → `delivery-failure` to the sender) is enforced at the loop routing
+    /// arm, not here. Marking the log BEFORE removing means a concurrent query between the two still sees a
+    /// terminated (not merely absent) session; once removed, an `Emit` to it bounces via registry-absence.
+    pub async fn terminate(
+        &mut self,
+        id: &SessionId,
+        by: Hash,
+        reason: String,
+    ) -> Option<Result<Hash, KernelError>> {
+        let session = self.sessions.get_mut(id)?;
+        let outcome = session.terminate(by, reason).await;
+        // Only drop it from the registry on a FRESH termination — an already-terminated session
+        // (FoldRefused) was already removed by its first terminate, so there is nothing to remove and the
+        // rejection is surfaced as-is.
+        if outcome.is_ok() {
+            self.remove(id);
+        }
+        Some(outcome)
     }
 
     /// How many sessions are registered.
@@ -1257,6 +1311,61 @@ mod tests {
             host.get(&id).unwrap().session().kv().get(b"status"),
             None,
             "the replacement is a FRESH session — the prior 'ran' state was dropped"
+        );
+    }
+
+    #[tokio::test]
+    async fn terminate_marks_the_log_then_removes_the_session_from_the_registry() {
+        // §lifecycle I5 slice-1: AgentHost::terminate installs the durable Terminated marker on the
+        // session's log AND drops it from the registry. Returns the marker hash. A subsequent Emit to it
+        // bounces via registry-absence (enforced at the loop arm, a later slice) — here we pin the
+        // registry-mutation half: marked terminated, then gone.
+        let mut host = AgentHost::new();
+        let id = SessionId::new("victim");
+        host.spawn(id.clone(), now_host());
+        assert!(host.contains(&id));
+
+        let by = Hash::of(b"controller-session");
+        let out = host.terminate(&id, by, "operator kill".into()).await;
+        match out {
+            Some(Ok(marker)) => {
+                // A real event hash was returned (not the zero/default) — the marker was appended.
+                assert_ne!(marker, Hash::of(b""), "terminate returns the marker event hash");
+            }
+            other => panic!("expected Some(Ok(marker)) on a fresh terminate, got {other:?}"),
+        }
+        // The session is gone from the registry — no longer scheduled or deliverable.
+        assert!(
+            !host.contains(&id),
+            "a terminated session is removed from the registry"
+        );
+        assert_eq!(host.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn terminating_an_absent_session_is_a_none_noop() {
+        // No such id (already gone / never registered) → None, not a panic — matching remove().
+        let mut host = AgentHost::new();
+        let out = host
+            .terminate(&SessionId::new("ghost"), Hash::of(b"ctl"), "x".into())
+            .await;
+        assert!(out.is_none(), "terminating an absent session is a None no-op");
+    }
+
+    #[tokio::test]
+    async fn hosted_session_terminate_marks_terminated_and_is_idempotent_by_rejection() {
+        // The HostedSession seam directly (below the registry): terminate installs the tail marker →
+        // is_terminated() flips true; a SECOND terminate on the already-terminated session returns
+        // FoldRefused (idempotent-by-rejection, the kernel's contract) — never a second marker.
+        let mut s = now_host();
+        assert!(!s.is_terminated(), "live before terminate");
+        let first = s.terminate(Hash::of(b"ctl"), "done".into()).await;
+        assert!(first.is_ok(), "first terminate installs the marker");
+        assert!(s.is_terminated(), "the Terminated tail marks it terminated");
+        let second = s.terminate(Hash::of(b"ctl"), "again".into()).await;
+        assert!(
+            matches!(second, Err(KernelError::FoldRefused)),
+            "a 2nd terminate on an already-terminated session is FoldRefused, got {second:?}"
         );
     }
 
