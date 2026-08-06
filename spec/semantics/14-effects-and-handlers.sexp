@@ -2037,6 +2037,25 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 202 Int64)))
 
+(case "a two-site arm over a HEAP STATE with a body free-var and a second state-reading op folds"
+  (doc    "The heap-STATE face of the body-free-var family (breaker ts1, fixed #2336). Unlike the
+           heap-resume-value case above, here the STATE itself is a `List` threaded through `s`, the
+           arm has TWO resume sites, and a SECOND state-reading op (`tally`) reads the advanced state
+           mid-chain — while the body reads main's param `n`. Before the fix the two-hole refold rebuilt
+           the arm's `if` condition `(> v 10)` (op-arg `v`↦`n`) via push_list, overwriting the shared `n`
+           node's parent and detaching it → false CDZ0101 'unbound n'. Now the substituted arm body is
+           anchored + resolved before the refold rebuild (pin-before-copy). feed 20 pass ([20]), feed n=5
+           miss (hold), feed 30 pass ([20,30]), tally = len 2 → 20 + 0 + 30 + 1000·2 = 2050.")
+  (input  (do
+            (effect St (op feed (-> Int64 Int64)) (op tally (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St (list)
+                ((feed (v) s (if (> v 10) (resume v (List.push s v)) (resume 0 s)))
+                 (tally (u) s (resume (List.len s) s)))
+                (+ (St.feed 20) (+ (St.feed n) (+ (St.feed 30) (* 1000 (St.tally)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 2050 Int64)))
+
 ; A do-local value def in a handle body must stay in scope for a perform's ARGUMENT (breaker FINDING;
 ; v-effects e49c698a1). The handle-body folds dropped non-final do-items and re-spliced only a survivor,
 ; orphaning a `(def v e)` that a later perform arg referenced → a false CDZ0101 'unbound name'; the
