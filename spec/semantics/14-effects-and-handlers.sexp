@@ -4088,6 +4088,53 @@
               (handle Amb 0 ((pick (u) s k (+ (k 1) (k 2)))) (+ n (Amb.pick)))) (export main)))
   (call   main (: 5 Int64)) (output (: 13 Int64)))
 
+(case "a two-site resume arm whose resume VALUE reads an enclosing-fn param folds"
+  (doc    "The ARM-SIDE enclosing-capture face (breaker mv-class, distinct from the continuation-C face): a
+           two-site resume arm `(+ (resume (+ n 1) s) (resume 2 s))` whose FIRST resume VALUE `(+ n 1)` reads
+           an ENCLOSING function param `n`. The arm body is β-substituted then its resume occurrences rewrite
+           to `C[value]` per site — so the resume VALUE (carrying free `n`) is copied per resume. Without
+           pinning `n` in the arm body BEFORE the β-substitution (which detaches it — the copied `n` loses
+           its binder), each per-site copy re-resolves `n` unbound → false CDZ0101. Here `C = (let ((x []))
+           (+ (* 10 x) x))`: resume 1 with `(+ n 1)` = 6 → `x=6` → 66, resume 2 with 2 → `x=2` → 22, arm =
+           `(+ 66 22)` = 88 (n = 5). Pins the resume-value enclosing-capture preservation across the
+           multi-site splice.")
+  (input  (do
+            (effect Amb (op pick (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle Amb 0
+                ((pick (u) s (+ (resume (+ n 1) s) (resume 2 s))))
+                (let ((x (Amb.pick))) (+ (* 10 x) x)))) (export main)))
+  (call   main (: 5 Int64)) (output (: 88 Int64)))
+
+(case "a two-site resume arm reading the enclosing SEED param in its resume value folds"
+  (doc    "The SEED face of the arm-side enclosing capture: the handle is seeded by the enclosing param
+           `(handle Amb n …)`, and the arm's first resume value `(+ s 1)` reads the state `s` (= the seed on
+           first entry). The seed `n` reaches the arm via the state-binder substitution, so it appears in the
+           β-substituted arm body (not the original) — pinned there so the per-site splice shares it. `C =
+           (let ((x [])) (+ (* 10 x) x))`, seed 5: resume 1 value `(+ s 1)` = 6 → 66, resume 2 value 2 → 22,
+           arm = 88.")
+  (input  (do
+            (effect Amb (op pick (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle Amb n
+                ((pick (u) s (+ (resume (+ s 1) s) (resume 2 s))))
+                (let ((x (Amb.pick))) (+ (* 10 x) x)))) (export main)))
+  (call   main (: 5 Int64)) (output (: 88 Int64)))
+
+(case "a two-site resume arm whose resume value is a heap LIST reading an enclosing param folds"
+  (doc    "The heap-payload variant of the arm-side enclosing-capture face: the resume value is a `(list n 2
+           9)` reading the enclosing param `n`, so a multi-node list payload carrying an enclosing capture
+           crosses the per-site splice. `C = (let ((xs [])) (List.len xs))`: resume 1 value `(list n 2 9)` =
+           a 3-element list → len 3, resume 2 value `(list 7)` → len 1, arm = `(+ 3 1)` = 4. Confirms the
+           enclosing-capture pin works when the resume value is a heap constructor, not just a scalar.")
+  (input  (do
+            (effect Amb (op pick (-> Unit (List Int64))))
+            (def (main (: n Int64))
+              (handle Amb 0
+                ((pick (u) s (+ (resume (list n 2 9) s) (resume (list 7) s))))
+                (let ((xs (Amb.pick))) (List.len xs)))) (export main)))
+  (call   main (: 5 Int64)) (output (: 4 Int64)))
+
 (case "a MULTI-shot arm keeps a pure applied lambda in its duplicated continuation"
   (doc    "The soundness anchor for the lambda-value purity rule under a MULTI-shot resume: an EFFECT-FREE
            let-bound lambda `k = (fn (y) (* y 2))` is APPLIED in the continuation `C` alongside the single

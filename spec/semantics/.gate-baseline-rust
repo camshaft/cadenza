@@ -6020,3 +6020,6 @@ pass	both same-effect handlers STATEFUL — the outer's advance survives the inn
 pass	a CLOSURE handler state captures the enclosing function's parameter and applies per dispatch
 pass	the closure state is REPLACED per dispatch by one capturing the arm's OWN binder
 pass	the natural invariant construction over a VIOLATING perform result traps through the handler
+pass	a two-site resume arm whose resume VALUE reads an enclosing-fn param folds
+pass	a two-site resume arm reading the enclosing SEED param in its resume value folds
+pass	a two-site resume arm whose resume value is a heap LIST reading an enclosing param folds

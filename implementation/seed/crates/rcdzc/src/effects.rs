@@ -2298,7 +2298,19 @@ pub fn reduce_handle(
             subst_k.insert(k_binder, k_lambda);
             crate::eval::beta_reduce(db, arm.body, &subst_k)
         } else {
+            // Pin the ARM BODY's enclosing captures BEFORE beta_reduce detaches them (mv-class arm-side).
+            // A two-site resume arm `(+ (resume (+ n 1) s) (resume 2 s))` whose resume VALUE reads an
+            // enclosing-fn param `n`: beta_reduce COPIES the arm body per the subst, and the copied `n` loses
+            // its binding (ref_binder None) so each per-resume splice re-resolves it unbound. Pinning `n`
+            // here (still parented to the def) records its resolution so beta_reduce's capture-share arm
+            // preserves it. `lam_body = arm.body`, so the arm's own op-params/state binder (bound within) stay
+            // unpinned + substitute normally. (breaker mv-class, arm-side/resume-value locus.)
+            crate::eval::pin_free_vars(db, arm.body, arm.body, &[]);
             let substituted = crate::eval::beta_reduce(db, arm.body, &subst);
+            // Also pin the SEED-derived captures now in `substituted`: when `n` is the handle SEED
+            // (`(handle Amb n …)`), it enters the arm via the state-binder subst, so it appears in
+            // `substituted` (not `arm.body`); pin it here so the per-resume splice shares it too.
+            crate::eval::pin_free_vars(db, substituted, substituted, &[]);
             // CAPTURE-AVOIDING HYGIENE. Freshen the substituted arm body's LOCAL value binders before the
             // resume rewrite splices the continuation `C` (the handle body, carrying OUTER free names) into
             // its tail. Without this, an arm-local `(do (def x 5) (resume (+ x s) s))` CAPTURES `C`'s free `x`
