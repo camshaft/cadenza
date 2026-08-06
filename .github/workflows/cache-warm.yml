@@ -67,11 +67,11 @@ jobs:
       # context (all its steps ok), NOT the outer job's later failure, so the save fired despite the job
       # failing and seeded a stale/partial store. At the JOB level, `if: success()` DOES see every prior step
       # incl. the warm-checks step → a failed warm run genuinely SKIPS the save = structural poison-fix, no
-      # eventually-consistent purge-then-save race (why we did NOT take purge-primary-key:0). The primary-key
-      # MUST mirror the composite (same c2 salt, same hashFiles) so cache-warm SAVES the exact key the
-      # checks.yml jobs RESTORE. The restore-prefix here is intentionally c2-scoped (tighter than the
-      # composite's bare `nix-<os>-<arch>-`) so a warm-start never picks up a PRE-c2 stale cache. The composite
-      # is untouched → zero blast radius on the other 10 callers.
+      # eventually-consistent purge-then-save race (why we did NOT take purge-primary-key:0). This RESTORE keeps
+      # the plain c2 form (restore-prefixes-first-match c2-scoped, tighter than the composite's bare
+      # `nix-<os>-<arch>-`) so a warm-start prefix-matches the NEWEST c2-* entry — incl. the drv-suffixed key the
+      # save step below writes on aarch64 — while never picking up a PRE-c2 stale cache. The composite is
+      # untouched → zero blast radius on the other 10 callers (they prefix-restore the newest c2-* too).
       - name: restore /nix/store (no save — the trailing step saves on success)
         uses: nix-community/cache-nix-action/restore@7df957e333c1e5da7721f60227dbba6d06080569 # v7 (pin matches composite)
         with:
@@ -97,6 +97,27 @@ jobs:
         run: |
           nix build .#checks.aarch64-linux.cdz-agent-host-native --print-build-logs
           nix build .#checks.aarch64-linux.cad-tests --print-build-logs
+      # DRV-IN-SAVE-KEY (v-nix+v-ft 2026-08-06): compute the SAVE key with the seed-compiler's OUTPUT drv-hash
+      # as a suffix ON AARCH64, so the key rotates WITH the payload. WHY: the seed-compiler drv rotates on every
+      # rcdzc/cdz/cdz-run closure commit (~90min cadence, measured), but the c2 key (hashFiles(flake.lock,
+      # flake.nix)) does NOT — so exact-hit-skip-save FROZE a stale c2 whenever the drv rotated under it, needing
+      # a manual evict every ~90min. By suffixing the save key with the drv-hash, a rotated drv saves a NEW key
+      # (no same-key exact-hit → no freeze → no manual evict ever); the arch-prefix purge below GCs the prior
+      # drv's key (created:0), leaving exactly one c2-* per arch. RESTORE is UNCHANGED (still c2-prefix via
+      # restore-prefixes-first-match) so candidates prefix-match the NEWEST c2-* regardless of suffix — warm-start
+      # preserved, composite + the 10 checks.yml callers untouched (zero blast radius). x86 has no seed-compiler
+      # payload, so its key stays the plain c2 form. The drv-hash is a pure eval (no build) so it's cheap + exact.
+      - name: compute the drv-suffixed save key (aarch64 rotates with the seed-compiler; x86 stays plain c2)
+        id: savekey
+        if: success() && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        run: |
+          base="nix-${{ runner.os }}-${{ runner.arch }}-c2-${{ hashFiles('flake.lock', 'flake.nix') }}"
+          if [ "${{ matrix.arch }}" = "aarch64" ]; then
+            drv=$(nix eval --raw .#packages.aarch64-linux.seed-compiler.drvPath | sed 's|.*/||; s|-cdz-seed-compiler.*||')
+            echo "key=${base}-seed-${drv}" >> "$GITHUB_OUTPUT"
+          else
+            echo "key=${base}" >> "$GITHUB_OUTPUT"
+          fi
       # SAVE the warmed store — gated `if: success()` at the JOB level so a run that FAILED any prior step
       # (incl. the warm-checks step above) does NOT save a stale/partial store (the poison-fix; see the restore
       # step's rationale). Params mirror the old composite's save side: gc the store to ~8GB before upload,
@@ -106,7 +127,7 @@ jobs:
         if: success() && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
         uses: nix-community/cache-nix-action/save@7df957e333c1e5da7721f60227dbba6d06080569 # v7 (pin matches composite)
         with:
-          primary-key: nix-${{ runner.os }}-${{ runner.arch }}-c2-${{ hashFiles('flake.lock', 'flake.nix') }}
+          primary-key: ${{ steps.savekey.outputs.key }}
           gc-max-store-size-linux: 8000000000
           purge: true
           purge-prefixes: nix-${{ runner.os }}-${{ runner.arch }}-c2-
