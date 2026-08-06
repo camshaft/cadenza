@@ -789,7 +789,8 @@ impl AgentHost {
     /// [`spawned_children`](HostedSession::spawned_children)) and bakes it into a `OneOf` grant the authorizer
     /// CAN evaluate. Re-compute + re-install after each new `Spawned` edge (a spawn changes the tree).
     ///
-    /// Walks the durable spawn-edge tree breadth-first from `controller`: each edge's `child_hash` IS the
+    /// Walks the durable spawn-edge tree from `controller` (traversal order is irrelevant — the returned SET
+    /// doesn't depend on it; this uses a Vec+pop worklist, i.e. depth-first): each edge's `child_hash` IS the
     /// child's SessionId (genesis-hash-hex), so the descendant set is those hex ids. A child not currently
     /// registered (terminated + removed) contributes its own id but no further descendants (its subtree is
     /// gone with it). Cycle-safe (a `visited` set) though the spawn DAG is acyclic by construction (a child's
@@ -797,7 +798,10 @@ impl AgentHost {
     /// nothing) for a controller with no descendants — correctly denying lifecycle control of any peer.
     pub fn descendant_set_of(&self, controller: &SessionId) -> ResourcePredicate {
         let mut out: Vec<std::sync::Arc<str>> = Vec::new();
-        let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
+        // Alloc-light (#2447 review c2): key the visited set on SessionId (Eq+Hash, cheap Arc<str> clone) —
+        // no per-id String; and push the SessionId's OWN `Arc<str>` (`id.0.clone()`) rather than copying its
+        // bytes into a fresh Arc.
+        let mut visited: std::collections::HashSet<SessionId> = std::collections::HashSet::new();
         // Seed the frontier with the controller's DIRECT children (the controller itself is not its own
         // descendant — a session can't lifecycle-control itself via this authority).
         let mut frontier: Vec<SessionId> = self
@@ -806,14 +810,14 @@ impl AgentHost {
             .map(child_ids)
             .unwrap_or_default();
         while let Some(id) = frontier.pop() {
-            if !visited.insert(id.as_str().to_string()) {
+            if !visited.insert(id.clone()) {
                 continue; // already recorded (cycle-guard / diamond)
             }
-            out.push(std::sync::Arc::from(id.as_str()));
             // Descend into this child's own children (transitive), if it's still registered.
             if let Some(child) = self.sessions.get(&id) {
                 frontier.extend(child_ids(child));
             }
+            out.push(id.0.clone()); // reuse SessionId's internal Arc<str>
         }
         ResourcePredicate::OneOf(out)
     }
