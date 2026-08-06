@@ -2724,6 +2724,63 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 103 Int64)))
 
+(case "a 40-element list op RESULT crosses resume — a multi-leaf RRB payload survives the marshal"
+  (doc    "The SIZE axis of collection crossings: the existing crossing pins carry small literal
+           collections (single-leaf structures); a 40-element recursively-built list exercises the
+           multi-leaf RRB spine through the resume marshal — len 40 and a deep index (element 36 at
+           index 35) → 4036. Structure sharing across the boundary must survive past the
+           single-node fast path.")
+  (input  (do
+            (effect St (op range (-> Int64 (List Int64))))
+            (def (build (: i Int64) (: k Int64) (: acc (List Int64)))
+              (if (> i k) acc (build (+ i 1) k (List.push acc i))))
+            (def (main (: n Int64))
+              (handle St 0
+                ((range (k) s (resume (build 1 k (list)) s)))
+                (let ((xs (St.range (* n 8))))
+                  (+ (* 100 (List.len xs))
+                     (match (List.at xs 35) ((Some v) v) ((None _u) -1))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 4036 Int64)))
+
+(case "a 40-element list as op ARGUMENT — the arm folds a multi-leaf RRB payload"
+  (doc    "The argument-direction twin of the multi-leaf crossing: a 40-element body-built list
+           rides INTO the arm, which runs a full indexed fold over it — sum 1..40 → 820. The
+           arm-side traversal of a spine that crossed the perform.")
+  (input  (do
+            (effect St (op total (-> (List Int64) Int64)))
+            (def (build (: i Int64) (: k Int64) (: acc (List Int64)))
+              (if (> i k) acc (build (+ i 1) k (List.push acc i))))
+            (def (sum-l (: xs (List Int64)) (: i Int64) (: acc Int64))
+              (match (List.at xs i)
+                ((Some v) (sum-l xs (+ i 1) (+ acc v)))
+                ((None _u) acc)))
+            (def (main (: n Int64))
+              (handle St 0
+                ((total (xs) s (resume (sum-l xs 0 0) s)))
+                (St.total (build 1 (* n 8) (list)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 820 Int64)))
+
+(case "a 40-element SET op result — a multi-node CHAMP payload crosses resume"
+  (doc    "The CHAMP sibling of the multi-leaf RRB pins: a 40-element recursively-built set (spaced
+           keys ×3 force node splits) crosses resume, then len + a positive and a negative
+           membership probe — 4000 + 10 (60 ∈) + 0 (61 ∉) → 4010. The multi-node trie must arrive
+           intact, not just its root.")
+  (input  (do
+            (effect St (op universe (-> Int64 (Set Int64))))
+            (def (fill (: i Int64) (: k Int64) (: acc (Set Int64)))
+              (if (> i k) acc (fill (+ i 1) k (Set.insert acc (* i 3)))))
+            (def (main (: n Int64))
+              (handle St 0
+                ((universe (k) s (resume (fill 1 k (Set.of (list))) s)))
+                (let ((xs (St.universe (* n 8))))
+                  (+ (* 100 (Set.len xs))
+                     (+ (if (Set.contains xs 60) 10 0)
+                        (if (Set.contains xs 61) 1 0))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 4010 Int64)))
+
 ; ============ Guarded match × effects (breaker FINDING, ag5 → fixed #2333). A guarded match on a
 ; perform-result scrutinee whose FALLBACK arm also performs used to leak the fold-synthesized #seed
 ; binder as a false CDZ0101: the guard desugar's arm-body copy reparented a reused (shared) body
