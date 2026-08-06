@@ -23,26 +23,22 @@ fn cdz() -> &'static str {
 /// AGREES with the storeless-rerun mechanism (which sets `CADENZA_STORE` to an empty temp dir).
 /// Mirrors the `store_present()` guard in `run_emitted_cli.rs` / `peer_list_handle_cli.rs`.
 fn store_present() -> bool {
-    if let Ok(dir) = std::env::var("CADENZA_STORE") {
-        return std::path::Path::new(&dir).is_dir()
-            && std::fs::read_dir(&dir)
-                .map(|mut e| e.next().is_some())
-                .unwrap_or(false);
-    }
-    std::path::PathBuf::from(env!("CARGO_BIN_EXE_cdz"))
-        .parent()
-        .and_then(|d| d.parent())
-        .map(|t| {
-            // NON-EMPTY, not just present: CI's rust-cache can restore an empty `<target>/cadenza-store`
-            // (no `cargo xtask build` ran), and a bare `.exists()` then falsely reports the store present,
-            // so a runtime-driving test runs storeless and fails "no runtime … refusing to run". Match the
-            // `CADENZA_STORE` branch above (non-empty) so an empty dir reads as absent and the test SKIPS.
-            let store = t.join("cadenza-store");
-            store.is_dir()
-                && std::fs::read_dir(&store)
-                    .map(|mut e| e.next().is_some())
-                    .unwrap_or(false)
-        })
+    // HASH-AWARE: the store must hold the CURRENT runtime — `<store>/<REQUIRED_RUNTIME_HASH>.wasm` is a
+    // file — NOT just be a non-empty dir. A NON-EMPTY-only check passed on a STALE rust-cached store (an
+    // OLDER runtime hash after a hash bump) → the runtime-driving test ran → the resolver missed the
+    // current hash → "no runtime of content address … refusing to run" red. Checking the exact `<hash>.wasm`
+    // makes a stale/empty store read as absent so the test SKIPS (as in the storeless CI job).
+    let required = rcdzc::backend::wasm::runtime_abi::REQUIRED_RUNTIME_HASH;
+    let store_dir = std::env::var_os("CADENZA_STORE")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::path::PathBuf::from(env!("CARGO_BIN_EXE_cdz"))
+                .parent()
+                .and_then(|d| d.parent())
+                .map(|t| t.join("cadenza-store"))
+        });
+    store_dir
+        .map(|d| d.join(format!("{required}.wasm")).is_file())
         .unwrap_or(false)
 }
 

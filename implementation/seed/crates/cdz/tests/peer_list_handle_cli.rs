@@ -29,28 +29,27 @@ fn cdz() -> &'static str {
 /// runtime resolver does (`CADENZA_STORE` env first, else `<target>/cadenza-store`), so this guard
 /// AGREES with the storeless-rerun mechanism (which sets `CADENZA_STORE` to an empty temp dir).
 /// Mirrors the `store_present()` guard in `run_emitted_cli.rs` / `normalize_cli.rs`.
+///
+/// HASH-AWARE (not merely presence): the store must hold the CURRENT runtime, `<store>/<hash>.wasm` for
+/// `REQUIRED_RUNTIME_HASH` — NOT just be a non-empty dir. A runner's rust-cache can restore a STALE
+/// `cadenza-store` holding an OLDER runtime hash (after a runtime-hash bump with no fresh `cargo xtask
+/// build`); a presence/non-empty check passes on that stale store, the peer run then resolves the CURRENT
+/// hash, misses it, and fails "no runtime of content address <hash> … refusing to run" (this red the
+/// REQUIRED `test (macos-latest)` job trunk-wide). Checking the exact `<hash>.wasm` makes a stale store
+/// read as absent → the test SKIPS (its documented storeless behavior) instead of running against the
+/// wrong/missing runtime.
 fn store_present() -> bool {
-    if let Ok(dir) = std::env::var("CADENZA_STORE") {
-        return std::path::Path::new(&dir).is_dir()
-            && std::fs::read_dir(&dir)
-                .map(|mut e| e.next().is_some())
-                .unwrap_or(false);
-    }
-    std::path::PathBuf::from(env!("CARGO_BIN_EXE_cdz"))
-        .parent()
-        .and_then(|d| d.parent())
-        .map(|t| {
-            // Must be NON-EMPTY, not merely present: CI's rust-cache can restore an empty
-            // `target/cadenza-store` dir (no `cargo xtask build` ran), and a bare `.exists()`
-            // then falsely reports the store present → the peer run executes storeless and fails
-            // "no runtime of content address … refusing to run". Match the `CADENZA_STORE` branch
-            // above (non-empty check) so an empty dir reads as absent and the run SKIPS.
-            let store = t.join("cadenza-store");
-            store.is_dir()
-                && std::fs::read_dir(&store)
-                    .map(|mut e| e.next().is_some())
-                    .unwrap_or(false)
-        })
+    let required = rcdzc::backend::wasm::runtime_abi::REQUIRED_RUNTIME_HASH;
+    let store_dir = std::env::var_os("CADENZA_STORE")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::path::PathBuf::from(env!("CARGO_BIN_EXE_cdz"))
+                .parent()
+                .and_then(|d| d.parent())
+                .map(|t| t.join("cadenza-store"))
+        });
+    store_dir
+        .map(|d| d.join(format!("{required}.wasm")).is_file())
         .unwrap_or(false)
 }
 
