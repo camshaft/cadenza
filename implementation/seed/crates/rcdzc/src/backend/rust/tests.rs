@@ -1323,6 +1323,38 @@ fn an_empty_map_lookup_whose_value_is_a_set_or_nested_list_holes_the_interior_el
 }
 
 #[test]
+fn an_empty_map_lookup_whose_value_is_itself_a_map_holes_the_inner_map_not_a_bare_new() {
+    // The MAP-of-MAPS face of the ms9-family collection-join fix (breaker ej3). A get-only `Map.empty`
+    // whose lookup value is ITSELF a `Map` (`(Some ys) ys` beside `(None _) Map.empty`), then the join is
+    // fed to a `Map.insert inner "x" n`. The enclosing insert sets `map_typed_by_enclosing_insert` — which
+    // types the map the insert operates on (the join result `inner`), NOT the scrutinee's OWN lookup map.
+    // That flag USED to leak down to the lookup map `m`, sending its `MapNew` to the bare-`new()` branch:
+    // `.get(&"k")` fixes only `m`'s KEY, not its VALUE (the inner map, unused at the lookup) → E0282 ("type
+    // annotations needed"). The fix clears the flag when threading the match-join type to the scrutinee, so
+    // `m` reconstructs `BTreeMap<String, BTreeMap<_, _>>` — outer key solved, inner map HOLED for rustc to
+    // infer from the downstream `.insert("x", n)`. (Distinct from the E0308 collection-value faces above:
+    // ej3 was E0282, a bare uninferrable `new()` — the same match-join miscompile-CLASS, Map-valued face.)
+    let m = compile_rust(
+        "(module m (def (main (: n Int64)) \
+           (let ((m Map.empty)) \
+             (let ((inner (match (Map.lookup m \"k\") ((Some ys) ys) ((None _u) Map.empty)))) \
+               (Map.len (Map.insert inner \"x\" n))))) (export main))",
+    );
+    assert!(
+        m.contains("BTreeMap<String, std::collections::BTreeMap<_, _>>"),
+        "the map-valued empty-map lookup annotates the inner map's OUTER shape (BTreeMap<_,_>), holed \
+         for the downstream insert to fix, not a bare uninferrable new():\n{m}"
+    );
+    // e2e: compiles + runs to 1 (lookup misses → None arm's empty map + one insert → len 1), matching wasm.
+    if let Some(out) = rustc_run_driver(&m, "fn main() { println!(\"{}\", prog::main(5)); }") {
+        assert_eq!(
+            out, "1",
+            "empty-map miss → None arm's empty map + one insert → len 1:\n{m}"
+        );
+    }
+}
+
+#[test]
 fn a_bare_float_set_or_map_key_uses_the_cdz_f64_total_order_wrapper() {
     // A bare `Float` Set element / Map key is NOT `Ord` as a raw `f64` (NaN breaks totality), so it maps to
     // the `CdzF64` total-order wrapper (bit-canonical, NaN→one quiet NaN — the runtime's `box-float`). The

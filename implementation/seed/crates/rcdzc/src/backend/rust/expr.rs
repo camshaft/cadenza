@@ -2628,6 +2628,16 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             } else {
                 let mut c = ctx.clone();
                 c.expected_ty = Some(match_result);
+                // CLEAR the enclosing-insert flag for the scrutinee: an enclosing `Map.insert`/`.remove`
+                // types the map it operates on (here the MATCH RESULT `inner`, which becomes the insert's
+                // base), NOT the scrutinee's OWN lookup map. When the scrutinee is `(Map.lookup m k)` whose
+                // value is itself a collection (ej3, the Map-of-Maps face), the flag would wrongly send `m`'s
+                // `MapNew` down the bare-`new()` branch — but `.get(&k)` fixes only `m`'s KEY, not its VALUE
+                // (the inner collection, unused at the lookup), so a bare `new()` E0282s. Clearing the flag
+                // lets `m` take the reconstruction branch and annotate `BTreeMap<key, <join-value holed>>`
+                // (the value's outer shape from the join, interior holed for the downstream insert to fix).
+                c.map_typed_by_enclosing_insert = false;
+                c.set_typed_by_enclosing_insert = false;
                 Some(c)
             };
             let scrut_emit_ctx = scrut_ctx.as_ref().unwrap_or(ctx);
