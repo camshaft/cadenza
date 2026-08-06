@@ -481,6 +481,19 @@ if (examples.length < 100) {
 // in — the same real browser compiler the reader hits.
 try {
   const { EXAMPLES: PLAYGROUND } = await import(join(guideRoot, "src/playground/examples.ts"));
+  // Vacuous-pass floor for the playground set (mirrors the chapter floor above): if a bad merge, a
+  // rename, or an errant edit empties/shrinks `EXAMPLES`, the loop below would push zero examples and the
+  // gate would go GREEN on an UNCHECKED playground — the same silent false-green the chapter floor guards.
+  // The dropdown ships 45 examples; assert a sane minimum so a broken/gutted array FAILS instead of
+  // passing on nothing. (A legit prune below the floor should lower it deliberately, not slip past.)
+  if (!Array.isArray(PLAYGROUND) || PLAYGROUND.length < 40) {
+    console.error(
+      `check-examples: expected ≥40 playground examples in src/playground/examples.ts, found ` +
+        `${Array.isArray(PLAYGROUND) ? PLAYGROUND.length : "a non-array export"} — the EXAMPLES array was ` +
+        `gutted/renamed (a vacuous pass would ship an unchecked playground dropdown).`,
+    );
+    process.exit(1);
+  }
   for (const p of PLAYGROUND) {
     // The intentional "see the squiggle" example is authored to NOT compile — check it as expect="error".
     const expect = /\(\+\s+1\s+true\)/.test(p.source) ? "error" : "value";
