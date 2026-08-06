@@ -6067,3 +6067,5 @@ pass	the arm slices a crossed multibyte String at a scalar boundary — the slic
 pass	a mid-scalar byte window crosses to the arm and String.from-bytes declines it
 pass	a pre-abort HOST call inside a NESTED strict operand is ISSUED before the abort abandons
 pass	a later let-binding abort preserves an EARLIER binding's committed advance (multi-binding prefix)
+pass	an inner ABORT handle inside a MULTI-SHOT region — each forked branch runs its own abort
+pass	a single MUTUAL-recursion chain performs at its base — the cross-function fold serves it

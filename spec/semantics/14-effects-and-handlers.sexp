@@ -4067,6 +4067,42 @@
   (host-calls (call ask.ask))
   (output (: 7 Int64)))
 
+(case "an inner ABORT handle inside a MULTI-SHOT region — each forked branch runs its own abort"
+  (doc    "Multi-shot × abort composition: the body forks 2×2 (pick1 branches, pick2 re-forks inside
+           each), and every fork's Bail handle aborts INDEPENDENTLY (stop(1)→3, stop(2)→6). Per
+           pick1-branch k(v) = (10v+3)+(10v+6) = 20v+9; k(1)+k(2) → 78. The multi-shot fold's
+           per-branch continuation copies must each carry their own abort machinery.")
+  (input  (do
+            (effect Amb (op pick (-> Unit Int64)))
+            (effect Bail (op stop (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle Amb 0
+                ((pick (u) s (+ (resume 1 s) (resume 2 s))))
+                (+ (* 10 (Amb.pick))
+                   (handle Bail 0
+                     ((stop (v) t (* v 3)))
+                     (+ 999 (Bail.stop (Amb.pick)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 78 Int64)))
+
+(case "a single MUTUAL-recursion chain performs at its base — the cross-function fold serves it"
+  (doc    "Mutual recursion crossing the fold boundary: `ev ↔ od` alternate down to the base, which
+           performs — ev(4) → od(3) → ev(2) → od(1) → ev(0) → count reads the seed 0. (TWO calls
+           into the mutual pair under one handler is the current honest decline — the fold serves
+           one mutual chain; the self-recursive twin folds at two sites.)")
+  (input  (do
+            (effect St (op count (-> Unit Int64)))
+            (def (ev (: k Int64))
+              (if (= k 0) (St.count) (od (- k 1))))
+            (def (od (: k Int64))
+              (if (= k 0) (+ 100 (St.count)) (ev (- k 1))))
+            (def (main (: n Int64))
+              (handle St 0
+                ((count (u) s (resume s (+ s 1))))
+                (ev 4)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 0 Int64)))
+
 ; ============ Guarded match × effects (breaker FINDING, ag5 → fixed #2333). A guarded match on a
 ; perform-result scrutinee whose FALLBACK arm also performs used to leak the fold-synthesized #seed
 ; binder as a false CDZ0101: the guard desugar's arm-body copy reparented a reused (shared) body
