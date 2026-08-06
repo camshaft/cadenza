@@ -1905,7 +1905,7 @@
   (call   main (: 0 Int64)) (output (: 2350 Int64)))
 
 (case "a two-site arm branching on the STATE folds (the refold re-anchor serves state-reading conditions)"
-  (doc    "Historically THE decline face of the multi-site family — `(if (> s 0) …)` reads the state binder
+  (doc    "Historically THE decline face of the multi-site family — `(if (> s 5) …)` reads the state binder
            and the arm resumes in both branches — now served by the two-hole refold re-anchor (the
            #2305-era fix; condition-agnostic). Seed 7 never changes (`(resume v s)` / `(resume -1 s)`), so
            both reads take the true branch: 5 + 10·6 = 65. The never-miscompile lib pin asserts this same
@@ -2018,6 +2018,60 @@
             (def (main) (run 5))
             (export main)))
   (output (: 21 Int64)))
+
+(case "a perform result LET-bound then fed to a bin segment builds Bytes under a handler"
+  (doc    "bin × effects: a `bin` integer segment is a STRICT operand position (a perform INLINE in the
+           segment is the not-yet-reducible strict-ctor boundary, like try operands), but the LET-BOUND
+           route folds — `(let ((v (UInt8.wrap (St.next)))) (bin (u8 v)))` discharges the perform first
+           and feeds the pure UInt8. Seed 5 → byte 5 read back via `Bytes.at` → 5. Pins the
+           wire-protocol-under-effects authoring idiom (bind performs, then construct).")
+  (input  (do
+            (effect St (op next (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next (u) s (resume s (+ s 1))))
+                (let ((v (UInt8.wrap (St.next))))
+                  (match (Bytes.at (bin (u8 v)) 0)
+                    ((Some b) (Int64.of b))
+                    ((None _u) -1)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 5 Int64)))
+
+(case "a constant bin construction folds alongside performs in the same handle body"
+  (doc    "The pure-construction control of the bin × effects pair: `(bin (u16 258) (u8 7))` has only
+           literal segments, so it is a pure Bytes value the fold treats as opaque data while the sibling
+           `(St.next)` discharges normally — 3 + 5 = 8. Pins that a bin ctor's presence does not
+           de-classify the body (the effect-reachability walk sees the ctor as pure).")
+  (input  (do
+            (effect St (op next (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next (u) s (resume s (+ s 1))))
+                (+ (Bytes.len (bin (u16 258) (u8 7))) (St.next))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 8 Int64)))
+
+(case "String.slice of a Map-looked-up String with perform-threaded start and end folds"
+  (doc    "The String sibling of the looked-up-Bytes slice shape (whose wasm scratch-alias miscompile is
+           separately pinned in 10-bytes): the string comes back through `Map.lookup` and BOTH slice
+           operands are perform results — start 1, end 2 → slice \"b\", byte-len 1. Note String.slice is
+           (start, END) where Bytes.slice is (start, LEN), and returns Option. Pins the looked-up-payload
+           × perform-operand shape folding for the String emit.")
+  (input  (do
+            (effect St (op next (-> Unit Int64)))
+            (def (main (: n Int64))
+              (do
+                (def table (Map.insert Map.empty 1 "abcdefgh"))
+                (handle St n
+                  ((next (u) s (resume s (+ s 1))))
+                  (match (Map.lookup table 1)
+                    ((Some str)
+                      (match (String.slice str (St.next) (St.next))
+                        ((Some sl) (String.byte-len sl))
+                        ((None _u) -100)))
+                    ((None _u) -200)))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 1 Int64)))
 
 (case "a let-bound value in a handle body flows into a perform's argument (the always-worked twin)"
   (doc    "The let-twin of the do-def perform-arg repro above — the semantically identical shape with the
@@ -2548,6 +2602,38 @@
                   (handle Amb 0 ((flip (u) s (+ (resume 1 s) (resume 2 s)))) (+ (Amb.flip) (List.len (List.push xs 99))))))
               (export main)))
   (output (: 9 Int64)))
+
+(case "a MULTI-shot continuation APPLIES a captured closure per re-reduction"
+  (doc    "The closure composition of the captured-heap multi-shot cases above: the re-reduced continuation
+           `(scale (+ (Go.fork) 10))` applies `scale = (fn (x) (* x n))` — a closure over `main`'s runtime
+           parameter — once per resumption. Each re-reduction must find the closure (and its env) alive:
+           k(1) → scale(11) = 55, k(2) → scale(12) = 60 → 115. A closure freed or its env dropped after
+           the first resume breaks the second application.")
+  (input  (do
+            (effect Go (op fork (-> Unit Int64)))
+            (def (main (: n Int64))
+              (do
+                (def scale (fn ((: x Int64)) (* x n)))
+                (handle Go 0
+                  ((fork (u) s (+ (resume 1 s) (resume 2 s))))
+                  (scale (+ (Go.fork) 10)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 115 Int64)))
+
+(case "a MULTI-shot continuation PUSHES onto a captured list per re-reduction (fresh copy each)"
+  (doc    "The double-consume composition: each re-reduction runs `(List.push (List.push (list n) (Go.fork))
+           7)` — TWO pushes onto a list built from the captured `n` — and reports its length. Both
+           re-reductions must see a fresh 1-element base (len 3 each → 6); an FBIP in-place grow shared
+           across resumes would give the second a longer list. Extends the dup-per-resume pin above from
+           one consuming op to a consuming CHAIN.")
+  (input  (do
+            (effect Go (op fork (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle Go 0
+                ((fork (u) s (+ (resume 1 s) (resume 2 s))))
+                (List.len (List.push (List.push (list n) (Go.fork)) 7))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 6 Int64)))
 
 (case "a MULTI-shot arm folds a perform under a CURRIED lambda applied to pure arguments"
   (doc    "The applied-lambda pre-reduction reduces a CURRIED redex — nested applications — as long as each

@@ -365,6 +365,7 @@ pass	String.scalar-at over a runtime index declines pending the runtime Char rep
 pass	String.scalar-len of a string selected by a runtime if
 pass	String.scalar-len of a string selected by a runtime match
 pass	String.slice across a multibyte scalar carries byte-len 2 with scalar-len 1, and degenerate ranges answer Some-empty / None
+pass	String.slice of a Map-looked-up String with perform-threaded start and end folds
 pass	String.slice spanning a rope seam maps a scalar range to the exact byte extent
 pass	String.to-bytes of a genuinely-runtime string yields its UTF-8 byte length
 pass	String.to-bytes of a rope round-trips through from-bytes equal, and a mid-scalar cut declines
@@ -701,6 +702,8 @@ pass	a MULTI-shot arm keeps a pure applied lambda in its duplicated continuation
 pass	a MULTI-shot arm re-reduces a continuation that reads a captured heap list per resume
 pass	a MULTI-shot arm whose FIRST resume value is chosen by an if on the state
 pass	a MULTI-shot arm whose each resume CONSUMES a captured heap list dups it per resume
+pass	a MULTI-shot continuation APPLIES a captured closure per re-reduction
+pass	a MULTI-shot continuation PUSHES onto a captured list per re-reduction (fresh copy each)
 pass	a MULTI-shot handler arm folds a two-hole body by re-reducing per resume
 pass	a MULTIBYTE and an EMPTY runtime String entry arg measure their UTF-8 byte lengths
 pass	a MULTIBYTE symbol map key is found by its runtime-CONCAT-interned twin
@@ -1368,6 +1371,7 @@ pass	a constant MUL-by-1 identity over a high UInt64 operand folds to the operan
 pass	a constant add of two high UInt64 operands within range folds to the sum
 pass	a constant algebraic identity over a high UInt64 operand folds to the operand, not a spurious reject
 pass	a constant argument out of a narrow parameter's range is rejected, not laundered
+pass	a constant bin construction folds alongside performs in the same handle body
 pass	a constant bit-and over a high UInt64 operand masks over the solved width
 pass	a constant bit-or over a high UInt64 operand folds over the solved width
 pass	a constant division by zero over a high UInt64 operand still rejects
@@ -2501,6 +2505,7 @@ pass	a perform in a match-arm guard is discharged by the enclosing handle
 pass	a perform in a taken if-branch threads its state to the continuation after the if
 pass	a perform in a taken match-arm threads its state to the continuation after the match
 pass	a perform in the scrutinee fires exactly ONCE whichever of three arms is selected
+pass	a perform result LET-bound then fed to a bin segment builds Bytes under a handler
 pass	a perform's result flowing as the ARGUMENT of an enclosing perform threads state inner-to-outer
 pass	a perform-free do-def feeding a bin-construction operand under a handler stays bound (F2)
 pass	a performed operation composes as a RECORD field value that is then projected
