@@ -135,6 +135,32 @@ impl HostedSession {
         }
     }
 
+    /// Start a SPAWNED CHILD session (§lifecycle I3): like [`genesis`](Self::genesis) but the seq-0 Genesis
+    /// event carries `parent = Some(parent_genesis_hash)` (the spawning session's id = its genesis hash) so
+    /// the child's own `genesis_hash` — and thus its SessionId — is PROVENANCE-DEPENDENT (it self-certifies
+    /// which session spawned it), per [`Session::genesis_spawned`]. A fresh OS-random spawn nonce is still
+    /// minted here (uniqueness even among same-reducer + same-parent children). The durable parent→child
+    /// EDGE (the supervision tree the Cedar `DescendantOf` authority walks) is recorded separately on the
+    /// PARENT's log via [`AgentHost::spawn_child`], which drives this + [`Session::record_spawn`].
+    pub fn genesis_spawned(
+        reducer_hash: Hash,
+        parent_genesis_hash: Hash,
+        reducer: Box<dyn Reducer>,
+        authz: Box<dyn Authorize>,
+        executor: CompositeExecutor,
+    ) -> Self {
+        HostedSession {
+            session: Session::genesis_spawned(
+                reducer_hash,
+                mint_spawn_nonce(),
+                Some(parent_genesis_hash),
+            ),
+            reducer,
+            authz,
+            executor,
+        }
+    }
+
     /// Attach a §4c mutable-name [`NameStore`](cdz_kernel::name_store::NameStore) so this hosted agent's
     /// `store/set` / `store/resolve` effects work — a builder over [`genesis`](Self::genesis). ADDITIVE:
     /// plain `genesis` leaves the session store-less, so a `store/*` effect there folds an observable `Err`
@@ -364,6 +390,21 @@ impl HostedSession {
         self.session.is_terminated()
     }
 
+    /// Record a durable parent→child EDGE on this (parent) session's log (§lifecycle I2b/I3): appends a
+    /// `Spawned{child_hash}` event via the kernel's fold-free [`Session::record_spawn`] seam. Returns the edge
+    /// event hash; refused ([`KernelError::FoldRefused`]) if this session is terminated (a tombstone can't
+    /// spawn). Driven by [`AgentHost::spawn_child`] after it builds the child.
+    pub async fn record_spawn(&mut self, child_hash: Hash) -> Result<Hash, KernelError> {
+        self.session.record_spawn(child_hash).await
+    }
+
+    /// This session's direct spawn-children (§lifecycle I2b), in spawn order — the `child_hash`es of the
+    /// `Spawned` edges on its log. Delegates to [`Session::spawned_children`]; the Cedar `DescendantOf`
+    /// authority (I6) walks these transitively to decide who may terminate/suspend whom.
+    pub fn spawned_children(&self) -> Vec<Hash> {
+        self.session.spawned_children()
+    }
+
     /// The earliest armed-timer deadline, if any — lets the host's scheduler know when to next tick.
     pub fn next_timer_deadline(&self) -> Option<u64> {
         self.session.next_timer_deadline()
@@ -553,6 +594,49 @@ impl AgentHost {
             "session installed"
         );
         id
+    }
+
+    /// SPAWN A CHILD session under `parent` (§lifecycle I3): the `lifecycle/spawn` effect's registry side.
+    /// Builds a child [`HostedSession`] from `reducer_hash` + its executor/authz with parent-provenance
+    /// ([`HostedSession::genesis_spawned`]), derives the child's `SessionId` from its genesis hash
+    /// (`hex(genesis_hash)` — the operator's SessionId=genesis-hash-hex ruling, so the id is provenance- +
+    /// nonce-unique), inserts it into the registry, and records the durable parent→child EDGE on the PARENT's
+    /// log ([`Session::record_spawn`]) — the supervision tree the Cedar `DescendantOf` authority (I6) walks.
+    ///
+    /// Returns:
+    /// - `Some(Ok(child_id))` — spawned; the child is registered under `child_id = hex(child genesis_hash)`
+    ///   and the parent's log carries the `Spawned{child_hash}` edge.
+    /// - `Some(Err(FoldRefused))` — the parent is TERMINATED (its log refuses the `record_spawn` append); the
+    ///   child is NOT registered (we record the edge FIRST so a terminated parent can't spawn — no orphan).
+    /// - `None` — no such `parent` id (a robust host doesn't spawn under a phantom parent).
+    ///
+    /// Records the edge on the parent BEFORE inserting the child: if the parent is terminated the whole spawn
+    /// is refused with nothing registered (atomic-ish — no dangling child whose parent rejected the edge).
+    pub async fn spawn_child(
+        &mut self,
+        parent: &SessionId,
+        reducer_hash: Hash,
+        reducer: Box<dyn Reducer>,
+        authz: Box<dyn Authorize>,
+        executor: CompositeExecutor,
+    ) -> Option<Result<SessionId, KernelError>> {
+        // Build the child first (pure construction, no registry mutation) so we know its genesis hash = its
+        // id, which is what the parent's edge records.
+        let parent_genesis = self.sessions.get(parent)?.genesis_hash();
+        let child =
+            HostedSession::genesis_spawned(reducer_hash, parent_genesis, reducer, authz, executor);
+        let child_hash = child.genesis_hash();
+        let child_id = SessionId::new(child_hash.to_hex());
+
+        // Record the durable parent→child edge FIRST: a terminated parent refuses the append (FoldRefused),
+        // and we then register NOTHING — so a terminated session can never spawn a live orphan.
+        let parent_session = self.sessions.get_mut(parent)?;
+        if let Err(e) = parent_session.record_spawn(child_hash).await {
+            return Some(Err(e));
+        }
+        // Edge recorded → register the child (reuses `spawn`: canonical-store replay + metrics + trace).
+        self.spawn(child_id.clone(), child);
+        Some(Ok(child_id))
     }
 
     /// Is a session registered under this id?
@@ -1373,6 +1457,99 @@ mod tests {
         assert!(
             matches!(second, Err(KernelError::FoldRefused)),
             "a 2nd terminate on an already-terminated session is FoldRefused, got {second:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn spawn_child_registers_the_child_under_its_genesis_hash_and_records_the_parent_edge() {
+        // §lifecycle I3: AgentHost::spawn_child builds a child with parent-provenance, registers it under
+        // SessionId = hex(child genesis_hash), and records the durable parent→child edge on the parent's log.
+        let mut host = AgentHost::new();
+        let parent = SessionId::new("parent");
+        host.spawn(parent.clone(), now_host());
+
+        let out = host
+            .spawn_child(
+                &parent,
+                Hash::of(b"child-reducer-v1"),
+                Box::new(GenesisRecordingReducer),
+                Box::new(Authorizer::deny_all()),
+                CompositeExecutor::new(),
+            )
+            .await;
+        let child_id = match out {
+            Some(Ok(id)) => id,
+            other => panic!("expected Some(Ok(child_id)), got {other:?}"),
+        };
+        // The child is registered, and its id IS its genesis-hash hex (the operator's SessionId ruling).
+        assert!(host.contains(&child_id), "child registered under its id");
+        assert_eq!(
+            child_id.as_str(),
+            host.get(&child_id).unwrap().genesis_hash().to_hex(),
+            "child SessionId = hex(its genesis_hash)"
+        );
+        // The parent's log carries exactly one Spawned edge, whose child_hash is the child's genesis hash.
+        let edges = host.get(&parent).unwrap().spawned_children();
+        assert_eq!(edges.len(), 1, "parent recorded one spawn edge");
+        assert_eq!(
+            edges[0].to_hex(),
+            child_id.as_str(),
+            "the edge's child_hash is the child's genesis hash (= its id)"
+        );
+    }
+
+    #[tokio::test]
+    async fn spawn_child_under_an_absent_parent_is_a_none_noop() {
+        let mut host = AgentHost::new();
+        let out = host
+            .spawn_child(
+                &SessionId::new("ghost-parent"),
+                Hash::of(b"child-v1"),
+                Box::new(GenesisRecordingReducer),
+                Box::new(Authorizer::deny_all()),
+                CompositeExecutor::new(),
+            )
+            .await;
+        assert!(
+            out.is_none(),
+            "spawning under an absent parent is a None no-op"
+        );
+        assert_eq!(host.len(), 0, "no child registered");
+    }
+
+    #[tokio::test]
+    async fn a_terminated_parent_cannot_spawn_a_child_edge_refused_no_orphan() {
+        // A terminated parent's log refuses the record_spawn append (FoldRefused); spawn_child records the
+        // edge BEFORE registering the child, so the whole spawn is refused with NO child left registered
+        // (no orphan whose parent rejected the edge).
+        let mut host = AgentHost::new();
+        let parent = SessionId::new("dead-parent");
+        // Terminate the parent HostedSession BEFORE registering it (installs the Terminated tail), then
+        // spawn it into the registry so spawn_child finds a registered-but-terminated parent.
+        let mut parent_session = now_host();
+        parent_session
+            .terminate(Hash::of(b"ctl"), "kill".into())
+            .await
+            .expect("parent terminates");
+        host.spawn(parent.clone(), parent_session);
+        let before = host.len();
+        let out = host
+            .spawn_child(
+                &parent,
+                Hash::of(b"child-v1"),
+                Box::new(GenesisRecordingReducer),
+                Box::new(Authorizer::deny_all()),
+                CompositeExecutor::new(),
+            )
+            .await;
+        assert!(
+            matches!(out, Some(Err(KernelError::FoldRefused))),
+            "spawning under a terminated parent is refused (FoldRefused), got {out:?}"
+        );
+        assert_eq!(
+            host.len(),
+            before,
+            "no child registered — a terminated parent spawns no orphan"
         );
     }
 
