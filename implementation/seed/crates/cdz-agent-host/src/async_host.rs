@@ -1238,6 +1238,94 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn lifecycle_terminate_through_loop_auto_evicts_the_victim_from_its_groups_i5() {
+        // §directory-I5 FULL LOOP E2E (the host-direct unit test's end-to-end peer): a controller performs
+        // lifecycle/terminate(victim) THROUGH the async loop → apply_lifecycle_ops drives AgentHost::terminate
+        // → I5 scan-on-death auto-evicts the victim from every canonical-store group it was in, while a
+        // survivor stays. Proves terminate→I5-eviction over the real executor→channel→loop-apply path.
+        use cdz_kernel::name_store::{MemberOp, NameStore};
+        const GROUP: &str = "session/room/lobby";
+
+        // The victim must be registered under its GENESIS-HASH-HEX id (I5 parses the SessionId back to the
+        // member Hash), and be a member of a group in the host-owned canonical store.
+        let victim_session = HostedSession::genesis(
+            Hash::of(b"victim-i5-v1"),
+            Box::new(MarkAgent),
+            Box::new(Authorizer::deny_all()),
+            CompositeExecutor::new(),
+        );
+        let victim_hash = victim_session.genesis_hash();
+        let victim_id = SessionId::new(victim_hash.to_hex());
+        let survivor_hash = Hash::of(b"survivor-i5");
+        let origin = Hash::of(b"adder-origin");
+
+        let mut canonical = NameStore::new();
+        canonical
+            .add_op(GROUP, MemberOp::add(victim_hash, origin, 0))
+            .unwrap();
+        canonical
+            .add_op(GROUP, MemberOp::add(survivor_hash, origin, 1))
+            .unwrap();
+
+        let mut async_host = AsyncAgentHost::new(AgentHost::with_canonical_store(canonical));
+        async_host
+            .host_mut()
+            .spawn(victim_id.clone(), victim_session);
+        // The controller: authorized to lifecycle/terminate the victim (by its hex id), wired to this loop.
+        let controller = HostedSession::genesis(
+            Hash::of(b"controller-i5-v1"),
+            Box::new(TerminatorAgent {
+                victim: victim_id.as_str().to_string(),
+            }),
+            Box::new(
+                Authorizer::new(vec![]).with_family_grants(vec![Capability::for_family(
+                    effect_ct::LIFECYCLE_TERMINATE,
+                    ResourcePredicate::Exact(victim_id.as_str().into()),
+                )]),
+            ),
+            CompositeExecutor::new().with_effect(
+                effect_ct::LIFECYCLE_TERMINATE,
+                Box::new(crate::LifecycleExecutor::new(
+                    async_host.lifecycle_channel(),
+                    SessionId::new("controller"),
+                )),
+            ),
+        );
+        async_host
+            .host_mut()
+            .spawn(SessionId::new("controller"), controller);
+
+        let inbox = async_host.inbox();
+        let (_sd_tx, sd_rx) = tokio::sync::oneshot::channel();
+        inbox
+            .send(Inbound {
+                session: SessionId::new("controller"),
+                body: go(),
+                cause: None,
+                reply_to: None,
+            })
+            .unwrap();
+        drop(inbox);
+        let host = async_host
+            .run(sd_rx, || 0)
+            .await
+            .expect("clean shutdown, no kernel error");
+
+        // Victim terminated + removed.
+        assert!(!host.contains(&victim_id), "victim terminated via the loop");
+        // I5: the victim is auto-evicted from the group; the survivor stays.
+        let members = host.canonical_store().unwrap().resolve_all(GROUP).unwrap();
+        assert!(
+            !members.contains(&victim_hash),
+            "terminate-through-the-loop auto-evicted the victim from its group (I5 end to end)"
+        );
+        assert!(
+            members.contains(&survivor_hash),
+            "the survivor stays in the group"
+        );
+    }
+
+    #[tokio::test]
     async fn lifecycle_spawn_e2e_a_parent_spawns_a_child_through_the_loop() {
         // §lifecycle I3 FULL E2E: a parent performs lifecycle/spawn → the executor pre-computes + returns the
         // child id (parent folds it) + records LifecycleOp::Spawn → the loop's apply-step materializes the
