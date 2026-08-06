@@ -640,6 +640,7 @@ pass	a Float32-overflowing magnitude literal under a Float32 Qty inner type is r
 pass	a Float64 handler state advances fractionally through a two-site arm
 pass	a Float64 op RESULT crosses resume and float state arithmetic is observed by comparison
 pass	a GENERIC recursive sum branching through a tuple folds at a concrete instantiation
+pass	a GENERIC user sum ((Box Int64)) as op result — nominal tag + instantiated payload cross resume
 pass	a GENERIC user sum crosses a module boundary at a concrete instantiation
 pass	a GENSYM effect derives fresh symbols from a counter state — same base yields distinct symbols
 pass	a GENUINELY-RUNTIME Rational map/set key is found by a normalized-equal key
@@ -839,6 +840,7 @@ pass	a RECURSIVE effectful walk accumulates into a list-state handler
 pass	a RECURSIVE sum as a Map key hits and misses by structural content
 pass	a RECURSIVE sum with a record payload walks an environment chain by depth and tag search
 pass	a RECURSIVE tree evaluator resolves variables through a READER effect with a Map-state handler
+pass	a RECURSIVE user sum (Tree) crosses resume; the body folds it
 pass	a RECURSIVE-sum value of runtime depth rides a handler resume
 pass	a REFL tactic closes a reflexivity goal by driving the kernel, and cannot close a false goal
 pass	a RELATIONAL @requires over two parameters enforces their order at entry
@@ -1023,7 +1025,9 @@ pass	a UInt64 holds a value above the signed 64-bit maximum
 pass	a UInt8 sum-payload literal-match hits the literal arm, result widens to Int64
 pass	a UInt8 sum-payload literal-match misses, binds the payload widened to Int64
 pass	a UInt8 wrapping-add result feeds a CHECKED add — the MASKED value is what the checked op sees
+pass	a USER sum as handler state — a countdown mode machine (Fast k -> Slow)
 pass	a USER-DEFINED multi-variant sum payload quantity renders scaled to its reference
+pass	a USER-SUM op result (Status) crosses resume; the body matches per variant
 pass	a Unit element between two Int64s in a tuple, a later element read
 pass	a Unit element in a multi-payload sum variant compiles to valid wasm
 pass	a Unit payload MATCH-bound from a still-live sum at a dup-site drops the sentinel
@@ -1743,6 +1747,7 @@ pass	a generic recursive HOF taking a closure is monomorphized at two distinct c
 pass	a generic recursive sum references itself bare and carries its own type parameter
 pass	a generic recursive sum with a bare self-reference nested in a list parameter
 pass	a generic sum NESTS ITSELF at a different instantiation and destructures through both layers
+pass	a generic sum instantiated at a HEAP payload ((Box (List Int64))) crosses resume
 pass	a generic sum type constructor applied to a value is rejected
 pass	a generic sum whose payload NESTS the parameter escapes with the instantiated inner type
 pass	a generic sum with TWO type parameters instantiates each independently
@@ -2783,6 +2788,7 @@ pass	a recursive resolver whose dead arm builds a trapping compound compiles
 pass	a recursive scalar-walk classifies characters across a multibyte String entry arg
 pass	a recursive scalar-walk over a guest-built rope classifies characters on every backend
 pass	a recursive scan counts a runtime string's matching characters
+pass	a recursive sum as op ARGUMENT — the arm dispatches on its shape
 pass	a recursive sum built then folded by a NESTED recursive call composes on every backend
 pass	a recursive sum constructor with a CHECKED-ARITH payload and a recursive-call sibling payload
 pass	a recursive sum consumer whose arguments are recursive sum producers compiles
@@ -3673,6 +3679,7 @@ pass	a unit MISMATCH in the resume value is rejected — the arm cannot resume a
 pass	a unit multiplied by its own inverse cancels to the dimensionless unit
 pass	a unit raised to the ZEROTH power is the dimensionless identity Unit.one
 pass	a user Name variant does not capture the Ast sum's Name variant
+pass	a user SUM is constructed AND matched inside the arm (per-dispatch classification)
 pass	a user SUM leaf inside a tuple key discriminates hits by variant AND payload
 pass	a user function may be named quote — its signature is a binding form, not a quote
 pass	a user generic NESTED as the type argument of a built-in generic resolves in an annotation
