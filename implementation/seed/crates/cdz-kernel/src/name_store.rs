@@ -50,6 +50,51 @@ impl SetEntry {
     }
 }
 
+/// One add/remove operation in a GROUP name's OR-set log (§4c session-directory I1). A group name (e.g.
+/// `session/room/lobby`) is multi-writer (each member adds ITSELF), so its membership is a CRDT — an OR-set:
+/// current members = fold the log with **add-wins** semantics (a member is present iff it has ≥1 `add` tag
+/// not covered by a `remove`). This is the ONLY multi-writer-safe model — the single-value prefix-append
+/// merge ([`NameStore::merge_appends_from`]) drops a concurrent writer's entry, an OR-set's tag-union does
+/// not (D2, the load-bearing reason).
+///
+/// `tag` makes each add UNIQUE — an `(origin, seq)` pair where `origin` is the emitting session's identity
+/// (its genesis hash = SessionId; converges with the naming work) and `seq` its local per-op counter. The
+/// tag is what makes the merge idempotent + a `remove` precise (a remove carries the tags it observed, so a
+/// concurrent re-add with a FRESH tag survives — add-wins). The tag is DETERMINISTIC (never random/clock) so
+/// replay reproduces it. This is the pure in-memory model; the durable add/remove-frame codec is I2.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct MemberOp {
+    /// `true` = add this member, `false` = remove the add-tags this op observed.
+    pub add: bool,
+    /// The member hash (a session's genesis hash = its SessionId, for a session group).
+    pub member: Hash,
+    /// The unique add-tag `(origin, seq)`: origin = emitting session's identity, seq = its local op counter.
+    /// For a `remove`, this identifies the specific add being retracted (add-wins: only tags ≤ this remove
+    /// are cleared; a later add with a new tag survives).
+    pub tag: (Hash, u64),
+}
+
+impl MemberOp {
+    /// An `add(member)` tagged by `(origin, seq)` — the join op. `origin` is the adding session's identity.
+    pub fn add(member: Hash, origin: Hash, seq: u64) -> Self {
+        MemberOp {
+            add: true,
+            member,
+            tag: (origin, seq),
+        }
+    }
+
+    /// A `remove(member)` carrying the tag it observed — the leave/evict op (add-wins: retracts adds up to
+    /// this tag; a concurrent re-add with a fresh tag is NOT retracted).
+    pub fn remove(member: Hash, origin: Hash, seq: u64) -> Self {
+        MemberOp {
+            add: false,
+            member,
+            tag: (origin, seq),
+        }
+    }
+}
+
 /// The §4c write-authority NAMESPACE a mutable name falls under, parsed from its PREFIX (§4c point 2).
 /// This is the signature-INDEPENDENT classification the Cedar prefix-grant keys on ("which authority
 /// governs this name"), ORTHOGONAL to "is a given writer actually that authority" (the grant check). The
@@ -85,6 +130,11 @@ pub enum NameStoreError {
     /// A [`NameStore::from_snapshot_bytes`] blob was malformed: a short length prefix, a truncated/garbage
     /// frame, or a frame that isn't a valid `name-set`. Total — a corrupt snapshot fails cleanly, not a panic.
     MalformedSnapshot,
+    /// A name was used with the WRONG kind (§4c session-directory D7 mode-guard): a group `add`/`remove` (or
+    /// `resolve_all`) on a name that's a SINGLE-VALUE pointer, or a `set`/`resolve` on a GROUP name. A name's
+    /// kind is fixed by its first write (pointer XOR group); a mismatching verb is refused, not coerced —
+    /// fail-closed, so a `set` can't silently clobber a group (or a `resolve` mis-read one) into nonsense.
+    NameModeMismatch,
 }
 
 /// The mutable-name store: per-name append-only logs of [`SetEntry`]. In-memory for v0/tests; a durable
@@ -96,6 +146,13 @@ pub struct NameStore {
     /// name → its value-over-time log (append-only; last = current). A name with an empty/absent log has
     /// never been set (`resolve` → `NoSuchName`).
     names: HashMap<String, Vec<SetEntry>>,
+    /// GROUP name → its OR-set add/remove log (§4c session-directory I1). SEPARATE from `names` so the
+    /// single-value pointer path (`resolve`/`to_set_entries`/`snapshot_bytes`/`merge_appends_from`) stays
+    /// BYTE-IDENTICAL to before — a name lives in `names` XOR `groups`, never both (structural enforcement
+    /// of "a name can never switch kinds": `add_member` refuses a name already in `names`, `set` refuses one
+    /// in `groups`). Current membership = fold the log ([`NameStore::resolve_all`]); the multi-writer merge
+    /// is the CRDT tag-union ([`NameStore::merge_appends_from`] extended to unite this map too).
+    groups: HashMap<String, Vec<MemberOp>>,
     /// Idempotency keys of `store/set`s already applied to this store — the crash/re-drive dedup (§16c-S1/D).
     /// The kernel's recovery re-drives an open (dispatched-but-unsettled) store effect by its stable
     /// idempotency key; without dedup a `store/set` re-applied after a crash appends a DUPLICATE entry
@@ -130,6 +187,7 @@ impl NameStore {
     pub fn new() -> Self {
         NameStore {
             names: HashMap::new(),
+            groups: HashMap::new(),
             applied_set_keys: std::collections::HashSet::new(),
         }
     }
@@ -142,6 +200,10 @@ impl NameStore {
     pub fn set(&mut self, name: &str, entry: SetEntry) -> Result<(), NameStoreError> {
         if Self::authority_prefix_of(name) == NameAuthority::Unscoped {
             return Err(NameStoreError::UnscopedNameUnwritable);
+        }
+        if self.groups.contains_key(name) {
+            // Already an OR-set group → can't also be a single-value pointer (no kind-switch, D7).
+            return Err(NameStoreError::NameModeMismatch);
         }
         self.names.entry(name.to_string()).or_default().push(entry);
         Ok(())
@@ -162,6 +224,56 @@ impl NameStore {
     /// slice for a never-set name.
     pub fn history(&self, name: &str) -> &[SetEntry] {
         self.names.get(name).map(|v| v.as_slice()).unwrap_or(&[])
+    }
+
+    /// Append an `add`/`remove` op to a GROUP name's OR-set log (§4c session-directory I1). Fail-closed on an
+    /// `Unscoped` prefix (same backstop as [`set`](Self::set)); refuses a name already used as a SINGLE-VALUE
+    /// pointer ([`NameStoreError::NameModeMismatch`]) — a name is a pointer XOR a group, never both, and the
+    /// kind is fixed by its FIRST write (mode-guard, D7). Authorization (may THIS writer touch THIS prefix)
+    /// is the authorizer's job, checked BEFORE this; the mode/Unscoped refusals are the store's backstops.
+    pub fn add_op(&mut self, name: &str, op: MemberOp) -> Result<(), NameStoreError> {
+        if Self::authority_prefix_of(name) == NameAuthority::Unscoped {
+            return Err(NameStoreError::UnscopedNameUnwritable);
+        }
+        if self.names.contains_key(name) {
+            // Already a single-value pointer → can't also be a group (no kind-switch).
+            return Err(NameStoreError::NameModeMismatch);
+        }
+        self.groups.entry(name.to_string()).or_default().push(op);
+        Ok(())
+    }
+
+    /// Resolve a GROUP name's CURRENT membership — fold its OR-set log with ADD-WINS semantics: a member is
+    /// present iff it has an `add` tag NOT covered by a `remove` of the same tag (§4c D1). Returns a
+    /// `BTreeSet<Hash>` (deterministic ascending-hash order → a frozen member set is byte-stable + the
+    /// multicast fan-out order is deterministic). `Err(NameModeMismatch)` for a SINGLE-VALUE (pointer) name —
+    /// resolve-all of a pointer is a misuse (use [`resolve`](Self::resolve)); `Err(NoSuchName)` if the name
+    /// has no group log at all.
+    pub fn resolve_all(
+        &self,
+        name: &str,
+    ) -> Result<std::collections::BTreeSet<Hash>, NameStoreError> {
+        if self.names.contains_key(name) {
+            return Err(NameStoreError::NameModeMismatch);
+        }
+        let log = self.groups.get(name).ok_or(NameStoreError::NoSuchName)?;
+        // Add-wins fold: collect the set of removed tags, then a member is present iff it has an add-tag not
+        // in that removed set. Tags are unique per add, so this is order-independent (CRDT).
+        let removed: std::collections::HashSet<&(Hash, u64)> =
+            log.iter().filter(|o| !o.add).map(|o| &o.tag).collect();
+        let mut members = std::collections::BTreeSet::new();
+        for op in log.iter().filter(|o| o.add) {
+            if !removed.contains(&op.tag) {
+                members.insert(op.member);
+            }
+        }
+        Ok(members)
+    }
+
+    /// The full OR-set op log for a group name (oldest → newest), for audit (§4c point 1). Empty for a
+    /// never-touched / non-group name.
+    pub fn group_history(&self, name: &str) -> &[MemberOp] {
+        self.groups.get(name).map(|v| v.as_slice()).unwrap_or(&[])
     }
 
     /// Reconstruct a `NameStore` by REPLAYING an ordered stream of `(name, hash)` `set` entries — the
@@ -367,10 +479,25 @@ impl NameStore {
     /// wrote them; re-checking would be redundant, and merge-back is a host-internal reconcile, not a write.
     /// `applied_set_keys` is untouched: those are per-live-dispatch crash-dedup keys, not shared state.
     pub fn merge_appends_from(&mut self, other: &NameStore) {
+        // Single-value pointer names: the EXACT prior path, BYTE-IDENTICAL (longer-log-wins tail-append —
+        // correct because a pointer name is single-writer, so the logs are prefixes of each other).
         for (name, other_log) in &other.names {
             let mine = self.names.entry(name.clone()).or_default();
             if other_log.len() > mine.len() {
                 mine.extend_from_slice(&other_log[mine.len()..]);
+            }
+        }
+        // GROUP names: the OR-set CRDT merge (§4c D2) — a group is MULTI-writer, so the logs are NOT prefixes
+        // of each other and the prefix-append above would DROP a concurrent writer's ops. Instead union by
+        // TAG: append every op from `other` whose (add, member, tag) isn't already present. Commutative +
+        // idempotent + order-independent (the tag makes each add unique + a remove precise), so a name's
+        // membership converges regardless of merge order — exactly what multi-writer reconcile needs.
+        for (name, other_ops) in &other.groups {
+            let mine = self.groups.entry(name.clone()).or_default();
+            for op in other_ops {
+                if !mine.contains(op) {
+                    mine.push(op.clone());
+                }
             }
         }
     }
@@ -918,6 +1045,160 @@ mod tests {
         assert_eq!(
             s.apply_effect(effect_ct::STORE_SET, "bare-name", Some(Hash::of(b"v")), k),
             Err(NameStoreError::UnscopedNameUnwritable)
+        );
+    }
+
+    // ── §4c session-directory I1: OR-set group membership ──────────────────────────────────────────────
+
+    // FOLD CORRECTNESS + ADD-WINS: membership = fold the add/remove log; a member re-added after a remove
+    // (with a FRESH tag) is present (add-wins), and a member whose only add-tag was removed is absent.
+    #[test]
+    fn resolve_all_folds_add_remove_with_add_wins() {
+        let mut s = NameStore::new();
+        let g = "session/room/lobby";
+        let (a, b, c) = (Hash::of(b"A"), Hash::of(b"B"), Hash::of(b"C"));
+        let origin = Hash::of(b"origin");
+        // add A, add B, add C, remove B(tag it was added with), add B(FRESH tag) → {A, B, C} (B re-added).
+        s.add_op(g, MemberOp::add(a, origin, 0)).unwrap();
+        s.add_op(g, MemberOp::add(b, origin, 1)).unwrap();
+        s.add_op(g, MemberOp::add(c, origin, 2)).unwrap();
+        s.add_op(g, MemberOp::remove(b, origin, 1)).unwrap(); // retracts the (origin,1) add of B
+        s.add_op(g, MemberOp::add(b, origin, 3)).unwrap(); // re-add B with a fresh tag
+        assert_eq!(
+            s.resolve_all(g).unwrap(),
+            [a, b, c].into_iter().collect(),
+            "add-wins: B re-added with a fresh tag is present; A + C untouched"
+        );
+
+        // Remove the sole remaining add of A → A absent.
+        s.add_op(g, MemberOp::remove(a, origin, 0)).unwrap();
+        assert_eq!(
+            s.resolve_all(g).unwrap(),
+            [b, c].into_iter().collect(),
+            "a member whose every add-tag is removed is absent"
+        );
+    }
+
+    // MULTI-WRITER MERGE is commutative + idempotent (the load-bearing CRDT property, D2): two sessions add
+    // to the SAME group concurrently (divergent logs, neither a prefix of the other); merging either
+    // direction — and twice — yields the SAME membership. The single-value prefix-append merge could NOT do
+    // this (it would drop one writer's op).
+    #[test]
+    fn group_merge_is_commutative_and_idempotent_over_concurrent_writers() {
+        let g = "session/room/lobby";
+        let (a, b) = (Hash::of(b"A"), Hash::of(b"B"));
+        // Writer 1's replica: adds A (its own identity).
+        let mut r1 = NameStore::new();
+        r1.add_op(g, MemberOp::add(a, a, 0)).unwrap();
+        // Writer 2's replica: adds B. Divergent — r1's + r2's logs are NOT prefixes of each other.
+        let mut r2 = NameStore::new();
+        r2.add_op(g, MemberOp::add(b, b, 0)).unwrap();
+
+        // Merge r2 into r1, and (separately) r1 into r2 — both converge to {A, B}.
+        let mut r1_then_r2 = NameStore::new();
+        r1_then_r2.merge_appends_from(&r1);
+        r1_then_r2.merge_appends_from(&r2);
+        let mut r2_then_r1 = NameStore::new();
+        r2_then_r1.merge_appends_from(&r2);
+        r2_then_r1.merge_appends_from(&r1);
+        assert_eq!(
+            r1_then_r2.resolve_all(g).unwrap(),
+            [a, b].into_iter().collect(),
+            "concurrent adds from two writers both survive the merge (multi-writer-safe)"
+        );
+        assert_eq!(
+            r1_then_r2.resolve_all(g).unwrap(),
+            r2_then_r1.resolve_all(g).unwrap(),
+            "merge is COMMUTATIVE — order doesn't change membership"
+        );
+        // Idempotent: merging the same replica again changes nothing (tag-union dedups).
+        let before = r1_then_r2.group_history(g).len();
+        r1_then_r2.merge_appends_from(&r1);
+        r1_then_r2.merge_appends_from(&r2);
+        assert_eq!(
+            r1_then_r2.group_history(g).len(),
+            before,
+            "merge is IDEMPOTENT — re-merging appends no duplicate ops (tag-union)"
+        );
+    }
+
+    // REGRESSION PIN (D1 no-regression): a SINGLE-VALUE pointer name's merge is BYTE-IDENTICAL to before the
+    // OR-set change — the group path must not perturb compiler/latest / policy/current. Merges the same
+    // pointer log both ways + asserts the resolved pointer + full history are unchanged.
+    #[test]
+    fn single_value_pointer_merge_is_unchanged_by_the_group_layer() {
+        let name = NameStore::COMPILER_LATEST;
+        let (v1, v2) = (Hash::of(b"v1"), Hash::of(b"v2"));
+        let mut src = NameStore::new();
+        src.set(name, SetEntry::unsigned(v1)).unwrap();
+        src.set(name, SetEntry::unsigned(v2)).unwrap();
+
+        let mut dst = NameStore::new();
+        dst.merge_appends_from(&src);
+        assert_eq!(
+            dst.resolve(name).unwrap(),
+            v2,
+            "pointer merge yields the latest set (unchanged)"
+        );
+        assert_eq!(
+            dst.history(name).len(),
+            2,
+            "the full value-over-time log merged (unchanged)"
+        );
+        // Re-merge is a no-op (longer-log-wins prefix path — the exact prior behavior).
+        dst.merge_appends_from(&src);
+        assert_eq!(
+            dst.history(name).len(),
+            2,
+            "re-merge appends nothing (prefix path unchanged)"
+        );
+    }
+
+    // MODE-GUARD (D7): a name is a pointer XOR a group, fixed by its first write. A group verb on a pointer
+    // name (and vice-versa), and resolve-all of a pointer, are refused with NameModeMismatch — never coerced.
+    #[test]
+    fn a_name_is_pointer_xor_group_mode_mismatch_is_refused() {
+        let mut s = NameStore::new();
+        // Establish a POINTER, then a group add on it is refused.
+        s.set("system/x", SetEntry::unsigned(Hash::of(b"v")))
+            .unwrap();
+        assert_eq!(
+            s.add_op("system/x", MemberOp::add(Hash::of(b"m"), Hash::of(b"o"), 0)),
+            Err(NameStoreError::NameModeMismatch),
+            "a group add on a single-value pointer name is refused"
+        );
+        assert_eq!(
+            s.resolve_all("system/x"),
+            Err(NameStoreError::NameModeMismatch),
+            "resolve_all of a pointer name is a misuse"
+        );
+        // Establish a GROUP, then a set on it is refused.
+        s.add_op(
+            "session/g/room",
+            MemberOp::add(Hash::of(b"m"), Hash::of(b"o"), 0),
+        )
+        .unwrap();
+        assert_eq!(
+            s.set("session/g/room", SetEntry::unsigned(Hash::of(b"v"))),
+            Err(NameStoreError::NameModeMismatch),
+            "a set on an OR-set group name is refused"
+        );
+        // Group verbs on an Unscoped prefix still fail closed.
+        assert_eq!(
+            s.add_op("bare", MemberOp::add(Hash::of(b"m"), Hash::of(b"o"), 0)),
+            Err(NameStoreError::UnscopedNameUnwritable),
+            "a group add on an Unscoped name fails closed"
+        );
+    }
+
+    // resolve_all of a name that was never touched as a group → NoSuchName (not an empty set — distinguish
+    // "unknown group" from "empty group").
+    #[test]
+    fn resolve_all_of_an_unknown_group_is_no_such_name() {
+        let s = NameStore::new();
+        assert_eq!(
+            s.resolve_all("session/room/ghost"),
+            Err(NameStoreError::NoSuchName)
         );
     }
 }
