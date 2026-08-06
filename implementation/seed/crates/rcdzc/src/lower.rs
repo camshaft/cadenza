@@ -5096,7 +5096,26 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
                 "a guarded scalar match needs an unguarded wildcard tail",
             ));
         };
+        // ag5 (breaker): PIN the reused arm bodies' + guard-conds' resolution NOW, while they STILL have
+        // their intact lexical ancestry — BEFORE the fold below `push_list`-reparents them (which detaches
+        // them from any enclosing binder). This establishes the invariant the desugar's skip coverage
+        // assumes ("the reused arm bodies resolved + memoized BEFORE the desugar"). A load-time user body
+        // already satisfies it; but the effects fold mints FRESH synth `#seed`/`#cv` references at LOWER
+        // time whose binder is a fold-synth `(let ((#seed n)) …)` ABOVE the match — never memoized, so once
+        // reparented their `#seed` ref can't reach that let → false CDZ0101. Pinning here (ancestry intact)
+        // resolves each to a `Ref` that survives the reparent via the resolve memo (the `apply_lambda`
+        // idiom, resolve.rs:206). Verified at entry: `#seed`'s chain reaches the fold `#seed` let and
+        // resolves to `Ref`. The `(let ((w scrutinee)) …)` wrap below binds `w` to the SAME scrutinee that
+        // its guard-cond resolution already names, so the pinned `w` resolution stays valid across the wrap.
+        for &(pat, body) in arms[..tail_ix].iter() {
+            let cond = db.ast.as_form(pat, "guard").and_then(|g| g.get(1).copied());
+            crate::resolve::resolve_subtree(db, body);
+            if let Some(g) = cond {
+                crate::resolve::resolve_subtree(db, g);
+            }
+        }
         let mut else_node = arms[tail_ix].1;
+        crate::resolve::resolve_subtree(db, else_node);
         // Fold the leading arms (0..tail_ix) from LAST backward into nested `if`s.
         for &(pat, body) in arms[..tail_ix].iter().rev() {
             let (inner_pat, guard) = match db.ast.as_form(pat, "guard") {
@@ -5134,14 +5153,15 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
                         let pair = db.push_list(vec![binder, scrutinee]);
                         let bindings = db.push_list(vec![pair]);
                         let wrapped = db.push_list(vec![let_head, bindings, then_branch]);
-                        // The reused guard-cond + body carry a STALE `resolved` column + scope-skip from
-                        // their original `(guard …)` position (where `w` resolved to the scrutinee via
-                        // `guard_cond_binds`, now detached). `forget_subtree` clears that so, under the new
-                        // `(let ((w scrutinee)) …)`, `w` re-resolves to the `let` binder and every OTHER
-                        // name (`n`, an enclosing param the cond reads) re-resolves up the live chain — the
-                        // same re-parent-then-forget discipline the fold paths use. Binding-aware skip
-                        // (`into_subtree`, not `pass_through`) so inner refs land on the `let` in O(1).
-                        crate::resolve::forget_subtree(db, wrapped);
+                        // `w` was PINNED at desugar entry (above) via `guard_cond_binds` to the SAME
+                        // scrutinee occurrence this new `(let ((w scrutinee)) …)` binds — so its memoized
+                        // `Ref` is already correct and survives the reparent; likewise the fold-synth
+                        // `#seed`/`#cv` refs were pinned to their fold-let binders. So we must NOT
+                        // `forget_subtree(wrapped)` here: a blanket forget would clear those correct pins,
+                        // and the detached `wrapped` (parent `None`) can no longer re-resolve a `#seed` whose
+                        // binder is an enclosing fold let → the ag5 false CDZ0101. Keep the pins; just cover
+                        // the fresh synth nodes with binding-aware skip (the `(let …)`/`if` chain) so a name
+                        // NOT already pinned still hops O(1) to the nearest candidate.
                         db.extend_scope_skip_into_subtree(wrapped);
                         wrapped
                     }
