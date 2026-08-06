@@ -2949,10 +2949,15 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
     // is `main` — permanently commit-distinct from `trunk` by the re-parent model — so counting there
     // reports a large nonsense delta every sweep AND masks a stale worktree (PR#2318 Copilot). The
     // built-from worktree's HEAD is the only ref whose lag reflects what this binary actually contains.
-    if let Some(worktree_root) = fleet.src.parent()
-        && let Some(behind) = xtask_commits_behind_trunk(worktree_root)
-        && let Some(warning) = stale_watchdog_warning(behind)
-    {
+    // `behind` (0 when current / git can't answer) is also recorded in the health log as
+    // `self_stale_behind` — the DURABLE twin of this stderr warning, so a stale watchdog is greppable
+    // after the terminal scrolls (the recurrence-detection the dead-cron saga lacked).
+    let self_stale_behind = fleet
+        .src
+        .parent()
+        .and_then(xtask_commits_behind_trunk)
+        .unwrap_or(0);
+    if let Some(warning) = stale_watchdog_warning(self_stale_behind) {
         eprintln!("  ! {warning}");
     }
 
@@ -3993,6 +3998,7 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
                 stranded_agents,
                 dead_letters_reaped,
                 reissued_agents,
+                self_stale_behind,
             },
         );
         if let Some(line) = summary {
@@ -4076,6 +4082,13 @@ struct WatchdogCounts {
     /// the identities makes that recurrence greppable. Appended as a trailing `reissued_agents=a,b,c`
     /// field ONLY when non-empty, so a clean or nudge-only sweep's line is byte-for-byte unchanged.
     reissued_agents: Vec<String>,
+    /// How many commits the WATCHDOG'S OWN `xtask` source lags trunk (`stale_watchdog_warning`'s count),
+    /// 0 when current. A SELF-diagnostic, not a fleet anomaly: >0 means the binary running this very sweep
+    /// may PREDATE recent self-heal fixes and be silently running old logic (the dead-cron 3-round saga —
+    /// the guard warns to stderr, which scrolls off; recording it here makes a stale watchdog a DURABLE,
+    /// greppable record so a recurrence is caught without re-live-debugging). Emitted as a trailing
+    /// `self_stale_behind=N` field ONLY when >0, so a current watchdog's line is byte-for-byte unchanged.
+    self_stale_behind: usize,
 }
 
 /// `checked` is the sweep's DENOMINATOR (active windowed agents examined) — pure CONTEXT, deliberately
@@ -4104,6 +4117,7 @@ fn watchdog_log_line(now: u64, checked: usize, c: &WatchdogCounts) -> Option<Str
         && c.leases_reaped == 0
         && c.stranded_agents == 0
         && c.dead_letters_reaped == 0
+        && c.self_stale_behind == 0
     {
         return None;
     }
@@ -4115,8 +4129,16 @@ fn watchdog_log_line(now: u64, checked: usize, c: &WatchdogCounts) -> Option<Str
     } else {
         format!("\treissued_agents={}", c.reissued_agents.join(","))
     };
+    // Same trailing-field discipline for the watchdog's own staleness — emitted only when >0, so a current
+    // watchdog's line is unchanged and a reader only sees `self_stale_behind=` when the running binary is
+    // itself behind trunk (the durable twin of the stderr `stale_watchdog_warning`).
+    let self_stale = if c.self_stale_behind == 0 {
+        String::new()
+    } else {
+        format!("\tself_stale_behind={}", c.self_stale_behind)
+    };
     Some(format!(
-        "{now}\tchecked={checked}\trearmed={}\treissued={}\treaped={}\tdrain_stalls={}\tdrain_stall_escalations={}\tsaturated={}\tqueued_but_landed={}\twedge_escalations={}\twedge_restarts={}\tcompact_nudges={}\tnote_backlogs={}\tleases_reaped={}\tstranded_agents={}\tdead_letters_reaped={}{reissued_agents}",
+        "{now}\tchecked={checked}\trearmed={}\treissued={}\treaped={}\tdrain_stalls={}\tdrain_stall_escalations={}\tsaturated={}\tqueued_but_landed={}\twedge_escalations={}\twedge_restarts={}\tcompact_nudges={}\tnote_backlogs={}\tleases_reaped={}\tstranded_agents={}\tdead_letters_reaped={}{reissued_agents}{self_stale}",
         c.rearmed,
         c.reissued,
         c.reaped,
@@ -12196,6 +12218,10 @@ mod tests {
                     // assertion (every historical line shape) is unchanged. The populated case is pinned
                     // by `watchdog_log_line_appends_reissued_agent_names_only_when_present` below.
                     reissued_agents: Vec::new(),
+                    // 0 here → the trailing `self_stale_behind=` field is OMITTED too, keeping this
+                    // exact-byte assertion unchanged; the >0 case is pinned by
+                    // `watchdog_log_line_records_self_staleness_only_when_the_watchdog_itself_lags_trunk`.
+                    self_stale_behind: 0,
                 }
             ),
             Some(
@@ -12381,6 +12407,56 @@ mod tests {
         assert!(
             !plain.contains("reissued_agents="),
             "empty names must omit the field entirely: {plain:?}"
+        );
+    }
+
+    #[test]
+    fn watchdog_log_line_records_self_staleness_only_when_the_watchdog_itself_lags_trunk() {
+        // self_stale_behind>0 ALONE is notable — a watchdog running old logic is an anomaly worth a
+        // durable record even on an otherwise-clean sweep (the dead-cron saga: the stderr warning scrolls
+        // off, so the log is the only recurrence-detection). Emitted as a trailing `self_stale_behind=N`.
+        let line = watchdog_log_line(
+            1700000000,
+            42,
+            &WatchdogCounts {
+                self_stale_behind: 12,
+                ..Default::default()
+            },
+        )
+        .expect("self_stale_behind>0 is notable on its own");
+        assert!(
+            line.ends_with("\tself_stale_behind=12"),
+            "self-staleness rides as the trailing field: {line:?}"
+        );
+        // Current watchdog (0) → field fully OMITTED, so every historical line shape stays byte-identical.
+        let plain = watchdog_log_line(
+            1700000000,
+            42,
+            &WatchdogCounts {
+                rearmed: 1,
+                ..Default::default()
+            },
+        )
+        .expect("rearmed>0 is notable");
+        assert!(
+            !plain.contains("self_stale_behind="),
+            "a current watchdog must omit the field entirely: {plain:?}"
+        );
+        // Both trailing fields coexist in a stable order (reissued_agents THEN self_stale_behind).
+        let both = watchdog_log_line(
+            1700000000,
+            42,
+            &WatchdogCounts {
+                reissued: 1,
+                reissued_agents: vec!["v-lsp".to_string()],
+                self_stale_behind: 3,
+                ..Default::default()
+            },
+        )
+        .expect("notable");
+        assert!(
+            both.ends_with("\treissued_agents=v-lsp\tself_stale_behind=3"),
+            "trailing fields keep a stable order: {both:?}"
         );
     }
 
