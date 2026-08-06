@@ -903,6 +903,7 @@ pass	a SET churned to empty equals a fresh empty set and re-accepts elements
 pass	a SET handler state grows per perform and dedupes a repeated event
 pass	a SET of BigInts as a map key matches its construction-order and arithmetic twin
 pass	a SET of SETS dedups elements by set CONTENT — insertion-order twins collapse
+pass	a SET state dedup accumulator — the condition PROBES the state, the pass branch inserts
 pass	a SET-valued handler state accumulates uniques across resumes (the visited-set idiom)
 pass	a SINGLE-variant open sum still requires an open-tail arm
 pass	a SIX-deep alternating A-B perform chain threads both nested states through every crossing
@@ -2226,6 +2227,7 @@ pass	a multi-payload variant with a scalar AND two recursive payloads escapes fl
 pass	a multi-payload variant with an EMPTY-Map first payload compiles + deconstructs (function[27] regression pin)
 pass	a multi-segment bin concatenates mixed-width signed and unsigned segments in order
 pass	a multi-site arm folds while the handle BODY reads an enclosing binding (the re-anchored free var)
+pass	a multi-site arm's resume value routes through a pure helper call
 pass	a multi-step kernel derivation composes several primitive rules into one theorem
 pass	a multi-use rope escapes a select through a Some shell and its twin survives the unwrap
 pass	a multi-use runtime Map do-def escapes an if-select and both CHAMP handles stay live
@@ -3612,6 +3614,8 @@ pass	a two-site arm branches on SYMBOL equality of the state
 pass	a two-site arm branching on the OP ARGUMENT with a hit-count state folds (threshold sift)
 pass	a two-site arm branching on the STATE folds (the refold re-anchor serves state-reading conditions)
 pass	a two-site arm gates on a PROJECTED field of the record state (rate limiter)
+pass	a two-site arm over a BYTES state (bin-built seed, concat growth) with a trailing size reader
+pass	a two-site arm over a STRING state (concat on pass, hold on fail) with a trailing length reader
 pass	a two-site arm whose condition reads the ARG AND the STATE together folds
 pass	a two-site arm over a HEAP STATE with a body free-var and a second state-reading op folds
 pass	a two-site arm with HEAP resume values (empty vs two-element list) folds

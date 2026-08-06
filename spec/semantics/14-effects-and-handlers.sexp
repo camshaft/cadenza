@@ -8475,6 +8475,69 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 2536 Int64)))
 
+(case "a two-site arm over a STRING state (concat on pass, hold on fail) with a trailing length reader"
+  (doc    "The string-accumulator idiom through the refold: the pass branch grows the state by
+           `String.concat s \\\"x\\\"`, the fail branch holds, and a trailing single-site `len` op reads
+           `String.byte-len` (served under the arm-shape rule — trailing single-site after multi-site
+           performs). tag 20 → 20 (s \\\"x\\\"), tag 5 → 0, tag 30 → 30 (s \\\"xx\\\"), len → 2 →
+           20 + 0 + 30 + 200 = 250. Completes the state-representation matrix's string face.")
+  (input  (do
+            (effect St (op tag (-> Int64 Int64)) (op len (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St ""
+                ((tag (v) s (if (> v 10) (resume v (String.concat s "x")) (resume 0 s)))
+                 (len (u) s (resume (String.byte-len s) s)))
+                (+ (St.tag 20) (+ (St.tag n) (+ (St.tag 30) (* 100 (St.len)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 250 Int64)))
+
+(case "a two-site arm over a BYTES state (bin-built seed, concat growth) with a trailing size reader"
+  (doc    "The binary-accumulator twin of the string face above: the seed is `(bin (u8 0))` (one byte),
+           the pass branch appends `(bin (u8 (UInt8.wrap v)))` via `Bytes.concat`, and a trailing
+           single-site `size` reads `Bytes.len`. feed 20 → 20 (2 bytes), feed 5 → 0, feed 30 → 30
+           (3 bytes), size → 3 → 20 + 0 + 30 + 300 = 350. Composes the bin-construction idiom with
+           the refold + the trailing-single-site rule.")
+  (input  (do
+            (effect St (op feed (-> Int64 Int64)) (op size (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St (bin (u8 0))
+                ((feed (v) s (if (> v 10) (resume v (Bytes.concat s (bin (u8 (UInt8.wrap v))))) (resume 0 s)))
+                 (size (u) s (resume (Bytes.len s) s)))
+                (+ (St.feed 20) (+ (St.feed n) (+ (St.feed 30) (* 100 (St.size)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 350 Int64)))
+
+(case "a SET state dedup accumulator — the condition PROBES the state, the pass branch inserts"
+  (doc    "Three rule faces in one realistic handler: the branch condition READS the heap state
+           (`Set.contains s v` — a membership probe), the pass branch advances it (`Set.insert`), and
+           a trailing single-site `card` reads the cardinality. add 7 → new (7, {7}), add 3 → new
+           (3, {7 3}), add 7 → DUP (0, held), card → 2 → 7 + 3 + 0 + 200 = 210. The seen-set dedup
+           idiom whole; a re-served insert or a stale membership read breaks the checksum.")
+  (input  (do
+            (effect St (op add (-> Int64 Int64)) (op card (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St (Set.of (list))
+                ((add (v) s (if (Set.contains s v) (resume 0 s) (resume v (Set.insert s v))))
+                 (card (u) s (resume (Set.len s) s)))
+                (+ (St.add 7) (+ (St.add n) (+ (St.add 7) (* 100 (St.card)))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 210 Int64)))
+
+(case "a multi-site arm's resume value routes through a pure helper call"
+  (doc    "The pass branch's resume VALUE is `(triple v)` — a named pure helper call — rather than an
+           inline expression: sift 20 → 60 (s 1), sift 5 → 0, sift 30 → 90 (s 2) → 150. Pins that the
+           refold's branch-value rebuild tolerates a function call in the value slot (the helper is
+           effect-free; its call folds as opaque pure computation inside the arm).")
+  (input  (do
+            (effect St (op sift (-> Int64 Int64)))
+            (def (triple (: x Int64)) (* x 3))
+            (def (main (: n Int64))
+              (handle St 0
+                ((sift (v) s (if (> v 10) (resume (triple v) (+ s 1)) (resume 0 s))))
+                (+ (St.sift 20) (+ (St.sift n) (St.sift 30)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 150 Int64)))
+
 (case "a RECORD handler state — the arm projects one field and rebuilds the record"
   (doc    "Record-typed handler state (the state-family pins cover scalar/sum/collection/closure; this
            adds the product): the arm answers with a projection (`(. s count)`) and advances by
