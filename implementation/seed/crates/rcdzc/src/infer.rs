@@ -539,7 +539,9 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
             // types (v-iterators' take-while, the bare-nullary-leaf-on-one-path family). Biasing the join
             // toward the rigid element keeps the result tied. Only reorders the two operands (still a
             // `join`, same result set); a non-sum / no-rigid / equal-var join is byte-identical.
-            rigid_biased_join(db, &then_ty, &else_ty)
+            let ty = rigid_biased_join(db, &then_ty, &else_ty);
+            ground_open_var_arms_to_collection(db, &[then_, else_], &ty);
+            ty
         }
         // A boolean connective is a Bool. Reading the operands' types is the backward demand; the
         // operands-are-Bool CHECK is `type_errors`' job (this fills the value column).
@@ -575,6 +577,8 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
                 let bt = type_of(db, *body);
                 ty = ty.join(&bt);
             }
+            let bodies: Vec<StructId> = arms.iter().map(|(_, b)| *b).collect();
+            ground_open_var_arms_to_collection(db, &bodies, &ty);
             ty
         }
         // `nan` — the canonical NaN Float VALUE (a bare prim naming a value). Types as `Ty::Float` (a
@@ -705,6 +709,54 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
                 let pt = type_of(db, crate::eval::param_name_occ(db, p));
                 Ty::Fn(Box::new(pt), Box::new(acc))
             })
+        }
+    }
+}
+
+/// GROUND an open-`Ty::Var` control-flow-JOIN arm body to a DETERMINED-COLLECTION join type — the empty-
+/// collection-in-a-match/if-fallback miscompile fix (breaker ms13 family). When one arm body of a `match`
+/// (or branch of an `if`) types as a bare `Ty::Var` (e.g. the `Some ys` arm binding a never-populated
+/// `Map.empty`'s value var `?v`) while a SIBLING arm supplies a determined collection (the empty `(list)`
+/// fallback grounds to `(List Any)`, or a `(List Int64)` sibling), the `join` already yields the determined
+/// collection at the MATCH NODE (`(Var, t) => t`), and the let-binder + downstream use read that grounded
+/// type. But the per-ARM emit reads each arm body's OWN `type_of` — and a bare `Ty::Var` has NO machine
+/// valtype (`lir::valtype_of(Ty::Var) = None`) while the join is a collection HANDLE (i32), so the Var-arm
+/// emits a scalar where the binder demands a handle → INVALID WASM ("expected i32, found i64") + rust E0308.
+/// (Confirmed: the join node IS already `(List Any)`; the sole gap is the ungrounded ARM node — RUN-probed
+/// ms13/mG on trunk 0e12d9bac.) GROUND each such arm's node type to the join, so the arm emits the same
+/// collection handle as its siblings — the fix gets the program COMPILING (operator's steer), not a decline.
+///
+/// NARROW + SAFE: fires ONLY when (a) the join `ty` is a determined collection — `List`/`Set`/`Map` whose
+/// element(s) are NOT themselves `Var`/`Any` (a genuinely-solved element, so the grounding is to a real
+/// machine type, never one guess feeding another); AND (b) an arm body's own `type_of` applies to a bare
+/// `Ty::Var`. It writes the arm NODE's memo directly (the type column), so the emit-time per-arm read sees
+/// the grounded type. It does NOT run while a SCHEME solve is in flight (`solving_schemes` non-empty) — a
+/// provisional mid-fixpoint Var must stay unfrozen to re-ground cleanly, exactly as the `type_of` memo guard
+/// skips a re-entrant nested-`Any`. A non-collection join, or no Var arm, is a no-op (byte-identical).
+fn ground_open_var_arms_to_collection(db: &mut Db, bodies: &[StructId], ty: &Ty) {
+    // (a) The join must be a determined collection — a solved element, not a hole. Grounding an arm to a
+    // `(List Any)`/`(List ?0)` would just move the hole into the arm (still no valtype); require a real
+    // element so the arm gets a genuine machine type. `(List Any)` from a lone empty `(list)` is a valid
+    // TARGET here though — it emits as an i32 handle (ej1c-proven) — so admit an `Any` ELEMENT for a list/
+    // set (the container is the handle; the element type does not change the i32 slot), but a bare-`Var`
+    // element (undetermined container) is not a grounding source.
+    let is_ground_collection = match ty {
+        Ty::List(e) | Ty::Set(e) => !matches!(**e, Ty::Var(_)),
+        Ty::Map(k, v) => !matches!(**k, Ty::Var(_)) && !matches!(**v, Ty::Var(_)),
+        _ => false,
+    };
+    if !is_ground_collection {
+        return;
+    }
+    // (b) A provisional mid-scheme-fixpoint Var must not be frozen — it re-grounds on a later clean demand
+    // (the same discipline the `type_of` memo guard applies to a re-entrant nested-`Any`). Only ground when
+    // no scheme solve is on the stack.
+    if !db.solving_schemes.is_empty() {
+        return;
+    }
+    for &body in bodies {
+        if matches!(type_of(db, body), Ty::Var(_)) {
+            db.types.fill(body, ty.clone());
         }
     }
 }
