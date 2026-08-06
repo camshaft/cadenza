@@ -3052,6 +3052,170 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 25.0 Float64)))
 
+(case "the ARM decodes a Bytes op argument with a bin pattern and resumes a parsed field"
+  (doc    "The arm as the DECODE site (the bin×effects pins put the codec in the body): a body-built
+           frame crosses the op argument and the ARM runs the `(bin (u8 tag) (u16 val))` match —
+           1000·7 + 500 → 7500. Binary parsing composes with dispatch in arm position.")
+  (input  (do
+            (effect Codec (op parse (-> Bytes Int64)))
+            (def (main (: n Int64))
+              (handle Codec 0
+                ((parse (frame) s
+                  (match frame
+                    ((bin (u8 tag) (u16 val))
+                      (resume (+ (* 1000 tag) val) s))
+                    (_other (resume -1 s)))))
+                (Codec.parse (bin (u8 (UInt8.wrap 7)) (u16 (UInt16.wrap (* n 100)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 7500 Int64)))
+
+(case "the ARM ENCODES its scalar op argument into framed Bytes and resumes them — body decodes"
+  (doc    "The inverse arm-codec direction: the arm bin-ENCODES its scalar argument into a framed
+           payload, resumes it, and the BODY decodes — 1000·9 + 150 → 9150. Round-trip with the
+           encode inside the arm and the decode outside.")
+  (input  (do
+            (effect Codec (op frame (-> Int64 Bytes)))
+            (def (main (: n Int64))
+              (handle Codec 0
+                ((frame (v) s (resume (bin (u8 (UInt8.wrap 9)) (u16 (UInt16.wrap (* v 3)))) s)))
+                (match (Codec.frame (* n 10))
+                  ((bin (u8 tag) (u16 val)) (+ (* 1000 tag) val))
+                  (_other -1))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 9150 Int64)))
+
+(case "a Bytes-to-Bytes transformer op — the arm frames the payload it received and the body re-reads"
+  (doc    "The byte-rope transformer face (hb pins cover List/Map transformers): the arm
+           length-prefixes the frame it received via `Bytes.concat` of a fresh bin over the crossed
+           payload — a NON-FLAT byte-rope result — and the body re-reads prefix + first payload byte:
+           10000·3 + 100·2 + 40 → 30240.")
+  (input  (do
+            (effect Codec (op wrap (-> Bytes Bytes)))
+            (def (main (: n Int64))
+              (handle Codec 0
+                ((wrap (b) s (resume (Bytes.concat (bin (u8 (UInt8.wrap (Bytes.len b)))) b) s)))
+                (let ((out (Codec.wrap (bin (u8 (UInt8.wrap (* n 8))) (u8 (UInt8.wrap 3))))))
+                  (+ (* 10000 (Bytes.len out))
+                     (+ (* 100 (match (Bytes.at out 0) ((Some h) h) ((None _u) -1)))
+                        (match (Bytes.at out 1) ((Some p) p) ((None _u) -1)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 30240 Int64)))
+
+(case "a String-to-String transformer op — a rope argument crosses in, a wrapped rope crosses back"
+  (doc    "The text transformer face: a concat-built rope ARGUMENT crosses in, the arm wraps it in
+           brackets via nested concats (another rope), and the result crosses back — byte-len
+           \\\"[abcde]\\\" → 7. Rope structure survives both marshal directions of one dispatch.")
+  (input  (do
+            (effect Fmt (op brack (-> String String)))
+            (def (main (: n Int64))
+              (handle Fmt 0
+                ((brack (t) s (resume (String.concat "[" (String.concat t "]")) s)))
+                (String.byte-len (Fmt.brack (String.concat "ab" (if (> n 0) "cde" "z"))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 7 Int64)))
+
+(case "an abortive arm READS the heap LIST op argument it was handed — the payload survives the abort"
+  (doc    "The abort×heap pins cover arm-BUILT lists and heap STATE reads; an abortive arm CONSUMING
+           its heap op-argument payload was unpinned. The crossed list must stay live on the abort
+           path — 100·3 + 42 → 342, plus the outer 1000; the discarded continuation's 999 never
+           adds → 1342.")
+  (input  (do
+            (effect Bail (op stop (-> (List Int64) Int64)))
+            (def (main (: n Int64))
+              (+ 1000
+                 (handle Bail 0
+                   ((stop (xs) s (+ (* 100 (List.len xs))
+                                    (match (List.at xs 1) ((Some v) v) ((None _u) -1)))))
+                   (+ 999 (Bail.stop (list n 42 7))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 1342 Int64)))
+
+(case "an abortive arm returns a MAP built FROM its heap op argument as the handle's value"
+  (doc    "Heap-in via the op argument AND heap-out via the abort branch, one arm: the abortive arm
+           folds its list argument into a fresh Map that becomes the handle's value — {sum: 35},
+           10·1 + 35 → 45. Both heap directions on the abort path.")
+  (input  (do
+            (effect Bail (op stop (-> (List Int64) (Map String Int64))))
+            (def (main (: n Int64))
+              (let ((m (handle Bail 0
+                         ((stop (xs) s (Map.insert Map.empty "sum"
+                                          (+ (match (List.at xs 0) ((Some a) a) ((None _u) 0))
+                                             (match (List.at xs 1) ((Some b) b) ((None _u) 0))))))
+                         (do (Bail.stop (list n 30)) Map.empty))))
+                (+ (* 10 (Map.len m))
+                   (match (Map.lookup m "sum") ((Some v) v) ((None _u) -1)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 45 Int64)))
+
+(case "200 recursive dispatches each crossing a heap LIST argument — the marshal at depth"
+  (doc    "The depth axis of heap-argument crossings (existing depth pins carry scalars): 200
+           iterations each build a fresh two-element list, cross it, and the arm folds it — the
+           per-dispatch marshal alloc/free churn must stay exact: Σ(i + 1) for i in 1..200 →
+           20300.")
+  (input  (do
+            (effect St (op scan (-> (List Int64) Int64)))
+            (def (loop (: i Int64) (: acc Int64))
+              (if (> i 200) acc
+                (loop (+ i 1) (+ acc (St.scan (list i 1))))))
+            (def (main (: n Int64))
+              (handle St 0
+                ((scan (xs) s
+                  (resume (+ (match (List.at xs 0) ((Some a) a) ((None _u) 0))
+                             (match (List.at xs 1) ((Some b) b) ((None _u) 0)))
+                          s)))
+                (loop 1 0)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 20300 Int64)))
+
+(case "a handler state GROWS a list across 100 dispatches — the accumulated spine reads back intact"
+  (doc    "The growing-spine RC discipline across suspensions: each dispatch pushes onto the list
+           state and resumes the length BEFORE its push, so the checksum verifies every intermediate
+           spine — 100·Σ(0..99) → 495000, not just the final length.")
+  (input  (do
+            (effect Log (op note (-> Int64 Int64)))
+            (def (loop (: i Int64) (: acc Int64))
+              (if (> i 100) acc
+                (loop (+ i 1) (+ acc (Log.note i)))))
+            (def (main (: n Int64))
+              (handle Log (list)
+                ((note (v) s (resume (List.len s) (List.push s v))))
+                (+ (* 100 (loop 1 0))
+                   0)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 495000 Int64)))
+
+(case "a Bytes.slice VIEW crosses as op ARGUMENT — the arm reads through the window it was handed"
+  (doc    "A body-built slice VIEW (not a copy) crossing INTO a dispatch (the existing view pins put
+           the slice in the resume value or slice the arm's own param): the arm reads len + both
+           bytes through the window — 100·2 + 20 + 30 → 250. The view's backing buffer must stay
+           live through the marshal.")
+  (input  (do
+            (effect St (op sum2 (-> Bytes Int64)))
+            (def (main (: n Int64))
+              (handle St 0
+                ((sum2 (w) s (resume (+ (* 100 (Bytes.len w))
+                                        (+ (match (Bytes.at w 0) ((Some a) a) ((None _u) -1))
+                                           (match (Bytes.at w 1) ((Some b) b) ((None _u) -1))))
+                             s)))
+                (match (Bytes.slice (Bytes.of (list 9 20 30 8)) 1 2)
+                  ((Some w) (St.sum2 w))
+                  ((None _u) -999))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 250 Int64)))
+
+(case "a String.slice VIEW built in the ARM crosses back through resume — the body measures it"
+  (doc    "The arm-built STRING view crossing OUT: the arm slices the rope argument it received
+           (start 1, end 4 → \\\"bcd\\\") and resumes the window — byte-len 3. An arm-created view
+           over a crossed payload must survive the return marshal.")
+  (input  (do
+            (effect St (op mid (-> String String)))
+            (def (main (: n Int64))
+              (handle St 0
+                ((mid (t) s (resume (match (String.slice t 1 4) ((Some w) w) ((None _u) "?")) s)))
+                (String.byte-len (St.mid (String.concat "ab" "cdef")))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 3 Int64)))
+
 ; ============ Guarded match × effects (breaker FINDING, ag5 → fixed #2333). A guarded match on a
 ; perform-result scrutinee whose FALLBACK arm also performs used to leak the fold-synthesized #seed
 ; binder as a false CDZ0101: the guard desugar's arm-body copy reparented a reused (shared) body
