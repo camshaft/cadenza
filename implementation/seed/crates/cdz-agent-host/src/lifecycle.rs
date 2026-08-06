@@ -22,9 +22,10 @@
 //! [`AgentHost::spawn_child_with_nonce`], recording the parent→child edge). All RECORD a [`LifecycleOp`] the
 //! loop applies after deliver. Spawn is distinct: it takes no peer `target`, RETURNS the child's SessionId
 //! synchronously (pre-computed via [`Session::derive_genesis_hash`](cdz_kernel::kernel::Session::derive_genesis_hash)),
-//! and the loop registers the child with the SAME nonce so the returned id matches. (The loop-apply
-//! factory-resolve — `reducer_hash` → a live reducer — is the next slice; the executor half + the
-//! pre-computed-id contract land here.)
+//! and the loop registers the child with the SAME nonce so the returned id matches. The loop-apply
+//! MATERIALIZES the child's reducer from `reducer_hash` via the session factory
+//! ([`SessionFactory::build_spawned`](crate::SessionFactory)) then registers it — the full spawn path
+//! (executor pre-compute → loop factory-resolve + register) is wired end to end.
 
 use crate::host::SessionId;
 use cdz_kernel::effect::{effect_ct, EffectRequest};
