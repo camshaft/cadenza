@@ -1109,6 +1109,7 @@ pass	a below-len guard lets List.at shed its own bounds check, yet an out-of-ran
 pass	a beyond-i64 constant BigInt is an operand of a runtime bigint op
 pass	a big literal is NOT grounded to a narrow width across a COMPARISON boundary (arith-spine climb stops at `<`)
 pass	a big-endian runtime construction read back through an le pattern crosses the byte order
+pass	a bin PATTERN destructures a perform-result Bytes (the wire round-trip through a handler)
 pass	a bin arm whose fixed-width segment overruns the input falls through
 pass	a bin pattern binds an integer read from a fixed-width segment
 pass	a bin pattern must consume the whole scrutinee or it does not match
@@ -1119,6 +1120,7 @@ pass	a bin pattern over an Int64 scrutinee is a type error
 pass	a bin tag-dispatch over a RUNTIME-START slice reads the re-based window per call
 pass	a bin-arm guard cond that traps at the decoded binder TRAPS the match — it does not fall through
 pass	a bin-decoded frame body drives per-byte performs through a recursive walk
+pass	a bin-pattern arm binds a parsed byte and PERFORMS again with it (parse-then-act)
 pass	a binary form whose bit-fields do not close a byte is ill-formed
 pass	a binary integer literal
 pass	a binary literal with digit separators
@@ -4719,6 +4721,7 @@ pass	eval of a quoted conditional takes the branch its boolean literal selects
 pass	eval of a quoted disjunction short-circuits to true
 pass	eval of a quoted division folds through the compile-time evaluator
 pass	eval of a quoted equality yields the boolean value directly
+pass	eval of a quoted expression folds INSIDE a handle body beside performs
 pass	eval of a quoted float executes it to the float value
 pass	eval of a quoted float feeds ordinary float arithmetic
 pass	eval of a quoted integer literal grounds to Int64 (BigInt is AST storage, not eval width)
