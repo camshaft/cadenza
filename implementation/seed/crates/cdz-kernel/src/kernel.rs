@@ -284,7 +284,12 @@ impl Session {
     /// guards (a `Session` only exists via `genesis()`/`replay()`, both of which guarantee it).
     pub fn genesis_hash(&self) -> Hash {
         match self.log.first() {
-            Some(e @ Event { body: EventBody::Genesis { .. }, .. }) => e.hash(),
+            Some(
+                e @ Event {
+                    body: EventBody::Genesis { .. },
+                    ..
+                },
+            ) => e.hash(),
             _ => panic!(
                 "cdz-kernel invariant violated: session log's first event is not Genesis \
                  (a Session is only constructed via genesis()/replay(), both of which guarantee it)"
@@ -3107,13 +3112,29 @@ mod monotonic_now_tests {
         );
     }
 
-    #[test]
-    fn genesis_hash_is_the_first_event_hash_stable_across_replay_and_reducer_derived_today() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn genesis_hash_is_the_first_event_hash_stable_across_replay_and_reducer_derived_today() {
         // genesis_hash() is the host's intended SessionId (operator ruling: SessionId = genesis-hash).
-        // Pin three properties that name-addressing-as-identity-map depends on:
-        let s = Session::genesis(Hash::of(b"reducer-A"));
+        // Pin the properties name-addressing-as-identity-map depends on. Drive a REAL fold so the
+        // "stable across replay" assert exercises an actual log with post-genesis events (not a bare
+        // genesis) — otherwise it degenerates to determinism-of-construction (github-liaison/#2362).
+        let mut s = Session::genesis(Hash::of(b"reducer-A"));
+        s.deliver(
+            inbound(),
+            None,
+            &NowReducer,
+            &now_cap(),
+            &mut StuckClock(1000),
+        )
+        .await
+        .unwrap();
+        assert!(
+            s.log().len() > 1,
+            "the session must carry post-genesis events so replay-stability is a NON-vacuous claim"
+        );
 
-        // (1) It IS log[0]'s Event::hash — the canonical durable head, not the reducer body hash.
+        // (1) It IS log[0]'s Event::hash — the canonical durable head, not the reducer body hash. It stays
+        // the genesis head even after folds appended later events (identity is anchored at log[0]).
         assert_eq!(
             s.genesis_hash(),
             s.log().first().expect("genesis has a head event").hash(),
@@ -3126,12 +3147,17 @@ mod monotonic_now_tests {
             Hash::of(b"reducer-A"),
             "genesis_hash hashes the whole genesis event, so it must differ from the bare reducer hash"
         );
-        // (3) STABLE across replay: a session recovered/rebuilt from the same log has the same identity.
-        let replayed = Session::genesis(Hash::of(b"reducer-A"));
+        // (3) STABLE across a REAL replay: reconstruct the session from its OWN persisted log via
+        // Session::replay (folding each event back through the reducer) and assert the identity survives.
+        // This is the genuine round-trip — `replayed` is built from s.log(), not a fresh genesis.
+        let replayed = Session::replay(s.log().to_vec(), &NowReducer)
+            .await
+            .expect("replay of a well-formed log succeeds");
         assert_eq!(
             s.genesis_hash(),
             replayed.genesis_hash(),
-            "genesis_hash is a pure function of the frozen genesis head — replay-stable"
+            "genesis_hash is anchored at the frozen genesis head, so it survives a replay round-trip \
+             (the durable identity a recovered session addresses by)"
         );
 
         // ⚠️ TODAY-ONLY property + the operator's uniqueness caveat, pinned so a future genesis-entropy
