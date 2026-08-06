@@ -243,6 +243,16 @@ pub enum EventBody {
     /// host/Cedar concern (I6, `ResourcePredicate::DescendantOf`); this event just records the durable
     /// fact + who did it.
     Terminated { by: Hash, reason: String },
+
+    /// **DURABLE parent→child edge (§lifecycle I2 / §6 supervision).** Recorded in the PARENT's log when it
+    /// SPAWNS a child (the `lifecycle/spawn` effect), naming the child by its genesis hash (= the child's
+    /// SessionId). These events form the supervision TREE: a controller's transitive `Spawned` descendants
+    /// are exactly what its lifecycle authority extends over (I6's `ResourcePredicate::DescendantOf` walks
+    /// them) and what a terminate/failure cascade follows (§8). The OTHER half of the relation is the
+    /// child's own genesis `parent` field (I2a) — the child-id self-certifies its parent, this edge lets
+    /// the parent enumerate its children. Purely a recorded fact (like `FoldFailed`): it is NOT folded
+    /// through the reducer (see `observable`) — a supervisor reads it from the log.
+    Spawned { child_hash: Hash },
 }
 
 /// How a session CLOSED — the structured terminal outcome a supervisor acts on (§6 supervision, operator
@@ -502,6 +512,9 @@ fn decode_body(c: &mut Cursor) -> Result<EventBody, DecodeError> {
             by: Hash::from_bytes(c.hash()?),
             reason: c.string()?,
         },
+        10 => EventBody::Spawned {
+            child_hash: Hash::from_bytes(c.hash()?),
+        },
         t => {
             return Err(DecodeError::BadTag {
                 field: "body",
@@ -693,6 +706,10 @@ fn encode_body(body: &EventBody, out: &mut Vec<u8>) {
             out.push(9);
             out.extend_from_slice(by.as_bytes());
             encode_str(reason, out);
+        }
+        EventBody::Spawned { child_hash } => {
+            out.push(10);
+            out.extend_from_slice(child_hash.as_bytes());
         }
     }
 }
@@ -1156,8 +1173,18 @@ mod tests {
                     caused_event: Hash::of(b"the event whose fold failed"),
                 },
             },
+            // Spawned PRECEDES Terminated (seq 14 < 15): these vectors round-trip per-event independently,
+            // but ordering the spawn-edge before the terminal marker avoids implying an impossible history
+            // (a spawn AFTER the terminal tail — the "Terminated is the log tail" invariant forbids it).
             Event {
                 seq: 14,
+                cause: Some(Hash::of(b"spawn-cause")),
+                body: EventBody::Spawned {
+                    child_hash: Hash::of(b"child-genesis"),
+                },
+            },
+            Event {
+                seq: 15,
                 cause: Some(Hash::of(b"terminate-cause")),
                 body: EventBody::Terminated {
                     by: Hash::of(b"controller-session"),

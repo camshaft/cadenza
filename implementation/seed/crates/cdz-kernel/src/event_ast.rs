@@ -650,6 +650,11 @@ fn body_form(b: &mut Builder, body: &EventBody) -> StructId {
             let r = str_leaf(b, reason);
             b.list(vec![head, byf, r])
         }
+        EventBody::Spawned { child_hash } => {
+            let head = b.name("spawned");
+            let ch = hash_form(b, child_hash);
+            b.list(vec![head, ch])
+        }
     }
 }
 
@@ -972,6 +977,14 @@ fn read_body(a: &Arenas, id: StructId) -> Result<EventBody, EventAstError> {
                 reason: read_str(a, *r)?,
             }
         }
+        "spawned" => {
+            let [ch] = form(a, id, "spawned")? else {
+                return Err(shape("spawned arity"));
+            };
+            EventBody::Spawned {
+                child_hash: read_hash(a, *ch)?,
+            }
+        }
         _ => return Err(shape("unknown event body tag")),
     })
 }
@@ -1149,8 +1162,17 @@ mod tests {
                     caused_event: Hash::of(b"the event whose fold failed"),
                 },
             },
+            // Spawned PRECEDES Terminated (seq 15 < 16): per-event round-trip is order-independent, but this
+            // avoids implying a spawn AFTER the terminal tail (which the "Terminated is the log tail" invariant forbids).
             Event {
                 seq: 15,
+                cause: Some(Hash::of(b"spawn-cause")),
+                body: EventBody::Spawned {
+                    child_hash: Hash::of(b"child-genesis"),
+                },
+            },
+            Event {
+                seq: 16,
                 cause: Some(Hash::of(b"terminate-cause")),
                 body: EventBody::Terminated {
                     by: Hash::of(b"controller-session"),

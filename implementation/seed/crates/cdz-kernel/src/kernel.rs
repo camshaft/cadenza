@@ -537,6 +537,36 @@ impl Session {
             .await)
     }
 
+    /// RECORD a parent→child spawn edge (§lifecycle I2 / §6): append an [`EventBody::Spawned`] naming the
+    /// child by its genesis hash into THIS (the parent's) log — the fold-free public seam the host's
+    /// `lifecycle/spawn` executor drives AFTER it instantiates the child (so the durable tree edge is on
+    /// the parent's log). Like [`terminate`](Self::terminate) it appends without folding (a recorded fact,
+    /// not a reducer input) + persists through the store; cause-linked to the current tip. Returns the
+    /// edge event's hash. REFUSED on a terminated parent ([`KernelError::FoldRefused`]) — a dead session
+    /// can't spawn.
+    pub async fn record_spawn(&mut self, child_hash: Hash) -> Result<Hash, KernelError> {
+        if self.is_terminated() {
+            return Err(KernelError::FoldRefused);
+        }
+        let cause = Some(self.tip_hash());
+        Ok(self.append(EventBody::Spawned { child_hash }, cause).await)
+    }
+
+    /// This session's DIRECT children — the child genesis hashes from its [`EventBody::Spawned`] edges,
+    /// in spawn order (§lifecycle I2 / §6). The supervision authority (I6 `DescendantOf`) + cascade (§8)
+    /// build on this: a controller's TRANSITIVE descendants are the closure of this over the child
+    /// sessions' own logs (each session records only its OWN direct spawns; the tree is assembled by the
+    /// host walking session logs). Reads the durable log, so it's replay-stable.
+    pub fn spawned_children(&self) -> Vec<Hash> {
+        self.log
+            .iter()
+            .filter_map(|e| match &e.body {
+                EventBody::Spawned { child_hash } => Some(*child_hash),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Genesis-seed the capability manifest (host-capability-discovery I5): fold a synthetic
     /// `control/capabilities` answer so the guest knows its capabilities without issuing a query. Synthesizes
     /// a `control/capabilities` [`Effect`] and runs it through the same drive path as a guest-issued query
@@ -1582,6 +1612,7 @@ fn event_body_name(body: &EventBody) -> &'static str {
         EventBody::AuthzDenied { .. } => "AuthzDenied",
         EventBody::Closed { .. } => "Closed",
         EventBody::Terminated { .. } => "Terminated",
+        EventBody::Spawned { .. } => "Spawned",
     }
 }
 
@@ -1647,11 +1678,14 @@ fn observable(body: &EventBody) -> bool {
         // Terminated is NOT folded either — it's a terminal marker; a terminated session refuses all
         // further folds (the deliver-time FoldRefused guard), so its own marker is never handed to a
         // reducer (§lifecycle I1).
+        // Spawned is a recorded parent→child edge (§I2, supervision-tree substrate), NOT a fold input —
+        // like FoldFailed/Terminated, a supervisor reads it from the log; it's never handed to the reducer.
         EventBody::Genesis { .. }
         | EventBody::Dispatched { .. }
         | EventBody::TimerArmed { .. }
         | EventBody::FoldFailed { .. }
-        | EventBody::Terminated { .. } => false,
+        | EventBody::Terminated { .. }
+        | EventBody::Spawned { .. } => false,
     }
 }
 
@@ -3700,6 +3734,8 @@ mod lifecycle_tests {
         .unwrap();
         let len_before = s.log().len();
         assert!(!s.is_terminated());
+        // Capture the prior tip so we can ASSERT the marker's causal edge points at it (not just claim it).
+        let prior_tip = s.log().last().expect("a tip before terminate").hash();
 
         // terminate() appends the marker (log grows by exactly 1) + returns its hash; the reducer did NOT
         // run on it (fold-free) — the marker is the tail, cause-linked to the prior tip.
@@ -3723,6 +3759,13 @@ mod lifecycle_tests {
         assert!(
             matches!(&tail.body, EventBody::Terminated { by: b, reason } if *b == by && reason == "operator kill"),
             "the tail is the Terminated marker carrying by + reason"
+        );
+        // ASSERT the causal edge (github-liaison #2395 review: the doc claimed cause-linking but the test
+        // never checked it — test-vacuity). The marker's cause MUST be the prior tip (§5 causal DAG).
+        assert_eq!(
+            tail.cause,
+            Some(prior_tip),
+            "the Terminated marker is cause-linked to the prior tip (causal-DAG edge)"
         );
 
         // A terminated session refuses folds (the I1 guard) through this seam too.
@@ -3748,6 +3791,80 @@ mod lifecycle_tests {
             s.log().len(),
             len_after,
             "a rejected second terminate appends nothing"
+        );
+    }
+
+    // §lifecycle I2 (Spawned edge): record_spawn appends a parent→child edge fold-free + spawned_children
+    // reads them back in order; the edge is cause-linked + replay-stable; a terminated parent can't spawn.
+    #[tokio::test(flavor = "current_thread")]
+    async fn record_spawn_appends_parent_child_edges_readable_and_replay_stable() {
+        let mut parent = Session::genesis(Hash::of(b"parent-reducer"), Hash::of(b"parent-nonce"));
+        parent
+            .deliver(
+                inbound(),
+                None,
+                &TimerArmingReducer,
+                &timer_cap(),
+                &mut RecordingExecutor::new(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            parent.spawned_children().is_empty(),
+            "no children before any spawn"
+        );
+
+        // Record two spawn edges (fold-free): each appends exactly one Spawned event + returns its hash,
+        // cause-linked to the prior tip.
+        let child_a = Hash::of(b"child-a-genesis");
+        let child_b = Hash::of(b"child-b-genesis");
+        let len_before = parent.log().len();
+        let prior_tip = parent.log().last().expect("tip").hash();
+        let edge_a = parent.record_spawn(child_a).await.expect("record child A");
+        assert_eq!(
+            parent.log().len(),
+            len_before + 1,
+            "record_spawn appends exactly one event"
+        );
+        let tail_a = parent.log().last().expect("tail");
+        assert_eq!(
+            tail_a.hash(),
+            edge_a,
+            "record_spawn returns the edge event's hash"
+        );
+        assert_eq!(
+            tail_a.cause,
+            Some(prior_tip),
+            "the Spawned edge is cause-linked to the prior tip"
+        );
+        parent.record_spawn(child_b).await.expect("record child B");
+
+        // spawned_children reads both back, in spawn order — the durable parent→child tree edges.
+        assert_eq!(
+            parent.spawned_children(),
+            vec![child_a, child_b],
+            "spawned_children returns the child genesis hashes in spawn order"
+        );
+
+        // Replay-stable: a session recovered from the log has the same spawn edges.
+        let replayed = Session::replay(parent.log().to_vec(), &TimerArmingReducer)
+            .await
+            .expect("replay of a log with Spawned edges succeeds");
+        assert_eq!(
+            replayed.spawned_children(),
+            vec![child_a, child_b],
+            "spawn edges survive a replay round-trip (durable supervision tree)"
+        );
+
+        // A TERMINATED parent can't spawn — record_spawn is refused (a dead session has no live children).
+        parent
+            .terminate(Hash::of(b"controller"), "kill".to_string())
+            .await
+            .expect("terminate the parent");
+        let refused = parent.record_spawn(Hash::of(b"child-c-genesis")).await;
+        assert!(
+            matches!(refused, Err(KernelError::FoldRefused)),
+            "a terminated parent cannot record a spawn, got {refused:?}"
         );
     }
 }

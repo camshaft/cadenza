@@ -3530,6 +3530,9 @@ fn event_to_guest_inputs(body: &EventBody) -> (ContentType, Option<Vec<u8>>, Opt
         // session refuses all folds via the FoldRefused guard, and `observable()` excludes it) — map
         // defensively rather than panic.
         EventBody::Terminated { .. } => (synthetic("terminated"), None, None),
+        // Spawned is a recorded parent→child edge (§I2), never folded (observable()=false) — map
+        // defensively rather than panic.
+        EventBody::Spawned { .. } => (synthetic("spawned"), None, None),
     }
 }
 
