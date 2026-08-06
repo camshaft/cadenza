@@ -2062,6 +2062,81 @@
             (export main)))
   (output (: 21 Int64)))
 
+; ============ Guarded match × effects (breaker FINDING, ag5 → fixed #2333). A guarded match on a
+; perform-result scrutinee whose FALLBACK arm also performs used to leak the fold-synthesized #seed
+; binder as a false CDZ0101: the guard desugar's arm-body copy reparented a reused (shared) body
+; without the seed-lift let, stranding the reference. The fix pins reused guarded-match arm bodies
+; at desugar entry (and drops the blanket forget). These five pin the served class: the repro, the
+; guard-TRUE runtime path, both single-machinery controls, and the multi-guard chain. The composed
+; face — a guard FALLBACK containing a two-site multi-perform arm — is a separate machinery
+; composition that declines cleanly (guard-desugar copy × two-hole refold). ============
+
+(case "a guarded match on a perform-result scrutinee with a PERFORMING fallback arm folds"
+  (doc    "FINDING repro (ag5, fixed #2333): `(match (St.roll) ((guard v (> v 6)) …) (v (+ (* 10
+           (St.roll)) v)))` — the scrutinee is a perform result AND the fallback arm performs again.
+           This exact conjunct leaked `#seed` as a false CDZ0101 before the fix (either alone was
+           fine — the controls below). roll → 5 (state 5→8), guard 5>6 misses, fallback: 10·8 + 5 =
+           85.")
+  (input  (do
+            (effect St (op roll (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((roll (u) s (resume s (+ s 3))))
+                (match (St.roll)
+                  ((guard v (> v 6)) (* v 100))
+                  (v (+ (* 10 (St.roll)) v)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 85 Int64)))
+
+(case "the guard-TRUE path of the perform-scrutinee match (no fallback entry)"
+  (doc    "The same shape called with a guard-passing input: roll → 9 (state 9→12), 9 > 6 holds, so
+           the guarded arm answers 900 and the performing fallback is never entered. With the repro
+           above, pins BOTH runtime paths of the served shape — the fallback's perform must neither
+           fire on this path nor confuse the fold on the other.")
+  (input  (do
+            (effect St (op roll (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((roll (u) s (resume s (+ s 3))))
+                (match (St.roll)
+                  ((guard v (> v 6)) (* v 100))
+                  (v v))))
+            (export main)))
+  (call   main (: 9 Int64)) (output (: 900 Int64)))
+
+(case "a guard whose CONDITION itself performs (pure scrutinee) folds"
+  (doc    "The third position a perform can occupy in a guarded match: the GUARD CONDITION `(> (St.roll)
+           4)` — scrutinee (`n`, pure) and arm bodies effect-free. roll → 5 (once; the guard evaluates
+           only after its pattern matches), 5 > 4 holds → 5·100 = 500. Completes the position triple
+           with the scrutinee-perform and fallback-perform pins above.")
+  (input  (do
+            (effect St (op roll (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((roll (u) s (resume s (+ s 3))))
+                (match n
+                  ((guard v (> (St.roll) 4)) (* v 100))
+                  (v v))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 500 Int64)))
+
+(case "a MULTI-guard chain on a perform-result scrutinee with a performing fallback folds"
+  (doc    "The chain face of the fixed class: TWO guarded arms cascade over the perform-result
+           scrutinee before the performing fallback — the arm-body pinning must hold across every
+           reused body in the cascade, not just one. roll → 5, 5>20 misses, 5>6 misses, fallback:
+           10·8 + 5 = 85.")
+  (input  (do
+            (effect St (op roll (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((roll (u) s (resume s (+ s 3))))
+                (match (St.roll)
+                  ((guard v (> v 20)) (* v 1000))
+                  ((guard v (> v 6)) (* v 100))
+                  (v (+ (* 10 (St.roll)) v)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 85 Int64)))
+
 (case "a perform result LET-bound then fed to a bin segment builds Bytes under a handler"
   (doc    "bin × effects: a `bin` integer segment is a STRICT operand position (a perform INLINE in the
            segment is the not-yet-reducible strict-ctor boundary, like try operands), but the LET-BOUND
