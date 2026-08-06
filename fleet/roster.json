@@ -40,7 +40,6 @@
     { "name": "tracker", "role": "tracker", "model": "opus", "effort": "high", "interval": "15m" },
     { "name": "v-value-facts", "role": "vertical", "vertical": "value-facts", "area": "rcdzc", "model": "opus", "effort": "high", "interval": "30m" },
     { "name": "v-agent-harness-host", "role": "vertical", "vertical": "agent-harness-host", "area": "agent-harness", "model": "opus", "effort": "high", "interval": "10m" },
-    { "name": "v-nix", "role": "vertical", "vertical": "nix-flake-pipeline", "area": "xtask", "model": "opus", "effort": "high", "interval": "30m" },
-    { "name": "v-harness-bootstrap", "role": "vertical", "vertical": "harness-bootstrap", "area": "rcdzc", "model": "opus", "effort": "high", "interval": "30m" }
+    { "name": "v-nix", "role": "vertical", "vertical": "nix-flake-pipeline", "area": "xtask", "model": "opus", "effort": "high", "interval": "30m" }
   ]
 }
