@@ -112,6 +112,14 @@ pub struct HostedSession {
     reducer: Box<dyn Reducer>,
     authz: Box<dyn Authorize>,
     executor: CompositeExecutor,
+    /// SUSPENDED — a HOST-SCHEDULER bit (§lifecycle I4), NOT kernel/session state: when true the host stops
+    /// SCHEDULING this session's ticks (the loop holds its inbound instead of delivering; timers don't fire
+    /// for it), but the durable log + KV are UNTOUCHED — resume just re-enables scheduling and the held
+    /// inbound replays. Kept out of the kernel entirely (v-agent-harness refinement): "suspended" is a
+    /// transient scheduler state, not a durable session fact, so it doesn't touch the log or survive a
+    /// recovery (a recovered session starts schedulable — a supervisor re-suspends if it wants). Distinct
+    /// from TERMINATED ([`is_terminated`](Self::is_terminated)), which IS a durable kernel marker.
+    suspended: bool,
 }
 
 impl HostedSession {
@@ -141,6 +149,7 @@ impl HostedSession {
             reducer,
             authz,
             executor,
+            suspended: false,
         }
     }
 
@@ -167,6 +176,7 @@ impl HostedSession {
             reducer,
             authz,
             executor,
+            suspended: false,
         }
     }
 
@@ -397,6 +407,28 @@ impl HostedSession {
     /// (bounce an `Emit` as `delivery-failure`) from a live one, and to guard against re-driving a tombstone.
     pub fn is_terminated(&self) -> bool {
         self.session.is_terminated()
+    }
+
+    /// SUSPEND this session (§lifecycle I4) — set the host-scheduler `suspended` bit so the loop stops
+    /// scheduling its ticks (holds inbound, skips its timers). NO log/KV mutation (suspend is transient
+    /// scheduler state, not a durable fact). Idempotent: suspending an already-suspended session is a no-op.
+    /// A TERMINATED session can't be meaningfully suspended, but this doesn't guard it (terminate already
+    /// froze the log + the loop won't deliver to it); the host's `AgentHost::suspend` is the driven entry.
+    pub fn suspend(&mut self) {
+        self.suspended = true;
+    }
+
+    /// RESUME this session (§lifecycle I4) — clear the `suspended` bit so the loop schedules it again; any
+    /// inbound the loop held during suspension replays. NO log/KV mutation. Idempotent.
+    pub fn resume(&mut self) {
+        self.suspended = false;
+    }
+
+    /// Is this session SUSPENDED (host-scheduler bit, §lifecycle I4)? The loop checks this before delivering
+    /// an inbound / firing a timer — a suspended session's inbound is HELD (re-queued), not delivered or
+    /// dropped. Orthogonal to [`is_terminated`](Self::is_terminated) (a durable kernel marker).
+    pub fn is_suspended(&self) -> bool {
+        self.suspended
     }
 
     /// Record a durable parent→child EDGE on this (parent) session's log (§lifecycle I2b/I3): appends a
@@ -651,6 +683,39 @@ impl AgentHost {
     /// Is a session registered under this id?
     pub fn contains(&self, id: &SessionId) -> bool {
         self.sessions.contains_key(id)
+    }
+
+    /// SUSPEND a registered session by id (§lifecycle I4): flip its host-scheduler `suspended` bit so the
+    /// loop holds its inbound / skips its timers (no log mutation — suspend is transient scheduler state, so
+    /// this stays synchronous, unlike terminate which appends a durable marker). Returns `true` if the session
+    /// exists (suspended, or already was — idempotent), `false` if no such id. The `lifecycle/suspend`
+    /// executor drives this via the loop's apply-step (defer-to-loop, like terminate).
+    pub fn suspend(&mut self, id: &SessionId) -> bool {
+        match self.sessions.get_mut(id) {
+            Some(s) => {
+                s.suspend();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// RESUME a registered session by id (§lifecycle I4): clear its `suspended` bit so the loop schedules it
+    /// again (held inbound replays). Returns `true` if the session exists, `false` if absent. Idempotent.
+    pub fn resume(&mut self, id: &SessionId) -> bool {
+        match self.sessions.get_mut(id) {
+            Some(s) => {
+                s.resume();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Is the session `id` suspended (host-scheduler bit)? `false` for an absent id (nothing to hold). The
+    /// loop consults each session's [`HostedSession::is_suspended`] directly; this is the by-id convenience.
+    pub fn is_suspended(&self, id: &SessionId) -> bool {
+        self.sessions.get(id).is_some_and(|s| s.is_suspended())
     }
 
     /// Deliver an inbound event to the session `id`. `Ok(None)` means no such session (the caller can
@@ -1706,6 +1771,37 @@ mod tests {
             oneof_set(&host.descendant_set_of(&SessionId::new("ghost"))),
             Vec::<String>::new()
         );
+    }
+
+    #[test]
+    fn suspend_resume_flips_the_scheduler_bit_without_touching_the_log() {
+        // §lifecycle I4 mechanism: suspend/resume flip the host-scheduler bit (NOT a log mutation) +
+        // idempotent; a suspended session is NOT terminated (orthogonal). AgentHost by-id + HostedSession
+        // direct both work; absent id = false.
+        let mut host = AgentHost::new();
+        let id = SessionId::new("worker");
+        host.spawn(id.clone(), now_host());
+        assert!(!host.is_suspended(&id), "starts schedulable");
+
+        assert!(
+            host.suspend(&id),
+            "suspend a registered session returns true"
+        );
+        assert!(host.is_suspended(&id), "now suspended");
+        // A suspended session is NOT terminated (suspend is a scheduler bit, no durable marker).
+        assert!(!host.get(&id).unwrap().is_terminated());
+        // Idempotent: suspending again is still true, still suspended.
+        assert!(host.suspend(&id));
+        assert!(host.is_suspended(&id));
+
+        assert!(host.resume(&id), "resume returns true");
+        assert!(!host.is_suspended(&id), "resumed → schedulable again");
+        assert!(host.resume(&id), "resume is idempotent");
+
+        // Absent id: suspend/resume/is_suspended all report absence, no panic.
+        assert!(!host.suspend(&SessionId::new("ghost")));
+        assert!(!host.resume(&SessionId::new("ghost")));
+        assert!(!host.is_suspended(&SessionId::new("ghost")));
     }
 
     #[tokio::test]
