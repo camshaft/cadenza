@@ -110,7 +110,10 @@ async fn a_real_agent_is_gated_by_a_real_cedar_decision() {
         let reducer = PolicyProbe;
         let mut exec = CompositeExecutor::new()
             .with_effect(effect_ct::MODEL, Box::new(ModelExecutor::new(StubModel)));
-        let mut session = Session::genesis(Hash::of(b"cedar-permit-v1"), Hash::of(b"cedar-permit-v1-nonce"));
+        let mut session = Session::genesis(
+            Hash::of(b"cedar-permit-v1"),
+            Hash::of(b"cedar-permit-v1-nonce"),
+        );
         session
             .deliver(inbound("model-ok"), None, &reducer, &authz, &mut exec)
             .await
@@ -136,7 +139,8 @@ async fn a_real_agent_is_gated_by_a_real_cedar_decision() {
         // Http executor isn't even needed to prove the deny (the gate stops it first).
         let mut exec = CompositeExecutor::new()
             .with_effect(effect_ct::MODEL, Box::new(ModelExecutor::new(StubModel)));
-        let mut session = Session::genesis(Hash::of(b"cedar-deny-v1"), Hash::of(b"cedar-deny-v1-nonce"));
+        let mut session =
+            Session::genesis(Hash::of(b"cedar-deny-v1"), Hash::of(b"cedar-deny-v1-nonce"));
         session
             .deliver(inbound("http-imds"), None, &reducer, &authz, &mut exec)
             .await

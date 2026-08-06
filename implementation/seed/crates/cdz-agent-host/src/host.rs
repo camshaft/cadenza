@@ -1330,7 +1330,11 @@ mod tests {
         match out {
             Some(Ok(marker)) => {
                 // A real event hash was returned (not the zero/default) — the marker was appended.
-                assert_ne!(marker, Hash::of(b""), "terminate returns the marker event hash");
+                assert_ne!(
+                    marker,
+                    Hash::of(b""),
+                    "terminate returns the marker event hash"
+                );
             }
             other => panic!("expected Some(Ok(marker)) on a fresh terminate, got {other:?}"),
         }
@@ -1349,7 +1353,10 @@ mod tests {
         let out = host
             .terminate(&SessionId::new("ghost"), Hash::of(b"ctl"), "x".into())
             .await;
-        assert!(out.is_none(), "terminating an absent session is a None no-op");
+        assert!(
+            out.is_none(),
+            "terminating an absent session is a None no-op"
+        );
     }
 
     #[tokio::test]
