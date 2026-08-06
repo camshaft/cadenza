@@ -8412,6 +8412,44 @@ fn write_ci_dispatch(fleet: &Fleet, d: &CiDispatch) -> std::io::Result<()> {
 /// 3. `candidate_dispatch_argv` (push cand branch / gh pr create --base main / gh pr merge --squash --auto).
 /// 4. scrape the PR number, write the `CiDispatch` record, remove the scratch worktree.
 ///
+/// Targeted self-correction guidance for a stale-base cherry-pick-conflict reject, given the newline-
+/// separated conflicted paths (`git diff --name-only --diff-filter=U`). pr-sync ALREADY re-parents every
+/// MR onto current origin/main before dispatch, so a conflict here is a REAL textual overlap on a file
+/// that trunk rotated under the MR — NOT an "always rebase" issue. The cure is authoring-side, and it
+/// differs by which file conflicted (concierge 2026-08-06):
+///   - a `.gate-baseline*` conflict → the sender REWROTE/reordered the baseline; `merge=union` auto-merges
+///     APPENDS but not a rewrite. Fix: APPEND to the baseline (gate --save re-sorts + de-dupes anyway).
+///   - otherwise → same-file-region contention (often the sender's OWN rapid successive MRs on one file).
+///     Fix: batch them into one MR, or space them so each rebases onto the prior's landed version.
+///
+/// Pure so the message + the baseline-vs-other branch are unit-testable.
+fn stale_base_reject_guidance(conflicted_paths: &str) -> String {
+    let files: Vec<&str> = conflicted_paths
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    let hit_baseline = files.iter().any(|f| f.contains(".gate-baseline"));
+    let files_note = if files.is_empty() {
+        String::new()
+    } else {
+        format!(" Conflicted: {}.", files.join(", "))
+    };
+    // pr-sync already re-parents onto current origin/main, so re-sending the SAME ref just re-conflicts;
+    // the sender must sync + re-author to avoid the overlap, per the file-specific cure below.
+    let cure = if hit_baseline {
+        "This is a BASELINE conflict: you rewrote/reordered a `.gate-baseline*` file, which `merge=union` \
+         can't auto-merge (it only unions APPENDS). Fix: sync onto trunk + APPEND your new verdicts rather \
+         than rewriting the file (`gate --save` re-sorts + de-dupes on the next write anyway), then resend."
+    } else {
+        "This is a same-file-region conflict (a hot file rotated under your MR — often your OWN rapid \
+         successive MRs appending to the same region). Fix: sync onto trunk + re-author onto the current \
+         file; if you have several MRs touching this same file, batch them into one or space them so each \
+         rebases onto the prior's landed version, then resend."
+    };
+    format!("reject the sender stale-base.{files_note} {cure}")
+}
+
 /// Any step failing aborts + cleans up the scratch worktree; nothing partial is recorded.
 /// Returns `true` iff a candidate PR was actually opened + its ci-dispatch record written (a real new
 /// dispatch). Returns `false` on every non-dispatch path — the idempotency guard blocked it, `--execute`
@@ -8588,13 +8626,25 @@ fn publish_candidate(
         .args(["cherry-pick", "--allow-empty", &range])
         .output();
     if !matches!(pick, Ok(ref o) if o.status.success()) {
+        // Capture the conflicted (unmerged) paths BEFORE aborting, so the reject names the files +
+        // gives targeted self-correction guidance (concierge 2026-08-06: clean MRs stale-base-bounce
+        // because a hot shared file rotated under them; the cure is authoring-side, so tell the sender
+        // WHICH pattern they hit). `--diff-filter=U` = only the unmerged paths.
+        let conflicted = Command::new("git")
+            .current_dir(&scratch)
+            .args(["diff", "--name-only", "--diff-filter=U"])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .unwrap_or_default();
         // Abort a partial multi-commit pick so the scratch worktree is clean before removal.
         let _ = Command::new("git")
             .current_dir(&scratch)
             .args(["cherry-pick", "--abort"])
             .output();
         eprintln!(
-            "publish-candidate: `git cherry-pick {range}` onto origin/main CONFLICTS — this MR needs a rebase; NOT dispatching. (reject the sender with a stale-base note.)"
+            "publish-candidate: `git cherry-pick {range}` onto origin/main CONFLICTS — NOT dispatching. {}",
+            stale_base_reject_guidance(&conflicted)
         );
         cleanup(&fleet.repo, &scratch_s);
         return false;
@@ -11180,6 +11230,50 @@ mod tests {
         );
         // Single-commit lag still fires (no silent tolerance band — one missing fix is enough).
         assert!(stale_watchdog_warning(1).is_some());
+    }
+
+    #[test]
+    fn stale_base_reject_guidance_branches_on_baseline_vs_same_file() {
+        // A .gate-baseline* conflict → the append-not-rewrite cure + names the file.
+        let g = stale_base_reject_guidance("spec/semantics/.gate-baseline-rust-async\n");
+        assert!(g.contains("BASELINE conflict"), "baseline branch: {g}");
+        assert!(g.contains("APPEND"), "baseline cure = append: {g}");
+        assert!(
+            g.contains("spec/semantics/.gate-baseline-rust-async"),
+            "names the conflicted file: {g}"
+        );
+        // A non-baseline (source/test) conflict → the same-file-region / batch-or-space cure.
+        let s = stale_base_reject_guidance(
+            "implementation/seed/crates/rcdzc/src/backend/rust/tests.rs\n",
+        );
+        assert!(s.contains("same-file-region"), "non-baseline branch: {s}");
+        assert!(
+            s.contains("batch") && s.contains("space"),
+            "same-file cure = batch/space: {s}"
+        );
+        assert!(
+            !s.contains("BASELINE conflict"),
+            "must not mislabel a test file as baseline: {s}"
+        );
+        // MIXED (baseline + other) → baseline cure wins (the union-unmergeable rewrite is the blocker).
+        let m = stale_base_reject_guidance("spec/semantics/.gate-baseline\nsrc/foo.rs\n");
+        assert!(
+            m.contains("BASELINE conflict"),
+            "mixed → baseline cure: {m}"
+        );
+        // Empty conflict list (git gave nothing) → still a valid stale-base reject, no file note, no panic.
+        let e = stale_base_reject_guidance("");
+        assert!(e.contains("stale-base"), "always a stale-base reject: {e}");
+        assert!(
+            !e.contains("Conflicted:"),
+            "no dangling file note when empty: {e}"
+        );
+        // Blank/whitespace lines are ignored (git output padding doesn't create phantom files).
+        let w = stale_base_reject_guidance("\n  \n");
+        assert!(
+            !w.contains("Conflicted:"),
+            "whitespace-only → no file note: {w}"
+        );
     }
 
     #[test]
