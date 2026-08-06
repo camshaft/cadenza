@@ -909,23 +909,28 @@ mod tests {
     /// is — a bare `cargo test` with no nix env stays green. A HALF-wired env (exactly one set) PANICS: a
     /// broken CI setup must fail loud, never masquerade as a clean skip. Single-sources this skip/fail-loud
     /// contract across the real-reducer E2Es so they can't drift (#2315 review).
+    ///
+    /// A present-but-EMPTY var (`CDZ_STORE=""`) counts as UNSET, not set: `.ok()` alone maps `Some("")`
+    /// through, which would drive `ComponentStore::open("")` (CWD-relative) and silently mask a misconfigured
+    /// CI env — so filter empties out and treat them as absent (#2320 review).
     fn require_reducer_and_store_or_skip(
         test_name: &str,
         reducer_env: &str,
     ) -> Option<(String, String)> {
-        let reducer_path = std::env::var(reducer_env).ok();
-        let store_dir = std::env::var("CDZ_STORE").ok();
+        let non_empty = |var: &str| std::env::var(var).ok().filter(|v| !v.is_empty());
+        let reducer_path = non_empty(reducer_env);
+        let store_dir = non_empty("CDZ_STORE");
         match (reducer_path, store_dir) {
             (None, None) => {
-                eprintln!("SKIP {test_name}: {reducer_env} + CDZ_STORE unset");
+                eprintln!("SKIP {test_name}: {reducer_env} + CDZ_STORE unset (or empty)");
                 None
             }
             (Some(_), None) => panic!(
-                "{reducer_env} is set but CDZ_STORE is not — the handle-lowered reducer's runtime dep \
-                 needs the component store to resolve its transitive cadenza:nfc/normalize (§23)"
+                "{test_name}: {reducer_env} is set but CDZ_STORE is not — the handle-lowered reducer's \
+                 runtime dep needs the component store to resolve its transitive cadenza:nfc/normalize (§23)"
             ),
             (None, Some(_)) => {
-                panic!("CDZ_STORE is set but {reducer_env} is not — nothing to drive")
+                panic!("{test_name}: CDZ_STORE is set but {reducer_env} is not — nothing to drive")
             }
             (Some(r), Some(s)) => Some((r, s)),
         }
