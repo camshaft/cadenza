@@ -3993,6 +3993,61 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 10 Int64)))
 
+(case "the arm slices a crossed multibyte String at a scalar boundary — the slice window respects UTF-8"
+  (doc    "Char-indexed slicing over a marshaled rope: \\\"aédc\\\" crosses as the op argument and the
+           arm slices chars [1,3) — \\\"éd\\\", whose two-byte é makes the byte-length 3. The
+           char/byte distinction must survive the crossing.")
+  (input  (do
+            (effect St (op cut (-> String Int64)))
+            (def (main (: n Int64))
+              (handle St 0
+                ((cut (t) s
+                  (resume (match (String.slice t 1 3)
+                            ((Some w) (String.byte-len w))
+                            ((None _u) -1))
+                          s)))
+                (St.cut (String.concat "a" "édc"))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 3 Int64)))
+
+(case "a mid-scalar byte window crosses to the arm and String.from-bytes declines it"
+  (doc    "The adversarial byte/char face: slicing é's continuation byte alone (`Bytes.slice b 1 1`
+           of the 2-byte encoding) produces invalid UTF-8; the arm's `String.from-bytes` must
+           validate the crossed window and decline None → -7, never construct a torn String.")
+  (input  (do
+            (effect St (op cut (-> Bytes Int64)))
+            (def (main (: n Int64))
+              (handle St 0
+                ((cut (b) s
+                  (resume (match (Bytes.slice b 1 1)
+                            ((Some w) (match (String.from-bytes w)
+                                        ((Some t) (String.byte-len t))
+                                        ((None _u) -7)))
+                            ((None _u) -1))
+                          s)))
+                (St.cut (String.to-bytes "é"))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: -7 Int64)))
+
+(case "a pre-abort HOST call inside a NESTED strict operand is ISSUED before the abort abandons"
+  (doc    "The host face of the nested-operand abort-collapse fix (breaker ah-x1; the in-program
+           twin is the ax4 pin): `(+ 999 (+ (ask.ask) (Bail.bail 7)))` — the pre-abort host call
+           MUST be issued (an externally-visible side effect, committed before the abort), matching
+           the do-spine guarantee. Before the fix the collapse dropped the call entirely (observed
+           host-calls were empty).")
+  (input  (do
+            (effect ask (op ask (-> Unit Int64)))
+            (effect Bail (op bail (-> Int64 Int64)))
+            (def (main)
+              (host (ask)
+                (handle Bail 0
+                  ((bail (n) s n))
+                  (+ 999 (+ (ask.ask) (Bail.bail 7))))))
+            (export main)))
+  (host-responses (respond ask.ask (: 100 Int64)))
+  (host-calls (call ask.ask))
+  (output (: 7 Int64)))
+
 ; ============ Guarded match × effects (breaker FINDING, ag5 → fixed #2333). A guarded match on a
 ; perform-result scrutinee whose FALLBACK arm also performs used to leak the fold-synthesized #seed
 ; binder as a false CDZ0101: the guard desugar's arm-body copy reparented a reused (shared) body

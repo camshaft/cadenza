@@ -6063,3 +6063,6 @@ pass	an inner abort preserves an outer advance committed in a NESTED strict oper
 pass	a nested-operand abort preserves a HEAP-state advance across a mid-mutation frame drop
 pass	an inner abort in a LET-INIT preserves the outer advance committed before it (let-init collapse)
 pass	a do-spine item abort ABANDONS its enclosing operator, not splicing the value (do-item abort-abandon)
+pass	the arm slices a crossed multibyte String at a scalar boundary — the slice window respects UTF-8
+pass	a mid-scalar byte window crosses to the arm and String.from-bytes declines it
+pass	a pre-abort HOST call inside a NESTED strict operand is ISSUED before the abort abandons
