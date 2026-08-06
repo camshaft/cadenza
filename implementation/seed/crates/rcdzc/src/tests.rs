@@ -68712,6 +68712,25 @@ mod stage1 {
             "17",
             "pm_pair: a pattern binder x resolves through the two-hole refold in a pair-body-position handle"
         );
+
+        // ts1 (breaker heap-state sibling): a two-site arm over a HEAP (List) state, ≥2 performs including a
+        // SECOND state-reading op, and the body reads main's param `n` mid-chain. Before the fix, the two-hole
+        // refold rebuilt the arm's `if` CONDITION `(> v 10)` (op-arg `v`↦`n`) via `push_list`, overwriting the
+        // shared `n` node's parent → detached `n` from main → false CDZ0101 'unbound n'. Fixed by anchoring the
+        // substituted arm body under the handle site + `resolve_subtree` BEFORE the refold rebuild (pin-before-
+        // copy). feed(20) pass (List→[20]), feed(n=5) miss (hold), feed(30) pass ([20,30]), tally=len=2 →
+        // `(+ 20 (+ 0 (+ 30 (* 1000 2))))` = 2050. Regression pin for the fixed heap-state false-reject.
+        let ts1 = "(do (effect St (op feed (-> Int64 Int64)) (op tally (-> Unit Int64))) \
+             (def (main (: n Int64)) \
+               (handle St (list) \
+                 ((feed (v) s (if (> v 10) (resume v (List.push s v)) (resume 0 s))) \
+                  (tally (u) s (resume (List.len s) s))) \
+                 (+ (St.feed 20) (+ (St.feed n) (+ (St.feed 30) (* 1000 (St.tally))))))) (export main))";
+        assert_eq!(
+            run(ts1, 5, "ts1 heap-state two-site arm, body reads param n"),
+            "2050",
+            "ts1: body-free-var n resolves through the two-hole refold with a HEAP state (was false CDZ0101)"
+        );
     }
 
     #[test]
