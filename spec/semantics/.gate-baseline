@@ -5971,3 +5971,5 @@ pass	a String op RESULT selected by the op argument, composed via concat
 pass	a heterogeneous TUPLE as op ARGUMENT — the arm destructures both components
 pass	one perform result flows through let, record, projection, tuple, destructure, and match
 pass	a pure HELPER's arguments evaluate left-to-right when each performs
+pass	a SET op RESULT crosses resume — membership-probed and measured per dispatch
+pass	a SET as op ARGUMENT — the arm measures and probes the set it is handed

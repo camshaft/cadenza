@@ -2610,6 +2610,36 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 567 Int64)))
 
+(case "a SET op RESULT crosses resume — membership-probed and measured per dispatch"
+  (doc    "The Set completion of the collection RESULT-direction crossings (Map, List, and Bytes op
+           results carry pins; Set appeared only as handler STATE): the arm resumes a per-dispatch
+           set — populated for a positive op argument, empty otherwise. The body membership-probes
+           the populated one (contains 5 → 10) and measures the empty one (len 0) → 10. A CHAMP set
+           marshaled out of the arm must support both query kinds on the resume side.")
+  (input  (do
+            (effect St (op allowed (-> Int64 (Set Int64))))
+            (def (main (: n Int64))
+              (handle St 0
+                ((allowed (k) s (resume (if (> k 0) (Set.of (list 2 5 9)) (Set.of (list))) s)))
+                (+ (if (Set.contains (St.allowed n) 5) 10 0)
+                   (Set.len (St.allowed 0)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 10 Int64)))
+
+(case "a SET as op ARGUMENT — the arm measures and probes the set it is handed"
+  (doc    "The argument-direction twin: a body-constructed `(Set.of (list n 2 9))` rides the op
+           argument INTO the arm, which measures it (len 3) and membership-probes it (contains 5 →
+           100) → 103. With this pair the collection crossing matrix — Map, List, Bytes, Set — has
+           witnesses in both marshal directions.")
+  (input  (do
+            (effect St (op tally (-> (Set Int64) Int64)))
+            (def (main (: n Int64))
+              (handle St 0
+                ((tally (xs) s (resume (+ (Set.len xs) (if (Set.contains xs 5) 100 0)) s)))
+                (St.tally (Set.of (list n 2 9)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 103 Int64)))
+
 ; ============ Guarded match × effects (breaker FINDING, ag5 → fixed #2333). A guarded match on a
 ; perform-result scrutinee whose FALLBACK arm also performs used to leak the fold-synthesized #seed
 ; binder as a false CDZ0101: the guard desugar's arm-body copy reparented a reused (shared) body
