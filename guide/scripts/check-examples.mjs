@@ -494,6 +494,28 @@ try {
     );
     process.exit(1);
   }
+  // UNIQUE-ID invariant: the playground UI keys off `id` — deep-links resolve `EXAMPLES.find(e => e.id
+  // === reqId)` (a dup silently loads the FIRST match, so a deep-link/Run-this-example lands on the wrong
+  // program) and the dropdown renders `<option key={e.id}>` (a dup id is a React key collision). A
+  // copy-paste slip that duplicates an id compiles + runs fine, so neither this harness nor the compiler
+  // catches it — pin it here. (Also require a non-empty string id, since `find`/`key` both need one.)
+  const idCounts = new Map();
+  for (const p of PLAYGROUND) {
+    if (typeof p.id !== "string" || p.id.length === 0) {
+      console.error(`check-examples: a playground example has a missing/empty \`id\` (name="${p.name ?? "?"}") — the dropdown/deep-link key off id.`);
+      process.exit(1);
+    }
+    idCounts.set(p.id, (idCounts.get(p.id) ?? 0) + 1);
+  }
+  const dupIds = [...idCounts].filter(([, n]) => n > 1).map(([id]) => id);
+  if (dupIds.length) {
+    console.error(
+      `check-examples: duplicate playground example id(s) in src/playground/examples.ts: ${dupIds.join(", ")} — ` +
+        `the dropdown keys <option key={id}> (React key collision) and deep-links resolve EXAMPLES.find(e => e.id === id) ` +
+        `(loads the FIRST match, so a deep-link lands on the wrong example). Give each example a unique id.`,
+    );
+    process.exit(1);
+  }
   for (const p of PLAYGROUND) {
     // The intentional "see the squiggle" example is authored to NOT compile — check it as expect="error".
     const expect = /\(\+\s+1\s+true\)/.test(p.source) ? "error" : "value";
