@@ -89,7 +89,7 @@ impl SessionId {
 /// not raw bytes coerced into the `Hash` type — the nonce is a HASH of entropy, uniformly with every other
 /// `Hash` in the system. `getrandom` panicking is not survivable (no entropy source = we can't safely mint
 /// a unique id), so a failure is a hard error, not a silent weak-nonce fallback.
-fn mint_spawn_nonce() -> Hash {
+pub(crate) fn mint_spawn_nonce() -> Hash {
     let mut bytes = [0u8; 32];
     getrandom::getrandom(&mut bytes).expect("OS entropy (getrandom) for a session spawn nonce");
     Hash::of(&bytes)

@@ -169,6 +169,29 @@ async fn apply_lifecycle_ops(
             LifecycleOp::Resume { target, by: _ } => {
                 host.resume(&target);
             }
+            // Spawn: register the child the executor pre-computed. The executor already minted the nonce +
+            // derived the child id (returned to the parent's reducer); the loop builds + registers the child
+            // with the SAME nonce so the id matches. REDUCER MATERIALIZATION (reducer_hash → a live
+            // Box<dyn Reducer> via the session factory) is the NEXT slice — `apply_lifecycle_ops` doesn't yet
+            // hold the factory. Until then this arm is a LOUD no-op: it does NOT register the child (so it
+            // never spawns a bogus session), and warns so the gap is visible — NOT a silent drop. The
+            // executor's returned id is still deterministically correct; only the registration awaits the
+            // factory-resolve slice. (Tracked: spawn executor-half landed; loop-apply factory-resolve next.)
+            LifecycleOp::Spawn {
+                parent,
+                reducer_hash,
+                spawn_nonce: _,
+                child_id,
+            } => {
+                tracing::warn!(
+                    parent = %parent.as_str(),
+                    child_id = %child_id.as_str(),
+                    reducer_hash = %reducer_hash.to_hex(),
+                    "lifecycle/spawn: child id pre-computed + returned to the parent, but registration awaits \
+                     the loop-apply factory-resolve slice (reducer_hash → live reducer) — child NOT yet \
+                     registered (loud no-op, not a silent drop)"
+                );
+            }
         }
     }
     Ok(())

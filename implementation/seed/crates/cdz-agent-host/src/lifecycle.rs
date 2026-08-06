@@ -17,9 +17,14 @@
 //!
 //! Scope: `lifecycle/terminate` (durable `Terminated` marker + registry removal via
 //! [`AgentHost::terminate`]) + `lifecycle/suspend` / `lifecycle/resume` (flip the host-scheduler bit via
-//! [`AgentHost::suspend`]/[`AgentHost::resume`] — the loop then holds/replays the target's inbound). All
-//! three RECORD a [`LifecycleOp`] the loop applies after deliver. `lifecycle/spawn` is driven separately
-//! (via [`AgentHost::spawn_child`], which records the parent→child edge) — a follow-on arm.
+//! [`AgentHost::suspend`]/[`AgentHost::resume`] — the loop then holds/replays the target's inbound) +
+//! `lifecycle/spawn` (create a child running a payload `reducer_hash`, via
+//! [`AgentHost::spawn_child_with_nonce`], recording the parent→child edge). All RECORD a [`LifecycleOp`] the
+//! loop applies after deliver. Spawn is distinct: it takes no peer `target`, RETURNS the child's SessionId
+//! synchronously (pre-computed via [`Session::derive_genesis_hash`](cdz_kernel::kernel::Session::derive_genesis_hash)),
+//! and the loop registers the child with the SAME nonce so the returned id matches. (The loop-apply
+//! factory-resolve — `reducer_hash` → a live reducer — is the next slice; the executor half + the
+//! pre-computed-id contract land here.)
 
 use crate::host::SessionId;
 use cdz_kernel::effect::{effect_ct, EffectRequest};
@@ -47,6 +52,21 @@ pub enum LifecycleOp {
     /// Resume `target`: the loop drives [`AgentHost::resume`](crate::AgentHost::resume) (clear the bit — held
     /// inbound replays). `by` is the controller.
     Resume { target: SessionId, by: SessionId },
+    /// Spawn a CHILD under `parent` (§lifecycle I3): the loop drives
+    /// [`AgentHost::spawn_child_with_nonce`](crate::AgentHost::spawn_child_with_nonce) — materializes a child
+    /// from `reducer_hash` (via the loop's session factory), registers it under its genesis-hash id, and
+    /// records the parent→child edge. `parent` is the controller (= the emitting session, whose SessionId is
+    /// its genesis-hash-hex). `spawn_nonce` is minted ONCE by the executor + carried here so the loop builds
+    /// the child with the SAME nonce the executor pre-computed the returned `child_id` from (via
+    /// [`Session::derive_genesis_hash`](cdz_kernel::kernel::Session::derive_genesis_hash)) — the id the loop
+    /// registers then matches the id the reducer already folded byte-for-byte. `child_id` is carried so the
+    /// loop registers under the exact pre-computed id (belt-and-suspenders; it also re-derives).
+    Spawn {
+        parent: SessionId,
+        reducer_hash: Hash,
+        spawn_nonce: Hash,
+        child_id: SessionId,
+    },
 }
 
 /// The channel a [`LifecycleExecutor`] records ops onto; the [`AsyncAgentHost`](crate::AsyncAgentHost) loop
@@ -69,12 +89,83 @@ impl LifecycleExecutor {
     pub fn new(channel: LifecycleChannel, owner: SessionId) -> Self {
         LifecycleExecutor { channel, owner }
     }
+
+    /// Handle `lifecycle/spawn` (§lifecycle I3): the OWNER (parent) spawns a CHILD running `reducer_hash`.
+    /// Unlike terminate/suspend/resume this CREATES a session + RETURNS the child's `SessionId` synchronously
+    /// as the effect result, so the parent's reducer folds the id immediately — while the loop registers the
+    /// child AFTER `deliver` (defer-to-loop). To make the returned id REAL (match what the loop registers),
+    /// we PRE-COMPUTE it: mint the spawn nonce ONCE here, derive the child genesis-hash from
+    /// `(reducer_hash, nonce, Some(parent_genesis))` via [`Session::derive_genesis_hash`], and hand BOTH the
+    /// nonce and the pre-computed id to the loop in [`LifecycleOp::Spawn`] so it builds the child with the
+    /// SAME nonce (see [`AgentHost::spawn_child_with_nonce`](crate::AgentHost::spawn_child_with_nonce)).
+    ///
+    /// `reducer_hash` rides the payload as 32 raw bytes (Inline) — the child reducer's content hash the loop's
+    /// factory materializes. `parent_genesis` is `self.owner`'s SessionId parsed back to a `Hash` (the id IS
+    /// the parent's genesis-hash-hex). Returns `Ok(Some(child_id_hex_bytes))` = accepted + the id (NOT yet
+    /// registered — the loop does that). A missing/malformed reducer_hash payload, or a non-hex owner, is a
+    /// structural PERMANENT; a closed channel is RETRYABLE.
+    fn perform_spawn(&self, req: &EffectRequest) -> EffectOutcome {
+        // reducer_hash rides the payload as 32 raw bytes. None / wrong-length / Blob = structural PERMANENT
+        // (a spawn with no reducer identity is meaningless; a blob-ref can't be resolved here).
+        let reducer_hash = match &req.payload {
+            Some(cdz_kernel::effect::Payload::Inline(bytes)) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(bytes);
+                Hash::from_bytes(arr)
+            }
+            _ => {
+                return EffectOutcome::Err(crate::retry::permanent(
+                    "LifecycleExecutor: lifecycle/spawn requires the child reducer_hash as a 32-byte inline payload",
+                ));
+            }
+        };
+        // The parent genesis hash = the OWNER's SessionId parsed back to a Hash (the id IS the parent's
+        // genesis-hash-hex — the operator's SessionId ruling). A non-hex owner (a test/legacy string id, not a
+        // real genesis hash) can't be a spawn parent → PERMANENT (spawn needs a real provenance hash).
+        let parent = self.owner.clone();
+        let Some(parent_genesis) = Hash::from_hex(parent.as_str()) else {
+            return EffectOutcome::Err(crate::retry::permanent(
+                "LifecycleExecutor: lifecycle/spawn parent (owner) SessionId is not a genesis-hash-hex; cannot derive child provenance",
+            ));
+        };
+        // Mint the nonce ONCE + pre-compute the child id from the SAME triple the loop will build with, so
+        // the id returned here == the id the loop registers (byte-for-byte). This is the load-bearing bit.
+        let spawn_nonce = crate::host::mint_spawn_nonce();
+        let child_hash = cdz_kernel::kernel::Session::derive_genesis_hash(
+            reducer_hash,
+            spawn_nonce,
+            Some(parent_genesis),
+        );
+        let child_id = SessionId::new(child_hash.to_hex());
+        let op = LifecycleOp::Spawn {
+            parent,
+            reducer_hash,
+            spawn_nonce,
+            child_id: child_id.clone(),
+        };
+        match self.channel.send(op) {
+            // Return the pre-computed child id as the effect result — the parent's reducer gets the id NOW,
+            // the loop registers the child (with the same nonce) after this deliver returns.
+            Ok(()) => EffectOutcome::Ok(Some(cdz_kernel::effect::Payload::Inline(
+                child_id.as_str().as_bytes().to_vec().into(),
+            ))),
+            Err(_) => EffectOutcome::Err(crate::retry::retryable(
+                "LifecycleExecutor: the host loop lifecycle channel is closed — cannot record the spawn op (host shutting down?)",
+            )),
+        }
+    }
 }
 
 #[async_trait::async_trait(?Send)]
 impl Executor for LifecycleExecutor {
     async fn perform(&mut self, req: &EffectRequest, _idempotency_key: Hash) -> EffectOutcome {
         let family = req.content_type.family.as_ref();
+        // SPAWN is structurally distinct from terminate/suspend/resume (no peer `target` — it CREATES a
+        // child; the reducer identity rides the payload; it RETURNS the child's SessionId synchronously). So
+        // dispatch it first, on its own path.
+        if req.content_type.matches_family(effect_ct::LIFECYCLE_SPAWN) {
+            return self.perform_spawn(req);
+        }
         // Dispatch by family: terminate / suspend / resume (register-by-string). A non-lifecycle family is
         // structural → PERMANENT (§17). Suspend/resume take no payload; terminate carries an optional reason.
         let is_terminate = req
@@ -86,7 +177,7 @@ impl Executor for LifecycleExecutor {
         let is_resume = req.content_type.matches_family(effect_ct::LIFECYCLE_RESUME);
         if !(is_terminate || is_suspend || is_resume) {
             return EffectOutcome::Err(crate::retry::permanent(format!(
-                "LifecycleExecutor handles only lifecycle/terminate|suspend|resume, got {family}"
+                "LifecycleExecutor handles only lifecycle/spawn|terminate|suspend|resume, got {family}"
             )));
         }
         // `target` is the peer session id (raw SessionId string). Empty = structural PERMANENT.
@@ -150,11 +241,11 @@ impl Executor for LifecycleExecutor {
     }
 
     fn handles_family(&self, family: &str) -> bool {
-        // terminate + suspend + resume. (lifecycle/spawn is driven differently — via AgentHost::spawn_child
-        // in a follow-on arm.)
+        // spawn + terminate + suspend + resume — the full lifecycle/* family this executor serves.
         matches!(
             family,
-            effect_ct::LIFECYCLE_TERMINATE
+            effect_ct::LIFECYCLE_SPAWN
+                | effect_ct::LIFECYCLE_TERMINATE
                 | effect_ct::LIFECYCLE_SUSPEND
                 | effect_ct::LIFECYCLE_RESUME
         )
@@ -173,6 +264,101 @@ mod tests {
             reason.map(|b| Payload::Inline(b.to_vec().into())),
             Timeliness::Interactive,
         )
+    }
+
+    #[tokio::test]
+    async fn spawn_records_an_op_and_returns_the_pre_computed_child_id() {
+        // §lifecycle I3 spawn executor: lifecycle/spawn returns the child's SessionId SYNCHRONOUSLY (the
+        // pre-computed derive_genesis_hash id) + records a LifecycleOp::Spawn for the loop to register with
+        // the SAME nonce. The owner (parent) SessionId must be a genesis-hash-hex so its provenance parses.
+        let parent_hash = Hash::of(b"parent-reducer");
+        let parent_id = SessionId::new(parent_hash.to_hex());
+        let reducer_hash = Hash::of(b"child-reducer");
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut exec = LifecycleExecutor::new(tx, parent_id.clone());
+        let req = EffectRequest::new_with_family(
+            effect_ct::LIFECYCLE_SPAWN,
+            String::new(), // spawn has no peer target
+            Some(Payload::Inline(reducer_hash.as_bytes().to_vec().into())),
+            Timeliness::Interactive,
+        );
+        let out = exec.perform(&req, Hash::of(b"k")).await;
+        // The returned id is the effect result (Ok(Some(payload=child_id_hex))).
+        let EffectOutcome::Ok(Some(Payload::Inline(returned))) = &out else {
+            panic!("spawn returns Ok(Some(child_id)), got {out:?}");
+        };
+        let returned_id = String::from_utf8(returned.to_vec()).unwrap();
+        // The recorded op carries the same child_id + reducer_hash + parent, and a nonce.
+        let LifecycleOp::Spawn {
+            parent,
+            reducer_hash: op_reducer,
+            spawn_nonce,
+            child_id,
+        } = rx.try_recv().expect("a Spawn op was recorded")
+        else {
+            panic!("expected a Spawn op");
+        };
+        assert_eq!(parent, parent_id, "op carries the parent (owner)");
+        assert_eq!(
+            op_reducer, reducer_hash,
+            "op carries the child reducer_hash"
+        );
+        assert_eq!(
+            child_id.as_str(),
+            returned_id,
+            "the returned id == the recorded op's child_id"
+        );
+        // The returned id is EXACTLY derive_genesis_hash(reducer, nonce, Some(parent)) — the load-bearing
+        // match the loop relies on to register the same id.
+        let expected = cdz_kernel::kernel::Session::derive_genesis_hash(
+            reducer_hash,
+            spawn_nonce,
+            Some(parent_hash),
+        );
+        assert_eq!(
+            returned_id,
+            expected.to_hex(),
+            "the returned child id == derive_genesis_hash of the (reducer, nonce, parent) triple"
+        );
+    }
+
+    #[tokio::test]
+    async fn spawn_without_a_reducer_hash_payload_is_permanent() {
+        let parent_id = SessionId::new(Hash::of(b"p").to_hex());
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut exec = LifecycleExecutor::new(tx, parent_id);
+        let req = EffectRequest::new_with_family(
+            effect_ct::LIFECYCLE_SPAWN,
+            String::new(),
+            None, // no reducer_hash
+            Timeliness::Interactive,
+        );
+        assert!(
+            matches!(&exec.perform(&req, Hash::of(b"k")).await,
+                EffectOutcome::Err(r) if r.starts_with("PERMANENT:") && r.contains("reducer_hash")),
+            "spawn with no reducer_hash payload is PERMANENT"
+        );
+    }
+
+    #[tokio::test]
+    async fn spawn_with_a_non_hex_owner_is_permanent() {
+        // A parent whose SessionId isn't a genesis-hash-hex (a test/legacy string id) can't be a spawn parent
+        // — the child's provenance needs a real parent genesis Hash.
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut exec = LifecycleExecutor::new(tx, SessionId::new("not-a-hash"));
+        let req = EffectRequest::new_with_family(
+            effect_ct::LIFECYCLE_SPAWN,
+            String::new(),
+            Some(Payload::Inline(
+                Hash::of(b"child").as_bytes().to_vec().into(),
+            )),
+            Timeliness::Interactive,
+        );
+        assert!(
+            matches!(&exec.perform(&req, Hash::of(b"k")).await,
+                EffectOutcome::Err(r) if r.starts_with("PERMANENT:") && r.contains("genesis-hash-hex")),
+            "spawn with a non-hex owner is PERMANENT"
+        );
     }
 
     #[tokio::test]
