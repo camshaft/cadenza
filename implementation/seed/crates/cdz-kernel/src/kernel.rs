@@ -263,6 +263,35 @@ impl Session {
         }
     }
 
+    /// The hash of this session's GENESIS event (`log[0]`), via [`Event::hash`]. Distinct from
+    /// [`reducer_hash`](Self::reducer_hash), which reads only the reducer *inside* genesis — this hashes
+    /// the whole genesis event and is STABLE across replay (genesis is the log's frozen head).
+    ///
+    /// Intended as the host's `SessionId` (operator ruling 2026-08-06: "session ids = a hash … as long as
+    /// the genesis is unique" → `SessionId = genesis-hash`), which collapses name-addressing to an identity
+    /// map (§4c `name → hash` IS `name → SessionId`, no host-side lookup).
+    ///
+    /// ⚠️ UNIQUENESS CAVEAT (the operator's exact "as long as genesis is unique" condition): TODAY genesis
+    /// carries ONLY the reducer (`Session::genesis(reducer)` builds `Genesis{reducer}` with `cause:None,
+    /// seq:0`), so this hash is a function of the REDUCER ALONE — two sessions spawned over the SAME reducer
+    /// get the SAME value. It is unique per *reducer*, NOT yet per *session*. For `SessionId = genesis-hash`
+    /// to be a safe identity, the genesis event must first gain per-spawn ENTROPY/PROVENANCE (e.g. a spawn
+    /// nonce or a parent→child provenance field — the latter is design-session-lifecycle's `Spawned`-edge
+    /// work). This accessor is the right primitive regardless; the uniqueness gap is a separate, flagged
+    /// follow-up (do NOT rely on per-session uniqueness until genesis carries spawn entropy).
+    ///
+    /// Panics on a log whose first event isn't Genesis — the same internal invariant `reducer_hash`
+    /// guards (a `Session` only exists via `genesis()`/`replay()`, both of which guarantee it).
+    pub fn genesis_hash(&self) -> Hash {
+        match self.log.first() {
+            Some(e @ Event { body: EventBody::Genesis { .. }, .. }) => e.hash(),
+            _ => panic!(
+                "cdz-kernel invariant violated: session log's first event is not Genesis \
+                 (a Session is only constructed via genesis()/replay(), both of which guarantee it)"
+            ),
+        }
+    }
+
     /// The count of dispatched-but-unsettled effects — the anti-stuck / recovery signal (§4b tier-2).
     pub fn open_effects(&self) -> usize {
         self.open.len()
@@ -477,9 +506,13 @@ impl Session {
     /// pre-seed guest query suppress the real seed, and (b) misstate the invariant. Cause-linked to genesis
     /// is the seed's true identity and is replay-stable (the durable cause edge survives recovery).
     fn already_seeded_capabilities(&self) -> bool {
-        let Some(genesis_hash) = self.log.first().map(|e| e.hash()) else {
+        // A fresh/empty log has no genesis to cause-link against (can't be seeded yet). Guard the empty
+        // case here rather than calling `genesis_hash()` (which panics on a non-Genesis head) — a
+        // never-constructed session shouldn't panic this read.
+        if self.log.is_empty() {
             return false;
-        };
+        }
+        let genesis_hash = self.genesis_hash();
         self.log.iter().any(|e| {
             matches!(
                 &e.body,
@@ -3071,6 +3104,53 @@ mod monotonic_now_tests {
             exec.seen.len(),
             0,
             "a timer-family effect is kernel-armed, never routed to an executor"
+        );
+    }
+
+    #[test]
+    fn genesis_hash_is_the_first_event_hash_stable_across_replay_and_reducer_derived_today() {
+        // genesis_hash() is the host's intended SessionId (operator ruling: SessionId = genesis-hash).
+        // Pin three properties that name-addressing-as-identity-map depends on:
+        let s = Session::genesis(Hash::of(b"reducer-A"));
+
+        // (1) It IS log[0]'s Event::hash — the canonical durable head, not the reducer body hash.
+        assert_eq!(
+            s.genesis_hash(),
+            s.log().first().expect("genesis has a head event").hash(),
+            "genesis_hash must be the hash of the genesis EVENT (log[0]), not something else"
+        );
+        // (2) It is NOT the reducer hash — genesis_hash wraps the reducer in the genesis event framing, so
+        // the two values differ (guards against a refactor that silently aliases them).
+        assert_ne!(
+            s.genesis_hash(),
+            Hash::of(b"reducer-A"),
+            "genesis_hash hashes the whole genesis event, so it must differ from the bare reducer hash"
+        );
+        // (3) STABLE across replay: a session recovered/rebuilt from the same log has the same identity.
+        let replayed = Session::genesis(Hash::of(b"reducer-A"));
+        assert_eq!(
+            s.genesis_hash(),
+            replayed.genesis_hash(),
+            "genesis_hash is a pure function of the frozen genesis head — replay-stable"
+        );
+
+        // ⚠️ TODAY-ONLY property + the operator's uniqueness caveat, pinned so a future genesis-entropy
+        // change TRIPS this test (a signal to update it + the SessionId uniqueness story, not silently
+        // regress): genesis carries only the reducer, so two sessions over the SAME reducer share an id.
+        // This is exactly WHY SessionId=genesis-hash is not yet per-session-unique — flagged in the doc.
+        let twin = Session::genesis(Hash::of(b"reducer-A"));
+        assert_eq!(
+            s.genesis_hash(),
+            twin.genesis_hash(),
+            "TODAY genesis carries only the reducer → same reducer ⇒ same genesis_hash (NOT yet \
+             per-session unique; adding spawn entropy will make this assert flip — update it then)"
+        );
+        // A DIFFERENT reducer → different id (the one uniqueness axis that DOES hold today).
+        let other = Session::genesis(Hash::of(b"reducer-B"));
+        assert_ne!(
+            s.genesis_hash(),
+            other.genesis_hash(),
+            "different reducers must yield different genesis hashes"
         );
     }
 
