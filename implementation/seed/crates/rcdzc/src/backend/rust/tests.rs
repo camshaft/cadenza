@@ -5197,6 +5197,65 @@ fn main() {
 }
 
 #[test]
+fn rustc_roundtrip_async_host_call_reads_shim_and_meters_gas() {
+    // COVERAGE PIN for the rust-async HOST-call frontier (the +103 host/@param unlock, PR #2412): an async
+    // fn that makes a delegated host call must (a) EMIT the host shim call inside the async body, (b) charge
+    // entry gas via the object-safe `consume_boxed`, and (c) RUN correctly under an executor with a supplied
+    // host shim — producing the SAME value as the sync/wasm oracle. Before #2412 the gate harness blanket-
+    // DECLINED any rust-async case with a host protocol; this pins that the async host path both emits AND
+    // runs, independent of the corpus baseline (a baseline row can be flipped; a lib rustc-roundtrip is a
+    // hard witness that regresses loudly if the async host emit/drive ever breaks).
+    let module = compile_rust_async(
+        "(module m (effect out (op ask (-> Unit Int64))) \
+         (def (main) (host (out) (+ (out.ask) 5))) (export main))",
+    );
+    // (a) the host call is a plain sync shim call INSIDE the async body (a host op charges no gas itself —
+    //     only the enclosing async fn's entry `consume_boxed` does), and (b) the async fn takes the uniform
+    //     object-safe `&mut dyn DynCdzEnv` env and charges entry gas via `consume_boxed`.
+    assert!(
+        module.contains("pub async fn main(__cdz_env: &mut dyn DynCdzEnv)")
+            && module.contains("__cdz_env.consume_boxed(1).await;"),
+        "async host-calling fn: uniform dyn-env + consume_boxed entry gas:\n{module}"
+    );
+    assert!(
+        module.contains("crate::__cdz_host_out_ask()"),
+        "the host op emits a (sync) crate-root shim call inside the async body:\n{module}"
+    );
+    // (c) drive it: a Meter env (async consume) + block_on + the host shim returning the recorded response
+    //     (37). main = out.ask() + 5 = 42; gas was metered (entry consume_boxed fired).
+    let driver = r#"
+struct Meter { spent: u64 }
+impl cdz_rt::CdzEnv for Meter {
+    async fn consume(&mut self, g: u64) { self.spent += g; }
+}
+#[allow(non_snake_case)]
+fn __cdz_host_out_ask() -> i64 { 37 }
+fn block_on<F: core::future::Future>(mut f: F) -> F::Output {
+    use core::task::*;
+    fn n(_: *const ()) {} fn c(_: *const ()) -> RawWaker { r() }
+    fn r() -> RawWaker { RawWaker::new(core::ptr::null(), &V) }
+    static V: RawWakerVTable = RawWakerVTable::new(c, n, n, n);
+    let w = unsafe { Waker::from_raw(r()) };
+    let mut cx = Context::from_waker(&w);
+    let mut f = unsafe { core::pin::Pin::new_unchecked(&mut f) };
+    loop { if let Poll::Ready(v) = f.as_mut().poll(&mut cx) { return v; } }
+}
+fn main() {
+    let mut e = Meter { spent: 0 };
+    let v = block_on(prog::main(&mut e));
+    // out.ask() = 37; 37 + 5 = 42; gas metered (entry consume_boxed charged >0).
+    println!("{v} {}", e.spent > 0);
+}
+"#;
+    if let Some(out) = rustc_run_driver(&module, driver) {
+        assert_eq!(
+            out, "42 true",
+            "async host-call run (37 + 5 = 42, gas metered):\n{module}"
+        );
+    }
+}
+
+#[test]
 fn rustc_roundtrip_async_mutually_recursive_sums_fold() {
     // Async recursion + MUTUAL sum recursion: `(type A (AN B))` / `(type B (BN A))` — neither variant
     // mentions its own decl, so the box decision must follow the A→B→A cycle (reaches_decl) to box both
