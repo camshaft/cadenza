@@ -511,6 +511,30 @@ impl Session {
         )
     }
 
+    /// TERMINATE this session (§lifecycle I1): append the durable [`EventBody::Terminated`] marker as the
+    /// log tail WITHOUT folding it through the reducer — the fold-free public seam the host's
+    /// `lifecycle/terminate` executor drives (a terminal marker must be INSTALLED as the frozen tail, not
+    /// folded like an inbound). This is the public counterpart to the crate-private `append` the I1 tests
+    /// use; `cdz-agent-host` calls THIS.
+    ///
+    /// `by` is the terminating controller's session identity (its genesis hash = its SessionId); `reason`
+    /// is a diagnostic string. The marker is cause-linked to the current tip (the causal-DAG edge, §5) and
+    /// persisted through the attached log store like any other append. Returns the marker's event hash so
+    /// the caller can cause-link / log it.
+    ///
+    /// IDEMPOTENT-BY-REJECTION: terminating an ALREADY-terminated session is a no-op that returns
+    /// [`KernelError::FoldRefused`] — never a second `Terminated` marker (which would break the "the tail
+    /// IS the terminal marker" invariant and the durable-once contract). Terminal: there is no un-terminate.
+    pub async fn terminate(&mut self, by: Hash, reason: String) -> Result<Hash, KernelError> {
+        if self.is_terminated() {
+            return Err(KernelError::FoldRefused);
+        }
+        let cause = Some(self.tip_hash());
+        Ok(self
+            .append(EventBody::Terminated { by, reason }, cause)
+            .await)
+    }
+
     /// Genesis-seed the capability manifest (host-capability-discovery I5): fold a synthetic
     /// `control/capabilities` answer so the guest knows its capabilities without issuing a query. Synthesizes
     /// a `control/capabilities` [`Effect`] and runs it through the same drive path as a guest-issued query
@@ -3653,6 +3677,75 @@ mod lifecycle_tests {
         assert!(
             s.is_terminated(),
             "the Terminated marker is STILL the log tail — the invariant holds across time_out_effect"
+        );
+    }
+
+    // §lifecycle I1 public seam (v-ah-host I5 ask): Session::terminate is the fold-free public way to
+    // install the Terminated marker (the host's lifecycle/terminate executor drives it; append is
+    // crate-private). Pins: it appends the marker + returns its hash, folds NOTHING (no reducer run), the
+    // session is then terminated + refuses folds, and a SECOND terminate is rejected (no double-marker).
+    #[tokio::test(flavor = "current_thread")]
+    async fn terminate_installs_the_marker_fold_free_and_is_idempotent_by_rejection() {
+        let mut s = Session::genesis(Hash::of(b"lifecycle-terminate-v1"), Hash::of(b"nonce"));
+        s.deliver(
+            inbound(),
+            None,
+            &TimerArmingReducer,
+            &timer_cap(),
+            &mut RecordingExecutor::new(),
+        )
+        .await
+        .unwrap();
+        let len_before = s.log().len();
+        assert!(!s.is_terminated());
+
+        // terminate() appends the marker (log grows by exactly 1) + returns its hash; the reducer did NOT
+        // run on it (fold-free) — the marker is the tail, cause-linked to the prior tip.
+        let by = Hash::of(b"controller-session");
+        let marker_hash = s
+            .terminate(by, "operator kill".to_string())
+            .await
+            .expect("terminate on a live session succeeds");
+        assert_eq!(
+            s.log().len(),
+            len_before + 1,
+            "terminate appends exactly one event"
+        );
+        assert!(s.is_terminated(), "the session is now terminated");
+        let tail = s.log().last().expect("tail");
+        assert_eq!(
+            tail.hash(),
+            marker_hash,
+            "terminate returns the appended marker's hash"
+        );
+        assert!(
+            matches!(&tail.body, EventBody::Terminated { by: b, reason } if *b == by && reason == "operator kill"),
+            "the tail is the Terminated marker carrying by + reason"
+        );
+
+        // A terminated session refuses folds (the I1 guard) through this seam too.
+        let refused = s
+            .deliver(
+                inbound(),
+                None,
+                &TimerArmingReducer,
+                &timer_cap(),
+                &mut RecordingExecutor::new(),
+            )
+            .await;
+        assert!(matches!(refused, Err(KernelError::FoldRefused)));
+
+        // A SECOND terminate is rejected — no double-marker (idempotent-by-rejection), log unchanged.
+        let len_after = s.log().len();
+        let second = s.terminate(by, "again".to_string()).await;
+        assert!(
+            matches!(second, Err(KernelError::FoldRefused)),
+            "terminating an already-terminated session returns FoldRefused, got {second:?}"
+        );
+        assert_eq!(
+            s.log().len(),
+            len_after,
+            "a rejected second terminate appends nothing"
         );
     }
 }
