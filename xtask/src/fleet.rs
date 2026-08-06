@@ -666,6 +666,18 @@ pub enum FleetCmd {
         #[arg(long, default_value_t = 0)]
         limit: usize,
     },
+    /// Run the LOCAL nix gate — `nix build .#checks.<arch>-linux.local-gate` — and print the verdict
+    /// (GREEN | RED | NO-CHECKS), exiting non-zero on not-landable so pr-sync can branch like `ci-status`.
+    /// The GHA-OUTAGE FALLBACK (operator idea 2026-08-06, GHA runners down): the `local-gate` aggregate
+    /// depends on the 9 merge-required aarch64 checks (ruleset-10 minus test-macos — nothing arch-specific,
+    /// so aarch64 coverage is the accepted fallback), so ONE build = a single green/red over the required
+    /// set with no GH runner. Exit: 0=green(land), 1=red, 2=no-checks(couldn't run nix — never false-green).
+    GateLocal {
+        /// The arch leg to gate on. Only `aarch64` is supported (x86/macos legs skipped per operator scope);
+        /// the fleet host is aarch64. Defaults to aarch64.
+        #[arg(long, default_value = "aarch64")]
+        arch: String,
+    },
     /// Query GitHub Actions for a pushed candidate's check verdict and print it (GREEN | RED | PENDING |
     /// NO-CHECKS) + a per-check breakdown. The polling PRIMITIVE for the CI-gated land path (operator
     /// ruling 2026-08-02: pr-sync pushes a candidate, then relies ENTIRELY on GitHub Actions for the gate
@@ -974,6 +986,7 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
         FleetCmd::RerouteUnknown { dry_run } => reroute_unknown(&fleet, dry_run),
         FleetCmd::MergeFloor { ours, theirs } => merge_floor(&ours, &theirs),
         FleetCmd::GateBatch { dry_run, limit } => gate_batch(&fleet, dry_run, limit),
+        FleetCmd::GateLocal { arch } => gate_local(&arch),
         FleetCmd::CiStatus { target } => ci_status(&target),
         FleetCmd::LaneOf { r#ref } => lane_of_cmd(&r#ref),
         FleetCmd::DispatchPlan { r#ref, agent } => dispatch_plan(&fleet, &r#ref, &agent),
@@ -7641,6 +7654,104 @@ fn ci_verdict_from_buckets<'a>(buckets: impl IntoIterator<Item = &'a str>) -> Ci
     }
 }
 
+/// The `nix` binary to invoke for the local gate, PATH-robustly. The fleet host has a Determinate
+/// multi-user nix install (`/nix/var/nix/profiles/default/bin/nix`), but a non-login/service shell (e.g.
+/// pr-sync's invocation env) may not have it on `PATH` — verified live 2026-08-06 (a bare `nix` failed to
+/// spawn while the profile path worked). So: use bare `"nix"` when it's on PATH (honors any custom
+/// install), else fall back to the standard multi-user profile path if that binary exists, else bare
+/// `"nix"` (let the spawn fail → NO-CHECKS, never a false Green). Returns the string to pass to `Command`.
+fn nix_binary() -> String {
+    // On PATH? (a login shell / CI runner) — prefer it so a custom/newer nix is honored.
+    if Command::new("nix")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success())
+    {
+        return "nix".to_string();
+    }
+    // Fall back to the standard Determinate/multi-user profile location if present.
+    const PROFILE_NIX: &str = "/nix/var/nix/profiles/default/bin/nix";
+    if std::path::Path::new(PROFILE_NIX).exists() {
+        return PROFILE_NIX.to_string();
+    }
+    // Neither — return bare `nix` so the spawn fails cleanly → NO-CHECKS (never a false Green).
+    "nix".to_string()
+}
+
+/// Map a `nix build .#checks.<sys>.local-gate` outcome to a [`CiVerdict`] — the LOCAL-GATE analogue of
+/// `ci_verdict_from_buckets`, for the GHA-outage fallback (concierge/operator 2026-08-06: GHA runners
+/// down ~3h+, integrate locally via the nix flake instead). The `local-gate` aggregate depends on the 9
+/// merge-required aarch64 checks (ruleset-10 minus test-macos), so its single exit code IS the batch
+/// verdict. Mapping: a `spawned_ok=false` (couldn't run `nix` at all) yields `NoChecks` — never a false
+/// Green, the exact conservatism `ci_status` keeps (an un-run gate must never authorize a trunk advance);
+/// `spawned_ok=true` with `build_ok=true` (exit 0, out-path produced) yields `Green`; `spawned_ok=true`
+/// with `build_ok=false` (non-zero, a required check's derivation failed) yields `Red`. There is NO
+/// `Pending` — `nix build` blocks to completion, so a concluded run is only ever pass/fail (unlike
+/// `gh pr checks`, which polls a still-running CI). Pure so the land policy is unit-tested without nix.
+fn local_gate_verdict(spawned_ok: bool, build_ok: bool) -> CiVerdict {
+    if !spawned_ok {
+        CiVerdict::NoChecks // couldn't run the gate → unknown → never Green (poll/retry, don't land)
+    } else if build_ok {
+        CiVerdict::Green // aggregate built (exit 0) → all 9 required checks green
+    } else {
+        CiVerdict::Red // aggregate failed (non-zero) → at least one required check failed
+    }
+}
+
+/// `fleet gate-local`: run the LOCAL nix gate (`nix build .#checks.<arch>-linux.local-gate`) + print the
+/// verdict (GREEN | RED | NO-CHECKS) the same way `ci-status` does, exiting non-zero on not-landable so
+/// pr-sync can branch identically to the CI-verdict path. This is the GHA-OUTAGE FALLBACK (operator idea
+/// 2026-08-06, GHA runners down): the aggregate (v-nix's flake `localGate`) depends on the 9 merge-required
+/// aarch64 checks (ruleset-10 minus test-macos — nothing arch-specific, so aarch64 coverage is the accepted
+/// fallback), so one build = a single green/red over the required set, no GH runner needed. Runs on the
+/// aarch64 fleet host; the warm c2 cache makes it fast. `arch` defaults to aarch64 (the only supported
+/// local-gate arch — x86/macos legs are explicitly skipped per the operator scope).
+fn gate_local(arch: &str) {
+    let target = format!(".#checks.{arch}-linux.local-gate");
+    // Resolve the `nix` binary PATH-robustly: the fleet host HAS nix (Determinate multi-user install at
+    // /nix/var/nix/profiles/default/bin) but a non-login shell (e.g. pr-sync's invocation env) may not have
+    // it on PATH — verified live 2026-08-06. Without this, gate_local would spawn-fail → NO-CHECKS and be
+    // useless as the fallback exactly when needed. So try bare `nix` (honors PATH if present), else fall
+    // back to the standard profile path.
+    let nix_bin = nix_binary();
+    eprintln!(
+        "gate-local: running `{nix_bin} build {target}` (local GHA-outage fallback; aarch64 required-set)…"
+    );
+    let out = Command::new(&nix_bin)
+        .args(["build", &target, "--no-link", "--print-out-paths"])
+        .status();
+    let (spawned_ok, build_ok) = match out {
+        Ok(s) => (true, s.success()),
+        Err(e) => {
+            eprintln!(
+                "gate-local: could not invoke `nix` ({e}) — NO-CHECKS (can't verify locally)."
+            );
+            (false, false)
+        }
+    };
+    let verdict = local_gate_verdict(spawned_ok, build_ok);
+    println!(
+        "decision: {}",
+        if verdict.is_landable() {
+            "LANDABLE (advance trunk)"
+        } else {
+            "HOLD (do not advance trunk)"
+        }
+    );
+    match verdict {
+        CiVerdict::Green => println!("GREEN"),
+        CiVerdict::Red => {
+            println!("RED");
+            std::process::exit(1);
+        }
+        // local_gate_verdict never returns Pending (nix build blocks to completion); NoChecks = couldn't run.
+        CiVerdict::Pending | CiVerdict::NoChecks => {
+            println!("NO-CHECKS");
+            std::process::exit(2);
+        }
+    }
+}
+
 /// `fleet ci-status <pr-or-branch>`: query GitHub Actions for the candidate's check verdict and print it
 /// (one word: GREEN | RED | PENDING | NO-CHECKS) + a per-check breakdown, exiting non-zero on RED so a
 /// shell caller can branch. This is the polling PRIMITIVE the CI-gated land path (operator ruling
@@ -13957,6 +14068,24 @@ mod tests {
         // Case-insensitive on the bucket token (a gh output-case change can't silently flip a verdict).
         assert_eq!(ci_verdict_from_buckets(["PASS", "Pass"]), Green);
         assert_eq!(ci_verdict_from_buckets(["FAIL"]), Red);
+    }
+
+    #[test]
+    fn local_gate_verdict_maps_nix_build_outcome_conservatively() {
+        use CiVerdict::*;
+        // nix build exit 0 (aggregate built, all 9 required checks green) → Green/landable.
+        assert_eq!(local_gate_verdict(true, true), Green);
+        assert!(local_gate_verdict(true, true).is_landable());
+        // nix build non-zero (a required check's derivation failed) → Red (never land a red tree).
+        assert_eq!(local_gate_verdict(true, false), Red);
+        assert!(!local_gate_verdict(true, false).is_landable());
+        // couldn't SPAWN nix (missing binary / env) → NO-CHECKS, NOT Green — same conservatism as
+        // ci_status: an un-run gate must never authorize a trunk advance (no false-green on infra failure).
+        assert_eq!(local_gate_verdict(false, false), NoChecks);
+        assert!(!local_gate_verdict(false, false).is_landable());
+        // spawn-fail dominates even if build_ok were somehow true (defensive — a not-run gate is unknown).
+        assert_eq!(local_gate_verdict(false, true), NoChecks);
+        // local_gate_verdict NEVER returns Pending (nix build blocks to completion) — only the 3 above.
     }
 
     #[test]
