@@ -4983,21 +4983,31 @@ fn async_mode_emits_env_threaded_gas_metered_fns() {
     );
     // The gas/yield trait now lives in the SHARED `cdz-rt` crate (NOT re-declared per module); the
     // module brings it into scope with a `use`, so an application implements `CdzEnv` once for all.
-    assert!(rs.contains("use cdz_rt::CdzEnv;"), "cdz_rt import:\n{rs}");
+    assert!(
+        rs.contains("use cdz_rt::{CdzEnv, DynCdzEnv, EnvClosure};"),
+        "cdz_rt import (async closures also import DynCdzEnv + EnvClosure for the boxed-future ABI):\n{rs}"
+    );
+    // The import is `#[allow(unused_imports)]`-guarded: a closure-free async program imports DynCdzEnv/
+    // EnvClosure unused, which `-D warnings` would reject.
+    assert!(
+        rs.contains("#[allow(unused_imports)] use cdz_rt::{CdzEnv, DynCdzEnv, EnvClosure};"),
+        "the cdz_rt import is unused-imports-guarded:\n{rs}"
+    );
     assert!(
         !rs.contains("pub trait CdzEnv"),
         "must NOT re-declare the trait:\n{rs}"
     );
-    // The fn is async, takes `__cdz_env: &mut __CdzE`, and charges gas at entry. Both the env TYPE param
-    // (`__CdzE`) and the env VALUE param (`__cdz_env`) are reserved `__`-names so neither collides with a
-    // user sum's Rust type nor a source parameter literally named `env`.
+    // The fn is async and takes the OBJECT-SAFE env `__cdz_env: &mut dyn DynCdzEnv` (uniform-env ABI — the
+    // same env a lifted closure fn takes, so a closure body can call top-level fns; no per-fn `<__CdzE>`
+    // generic). The env VALUE param is the reserved `__cdz_env` (never collides with a source `env`).
     assert!(
-        rs.contains("pub async fn sum_to<__CdzE: CdzEnv>(__cdz_env: &mut __CdzE, n: i64)"),
-        "signature:\n{rs}"
+        rs.contains("pub async fn sum_to(__cdz_env: &mut dyn DynCdzEnv, n: i64)"),
+        "signature (uniform &mut dyn DynCdzEnv env, no generic):\n{rs}"
     );
+    // Gas charges via the OBJECT-SAFE `consume_boxed` (the RPITIT `consume` is not callable on a `dyn`).
     assert!(
-        rs.contains("__cdz_env.consume(1).await;"),
-        "gas charge:\n{rs}"
+        rs.contains("__cdz_env.consume_boxed(1).await;"),
+        "gas charge via consume_boxed:\n{rs}"
     );
     // The recursive call is boxed-and-awaited, threading the env first.
     assert!(
@@ -5060,17 +5070,21 @@ fn async_boxes_only_a_call_whose_future_is_self_referential() {
 
 #[test]
 fn async_env_type_param_does_not_collide_with_a_user_sum_named_e() {
-    // REGRESSION: the async env type param was a bare `E`; a user sum `(type E …)` maps to `enum E`, so
-    // `E::A` in the constructing code resolved to the type PARAMETER, not the enum (`no associated item
-    // named A`). The param is now the reserved `__CdzE`, so the enum `E` is unshadowed and constructs.
+    // The async env is now the OBJECT-SAFE `&mut dyn DynCdzEnv` VALUE param — there is NO generic env TYPE
+    // parameter at all, so a user sum `(type E …)` → `enum E` can never be shadowed by one (the earlier
+    // bare-`E`-type-param collision is structurally impossible now). Pin that: the enum emits + constructs,
+    // and no async fn header carries ANY generic env param.
     let rs = compile_rust_async(
         "(module m (type E (A Int64) (B Int64)) (def (main) (E.B 7)) (export main))",
     );
     assert!(rs.contains("pub enum E {"), "user enum E emitted:\n{rs}");
-    assert!(rs.contains("<__CdzE: CdzEnv>"), "reserved env param:\n{rs}");
     assert!(
-        !rs.contains("<E: CdzEnv>"),
-        "no bare-E param collision:\n{rs}"
+        rs.contains("pub async fn main(__cdz_env: &mut dyn DynCdzEnv)"),
+        "uniform-env signature, no generic env param:\n{rs}"
+    );
+    assert!(
+        !rs.contains(": CdzEnv>"),
+        "no generic env type param on any async fn:\n{rs}"
     );
     // It compiles (the enum `E` and the env param no longer collide).
     let driver = r#"
@@ -6637,63 +6651,100 @@ fn rustc_roundtrip_host_closure_factory_compound_result_s3() {
 }
 
 #[test]
-fn async_lifted_closure_with_a_call_free_body_emits_a_sync_fn() {
-    // HOST-CLOSURE on `--target rust-async`: a lambda-lifted closure whose body makes NO runtime call
-    // (pure arithmetic / branches / runtime ops — the bulk of the host-closure corpus) emits as an
-    // ORDINARY SYNC `fn __lifted_k` even under async mode. The only body-emit site that threads the
-    // gas/yield `env` (and awaits) is the `Core::Call` arm, so a call-free body compiles byte-identically
-    // to sync; the ENCLOSING factory is the `async fn` that awaits the closure VALUE, not its call.
+fn async_lifted_closure_call_free_body_emits_env_closure_uniform_abi() {
+    // OPTION A (uniform async closure ABI): on `--target rust-async` EVERY lifted closure — call-free
+    // included — emits as an `async fn __lifted_k(env: &mut dyn DynCdzEnv, …)` whose VALUE is
+    // `Rc<dyn EnvClosure<A,R>>` (a per-closure synth `struct __Clos_k` + `impl EnvClosure`). Uniform so a
+    // `Ty::Fn` TYPE position can spell the value form (`async_closure_type`) without observing
+    // `body_has_call` (which a type can't see). A call-free body's env is present-but-unused.
     let both = compile_rust_async(
         "(module m (def (both (: a Int64) (: b Int64)) (fn ((: x Int64)) (+ (+ a b) x))) (export both))",
     );
-    // The factory is an async fn returning the Rc<dyn Fn> handle (its captures leading its own params).
+    // The factory is an async fn RETURNING the EnvClosure handle (its captures lead its own params). Its
+    // env is the uniform object-safe `&mut dyn DynCdzEnv` (no generic).
     assert!(
         both.contains(
-            "pub async fn both<__CdzE: CdzEnv>(__cdz_env: &mut __CdzE, a: i64, b: i64) -> std::rc::Rc<dyn Fn(i64) -> i64>"
+            "pub async fn both(__cdz_env: &mut dyn DynCdzEnv, a: i64, b: i64) -> std::rc::Rc<dyn cdz_rt::EnvClosure<i64, i64>>"
         ),
-        "the factory is an async fn returning the closure handle:\n{both}"
+        "the factory is an async fn returning the EnvClosure handle:\n{both}"
     );
-    // The lifted closure body itself is a plain SYNC `fn` — NOT `async fn __lifted`, NO env param.
+    // The lifted closure body is now an `async fn` taking the object-safe `&mut dyn DynCdzEnv` (uniform ABI).
     assert!(
-        both.contains("fn __lifted_0(__cap0: i64, __cap1: i64, x: i64) -> i64")
-            && !both.contains("async fn __lifted_0"),
-        "the call-free lifted closure body is a sync fn (no env/await):\n{both}"
+        both.contains("async fn __lifted_0(__cdz_env: &mut dyn DynCdzEnv, __cap0: i64, __cap1: i64, x: i64) -> i64"),
+        "the call-free lifted closure body is an async fn threading &mut dyn DynCdzEnv:\n{both}"
     );
-    // A no-capture closure (`(fn (x) (+ x 1))`) likewise: async factory, sync lifted body.
-    let inc =
-        compile_rust_async("(module m (def (main) (fn ((: x Int64)) (+ x 1))) (export main))");
+    // The per-closure synth struct carries the captures + impls EnvClosure, forwarding env + caps + arg.
     assert!(
-        inc.contains("pub async fn main<__CdzE: CdzEnv>(__cdz_env: &mut __CdzE) -> std::rc::Rc<dyn Fn(i64) -> i64>")
-            && inc.contains("fn __lifted_0(x: i64) -> i64")
-            && !inc.contains("async fn __lifted_0"),
-        "a no-capture closure crosses on rust-async as a sync lifted fn under an async factory:\n{inc}"
+        both.contains("struct __Clos_0")
+            && both.contains("impl cdz_rt::EnvClosure<i64, i64> for __Clos_0")
+            && both.contains(
+                "Box::pin(__lifted_0(__cdz_env, self.__c0.clone(), self.__c1.clone(), __a0))"
+            ),
+        "the closure value is a per-closure struct impl'ing EnvClosure:\n{both}"
+    );
+    // The `Core::Closure` VALUE builds the struct + casts to `Rc<dyn EnvClosure>`.
+    assert!(
+        both.contains("std::rc::Rc::new(__Clos_0 { __c0: __c0, __c1: __c1 }) as std::rc::Rc<dyn cdz_rt::EnvClosure<i64, i64>>"),
+        "the closure value is Rc::new(__Clos_0{{..}}) as Rc<dyn EnvClosure>:\n{both}"
     );
 }
 
 #[test]
-fn async_lifted_closure_whose_body_makes_a_call_still_declines() {
-    // The BOUNDARY of the option-C slice: a lifted closure whose body reaches a runtime `Core::Call` would
-    // name an async callee (needing `env` threaded in) and cannot be a plain `Fn(A) -> R` — that boxed-
-    // future closure ABI is the deferred slice. Such a body must DECLINE cleanly on rust-async (not emit
-    // an uncompilable sync call to an async fn). A closure that captures a recursive helper it calls is the
-    // shape: the closure body's `(rec …)` is a `Core::Call`. (The SAME program compiles on sync `rust`.)
+fn async_lifted_closure_whose_body_makes_a_call_now_emits_env_closure() {
+    // OPTION A UNLOCK: a lifted closure whose body reaches a runtime `Core::Call` (an async callee needing
+    // env threaded + awaited) — previously a clean DECLINE — now EMITS under the EnvClosure ABI: the lifted
+    // fn is an `async fn` whose body awaits the call, and the closure value is `Rc<dyn EnvClosure>`. This is
+    // the shape that defeated the `Rc<dyn Fn>` attempts (a `Fn` closure can't return a future borrowing its
+    // own `&mut` env); `EnvClosure`'s generic `call<'a>` method ties the future to the env borrow.
+    // A recursive higher-order consumer `ap` keeps the closure as a RUNTIME VALUE it applies via `.call`.
     let src = "(module m \
-       (def (rec (: n Int64)) (if (= n 0) 0 (+ n (rec (+ n -1))))) \
-       (def (mk (: base Int64)) (fn ((: x Int64)) (+ base (rec x)))) (export mk))";
-    // Sync rust emits it (the lifted body's call is a plain sync call).
+       (def (ap (: g (-> Int64 Int64)) (: n Int64) (: x Int64)) (if (= n 0) x (ap g (+ n -1) (g x)))) \
+       (def (run) (let ((inc (fn ((: y Int64)) (+ y 1)))) (ap inc 5 10))) (export run))";
+    // Sync rust emits it (the closure is a plain `Rc<dyn Fn>` applied `(g)(x)`).
     assert!(
         compile_rust_result(src).is_ok(),
-        "the call-in-closure-body program compiles on SYNC rust"
+        "the higher-order closure program compiles on SYNC rust"
     );
-    // Async rust declines it cleanly (the deferred boxed-future closure ABI), with the specific message.
-    match compile_rust_async_result(src) {
-        Ok(s) => panic!("expected a clean async decline, but it emitted:\n{s}"),
-        Err(diags) => assert!(
-            diags
-                .iter()
-                .any(|d| d.contains("async lambda-lifted closure whose body makes a call")),
-            "declines with the call-in-body message, got: {diags:?}"
-        ),
+    // Async rust now EMITS it (no decline): the consumer takes `g: Rc<dyn EnvClosure<i64,i64>>` and applies
+    // it `g.call(env, x).await`, and the closure value builds an `EnvClosure` struct.
+    let a = compile_rust_async(src);
+    assert!(
+        a.contains("g: std::rc::Rc<dyn cdz_rt::EnvClosure<i64, i64>>"),
+        "the recursive consumer takes the EnvClosure by value:\n{a}"
+    );
+    assert!(
+        a.contains(".call(__cdz_env,") && a.contains(".await"),
+        "the consumer applies the closure via .call(env, arg).await:\n{a}"
+    );
+    assert!(
+        a.contains("impl cdz_rt::EnvClosure<i64, i64> for __Clos_0"),
+        "the closure value impls EnvClosure:\n{a}"
+    );
+    // e2e: rustc-roundtrip against cdz-rt proves the language wall is cleared (the `Rc<dyn Fn>` attempts
+    // could not compile THIS shape — a closure value passed to a recursive consumer + `.call`ed through
+    // `&mut dyn DynCdzEnv`). inc applied 5× to 10 = 15.
+    let driver = r#"
+struct Meter;
+impl cdz_rt::CdzEnv for Meter {
+    async fn consume(&mut self, _g: u64) {}
+}
+fn block_on<F: core::future::Future>(mut f: F) -> F::Output {
+    use core::task::*;
+    fn n(_: *const ()) {} fn c(_: *const ()) -> RawWaker { r() }
+    fn r() -> RawWaker { RawWaker::new(core::ptr::null(), &V) }
+    static V: RawWakerVTable = RawWakerVTable::new(c, n, n, n);
+    let w = unsafe { Waker::from_raw(r()) };
+    let mut cx = Context::from_waker(&w);
+    let mut f = unsafe { core::pin::Pin::new_unchecked(&mut f) };
+    loop { if let Poll::Ready(v) = f.as_mut().poll(&mut cx) { return v; } }
+}
+fn main() {
+    let mut e = Meter;
+    println!("{}", block_on(prog::run(&mut e)));
+}
+"#;
+    if let Some(out) = rustc_run_driver(&a, driver) {
+        assert_eq!(out, "15", "inc applied 5 times to 10 = 15:\n{a}");
     }
 }
 

@@ -1,7 +1,14 @@
 # DESIGN — Rust `rust-async` backend: emit for lambda-lifted closures
 
-**Status:** OPTION C LANDED (v-rust-backend, MR `c6f1f3f2`, 2026-07-20) — rust-async 3510→3869/0 (+359).
-Option A (await-in-closure-body, boxed-future ABI + `DynCdzEnv` shim) remains. UNTRACKED scratch.
+**Status:** OPTION A BUILT + GATED (v-rust-backend, 2026-08-06) — the await-in-closure-body slice is DONE
+via the `EnvClosure` per-closure-struct ABI (built on v-runtime's `DynCdzEnv` #2350 + `EnvClosure` #2361).
+`21-host-closures` + `09-functions` rust-async are 0-fail; full rust-async corpus 5778/0 (0 regress vs
+baseline, 3 newly-passing); sync rust byte-identical (5891/0); rcdzc lib 2548/0. **The `Rc<dyn Fn>` ABI
+in the "design crux" below was superseded — a `Fn` closure CANNOT return a future borrowing its own `&mut`
+env (E0271 / lifetime); the object-safe `EnvClosure` trait (a generic `call<'a>` METHOD) is what works.**
+See the "OPTION A AS BUILT" section at the bottom for the delivered shape.
+(Historical: OPTION C LANDED MR `c6f1f3f2`, 2026-07-20, rust-async 3510→3869/0; Option A now subsumes it —
+call-free async closures are ALSO boxed-future under the uniform ABI, so the two are one path.)
 
 ## ✅ Option C landed (call-free closure bodies)
 `emit_lifted_lambda` emits a call-free async lifted body as a plain SYNC `fn` (forced `Mode::Sync` after
@@ -149,3 +156,40 @@ But a `Ty::Fn` TYPE position (a factory RESULT, a consumer PARAM, a struct FIELD
 **THE SOUND RULING (owner decision — ONE async closure ABI):** in async mode ALL lifted closures are BOXED-FUTURE, call-free included. Drop the "call-free async lifted fn stays a sync `fn`" branch of edits 1-3; a call-free async closure becomes `async fn __lifted_k(env: &mut dyn DynCdzEnv, …)` (env unused but present) whose value is the boxed-future `Rc<dyn Fn(&mut dyn DynCdzEnv, A) -> Pin<Box<…>>>`. Then `async_closure_type`'s "every `Ty::Fn` → boxed-future" is CORRECT, because the value form is now uniform — type and value always agree, no per-value fork a type position can't observe. `Core::CallClosure` in async mode is then ALWAYS `Box::pin((c)(env, args)).await` (no `body_has_call` guard needed either — the indirectly-held-closure case that attempt-1 couldn't distinguish is resolved by uniformity).
 
 **BLAST RADIUS (why this is a measure-first MR, not a quiet edit):** the ~294 Option-C cases SWITCH ABI (sync-form → boxed-future). The gate HARNESS (`xtask/main.rs`) drives a host-closure factory/consumer by calling the closure VALUE; under uniform boxed-future it must call EVERY async closure as `Box::pin((clos)(&mut env, args)).await` through `&mut dyn DynCdzEnv` — including the call-free ones it currently calls synchronously. So edit 5 (harness) grows to cover the call-free path too. Sequence the MR: (1) uniform boxed-future in emit_lifted_lambda + Core::Closure + CallClosure (drop the call-free sync branch), (2) `async_closure_type` at sig sites, (3) harness uniform boxed-future call, (4) `cargo xtask gate --check --target rust` byte-identical (0 regress) + `--target rust-async` re-measure — EXPECT the 294 to stay green under the new ABI (not silently drop) + the call-bearing cases to newly pass. If the 294 can't be kept green under uniform boxed-future in one MR, that's the true increment boundary — land uniform-ABI-for-call-free FIRST (re-green the 294 under boxed-future, 0 net new but ABI unified), THEN call-bearing on top. Re-stash edits 1-3 and rework from the uniform-ABI shape, NOT the dual-form shape.
+
+## ✅ OPTION A AS BUILT (2026-08-06) — the `EnvClosure` uniform closure ABI
+The delivered shape (supersedes the `Rc<dyn Fn>`-based crux above, which hits a Rust language wall).
+
+**The ABI.** In `--target rust-async`, EVERY lifted closure is BOXED-FUTURE and uniform:
+- The env is the OBJECT-SAFE `&mut dyn DynCdzEnv` EVERYWHERE — every top-level `async fn` AND every lifted
+  closure fn takes it (no per-fn `<__CdzE: CdzEnv>` generic anymore). Gas charges via `consume_boxed(1)`.
+  Uniform env is why a closure body can call top-level fns (a generic `__CdzE` param rejected the `dyn
+  DynCdzEnv` a closure carries — `dyn DynCdzEnv: CdzEnv` unsatisfied). A concrete caller env unsizes to
+  `&mut dyn DynCdzEnv` at the call site.
+- A closure VALUE is `Rc<dyn cdz_rt::EnvClosure<A, R>>` — a per-closure synth `struct __Clos_k { <captures> }`
+  with `impl EnvClosure<A,R>` whose `call<'a>(&self, env, arg: A) -> Pin<Box<dyn Future<Output=R> + 'a>>`
+  boxes the lifted fn's future. `A` = the single arg (arity 1), a TUPLE of args (arity ≥2), or `()` (arity
+  0) — the flat lifted params tupled into one `A`, destructured inside `call`. `EnvClosure`'s generic
+  `call<'a>` METHOD is what a bare `dyn Fn` can't be: `'a` ties the returned future to the env borrow.
+- `Core::Closure` async → `Rc::new(__Clos_k { .. }) as Rc<dyn EnvClosure<A,R>>`; `Core::CallClosure` async →
+  `closure.call(env, arg).await` (hoisting any `.await`-bearing operand into a `let` first, else two live
+  `&mut env` borrows = E0499). `Box::pin`/`Pin<Box<..>>` are fully qualified `::std::boxed::Box` (a user sum
+  named `Box` emits `enum Box` which would shadow std `Box`).
+
+**Type positions.** `types::async_closure_type` mirrors `rust_type` but every `Ty::Fn` → `Rc<dyn
+EnvClosure<A,R>>` (recursing compounds). Applied via `mod::async_or_rust_type(ty, mode)` at ALL async
+signature-emit sites: def/lifted param+result, `Core::Closure` dyn_ty, collection VALUE/element annotations
+(`Core::MapNew`/`Core::ListNew`), and ENUM PAYLOAD types (`enums::render_payload_ty` threads `mode`, so a
+closure-payload sum's `enum` field matches the `Rc<dyn EnvClosure>` value a `Core::SumNew` builds). Sync mode
++ any closure-free type is byte-identical to `rust_type`.
+
+**Gate harness (`xtask/main.rs`).** `names_closure_value` recognizes both `Rc<dyn Fn(` and `Rc<dyn
+[cdz_rt::]EnvClosure<`. A factory's returned closure is driven `{ let __h = block_on(factory);
+block_on(__h.call(&mut env, arg)) }`; a consumer's producer-supplied closure is a `block_on(prog::mk(&mut
+env))` handle passed to the consumer (whose body `.call`s it). A NULLARY async factory returning `Rc<dyn
+EnvClosure>` is classified `Factory{cap:0}` (a peeled-fn-item coercion can't wrap an async fn).
+
+**cdz-rt (v-runtime).** `DynCdzEnv` (object-safe `consume_boxed`, #2350) + `EnvClosure<A,R>` (#2361) — both
+additive rlib-only, no `REQUIRED_RUNTIME_HASH` bump. The env-ABI perf tradeoff (dyn-dispatch gas vs
+monomorphized) is backlogged to the concierge: option B (`impl CdzEnv for dyn DynCdzEnv`, a v-runtime land)
+keeps top-level→top-level monomorphized if async perf ever matters. Not gate-measured as hot; deferred.
