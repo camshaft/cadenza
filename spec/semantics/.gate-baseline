@@ -397,6 +397,7 @@ pass	TWO closures capture the SAME heap map and the map outlives both applicatio
 pass	TWO closures capturing one let-bound host call share ONE firing (in the exported def)
 pass	TWO closures escaping one handle carry DISTINCT captured state reads
 pass	TWO closures minted by the same op at DIFFERENT states each keep their own snapshot
+pass	TWO different two-site ops dispatched in segments fold (multi-multi mixing, A A B B)
 pass	TWO distinct nonzero BigInt literal probes dispatch in one recursive fn
 pass	TWO guarded map arms over a PARTIAL-CONST map fall through, each re-resolving its value binder
 pass	TWO loop-carried ropes each rebind to derived strings every recursion step
@@ -693,6 +694,7 @@ pass	a MAP-valued key normalizes its Rational VALUES for the outer key hash
 pass	a MATCH as a NON-FINAL multi-binding let init selects the binding value per call
 pass	a MATCH-arm perform in a self-recursive performer threads the advance across recursion (rw-match)
 pass	a MATCH-dispatched mutual group with the perform in one arm and the mutual call in another folds
+pass	a MATCH-shaped arm with three resume sites folds (sum-dispatch, not if)
 pass	a MAX-fold over quantities compares through the erased unit wrapper per step
 pass	a MAX-fold threads a CONDITIONAL accumulator over a list with a runtime element
 pass	a MEDIAN-OF-3 filter smooths interior spikes while endpoints pass through unchanged
@@ -984,6 +986,8 @@ pass	a THREE-deep member-access chain reads a RUNTIME leaf through nested record
 pass	a THREE-deep transitive closure-capture chain applies with each level's own capture live
 pass	a THREE-level nest — Option of Result of a USER sum — matches through all three at runtime
 pass	a THREE-parameter op arm binds all three parameters and the state
+pass	a THREE-site and a TWO-site arm interleaved fold (site counts mix freely)
+pass	a THREE-site arm (nested if, three resume sites) folds
 pass	a TOGGLE fold flips set membership per occurrence — odd count in, even count out
 pass	a TOPOLOGICAL sort drains min-ready nodes and verifies every edge points forward
 pass	a TRANSPOSE of a 2x3 list-of-rows walks columns across row spines
@@ -3538,6 +3542,7 @@ pass	a top-level value definition binds a record projected by the program's func
 pass	a top-level value definition binds a sum value matched by the program's functions
 pass	a top-level value definition may reference a value defined later in the module
 pass	a total match on a partly-un-built sum compiles its dead arm's unconstrained payload
+pass	a trailing ABORT after multi-site performs reads the fully-advanced state
 pass	a trailing bytes segment accepts the leftover the fixed segments leave
 pass	a trailing digit separator is a malformed literal, not the digits with it dropped
 pass	a trailing state-READING single-site op is served after one two-site perform
@@ -5376,6 +5381,7 @@ pass	the absorption law holds on runtime-element sets
 pass	the additive-zero identity preserves a boundary-crossing runtime operand
 pass	the and-complement folds to zero on an unsigned type but the or-complement is the width all-ones not -1
 pass	the arithmetic operator rejects a float-first mixed operand pair
+pass	the arm-shape rule is FRAME-RELATIVE: a nested single-site handler dispatching mid-sequence is invisible
 pass	the b2 match predicate LICENSES the elision: the discharged no-overflow proof matches the obligation and its hyps are covered by the node precondition
 pass	the b2 match predicate REJECTS a proof discharged under a FOREIGN hypothesis not in the node precondition (soundness — no elision under wrong assumptions)
 pass	the bitwise absorption law folds x-and-(x-or-y) and x-or-(x-and-y) to x on runtime operands
@@ -5465,6 +5471,7 @@ pass	the identity function applied to an integer returns the integer
 pass	the implication-extended kernel Thm stays unforgeable — Thm.Seq of a bogus implication outside is CDZ0214
 pass	the inclusive Int8 boundaries fit in a runtime branch and one-past rejects
 pass	the int-to-float generator is order-preserving (a < b implies of a <= of b — NON-decreasing)
+pass	the interleaved middle op SERVES when made two-site itself (the shape-not-position witness)
 pass	the intersection contains the elements in both sets
 pass	the intersection of disjoint sets is empty
 pass	the intersection of sets of TUPLES matches elements by their whole-tuple content
@@ -5755,6 +5762,7 @@ pass	two stacked erased newtypes wrapping a sum peel both no-op layers before th
 pass	two structural values of the same shape are equal
 pass	two sum arms with textually identical bodies still bind their own variant's payload
 pass	two sum types whose names differ only by punctuation stay DISTINCT types
+pass	two two-site ops INTERLEAVED A-B-A fold (order does not matter when all arms are multi-site)
 pass	two unequal runtime strings compare false by their contents
 pass	two variants of the same sum compare unequal regardless of operand order
 pass	two variants past the first each carry a different nested sum, over a runtime discriminant

@@ -1997,6 +1997,135 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 21 Int64)))
 
+(case "TWO different two-site ops dispatched in segments fold (multi-multi mixing, A A B B)"
+  (doc    "Arm-shape uniformity, the two-op face: BOTH arms are two-site, dispatched as two siftAs then
+           two siftBs — 20 pass (s 1), 3 fail, 7 pass ×2 (s 11), 4 fail → 20 + 0 + 14 − 1 = 33. With
+           the interleaved sibling below, pins that any mix of MULTI-site arms folds regardless of
+           dispatch grouping — the single-site-among-multi decline is about arm SHAPE, not op count.")
+  (input  (do
+            (effect St (op siftA (-> Int64 Int64)) (op siftB (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle St 0
+                ((siftA (v) s (if (> v 10) (resume v (+ s 1)) (resume 0 s)))
+                 (siftB (v) s (if (> v 5) (resume (* v 2) (+ s 10)) (resume -1 s))))
+                (+ (St.siftA 20) (+ (St.siftA 3) (+ (St.siftB 7) (St.siftB 4))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 33 Int64)))
+
+(case "two two-site ops INTERLEAVED A-B-A fold (order does not matter when all arms are multi-site)"
+  (doc    "The interleave face of multi-multi mixing: siftA, then siftB, then siftA again — the exact
+           dispatch pattern that DECLINES when the middle arm is single-site folds when it is two-site.
+           20 pass (s 1), 7 doubled (s 11), 30 pass (s 12) → 20 + 14 + 30 = 64. The strongest witness
+           that the boundary is arm-shape uniformity, not dispatch position.")
+  (input  (do
+            (effect St (op siftA (-> Int64 Int64)) (op siftB (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle St 0
+                ((siftA (v) s (if (> v 10) (resume v (+ s 1)) (resume 0 s)))
+                 (siftB (v) s (if (> v 5) (resume (* v 2) (+ s 10)) (resume -1 s))))
+                (+ (St.siftA 20) (+ (St.siftB 7) (St.siftA 30)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 64 Int64)))
+
+(case "the interleaved middle op SERVES when made two-site itself (the shape-not-position witness)"
+  (doc    "The decisive discriminator: the sift-peek-sift order whose single-site peek declines is
+           served verbatim once peek's arm is TWO-site — `(if (> s 0) (resume s s) (resume -1 s))`.
+           sift 20 → 20 (s 1), peek → 1 (s > 0 path), sift 30 → 30 (s 2) → 51. Same program order,
+           only the arm shape changed: the refold rebuilds all dispatched arms in one pass and serves
+           any all-multi-site mix.")
+  (input  (do
+            (effect St (op sift (-> Int64 Int64)) (op peek (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St 0
+                ((sift (v) s (if (> v 10) (resume v (+ s 1)) (resume 0 s)))
+                 (peek (u) s (if (> s 0) (resume s s) (resume -1 s))))
+                (+ (St.sift 20) (+ (St.peek) (St.sift 30)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 51 Int64)))
+
+(case "a THREE-site arm (nested if, three resume sites) folds"
+  (doc    "The refold generalizes past two resume sites: a nested-if arm with THREE resumes — >20 pays
+           ×10 and jumps the state, >10 passes and counts, else zero-holds. rank 25 → 250 (s 100),
+           rank 15 → 15 (s 101), rank 5 → 0 → 265. Site count is not the boundary; arm-shape mixing
+           is.")
+  (input  (do
+            (effect St (op rank (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle St 0
+                ((rank (v) s
+                  (if (> v 20) (resume (* v 10) (+ s 100))
+                    (if (> v 10) (resume v (+ s 1)) (resume 0 s)))))
+                (+ (St.rank 25) (+ (St.rank 15) (St.rank n)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 265 Int64)))
+
+(case "a MATCH-shaped arm with three resume sites folds (sum-dispatch, not if)"
+  (doc    "The refold is not if-specific: the arm dispatches on `(% v 3)` through a MATCH with a resume
+           in every branch — 6 → ×10 (s+1), 7 → identity, 5 → negated (s+100): 60 + 7 − 5 = 62. Pins
+           multi-site service for match-shaped arm bodies alongside the nested-if face above.")
+  (input  (do
+            (effect St (op class (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle St 0
+                ((class (v) s
+                  (match (% v 3)
+                    (0 (resume (* v 10) (+ s 1)))
+                    (1 (resume v s))
+                    (_ (resume (- 0 v) (+ s 100))))))
+                (+ (St.class 6) (+ (St.class 7) (St.class n)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 62 Int64)))
+
+(case "a THREE-site and a TWO-site arm interleaved fold (site counts mix freely)"
+  (doc    "Exact site-count uniformity is NOT required — a 3-site rank and a 2-site sift interleave
+           (rank, sift, rank) and fold: 250 (s 100), 7 (s 110), 15 (s 111) → 272. Only the
+           multi-vs-single distinction gates the mix.")
+  (input  (do
+            (effect St (op rank (-> Int64 Int64)) (op sift (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle St 0
+                ((rank (v) s
+                  (if (> v 20) (resume (* v 10) (+ s 100))
+                    (if (> v 10) (resume v (+ s 1)) (resume 0 s))))
+                 (sift (v) s (if (> v 5) (resume v (+ s 10)) (resume -1 s))))
+                (+ (St.rank 25) (+ (St.sift 7) (St.rank n)))))
+            (export main)))
+  (call   main (: 15 Int64)) (output (: 272 Int64)))
+
+(case "a trailing ABORT after multi-site performs reads the fully-advanced state"
+  (doc    "The abort corollary of arm-shape mixing: an aborting arm has ZERO resume sites, so it counts
+           as non-multi — dispatched between multi-site performs it declines, but TRAILING it folds:
+           sift 20 (s 1), sift 30 (s 2), then bail aborts with s·10 = 20 and the +1000 shell proves
+           the continuation is discarded → 1020. The abort must read the state BOTH sifts advanced.")
+  (input  (do
+            (effect St (op sift (-> Int64 Int64)) (op bail (-> Unit Int64)))
+            (def (main (: n Int64))
+              (+ 1000
+                (handle St 0
+                  ((sift (v) s (if (> v 10) (resume v (+ s 1)) (resume 0 s)))
+                   (bail (u) s (* s 10)))
+                  (+ (St.sift 20) (+ (St.sift n) (St.bail))))))
+            (export main)))
+  (call   main (: 30 Int64)) (output (: 1020 Int64)))
+
+(case "the arm-shape rule is FRAME-RELATIVE: a nested single-site handler dispatching mid-sequence is invisible"
+  (doc    "A multi-site OUTER handler folds even though a nested single-site handler (a SEPARATE
+           effect) dispatches between the outer sifts — from the outer refold's frame its own dispatch
+           sequence is contiguous sift-sift; the inner bump belongs to the nested frame below. 20 (s 1)
+           + 100 (inner, t → 110) + 30 (s 2) → 150. (The inverse — an OUTER perform escaping through a
+           multi-site INNER handler's chain — declines: that dispatch IS foreign at the inner frame.)")
+  (input  (do
+            (effect Out (op sift (-> Int64 Int64)))
+            (effect In (op bump (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle Out 0
+                ((sift (v) s (if (> v 10) (resume v (+ s 1)) (resume 0 s))))
+                (handle In 100
+                  ((bump (u) t (resume t (+ t 10))))
+                  (+ (Out.sift 20) (+ (In.bump) (Out.sift n))))))
+            (export main)))
+  (call   main (: 30 Int64)) (output (: 150 Int64)))
+
 (case "a two-site arm branching on the OP ARGUMENT with a hit-count state folds (threshold sift)"
   (doc    "The op-argument face of the served multi-site family: `(if (> v 10) …)` reads the op PARAM;
            the pass path resumes the value and counts it, the fail path resumes 0 and holds. Three sifts
