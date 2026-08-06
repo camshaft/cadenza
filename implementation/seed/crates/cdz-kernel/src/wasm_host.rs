@@ -3526,6 +3526,10 @@ fn event_to_guest_inputs(body: &EventBody) -> (ContentType, Option<Vec<u8>>, Opt
         // FoldFailed is a kernel-recorded failure event, not a fold input (the loop never folds it —
         // `observable()` excludes it); map defensively rather than panic.
         EventBody::FoldFailed { .. } => (synthetic("fold-failed"), None, None),
+        // Terminated is the durable terminal marker (§lifecycle I1); it is never folded (a terminated
+        // session refuses all folds via the FoldRefused guard, and `observable()` excludes it) — map
+        // defensively rather than panic.
+        EventBody::Terminated { .. } => (synthetic("terminated"), None, None),
     }
 }
 
