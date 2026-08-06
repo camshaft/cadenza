@@ -642,6 +642,15 @@ impl AgentHost {
         }
     }
 
+    /// Borrow the host-owned CANONICAL shared name store (`None` for a share-less host). The read-back dual
+    /// of [`with_canonical_store`](Self::with_canonical_store): a driver observes the shared directory the
+    /// host maintains (group memberships after death-retract, published pointers), e.g. to `resolve_all` a
+    /// group post-eviction. Read-only — the host owns the mutation policy (session-write fold-back +
+    /// §I5 death-retract).
+    pub fn canonical_store(&self) -> Option<&cdz_kernel::name_store::NameStore> {
+        self.canonical.as_ref()
+    }
+
     /// Register a new running session under `id`. Returns the id back for convenience. If `id` already
     /// exists it is REPLACED (the caller chose to restart it) — the old session is dropped; a caller that
     /// wants collision-detection checks [`AgentHost::contains`] first.
@@ -965,9 +974,72 @@ impl AgentHost {
         // (FoldRefused) was already removed by its first terminate, so there is nothing to remove and the
         // rejection is surfaced as-is.
         if outcome.is_ok() {
+            // §session-directory I5 death-retract (concierge-ruled OPTION B, scan-on-death): a terminated
+            // session is AUTO-EVICTED from every group it was a member of (multicast stops fanning out to
+            // it). The dead session's id IS its genesis hash = the member value in a session-group OR-set, so
+            // retract by that hash. Done BEFORE `remove` while the id is in hand.
+            self.retract_dead_member_from_groups(id);
             self.remove(id);
         }
         Some(outcome)
+    }
+
+    /// §session-directory I5 — evict a dead member from every group in the host-owned CANONICAL name store
+    /// (concierge-ruled OPTION B, SCAN-ON-DEATH). For each group where `dead`'s SessionId (= its genesis
+    /// hash) has a live add-tag, append an observed-`remove` carrying that exact tag (add-wins: retracts
+    /// precisely the add it observed, so a concurrent re-add with a fresh tag would survive — though a dead
+    /// session won't re-add). No-op when there is no canonical store (the v0.2 per-session-store mode has no
+    /// host-writable groups — the host can only READ a session's own store via the kernel, so death-retract
+    /// there would need a kernel mut-seam / owner-driven path; v0 ships the canonical-store path the shared
+    /// directory uses). `suspend` is transparent (only terminate evicts).
+    ///
+    /// ⚠ COST (concierge-flagged, documented): O(groups × ops) per death — it scans every group's OR-set log
+    /// in the canonical store. Fine at v0 scale (deaths rare, few groups); the REVISIT TRIGGER is a central
+    /// group-store OR a measured perf issue (whichever first), at which point a session→groups reverse index
+    /// (or the central store's own index) becomes the O(1) path. See the directory-i5 index note.
+    fn retract_dead_member_from_groups(&mut self, dead: &SessionId) {
+        let Some(canonical) = &mut self.canonical else {
+            return; // per-session-store mode: no host-writable group set to retract from
+        };
+        // The member value is the dead session's genesis hash (= its SessionId hex parsed back to a Hash). A
+        // non-hex id can't be a group member value → nothing to retract.
+        let Some(dead_hash) = Hash::from_hex(dead.as_str()) else {
+            return;
+        };
+        // Collect (group, tag) pairs for the dead member's LIVE adds (an add-tag not already covered by a
+        // remove), grouped by name — snapshot first (can't borrow the store's logs while appending).
+        let mut retract: Vec<(String, (Hash, u64))> = Vec::new();
+        {
+            use std::collections::HashSet;
+            let ops = canonical.to_group_ops(); // Vec<(name, MemberOp)> over all groups
+                                                // Per group, the set of removed tags (to skip already-retracted adds).
+            let removed: HashSet<(&str, (Hash, u64))> = ops
+                .iter()
+                .filter(|(_, op)| !op.add)
+                .map(|(n, op)| (n.as_str(), op.tag))
+                .collect();
+            for (name, op) in &ops {
+                if op.add && op.member == dead_hash && !removed.contains(&(name.as_str(), op.tag)) {
+                    retract.push((name.clone(), op.tag));
+                }
+            }
+        }
+        if retract.is_empty() {
+            return;
+        }
+        for (name, (origin, seq)) in &retract {
+            // add_op appends the op directly to the canonical store's group log (host-owned; not via the
+            // kernel effect path — the host is the authority for a death-retract, not a guest reducer).
+            let _ = canonical.add_op(
+                name,
+                cdz_kernel::name_store::MemberOp::remove(dead_hash, *origin, *seq),
+            );
+        }
+        tracing::info!(
+            dead = %dead.as_str(),
+            groups = retract.len(),
+            "session-directory I5: auto-evicted a terminated session from its groups (scan-on-death)"
+        );
     }
 
     /// How many sessions are registered.
@@ -1641,6 +1713,59 @@ mod tests {
             "a terminated session is removed from the registry"
         );
         assert_eq!(host.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn terminate_evicts_the_dead_session_from_its_groups_i5_scan_on_death() {
+        // §session-directory I5 (scan-on-death, option B): terminating a session AUTO-EVICTS it from every
+        // group it was a member of in the host-owned canonical store, while OTHER members stay. Suspend would
+        // be transparent; only terminate evicts.
+        use cdz_kernel::name_store::{MemberOp, NameStore};
+        const GROUP: &str = "session/room/lobby";
+
+        // Two members: the victim (whose session we'll terminate) + a survivor. A group member value is a
+        // session's genesis hash; the victim's SessionId must be that hash's hex so terminate can retract it.
+        let victim_hash = Hash::of(b"victim-genesis");
+        let survivor_hash = Hash::of(b"survivor-genesis");
+        let origin = Hash::of(b"adder-origin");
+
+        // Canonical store with both members added to the group (each add tagged (origin, seq) — the OR-set).
+        let mut canonical = NameStore::new();
+        canonical
+            .add_op(GROUP, MemberOp::add(victim_hash, origin, 0))
+            .unwrap();
+        canonical
+            .add_op(GROUP, MemberOp::add(survivor_hash, origin, 1))
+            .unwrap();
+
+        let mut host = AgentHost::with_canonical_store(canonical);
+        // Register a terminatable session under the victim's genesis-hash-hex id.
+        let victim_id = SessionId::new(victim_hash.to_hex());
+        host.spawn(victim_id.clone(), now_host());
+
+        // Both members present before the death.
+        assert_eq!(
+            host.canonical_store().unwrap().resolve_all(GROUP).unwrap(),
+            [victim_hash, survivor_hash].into_iter().collect(),
+            "both members are in the group before termination"
+        );
+
+        // Terminate the victim → I5 scan-on-death retracts it from the group.
+        host.terminate(&victim_id, Hash::of(b"ctl"), "kill".into())
+            .await
+            .expect("victim present")
+            .expect("fresh terminate");
+
+        // The victim is evicted; the survivor remains (observed-remove is precise).
+        let members = host.canonical_store().unwrap().resolve_all(GROUP).unwrap();
+        assert!(
+            !members.contains(&victim_hash),
+            "the terminated session is auto-evicted from the group (I5)"
+        );
+        assert!(
+            members.contains(&survivor_hash),
+            "a non-terminated member stays in the group"
+        );
     }
 
     #[tokio::test]
