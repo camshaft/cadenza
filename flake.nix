@@ -1681,6 +1681,48 @@
             reducerCadenzaB2Valid = validComponent { name = "reducer-cadenza-b2"; drv = reducerCadenzaB2; };
             reducerCadenzaB3Valid = validComponent { name = "reducer-cadenza-b3"; drv = reducerCadenzaB3; };
             reducerCadenzaGenesisValid = validComponent { name = "reducer-cadenza-genesis"; drv = reducerCadenzaGenesis; };
+
+            # LOCAL-GATE bindings (v-nix+v-fleet-tooling 2026-08-06, GHA-outage fallback). The 3 required
+            # checks that were inline `cargoWorkspaceCheck {…}` at their attr get `let`-bound here so BOTH
+            # the individual `checks.*` attrs AND the `localGate` aggregate share ONE derivation each (no
+            # rebuild). Definitions are byte-identical to the former inline ones.
+            fmtCheck = cargoWorkspaceCheck {
+              name = "cargo-fmt";
+              cargoCmd = "cargo fmt --all --check";
+            };
+            testCheck = cargoWorkspaceCheck {
+              name = "cargo-test";
+              cargoCmd = "cargo test --workspace --locked";
+              src = seedTestSrc;
+              extraInputs = [ pkgs.git ];
+            };
+            roundtripCheck = cargoWorkspaceCheck {
+              name = "cargo-xtask-roundtrip";
+              cargoCmd = "cargo run --locked --package xtask --profile release -- roundtrip";
+              src = seedRoundtripSrc;
+            };
+
+            # LOCAL GATE — the GHA-outage fallback (operator-greenlit, concierge-assigned, v-ft leads the
+            # pr-sync wiring). One `nix build .#checks.aarch64-linux.local-gate` = a single green/red over
+            # EXACTLY the 9 merge-required contexts (ruleset-10 MINUS test-macos, which is native x86/macos
+            # and out of scope per operator: nothing is arch-specific, aarch64 coverage is the accepted
+            # fallback). The required 9, mapped to their nix checks:
+            #   rustfmt→fmtCheck · clippy→clippyCraneAggregate · test(ubuntu)→testCheck ·
+            #   codegen→codegenCheck · gate→gateCheck · wasm-runtime-build→runtimeHashParity (builds the
+            #   runtime component + verifies REQUIRED_RUNTIME_HASH — a superset of the raw CI build) ·
+            #   syntax-roundtrip→roundtripCheck · allocation-bench→benchCheck · guide-examples→guideExamplesCheck.
+            # The three ADVISORY natives (cdz-kernel/cdz-agent-host/cad-tests) are NOT in ruleset-10, so they
+            # are deliberately EXCLUDED from the aggregate's fail-set (a red on them must not block merge,
+            # matching prod). They stay independently buildable + warm via their own `checks.*` attrs; pr-sync
+            # can build them separately for extra signal without gating. FAIL-CLOSED: the aggregate depends on
+            # all 9 required, so `nix build` of it is red if ANY required check fails — no silent gap. aarch64.
+            localGate = pkgs.runCommand "local-gate"
+              {
+                inherit clippyCraneAggregate codegenCheck gateCheck guideExamplesCheck
+                  benchCheck runtimeHashParity fmtCheck testCheck roundtripCheck;
+              } ''
+              echo "ok: local-gate — 9 merge-required contexts (ruleset-10 minus test-macos) green on aarch64-nix" > $out
+            '';
           in
           {
             # the reproducibility-backstop subset the advisory `nix-flake` CI job runs (INSTEAD of a whole
@@ -1707,10 +1749,7 @@
             # Full-CI-in-nix increment 1: the LINT pair, mirroring checks.yml `fmt` + `clippy` exactly.
             # `nix flake check` now runs them; the checks.yml jobs stay in place (advisory overlap) until
             # v-fleet-tooling's required-set cutover retires the hand-wired ones.
-            fmt = cargoWorkspaceCheck {
-              name = "cargo-fmt";
-              cargoCmd = "cargo fmt --all --check";
-            };
+            fmt = fmtCheck;
             # seq-126 Part B (option A + 1a): the whole-workspace `clippy --workspace` + `test --workspace`
             # are REPLACED by PER-CRATE checks (clippy -p C + test -p C), each shipping all member src (the
             # cargo workspace-parse floor) + ONLY its own tests/, so an independent crate's edit doesn't
@@ -1752,12 +1791,7 @@
             # <16m is wanted later, SHARD the cargo test job (parallel -p groups) — attacks the first-party
             # compile floor without the crane dev-dep-recompile penalty (v-ft's sharding lever). Context name
             # unchanged (`checks / test (ubuntu-latest)`) → no ruleset edit.
-            test = cargoWorkspaceCheck {
-              name = "cargo-test";
-              cargoCmd = "cargo test --workspace --locked";
-              src = seedTestSrc;
-              extraInputs = [ pkgs.git ];
-            };
+            test = testCheck;
             # Full-CI-in-nix increment 3: the native half of the GHA rcdzc-wasm job (the wasm build half
             # is the rcdzcWasm derivation / rcdzc-wasm-hash, already covered).
             rcdzc-wasm-native = rcdzcWasmNativeCheck;
@@ -1781,11 +1815,11 @@
             # `seedRoundtripSrc` (no compiler-ml, #2007). Invoked via `cargo run --locked` (not the bare
             # `cargo xtask` alias, which omits --locked) so a lockfile drift hard-fails, matching the
             # workspace test/clippy checks (#2032).
-            roundtrip = cargoWorkspaceCheck {
-              name = "cargo-xtask-roundtrip";
-              cargoCmd = "cargo run --locked --package xtask --profile release -- roundtrip";
-              src = seedRoundtripSrc;
-            };
+            roundtrip = roundtripCheck;
+            # LOCAL GATE aggregate — the GHA-outage fallback (see the `localGate` binding above). pr-sync
+            # invokes `nix build .#checks.aarch64-linux.local-gate` for a single green/red over the 9
+            # merge-required contexts (ruleset-10 minus test-macos) without any GH runner.
+            local-gate = localGate;
           }
           # seq-126 Part B: expose each per-crate CRANE CLIPPY check individually (granular signal + `nix flake
           # check` runs them). checks.clippy forces this same set; exposing them adds per-crate cache
