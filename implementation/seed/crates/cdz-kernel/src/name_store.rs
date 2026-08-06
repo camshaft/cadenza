@@ -349,10 +349,13 @@ impl NameStore {
     /// Serialize the whole store to a SINGLE durable-snapshot blob — the §4c cascade-free durability path:
     /// a backend `blob.put(store.snapshot_bytes())`s this and `from_snapshot_bytes(blob.get(..))`s it back on
     /// recovery (BlobStore is content-addressed + async, so the snapshot self-verifies by hash). The blob is
-    /// the deterministic [`NameStore::to_set_entries`] stream, each `(name, hash)` a `u32-LE-length`-framed
-    /// [`crate::event_ast::encode_name_set`] frame (the SAME framing `log_store` uses — one shared frame
-    /// discipline). Byte-STABLE (to_set_entries is name-sorted), so the snapshot content-addresses
-    /// identically regardless of insertion history.
+    /// a stream of `u32-LE-length`-framed frames (the SAME framing `log_store` uses — one shared discipline),
+    /// each self-describing by its AST head: FIRST every single-value pointer as a
+    /// [`crate::event_ast::encode_name_set`] `name-set` frame ([`NameStore::to_set_entries`] order), THEN every
+    /// GROUP op as an [`crate::event_ast::encode_member_op`] `member-op` frame ([`NameStore::to_group_ops`]
+    /// order) — so a snapshot carries BOTH the pointer values AND the OR-set group membership+kind (restore
+    /// routes per-frame on the head). Byte-STABLE (both streams name-sorted; group log order is append order),
+    /// so the snapshot content-addresses identically regardless of insertion history.
     pub fn snapshot_bytes(&self) -> Vec<u8> {
         let mut buf = Vec::new();
         let mut push_frame = |frame: Vec<u8>| {
@@ -398,24 +401,31 @@ impl NameStore {
             let frame = bytes
                 .get(len_end..frame_end)
                 .ok_or(NameStoreError::MalformedSnapshot)?;
-            // Route per-frame by its self-describing AST head: a `member-op` frame (GROUP op) → add_op; else
-            // a `name-set` frame (single-value pointer) → set. Try member-op FIRST (distinct head), fall to
-            // name-set. A frame that's NEITHER is a corrupt snapshot. Both go through the authority-checked
-            // write path (set/add_op), so a tampered snapshot can't smuggle an Unscoped/mode-mismatched name.
-            if let Ok((name, add, member, tag)) = crate::event_ast::decode_member_op(frame) {
-                let op = if add {
-                    MemberOp::add(member, tag.0, tag.1)
-                } else {
-                    MemberOp::remove(member, tag.0, tag.1)
-                };
-                // Propagate the write-path error VERBATIM (UnscopedNameUnwritable / NameModeMismatch) — a
-                // tampered snapshot naming an unwritable/mode-mismatched name fails on the AUTHORITY check,
-                // not as MalformedSnapshot (only a bad FRAME is malformed).
-                store.add_op(&name, op)?;
-            } else {
-                let (name, hash) = crate::event_ast::decode_name_set(frame)
-                    .map_err(|_| NameStoreError::MalformedSnapshot)?;
-                store.set(&name, SetEntry::unsigned(hash))?;
+            // Decode the frame ONCE + route on its self-describing AST head (name-set → set, member-op →
+            // add_op) — NOT try-one-then-fall-back, which re-parses every pointer frame (github-liaison
+            // #2424 c2). A frame that's neither head = MalformedSnapshot. Both kinds go through the
+            // authority-checked write path (set/add_op) with the underlying error PROPAGATED VERBATIM (a
+            // tampered snapshot naming an Unscoped/mode-mismatched name fails on the AUTHORITY check, not as
+            // MalformedSnapshot — only a bad FRAME is malformed).
+            match crate::event_ast::decode_store_frame(frame)
+                .map_err(|_| NameStoreError::MalformedSnapshot)?
+            {
+                crate::event_ast::StoreFrame::NameSet { name, hash } => {
+                    store.set(&name, SetEntry::unsigned(hash))?;
+                }
+                crate::event_ast::StoreFrame::MemberOp {
+                    name,
+                    add,
+                    member,
+                    tag,
+                } => {
+                    let op = if add {
+                        MemberOp::add(member, tag.0, tag.1)
+                    } else {
+                        MemberOp::remove(member, tag.0, tag.1)
+                    };
+                    store.add_op(&name, op)?;
+                }
             }
             pos = frame_end;
         }

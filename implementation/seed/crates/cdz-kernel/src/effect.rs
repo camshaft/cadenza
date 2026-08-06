@@ -111,12 +111,12 @@ pub mod effect_ct {
     /// hold `&mut AgentHost` while the driven session borrows the registry — the on-loop-no-deadlock
     /// design). So the kernel needs NO special drive-loop arm for it — only these family-string consts (one
     /// source of truth across a reducer, the host executor, and the manifest). Authority is enforced via the
-    /// EXISTING `FamilyGrant` seam (`Capability::for_family` + `crate::authz::Authorizer::with_family_grants`):
-    /// a grant keyed on a `lifecycle/*` family string + a `ResourcePredicate` over the target (the target
-    /// SessionId). ⚠️ FUTURE (I6, NOT present): the intended supervision-tree authority — "may only
-    /// terminate/spawn under my transitive `Spawned`-descendants" — is a NEW `ResourcePredicate::DescendantOf`
-    /// variant + a host/Cedar tree-walk (the descendant set is host-registry state the kernel's static
-    /// predicate can't compute); tracked as the I6 seam. Register-by-string (`Emit` placeholder kind).
+    /// `FamilyGrant` seam (`Capability::for_family` + `crate::authz::Authorizer::with_family_grants`): a grant
+    /// keyed on a `lifecycle/*` family string + a `ResourcePredicate` over the target (the target SessionId).
+    /// This does NOT yet restrict a controller to its transitive `Spawned`-descendants — a supervision-tree
+    /// (descendant-only) restriction needs a host/Cedar tree-walk over the spawn edges (host-registry state
+    /// the kernel's static predicate can't compute), so lifecycle authority is currently target-predicate
+    /// scoped, not tree-scoped. Register-by-string (`Emit` placeholder kind).
     pub const LIFECYCLE_PREFIX: &str = "lifecycle/";
 
     /// `lifecycle/spawn` — spawn a durable CHILD session (target = the child's reducer hash; the effect
