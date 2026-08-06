@@ -1991,7 +1991,41 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // `Map.lookup` → the fallible keyed read → Rust's own `Option`: `BTreeMap::get` borrows, returns
         // `Option<&V>`; `.cloned()` gives an owned `Option<V>` (the harness renders a native Option).
         Core::MapLookup { map, key, .. } => {
-            let m = emit(db, map, env, ctx)?;
+            // An inlined empty `Map.empty` map operand (a `let`-bound `Map.empty` β-substituted to here) has
+            // its OWN `type_of` = `Map(Var, Var)` — fully OPEN, because inference fixes K/V only through this
+            // lookup's key + the DOWNSTREAM match arms, not at the construction node. Emitting it grounds to
+            // the DEFAULT `BTreeMap<i64,i64>`, but the use is `.get(&"k".to_string())` (String key) → a silent
+            // MISCOMPILE (rust E0308; wasm runs correct — breaker ms9). RECONSTRUCT the map's type at this
+            // lookup from the SOLVED evidence — the KEY's type (`key_ty`, here String) + this lookup's RESULT
+            // `Option<V>` payload (the map's value type) — then GROUND any still-open var (the value, fixed
+            // only by the match arms, grounds to the default like the plain empty-map path). Threading that
+            // as `expected_ty` makes `Core::MapNew` annotate `BTreeMap<String, i64>` — correct key, safely-
+            // grounded value (a wrong value ground still errors LOUDLY at rustc, never silently). Only when
+            // the map operand's own type is OPEN (a concrete map needs no hint) and the key type is concrete.
+            let key_ty = type_of(db, key);
+            let map_ty = type_of(db, map);
+            let reconstructed = if map_ty.has_free_var() && !key_ty.has_free_var() {
+                // The lookup result is `Option<V>`; pull V (the map's value type) from its sole type arg.
+                let val_ty = match type_of(db, id).strip_nominal() {
+                    Ty::Sum { name, args, .. } if name == "Option" && args.len() == 1 => {
+                        args[0].clone()
+                    }
+                    _ => Ty::Var(0), // no readable payload → leave open, grounds below
+                };
+                Some(types::ground_open_vars(&Ty::Map(
+                    Box::new(key_ty.clone()),
+                    Box::new(val_ty),
+                )))
+            } else {
+                None
+            };
+            let m = if let Some(exp) = reconstructed {
+                let mut c = ctx.clone();
+                c.expected_ty = Some(exp);
+                emit(db, map, env, &c)?
+            } else {
+                emit(db, map, env, ctx)?
+            };
             let k = emit(db, key, env, ctx)?;
             // Wrap a bare-float lookup key in `CdzF64::new` to match the map's `CdzF64` key type (and
             // NaN-canonicalize — a differently-produced NaN finds the stored entry, the corpus case).
