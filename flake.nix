@@ -856,16 +856,13 @@
             # <sha256hex>.wasm blobs + runtime.toml), same resolution as the b1/b2 kernel e2es. Distinct var from
             # CDZ_REDUCER_COMPONENT (the Rust reducerGuest above); both set — the genesis test keys on GENESIS_REDUCER_COMPONENT.
             export GENESIS_REDUCER_COMPONENT="${reducerCadenzaGenesis}"
-            # #2315 full-agent-loop E2E: host.rs real_effect_reducer_runs_a_full_http_turn_through_the_host
-            # drives the real effect-emitting reducer_b2 through the host's async apply_handle_lowered (one Http
-            # turn). It env-gates on REDUCER_CADENZA_B2_COMPONENT + CDZ_STORE — and its shared helper
-            # (require_reducer_and_store_or_skip, #2320) PANICS on a HALF-wired env (exactly one set). Since I
-            # set CDZ_STORE (for genesis above), I MUST also set REDUCER_CADENZA_B2_COMPONENT or that guard fires
-            # ("CDZ_STORE is set but REDUCER_CADENZA_B2_COMPONENT is not — nothing to drive"). Setting it makes
-            # the #2315 turn RUN (not skip, not panic) — same reducerCadenzaB2 + CDZ_STORE transitive-nfc
-            # resolution as the b2 kernel e2e. (The hand-wired CI job sets neither → clean-skips this test; the
-            # nix twin runs it, so the twin is a strict superset.)
-            export REDUCER_CADENZA_B2_COMPONENT="${reducerCadenzaB2}"
+            # NOTE: no REDUCER_CADENZA_B2/B3 export here. #2315's full-agent-loop host-dispatch E2E
+            # (real_effect_reducer_runs_a_full_http_turn) was REMOVED (#2343): reducer_b2/b3 emit an Http effect
+            # with payload=None, which HttpExecutor rejects before dispatch, so a real host-DISPATCH turn can't
+            # be exercised by the available fixtures (the deliver-loop is covered by the native ClockAgent test +
+            # the genesis E2E). With that test gone, NO test reads REDUCER_CADENZA_B2/B3 here, so setting it would
+            # be a dead export (and a half-wired-panic footgun if the shared helper is reused). CDZ_STORE stays —
+            # the genesis E2E resolves reducerCadenzaGenesis's value-heap runtime + transitive nfc from it.
             export CDZ_STORE="${componentStore}"
             cargo test --locked
             cargo clippy --all-targets --locked -- -D warnings
