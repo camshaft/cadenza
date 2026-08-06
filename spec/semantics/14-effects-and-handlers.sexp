@@ -1962,14 +1962,15 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 65 Int64)))
 
-(case "a state-REPLACING second op AFTER a two-site arm's performs is served (prefix rule)"
-  (doc    "The second-op PREFIX boundary, served face: a handler with a two-site sift AND a
-           state-REPLACING reset serves the program when the sift performs form a contiguous PREFIX of
-           the dispatch sequence and reset comes AFTER — sift 20 → 20 (s 1), sift 30 → 30 (s 2),
-           reset → 2 (state becomes 100, unobserved) → 52. Any different-op dispatch BEFORE or BETWEEN
-           the two-site performs declines (the interleaved decline face is pinned as a todo-witness
-           nearby): the two-hole refold cannot yet thread another op's dispatch through the middle of
-           a multi-site continuation chain — trailing dispatches are outside the chain and fold.")
+(case "a trailing state-REPLACING single-site op is served after a two-site arm's performs"
+  (doc    "The arm-shape MIXING boundary, trailing-served face: the refold serves any mix of MULTI-site
+           arms in any dispatch order, but a SINGLE-site arm (like `reset` here) dispatched among
+           multi-site performs declines — UNLESS it trails, as here: sift 20 → 20 (s 1), sift 30 → 30
+           (s 2), reset → 2 (state becomes 100, unobserved) → 52. A trailing dispatch sits outside the
+           multi-site continuation chain and folds; the same reset dispatched before or between the
+           sifts declines (that face is pinned as a todo-witness nearby). Making the interleaved arm
+           itself multi-site serves the same order — the rule is arm-shape uniformity at the handler's
+           own frame, not dispatch position per se.")
   (input  (do
             (effect St (op sift (-> Int64 Int64)) (op reset (-> Unit Int64)))
             (def (main (: n Int64))
@@ -1980,11 +1981,12 @@
             (export main)))
   (call   main (: 30 Int64)) (output (: 52 Int64)))
 
-(case "a state-READING second op after a SINGLE two-site perform is served (minimal prefix)"
-  (doc    "The minimal serving of the prefix rule: ONE two-site sift then a trailing state-reading
-           peek — sift 20 passes (s → 1), peek reads 1 → 21. With the multi-perform sibling above,
-           pins that the prefix rule is about POSITION, not perform count: even a single leading
-           different-op dispatch (peek FIRST) declines, while any number of trailing ones fold.")
+(case "a trailing state-READING single-site op is served after one two-site perform"
+  (doc    "The minimal trailing-served face of the arm-shape mixing boundary: ONE two-site sift then a
+           trailing single-site peek — sift 20 passes (s → 1), peek reads 1 → 21. With the
+           multi-perform sibling above, pins that trailing serves regardless of perform count — while
+           even a single LEADING single-site dispatch (peek first) declines. The full rule: multi-site
+           arms mix freely; single-site arms among multi-site performs decline except trailing.")
   (input  (do
             (effect St (op sift (-> Int64 Int64)) (op peek (-> Unit Int64)))
             (def (main (: n Int64))

@@ -3398,8 +3398,6 @@ pass	a squared BigInt-inner quantity added to a linear one is a dimension mismat
 pass	a squared quantity does not add to a linear quantity
 pass	a stacked @test @ensures def called as a function returns its value, not unit (value-transparent)
 pass	a stacked @test @ensures with a FALSE postcondition traps when the def is called (test semantics preserved)
-pass	a state-READING second op after a SINGLE two-site perform is served (minimal prefix)
-pass	a state-REPLACING second op AFTER a two-site arm's performs is served (prefix rule)
 pass	a state-advancing helper called before a later read threads its write through the continuation
 pass	a stateful counter is observed left-to-right by sibling performs in one expression
 pass	a stateful counter threads through a RECURSIVE callee performing inside the handled region
@@ -3542,6 +3540,8 @@ pass	a top-level value definition may reference a value defined later in the mod
 pass	a total match on a partly-un-built sum compiles its dead arm's unconstrained payload
 pass	a trailing bytes segment accepts the leftover the fixed segments leave
 pass	a trailing digit separator is a malformed literal, not the digits with it dropped
+pass	a trailing state-READING single-site op is served after one two-site perform
+pass	a trailing state-REPLACING single-site op is served after a two-site arm's performs
 pass	a transformation maps a syntax tree to a syntax tree and preserves meaning
 pass	a transformation observably rewrites the tree, not just its value
 pass	a transformation over the built-in Ast composes across a function call
