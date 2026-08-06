@@ -62,10 +62,13 @@ impl<E: CdzEnv> DynCdzEnv for E {
 /// -> Pin<Box<dyn Future<Output = R> + '_>>` CANNOT express this: a closure cannot be generic/HRTB over its
 /// OWN parameter lifetimes, so the `'_` on the boxed future can't be tied to the call's `&'a mut env` borrow
 /// (E0271 / "lifetime may not live long enough"). A trait with a GENERIC METHOD `call<'a>` can — `'a` ties the
-/// returned future to the env borrow — and is object-safe, so an emitted closure is `Rc<dyn EnvClosure<A, R>>`.
-/// The backend emits a small per-closure struct (its captures as fields) with an `EnvClosure` impl whose
-/// `call` boxes the lifted body's future; `A`/`R` are the closure's (single) argument and result machine types
-/// (a multi-arg closure tuples its args into `A`, matching the lifted-lambda calling convention).
+/// returned future to the env borrow — and is object-safe, so a runtime closure value CAN be represented as
+/// `Rc<dyn EnvClosure<A, R>>`. INTENDED USAGE (the async-closure frontier that will consume this — NOT yet
+/// wired: the Rust backend's `Core::Closure` still emits `Rc<dyn Fn(..)->..>`): the backend emits a small
+/// per-closure struct (its captures as fields) with an `EnvClosure` impl whose `call` boxes the lifted body's
+/// future; `A`/`R` are the closure's (single) argument and result machine types (a multi-arg closure tuples
+/// its args into `A`, matching the lifted-lambda calling convention). This trait is the object-safe
+/// closure-value ABI that emit target lands against.
 ///
 /// Additive like [`DynCdzEnv`]: rust-backend rlib only, NO change to `CdzEnv`, and it does NOT touch the wasm
 /// value-heap `cdz-runtime` component, so `REQUIRED_RUNTIME_HASH` is unaffected (no `xtask codegen`).
