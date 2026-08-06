@@ -6053,3 +6053,9 @@ pass	an empty SET literal in a match-Option fallback grounds through the join
 pass	an IF-join with an unsolved-Var arm and an empty-list sibling grounds like a match join
 pass	a MAP-OF-LISTS handler state accumulates per dispatch — the upsert idiom end to end
 pass	an empty MAP fallback beside an unsolved-Var arm grounds — the Map-of-Maps face
+pass	a handler state SHRINKS per dispatch — Map.remove down to empty across resume cycles
+pass	a SET state churns — inserts and removes interleave across dispatches, canonical at each read
+pass	the arm ENUMERATES its Map state to a list of tuples and resumes the enumeration
+pass	Set.to-list of the state crosses resume ORDERED — the body reads elements positionally
+pass	a crossed rope String compares EQUAL to an arm-local flat literal — content equality over the marshal
+pass	two crossed LISTS compare structurally in the arm — same content from different builders

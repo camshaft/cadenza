@@ -3808,6 +3808,108 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 1 Int64)))
 
+(case "a handler state SHRINKS per dispatch — Map.remove down to empty across resume cycles"
+  (doc    "The shrink direction of heap state (the growth pins push/insert): three evictions read
+           lengths 2, 1, 0 — the removal path-copies and node-collapses must survive resume
+           suspensions all the way to the empty map (210).")
+  (input  (do
+            (effect Db (op evict (-> String Int64)))
+            (def (main (: n Int64))
+              (handle Db (Map.insert (Map.insert (Map.insert Map.empty "a" n) "b" 7) "c" 9)
+                ((evict (k) m (resume (Map.len (Map.remove m k)) (Map.remove m k))))
+                (+ (* 100 (Db.evict "a"))
+                   (+ (* 10 (Db.evict "b"))
+                      (Db.evict "c")))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 210 Int64)))
+
+(case "a SET state churns — inserts and removes interleave across dispatches, canonical at each read"
+  (doc    "State churn including the re-insert-after-remove cycle on one key: flip 2 removes (len 2),
+           flip 2 again re-inserts (len 3), flip 9 inserts fresh (len 4) → 234. The
+           contains-conditional arm reads the CURRENT state each dispatch.")
+  (input  (do
+            (effect St (op flip (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle St (Set.of (list 1 2 3))
+                ((flip (k) s
+                  (resume (Set.len (if (Set.contains s k) (Set.remove s k) (Set.insert s k)))
+                          (if (Set.contains s k) (Set.remove s k) (Set.insert s k)))))
+                (+ (* 100 (St.flip 2))
+                   (+ (* 10 (St.flip 2))
+                      (St.flip 9)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 234 Int64)))
+
+(case "the arm ENUMERATES its Map state to a list of tuples and resumes the enumeration"
+  (doc    "The enumeration itself crossing resume (the to-list pins fold INSIDE the arm and resume a
+           scalar): `Map.to-list` of the state becomes the resume value; the body measures it and
+           folds the values — 100·2 + 35 → 235.")
+  (input  (do
+            (effect Db (op dump (-> Unit (List (Tuple String Int64)))))
+            (def (sum-snd (: xs (List (Tuple String Int64))) (: i Int64) (: acc Int64))
+              (match (List.at xs i)
+                ((Some p) (match p ((tuple k v) (sum-snd xs (+ i 1) (+ acc v)))))
+                ((None _u) acc)))
+            (def (main (: n Int64))
+              (handle Db (Map.insert (Map.insert Map.empty "a" n) "b" 30)
+                ((dump (u) m (resume (Map.to-list m) m)))
+                (let ((xs (Db.dump)))
+                  (+ (* 100 (List.len xs)) (sum-snd xs 0 0)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 235 Int64)))
+
+(case "Set.to-list of the state crosses resume ORDERED — the body reads elements positionally"
+  (doc    "The total-order contract surviving the marshal: the set {30, 5, 9} enumerates sorted
+           [5, 9, 30], crosses resume, and the body reads each position — 1000·5 + 10·9 + 30 →
+           5120. An unordered or order-scrambled marshal breaks the positional reads.")
+  (input  (do
+            (effect St (op dump (-> Unit (List Int64))))
+            (def (main (: n Int64))
+              (handle St (Set.of (list 30 n 9))
+                ((dump (u) s (resume (Set.to-list s) s)))
+                (let ((xs (St.dump)))
+                  (+ (* 1000 (match (List.at xs 0) ((Some a) a) ((None _u) -1)))
+                     (+ (* 10 (match (List.at xs 1) ((Some b) b) ((None _u) -1)))
+                        (match (List.at xs 2) ((Some c) c) ((None _u) -1)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 5120 Int64)))
+
+(case "a crossed rope String compares EQUAL to an arm-local flat literal — content equality over the marshal"
+  (doc    "Comparison ACROSS the marshal (the equality pins are body-side): a concat-built rope
+           crosses as the op argument and the arm compares it against flat literals — content-equal
+           (100), and lexicographic order both directions (\\\"abcde\\\" < \\\"abd\\\" holds at the
+           third character, before length) → 110.")
+  (input  (do
+            (effect St (op check (-> String Int64)))
+            (def (main (: n Int64))
+              (handle St 0
+                ((check (t) s
+                  (resume (+ (* 100 (if (= t "abcde") 1 0))
+                             (+ (* 10 (if (< t "abd") 1 0))
+                                (if (< "abd" t) 1 0)))
+                          s)))
+                (St.check (String.concat "ab" (if (> n 0) "cde" "z")))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 110 Int64)))
+
+(case "two crossed LISTS compare structurally in the arm — same content from different builders"
+  (doc    "Structural equality across the marshal AND across construction paths: a literal
+           `(list 1 2 3)` and a recursively-built copy cross together in a tuple; the arm compares
+           them equal (10), while different content compares unequal (0) → 10.")
+  (input  (do
+            (effect St (op pair (-> (Tuple (List Int64) (List Int64)) Int64)))
+            (def (build (: i Int64) (: k Int64) (: acc (List Int64)))
+              (if (> i k) acc (build (+ i 1) k (List.push acc i))))
+            (def (main (: n Int64))
+              (handle St 0
+                ((pair (p) s
+                  (match p
+                    ((tuple xs ys) (resume (if (= xs ys) 1 0) s)))))
+                (+ (* 10 (St.pair (tuple (list 1 2 3) (build 1 3 (list)))))
+                   (St.pair (tuple (list 1 2) (list 1 2 9))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 10 Int64)))
+
 ; ============ Guarded match × effects (breaker FINDING, ag5 → fixed #2333). A guarded match on a
 ; perform-result scrutinee whose FALLBACK arm also performs used to leak the fold-synthesized #seed
 ; binder as a false CDZ0101: the guard desugar's arm-body copy reparented a reused (shared) body
