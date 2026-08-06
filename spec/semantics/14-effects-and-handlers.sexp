@@ -2306,6 +2306,52 @@
             (export main)))
   (output (: 21 Int64)))
 
+(case "a chain of perform-fed let inits — each binding feeds the next perform's argument"
+  (doc    "The sequential-dependency face of let × effects: three lets where each init's perform takes
+           the PREVIOUS binding as its argument — a = add(5) = 5 (s 1), b = add(a) = 6 (s 2),
+           c = add(b) = 8 (s 3) → 5 + 6 + 8 = 19. Each binding must be fully resolved before the
+           next dispatch marshals it; a stale or reordered binding read skews the whole chain. (The
+           pinned let cases cover bindings used AFTER performs; this pins bindings FEEDING the next.)")
+  (input  (do
+            (effect St (op add (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle St 0
+                ((add (v) s (resume (+ v s) (+ s 1))))
+                (let ((a (St.add n)))
+                  (let ((b (St.add a)))
+                    (let ((c (St.add b)))
+                      (+ a (+ b c)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 19 Int64)))
+
+(case "a perform in the body's IF CONDITION gates a second perform in the branch"
+  (doc    "Effect-gated dispatch, the true path: the condition's `(St.check)` fires (reads 5, state →
+           6), 5 > 3 holds, so the branch's second check fires and reads the ADVANCED 6. The
+           condition's dispatch must complete (and its advance commit) before the branch's dispatch
+           reads the state.")
+  (input  (do
+            (effect St (op check (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((check (u) s (resume s (+ s 1))))
+                (if (> (St.check) 3) (St.check) 0)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 6 Int64)))
+
+(case "the false branch: the condition's perform fires, the branch's does NOT (same program)"
+  (doc    "The other runtime path of the effect-gated dispatch above: at seed 1 the condition's check
+           reads 1, 1 > 3 fails, and the untaken branch's perform must NOT fire — the answer is the
+           else's 0, and a speculative or hoisted dispatch of the branch perform would be observable
+           as a state advance (or a wrong value) here.")
+  (input  (do
+            (effect St (op check (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((check (u) s (resume s (+ s 1))))
+                (if (> (St.check) 3) (St.check) 0)))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 0 Int64)))
+
 ; ============ Guarded match × effects (breaker FINDING, ag5 → fixed #2333). A guarded match on a
 ; perform-result scrutinee whose FALLBACK arm also performs used to leak the fold-synthesized #seed
 ; binder as a false CDZ0101: the guard desugar's arm-body copy reparented a reused (shared) body
@@ -9428,10 +9474,11 @@
   (call   main (: 5 Int64)) (output (: 8 Int64)))
 
 (case "NEGATIVE values thread every effect slot — state, argument, and result stay signed"
-  (doc    "Every effect-pin checksum in this file is positive; a sign-extension slip in any marshal
-           (i64 truncation, a wrong-width reload) would surface only on negatives. Here EVERY slot is
-           negative at once: seed −100, op arg −5, resume values −105/−107, next-state arithmetic
-           −110 → −212. The signed-values face of the effect machinery.")
+  (doc    "The effect-pin OUTPUT checksums in this file were uniformly positive before this ladder,
+           so a sign-extension slip in any marshal (i64 truncation, a wrong-width reload) had no
+           witness — it surfaces only on negatives. Here EVERY slot is negative at once: seed −100,
+           op arg −5, resume values −105/−107, next-state arithmetic −110 → −212. The signed-values
+           face of the effect machinery.")
   (input  (do
             (effect St (op dip (-> Int64 Int64)))
             (def (main (: n Int64))
