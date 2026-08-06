@@ -5176,7 +5176,26 @@ fn thread_bounded(
                     // clean branch out-state (rw1's `(if true (St.get) 0)` → then_out is a plain resume
                     // next-state, no `#cv`) merges safely. When unsafe or when neither branch advanced the
                     // slot, keep `cur` (byte-identical to the pre-fix behavior — no regression).
+                    //
+                    // A BRANCH MUST ACTUALLY PERFORM to have advanced state (breaker en1 fix). The
+                    // `(t != c || e != c)` test alone is a NODE-IDENTITY compare — but the branches were
+                    // threaded over `deep_fresh_copy`(cur) (5140-5141), so `then_out`/`else_out` are FRESH
+                    // node ids ALWAYS distinct from `c` even when the branch performed NOTHING and its
+                    // out-state is semantically just `cur`. Without the perform gate, a pure branching
+                    // conditional in the handle-body tail — the `(if (>= r 100) r 0)` LET-BODY of an inlined
+                    // performing helper `(let ((r (+ x (St.bump)))) (if …))` — spuriously builds the state
+                    // selector `(if cond r 0)` from its VALUE branches (`r`,`0`), which carry NO state advance.
+                    // That value-`if` then rides forward as the slot's next-STATE (cur[slot] = the if), and a
+                    // later dispatch substitutes it back as its resume value → the let-body `if` lands in the
+                    // let's BINDINGS, the binder `r` referenced in the if-cond is structurally unreachable →
+                    // false CDZ0101 "unbound r". Requiring an actual branch perform restores the invariant
+                    // "state out of a pure conditional = cur unchanged": neither branch performs → no advance
+                    // → keep `c` (en1 folds; the pure analog already did). A genuine branch perform (rw1/rw3:
+                    // `(if c (St.get) 0)`) still merges — its out-state is a real threaded resume next-state.
+                    let branch_advanced =
+                        subtree_performs(db, then_, ctx) || subtree_performs(db, else_, ctx);
                     let mergeable = cond_pure
+                        && branch_advanced
                         && (t != c || e != c)
                         && !contains_cv_ref(db, t)
                         && !contains_cv_ref(db, e);

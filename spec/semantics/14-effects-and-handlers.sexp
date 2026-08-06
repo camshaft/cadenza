@@ -2531,6 +2531,42 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 608 Int64)))
 
+(case "a performing helper whose body BINDS the result and BRANCHES on it, called from two sites, folds"
+  (doc    "The en1 fix (breaker MED). The crash face of the two-site inline above: the helper's body binds the
+           perform result in a `let` AND reads that binder in an `if` CONDITION — `f(x) = let r = x + St.bump
+           in if r >= 100 then r else 0`. Inlined at TWO sites, the `if`-arm's per-branch state-merge used to
+           build a state selector `(if cond r 0)` from the PURE value branches (neither performs) — because the
+           merge gate was a node-IDENTITY compare (`then_out != cur`) that `deep_fresh_copy` makes ALWAYS true —
+           so the value-`if` rode forward as the next-STATE, a later dispatch spliced it back as its resume
+           value, the let-body `if` landed in the let's BINDINGS, and `r` (read in the if-cond) resolved UNBOUND
+           → false CDZ0101. The fix gates the merge on an ACTUAL branch perform: neither branch performs → no
+           state advance → keep the incoming state. f(5)=5+100=105, 105>=100 → 105 (state→101); f(2)=2+101=103,
+           103>=100 → 103 → 105 + 103 = 208. The single-call + pure-init analogs always folded; the [let-bound
+           perform result] × [if-cond reads it] × [≥2 inlined sites] conjunct was the exact crash.")
+  (input  (do
+            (effect St (op bump (-> Unit Int64)))
+            (def (f (: x Int64)) (let ((r (+ x (St.bump)))) (if (>= r 100) r 0)))
+            (def (main (: n Int64))
+              (handle St 100
+                ((bump (u) s (resume s (+ s 1))))
+                (+ (f n) (f 2))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 208 Int64)))
+
+(case "the en1 helper called ONCE folds (the single-site control)"
+  (doc    "The single-call control for the en1 fix: the SAME helper `f(x) = let r = x + St.bump in if r >= 100
+           then r else 0` called ONCE always folded (one inline = no cross-site state-merge) — pins that the fix
+           does not disturb it. f(5) = 5 + 100 = 105, 105 >= 100 → 105.")
+  (input  (do
+            (effect St (op bump (-> Unit Int64)))
+            (def (f (: x Int64)) (let ((r (+ x (St.bump)))) (if (>= r 100) r 0)))
+            (def (main (: n Int64))
+              (handle St 100
+                ((bump (u) s (resume s (+ s 1))))
+                (f n)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 105 Int64)))
+
 (case "constant conditions simplify around performs — kept branches dispatch, dropped ones do not"
   (doc    "Constant folding × effects: `(if true (St.next) 999)` and `(if false 999 (St.next))` both
            have compile-time-constant conditions — the simplification keeps each surviving branch's

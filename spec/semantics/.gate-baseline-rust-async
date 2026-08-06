@@ -2572,6 +2572,7 @@ pass	a performing closure homed TRANSITIVELY through a pass-through function is 
 pass	a performing closure passed to a function that applies it UNDER a handler is homed at the apply site
 pass	a performing do-def feeding a bin-construction operand under a handler stays bound (F2)
 pass	a performing helper called from TWO sites — each call site is its own dispatch
+pass	a performing helper whose body BINDS the result and BRANCHES on it, called from two sites, folds
 pass	a performing match SCRUTINEE threads its state into a performing arm body
 pass	a performing match-arm guard folds with WILDCARD patterns (no binder to let-bind)
 pass	a pipeline chain applies its stages left to right
@@ -5414,6 +5415,7 @@ pass	the empty string has length zero
 pass	the empty string is a matchable literal
 pass	the empty symbol converts to the empty string
 pass	the empty symbol equals itself
+pass	the en1 helper called ONCE folds (the single-site control)
 pass	the encoded tag byte of an Ast.Bool is 0x03
 pass	the encoded tag byte of an Ast.Float is 0x05
 pass	the encoded tag byte of an Ast.Int is 0x00
