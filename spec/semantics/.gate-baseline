@@ -6066,3 +6066,4 @@ pass	a do-spine item abort ABANDONS its enclosing operator, not splicing the val
 pass	the arm slices a crossed multibyte String at a scalar boundary — the slice window respects UTF-8
 pass	a mid-scalar byte window crosses to the arm and String.from-bytes declines it
 pass	a pre-abort HOST call inside a NESTED strict operand is ISSUED before the abort abandons
+pass	a later let-binding abort preserves an EARLIER binding's committed advance (multi-binding prefix)

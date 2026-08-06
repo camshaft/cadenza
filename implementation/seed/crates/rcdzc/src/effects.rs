@@ -5557,7 +5557,41 @@ fn thread_bounded(
                 // the ABORT-VALUE RE-SCOPE below; this is the INIT-abort case it missed — the `abort_before`
                 // snapshot there is taken AFTER this loop, so an init abort slipped through).
                 if init_abort_before.is_none() && ctx.abort_value.get().is_some() {
-                    return Some((rinit, cur));
+                    // PRESERVE the EARLIER bindings' committed effects (breaker ax12). The bindings BEFORE
+                    // the aborting one (`rpairs`, already threaded) ran on the strict spine before the abort,
+                    // so an earlier binding whose init committed a FOREIGN advance / host call — `(let ((y
+                    // (A.tick)) (x (+ 1 (B.bail 99)))) …)`, where `y=(A.tick)` advances the OUTER A-state
+                    // before `x`'s abort — must survive. Returning the bare `rinit` (the abort value) drops
+                    // them, losing `y`'s advance (109 vs 110). Re-wrap the abort value in a `let` over the
+                    // earlier bindings so they run for-effect (and remain in scope, since the abort value may
+                    // reference an earlier binder) before the abort value. When there are no earlier bindings
+                    // (the aborting init is the FIRST) this is a bare `rinit` — the ax7 case, unchanged. The
+                    // enclosing fold's do/bare-abort collapse then discharges the wrapping `let`'s foreign
+                    // inits (advancing the outer state) before yielding the value.
+                    // Collect the earlier bindings' INITS that committed a FOREIGN effect (a foreign
+                    // perform / host call) — the pure ones commit nothing and are dropped. Sequence them as
+                    // a for-effect `do` PREFIX before the abort value, so the enclosing fold discharges them
+                    // (advancing the outer state / issuing the host call) before yielding the abort value. A
+                    // `let`-WRAP would not work: an unused binding whose init performs gets dead-code
+                    // dropped, losing the effect (ax12 stayed 109). Reuse each init's ALREADY-THREADED
+                    // rewrite (`rpairs[i]` = `(name rinit_i)`, take the init `rinit_i`).
+                    let mut foreign_prefix: Vec<StructId> = Vec::new();
+                    for rp in &rpairs {
+                        if let Struct::List(kv2) = db.ast.get(*rp).clone()
+                            && kv2.len() == 2
+                            && body_reaches_foreign_perform(db, kv2[1], ctx)
+                        {
+                            foreign_prefix.push(kv2[1]);
+                        }
+                    }
+                    if foreign_prefix.is_empty() {
+                        return Some((rinit, cur));
+                    }
+                    let do_head = db.push_name("do");
+                    let mut ch = vec![do_head];
+                    ch.extend(foreign_prefix);
+                    ch.push(rinit);
+                    return Some((db.push_list(ch), cur));
                 }
                 // A pure threaded init captured by a returned-lambda body → substitute it into the body
                 // (see the block comment above). GATED to the closure shape + an effect-FREE init (an

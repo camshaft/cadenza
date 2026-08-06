@@ -1824,6 +1824,25 @@
                   (+ b (A.get))))) (export main)))
   (call   main (: 5 Int64)) (output (: 110 Int64)))
 
+(case "a later let-binding abort preserves an EARLIER binding's committed advance (multi-binding prefix)"
+  (doc    "The MULTI-BINDING face of the let-init abort collapse, breaker ax12. Two bindings: `y` = A.tick,
+           then `x` = an aborting init `+ 1 <B.bail 99>`. The FIRST binding commits A-state 10 to 11 before
+           the SECOND binding aborts B. The abort abandons the let so b = the abort value 99 — but the
+           earlier `y = A.tick` advance must SURVIVE. Before the fix the let-init abort collapse returned just
+           the aborting init's rewrite, dropping the earlier bindings, so the outer A.get read the seed 10
+           giving 109. Fixed: the collapse sequences the earlier bindings' foreign inits as a for-effect do
+           prefix before the abort value, so A.tick runs and A.get reads 11 giving 99 + 11 = 110. A `let`-wrap
+           would not do: an unused binding whose init performs is dead-code dropped.")
+  (input  (do
+            (effect A (op tick (-> Unit Int64)) (op get (-> Unit Int64)))
+            (effect B (op bail (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle A 10
+                ((tick (u) s (resume s (+ s 1))) (get (u) s (resume s s)))
+                (let ((b (handle B 0 ((bail (v) s v)) (let ((y (A.tick)) (x (+ 1 (B.bail 99)))) (+ x y)))))
+                  (+ b (A.get))))) (export main)))
+  (call   main (: 5 Int64)) (output (: 110 Int64)))
+
 (case "an inner abort preserves an OUTER advance committed in an IF-BRANCH before it (branch do-shape)"
   (doc    "The IF-BRANCH face of the outer-advance preservation (v-effects self-probe; the direct do-shape and
            strict-operand faces are pinned above). The foreign `(A.tick)` and the abort sit on the strict
