@@ -37,16 +37,24 @@ const MESSAGE_VERSION: u32 = 1;
 /// Routes an `Emit` effect to a peer session's inbox — cross-session messaging. Holds the host loop's
 /// [`Inbox`] sender (injected at construction, since [`Executor::perform`] has no loop handle); each emit
 /// becomes an [`Inbound`] fed to that sender, addressed to the effect's `target` session.
+///
+/// It also carries `owner` — the id of the session this executor belongs to (the EMITTER). It stamps that
+/// onto the routed [`Inbound`]'s `reply_to` so the loop knows the return-address if the target turns out to
+/// be gone/terminated and the delivery must BOUNCE back as a `delivery-failure` (§lifecycle I5). This is
+/// host routing metadata, set at wiring time (the owning session's id is known then); it never touches the
+/// guest payload (§4 opaque) and is not persisted into any log.
 pub struct EmitExecutor {
     inbox: Inbox,
+    owner: SessionId,
 }
 
 impl EmitExecutor {
     /// Build the executor over the host loop's [`Inbox`] sender (from
-    /// [`AsyncAgentHost::inbox`](crate::AsyncAgentHost::inbox)). Register it under [`effect_ct::EMIT`] in the
-    /// session's `CompositeExecutor`.
-    pub fn new(inbox: Inbox) -> Self {
-        EmitExecutor { inbox }
+    /// [`AsyncAgentHost::inbox`](crate::AsyncAgentHost::inbox)) for the session `owner` (the emitter, whose
+    /// `CompositeExecutor` this is registered in under [`effect_ct::EMIT`]). `owner` becomes the `reply_to`
+    /// return-address on every routed [`Inbound`], so a bounce (target gone/terminated) can find the sender.
+    pub fn new(inbox: Inbox, owner: SessionId) -> Self {
+        EmitExecutor { inbox, owner }
     }
 }
 
@@ -108,6 +116,9 @@ impl Executor for EmitExecutor {
                 payload,
             },
             cause: None,
+            // The emitter's id: the loop's bounce path (§lifecycle I5) routes a `delivery-failure` here if
+            // the target is gone/terminated. Cloning an `Arc<str>` (O(1) refcount bump).
+            reply_to: Some(self.owner.clone()),
         };
         match self.inbox.send(inbound) {
             // Enqueued for the target session — fire-and-forget: Ok(None) is the unit ack that the signal
@@ -150,7 +161,7 @@ mod tests {
         // The core cross-session routing: an Emit(target=B, payload) becomes an Inbound addressed to B on
         // the shared inbox, carrying family "message" + the payload verbatim, and the executor acks Ok(None).
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let mut exec = EmitExecutor::new(tx);
+        let mut exec = EmitExecutor::new(tx, SessionId::new("sender-a"));
 
         let out = exec
             .perform(&emit_req("session-b", Some(b"hello-peer")), Hash::of(b"k"))
@@ -192,7 +203,7 @@ mod tests {
     async fn a_payloadless_emit_routes_an_empty_message() {
         // A bare signal (no payload) is legitimate — it routes an empty-payload message, not an error.
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let mut exec = EmitExecutor::new(tx);
+        let mut exec = EmitExecutor::new(tx, SessionId::new("sender-a"));
         let out = exec.perform(&emit_req("b", None), Hash::of(b"k")).await;
         assert!(matches!(out, EffectOutcome::Ok(None)));
         let routed = rx.try_recv().expect("routed");
@@ -211,7 +222,7 @@ mod tests {
     #[tokio::test]
     async fn an_empty_target_is_a_permanent_error() {
         let (tx, _rx) = mpsc::unbounded_channel();
-        let mut exec = EmitExecutor::new(tx);
+        let mut exec = EmitExecutor::new(tx, SessionId::new("sender-a"));
         let out = exec
             .perform(&emit_req("", Some(b"x")), Hash::of(b"k"))
             .await;
@@ -230,7 +241,7 @@ mod tests {
     #[tokio::test]
     async fn a_non_emit_family_is_a_permanent_error() {
         let (tx, _rx) = mpsc::unbounded_channel();
-        let mut exec = EmitExecutor::new(tx);
+        let mut exec = EmitExecutor::new(tx, SessionId::new("sender-a"));
         let req = EffectRequest::new_with_family(
             effect_ct::HTTP,
             "b".to_string(),
@@ -251,7 +262,7 @@ mod tests {
         // malformed-request PERMANENT.
         let (tx, rx) = mpsc::unbounded_channel();
         drop(rx); // loop's receiver gone
-        let mut exec = EmitExecutor::new(tx);
+        let mut exec = EmitExecutor::new(tx, SessionId::new("sender-a"));
         let out = exec
             .perform(&emit_req("b", Some(b"x")), Hash::of(b"k"))
             .await;
