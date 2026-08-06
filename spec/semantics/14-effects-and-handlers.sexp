@@ -2781,6 +2781,94 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 4010 Int64)))
 
+(case "a LIST OF STRINGS op result — the body indexes and measures rope elements after the marshal"
+  (doc    "The ELEMENT-type axis of collection crossings (the crossing pins carry scalar elements):
+           a `(List String)` op result mixing a rope-built element, a branch-selected one, and a
+           literal — the body indexes and byte-measures them after the marshal (3 elements, len 5 +
+           len 4 → 354). Heap-boxed elements inside a crossing list payload.")
+  (input  (do
+            (effect St (op names (-> Int64 (List String))))
+            (def (main (: n Int64))
+              (handle St 0
+                ((names (k) s (resume (list (String.concat "al" "pha") (if (> k 0) "beta" "x") "gamma") s)))
+                (let ((xs (St.names n)))
+                  (+ (* 100 (List.len xs))
+                     (+ (* 10 (match (List.at xs 0) ((Some a) (String.byte-len a)) ((None _u) -1)))
+                        (match (List.at xs 1) ((Some b) (String.byte-len b)) ((None _u) -1)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 354 Int64)))
+
+(case "a LIST OF BIGINTS as op ARGUMENT — the arm folds heap-numeric elements it is handed"
+  (doc    "The argument-direction heap-element face: a body-built `(List BigInt)` rides INTO the arm,
+           which runs an indexed fold accumulating a BigInt — 5 + 100 + 3000 → 3105, narrowed once
+           through checked Int64.of. Heap-numeric boxes must survive inside the crossing payload.")
+  (input  (do
+            (effect St (op total (-> (List BigInt) Int64)))
+            (def (sum-b (: xs (List BigInt)) (: i Int64) (: acc BigInt))
+              (match (List.at xs i)
+                ((Some v) (sum-b xs (+ i 1) (+ acc v)))
+                ((None _u) acc)))
+            (def (main (: n Int64))
+              (handle St 0
+                ((total (xs) s (resume (Int64.of (sum-b xs 0 (BigInt.of 0))) s)))
+                (St.total (list (BigInt.of n) (BigInt.of 100) (BigInt.of 3000)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 3105 Int64)))
+
+(case "a list of RATIONALS op result — exact fractions cross resume and fold to a canonical sum"
+  (doc    "The exact-arithmetic element face: `(list 1/2 1/3 1/30)` crosses resume and the body folds
+           it — the sum must arrive gcd-canonical (13/15, not an unreduced spelling) for the num/den
+           digit encode to read 10·13 + 15 → 145. Rational normalization must survive both the
+           marshal and the fold.")
+  (input  (do
+            (effect St (op parts (-> Int64 (List Rational))))
+            (def (sum-r (: xs (List Rational)) (: i Int64) (: acc Rational))
+              (match (List.at xs i)
+                ((Some v) (sum-r xs (+ i 1) (+ acc v)))
+                ((None _u) acc)))
+            (def (main (: n Int64))
+              (handle St 0
+                ((parts (k) s (resume (list (Rational.of 1 2) (Rational.of 1 3) (Rational.of 1 (* k 6))) s)))
+                (let ((r (sum-r (St.parts n) 0 (Rational.of 0 1))))
+                  (+ (* 10 (Int64.of (Rational.numerator r)))
+                     (Int64.of (Rational.denominator r))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 145 Int64)))
+
+(case "a list-to-list TRANSFORMER op — heap payloads cross BOTH slots of one dispatch"
+  (doc    "Every crossing pin carries heap in ONE slot per dispatch (scalar the other way); a
+           transformer signature `(-> (List Int64) (List Int64))` moves heap BOTH directions through
+           the same perform — the arm extends the very list it received (push len·10, push n) and
+           resumes it; the body reads len 4 and both appended elements → 6005.")
+  (input  (do
+            (effect St (op grow (-> (List Int64) (List Int64))))
+            (def (main (: n Int64))
+              (handle St 0
+                ((grow (xs) s (resume (List.push (List.push xs (* (List.len xs) 10)) n) s)))
+                (let ((out (St.grow (list 7 8))))
+                  (+ (* 1000 (List.len out))
+                     (+ (* 100 (match (List.at out 2) ((Some a) a) ((None _u) -1)))
+                        (match (List.at out 3) ((Some b) b) ((None _u) -1)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 6005 Int64)))
+
+(case "a map-to-map transformer op CHAINED — the second dispatch receives the first's result"
+  (doc    "The re-crossing composition: a `(Map String Int64) → (Map String Int64)` transformer
+           called on its OWN result — a heap value that already crossed the boundary once crosses
+           again as the next dispatch's argument. State-keyed inserts (first at s=0, second at s=1)
+           make the two dispatches distinguishable: {seed, first:5, second:6} → 356.")
+  (input  (do
+            (effect St (op stamp (-> (Map String Int64) (Map String Int64))))
+            (def (main (: n Int64))
+              (handle St 0
+                ((stamp (m) s (resume (Map.insert m (if (= s 0) "first" "second") (+ s n)) (+ s 1))))
+                (let ((m2 (St.stamp (St.stamp (Map.insert Map.empty "seed" 1)))))
+                  (+ (* 100 (Map.len m2))
+                     (+ (* 10 (match (Map.lookup m2 "first") ((Some a) a) ((None _u) -1)))
+                        (match (Map.lookup m2 "second") ((Some b) b) ((None _u) -1)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 356 Int64)))
+
 ; ============ Guarded match × effects (breaker FINDING, ag5 → fixed #2333). A guarded match on a
 ; perform-result scrutinee whose FALLBACK arm also performs used to leak the fold-synthesized #seed
 ; binder as a false CDZ0101: the guard desugar's arm-body copy reparented a reused (shared) body
