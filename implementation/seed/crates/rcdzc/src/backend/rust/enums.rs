@@ -25,7 +25,7 @@ use crate::diag::Reject;
 /// A declaration whose variant payloads have no native mapping (or that is recursive) is SKIPPED here —
 /// a use of such a sum declines at `rust_type`/selection, attributed to this target, so skipping its
 /// declaration is consistent (no enum is emitted that no compilable code names).
-pub fn emit_enum_decls(db: &mut Db) -> String {
+pub fn emit_enum_decls(db: &mut Db, mode: super::Mode) -> String {
     let mut out = String::new();
     let n = db.type_decls.len();
     // DEDUP by emitted enum IDENTIFIER: a LINKED multi-module program can carry two declarations that emit
@@ -38,7 +38,7 @@ pub fn emit_enum_decls(db: &mut Db) -> String {
     // fails loudly rather than silently dropping a distinct type.
     let mut emitted: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     for i in 0..n {
-        if let Ok(decl_src) = emit_one_enum(db, i) {
+        if let Ok(decl_src) = emit_one_enum(db, i, mode) {
             let ident = types::sum_ident(&db.type_decls[i].name);
             match emitted.get(&ident) {
                 // A same-ident decl already emitted with identical source — skip (dedup the linked twin).
@@ -75,7 +75,10 @@ pub fn emit_sum_descriptors(db: &mut Db) -> String {
         let decl = db.type_decls[i].clone();
         // Only a sum whose enum actually emits (non-built-in, non-recursive, native payloads). A GENERIC
         // sum now gets a descriptor too (payloads as `T{k}` placeholders); a monomorphic one has no params.
-        if emit_one_enum(db, i).is_err() {
+        // Mode-INVARIANT check: a payload is representable in both modes (only a closure's SPELLING differs —
+        // `Rc<dyn Fn>` vs `Rc<dyn EnvClosure>`, both native), and this descriptor path emits no closure type
+        // into the module. `Sync` suffices to decide "does the enum emit at all".
+        if emit_one_enum(db, i, super::Mode::Sync).is_err() {
             continue;
         }
         // Key the descriptor by the CADENZA name (`decl.name`) — the SAME string `cdz-return` emits (a
@@ -256,7 +259,7 @@ fn variant_payload_renders(db: &mut Db, variant: &crate::db::Variant) -> Vec<Str
 
 /// Emit one sum declaration `db.type_decls[i]` as a Rust `enum`, or decline (a variant payload with no
 /// native mapping, or a recursive sum). `Err` means "skip this declaration" — the caller drops it.
-fn emit_one_enum(db: &mut Db, i: usize) -> Result<String, Reject> {
+fn emit_one_enum(db: &mut Db, i: usize, mode: super::Mode) -> Result<String, Reject> {
     let decl = db.type_decls[i].clone();
     // The BUILT-IN `Option`/`Result` map to RUST'S OWN `Option`/`Result` (the operator's ask — idiomatic
     // + trivially usable from Rust), so DON'T emit a synthetic `enum Option { … }` that would shadow
@@ -303,7 +306,7 @@ fn emit_one_enum(db: &mut Db, i: usize) -> Result<String, Reject> {
         // `T{k}`. A payload with no native mapping declines the whole enum.
         let mut payloads = Vec::with_capacity(variant.payloads.len());
         for &pty_occ in &variant.payloads {
-            payloads.push(payload_rust_type(db, pty_occ, &decl)?);
+            payloads.push(payload_rust_type(db, pty_occ, &decl, mode)?);
         }
         // A RECURSIVE variant — one whose payload mentions THIS sum (`(Cons Int64 L)`, `(Node L L)`) —
         // BOXES its whole payload field: a Rust enum containing itself by value is infinitely sized, so
@@ -471,6 +474,7 @@ fn payload_rust_type(
     db: &mut Db,
     pty_occ: crate::ast::StructId,
     decl: &crate::db::TypeDecl,
+    mode: super::Mode,
 ) -> Result<String, Reject> {
     // A bare type-parameter payload — the payload type-expr is a lowercase name that IS one of the
     // declaration's params. Render it as the corresponding `T{k}` (the enum's type parameter).
@@ -498,7 +502,7 @@ fn payload_rust_type(
         sentinel_payload_ty(db, decl, pty_occ)
             .ok_or_else(|| Reject::decline("a variant payload type does not resolve"))?
     };
-    render_payload_ty(&ty, decl).ok_or_else(|| {
+    render_payload_ty(&ty, decl, mode).ok_or_else(|| {
         Reject::decline(format!(
             "a variant payload type {} has no native Rust representation",
             ty.render_name()
@@ -558,7 +562,11 @@ fn sentinel_payload_ty(
 /// whatever args the bare self-mention carries (none). This is what makes a generic recursive sum's
 /// self-referential payload name the enum correctly (E0107 otherwise). Non-self sums/compounds delegate to
 /// `types::rust_type` (their args are concrete). `None` for a type with no native Rust form.
-fn render_payload_ty(ty: &crate::ty::Ty, decl: &crate::db::TypeDecl) -> Option<String> {
+fn render_payload_ty(
+    ty: &crate::ty::Ty,
+    decl: &crate::db::TypeDecl,
+    mode: super::Mode,
+) -> Option<String> {
     use crate::ty::Ty;
     // A SENTINEL param var (`PARAM_SENTINEL_BASE + k`) is the sum's k-th type parameter — render `T{k}`.
     // This is what lets a param appearing ANYWHERE in a payload (nested in `Option`/`Tuple`/a self-ref's
@@ -582,7 +590,7 @@ fn render_payload_ty(ty: &crate::ty::Ty, decl: &crate::db::TypeDecl) -> Option<S
         // to the positional `T{k}` if an arg is missing (a bare self-mention with no args).
         let ps: Vec<String> = if args.len() == decl.params.len() {
             args.iter()
-                .map(|a| render_payload_ty(a, decl))
+                .map(|a| render_payload_ty(a, decl, mode))
                 .collect::<Option<Vec<_>>>()?
         } else {
             (0..decl.params.len()).map(|k| format!("T{k}")).collect()
@@ -594,8 +602,10 @@ fn render_payload_ty(ty: &crate::ty::Ty, decl: &crate::db::TypeDecl) -> Option<S
     // to `types::rust_type`.
     match ty {
         Ty::Tuple(elems) => {
-            let parts: Option<Vec<String>> =
-                elems.iter().map(|e| render_payload_ty(e, decl)).collect();
+            let parts: Option<Vec<String>> = elems
+                .iter()
+                .map(|e| render_payload_ty(e, decl, mode))
+                .collect();
             let parts = parts?;
             match parts.len() {
                 0 => Some("()".to_string()),
@@ -608,16 +618,20 @@ fn render_payload_ty(ty: &crate::ty::Ty, decl: &crate::db::TypeDecl) -> Option<S
         // concrete monomorphic sum name). The head name uses the built-in std mapping for Option/Result
         // via `types::rust_type` on the ARGS-STRIPPED shape is not needed — render the name + args here.
         Ty::Sum { name, args, .. } if !args.is_empty() => {
-            let parts: Option<Vec<String>> =
-                args.iter().map(|a| render_payload_ty(a, decl)).collect();
+            let parts: Option<Vec<String>> = args
+                .iter()
+                .map(|a| render_payload_ty(a, decl, mode))
+                .collect();
             let ident = types::sum_ident(name);
             Some(format!("{ident}<{}>", parts?.join(", ")))
         }
         // A `List`/`Map`/`Set` element is NOT rendered (collections-as-values are unrealized on the Rust
         // backend — `types::rust_type` has no arm; a `Vec<…>` field would be an enum the construct/match
-        // paths can't handle). Delegate to `types::rust_type`, which declines — consistent with a bare
-        // `List` payload declining.
-        _ => types::rust_type(ty),
+        // paths can't handle). A closure payload (`Ty::Fn`) delegates to the MODE-AWARE spelling: in async
+        // mode a closure crosses as `Rc<dyn EnvClosure<A,R>>` (the enum FIELD must match the `Rc<dyn
+        // EnvClosure>` VALUE a `Core::SumNew` constructs — else E0308), in sync mode the plain `Rc<dyn Fn>`.
+        // A closure-free leaf is byte-identical (`async_closure_type` == `rust_type` off `Ty::Fn`).
+        _ => super::async_or_rust_type(ty, mode),
     }
 }
 
@@ -945,7 +959,9 @@ fn decl_emits(db: &mut Db, decl: &crate::db::TypeDecl) -> bool {
         variant
             .payloads
             .iter()
-            .all(|&pty| payload_rust_type(db, pty, decl).is_ok())
+            // Mode-INVARIANT: a closure payload is representable in both modes (only the SPELLING differs);
+            // this is a yes/no representability check, not an emit, so `Sync` decides it.
+            .all(|&pty| payload_rust_type(db, pty, decl, super::Mode::Sync).is_ok())
     })
 }
 

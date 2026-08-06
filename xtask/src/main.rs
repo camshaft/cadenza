@@ -2080,8 +2080,19 @@ fn run_program_rust(
             } else {
                 format!("prog::{export}(&mut env, {caps})")
             };
-            // `block_on` awaits the factory's future to obtain the closure handle, then applies it.
-            format!("block_on({factory}){application}")
+            // OPTION A: the factory returns `Rc<dyn EnvClosure<A,R>>` (NOT a sync `Rc<dyn Fn>`), so its
+            // returned closure is applied via `handle.call(&mut env, arg).await`, NOT the sync `(applied)`.
+            // `block_on(factory)` yields the handle; bind it to `__h` FIRST so the `.call(&mut env, …)` env
+            // borrow doesn't overlap the factory's (E0499). `application` is `(applied…)` — the flat applied
+            // args; `EnvClosure::call` takes ONE `A` (a multi-arg closure tuples them, matching the lifted
+            // convention + the emit's CallClosure). Strip the parens and tuple ≥2 args into one `A`.
+            let applied = application
+                .strip_prefix('(')
+                .and_then(|s| s.strip_suffix(')'))
+                .unwrap_or("")
+                .trim();
+            let arg = env_closure_call_arg(applied);
+            format!("{{ let __h = block_on({factory}); block_on(__h.call(&mut env, {arg})) }}")
         } else if call_expr.ends_with("()") {
             format!("block_on(prog::{export}(&mut env))")
         } else {
@@ -2424,6 +2435,34 @@ fn cdz_render_bytes_list(ty: &str) -> String {
 /// closure is not applied). The split is the FIRST `)` at paren-depth 0 that is immediately followed by a
 /// `(` — a nested `)(` inside a compound argument (`both((tuple 1 2), (record …))`) sits at depth > 0 and is
 /// skipped, so only the real factory/application seam matches.
+/// The single `EnvClosure::call` `A` argument from a flat applied-args string (`"5"`, `"3, 4"`, `""`). A
+/// 0-arg closure takes `()`; a 1-arg closure the bare arg; a ≥2-arg closure a TUPLE `(a, b)` — matching the
+/// lifted-lambda calling convention the backend's `Core::CallClosure`/`EnvClosure` impl uses (a multi-arg
+/// closure tuples its flat args into one `A`, destructured inside `call`). Splits on TOP-LEVEL commas only
+/// (a compound arg `(tuple 1 2)` / `Rc::new(..)` keeps its inner commas), so `(a, (x, y))` stays two args.
+fn env_closure_call_arg(applied: &str) -> String {
+    let applied = applied.trim();
+    if applied.is_empty() {
+        return "()".to_string();
+    }
+    let bytes = applied.as_bytes();
+    let mut depth = 0usize;
+    let mut n_top_commas = 0usize;
+    for &b in bytes {
+        match b {
+            b'(' | b'<' | b'[' => depth += 1,
+            b')' | b'>' | b']' => depth = depth.saturating_sub(1),
+            b',' if depth == 0 => n_top_commas += 1,
+            _ => {}
+        }
+    }
+    if n_top_commas == 0 {
+        applied.to_string() // 1 arg → the bare arg
+    } else {
+        format!("({applied})") // ≥2 args → a tuple of them
+    }
+}
+
 fn split_factory_application(call_expr: &str) -> Option<(String, String)> {
     let bytes = call_expr.as_bytes();
     let mut depth = 0usize;
@@ -2539,9 +2578,21 @@ fn is_env_param(param: &str) -> bool {
     param.trim_start().starts_with("__cdz_env") || param.contains("&mut __CdzE")
 }
 
-/// Whether a parameter slice (`<name>: <type>`) is a closure — its type is an `Rc<dyn Fn(…)>`.
+/// Whether a type string names a runtime closure VALUE — either the SYNC `Rc<dyn Fn(…)>` or the ASYNC
+/// (Option A) `Rc<dyn cdz_rt::EnvClosure<A, R>>` (a lifted async closure crosses as an `EnvClosure` trait
+/// object, not a `dyn Fn`, since its `call` future borrows the `&mut env` — see `cdz_rt::EnvClosure`). Both
+/// closure-detection sites (a PARAM type, a factory RESULT type) key off this so the async host-closure
+/// cases are recognized as factories/consumers/producers exactly like the sync ones.
+fn names_closure_value(ty: &str) -> bool {
+    ty.contains("Rc<dyn Fn(")
+        || ty.contains("Rc<dyn cdz_rt::EnvClosure<")
+        || ty.contains("Rc<dyn EnvClosure<")
+}
+
+/// Whether a parameter slice (`<name>: <type>`) is a closure — sync `Rc<dyn Fn(…)>` or async `Rc<dyn
+/// EnvClosure<…>>`.
 fn is_closure_param(param: &str) -> bool {
-    param.contains("std::rc::Rc<dyn Fn(") || param.contains("Rc<dyn Fn(")
+    names_closure_value(param)
 }
 
 /// The closure TYPE of a parameter slice (`g: std::rc::Rc<dyn Fn(i64) -> i64>`) → the `Rc<dyn Fn…>` text,
@@ -2553,9 +2604,16 @@ fn is_closure_param(param: &str) -> bool {
 /// to a higher-order producer `Rc<dyn Fn(Rc<dyn Fn(i64)->i64>)->i64>` (the former is a substring of the
 /// latter), so the pairing must compare EXACT balanced closure types (`ty_matches` uses `==` — see there).
 fn closure_param_type(param: &str) -> Option<&str> {
+    // Locate the `Rc<…>` closure type — sync `Rc<dyn Fn(` or async `Rc<dyn [cdz_rt::]EnvClosure<`. The
+    // balanced `<`/`>` walk below then extracts the whole `Rc<…>` (the `EnvClosure<A, R>`'s inner `<>` and
+    // the `Fn(A) -> R`'s `->` are both handled by the depth counter + the `->` guard), so an async closure
+    // param `g: std::rc::Rc<dyn cdz_rt::EnvClosure<i64, i64>>` yields exactly its `Rc<…>` type.
     let start = param
         .find("std::rc::Rc<dyn Fn(")
-        .or_else(|| param.find("Rc<dyn Fn("))?;
+        .or_else(|| param.find("std::rc::Rc<dyn cdz_rt::EnvClosure<"))
+        .or_else(|| param.find("Rc<dyn Fn("))
+        .or_else(|| param.find("Rc<dyn cdz_rt::EnvClosure<"))
+        .or_else(|| param.find("Rc<dyn EnvClosure<"))?;
     let rest = &param[start..];
     // Find the `<` that opens `Rc<` and walk to its MATCHING `>` (depth-balanced over `<`/`>`), so a nested
     // `Rc<dyn Fn(Rc<…>)…>` returns its whole self and a trailing `, x: i64` is excluded. CRITICAL: the
@@ -2590,12 +2648,15 @@ fn param_type_of(param: &str) -> String {
     }
 }
 
-/// The `Rc<dyn Fn(…)>` closure type out of a return-head (`-> std::rc::Rc<dyn Fn(i64) -> i64>`), trimming
-/// the leading `->`. `None` if the return is not a closure type.
+/// The closure type out of a return-head — sync `-> std::rc::Rc<dyn Fn(i64) -> i64>` or async `-> std::rc::
+/// Rc<dyn cdz_rt::EnvClosure<i64, i64>>` — trimming the leading `->`. `None` if the return is not a closure.
 fn closure_ret_type(ret_head: &str) -> Option<String> {
     let start = ret_head
         .find("std::rc::Rc<dyn Fn(")
-        .or_else(|| ret_head.find("Rc<dyn Fn("))?;
+        .or_else(|| ret_head.find("std::rc::Rc<dyn cdz_rt::EnvClosure<"))
+        .or_else(|| ret_head.find("Rc<dyn Fn("))
+        .or_else(|| ret_head.find("Rc<dyn cdz_rt::EnvClosure<"))
+        .or_else(|| ret_head.find("Rc<dyn EnvClosure<"))?;
     Some(ret_head[start..].trim().to_string())
 }
 
@@ -2677,9 +2738,13 @@ fn build_closure_consumer_call(
             continue;
         };
         let src_params: Vec<&&str> = psig.params.iter().filter(|p| !is_env_param(p)).collect();
-        if psig.ret_head.contains("Rc<dyn Fn(") {
-            // FACTORY: result is a closure. Its `cdz-return[ident]` note is the arrow render-name (the
-            // pre-erasure closure shape) — captured for the collision-disambiguation pairing below.
+        if names_closure_value(&psig.ret_head) {
+            // FACTORY: result is a closure (sync `Rc<dyn Fn(` or async `Rc<dyn EnvClosure<`). A NULLARY
+            // factory (cap = 0) returning a closure value is the common host-closure producer `(def (mk) (fn
+            // (n) …))`; classifying it here (not as a Peeled fn-item, which an async closure can't be) is what
+            // lets the async consumer path drive it via `block_on(prog::mk(&mut env))` → the `Rc<dyn
+            // EnvClosure>` handle. Its `cdz-return[ident]` note is the arrow render-name (pre-erasure closure
+            // shape) — captured for the collision-disambiguation pairing below.
             let cty = closure_ret_type(&psig.ret_head)?;
             let shape = cdz_return_type(module, &ident);
             producers.push(Producer::Factory {
@@ -2849,8 +2914,9 @@ fn build_closure_consumer_call(
 
 fn rust_factory_param_count(module: &str, name: &str, async_mode: bool) -> Option<usize> {
     let sig = parse_emitted_sig(module, name, async_mode)?;
-    // A FACTORY's return type is a closure (`-> …Rc<dyn Fn(`) — only then is this a producer.
-    if !sig.ret_head.contains("Rc<dyn Fn(") {
+    // A FACTORY's return type is a closure (`-> …Rc<dyn Fn(` or async `-> …Rc<dyn EnvClosure<`) — only
+    // then is this a producer.
+    if !names_closure_value(&sig.ret_head) {
         return None;
     }
     // The factory's CAPTURE params = its source params minus the async env param (which is backend

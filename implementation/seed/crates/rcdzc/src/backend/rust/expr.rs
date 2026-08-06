@@ -352,6 +352,101 @@ pub(super) fn lifted_ident(k: usize) -> String {
     format!("__lifted_{k}")
 }
 
+/// The Rust identifier for the per-closure `EnvClosure` synth STRUCT of lifted slot `k` (Option A, async
+/// mode) — `__Clos_{k}`, a backend-reserved (`__`) name that cannot collide with a source type. The struct
+/// carries the closure's captures as fields; its `EnvClosure::call` impl forwards them + the env into the
+/// async lifted fn `__lifted_{k}`. Emitted at module level (see `emit_closure_struct`) beside the lifted fn.
+pub(super) fn closure_struct_ident(k: usize) -> String {
+    format!("__Clos_{k}")
+}
+
+/// Wrap a closure VALUE expression for emission: `{ <cap_lets><expr> }` when there are capture `let`s to
+/// scope, else the bare `<expr>`. A no-capture closure has no `let`s, so a `{ expr }` block around it is
+/// needless and trips `unused_braces` under the gate's `-D warnings` (the value appears in arbitrary
+/// positions — a `.call(..)` argument, a function/return value — each of which the lint flags). Shared by
+/// the sync (`Rc<dyn Fn>`) and async (`Rc<dyn EnvClosure>`) `Core::Closure` emits so both stay warning-clean.
+fn wrap_closure_value(cap_lets: &str, closure_expr: &str) -> String {
+    if cap_lets.is_empty() {
+        closure_expr.to_string()
+    } else {
+        format!("{{ {cap_lets}{closure_expr} }}")
+    }
+}
+
+/// Emit the per-closure `EnvClosure` STRUCT + impl for lifted slot `k`, async mode (Option A). The struct
+/// holds the captures as fields `__c{j}: <capture-ty>` (async spelling); its `call` clones each capture,
+/// destructures the single `A` arg back into the lifted lambda's flat params, then forwards the env plus the
+/// captures plus the params into the async `__lifted_{k}`, boxing the returned future. This is the
+/// object-safe closure VALUE a `Core::Closure` builds (`Rc::new(__Clos_{k} { … }) as Rc<dyn
+/// EnvClosure<A,R>>`). Declines if a capture, param, or result type has no async representation (the lifted
+/// fn itself would already have declined).
+pub(super) fn emit_closure_struct(
+    db: &mut Db,
+    k: usize,
+    layout: &Layout,
+) -> Result<String, Reject> {
+    let lam = layout.lifted[k].clone();
+    let struct_ident = closure_struct_ident(k);
+    let lifted = lifted_ident(k);
+    // Capture FIELDS: `__c{j}: <async ty of the captured binding>` (same type the lifted fn's leading
+    // capture params take, so the forward type-checks). A capture with no async rep declines.
+    let mut fields = Vec::with_capacity(lam.captures.len());
+    let mut field_clones = Vec::with_capacity(lam.captures.len());
+    for (j, &cap_binder) in lam.captures.iter().enumerate() {
+        let cty = type_of(db, cap_binder);
+        let rty = types::async_closure_type(&cty).ok_or_else(|| {
+            Reject::decline(format!(
+                "async closure capture {j} type {} has no native Rust representation",
+                cty.render_name()
+            ))
+        })?;
+        fields.push(format!("    __c{j}: {rty},"));
+        // Clone each capture into the forwarded call — `call` takes `&self`, so it may not MOVE a field out
+        // (it is callable repeatedly). A Copy field's `.clone()` is a plain copy.
+        field_clones.push(format!("self.__c{j}.clone()"));
+    }
+    // The single `A` arg destructured back into the flat lifted params. Arity 0 → `()` (ignore); arity 1 →
+    // the bare `__a0`; arity ≥2 → a tuple pattern `(__a0, __a1, …)`. `EnvClosure::call`'s `arg: A` binds it.
+    let arity = lam.params.len();
+    let arg_pat = match arity {
+        0 => "_".to_string(),
+        1 => "__a0".to_string(),
+        _ => format!(
+            "({})",
+            (0..arity)
+                .map(|i| format!("__a{i}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    };
+    // The forwarded arguments into `__lifted_k(env, caps…, params…)`: env first, then cloned captures, then
+    // the destructured params in order.
+    let mut fwd = vec![super::ENV_PARAM.to_string()];
+    fwd.extend(field_clones);
+    fwd.extend((0..arity).map(|i| format!("__a{i}")));
+    // `A`/`R` for the `impl EnvClosure<A,R>` header — the SAME spelling the value cast + type positions use.
+    let (a_ty, r_ty) = types::env_closure_args(&lam.params, &lam.ret_ty).ok_or_else(|| {
+        Reject::decline("an async closure's arg/result type has no native Rust representation")
+    })?;
+    // `#[derive(Clone)]`: a closure value is `Rc<dyn EnvClosure>` (shared via Rc clone), but a captured
+    // closure-in-closure or a clone-on-read of the struct itself needs Clone; deriving it is harmless (all
+    // fields are Clone — they are captured values, each `needs_clone_on_read`-safe).
+    let fields_src = if fields.is_empty() {
+        String::new()
+    } else {
+        format!("\n{}\n", fields.join("\n"))
+    };
+    // `Box` is fully qualified as `::std::boxed::Box` throughout: a USER sum named `Box` (`(type Box (Bin
+    // …))`) emits `enum Box`, which would shadow the std `Box` in `Box::pin`/`Pin<Box<…>>` → E0107 "enum
+    // Box takes 0 generic arguments". The fully-qualified path can never be shadowed. (Mirrors the async
+    // `Core::Call` arm's `::std::boxed::Box::pin`.)
+    Ok(format!(
+        "// cdz-closure-struct[{k}]\n#[derive(Clone)]\nstruct {struct_ident} {{{fields_src}}}\nimpl cdz_rt::EnvClosure<{a_ty}, {r_ty}> for {struct_ident} {{\n    fn call<'a>(&self, {env}: &'a mut dyn cdz_rt::DynCdzEnv, arg: {a_ty}) -> std::pin::Pin<::std::boxed::Box<dyn core::future::Future<Output = {r_ty}> + 'a>> {{\n        let {arg_pat} = arg;\n        ::std::boxed::Box::pin({lifted}({}))\n    }}\n}}\n",
+        fwd.join(", "),
+        env = super::ENV_PARAM,
+    ))
+}
+
 /// Emit lambda-lifted closure slot `k` as a private `fn __lifted_{k}(<captures…>, <params…>) -> <ret>`.
 ///
 /// The lifted lambda (`layout.lifted[k]` — a [`crate::lower::LiftedLambda`]) is the body of a `(fn …)`
@@ -371,30 +466,37 @@ pub(super) fn emit_lifted_lambda(
 ) -> Result<String, Reject> {
     // Clone the lifted lambda's shape out of the layout so `db` can be borrowed mutably while emitting.
     let lam = layout.lifted[k].clone();
-    // Async lifted lambdas: a closure body that reaches a runtime `Core::Call` would name an async callee
-    // (which needs the gas/yield `env` threaded in) and cannot be a plain `Fn(A) -> R` — that boxed-future
-    // ABI is the deferred slice. But a CALL-FREE body (pure arithmetic / branches / runtime ops — the bulk
-    // of the host-closure corpus, e.g. `(fn (x) (+ x 1))`) emits BYTE-IDENTICALLY in sync and async mode:
-    // the only body-emit site that threads `env`/awaits is the `Core::Call` arm (`emit`'s async branch),
-    // and a call-free body never hits it. So such a body is emitted as an ORDINARY SYNC `fn` even under
-    // `--target rust-async`; the enclosing `async fn` awaits the closure's value, not its (sync) call. A
-    // body WITH a call stays a clean decline until the boxed-future closure ABI lands.
-    if mode.is_async() && crate::layout::body_has_call(db, lam.body) {
-        return Err(Reject::decline(
-            "an async lambda-lifted closure whose body makes a call is not yet emitted by the Rust backend",
-        ));
-    }
-    // Emit the body in SYNC mode: a lifted lambda becomes a sync `fn` on both targets (an async body would
-    // have declined just above), so its inner emit must not thread `env` — force the sync path.
-    let mode = Mode::Sync;
+    // OPTION A — UNIFORM async closure ABI. In async mode EVERY lifted closure is emitted as an `async fn`
+    // taking the gas/yield env as `&mut dyn DynCdzEnv` (the object-safe facet — NOT the generic `&mut __CdzE`
+    // a TOP-LEVEL async fn takes, because the closure VALUE that wraps this fn is `Rc<dyn EnvClosure<A,R>>`
+    // and a trait object cannot be generic over `__CdzE`). The body emits in Async mode so its `Core::Call`s
+    // thread env/await; entry gas is charged via the object-safe `consume_boxed`. This is UNIFORM (a
+    // call-free async body becomes an async fn too — env unused but present) so the closure VALUE form is one
+    // ABI everywhere, letting a `Ty::Fn` TYPE position spell it (`async_closure_type`) without needing to
+    // observe `body_has_call` (a per-value property a type can't see). In SYNC mode a lifted lambda stays an
+    // ordinary sync `fn` — its inner emit must not thread env.
+    let closure_async = mode.is_async();
+    let mode = if closure_async {
+        Mode::Async
+    } else {
+        Mode::Sync
+    };
     let mut params_src = String::new();
     let mut env: Env = HashMap::new();
     let mut first = true;
+    // A UNIFORM async lifted fn threads the env as its FIRST parameter, as the object-safe `&mut dyn
+    // DynCdzEnv` (see above). The `EnvClosure::call` wrapper forwards its own `env` into this fn.
+    if closure_async {
+        params_src.push_str(&format!("{}: &mut dyn DynCdzEnv", super::ENV_PARAM));
+        first = false;
+    }
     // Captures FIRST — each an ordinary leading parameter `__cap{j}: <ty>`. `Core::Captured{index:j}`
     // reads it. The capture's TYPE is the solved type of the captured binding (read off its occurrence).
     for (j, &cap_binder) in lam.captures.iter().enumerate() {
         let cty = type_of(db, cap_binder);
-        let rty = types::rust_type(&cty).ok_or_else(|| {
+        // Async: a captured CLOSURE spells the `EnvClosure` ABI (a captured closure value is `Rc<dyn
+        // EnvClosure>`); `async_closure_type` == `rust_type` for a closure-free capture.
+        let rty = super::async_or_rust_type(&cty, mode).ok_or_else(|| {
             Reject::decline(format!(
                 "lifted lambda capture {j} type {} has no native Rust representation",
                 cty.render_name()
@@ -410,7 +512,8 @@ pub(super) fn emit_lifted_lambda(
     }
     // Then the lambda's own PARAMETERS, in order.
     for (i, (binder, ty)) in lam.params.iter().enumerate() {
-        let rty = types::rust_type(ty).ok_or_else(|| {
+        // Async: a closure-typed param (a higher-order lifted lambda) spells the `EnvClosure` ABI.
+        let rty = super::async_or_rust_type(ty, mode).ok_or_else(|| {
             Reject::decline(format!(
                 "lifted lambda parameter {i} type {} has no native Rust representation",
                 ty.render_name()
@@ -424,7 +527,8 @@ pub(super) fn emit_lifted_lambda(
         env.insert(*binder, pname);
         first = false;
     }
-    let ret = types::rust_type(&lam.ret_ty).ok_or_else(|| {
+    // Async: a closure-typed RESULT (a lifted lambda returning a closure) spells the `EnvClosure` ABI.
+    let ret = super::async_or_rust_type(&lam.ret_ty, mode).ok_or_else(|| {
         Reject::decline(format!(
             "lifted lambda result type {} has no native Rust representation",
             lam.ret_ty.render_name()
@@ -443,6 +547,16 @@ pub(super) fn emit_lifted_lambda(
     };
     let body = emit(db, lam.body, &env, &ctx)?;
     let ident = lifted_ident(k);
+    if closure_async {
+        // A UNIFORM async lifted closure body → `async fn` charging entry gas via the OBJECT-SAFE
+        // `consume_boxed` (the `&mut dyn DynCdzEnv` env can't call the RPITIT `consume`). Mirrors a
+        // top-level async fn's `env.consume(1).await`. The per-closure `EnvClosure` struct (emitted in
+        // `mod.rs`) wraps this fn into the `Rc<dyn EnvClosure<A,R>>` value.
+        return Ok(format!(
+            "// cdz-lifted[{k}]\nasync fn {ident}({params_src}) -> {ret} {{\n    {}.consume_boxed(1).await;\n    {body}\n}}\n",
+            super::ENV_PARAM
+        ));
+    }
     Ok(format!(
         "// cdz-lifted[{k}]\nfn {ident}({params_src}) -> {ret} {{\n    {body}\n}}\n"
     ))
@@ -1601,9 +1715,12 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             // bare `vec![…]` (byte-identical to before). An empty list whose element type is NOT representable
             // (a free var, a fn) emits the bare `vec![]` and relies on downstream inference as before (no
             // regression — the annotation is a pure ADD when we can spell the type).
+            // ASYNC: a list of CLOSURES spells `Vec<Rc<dyn EnvClosure<A,R>>>`, so the element annotation uses
+            // `async_closure_type` (via `async_or_rust_type`) — else a `Vec::<Rc<dyn Fn>>::new()` mismatches
+            // the `Rc<dyn EnvClosure>` closures pushed in (E0308). Byte-identical for a closure-free element.
             if elems.is_empty()
                 && let Ty::List(elem) = type_of(db, id).strip_nominal()
-                && let Some(rust_elem) = types::rust_type(elem)
+                && let Some(rust_elem) = super::async_or_rust_type(elem, ctx.mode)
             {
                 return Ok(format!("Vec::<{rust_elem}>::new()"));
             }
@@ -1617,7 +1734,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             if elems.is_empty()
                 && let Some(exp) = ctx.expected_ty.as_ref()
                 && let Ty::List(elem) = exp.strip_nominal()
-                && let Some(rust_elem) = types::rust_type(elem)
+                && let Some(rust_elem) = super::async_or_rust_type(elem, ctx.mode)
             {
                 return Ok(format!("Vec::<{rust_elem}>::new()"));
             }
@@ -1782,11 +1899,17 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             // case. (Earlier this was a bare `new()`, which E0282'd an empty-Map handler state — a
             // Todo→Fail regression once the effects inline/hoist fix made that shape reach the rust emit.)
             let map_ty = type_of(db, id);
+            // In ASYNC mode a Map VALUE that is a closure spells `Rc<dyn EnvClosure<A,R>>`, so the `__m`
+            // annotation must use `async_closure_type` (via `async_or_rust_type`) — else a
+            // `BTreeMap<K, Rc<dyn Fn>>` annotation mismatches the `Rc<dyn EnvClosure>` values inserted (a
+            // closure-as-map-value case: E0308). A closure-free map annotation is byte-identical to `rust_type`.
+            let map_type_str =
+                |t: &Ty| -> Option<String> { super::async_or_rust_type(t, ctx.mode) };
             let ann = if ctx.map_typed_by_enclosing_insert {
                 // The enclosing `.insert`/`.remove` will fix K/V — a bare `new()` infers, and an annotation
                 // would OVER-CONSTRAIN (grounding an open var here clashes with a Rational/String/Bytes key
                 // the insert actually uses → E0308). Leave it unannotated; rustc reads the types from the use.
-                match types::rust_type(&map_ty) {
+                match map_type_str(&map_ty) {
                     Some(t) => format!(": {t}"),
                     None => String::new(),
                 }
@@ -1797,7 +1920,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             {
                 // Empty `Map.empty` at a CALL-ARG position: annotate from the callee param's concrete `Map`
                 // type, not the default ground (the Set-twin of the empty-Set-at-call-arg E0308 fix).
-                match types::rust_type(exp) {
+                match map_type_str(exp) {
                     Some(t) => format!(": {t}"),
                     None => String::new(),
                 }
@@ -1806,7 +1929,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 // state): GROUND the open vars so the annotation is spellable (else E0282). See
                 // `ground_open_vars` for why grounding to the default is safe (a wrong ground → loud rustc
                 // error, never a silent miscompile).
-                match types::rust_type(&types::ground_open_vars(&map_ty)) {
+                match map_type_str(&types::ground_open_vars(&map_ty)) {
                     Some(t) => format!(": {t}"),
                     None => String::new(),
                 }
@@ -2498,6 +2621,34 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             // string for two closures of the same lifted signature, so the `as` cast still unifies them in a
             // list/if/match. Fall back to `type_of(id)` only if a `lam` param/result somehow does not map
             // (it would already have declined at the lifted-fn emit, so this is belt-and-suspenders).
+            // ASYNC (Option A uniform ABI): the closure VALUE is `Rc<dyn EnvClosure<A,R>>` — a per-closure
+            // synth `struct Clos_{code}` (its captures as fields, emitted at module level in `mod.rs`) whose
+            // `EnvClosure::call` forwards `env` + its cloned captures + the (destructured) arg into the async
+            // lifted fn and boxes the future. Here we build the VALUE: `Rc::new(Clos_{code} { __c0, … }) as
+            // Rc<dyn EnvClosure<A,R>>`. The captures are the already-`move`d `__c{j}` locals (bound by
+            // `cap_lets`); the struct owns them. `A`/`R` come from the lifted lambda's own params/ret via
+            // `env_closure_args` (the SAME spelling `async_closure_type(Ty::Fn)` produces at a type position,
+            // so this value fits a param/result/field slot spelled by `async_closure_type`).
+            if ctx.mode.is_async() {
+                let (a_ty, r_ty) = types::env_closure_args(&lam.params, &lam.ret_ty).ok_or_else(|| {
+                    Reject::decline(
+                        "an async closure whose function type is not fully representable has no native Rust representation",
+                    )
+                })?;
+                let struct_ident = closure_struct_ident(code);
+                // The struct literal fields: `__c{j}: __c{j}` (field name == the moved local name).
+                let field_inits: Vec<String> = (0..cap_names.len())
+                    .map(|j| format!("__c{j}: __c{j}"))
+                    .collect();
+                let closure_expr = format!(
+                    "std::rc::Rc::new({struct_ident} {{ {} }}) as std::rc::Rc<dyn cdz_rt::EnvClosure<{a_ty}, {r_ty}>>",
+                    field_inits.join(", ")
+                );
+                // Wrap in a block ONLY when there are capture `let`s to scope — a NO-capture closure is a bare
+                // expression, and `{ expr }` around it trips `unused_braces` under the gate's `-D warnings`
+                // (the block appears in an arbitrary position: a `.call(...)` arg, a return value, …).
+                return Ok(wrap_closure_value(&cap_lets, &closure_expr));
+            }
             let dyn_ty = {
                 let mut param_tys = Vec::with_capacity(lam.params.len());
                 let mut ok = true;
@@ -2529,14 +2680,56 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 params.join(", "),
                 call_args.join(", ")
             );
-            Ok(format!("{{ {cap_lets}{closure_expr} }}"))
+            Ok(wrap_closure_value(&cap_lets, &closure_expr))
         }
-        // Apply a runtime closure at full arity → a direct call of the `Rc<dyn Fn>`: `(<closure>)(<a0>,…)`.
+        // Apply a runtime closure at full arity → a direct call. SYNC: `(<closure>)(<a0>,…)`. ASYNC (Option A):
+        // `<closure>.call(env, <arg-or-tuple>).await` — the `EnvClosure::call` takes the env at the call +
+        // one `A` arg (a multi-arg closure tuples its args into `A`, matching the lifted convention), and its
+        // returned future is awaited. `.await` inside an async fn body is the same shape a `Core::Call` uses.
         Core::CallClosure { closure, args } => {
             let c = emit(db, closure, env, ctx)?;
             let mut rendered = Vec::with_capacity(args.len());
             for &a in &args {
                 rendered.push(emit(db, a, env, ctx)?);
+            }
+            if ctx.mode.is_async() {
+                // `.call(env, arg).await` reborrows `env` for the whole call — so if the CLOSURE expr `c` OR
+                // any ARG contains its own `.await` (a nested async call `foldn(env,…).await`, e.g. the shape
+                // `(f (foldn f z m))`), that inner reborrow of `env` is still LIVE while `.call` reborrows it
+                // → E0499 "borrow `*__cdz_env` as mutable more than once". HOIST every `.await`-containing
+                // operand into a `let` BEFORE the `.call`: each hoisted reborrow completes (its `.await`
+                // releases `env`) before the next statement, so no two are ever live together. This mirrors
+                // the async `Core::Call` arm's `needs_hoist`. Operands with no `.await` (scalars, field reads,
+                // a bare closure local) stay inline.
+                let mut binds = String::new();
+                let hoist = |expr: String, tmp: &str, binds: &mut String| -> String {
+                    if expr.contains(".await") {
+                        binds.push_str(&format!("let {tmp} = {expr}; "));
+                        tmp.to_string()
+                    } else {
+                        expr
+                    }
+                };
+                let c = hoist(c, "__cclos", &mut binds);
+                let hoisted_args: Vec<String> = rendered
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, a)| hoist(a, &format!("__carg{i}"), &mut binds))
+                    .collect();
+                // Tuple ≥2 args into the single `A` (arity 1 = the bare arg; arity 0 = `()`), matching
+                // `env_closure_args`/`async_closure_type`'s `A` convention + the struct's `call` destructure.
+                let arg = match hoisted_args.len() {
+                    0 => "()".to_string(),
+                    1 => hoisted_args.into_iter().next().unwrap(),
+                    _ => format!("({})", hoisted_args.join(", ")),
+                };
+                let call = format!("({c}).call({}, {arg}).await", super::ENV_PARAM);
+                // Wrap in a block only when we hoisted (else a bare braced expr trips `unused_braces`).
+                return Ok(if binds.is_empty() {
+                    call
+                } else {
+                    format!("{{ {binds}{call} }}")
+                });
             }
             Ok(format!("({c})({})", rendered.join(", ")))
         }
