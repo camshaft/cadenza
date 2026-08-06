@@ -1033,17 +1033,25 @@ mod tests {
         );
     }
 
-    /// END-TO-END: drive the REAL rcdzc-compiled effect-emitting reducer (`reducer_b2`, which requests one
-    /// Http effect to `https://ok.host/x` on any event) through the FULL host agent loop — `HostedSession::deliver`
-    /// → fold → the emitted Http effect is AUTHORIZED → DISPATCHED via a stub [`HttpExecutor`] → the response
-    /// folds back — and assert the turn runs to completion (no open effects) and the executor was actually
-    /// reached with the reducer's URL. Where `real_genesis_reducer_folds_setup_events_through_the_host_async_path`
-    /// proves a real reducer folds SETUP events (which emit NO effects), THIS proves the full agent cycle
-    /// (deliver → fold → emit → authorize → dispatch → fold-result) through the host against a real reducer that
-    /// EMITS an effect — the headline "an agent runs" path, end to end.
+    /// END-TO-END: drive the REAL rcdzc-compiled effect-emitting reducer (`reducer_b3`) through the FULL host
+    /// agent loop — `HostedSession::deliver` → fold → the emitted Http effect is AUTHORIZED → DISPATCHED via a
+    /// stub [`HttpExecutor`] → the response folds back → the reducer STOPS — and assert the turn runs to
+    /// QUIESCENCE (no open effects), the executor was reached with the reducer's URL, and the reducer's KV
+    /// write landed. Where `real_genesis_reducer_folds_setup_events_through_the_host_async_path` proves a real
+    /// reducer folds SETUP events (which emit NO effects), THIS proves the full agent cycle (deliver → fold →
+    /// emit → authorize → dispatch → fold-result → STOP) through the host against a real reducer that EMITS an
+    /// effect — the headline "an agent runs" path, end to end.
     ///
-    /// Env-gated skip-on-unset (same contract as the genesis + b1/b2 kernel e2es): `REDUCER_CADENZA_B2_COMPONENT`
-    /// (the compiled reducer_b2 bytes) + `CDZ_STORE` (the hash-keyed store the handle-lowered reducer's
+    /// Uses `reducer_b3`, NOT `reducer_b2`: b2 emits an Http effect UNCONDITIONALLY (ignores the event), so it
+    /// re-emits on the folded-back result event too → `deliver` (which loops to quiescence) never terminates
+    /// (an infinite dispatch loop — b2 is a valid single-FOLD fixture for the kernel e2e, not a valid full-LOOP
+    /// subject). b3 is behaved: it emits one Http on an inbound `message` (bumping a KV `count`) but emits
+    /// NOTHING on the result event (`resumes = Some(_)`), so the loop QUIESCES after one turn. A
+    /// `tokio::time::timeout` wraps the drive as a fail-fast backstop so any future non-termination FAILS the
+    /// test fast instead of pinning a CI runner (the b2-hang lesson).
+    ///
+    /// Env-gated skip-on-unset (same contract as the genesis + b3 kernel e2e): `REDUCER_CADENZA_B3_COMPONENT`
+    /// (the compiled reducer_b3 bytes) + `CDZ_STORE` (the hash-keyed store the handle-lowered reducer's
     /// value-heap runtime dep + its transitive nfc resolve from). Both-or-fail-loud; a bare `cargo test` skips.
     #[tokio::test]
     async fn real_effect_reducer_runs_a_full_http_turn_through_the_host() {
@@ -1052,30 +1060,30 @@ mod tests {
 
         let Some((reducer_path, store_dir)) = require_reducer_and_store_or_skip(
             "real_effect_reducer_runs_a_full_http_turn_through_the_host",
-            "REDUCER_CADENZA_B2_COMPONENT",
+            "REDUCER_CADENZA_B3_COMPONENT",
         ) else {
             return;
         };
 
         let bytes = std::fs::read(&reducer_path).unwrap_or_else(|e| {
-            panic!("REDUCER_CADENZA_B2_COMPONENT={reducer_path:?} set but unreadable: {e}")
+            panic!("REDUCER_CADENZA_B3_COMPONENT={reducer_path:?} set but unreadable: {e}")
         });
         let reducer = AsyncComponentReducer::from_component_bytes(&bytes)
-            .unwrap_or_else(|e| panic!("reducer_b2 must be a valid component: {e:?}"));
-        // b2 lowers compounds to value-heap handles → declares a cadenza:runtime/heap dep. Resolve every dep
+            .unwrap_or_else(|e| panic!("reducer_b3 must be a valid component: {e:?}"));
+        // b3 lowers compounds to value-heap handles → declares a cadenza:runtime/heap dep. Resolve every dep
         // from the store (content-verified via get_by_hash, matching the genesis E2E) + attach the store so
         // the §23 compose resolves the runtime's own transitive nfc.
         let store = cdz_kernel::component_store::ComponentStore::open(&store_dir);
         let deps = reducer.deps().to_vec();
         assert!(
             !deps.is_empty(),
-            "a real effect-emitting reducer_b2 must declare a cadenza:runtime/heap dep"
+            "a real effect-emitting reducer_b3 must declare a cadenza:runtime/heap dep"
         );
         let mut resolved = Vec::with_capacity(deps.len());
         for dep in &deps {
             let dep_bytes = store.get_by_hash(&dep.hash).unwrap_or_else(|e| {
                 panic!(
-                    "CDZ_STORE={store_dir:?} could not resolve reducer_b2 dep {:?} (hash {}): {e:?}",
+                    "CDZ_STORE={store_dir:?} could not resolve reducer_b3 dep {:?} (hash {}): {e:?}",
                     dep.import_name,
                     dep.hash.to_hex()
                 )
@@ -1123,29 +1131,47 @@ mod tests {
             predicate: ResourcePredicate::Any,
         }]);
         let mut session = HostedSession::genesis(
-            Hash::of(b"real-b2-effect-reducer"),
+            Hash::of(b"real-b3-effect-reducer"),
             Box::new(reducer),
             Box::new(authz),
             executor,
         );
 
-        // ONE turn: deliver an inbound event → b2 folds → emits the Http effect → authorized → dispatched via
-        // the stub → response folds back. `deliver` runs the whole cycle to completion.
-        session.deliver(inbound_go(), None).await.expect(
-            "the real b2 reducer runs a full Http turn through the host without a kernel error",
-        );
+        // ONE turn to QUIESCENCE: deliver an inbound `message` → b3 folds → bumps KV `count` + emits the Http
+        // effect → authorized → dispatched via the stub → response folds back → b3 emits nothing on the result
+        // → loop quiesces. `deliver` loops until no effects remain; a well-behaved b3 terminates. Wrap in a
+        // 60s timeout as a fail-fast backstop: a non-terminating reducer FAILS the test instead of pinning the
+        // CI runner (the b2-hang lesson — b2 emitted unconditionally + hung the nix check indefinitely).
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            session.deliver(inbound_go(), None),
+        )
+        .await
+        {
+            Ok(res) => res.expect("reducer_b3 runs a full Http turn through the host without a kernel error"),
+            Err(_) => panic!(
+                "reducer_b3 did NOT quiesce within 60s — the agent loop is non-terminating (a reducer that \
+                 re-emits on its own result event, like b2, loops forever); failing fast rather than hanging"
+            ),
+        }
 
-        // The turn completed with nothing left open, and the effect actually reached the executor with b2's
-        // documented URL — the full deliver→fold→emit→authorize→dispatch→fold-result cycle ran end to end.
+        // The loop reached quiescence with nothing left open; the effect reached the executor with b3's URL;
+        // and the reducer's KV write landed — the full deliver→fold→emit→authorize→dispatch→fold-result→stop
+        // cycle ran end to end against a real behaved effect-emitting reducer.
         assert_eq!(
             session.open_effects(),
             0,
-            "the Http effect was dispatched + its result folded back (no effect left open)"
+            "the Http effect was dispatched + its result folded back, and b3 stopped (no effect left open)"
         );
         assert_eq!(
             called_url.lock().unwrap().as_deref(),
             Some("https://ok.host/x"),
-            "the reducer's Http effect reached the executor with b2's documented URL"
+            "the reducer's Http effect reached the executor with b3's documented URL"
+        );
+        assert_eq!(
+            session.session().kv().get(b"count"),
+            Some(&[1u8][..]),
+            "b3 bumped its KV `count` counter to 1 on the inbound message (the fold's KV write landed)"
         );
     }
 
