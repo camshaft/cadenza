@@ -328,6 +328,24 @@ impl NameStore {
         out
     }
 
+    /// Export every GROUP name's OR-set ops (§4c session-directory I2), name-sorted, ops in log order — the
+    /// group counterpart to [`to_set_entries`](Self::to_set_entries). This is what [`snapshot_bytes`](Self::snapshot_bytes)
+    /// serializes (as `member-op` frames) so a store COPY / snapshot preserves the GROUP kind + membership,
+    /// not just single-value pointers (the #2414-c3 "copies drop the group kind" gap — a copy seeded only
+    /// from `to_set_entries` would lose groups entirely; this + the snapshot round-trip closes it). Byte-STABLE
+    /// (name-sorted; each group's log order is its append order, already deterministic).
+    pub fn to_group_ops(&self) -> Vec<(String, MemberOp)> {
+        let mut names: Vec<&String> = self.groups.keys().collect();
+        names.sort_unstable();
+        let mut out = Vec::new();
+        for name in names {
+            for op in &self.groups[name] {
+                out.push((name.clone(), op.clone()));
+            }
+        }
+        out
+    }
+
     /// Serialize the whole store to a SINGLE durable-snapshot blob — the §4c cascade-free durability path:
     /// a backend `blob.put(store.snapshot_bytes())`s this and `from_snapshot_bytes(blob.get(..))`s it back on
     /// recovery (BlobStore is content-addressed + async, so the snapshot self-verifies by hash). The blob is
@@ -337,11 +355,21 @@ impl NameStore {
     /// identically regardless of insertion history.
     pub fn snapshot_bytes(&self) -> Vec<u8> {
         let mut buf = Vec::new();
-        for (name, hash) in self.to_set_entries() {
-            let frame = crate::event_ast::encode_name_set(&name, &hash);
+        let mut push_frame = |frame: Vec<u8>| {
             // u32-LE length prefix, matching the log-store framing (a frame is at most a small name+hash).
             buf.extend_from_slice(&(frame.len() as u32).to_le_bytes());
             buf.extend_from_slice(&frame);
+        };
+        // Single-value pointer names first (name-set frames), then GROUP names (member-op frames). Each
+        // frame is self-describing by its AST head (`name-set` vs `member-op`), so from_snapshot_bytes routes
+        // per-frame — the two kinds can interleave freely; this order is just deterministic (both sorted).
+        for (name, hash) in self.to_set_entries() {
+            push_frame(crate::event_ast::encode_name_set(&name, &hash));
+        }
+        for (name, op) in self.to_group_ops() {
+            push_frame(crate::event_ast::encode_member_op(
+                &name, op.add, &op.member, &op.tag,
+            ));
         }
         buf
     }
@@ -353,7 +381,7 @@ impl NameStore {
     /// come from a store/CAS, so a corrupt snapshot must fail cleanly (the caller falls back / halts), like
     /// the session-log `Corrupt` path.
     pub fn from_snapshot_bytes(bytes: &[u8]) -> Result<NameStore, NameStoreError> {
-        let mut entries: Vec<(String, Hash)> = Vec::new();
+        let mut store = NameStore::new();
         let mut pos = 0usize;
         while pos < bytes.len() {
             let len_end = pos
@@ -370,12 +398,28 @@ impl NameStore {
             let frame = bytes
                 .get(len_end..frame_end)
                 .ok_or(NameStoreError::MalformedSnapshot)?;
-            let (name, hash) = crate::event_ast::decode_name_set(frame)
-                .map_err(|_| NameStoreError::MalformedSnapshot)?;
-            entries.push((name, hash));
+            // Route per-frame by its self-describing AST head: a `member-op` frame (GROUP op) → add_op; else
+            // a `name-set` frame (single-value pointer) → set. Try member-op FIRST (distinct head), fall to
+            // name-set. A frame that's NEITHER is a corrupt snapshot. Both go through the authority-checked
+            // write path (set/add_op), so a tampered snapshot can't smuggle an Unscoped/mode-mismatched name.
+            if let Ok((name, add, member, tag)) = crate::event_ast::decode_member_op(frame) {
+                let op = if add {
+                    MemberOp::add(member, tag.0, tag.1)
+                } else {
+                    MemberOp::remove(member, tag.0, tag.1)
+                };
+                // Propagate the write-path error VERBATIM (UnscopedNameUnwritable / NameModeMismatch) — a
+                // tampered snapshot naming an unwritable/mode-mismatched name fails on the AUTHORITY check,
+                // not as MalformedSnapshot (only a bad FRAME is malformed).
+                store.add_op(&name, op)?;
+            } else {
+                let (name, hash) = crate::event_ast::decode_name_set(frame)
+                    .map_err(|_| NameStoreError::MalformedSnapshot)?;
+                store.set(&name, SetEntry::unsigned(hash))?;
+            }
             pos = frame_end;
         }
-        Self::replay_set_entries(entries.iter().map(|(n, h)| (n.as_str(), *h)))
+        Ok(store)
     }
 
     /// The §4c write-authority namespace for `name`, by its prefix — the pure classification a Cedar
@@ -869,6 +913,52 @@ mod tests {
                 .unwrap()
                 .to_set_entries(),
             Vec::<(String, Hash)>::new()
+        );
+    }
+
+    // §4c session-directory I2 (the #2414-c3 "copies drop the group kind" close): a store with BOTH a
+    // single-value pointer AND an OR-set group round-trips through snapshot — the restored store preserves
+    // group MEMBERSHIP (add-wins, incl. an observed-remove) AND the group KIND (resolve_all works, resolve
+    // is a mode-mismatch), so a store COPY seeded from a snapshot is a faithful replica of both maps.
+    #[test]
+    fn snapshot_round_trips_or_set_groups_preserving_membership_and_kind() {
+        let (a, b, c) = (Hash::of(b"A"), Hash::of(b"B"), Hash::of(b"C"));
+        let origin = Hash::of(b"origin");
+        let mut s = NameStore::new();
+        // A single-value pointer (must still round-trip unchanged) + a group with an observed-remove.
+        s.set("system/compiler/latest", SetEntry::unsigned(a))
+            .unwrap();
+        s.add_op("session/room/lobby", MemberOp::add(a, origin, 0))
+            .unwrap();
+        s.add_op("session/room/lobby", MemberOp::add(b, origin, 1))
+            .unwrap();
+        s.add_op("session/room/lobby", MemberOp::add(c, origin, 2))
+            .unwrap();
+        s.add_op("session/room/lobby", MemberOp::remove(b, origin, 1))
+            .unwrap(); // B removed → {A, C}
+
+        let blob = s.snapshot_bytes();
+        let restored = NameStore::from_snapshot_bytes(&blob).expect("group snapshot round-trips");
+
+        // GROUP membership survives (add-wins fold reproduced through the snapshot).
+        assert_eq!(
+            restored.resolve_all("session/room/lobby").unwrap(),
+            [a, c].into_iter().collect(),
+            "the OR-set membership (B removed) round-trips through the snapshot"
+        );
+        // GROUP kind survives: resolve_all works, resolve is a mode-mismatch (not restored as a pointer).
+        assert_eq!(
+            restored.resolve("session/room/lobby"),
+            Err(NameStoreError::NameModeMismatch),
+            "the group kind is preserved — a copy doesn't degrade it to a pointer"
+        );
+        // The single-value pointer still round-trips unchanged (no regression from the group frames).
+        assert_eq!(restored.resolve("system/compiler/latest").unwrap(), a);
+        // Byte-stable: re-snapshotting the restored store yields identical bytes (groups + pointers).
+        assert_eq!(
+            restored.snapshot_bytes(),
+            blob,
+            "snapshot is byte-stable across a round-trip"
         );
     }
 

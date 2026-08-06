@@ -106,13 +106,17 @@ pub mod effect_ct {
     /// The `lifecycle/*` namespace PREFIX — the §lifecycle session-control partition (spawn/suspend/resume/
     /// terminate). UNLIKE `store/*` (kernel-applied to the name-store) and `control/*` (authz-exempt,
     /// kernel/host-answered), a `lifecycle/*` effect is AUTHZ-GATED and routes through the NORMAL
-    /// authorize→executor path: the HOST registers an executor that [`handles_family`](super::Executor::handles_family)
-    /// the lifecycle names + mutates the session registry inline (`&mut AgentHost`, the on-loop-no-deadlock
+    /// authorize→executor path: the HOST registers an executor that `handles_family` (the `Executor` trait
+    /// method) the lifecycle names + defers the session-registry mutation to the loop (an executor can't
+    /// hold `&mut AgentHost` while the driven session borrows the registry — the on-loop-no-deadlock
     /// design). So the kernel needs NO special drive-loop arm for it — only these family-string consts (one
-    /// source of truth across a reducer, the host executor, and the manifest). The authority to spawn/kill
-    /// is a `Capability{family: lifecycle/*}` whose predicate is the supervision-tree descendant check
-    /// (I6 `ResourcePredicate::DescendantOf`, host/Cedar seam). Register-by-string (no `EffectKind` variant
-    /// → the `Emit` placeholder kind), like `store/`/`control/`.
+    /// source of truth across a reducer, the host executor, and the manifest). Authority is enforced via the
+    /// EXISTING `FamilyGrant` seam (`Capability::for_family` + `crate::authz::Authorizer::with_family_grants`):
+    /// a grant keyed on a `lifecycle/*` family string + a `ResourcePredicate` over the target (the target
+    /// SessionId). ⚠️ FUTURE (I6, NOT present): the intended supervision-tree authority — "may only
+    /// terminate/spawn under my transitive `Spawned`-descendants" — is a NEW `ResourcePredicate::DescendantOf`
+    /// variant + a host/Cedar tree-walk (the descendant set is host-registry state the kernel's static
+    /// predicate can't compute); tracked as the I6 seam. Register-by-string (`Emit` placeholder kind).
     pub const LIFECYCLE_PREFIX: &str = "lifecycle/";
 
     /// `lifecycle/spawn` — spawn a durable CHILD session (target = the child's reducer hash; the effect
