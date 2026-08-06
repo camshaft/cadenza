@@ -101,6 +101,14 @@ tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
 # (all async, single trait each). My `ModelTransport`/`HttpTransport` sub-traits + my native `impl Executor`
 # for the executors use `#[async_trait(?Send)]` (single-threaded host, non-Send transport futures — §15b).
 async-trait = "0.1"
+# getrandom — OS entropy for a fresh session's SPAWN NONCE (§lifecycle I2a). v-agent-harness's
+# `Session::genesis(reducer, spawn_nonce)` made `genesis_hash` (= the host's SessionId) per-session-UNIQUE
+# by hashing a caller-supplied nonce into the seq-0 Genesis event; the HOST mints that nonce (kernel stays
+# clock/entropy-free, §9c). We draw 32 fresh OS-random bytes and hash them into a `Hash` (blake3 semantics
+# via `Hash::of`, NOT `Hash::from_bytes` — the nonce is a HASH of entropy, keeping the type's invariant).
+# Minted ONCE at fresh genesis + recorded in the durable log; replay/recover reads it back FROM the log
+# (never re-mints — a re-mint would change the SessionId on recovery). Tiny, std-only, no network.
+getrandom = "0.2"
 # serde + toml — the daemon's single-TOML config (operator directive: "set the entire thing up via config
 # and not from cli args; the only arg I want is the path to the config"). serde derives the config schema;
 # toml parses the file. Small, always-on (the config layer is part of the daemon's core, not feature-gated
