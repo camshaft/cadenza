@@ -1689,6 +1689,125 @@ mod status_snapshot_tests {
         }
     }
 
+    // CROSS-SESSION MESSAGING (operator's next big rock): an "emitter" reducer that, on an inbound trigger,
+    // performs ONE real Emit effect targeting a PEER session id with a message payload — the sender half of
+    // A.Emit → host-routes → B.Inbound. This pins the KERNEL contract the joint host E2E (v-agent-harness-host
+    // owns the routing + 2-session harness) leans on: a reducer's Emit(target=<peer id>) is authorized against
+    // an Emit capability over that target, then recorded as a durable Dispatched frame carrying kind=Emit +
+    // the peer target (what the host's EmitExecutor routes from). Distinct from the CONTROL-family Emit
+    // placeholder tests above — this is a REAL peer-directed emit (family `emit`, a concrete target).
+    struct PeerEmitterReducer {
+        peer: &'static str,
+    }
+    #[async_trait::async_trait(?Send)]
+    impl Reducer for PeerEmitterReducer {
+        async fn fold(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+            match &event.body {
+                EventBody::Inbound { .. } => FoldOutput::with(vec![EffectRequest::new(
+                    EffectKind::Emit,
+                    self.peer,
+                    Some(crate::effect::Payload::Inline(
+                        b"hello-peer".to_vec().into(),
+                    )),
+                    Timeliness::Interactive,
+                )]),
+                _ => FoldOutput::none(),
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_peer_directed_emit_is_authorized_dispatched_and_routed_with_its_target() {
+        // The kernel half of cross-session messaging: emitter folds → kernel AUTHORIZES the Emit against an
+        // Emit-cap over the exact peer target → durably records a Dispatched{kind:Emit, target:<peer>} →
+        // surfaces the effect to the executor (the host's EmitExecutor routes it to the peer's inbox). Assert
+        // all three: the executor SAW the emit with the right target+payload; the Dispatched frame recorded
+        // kind=Emit + the peer target; the emit was authorized (it wasn't dropped).
+        let peer = "session-B";
+        let mut exec = RecordingExecutor::new();
+        let authz = Authorizer::new(vec![Capability {
+            kind: EffectKind::Emit,
+            predicate: ResourcePredicate::Exact(peer.into()),
+        }]);
+        let mut s = Session::genesis(Hash::of(b"emitter-v1"));
+        s.deliver(
+            inbound(),
+            None,
+            &PeerEmitterReducer { peer },
+            &authz,
+            &mut exec,
+        )
+        .await
+        .expect("deliver");
+
+        // The executor saw exactly the peer-directed emit (this is what the host EmitExecutor routes).
+        assert_eq!(
+            exec.seen.len(),
+            1,
+            "the authorized emit reached the executor"
+        );
+        let (req, _key) = &exec.seen[0];
+        assert!(matches!(req.kind, EffectKind::Emit), "kind is Emit");
+        assert_eq!(req.target.as_ref(), peer, "target is the peer session id");
+        assert_eq!(
+            req.payload,
+            Some(crate::effect::Payload::Inline(
+                b"hello-peer".to_vec().into()
+            )),
+            "the message payload rides the emit"
+        );
+
+        // A durable Dispatched frame recorded kind=Emit + the peer target (the crash-recovery-safe record
+        // the host routes from — before the effect leaves the kernel).
+        let (kind, target) = s
+            .log()
+            .iter()
+            .find_map(|e| match &e.body {
+                EventBody::Dispatched { kind, target, .. } => Some((kind.clone(), target.clone())),
+                _ => None,
+            })
+            .expect("a Dispatched frame was recorded for the emit");
+        assert!(
+            matches!(kind, EffectKind::Emit),
+            "Dispatched records kind=Emit"
+        );
+        assert_eq!(target.as_ref(), peer, "Dispatched records the peer target");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_peer_emit_to_an_ungranted_target_is_denied_not_routed() {
+        // Cedar gate on cross-session messaging: a session may Emit ONLY where its capability grants the
+        // target. An emit to a peer the capability does NOT cover is DENIED — never surfaced to the executor
+        // (so the host never routes it), never a Dispatched frame. Grant Emit to "session-B" but emit to
+        // "session-C" → denied. (This is the kernel-side of the authz v-agent-harness-host gates §20b-side.)
+        let mut exec = RecordingExecutor::new();
+        let authz = Authorizer::new(vec![Capability {
+            kind: EffectKind::Emit,
+            predicate: ResourcePredicate::Exact("session-B".into()),
+        }]);
+        let mut s = Session::genesis(Hash::of(b"emitter-deny-v1"));
+        s.deliver(
+            inbound(),
+            None,
+            &PeerEmitterReducer { peer: "session-C" }, // NOT the granted target
+            &authz,
+            &mut exec,
+        )
+        .await
+        .expect("deliver");
+
+        assert!(
+            exec.seen.is_empty(),
+            "an emit to an ungranted peer target must NOT reach the executor (Cedar-denied, so unroutable)"
+        );
+        assert!(
+            !s.log()
+                .iter()
+                .any(|e| matches!(&e.body, EventBody::Dispatched { .. })),
+            "a denied emit records NO Dispatched frame (it never dispatches)"
+        );
+    }
+
     fn timer_cap() -> Authorizer {
         Authorizer::new(vec![Capability {
             kind: EffectKind::Timer,
