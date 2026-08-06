@@ -88,8 +88,11 @@ pub enum EventBody {
     /// caller-supplied per-spawn `spawn_nonce` (entropy), and optional `parent` provenance.
     ///
     /// `spawn_nonce` (§lifecycle I2 / operator "hash of spawn-time + entropy" ruling): the kernel is
-    /// clock-free + entropy-free (§9c), so the HOST mints this at spawn (32 random bytes via getrandom)
-    /// and passes it in. It lives in the durable seq-0 event, so it's replay-deterministic (recovery reads
+    /// clock-free + entropy-free (§9c), so the HOST mints this at spawn and passes it in. It's a `Hash`
+    /// (blake3 content hash), so the host DERIVES it as `Hash::of(<spawn-unique bytes>)` — e.g.
+    /// `Hash::of(&getrandom_bytes)` (an OS-entropy draw, not wall-clock, to avoid same-ms burst collisions)
+    /// — NOT `Hash::from_bytes(random)` (which would fabricate a "hash" of nothing, violating Hash
+    /// semantics). It lives in the durable seq-0 event, so it's replay-deterministic (recovery reads
     /// it from the log, NEVER re-mints — a re-mint would change the genesis hash = a different SessionId on
     /// recovery = corruption). It is what makes `genesis_hash()` per-SESSION unique: without it, two
     /// sessions over the same reducer produced an identical Genesis event → identical SessionId → registry
