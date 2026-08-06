@@ -307,6 +307,15 @@ pub enum ComponentError {
         func: String,
         reason: String,
     },
+    /// A generic [`invoke_component_with_dicts`] call's AST `arg` couldn't be resolved against the supplied
+    /// dictionaries (I4 invoke-wire, design-binary-ast-dictionary §I4): either a supplied dict artifact was
+    /// malformed / not flat ([`cadenza_ast::dict::DictError`]), or the arg was a `cdzast\x00\x02` dict-bearing
+    /// transport that references a dict hash ABSENT from the supplied set ([`DecodeError::MissingDict`]), or the
+    /// arg bytes weren't a decodable AST at all. A CLEAN host-level error (the design gate: "a missing dict is a
+    /// clean host-level error, not a panic") — DISTINCT from [`ComponentError::InvalidComponent`] (the wasm bytes)
+    /// and [`ComponentError::Trap`] (the guest ran + trapped): here the fault is in the INVOKE ARG / its dicts,
+    /// surfaced before the guest is even instantiated. `reason` carries the underlying dict/decode diagnostic.
+    InvalidInvokeArg { reason: String },
 }
 
 /// One emitted ARTIFACT of a generic component invocation — the result unit of the operator's invoke
@@ -1788,6 +1797,60 @@ impl KvHeapOps {
             }
         }
     }
+}
+
+/// Resolve a possibly-dict-bearing invoke `arg` against supplied dictionary artifacts, handing back
+/// canonical inline `cdzast\x00\x01` bytes for marshalling (I4 invoke-wire, design-binary-ast-dictionary
+/// §I4). The AST-as-ABI invoke primitive accepts dictionaries as ADDITIONAL input artifacts alongside the
+/// primary AST `arg`; a `cdzast\x00\x02` transport arg references shared subtrees BY CONTENT HASH (compact
+/// wire), which this expands HERMETICALLY from `dict_artifacts` — no external fetch. Each dict artifact is
+/// `(content_hash, bytes)`; the caller (host) supplies the content address (this bottom crate never
+/// computes one). The transform is `decode_with_dicts` THEN `encode` (seq-125 deref): the result is the
+/// SAME canonical bytes the fully-inlined arg would encode to, so the guest ALWAYS sees inline `\x00\x01`
+/// and needs no dict knowledge — the design gate ("a dict-bearing arg produces the IDENTICAL result to the
+/// same arg encoded inline"). A dict-free `\x00\x01` arg is byte-identical passthrough (dicts unused).
+///
+/// Every failure is a CLEAN [`ComponentError::InvalidInvokeArg`], never a panic (the design gate: "a missing
+/// dict is a clean host-level error"): a malformed / non-flat dict artifact ([`cadenza_ast::dict::DictError`]),
+/// a `TAG_DICT_REF` naming a hash absent from the supplied set ([`DecodeError::MissingDict`]), or an arg that
+/// isn't a decodable AST.
+fn resolve_dict_bearing_arg(
+    arg: &[u8],
+    dict_artifacts: &[(Hash, Vec<u8>)],
+) -> Result<Vec<u8>, ComponentError> {
+    use cadenza_ast::dict::{self, DictSet, Hash as AstHash};
+    let invalid = |reason: String| ComponentError::InvalidInvokeArg { reason };
+    // Build the DictSet from the supplied artifacts — keyed by content hash. `from_artifacts` decodes each
+    // through the canonical `\x00\x01` plane, rejecting a non-flat (dict-bearing) or malformed dict. Bridge
+    // the kernel `Hash` (blake3 32-byte container) to cadenza-ast's value-only `dict::Hash` by its bytes.
+    let dicts = DictSet::from_artifacts(
+        dict_artifacts
+            .iter()
+            .map(|(h, bytes)| (AstHash(*h.as_bytes()), bytes.as_slice())),
+    )
+    .map_err(|e| invalid(format!("supplied dictionary artifact rejected: {e:?}")))?;
+    // Resolve the arg: a `\x00\x02` transport is expanded against `dicts` to a plain inline arena; a
+    // `\x00\x01` arg decodes identically (dicts unused). Then re-encode to canonical inline bytes.
+    let arenas = dict::resolve(arg, &dicts)
+        .map_err(|e| invalid(format!("resolving the invoke arg against its dicts: {e:?}")))?;
+    Ok(cadenza_ast::codec::encode(&arenas))
+}
+
+/// The I4 dict-aware form of [`invoke_component`]: resolve a possibly-dict-bearing `arg` against supplied
+/// dictionary artifacts (see [`resolve_dict_bearing_arg`]) to canonical inline AST bytes FIRST, then invoke
+/// exactly as [`invoke_component`] does — so the guest sees the same inline arg whether the caller sent it
+/// inline or dict-compacted (the design gate). `dict_artifacts` empty = a plain passthrough (a `\x00\x01`
+/// arg is unchanged), i.e. this is a strict superset of [`invoke_component`].
+pub fn invoke_component_with_dicts(
+    bytes: &[u8],
+    interface: &str,
+    func: &str,
+    arg: &[u8],
+    dict_artifacts: &[(Hash, Vec<u8>)],
+    fuel_budget: u64,
+) -> Result<Vec<Artifact>, ComponentError> {
+    let resolved_arg = resolve_dict_bearing_arg(arg, dict_artifacts)?;
+    invoke_component(bytes, interface, func, &resolved_arg, fuel_budget)
 }
 
 /// Generic MULTI-EXPORT component INVOCATION — the core mechanism of the operator's resolve-name→
@@ -4722,6 +4785,117 @@ mod tests {
             ],
             "invoke returns the exact multi-artifact set the component emitted (seq-108)"
         );
+    }
+
+    // I4 invoke-wire (design-binary-ast-dictionary §I4) — THE GATE: an invoke whose AST `arg` is
+    // DICT-BEARING produces the IDENTICAL result to the same arg encoded INLINE. Build a tree `(f (pair a
+    // b))`, a dict exporting its `(pair a b)` subtree, and encode the tree TWO ways: inline (`\x00\x01`) and
+    // dict-compacted (`\x00\x02`, a TAG_DICT_REF into the dict). invoke_component_with_dicts resolves the
+    // dict-bearing arg back to inline BEFORE marshalling, so both invokes hand the guest the same canonical
+    // arg → the same artifacts. (two_artifact_component ignores its arg, so the artifacts are fixed; what
+    // this proves is that the dict-resolution transform runs + both paths reach the same invoke.)
+    #[test]
+    fn invoke_with_dicts_resolves_a_dict_bearing_arg_identically_to_inline() {
+        use cadenza_ast::ast::Builder;
+        use cadenza_ast::codec::{encode, encode_with_dict};
+        use cadenza_ast::dict::{DictSet, Hash as AstHash};
+
+        // The dict's shared subtree `(pair a b)`.
+        let dict_arena = {
+            let mut b = Builder::new();
+            let pair = b.name("pair");
+            let sa = b.name("a");
+            let sb = b.name("b");
+            let root = b.list(vec![pair, sa, sb]);
+            b.finish(root)
+        };
+        // The program `(f (pair a b))` — contains the dict subtree, so encode_with_dict compacts it.
+        let program = {
+            let mut b = Builder::new();
+            let f = b.name("f");
+            let pair = b.name("pair");
+            let sa = b.name("a");
+            let sb = b.name("b");
+            let inner = b.list(vec![pair, sa, sb]);
+            let root = b.list(vec![f, inner]);
+            b.finish(root)
+        };
+        // A caller-chosen content hash for the dict (content-addressing is the caller's job); the same hash
+        // keys both the encode-time DictSet and the invoke-time dict artifact, so resolve grafts by it.
+        let dict_bytes = encode(&dict_arena);
+        let dict_hash_bytes = [0x11u8; 32];
+        let encode_set =
+            DictSet::from_artifacts([(AstHash(dict_hash_bytes), dict_bytes.as_slice())]).unwrap();
+        let inline_arg = encode(&program); // \x00\x01
+        let dict_bearing_arg = encode_with_dict(&program, &encode_set); // \x00\x02 (a dict-ref)
+        assert_ne!(
+            inline_arg, dict_bearing_arg,
+            "sanity: the dict-bearing encoding must actually differ from inline (it compacted a subtree)"
+        );
+
+        let bytes = two_artifact_component();
+        // INLINE arg (no dicts needed) + DICT-BEARING arg (its one dict supplied) → identical artifacts.
+        let via_inline =
+            invoke_component_with_dicts(&bytes, "", "run", &inline_arg, &[], DEFAULT_FOLD_FUEL)
+                .expect("inline-arg invoke");
+        let dict_artifacts = vec![(Hash::from_bytes(dict_hash_bytes), dict_bytes.clone())];
+        let via_dicts = invoke_component_with_dicts(
+            &bytes,
+            "",
+            "run",
+            &dict_bearing_arg,
+            &dict_artifacts,
+            DEFAULT_FOLD_FUEL,
+        )
+        .expect("dict-bearing-arg invoke");
+        assert_eq!(
+            via_inline, via_dicts,
+            "a dict-bearing arg must invoke to the IDENTICAL result as the same arg inline (I4 gate)"
+        );
+    }
+
+    // I4 gate (the fail-loud half): a dict-bearing arg that references a dict hash ABSENT from the supplied
+    // artifacts is a CLEAN ComponentError::InvalidInvokeArg (a MissingDict surfaced as a host error), NOT a
+    // panic and NOT an InvalidComponent — the fault is the arg/its dicts, before the guest is instantiated.
+    #[test]
+    fn invoke_with_dicts_missing_dict_is_a_clean_invalid_invoke_arg_not_a_panic() {
+        use cadenza_ast::ast::Builder;
+        use cadenza_ast::codec::{encode, encode_with_dict};
+        use cadenza_ast::dict::{DictSet, Hash as AstHash};
+
+        let dict_arena = {
+            let mut b = Builder::new();
+            let pair = b.name("pair");
+            let sa = b.name("a");
+            let sb = b.name("b");
+            let root = b.list(vec![pair, sa, sb]);
+            b.finish(root)
+        };
+        let program = {
+            let mut b = Builder::new();
+            let f = b.name("f");
+            let pair = b.name("pair");
+            let sa = b.name("a");
+            let sb = b.name("b");
+            let inner = b.list(vec![pair, sa, sb]);
+            let root = b.list(vec![f, inner]);
+            b.finish(root)
+        };
+        let dict_hash_bytes = [0x11u8; 32];
+        let encode_set =
+            DictSet::from_artifacts([(AstHash(dict_hash_bytes), encode(&dict_arena).as_slice())])
+                .unwrap();
+        let dict_bearing_arg = encode_with_dict(&program, &encode_set);
+
+        let bytes = two_artifact_component();
+        // Supply NO dict artifacts → the arg's TAG_DICT_REF can't resolve → clean InvalidInvokeArg.
+        match invoke_component_with_dicts(&bytes, "", "run", &dict_bearing_arg, &[], DEFAULT_FOLD_FUEL) {
+            Err(ComponentError::InvalidInvokeArg { reason }) => assert!(
+                reason.contains("MissingDict") || reason.to_lowercase().contains("resolv"),
+                "a missing dict must be a clean InvalidInvokeArg naming the resolution failure, got {reason:?}"
+            ),
+            other => panic!("a dict-bearing arg with no supplied dicts must be InvalidInvokeArg, got {other:?}"),
+        }
     }
 
     // A valid component that lacks the named export is InvokeExport (actionable "not invokable at
