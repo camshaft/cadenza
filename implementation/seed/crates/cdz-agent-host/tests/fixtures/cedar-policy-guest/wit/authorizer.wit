@@ -17,6 +17,15 @@ interface types {
     // Cedar RESOURCE — the resolved target (URL / model-id / command). Named `target`, not `resource`
     // (a reserved WIT keyword). SEC-F1 gates (kind, target) — the effect payload/body is NOT in the request.
     target: string,
+    // The STRUCTURED SUBJECT of a subject-scoped effect — a SECOND resource dimension, NOT opaque body.
+    // For a group membership op (`store/add`/`store/remove`) `target` is the GROUP NAME and this is the
+    // MEMBER VALUE (a SessionId hex); a policy uses it for the §directory-D5 self-vs-other rule (add/remove
+    // SELF where `subject == principal` is allowed by the join grant; add/remove OTHER requires the group's
+    // owner authority). `none` for effects with no structured subject. The kernel's ComponentAuthorizer
+    // populates it (decoding a member-op payload); SEC-F1 still gates on (principal, action, target).
+    // Kept BYTE-IN-SYNC with cdz-kernel/wit/authorizer.wit (the canonical world) + the reducer/dogwood
+    // guest copies — a drift breaks the guest bindgen against the kernel's lifted component.
+    subject: option<string>,
   }
   record decision {
     // true = permit, false = deny.

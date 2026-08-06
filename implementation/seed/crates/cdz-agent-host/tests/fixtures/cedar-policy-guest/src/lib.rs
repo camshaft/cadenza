@@ -20,7 +20,9 @@ wit_bindgen::generate!({
     path: "wit/authorizer.wit",
 });
 
-use cedar_policy::{Authorizer, Context, Decision, Entities, EntityUid, PolicySet, Request};
+use cedar_policy::{
+    Authorizer, Context, Decision, Entities, EntityUid, PolicySet, Request, RestrictedExpression,
+};
 use exports::cadenza::agent_kernel_authz::authorizer::{
     AuthRequest, Decision as WitDecision, Guest,
 };
@@ -49,6 +51,21 @@ forbid(principal, action == Action::"http", resource == Resource::"http://169.25
 permit(principal, action == Action::"model", resource == Resource::"claude-test");
 permit(principal, action == Action::"store/resolve", resource);
 forbid(principal, action == Action::"store/set", resource == Resource::"system/policy/current");
+// §directory-D5 self-join: a session may add/remove ITSELF (the member value == the emitter) to/from any
+// group — context.is_self is set by the host when subject == principal. This is the least-authority
+// opt-in-group model (a session joins/leaves groups on its own behalf).
+permit(principal, action == Action::"store/add", resource) when { context.is_self };
+permit(principal, action == Action::"store/remove", resource) when { context.is_self };
+// §directory-D5 owner-evict: adding/removing ANOTHER member (subject != principal → !context.is_self) is
+// OWNER-only. This fixture models one owner-managed group ("session/room/moderated") an owner-principal
+// may evict others from; every OTHER non-self add/remove falls through to default-deny (no matching
+// permit). A real deployment expresses "owner authority" as the group name's prefix grant on the emitter;
+// the fixture pins the shape (a specific owner may evict-other on a specific group).
+permit(
+  principal == Principal::"agent://group-owner",
+  action in [Action::"store/add", Action::"store/remove"],
+  resource == Resource::"session/room/moderated"
+);
 "#;
 
 struct Guest0;
@@ -112,7 +129,31 @@ fn decide(request: &AuthRequest) -> Result<bool, String> {
     let resource: EntityUid =
         EntityUid::from_str(&format!("Resource::\"{}\"", cedar_escape(&request.target)))
             .map_err(|e| format!("resource uid: {e}"))?;
-    let req = Request::new(principal, action, resource, Context::empty(), None)
+    // §directory-D5 self-vs-other: when the request carries a structured `subject` (the MEMBER value of a
+    // store/add|remove group op — a SessionId hex), expose to the policy (a) `context.subject` (the member)
+    // and (b) `context.is_self` = (subject == principal): the member being added/removed IS the emitter. A
+    // policy permits self-join on `context.is_self` and requires owner authority otherwise. Computing the
+    // equality in Rust keeps the policy a simple `when { context.is_self }` (Cedar can't compare a
+    // principal-entity's eid to a context string directly). `none` subject → empty context (non-membership
+    // effects — their security-relevant string is fully in `target`).
+    let context = match &request.subject {
+        Some(subject) => {
+            let is_self = subject == &request.principal;
+            Context::from_pairs([
+                (
+                    "subject".to_string(),
+                    RestrictedExpression::new_string(subject.clone()),
+                ),
+                (
+                    "is_self".to_string(),
+                    RestrictedExpression::new_bool(is_self),
+                ),
+            ])
+            .map_err(|e| format!("context: {e}"))?
+        }
+        None => Context::empty(),
+    };
+    let req = Request::new(principal, action, resource, context, None)
         .map_err(|e| format!("request: {e}"))?;
     let answer = Authorizer::new().is_authorized(&req, &policies, &Entities::empty());
     Ok(matches!(answer.decision(), Decision::Allow))
@@ -135,6 +176,18 @@ mod tests {
             principal: principal.to_string(),
             action: action.to_string(),
             target: target.to_string(),
+            subject: None,
+        }
+    }
+
+    /// A group membership request (§D5): `target` = group name, `subject` = the member value being
+    /// added/removed (a SessionId hex). Self-join iff subject == principal.
+    fn group_req(principal: &str, action: &str, group: &str, member: &str) -> AuthRequest {
+        AuthRequest {
+            principal: principal.to_string(),
+            action: action.to_string(),
+            target: group.to_string(),
+            subject: Some(member.to_string()),
         }
     }
 
@@ -214,5 +267,64 @@ mod tests {
         assert_eq!(cedar_escape(r#"a"b"#), r#"a\"b"#);
         assert_eq!(cedar_escape(r"a\b"), r"a\\b");
         assert_eq!(cedar_escape("plain"), "plain");
+    }
+
+    #[test]
+    fn d5_self_join_vs_owner_evict_decides_on_the_member_subject() {
+        // §directory-D5: store/add|remove of a group member decides on subject-vs-principal.
+        // SELF-JOIN — a session adds/removes ITSELF (subject == principal) → PERMITTED on any group.
+        assert_eq!(
+            decide(&group_req(
+                "agent://alice",
+                "store/add",
+                "session/room/lobby",
+                "agent://alice"
+            )),
+            Ok(true),
+            "a session joining a group as ITSELF is permitted (self-join)"
+        );
+        assert_eq!(
+            decide(&group_req(
+                "agent://alice",
+                "store/remove",
+                "session/room/lobby",
+                "agent://alice"
+            )),
+            Ok(true),
+            "a session removing ITSELF (leave) is permitted"
+        );
+        // ADD/REMOVE OTHER — subject != principal, and the emitter is NOT the group owner → DENIED
+        // (no matching permit; self-join's `context.is_self` is false, owner-evict needs the owner principal).
+        assert_eq!(
+            decide(&group_req(
+                "agent://alice",
+                "store/add",
+                "session/room/lobby",
+                "agent://bob"
+            )),
+            Ok(false),
+            "adding ANOTHER session (not self, not owner) is denied"
+        );
+        assert_eq!(
+            decide(&group_req(
+                "agent://alice",
+                "store/remove",
+                "session/room/moderated",
+                "agent://bob"
+            )),
+            Ok(false),
+            "a non-owner evicting another member is denied"
+        );
+        // OWNER-EVICT — the group owner may add/remove OTHERS on the owned group (owner-managed eviction).
+        assert_eq!(
+            decide(&group_req(
+                "agent://group-owner",
+                "store/remove",
+                "session/room/moderated",
+                "agent://bob"
+            )),
+            Ok(true),
+            "the group owner may evict another member (owner-managed)"
+        );
     }
 }
