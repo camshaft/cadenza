@@ -66,6 +66,7 @@ pub mod export;
 pub mod factory;
 pub mod host;
 pub mod http;
+pub mod lifecycle;
 pub mod metrics;
 pub mod model;
 pub mod retry;
@@ -105,6 +106,7 @@ pub use host::{genesis_ct, AgentHost, HostedSession, SessionId};
 #[cfg(feature = "live-net")]
 pub use http::ReqwestHttpTransport;
 pub use http::{HttpExecutor, HttpMethod, HttpResponse, HttpTransport};
+pub use lifecycle::{LifecycleChannel, LifecycleExecutor, LifecycleOp};
 pub use metrics::{EffectMetrics, HostMetrics};
 #[cfg(feature = "live-net")]
 pub use model::BedrockModelTransport;
