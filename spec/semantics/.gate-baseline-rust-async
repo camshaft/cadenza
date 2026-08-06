@@ -6007,3 +6007,6 @@ pass	200 recursive dispatches each crossing a heap LIST argument — the marshal
 pass	a handler state GROWS a list across 100 dispatches — the accumulated spine reads back intact
 pass	a Bytes.slice VIEW crosses as op ARGUMENT — the arm reads through the window it was handed
 pass	a String.slice VIEW built in the ARM crosses back through resume — the body measures it
+pass	a multi-shot ctl arm whose continuation reads an ENCLOSING-fn param folds
+pass	a ONE-shot ctl arm whose continuation reads an enclosing-fn param folds (mv single-splice control)
+pass	a multi-shot ctl arm reading an enclosing param with NO let frame folds (mv no-let control)

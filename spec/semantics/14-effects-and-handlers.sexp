@@ -3894,6 +3894,46 @@
                 (let ((f (fn (x) (+ x (Amb.flip))))) (f 100)))) (export main)))
   (output (: 203 Int64)))
 
+(case "a multi-shot ctl arm whose continuation reads an ENCLOSING-fn param folds"
+  (doc    "A multi-shot E5 within-activation arm `(pick (u) s k (+ (k 1) (k 2)))` — `k` (the reified
+           delimited continuation) applied TWICE — over a handle body `(let ((y 3)) (+ n (Amb.pick)))` whose
+           continuation `C = (+ n [])` reads an ENCLOSING function param `n`. The fold splices a FRESH copy
+           of `C` per `k`-application (2 copies), so `C[1]` = `(+ n 1)` and `C[2]` = `(+ n 2)`, and the arm
+           yields `(+ (+ n 1) (+ n 2))`; with `n = 5` that is `(+ 6 7)` = 13. Pins that the per-resume splice
+           PRESERVES `C`'s enclosing captures: without pinning `n` before the splice each copy re-resolves it
+           against its own orphan and reports a false CDZ0101 'unbound n' (breaker mv-class). The arm's own
+           `k`/state binders and the body-local `let` binder `y` are unaffected — only the enclosing capture
+           needed pinning. Both backends agree.")
+  (input  (do
+            (effect Amb (op pick (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle Amb 0 ((pick (u) s k (+ (k 1) (k 2)))) (let ((y 3)) (+ n (Amb.pick))))) (export main)))
+  (call   main (: 5 Int64)) (output (: 13 Int64)))
+
+(case "a ONE-shot ctl arm whose continuation reads an enclosing-fn param folds (mv single-splice control)"
+  (doc    "The single-resume control for the multi-shot enclosing-capture case: the SAME body
+           `(let ((y 3)) (+ n (Amb.pick)))` but a ONE-shot arm `(pick (u) s k (k 1))` — `k` applied once, so
+           `C = (+ n [])` is spliced a SINGLE time → `C[1]` = `(+ n 1)`; with `n = 5` that is `6`. A single
+           splice never needed the capture pin (one copy, one resolution), so this held before the mv-class
+           fix; it stays green after, confirming the fix does not disturb the single-splice path.")
+  (input  (do
+            (effect Amb (op pick (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle Amb 0 ((pick (u) s k (k 1))) (let ((y 3)) (+ n (Amb.pick))))) (export main)))
+  (call   main (: 5 Int64)) (output (: 6 Int64)))
+
+(case "a multi-shot ctl arm reading an enclosing param with NO let frame folds (mv no-let control)"
+  (doc    "The no-let control: the multi-shot arm `(pick (u) s k (+ (k 1) (k 2)))` over a body with NO
+           intervening `let` — `(+ n (Amb.pick))` directly — so `C = (+ n [])` reading the enclosing param
+           `n`. Isolates that the fix is about preserving the enclosing capture `n` across the per-resume
+           splice, independent of a body-local binding frame: `(+ (+ n 1) (+ n 2))` with `n = 5` = 13,
+           matching the let-wrapped case.")
+  (input  (do
+            (effect Amb (op pick (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle Amb 0 ((pick (u) s k (+ (k 1) (k 2)))) (+ n (Amb.pick)))) (export main)))
+  (call   main (: 5 Int64)) (output (: 13 Int64)))
+
 (case "a MULTI-shot arm keeps a pure applied lambda in its duplicated continuation"
   (doc    "The soundness anchor for the lambda-value purity rule under a MULTI-shot resume: an EFFECT-FREE
            let-bound lambda `k = (fn (y) (* y 2))` is APPLIED in the continuation `C` alongside the single

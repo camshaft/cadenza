@@ -2306,6 +2306,16 @@ pub fn reduce_handle(
             // already substituted away — freshening rebuilds the tree, which would otherwise orphan those
             // node-identity-keyed refs). (breaker's silent-miscompile finding, corpus-bugfix 2026-07-28.)
             let substituted = freshen_local_binders(db, substituted);
+            // PIN `C`'S ENCLOSING CAPTURES before the (possibly multi-)splice. A MULTI-SHOT arm
+            // (`(pick (u) s k (+ (k 1) (k 2)))`) has `k` applied ≥2×, so `rewrite_resume_to_context`
+            // splices a FRESH copy of `C` per resume. When `C` (the handle body) reads an ENCLOSING-fn
+            // param — `(let ((y 3)) (+ n (Amb.pick)))` free in `n` — each `splice_context` copy would
+            // re-resolve `n` against its own orphan and report a false CDZ0101 "unbound n" (the reparent
+            // at the fold tail only re-anchors the single folded root, not both C-copies). Pinning `C`'s
+            // free captures here records their resolution so the per-resume copies SHARE the resolved
+            // `n` — exactly the `apply_lambda_uncached` capture-share idiom. `C`'s own local binders (the
+            // `let`'s `y`) are bound WITHIN `body`, so they stay unpinned and copy fresh. (breaker mv-class.)
+            crate::eval::pin_free_vars(db, body, body, &[]);
             // Rewrite every `(resume v s)` → `C[v]` (the pure delimited continuation applied to the resume
             // value). The arm body's free names keep their pinned resolution through `beta_reduce`; `C`'s
             // free names resolve against the handle scope (the structural splice copy re-parents them). The
