@@ -40,6 +40,11 @@ pub enum KernelError {
     NonContiguousSeq { expected: u64, got: u64 },
     /// The first event of a session must be `Genesis`.
     MissingGenesis,
+    /// A fold was attempted on a TERMINATED session (its log tail is
+    /// [`EventBody::Terminated`](crate::event::EventBody::Terminated)). §lifecycle I1: a terminated
+    /// session refuses every further delivery — a first-class kernel guard so a terminated session can't
+    /// be re-driven even by a buggy host. Terminal: there is no recovery (a fresh spawn replaces it, §7).
+    FoldRefused,
 }
 
 /// A single-session kernel instance: the authoritative log plus the derived KV and the id counter.
@@ -442,9 +447,27 @@ impl Session {
         authz: &(impl Authorize + ?Sized),
         executor: &mut (impl Executor + ?Sized),
     ) -> Result<Vec<crate::effect::ControlEffect>, KernelError> {
+        // §lifecycle I1: a TERMINATED session refuses every further fold — checked BEFORE the append so a
+        // terminated log stays frozen (no event is written, no reducer runs). First-class kernel guard, not
+        // a host convention: even a buggy/hostile driver can't re-drive a terminated session. Terminal +
+        // replay-stable (the tail is durable, so a recovered session whose tail is `Terminated` refuses too).
+        if self.is_terminated() {
+            return Err(KernelError::FoldRefused);
+        }
         self.append(body, cause).await;
         let control = self.drive(reducer, authz, executor).await;
         Ok(control)
+    }
+
+    /// Is this session TERMINATED — i.e. its log TAIL is an [`EventBody::Terminated`] marker (§lifecycle
+    /// I1)? Keys on the LAST event, not "any Terminated anywhere": terminality is a terminal state the
+    /// marker installs as the tail, and nothing can be appended after it (the fold guard rejects), so the
+    /// tail is the authoritative signal — and it's replay-stable (the durable log rebuilds the same tail).
+    pub fn is_terminated(&self) -> bool {
+        matches!(
+            self.log.last().map(|e| &e.body),
+            Some(EventBody::Terminated { .. })
+        )
     }
 
     /// Genesis-seed the capability manifest (host-capability-discovery I5): fold a synthetic
@@ -606,6 +629,13 @@ impl Session {
         authz: &(impl Authorize + ?Sized),
         executor: &mut (impl Executor + ?Sized),
     ) -> usize {
+        // §lifecycle I1: a TERMINATED session fires no timers — the terminal marker must stay the log tail,
+        // so no `TimerFired` may be appended after it (that would un-tail the marker and flip is_terminated()
+        // back to false, breaking the invariant). Return 0 (nothing fired), mirroring the deliver_control
+        // refusal. See the guard-every-append-path invariant (github-liaison #2381 review).
+        if self.is_terminated() {
+            return 0;
+        }
         let mut due: Vec<(u64, u64)> = self
             .armed_timers
             .iter()
@@ -1060,6 +1090,13 @@ impl Session {
         authz: &(impl Authorize + ?Sized),
         executor: &mut (impl Executor + ?Sized),
     ) -> bool {
+        // §lifecycle I1: a TERMINATED session times out nothing — the terminal marker must stay the log tail
+        // (a timeout `EffectResult` appended after it would un-tail the marker + flip is_terminated() back to
+        // false). Return false (no-op), mirroring the deliver_control/fire_due_timers refusals. (github-liaison
+        // #2381 review: guard EVERY append/drive entry point, not just deliver_control.)
+        if self.is_terminated() {
+            return false;
+        }
         // Idempotent: only an OPEN id can be timed out. Settled (or never-dispatched) → no-op, so a late
         // real result and a timeout can't both settle one id (§16c-S4 at-most-once).
         if !self.open.contains(&id.0) {
@@ -1477,6 +1514,7 @@ fn event_body_name(body: &EventBody) -> &'static str {
         EventBody::FoldFailed { .. } => "FoldFailed",
         EventBody::AuthzDenied { .. } => "AuthzDenied",
         EventBody::Closed { .. } => "Closed",
+        EventBody::Terminated { .. } => "Terminated",
     }
 }
 
@@ -1539,10 +1577,14 @@ fn observable(body: &EventBody) -> bool {
         | EventBody::Closed { .. } => true,
         // FoldFailed is NOT folded (v0 records it for a supervisor to observe, but re-handing a failed
         // fold to the same failing reducer would recurse — a supervisor reacting is a later slice).
+        // Terminated is NOT folded either — it's a terminal marker; a terminated session refuses all
+        // further folds (the deliver-time FoldRefused guard), so its own marker is never handed to a
+        // reducer (§lifecycle I1).
         EventBody::Genesis { .. }
         | EventBody::Dispatched { .. }
         | EventBody::TimerArmed { .. }
-        | EventBody::FoldFailed { .. } => false,
+        | EventBody::FoldFailed { .. }
+        | EventBody::Terminated { .. } => false,
     }
 }
 
@@ -3302,6 +3344,237 @@ mod monotonic_now_tests {
                 }
             )),
             "the Err outcome is a first-class log event"
+        );
+    }
+}
+
+// §lifecycle I1: the Terminated marker + the first-class FoldRefused guard. A session terminated by another
+// session (distinct from self-Closed) gets a durable `Terminated` log tail, and the kernel refuses every
+// further fold — the guard holds on ALL append/drive entry points (deliver_control, fire_due_timers,
+// time_out_effect), so a terminated session's log tail STAYS the terminal marker (github-liaison #2381).
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+    use crate::authz::Authorizer;
+    use crate::effect::{Capability, EffectRequest, Payload, ResourcePredicate, Timeliness};
+    use crate::executor::RecordingExecutor;
+    use crate::reducer::{Effect, FoldOutput, Reducer};
+
+    fn inbound() -> EventBody {
+        EventBody::Inbound {
+            content_type: crate::event::ContentType {
+                family: "message".into(),
+                version: 1,
+            },
+            payload: Payload::Inline(b"go".to_vec().into()),
+        }
+    }
+
+    // A reducer that ARMS a timer (deadline 1000ms) on an inbound — so fire_due_timers has something due.
+    struct TimerArmingReducer;
+    #[async_trait::async_trait(?Send)]
+    impl Reducer for TimerArmingReducer {
+        async fn fold(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+            match &event.body {
+                EventBody::Inbound { .. } => {
+                    let mut request =
+                        EffectRequest::new(EffectKind::Emit, "1000", None, Timeliness::Interactive);
+                    request.content_type.family = crate::effect::effect_ct::TIMER.into();
+                    FoldOutput::with_effects(vec![Effect {
+                        request,
+                        token: None,
+                    }])
+                }
+                _ => FoldOutput::none(),
+            }
+        }
+    }
+
+    fn timer_cap() -> Authorizer {
+        Authorizer::new(vec![Capability {
+            kind: EffectKind::Timer,
+            predicate: ResourcePredicate::Any,
+        }])
+    }
+
+    fn terminated_marker() -> EventBody {
+        EventBody::Terminated {
+            by: Hash::of(b"controller-session"),
+            reason: "operator kill".into(),
+        }
+    }
+
+    // Once a `Terminated` marker is the log tail, the kernel REFUSES every further fold — a first-class
+    // guard (KernelError::FoldRefused), checked before the append so no event is written + no reducer runs.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_terminated_session_refuses_every_further_fold() {
+        let mut s = Session::genesis(Hash::of(b"lifecycle-term-v1"));
+        // A normal live fold works before termination.
+        s.deliver(
+            inbound(),
+            None,
+            &TimerArmingReducer,
+            &timer_cap(),
+            &mut RecordingExecutor::new(),
+        )
+        .await
+        .expect("a live session folds normally");
+        assert!(!s.is_terminated(), "not terminated before the marker");
+
+        // Install the durable terminal marker (what the host's I5 terminate executor will append).
+        s.append(terminated_marker(), None).await;
+        assert!(
+            s.is_terminated(),
+            "the Terminated tail marks the session terminated"
+        );
+        let len_after_marker = s.log().len();
+
+        // The next delivery is REFUSED — not applied, not silently dropped.
+        let refused = s
+            .deliver(
+                inbound(),
+                None,
+                &TimerArmingReducer,
+                &timer_cap(),
+                &mut RecordingExecutor::new(),
+            )
+            .await;
+        assert!(
+            matches!(refused, Err(KernelError::FoldRefused)),
+            "a fold on a terminated session must return FoldRefused, got {refused:?}"
+        );
+        assert_eq!(
+            s.log().len(),
+            len_after_marker,
+            "a refused fold must NOT append any event — the terminated log stays frozen"
+        );
+    }
+
+    // Terminality is DURABLE: a session recovered from a log whose tail is `Terminated` is still terminated
+    // and still refuses folds — the guard rebuilds from the log, not volatile in-memory state.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_recovered_terminated_session_stays_terminated_and_refuses_folds() {
+        let mut s = Session::genesis(Hash::of(b"lifecycle-term-replay-v1"));
+        s.deliver(
+            inbound(),
+            None,
+            &TimerArmingReducer,
+            &timer_cap(),
+            &mut RecordingExecutor::new(),
+        )
+        .await
+        .unwrap();
+        s.append(terminated_marker(), None).await;
+
+        let recovered = Session::replay(s.log().to_vec(), &TimerArmingReducer)
+            .await
+            .expect("replay of a terminated log succeeds");
+        assert!(
+            recovered.is_terminated(),
+            "a recovered session whose log tail is Terminated must still be terminated"
+        );
+
+        let mut recovered = recovered;
+        let refused = recovered
+            .deliver(
+                inbound(),
+                None,
+                &TimerArmingReducer,
+                &timer_cap(),
+                &mut RecordingExecutor::new(),
+            )
+            .await;
+        assert!(
+            matches!(refused, Err(KernelError::FoldRefused)),
+            "a recovered terminated session must still refuse folds, got {refused:?}"
+        );
+    }
+
+    // github-liaison #2381 (MED): the guard must hold on fire_due_timers too. is_terminated() keys on the
+    // log TAIL, so a TimerFired appended after the Terminated marker would un-tail it → is_terminated() flips
+    // false → the session is foldable again. A terminated session must fire NO due timers.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_terminated_session_fires_no_due_timers_and_keeps_its_terminal_tail() {
+        let mut s = Session::genesis(Hash::of(b"lifecycle-term-timer-v1"));
+        s.deliver(
+            inbound(),
+            None,
+            &TimerArmingReducer,
+            &timer_cap(),
+            &mut RecordingExecutor::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(s.next_timer_deadline(), Some(1000), "a timer is armed");
+
+        s.append(terminated_marker(), None).await;
+        assert!(s.is_terminated());
+        let len_after_marker = s.log().len();
+
+        let fired = s
+            .fire_due_timers(
+                1500,
+                &TimerArmingReducer,
+                &timer_cap(),
+                &mut RecordingExecutor::new(),
+            )
+            .await;
+        assert_eq!(fired, 0, "a terminated session fires no timers");
+        assert_eq!(
+            s.log().len(),
+            len_after_marker,
+            "fire_due_timers must append nothing on a terminated session"
+        );
+        assert!(
+            s.is_terminated(),
+            "the Terminated marker is STILL the log tail — the invariant holds across fire_due_timers"
+        );
+    }
+
+    // github-liaison #2381: the same guard on time_out_effect — a terminated session times out nothing, so
+    // a timeout EffectResult can't un-tail the Terminated marker. The armed timer gives a real OPEN
+    // obligation (open_effects() > 0); on a terminated session time_out_effect must still be a total no-op
+    // that leaves the terminal tail intact — the guard short-circuits before ANY append.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_terminated_session_times_out_no_effect_and_keeps_its_terminal_tail() {
+        let mut s = Session::genesis(Hash::of(b"lifecycle-term-timeout-v1"));
+        // Arm a timer, so there's an OPEN obligation in the session (open_effects() > 0).
+        s.deliver(
+            inbound(),
+            None,
+            &TimerArmingReducer,
+            &timer_cap(),
+            &mut RecordingExecutor::new(),
+        )
+        .await
+        .unwrap();
+        assert!(
+            s.open_effects() > 0,
+            "the armed timer is an open obligation"
+        );
+        let open_id = EffectId(0); // the first (only) open id
+
+        s.append(terminated_marker(), None).await;
+        let len_after_marker = s.log().len();
+
+        // time_out_effect on the terminated session is a no-op — no EffectResult appended, tail preserved.
+        let timed_out = s
+            .time_out_effect(
+                open_id,
+                &TimerArmingReducer,
+                &timer_cap(),
+                &mut RecordingExecutor::new(),
+            )
+            .await;
+        assert!(!timed_out, "a terminated session times out no effect");
+        assert_eq!(
+            s.log().len(),
+            len_after_marker,
+            "time_out_effect must append nothing on a terminated session"
+        );
+        assert!(
+            s.is_terminated(),
+            "the Terminated marker is STILL the log tail — the invariant holds across time_out_effect"
         );
     }
 }

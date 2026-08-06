@@ -207,6 +207,21 @@ pub enum EventBody {
     /// that first-class. When the session had a parent, the kernel delivers this outcome to it as a
     /// `child-completed` signal (slices 2-3, pending the operator's design review).
     Closed { outcome: CloseOutcome },
+
+    /// **DURABLE terminal marker (§lifecycle I1).** A session was TERMINATED by another session (the
+    /// `lifecycle/terminate` effect), as distinct from [`Closed`](Self::Closed) (a session ending
+    /// ITSELF). Once this is the log TAIL the kernel refuses every further fold ([`KernelError::
+    /// FoldRefused`](crate::kernel::KernelError::FoldRefused)) — a first-class guard, not a host
+    /// convention, so a terminated session can't be re-driven even by a buggy host. The log + KV are
+    /// RETAINED (queryable, frozen); the terminality is durable + replay-stable (a recovered session
+    /// whose tail is `Terminated` stays terminated). Terminal: there is no un-terminate (recovery from
+    /// a bad state is a fresh spawn, §7).
+    ///
+    /// `by` is the terminating controller's session identity (its genesis hash = its SessionId); `reason`
+    /// is a human/diagnostic string. The supervision-tree authority that gates WHO may terminate is a
+    /// host/Cedar concern (I6, `ResourcePredicate::DescendantOf`); this event just records the durable
+    /// fact + who did it.
+    Terminated { by: Hash, reason: String },
 }
 
 /// How a session CLOSED — the structured terminal outcome a supervisor acts on (§6 supervision, operator
@@ -451,6 +466,10 @@ fn decode_body(c: &mut Cursor) -> Result<EventBody, DecodeError> {
             reason: c.string()?,
             caused_event: Hash::from_bytes(c.hash()?),
         },
+        9 => EventBody::Terminated {
+            by: Hash::from_bytes(c.hash()?),
+            reason: c.string()?,
+        },
         t => {
             return Err(DecodeError::BadTag {
                 field: "body",
@@ -624,6 +643,11 @@ fn encode_body(body: &EventBody, out: &mut Vec<u8>) {
             out.push(8);
             encode_str(reason, out);
             out.extend_from_slice(caused_event.as_bytes());
+        }
+        EventBody::Terminated { by, reason } => {
+            out.push(9);
+            out.extend_from_slice(by.as_bytes());
+            encode_str(reason, out);
         }
     }
 }
@@ -1079,6 +1103,14 @@ mod tests {
                 body: EventBody::FoldFailed {
                     reason: "wasm reducer trapped: unreachable".to_string(),
                     caused_event: Hash::of(b"the event whose fold failed"),
+                },
+            },
+            Event {
+                seq: 14,
+                cause: Some(Hash::of(b"terminate-cause")),
+                body: EventBody::Terminated {
+                    by: Hash::of(b"controller-session"),
+                    reason: "operator kill".to_string(),
                 },
             },
         ]

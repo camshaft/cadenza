@@ -627,6 +627,12 @@ fn body_form(b: &mut Builder, body: &EventBody) -> StructId {
             let ce = hash_form(b, caused_event);
             b.list(vec![head, r, ce])
         }
+        EventBody::Terminated { by, reason } => {
+            let head = b.name("terminated");
+            let byf = hash_form(b, by);
+            let r = str_leaf(b, reason);
+            b.list(vec![head, byf, r])
+        }
     }
 }
 
@@ -928,6 +934,15 @@ fn read_body(a: &Arenas, id: StructId) -> Result<EventBody, EventAstError> {
                 caused_event: read_hash(a, *ce)?,
             }
         }
+        "terminated" => {
+            let [byf, r] = form(a, id, "terminated")? else {
+                return Err(shape("terminated arity"));
+            };
+            EventBody::Terminated {
+                by: read_hash(a, *byf)?,
+                reason: read_str(a, *r)?,
+            }
+        }
         _ => return Err(shape("unknown event body tag")),
     })
 }
@@ -1099,6 +1114,14 @@ mod tests {
                 body: EventBody::FoldFailed {
                     reason: "wasm reducer trapped: unreachable".to_string(),
                     caused_event: Hash::of(b"the event whose fold failed"),
+                },
+            },
+            Event {
+                seq: 15,
+                cause: Some(Hash::of(b"terminate-cause")),
+                body: EventBody::Terminated {
+                    by: Hash::of(b"controller-session"),
+                    reason: "operator kill".to_string(),
                 },
             },
         ]
