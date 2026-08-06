@@ -77,7 +77,8 @@ pub fn decode(bytes: &[u8]) -> Result<Event, EventAstError> {
 ///     `(requestable …)` split + future fields append with NO wire break (open sums; a tolerant guest
 ///     matches the head and ignores/denies an unknown one).
 ///   `<scope>` = `(none)` | `(some <predicate>)`; `<predicate>` = `(any)` | `(exact <str>)` |
-///     `(one-of <str>…)` | `(host-in <str>…)` | `(prefix <str>)` — mirrors [`crate::effect::ResourcePredicate`].
+///     `(one-of <str>…)` | `(host-in <str>…)` | `(prefix <str>)` | `(descendant-of <controller-hex>)` (I6
+///     supervision marker) — mirrors [`crate::effect::ResourcePredicate`].
 /// Entries are emitted in the manifest's order (the projection uses `effect_ct::ALL` order) so the bytes
 /// are stable/replay-safe. The leading `<version:int>` INSIDE the payload (=1) lets a decoder range-check
 /// without re-reading the envelope's `content_type.version`.
@@ -141,7 +142,9 @@ pub fn encode_capability_manifest(manifest: &crate::effect::CapabilityManifest) 
                         // discovery reader sees which controller a lifecycle/* grant is scoped under (the
                         // kernel's own admits() never green-lights it — the host freezes the descendant set).
                         let h = b.name("descendant-of");
-                        let v = str_leaf(&mut b, &controller.to_hex());
+                        // Build the leaf from the OWNED hex directly — str_leaf(&str) would re-clone it via
+                        // to_string(), a needless second alloc of the 64-char hex (github-liaison #2443 c2).
+                        let v = b.atom_leaf(Leaf::Str(controller.to_hex()));
                         b.list(vec![h, v])
                     }
                 };
@@ -1663,10 +1666,12 @@ mod tests {
 
     #[test]
     fn members_frame_round_trips_and_is_byte_stable_ascending() {
-        // §4c I3b resolve-all result: the frozen member set round-trips through the members codec, and the
-        // encoded bytes are byte-STABLE regardless of the iteration order passed in (encode writes whatever
-        // order it's given; the store hands it an ascending BTreeSet, so a re-encode of the DECODED set is
-        // identical). Here we feed a BTreeSet both times to pin the canonical (ascending) encoding.
+        // §4c I3b resolve-all result: the frozen member set round-trips through the members codec. Byte-
+        // stability is a CALLER CONTRACT, not an internal guarantee: encode_members writes members in the
+        // ORDER GIVEN (it does NOT sort), so the caller must feed a canonical order for the bytes to be
+        // stable. The store always hands it an ascending BTreeSet, so a re-encode of the DECODED set (also
+        // collected into a BTreeSet) is identical. Here we feed a BTreeSet both times to pin that canonical
+        // (ascending) encoding.
         use std::collections::BTreeSet;
         let members: BTreeSet<Hash> = [Hash::of(b"A"), Hash::of(b"B"), Hash::of(b"C")]
             .into_iter()
@@ -1979,7 +1984,8 @@ mod tests {
     fn scope_predicate_encodes_every_resource_predicate_variant() {
         use crate::effect::{CapabilityEntry, CapabilityManifest, GrantState, ResourcePredicate};
         // The manifest payload is a DURABLE wire contract the guest decodes; the `<scope>` predicate has
-        // five arms but the shape test above exercises only HostIn. A typo in any tag (`one-of`→`oneof`)
+        // SIX arms (Any/Exact/OneOf/HostIn/Prefix + I6 DescendantOf) but the shape test above exercises only
+        // HostIn. A typo in any tag (`one-of`→`oneof`)
         // or a swapped payload arity would ship silently. Encode one entry per ResourcePredicate variant
         // and assert each `(some <predicate>)` head + payload decodes as designed. One entry per arm keeps
         // the family a don't-care label; grant is fixed Granted.

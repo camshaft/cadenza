@@ -4169,7 +4169,8 @@ mod store_effect_tests {
                     ..
                 } => {
                     // Count settled effects; after BOTH adds settle, fire the resolve-all; on the resolve-all
-                    // result, record the decoded membership count + the hex members (sorted) into the KV.
+                    // result, record the decoded membership COUNT into the KV (the count is what the assertion
+                    // below checks; the member hashes themselves aren't stored).
                     let n = kv.get(b"settled").map(|v| v[0]).unwrap_or(0) + 1;
                     kv.put(b"settled".to_vec(), vec![n]);
                     if let Some(Payload::Inline(bytes)) = body {
