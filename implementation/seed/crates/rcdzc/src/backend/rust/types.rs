@@ -187,6 +187,123 @@ pub fn rust_type(ty: &Ty) -> Option<String> {
     }
 }
 
+/// The ASYNC-mode Rust type for a solved Cadenza type — identical to [`rust_type`] EXCEPT a function type
+/// `Ty::Fn` spells the UNIFORM async closure ABI `std::rc::Rc<dyn cdz_rt::EnvClosure<A, R>>` instead of the
+/// sync `Rc<dyn Fn(A…)->R>`. Under `--target rust-async` a lifted closure VALUE is `Rc<dyn EnvClosure<A,R>>`
+/// (its `call` future borrows the `&mut dyn DynCdzEnv` passed AT the call — a `dyn Fn` cannot express that;
+/// see `cdz_rt::EnvClosure`). So every SIGNATURE position that spells a closure type in async mode — a def
+/// param/result, a lifted-fn param/result, the `Core::Closure` value cast — must use THIS spelling, or the
+/// closure value (built as `Rc<dyn EnvClosure>`) mismatches its slot (E0308). `A`/`R` follow the
+/// lifted-lambda calling convention: `R` is the (non-arrow) result; `A` is the SINGLE arg for a 1-param
+/// closure, a TUPLE of the args for a multi-param closure (the flat lifted params tupled into `A`), and `()`
+/// for a 0-param closure. A closure NESTED inside a compound (a `(List (-> Int Int))`, a tuple element) is
+/// spelled async too — the walk recurses with `async_closure_type` through every compound arm, delegating a
+/// scalar/leaf to [`rust_type`] (which is mode-agnostic for non-function types). `None` on any
+/// non-representable component, exactly like `rust_type`.
+pub(super) fn async_closure_type(ty: &Ty) -> Option<String> {
+    match ty {
+        // A FUNCTION → the uniform async closure ABI. Peel the arrow SPINE (flat, like `rust_type`): the
+        // args are the spine's params, the result is the final non-arrow tail. Each arg + the result is
+        // itself spelled ASYNC (a higher-order closure arg/result is also `EnvClosure`).
+        Ty::Fn(_, _) => {
+            let mut args = Vec::new();
+            let mut cur = ty;
+            while let Ty::Fn(p, r) = cur {
+                args.push(async_closure_type(p)?);
+                cur = r;
+            }
+            let ret = async_closure_type(cur)?;
+            // `A` = () for 0 args, the single type for 1, a tuple for ≥2 (the lifted convention tuples a
+            // multi-arg closure's args into one `A`; `EnvClosure::call` destructures it).
+            let a = match args.len() {
+                0 => "()".to_string(),
+                1 => args.into_iter().next().unwrap(),
+                _ => format!("({})", args.join(", ")),
+            };
+            Some(format!("std::rc::Rc<dyn cdz_rt::EnvClosure<{a}, {ret}>>"))
+        }
+        // Compounds that can CONTAIN a closure recurse with `async_closure_type`; the spelling is otherwise
+        // identical to `rust_type`'s (same wrapper types), so a closure-free compound maps byte-identically.
+        Ty::Tuple(elems) => {
+            let mut parts = Vec::with_capacity(elems.len());
+            for e in elems.iter() {
+                parts.push(async_closure_type(e)?);
+            }
+            Some(if parts.len() == 1 {
+                format!("({},)", parts[0])
+            } else {
+                format!("({})", parts.join(", "))
+            })
+        }
+        Ty::Record(fields) => {
+            let mut parts = Vec::with_capacity(fields.len());
+            for v in fields.values() {
+                parts.push(async_closure_type(v)?);
+            }
+            Some(if parts.len() == 1 {
+                format!("({},)", parts[0])
+            } else {
+                format!("({})", parts.join(", "))
+            })
+        }
+        Ty::Sum { name, args, .. } => {
+            let ident = sum_ident(name);
+            if args.is_empty() {
+                Some(ident)
+            } else {
+                let mut params = Vec::with_capacity(args.len());
+                for a in args.iter() {
+                    params.push(async_closure_type(a)?);
+                }
+                Some(format!("{ident}<{}>", params.join(", ")))
+            }
+        }
+        Ty::Nominal { inner, .. } => async_closure_type(inner),
+        Ty::List(elem) => Some(format!("Vec<{}>", async_closure_type(elem)?)),
+        // A Map/Set KEY cannot be a closure (not `Ord`), so the key keeps `ord_key_type`; only the Map VALUE
+        // can carry a closure, so it recurses. (A closure-keyed collection would have declined upstream.)
+        Ty::Map(k, v) => Some(format!(
+            "std::collections::BTreeMap<{}, {}>",
+            ord_key_type(k)?,
+            async_closure_type(v)?
+        )),
+        Ty::Set(elem) => Some(format!(
+            "std::collections::BTreeSet<{}>",
+            ord_key_type(elem)?
+        )),
+        Ty::Qty { inner, unit }
+            if unit.scale() == (1, 1) || qty_scale_supported(inner, unit.scale()) =>
+        {
+            async_closure_type(inner)
+        }
+        // Every other type (scalars, Bytes, String, Symbol, …) has no closure inside — delegate to the
+        // mode-agnostic `rust_type` (identical spelling in both modes).
+        _ => rust_type(ty),
+    }
+}
+
+/// The `(A, R)` type-argument spelling for a lifted lambda's `EnvClosure<A, R>` impl, in ASYNC mode: `R` is
+/// the lambda's result type, `A` is the single param type (arity 1), a tuple of the param types (arity ≥2),
+/// or `()` (arity 0) — the SAME convention [`async_closure_type`]'s `Ty::Fn` arm produces, so a closure
+/// VALUE's `Rc<dyn EnvClosure<A,R>>` and its TYPE-position spelling agree. `None` if any param/result has no
+/// async representation.
+pub(super) fn env_closure_args(
+    params: &[(crate::ast::StructId, Ty)],
+    ret: &Ty,
+) -> Option<(String, String)> {
+    let mut arg_tys = Vec::with_capacity(params.len());
+    for (_, t) in params {
+        arg_tys.push(async_closure_type(t)?);
+    }
+    let a = match arg_tys.len() {
+        0 => "()".to_string(),
+        1 => arg_tys.into_iter().next().unwrap(),
+        _ => format!("({})", arg_tys.join(", ")),
+    };
+    let r = async_closure_type(ret)?;
+    Some((a, r))
+}
+
 /// The Rust type for a Set ELEMENT / Map KEY position — like [`rust_type`], except a bare `Float` maps to a
 /// WIDTH-SPECIFIC total-order wrapper (a `BTreeSet`/`BTreeMap` needs `Ord`, which `f32`/`f64` lack). The
 /// wrapper MUST match the float's width: a `Float64` → `__CdzF64` (over `u64` bits), a `Float32` → `__CdzF32`

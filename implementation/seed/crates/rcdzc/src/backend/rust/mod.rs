@@ -500,18 +500,28 @@ impl Mode {
     }
 }
 
-/// The Rust type-PARAMETER name for the async gas/yield env (`async fn f<__CdzE: CdzEnv>(env: &mut
-/// __CdzE, …)`). A `__`-prefixed reserved name — NOT a bare `E` — so it cannot collide with a user sum's
-/// Rust type name (a `(type E …)` maps to `enum E`, which a bare `E` type param would shadow, breaking
-/// `E::Variant`). Matches the `__pay`/`__p` reserved-local convention the expression emitter uses.
-const ENV_TYPE_PARAM: &str = "__CdzE";
+// (The `__CdzE` generic env TYPE-PARAMETER was removed with the uniform-env change: every async fn now
+// takes the object-safe `&mut dyn DynCdzEnv` — the same env a lifted closure fn takes — so there is no
+// per-fn generic env type param to name. See the async signature emit + the `ENV_PARAM` note below.)
 
-/// The Rust VALUE-PARAMETER name for the async gas/yield env (`async fn f(<this>: &mut __CdzE, …)`),
+/// The Rust VALUE-PARAMETER name for the async gas/yield env (`async fn f(<this>: &mut dyn DynCdzEnv, …)`),
 /// threaded into every emitted call. A `__`-prefixed RESERVED name — NOT a bare `env` — so it cannot
 /// collide with a SOURCE parameter literally named `env` (`(def (ev e env) …)`), which a bare `env` would
 /// duplicate in the signature (rustc E0415 "bound more than once"). Matches the `__CdzE`/`__pay`/`__p`
 /// reserved-name convention; user idents never begin with `__` (the sanitizer does not emit it).
 pub(super) const ENV_PARAM: &str = "__cdz_env";
+
+/// The Rust type for a solved Cadenza type, mode-aware: in ASYNC mode a closure-typed position spells the
+/// uniform `Rc<dyn EnvClosure<A,R>>` ABI (Option A) via [`types::async_closure_type`]; in SYNC mode (and for
+/// any closure-free type in either mode) it is the plain [`types::rust_type`]. Use at every SIGNATURE-emit
+/// site (def/lifted param + result) so a closure value (`Rc<dyn EnvClosure>` in async) fits its slot.
+pub(super) fn async_or_rust_type(ty: &crate::ty::Ty, mode: Mode) -> Option<String> {
+    if mode.is_async() {
+        types::async_closure_type(ty)
+    } else {
+        types::rust_type(ty)
+    }
+}
 
 /// Emit a Rust-source artifact for the program in `db` under the boundary `layout`. Produces one
 /// `pub fn` per export (verbatim name, native scalar signature), reading the shared columns on demand.
@@ -551,7 +561,7 @@ pub fn emit(db: &mut Db, layout: &Layout, mode: Mode) -> Result<Vec<u8>, Reject>
     // Every sum type the program declares becomes a Rust `enum` (emitted before the functions that
     // construct/match/return it). A declaration with no native form (a recursive sum, an unrepresentable
     // payload) is skipped — a use of it declines at selection, so no orphan enum is emitted.
-    out.push_str(&enums::emit_enum_decls(db));
+    out.push_str(&enums::emit_enum_decls(db, mode));
     // A machine-readable descriptor per user sum (variant names + payload types in discriminant order) —
     // inert to rustc (`//` comments), read by the corpus gate to render a user-sum boundary value to its
     // canonical bare form. The enum decls above give rustc the types; these give the gate the structure.
@@ -640,6 +650,14 @@ pub fn emit(db: &mut Db, layout: &Layout, mode: Mode) -> Result<Vec<u8>, Reject>
             let f = expr::emit_lifted_lambda(db, k, layout, mode)?;
             out.push('\n');
             out.push_str(&f);
+            // ASYNC (Option A uniform ABI): the lifted fn is an `async fn`, and its closure VALUE is
+            // `Rc<dyn EnvClosure<A,R>>` — a per-closure synth struct + impl forwarding into the lifted fn.
+            // Emit it right after the lifted fn (a `Core::Closure` builds `Rc::new(__Clos_k { … })`).
+            if mode.is_async() {
+                let s = expr::emit_closure_struct(db, k, layout)?;
+                out.push('\n');
+                out.push_str(&s);
+            }
         }
     }
     // A Float-keyed set/map emits a total-order float wrapper (a bare `f32`/`f64` is not `Ord`). Two
@@ -690,7 +708,13 @@ pub fn emit(db: &mut Db, layout: &Layout, mode: Mode) -> Result<Vec<u8>, Reject>
 /// each module — so an application implements it ONCE for `RcRuntime`/its own env type and every emitted
 /// module uses that same trait (two modules interoperate). A downstream build depends on `cdz-rt`; the
 /// corpus gate links it via `--extern cdz_rt=<rlib>`.
-const CDZ_RT_IMPORTS: &str = "use cdz_rt::CdzEnv;\n";
+// `CdzEnv` is used by EVERY async fn (the gas param); `DynCdzEnv`/`EnvClosure` are used only by a module
+// that emits an async CLOSURE value (its per-closure struct impls `EnvClosure` + charges via `DynCdzEnv`).
+// A closure-free async program imports them unused, which `-D warnings` (`unused_imports`) would reject —
+// so `#[allow(unused_imports)]` the whole `use` (a mechanically-emitted preamble import, like the backend's
+// other synthesized `#[allow(dead_code)]` helpers). Simpler + robust vs. threading closure-presence up here.
+const CDZ_RT_IMPORTS: &str =
+    "#[allow(unused_imports)] use cdz_rt::{CdzEnv, DynCdzEnv, EnvClosure};\n";
 
 /// The file preamble — a header comment marking the source as generated, and the lint allowances a
 /// mechanically-emitted file needs (its names come verbatim from the source program, so they will not
@@ -1042,9 +1066,16 @@ fn emit_signature(
     let loops = !params.is_empty() && expr::body_loops(db, def);
     let mut param_src = String::new();
     // In async/gas mode, the FIRST parameter is the caller-supplied gas/yield env, threaded into every
-    // call. It precedes the source parameters; the source params keep their positions after it.
+    // call. It precedes the source parameters; the source params keep their positions after it. The env is
+    // the OBJECT-SAFE `&mut dyn DynCdzEnv` — NOT a generic `&mut __CdzE: CdzEnv` — so a top-level async fn
+    // takes the SAME env type a lifted CLOSURE fn does (a closure value is `Rc<dyn EnvClosure>` holding a
+    // `&mut dyn DynCdzEnv`, and its body CALLS these top-level fns; a generic `__CdzE` param would reject the
+    // `dyn DynCdzEnv` the closure passes — `dyn DynCdzEnv: CdzEnv` is unsatisfied). Uniform env everywhere =
+    // one env type across fns + closures, and it also drops the per-fn `<__CdzE: CdzEnv>` generic. A concrete
+    // caller env (`&mut GateEnv`) unsizes to `&mut dyn DynCdzEnv` at the call site. Gas charges via the
+    // object-safe `consume_boxed` (the RPITIT `consume` is not callable on a `dyn`).
     if mode.is_async() {
-        param_src.push_str(&format!("{ENV_PARAM}: &mut {ENV_TYPE_PARAM}"));
+        param_src.push_str(&format!("{ENV_PARAM}: &mut dyn DynCdzEnv"));
     }
     for (i, (binder, ty)) in params.iter().enumerate() {
         if i > 0 || mode.is_async() {
@@ -1066,7 +1097,10 @@ fn emit_signature(
         if let Some(reject) = ill_formed_int_width_reject(ty) {
             return Err(reject);
         }
-        let rty = types::rust_type(ty).ok_or_else(|| {
+        // In ASYNC mode a closure-typed param spells the uniform `Rc<dyn EnvClosure<A,R>>` ABI (a closure
+        // value flowing in is `Rc<dyn EnvClosure>`, not `Rc<dyn Fn>`); `async_closure_type` == `rust_type`
+        // for any closure-free type, so a scalar/compound param is byte-identical in both modes.
+        let rty = async_or_rust_type(ty, mode).ok_or_else(|| {
             Reject::decline(format!(
                 "`{name}`: parameter type {} has no native Rust representation",
                 ty.render_name()
@@ -1107,7 +1141,8 @@ fn emit_signature(
     let ret = if diverges {
         "!".to_string()
     } else {
-        types::rust_type(result).ok_or_else(|| {
+        // Async: a closure-typed RESULT (a factory export returning a closure) spells the `EnvClosure` ABI.
+        async_or_rust_type(result, mode).ok_or_else(|| {
             Reject::decline(format!(
                 "`{name}`: result type {} has no native Rust representation",
                 result.render_name()
@@ -1235,13 +1270,13 @@ fn emit_signature(
     let ret_note =
         format!("{ret_note}{unit_note}{qty_at_notes}{param_shapes_note}{produces_closure_note}");
     if mode.is_async() {
-        // `async fn <name><__CdzE: CdzEnv>(env: &mut __CdzE, …) -> <ret> { env.consume(1).await; <body> }`
-        // — the per-call fuel charge + cooperative-yield point at entry. The env TYPE PARAMETER is named
-        // `__CdzE` (not a bare `E`) so it can NEVER collide with a user sum's Rust type name (a sum named
-        // `E` would otherwise shadow the type param, making `E::Variant` unresolvable) — the `__` prefix
-        // marks it backend-reserved, matching the emitted `__pay`/`__p` locals.
+        // `async fn <name>(env: &mut dyn DynCdzEnv, …) -> <ret> { env.consume_boxed(1).await; <body> }` —
+        // the per-call fuel charge + cooperative-yield point at entry. The env is the OBJECT-SAFE `&mut dyn
+        // DynCdzEnv` (see the param assembly above): uniform with a lifted closure fn's env, so a closure
+        // body can call these top-level fns. Gas charges via `consume_boxed` (the object-safe method — the
+        // RPITIT `CdzEnv::consume` is not callable through a `dyn`). No per-fn `<__CdzE: CdzEnv>` generic.
         Ok(format!(
-            "{ret_note}{vis}async fn {ident}<{ENV_TYPE_PARAM}: CdzEnv>({param_src}) -> {ret} {{\n    {ENV_PARAM}.consume(1).await;\n{body_src}\n}}\n"
+            "{ret_note}{vis}async fn {ident}({param_src}) -> {ret} {{\n    {ENV_PARAM}.consume_boxed(1).await;\n{body_src}\n}}\n"
         ))
     } else {
         Ok(format!(
