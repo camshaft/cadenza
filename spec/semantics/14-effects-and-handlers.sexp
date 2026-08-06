@@ -2352,6 +2352,91 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 0 Int64)))
 
+(case "performs in BOTH and-operands — the second fires when the first passes"
+  (doc    "Short-circuit booleans × effects, the fire-both path: both `and` operands perform. At seed 5
+           the first check reads 5 (> 3 passes, state → 6), so the SECOND fires and reads 6 (> 4
+           passes, state → 7); the trailing count reads the DOUBLE advance → 700. The state is a
+           dispatch counter — the checksum encodes exactly how many operand performs ran.")
+  (input  (do
+            (effect St (op check (-> Unit Int64)) (op count (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((check (u) s (resume s (+ s 1)))
+                 (count (u) s (resume s s)))
+                (if (and (> (St.check) 3) (> (St.check) 4))
+                  (* 100 (St.count))
+                  (St.count))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 700 Int64)))
+
+(case "the and SHORT-CIRCUITS: the second operand's perform must NOT fire (state proves it)"
+  (doc    "The elision path of the same program: at seed 1 the first check reads 1 (> 3 FAILS), the
+           `and` short-circuits, and the second operand's perform must NOT fire — the count reads
+           exactly ONE advance (2). Short-circuit evaluation is the language's only by-value runtime
+           expression elision; an eager or reordered boolean lowering would fire the second dispatch
+           and read 3.")
+  (input  (do
+            (effect St (op check (-> Unit Int64)) (op count (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((check (u) s (resume s (+ s 1)))
+                 (count (u) s (resume s s)))
+                (if (and (> (St.check) 3) (> (St.check) 4))
+                  (* 100 (St.count))
+                  (St.count))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 2 Int64)))
+
+(case "the OR short-circuits on a true first operand — the second perform must NOT fire"
+  (doc    "The `or` elision path: at seed 5 the first check reads 5 (> 3 holds), the `or`
+           short-circuits, the second operand's perform never fires — the count reads exactly one
+           advance (6). The or-twin of the and-elision pin above.")
+  (input  (do
+            (effect St (op check (-> Unit Int64)) (op count (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((check (u) s (resume s (+ s 1)))
+                 (count (u) s (resume s s)))
+                (if (or (> (St.check) 3) (> (St.check) 0))
+                  (St.count)
+                  (* 100 (St.count)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 6 Int64)))
+
+(case "a false first operand falls through — the OR's second perform fires (same program)"
+  (doc    "The fall-through path: at seed 1 the first check reads 1 (> 3 fails), so the `or`
+           evaluates its second operand — that perform fires (reads 2, > 0 holds) and the count
+           reads TWO advances (3). With the three sibling pins, all four short-circuit paths carry
+           dispatch-count-proven witnesses.")
+  (input  (do
+            (effect St (op check (-> Unit Int64)) (op count (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((check (u) s (resume s (+ s 1)))
+                 (count (u) s (resume s s)))
+                (if (or (> (St.check) 3) (> (St.check) 0))
+                  (St.count)
+                  (* 100 (St.count)))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 3 Int64)))
+
+(case "a perform under NOT in a condition (the negated dispatch gate)"
+  (doc    "The remaining boolean operator: the condition wraps the perform in `not` — check reads 1
+           (> 3 fails), the not flips it, the then-branch runs and count reads the single advance
+           (100·2 = 200). Completes the boolean-op set (and/or short-circuits + not) over effect
+           dispatches.")
+  (input  (do
+            (effect St (op check (-> Unit Int64)) (op count (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((check (u) s (resume s (+ s 1)))
+                 (count (u) s (resume s s)))
+                (if (not (> (St.check) 3))
+                  (* 100 (St.count))
+                  (St.count))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 200 Int64)))
+
 ; ============ Guarded match × effects (breaker FINDING, ag5 → fixed #2333). A guarded match on a
 ; perform-result scrutinee whose FALLBACK arm also performs used to leak the fold-synthesized #seed
 ; binder as a false CDZ0101: the guard desugar's arm-body copy reparented a reused (shared) body
@@ -9474,11 +9559,10 @@
   (call   main (: 5 Int64)) (output (: 8 Int64)))
 
 (case "NEGATIVE values thread every effect slot — state, argument, and result stay signed"
-  (doc    "The effect-pin OUTPUT checksums in this file were uniformly positive before this ladder,
-           so a sign-extension slip in any marshal (i64 truncation, a wrong-width reload) had no
-           witness — it surfaces only on negatives. Here EVERY slot is negative at once: seed −100,
-           op arg −5, resume values −105/−107, next-state arithmetic −110 → −212. The signed-values
-           face of the effect machinery.")
+  (doc    "A sign-extension slip in any marshal (i64 truncation, a wrong-width reload) surfaces only
+           on negative values; this case drives negatives through EVERY slot at once so each marshal
+           path has a signed witness: seed −100, op arg −5, resume values −105/−107, next-state
+           arithmetic −110 → −212. The signed-values face of the effect machinery.")
   (input  (do
             (effect St (op dip (-> Int64 Int64)))
             (def (main (: n Int64))
