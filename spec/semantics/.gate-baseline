@@ -751,6 +751,7 @@ pass	a NEGATIVE Float32-overflowing literal in a runtime branch is rejected
 pass	a NEGATIVE large-magnitude float renders its full expansion with its sign
 pass	a NEGATIVE prefixed quantity carries its sign through the reference scale-fold
 pass	a NEGATIVE-constant point fact folds an inner comparison with the correct SIGN — the negative-point twin
+pass	a NESTED Map-of-Map state — the arm updates the inner map through the outer per dispatch
 pass	a NESTED Record ARG (a record containing a record) crosses the direct-call boundary
 pass	a NESTED Record ARG with a LIST result crosses the direct-call boundary
 pass	a NESTED Tuple ARG (a tuple containing a tuple) crosses the direct-call boundary
@@ -937,6 +938,7 @@ pass	a SUM constructor payload that is a compound built from performs threads an
 pass	a SUM is threaded as a handler's folded state across operations
 pass	a SYM tactic reduces a goal to a subgoal plus a kernel justification (backward proof)
 pass	a SYMBOL compound = has DISCRIMINATING power (two runtime-selected interned names separate)
+pass	a SYMBOL-keyed Map state routes hits to different keys (route-table accumulator)
 pass	a SYMBOL-returning effect op interns through the handler and results compare by content
 pass	a Set of (Int64, Bytes) tuples orders by int then Bytes lexicographically and dedups by content
 pass	a Set of MAPS-OF-SETS dedupes by full-depth content
@@ -5651,6 +5653,7 @@ pass	three-way compare orders (Some 3) below None per the declared discriminant 
 pass	to-bytes of a sliced multibyte string is read twice and both reads see the right bytes
 pass	tree HEIGHT and BALANCE derive from insertion order over the same BST shape
 pass	triple negation of a runtime boolean is a single negation
+pass	triple-nested same-op performs — each argument is the inner perform's result
 pass	true is greater than false
 pass	true is not less than false
 pass	truncating a rational whose integer part exceeds Int64 traps rather than wrapping
