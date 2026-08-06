@@ -136,6 +136,14 @@ pub fn encode_capability_manifest(manifest: &crate::effect::CapabilityManifest) 
                         let v = str_leaf(&mut b, p);
                         b.list(vec![h, v])
                     }
+                    ResourcePredicate::DescendantOf(controller) => {
+                        // I6 supervision-tree marker: ride the controller's hash as its hex string, so a
+                        // discovery reader sees which controller a lifecycle/* grant is scoped under (the
+                        // kernel's own admits() never green-lights it — the host freezes the descendant set).
+                        let h = b.name("descendant-of");
+                        let v = str_leaf(&mut b, &controller.to_hex());
+                        b.list(vec![h, v])
+                    }
                 };
                 let some = b.name("some");
                 b.list(vec![some, pred_form])
@@ -1993,6 +2001,10 @@ mod tests {
                     ResourcePredicate::HostIn(vec!["h.host".into()]),
                 ),
                 pred_entry("f-prefix", ResourcePredicate::Prefix("pre/".into())),
+                pred_entry(
+                    "f-descendant-of",
+                    ResourcePredicate::DescendantOf(crate::hash::Hash::of(b"controller")),
+                ),
             ],
         };
         let bytes = encode_capability_manifest(&manifest);
@@ -2001,7 +2013,7 @@ mod tests {
             .as_form(a.root, "capabilities-manifest")
             .expect("root head");
         let entries = a.as_form(root[1], "entries").expect("entries head");
-        assert_eq!(entries.len(), 5, "one entry per predicate arm");
+        assert_eq!(entries.len(), 6, "one entry per predicate arm");
 
         // Pull the `(some <predicate>)` predicate form for entry i, asserting the (some ..) wrapper carries
         // EXACTLY one child. Pinning the arity (not just the head) means an encoder that accidentally
@@ -2030,5 +2042,13 @@ mod tests {
         // (prefix <str>)
         let prefix = a.as_form(pred_of(4), "prefix").expect("(prefix ..)");
         assert_eq!(a.as_str(prefix[0]), Some("pre/"));
+        // (descendant-of <controller-hex>) — I6 supervision marker; the controller rides as its hex string.
+        let desc = a
+            .as_form(pred_of(5), "descendant-of")
+            .expect("(descendant-of ..)");
+        assert_eq!(
+            a.as_str(desc[0]),
+            Some(crate::hash::Hash::of(b"controller").to_hex().as_str())
+        );
     }
 }
