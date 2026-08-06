@@ -60,6 +60,7 @@ pub mod admin_wire;
 pub mod async_host;
 pub mod clock;
 pub mod config;
+pub mod emit;
 #[cfg(feature = "metrics-export")]
 pub mod export;
 pub mod factory;
@@ -85,6 +86,7 @@ pub use config::{
     AdminConfig, BlobConfig, DaemonConfig, LogConfig, MetricsTarget, ObservabilityConfig,
     RetryConfig, TracingConfig, TracingFormat, TracingOutput,
 };
+pub use emit::EmitExecutor;
 #[cfg(feature = "metrics-export-prometheus")]
 pub use export::{is_loopback_bind, run_prometheus_scrape_server, PrometheusTarget};
 #[cfg(feature = "metrics-export")]
