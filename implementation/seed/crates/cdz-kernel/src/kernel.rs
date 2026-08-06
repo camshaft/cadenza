@@ -40,6 +40,11 @@ pub enum KernelError {
     NonContiguousSeq { expected: u64, got: u64 },
     /// The first event of a session must be `Genesis`.
     MissingGenesis,
+    /// A fold was attempted on a TERMINATED session (its log tail is
+    /// [`EventBody::Terminated`](crate::event::EventBody::Terminated)). §lifecycle I1: a terminated
+    /// session refuses every further delivery — a first-class kernel guard so a terminated session can't
+    /// be re-driven even by a buggy host. Terminal: there is no recovery (a fresh spawn replaces it, §7).
+    FoldRefused,
 }
 
 /// A single-session kernel instance: the authoritative log plus the derived KV and the id counter.
@@ -442,9 +447,27 @@ impl Session {
         authz: &(impl Authorize + ?Sized),
         executor: &mut (impl Executor + ?Sized),
     ) -> Result<Vec<crate::effect::ControlEffect>, KernelError> {
+        // §lifecycle I1: a TERMINATED session refuses every further fold — checked BEFORE the append so a
+        // terminated log stays frozen (no event is written, no reducer runs). First-class kernel guard, not
+        // a host convention: even a buggy/hostile driver can't re-drive a terminated session. Terminal +
+        // replay-stable (the tail is durable, so a recovered session whose tail is `Terminated` refuses too).
+        if self.is_terminated() {
+            return Err(KernelError::FoldRefused);
+        }
         self.append(body, cause).await;
         let control = self.drive(reducer, authz, executor).await;
         Ok(control)
+    }
+
+    /// Is this session TERMINATED — i.e. its log TAIL is an [`EventBody::Terminated`] marker (§lifecycle
+    /// I1)? Keys on the LAST event, not "any Terminated anywhere": terminality is a terminal state the
+    /// marker installs as the tail, and nothing can be appended after it (the fold guard rejects), so the
+    /// tail is the authoritative signal — and it's replay-stable (the durable log rebuilds the same tail).
+    pub fn is_terminated(&self) -> bool {
+        matches!(
+            self.log.last().map(|e| &e.body),
+            Some(EventBody::Terminated { .. })
+        )
     }
 
     /// Genesis-seed the capability manifest (host-capability-discovery I5): fold a synthetic
@@ -1477,6 +1500,7 @@ fn event_body_name(body: &EventBody) -> &'static str {
         EventBody::FoldFailed { .. } => "FoldFailed",
         EventBody::AuthzDenied { .. } => "AuthzDenied",
         EventBody::Closed { .. } => "Closed",
+        EventBody::Terminated { .. } => "Terminated",
     }
 }
 
@@ -1539,10 +1563,14 @@ fn observable(body: &EventBody) -> bool {
         | EventBody::Closed { .. } => true,
         // FoldFailed is NOT folded (v0 records it for a supervisor to observe, but re-handing a failed
         // fold to the same failing reducer would recurse — a supervisor reacting is a later slice).
+        // Terminated is NOT folded either — it's a terminal marker; a terminated session refuses all
+        // further folds (the deliver-time FoldRefused guard), so its own marker is never handed to a
+        // reducer (§lifecycle I1).
         EventBody::Genesis { .. }
         | EventBody::Dispatched { .. }
         | EventBody::TimerArmed { .. }
-        | EventBody::FoldFailed { .. } => false,
+        | EventBody::FoldFailed { .. }
+        | EventBody::Terminated { .. } => false,
     }
 }
 
@@ -3177,6 +3205,113 @@ mod monotonic_now_tests {
             s.genesis_hash(),
             other.genesis_hash(),
             "different reducers must yield different genesis hashes"
+        );
+    }
+
+    // §lifecycle I1: once a `Terminated` marker is the log tail, the kernel REFUSES every further fold —
+    // a first-class guard (KernelError::FoldRefused), checked before the append so no event is written and
+    // no reducer runs. Drives a real fold first (so the session is live + has post-genesis events), then
+    // installs the terminal marker, then asserts the next delivery is refused (and the log did NOT grow —
+    // the refusal is total, not a silent no-op that still appended).
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_terminated_session_refuses_every_further_fold() {
+        let mut s = Session::genesis(Hash::of(b"lifecycle-term-v1"));
+        // A normal live fold works before termination.
+        s.deliver(
+            inbound(),
+            None,
+            &NowReducer,
+            &now_cap(),
+            &mut StuckClock(1000),
+        )
+        .await
+        .expect("a live session folds normally");
+        assert!(!s.is_terminated(), "not terminated before the marker");
+
+        // Install the durable terminal marker (what the host's I5 terminate executor will append). `by` is
+        // the terminating controller's session identity; the reason is diagnostic.
+        s.append(
+            EventBody::Terminated {
+                by: Hash::of(b"controller-session"),
+                reason: "operator kill".into(),
+            },
+            None,
+        )
+        .await;
+        assert!(
+            s.is_terminated(),
+            "the Terminated tail marks the session terminated"
+        );
+        let len_after_marker = s.log().len();
+
+        // The next delivery is REFUSED — not applied, not silently dropped.
+        let refused = s
+            .deliver(
+                inbound(),
+                None,
+                &NowReducer,
+                &now_cap(),
+                &mut StuckClock(2000),
+            )
+            .await;
+        assert!(
+            matches!(refused, Err(KernelError::FoldRefused)),
+            "a fold on a terminated session must return FoldRefused, got {refused:?}"
+        );
+        assert_eq!(
+            s.log().len(),
+            len_after_marker,
+            "a refused fold must NOT append any event — the terminated log stays frozen"
+        );
+    }
+
+    // §lifecycle I1 replay-stability: terminality is DURABLE. A session recovered from a log whose tail is
+    // `Terminated` is still terminated and still refuses folds — the guard rebuilds from the log, it isn't
+    // volatile in-memory state (so a crash/restart can't resurrect a terminated session).
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_recovered_terminated_session_stays_terminated_and_refuses_folds() {
+        let mut s = Session::genesis(Hash::of(b"lifecycle-term-replay-v1"));
+        s.deliver(
+            inbound(),
+            None,
+            &NowReducer,
+            &now_cap(),
+            &mut StuckClock(1000),
+        )
+        .await
+        .unwrap();
+        s.append(
+            EventBody::Terminated {
+                by: Hash::of(b"controller-session"),
+                reason: "operator kill".into(),
+            },
+            None,
+        )
+        .await;
+
+        // Replay the persisted log into a fresh session (the recovery path).
+        let recovered = Session::replay(s.log().to_vec(), &NowReducer)
+            .await
+            .expect("replay of a terminated log succeeds");
+        assert!(
+            recovered.is_terminated(),
+            "a recovered session whose log tail is Terminated must still be terminated"
+        );
+
+        // And it refuses a fold, exactly like the pre-crash session — terminality survives recovery.
+        let mut recovered = recovered;
+        let refused = recovered
+            .deliver(
+                inbound(),
+                None,
+                &NowReducer,
+                &now_cap(),
+                &mut StuckClock(2000),
+            )
+            .await;
+        assert!(
+            matches!(refused, Err(KernelError::FoldRefused)),
+            "a recovered terminated session must still refuse folds, got {refused:?}"
         );
     }
 
