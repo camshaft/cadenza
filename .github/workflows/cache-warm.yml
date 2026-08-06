@@ -61,3 +61,19 @@ jobs:
         run: nix build .#packages.${{ matrix.arch }}-linux.cargo-artifacts --print-build-logs
       - name: warm component store
         run: nix build .#packages.${{ matrix.arch }}-linux.store --print-build-logs
+      # Warm the AARCH64 nix CHECKS that the store+cargo-artifacts warm DON'T cover — cdz-agent-host-native +
+      # cad-tests build the SEED COMPILER (cdz-seed-compiler is in their requisites) + run `cdz test`/the genesis
+      # E2E, and neither packages.store nor cargo-artifacts pulls seedCompiler. After the seedCompiler-src
+      # narrowing (#2373) these checks became warm-able (their input hash no longer rotates per unrelated
+      # seed-crate commit), BUT the ONLY path that saved them was a MAIN checks.yml run — which the ~5min main
+      # cadence starves (a 17min run is superseded-while-pending before it saves). So this backstop builds them
+      # here → the */30 cron seeds seedCompiler + both checks into the new-key store → candidates restore them
+      # warm (v-nix+v-ft 2026-08-06). AARCH64 ONLY: both resolve the per-arch value-heap runtime hash from
+      # CDZ_STORE (the reason #2354 moved cdz-agent-host to aarch64) — on x86 they'd BlobMiss, so guard to the
+      # arm leg. (nix-flake-advisory/clippy/test warm via their own required-job saves + the store/cargo-artifacts
+      # here; these two are the ones with no other warm path.)
+      - name: warm the aarch64-only nix checks (cdz-agent-host-native + cad-tests — seed-compiler bearers)
+        if: matrix.arch == 'aarch64'
+        run: |
+          nix build .#checks.aarch64-linux.cdz-agent-host-native --print-build-logs
+          nix build .#checks.aarch64-linux.cad-tests --print-build-logs
