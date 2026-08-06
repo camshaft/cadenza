@@ -4762,7 +4762,8 @@
            perform embedded in a peeled match-value's scrutinee across the outer `A` fold is not yet composed.
            DECLINE, never a wrong value (an honest not-yet-reducible todo). When the op-arg-lift × match-peel
            composition lands, this FOLDS to 14: `A.src` = bytes[20,30,40]; `Bytes.slice … 1 2` = [30,40] (Some);
-           `B.cut` resumes that view; `Bytes.len` = 2; `(+ 2 12)` = 14. Flip this todo→14 then.")
+           `B.cut` resumes that view; `Bytes.len` = 2; `(+ 2 12)` = 14. The output is already pinned (14); when
+           the composition lands, flip this case's BASELINE entry todo→pass across all three .gate-baseline* files.")
   (input  (do
             (effect A (op src (-> Unit Bytes)))
             (effect B (op cut (-> Bytes Bytes)))
