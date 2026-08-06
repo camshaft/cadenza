@@ -8809,6 +8809,57 @@
             (export main)))
   (call   main (: 7 Int64)) (output (: 2 Int64)))
 
+(case "a bin PATTERN destructures a perform-result Bytes (the wire round-trip through a handler)"
+  (doc    "binary-matching × effects, the codec round-trip: the ARM constructs framed Bytes from its
+           state (`(bin (u16 …) (u8 7))`) and the BODY destructures the perform result with a bin
+           PATTERN, recovering both fields — hi = 258 (the seed, big-endian u16), lo = 7 → 258 + 700 =
+           958. The protocol-handler idiom: a handler serves wire bytes, the caller parses them; the
+           pattern must read exactly the bytes the arm's construction laid down.")
+  (input  (do
+            (effect St (op fetch (-> Unit Bytes)))
+            (def (main (: n Int64))
+              (handle St n
+                ((fetch (u) s (resume (bin (u16 (UInt16.wrap s)) (u8 7)) (+ s 1))))
+                (match (St.fetch)
+                  ((bin (u16 hi) (u8 lo)) (+ (Int64.of hi) (* 100 (Int64.of lo))))
+                  (_ -1))))
+            (export main)))
+  (call   main (: 258 Int64)) (output (: 958 Int64)))
+
+(case "a bin-pattern arm binds a parsed byte and PERFORMS again with it (parse-then-act)"
+  (doc    "The pipeline composition of the bin-pattern crossing above: the match arm's binder `b` —
+           established by the bin PATTERN over the perform result — feeds a SECOND perform
+           (`(St.log (Int64.of b))`), whose arm multiplies by 10: fetch serves byte 5, log answers
+           50. Pins that a bin-pattern binding flows into a subsequent dispatch correctly — the
+           parse-then-act shape every wire-protocol reducer uses.")
+  (input  (do
+            (effect St (op fetch (-> Unit Bytes)) (op log (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((fetch (u) s (resume (bin (u8 (UInt8.wrap s))) (+ s 1)))
+                 (log (v) s (resume (* v 10) s)))
+                (match (St.fetch)
+                  ((bin (u8 b)) (St.log (Int64.of b)))
+                  (_ -1))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 50 Int64)))
+
+(case "eval of a quoted expression folds INSIDE a handle body beside performs"
+  (doc    "quote/eval × effects coexistence: `(eval (quote (+ 1 2)))` — a COMPILE-TIME eval of a
+           compile-time-visible quote — sits between two performs and folds to its 3 while the
+           performs discharge normally: 5 + 3 + 6 = 14. Both features rewrite the handle body (the
+           eval reconstructs-and-compiles, the fold discharges performs); this pins that they
+           compose. (An arm-built RUNTIME Ast fed to eval is rejected by design — eval executes
+           only compile-time-visible AST constructions, with a diagnostic saying exactly that.)")
+  (input  (do
+            (effect St (op next (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next (u) s (resume s (+ s 1))))
+                (+ (St.next) (+ (eval (quote (+ 1 2))) (St.next)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 14 Int64)))
+
 (case "an ABORTING arm derives its answer from an Ast op-arg and discards the continuation"
   (doc    "The abort composition of the Ast op-arg: the arm never resumes, so the handle's value IS the
            arm's — `(Int64.of b)` on the node's BigInt payload plus the state — and the continuation's
