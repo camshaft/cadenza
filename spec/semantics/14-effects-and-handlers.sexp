@@ -9427,6 +9427,61 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 8 Int64)))
 
+(case "NEGATIVE values thread every effect slot — state, argument, and result stay signed"
+  (doc    "Every effect-pin checksum in this file is positive; a sign-extension slip in any marshal
+           (i64 truncation, a wrong-width reload) would surface only on negatives. Here EVERY slot is
+           negative at once: seed −100, op arg −5, resume values −105/−107, next-state arithmetic
+           −110 → −212. The signed-values face of the effect machinery.")
+  (input  (do
+            (effect St (op dip (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle St (- 0 100)
+                ((dip (v) s (resume (+ v s) (- s 10))))
+                (+ (St.dip (- 0 n)) (St.dip 3))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: -212 Int64)))
+
+(case "Int64 MAX threads the handler state intact (representation at the boundary)"
+  (doc    "The state slot must carry a full i64: the seed is Int64 MAX, the first peek reads it back
+           EXACTLY, the state decrements, and the second peek reads MAX−1 → 1. Any narrower
+           intermediate representation (or a float round-trip) corrupts the boundary value.")
+  (input  (do
+            (effect St (op peek (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St 9223372036854775807
+                ((peek (u) s (resume s (- s 1))))
+                (if (= (St.peek) 9223372036854775807) (if (= (St.peek) 9223372036854775806) 1 2) 3)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 1 Int64)))
+
+(case "ZERO threads every effect slot (zero seed, zero args, zero results)"
+  (doc    "The degenerate-value face: a zero state seed, a zero LITERAL argument, a zero COMPUTED
+           argument (`(- n n)`), and zero resume values — all thread and the +7 tail lands the
+           checksum. Zeros matter because a wrong slot read aliases with an uninitialized cell; a
+           positive checksum cannot distinguish 0-the-value from 0-the-missing-write.")
+  (input  (do
+            (effect St (op echo (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle St 0
+                ((echo (v) s (resume (+ v s) s)))
+                (+ (St.echo 0) (+ (St.echo (- n n)) 7))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 7 Int64)))
+
+(case "a handle whose body NEVER performs is exactly its body (zero dispatches)"
+  (doc    "The zero-dispatch degenerate: the effect is declared, the handler installed with a live
+           arm — and the body never performs, so the handle is exactly `(* n 2)` = 10. The fold's
+           fully-eliminated path: the handler apparatus must vanish without residue (no stray seed
+           evaluation effects, no frame cost observable in the value).")
+  (input  (do
+            (effect St (op never (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St 100
+                ((never (u) s (resume s s)))
+                (* n 2)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 10 Int64)))
+
 (case "a pure closure-driver call beside a perform in one handle body"
   (doc    "A generic driver (`apply-twice`, a lambda-lifted closure call on every backend, incl. the
            async EnvClosure emit) runs BESIDE a perform in one handle body: the driver computes
