@@ -103,6 +103,45 @@ pub mod effect_ct {
         family.starts_with(STORE_PREFIX)
     }
 
+    /// The `lifecycle/*` namespace PREFIX — the §lifecycle session-control partition (spawn/suspend/resume/
+    /// terminate). UNLIKE `store/*` (kernel-applied to the name-store) and `control/*` (authz-exempt,
+    /// kernel/host-answered), a `lifecycle/*` effect is AUTHZ-GATED and routes through the NORMAL
+    /// authorize→executor path: the HOST registers an executor that [`handles_family`](super::Executor::handles_family)
+    /// the lifecycle names + mutates the session registry inline (`&mut AgentHost`, the on-loop-no-deadlock
+    /// design). So the kernel needs NO special drive-loop arm for it — only these family-string consts (one
+    /// source of truth across a reducer, the host executor, and the manifest). The authority to spawn/kill
+    /// is a `Capability{family: lifecycle/*}` whose predicate is the supervision-tree descendant check
+    /// (I6 `ResourcePredicate::DescendantOf`, host/Cedar seam). Register-by-string (no `EffectKind` variant
+    /// → the `Emit` placeholder kind), like `store/`/`control/`.
+    pub const LIFECYCLE_PREFIX: &str = "lifecycle/";
+
+    /// `lifecycle/spawn` — spawn a durable CHILD session (target = the child's reducer hash; the effect
+    /// result is the child's SessionId = its genesis hash). The host executor instantiates the child +
+    /// registers it + records the parent→child [`Spawned`](crate::event::EventBody::Spawned) edge via
+    /// [`Session::record_spawn`](crate::kernel::Session::record_spawn).
+    pub const LIFECYCLE_SPAWN: &str = "lifecycle/spawn";
+
+    /// `lifecycle/suspend` — stop scheduling a target session's ticks (target = SessionId). Durable log
+    /// untouched (suspend is a host-scheduler state, not a kernel event); queued inbound is held.
+    pub const LIFECYCLE_SUSPEND: &str = "lifecycle/suspend";
+
+    /// `lifecycle/resume` — re-enable a suspended session (target = SessionId); replays any held inbound.
+    pub const LIFECYCLE_RESUME: &str = "lifecycle/resume";
+
+    /// `lifecycle/terminate` — terminate a target session (target = SessionId). The host executor drives
+    /// [`Session::terminate`](crate::kernel::Session::terminate) (the durable [`Terminated`](crate::event::EventBody::Terminated)
+    /// marker + fold-refusal), removes it from the registry, and bounces in-flight Emits to it as a
+    /// permanent Failure-to-sender.
+    pub const LIFECYCLE_TERMINATE: &str = "lifecycle/terminate";
+
+    /// Is `family` in the `lifecycle/*` namespace (the §lifecycle session-control partition)? A prefix
+    /// test (like [`is_store_family`]). Note this partition is executor-routed (not kernel-handled), so
+    /// the drive loop needs no special arm keyed on this — it's here for the manifest + discoverability +
+    /// so a future kernel-side use has one source of truth for the partition boundary.
+    pub fn is_lifecycle_family(family: &str) -> bool {
+        family.starts_with(LIFECYCLE_PREFIX)
+    }
+
     /// Is `family` in the `control/*` namespace (authz-exempt, host/kernel-answered, never executor-routed)?
     /// The partition test the drive loop applies BEFORE authorize/route: `true` → control path, `false` →
     /// the effect path (authorize → executor). A simple prefix check on [`CONTROL_PREFIX`] — one source of
@@ -128,7 +167,18 @@ pub mod effect_ct {
     /// Iterating it is what makes capability-manifest projection complete BY CONSTRUCTION (probe each known
     /// family; there is nothing to miss — see [`super::project_manifest`]). Keep in sync with the consts
     /// above (they're the single source; this just lists them for enumeration).
-    pub const ALL: &[&str] = &[SHELL, HTTP, MODEL, NOW, TIMER, EMIT];
+    pub const ALL: &[&str] = &[
+        SHELL,
+        HTTP,
+        MODEL,
+        NOW,
+        TIMER,
+        EMIT,
+        LIFECYCLE_SPAWN,
+        LIFECYCLE_SUSPEND,
+        LIFECYCLE_RESUME,
+        LIFECYCLE_TERMINATE,
+    ];
 
     /// If `family` is a WELL-KNOWN family whose string is a FIXED, kernel-defined `&'static` — one of the
     /// built-in effect verbs ([`ALL`], via [`super::EffectKind::from_family`]) or the exact control/store
@@ -152,6 +202,10 @@ pub mod effect_ct {
             SUMMARY => Some(SUMMARY),
             STORE_SET => Some(STORE_SET),
             STORE_RESOLVE => Some(STORE_RESOLVE),
+            LIFECYCLE_SPAWN => Some(LIFECYCLE_SPAWN),
+            LIFECYCLE_SUSPEND => Some(LIFECYCLE_SUSPEND),
+            LIFECYCLE_RESUME => Some(LIFECYCLE_RESUME),
+            LIFECYCLE_TERMINATE => Some(LIFECYCLE_TERMINATE),
             _ => None,
         }
     }
@@ -903,6 +957,46 @@ mod tests {
         // A family merely CONTAINING "store" but not prefixed is not a store family.
         assert!(!effect_ct::is_store_family("my-store"));
         assert!(!effect_ct::is_store_family(""));
+    }
+
+    #[test]
+    fn lifecycle_family_partition_consts_predicate_manifest_and_safe_logging() {
+        // §lifecycle session-control partition: lifecycle/{spawn,suspend,resume,terminate} — a NEW
+        // authz-gated partition (executor-routed, NOT kernel-handled like store/control).
+        assert_eq!(effect_ct::LIFECYCLE_PREFIX, "lifecycle/");
+        for f in [
+            effect_ct::LIFECYCLE_SPAWN,
+            effect_ct::LIFECYCLE_SUSPEND,
+            effect_ct::LIFECYCLE_RESUME,
+            effect_ct::LIFECYCLE_TERMINATE,
+        ] {
+            assert!(f.starts_with(effect_ct::LIFECYCLE_PREFIX));
+            assert!(
+                effect_ct::is_lifecycle_family(f),
+                "{f:?} is a lifecycle family"
+            );
+            // SAFE-LOGGING (#2180): the exact lifecycle strings are kernel-defined fixed &'static, so they
+            // log VERBATIM (not redacted-to-length) — wellknown_static_str returns Some for each.
+            assert_eq!(effect_ct::wellknown_static_str(f), Some(f));
+            // They're in the manifest family set → the capability projection reports lifecycle grant-states.
+            assert!(
+                effect_ct::ALL.contains(&f),
+                "{f:?} is projected in the capability manifest"
+            );
+        }
+        assert_eq!(effect_ct::LIFECYCLE_SPAWN, "lifecycle/spawn");
+        assert_eq!(effect_ct::LIFECYCLE_TERMINATE, "lifecycle/terminate");
+        // DISJOINT from store/control: lifecycle is neither (it's authz-gated + executor-routed).
+        assert!(!effect_ct::is_store_family(effect_ct::LIFECYCLE_SPAWN));
+        assert!(!effect_ct::is_control_family(effect_ct::LIFECYCLE_SPAWN));
+        assert!(!effect_ct::is_lifecycle_family(effect_ct::STORE_SET));
+        assert!(!effect_ct::is_lifecycle_family(effect_ct::CAPABILITIES));
+        // A guest-controlled extension family under a fake lifecycle-ish name that ISN'T the exact const
+        // logs redacted (None), not verbatim — the #2180 prefix-isn't-enough rule.
+        assert_eq!(effect_ct::wellknown_static_str("lifecycle/secret-x"), None);
+        // But the prefix predicate still classifies it (routing/authz partition is prefix-based).
+        assert!(effect_ct::is_lifecycle_family("lifecycle/secret-x"));
+        assert!(!effect_ct::is_lifecycle_family("my-lifecycle"));
     }
 
     #[test]
