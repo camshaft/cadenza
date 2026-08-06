@@ -514,19 +514,54 @@ impl AsyncAgentHost {
 
             // A lifecycle op may have RESUMED a session (§lifecycle I4): replay any inbound held for a
             // now-un-suspended target. Deliver each in-place (still-suspended ones stay held). Partition:
-            // keep still-held; deliver the rest. (A resumed target that terminated meanwhile → deliver returns
-            // None/FoldRefused, both benign here — a held inbound to a gone session is dropped, not bounced,
-            // since a held inbound has no live emitter awaiting it.)
+            // keep still-held; deliver the rest. A resumed target that TERMINATED while suspended →
+            // deliver returns None (removed) / FoldRefused (marked): for a held cross-session Emit (reply_to
+            // set) this BOUNCES a delivery-failure to the emitter, EXACTLY like the main inbox arm — a held
+            // Emit retains its live `reply_to` (the emitter is still registered + awaiting), so dropping it
+            // silently would be a lossy Failure-to-sender hole (#2452 Copilot c1 — corrected my earlier
+            // "held inbound has no live emitter" claim, which was wrong: held Emits DO carry reply_to). A
+            // held EXTERNAL inbound (reply_to None) still drops silently — no originator to notify.
             if !held_inbound.is_empty() {
                 let mut still_held = Vec::new();
                 for msg in std::mem::take(&mut held_inbound) {
                     if host.is_suspended(&msg.session) {
                         still_held.push(msg);
-                    } else {
-                        match host.deliver(&msg.session, msg.body, msg.cause).await {
-                            Some(Ok(())) | None | Some(Err(KernelError::FoldRefused)) => {}
-                            Some(Err(e)) => return Err(e),
+                        continue;
+                    }
+                    // Capture the bounce return-address + echo payload BEFORE msg.body moves into deliver
+                    // (only when reply_to is set — a held Emit; an external inbound never bounces).
+                    let bounce_ctx = msg
+                        .reply_to
+                        .clone()
+                        .map(|sender| (sender, bounce_echo_payload(&msg.body)));
+                    let target = msg.session.clone();
+                    match host.deliver(&msg.session, msg.body, msg.cause).await {
+                        Some(Ok(())) => {}
+                        // Target gone (removed) or terminated-in-place while it was suspended → bounce a
+                        // delivery-failure to the held Emit's originator (Failure-to-sender), same as the
+                        // main inbox arm; an external held inbound (bounce_ctx None) drops silently.
+                        None => {
+                            if let Some((sender, payload)) = bounce_ctx {
+                                bounce_delivery_failure(
+                                    &mut host, &sender, &target, payload,
+                                    "held target session is not registered (terminated while suspended)",
+                                )
+                                .await?;
+                            }
                         }
+                        Some(Err(KernelError::FoldRefused)) => {
+                            if let Some((sender, payload)) = bounce_ctx {
+                                bounce_delivery_failure(
+                                    &mut host,
+                                    &sender,
+                                    &target,
+                                    payload,
+                                    "held target session is terminated (refuses further delivery)",
+                                )
+                                .await?;
+                            }
+                        }
+                        Some(Err(e)) => return Err(e),
                     }
                 }
                 held_inbound = still_held;
@@ -1336,6 +1371,116 @@ mod tests {
                 .get(b"inbox"),
             None,
             "still-suspended target B's held inbound stays held (partition KEPT it — not leaked, not dropped)"
+        );
+    }
+
+    #[tokio::test]
+    async fn lifecycle_held_emit_to_a_target_terminated_while_suspended_bounces_to_the_sender() {
+        // §lifecycle I4/I5 (#2452 Copilot c1 fix): a cross-session Emit (reply_to set) HELD while its target
+        // is suspended, whose target then TERMINATES before resume, must BOUNCE a delivery-failure to the
+        // emitter on the replay-drain — NOT drop silently (a held Emit retains its live reply_to). Drive:
+        // suspend victim → a held Emit for victim (reply_to=sender) → terminate victim → resume victim →
+        // replay-drain finds victim gone → bounces to sender, who folds it.
+        let mut async_host = AsyncAgentHost::new(AgentHost::new());
+        // The SENDER (a live registered session) records any delivery-failure bounce it receives.
+        async_host.host_mut().spawn(
+            SessionId::new("sender"),
+            HostedSession::genesis(
+                Hash::of(b"bounce-recorder-v1"),
+                Box::new(BounceRecorder),
+                Box::new(Authorizer::deny_all()),
+                CompositeExecutor::new(),
+            ),
+        );
+        // The VICTIM: an ordinary session, suspended then terminated below.
+        async_host.host_mut().spawn(
+            SessionId::new("victim"),
+            HostedSession::genesis(
+                Hash::of(b"receiver-v1"),
+                Box::new(ReceiverAgent),
+                Box::new(Authorizer::deny_all()),
+                CompositeExecutor::new(),
+            ),
+        );
+        // A controller that suspends victim (b"suspend") / resumes victim (b"resume").
+        let sr_controller = suspend_resume_controller(&async_host, "victim");
+        async_host
+            .host_mut()
+            .spawn(SessionId::new("controller"), sr_controller);
+        // A controller that terminates victim (on b"go").
+        let killer = HostedSession::genesis(
+            Hash::of(b"killer-v1"),
+            Box::new(TerminatorAgent {
+                victim: "victim".to_string(),
+            }),
+            Box::new(
+                Authorizer::new(vec![]).with_family_grants(vec![Capability::for_family(
+                    effect_ct::LIFECYCLE_TERMINATE,
+                    ResourcePredicate::Exact("victim".into()),
+                )]),
+            ),
+            CompositeExecutor::new().with_effect(
+                effect_ct::LIFECYCLE_TERMINATE,
+                Box::new(crate::LifecycleExecutor::new(
+                    async_host.lifecycle_channel(),
+                    SessionId::new("killer"),
+                )),
+            ),
+        );
+        async_host
+            .host_mut()
+            .spawn(SessionId::new("killer"), killer);
+
+        let inbox = async_host.inbox();
+        let (_sd_tx, sd_rx) = tokio::sync::oneshot::channel();
+        // FIFO: suspend victim → a HELD cross-session Emit for victim (reply_to=sender) → terminate victim
+        // (marks + removes it while its inbound is held) → resume victim → replay-drain finds victim gone →
+        // bounce to sender.
+        inbox.send(control_trigger(b"suspend")).unwrap();
+        inbox
+            .send(Inbound {
+                session: SessionId::new("victim"),
+                body: EventBody::Inbound {
+                    content_type: ContentType {
+                        family: "message".into(),
+                        version: 1,
+                    },
+                    payload: Payload::Inline(b"held-emit".to_vec().into()),
+                },
+                cause: None,
+                reply_to: Some(SessionId::new("sender")), // a cross-session Emit's return-address
+            })
+            .unwrap();
+        inbox
+            .send(Inbound {
+                session: SessionId::new("killer"),
+                body: go(),
+                cause: None,
+                reply_to: None,
+            })
+            .unwrap();
+        inbox.send(control_trigger(b"resume")).unwrap();
+        drop(inbox);
+        let host = async_host
+            .run(sd_rx, || 0)
+            .await
+            .expect("clean shutdown, no kernel error");
+
+        // The victim was terminated + removed.
+        assert!(
+            !host.contains(&SessionId::new("victim")),
+            "victim terminated while suspended + removed"
+        );
+        // The sender folded a delivery-failure bounce carrying the held Emit's echoed payload — the held
+        // Emit did NOT drop silently (the #2452 c1 fix).
+        assert_eq!(
+            host.get(&SessionId::new("sender"))
+                .unwrap()
+                .session()
+                .kv()
+                .get(b"bounced"),
+            Some(&b"held-emit"[..]),
+            "a held Emit to a target terminated-while-suspended BOUNCES to the sender (not dropped)"
         );
     }
 
