@@ -155,11 +155,41 @@
             ./rust-toolchain.toml
           ];
         };
+        # The cdz+cdz-run DEP-CLOSURE (seq-126 crateClosure walk) — the only crates whose src the seed
+        # compiler actually compiles. 10 of the 18 seed crates (cadenza-ast/syntax, cdz, cdz-calc, cdz-corpus,
+        # cdz-num, cdz-rt, cdz-run, cdz-rust-render, rcdzc); the 8 OUTSIDE (cdz-agent-host, cdz-cad, cdz-kernel,
+        # cdz-nfc, cdz-runtime, cdz-smith, cdz-wasm, rcdzc-wasm) + xtask are stubbed.
+        seedCompilerClosure = pkgs.lib.unique (crateClosure "cdz" ++ crateClosure "cdz-run");
+        # seedCompilerSrc: SCOPED to the cdz+cdz-run closure so an edit to a NON-closure seed crate (cdz-kernel,
+        # cdz-agent-host, cdz-corpus's siblings, etc. — the fleet commits to these every few min) does NOT rotate
+        # this derivation's input hash → the /nix/store cache actually WARMS across candidates. Was `seedSrc` (all
+        # 18 crates → any seed-crate commit busted it → cache-miss every run → cdz-agent-host/cad-tests/genesis
+        # never warmed, since they depend on cdz via `cdz compile` — v-nix+v-ft 2026-08-06). Same isolation the
+        # per-crate crane checks use: FULL src/ for closure crates + Cargo.toml-only for non-closure members
+        # (+ xtask) + synthetic stubs (postPatch) so cargo's workspace `members` glob resolves for `-p cdz`
+        # without their real src. `.cargo`/lock/toolchain pinned. fmt keeps the broad seedSrc (it needs all src).
+        seedCompilerSrc = pkgs.lib.fileset.toSource {
+          root = ./.;
+          fileset = pkgs.lib.fileset.unions (
+            (pkgs.lib.concatMap crateCompileSrc seedCompilerClosure)
+            ++ nonClosureManifests seedCompilerClosure
+            ++ [ ./xtask/Cargo.toml ./Cargo.toml ./Cargo.lock ./.cargo ./rust-toolchain.toml ]);
+        };
         seedCompiler = seedRustPlatform.buildRustPackage {
           pname = "cdz-seed-compiler";
           version = "0.0.0";
-          src = seedSrc;
+          src = seedCompilerSrc;
           cargoLock.lockFile = ./Cargo.lock;
+          # Materialize synthetic empty target stubs for the non-closure members (+ xtask) whose real src the
+          # scoped fileset omits, so cargo can parse the workspace `members` glob for `-p cdz -p cdz-run`
+          # without their src. Content-fixed → invariant to those crates' real edits (the whole point). chmod
+          # first: fileset.toSource copies are read-only. Same stub machinery as the per-crate crane checks.
+          postPatch = ''
+            chmod -R u+w .
+            ${stubNonClosure seedCompilerClosure}
+            [ -f xtask/src/main.rs ] || { mkdir -p xtask/src; echo "fn main(){}" > xtask/src/main.rs; }
+            [ -f xtask/src/lib.rs ] || echo "" > xtask/src/lib.rs
+          '';
           # Build only the seed-compiler binaries, not the whole workspace (xtask etc.).
           cargoBuildFlags = [ "-p" "cdz" "-p" "cdz-run" ];
           # Tests run in the existing gate/CI, not here — this derivation just BUILDS the toolchain
