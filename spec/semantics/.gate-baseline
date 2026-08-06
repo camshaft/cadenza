@@ -4641,6 +4641,7 @@ pass	distinct-signature capturing producers
 pass	distinct-signature closures alongside a plain export — the Int64->Bool closure runs
 pass	distinct-signature closures alongside a plain export — the Int64->Int64 closure runs
 pass	distinct-signature closures alongside a plain export — the plain export runs
+pass	divergent multi-shot states carry HEAP lineages — each branch grows its own list
 pass	dividing a quantity by a bare number keeps its dimension
 pass	dividing a rational by a negative rational normalizes the quotient's sign
 pass	dividing an unusual-width minimum by -1 overflows its declared range and is rejected CDZ0304
@@ -4662,6 +4663,8 @@ pass	dropping an absent field from a record is rejected
 pass	dropping fields from a record leaves the remaining fields
 pass	each definition in a module registers a reachable export field
 pass	each literal kind quotes to its own single Ast leaf that escapes and renders
+pass	each multi-shot branch OBSERVES its own divergent state via a trailing peek
+pass	each multi-shot branch observes its own heap-lineage length
 pass	each recursion level installs its own handle around a def-bound perform
 pass	effect state threads across a successful `?`
 pass	encoding a decoded string round-trips to the same bytes
@@ -4942,6 +4945,7 @@ pass	multi-export record result — the second closure, with a negative leaf
 pass	multi-limb BigInt map keys stay distinct and look up by full value
 pass	multi-limb BigInt set elements deduplicate by full value
 pass	multi-limb BigInts equal in the LOW limb compare by the HIGH limb
+pass	multi-shot resumes carry DIVERGENT states; two performs branch 2x2
 pass	multibyte symbols order by UNSIGNED content bytes - a CJK scalar sorts after z
 pass	multiplication
 pass	multiplication of an integer and a float does not silently promote
