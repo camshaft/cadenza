@@ -6042,3 +6042,9 @@ pass	a multi-shot arm with an enclosing-param resume value and a MATCH-binder co
 pass	a performing match-arm guard on a REFUTABLE pattern folds (keeps the match, hoists the guard)
 pass	a performing guard on a refutable pattern whose guard FAILS falls to the catch-all
 pass	a performing guard on a TUPLE-destructuring pattern folds
+pass	an @ensures on a PERFORMING def called TWICE under one handler — both effectful results checked
+pass	an OPTION as op ARGUMENT — the arm matches Some/None it was handed, per dispatch
+pass	a RESULT as op ARGUMENT — the arm branches on Ok/Err payloads it was handed
+pass	a scrutinee FAILING the pattern reaches the catch-all WITHOUT running the guard's perform
+pass	a MULTI-argument op mixing a heap list and two scalars — the arm consumes all three
+pass	a multi-argument op with TWO heap arguments — a String key and a Map to search

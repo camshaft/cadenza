@@ -3627,6 +3627,101 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 88 Int64)))
 
+(case "an @ensures on a PERFORMING def called TWICE under one handler — both effectful results checked"
+  (doc    "The @ensures SURFACE face of the en1 class (the minimal let-if-inline shape is pinned
+           above; 26-program-conditions marks the multi-call face as future): a postcondition on a
+           performing def called twice under one handler — verify_enforce wraps each inline, both
+           effectful results check `(>= ret 100)`: f(5)=105, f(2)=103 → 208.")
+  (input  (do
+            (effect St (op bump (-> Unit Int64)))
+            (@ (ensures (>= ret 100)) (def (f (: x Int64)) (+ x (St.bump))))
+            (def (main (: n Int64))
+              (handle St 100
+                ((bump (u) s (resume s (+ s 1))))
+                (+ (f n) (f 2))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 208 Int64)))
+
+(case "an OPTION as op ARGUMENT — the arm matches Some/None it was handed, per dispatch"
+  (doc    "Option's ARGUMENT direction (results + state are pinned): body-built `(Some n)` and
+           `(None unit)` each ride into the arm, which matches — Some(5) → 50, None → -1 →
+           100·50 - 1 = 4999. The std-sum tag must survive the crossing per dispatch.")
+  (input  (do
+            (effect St (op weigh (-> (Option Int64) Int64)))
+            (def (main (: n Int64))
+              (handle St 0
+                ((weigh (o) s (resume (match o ((Some v) (* v 10)) ((None _u) -1)) s)))
+                (+ (* 100 (St.weigh (Some n)))
+                   (St.weigh (None unit)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 4999 Int64)))
+
+(case "a RESULT as op ARGUMENT — the arm branches on Ok/Err payloads it was handed"
+  (doc    "Result's ARGUMENT direction: `(Result.Ok n)` and `(Result.Err 7)` cross into the arm,
+           which branches — Ok(5) → 50, Err(7) → -7 → 100·50 - 7 = 4993. Completes the std-sum
+           pair's three effect positions.")
+  (input  (do
+            (effect St (op judge (-> (Result Int64 Int64) Int64)))
+            (def (main (: n Int64))
+              (handle St 0
+                ((judge (r) s (resume (match r ((Result.Ok v) (* v 10)) ((Result.Err e) (- 0 e))) s)))
+                (+ (* 100 (St.judge (Result.Ok n)))
+                   (St.judge (Result.Err 7)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 4993 Int64)))
+
+(case "a scrutinee FAILING the pattern reaches the catch-all WITHOUT running the guard's perform"
+  (doc    "The pattern-MISS soundness face of the refutable performing guard (the sibling pins test
+           guard-matches-then-false): a None scrutinee against `(guard (Some v) (> v (St.quota)))`
+           must reach the catch-all with the guard's perform NEVER evaluated — witnessed by a
+           post-match `St.quota` reading the UNADVANCED state: 100·99 + 5 = 9905. (The keep-the-match
+           hoist guarantees this; an if-only rewrite would have run the guard on the miss.)")
+  (input  (do
+            (effect St (op quota (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((quota (u) s (resume s (+ s 1))))
+                (+ (* 100 (match (None unit)
+                            ((guard (Some v) (> v (St.quota))) v)
+                            (_other 99)))
+                   (St.quota))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 9905 Int64)))
+
+(case "a MULTI-argument op mixing a heap list and two scalars — the arm consumes all three"
+  (doc    "Multi-argument op signatures are pinned scalar-only; here a `(List Int64)` crosses beside
+           two scalar INDICES into it — the arm indexes the list by both and measures it:
+           100·7 + 10·9 + 3 → 793. Positional integrity across a mixed heap/scalar marshal.")
+  (input  (do
+            (effect St (op pick (-> (List Int64) Int64 Int64 Int64)))
+            (def (main (: n Int64))
+              (handle St 0
+                ((pick (xs lo hi) s
+                  (resume (+ (* 100 (match (List.at xs lo) ((Some a) a) ((None _u) -1)))
+                             (+ (* 10 (match (List.at xs hi) ((Some b) b) ((None _u) -1)))
+                                (List.len xs)))
+                          s)))
+                (St.pick (list 7 n 9) 0 2)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 793 Int64)))
+
+(case "a multi-argument op with TWO heap arguments — a String key and a Map to search"
+  (doc    "Two heap values in ONE op signature (the lookup-service idiom): a rope-built String key
+           and a Map cross together; the arm looks the key up in the map it was handed —
+           10·5 + 2 → 52. Two independent heap handles must both survive the same marshal.")
+  (input  (do
+            (effect St (op find (-> String (Map String Int64) Int64)))
+            (def (main (: n Int64))
+              (handle St 0
+                ((find (k m) s
+                  (resume (+ (* 10 (match (Map.lookup m k) ((Some v) v) ((None _u) -1)))
+                             (Map.len m))
+                          s)))
+                (St.find (String.concat "k" "1")
+                         (Map.insert (Map.insert Map.empty "k1" n) "k2" 30))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 52 Int64)))
+
 ; ============ Guarded match × effects (breaker FINDING, ag5 → fixed #2333). A guarded match on a
 ; perform-result scrutinee whose FALLBACK arm also performs used to leak the fold-synthesized #seed
 ; binder as a false CDZ0101: the guard desugar's arm-body copy reparented a reused (shared) body
