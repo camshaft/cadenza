@@ -1914,13 +1914,27 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                     None => String::new(),
                 }
             } else if map_ty.has_free_var()
-                && let Some(exp) = &ctx.expected_ty
-                && matches!(exp, Ty::Map(_, _))
-                && !exp.has_free_var()
+                && let Some(exp @ Ty::Map(ek, _)) = &ctx.expected_ty
+                && !ek.has_free_var()
             {
-                // Empty `Map.empty` at a CALL-ARG position: annotate from the callee param's concrete `Map`
-                // type, not the default ground (the Set-twin of the empty-Set-at-call-arg E0308 fix).
-                match map_type_str(exp) {
+                // An empty `Map.empty` whose OWN type is open but whose KEY is fixed by the consuming
+                // context (`ek` solved), threaded here as `expected_ty`. Two shapes, one render:
+                //   (a) a CALL-ARG whose callee param is a concrete `Map` (value fully solved) — annotate it
+                //       directly (the Set-twin of the empty-Set-at-call-arg E0308 fix);
+                //   (b) a GET-ONLY lookup whose VALUE is fixed only by the downstream match-join, which may
+                //       leave a free INTERIOR (a nested `List Any` — breaker ms9-family ms13/ns1/ej*).
+                // Prefer the MODE-AWARE `map_type_str` (spells an async closure map VALUE as
+                // `Rc<dyn EnvClosure>` — a call-arg map of closures) — it succeeds when the value is fully
+                // solved (both shapes (a) and every concrete case). It DECLINES (None) on a free `Ty::Any`/
+                // `Var` interior (shape (b), a nested match-join `List Any`); THERE fall to `rust_type_holes`,
+                // which renders the solved OUTER shape (`Vec`/`BTreeSet`) with interior free vars as inference
+                // HOLES `_` — the outer shape satisfies rustc method resolution while `_` lets rustc solve the
+                // interior from the use (ms9 scalar → i64; ms13 → `Vec<i64>`; ns1 nested → `Vec<Vec<i64>>`).
+                // The old code grounded a free interior to the DEFAULT `i64`, under-approximating a nested
+                // value (`List Any` → wrongly `Vec<i64>` → E0308 at `.push(vec![..])`) — the miscompile-CLASS
+                // this fixes. Sound: a get-only empty-map lookup always MISSES (the `Some` arm is dead), and a
+                // concrete call-arg value is exact — a wrong OUTER shape errors LOUD at rustc, never silent.
+                match map_type_str(exp).or_else(|| types::rust_type_holes(exp)) {
                     Some(t) => format!(": {t}"),
                     None => String::new(),
                 }
@@ -1999,11 +2013,14 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             // so the artifact FAILS TO BUILD. A backend DIFFERENTIAL, not a runtime miscompile — wasm folds
             // the String key + runs correct (breaker ms9). RECONSTRUCT the map's type at this
             // lookup from the SOLVED evidence — the KEY's type (`key_ty`, here String) + this lookup's RESULT
-            // `Option<V>` payload (the map's value type) — then GROUND any still-open var (the value, fixed
-            // only by the match arms, grounds to the default like the plain empty-map path). Threading that
-            // as `expected_ty` makes `Core::MapNew` annotate `BTreeMap<String, i64>` — correct key, safely-
-            // grounded value (a wrong value ground still errors LOUDLY at rustc, never silently). Only when
-            // the map operand's own type is OPEN (a concrete map needs no hint) and the key type is concrete.
+            // `Option<V>` payload (the map's value type) — and thread it as `expected_ty`. The KEY is solved
+            // here (it IS the lookup key); the VALUE may still be a free var (fixed only by the downstream
+            // match-join — a List/Set/Map value, breaker ms9-family ms13/ms6/ns1/ej*). We do NOT ground a
+            // free value: `Core::MapNew` annotates the SOLVED key and leaves a free value an INFERENCE HOLE
+            // `_` (below), so rustc solves it from the use (ms9: value=i64; ms13: value=Vec<i64> via `.push`).
+            // Grounding a free value to the DEFAULT (i64) was wrong for a collection value (E0308 on the
+            // `Some`-arm vs the `None => vec![]` arm) — the miscompile-CLASS this reconstruction now fixes.
+            // Only when the map operand's own type is OPEN (a concrete map needs no hint) and key is concrete.
             let key_ty = type_of(db, key);
             let map_ty = type_of(db, map);
             // Reconstruct ONLY when the lookup result is EXACTLY `Option<V>` (the map's value type = V). If
@@ -2018,17 +2035,41 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 }
                 _ => None,
             };
-            let reconstructed = if map_ty.has_free_var()
-                && !key_ty.has_free_var()
-                && let Some(v) = val_ty
-            {
-                // GROUND any still-open var in the reconstructed `Map(key_ty, V)` — V is fixed only by the
-                // downstream match arms, invisible here, so it grounds to the default like the plain empty-map
-                // path (a wrong value ground still errors LOUDLY at rustc, never silently miscompiles).
-                Some(types::ground_open_vars(&Ty::Map(
-                    Box::new(key_ty.clone()),
-                    Box::new(v),
-                )))
+            let reconstructed = if map_ty.has_free_var() && !key_ty.has_free_var() {
+                match val_ty {
+                    // Result deviated from `Option<V>` — fail-loud, do NOT reconstruct (see above).
+                    None => None,
+                    Some(v) => {
+                        // The map's VALUE type. Prefer the SOLVED lookup-result payload `V`. When `V` is
+                        // still FREE (inference fixes it only through the DOWNSTREAM match-join, invisible at
+                        // this node — breaker ms9-family), use the consuming match's RESULT type, threaded
+                        // here as `expected_ty` by `Core::MatchSum`: the `Some` arm returns the payload into
+                        // that join, so the join type IS the value type. For ms9 the join is `Int64` (→ the
+                        // existing `BTreeMap<String, i64>`); for ms13/ms6/ns1/ej* it is a COLLECTION (`List`/
+                        // `Set`) → `BTreeMap<String, Vec<_>>`, which the old `ground_open_vars(free V)`→
+                        // default `i64` got WRONG (the `Some`-arm `i64` vs the `None => vec![]` `Vec`
+                        // mismatched: E0308 — the miscompile-CLASS this now fixes). The join's OUTER shape is
+                        // solved; an INTERIOR element may still be free (the join under-approximates a NESTED
+                        // value — `(list (list n))` gives the join only `List Any`, truly `List (List i64)`),
+                        // so we render interior free vars as inference HOLES `_` in `MapNew` (the outer shape
+                        // satisfies rustc method resolution; the `_` interior is solved from the actual use).
+                        // Sound: a `Map.empty` lookup always MISSES, so the `Some` arm is dead — a wrong outer
+                        // shape errors LOUD at rustc, never a runtime miscompile. A bare `Var`/`Any` hint
+                        // carries no shape → fall back to the free payload (grounded → the get-only default).
+                        let v_eff = if v.has_free_var() {
+                            ctx.expected_ty
+                                .as_ref()
+                                .filter(|t| !matches!(t, Ty::Var(_) | Ty::Any))
+                                .cloned()
+                                .unwrap_or(v)
+                        } else {
+                            v
+                        };
+                        // Do NOT ground here — a free interior stays free so `MapNew` renders it as a `_`
+                        // hole. (A fully-solved `v_eff` — the ms9 scalar / a solved collection — is untouched.)
+                        Some(Ty::Map(Box::new(key_ty.clone()), Box::new(v_eff)))
+                    }
+                }
             } else {
                 None
             };
@@ -2571,8 +2612,27 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             // of the `let` is the whole match, wrapped in a block. (A constant `SumNew` scrutinee folds in
             // `emit_sum_payload` against its payload nodes — no re-emit blow-up — so it needs no binding; only
             // a runtime non-trivial scrutinee does.)
+            // Thread the match's RESULT type down to the scrutinee as `expected_ty` — so a `Core::MapLookup`
+            // scrutinee `(Map.lookup m k)` over an empty `Map.empty` whose VALUE type is fixed only by THIS
+            // match-join (not at the lookup: its payload is a free `Var`) can reconstruct the map's value
+            // type from the join (breaker ms9-family ms13/ms6/ns1/ej*). Only when the result is solved (a
+            // free-var join gives no hint). Harmless to other scrutinee kinds (they ignore `expected_ty`).
+            // Thread down only when the result has a CONCRETE OUTER SHAPE — a bare top-level `Var`/`Any`
+            // gives no shape to reconstruct a map value from (and would just re-ground to the default), so
+            // skip it. An interior free var (`Set(Var)` / `List(Any)`: the element is fixed downstream) is
+            // FINE — the reconstruction grounds the interior (`ground_open_vars`) and the OUTER shape is
+            // exactly what avoids the E0282 that a bare `_` value hole would raise.
+            let match_result = type_of(db, id);
+            let scrut_ctx = if matches!(match_result, Ty::Var(_) | Ty::Any) {
+                None
+            } else {
+                let mut c = ctx.clone();
+                c.expected_ty = Some(match_result);
+                Some(c)
+            };
+            let scrut_emit_ctx = scrut_ctx.as_ref().unwrap_or(ctx);
             if scrutinee_needs_materialize(db, scrutinee) {
-                let sv = emit(db, scrutinee, env, ctx)?;
+                let sv = emit(db, scrutinee, env, scrut_emit_ctx)?;
                 let local = format!("__ms{}", scrutinee.0);
                 let mut c = ctx.clone();
                 c.scrut_locals.push((scrutinee, local.clone()));

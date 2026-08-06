@@ -1242,6 +1242,87 @@ fn an_empty_map_get_only_with_a_solved_string_key_annotates_string_not_the_defau
 }
 
 #[test]
+fn an_empty_map_lookup_whose_value_is_a_collection_annotates_the_solved_join_not_the_default() {
+    // REGRESSION (breaker ms9-family, the COLLECTION-VALUED face — ms13/ms6/ns1/ej*): a let-bound
+    // `Map.empty` used GET-ONLY, whose lookup RESULT is a `match` returning a COLLECTION (`(Some ys) ys`
+    // beside `(None _u) (list)`), so the map's VALUE type is `List Int64` — but at the `Map.lookup` node
+    // the lookup-result payload is still a FREE `Var` (inference fixes it only through the DOWNSTREAM
+    // match-join, invisible at the node). The OLD ms9 reconstruction `ground_open_vars`'d that free value
+    // to the DEFAULT `i64`, emitting `BTreeMap<String, i64>` → the `Some`-arm `i64` clashed with the
+    // `None => vec![]` `Vec` arm: rust E0308 (the artifact FAILS TO BUILD — a backend DIFFERENTIAL, wasm
+    // folds + runs correct). The fix threads the consuming `Core::MatchSum`'s SOLVED result type down to
+    // the lookup as `expected_ty`, so the reconstruction uses the join's OUTER shape (`List _` → `Vec<_>`)
+    // for the map value, rendering the interior element as an inference HOLE `_`: `BTreeMap<String, Vec<_>>`
+    // — the outer `Vec` satisfies rustc method resolution and `_` lets rustc solve the element (i64) from
+    // the `.push(n)` use. Both arms are `Vec<_>`, compiles. Sound because a `Map.empty` lookup always
+    // MISSES (the `Some` arm is dead) — a wrong OUTER shape errors LOUD at rustc, never a runtime miscompile.
+    let m = compile_rust(
+        "(module m (def (main (: n Int64)) \
+           (let ((m Map.empty)) \
+             (let ((xs (match (Map.lookup m \"k\") ((Some ys) ys) ((None _u) (list))))) \
+               (List.len (List.push xs n))))) (export main))",
+    );
+    assert!(
+        m.contains("BTreeMap<String, Vec<_>>"),
+        "the collection-valued empty-map lookup annotates the SOLVED join OUTER shape (Vec<_>, element \
+         holed for rustc to infer), not the default i64:\n{m}"
+    );
+    // e2e: compiles + runs to 1 (lookup misses → None arm → empty list → push n → len 1), matching wasm.
+    let driver = "fn main() { println!(\"{}\", prog::main(7)); }";
+    if let Some(out) = rustc_run_driver(&m, driver) {
+        assert_eq!(
+            out, "1",
+            "empty-map lookup misses → None arm's empty list gets one push → len 1:\n{m}"
+        );
+    }
+}
+
+#[test]
+fn an_empty_map_lookup_whose_value_is_a_set_or_nested_list_holes_the_interior_element() {
+    // The Set-valued + NESTED-list-valued faces of the same ms9-family collection-join fix. The map's
+    // VALUE join has a SOLVED OUTER shape (`Set _` / `List (List _)`) but a FREE interior element (fixed
+    // only downstream). The fix renders the outer shape with interior INFERENCE HOLES `_` — the outer
+    // `BTreeSet`/`Vec` satisfies rustc method resolution while `_` lets rustc solve the interior from the
+    // use. Grounding the interior to the DEFAULT `i64` under-approximated the NESTED value (`List Any` →
+    // wrongly `Vec<i64>` → E0308 at `.push(vec![..])`), which is why the hole (not a ground) is required.
+    // Set value: (Some ys) ys beside (None _) (Set.of (list)) → BTreeSet<_>, then Set.insert n → size 1.
+    let s = compile_rust(
+        "(module m (def (main (: n Int64)) \
+           (let ((m Map.empty)) \
+             (let ((xs (match (Map.lookup m \"k\") ((Some ys) ys) ((None _u) (Set.of (list)))))) \
+               (Set.len (Set.insert xs n))))) (export main))",
+    );
+    assert!(
+        s.contains("BTreeMap<String, std::collections::BTreeSet<_>>"),
+        "the Set-valued empty-map lookup annotates BTreeSet<_> (outer shape, holed element):\n{s}"
+    );
+    if let Some(out) = rustc_run_driver(&s, "fn main() { println!(\"{}\", prog::main(7)); }") {
+        assert_eq!(
+            out, "1",
+            "empty-map miss → None arm's empty set + one insert → size 1:\n{s}"
+        );
+    }
+    // Nested list value: push a `(list n)` into the join list → the value is `List (List Int64)`. The
+    // join only sees `List Any` (the empty `(list)` None arm), so the ELEMENT must be a hole, not i64.
+    let nested = compile_rust(
+        "(module m (def (main (: n Int64)) \
+           (let ((m Map.empty)) \
+             (let ((xs (match (Map.lookup m \"k\") ((Some ys) ys) ((None _u) (list))))) \
+               (List.len (List.push xs (list n)))))) (export main))",
+    );
+    assert!(
+        nested.contains("BTreeMap<String, Vec<_>>"),
+        "the nested-list-valued empty-map lookup HOLES the element (Vec<_>), not Vec<i64>:\n{nested}"
+    );
+    if let Some(out) = rustc_run_driver(&nested, "fn main() { println!(\"{}\", prog::main(7)); }") {
+        assert_eq!(
+            out, "1",
+            "empty-map miss → None arm's empty list + one nested push → len 1:\n{nested}"
+        );
+    }
+}
+
+#[test]
 fn a_bare_float_set_or_map_key_uses_the_cdz_f64_total_order_wrapper() {
     // A bare `Float` Set element / Map key is NOT `Ord` as a raw `f64` (NaN breaks totality), so it maps to
     // the `CdzF64` total-order wrapper (bit-canonical, NaN→one quiet NaN — the runtime's `box-float`). The

@@ -397,6 +397,68 @@ pub(super) fn is_flip_order_option_key_shallow(ty: &Ty) -> bool {
 /// `new()` (a build failure the gate records as `todo`), never a silent miscompile. So grounding is
 /// strictly safer than the bare `new()` (which E0282s for EVERY open case) and correct for the int-typed
 /// majority. Only the OPEN vars are grounded — a partially-solved `(Map Int64 Var)` grounds just the value.
+/// Render `ty` as a Rust type spelling exactly like [`rust_type`], EXCEPT a free type variable
+/// (`Ty::Var`/`Ty::Any`) renders as the inference HOLE `_` (instead of failing, as `rust_type` does).
+/// Used to annotate an empty collection whose OUTER shape is solved but whose INTERIOR element type is
+/// fixed only by later use — e.g. a get-only `Map.empty` whose value type the downstream match-join
+/// pins to `List <var>` (breaker ms9-family ms13/ns1): the outer `Vec` satisfies rustc's method
+/// resolution (so `.push` / `.clone` on the value resolve) while the `_` element lets rustc solve the
+/// interior from the actual use — strictly better than grounding the interior to the DEFAULT `i64`,
+/// which under-approximates a nested value (`List (List i64)` → wrongly `Vec<i64>` → E0308 at `.push`).
+/// A concrete leaf renders as itself; a compound recurses. `None` only if a NON-var component has no rep
+/// (a float Map key, a closure in sync-map position) — the same decline surface as `rust_type`.
+pub(super) fn rust_type_holes(ty: &Ty) -> Option<String> {
+    match ty {
+        Ty::Var(_) | Ty::Any => Some("_".to_string()),
+        Ty::List(e) => Some(format!("Vec<{}>", rust_type_holes(e)?)),
+        Ty::Set(e) => Some(format!(
+            "std::collections::BTreeSet<{}>",
+            ord_key_type_holes(e)?
+        )),
+        Ty::Map(k, v) => Some(format!(
+            "std::collections::BTreeMap<{}, {}>",
+            ord_key_type_holes(k)?,
+            rust_type_holes(v)?
+        )),
+        Ty::Tuple(elems) => {
+            let mut parts = Vec::with_capacity(elems.len());
+            for e in elems.iter() {
+                parts.push(rust_type_holes(e)?);
+            }
+            Some(if parts.len() == 1 {
+                format!("({},)", parts[0])
+            } else {
+                format!("({})", parts.join(", "))
+            })
+        }
+        // A non-compound (scalar/text/sum/nominal/…) has no interior collection var to hole out — spell
+        // it exactly as `rust_type` (a free var in a sum ARG is rare here and rust_type declines it, the
+        // same fail-loud floor).
+        _ => rust_type(ty),
+    }
+}
+
+/// The ord-key twin of [`rust_type_holes`]: an ord-key position (a Set element / Map key) renders a free
+/// var as `_` and otherwise defers to [`ord_key_type`] (the `__CdzF*`/`__CdzOpt` wrapper spellings). A
+/// key is almost always solved (it IS the lookup key), but a NESTED key inside a holed value (a
+/// `Map String (Set <var>)`) recurses here for the inner set element.
+fn ord_key_type_holes(ty: &Ty) -> Option<String> {
+    match ty {
+        Ty::Var(_) | Ty::Any => Some("_".to_string()),
+        Ty::List(e) => Some(format!("Vec<{}>", rust_type_holes(e)?)),
+        Ty::Set(e) => Some(format!(
+            "std::collections::BTreeSet<{}>",
+            ord_key_type_holes(e)?
+        )),
+        Ty::Map(k, v) => Some(format!(
+            "std::collections::BTreeMap<{}, {}>",
+            ord_key_type_holes(k)?,
+            rust_type_holes(v)?
+        )),
+        _ => ord_key_type(ty),
+    }
+}
+
 pub(super) fn ground_open_vars(ty: &Ty) -> Ty {
     match ty {
         Ty::Var(_) | Ty::Any => Ty::int64(),
