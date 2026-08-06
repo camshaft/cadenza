@@ -21,6 +21,7 @@
 
 use crate::admin::{AdminAuthorizer, AdminCommand, AdminResponse, AllowList, SessionFactory};
 use crate::host::{AgentHost, SessionId};
+use crate::lifecycle::{LifecycleChannel, LifecycleOp};
 use cdz_kernel::effect::Payload;
 use cdz_kernel::event::{ContentType, EventBody};
 use cdz_kernel::hash::Hash;
@@ -104,6 +105,45 @@ async fn bounce_delivery_failure(
     }
 }
 
+/// Drain + APPLY the lifecycle ops a session's [`LifecycleExecutor`](crate::LifecycleExecutor) recorded
+/// during a `deliver` (§lifecycle I5 defer-to-loop). Called after each loop iteration's deliver, where
+/// `&mut host` is free (the executor couldn't mutate the registry from inside `perform`). Drains
+/// synchronously (`try_recv` — the ops were produced on this same task, nothing to await).
+///
+/// `Terminate` → [`AgentHost::terminate`](crate::AgentHost::terminate) (append the durable `Terminated`
+/// marker + remove from the registry). `Some(Ok(_))` = terminated; `Some(Err(FoldRefused))` = the target
+/// was already terminated (benign double-terminate); `None` = no such session (benign — already gone). A
+/// REAL `KernelError` (not `FoldRefused`) is corruption → propagate (fail fast, like the deliver arm).
+///
+/// The `by` on the op is the controller's SessionId string, which IS its genesis-hash-HEX (operator ruling).
+/// The durable `Terminated{by}` marker wants the controller's actual genesis `Hash` — so PARSE the hex back
+/// with `Hash::from_hex` (round-trips the id to the real Hash), NOT `Hash::of` (which would HASH the hex TEXT
+/// → a different Hash no consumer/authz could match against the controller's identity). A non-hex SessionId
+/// (a test/legacy string id, not a genesis hash) can't round-trip → fall back to `Hash::of` of its bytes (a
+/// stable opaque tag; those ids aren't real genesis hashes anyone matches against anyway).
+async fn apply_lifecycle_ops(
+    host: &mut AgentHost,
+    lifecycle_rx: &mut mpsc::UnboundedReceiver<LifecycleOp>,
+) -> Result<(), KernelError> {
+    while let Ok(op) = lifecycle_rx.try_recv() {
+        match op {
+            LifecycleOp::Terminate { target, by, reason } => {
+                let by_hash =
+                    Hash::from_hex(by.as_str()).unwrap_or_else(|| Hash::of(by.as_str().as_bytes()));
+                match host.terminate(&target, by_hash, reason).await {
+                    // Terminated, or a benign no-op (already-terminated FoldRefused / absent None) — nothing
+                    // more to do; the durable marker (if fresh) + registry removal are done inside terminate.
+                    Some(Ok(_)) | Some(Err(KernelError::FoldRefused)) | None => {}
+                    // A real kernel error on the target's terminate-append is corruption — fail fast, same
+                    // as the deliver arm (a reducer fault would be a FoldFailed event, not a KernelError).
+                    Some(Err(e)) => return Err(e),
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// One admin command routed to the host loop with a reply channel — the in-process half of the admin
 /// CONTROL INTERFACE. A producer (the future Unix-socket listener, or a test) sends this on the
 /// [`AdminChannel`]; the loop applies it via [`AgentHost::apply_admin`] on the single-threaded loop task
@@ -155,6 +195,15 @@ pub struct AsyncAgentHost {
     /// an un-configured control plane grants nothing). The deployed daemon installs a real authorizer via
     /// [`with_admin_authz`](Self::with_admin_authz) (the local-admin allowlist, or later a Cedar policy).
     admin_authz: Box<dyn AdminAuthorizer>,
+    /// The `lifecycle/*` op receiver (§lifecycle I5): a session's [`LifecycleExecutor`](crate::LifecycleExecutor)
+    /// RECORDS an op here (it can't mutate the registry from inside `perform` — the registry is borrowed for
+    /// the session being driven), and the loop DRAINS + APPLIES it after each `deliver` (where `&mut host` is
+    /// free — the defer-to-loop mechanism, same shape as `pending_admin`). Paired with the
+    /// [`LifecycleChannel`] sender handed to each session's executor via [`lifecycle_channel`](Self::lifecycle_channel).
+    lifecycle_rx: mpsc::UnboundedReceiver<LifecycleOp>,
+    /// Retained sender for the lifecycle channel — cloned to each session's [`LifecycleExecutor`]. The loop
+    /// drops its own copy at start (like `tx`/`admin_tx`) so the channel closes when the last executor drops.
+    lifecycle_tx: LifecycleChannel,
 }
 
 impl AsyncAgentHost {
@@ -190,6 +239,7 @@ impl AsyncAgentHost {
     ) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
         let (admin_tx, admin_rx) = mpsc::unbounded_channel();
+        let (lifecycle_tx, lifecycle_rx) = mpsc::unbounded_channel();
         AsyncAgentHost {
             host,
             rx,
@@ -198,7 +248,17 @@ impl AsyncAgentHost {
             admin_tx,
             factory,
             admin_authz,
+            lifecycle_rx,
+            lifecycle_tx,
         }
+    }
+
+    /// A cloneable [`LifecycleChannel`] sender to hand each session's [`LifecycleExecutor`](crate::LifecycleExecutor)
+    /// (§lifecycle I5): the executor records `lifecycle/terminate` ops on it, and the loop drains + applies
+    /// them after each `deliver`. Wire it into a session's executor set at spawn/install (with that session's
+    /// id as the `owner`), the way the `Emit` executor gets [`inbox`](Self::inbox).
+    pub fn lifecycle_channel(&self) -> LifecycleChannel {
+        self.lifecycle_tx.clone()
     }
 
     /// A cloneable sender to feed inbound events into the loop. Every producer that wants to deliver to a
@@ -258,12 +318,19 @@ impl AsyncAgentHost {
             admin_tx,
             mut factory,
             admin_authz,
+            mut lifecycle_rx,
+            lifecycle_tx,
         } = self;
 
         // Drop OUR retained inbox sender so the channel closes once every EXTERNAL producer drops its clone.
         // Otherwise `tx` would keep it open forever and `rx.recv()` would never return `None` — the loop
         // could only ever exit via `shutdown`. (Producers get their senders from `inbox()` BEFORE `run`.)
         drop(tx);
+        // Same for the lifecycle channel: drop our retained sender so the receiver isn't kept open by the
+        // loop itself (each session's LifecycleExecutor holds its own clone from `lifecycle_channel()`). We
+        // DRAIN lifecycle_rx synchronously (try_recv) after each deliver rather than select! on it — a
+        // lifecycle op is only ever produced BY a deliver on this same task, so there's nothing to wait for.
+        drop(lifecycle_tx);
         // Same for the admin channel: drop our retained sender so `admin_rx.recv()` yields `None` once the
         // last external admin producer (the socket listener) drops its clone. The admin channel closing is
         // NOT a loop-exit condition on its own (an admin-less run still serves inbound + timers) — a closed
@@ -405,6 +472,12 @@ impl AsyncAgentHost {
                 )
                 .await;
             }
+
+            // Apply any lifecycle ops a session's LifecycleExecutor recorded during this iteration's deliver
+            // (§lifecycle I5 defer-to-loop): the executor couldn't mutate the registry from inside `perform`
+            // (registry borrowed for the driven session), so it enqueued the op here — now `&mut host` is
+            // free. Drained synchronously (the ops were produced on THIS task, so there's nothing to await).
+            apply_lifecycle_ops(&mut host, &mut lifecycle_rx).await?;
         }
     }
 
@@ -594,6 +667,27 @@ mod tests {
     /// An EMITTER agent (cross-session messaging, sender half): on an inbound "trigger" it performs an
     /// `Emit` effect to a fixed peer session id, carrying a fixed message payload. `target` is the raw peer
     /// SessionId string (the wire contract); the emit is fire-and-forget (the result folds to nothing).
+    /// On "go", performs a `lifecycle/terminate` targeting `victim` (the peer-control path, §lifecycle I5).
+    struct TerminatorAgent {
+        victim: String,
+    }
+    #[async_trait::async_trait(?Send)]
+    impl Reducer for TerminatorAgent {
+        async fn fold(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+            match &event.body {
+                EventBody::Inbound { .. } => {
+                    FoldOutput::with(vec![EffectRequest::new_with_family(
+                        effect_ct::LIFECYCLE_TERMINATE,
+                        self.victim.clone(),
+                        Some(Payload::Inline(b"kill".to_vec().into())),
+                        Timeliness::Interactive,
+                    )])
+                }
+                _ => FoldOutput::none(),
+            }
+        }
+    }
+
     struct EmitterAgent {
         peer: String,
         message: Vec<u8>,
@@ -826,6 +920,75 @@ mod tests {
             .expect("a stray external inbound is a clean no-op, not a loop error");
         // The live session is untouched (it was never addressed); nothing bounced anywhere.
         assert!(host.contains(&SessionId::new("live")));
+    }
+
+    #[tokio::test]
+    async fn lifecycle_terminate_e2e_controller_terminates_a_peer_through_the_loop() {
+        // §lifecycle I5 slice-3 E2E (defer-to-loop): a controller session performs lifecycle/terminate(victim)
+        // → its LifecycleExecutor records the op on the lifecycle channel + returns Ok(None) → the loop drains
+        // the op AFTER the controller's deliver + drives AgentHost::terminate → the victim is marked Terminated
+        // + removed from the registry. Proves the executor→channel→loop-apply path end to end.
+        let mut async_host = AsyncAgentHost::new(AgentHost::new());
+        // The victim: an ordinary session (deny-all authz is fine; it performs nothing).
+        async_host.host_mut().spawn(
+            SessionId::new("victim"),
+            HostedSession::genesis(
+                Hash::of(b"victim-v1"),
+                Box::new(MarkAgent),
+                Box::new(Authorizer::deny_all()),
+                CompositeExecutor::new(),
+            ),
+        );
+        // The CONTROLLER: a LifecycleExecutor over THIS loop's lifecycle channel (owner = "controller"),
+        // authorized to lifecycle/terminate the victim. Fetched after wrapping (the channel lives on the loop).
+        let controller = HostedSession::genesis(
+            Hash::of(b"controller-v1"),
+            Box::new(TerminatorAgent {
+                victim: "victim".to_string(),
+            }),
+            // lifecycle/* is a register-by-string family (no dedicated EffectKind) → grant it via a
+            // FAMILY grant (Capability::for_family), not a kind-based Capability. Authorized to
+            // lifecycle/terminate exactly the victim.
+            Box::new(
+                Authorizer::new(vec![]).with_family_grants(vec![Capability::for_family(
+                    effect_ct::LIFECYCLE_TERMINATE,
+                    ResourcePredicate::Exact("victim".into()),
+                )]),
+            ),
+            CompositeExecutor::new().with_effect(
+                effect_ct::LIFECYCLE_TERMINATE,
+                Box::new(crate::LifecycleExecutor::new(
+                    async_host.lifecycle_channel(),
+                    SessionId::new("controller"),
+                )),
+            ),
+        );
+        async_host
+            .host_mut()
+            .spawn(SessionId::new("controller"), controller);
+
+        let inbox = async_host.inbox();
+        let (_sd_tx, sd_rx) = tokio::sync::oneshot::channel();
+        // Trigger the controller → it emits lifecycle/terminate(victim). Drop inbox → loop drains + returns.
+        inbox
+            .send(Inbound {
+                session: SessionId::new("controller"),
+                body: go(),
+                cause: None,
+                reply_to: None,
+            })
+            .unwrap();
+        drop(inbox);
+        let host = async_host
+            .run(sd_rx, || 0)
+            .await
+            .expect("clean shutdown, no kernel error");
+        assert!(
+            !host.contains(&SessionId::new("victim")),
+            "the victim was terminated + removed from the registry via lifecycle/terminate through the loop"
+        );
+        // The controller itself is untouched (it terminated a PEER, not itself).
+        assert!(host.contains(&SessionId::new("controller")));
     }
 
     /// A timer agent: arms a timer at `deadline_ms` on "go"; records "woke" when it fires (PR#1303 fix).
