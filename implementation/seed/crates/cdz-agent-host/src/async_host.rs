@@ -492,6 +492,130 @@ mod tests {
             .expect("shutdown returns Ok");
     }
 
+    /// An EMITTER agent (cross-session messaging, sender half): on an inbound "trigger" it performs an
+    /// `Emit` effect to a fixed peer session id, carrying a fixed message payload. `target` is the raw peer
+    /// SessionId string (the wire contract); the emit is fire-and-forget (the result folds to nothing).
+    struct EmitterAgent {
+        peer: String,
+        message: Vec<u8>,
+    }
+    #[async_trait::async_trait(?Send)]
+    impl Reducer for EmitterAgent {
+        async fn fold(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+            match &event.body {
+                EventBody::Inbound { .. } => {
+                    FoldOutput::with(vec![EffectRequest::new_with_family(
+                        effect_ct::EMIT,
+                        self.peer.clone(),
+                        Some(Payload::Inline(self.message.clone().into())),
+                        Timeliness::Interactive,
+                    )])
+                }
+                _ => FoldOutput::none(),
+            }
+        }
+    }
+
+    /// A RECEIVER agent (cross-session messaging, target half): folds an inbound `message` (the routed peer
+    /// signal) into KV under `inbox` — the observable state change proving the message arrived + was folded.
+    struct ReceiverAgent;
+    #[async_trait::async_trait(?Send)]
+    impl Reducer for ReceiverAgent {
+        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+            if let EventBody::Inbound {
+                content_type,
+                payload: Payload::Inline(bytes),
+            } = &event.body
+            {
+                if content_type.matches_family("message") {
+                    kv.put(b"inbox".to_vec(), bytes.to_vec());
+                }
+            }
+            FoldOutput::none()
+        }
+    }
+
+    #[tokio::test]
+    async fn cross_session_emit_routes_a_message_from_a_to_b() {
+        // THE cross-session messaging E2E (operator's "next"): session A emits to B → the host EmitExecutor
+        // routes the signal → it lands as an Inbound in B → B folds it into KV.
+        //
+        // Driven DIRECTLY (not under the full AsyncAgentHost loop): the loop routes an Inbound by dequeuing
+        // it from the shared Inbox and calling `deliver` on the target — the trivial glue that
+        // `two_sessions_interleave_on_one_loop` already covers. Here the test plays that role so completion
+        // is deterministic (a fire-and-forget loop has no clean "done" signal — the EmitExecutor's retained
+        // Inbox clone keeps the channel open). What's exercised REALLY: A's full turn
+        // (deliver→fold→emit→authorize→dispatch via the REAL EmitExecutor), the EmitExecutor's routing (it
+        // constructs the peer Inbound + sends it on the real Inbox), and B's real fold of the routed message.
+        let (tx, mut rx) = mpsc::unbounded_channel::<Inbound>();
+
+        // A: EmitterAgent → emits to B on its trigger, dispatched by the REAL EmitExecutor over `tx`.
+        // AUTHORIZED to Emit exactly to B (the kernel gates the emit before dispatch, SEC-F1 — an un-granted
+        // target would be DENIED, and this proves the AUTHORIZED path).
+        let mut a = HostedSession::genesis(
+            Hash::of(b"emitter-v1"),
+            Box::new(EmitterAgent {
+                peer: "session-b".to_string(),
+                message: b"hello-from-a".to_vec(),
+            }),
+            Box::new(Authorizer::new(vec![Capability {
+                kind: EffectKind::Emit,
+                predicate: ResourcePredicate::Exact("session-b".into()),
+            }])),
+            CompositeExecutor::new().with_effect(
+                effect_ct::EMIT,
+                Box::new(crate::EmitExecutor::new(tx.clone())),
+            ),
+        );
+        // B: ReceiverAgent → folds the routed message into KV. Performs no effects (deny-all authz is fine).
+        let mut b = HostedSession::genesis(
+            Hash::of(b"receiver-v1"),
+            Box::new(ReceiverAgent),
+            Box::new(Authorizer::deny_all()),
+            CompositeExecutor::new(),
+        );
+
+        // Drive A's turn: inbound trigger → A folds → emits Emit(target=session-b) → authorized → the
+        // EmitExecutor routes a peer Inbound onto `tx`. A's turn runs to completion (the emit's Ok(None)
+        // result folds to nothing — fire-and-forget).
+        a.deliver(go(), None)
+            .await
+            .expect("A runs its turn (fold → emit → authorized → routed) without a kernel error");
+        assert_eq!(
+            a.open_effects(),
+            0,
+            "A's emit dispatched + its Ok(None) result folded back"
+        );
+
+        // The EmitExecutor routed exactly one peer Inbound, addressed to B with family "message" + A's
+        // payload verbatim — the routing contract.
+        let routed = rx
+            .try_recv()
+            .expect("A's Emit routed a peer Inbound onto the inbox");
+        assert_eq!(
+            routed.session.as_str(),
+            "session-b",
+            "routed to the target peer session"
+        );
+        drop(tx); // no more producers; the channel is now empty (exactly one message routed)
+        assert!(
+            rx.try_recv().is_err(),
+            "exactly one message routed (no spurious extra)"
+        );
+
+        // Deliver the routed Inbound to B (the loop's routing step) → B folds it.
+        b.deliver(routed.body, routed.cause)
+            .await
+            .expect("B folds the routed peer message without a kernel error");
+
+        // B received A's message end to end: A.Emit → EmitExecutor route → B.Inbound → B folds → KV.
+        assert_eq!(
+            b.session().kv().get(b"inbox"),
+            Some(&b"hello-from-a"[..]),
+            "B's reducer folded the message A emitted (cross-session messaging works end to end)"
+        );
+    }
+
     /// A timer agent: arms a timer at `deadline_ms` on "go"; records "woke" when it fires (PR#1303 fix).
     struct TimerAgent {
         deadline_ms: u64,
