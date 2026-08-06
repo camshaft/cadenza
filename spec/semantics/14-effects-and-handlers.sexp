@@ -9085,6 +9085,102 @@
   (call   main (: 5 Int64))
   (trap   "unreachable"))
 
+(case "a satisfied @ensures on a performing def passes the effectful result through"
+  (doc    "The postcondition side of the contract × effects pair (the @requires pins are above): the
+           `@ensures (>= ret 100)` wrapper checks the EFFECT-DERIVED result — f 5 = 5 + bump(100) =
+           105, satisfying — and passes it through unchanged (105). Single call; the multi-call face
+           is the open let-perform × branching-condition fold bug tracked separately.")
+  (input  (do
+            (effect St (op bump (-> Unit Int64)))
+            (@ (ensures (>= ret 100)) (def (f (: x Int64)) (+ x (St.bump))))
+            (def (main (: n Int64))
+              (handle St 100
+                ((bump (u) s (resume s (+ s 1))))
+                (f n)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 105 Int64)))
+
+(case "a VIOLATED @ensures on a performing def traps at body-exit"
+  (doc    "The violated face: `(>= ret 1000)` fails against the effect-derived 105, so the injected
+           body-exit check traps — postcondition enforcement works when the result came through a
+           resume rather than pure arithmetic.")
+  (input  (do
+            (effect St (op bump (-> Unit Int64)))
+            (@ (ensures (>= ret 1000)) (def (f (: x Int64)) (+ x (St.bump))))
+            (def (main (: n Int64))
+              (handle St 100
+                ((bump (u) s (resume s (+ s 1))))
+                (f n)))
+            (export main)))
+  (call   main (: 5 Int64))
+  (trap   "unreachable"))
+
+(case "a STACKED @requires + @ensures contract on a performing def threads all three layers"
+  (doc    "The full Hoare triple × effects: precondition check (satisfied), effectful body (the bump
+           resumes 100), postcondition check (105 >= 100, satisfied) — pre + perform + post all thread
+           and the contract-checked effectful result returns (105).")
+  (input  (do
+            (effect St (op bump (-> Unit Int64)))
+            (@ (requires (>= x 0))
+            (@ (ensures (>= ret 100))
+               (def (f (: x Int64)) (+ x (St.bump)))))
+            (def (main (: n Int64))
+              (handle St 100
+                ((bump (u) s (resume s (+ s 1))))
+                (f n)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 105 Int64)))
+
+(case "the stacked contract's PRE fires through the @ensures layer BEFORE the perform (abortive observer)"
+  (doc    "Composes the descent-through-annotation-layers guarantee (the @requires reaches the def
+           through the intervening @ensures wrapper) with OBSERVABLE check-before-perform ordering:
+           the bump arm ABORTS with 999, so if the perform ran before the (violated) precondition
+           check, the program would return 999 — the trap proves the pre fires first, through the
+           stack.")
+  (input  (do
+            (effect St (op bump (-> Unit Int64)))
+            (@ (requires (>= x 0))
+            (@ (ensures (>= ret 100))
+               (def (f (: x Int64)) (+ x (St.bump)))))
+            (def (main (: n Int64))
+              (handle St 100
+                ((bump (u) s 999))
+                (f (- 0 n))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (trap   "unreachable"))
+
+(case "a @test-tier @ensures on a performing def runs and checks"
+  (doc    "The three-layer annotation stack — `@test` → `@ensures` → a performing def — threads: the
+           test-tier postcondition checks the effect-derived 105 and passes it through. Completes the
+           annotation-tier crossings with effects (plain and @test-tier contracts both compose).")
+  (input  (do
+            (effect St (op bump (-> Unit Int64)))
+            (@ test (@ (ensures (>= ret 100)) (def (f (: x Int64)) (+ x (St.bump)))))
+            (def (main (: n Int64))
+              (handle St 100
+                ((bump (u) s (resume s (+ s 1))))
+                (f n)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 105 Int64)))
+
+(case "an @invariant newtype is constructed from PERFORM results"
+  (doc    "The invariant-type × effects cross: a `Percent` (0..100 @invariant) built from two perform
+           results at advancing state — mk(42) and mk(43), both satisfying — unwrapped and summed
+           (85). The invariant machinery (the synthesized checker) and the effect fold compose when
+           the checked value originates from a handler.")
+  (input  (do
+            (effect St (op next (-> Unit Int64)))
+            (@ (invariant (and (>= self 0) (<= self 100))) (type Percent (Pct Int64)))
+            (def (mk (: v Int64)) (Percent.Pct v))
+            (def (unwrap (: p Percent)) (match p (((. Percent Pct) n) n)))
+            (def (main (: n Int64))
+              (handle St 42
+                ((next (u) s (resume s (+ s 1))))
+                (+ (unwrap (mk (St.next))) (unwrap (mk (St.next))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 85 Int64)))
+
 (case "an ABORTING arm derives its answer from an Ast op-arg and discards the continuation"
   (doc    "The abort composition of the Ast op-arg: the arm never resumes, so the handle's value IS the
            arm's — `(Int64.of b)` on the node's BigInt payload plus the state — and the continuation's

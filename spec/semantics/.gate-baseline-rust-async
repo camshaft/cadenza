@@ -507,6 +507,7 @@ pass	a @requires predicate that references `ret` is REJECTED CDZ0101 — only @e
 pass	a @requires relating TWO heap params enforces the zip precondition at runtime
 pass	a @requires-guarded def PERFORMS in its body — contract check and effect specialization compose
 pass	a @test-stacked @requires+@ensures def keeps full contract enforcement for a direct call
+pass	a @test-tier @ensures on a performing def runs and checks
 pass	a BARE (unqualified) constructor pattern over an abstract proof type outside the kernel is also a withheld-constructor rejection
 pass	a BARE pattern on a withheld constructor is rejected like the qualified spelling (encapsulation soundness)
 pass	a BASE-N conversion round-trips one value through three runtime radices
@@ -917,6 +918,7 @@ pass	a SOLE RECORD closure ARG crosses the direct-call boundary
 pass	a SPLIT on separator slices fields between hits and round-trips through the pinned JOIN
 pass	a STABLE DEDUP keeps first occurrences in input order via a seen-Set threaded through the fold
 pass	a STACK-MACHINE interpreter dispatches instruction sums over a list operand stack
+pass	a STACKED @requires + @ensures contract on a performing def threads all three layers
 pass	a STALLED counter makes all Set.of perform results collide to a singleton
 pass	a STATS record threads min/max/sum/count as one fold accumulator with data-dependent field updates
 pass	a STRING run-length grouping counts adjacent equal scalars across a rope seam
@@ -1031,6 +1033,7 @@ pass	a Unit.* at the wrong arity is rejected
 pass	a Unit.^ at the wrong arity is rejected
 pass	a Unit.of named with a non-symbol value is rejected
 pass	a VARIABLE catch-all arm binds the whole runtime scrutinee as a Bytes value
+pass	a VIOLATED @ensures on a performing def traps at body-exit
 pass	a VIOLATED @ensures traps when the def arrives through a runtime branch
 pass	a VIOLATED @requires traps at body-entry BEFORE the body's perform fires
 pass	a WIDE integer literal pattern (beyond ±2^31) matches a runtime scrutinee by equality
@@ -3211,6 +3214,7 @@ pass	a same-name variant of a multi-variant sum constructs bare in a body
 pass	a same-scrutinee re-match whose inner arm set OMITS the refined variant falls to the inner default
 pass	a same-type sum match is accepted and binds the payload (the control)
 pass	a same-unit quantity join flows and its magnitude reads back
+pass	a satisfied @ensures on a performing def passes the effectful result through
 pass	a scalar Ast.Int built in a helper from a runtime param compares = a constant Ast.Int
 pass	a scalar BETWEEN two Tuple args with a LIST result
 pass	a scalar Int64 match nested as an op operand beside an i32-handle sibling emits valid wasm
@@ -3777,6 +3781,7 @@ pass	an @ensures predicate that itself traps keeps its own trap kind (not the @e
 pass	an @ensures relating the RESULT to a PARAM over heap values enforces growth
 pass	an @invariant newtype REBUILT through a chain of constructor calls re-establishes each time
 pass	an @invariant newtype constructed INSIDE a handler arm establishes per resume
+pass	an @invariant newtype is constructed from PERFORM results
 pass	an ABORTING arm applies the CLOSURE STATE for its final answer
 pass	an ABORTING arm derives its answer from an Ast op-arg and discards the continuation
 pass	an ABORTIVE arm whose value is a COMPOUND matches the handle body type and folds
@@ -5512,6 +5517,7 @@ pass	the shrinking search terminates via its fuel bound rather than searching un
 pass	the sign of ZERO propagates through multiply and add per IEEE at runtime
 pass	the slice overflow guard holds on a chained slice-of-a-slice
 pass	the span between two equal Instants is zero — the inclusive lower boundary of `since`
+pass	the stacked contract's PRE fires through the @ensures layer BEFORE the perform (abortive observer)
 pass	the swap and take value-yielding forms agree with insert and remove on the resulting map
 pass	the taken arm's checked add still overflows under the operator hoist
 pass	the tautology fold keeps a trapping shared operand
