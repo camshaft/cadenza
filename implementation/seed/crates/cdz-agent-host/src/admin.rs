@@ -7,12 +7,15 @@
 //! data-only [`AdminCommand`] an admin issues, an [`AdminResponse`] the daemon returns, and
 //! [`AgentHost::apply_admin`] which applies one command against the live registry. It is DELIBERATELY
 //! transport-free (no socket, no serialization) so the command semantics are hermetically testable; the
-//! Unix-domain-socket listener that carries these frames is the next slice, and the Cedar `admin/*`
-//! authorization of each command (deny-by-default, uniform with effect authz) is the slice after.
+//! Unix-domain-socket listener that carries these frames lives in [`admin_socket`](crate::admin_socket)
+//! (behind the `admin` feature), and the Cedar `admin/*` authorization of each command (deny-by-default,
+//! uniform with effect authz) is the [`AdminAuthorizer`] seam every command is gated through — both landed.
 //!
 //! **The install seam ([`SessionFactory`]).** Installing a session means building a [`HostedSession`] —
 //! which needs a *reducer*, and building a reducer FROM a [`reducer_hash`](InstallSpec::reducer_hash)
-//! means loading its wasm component (v-agent-harness's genesis-from-hash path, not yet wired here). So the
+//! means loading its wasm component (blob-get → lift → assemble — wired in the real
+//! [`ComponentSessionFactory`](crate::ComponentSessionFactory), which also completes the genesis
+//! authorizer-from-hash ceremony). So the
 //! command layer does not build sessions itself: it delegates to a caller-supplied [`SessionFactory`]. The
 //! real daemon supplies a factory that loads the reducer component + assembles the live executor set + the
 //! policy-derived authorizer; a test supplies a stub factory returning a canned session. This is what lets
