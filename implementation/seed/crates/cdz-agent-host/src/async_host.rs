@@ -39,6 +39,17 @@ const DELIVERY_FAILURE_FAMILY: &str = "delivery-failure";
 /// v1 of the delivery-failure wire.
 const DELIVERY_FAILURE_VERSION: u32 = 1;
 
+/// Backpressure ceiling for the suspend HOLD buffer (§lifecycle I4 / #2452 Copilot c2). Suspend is
+/// SHORT-LIVED BY CONTRACT — a supervisor suspends a session to inspect/migrate/throttle it, not to park
+/// it indefinitely — so the held-inbound buffer is bounded in normal operation. But nothing STRUCTURALLY
+/// bounded it: the inbox is unbounded, so a misbehaving/long-suspend target with live producers could grow
+/// `held_inbound` without limit → host OOM. This cap makes the bound explicit + DEFENSIVE: once a single
+/// loop's held buffer reaches it, the loop SHEDS the oldest held message (bouncing it if it was a
+/// cross-session Emit, so the sender learns; dropping a producer-less external inbound) rather than
+/// accumulate unboundedly. A generous ceiling — a healthy short suspension never approaches it; hitting it
+/// signals a stuck-suspended target or a flooding producer, both of which shedding + the warn surface.
+const HELD_INBOUND_CAP: usize = 4096;
+
 /// One inbound delivery to route to a session: its id + the event body + optional cause. The `Inbox`
 /// sender clones cheaply, so many producers (network listeners, peer-emit bridges, a test) can feed the
 /// one loop.
@@ -370,7 +381,9 @@ impl AsyncAgentHost {
         let mut pending_admin: Option<AdminRequest> = None;
         // Inbound HELD because its target session is suspended (§lifecycle I4): not delivered, not dropped —
         // replayed when the target resumes (drained after each apply_lifecycle_ops, which may have resumed
-        // it). A bounded buffer in practice (only accumulates while a target is suspended).
+        // it). Bounded by `HELD_INBOUND_CAP` at the push site (#2452 c2): suspend is short-lived by contract,
+        // so it stays small in practice, and the cap defends against an OOM if a target stays suspended under
+        // live producers (shed-oldest-with-bounce at the ceiling).
         let mut held_inbound: Vec<Inbound> = Vec::new();
         loop {
             // Both producer channels closed → nothing can ever drive the loop again → return (unless a timer
@@ -418,6 +431,29 @@ impl AsyncAgentHost {
                             // deliver, don't drop — a drop is a lossy correctness hole) — it replays when the
                             // session resumes (drained below, after apply_lifecycle_ops may have resumed it).
                             if host.is_suspended(&msg.session) {
+                                // Backpressure (#2452 Copilot c2): the hold buffer is bounded in practice
+                                // (suspend is short-lived by contract), but the inbox is unbounded — so cap it
+                                // defensively. At the ceiling, SHED THE OLDEST held message rather than grow
+                                // without bound (OOM guard): bounce it if it was a cross-session Emit (the
+                                // sender learns via a delivery-failure — not a silent loss), else drop a
+                                // producer-less external inbound. Warn so an operator sees a stuck-suspended
+                                // target / flooding producer.
+                                if held_inbound.len() >= HELD_INBOUND_CAP {
+                                    let shed = held_inbound.remove(0);
+                                    tracing::warn!(
+                                        target_session = %shed.session.as_str(),
+                                        cap = HELD_INBOUND_CAP,
+                                        "held-inbound buffer at cap — shedding the oldest held message (suspend is meant to be short-lived; a stuck-suspended target or flooding producer hit the ceiling)"
+                                    );
+                                    if let Some(sender) = shed.reply_to.clone() {
+                                        let payload = bounce_echo_payload(&shed.body);
+                                        bounce_delivery_failure(
+                                            &mut host, &sender, &shed.session, payload,
+                                            "held-inbound buffer overflow while target suspended (shed oldest)",
+                                        )
+                                        .await?;
+                                    }
+                                }
                                 held_inbound.push(msg);
                                 continue;
                             }
@@ -930,6 +966,23 @@ mod tests {
         }
     }
 
+    /// COUNTS `delivery-failure` bounces (§lifecycle I4 cap test): appends one byte to KV["bounces"] per
+    /// bounce folded, so a test asserts HOW MANY shed messages bounced (len = count), not just that one did.
+    struct BounceCounter;
+    #[async_trait::async_trait(?Send)]
+    impl Reducer for BounceCounter {
+        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+            if let EventBody::Inbound { content_type, .. } = &event.body {
+                if content_type.matches_family("delivery-failure") {
+                    let mut acc = kv.get(b"bounces").map(|v| v.to_vec()).unwrap_or_default();
+                    acc.push(1);
+                    kv.put(b"bounces".to_vec(), acc);
+                }
+            }
+            FoldOutput::none()
+        }
+    }
+
     #[tokio::test]
     async fn an_emit_to_an_absent_target_bounces_a_delivery_failure_to_the_sender() {
         // §lifecycle I5 bounce: an Inbound produced by a cross-session Emit (reply_to = the sender) whose
@@ -1177,6 +1230,78 @@ mod tests {
             cause: None,
             reply_to: None,
         }
+    }
+
+    #[tokio::test]
+    async fn held_inbound_buffer_sheds_oldest_with_a_bounce_at_the_cap() {
+        // §lifecycle I4 / #2452 Copilot c2: the hold buffer is BOUNDED (HELD_INBOUND_CAP). Flooding a
+        // suspended target past the cap sheds the OLDEST held message rather than growing unbounded, and
+        // (since these are cross-session Emits carrying reply_to) BOUNCES each shed message to its sender —
+        // not a silent loss. Drive: suspend the victim, then send CAP+N Emit-shaped inbounds for it; the
+        // loop holds CAP and sheds+bounces the N oldest; the sender folds N bounces.
+        const OVER: usize = 3; // how many past the cap to send
+        let mut host = AgentHost::new();
+        // The SENDER records every delivery-failure bounce it folds (counts them via appending a byte).
+        host.spawn(
+            SessionId::new("sender"),
+            HostedSession::genesis(
+                Hash::of(b"bounce-counter-v1"),
+                Box::new(BounceCounter),
+                Box::new(Authorizer::deny_all()),
+                CompositeExecutor::new(),
+            ),
+        );
+        // The victim: suspended below so all its inbound is held.
+        host.spawn(
+            SessionId::new("victim"),
+            HostedSession::genesis(
+                Hash::of(b"receiver-v1"),
+                Box::new(ReceiverAgent),
+                Box::new(Authorizer::deny_all()),
+                CompositeExecutor::new(),
+            ),
+        );
+        host.suspend(&SessionId::new("victim")); // suspend BEFORE running → all victim inbound is held
+        let async_host = AsyncAgentHost::new(host);
+        let inbox = async_host.inbox();
+        let (_sd_tx, sd_rx) = tokio::sync::oneshot::channel();
+        // Flood CAP + OVER Emit-shaped inbounds for the suspended victim, each carrying the sender as
+        // reply_to (a cross-session Emit) so a shed message bounces.
+        for i in 0..(HELD_INBOUND_CAP + OVER) {
+            inbox
+                .send(Inbound {
+                    session: SessionId::new("victim"),
+                    body: EventBody::Inbound {
+                        content_type: ContentType {
+                            family: "message".into(),
+                            version: 1,
+                        },
+                        payload: Payload::Inline(vec![i as u8].into()),
+                    },
+                    cause: None,
+                    reply_to: Some(SessionId::new("sender")),
+                })
+                .unwrap();
+        }
+        drop(inbox);
+        let host = async_host
+            .run(sd_rx, || 0)
+            .await
+            .expect("clean shutdown, no kernel error");
+
+        // The victim is still suspended + never folded anything (all held); the sender folded exactly OVER
+        // bounces — the OVER oldest messages shed at the cap, each bounced (not silently lost).
+        assert!(host.is_suspended(&SessionId::new("victim")));
+        assert_eq!(
+            host.get(&SessionId::new("sender"))
+                .unwrap()
+                .session()
+                .kv()
+                .get(b"bounces")
+                .map(|v| v.len()),
+            Some(OVER),
+            "the OVER oldest held messages shed at the cap each bounced to the sender (bounded, not silent-loss)"
+        );
     }
 
     #[tokio::test]
