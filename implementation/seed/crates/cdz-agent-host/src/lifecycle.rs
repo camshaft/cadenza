@@ -124,10 +124,22 @@ impl Executor for LifecycleExecutor {
                 }
             };
             LifecycleOp::Terminate { target, by, reason }
-        } else if is_suspend {
-            LifecycleOp::Suspend { target, by }
         } else {
-            LifecycleOp::Resume { target, by }
+            // suspend / resume take NO payload (they flip a scheduler bit — there's no reason string to
+            // carry). A caller that attaches one is a structural mistake: reject PERMANENT rather than
+            // silently drop it, mirroring terminate's Blob guard (#2452 Copilot c3 — suspend/resume were
+            // building their op WITHOUT reading req.payload, so a payload, esp. a Blob ref, vanished silently
+            // — the exact inconsistency terminate's exhaustive match guards against).
+            if req.payload.is_some() {
+                return EffectOutcome::Err(crate::retry::permanent(format!(
+                    "LifecycleExecutor: {family} takes no payload (it flips a scheduler bit); drop the payload"
+                )));
+            }
+            if is_suspend {
+                LifecycleOp::Suspend { target, by }
+            } else {
+                LifecycleOp::Resume { target, by }
+            }
         };
         match self.channel.send(op) {
             Ok(()) => EffectOutcome::Ok(None),
@@ -241,6 +253,41 @@ mod tests {
             panic!("expected a Resume op");
         };
         assert_eq!(target.as_str(), "victim");
+    }
+
+    #[tokio::test]
+    async fn suspend_or_resume_with_a_payload_is_a_permanent_error() {
+        // #2452 Copilot c3: suspend/resume take NO payload (they flip a scheduler bit). A caller-attached
+        // payload (esp. a Blob ref) must be rejected PERMANENT, not silently dropped — mirroring terminate's
+        // payload guard, the inconsistency the finding flagged.
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut exec = LifecycleExecutor::new(tx, SessionId::new("ctl"));
+        for family in [effect_ct::LIFECYCLE_SUSPEND, effect_ct::LIFECYCLE_RESUME] {
+            // Inline payload → PERMANENT.
+            let inline = EffectRequest::new_with_family(
+                family,
+                "victim".to_string(),
+                Some(Payload::Inline(b"unexpected".to_vec().into())),
+                Timeliness::Interactive,
+            );
+            assert!(
+                matches!(&exec.perform(&inline, Hash::of(b"k")).await,
+                    EffectOutcome::Err(r) if r.starts_with("PERMANENT:") && r.contains("takes no payload")),
+                "{family} with an inline payload is PERMANENT"
+            );
+            // Blob-ref payload → PERMANENT (the specific silent-drop the finding called out).
+            let blob = EffectRequest::new_with_family(
+                family,
+                "victim".to_string(),
+                Some(Payload::Blob(Hash::of(b"some-blob"))),
+                Timeliness::Interactive,
+            );
+            assert!(
+                matches!(&exec.perform(&blob, Hash::of(b"k")).await,
+                    EffectOutcome::Err(r) if r.starts_with("PERMANENT:") && r.contains("takes no payload")),
+                "{family} with a blob-ref payload is PERMANENT (no silent drop)"
+            );
+        }
     }
 
     #[tokio::test]
