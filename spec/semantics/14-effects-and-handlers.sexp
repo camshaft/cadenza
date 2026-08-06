@@ -2066,8 +2066,8 @@
 ; perform-result scrutinee whose FALLBACK arm also performs used to leak the fold-synthesized #seed
 ; binder as a false CDZ0101: the guard desugar's arm-body copy reparented a reused (shared) body
 ; without the seed-lift let, stranding the reference. The fix pins reused guarded-match arm bodies
-; at desugar entry (and drops the blanket forget). These five pin the served class: the repro, the
-; guard-TRUE runtime path, both single-machinery controls, and the multi-guard chain. The composed
+; at desugar entry (and drops the blanket forget). These four pin the served class: the repro, the
+; guard-TRUE runtime path, the performing-guard-CONDITION position, and the multi-guard chain. The composed
 ; face — a guard FALLBACK containing a two-site multi-perform arm — is a separate machinery
 ; composition that declines cleanly (guard-desugar copy × two-hole refold). ============
 
@@ -8237,6 +8237,117 @@
             (export main)))
   (call   main (: 21 Int64))
   (output (: 42 Int64)))
+
+(case "a TWO-site arm over a Qty state gates on the unwrapped magnitude"
+  (doc    "The two-site refold face of the Qty-state family above: the arm's branch condition reads the
+           op ARGUMENT (`(> v 10)`), the pass path folds the unwrapped state into its answer and
+           advances by re-wrap (`(Qty.of (+ (Qty.value s) 1) meter)`), the fail path holds. feed 20 →
+           20+5 = 25 (state 6m), feed 3 → 0, feed 30 → 30+6 = 36 → 2536. Pins the served multi-site
+           family over a UNIT-CARRYING state — the erased-unit representation must survive the
+           refold's continuation rebuild on both branches.")
+  (input  (do
+            (effect Acc (op feed (-> Int64 Int64)))
+            (def (main (: a Int64))
+              (handle Acc (Qty.of a (Unit.base #"meter"))
+                ((feed (v) s (if (> v 10) (resume (+ v (Qty.value s)) (Qty.of (+ (Qty.value s) 1) (Unit.base #"meter"))) (resume 0 s))))
+                (+ (* 100 (Acc.feed 20)) (+ (* 10 (Acc.feed 3)) (Acc.feed 30)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 2536 Int64)))
+
+(case "a TWO-site arm over a BigInt state (heap-scalar state through the refold)"
+  (doc    "The heap-scalar sibling of the Qty two-site pin above: the state is a BigInt (`(BigInt.of
+           a)`), advanced with BigInt arithmetic (`(+ s 1N)`) on the pass path and read back through
+           `Int64.of` in the resume value. Same walk: 25, 0, 36 → 2536. With the Qty face, pins that
+           the refold's state threading is representation-agnostic — boxed heap scalars behave as
+           machine ints do.")
+  (input  (do
+            (effect Acc (op feed (-> Int64 Int64)))
+            (def (main (: a Int64))
+              (handle Acc (BigInt.of a)
+                ((feed (v) s (if (> v 10) (resume (+ v (Int64.of s)) (+ s 1N)) (resume 0 s))))
+                (+ (* 100 (Acc.feed 20)) (+ (* 10 (Acc.feed 3)) (Acc.feed 30)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 2536 Int64)))
+
+(case "a RECORD handler state — the arm projects one field and rebuilds the record"
+  (doc    "Record-typed handler state (the state-family pins cover scalar/sum/collection/closure; this
+           adds the product): the arm answers with a projection (`(. s count)`) and advances by
+           REBUILDING the record with one field bumped and the other carried (`(record (count …+1)
+           (tag (. s tag)))`). hit → 5 (count becomes 6), hit → 6 → 56. A dropped or reordered field
+           in the rebuild breaks the checksum.")
+  (input  (do
+            (effect St (op hit (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St (record (count n) (tag 7))
+                ((hit (u) s (resume (. s count) (record (count (+ (. s count) 1)) (tag (. s tag))))))
+                (+ (* 10 (St.hit)) (St.hit))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 56 Int64)))
+
+(case "an OPEN-ROW helper projects from the record state INSIDE the arm"
+  (doc    "Row polymorphism under the fold: `get-count` is typed OPEN over extra fields (`(. r count)`
+           only), and the arm calls it on the state — a row-poly instantiation happening inside
+           handler machinery. Same walk as the direct-projection pin above (56); the helper must
+           instantiate at the state's record shape when the arm body is folded, not resolve against
+           a stale row.")
+  (input  (do
+            (effect St (op hit (-> Unit Int64)))
+            (def (get-count r) (. r count))
+            (def (main (: n Int64))
+              (handle St (record (count n) (tag 7))
+                ((hit (u) s (resume (get-count s) (record (count (+ (get-count s) 1)) (tag 9)))))
+                (+ (* 10 (St.hit)) (St.hit))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 56 Int64)))
+
+(case "a two-site arm gates on a PROJECTED field of the record state (rate limiter)"
+  (doc    "The refold × record-projection composition — the rate-limiter idiom whole: the branch
+           condition compares two projected fields (`(< (. s hits) (. s cap))`), the pass path
+           rebuilds with hits+1, the fail path answers -1 and holds. cap 2: feed 7 → 7 (hits 1),
+           feed 8 → 8 (hits 2), feed 9 → -1 (limit) → 779. The projection in CONDITION position
+           and the rebuild across both branches compose with the two-hole refold.")
+  (input  (do
+            (effect St (op feed (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle St (record (hits 0) (cap n))
+                ((feed (v) s
+                  (if (< (. s hits) (. s cap))
+                    (resume v (record (hits (+ (. s hits) 1)) (cap (. s cap))))
+                    (resume -1 s))))
+                (+ (* 100 (St.feed 7)) (+ (* 10 (St.feed 8)) (St.feed 9)))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 779 Int64)))
+
+(case "a two-site arm branches on SYMBOL equality of the state"
+  (doc    "The interned-symbol face of the served multi-site family: the condition is `(= s (Symbol.of
+           \"loud\"))` — an O(1) symbol identity check against the state binder. Both reads take the
+           loud path at seed \"loud\": 500 + 300 = 800. Extends the refold's condition coverage to
+           Symbol-typed states (the mode-dispatch handler idiom's read half).")
+  (input  (do
+            (effect St (op emit (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle St (Symbol.of "loud")
+                ((emit (v) s (if (= s (Symbol.of "loud")) (resume (* v 100) s) (resume v s))))
+                (+ (St.emit n) (St.emit 3))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 800 Int64)))
+
+(case "a mode-REPLACING arm swaps the Symbol state; a conditional-value arm reads it"
+  (doc    "The write half of the mode-dispatch idiom: `flip` REPLACES the Symbol state (`loud` →
+           `quiet`) while `emit` answers conditionally on it (single resume site — the branch is in
+           the VALUE, not around the resume). emit 5 loud → 500, flip → 0 (mode quiet), emit 3
+           quiet → 3 → 503. Pins a symbol-valued state transition observed by a later dispatch.
+           (The two-site-branch × mode-replacing composition in ONE handler still declines — the
+           open second-op family.)")
+  (input  (do
+            (effect St (op emit (-> Int64 Int64)) (op flip (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St (Symbol.of "loud")
+                ((emit (v) s (resume (if (= s (Symbol.of "loud")) (* v 100) v) s))
+                 (flip (u) s (resume 0 (Symbol.of "quiet"))))
+                (+ (St.emit n) (+ (St.flip) (St.emit 3)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 503 Int64)))
 
 ; --- Effects micro-family: positional op-arg binding, per-slot ctor-element ordering, the SET
 ; constructor's dedup-of-results, stateful nested-handler isolation, and a growing Bytes-rope
