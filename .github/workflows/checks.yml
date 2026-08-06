@@ -325,16 +325,24 @@ jobs:
     # the cedar + reducer guests as content-addressed nix derivations, AND it additionally RUNS the genesis
     # round-trip E2E (env-wired). So this is a pure body-swap: keep the job NAME (advisory context
     # `checks / cdz-agent-host` unchanged — verified NOT in ruleset 10560470's 10 required, so no ruleset edit;
-    # a red can't block merge), swap cold→cache-warm. x86 (ubuntu-latest, unchanged) so it frees the SAME x86
-    # runner slot that contends with the required jobs' queue (v-ft's queue-wait finding: freeing x86 slots is
-    # the real time-to-merge lever, not the arm64 one C freed). Same pattern as clippy/test/codegen (#2171).
-    runs-on: ubuntu-latest
+    # a red can't block merge), swap cold→cache-warm.
+    #
+    # 🪤 AARCH64 (ubuntu-24.04-arm), NOT x86: the genesis round-trip E2E this check runs resolves the genesis
+    # reducer's `cadenza:runtime/heap` dep BY CONTENT HASH from CDZ_STORE, and the value-heap runtime's content
+    # hash is per-arch non-deterministic (LTO lays core/alloc out host-dependently — the same reason gate/codegen/
+    # cad-tests are all aarch64). On x86 the reducer's baked heap-hash MISSES the x86-built store runtime →
+    # `BlobMissing` panic (observed: #2350 candidate, hash 39358be4…). So this check MUST run on the arch its
+    # recorded runtime hash was reproduced on (aarch64). That forfeits the x86-queue-lever ambition — this is
+    # an arm64 runner-cost win (15.8m cold→warm, like cad-tests), not the x86 slot-freer — but correctness first:
+    # a per-arch-hash-resolving check can't run cross-arch. (The old hand-wired x86 job SKIPPED genesis — no
+    # reducer env — so it never hit this; the swap RUNS genesis, which needs aarch64.)
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@v22
       - uses: ./.github/actions/nix-store-cache
       - name: cdz-agent-host test + clippy + fmt + feature matrix + genesis e2e (via nix)
-        run: nix build .#checks.x86_64-linux.cdz-agent-host-native --print-build-logs
+        run: nix build .#checks.aarch64-linux.cdz-agent-host-native --print-build-logs
 
   rcdzc-wasm:
     # The Cadenza COMPILER as a WASM artifact (implementation/seed/crates/rcdzc-wasm, v-agent-harness
