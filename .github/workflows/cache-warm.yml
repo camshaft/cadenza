@@ -31,10 +31,16 @@ concurrency:
   group: cache-warm
   cancel-in-progress: false
 
-# Least-privilege, matching ci.yml/pages: this job only READS the repo + reads/writes the GHA cache (the
-# cache API works under contents:read — the actions: scope gates workflow-RUN management, not cache r/w).
+# Least-privilege: this job READS the repo + reads/writes the GHA cache (cache r/w works under contents:read)
+# AND needs `actions: write` to DELETE caches — the purge step (which GCs the prior seed-compiler drv's c2 key
+# each rotation so the drv-keyed caches don't accumulate one-per-90min) calls the cache-DELETE REST endpoint,
+# which is gated on the `actions` scope (NOT contents). Without it the purge fails `HttpError: Resource not
+# accessible by integration` and stale c2-*-seed-<drv> keys pile up → GHA's 10GB repo cap evict-thrashes the
+# x86 warm caches. cache-warm is the ONLY workflow that purges (checks.yml jobs run on candidate branches where
+# the default-branch-gated purge is a no-op, so they stay contents:read).
 permissions:
   contents: read
+  actions: write
 
 env:
   CARGO_INCREMENTAL: "0"
