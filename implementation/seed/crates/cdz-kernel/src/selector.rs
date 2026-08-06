@@ -277,4 +277,80 @@ mod tests {
             other => panic!("expected Unrouted under an empty selector, got {other:?}"),
         }
     }
+
+    // A rule with BOTH matchers set is an AND: the artifact's kind must match EXACTLY *and* its name must
+    // start with the prefix. Pins the documented AND semantics (SelectorRule doc + `matches`) — a future
+    // change that flipped it to OR would let one matcher alone route, silently mis-sinking artifacts.
+    // Here: the AND rule (kind==wasm AND name starts "out/") sinks ONLY the artifact satisfying both; a
+    // wasm with a non-matching name and a non-wasm with a matching name both FALL THROUGH to the catch-all.
+    #[test]
+    fn a_rule_with_both_kind_and_name_prefix_matches_only_when_both_hold() {
+        let sel = Selector {
+            rules: vec![
+                SelectorRule {
+                    kind: Some("wasm".into()),
+                    name_prefix: Some("out/".into()),
+                    sink: Sink::Cas { name: None },
+                },
+                SelectorRule {
+                    kind: None,
+                    name_prefix: None,
+                    sink: Sink::SessionResponse,
+                },
+            ],
+        };
+        let routed = sel
+            .route(vec![
+                artifact("wasm", "out/a", &[1]), // both hold → CAS
+                artifact("wasm", "keep", &[2]), // kind holds, prefix does NOT → falls through to session
+                artifact("diag", "out/b", &[3]), // prefix holds, kind does NOT → falls through to session
+            ])
+            .expect("routes");
+        assert_eq!(
+            routed.cas,
+            vec![(artifact("wasm", "out/a", &[1]), None)],
+            "only the artifact satisfying BOTH matchers is CAS-routed"
+        );
+        assert_eq!(
+            routed.session,
+            vec![artifact("wasm", "keep", &[2]), artifact("diag", "out/b", &[3])],
+            "an artifact satisfying only ONE matcher must NOT match the AND rule — it falls through"
+        );
+    }
+
+    // Direct unit of `SelectorRule::matches` AND-truth-table (the routing primitive): both-set matches
+    // only on (kind AND prefix); each single-miss is false; both-absent is the catch-all (always true).
+    #[test]
+    fn selector_rule_matches_is_a_strict_and_over_present_matchers() {
+        let both = SelectorRule {
+            kind: Some("wasm".into()),
+            name_prefix: Some("out/".into()),
+            sink: Sink::SessionResponse,
+        };
+        assert!(
+            both.matches(&artifact("wasm", "out/a", &[])),
+            "kind✓ prefix✓ → true"
+        );
+        assert!(
+            !both.matches(&artifact("wasm", "keep", &[])),
+            "kind✓ prefix✗ → false"
+        );
+        assert!(
+            !both.matches(&artifact("diag", "out/a", &[])),
+            "kind✗ prefix✓ → false"
+        );
+        assert!(
+            !both.matches(&artifact("diag", "keep", &[])),
+            "kind✗ prefix✗ → false"
+        );
+        let catch_all = SelectorRule {
+            kind: None,
+            name_prefix: None,
+            sink: Sink::SessionResponse,
+        };
+        assert!(
+            catch_all.matches(&artifact("anything", "whatever", &[])),
+            "both matchers absent → catch-all (always true)"
+        );
+    }
 }
