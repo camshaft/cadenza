@@ -487,6 +487,19 @@ pub enum ResourcePredicate {
     HostIn(Vec<std::sync::Arc<str>>),
     /// Target must start with this prefix (e.g. a command allow-list, a path/repo scope).
     Prefix(std::sync::Arc<str>),
+    /// Target (a SessionId = genesis hash) must be a transitive `Spawned`-DESCENDANT of `controller`
+    /// (§lifecycle supervision-tree authority, I6). This is a DECLARATIVE MARKER only: the kernel cannot
+    /// compute the descendant set here — [`admits`](Self::admits) has no access to the session registry
+    /// (it's a per-session, replay-deterministic check called during `deliver` while the registry is
+    /// borrowed; walking the live spawn tree at authorize-time would also be §4b replay-unsafe). So this
+    /// arm always [`admits`] FALSE (fail-closed); the HOST enforces the real relation by FREEZING the
+    /// controller's transitive descendant-set into a concrete predicate (a [`OneOf`](Self::OneOf) of the
+    /// descendant SessionIds) at `set_authorizer` time — it has the registry + re-bakes on each new
+    /// `Spawned` edge, so the frozen set is a replay-safe snapshot. The `controller` hash rides the wire
+    /// (manifest codec) as its hex so a discovery reader can see WHICH controller a `lifecycle/*` grant is
+    /// scoped under, even though the kernel's own `admits` never green-lights it. Locked shape with
+    /// v-agent-harness-host (option-a): kernel = inert marker + wire vocab, host = the tree-walk.
+    DescendantOf(Hash),
 }
 
 impl ResourcePredicate {
@@ -506,6 +519,10 @@ impl ResourcePredicate {
                 None => false, // unparseable target → deny (fail closed)
             },
             ResourcePredicate::Prefix(p) => target.starts_with(p.as_ref()),
+            // A DECLARATIVE MARKER (I6): the kernel has no registry here to walk the spawn tree, so this
+            // fails closed — the host re-bakes it into a concrete OneOf(descendant-set) at set_authorizer
+            // time (see the variant doc). A `DescendantOf` grant that reaches `admits` unfrozen denies.
+            ResourcePredicate::DescendantOf(_) => false,
         }
     }
 }
@@ -1295,6 +1312,35 @@ mod tests {
         let bad = EffectRequest::new(EffectKind::Shell, "rm -rf /", None, Timeliness::Interactive);
         assert!(cap.permits(&ok));
         assert!(!cap.permits(&bad));
+    }
+
+    #[test]
+    fn descendant_of_is_an_inert_marker_that_admits_nothing_in_the_kernel() {
+        // I6 supervision-tree authority: the kernel's admits() has no registry to walk the spawn tree, so a
+        // DescendantOf predicate FAILS CLOSED here — it admits NO target, whatever the controller or target.
+        // (The host re-bakes it into a concrete OneOf(descendant-set) at set_authorizer time; unfrozen, it
+        // must never green-light a lifecycle/* effect — that's the fail-closed safety of the marker.)
+        let controller = Hash::of(b"controller-session");
+        let pred = ResourcePredicate::DescendantOf(controller);
+        // Neither the controller itself, nor an arbitrary would-be descendant, nor an empty target is admitted.
+        assert!(
+            !pred.admits(&controller.to_hex()),
+            "not even the controller itself"
+        );
+        assert!(!pred.admits(&Hash::of(b"some-child").to_hex()));
+        assert!(!pred.admits(""));
+        // A lifecycle/* family-grant carrying an unfrozen DescendantOf therefore permits nothing.
+        let grant = Capability::for_family(effect_ct::LIFECYCLE_TERMINATE, pred);
+        let req = EffectRequest::new_with_family(
+            effect_ct::LIFECYCLE_TERMINATE,
+            Hash::of(b"some-child").to_hex(),
+            None,
+            Timeliness::Interactive,
+        );
+        assert!(
+            !grant.permits(&req),
+            "an unfrozen DescendantOf grant admits no lifecycle target in the kernel"
+        );
     }
 
     // ---- host-capability-discovery I1: manifest projection by probing --------------------------------
