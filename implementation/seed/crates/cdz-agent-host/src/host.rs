@@ -303,13 +303,18 @@ impl HostedSession {
         &self.session
     }
 
-    /// This session's GENESIS HASH — the content hash of its genesis event ([`Session::genesis_hash`]),
-    /// derived from the reducer hash + the genesis events. This is the host's canonical SessionId primitive:
-    /// the operator ruled a session's identity IS its genesis-hash-hex (a content hash with entropy —
-    /// distinct even for two sessions over the SAME reducer, since their genesis events differ), which the
-    /// naming layer resolves a name to (name → genesis-hash = the SessionId directly, so cross-session
-    /// routing needs no separate hash→id map — the resolved hash-hex is the routable id). A caller
-    /// assigns/validates a [`SessionId`] against `hex(this)`.
+    /// This session's GENESIS HASH — the content hash of its genesis event ([`Session::genesis_hash`], =
+    /// `log[0].hash()`). This is the host's canonical SessionId primitive: the operator ruled a session's
+    /// identity IS its genesis-hash-hex, which the naming layer resolves a name to (name → genesis-hash =
+    /// the SessionId directly, so cross-session routing needs no separate hash→id map — the resolved hash-hex
+    /// is the routable id). A caller assigns/validates a [`SessionId`] against `hex(this)`.
+    ///
+    /// ⚠️ NOT per-session-unique TODAY: the genesis event carries the reducer hash ALONE (no spawn entropy),
+    /// so two sessions over the SAME reducer produce the SAME genesis_hash — a SessionId COLLISION under the
+    /// identity ruling (see `genesis_hash_of_two_same_reducer_sessions_collides_uniqueness_gap`, which PINS
+    /// that collision). Making it per-session-unique is the documented fix path (spawn-time entropy in the
+    /// genesis event, per the operator's "hash of spawn-time + entropy" instinct — greenlit, owned by
+    /// v-agent-harness's kernel seam), NOT current behavior.
     pub fn genesis_hash(&self) -> Hash {
         self.session.genesis_hash()
     }
