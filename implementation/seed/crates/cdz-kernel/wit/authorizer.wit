@@ -50,6 +50,16 @@ interface types {
     // This is the SEC-F1 security-relevant string — a policy admits/denies on principal×action×target.
     // (Named `target`, not `resource`: `resource` is a reserved WIT keyword — component-model resources.)
     target: string,
+    // The STRUCTURED SUBJECT of a subject-scoped effect — a SECOND resource dimension, NOT opaque body.
+    // For a group membership op (`store/add`/`store/remove`) the `target` is the GROUP NAME and this is the
+    // MEMBER VALUE (a SessionId hex); it lets a policy express the §directory-D5 self-vs-other rule
+    // (add/remove SELF where `subject == principal` is allowed by the join grant; add/remove OTHER requires
+    // the group's owner authority). `none` for effects with no structured subject (http/model/shell/…, and
+    // `store/set`/`store/resolve`, whose security-relevant string is fully captured by `target`). This does
+    // NOT admit general effect BODY into the authz decision — SEC-F1 still gates on (principal, action,
+    // target); `subject` is a typed, effect-derived identity the kernel extracts (e.g. by decoding a
+    // member-op payload), not arbitrary caller bytes. Additive + optional, so existing policies ignore it.
+    subject: option<string>,
   }
 
   // The policy's verdict. `allow` = permit the effect (proceed to dispatch); otherwise deny, carrying a

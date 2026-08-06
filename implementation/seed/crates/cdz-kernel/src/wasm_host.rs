@@ -3376,6 +3376,29 @@ fn async_guest_kind_to_public(
 /// does — a Cedar policy set compiled to a component (built by v-agent-harness-host) is the intended
 /// guest; construction here is guest-agnostic (any component exporting the `authorizer` world works).
 ///
+/// The STRUCTURED SUBJECT of a subject-scoped effect, for the `auth-request.subject` field (§directory-D5) —
+/// `Some(member-hex)` for a group membership op (`store/add`/`store/remove`), `None` for every other effect.
+/// A group op's `target` is the GROUP NAME; the MEMBER VALUE rides the inline `member-op` payload, so the
+/// self-vs-other policy rule can't see it via `target` alone. This decodes that payload to the member hash
+/// (hex) so the wasm policy component gets the same subject the NATIVE authz path sees on the `EffectRequest`.
+/// TOTAL + fail-quiet: a non-group family, a non-inline/absent payload, or a malformed member-op all yield
+/// `None` (the policy then decides on principal×action×target alone) — never a panic, and never opaque body
+/// bytes (only the typed member identity is surfaced, preserving the SEC-F1 "no body in authz" posture).
+fn subject_of(req: &crate::effect::EffectRequest) -> Option<String> {
+    if !crate::effect::effect_ct::is_group_store_family(&req.content_type.family) {
+        return None;
+    }
+    match &req.payload {
+        Some(crate::effect::Payload::Inline(bytes)) => {
+            // (name, add, member, tag) — the subject is the MEMBER value.
+            crate::event_ast::decode_member_op(bytes)
+                .ok()
+                .map(|(_name, _add, member, _tag)| member.to_hex())
+        }
+        _ => None,
+    }
+}
+
 /// FAIL-CLOSED (§10 + §17): a policy trap / instantiate failure is a DENY (a policy that can't decide
 /// must not accidentally permit), never a panic — so a broken policy fails safe, not open.
 pub struct ComponentAuthorizer {
@@ -3452,6 +3475,14 @@ impl crate::authz::Authorize for ComponentAuthorizer {
             // policy could never gate store writes (or any register-by-string family) correctly.
             action: req.content_type.family.to_string(),
             target: req.target.to_string(),
+            // SUBJECT (§directory-D5): a group membership op (`store/add`/`store/remove`) carries the member
+            // value in its `member-op` payload — the STRUCTURED SUBJECT the self-vs-other rule keys on
+            // (subject==principal ⇒ self-join; subject!=principal ⇒ needs owner authority). Extract it here so
+            // the wasm policy component can see it (the native path already sees the EffectRequest payload).
+            // NOT opaque body: only the typed member identity of a subject-scoped effect is surfaced; every
+            // other effect (and a malformed/absent payload) yields `None`, so SEC-F1's (principal, action,
+            // target) gate is unchanged for them.
+            subject: subject_of(req),
         };
         match world
             .cadenza_agent_kernel_authz_authorizer()
@@ -3598,6 +3629,60 @@ fn guest_effect_to_kernel_effect(g: EffectRequest) -> crate::reducer::Effect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // §directory-D5: subject_of surfaces the MEMBER VALUE of a group membership op (store/add|remove) as the
+    // auth-request `subject`, so a wasm policy can express self-vs-other; every other effect (and a
+    // malformed/absent payload) yields None (the policy then gates on principal×action×target alone).
+    #[test]
+    fn subject_of_extracts_the_member_for_group_ops_and_is_none_otherwise() {
+        use crate::effect::{effect_ct, EffectRequest, Payload, Timeliness};
+        let member = crate::hash::Hash::of(b"member-session");
+        let origin = crate::hash::Hash::of(b"origin");
+        // store/add carrying a member-op payload → subject = the member hex.
+        let add_payload =
+            crate::event_ast::encode_member_op("session/room/lobby", true, &member, &(origin, 0));
+        let add = EffectRequest::new_with_family(
+            effect_ct::STORE_ADD,
+            "session/room/lobby",
+            Some(Payload::Inline(add_payload.into())),
+            Timeliness::Interactive,
+        );
+        assert_eq!(subject_of(&add), Some(member.to_hex()));
+        // store/remove likewise (add-flag doesn't matter to subject extraction — the MEMBER is the subject).
+        let rm_payload =
+            crate::event_ast::encode_member_op("session/room/lobby", false, &member, &(origin, 0));
+        let rm = EffectRequest::new_with_family(
+            effect_ct::STORE_REMOVE,
+            "session/room/lobby",
+            Some(Payload::Inline(rm_payload.into())),
+            Timeliness::Interactive,
+        );
+        assert_eq!(subject_of(&rm), Some(member.to_hex()));
+        // A non-group store family (store/set) → None (its security-relevant string is fully in `target`).
+        let set = EffectRequest::new_with_family(
+            effect_ct::STORE_SET,
+            "system/x",
+            None,
+            Timeliness::Interactive,
+        );
+        assert_eq!(subject_of(&set), None);
+        // A group family with a MALFORMED payload → None (fail-quiet, never a panic).
+        let bad = EffectRequest::new_with_family(
+            effect_ct::STORE_ADD,
+            "session/room/lobby",
+            Some(Payload::Inline(b"not a member-op".to_vec().into())),
+            Timeliness::Interactive,
+        );
+        assert_eq!(subject_of(&bad), None);
+        // A non-store effect → None.
+        let http = EffectRequest::new(
+            crate::effect::EffectKind::Http,
+            "https://ok/x",
+            None,
+            Timeliness::Interactive,
+        );
+        assert_eq!(subject_of(&http), None);
+    }
 
     // `bare_iface_name` strips BOTH `+<hash>` and `@<semver>`, and the runtime-dep selection must agree with
     // `declared_deps`' `rsplit_once('+')` parse for EVERY import-name form — including the `+<hash>`-with-no-`@`
