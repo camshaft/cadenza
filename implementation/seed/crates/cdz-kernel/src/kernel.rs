@@ -149,15 +149,10 @@ impl Session {
             name_store: None,
             last_manifest: None,
         };
-        s.log.push(Event {
-            seq: 0,
-            cause: None,
-            body: EventBody::Genesis {
-                reducer,
-                spawn_nonce,
-                parent,
-            },
-        });
+        // The SAME genesis-event construction `derive_genesis_hash` hashes — so a host pre-computing the
+        // child's SessionId and this kernel registering it can never disagree (single source of truth).
+        s.log
+            .push(Self::genesis_event(reducer, spawn_nonce, parent));
         s
     }
 
@@ -343,6 +338,37 @@ impl Session {
                  (a Session is only constructed via genesis()/replay(), both of which guarantee it)"
             ),
         }
+    }
+
+    /// The genesis event a fresh session over `(reducer, spawn_nonce, parent)` WOULD carry as `log[0]` —
+    /// the single construction site both [`genesis_spawned`](Self::genesis_spawned) (which pushes it) and
+    /// [`derive_genesis_hash`](Self::derive_genesis_hash) (which hashes it) route through, so the two can
+    /// NEVER diverge on field order / seq / cause.
+    fn genesis_event(reducer: Hash, spawn_nonce: Hash, parent: Option<Hash>) -> Event {
+        Event {
+            seq: 0,
+            cause: None,
+            body: EventBody::Genesis {
+                reducer,
+                spawn_nonce,
+                parent,
+            },
+        }
+    }
+
+    /// Compute the genesis-hash (= [`SessionId`](Self::genesis_hash)) a session over
+    /// `(reducer, spawn_nonce, parent)` WILL have — WITHOUT constructing the `Session`. This is the
+    /// host-reproducible derivation seam (§lifecycle I3, v-agent-harness-host coordination 2026-08-06): the
+    /// `lifecycle/spawn` executor PRE-COMPUTES the child's provisional SessionId to return synchronously
+    /// (option-b: spawn defers the registry mutation to the loop, but the sync `Ok(payload=child_hash)`
+    /// contract + `SessionId = genesis-hash-hex` must hold), then the loop instantiates the child via
+    /// [`genesis_spawned`](Self::genesis_spawned) with the SAME `(reducer, spawn_nonce, parent)`. Because
+    /// BOTH paths hash the SAME [`genesis_event`](Self::genesis_event), the pre-computed provisional id is
+    /// GUARANTEED byte-identical to what [`genesis_hash`](Self::genesis_hash) reports on the registered
+    /// child — the host never reimplements the derivation (field order / encoding / hash algo live in ONE
+    /// place here, so a future Genesis-shape change can't silently drift the two apart).
+    pub fn derive_genesis_hash(reducer: Hash, spawn_nonce: Hash, parent: Option<Hash>) -> Hash {
+        Self::genesis_event(reducer, spawn_nonce, parent).hash()
     }
 
     /// The count of dispatched-but-unsettled effects — the anti-stuck / recovery signal (§4b tier-2).
@@ -3589,6 +3615,38 @@ mod lifecycle_tests {
             },
             payload: Payload::Inline(b"go".to_vec().into()),
         }
+    }
+
+    #[test]
+    fn derive_genesis_hash_matches_the_registered_session_byte_for_byte() {
+        // §lifecycle I3 host-reproducibility contract (v-ah-host coordination): the host PRE-COMPUTES a
+        // child's SessionId via derive_genesis_hash(reducer, nonce, parent) to return it synchronously; the
+        // loop then instantiates the child via genesis_spawned with the SAME triple. The pre-computed id MUST
+        // equal what the registered session reports — else the provisional id the spawn returns wouldn't
+        // match the session the kernel registers. Cover root (parent=None) AND spawned-child (parent=Some).
+        let (reducer, nonce, parent) = (
+            Hash::of(b"child-reducer"),
+            Hash::of(b"fresh-spawn-nonce"),
+            Hash::of(b"parent-session-id"),
+        );
+        // Root: derive == the constructed root's genesis_hash.
+        assert_eq!(
+            Session::derive_genesis_hash(reducer, nonce, None),
+            Session::genesis(reducer, nonce).genesis_hash(),
+            "host pre-compute must match the registered ROOT session byte-for-byte"
+        );
+        // Spawned child: derive(..., Some(parent)) == the constructed child's genesis_hash.
+        assert_eq!(
+            Session::derive_genesis_hash(reducer, nonce, Some(parent)),
+            Session::genesis_spawned(reducer, nonce, Some(parent)).genesis_hash(),
+            "host pre-compute must match the registered SPAWNED CHILD byte-for-byte"
+        );
+        // And the two derivations differ (parent provenance participates) — a sanity check that the parent
+        // arg isn't silently dropped, which would collide a child's provisional id with a root's.
+        assert_ne!(
+            Session::derive_genesis_hash(reducer, nonce, None),
+            Session::derive_genesis_hash(reducer, nonce, Some(parent)),
+        );
     }
 
     // A reducer that ARMS a timer (deadline 1000ms) on an inbound — so fire_due_timers has something due.
