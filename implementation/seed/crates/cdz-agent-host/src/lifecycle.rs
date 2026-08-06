@@ -93,13 +93,21 @@ impl Executor for LifecycleExecutor {
             ));
         }
         // The reason rides the effect payload as opaque bytes IF present (host-authored diagnostic; the
-        // guest may pass a UTF-8 reason). Lossy-decode to a String for the durable marker; a non-UTF-8 or
-        // absent payload yields an empty reason (the marker's `reason` is diagnostic, not load-bearing).
+        // guest may pass a UTF-8 reason). An INLINE payload lossy-decodes to a String for the durable marker
+        // (non-UTF-8 bytes become replacement chars, NOT empty). An ABSENT payload is a genuinely reason-less
+        // terminate → empty string. A BLOB-ref payload is REJECTED as structural PERMANENT (mirrors
+        // HttpExecutor/EmitExecutor): this executor has no blob-store handle to resolve it, and silently
+        // dropping a provided-but-unresolvable reason would hide a caller bug (#2425 review — consistency).
         let reason = match &req.payload {
             Some(cdz_kernel::effect::Payload::Inline(bytes)) => {
                 String::from_utf8_lossy(bytes).into_owned()
             }
-            _ => String::new(),
+            None => String::new(),
+            Some(cdz_kernel::effect::Payload::Blob(_)) => {
+                return EffectOutcome::Err(crate::retry::permanent(
+                    "LifecycleExecutor: a blob-ref reason is unsupported — this executor has no blob-store access; inline the reason (or omit it)",
+                ));
+            }
         };
         // RECORD the op for the loop to apply after deliver (defer-to-loop). Returns provisionally: Ok(None)
         // = the terminate request was accepted + enqueued (NOT that the target is gone yet; the loop applies
@@ -171,6 +179,25 @@ mod tests {
         match rx.try_recv().expect("recorded") {
             LifecycleOp::Terminate { reason, .. } => assert_eq!(reason, ""),
         }
+    }
+
+    #[tokio::test]
+    async fn a_blob_ref_reason_is_a_permanent_error() {
+        // A blob-ref reason can't be resolved here (no blob-store handle) — reject PERMANENT, mirroring
+        // Http/Emit, rather than silently dropping a provided reason (#2425 review consistency).
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut exec = LifecycleExecutor::new(tx, SessionId::new("ctl"));
+        let req = EffectRequest::new_with_family(
+            effect_ct::LIFECYCLE_TERMINATE,
+            "victim".to_string(),
+            Some(Payload::Blob(Hash::of(b"some-blob"))),
+            Timeliness::Interactive,
+        );
+        let out = exec.perform(&req, Hash::of(b"k")).await;
+        assert!(
+            matches!(&out, EffectOutcome::Err(r) if r.starts_with("PERMANENT:") && r.contains("blob-ref reason is unsupported")),
+            "a blob-ref reason is rejected PERMANENT, got {out:?}"
+        );
     }
 
     #[tokio::test]
