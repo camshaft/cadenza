@@ -708,11 +708,19 @@ pub fn emit(db: &mut Db, layout: &Layout, mode: Mode) -> Result<Vec<u8>, Reject>
 /// each module — so an application implements it ONCE for `RcRuntime`/its own env type and every emitted
 /// module uses that same trait (two modules interoperate). A downstream build depends on `cdz-rt`; the
 /// corpus gate links it via `--extern cdz_rt=<rlib>`.
-// `CdzEnv` is used by EVERY async fn (the gas param); `DynCdzEnv`/`EnvClosure` are used only by a module
-// that emits an async CLOSURE value (its per-closure struct impls `EnvClosure` + charges via `DynCdzEnv`).
-// A closure-free async program imports them unused, which `-D warnings` (`unused_imports`) would reject —
-// so `#[allow(unused_imports)]` the whole `use` (a mechanically-emitted preamble import, like the backend's
-// other synthesized `#[allow(dead_code)]` helpers). Simpler + robust vs. threading closure-presence up here.
+// WHICH of the three traits a given async module actually references varies, so the `use` is
+// `#[allow(unused_imports)]`:
+//   - `DynCdzEnv` — every async fn takes `env: &mut dyn DynCdzEnv` and charges gas via `env.consume_boxed(1)`
+//     (the uniform-env ABI), so a module with ANY async fn names it.
+//   - `EnvClosure` — only a module that emits an async CLOSURE value (its per-closure struct `impl
+//     EnvClosure`) names it directly.
+//   - `CdzEnv` — the base trait an APPLICATION/the gate harness impls for its concrete env; an emitted
+//     module no longer names it directly (async fns take `dyn DynCdzEnv`, not a generic `<__CdzE: CdzEnv>`),
+//     but it stays in the `use` so the blanket `impl<E: CdzEnv> DynCdzEnv for E` (cdz-rt) is in scope.
+// A closure-free (or trait-unreferencing) async program imports some of these unused, which `-D warnings`
+// (`unused_imports`) would reject — so `#[allow(unused_imports)]` the whole `use` (a mechanically-emitted
+// preamble import, like the backend's other synthesized `#[allow(dead_code)]` helpers). Simpler + robust
+// than threading per-module trait-usage presence up here.
 const CDZ_RT_IMPORTS: &str =
     "#[allow(unused_imports)] use cdz_rt::{CdzEnv, DynCdzEnv, EnvClosure};\n";
 
