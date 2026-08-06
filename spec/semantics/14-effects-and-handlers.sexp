@@ -2640,6 +2640,90 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 103 Int64)))
 
+(case "a LIST OF SETS op result — the body indexes, measures, and probes the nested elements"
+  (doc    "NESTED collection crossings: every flat collection has both-direction witnesses; a
+           collection INSIDE a collection riding the boundary (two heap layers, RRB list over CHAMP
+           sets) had none. The arm resumes `(list (Set.of (list 1 2)) (Set.of (list 3 4 n)))`; the
+           body indexes both elements, measuring one (len 2) and membership-probing the other
+           (contains 5 → 100) → 102. Both layers must survive the resume marshal intact.")
+  (input  (do
+            (effect St (op groups (-> Unit (List (Set Int64)))))
+            (def (main (: n Int64))
+              (handle St 0
+                ((groups (u) s (resume (list (Set.of (list 1 2)) (Set.of (list 3 4 n))) s)))
+                (let ((r (St.groups)))
+                  (+ (match (List.at r 0) ((Some a) (Set.len a)) ((None _u) -1))
+                     (match (List.at r 1) ((Some b) (if (Set.contains b 5) 100 0)) ((None _u) -1))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 102 Int64)))
+
+(case "a LIST OF SETS as op ARGUMENT — the arm indexes into the nested payload it is handed"
+  (doc    "The argument-direction twin of the nested-result pin: a body-built list of sets rides the
+           op argument INTO the arm, which indexes both elements — 10·2 + 100 (contains 5) + 1 →
+           121. The arm-side unbox of a two-layer payload.")
+  (input  (do
+            (effect St (op weigh (-> (List (Set Int64)) Int64)))
+            (def (main (: n Int64))
+              (handle St 0
+                ((weigh (xs) s
+                  (resume (+ (match (List.at xs 0) ((Some a) (+ (* 10 (Set.len a)) (if (Set.contains a 5) 100 0))) ((None _u) -1))
+                             (match (List.at xs 1) ((Some b) (Set.len b)) ((None _u) -1)))
+                          s)))
+                (St.weigh (list (Set.of (list n 2)) (Set.of (list 7))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 121 Int64)))
+
+(case "a MAP OF LISTS op result — the body looks up a key and folds the inner list"
+  (doc    "The keyed face of nested crossings: a `(Map String (List Int64))` op result — the body
+           looks up both keys and reads through the inner lists (len 3 + element 5 + element 40 →
+           48). CHAMP-over-RRB, the inverse layering of the list-of-sets pins.")
+  (input  (do
+            (effect St (op index (-> Unit (Map String (List Int64)))))
+            (def (main (: n Int64))
+              (handle St 0
+                ((index (u) s (resume (Map.insert (Map.insert Map.empty "a" (list 1 2 n)) "b" (list 40)) s)))
+                (let ((m (St.index)))
+                  (+ (match (Map.lookup m "a")
+                       ((Some xs) (+ (List.len xs) (match (List.at xs 2) ((Some v) v) ((None _u) -1))))
+                       ((None _u) -100))
+                     (match (Map.lookup m "b")
+                       ((Some ys) (match (List.at ys 0) ((Some w) w) ((None _u) -1)))
+                       ((None _u) -100))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 48 Int64)))
+
+(case "a record with a LIST field crosses resume — the body projects and folds the collection field"
+  (doc    "Record crossings carry all-scalar pins both ways plus a rope-String field on the argument
+           side; a COLLECTION-typed field (CHAMP/RRB nested inside the record box) was unpinned in
+           either direction. The arm resumes `(record (total 50) (items (list 5 6 7)))`; the body
+           projects the scalar and folds the list field — 50 + 3 + 7 → 60.")
+  (input  (do
+            (effect St (op page (-> Int64 (Record (total Int64) (items (List Int64))))))
+            (def (main (: n Int64))
+              (handle St 0
+                ((page (k) s (resume (record (total (* k 10)) (items (list k (+ k 1) (+ k 2)))) s)))
+                (let ((r (St.page n)))
+                  (+ (. r total)
+                     (+ (List.len (. r items))
+                        (match (List.at (. r items) 2) ((Some v) v) ((None _u) -1)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 60 Int64)))
+
+(case "a record with a SET field as op ARGUMENT — the arm probes the collection beside the scalar"
+  (doc    "The argument-direction twin: the body hands `(record (want n) (seen (Set.of …)))` to the
+           op and the ARM uses one field to query the other — contains(seen, want) → 100, plus len 3
+           → 103. The collection field must arrive beside the scalar with both intact.")
+  (input  (do
+            (effect St (op audit (-> (Record (want Int64) (seen (Set Int64))) Int64)))
+            (def (main (: n Int64))
+              (handle St 0
+                ((audit (r) s (resume (+ (* 100 (if (Set.contains (. r seen) (. r want)) 1 0))
+                                         (Set.len (. r seen)))
+                              s)))
+                (St.audit (record (want n) (seen (Set.of (list 2 n 9)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 103 Int64)))
+
 ; ============ Guarded match × effects (breaker FINDING, ag5 → fixed #2333). A guarded match on a
 ; perform-result scrutinee whose FALLBACK arm also performs used to leak the fold-synthesized #seed
 ; binder as a false CDZ0101: the guard desugar's arm-body copy reparented a reused (shared) body

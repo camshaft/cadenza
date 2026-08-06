@@ -5973,3 +5973,8 @@ pass	one perform result flows through let, record, projection, tuple, destructur
 pass	a pure HELPER's arguments evaluate left-to-right when each performs
 pass	a SET op RESULT crosses resume — membership-probed and measured per dispatch
 pass	a SET as op ARGUMENT — the arm measures and probes the set it is handed
+pass	a LIST OF SETS op result — the body indexes, measures, and probes the nested elements
+pass	a LIST OF SETS as op ARGUMENT — the arm indexes into the nested payload it is handed
+pass	a MAP OF LISTS op result — the body looks up a key and folds the inner list
+pass	a record with a LIST field crosses resume — the body projects and folds the collection field
+pass	a record with a SET field as op ARGUMENT — the arm probes the collection beside the scalar
