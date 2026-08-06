@@ -3370,6 +3370,176 @@
   (call   main (: 200 Int64))
   (trap   "unreachable"))
 
+(case "the arm DECODES a Bytes op argument to a String — multibyte UTF-8 survives the crossing"
+  (doc    "String.from-bytes validation in ARM position over a crossed payload (the validation pins
+           are body-side): \\\"héllo\\\" (6 bytes, one 2-byte scalar) crosses as the op argument and
+           the arm's decode validates it → byte-len 6.")
+  (input  (do
+            (effect Codec (op read (-> Bytes Int64)))
+            (def (main (: n Int64))
+              (handle Codec 0
+                ((read (b) s
+                  (resume (match (String.from-bytes b)
+                            ((Some t) (String.byte-len t))
+                            ((None _u) -1))
+                          s)))
+                (Codec.read (String.to-bytes "héllo"))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 6 Int64)))
+
+(case "INVALID UTF-8 crosses as a Bytes op argument — the arm's decode declines with None"
+  (doc    "The invalid-bytes face: `0xFF 0xFE` crosses the boundary and the arm's
+           `String.from-bytes` must actually validate the crossed payload (not trust it) —
+           None → -1.")
+  (input  (do
+            (effect Codec (op read (-> Bytes Int64)))
+            (def (main (: n Int64))
+              (handle Codec 0
+                ((read (b) s
+                  (resume (match (String.from-bytes b)
+                            ((Some t) (String.byte-len t))
+                            ((None _u) -1))
+                          s)))
+                (Codec.read (bin (u8 (UInt8.wrap 255)) (u8 (UInt8.wrap 254))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: -1 Int64)))
+
+(case "TWO sequential handles of the same effect — the second starts fresh, no state bleed"
+  (doc    "Handler LIFECYCLE isolation (the existing pins nest but never SEQUENCE): one helper
+           instantiates the same handler twice in sequence — run(5) = 5+6 = 11, then run(10) =
+           10+11 = 21, each from its OWN seed → 100·11 + 21 = 1121. No state bleeds between
+           instantiations.")
+  (input  (do
+            (effect St (op next (-> Unit Int64)))
+            (def (run (: seed Int64))
+              (handle St seed
+                ((next (u) s (resume s (+ s 1))))
+                (+ (St.next) (St.next))))
+            (def (main (: n Int64))
+              (+ (* 100 (run n)) (run 10)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 1121 Int64)))
+
+(case "an ABORT in the first handle leaves the SECOND handle's dispatch untouched"
+  (doc    "Post-abort isolation: the first handle aborts (5·2 = 10, its 999 continuation dropped);
+           a SECOND, separate handle then dispatches normally (7+8 = 15) → 10·10 + 15 = 115. The
+           abort's unwind must not corrupt a sibling handler's dispatch or state.")
+  (input  (do
+            (effect Bail (op stop (-> Int64 Int64)))
+            (effect St (op next (-> Unit Int64)))
+            (def (main (: n Int64))
+              (+ (* 10 (handle Bail 0
+                         ((stop (v) s (* v 2)))
+                         (+ 999 (Bail.stop n))))
+                 (handle St 7
+                   ((next (u) s (resume s (+ s 1))))
+                   (+ (St.next) (St.next)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 115 Int64)))
+
+(case "a bare BIGINT as op ARGUMENT — the arm does exact wide arithmetic on the crossed box"
+  (doc    "BigInt's ARGUMENT direction (results/state/list-elements are pinned): the arm multiplies
+           the crossed box by 10^6 and integer-divides by 999999999 — exact wide arithmetic on a
+           value that crossed the boundary → 1000, narrowed once through checked Int64.of.")
+  (input  (do
+            (effect St (op grow (-> BigInt Int64)))
+            (def (main (: n Int64))
+              (handle St 0
+                ((grow (b) s (resume (Int64.of (/ (* b (BigInt.of 1000000)) (BigInt.of 999999999))) s)))
+                (St.grow (BigInt.of (* n 200000)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 1000 Int64)))
+
+(case "a bare RATIONAL as op ARGUMENT — the arm reads exact numerator/denominator off the crossed value"
+  (doc    "Rational's ARGUMENT direction: 1/3 crosses, the arm adds 1/6 and reads num/den off the
+           gcd-canonical sum (1/2) → 10·1 + 2 = 12. Exact-fraction identity must survive the
+           marshal into the arm.")
+  (input  (do
+            (effect St (op mix (-> Rational Int64)))
+            (def (main (: n Int64))
+              (handle St 0
+                ((mix (r) s
+                  (let ((q (+ r (Rational.of 1 6))))
+                    (resume (+ (* 10 (Int64.of (Rational.numerator q)))
+                               (Int64.of (Rational.denominator q)))
+                            s))))
+                (St.mix (Rational.of 1 (- n 2)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 12 Int64)))
+
+; ============ Narrow-width effect-op literals (breaker FINDING nw, operator-confirmed soundness →
+; fixed on trunk). The effect-op signature positions (argument AND result-via-resume) skipped the
+; CDZ0302 literal fit-check every sibling position enforces — an out-of-range literal observably
+; inhabited the narrow type, including across the HOST boundary in a declared-width slot. The fix
+; range-checks both marshal directions (and descends compounds: tuple/record/list). These pin the
+; served class: the in-range pass, the bare-arg + resume-result + record-field rejects, and the
+; runtime-argument control (a TYPE mismatch, not a width fault). ============
+
+(case "an in-range literal to a narrow effect-op parameter crosses and the arm observes it"
+  (doc    "The pass face of the narrow-op range check: `(Send.put 42)` against `(-> UInt8 Int64)`
+           fits, crosses, and the arm reads 42 back via checked Int64.of.")
+  (input  (do
+            (effect Send (op put (-> UInt8 Int64)))
+            (def (main (: n Int64))
+              (handle Send 0
+                ((put (v) s (resume (Int64.of v) s)))
+                (Send.put 42)))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 42 Int64)))
+
+(case "an OVERFLOWING literal to a narrow effect-op parameter is rejected"
+  (doc    "The argument-direction reject: `(Send.put 999)` against a UInt8 parameter (0..=255) is
+           CDZ0302 — the same fit-check plain-fn params and annotated literals enforce. Before the
+           fix this compiled and the arm observed 999.")
+  (input  (do
+            (effect Send (op put (-> UInt8 Int64)))
+            (def (main (: n Int64))
+              (handle Send 0
+                ((put (v) s (resume (Int64.of v) s)))
+                (Send.put 999)))
+            (export main)))
+  (error  CDZ0302))
+
+(case "an arm resuming an OVERFLOWING literal into a narrow op RESULT is rejected"
+  (doc    "The result-direction reject: the op's declared result is UInt8 and the arm resumes 999 —
+           CDZ0302 at the resume site. Before the fix the body observed 999 through the narrow
+           result type.")
+  (input  (do
+            (effect Give (op get (-> Unit UInt8)))
+            (def (main (: n Int64))
+              (handle Give 0
+                ((get (u) s (resume 999 s)))
+                (Int64.of (Give.get))))
+            (export main)))
+  (error  CDZ0302))
+
+(case "an overflowing literal in a RECORD op argument's narrow field is rejected"
+  (doc    "The compound-descent face: the width check must recurse into a Record op argument's
+           fields — `(record (small 999) …)` against `(Record (small UInt8) …)` is CDZ0302. (Tuple
+           and List elements were covered by the same descent from the start; the Record row arm
+           was a fold-in.)")
+  (input  (do
+            (effect Send (op put (-> (Record (small UInt8) (big Int64)) Int64)))
+            (def (main (: n Int64))
+              (handle Send 0
+                ((put (r) s (resume (+ (Int64.of (. r small)) (. r big)) s)))
+                (Send.put (record (small 999) (big 5)))))
+            (export main)))
+  (error  CDZ0302))
+
+(case "a RUNTIME Int64 argument to a narrow effect-op parameter is rejected as a type mismatch"
+  (doc    "The control distinguishing the width fault from ordinary typing: a RUNTIME Int64 arg to a
+           UInt8 op parameter is CDZ0301 (type mismatch — no silent narrowing), NOT CDZ0302 (which
+           is literal-fit). The two rejects must not blur.")
+  (input  (do
+            (effect Send (op put (-> UInt8 Int64)))
+            (def (main (: n Int64))
+              (handle Send 0
+                ((put (v) s (resume 7 s)))
+                (Send.put n)))
+            (export main)))
+  (error  CDZ0301))
+
 ; ============ Guarded match × effects (breaker FINDING, ag5 → fixed #2333). A guarded match on a
 ; perform-result scrutinee whose FALLBACK arm also performs used to leak the fold-synthesized #seed
 ; binder as a false CDZ0101: the guard desugar's arm-body copy reparented a reused (shared) body

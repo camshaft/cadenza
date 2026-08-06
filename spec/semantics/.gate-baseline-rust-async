@@ -6023,3 +6023,14 @@ pass	the natural invariant construction over a VIOLATING perform result traps th
 pass	a two-site resume arm whose resume VALUE reads an enclosing-fn param folds
 pass	a two-site resume arm reading the enclosing SEED param in its resume value folds
 pass	a two-site resume arm whose resume value is a heap LIST reading an enclosing param folds
+pass	the arm DECODES a Bytes op argument to a String — multibyte UTF-8 survives the crossing
+pass	INVALID UTF-8 crosses as a Bytes op argument — the arm's decode declines with None
+pass	TWO sequential handles of the same effect — the second starts fresh, no state bleed
+pass	an ABORT in the first handle leaves the SECOND handle's dispatch untouched
+pass	a bare BIGINT as op ARGUMENT — the arm does exact wide arithmetic on the crossed box
+pass	a bare RATIONAL as op ARGUMENT — the arm reads exact numerator/denominator off the crossed value
+pass	an in-range literal to a narrow effect-op parameter crosses and the arm observes it
+pass	an OVERFLOWING literal to a narrow effect-op parameter is rejected
+pass	an arm resuming an OVERFLOWING literal into a narrow op RESULT is rejected
+pass	an overflowing literal in a RECORD op argument's narrow field is rejected
+pass	a RUNTIME Int64 argument to a narrow effect-op parameter is rejected as a type mismatch
