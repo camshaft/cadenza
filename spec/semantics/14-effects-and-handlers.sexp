@@ -3722,6 +3722,78 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 52 Int64)))
 
+; ============ Empty-collection match-join grounding (breaker FINDING ms/ej, fixed in three parts:
+; the front-end grounds an open-Var join arm to the determined-collection shell — all three
+; collection kinds; the rust emit reconstructs the solved map type at Map.lookup for scalar values;
+; and the rust emit annotates a collection-valued join's solved OUTER shape with holed interior
+; (`Vec<_>`) rather than grounding — the nested face is WHY: the join under-approximates nested
+; element types, and a ground would break exactly where a hole lets rustc solve). These pin the
+; served class: the pure minimal, the Set sibling, the IF-join face, and the two-layer upsert
+; idiom. The empty-MAP-fallback sibling is a known loud E0282 follow-up on the rust backends. ============
+
+(case "an empty (list) match-fallback beside an unsolved-Var arm grounds to the join's list type"
+  (doc    "FINDING repro (ms13, fixed): `(match (Map.lookup m \\\"k\\\") ((Some ys) ys) ((None _u)
+           (list)))` — the Some arm binds an open Var (the empty map's value type is only fixed
+           downstream) and the fallback is an empty literal; the join must ground both arms to the
+           downstream-determined list type. Runs 1 (one push onto the empty fallback).")
+  (input  (do
+            (def (main (: n Int64))
+              (let ((m Map.empty))
+                (let ((xs (match (Map.lookup m "k") ((Some ys) ys) ((None _u) (list)))))
+                  (let ((nxs (List.push xs n)))
+                    (List.len nxs)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 1 Int64)))
+
+(case "an empty SET literal in a match-Option fallback grounds through the join"
+  (doc    "The Set sibling of the empty-literal join class: the fallback is `(Set.of (list))` and
+           the downstream `Set.insert` fixes the element type — 1. The join ground must cover all
+           collection kinds, not just List.")
+  (input  (do
+            (def (main (: n Int64))
+              (let ((m Map.empty))
+                (let ((xs (match (Map.lookup m "k") ((Some ys) ys) ((None _u) (Set.of (list))))))
+                  (Set.len (Set.insert xs n)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 1 Int64)))
+
+(case "an IF-join with an unsolved-Var arm and an empty-list sibling grounds like a match join"
+  (doc    "The join kind is irrelevant (a concrete-sibling IF always worked — the sibling supplied
+           the evidence): an IF whose then-arm is a Map-lookup payload (open Var) and whose else is
+           an empty `(list)` must ground through the same machinery as the match join — 1.")
+  (input  (do
+            (def (main (: n Int64))
+              (let ((m Map.empty))
+                (let ((xs (if (> n 0)
+                              (match (Map.lookup m "k") ((Some ys) ys) ((None _u) (list)))
+                              (list))))
+                  (List.len (List.push xs n)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 1 Int64)))
+
+(case "a MAP-OF-LISTS handler state accumulates per dispatch — the upsert idiom end to end"
+  (doc    "The real-world shape that found the class: a `(Map String (List Int64))` handler state
+           with the lookup-fallback-push upsert arm — key a gets 3 appends, key b one; each resume
+           returns the new inner length (1,1,2,3 → 1123). The two-layer state (CHAMP over RRB) must
+           path-copy across resume cycles, and the empty-fallback join must ground (nested: the join
+           sees only `List Any`, the emit's interior hole lets rustc solve `Vec<Vec<i64>>`).")
+  (input  (do
+            (effect Db (op add (-> (Tuple String Int64) Int64)))
+            (def (main (: n Int64))
+              (handle Db Map.empty
+                ((add (p) m
+                  (match p
+                    ((tuple k v)
+                      (let ((xs (match (Map.lookup m k) ((Some ys) ys) ((None _u) (list)))))
+                        (let ((nxs (List.push xs v)))
+                          (resume (List.len nxs) (Map.insert m k nxs))))))))
+                (+ (* 1000 (Db.add (tuple "a" n)))
+                   (+ (* 100 (Db.add (tuple "b" 7)))
+                      (+ (* 10 (Db.add (tuple "a" 6)))
+                         (Db.add (tuple "a" 9)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 1123 Int64)))
+
 ; ============ Guarded match × effects (breaker FINDING, ag5 → fixed #2333). A guarded match on a
 ; perform-result scrutinee whose FALLBACK arm also performs used to leak the fold-synthesized #seed
 ; binder as a false CDZ0101: the guard desugar's arm-body copy reparented a reused (shared) body

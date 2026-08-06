@@ -6048,3 +6048,7 @@ pass	a RESULT as op ARGUMENT — the arm branches on Ok/Err payloads it was hand
 pass	a scrutinee FAILING the pattern reaches the catch-all WITHOUT running the guard's perform
 pass	a MULTI-argument op mixing a heap list and two scalars — the arm consumes all three
 pass	a multi-argument op with TWO heap arguments — a String key and a Map to search
+pass	an empty (list) match-fallback beside an unsolved-Var arm grounds to the join's list type
+pass	an empty SET literal in a match-Option fallback grounds through the join
+pass	an IF-join with an unsolved-Var arm and an empty-list sibling grounds like a match join
+pass	a MAP-OF-LISTS handler state accumulates per dispatch — the upsert idiom end to end
