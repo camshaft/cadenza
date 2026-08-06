@@ -6059,3 +6059,5 @@ pass	the arm ENUMERATES its Map state to a list of tuples and resumes the enumer
 pass	Set.to-list of the state crosses resume ORDERED — the body reads elements positionally
 pass	a crossed rope String compares EQUAL to an arm-local flat literal — content equality over the marshal
 pass	two crossed LISTS compare structurally in the arm — same content from different builders
+pass	an inner abort preserves an outer advance committed in a NESTED strict operand (deeper-operand-lift)
+pass	a nested-operand abort preserves a HEAP-state advance across a mid-mutation frame drop

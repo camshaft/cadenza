@@ -5710,8 +5710,19 @@ fn thread_bounded(
                     kept_foreign.push(ra);
                 }
             }
+            // NESTED-OPERAND face (breaker ax4): the aborting operand may ITSELF be an inner strict form
+            // whose abort-lift already produced a `(do <foreign-prefix> abort-value)` tail — `(+ 999 (+
+            // (A.tick) (B.bail 99)))` threads the inner `+` to `(do (A.tick) 99)`. This level's `kept_foreign`
+            // is empty (999 pure), so rebuilding `(+ 999 (do (A.tick) 99))` buries the foreign prefix in a
+            // DEAD arithmetic wrapper the bare-abort collapse discards → the advance is lost (109 vs 110,
+            // silent cross-backend). The abort abandons the whole `+` anyway, so collapse to the tail
+            // directly (dropping the dead pure siblings), preserving its do-prefix. NARROW: only when the
+            // tail is ALREADY a `(do …)` (an inner abort-lift's output) — a bare-value tail keeps the
+            // existing bare-abort collapse (which is correct + avoids perturbing the #seed-let scoping the
+            // broad `reaches_foreign` gate broke — 9 regressions).
+            let tail_is_lifted_do = abort_tail.is_some_and(|t| db.ast.as_form(t, "do").is_some());
             if let Some(tail) = abort_tail
-                && !kept_foreign.is_empty()
+                && (!kept_foreign.is_empty() || tail_is_lifted_do)
             {
                 let do_head = db.push_name("do");
                 let mut ch = vec![do_head];

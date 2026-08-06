@@ -1741,6 +1741,49 @@
                     (+ (A.a) (+ (B.b) (Bail.bail 99))))))) (export main)))
   (output (: 99 Int64)))
 
+(case "an inner abort preserves an outer advance committed in a NESTED strict operand (deeper-operand-lift)"
+  (doc    "The NESTED-OPERAND face of the outer-advance preservation (breaker ax4; the FLAT strict-operand
+           face is pinned above). The foreign `(A.tick)` + abort sit one operand DEEPER — `(+ 999 (+ (A.tick)
+           (B.bail 99)))` under B. The inner `+` threads to `(do (A.tick) 99)` (the flat operand-lift). But
+           the OUTER `(+ 999 …)` around it, whose sibling `999` is pure, would then rebuild `(+ 999 (do
+           (A.tick) 99))` — burying the foreign `do` prefix inside a DEAD arithmetic wrapper the bare-abort
+           collapse discards, dropping A's advance → outer `(A.get)` reads the seed 10 → 109 (a SILENT
+           cross-backend wrong value, breaker MED). Fixed: when the aborting operand's tail is ALREADY a
+           lifted `(do …)`, the outer collapse drops the dead pure siblings and keeps the tail directly, so
+           the foreign prefix survives → `(A.get)` reads 11 → `(+ 99 11)` = 110. Narrow to a `do`-tail so the
+           bare-value bare-abort collapse (and the `#seed`-let scoping) is untouched.")
+  (input  (do
+            (effect A (op tick (-> Unit Int64)) (op get (-> Unit Int64)))
+            (effect B (op bail (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle A 10
+                ((tick (u) s (resume s (+ s 1))) (get (u) s (resume s s)))
+                (let ((b (handle B 0 ((bail (v) s v)) (+ 999 (+ (A.tick) (B.bail 99))))))
+                  (+ b (A.get))))) (export main)))
+  (call   main (: 5 Int64)) (output (: 110 Int64)))
+
+(case "a nested-operand abort preserves a HEAP-state advance across a mid-mutation frame drop"
+  (doc    "The heap-state face of the deeper-operand-lift (breaker ax1): the outer effect `Log` threads a
+           LIST state (each `note` pushes + returns the pre-push length), and the aborting `(Bail.stop 3)` +
+           foreign `(Log.note 7)` sit in a nested `+` under `(+ 999 …)`. The abort drops the mid-mutation
+           frame; the committed `Log.note 7` push (advancing the list) must survive so the trailing
+           `(Log.note 8)` reads the fully-advanced state. Same lift as ax4 but the surviving advance is a heap
+           mutation, not a scalar increment — confirms the do-tail collapse preserves a heap-state advance.
+           note n=5 gives len 0, note 7 gives len 1, Bail.stop aborts inner 6 which the abort collapses,
+           note 8 gives len 2: 100*0 + 10*6 + 2 = 62.")
+  (input  (do
+            (effect Bail (op stop (-> Int64 Int64)))
+            (effect Log (op note (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle Log (list)
+                ((note (v) s (resume (List.len s) (List.push s v))))
+                (+ (* 100 (Log.note n))
+                   (+ (* 10 (handle Bail 0
+                              ((stop (v) s (* v 2)))
+                              (+ 999 (+ (Log.note 7) (Bail.stop 3)))))
+                      (Log.note 8))))) (export main)))
+  (call   main (: 5 Int64)) (output (: 62 Int64)))
+
 (case "an inner abort preserves an OUTER advance committed in an IF-BRANCH before it (branch do-shape)"
   (doc    "The IF-BRANCH face of the outer-advance preservation (v-effects self-probe; the direct do-shape and
            strict-operand faces are pinned above). The foreign `(A.tick)` and the abort sit on the strict
