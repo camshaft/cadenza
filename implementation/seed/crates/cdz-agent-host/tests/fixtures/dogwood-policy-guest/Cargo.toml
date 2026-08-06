@@ -1,0 +1,52 @@
+# A DOGWOOD-policy wasm-COMPONENT authorizer fixture — the TEMPORAL extension to our Cedar auth stack, as
+# a wasm component EXACTLY like `cedar-policy-guest` (operator: "just like cedar it should be a wasm
+# component"). A wit-bindgen Rust guest that embeds a dogwood policy, LOWERS it to a Cedar `PolicySet`
+# in-wasm (dogwood's temporal ops → `context.<id>` slots), and exports the same
+# `cadenza:agent-kernel-authz` authorizer-world's `authorize` function the kernel's ComponentAuthorizer
+# instantiates + calls. The temporal `context.<id>` bindings are HOST-provided (the host observes the
+# session event log + passes them in the request) so this component stays a pure decision function like
+# cedar — no event history inside the guest.
+#
+# 🔑 WASM RECIPE (dogwood's native tree — rhai/pest/logos/cedar-policy-mcp-schema-generator/mcp-tools-sdk —
+# DOES compile to wasm32-unknown-unknown once two transitive randomness backends are selected, verified by
+# spike): (1) getrandom 0.3 with `wasm_js` + the `--cfg getrandom_backend="wasm_js"` RUSTFLAG (in
+# .cargo/config.toml); (2) `uuid` with the `js` feature at THIS top level (Cargo feature-unifies dogwood's
+# transitive uuid, pulled via cedar-policy-mcp-schema-generator). Both are declared here so the component
+# builds to wasm; neither is needed by the runtime decision path — they only satisfy wasm's missing OS RNG.
+#
+# Compiled to a wasm32-unknown-unknown core module then lifted with `wasm-tools component new` (NOT
+# wasm32-wasip1 — a WASI target emits wasi_snapshot_preview1 imports the lift can't resolve; same as
+# cedar-policy-guest / reducer-guest). Its OWN workspace (empty [workspace]) — NOT part of cdz-agent-host's
+# (different target + cdylib), so the native `cargo test` never builds it; a CI job / build step compiles +
+# lifts it on demand.
+[workspace]
+
+[package]
+name = "dogwood-policy-guest"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# wit-bindgen: generate the authorizer-world guest bindings (export `authorize`). Same version + world as
+# cedar-policy-guest so the two authorizer components are drop-in interchangeable to the kernel.
+wit-bindgen = "0.45"
+# amzn-dogwood-language: the temporal-Cedar engine, embedded in the guest. Pinned to a git rev (no
+# published version). Lowers a dogwood policy → a plain Cedar PolicySet in-wasm; its `cedar` re-export
+# gives us the Cedar decision types WITHOUT a separate cedar-policy version to match.
+amzn-dogwood-language = { git = "https://github.com/dogwood-policy/dogwood.git", rev = "1fcba6cdf891a3ce703b5ba54d322a45184c5e7a" }
+# cedar-policy: the DECISION engine (Authorizer/Context/Decision/Request) — dogwood re-exports the DATA
+# types (PolicySet/Schema/Request/Entities) but NOT the Authorizer, so we take cedar-policy directly to
+# EVALUATE the lowered PolicySet. `= "4"` semver-unifies with dogwood's own `cedar-policy = "4.11"` (Cargo
+# uses ONE cedar-policy instance across the tree, so `LoweredPolicySet::as_cedar()`'s `&PolicySet` is the
+# SAME type our Authorizer consumes — no cross-version mismatch). Pure-Rust, wasm32-clean (same as the
+# cedar-policy-guest fixture).
+cedar-policy = "4"
+# getrandom `wasm_js` + uuid `js` — the two randomness backends dogwood's transitive tree needs on
+# wasm32-unknown-unknown (see the WASM RECIPE note above). Declared to select the backend; the decision
+# path itself draws no entropy.
+getrandom = { version = "0.3", features = ["wasm_js"] }
+uuid = { version = "1", features = ["js"] }
