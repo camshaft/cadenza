@@ -2,8 +2,11 @@
 
 Owner: a new `vertical` (area = `cdz-kernel`), coordinated with `v-agent-harness` (owns the session model +
 `name_store.rs`) and `v-agent-harness-host` (owns the Emit executor + peer-inbox routing). Design by
-`design-session-directory`. Status: **PROPOSAL — shaped autonomously (operator delegated the design and is
-not iterating live); coordinated with `v-agent-harness` via `note`.** Operator idea via concierge 2026-08-06.
+`design-session-directory`. Status: **ENDORSED by `v-agent-harness` (the `name_store` file owner) — the
+OR-set-on-`name_store` direction + the `merge_appends_from` multi-writer diagnosis are verified-correct
+against the code; 4 owner guardrails folded in below.** Shaped autonomously (operator delegated the design
+and is not iterating live). Operator idea via concierge 2026-08-06. Lifecycle-seam (death → group eviction)
+aligned with `design-session-lifecycle`.
 
 > **Operator spark (verbatim).** *"Yeah a directory would be interesting. For that I wonder if we make the
 > global name service able to store multiple values? And that would make it naturally support resolving
@@ -58,9 +61,38 @@ Why OR-set and not name→list-forever or a separate store:
 - **It supports `leave` and (later) death-retraction**, which a monotonic name→list cannot.
 - **It is the ONLY multi-writer-safe choice** — see D2, the load-bearing reason.
 
+**Value model — `name → Hash`, NATIVE (no bytes/record change).** The store keeps its `Hash` value type
+throughout: a single-value name resolves (latest) to a `Hash`; a group name `resolve-all`s to a **set of
+`Hash`es**. A group is just a name whose log frames are `add`/`remove(member-hash)` instead of `set`. This
+dovetails with `v-agent-harness`'s in-flight **session-naming** increment (`resolve('session/alice') → Hash`):
+their single-name resolution is the **degenerate single-value case** of this same store, and since **#2362
+landed `SessionId = genesis-hash`**, the `Hash` a name resolves to IS the target session's genesis hash (the
+host maps `hash → running SessionId`). So the directory layer needs **nothing beyond `name → Hash`** — no
+bytes value, no new session-address record.
+
 **Rejected — a separate `directory/*` effect family with its own store:** clean separation, but it duplicates
 the log framing, the Cedar prefix-authority, and the snapshot/replay/merge machinery `name_store` already has.
 The group log IS a name-store log; reusing it is the smaller, more coherent change.
+
+**Owner guardrails (from `v-agent-harness`, `name_store` file owner — verified against the code, folded in):**
+
+1. **Kind is DURABLE-IN-LOG, replay-derivable — not a runtime side-flag.** Whether a name is single-value or
+   an OR-set group must be reconstructable from the name's LOG alone (so `replay_set_entries` /
+   `from_snapshot_bytes` know which merge path to use). **The first entry declares the name's kind** (a
+   group-init marker); `merge_appends_from` dispatches per-name on it; **a name can never switch kinds after
+   init.** This upgrades D7 from a runtime guard to a recoverable invariant.
+2. **The durable codec round-trips add-tags + tombstones**, not just the resolved head (see I2). The add-tag
+   nonce is **deterministic**: derived from the adding session's **`genesis_hash` (#2362) + a per-session
+   monotonic counter** — reproducible on replay, NEVER wall-clock/random (this is a reducer; replay must
+   reproduce it). `v-agent-harness` **owns the codec extension** (it's their file — `event_ast` +
+   `snapshot_bytes`/`from_snapshot_bytes`); this doc specs the frame shape, they implement it.
+3. **`resolve()` (latest) stays BYTE-IDENTICAL for non-group names** — the session-naming increment depends on
+   `resolve('session/alice') → Hash`. A group name passed to `resolve()` returns
+   **`NameStoreError::IsGroup`** — NOT the latest `add` (which would be a silent mis-resolve). `resolve_all` is
+   the SOLE group accessor.
+4. **The three new `store/*` sub-families route through the SAME idempotency-key dedup** as `store/set` /
+   `store/resolve` in `apply_effect` — so a crash-redrive of a `store/add` can't double-add. (The OR-set tag
+   makes a genuine double-add idempotent anyway, but the effect-layer dedup must still hold.)
 
 ### D2. Multi-writer safety — the OR-set must be a **CRDT** (the real reason D1 is forced)
 
@@ -157,6 +189,18 @@ their own later increments/designs:
   + a retract-on-death hook (the host injects a `remove` when it observes a session end). This is host
   mechanism `v-agent-harness-host` owns, and it is cleanly additive: it just emits `store/remove(member)` on
   death, using D1's remove path. Flagged as increment **I5 (deferred / own slice)**.
+  - **Lifecycle seam (aligned with `design-session-lifecycle`).** That design owns session lifecycles
+    (spawn/suspend/resume/terminate) and emits a **`EventBody::Terminated { by: SessionId, reason: String }`**
+    event (a durable event in the terminated session's log — the shape is LOCKED in `DESIGN-session-lifecycle.md`
+    §8, confirmed stable). The clean split we agreed: **lifecycle fans out the SIGNAL (`Terminated`), the
+    directory owns the REMOVAL MECHANISM** — a host hook (lifecycle's I5, `v-agent-harness-host`-owned executor)
+    consumes `Terminated` and drives a `store/remove(member)` into each group the dead session belonged to
+    (an ordinary OR-set observed-remove). So a terminated session is **auto-evicted from groups** (multicast
+    stops fanning out to it), while its **own single-value `session/<name>` tombstones** (lifecycle's
+    `resolve()` semantics — "existed but terminated"). **`suspend` is TRANSPARENT to the directory**: a
+    suspended session stays a member, multicast still reaches it, its inbox queues for resume — only
+    `terminate` evicts. `resolve_all` does NOT skip suspended members. (An "active-only" fan-out, if ever
+    wanted, is a future `resolve_all` FILTER param, not a membership change.)
 - **A "who is alive" liveness query** — orthogonal to naming. A directory here answers *"who joined this
   name,"* not *"who is currently running."* A member can be in a group and its session dead (until I5 prunes
   it). Liveness is its own query-effect design (same freeze-into-log shape as capability discovery), NOT part
@@ -164,38 +208,55 @@ their own later increments/designs:
 
 Keeping these out keeps the multicast feature tight and shippable, and avoids coupling in death-detection now.
 
-### D7. A group is self-describing by its frames (no separate type tag), with a cheap misuse guard
+### D7. A group is self-describing by its DURABLE-IN-LOG kind (guardrail 1), enforced by a mode guard
 
-A name is a **pointer** if written by `set`, a **group** if written by `add`/`remove`. To prevent silent
-corruption (a `set` onto a group name, or `resolve` (latest) of a group), I3 adds a per-name **mode guard**:
-the first write kind fixes the name's mode; a mismatching verb (`set` on an add/remove name, or vice-versa)
-returns a new `NameStoreError::NameModeMismatch` rather than producing nonsense. `resolve-all` of a pointer
-name and `resolve` (latest) of a group name are likewise mismatches. Cheap, total, fail-closed — and it means
-the existing pointer names are provably untouched by group verbs.
+A name's kind is **declared by its first log entry** (a group-init marker for `add`/`remove` names; a plain
+`set` for pointers) and is thus **replay-derivable** — recovery / `from_snapshot_bytes` reconstruct which
+merge path a name uses from the log alone, with no runtime side-flag (guardrail 1). A name **can never switch
+kinds after init.** The mode guard then makes every mismatching verb fail-closed: `set` on a group name (or
+`add`/`remove` on a pointer) → `NameStoreError::NameModeMismatch`; `resolve` (latest) of a group →
+`NameStoreError::IsGroup` (guardrail 3 — never a silent latest-add); `resolve-all` of a pointer → mismatch.
+Cheap, total, fail-closed — the existing pointer names are provably untouched by group verbs, AND the merge
+path a name takes is a durable property of its log, not mutable state.
 
 ## Increments (top-to-bottom, the way a vertical will land them)
 
 Each increment is independently green (per-commit-green invariant) and carries its own gate.
 
-- **I1 — OR-set fold + CRDT merge in `name_store.rs` (pure, no wire).** Add the add/remove entry kind
-  (`SetEntry` grows a variant, or a sibling `MemberEntry` — implementer's call at the struct seam), the
-  tagged-add model, `resolve_all(name) -> BTreeSet<Hash>` (deterministic order), and the CRDT branch of
-  `merge_appends_from` taken only for group names. Pointer names keep the exact current path. **Gate:** rcdzc
-  lib unit tests — fold correctness, add-wins observed-remove, and the multi-writer merge property (two
-  divergent group logs merge commutatively + idempotently; a single-value log's merge is byte-identical to
-  today). This is the load-bearing slice; it lands before any wire/effect change.
+> **Sequencing constraint (agreed with `v-agent-harness`).** `v-agent-harness` is mid-build on the
+> **single-name session-naming** increment (`resolve('session/alice') → Hash = SessionId`, gated on
+> `v-ah-host` deriving `SessionId = genesis-hash` at spawn — #2362). That increment leaves `resolve()`
+> untouched. **Their naming increment lands FIRST**; the OR-set layer here is strictly ADDITIVE on top. To
+> avoid two agents editing `name_store.rs` concurrently, I1–I3 (the `name_store` / `event_ast`-touching
+> slices) are **sequenced AFTER** the naming increment and are **reviewed by (or, at their option, owned by)
+> `v-agent-harness` as the file owner** — the codec extension (I2) they've offered to own outright. The PM
+> should assign the vertical with this coordination noted.
 
-- **I2 — durable codec + snapshot/replay for add/remove frames.** Extend `event_ast` (`encode/decode`) with
-  add/remove frames beside `name-set`; confirm `snapshot_bytes` / `from_snapshot_bytes` /
-  `replay_set_entries` / `to_set_entries` round-trip a group log deterministically (byte-stable, name-sorted).
-  **Gate:** round-trip + malformed-frame totality tests, mirroring the existing `name_store` snapshot tests.
+- **I1 — OR-set fold + CRDT merge in `name_store.rs` (pure, no wire).** Add the add/remove entry kind, the
+  tagged-add model, `resolve_all(name) -> BTreeSet<Hash>` (deterministic order), and the CRDT branch of
+  `merge_appends_from` taken only for group names. Pointer names keep the exact current path. **The struct
+  seam (`SetEntry` grows a variant vs a sibling `MemberEntry` the per-name log holds) is `v-agent-harness`'s
+  call — they own the file and want the shape driven by the I2 codec's round-trip constraint (both kinds must
+  round-trip through `snapshot_bytes`/`from_snapshot_bytes`/`to_set_entries` cleanly).** **Gate:** rcdzc lib
+  unit tests — fold correctness, add-wins observed-remove, and the multi-writer merge property (two divergent
+  group logs merge commutatively + idempotently; a single-value log's merge is byte-identical to today). This
+  is the load-bearing slice; it lands before any wire/effect change.
+
+- **I2 — durable codec + snapshot/replay for add/remove frames** *(offered to `v-agent-harness` to own — it's
+  their file).* Extend `event_ast` (`encode/decode`) with add/remove frames beside `name-set`, carrying the
+  **add-tag** (member-hash + deterministic nonce from the adding session's `genesis_hash` #2362 + a per-session
+  monotonic counter) and tombstones; confirm `snapshot_bytes` / `from_snapshot_bytes` / `replay_set_entries` /
+  `to_set_entries` round-trip a group log deterministically (byte-stable, name-sorted) **including tags +
+  tombstones, not just the resolved head** (guardrail 2). **Gate:** round-trip + malformed-frame totality
+  tests, mirroring the existing `name_store` snapshot tests.
 
 - **I3 — the three `store/*` effect families + apply_effect + mode guard.** Add `STORE_ADD`, `STORE_REMOVE`,
-  `STORE_RESOLVE_ALL` consts + `apply_effect` arms + `NameStoreError::NameModeMismatch` (D7). Wire them into
-  the drive loop's store-family routing (they inherit `is_store_family` + the authorize gate). Add them to
+  `STORE_RESOLVE_ALL` consts + `apply_effect` arms + `NameStoreError::{NameModeMismatch, IsGroup}` (D7,
+  guardrail 3). Wire them into the drive loop's store-family routing (they inherit `is_store_family` + the
+  authorize gate + **the same idempotency-key dedup** as `store/set`/`store/resolve`, guardrail 4). Add them to
   `wellknown_static_str` (the off-box-logging safety, #2180). **Gate:** `apply_effect` dispatch + idempotency
-  (re-driven `store/add` by key = no duplicate tag) + mode-mismatch reject + a wasmtime run where a reducer
-  adds, resolves-all, and observes the set.
+  (re-driven `store/add` by key = no duplicate tag) + mode-mismatch/`IsGroup` reject + a wasmtime run where a
+  reducer adds, resolves-all, and observes the set.
 
 - **I4 — the `resolve-all`-freeze query semantics + reducer-side multicast, E2E through the host.** The
   `resolve-all` result freezes into the sender's log; a demo reducer does resolve-all → loops by-id `Emit`
@@ -239,8 +300,13 @@ Each increment is independently green (per-commit-green invariant) and carries i
 
 ## Open decisions with a chosen default
 
-- **Add-tag nonce source** → derive deterministically from `(emitting SessionId, local effect id)`, NEVER a
-  random/clock source (replay-stability). *Default chosen; the vertical picks the exact bytes at the
+- **Add-tag nonce source** → derive deterministically from **`(emitting session's genesis_hash, local effect
+  id)`**, NEVER a random/clock source (replay-stability). *Chosen — and tied to `genesis_hash` rather than a
+  bare `SessionId` on `v-agent-harness`'s review: `SessionId` is becoming the genesis-hash (their greenlit
+  Genesis `spawn_nonce` change, following #2362), so "emitting session's genesis_hash" IS the SessionId once
+  that lands — content-derived + collision-resistant automatically, and the two threads converge with no
+  rework. Before it lands, today's `SessionId` is a weak host-assigned string, so spec'ing the nonce against
+  `genesis_hash` keeps I1 from hardcoding a pre-uniqueness id. The vertical picks the exact bytes at the
   `apply_effect` seam where both are in hand.*
 - **`resolve_all` order** → `BTreeSet<Hash>` (ascending hash bytes) so the frozen set is byte-stable and the
   multicast fan-out order is deterministic. *Default chosen.*
@@ -253,10 +319,21 @@ Each increment is independently green (per-commit-green invariant) and carries i
   the exact Cedar policy text is `v-agent-harness-host`'s to author against their authz seam. *Direction
   chosen; policy text is theirs.*
 
-## Coordination note
+## Coordination record
 
-Sent `v-agent-harness` a `note` flagging the OR-set-on-`name_store` direction and specifically the
-multi-writer `merge_appends_from` change (the one thing that touches their code), with the invariant that
-single-value pointer names keep the exact current merge path. Absent an objection, this proceeds; the vertical
-owner coordinates the `name_store.rs` edits with them as file owner, and `v-agent-harness-host` on the I4 Emit
-fan-out + the I5 death-retract boundary.
+- **`v-agent-harness` (owns `name_store.rs` + the session model) — ENDORSED.** Verified the
+  `merge_appends_from` multi-writer diagnosis against the code (`name_store.rs:369` — `if other_log.len() >
+  mine.len() { extend }` = longer-log-wins prefix-append, single-writer-only; a multi-writer group silently
+  drops one member's `add`). Confirmed the OR-set CRDT is the correct fix and single-value last-write-wins
+  keeps the current path (no regression to `compiler/latest` / `policy/current` / `session/<name>`). Supplied
+  the 4 guardrails folded into D1/D2/D7 + I2/I3, and the value model (`name → Hash` native; their
+  session-naming = the degenerate single-value case; `SessionId = genesis-hash` per #2362). Agreed sequencing:
+  **their single-name naming increment lands first**, this OR-set layer is additive on top, and I1–I3 (the
+  `name_store`/`event_ast` slices) are reviewed-by / optionally-owned-by them as file owner (I2 codec offered
+  to them outright).
+- **`design-session-lifecycle` — aligned on the death seam** (D6): lifecycle emits `Terminated`; the directory
+  consumes it to `store/remove` the dead member from its groups (auto-evict); direct `session/<name>`
+  tombstones (lifecycle's `resolve()`); `suspend` is transparent to group resolution. That is exactly this
+  design's I5.
+- **`v-agent-harness-host`** owns the I4 Emit fan-out (reused by-id path) + the I5 death-retract host hook +
+  the `add/remove self` vs `remove other` Cedar policy text (D5).
