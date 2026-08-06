@@ -1880,6 +1880,49 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 101 Int64)))
 
+(case "Set.contains on a Map-looked-up Set with a perform-threaded element"
+  (doc    "The set/elem same-base emit witnessed clean (the mixed-width siblings of this shape — a
+           looked-up closure applied to a perform result, and Bytes.slice of a looked-up Bytes with
+           perform operands — were i32/i64 scratch-alias miscompiles, both fixed and pinned): the Set
+           comes back through `Map.lookup` and the membership PROBE is a perform result. Same-width
+           slots cannot type-collide; this pins no value clobber either — 5 ∈ {2 5 9} → 10, 6 ∉ → 0 →
+           10.")
+  (input  (do
+            (effect St (op next (-> Unit Int64)))
+            (def (main (: n Int64))
+              (do
+                (def table (Map.insert Map.empty 1 (Set.of (list 2 5 9))))
+                (handle St n
+                  ((next (u) s (resume s (+ s 1))))
+                  (match (Map.lookup table 1)
+                    ((Some st)
+                      (+ (if (Set.contains st (St.next)) 10 0)
+                         (if (Set.contains st (St.next)) 1 0)))
+                    ((None _u) -200)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 10 Int64)))
+
+(case "two sequential lookups on the same Map with perform-threaded keys stay independent"
+  (doc    "The map/key same-base emit witnessed clean (see the sibling pin above for the fixed
+           mixed-width class): two `Map.lookup inner (St.next)` calls in one sum, each key a fresh
+           perform result (5 → 100, 6 → 250 → 350). Pins that consecutive lookup emits with live
+           perform-threaded key operands do not share (or clobber) scratch state.")
+  (input  (do
+            (effect St (op next (-> Unit Int64)))
+            (def (main (: n Int64))
+              (do
+                (def inner (Map.insert (Map.insert Map.empty 5 100) 6 250))
+                (handle St n
+                  ((next (u) s (resume s (+ s 1))))
+                  (+ (match (Map.lookup inner (St.next))
+                       ((Some v) v)
+                       ((None _u) -1))
+                     (match (Map.lookup inner (St.next))
+                       ((Some v) v)
+                       ((None _u) -1))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 350 Int64)))
+
 (case "a TWO-resume-site arm branching on a CAPTURED Map folds — the branch reads heap, not state"
   (doc    "The first-served face of the multi-resume-site family: an arm with two resume sites carrying
            DIFFERENT states per site — the hit path advances the count `(resume v (+ s 1))`, the miss path
@@ -8501,6 +8544,27 @@
   (host-responses (respond ask.get (: 30 Int64)) (respond ask.get (: 40 Int64)))
   (host-calls (call ask.get) (call ask.get))
   (output (: 2070 Int64)))
+
+(case "an in-program two-site handler runs INSIDE a host block beside a host call"
+  (doc    "The host-frame × in-program-frame MIX (wasm/rust; the rust-async lowering declines this
+           composition — its baseline row is a todo, the interposer precedent): the host block's body
+           holds a real host call AND a plain in-program handle side by side — `(+ (ask.get 3) (handle
+           St 0 …))`. The host response (30) and the served two-site sift (5 pass at s=0, 1 fail → 5)
+           sum to 35. Pins that an in-program handler's fold is undisturbed by a sibling host effect
+           in the same body — the frames are independent.")
+  (input  (do
+            (effect ask (op get (-> Int64 Int64)))
+            (effect St (op sift (-> Int64 Int64)))
+            (def (main)
+              (host (ask)
+                (+ (ask.get 3)
+                   (handle St 0
+                     ((sift (v) s (if (> v 1) (resume v (+ s 1)) (resume 0 s))))
+                     (+ (St.sift 5) (St.sift 1))))))
+            (export main)))
+  (host-responses (respond ask.get (: 30 Int64)))
+  (host-calls (call ask.get))
+  (output (: 35 Int64)))
 
 (case "a constant-try helper folds and its result feeds a handler arm's resume"
   (doc    "try × handler-arm composition (the effect pins keep performs on the spine, try in the body): a CONST succeeding try in a helper folds through and feeds the arm's resume.")

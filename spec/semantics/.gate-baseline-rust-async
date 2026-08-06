@@ -299,6 +299,7 @@ pass	Set.contains dispatches on an Option element at a runtime payload
 pass	Set.contains does not fold a set whose element is a runtime scalar
 pass	Set.contains finds a runtime STRING-rope element built via Set.of
 pass	Set.contains finds a separately-built equal quantity but not a non-member
+pass	Set.contains on a Map-looked-up Set with a perform-threaded element
 pass	Set.contains over nan finds nan
 pass	Set.contains over negative zero does not find positive zero
 pass	Set.insert does not fold a duplicate against a runtime element
@@ -5629,6 +5630,7 @@ pass	two same-signature closures alongside a plain export all coexist
 pass	two same-signature closures alongside a plain export — the plain export runs
 pass	two same-variant ctor list elements refining the payload by literal fall through, not trap
 pass	two scalar matches of different widths beside i32 handles in one recursive emit frame stay valid
+pass	two sequential lookups on the same Map with perform-threaded keys stay independent
 pass	two sets of TUPLES built in different orders compare equal through the compound elements
 pass	two sets of different sizes are unequal, not a type error
 pass	two sets with different elements are unequal, not a type error
@@ -5823,6 +5825,7 @@ todo	an effectful host arg to a multi-use function parameter is evaluated ONCE, 
 todo	an entrypoint delegation lets a program reach its host function
 todo	an entrypoint delegation reaches an effect performed in a recursive callee
 todo	an exact RATIONAL host value crosses as two scalar num/den ops the guest recombines (#13)
+todo	an in-program two-site handler runs INSIDE a host block beside a host call
 todo	an inner handle of the SAME delegated effect discharges in-program inside the host block
 todo	an interposing handler TRANSFORMS the host response before resuming (offset adapter)
 todo	an intra-program handler interposes on a delegated effect, counts it, and forwards to the boundary

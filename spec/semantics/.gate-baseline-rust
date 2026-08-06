@@ -299,6 +299,7 @@ pass	Set.contains dispatches on an Option element at a runtime payload
 pass	Set.contains does not fold a set whose element is a runtime scalar
 pass	Set.contains finds a runtime STRING-rope element built via Set.of
 pass	Set.contains finds a separately-built equal quantity but not a non-member
+pass	Set.contains on a Map-looked-up Set with a perform-threaded element
 pass	Set.contains over nan finds nan
 pass	Set.contains over negative zero does not find positive zero
 pass	Set.insert does not fold a duplicate against a runtime element
@@ -4146,6 +4147,7 @@ pass	an imported helper's performs discharge at a handler whose STATE is the imp
 pass	an imported name resolves to a sibling file's exported definition
 pass	an in-bounds slice yields Some of the bytes at that range
 pass	an in-program handler OVERRIDES an effect's peer binding (the test-mock, no peer call)
+pass	an in-program two-site handler runs INSIDE a host block beside a host call
 pass	an in-range constant argument to a narrow parameter computes at the parameter width
 pass	an in-range left shift on an unusual signed width computes at the declared width
 pass	an in-range unusual-width division computes at the declared width
@@ -5742,6 +5744,7 @@ pass	two same-signature closures alongside a plain export — the plain export r
 pass	two same-unit Qty host results combine guest-side as a same-dimension add
 pass	two same-variant ctor list elements refining the payload by literal fall through, not trap
 pass	two scalar matches of different widths beside i32 handles in one recursive emit frame stay valid
+pass	two sequential lookups on the same Map with perform-threaded keys stay independent
 pass	two sets of TUPLES built in different orders compare equal through the compound elements
 pass	two sets of different sizes are unequal, not a type error
 pass	two sets with different elements are unequal, not a type error
