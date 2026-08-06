@@ -1572,6 +1572,44 @@
                     (+ (A.a) (+ (B.b) (Bail.bail 99))))))) (export main)))
   (output (: 99 Int64)))
 
+(case "FOUR nested resumptive frames dispatched innermost-out"
+  (doc    "The resumptive nesting pins stop at two frames; this stacks FOUR (distinct effects, distinct
+           seeds at distinct place values) and dispatches innermost-out — D, C, B, A — so each perform
+           is served by its own frame with zero escaping: 4000 + 300 + 20 + 5 = 4325. With the
+           outermost-first sibling below, pins depth-4 frame bookkeeping in both traversal orders.")
+  (input  (do
+            (effect A (op a (-> Unit Int64)))
+            (effect B (op b (-> Unit Int64)))
+            (effect C (op c (-> Unit Int64)))
+            (effect D (op d (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle A n ((a (u) s (resume s (+ s 1))))
+                (handle B 20 ((b (u) s (resume s (+ s 1))))
+                  (handle C 300 ((c (u) s (resume s (+ s 1))))
+                    (handle D 4000 ((d (u) s (resume s (+ s 1))))
+                      (+ (D.d) (+ (C.c) (+ (B.b) (A.a)))))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 4325 Int64)))
+
+(case "four nested frames dispatched OUTERMOST-first — every outer perform escapes live inner frames"
+  (doc    "The escape-order stress of the depth-4 stack: dispatching A, B, C, D means the `A.a` perform
+           must route past THREE live inner frames (B, C, D) to its handler, `B.b` past two, `C.c`
+           past one — the maximal-escape traversal. Same checksum as the innermost-out sibling (4325):
+           the answer must not depend on which frame order the body dispatches.")
+  (input  (do
+            (effect A (op a (-> Unit Int64)))
+            (effect B (op b (-> Unit Int64)))
+            (effect C (op c (-> Unit Int64)))
+            (effect D (op d (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle A n ((a (u) s (resume s (+ s 1))))
+                (handle B 20 ((b (u) s (resume s (+ s 1))))
+                  (handle C 300 ((c (u) s (resume s (+ s 1))))
+                    (handle D 4000 ((d (u) s (resume s (+ s 1))))
+                      (+ (A.a) (+ (B.b) (+ (C.c) (D.d)))))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 4325 Int64)))
+
 (case "an inner abortive handler preserves an OUTER effect's advance committed before the abort (do-shape)"
   (doc    "The abort-fold's outer-advance preservation (v-effects, breaker ao1). An inner abortive `B`-handle
            runs a FOREIGN perform `(A.tick)` — an OUTER `A` handler's op — on its strict do-spine BEFORE it
@@ -8460,6 +8498,98 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 2536 Int64)))
 
+(case "a Float64 handler state advances fractionally through a two-site arm"
+  (doc    "The f64 face of the state-representation matrix: the state walks 0.5 → 0.75 → 1.0 (+0.25
+           per pass — dyadic fractions, no rounding ambiguity) while the arm gates on the integer op
+           argument. feed 20 → 20, feed 5 → 0, feed 30 → 30 → 2030. Pins that the refold's state
+           threading carries an f64 slot through the continuation rebuild.")
+  (input  (do
+            (effect St (op feed (-> Int64 Int64)))
+            (def (main (: a Int64))
+              (handle St 0.5
+                ((feed (v) s (if (> v 10) (resume v (+ s 0.25)) (resume 0 s))))
+                (+ (* 100 (St.feed 20)) (+ (* 10 (St.feed a)) (St.feed 30)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 2030 Int64)))
+
+(case "a Float64 op RESULT crosses resume and float state arithmetic is observed by comparison"
+  (doc    "The f64 op-result face: the arm resumes the CURRENT float state and halves it (`(* s 0.5)`),
+           so two reads yield 0.5 and 0.25 — all dyadic, exact — and the body observes their sum via
+           `(> … 0.7)` → 1. Pins float values crossing the resume boundary and float next-state
+           arithmetic, with a comparison consumer (float equality is not the corpus idiom).")
+  (input  (do
+            (effect St (op frac (-> Unit Float64)))
+            (def (main (: a Int64))
+              (handle St 0.5
+                ((frac (u) s (resume s (* s 0.5))))
+                (if (> (+ (St.frac) (St.frac)) 0.7) 1 0)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 1 Int64)))
+
+(case "a TUPLE handler state — the arm destructures, branches, and rebuilds both slots"
+  (doc    "The product-state twin-accumulator: `(tuple lo hi)` where the two-site arm (a match around
+           the if) routes fails into `lo` (accumulating) and passes into `hi` (counting +1 per pass,
+           resumed with `v + hi`); the trailing `sum` reads both. step 20 → 120 (hi 101), step 3 → 0
+           (lo 3), sum → 104 → 120 + 0 + 104000 = 104120. Both slots must survive every rebuild —
+           a dropped or swapped slot breaks the place-value sum.")
+  (input  (do
+            (effect St (op step (-> Int64 Int64)) (op sum (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St (tuple 0 100)
+                ((step (v) s
+                  (match s
+                    ((tuple lo hi)
+                      (if (> v 10)
+                        (resume (+ v hi) (tuple lo (+ hi 1)))
+                        (resume lo (tuple (+ lo v) hi))))))
+                 (sum (u) s (match s ((tuple lo hi) (resume (+ lo hi) s)))))
+                (+ (St.step 20) (+ (St.step n) (* 1000 (St.sum))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 104120 Int64)))
+
+(case "a tuple-of-HEAP state — every dispatch grows BOTH components in one rebuild"
+  (doc    "The heap escalation of the tuple state: `(tuple (list) map)` where each `rec` pushes onto
+           the List AND inserts into the Map in one rebuild, answering the pre-push length; the
+           trailing `stats` reads across both components. rec 7 → 0 ([7], {…,7:14}), rec 5 → 1
+           ([7 5], {…,5:10}), stats → 2 + m[7]=14 = 16 → 0 + 1 + 1600 = 1601. The twin-accumulator
+           idiom as ONE tuple-valued state (the do-threaded twin-accumulator pins spell it as two
+           separate bindings).")
+  (input  (do
+            (effect St (op rec (-> Int64 Int64)) (op stats (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St (tuple (list) (Map.insert Map.empty 0 0))
+                ((rec (v) s
+                  (match s
+                    ((tuple xs m)
+                      (resume (List.len xs) (tuple (List.push xs v) (Map.insert m v (* v 2)))))))
+                 (stats (u) s
+                  (match s
+                    ((tuple xs m)
+                      (resume (+ (List.len xs) (match (Map.lookup m 7) ((Some x) x) ((None _u) 0))) s)))))
+                (+ (St.rec 7) (+ (St.rec n) (* 100 (St.stats))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 1601 Int64)))
+
+(case "a compile-time Char comparison folds beside performs (the runtime-Char boundary's served face)"
+  (doc    "`(String.scalar-at \\\"hello\\\" 1)` with BOTH operands compile-time constants yields
+           `(Some #\\e)` at compile time, and the `(= c #\\e)` comparison folds to 1 beside a live
+           perform: 5 + 1 = 6. The RUNTIME face is a by-design boundary: a runtime Char has no
+           representation yet, so `String.scalar-at` over a runtime string/index rejects (the
+           diagnostic names the alternatives — `String.at` for an `(Option String)` one-scalar read,
+           `Bytes.at` over `String.to-bytes` for ASCII scans); an effect crossing inherits that
+           boundary unchanged.")
+  (input  (do
+            (effect St (op bump (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((bump (u) s (resume s (+ s 1))))
+                (+ (St.bump)
+                   (match (String.scalar-at "hello" 1)
+                     ((Some c) (if (= c #\e) 1 0))
+                     ((None _u) -1)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 6 Int64)))
+
 (case "a TWO-site arm over a BigInt state (heap-scalar state through the refold)"
   (doc    "The heap-scalar sibling of the Qty two-site pin above: the state is a BigInt (`(BigInt.of
            a)`), advanced with BigInt arithmetic (`(+ s 1N)`) on the pass path and read back through
@@ -8907,9 +9037,10 @@
            compile-time-visible quote — sits between two performs and folds to its 3 while the
            performs discharge normally: 5 + 3 + 6 = 14. Both features rewrite the handle body (the
            eval reconstructs-and-compiles, the fold discharges performs); this pins that they
-           compose. (An arm-built RUNTIME Ast fed to eval is rejected by design with CDZ0101:
-           'eval executes only a COMPILE-TIME-VISIBLE AST construction (a (quote ...) or literal
-           Ast.*)' — the compiler builds and analyzes AST but does not run a dynamically-built one.)")
+           compose. (An arm-built RUNTIME Ast fed to eval is rejected by design with CDZ0101, whose
+           message begins: `eval` executes only a COMPILE-TIME-VISIBLE AST construction (a
+           `(quote …)` or literal `Ast.*`): it reconstructs the source that AST denotes and compiles
+           it. — the compiler builds and analyzes AST but does not run a dynamically-built one.)")
   (input  (do
             (effect St (op next (-> Unit Int64)))
             (def (main (: n Int64))

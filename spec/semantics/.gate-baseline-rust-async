@@ -118,6 +118,7 @@ pass	EQUILIBRIUM INDEX finds where left and right sums balance using total minus
 pass	Euclid's GCD runs over MULTI-LIMB BigInts — the remainder loop carries full precision
 pass	FAST-DOUBLING fib recurses on the halved index returning a pair, checked against linear iteration
 pass	FOUR bit-fields with widths 5+7+9+3 decode across three runtime bytes
+pass	FOUR nested resumptive frames dispatched innermost-out
 pass	FULL CONTRACT: @requires + @ensures on ONE def fire INDEPENDENTLY — a pre-violation and a post-violation trap on DIFFERENT inputs
 pass	Float32 arithmetic runs at 24-bit mantissa precision — 2^24+1 absorbs, 2^24+2 is exact
 pass	Float32 division const-folds at f32 (0.3f32 / 3.0f32 = 0.1f32)
@@ -633,6 +634,8 @@ pass	a Float32-overflowing literal in a runtime match arm is rejected at check
 pass	a Float32-overflowing literal in argument position under a narrow parameter is rejected at check
 pass	a Float32-overflowing literal nested in a compound payload is rejected
 pass	a Float32-overflowing magnitude literal under a Float32 Qty inner type is rejected
+pass	a Float64 handler state advances fractionally through a two-site arm
+pass	a Float64 op RESULT crosses resume and float state arithmetic is observed by comparison
 pass	a GENERIC recursive sum branching through a tuple folds at a concrete instantiation
 pass	a GENERIC user sum crosses a module boundary at a concrete instantiation
 pass	a GENSYM effect derives fresh symbols from a counter state — same base yields distinct symbols
@@ -982,6 +985,7 @@ pass	a TOPOLOGICAL sort drains min-ready nodes and verifies every edge points fo
 pass	a TRANSPOSE of a 2x3 list-of-rows walks columns across row spines
 pass	a TRIPLY-nested Record ARG crosses the direct-call boundary
 pass	a TUPLE containing a closure as a map key is rejected (CDZ0216 descends into compound keys)
+pass	a TUPLE handler state — the arm destructures, branches, and rebuilds both slots
 pass	a TUPLE op argument with a HEAP leaf destructures inside the arm
 pass	a TUPLE-result perform's projected field feeds a SECOND perform's argument, threading state across both
 pass	a TUPLE-returning operation resumes a pair built from the handler state, then projected
@@ -1322,6 +1326,7 @@ pass	a comparison's trapping shared bound fires under a trap-free condition
 pass	a comparison-driven MERGE of two sorted lists interleaves and drains the remainder
 pass	a comparison-predicate function returns its boolean result
 pass	a comparison-select over the two zeros returns the UNTAKEN operand and the canonical eq sees which
+pass	a compile-time Char comparison folds beside performs (the runtime-Char boundary's served face)
 pass	a compile-time expansion residual combines with a runtime param per call
 pass	a compile-time type branch reads a runtime parameter's static type
 pass	a complementary comparison pair nested past a third operand still folds via reassociation
@@ -3583,6 +3588,7 @@ pass	a tuple with a Symbol leaf as a SET element dedups and membership-checks by
 pass	a tuple with a runtime element is returned as a program result
 pass	a tuple with every element computed at run time is returned as a result
 pass	a tuple-destructuring fn (lambda) parameter binds its parts
+pass	a tuple-of-HEAP state — every dispatch grows BOTH components in one rebuild
 pass	a tuple-of-two-sums match reads each sum's payload from its own slot (HM-unify shape)
 pass	a tuple-parameter export returns a BigInt computed from its fields
 pass	a tuple-parameter export returns a list computed from its fields
@@ -4689,6 +4695,7 @@ pass	float double negation round-trips signed zero — -(-0.0) is +0.0, not -0.0
 pass	float multiplication uses the arithmetic operator
 pass	float subtraction uses the arithmetic operator
 pass	floating-point uses the fixed rounding mode
+pass	four nested frames dispatched OUTERMOST-first — every outer perform escapes live inner frames
 pass	four same-signature closure exports share one resource
 pass	from-bytes decodes a 3-byte scalar split across BOTH seams of a 3-leaf rope
 pass	from-bytes rejects a torn sequence whose invalid continuation sits in the NEXT leaf
