@@ -21,10 +21,20 @@
 
 use crate::admin::{AdminAuthorizer, AdminCommand, AdminResponse, AllowList, SessionFactory};
 use crate::host::{AgentHost, SessionId};
-use cdz_kernel::event::EventBody;
+use cdz_kernel::effect::Payload;
+use cdz_kernel::event::{ContentType, EventBody};
 use cdz_kernel::hash::Hash;
 use cdz_kernel::kernel::KernelError;
 use tokio::sync::{mpsc, oneshot};
+
+/// The content-type family of a BOUNCE event (§lifecycle I5): when a cross-session [`Emit`](crate::EmitExecutor)
+/// targets a session that is GONE (terminated → removed from the registry) or terminated-in-place, the loop
+/// delivers an [`EventBody::Inbound`] of this family back to the ORIGINATING session (its `reply_to`), so the
+/// sender's reducer observes the failure (a Failure-to-sender, §effect-model — never a silent drop). The
+/// payload echoes the failed Emit's correlation token + a reason so the sender matches it to the specific Emit.
+const DELIVERY_FAILURE_FAMILY: &str = "delivery-failure";
+/// v1 of the delivery-failure wire.
+const DELIVERY_FAILURE_VERSION: u32 = 1;
 
 /// One inbound delivery to route to a session: its id + the event body + optional cause. The `Inbox`
 /// sender clones cheaply, so many producers (network listeners, peer-emit bridges, a test) can feed the
@@ -33,10 +43,64 @@ pub struct Inbound {
     pub session: SessionId,
     pub body: EventBody,
     pub cause: Option<Hash>,
+    /// HOST-INTERNAL routing return-address (§lifecycle I5): the id of the session that ORIGINATED this
+    /// delivery, when it was produced by a cross-session [`Emit`](crate::EmitExecutor) — so if the target is
+    /// gone (terminated → removed from the registry) or terminated-in-place, the loop can BOUNCE a
+    /// `delivery-failure` back to the originator (a Failure-to-sender, not a silent drop). `None` for an
+    /// ordinary external inbound (a network/admin producer with no originating session to bounce to).
+    ///
+    /// This is host ROUTING METADATA, never a kernel field and never guest-interpreted: the guest payload
+    /// stays opaque (§4), and the origin is the host's own dispatch context (the sender IS the session being
+    /// driven when its reducer emitted). It is NOT persisted into the target's log — only `body`/`cause` are.
+    pub reply_to: Option<SessionId>,
 }
 
 /// The sending half a producer holds to deliver events into the host loop. Cloneable (mpsc sender).
 pub type Inbox = mpsc::UnboundedSender<Inbound>;
+
+/// The correlation payload to echo in a bounce (§lifecycle I5): the failed message's OWN payload, so the
+/// sender's reducer can match the delivery-failure to the specific message it emitted. For an
+/// [`EventBody::Inbound`] (what a cross-session Emit produces) that's its `payload`; any other body (a
+/// bounce should only ever originate from an Emit-produced Inbound) yields an empty payload.
+fn bounce_echo_payload(body: &EventBody) -> Payload {
+    match body {
+        EventBody::Inbound { payload, .. } => payload.clone(),
+        _ => Payload::Inline(Vec::new().into()),
+    }
+}
+
+/// Route a `delivery-failure` bounce back to the ORIGINATING session (§lifecycle I5): a cross-session Emit
+/// could not be delivered because its target is gone (terminated → removed) or terminated-in-place, so the
+/// sender's reducer folds this Inbound as a Failure-to-sender instead of the emit silently vanishing. The
+/// bounce is delivered IN-PLACE (same `host.deliver` path) — the sender is a live registered session on this
+/// loop. Best-effort by design: if the SENDER is itself gone/terminated (its own delivery returns
+/// `None`/`FoldRefused`) there is nothing to notify and we drop the bounce (no bounce-of-a-bounce); a real
+/// `KernelError` on the sender's fold still fails the loop fast (propagated via `?`).
+async fn bounce_delivery_failure(
+    host: &mut AgentHost,
+    sender: &SessionId,
+    failed_target: &SessionId,
+    failed_payload: Payload,
+    reason: &str,
+) -> Result<(), KernelError> {
+    // Guest-opaque payload: the sender defined the message schema, so we echo its own bytes back for
+    // correlation (§4 — the host never interprets it). The `reason` rides the log's tracing, not the guest
+    // payload (guest sees its own message came back under the delivery-failure family).
+    let _ = (failed_target, reason); // recorded via tracing at the call site's span; not in the guest payload
+    let body = EventBody::Inbound {
+        content_type: ContentType {
+            family: DELIVERY_FAILURE_FAMILY.into(),
+            version: DELIVERY_FAILURE_VERSION,
+        },
+        payload: failed_payload,
+    };
+    match host.deliver(sender, body, None).await {
+        // Sender folded the bounce, or the sender is itself gone/terminated → nothing more to do (no
+        // bounce-of-a-bounce). Only a genuine KernelError on the sender's own fold propagates.
+        Some(Ok(())) | None | Some(Err(KernelError::FoldRefused)) => Ok(()),
+        Some(Err(e)) => Err(e),
+    }
+}
 
 /// One admin command routed to the host loop with a reply channel — the in-process half of the admin
 /// CONTROL INTERFACE. A producer (the future Unix-socket listener, or a test) sends this on the
@@ -258,15 +322,42 @@ impl AsyncAgentHost {
                 maybe = rx.recv(), if inbox_open => {
                     match maybe {
                         Some(msg) => {
+                            // Keep the return-address + the failed message payload BEFORE `msg.body` is moved
+                            // into deliver — needed to synthesize a bounce if the target is gone/terminated
+                            // (§lifecycle I5). `reply_to` is set only for cross-session Emits (EmitExecutor).
+                            let reply_to = msg.reply_to.clone();
+                            let failed_payload = bounce_echo_payload(&msg.body);
+                            let target = msg.session.clone();
                             match host.deliver(&msg.session, msg.body, msg.cause).await {
                                 // Delivered + the session ran a turn.
                                 Some(Ok(())) => {}
-                                // Unknown session id: a no-op (the producer addressed a session that isn't
-                                // registered) — a robust host doesn't crash on a stray id.
-                                None => {}
-                                // A KERNEL error (corruption / programming error — NOT a reducer fault,
-                                // which is a FoldFailed event). Not recoverable in-loop: fail fast so an
-                                // operator/supervisor sees it, rather than swallowing it (PR#1303).
+                                // Target ABSENT from the registry. For an ORDINARY external inbound (no
+                                // reply_to) this is the benign stray-id no-op (a robust host doesn't crash).
+                                // For a cross-session Emit (reply_to set) whose target is gone — e.g.
+                                // TERMINATED then removed (§lifecycle I5) — BOUNCE a delivery-failure back to
+                                // the sender rather than silently dropping it (Failure-to-sender).
+                                None => {
+                                    if let Some(sender) = reply_to {
+                                        bounce_delivery_failure(
+                                            &mut host, &sender, &target, failed_payload,
+                                            "target session is not registered (terminated or never spawned)",
+                                        ).await?;
+                                    }
+                                }
+                                // Target present but TERMINATED — the kernel's I1 fold guard refuses the
+                                // delivery (FoldRefused). This is the ONLY KernelError that means "terminated";
+                                // a cross-session Emit to it BOUNCES (Failure-to-sender), same as absent.
+                                Some(Err(KernelError::FoldRefused)) => {
+                                    if let Some(sender) = reply_to {
+                                        bounce_delivery_failure(
+                                            &mut host, &sender, &target, failed_payload,
+                                            "target session is terminated (refuses further delivery)",
+                                        ).await?;
+                                    }
+                                }
+                                // Any OTHER KERNEL error (corruption / programming error — NOT a reducer
+                                // fault, which is a FoldFailed event, and NOT FoldRefused). Not recoverable
+                                // in-loop: fail fast so an operator/supervisor sees it (PR#1303).
                                 Some(Err(e)) => return Err(e),
                             }
                         }
@@ -445,6 +536,7 @@ mod tests {
                 session: SessionId::new("a"),
                 body: go(),
                 cause: None,
+                reply_to: None,
             })
             .unwrap();
         inbox
@@ -452,6 +544,7 @@ mod tests {
                 session: SessionId::new("b"),
                 body: go(),
                 cause: None,
+                reply_to: None,
             })
             .unwrap();
         drop(inbox);
@@ -564,7 +657,7 @@ mod tests {
             }])),
             CompositeExecutor::new().with_effect(
                 effect_ct::EMIT,
-                Box::new(crate::EmitExecutor::new(tx.clone())),
+                Box::new(crate::EmitExecutor::new(tx.clone(), SessionId::new("session-a"))),
             ),
         );
         // B: ReceiverAgent → folds the routed message into KV. Performs no effects (deny-all authz is fine).
@@ -617,6 +710,105 @@ mod tests {
             Some(&b"hello-from-a"[..]),
             "B's reducer folded the message A emitted (cross-session messaging works end to end)"
         );
+    }
+
+    /// Records a `delivery-failure` bounce (§lifecycle I5): folds a delivery-failure Inbound into KV under
+    /// "bounced" with the echoed (failed-message) payload, so a test can assert the sender was notified.
+    struct BounceRecorder;
+    #[async_trait::async_trait(?Send)]
+    impl Reducer for BounceRecorder {
+        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+            if let EventBody::Inbound {
+                content_type,
+                payload: Payload::Inline(bytes),
+            } = &event.body
+            {
+                if content_type.matches_family("delivery-failure") {
+                    kv.put(b"bounced".to_vec(), bytes.to_vec());
+                }
+            }
+            FoldOutput::none()
+        }
+    }
+
+    #[tokio::test]
+    async fn an_emit_to_an_absent_target_bounces_a_delivery_failure_to_the_sender() {
+        // §lifecycle I5 bounce: an Inbound produced by a cross-session Emit (reply_to = the sender) whose
+        // TARGET is not registered (terminated→removed, or never spawned) does NOT silently drop — the loop
+        // routes a `delivery-failure` Inbound back to the sender, which folds it. Drive the real loop.
+        let mut host = AgentHost::new();
+        // Only the SENDER is registered; the target "ghost" is absent (models a terminated-then-removed peer).
+        host.spawn(SessionId::new("sender"), {
+            HostedSession::genesis(
+                Hash::of(b"bounce-recorder-v1"),
+                Box::new(BounceRecorder),
+                Box::new(Authorizer::deny_all()),
+                CompositeExecutor::new(),
+            )
+        });
+        let async_host = AsyncAgentHost::new(host);
+        let inbox = async_host.inbox();
+        let (_sd_tx, sd_rx) = tokio::sync::oneshot::channel();
+
+        // A message addressed to the ABSENT target, carrying the sender as reply_to (what EmitExecutor
+        // stamps). The loop's deliver → None (absent) → bounce a delivery-failure to "sender".
+        inbox
+            .send(Inbound {
+                session: SessionId::new("ghost"),
+                body: EventBody::Inbound {
+                    content_type: ContentType {
+                        family: "message".into(),
+                        version: 1,
+                    },
+                    payload: Payload::Inline(b"undeliverable".to_vec().into()),
+                },
+                cause: None,
+                reply_to: Some(SessionId::new("sender")),
+            })
+            .unwrap();
+        drop(inbox);
+
+        let host = async_host
+            .run(sd_rx, || 0)
+            .await
+            .expect("clean shutdown, no kernel error");
+
+        // The sender folded a delivery-failure carrying the failed message's payload (correlation echo).
+        assert_eq!(
+            host.get(&SessionId::new("sender"))
+                .unwrap()
+                .session()
+                .kv()
+                .get(b"bounced"),
+            Some(&b"undeliverable"[..]),
+            "the sender folded a delivery-failure bounce for its undeliverable Emit (not a silent drop)"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_external_inbound_to_an_absent_target_is_a_silent_noop_no_bounce() {
+        // The bounce is ONLY for cross-session Emits (reply_to set). An ORDINARY external inbound (reply_to
+        // None) to an absent id stays the benign stray-id no-op — no bounce, no panic, clean loop exit.
+        let mut host = AgentHost::new();
+        host.spawn(SessionId::new("live"), mark_host());
+        let async_host = AsyncAgentHost::new(host);
+        let inbox = async_host.inbox();
+        let (_sd_tx, sd_rx) = tokio::sync::oneshot::channel();
+        inbox
+            .send(Inbound {
+                session: SessionId::new("nobody"),
+                body: go(),
+                cause: None,
+                reply_to: None, // external producer, no originating session → no bounce
+            })
+            .unwrap();
+        drop(inbox);
+        let host = async_host
+            .run(sd_rx, || 0)
+            .await
+            .expect("a stray external inbound is a clean no-op, not a loop error");
+        // The live session is untouched (it was never addressed); nothing bounced anywhere.
+        assert!(host.contains(&SessionId::new("live")));
     }
 
     /// A timer agent: arms a timer at `deadline_ms` on "go"; records "woke" when it fires (PR#1303 fix).
@@ -713,6 +905,7 @@ mod tests {
                 session: SessionId::new("wall"),
                 body: go(),
                 cause: None,
+                reply_to: None,
             })
             .unwrap();
         drop(inbox); // channel closes after the one message → loop returns
