@@ -1551,6 +1551,63 @@ fn nested_width_fault_by_ty(db: &mut Db, value: StructId, want: &Ty) -> Option<R
                 .iter()
                 .find_map(|&e| width_fault_against_ty(db, e, &elem_ty))
         }
+        // A RECORD value against a `(Record …)` expected type — each declared field's type applies to its
+        // value node, keyed by symbol. The `Ty`-driven twin of the `ty_expr`-driven Record arm in
+        // `nested_literal_width_faults_against`: without it a narrow FIELD literal fed through a compound
+        // op ARGUMENT — `(Send.put (record (small 999) (big 5)))` for `(-> (Record (small UInt8) …) …)` —
+        // escaped the fit-check (the tuple/list element arms above already reach their elements, but a
+        // record row was not descended), so `999` inhabited the `UInt8` field and the arm OBSERVED it
+        // (breaker nc-t3, the record face of the nw-class op-arg soundness gap). Read the field value nodes
+        // by symbol from whichever record shape (a folded `Resolved::Record` or a `RecordNew` name-alias),
+        // exactly as the `ty_expr` descent does.
+        Ty::Record(field_tys) => {
+            let fields = match resolved_of(db, value) {
+                Resolved::Record { fields } => (*fields).clone(),
+                Resolved::Apply { head, args }
+                    if crate::eval::meta_apply_of(db, head)
+                        == Some(crate::resolved::Prim::RecordNew) =>
+                {
+                    crate::resolve::read_record_fields(db, &args).ok()?
+                }
+                _ => return None,
+            };
+            field_tys.iter().find_map(|(sym, t)| {
+                fields
+                    .get(sym)
+                    .and_then(|&v| width_fault_against_ty(db, v, t))
+            })
+        }
+        // A MAP value against a `(Map K V)` expected type — each entry key literal against `K`, each value
+        // literal against `V`. The `Ty`-driven twin of the `ty_expr` Map arm; the map face of the same
+        // compound-op-argument gap (a `(-> (Map … UInt8) …)` op arg with an out-of-range value literal).
+        Ty::Map(key_ty, val_ty) => {
+            let (key_ty, val_ty) = ((**key_ty).clone(), (**val_ty).clone());
+            match resolved_of(db, value) {
+                Resolved::Map { entries } => entries.to_vec().iter().find_map(|&(k, v)| {
+                    width_fault_against_ty(db, k, &key_ty)
+                        .or_else(|| width_fault_against_ty(db, v, &val_ty))
+                }),
+                Resolved::Apply { head, args }
+                    if crate::eval::meta_apply_of(db, head)
+                        == Some(crate::resolved::Prim::MapNew) =>
+                {
+                    args.iter()
+                        .filter_map(|&entry| match db.ast.get(entry) {
+                            crate::ast::Struct::List(items) if items.len() == 2 => {
+                                Some((items[0], items[1]))
+                            }
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .iter()
+                        .find_map(|&(k, v)| {
+                            width_fault_against_ty(db, k, &key_ty)
+                                .or_else(|| width_fault_against_ty(db, v, &val_ty))
+                        })
+                }
+                _ => None,
+            }
+        }
         _ => None,
     }
 }
@@ -7508,6 +7565,18 @@ fn check_resume_result_type(db: &mut Db, arm: &crate::resolved::HandleArm, out: 
         return; // no tail resume (abortive / non-tail) — out of scope for this check
     };
     let value_ty = type_of(db, value);
+    // WIDTH FIT-CHECK (breaker nw-class, nw8 result face): a DEFERRED integer LITERAL resume value
+    // `(resume 999 s)` AGREES with any int width, so the `agrees_with` clash-check below does NOT fire —
+    // yet `999` does not FIT a `UInt8` op RESULT. The perform site returns this value into a `UInt8`-typed
+    // position (and, for a HOST op, across the component boundary), so it must pass the same CDZ0302
+    // range-check the argument direction + every annotated narrow position enforces. Run it against the
+    // op's declared result type BEFORE the agreement check (a genuine kind-clash still falls to CDZ0201
+    // below). `width_fault_against_ty` handles narrow-int / Float32 / compound-payload nesting.
+    if let Some(reject) = width_fault_against_ty(db, value, &result) {
+        trace!(target: "rcdzc::infer", value = value.0, "fault: resume value literal does not fit the operation's declared narrow result width (CDZ0302)");
+        out.push(reject);
+        return;
+    }
     if !value_ty.agrees_with(&result) {
         trace!(target: "rcdzc::infer", value = value.0, "fault: resume value's type does not match the operation's result type (CDZ0201)");
         let mut reject = Reject::coded(
@@ -11221,6 +11290,28 @@ fn check_application(
                             ..reject
                         });
                     } else {
+                        out.push(reject);
+                    }
+                } else if crate::eval::effect_op_of(db, head).is_some() {
+                    // SUCCESSFUL unify against an effect-op parameter — but a DEFERRED integer LITERAL
+                    // `(Send.put 999)` AGREES with any int width (the deferred width is compatible), so the
+                    // unify does not fault, yet `999` does not FIT a `UInt8` op parameter. Run the same
+                    // range-check (CDZ0302) every SIBLING narrow position enforces — a plain-fn param
+                    // (`(f 999)` for `(: v UInt8)`, via the substitution/annotation path), an annotated
+                    // literal (`(: 999 UInt8)`), a variant payload, the handle SEED. The effect-op perform
+                    // is NOT inlined (the fold discharges it), so it never reaches those paths and the
+                    // out-of-range literal silently inhabited the narrow binder → the arm OBSERVED the
+                    // over-range value (`999` in a `UInt8` slot) and, for a HOST-delegated op, it crossed
+                    // the COMPONENT boundary in the declared-width slot (breaker nw-class, operator-confirmed
+                    // soundness). Fit-check the arg against the op's SOLVED parameter type here — the
+                    // perform-site analogue of the parameter-substitution fit-check. `width_fault_against_ty`
+                    // descends a compound (record/tuple/list payload) + handles the narrow-int / Float32
+                    // cases, so a compound op argument's nested literal is checked too. Covers the ARGUMENT
+                    // direction (all widths, both signs); the RESUME-VALUE-vs-op-RESULT direction (nw8) is
+                    // checked at the resume-result site.
+                    let sparam = subst.apply(&param);
+                    if let Some(reject) = width_fault_against_ty(db, arg, &sparam) {
+                        trace!(target: "rcdzc::infer", head = head.0, arg = arg.0, "fault: effect-op argument literal does not fit the declared narrow width (CDZ0302)");
                         out.push(reject);
                     }
                 }
