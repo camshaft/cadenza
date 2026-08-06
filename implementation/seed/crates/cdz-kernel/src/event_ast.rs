@@ -434,6 +434,77 @@ pub fn decode_member_op(bytes: &[u8]) -> Result<(String, bool, Hash, (Hash, u64)
     Ok((name, add, member, tag))
 }
 
+/// A decoded §4c store-snapshot frame — either a single-value `name-set` pointer or a group `member-op`.
+/// This is the durable-snapshot restore discriminant: [`decode_store_frame`] decodes the shared codec
+/// ONCE and routes on the frame's self-describing AST head, so [`crate::name_store::NameStore::from_snapshot_bytes`]
+/// doesn't try-one-then-fall-back (which re-parses every pointer frame — github-liaison #2424 c2 perf).
+#[derive(Debug, PartialEq, Eq)]
+pub enum StoreFrame {
+    /// A single-value pointer `set(name, hash)` (a `name-set` frame).
+    NameSet { name: String, hash: Hash },
+    /// A group OR-set op (a `member-op` frame): `(name, add, member, tag)`.
+    MemberOp {
+        name: String,
+        add: bool,
+        member: Hash,
+        tag: (Hash, u64),
+    },
+}
+
+/// Decode a store-snapshot frame with a SINGLE codec pass, routing on its AST head (`name-set` vs
+/// `member-op`) — the restore-time discriminant for [`crate::name_store::NameStore::from_snapshot_bytes`].
+/// Total: an unknown head / bad shape / non-AST bytes is a clean `Err` (durable-store bytes), never a panic.
+pub fn decode_store_frame(bytes: &[u8]) -> Result<StoreFrame, EventAstError> {
+    let a = codec::decode_detailed(bytes).map_err(EventAstError::Codec)?;
+    match head_of(&a, a.root)? {
+        "name-set" => {
+            let [name_f, hash_f] = a
+                .as_form(a.root, "name-set")
+                .ok_or(shape("name-set head"))?
+            else {
+                return Err(shape("name-set arity"));
+            };
+            let [nv] = a.as_form(*name_f, "name").ok_or(shape("name form"))? else {
+                return Err(shape("name arity"));
+            };
+            let [hv] = a.as_form(*hash_f, "hash").ok_or(shape("hash form"))? else {
+                return Err(shape("hash-wrapper arity"));
+            };
+            Ok(StoreFrame::NameSet {
+                name: read_str(&a, *nv)?,
+                hash: read_hash(&a, *hv)?,
+            })
+        }
+        "member-op" => {
+            let [name_f, add_f, member_f, tag_f] = a
+                .as_form(a.root, "member-op")
+                .ok_or(shape("member-op head"))?
+            else {
+                return Err(shape("member-op arity"));
+            };
+            let [nv] = a.as_form(*name_f, "name").ok_or(shape("name form"))? else {
+                return Err(shape("name arity"));
+            };
+            let [av] = a.as_form(*add_f, "add").ok_or(shape("add form"))? else {
+                return Err(shape("add arity"));
+            };
+            let [mv] = a.as_form(*member_f, "member").ok_or(shape("member form"))? else {
+                return Err(shape("member arity"));
+            };
+            let [ov, sv] = a.as_form(*tag_f, "tag").ok_or(shape("tag form"))? else {
+                return Err(shape("tag arity"));
+            };
+            Ok(StoreFrame::MemberOp {
+                name: read_str(&a, *nv)?,
+                add: read_u64(&a, *av)? != 0,
+                member: read_hash(&a, *mv)?,
+                tag: (read_hash(&a, *ov)?, read_u64(&a, *sv)?),
+            })
+        }
+        _ => Err(shape("unknown store-frame head")),
+    }
+}
+
 /// Encode a `(none)` | `(some <bytes>)` optional body form (shared by the request encoders).
 fn encode_opt_body(b: &mut Builder, body: Option<&[u8]>) -> StructId {
     match body {
@@ -1536,6 +1607,40 @@ mod tests {
         .expect("remove frame round-trips");
         assert!(!add2, "the remove flag round-trips as false");
         assert_eq!(tag2, (origin, 7));
+    }
+
+    #[test]
+    fn decode_store_frame_routes_both_kinds_in_one_pass_and_rejects_unknown() {
+        // The single-pass snapshot-restore discriminant (#2424 c2): one decode routes on the AST head,
+        // no try-one-then-fall-back double-decode.
+        let h = Hash::of(b"ptr");
+        match decode_store_frame(&encode_name_set("system/x", &h)).expect("name-set routes") {
+            StoreFrame::NameSet { name, hash } => {
+                assert_eq!(name, "system/x");
+                assert_eq!(hash, h);
+            }
+            other => panic!("expected NameSet, got {other:?}"),
+        }
+        let (m, o) = (Hash::of(b"member"), Hash::of(b"origin"));
+        match decode_store_frame(&encode_member_op("session/g/room", true, &m, &(o, 3)))
+            .expect("member-op routes")
+        {
+            StoreFrame::MemberOp {
+                name,
+                add,
+                member,
+                tag,
+            } => {
+                assert_eq!(name, "session/g/room");
+                assert!(add);
+                assert_eq!(member, m);
+                assert_eq!(tag, (o, 3));
+            }
+            other => panic!("expected MemberOp, got {other:?}"),
+        }
+        // An unknown-head frame (a valid AST that's neither) is a clean Err, not a panic / mis-route.
+        assert!(decode_store_frame(&encode(&all_variants()[0])).is_err());
+        assert!(decode_store_frame(b"garbage").is_err());
     }
 
     #[test]
