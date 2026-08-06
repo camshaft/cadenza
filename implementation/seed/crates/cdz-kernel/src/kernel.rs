@@ -4274,4 +4274,176 @@ mod store_effect_tests {
             "a store/resolve-only grant must DENY store/set (allow-read-deny-write)"
         );
     }
+
+    // ── §4c session-NAMING increment (operator "naming next") ──────────────────────────────────────────
+    // A session PUBLISHES its own identity under a `session/<name>` pointer (store/set, gated by the
+    // Session name-authority), and another session RESOLVES that name to get back the publisher's genesis
+    // hash — which, since SessionId = genesis-hash (I2a), IS the publisher's addressable SessionId. This is
+    // the "resolve a session BY NAME → get its SessionId" path: the resolved Hash is exactly what a peer
+    // would Emit to (target = hash-hex), so name-addressed cross-session messaging = resolve-then-Emit-by-id
+    // with NO new kernel primitive (store/resolve + Emit + genesis-hash identity compose it). This E2E pins
+    // the resolution half (name → SessionId); the host wires the resolved id into the by-id EmitExecutor.
+
+    // A reducer that publishes a fixed (name → hash) pointer via store/set on inbound. Carries the name +
+    // hash as fields so the driver can point it at `session/<name>` → the publisher's own genesis_hash.
+    struct PublishName {
+        name: String,
+        hash: Hash,
+    }
+    #[async_trait::async_trait(?Send)]
+    impl Reducer for PublishName {
+        async fn fold(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+            match &event.body {
+                EventBody::Inbound { .. } => {
+                    let payload = crate::event_ast::encode_name_set(&self.name, &self.hash);
+                    FoldOutput::with(vec![EffectRequest::new_with_family(
+                        effect_ct::STORE_SET,
+                        self.name.clone(),
+                        Some(Payload::Inline(payload.into())),
+                        Timeliness::Interactive,
+                    )])
+                }
+                _ => FoldOutput::none(),
+            }
+        }
+    }
+
+    // A reducer that resolves a fixed name on inbound + records the resolved hash (the ResolveOnly pattern,
+    // but parameterized by name so it can resolve `session/<name>`).
+    struct ResolveName {
+        name: String,
+    }
+    #[async_trait::async_trait(?Send)]
+    impl Reducer for ResolveName {
+        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+            match &event.body {
+                EventBody::Inbound { .. } => {
+                    FoldOutput::with(vec![EffectRequest::new_with_family(
+                        effect_ct::STORE_RESOLVE,
+                        self.name.clone(),
+                        None,
+                        Timeliness::Interactive,
+                    )])
+                }
+                EventBody::EffectResult {
+                    result: EffectOutcome::Ok(Some(Payload::Inline(bytes))),
+                    ..
+                } => {
+                    if let Ok((_n, h)) = crate::event_ast::decode_name_set(bytes) {
+                        kv.put(b"resolved".to_vec(), h.to_hex().into_bytes());
+                    }
+                    FoldOutput::none()
+                }
+                _ => FoldOutput::none(),
+            }
+        }
+    }
+
+    // Grants store/set + store/resolve over the `session/` prefix — the Session name-authority a session
+    // needs to publish/resolve `session/<name>` pointers (mirrors AllowStore but proves the prefix path).
+    fn session_store_cap() -> crate::authz::Authorizer {
+        use crate::effect::{Capability, ResourcePredicate};
+        crate::authz::Authorizer::new(vec![]).with_family_grants(vec![
+            Capability::for_family(
+                effect_ct::STORE_SET,
+                ResourcePredicate::Prefix("session/".into()),
+            ),
+            Capability::for_family(
+                effect_ct::STORE_RESOLVE,
+                ResourcePredicate::Prefix("session/".into()),
+            ),
+        ])
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_session_published_by_name_resolves_to_its_genesis_hash_sessionid() {
+        // PUBLISHER B: a session that publishes its OWN identity under `session/alice`. Its SessionId IS
+        // its genesis hash (I2a), so it publishes session/alice → B.genesis_hash().
+        let mut exec_b = crate::executor::RecordingExecutor::new();
+        let mut publisher = Session::genesis(Hash::of(b"alice-reducer"), Hash::of(b"alice-nonce"));
+        publisher.attach_name_store(NameStore::new());
+        let alice_id = publisher.genesis_hash(); // = B's SessionId
+        let publish = PublishName {
+            name: "session/alice".to_string(),
+            hash: alice_id,
+        };
+        publisher
+            .deliver(inbound(), None, &publish, &session_store_cap(), &mut exec_b)
+            .await
+            .unwrap();
+
+        // The name→hash pointer B published is visible via the read-back accessor (the host exports it to
+        // seed the resolver's store — the same hand-across the compiler-latest test proves).
+        let published = publisher
+            .name_store()
+            .expect("publisher store")
+            .to_set_entries();
+        assert!(
+            published
+                .iter()
+                .any(|(n, h)| n == "session/alice" && *h == alice_id),
+            "B published session/alice → its own genesis_hash (SessionId)"
+        );
+
+        // RESOLVER A: a DIFFERENT session, seeded with B's published pointer, resolves `session/alice` and
+        // gets back EXACTLY B's genesis_hash — i.e. B's SessionId. That resolved hash-hex is what A would
+        // Emit to (target=SessionId), so name-addressing = this resolve + the landed by-id Emit path.
+        let resolver_store =
+            NameStore::replay_set_entries(published.iter().map(|(n, h)| (n.as_str(), *h)))
+                .expect("B's entries replay into A's store");
+        let mut exec_a = crate::executor::RecordingExecutor::new();
+        let mut resolver =
+            Session::genesis(Hash::of(b"resolver-reducer"), Hash::of(b"resolver-nonce"));
+        resolver.attach_name_store(resolver_store);
+        resolver
+            .deliver(
+                inbound(),
+                None,
+                &ResolveName {
+                    name: "session/alice".to_string(),
+                },
+                &session_store_cap(),
+                &mut exec_a,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resolver.kv().get(b"resolved"),
+            Some(alice_id.to_hex().into_bytes().as_slice()),
+            "resolving session/alice yields B's genesis_hash = its SessionId (name → SessionId identity)"
+        );
+    }
+
+    // The Session name-authority gates `session/` writes: a session WITHOUT the session/-prefix store grant
+    // is DENIED a store/set on a session/<name> (can't hijack another session's name pointer).
+    #[tokio::test(flavor = "current_thread")]
+    async fn publishing_a_session_name_without_the_session_prefix_grant_is_denied() {
+        let mut exec = crate::executor::RecordingExecutor::new();
+        let mut s = Session::genesis(Hash::of(b"nobody"), Hash::of(b"nobody-nonce"));
+        s.attach_name_store(NameStore::new());
+        let publish = PublishName {
+            name: "session/victim".to_string(),
+            hash: Hash::of(b"attacker-hash"),
+        };
+        // A grant over a DIFFERENT prefix (system/) — not session/ — must NOT admit the session/ write.
+        let wrong_cap = {
+            use crate::effect::{Capability, ResourcePredicate};
+            crate::authz::Authorizer::new(vec![]).with_family_grants(vec![Capability::for_family(
+                effect_ct::STORE_SET,
+                ResourcePredicate::Prefix("system/".into()),
+            )])
+        };
+        s.deliver(inbound(), None, &publish, &wrong_cap, &mut exec)
+            .await
+            .unwrap();
+        // The set was denied at the gate → the name was never published.
+        assert!(
+            s.name_store()
+                .expect("store")
+                .to_set_entries()
+                .iter()
+                .all(|(n, _)| n != "session/victim"),
+            "a store/set on session/victim without the session/ grant must be denied, not applied"
+        );
+    }
 }
