@@ -9179,6 +9179,125 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 53 Int64)))
 
+(case "a USER-SUM op result (Status) crosses resume; the body matches per variant"
+  (doc    "User-DECLARED sums through the effect boundary (Option/Result crossings are pinned; nominal
+           sums go through the general type marshal, not the built-in paths): the op's result type is
+           `Status` (a payload variant + an empty one), the arm resumes either, and the body matches —
+           poll 20 → Active 40, poll 5 → Idle → -1 → 39. The marshal must carry the nominal tag and
+           payload across resume.")
+  (input  (do
+            (effect St (op poll (-> Int64 Status)))
+            (type Status (Active Int64) (Idle))
+            (def (main (: n Int64))
+              (handle St 0
+                ((poll (v) s (resume (if (> v 10) (Status.Active (* v 2)) (Status.Idle)) (+ s 1))))
+                (+ (match (St.poll 20) ((Status.Active x) x) ((Status.Idle) -1))
+                   (match (St.poll n) ((Status.Active x) x) ((Status.Idle) -1)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 39 Int64)))
+
+(case "a user SUM is constructed AND matched inside the arm (per-dispatch classification)"
+  (doc    "The arm-internal face: the sum never crosses the boundary — the arm builds a `Status` from
+           the op argument, matches it immediately, and resumes the scalar classification (20 pass →
+           20, 5 fail → 0 → 20). Pins nominal-sum construction + dispatch working inside folded arm
+           bodies.")
+  (input  (do
+            (effect St (op classify (-> Int64 Int64)))
+            (type Status (Active Int64) (Idle))
+            (def (main (: n Int64))
+              (handle St 0
+                ((classify (v) s
+                  (resume (match (if (> v 10) (Status.Active v) (Status.Idle))
+                            ((Status.Active x) x)
+                            ((Status.Idle) 0)) s)))
+                (+ (St.classify 20) (St.classify n))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 20 Int64)))
+
+(case "a GENERIC user sum ((Box Int64)) as op result — nominal tag + instantiated payload cross resume"
+  (doc    "The generic extension of the monomorphic Status crossing above: `(Box a)` instantiated at
+           Int64 — wrap 20 → Full 60, wrap 5 → Empty → -1 → 59. The instantiated payload slot and the
+           nominal tag both survive the resume marshal.")
+  (input  (do
+            (effect St (op wrap (-> Int64 (Box Int64))))
+            (type (Box a) (Full a) (Empty))
+            (def (main (: n Int64))
+              (handle St 0
+                ((wrap (v) s (resume (if (> v 10) (Box.Full (* v 3)) (Box.Empty)) (+ s 1))))
+                (+ (match (St.wrap 20) ((Box.Full x) x) ((Box.Empty) -1))
+                   (match (St.wrap n) ((Box.Full x) x) ((Box.Empty) -1)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 59 Int64)))
+
+(case "a generic sum instantiated at a HEAP payload ((Box (List Int64))) crosses resume"
+  (doc    "The heap-instantiation face: the generic payload slot holds a LIST — grab 20 → Full [20 20
+           20] (len 3), grab 5 → Empty → -1 → 2. Instantiation-specific layout (a heap pointer in the
+           payload slot) through the resume marshal.")
+  (input  (do
+            (effect St (op grab (-> Int64 (Box (List Int64)))))
+            (type (Box a) (Full a) (Empty))
+            (def (main (: n Int64))
+              (handle St 0
+                ((grab (v) s (resume (if (> v 10) (Box.Full (list v v v)) (Box.Empty)) s)))
+                (+ (match (St.grab 20) ((Box.Full xs) (List.len xs)) ((Box.Empty) -1))
+                   (match (St.grab n) ((Box.Full xs) (List.len xs)) ((Box.Empty) -1)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 2 Int64)))
+
+(case "a RECURSIVE user sum (Tree) crosses resume; the body folds it"
+  (doc    "A user-declared RECURSIVE sum (payloads contain the sum itself) as the op result: the arm
+           builds a 3-leaf tree from the op argument and the body folds it with a recursive helper —
+           Node(Leaf 5, Node(Leaf 10, Leaf 1)) → 16. Distinct from the built-in Ast crossings: a user
+           recursive type goes through the general nominal marshal.")
+  (input  (do
+            (effect St (op grow (-> Int64 Tree)))
+            (type Tree (Leaf Int64) (Node Tree Tree))
+            (def (sum-tree t)
+              (match t
+                ((Tree.Leaf v) v)
+                ((Tree.Node l r) (+ (sum-tree l) (sum-tree r)))))
+            (def (main (: n Int64))
+              (handle St 0
+                ((grow (v) s (resume (Tree.Node (Tree.Leaf v) (Tree.Node (Tree.Leaf (* v 2)) (Tree.Leaf 1))) s)))
+                (sum-tree (St.grow n))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 16 Int64)))
+
+(case "a recursive sum as op ARGUMENT — the arm dispatches on its shape"
+  (doc    "The argument direction: the body hands trees to the op and the ARM pattern-dispatches on
+           the shape it receives — a Leaf answers its payload (5), a Node answers 99 → 104. The op-arg
+           marshal carries the recursive structure into the arm intact.")
+  (input  (do
+            (effect St (op weigh (-> Tree Int64)))
+            (type Tree (Leaf Int64) (Node Tree Tree))
+            (def (main (: n Int64))
+              (handle St 0
+                ((weigh (t) s
+                  (resume (match t
+                            ((Tree.Leaf v) v)
+                            ((Tree.Node l r) 99)) s)))
+                (+ (St.weigh (Tree.Leaf n)) (St.weigh (Tree.Node (Tree.Leaf 1) (Tree.Leaf 2))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 104 Int64)))
+
+(case "a USER sum as handler state — a countdown mode machine (Fast k -> Slow)"
+  (doc    "The state-slot completion of the user-sum ladder (Option/Result STATE pins exist; a
+           user-declared sum state did not): `Mode` starts `Fast n`, the arm decrements the payload
+           per dispatch and TRANSITIONS variants at zero — Fast 2 → Fast 1 → Fast 0 → Slow, resuming
+           2, 1, 0 → 210. Nominal-sum layout in the state slot, with a variant transition mid-run.")
+  (input  (do
+            (effect St (op step (-> Unit Int64)))
+            (type Mode (Fast Int64) (Slow))
+            (def (main (: n Int64))
+              (handle St (Mode.Fast n)
+                ((step (u) s
+                  (match s
+                    ((Mode.Fast k) (if (> k 0) (resume k (Mode.Fast (- k 1))) (resume 0 (Mode.Slow))))
+                    ((Mode.Slow) (resume -1 (Mode.Slow))))))
+                (+ (* 100 (St.step)) (+ (* 10 (St.step)) (St.step)))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 210 Int64)))
+
 (case "three DISCARDED performs on a do-spine still advance the state"
   (doc    "Effect-only evaluation: three `(St.bump)` results are discarded on the do-spine — evaluated
            purely for their state effect — and the trailing peek reads the fully-advanced 8 (seed 5,
