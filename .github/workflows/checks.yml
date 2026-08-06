@@ -315,96 +315,26 @@ jobs:
           cargo test --features live-exec
 
   cdz-agent-host:
-    # The REAL kernel effect executors + host runner + Cedar authorizer guest
-    # (implementation/seed/crates/cdz-agent-host, v-agent-harness-host). Its OWN workspace (empty
-    # `[workspace]`), EXCLUDED from the seed workspace (it path-deps cdz-kernel + grows a network/AWS/tokio
-    # tree the seed `--workspace` jobs must never pay), so the test/clippy/fmt jobs above don't cover it —
-    # gate it HERE (same isolation rationale as cdz-kernel). Without this job the crate was UNGATED in CI: a
-    # peer's cdz-kernel shared-type change (the Payload::Inline→Bytes flip, the required Timeliness field)
-    # broke it red on trunk with nothing catching it — this job is that missing coverage.
     name: cdz-agent-host
+    # Full-CI-in-nix Model-A body-swap (v-nix + v-ft data-driven CI-speed, 2026-08-06): the hand-wired body
+    # (setup-rust + cold cargo builds of the cedar + reducer guest fixtures + the cdz-agent-host test/clippy/fmt
+    # + admin/live-net feature matrix) rebuilt cold every candidate (~15.8m) with NO /nix/store cache — the
+    # second-biggest advisory runner-cost + slot-hog after the nix-flake advisory (#2313). The nix check
+    # `checks.<sys>.cdz-agent-host-native` is a SUPERSET of the hand-wired job: identical matrix (test + clippy +
+    # fmt + --features admin test+clippy + live-net clippy + admin,live-net clippy) via the cached vendor, with
+    # the cedar + reducer guests as content-addressed nix derivations, AND it additionally RUNS the genesis
+    # round-trip E2E (env-wired). So this is a pure body-swap: keep the job NAME (advisory context
+    # `checks / cdz-agent-host` unchanged — verified NOT in ruleset 10560470's 10 required, so no ruleset edit;
+    # a red can't block merge), swap cold→cache-warm. x86 (ubuntu-latest, unchanged) so it frees the SAME x86
+    # runner slot that contends with the required jobs' queue (v-ft's queue-wait finding: freeing x86 slots is
+    # the real time-to-merge lever, not the arm64 one C freed). Same pattern as clippy/test/codegen (#2171).
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: ./.github/actions/setup-rust
-        with:
-          wasm-tools: "true"
-          cache-key: cdz-agent-host
-      - name: Rebuild the cedar-policy-guest fixture from source + verify it's a valid component
-        working-directory: implementation/seed/crates/cdz-agent-host
-        run: |
-          # The Cedar authorizer GUEST (tests/fixtures/cedar-policy-guest, a wit-bindgen guest embedding a
-          # Cedar PolicySet) is lifted to a wasm component that the kernel's ComponentAuthorizer instantiates
-          # + that the cedar_authz_e2e test drives. Rebuild it from source here + verify the fresh build is a
-          # VALID component (wasm-tools validate). This catches "source no longer produces a valid authorizer
-          # component" — NOT staleness of a committed artifact (there is NO committed cedar .component.wasm:
-          # it's ~3.3 MB with the Cedar engine embedded, so it's CI-built here, not checked in). Validate,
-          # not a byte-diff: even with the committed lock (built --locked below), CI floats the toolchain →
-          # different-but-valid bytes (same rationale as reducer-guest, trunk@455dcb7e7). The lifted
-          # component's PATH is handed to the e2e via CEDAR_POLICY_COMPONENT (next step).
-          rustup target add wasm32-unknown-unknown
-          # Run the guest's OWN unit tests on the HOST target first — its `decide()` policy logic (the Cedar
-          # PolicySet decisions: permit/forbid/default-deny, incl. the #1916 store/set-is-a-family-string
-          # regression pin) is native-testable (the cedar-policy crate runs on the host), and the wasm build
-          # below can't run tests (wasm32-unknown-unknown has no test runner). Without this the guest's
-          # decision tests only compile-check, never execute in CI.
-          ( cd tests/fixtures/cedar-policy-guest && cargo test --locked )
-          # --locked: build against the COMMITTED Cargo.lock (#1522). The guest's deps are loose
-          # (cedar-policy = "4", wit-bindgen = "0.45"), so without --locked CI floats to a newer
-          # cedar-policy 4.x whose codegen breaks the component lift below — the "no longer builds a
-          # valid wasm component" red. --locked pins the reproducible lock (cedar-policy 4.12.0) the
-          # commit intended, so the lift stays valid.
-          ( cd tests/fixtures/cedar-policy-guest && cargo build --target wasm32-unknown-unknown --release --locked )
-          wasm-tools component new \
-            tests/fixtures/cedar-policy-guest/target/wasm32-unknown-unknown/release/cedar_policy_guest.wasm \
-            -o /tmp/cedar_policy_guest.component.wasm
-          wasm-tools validate --features component-model /tmp/cedar_policy_guest.component.wasm \
-            || { echo "::error::cedar-policy-guest source no longer builds a valid wasm component"; exit 1; }
-      - name: Build the reducer-guest fixture → a fold-world component for the ComponentSessionFactory e2e
-        run: |
-          # The factory's install_of_a_real_reducer_component_runs_an_agent e2e loads a REAL reducer
-          # component (blob.get → AsyncComponentReducer → install → deliver → assert the fold ran). Without a
-          # built component it skips — so build the kernel's reducer-guest fixture (a wit-bindgen fold-world
-          # guest, the same one the cdz-kernel job builds) + lift it, and export CDZ_REDUCER_COMPONENT so the
-          # factory e2e actually RUNS here (the #1979 review flagged the test was never exercised anywhere).
-          # Cross-crate reach into cdz-kernel's fixture is deliberate: it's THE canonical dep-free fold-world
-          # guest, and duplicating one into this crate would just drift from it.
-          rustup target add wasm32-unknown-unknown
-          ( cd implementation/seed/crates/cdz-kernel/tests/fixtures/reducer-guest \
-            && cargo build --locked --target wasm32-unknown-unknown --release )
-          wasm-tools component new \
-            implementation/seed/crates/cdz-kernel/tests/fixtures/reducer-guest/target/wasm32-unknown-unknown/release/reducer_guest.wasm \
-            -o /tmp/reducer_guest.component.wasm
-          wasm-tools validate --features component-model /tmp/reducer_guest.component.wasm \
-            || { echo "::error::reducer-guest source no longer builds a valid wasm component"; exit 1; }
-      - name: Test + lint the cdz-agent-host crate (standalone workspace)
-        working-directory: implementation/seed/crates/cdz-agent-host
-        # Hand the lifted Cedar component (built above) to the cedar_authz_e2e test, which gates a real
-        # agent through the kernel's ComponentAuthorizer built from it (permit + fail-closed deny). Absent
-        # this var — a plain local `cargo test` without the wasm toolchain — that e2e skips cleanly. Same for
-        # CDZ_REDUCER_COMPONENT (the lifted reducer-guest) → the factory's real-component install-runs-e2e.
-        env:
-          CEDAR_POLICY_COMPONENT: /tmp/cedar_policy_guest.component.wasm
-          CDZ_REDUCER_COMPONENT: /tmp/reducer_guest.component.wasm
-        run: |
-          cargo test
-          cargo clippy --all-targets -- -D warnings
-          cargo fmt --check
-          # `admin` gates the admin control interface's Unix-socket LISTENER. Unlike `live-net`, it needs NO
-          # egress or credentials — a Unix domain socket is local IPC that binds + connects on any runner — so
-          # it's fully TESTED here (its e2e binds a real socket in the temp dir + round-trips frames), not
-          # lint-only. Both test + clippy so the feature-gated transport is covered.
-          cargo test --features admin
-          cargo clippy --all-targets --features admin -- -D warnings
-          # `live-net` gates the network executors (Bedrock model / real HTTP transports), which need egress
-          # + credentials a CI runner lacks — so LINT-ONLY here (clippy), no `cargo test --features live-net`
-          # (unlike the sibling cdz-kernel live-exec, whose subprocess spawn works on any runner). The default
-          # build stays hermetic; the live transports are exercised where egress exists, not in this job.
-          cargo clippy --all-targets --features live-net -- -D warnings
-          # `admin,live-net` together: the cdz-agent-daemon bin's live control-plane wiring (admin socket +
-          # the real executor set) only compiles under BOTH — lint it so that path can't rot. Lint-only for
-          # the same live-net egress reason.
-          cargo clippy --all-targets --features admin,live-net -- -D warnings
+      - uses: DeterminateSystems/nix-installer-action@v22
+      - uses: ./.github/actions/nix-store-cache
+      - name: cdz-agent-host test + clippy + fmt + feature matrix + genesis e2e (via nix)
+        run: nix build .#checks.x86_64-linux.cdz-agent-host-native --print-build-logs
 
   rcdzc-wasm:
     # The Cadenza COMPILER as a WASM artifact (implementation/seed/crates/rcdzc-wasm, v-agent-harness
