@@ -507,6 +507,62 @@ impl NameStore {
         }
     }
 
+    /// Apply a GROUP `store/*` effect by its FAMILY (§4c session-directory I3: [`STORE_ADD`](crate::effect::effect_ct::STORE_ADD)
+    /// / [`STORE_REMOVE`](crate::effect::effect_ct::STORE_REMOVE) / [`STORE_RESOLVE_ALL`](crate::effect::effect_ct::STORE_RESOLVE_ALL))
+    /// — the OR-set counterpart to [`apply_effect`](Self::apply_effect). The drive loop's store arm routes here
+    /// on [`is_group_store_family`](crate::effect::effect_ct::is_group_store_family) after the SEC-F1 authorize
+    /// gate; this is the pure store SEMANTIC (mode/Unscoped/idempotency backstops, no authz).
+    ///
+    /// - `store/add` / `store/remove`: `op` MUST be `Some` (the member+tag payload) — append it via
+    ///   [`add_op`](Self::add_op), which enforces the pointer-XOR-group mode-guard + Unscoped fail-close. Returns
+    ///   [`StoreOutcome::GroupOpApplied`]. IDEMPOTENT by `idempotency_key` (§16c-S1/D): a re-driven op (crash
+    ///   recovery) is a NO-OP returning the same success — no duplicate log entry. (Note the OR-set fold is
+    ///   ALSO idempotent by the op's unique `tag`, so a duplicate would be harmless to membership; the key dedup
+    ///   additionally keeps the LOG itself append-exact, matching the pointer path's invariant.) A `None` op is
+    ///   a [`MalformedStoreEffect`](NameStoreError::MalformedStoreEffect) (an add/remove needs a member).
+    /// - `store/resolve-all`: `op` MUST be `None` (a resolve carries no payload) — returns the current member
+    ///   set via [`resolve_all`](Self::resolve_all) (mode-guard: a pointer name is `NameModeMismatch`). A pure
+    ///   READ, so `idempotency_key` doesn't matter. A `Some` op is `MalformedStoreEffect`.
+    /// - any other family: `MalformedStoreEffect` (defensive total-ness backstop — the drive loop only routes a
+    ///   group `store/*` family here).
+    pub fn apply_group_effect(
+        &mut self,
+        family: &str,
+        name: &str,
+        op: Option<MemberOp>,
+        idempotency_key: Hash,
+    ) -> Result<StoreOutcome, NameStoreError> {
+        use crate::effect::effect_ct;
+        match family {
+            effect_ct::STORE_ADD | effect_ct::STORE_REMOVE => {
+                let op = op.ok_or(NameStoreError::MalformedStoreEffect)?;
+                // The op's `add` flag MUST agree with the family verb — a `store/add` carrying a remove-op (or
+                // vice-versa) is a malformed effect, not a silent coercion (the family is what authz gated).
+                let expect_add = family == effect_ct::STORE_ADD;
+                if op.add != expect_add {
+                    return Err(NameStoreError::MalformedStoreEffect);
+                }
+                // Dedup by idempotency key BEFORE add_op: the check must precede the append (add_op is
+                // unconditional-append, so re-applying would DOUBLE-log). The mode/Unscoped guards live inside
+                // add_op, so a first-application failure propagates via `?`; re-drive safety comes from the
+                // architecture (recovery re-attaches a FRESH store → empty keys; an in-process re-drive of a
+                // settled id is blocked by record_result), the SAME rationale the pointer `apply_effect` relies
+                // on — not from a pre-check here.
+                if self.applied_set_keys.insert(idempotency_key) {
+                    self.add_op(name, op)?;
+                }
+                Ok(StoreOutcome::GroupOpApplied)
+            }
+            effect_ct::STORE_RESOLVE_ALL => {
+                if op.is_some() {
+                    return Err(NameStoreError::MalformedStoreEffect);
+                }
+                self.resolve_all(name).map(StoreOutcome::Members)
+            }
+            _ => Err(NameStoreError::MalformedStoreEffect),
+        }
+    }
+
     /// Drop a `store/set`'s idempotency key from the dedup set once its `EffectResult` is APPENDED to the
     /// in-memory session log (the effect is SETTLED in this session — its dedup entry is no longer needed).
     /// Boundary, in the log-store's v0 durability terms ([`crate::log_store::LogStore::append`]): "appended"
@@ -583,6 +639,14 @@ pub enum StoreOutcome {
     Set(Hash),
     /// A `store/resolve` succeeded: the name's CURRENT hash (the caller freezes it into its log, §4c-pt3).
     Resolved(Hash),
+    /// A `store/add` / `store/remove` succeeded: the group op was appended to the name's OR-set log (§4c
+    /// session-directory I3). Empty-success — like `Set`, the op's payload already carried the member+tag,
+    /// so there is nothing to echo back; the reducer keyed its continuation by EffectId.
+    GroupOpApplied,
+    /// A `store/resolve-all` succeeded: the group name's CURRENT membership, add-wins folded into a
+    /// deterministic ascending-hash set (§4c D1). The caller freezes it into its log (the multicast §8
+    /// fan-out iterates this frozen set — byte-stable order).
+    Members(std::collections::BTreeSet<Hash>),
 }
 
 #[cfg(test)]
@@ -1163,6 +1227,171 @@ mod tests {
         assert_eq!(
             s.apply_effect(effect_ct::STORE_SET, "bare-name", Some(Hash::of(b"v")), k),
             Err(NameStoreError::UnscopedNameUnwritable)
+        );
+    }
+
+    // ── §4c session-directory I3: the GROUP store-effect semantic (apply_group_effect) ──────────────────
+
+    #[test]
+    fn apply_group_effect_dispatches_add_remove_resolve_all_by_family() {
+        use crate::effect::effect_ct;
+        let mut s = NameStore::new();
+        let g = "session/room/lobby";
+        let (a, b) = (Hash::of(b"A"), Hash::of(b"B"));
+        let origin = Hash::of(b"origin");
+
+        // store/add A, store/add B → GroupOpApplied each; resolve-all → {A, B}.
+        assert_eq!(
+            s.apply_group_effect(
+                effect_ct::STORE_ADD,
+                g,
+                Some(MemberOp::add(a, origin, 0)),
+                Hash::of(b"k-add-a")
+            ),
+            Ok(StoreOutcome::GroupOpApplied)
+        );
+        assert_eq!(
+            s.apply_group_effect(
+                effect_ct::STORE_ADD,
+                g,
+                Some(MemberOp::add(b, origin, 1)),
+                Hash::of(b"k-add-b")
+            ),
+            Ok(StoreOutcome::GroupOpApplied)
+        );
+        assert_eq!(
+            s.apply_group_effect(effect_ct::STORE_RESOLVE_ALL, g, None, Hash::of(b"k-r1")),
+            Ok(StoreOutcome::Members([a, b].into_iter().collect()))
+        );
+
+        // store/remove B (its observed add-tag) → membership {A}.
+        assert_eq!(
+            s.apply_group_effect(
+                effect_ct::STORE_REMOVE,
+                g,
+                Some(MemberOp::remove(b, origin, 1)),
+                Hash::of(b"k-rm-b")
+            ),
+            Ok(StoreOutcome::GroupOpApplied)
+        );
+        assert_eq!(
+            s.apply_group_effect(effect_ct::STORE_RESOLVE_ALL, g, None, Hash::of(b"k-r2")),
+            Ok(StoreOutcome::Members([a].into_iter().collect()))
+        );
+    }
+
+    #[test]
+    fn apply_group_effect_add_is_idempotent_by_key_no_duplicate_log_entry() {
+        // §16c-S1/D: re-driving the SAME store/add (same idempotency key) after a crash must NOT append a
+        // duplicate op — the dedup makes the re-drive a no-op returning the same GroupOpApplied. (Membership
+        // would be tag-idempotent anyway, but the LOG must stay append-exact, matching the pointer path.)
+        use crate::effect::effect_ct;
+        let mut s = NameStore::new();
+        let g = "session/room/lobby";
+        let a = Hash::of(b"A");
+        let op = MemberOp::add(a, Hash::of(b"origin"), 0);
+        let key = Hash::of(b"dispatch-key-A");
+
+        assert_eq!(
+            s.apply_group_effect(effect_ct::STORE_ADD, g, Some(op.clone()), key),
+            Ok(StoreOutcome::GroupOpApplied)
+        );
+        assert_eq!(s.group_history(g).len(), 1);
+        // RE-DRIVE with the SAME key → no-op, log unchanged (no duplicate op).
+        assert_eq!(
+            s.apply_group_effect(effect_ct::STORE_ADD, g, Some(op), key),
+            Ok(StoreOutcome::GroupOpApplied)
+        );
+        assert_eq!(
+            s.group_history(g).len(),
+            1,
+            "re-drive by same key must NOT duplicate the group op"
+        );
+    }
+
+    #[test]
+    fn apply_group_effect_is_total_on_malformed_shapes() {
+        use crate::effect::effect_ct;
+        let mut s = NameStore::new();
+        let g = "session/room/lobby";
+        let k = Hash::of(b"k");
+        let origin = Hash::of(b"origin");
+        // store/add REQUIRES an op (the member); None is malformed, not a panic.
+        assert_eq!(
+            s.apply_group_effect(effect_ct::STORE_ADD, g, None, k),
+            Err(NameStoreError::MalformedStoreEffect)
+        );
+        // store/resolve-all must NOT carry an op.
+        assert_eq!(
+            s.apply_group_effect(
+                effect_ct::STORE_RESOLVE_ALL,
+                g,
+                Some(MemberOp::add(Hash::of(b"m"), origin, 0)),
+                k
+            ),
+            Err(NameStoreError::MalformedStoreEffect)
+        );
+        // The op's add-flag MUST agree with the family verb — a store/add carrying a remove-op is malformed
+        // (never a silent coercion; the family is what authz gated).
+        assert_eq!(
+            s.apply_group_effect(
+                effect_ct::STORE_ADD,
+                g,
+                Some(MemberOp::remove(Hash::of(b"m"), origin, 0)),
+                k
+            ),
+            Err(NameStoreError::MalformedStoreEffect)
+        );
+        // …and a store/remove carrying an add-op is likewise malformed.
+        assert_eq!(
+            s.apply_group_effect(
+                effect_ct::STORE_REMOVE,
+                g,
+                Some(MemberOp::add(Hash::of(b"m"), origin, 0)),
+                k
+            ),
+            Err(NameStoreError::MalformedStoreEffect)
+        );
+        // a non-group store family (or any non-store family) is not a group verb (defensive backstop).
+        assert_eq!(
+            s.apply_group_effect(effect_ct::STORE_SET, g, None, k),
+            Err(NameStoreError::MalformedStoreEffect)
+        );
+        // store/add to an Unscoped name fails closed via the underlying add_op().
+        assert_eq!(
+            s.apply_group_effect(
+                effect_ct::STORE_ADD,
+                "bare-group",
+                Some(MemberOp::add(Hash::of(b"m"), origin, 0)),
+                k
+            ),
+            Err(NameStoreError::UnscopedNameUnwritable)
+        );
+    }
+
+    #[test]
+    fn apply_group_effect_refuses_a_name_already_a_single_value_pointer() {
+        // pointer-XOR-group mode-guard (D7) at the effect layer: a name written as a pointer via store/set
+        // can't then be joined as a group — add_op surfaces NameModeMismatch, and apply_group_effect
+        // propagates it (an observable Err the drive loop folds, never a coercion into both maps).
+        use crate::effect::effect_ct;
+        let mut s = NameStore::new();
+        let name = NameStore::COMPILER_LATEST; // system/… — a valid scoped pointer name
+        s.apply_effect(
+            effect_ct::STORE_SET,
+            name,
+            Some(Hash::of(b"v")),
+            Hash::of(b"k-set"),
+        )
+        .unwrap();
+        assert_eq!(
+            s.apply_group_effect(
+                effect_ct::STORE_ADD,
+                name,
+                Some(MemberOp::add(Hash::of(b"m"), Hash::of(b"o"), 0)),
+                Hash::of(b"k-add")
+            ),
+            Err(NameStoreError::NameModeMismatch)
         );
     }
 

@@ -1291,6 +1291,17 @@ impl Session {
                 let bytes = crate::event_ast::encode_name_set(name, &h);
                 EffectOutcome::Ok(Some(crate::effect::Payload::Inline(bytes.into())))
             }
+            // GROUP outcomes (GroupOpApplied / Members) can only come from `apply_group_effect`, which this
+            // POINTER path never calls — the drive loop routes group verbs to a separate arm (§4c I3b, not yet
+            // wired). A group outcome here would mean a mis-route; fold it as an observable Err (anti-stuck),
+            // never a panic, until the group drive-loop arm lands.
+            Ok(
+                crate::name_store::StoreOutcome::GroupOpApplied
+                | crate::name_store::StoreOutcome::Members(_),
+            ) => EffectOutcome::Err(format!(
+                "store effect on {name:?}: a group OR-set outcome from the pointer path \
+                 (misroute — group verbs use apply_group_effect)"
+            )),
             Err(e) => EffectOutcome::Err(format!("store effect on {name:?}: {e:?}")),
         }
     }

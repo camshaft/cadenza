@@ -95,6 +95,35 @@ pub mod effect_ct {
     /// change it). A read; a broad store grant admits it (the write-authority gate is on `store/set`).
     pub const STORE_RESOLVE: &str = "store/resolve";
 
+    /// `store/add` — join a member to a GROUP name's OR-set (§4c session-directory I3). The effect target is
+    /// the mutable GROUP NAME; the member hash + its unique add-tag `(origin, seq)` ride the payload (a
+    /// `member-op` blob, [`crate::event_ast::encode_member_op`]). AUTHZ-GATED on the name's prefix authority,
+    /// exactly like `store/set` (the write-authority gate is on the GROUP name). A group name is a pointer
+    /// XOR a group — [`crate::name_store::NameStore::add_op`] refuses a name already used as a single-value
+    /// pointer with [`NameStoreError::NameModeMismatch`](crate::name_store::NameStoreError::NameModeMismatch).
+    pub const STORE_ADD: &str = "store/add";
+
+    /// `store/remove` — retract a member from a GROUP name's OR-set (§4c session-directory I3). Observed-remove
+    /// (add-wins): the payload's tag names the SPECIFIC add being cleared; a concurrent re-add with a FRESH
+    /// tag survives. Same target/payload/authz shape as [`STORE_ADD`] (the op's `add` flag is `false`).
+    pub const STORE_REMOVE: &str = "store/remove";
+
+    /// `store/resolve-all` — read a GROUP name's CURRENT membership: fold its OR-set log add-wins into a
+    /// deterministic ascending-hash member set (§4c D1, [`crate::name_store::NameStore::resolve_all`]). A pure
+    /// READ (no payload) — the group analogue of [`STORE_RESOLVE`]; a broad store grant admits it. The frozen
+    /// member set is what a multicast fan-out (§8) iterates, so its order is byte-stable.
+    pub const STORE_RESOLVE_ALL: &str = "store/resolve-all";
+
+    /// Is `family` a GROUP OR-set store verb (`store/add` / `store/remove` / `store/resolve-all`, §4c
+    /// session-directory I3) — as opposed to the single-value pointer verbs (`store/set` / `store/resolve`)?
+    /// Both partitions share the [`STORE_PREFIX`] (both are authz-gated on the name), but they carry a
+    /// DIFFERENT payload shape (a `member-op` blob vs a `name-set` blob) and dispatch to a different store
+    /// method ([`crate::name_store::NameStore::apply_group_effect`] vs `apply_effect`), so the kernel's
+    /// store arm routes on this sub-partition. `false` for a non-store family (check [`is_store_family`] first).
+    pub fn is_group_store_family(family: &str) -> bool {
+        matches!(family, STORE_ADD | STORE_REMOVE | STORE_RESOLVE_ALL)
+    }
+
     /// Is `family` in the `store/*` namespace (the §4c global-store write layer, authz-gated on the name's
     /// prefix authority)? The one-source prefix test the drive loop applies alongside [`is_control_family`]
     /// to route `store/*` to the attached name-store (via `Session::apply_store_effect`) rather than a
@@ -186,8 +215,9 @@ pub mod effect_ct {
 
     /// If `family` is a WELL-KNOWN family whose string is a FIXED, kernel-defined `&'static` — one of the
     /// built-in effect verbs ([`ALL`], via [`super::EffectKind::from_family`]) or the exact control/store
-    /// families (`control/capabilities`, `control/summary`, `store/set`, `store/resolve`) — return that
-    /// canonical `&'static str`. `None` for an EXTENSION family (register-by-string).
+    /// families (`control/capabilities`, `control/summary`, `store/set`, `store/resolve`, `store/add`,
+    /// `store/remove`, `store/resolve-all`) — return that canonical `&'static str`. `None` for an EXTENSION
+    /// family (register-by-string).
     ///
     /// The distinction matters for LOGGING (github-liaison #2180 residual): `ContentType.family` is a
     /// `Cow<'static, str>` and for an extension family it carries the CALLER's `Cow::Owned` verbatim — i.e.
@@ -206,6 +236,9 @@ pub mod effect_ct {
             SUMMARY => Some(SUMMARY),
             STORE_SET => Some(STORE_SET),
             STORE_RESOLVE => Some(STORE_RESOLVE),
+            STORE_ADD => Some(STORE_ADD),
+            STORE_REMOVE => Some(STORE_REMOVE),
+            STORE_RESOLVE_ALL => Some(STORE_RESOLVE_ALL),
             LIFECYCLE_SPAWN => Some(LIFECYCLE_SPAWN),
             LIFECYCLE_SUSPEND => Some(LIFECYCLE_SUSPEND),
             LIFECYCLE_RESUME => Some(LIFECYCLE_RESUME),
@@ -751,12 +784,40 @@ mod tests {
         assert_eq!(wellknown_static_str(EMIT), Some(EMIT));
         assert_eq!(wellknown_static_str(CAPABILITIES), Some(CAPABILITIES));
         assert_eq!(wellknown_static_str(STORE_SET), Some(STORE_SET));
+        assert_eq!(wellknown_static_str(STORE_ADD), Some(STORE_ADD));
+        assert_eq!(wellknown_static_str(STORE_REMOVE), Some(STORE_REMOVE));
+        assert_eq!(
+            wellknown_static_str(STORE_RESOLVE_ALL),
+            Some(STORE_RESOLVE_ALL)
+        );
         // Extension families (register-by-string, guest-controlled) → None (redacted).
         assert_eq!(wellknown_static_str("my/custom-effect"), None);
         assert_eq!(wellknown_static_str("weather"), None);
         // A guest string sharing a control/store PREFIX is STILL guest bytes → None (prefix ≠ safe).
         assert_eq!(wellknown_static_str("store/secret-token-abc123"), None);
         assert_eq!(wellknown_static_str("control/leak-me"), None);
+    }
+
+    // §4c session-directory I3: the store sub-partition split — both pointer and group verbs share the
+    // `store/` prefix (both authz-gated on the name), but the drive loop routes GROUP verbs to
+    // apply_group_effect (member-op payload) and pointer verbs to apply_effect (name-set payload).
+    #[test]
+    fn is_group_store_family_splits_group_verbs_from_pointer_verbs() {
+        use effect_ct::*;
+        // Group OR-set verbs → true.
+        assert!(is_group_store_family(STORE_ADD));
+        assert!(is_group_store_family(STORE_REMOVE));
+        assert!(is_group_store_family(STORE_RESOLVE_ALL));
+        // Single-value pointer verbs → false (they're store/*, but NOT group).
+        assert!(!is_group_store_family(STORE_SET));
+        assert!(!is_group_store_family(STORE_RESOLVE));
+        // …yet every group verb is still in the store partition (shares the prefix + authz gate).
+        assert!(is_store_family(STORE_ADD));
+        assert!(is_store_family(STORE_REMOVE));
+        assert!(is_store_family(STORE_RESOLVE_ALL));
+        // A guest string sharing the prefix is NOT a known group verb (exact-match, not prefix).
+        assert!(!is_group_store_family("store/add-evil"));
+        assert!(!is_group_store_family("http"));
     }
 
     fn http(target: &str) -> EffectRequest {
