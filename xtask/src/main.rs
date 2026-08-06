@@ -2429,17 +2429,18 @@ fn cdz_render_bytes_list(ty: &str) -> String {
     )
 }
 
-/// Split a FACTORY call expression `export(caps…)(applied…)` into `("export(caps…)", "(applied…)")` at the
-/// boundary between the factory's own arg group and the returned-closure application. Returns `None` when
-/// there is no top-level application group (a non-factory call `export(args…)`, or a factory whose result
-/// closure is not applied). The split is the FIRST `)` at paren-depth 0 that is immediately followed by a
-/// `(` — a nested `)(` inside a compound argument (`both((tuple 1 2), (record …))`) sits at depth > 0 and is
-/// skipped, so only the real factory/application seam matches.
 /// The single `EnvClosure::call` `A` argument from a flat applied-args string (`"5"`, `"3, 4"`, `""`). A
 /// 0-arg closure takes `()`; a 1-arg closure the bare arg; a ≥2-arg closure a TUPLE `(a, b)` — matching the
 /// lifted-lambda calling convention the backend's `Core::CallClosure`/`EnvClosure` impl uses (a multi-arg
 /// closure tuples its flat args into one `A`, destructured inside `call`). Splits on TOP-LEVEL commas only
 /// (a compound arg `(tuple 1 2)` / `Rc::new(..)` keeps its inner commas), so `(a, (x, y))` stays two args.
+///
+/// Nesting is balanced over `()`, `[]`, `{}` (block/struct-literal args), AND `<>` — EXCEPT a `>` that is
+/// the tail of a `->` return arrow (a closure-typed arg `Rc<dyn Fn(i64) -> i64>` contains a `->` whose `>`
+/// must NOT close a `<` group, or depth underflows and an inner comma leaks as top-level). Today the gate's
+/// `applied` args are corpus call VALUES (scalars, `(tuple …)`, bignum exprs) — no block/struct-literal/
+/// closure-sig arg reaches here — so the `{}`/`->` handling is DEFENSIVE (github-liaison #2391 c1): it keeps
+/// the splitter correct if the emit surface ever grows such an arg, rather than silently mis-tupling.
 fn env_closure_call_arg(applied: &str) -> String {
     let applied = applied.trim();
     if applied.is_empty() {
@@ -2448,10 +2449,13 @@ fn env_closure_call_arg(applied: &str) -> String {
     let bytes = applied.as_bytes();
     let mut depth = 0usize;
     let mut n_top_commas = 0usize;
-    for &b in bytes {
+    for (i, &b) in bytes.iter().enumerate() {
         match b {
-            b'(' | b'<' | b'[' => depth += 1,
-            b')' | b'>' | b']' => depth = depth.saturating_sub(1),
+            b'(' | b'<' | b'[' | b'{' => depth += 1,
+            // A `>` preceded by `-` is the arrow of a `->` return type, NOT a `<` group close — skip it
+            // (matching the emitted `Rc<dyn Fn(A) -> R>` / `EnvClosure` closure-typed arg spelling).
+            b'>' if i > 0 && bytes[i - 1] == b'-' => {}
+            b')' | b'>' | b']' | b'}' => depth = depth.saturating_sub(1),
             b',' if depth == 0 => n_top_commas += 1,
             _ => {}
         }
@@ -2463,6 +2467,12 @@ fn env_closure_call_arg(applied: &str) -> String {
     }
 }
 
+/// Split a FACTORY call expression `export(caps…)(applied…)` into `("export(caps…)", "(applied…)")` at the
+/// boundary between the factory's own arg group and the returned-closure application. Returns `None` when
+/// there is no top-level application group (a non-factory call `export(args…)`, or a factory whose result
+/// closure is not applied). The split is the FIRST `)` at paren-depth 0 that is immediately followed by a
+/// `(` — a nested `)(` inside a compound argument (`both((tuple 1 2), (record …))`) sits at depth > 0 and is
+/// skipped, so only the real factory/application seam matches.
 fn split_factory_application(call_expr: &str) -> Option<(String, String)> {
     let bytes = call_expr.as_bytes();
     let mut depth = 0usize;
@@ -8000,6 +8010,36 @@ mod trap_grading_tests {
             ml_test_jobs_from(None, 0, true),
             1,
             "empty file list still yields at least one worker"
+        );
+    }
+
+    /// `env_closure_call_arg` maps flat applied args → the single `EnvClosure::call` `A`: `()` for 0 args,
+    /// the bare arg for 1, a tuple for ≥2 — splitting on TOP-LEVEL commas only, with nesting balanced over
+    /// `()`/`[]`/`{}`/`<>` and the `->` arrow's `>` NOT counted as a group close (github-liaison #2391 c1).
+    #[test]
+    fn env_closure_call_arg_tuples_top_level_args_only() {
+        // Arity 0/1: `()` and the bare arg.
+        assert_eq!(env_closure_call_arg(""), "()");
+        assert_eq!(env_closure_call_arg("5"), "5");
+        // Arity ≥2: a tuple of the top-level args.
+        assert_eq!(env_closure_call_arg("3, 4"), "(3, 4)");
+        // A compound arg keeps its INNER commas — `(a, (x, y))` is TWO top-level args → tupled as one `A`,
+        // but the inner tuple's comma is not a top-level split (paren-balanced).
+        assert_eq!(env_closure_call_arg("a, (x, y)"), "(a, (x, y))");
+        // A SINGLE compound arg with inner commas is ONE arg → the bare arg (no extra wrap).
+        assert_eq!(env_closure_call_arg("(1, 2)"), "(1, 2)");
+        assert_eq!(env_closure_call_arg("vec![1, 2, 3]"), "vec![1, 2, 3]");
+        // DEFENSIVE (c1): a `{}` block/struct-literal arg with inner commas stays ONE arg (brace-balanced),
+        // not mis-split into several.
+        assert_eq!(
+            env_closure_call_arg("Foo { a: 1, b: 2 }"),
+            "Foo { a: 1, b: 2 }"
+        );
+        // DEFENSIVE (c1): a closure-typed arg whose type spells `->` — the arrow's `>` must not underflow the
+        // `<` depth, so an inner `,` after it is still seen as nested (this stays ONE arg).
+        assert_eq!(
+            env_closure_call_arg("x as Rc<dyn Fn(i64) -> (i64, i64)>"),
+            "x as Rc<dyn Fn(i64) -> (i64, i64)>"
         );
     }
 }
