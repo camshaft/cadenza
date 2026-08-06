@@ -139,6 +139,14 @@ async fn apply_lifecycle_ops(
                     Some(Err(e)) => return Err(e),
                 }
             }
+            // Suspend/resume flip the host-scheduler bit (no log mutation, so no KernelError possible). An
+            // absent target (`false`) is a benign no-op — the loop just has nothing to hold/release.
+            LifecycleOp::Suspend { target, by: _ } => {
+                host.suspend(&target);
+            }
+            LifecycleOp::Resume { target, by: _ } => {
+                host.resume(&target);
+            }
         }
     }
     Ok(())
@@ -349,6 +357,10 @@ impl AsyncAgentHost {
         let mut admin_open = true;
         // A slot for an admin request captured in the select! and handled just below it (see the admin arm).
         let mut pending_admin: Option<AdminRequest> = None;
+        // Inbound HELD because its target session is suspended (§lifecycle I4): not delivered, not dropped —
+        // replayed when the target resumes (drained after each apply_lifecycle_ops, which may have resumed
+        // it). A bounded buffer in practice (only accumulates while a target is suspended).
+        let mut held_inbound: Vec<Inbound> = Vec::new();
         loop {
             // Both producer channels closed → nothing can ever drive the loop again → return (unless a timer
             // is still pending, which the arms below still service; once channels are closed AND no timer is
@@ -391,6 +403,13 @@ impl AsyncAgentHost {
                 maybe = rx.recv(), if inbox_open => {
                     match maybe {
                         Some(msg) => {
+                            // §lifecycle I4: if the target session is SUSPENDED, HOLD the inbound (don't
+                            // deliver, don't drop — a drop is a lossy correctness hole) — it replays when the
+                            // session resumes (drained below, after apply_lifecycle_ops may have resumed it).
+                            if host.is_suspended(&msg.session) {
+                                held_inbound.push(msg);
+                                continue;
+                            }
                             // A bounce is only ever needed for a cross-session Emit (reply_to set); an
                             // ordinary external inbound (reply_to None — the common case) never bounces. So
                             // capture the return-address + the echo payload ONLY when reply_to is set — an
@@ -478,6 +497,26 @@ impl AsyncAgentHost {
             // (registry borrowed for the driven session), so it enqueued the op here — now `&mut host` is
             // free. Drained synchronously (the ops were produced on THIS task, so there's nothing to await).
             apply_lifecycle_ops(&mut host, &mut lifecycle_rx).await?;
+
+            // A lifecycle op may have RESUMED a session (§lifecycle I4): replay any inbound held for a
+            // now-un-suspended target. Deliver each in-place (still-suspended ones stay held). Partition:
+            // keep still-held; deliver the rest. (A resumed target that terminated meanwhile → deliver returns
+            // None/FoldRefused, both benign here — a held inbound to a gone session is dropped, not bounced,
+            // since a held inbound has no live emitter awaiting it.)
+            if !held_inbound.is_empty() {
+                let mut still_held = Vec::new();
+                for msg in std::mem::take(&mut held_inbound) {
+                    if host.is_suspended(&msg.session) {
+                        still_held.push(msg);
+                    } else {
+                        match host.deliver(&msg.session, msg.body, msg.cause).await {
+                            Some(Ok(())) | None | Some(Err(KernelError::FoldRefused)) => {}
+                            Some(Err(e)) => return Err(e),
+                        }
+                    }
+                }
+                held_inbound = still_held;
+            }
         }
     }
 
