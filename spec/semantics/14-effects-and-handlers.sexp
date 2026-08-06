@@ -1784,6 +1784,46 @@
                       (Log.note 8))))) (export main)))
   (call   main (: 5 Int64)) (output (: 62 Int64)))
 
+(case "an inner abort in a LET-INIT preserves the outer advance committed before it (let-init collapse)"
+  (doc    "The LET-INIT face of the outer-advance preservation (breaker ax7). The foreign `(A.tick)` + abort
+           sit in a `let`-INIT — `(let ((x (+ (A.tick) (B.bail 99)))) (+ x 1))` under B. `A.tick` resumes,
+           committing A-state 10 to 11; then `B.bail` abandons B's handle, so the `let` never binds `x` and
+           the body `(+ x 1)` is DEAD. Before the fix the let-arm threaded the init to `(do (A.tick) 99)` but
+           bound it to `x` and ran `(+ x 1)` on the do-tail (a wrong value) while burying the foreign prefix
+           in a dead binding the collapse discards, dropping A's advance to the seed 10 → 109. Fixed: when a
+           let-INIT fires the abort, collapse the `let` to the init's rewrite directly (its `(do (A.tick) 99)`
+           preserving the committed advance), abandoning the body → outer `(A.get)` reads 11 → `(+ 99 11)` =
+           110. The let-arm analog of the strict-operand and do-item abort collapses.")
+  (input  (do
+            (effect A (op tick (-> Unit Int64)) (op get (-> Unit Int64)))
+            (effect B (op bail (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle A 10
+                ((tick (u) s (resume s (+ s 1))) (get (u) s (resume s s)))
+                (let ((b (handle B 0 ((bail (v) s v)) (let ((x (+ (A.tick) (B.bail 99)))) (+ x 1)))))
+                  (+ b (A.get))))) (export main)))
+  (call   main (: 5 Int64)) (output (: 110 Int64)))
+
+(case "a do-spine item abort ABANDONS its enclosing operator, not splicing the value (do-item abort-abandon)"
+  (doc    "The do-spine SPLICE face, breaker ax9. A do-item `+ 999 <bail>` — a pure sibling 999 plus an
+           aborting operand — sits on the do-spine after a committed A.tick, under B. The abort abandons the
+           whole `+`, so the do-item's value IS the abort value 99, with A.tick's advance preserved as the
+           do-prefix. Before the fix the Apply-arm rebuilt `+ 999 99` — SPLICING the abort value into the dead
+           arithmetic — and as a do-ITEM nothing collapsed it: the reduce_handle top-level bare-abort collapse
+           only fires at the whole-body position, so b was `do A.tick then 1098` = 1098 giving 1109. Fixed:
+           when an operator's operand aborts and its other operands are pure, with no foreign prefix to keep,
+           the Apply-arm collapses to the abort value directly, dropping the dead pure siblings, so b = 99 and
+           the outer A.get reads the advanced 11 giving 99 + 11 = 110.")
+  (input  (do
+            (effect A (op tick (-> Unit Int64)) (op get (-> Unit Int64)))
+            (effect B (op bail (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle A 10
+                ((tick (u) s (resume s (+ s 1))) (get (u) s (resume s s)))
+                (let ((b (handle B 0 ((bail (v) s v)) (do (A.tick) (+ 999 (B.bail 99))))))
+                  (+ b (A.get))))) (export main)))
+  (call   main (: 5 Int64)) (output (: 110 Int64)))
+
 (case "an inner abort preserves an OUTER advance committed in an IF-BRANCH before it (branch do-shape)"
   (doc    "The IF-BRANCH face of the outer-advance preservation (v-effects self-probe; the direct do-shape and
            strict-operand faces are pinned above). The foreign `(A.tick)` and the abort sit on the strict

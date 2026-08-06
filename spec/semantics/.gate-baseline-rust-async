@@ -6061,3 +6061,5 @@ pass	a crossed rope String compares EQUAL to an arm-local flat literal — conte
 pass	two crossed LISTS compare structurally in the arm — same content from different builders
 pass	an inner abort preserves an outer advance committed in a NESTED strict operand (deeper-operand-lift)
 pass	a nested-operand abort preserves a HEAP-state advance across a mid-mutation frame drop
+pass	an inner abort in a LET-INIT preserves the outer advance committed before it (let-init collapse)
+pass	a do-spine item abort ABANDONS its enclosing operator, not splicing the value (do-item abort-abandon)

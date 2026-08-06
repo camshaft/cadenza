@@ -5540,8 +5540,25 @@ fn thread_bounded(
                 // The binder NAME is copied structurally (a binder, not a value to thread); the INIT is
                 // threaded (it may perform).
                 let name_copy = copy_pure(db, kv[0]);
+                let init_abort_before = ctx.abort_value.get();
                 let (rinit, next) = thread_bounded(db, kv[1], cur, ctx, inline_depth)?;
                 cur = next;
+                // LET-INIT ABORT COLLAPSE (breaker ax7/ah-x3). If threading THIS init fired an abort — the
+                // init `(+ (A.tick) (B.bail 99))` / `(do (ask.ask) (Bail.bail 7))` aborts — the `let` never
+                // binds the name and the body + remaining bindings are DEAD (the abort abandons the
+                // continuation). `rinit` is already the sound rewrite the abort-lift produced: a `(do
+                // <pre-abort-foreign-prefix> abort-value)` (or the bare abort value), carrying any committed
+                // foreign advance / issued host call. Return it DIRECTLY as the let's value — do NOT push it
+                // as a binding + continue to the body, which would (a) bind the name to the do-tail and run
+                // `(+ x 1)` on it (a wrong value, ax7 → 109) and (b) leave the foreign prefix buried in a dead
+                // binding the enclosing collapse discards (dropping A.tick's advance / never issuing the host
+                // call, ah-x3). The abort cell stays SET so the enclosing fold collapses to this value. This
+                // is the let-INIT analog of the strict-operand abort-lift (the body-abort case is handled by
+                // the ABORT-VALUE RE-SCOPE below; this is the INIT-abort case it missed — the `abort_before`
+                // snapshot there is taken AFTER this loop, so an init abort slipped through).
+                if init_abort_before.is_none() && ctx.abort_value.get().is_some() {
+                    return Some((rinit, cur));
+                }
                 // A pure threaded init captured by a returned-lambda body → substitute it into the body
                 // (see the block comment above). GATED to the closure shape + an effect-FREE init (an
                 // effectful init would duplicate its effect on inline).
@@ -5729,6 +5746,21 @@ fn thread_bounded(
                 ch.extend(kept_foreign);
                 ch.push(tail);
                 return Some((db.push_list(ch), cur));
+            }
+            // OPERAND ABORT ABANDONS PURE SIBLINGS (breaker ax9/ah-x2). When an operand ABORTED and there
+            // is no foreign prefix to preserve (`kept_foreign` empty) and the tail is a bare abort value
+            // (not a lifted `do`), rebuilding `(op <pure siblings> <abort-value>)` — `(+ 999 99)` — SPLICES
+            // the abort value into a dead arithmetic form. At the reduce_handle TOP LEVEL a downstream
+            // bare-abort collapse reduces that away, but when this `(+ 999 (B.bail 99))` is a `do`-ITEM (or
+            // any non-top position) nothing collapses it → the spliced `(+ 999 99)` = 1098 rides forward as
+            // the value (ax9 → 1109). The abort abandons the whole operator application, so its value IS the
+            // abort value: collapse to `tail` directly, dropping the pure siblings. Sound — the siblings are
+            // pure (no `kept_foreign`), so dropping them discards no effect; the abort cell stays set so the
+            // enclosing fold treats this as the abort. (A foreign sibling would have populated `kept_foreign`
+            // → the do-prefix branch above; a lifted-do tail → that branch too. This is the bare-value,
+            // pure-siblings-only residue.)
+            if let Some(tail) = abort_tail {
+                return Some((tail, cur));
             }
             Some((db.push_list(children), cur))
         }
