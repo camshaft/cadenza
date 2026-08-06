@@ -5978,3 +5978,6 @@ pass	a LIST OF SETS as op ARGUMENT — the arm indexes into the nested payload i
 pass	a MAP OF LISTS op result — the body looks up a key and folds the inner list
 pass	a record with a LIST field crosses resume — the body projects and folds the collection field
 pass	a record with a SET field as op ARGUMENT — the arm probes the collection beside the scalar
+pass	a 40-element list op RESULT crosses resume — a multi-leaf RRB payload survives the marshal
+pass	a 40-element list as op ARGUMENT — the arm folds a multi-leaf RRB payload
+pass	a 40-element SET op result — a multi-node CHAMP payload crosses resume
