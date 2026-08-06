@@ -3398,6 +3398,8 @@ pass	a squared BigInt-inner quantity added to a linear one is a dimension mismat
 pass	a squared quantity does not add to a linear quantity
 pass	a stacked @test @ensures def called as a function returns its value, not unit (value-transparent)
 pass	a stacked @test @ensures with a FALSE postcondition traps when the def is called (test semantics preserved)
+pass	a state-READING second op after a SINGLE two-site perform is served (minimal prefix)
+pass	a state-REPLACING second op AFTER a two-site arm's performs is served (prefix rule)
 pass	a state-advancing helper called before a later read threads its write through the continuation
 pass	a stateful counter is observed left-to-right by sibling performs in one expression
 pass	a stateful counter threads through a RECURSIVE callee performing inside the handled region
