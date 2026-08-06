@@ -85,7 +85,7 @@ async fn reactive_two_step_loop_runs_to_completion() {
     let reducer = TwoStepReducer;
     let authz = http_cap();
     let mut exec = RecordingExecutor::new();
-    let mut session = Session::genesis(Hash::of(b"two-step-v1"));
+    let mut session = Session::genesis(Hash::of(b"two-step-v1"), Hash::of(b"test-spawn-nonce"));
 
     session
         .deliver(inbound_go(), None, &reducer, &authz, &mut exec)
@@ -114,7 +114,7 @@ async fn effect_chain_populates_the_causal_dag() {
 
     let reducer = TwoStepReducer;
     let mut exec = RecordingExecutor::new();
-    let mut session = Session::genesis(H::of(b"two-step-v1"));
+    let mut session = Session::genesis(H::of(b"two-step-v1"), H::of(b"test-spawn-nonce"));
     session
         .deliver(inbound_go(), None, &reducer, &http_cap(), &mut exec)
         .await
@@ -184,7 +184,7 @@ async fn denied_effect_is_logged_and_never_executed() {
         }
     }
     let mut exec = RecordingExecutor::new();
-    let mut session = Session::genesis(Hash::of(b"exfil"));
+    let mut session = Session::genesis(Hash::of(b"exfil"), Hash::of(b"test-spawn-nonce"));
     session
         .deliver(inbound_go(), None, &Exfil, &http_cap(), &mut exec)
         .await
@@ -208,7 +208,7 @@ async fn crash_after_dispatch_before_result_does_not_double_fire() {
     let reducer = TwoStepReducer;
 
     // Build a log ending in a Dispatched-with-no-result (the crash point).
-    let mut session = Session::genesis(Hash::of(b"two-step-v1"));
+    let mut session = Session::genesis(Hash::of(b"two-step-v1"), Hash::of(b"test-spawn-nonce"));
     // Drive step 1's dispatch by hand-constructing the crash state via a custom executor that records
     // the effect but then we truncate the log before the result. Easiest: run normally, then chop.
     let authz = http_cap();
@@ -298,7 +298,7 @@ async fn timeout_cancels_so_a_late_result_is_dropped() {
 
     let reducer = CountResumes;
     let mut exec = TimeoutExecutor;
-    let mut session = Session::genesis(Hash::of(b"count"));
+    let mut session = Session::genesis(Hash::of(b"count"), Hash::of(b"test-spawn-nonce"));
     session
         .deliver(inbound_go(), None, &reducer, &http_cap(), &mut exec)
         .await
@@ -346,7 +346,7 @@ async fn time_out_effect_settles_an_open_dispatch_and_resumes_the_reducer() {
     // (models a crash after Dispatched, before any result — the state a driver must resolve).
     let reducer = GiveUpOnTimeout;
     let mut exec = RecordingExecutor::new();
-    let mut session = Session::genesis(Hash::of(b"giveup-v1"));
+    let mut session = Session::genesis(Hash::of(b"giveup-v1"), Hash::of(b"test-spawn-nonce"));
     session
         .deliver(inbound_go(), None, &reducer, &http_cap(), &mut exec)
         .await
@@ -413,7 +413,7 @@ async fn time_out_effect_on_an_armed_timer_id_is_a_noop_not_a_panic() {
     // timer fires via fire_due_timers, not a manual timeout; timing one out is a no-op returning false.
     let reducer = TimerReducer { deadline_ms: 5000 };
     let mut exec = RecordingExecutor::new();
-    let mut session = Session::genesis(Hash::of(b"timer-v1"));
+    let mut session = Session::genesis(Hash::of(b"timer-v1"), Hash::of(b"test-spawn-nonce"));
     session
         .deliver(inbound_go(), None, &reducer, &timer_cap(), &mut exec)
         .await
@@ -466,7 +466,7 @@ async fn attached_log_persists_through_on_append_no_manual_mirroring() {
 
     let reducer = TwoStepReducer;
     let mut exec = RecordingExecutor::new();
-    let mut session = Session::genesis(Hash::of(b"two-step-v1"));
+    let mut session = Session::genesis(Hash::of(b"two-step-v1"), Hash::of(b"test-spawn-nonce"));
     // The store holds the log up to the current tip before attaching (here: just genesis). Then
     // write-through owns every subsequent append.
     {
@@ -532,7 +532,7 @@ async fn a_reducers_continuation_token_is_recorded_in_the_dispatched_frame() {
     }
 
     let mut exec = RecordingExecutor::new();
-    let mut session = Session::genesis(Hash::of(b"token-v1"));
+    let mut session = Session::genesis(Hash::of(b"token-v1"), Hash::of(b"test-spawn-nonce"));
     session
         .deliver(inbound_go(), None, &TokenReducer, &http_cap(), &mut exec)
         .await
@@ -565,7 +565,7 @@ async fn a_reducers_continuation_token_is_recorded_in_the_dispatched_frame() {
 
     // Control: a token-free reducer (the common Rust path via FoldOutput::with) records token None.
     let mut exec2 = RecordingExecutor::new();
-    let mut s2 = Session::genesis(Hash::of(b"notoken-v1"));
+    let mut s2 = Session::genesis(Hash::of(b"notoken-v1"), Hash::of(b"test-spawn-nonce"));
     s2.deliver(inbound_go(), None, &TwoStepReducer, &http_cap(), &mut exec2)
         .await
         .unwrap();
@@ -608,7 +608,7 @@ async fn a_continuation_token_rides_timer_fired_and_authz_denied_events() {
     }
 
     let mut exec = RecordingExecutor::new();
-    let mut session = Session::genesis(Hash::of(b"token-timer-v1"));
+    let mut session = Session::genesis(Hash::of(b"token-timer-v1"), Hash::of(b"test-spawn-nonce"));
     session
         .deliver(
             inbound_go(),
@@ -671,7 +671,7 @@ async fn a_continuation_token_rides_timer_fired_and_authz_denied_events() {
     }
     // A capability that authorizes Timer but NOT Http → the Http effect is denied.
     let mut exec2 = RecordingExecutor::new();
-    let mut s2 = Session::genesis(Hash::of(b"token-deny-v1"));
+    let mut s2 = Session::genesis(Hash::of(b"token-deny-v1"), Hash::of(b"test-spawn-nonce"));
     s2.deliver(
         inbound_go(),
         None,
@@ -731,7 +731,7 @@ async fn s1_route_guard_does_not_perform_an_effect_whose_dispatch_failed_to_pers
     }
 
     let mut exec = RecordingExecutor::new();
-    let mut session = Session::genesis(Hash::of(b"oneshot-v1"));
+    let mut session = Session::genesis(Hash::of(b"oneshot-v1"), Hash::of(b"test-spawn-nonce"));
     session.attach_sink(Box::new(FailingSink));
 
     session
@@ -776,7 +776,7 @@ async fn persist_crash_recover_reconstructs_kv_and_open_obligations() {
     // process that flushed the Dispatched frame and died before writing the result frame.
     let reducer = TwoStepReducer;
     let mut exec = RecordingExecutor::new();
-    let mut session = Session::genesis(Hash::of(b"two-step-v1"));
+    let mut session = Session::genesis(Hash::of(b"two-step-v1"), Hash::of(b"test-spawn-nonce"));
     session
         .deliver(inbound_go(), None, &reducer, &http_cap(), &mut exec)
         .await
@@ -832,7 +832,7 @@ async fn session_recover_is_the_one_call_recovery_entry_point() {
 
     // Persist a session up to a mid-flight dispatch (the crash point), then recover via the one call.
     let mut exec = RecordingExecutor::new();
-    let mut session = Session::genesis(Hash::of(b"two-step-v1"));
+    let mut session = Session::genesis(Hash::of(b"two-step-v1"), Hash::of(b"test-spawn-nonce"));
     session
         .deliver(inbound_go(), None, &reducer, &http_cap(), &mut exec)
         .await
@@ -886,7 +886,7 @@ async fn session_recover_from_is_backend_agnostic_no_file_needed() {
     // Produce a real event prefix WITHOUT touching disk: run a session in memory, take its log, and wrap
     // it in a `Recovered` as a non-file backend would after reading its stream.
     let mut exec = RecordingExecutor::new();
-    let mut session = Session::genesis(Hash::of(b"two-step-v1"));
+    let mut session = Session::genesis(Hash::of(b"two-step-v1"), Hash::of(b"test-spawn-nonce"));
     session
         .deliver(inbound_go(), None, &reducer, &http_cap(), &mut exec)
         .await
@@ -938,6 +938,8 @@ async fn session_recover_surfaces_corruption_to_the_caller() {
                 cause: None,
                 body: EventBody::Genesis {
                     reducer: Hash::of(b"two-step-v1"),
+                    spawn_nonce: Hash::of(b"test-spawn-nonce"),
+                    parent: None,
                 },
             })
             .unwrap();
@@ -1000,7 +1002,7 @@ fn timer_cap() -> Authorizer {
 async fn timer_arms_without_executor_then_kernel_fires_on_deadline() {
     let reducer = TimerReducer { deadline_ms: 1000 };
     let mut exec = RecordingExecutor::new();
-    let mut session = Session::genesis(Hash::of(b"timer"));
+    let mut session = Session::genesis(Hash::of(b"timer"), Hash::of(b"test-spawn-nonce"));
 
     session
         .deliver(inbound_go(), None, &reducer, &timer_cap(), &mut exec)
@@ -1043,7 +1045,7 @@ async fn fired_timestamp_is_the_deadline_not_the_wall_clock_that_fired_it() {
     // is independent of when fire_due_timers happened to run.
     let reducer = TimerReducer { deadline_ms: 500 };
     let mut exec = RecordingExecutor::new();
-    let mut session = Session::genesis(Hash::of(b"timer"));
+    let mut session = Session::genesis(Hash::of(b"timer"), Hash::of(b"test-spawn-nonce"));
     session
         .deliver(inbound_go(), None, &reducer, &timer_cap(), &mut exec)
         .await
@@ -1073,7 +1075,7 @@ async fn armed_timer_survives_replay() {
     // so a recovered/migrated session still fires it.
     let reducer = TimerReducer { deadline_ms: 2000 };
     let mut exec = RecordingExecutor::new();
-    let mut session = Session::genesis(Hash::of(b"timer"));
+    let mut session = Session::genesis(Hash::of(b"timer"), Hash::of(b"test-spawn-nonce"));
     session
         .deliver(inbound_go(), None, &reducer, &timer_cap(), &mut exec)
         .await
@@ -1117,7 +1119,7 @@ async fn malformed_timer_deadline_is_rejected_not_panicked() {
         }
     }
     let mut exec = RecordingExecutor::new();
-    let mut session = Session::genesis(Hash::of(b"badtimer"));
+    let mut session = Session::genesis(Hash::of(b"badtimer"), Hash::of(b"test-spawn-nonce"));
     session
         .deliver(inbound_go(), None, &BadTimer, &timer_cap(), &mut exec)
         .await
@@ -1173,7 +1175,7 @@ async fn live_shell_executor_runs_a_real_command_end_to_end() {
         predicate: ResourcePredicate::Prefix("echo ".into()),
     }]);
     let mut exec = ShellExecutor;
-    let mut session = Session::genesis(Hash::of(b"shell"));
+    let mut session = Session::genesis(Hash::of(b"shell"), Hash::of(b"test-spawn-nonce"));
     session
         .deliver(inbound_go(), None, &ShellReducer, &authz, &mut exec)
         .await
@@ -1222,7 +1224,7 @@ async fn live_shell_denied_command_never_executes() {
         predicate: ResourcePredicate::Prefix("echo ".into()),
     }]);
     let mut exec = ShellExecutor;
-    let mut session = Session::genesis(Hash::of(b"denied"));
+    let mut session = Session::genesis(Hash::of(b"denied"), Hash::of(b"test-spawn-nonce"));
     session
         .deliver(
             inbound_go(),
@@ -1287,7 +1289,7 @@ async fn live_shell_no_injection_via_metacharacters() {
         predicate: ResourcePredicate::Prefix("echo ".into()),
     }]);
     let mut exec = ShellExecutor;
-    let mut session = Session::genesis(Hash::of(b"inject"));
+    let mut session = Session::genesis(Hash::of(b"inject"), Hash::of(b"test-spawn-nonce"));
     let payload = format!("echo ok ; touch {marker}");
     session
         .deliver(inbound_go(), None, &Injector(payload), &authz, &mut exec)
@@ -1340,7 +1342,7 @@ async fn authz_denied_is_folded_live_so_replay_matches() {
         predicate: ResourcePredicate::HostIn(vec!["ok.host".into()]),
     }]);
     let mut exec = RecordingExecutor::new();
-    let mut session = Session::genesis(Hash::of(b"denial"));
+    let mut session = Session::genesis(Hash::of(b"denial"), Hash::of(b"test-spawn-nonce"));
     session
         .deliver(inbound_go(), None, &DenialCounter, &authz, &mut exec)
         .await

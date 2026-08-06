@@ -176,6 +176,8 @@ mod tests {
             cause: None,
             body: EventBody::Genesis {
                 reducer: crate::hash::Hash::of(b"r"),
+                spawn_nonce: crate::hash::Hash::of(b"test-spawn-nonce"),
+                parent: None,
             },
         };
         let mut kv = Kv::new();

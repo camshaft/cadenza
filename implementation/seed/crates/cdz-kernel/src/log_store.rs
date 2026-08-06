@@ -265,6 +265,8 @@ mod tests {
             cause: None,
             body: EventBody::Genesis {
                 reducer: Hash::of(b"r"),
+                spawn_nonce: Hash::of(b"test-spawn-nonce"),
+                parent: None,
             },
         }
     }
