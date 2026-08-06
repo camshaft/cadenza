@@ -973,6 +973,11 @@ impl Session {
                         "dispatch not durably logged (persist failure) — store effect NOT applied (S1)"
                             .to_string(),
                     )
+                } else if crate::effect::effect_ct::is_group_store_family(&req.content_type.family)
+                {
+                    // §4c I3b GROUP sub-partition: store/add|remove|resolve-all act on OR-set groups (member-op
+                    // payload) — routed to the group handler, distinct from the single-value pointer path.
+                    self.apply_group_store_effect(&req, idempotency_key)
                 } else {
                     self.apply_store_effect(&req, idempotency_key)
                 };
@@ -1303,6 +1308,85 @@ impl Session {
                  (misroute — group verbs use apply_group_effect)"
             )),
             Err(e) => EffectOutcome::Err(format!("store effect on {name:?}: {e:?}")),
+        }
+    }
+
+    /// Apply a GROUP `store/*` effect (§4c session-directory I3b: `store/add` / `store/remove` /
+    /// `store/resolve-all`) to the attached name-store — the OR-set counterpart to [`apply_store_effect`]. The
+    /// effect's `target` is the mutable GROUP NAME; for add/remove the `(member, tag)` rides the payload as a
+    /// `member-op` blob ([`crate::event_ast::encode_member_op`] — the SAME frame the durable snapshot uses, so
+    /// one codec spans the wire and the store), for `resolve-all` there is no payload. A successful
+    /// `resolve-all` returns the frozen membership as a `members` blob ([`crate::event_ast::encode_members`],
+    /// ascending-hash → byte-stable), which the guest decodes the same way a snapshot reader would; add/remove
+    /// return empty-success (the op already rode the payload). Every failure — no store attached, a malformed/
+    /// wrong-shaped payload, a mode-mismatch, an Unscoped or never-touched group — is an observable
+    /// `EffectOutcome::Err` (§9d anti-stuck), never a panic.
+    fn apply_group_store_effect(
+        &mut self,
+        req: &EffectRequest,
+        idempotency_key: Hash,
+    ) -> EffectOutcome {
+        let family = req.content_type.family.as_ref();
+        let name = req.target.as_ref();
+        // add/remove carry a `member-op` payload (member + tag); resolve-all carries none. Decode → the
+        // optional MemberOp apply_group_effect expects. VALIDATE the payload's embedded name against the effect
+        // TARGET (the target is what the authorizer gated, SEC-F1): an op whose payload names a DIFFERENT group
+        // than it was authorized for must be rejected, never silently applied to the payload name.
+        let op = match &req.payload {
+            Some(crate::effect::Payload::Inline(bytes)) => {
+                match crate::event_ast::decode_member_op(bytes) {
+                    Ok((payload_name, add, member, tag)) => {
+                        if payload_name != name {
+                            return EffectOutcome::Err(format!(
+                                "group store effect payload name {payload_name:?} != authorized target \
+                                 {name:?} — refusing (the target is what authz gated)"
+                            ));
+                        }
+                        Some(crate::name_store::MemberOp { add, member, tag })
+                    }
+                    Err(e) => {
+                        return EffectOutcome::Err(format!(
+                            "group store effect: malformed member-op payload: {e:?}"
+                        ));
+                    }
+                }
+            }
+            Some(crate::effect::Payload::Blob(_)) => {
+                return EffectOutcome::Err(
+                    "group store effect: blob-ref payload unsupported — inline the member-op"
+                        .to_string(),
+                );
+            }
+            None => None,
+        };
+        let Some(store) = self.name_store.as_mut() else {
+            return EffectOutcome::Err(
+                "group store effect: no name store attached to this session (attach_name_store)"
+                    .to_string(),
+            );
+        };
+        match store.apply_group_effect(family, name, op, idempotency_key) {
+            Ok(crate::name_store::StoreOutcome::GroupOpApplied) => {
+                // An add/remove's outcome is empty-success — the op's member+tag already rode the payload; the
+                // reducer keyed its continuation by EffectId.
+                EffectOutcome::Ok(None)
+            }
+            Ok(crate::name_store::StoreOutcome::Members(members)) => {
+                // resolve-all: return the frozen membership as a `members` blob (ascending-hash → byte-stable),
+                // decoded the same way a snapshot reader decodes group state.
+                let bytes = crate::event_ast::encode_members(&members);
+                EffectOutcome::Ok(Some(crate::effect::Payload::Inline(bytes.into())))
+            }
+            // POINTER outcomes (Set/Resolved) can't come from apply_group_effect (a group family never
+            // dispatches to the pointer verbs); fold as an observable Err if one somehow arrives (anti-stuck,
+            // no panic) — the mirror of the group-outcome guard on the pointer path.
+            Ok(
+                crate::name_store::StoreOutcome::Set(_)
+                | crate::name_store::StoreOutcome::Resolved(_),
+            ) => EffectOutcome::Err(format!(
+                "group store effect on {name:?}: a single-value outcome from the group path (misroute)"
+            )),
+            Err(e) => EffectOutcome::Err(format!("group store effect on {name:?}: {e:?}")),
         }
     }
 
@@ -3990,6 +4074,106 @@ mod store_effect_tests {
             "store/* is NOT routed to the executor"
         );
         assert_eq!(s.open_effects(), 0, "both store effects settled");
+    }
+
+    // §4c session-directory I3b: a reducer that JOINs two members to a group then RESOLVE-ALLs it, driving the
+    // group store verbs (store/add, store/resolve-all) through the kernel's group arm end-to-end.
+    struct JoinThenResolveAll {
+        group: &'static str,
+        m1: Hash,
+        m2: Hash,
+        origin: Hash,
+    }
+    #[async_trait::async_trait(?Send)]
+    impl Reducer for JoinThenResolveAll {
+        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+            match &event.body {
+                EventBody::Inbound { .. } => {
+                    // Add m1 and m2 (each tagged (origin, seq)) in one turn — two store/add effects.
+                    let add = |member: &Hash, seq: u64| {
+                        let payload = crate::event_ast::encode_member_op(
+                            self.group,
+                            true,
+                            member,
+                            &(self.origin, seq),
+                        );
+                        EffectRequest::new_with_family(
+                            effect_ct::STORE_ADD,
+                            self.group,
+                            Some(Payload::Inline(payload.into())),
+                            Timeliness::Interactive,
+                        )
+                    };
+                    FoldOutput::with(vec![add(&self.m1, 0), add(&self.m2, 1)])
+                }
+                EventBody::EffectResult {
+                    result: EffectOutcome::Ok(body),
+                    ..
+                } => {
+                    // Count settled effects; after BOTH adds settle, fire the resolve-all; on the resolve-all
+                    // result, record the decoded membership count + the hex members (sorted) into the KV.
+                    let n = kv.get(b"settled").map(|v| v[0]).unwrap_or(0) + 1;
+                    kv.put(b"settled".to_vec(), vec![n]);
+                    if let Some(Payload::Inline(bytes)) = body {
+                        // A members payload only rides the resolve-all result — decode it if present.
+                        if let Ok(members) = crate::event_ast::decode_members(bytes) {
+                            kv.put(b"member_count".to_vec(), vec![members.len() as u8]);
+                        }
+                    }
+                    if n == 2 {
+                        // Both adds settled → resolve-all the group.
+                        return FoldOutput::with(vec![EffectRequest::new_with_family(
+                            effect_ct::STORE_RESOLVE_ALL,
+                            self.group,
+                            None,
+                            Timeliness::Interactive,
+                        )]);
+                    }
+                    FoldOutput::none()
+                }
+                _ => FoldOutput::none(),
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn group_add_then_resolve_all_round_trips_through_the_kernel_group_arm() {
+        let mut exec = crate::executor::RecordingExecutor::new();
+        let mut s = Session::genesis(Hash::of(b"dir-v1"), Hash::of(b"test-spawn-nonce"));
+        s.attach_name_store(NameStore::new());
+        let reducer = JoinThenResolveAll {
+            group: "session/room/lobby",
+            m1: Hash::of(b"member-A"),
+            m2: Hash::of(b"member-B"),
+            origin: Hash::of(b"origin-session"),
+        };
+
+        s.deliver(inbound(), None, &reducer, &AllowStore, &mut exec)
+            .await
+            .unwrap();
+
+        // The reducer added 2 members then resolve-all'd → the decoded membership it recorded is exactly 2
+        // (the group round-tripped THROUGH the kernel's group arm: adds applied, resolve-all folded add-wins).
+        assert_eq!(
+            s.kv().get(b"member_count"),
+            Some([2u8].as_slice()),
+            "resolve-all returned both joined members"
+        );
+        // Ground-truth the attached store directly: its OR-set really has both members.
+        assert_eq!(
+            s.name_store()
+                .unwrap()
+                .resolve_all("session/room/lobby")
+                .unwrap(),
+            [Hash::of(b"member-A"), Hash::of(b"member-B")]
+                .into_iter()
+                .collect()
+        );
+        assert!(
+            exec.seen.is_empty(),
+            "store/* is NOT routed to the executor"
+        );
+        assert_eq!(s.open_effects(), 0, "all group store effects settled");
     }
 
     #[tokio::test(flavor = "current_thread")]

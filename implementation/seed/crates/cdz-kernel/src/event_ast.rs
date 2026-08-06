@@ -434,6 +434,50 @@ pub fn decode_member_op(bytes: &[u8]) -> Result<(String, bool, Hash, (Hash, u64)
     Ok((name, add, member, tag))
 }
 
+/// Encode a §4c session-directory `store/resolve-all` RESULT — a group's current membership (add-wins fold)
+/// as canonical AST:
+///
+///   `(members (member <hash>) (member <hash>) …)`
+///
+/// The result payload the drive loop returns for a `store/resolve-all` (§4c I3b), so a guest reader decodes
+/// the frozen member set through this ONE codec (the group analogue of a `store/resolve` returning a single
+/// `name-set` hash). `members` is passed in ASCENDING-hash order (the `BTreeSet<Hash>` iteration order from
+/// [`crate::name_store::NameStore::resolve_all`]) so the encoded bytes are BYTE-STABLE — a frozen membership
+/// content-addresses identically, and a multicast (§8) fan-out over the decoded set is deterministic. An empty
+/// group encodes to `(members)` (a live group whose members were all removed — distinct from a NoSuchName
+/// error, which the drive loop folds as an `Err` outcome, never an empty `members`). Same shared-codec +
+/// total-decode discipline as [`encode_member_op`] (the bytes ride the durable result log).
+pub fn encode_members<'a>(members: impl IntoIterator<Item = &'a Hash>) -> Vec<u8> {
+    let mut b = Builder::new();
+    let head = b.name("members");
+    let mut items = vec![head];
+    for m in members {
+        let h = b.name("member");
+        let mf = hash_form(&mut b, m);
+        items.push(b.list(vec![h, mf]));
+    }
+    let root = b.list(items);
+    codec::encode(&b.finish(root))
+}
+
+/// Decode a `members` frame encoded by [`encode_members`] → the member hashes in ENCODED order (which
+/// `encode_members` writes ascending, so a round-trip through a `BTreeSet` reproduces the same set). Total:
+/// non-conforming bytes / a non-`member` child / a bad hash are a clean `Shape` error, never a panic
+/// (durable-log / untrusted-store bytes). Returns a `Vec` (not a set) so a caller can observe the exact
+/// encoded order; collecting into a `BTreeSet` recovers the canonical membership.
+pub fn decode_members(bytes: &[u8]) -> Result<Vec<Hash>, EventAstError> {
+    let a = codec::decode_detailed(bytes).map_err(EventAstError::Codec)?;
+    let member_forms = a.as_form(a.root, "members").ok_or(shape("members head"))?;
+    let mut out = Vec::with_capacity(member_forms.len());
+    for &mf in member_forms {
+        let [hv] = a.as_form(mf, "member").ok_or(shape("member form"))? else {
+            return Err(shape("member arity"));
+        };
+        out.push(read_hash(&a, *hv)?);
+    }
+    Ok(out)
+}
+
 /// A decoded §4c store-snapshot frame — either a single-value `name-set` pointer or a group `member-op`.
 /// This is the durable-snapshot restore discriminant: [`decode_store_frame`] decodes the shared codec
 /// ONCE and routes on the frame's self-describing AST head, so [`crate::name_store::NameStore::from_snapshot_bytes`]
@@ -1607,6 +1651,54 @@ mod tests {
         .expect("remove frame round-trips");
         assert!(!add2, "the remove flag round-trips as false");
         assert_eq!(tag2, (origin, 7));
+    }
+
+    #[test]
+    fn members_frame_round_trips_and_is_byte_stable_ascending() {
+        // §4c I3b resolve-all result: the frozen member set round-trips through the members codec, and the
+        // encoded bytes are byte-STABLE regardless of the iteration order passed in (encode writes whatever
+        // order it's given; the store hands it an ascending BTreeSet, so a re-encode of the DECODED set is
+        // identical). Here we feed a BTreeSet both times to pin the canonical (ascending) encoding.
+        use std::collections::BTreeSet;
+        let members: BTreeSet<Hash> = [Hash::of(b"A"), Hash::of(b"B"), Hash::of(b"C")]
+            .into_iter()
+            .collect();
+        let bytes = encode_members(&members);
+        let decoded = decode_members(&bytes).expect("members frame round-trips");
+        assert_eq!(
+            decoded.iter().copied().collect::<BTreeSet<Hash>>(),
+            members,
+            "the member set round-trips"
+        );
+        // Re-encoding the decoded set (collected back into a BTreeSet → ascending) reproduces the SAME bytes.
+        let re: BTreeSet<Hash> = decoded.into_iter().collect();
+        assert_eq!(
+            encode_members(&re),
+            bytes,
+            "members encoding is byte-stable"
+        );
+    }
+
+    #[test]
+    fn members_frame_handles_empty_and_rejects_malformed() {
+        // An empty group (all members removed) encodes to `(members)` and round-trips to an empty vec — this
+        // is DISTINCT from a decode error (a live-but-empty group vs. corrupt bytes).
+        let empty: [&Hash; 0] = [];
+        let bytes = encode_members(empty);
+        assert!(
+            decode_members(&bytes)
+                .expect("empty members round-trips")
+                .is_empty(),
+            "an empty membership decodes to an empty vec, not an error"
+        );
+        // Non-conforming bytes are a clean Shape error, never a panic (durable/untrusted bytes).
+        assert!(decode_members(b"not a members frame").is_err());
+        // A frame with the WRONG head (a member-op, not members) is rejected — no cross-decode.
+        let (m, o) = (Hash::of(b"m"), Hash::of(b"o"));
+        assert!(
+            decode_members(&encode_member_op("session/g", true, &m, &(o, 0))).is_err(),
+            "a member-op frame is not a members frame"
+        );
     }
 
     #[test]
