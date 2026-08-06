@@ -3216,6 +3216,160 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 3 Int64)))
 
+(case "an IN-PROGRAM arm resumes a Qty built in the arm — the erased-scalar crossing without a host"
+  (doc    "The pure in-program Qty handler (the existing Qty effect pins are host-delegated): the arm
+           builds `(Qty.of (* k 2) meter)` and resumes it; two dispatches sum under the unit type and
+           `Qty.value` reads 30. The compile-time-erased unit must type the arm/body agreement with
+           no host boundary involved.")
+  (input  (do
+            (effect Env (op width (-> Int64 (Qty Int64 (Unit.base #"meter")))))
+            (def (main (: n Int64))
+              (handle Env 0
+                ((width (k) s (resume (Qty.of (* k 2) (Unit.base #"meter")) s)))
+                (Qty.value (+ (Env.width n) (Env.width 10)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 30 Int64)))
+
+(case "a Qty STATE threads via a def-bound arm computation — the workaround shape runs end to end"
+  (doc    "Qty as handler STATE with the arm computing the next state through an arm-local `def` —
+           each dispatch resumes the PRIOR quantity and doubles the state: 5m + 10m → 15. (The
+           sibling pin below covers the inline-slot spelling.)")
+  (input  (do
+            (effect Acc (op step (-> Unit (Qty Int64 (Unit.base #"meter")))))
+            (def (main (: n Int64))
+              (handle Acc (Qty.of n (Unit.base #"meter"))
+                ((step (u) s (do (def t (+ s s)) (resume s t))))
+                (Qty.value (+ (Acc.step) (Acc.step)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 15 Int64)))
+
+(case "a Qty state's next-state slot computes (+ s s) INLINE — the formerly-rejected shape runs"
+  (doc    "This exact spelling — Qty-state arithmetic INSIDE the next-state slot — used to falsely
+           reject (the state binder typed at the erased Int64 in slot position; an 18-units
+           provenance note documents the old behavior and its def-workaround). Fixed on trunk; this
+           pins the flip: seed 5m, `(resume s (+ s s))` threads 5+10 → 15 with values verified.")
+  (input  (do
+            (effect Acc (op step (-> Unit (Qty Int64 (Unit.base #"meter")))))
+            (def (main (: n Int64))
+              (handle Acc (Qty.of n (Unit.base #"meter"))
+                ((step (u) s (resume s (+ s s))))
+                (Qty.value (+ (Acc.step) (Acc.step)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 15 Int64)))
+
+(case "a guard destructures a perform-result TUPLE and its condition reads both binders"
+  (doc    "The compound-pattern face of the guarded perform-scrutinee family (the ag5 pins use
+           scalar guard binders): `(guard (tuple a b) (> (+ a b) 10))` over a perform-result tuple —
+           the guard-desugar's arm copy composes with the destructure; hit path 100·5 + 10 → 510.")
+  (input  (do
+            (effect St (op pair (-> Unit (Tuple Int64 Int64))))
+            (def (main (: n Int64))
+              (handle St n
+                ((pair (u) s (resume (tuple s (* s 2)) (+ s 1))))
+                (match (St.pair)
+                  ((guard (tuple a b) (> (+ a b) 10)) (+ (* 100 a) b))
+                  ((tuple a b) (+ a b)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 510 Int64)))
+
+(case "the guard-MISS path re-performs in the fallback arm — dispatch continues past a failed guard"
+  (doc    "The miss path of the compound guard: `(> (+ a b) 100)` fails at 15, the fallback arm
+           RE-PERFORMS, and the second dispatch reads the advanced state — 10·15 + 18 → 168. A
+           failed compound guard must leave the dispatch machinery able to serve the fallback's
+           perform.")
+  (input  (do
+            (effect St (op pair (-> Unit (Tuple Int64 Int64))))
+            (def (main (: n Int64))
+              (handle St n
+                ((pair (u) s (resume (tuple s (* s 2)) (+ s 1))))
+                (match (St.pair)
+                  ((guard (tuple a b) (> (+ a b) 100)) (+ (* 100 a) b))
+                  ((tuple a b) (match (St.pair) ((tuple c d) (+ (* 10 (+ a b)) (+ c d))))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 168 Int64)))
+
+(case "an arm re-performs its OWN effect to a SAME-EFFECT outer handler — the true self-shadow forward"
+  (doc    "The existing forwarding pin uses two DISTINCT effects; here the inner handler of `Ctr`
+           re-performs `Ctr` against a same-effect OUTER handler with a DIFFERENT arm shape — inner
+           multiplies-and-forwards, outer adds-with-state: bump(5) → outer bump(50) → 50+100 = 150.
+           The forward must reach the outer arm's semantics, not re-enter the inner's.")
+  (input  (do
+            (effect Ctr (op bump (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle Ctr 100
+                ((bump (v) t (resume (+ v t) (+ t 1))))
+                (handle Ctr 0
+                  ((bump (v) s (resume (Ctr.bump (* v 10)) s)))
+                  (Ctr.bump n))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 150 Int64)))
+
+(case "both same-effect handlers STATEFUL — the outer's advance survives the inner's forwards"
+  (doc    "The stateful composition of the self-shadow forward: two inner-region dispatches each
+           forward to the stateful outer (t advances 100→101→102), then a POST-region perform reads
+           the accumulated t — (150 + 111) + 104 → 365. The outer state must thread across forwards
+           originating in the inner arm.")
+  (input  (do
+            (effect Ctr (op bump (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle Ctr 100
+                ((bump (v) t (resume (+ v t) (+ t 1))))
+                (+ (handle Ctr 0
+                     ((bump (v) s (resume (Ctr.bump (* v 10)) (+ s 1))))
+                     (+ (Ctr.bump n) (Ctr.bump 1)))
+                   (Ctr.bump 2))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 365 Int64)))
+
+(case "a CLOSURE handler state captures the enclosing function's parameter and applies per dispatch"
+  (doc    "The existing closure-state pins seed with parameter-FREE closures; here the seed closure
+           captures the enclosing function's `n` — `(fn (x) (* x n))` applied in the arm reads the
+           capture (10·5 → 50). Single-shot dispatch with a param-capturing closure state (the
+           multi-shot sibling is a known open capture-locus).")
+  (input  (do
+            (effect St (op next (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St (fn ((: x Int64)) (* x n))
+                ((next (u) f (resume (f 10) f)))
+                (St.next)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 50 Int64)))
+
+(case "the closure state is REPLACED per dispatch by one capturing the arm's OWN binder"
+  (doc    "State replacement with an arm-frame capture: each dispatch builds a FRESH closure over the
+           arm's own let-binder `r` and installs it as the next state — d1: f = x+5, r = 105, next
+           f = x+105; d2: r = 205 → 1000·105 + 205 = 105205. The replacement closure's environment
+           must be the arm frame's, rebuilt per dispatch.")
+  (input  (do
+            (effect St (op next (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St (fn ((: x Int64)) (+ x n))
+                ((next (u) f
+                  (let ((r (f 100)))
+                    (resume r (fn ((: x Int64)) (+ x r))))))
+                (+ (* 1000 (St.next)) (St.next))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 105205 Int64)))
+
+(case "the natural invariant construction over a VIOLATING perform result traps through the handler"
+  (doc    "The body-side invariant × effects composition (the arm-side pin lives in
+           26-program-conditions): `(Percent.Pct (St.next))` where the RESUMED VALUE itself decides —
+           in-range 42 constructs and unwraps; an out-of-range 200 violates `[0,100]` and traps at
+           the establish-divert THROUGH the handler's resume path.")
+  (input  (do
+            (effect St (op next (-> Unit Int64)))
+            (@ (invariant (and (>= self 0) (<= self 100))) (type Percent (Pct Int64)))
+            (def (unwrap (: p Percent)) (match p (((. Percent Pct) n) n)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next (u) s (resume s (+ s 1))))
+                (unwrap (Percent.Pct (St.next)))))
+            (export main)))
+  (call   main (: 42 Int64))
+  (output (: 42 Int64))
+  (call   main (: 200 Int64))
+  (trap   "unreachable"))
+
 ; ============ Guarded match × effects (breaker FINDING, ag5 → fixed #2333). A guarded match on a
 ; perform-result scrutinee whose FALLBACK arm also performs used to leak the fold-synthesized #seed
 ; binder as a false CDZ0101: the guard desugar's arm-body copy reparented a reused (shared) body

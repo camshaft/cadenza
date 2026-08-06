@@ -6010,3 +6010,13 @@ pass	a String.slice VIEW built in the ARM crosses back through resume — the bo
 pass	a multi-shot ctl arm whose continuation reads an ENCLOSING-fn param folds
 pass	a ONE-shot ctl arm whose continuation reads an enclosing-fn param folds (mv single-splice control)
 pass	a multi-shot ctl arm reading an enclosing param with NO let frame folds (mv no-let control)
+pass	an IN-PROGRAM arm resumes a Qty built in the arm — the erased-scalar crossing without a host
+pass	a Qty STATE threads via a def-bound arm computation — the workaround shape runs end to end
+pass	a Qty state's next-state slot computes (+ s s) INLINE — the formerly-rejected shape runs
+pass	a guard destructures a perform-result TUPLE and its condition reads both binders
+pass	the guard-MISS path re-performs in the fallback arm — dispatch continues past a failed guard
+pass	an arm re-performs its OWN effect to a SAME-EFFECT outer handler — the true self-shadow forward
+pass	both same-effect handlers STATEFUL — the outer's advance survives the inner's forwards
+pass	a CLOSURE handler state captures the enclosing function's parameter and applies per dispatch
+pass	the closure state is REPLACED per dispatch by one capturing the arm's OWN binder
+pass	the natural invariant construction over a VIOLATING perform result traps through the handler
