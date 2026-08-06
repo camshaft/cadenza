@@ -2942,7 +2942,15 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
     // `stale_watchdog_warning`). Warn loudly + up front so a stale watchdog is self-evident, not a
     // phantom logic bug. Advisory only (never blocks the sweep) — a worktree that can't answer git stays
     // quiet rather than false-alarming.
-    if let Some(behind) = xtask_commits_behind_trunk(&fleet.repo)
+    //
+    // Count in the WORKTREE the binary was built from (`fleet.src` = `<worktree>/fleet`, so its parent is
+    // that worktree's root — and `fleet.src` derives from `CARGO_MANIFEST_DIR`, baked in at BUILD time, so
+    // it IS the built-from tree), NOT `fleet.repo` (the shared hub via `--git-common-dir`). The hub's HEAD
+    // is `main` — permanently commit-distinct from `trunk` by the re-parent model — so counting there
+    // reports a large nonsense delta every sweep AND masks a stale worktree (PR#2318 Copilot). The
+    // built-from worktree's HEAD is the only ref whose lag reflects what this binary actually contains.
+    if let Some(worktree_root) = fleet.src.parent()
+        && let Some(behind) = xtask_commits_behind_trunk(worktree_root)
         && let Some(warning) = stale_watchdog_warning(behind)
     {
         eprintln!("  ! {warning}");
@@ -7331,13 +7339,18 @@ fn last_commit_age_secs(repo: &Path, refname: &str) -> Option<u64> {
     Some(now_unix().saturating_sub(ct))
 }
 
-/// How many commits on `trunk` touch `xtask/` but are NOT in this worktree's `HEAD` — i.e. how far the
-/// worktree's `xtask` SOURCE lags trunk. `None` if git can't answer (detached/no trunk ref/error), which
-/// the caller treats as "can't prove stale" (silent, not a false alarm). Used by the watchdog to detect
-/// that IT was built from stale source (see [`stale_watchdog_warning`]).
-fn xtask_commits_behind_trunk(repo: &Path) -> Option<usize> {
+/// How many commits on `trunk` touch `xtask/` but are NOT in `worktree_root`'s `HEAD` — i.e. how far
+/// that worktree's `xtask` SOURCE lags trunk. `None` if git can't answer (detached/no trunk ref/error),
+/// which the caller treats as "can't prove stale" (silent, not a false alarm). Used by the watchdog to
+/// detect that IT was built from stale source (see [`stale_watchdog_warning`]).
+///
+/// ⚠ Must be called with the WORKTREE ROOT the binary was built from (`fleet.src.parent()`), NOT the
+/// shared hub (`fleet.repo`): in the bare-hub + linked-worktree topology the hub's `HEAD` is `main`
+/// (commit-distinct from `trunk` by the re-parent model), so counting there both reports a nonsense
+/// delta and misses a stale worktree entirely — the exact topology this guard protects (PR#2318).
+fn xtask_commits_behind_trunk(worktree_root: &Path) -> Option<usize> {
     let out = Command::new("git")
-        .current_dir(repo)
+        .current_dir(worktree_root)
         .args(["rev-list", "--count", "HEAD..trunk", "--", "xtask"])
         .output()
         .ok()?;
