@@ -630,8 +630,14 @@ fn imm_unit() -> Handle {
 /// `wasm-tools strip -a` removes all custom sections (so the section costs zero bytes in the shipped/
 /// hashed runtime, and the const the compiler pushes is DERIVED from the runtime, guarded by the content
 /// hash — never a hand-transcribed number). The bytes are the little-endian `u32` of `imm_unit()`'s bit
-/// pattern; a change to the encoding re-derives through codegen on the next run. `#[used]` keeps the
-/// section even though nothing in the crate references it.
+/// pattern; a change to the encoding re-derives through codegen on the next run. No `#[used]` is needed:
+/// `link_section` on a `static` places it in the `cdz-abi` section, which survives the `wasm32` build (a
+/// unit test also references it), and codegen's `read_abi_imm_unit` PANICS loudly if the section is ever
+/// absent — so a lost section fails codegen/CI visibly rather than silently. `#[allow(dead_code)]` only
+/// silences the release-build lint (the sole in-crate reference is `#[cfg(test)]`); deliberately NOT
+/// `#[used]`, because `#[used]` perturbs the STRIPPED runtime bytes and would force a fleet-wide
+/// `REQUIRED_RUNTIME_HASH` bump for zero behavioral gain.
+#[allow(dead_code)]
 #[unsafe(link_section = "cdz-abi")]
 static CDZ_ABI_IMM_UNIT: [u8; 4] = (0b0010u32).to_le_bytes();
 
