@@ -116,9 +116,24 @@ pub struct Session {
 }
 
 impl Session {
-    /// Start a fresh session with a genesis event naming the reducer. The genesis is the first log
-    /// entry; nothing is folded yet (genesis carries no effects).
-    pub fn genesis(reducer: Hash) -> Self {
+    /// Start a fresh ROOT session with a genesis event naming the reducer + a caller-supplied per-spawn
+    /// `spawn_nonce` (entropy). The genesis is the first log entry; nothing is folded yet.
+    ///
+    /// `spawn_nonce` is what makes [`genesis_hash`](Self::genesis_hash) per-SESSION unique (§lifecycle I2 /
+    /// operator ruling): the kernel is clock-free + entropy-free (§9c), so the HOST mints the nonce
+    /// (getrandom) and passes it. It's recorded in the durable seq-0 event, so recovery/[`replay`] reads it
+    /// FROM the log (never re-mints — that would change the id on recovery). A ROOT session has no parent;
+    /// use [`genesis_spawned`](Self::genesis_spawned) for a session spawned by another (`lifecycle/spawn`).
+    pub fn genesis(reducer: Hash, spawn_nonce: Hash) -> Self {
+        Self::genesis_spawned(reducer, spawn_nonce, None)
+    }
+
+    /// Start a fresh session with explicit `parent` provenance — the SPAWNED-child constructor (§6/§I2).
+    /// `parent` = `Some(<parent session's genesis hash>)` for a child spawned via `lifecycle/spawn`, so the
+    /// child's own genesis-hash is provenance-dependent (self-certifies its parent); `None` = a root
+    /// session (equivalent to [`genesis`](Self::genesis)). The durable `Spawned{child_hash}` edge in the
+    /// PARENT's log is the other half of the relation.
+    pub fn genesis_spawned(reducer: Hash, spawn_nonce: Hash, parent: Option<Hash>) -> Self {
         let mut s = Session {
             log: Vec::new(),
             kv: Kv::new(),
@@ -135,7 +150,11 @@ impl Session {
         s.log.push(Event {
             seq: 0,
             cause: None,
-            body: EventBody::Genesis { reducer },
+            body: EventBody::Genesis {
+                reducer,
+                spawn_nonce,
+                parent,
+            },
         });
         s
     }
@@ -246,10 +265,33 @@ impl Session {
         // empty open/settled/armed-timer sets, `next_effect_id` reset, no log store, and no latched persist
         // error. Then override only the fork DELTAS: the materialized KV (cloned) and the monotonic clock
         // floor (so a `Now` read in the fork can't observe time earlier than the parent already did).
-        let mut fork = Session::genesis(self.reducer_hash());
+        // REUSE the parent's genesis provenance (spawn_nonce + parent), NOT a fresh spawn: a query-fork is
+        // an ephemeral read-view of THIS session, never a registered spawn, so it must carry the parent's
+        // identity — minting a new nonce would give it a distinct genesis_hash / SessionId, which is wrong
+        // for a read-view (§lifecycle I2, v-agent-harness-host confirm). It's never registered, so there's
+        // no id collision from sharing the parent's genesis identity.
+        let (spawn_nonce, parent) = self.genesis_provenance();
+        let mut fork = Session::genesis_spawned(self.reducer_hash(), spawn_nonce, parent);
         fork.kv = self.kv.clone();
         fork.last_now = self.last_now;
         fork
+    }
+
+    /// The genesis event's `(spawn_nonce, parent)` provenance (§lifecycle I2). Panics on a non-Genesis head
+    /// — the same internal invariant [`reducer_hash`](Self::reducer_hash)/[`genesis_hash`](Self::genesis_hash)
+    /// guard (a `Session` only exists via a genesis constructor / `replay`, both of which guarantee it).
+    fn genesis_provenance(&self) -> (Hash, Option<Hash>) {
+        match self.log.first().map(|e| &e.body) {
+            Some(EventBody::Genesis {
+                spawn_nonce,
+                parent,
+                ..
+            }) => (*spawn_nonce, *parent),
+            _ => panic!(
+                "cdz-kernel invariant violated: session log's first event is not Genesis \
+                 (a Session is only constructed via a genesis constructor/replay, which guarantee it)"
+            ),
+        }
     }
 
     /// The reducer this session was created with (from genesis). FAILS LOUDLY on a log whose first
@@ -260,7 +302,7 @@ impl Session {
     /// bytes are already rejected by `replay`/`decode` before a Session exists).
     fn reducer_hash(&self) -> Hash {
         match self.log.first().map(|e| &e.body) {
-            Some(EventBody::Genesis { reducer }) => *reducer,
+            Some(EventBody::Genesis { reducer, .. }) => *reducer,
             _ => panic!(
                 "cdz-kernel invariant violated: session log's first event is not Genesis \
                  (a Session is only constructed via genesis()/replay(), both of which guarantee it)"
@@ -276,14 +318,13 @@ impl Session {
     /// the genesis is unique" → `SessionId = genesis-hash`), which collapses name-addressing to an identity
     /// map (§4c `name → hash` IS `name → SessionId`, no host-side lookup).
     ///
-    /// ⚠️ UNIQUENESS CAVEAT (the operator's exact "as long as genesis is unique" condition): TODAY genesis
-    /// carries ONLY the reducer (`Session::genesis(reducer)` builds `Genesis{reducer}` with `cause:None,
-    /// seq:0`), so this hash is a function of the REDUCER ALONE — two sessions spawned over the SAME reducer
-    /// get the SAME value. It is unique per *reducer*, NOT yet per *session*. For `SessionId = genesis-hash`
-    /// to be a safe identity, the genesis event must first gain per-spawn ENTROPY/PROVENANCE (e.g. a spawn
-    /// nonce or a parent→child provenance field — the latter is design-session-lifecycle's `Spawned`-edge
-    /// work). This accessor is the right primitive regardless; the uniqueness gap is a separate, flagged
-    /// follow-up (do NOT rely on per-session uniqueness until genesis carries spawn entropy).
+    /// PER-SESSION UNIQUE (§lifecycle I2 — the operator's "as long as genesis is unique" condition is now
+    /// MET): the genesis event carries a caller-supplied `spawn_nonce` (host-minted getrandom entropy) plus
+    /// optional `parent` provenance, so this hash is a function of `(reducer, spawn_nonce, parent)`, not the
+    /// reducer alone. Two sessions over the SAME reducer get DIFFERENT ids as long as the host mints a fresh
+    /// nonce per spawn (which it must — see [`genesis`](Self::genesis)); a spawned child additionally differs
+    /// by its parent hash. So `SessionId = genesis-hash` is a sound identity, and name-addressing (§4c
+    /// `name → hash`) IS `name → SessionId` with no host-side lookup.
     ///
     /// Panics on a log whose first event isn't Genesis — the same internal invariant `reducer_hash`
     /// guards (a `Session` only exists via `genesis()`/`replay()`, both of which guarantee it).
@@ -1665,7 +1706,7 @@ mod status_snapshot_tests {
         // ("errors into the void"), NOT panic the loop, NOT wedge the session. Pins the drive-loop BEHAVIOR
         // (the codec round-trip is pinned separately in event.rs/event_ast).
         let mut exec = RecordingExecutor::new();
-        let mut s = Session::genesis(Hash::of(b"fail-v1"));
+        let mut s = Session::genesis(Hash::of(b"fail-v1"), Hash::of(b"test-spawn-nonce"));
         s.deliver(
             inbound(),
             None,
@@ -1809,7 +1850,7 @@ mod status_snapshot_tests {
             kind: EffectKind::Emit,
             predicate: ResourcePredicate::Exact(peer.into()),
         }]);
-        let mut s = Session::genesis(Hash::of(b"emitter-v1"));
+        let mut s = Session::genesis(Hash::of(b"emitter-v1"), Hash::of(b"test-spawn-nonce"));
         s.deliver(
             inbound(),
             None,
@@ -1865,7 +1906,7 @@ mod status_snapshot_tests {
             kind: EffectKind::Emit,
             predicate: ResourcePredicate::Exact("session-B".into()),
         }]);
-        let mut s = Session::genesis(Hash::of(b"emitter-deny-v1"));
+        let mut s = Session::genesis(Hash::of(b"emitter-deny-v1"), Hash::of(b"test-spawn-nonce"));
         s.deliver(
             inbound(),
             None,
@@ -1907,7 +1948,7 @@ mod status_snapshot_tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn fresh_session_is_quiescent_with_no_published_view() {
-        let s = Session::genesis(Hash::of(b"r"));
+        let s = Session::genesis(Hash::of(b"r"), Hash::of(b"test-spawn-nonce"));
         let snap = s.status_snapshot(Some(0), 300_000);
         assert_eq!(snap.state, SessionState::Quiescent);
         assert_eq!(snap.event_count, 1); // just genesis
@@ -1920,7 +1961,7 @@ mod status_snapshot_tests {
     #[tokio::test(flavor = "current_thread")]
     async fn active_session_reports_armed_timer_and_only_the_public_kv() {
         let mut exec = RecordingExecutor::new();
-        let mut s = Session::genesis(Hash::of(b"status-v1"));
+        let mut s = Session::genesis(Hash::of(b"status-v1"), Hash::of(b"test-spawn-nonce"));
         s.deliver(inbound(), None, &StatusReducer, &timer_cap(), &mut exec)
             .await
             .unwrap();
@@ -1942,7 +1983,7 @@ mod status_snapshot_tests {
     #[tokio::test(flavor = "current_thread")]
     async fn fork_for_query_clones_state_without_touching_the_original() {
         let mut exec = RecordingExecutor::new();
-        let mut s = Session::genesis(Hash::of(b"status-v1"));
+        let mut s = Session::genesis(Hash::of(b"status-v1"), Hash::of(b"test-spawn-nonce"));
         s.deliver(inbound(), None, &StatusReducer, &timer_cap(), &mut exec)
             .await
             .unwrap();
@@ -1992,7 +2033,7 @@ mod status_snapshot_tests {
         // delivery determinism.)
 
         let mut sync_exec = RecordingExecutor::new();
-        let mut sync_s = Session::genesis(Hash::of(b"status-v1"));
+        let mut sync_s = Session::genesis(Hash::of(b"status-v1"), Hash::of(b"test-spawn-nonce"));
         sync_s
             .deliver(
                 inbound(),
@@ -2005,7 +2046,7 @@ mod status_snapshot_tests {
             .unwrap();
 
         let mut async_exec = RecordingExecutor::new();
-        let mut async_s = Session::genesis(Hash::of(b"status-v1"));
+        let mut async_s = Session::genesis(Hash::of(b"status-v1"), Hash::of(b"test-spawn-nonce"));
         async_s
             .deliver(
                 inbound(),
@@ -2079,7 +2120,7 @@ mod status_snapshot_tests {
         // the recorded fired_ms is the timer's deadline, so replay is stable.
         let reducer = TimerThenPublishReducer;
         let mut exec = RecordingExecutor::new();
-        let mut s = Session::genesis(Hash::of(b"timer-v1"));
+        let mut s = Session::genesis(Hash::of(b"timer-v1"), Hash::of(b"test-spawn-nonce"));
         s.deliver(inbound(), None, &reducer, &timer_cap(), &mut exec)
             .await
             .unwrap();
@@ -2104,7 +2145,7 @@ mod status_snapshot_tests {
         // End-to-end shape of fork-for-query: fork, deliver a query message, the fork folds it (arming its
         // OWN timer here — a stand-in for the reducer's summarize work), and the parent is still untouched.
         let mut exec = RecordingExecutor::new();
-        let mut s = Session::genesis(Hash::of(b"status-v1"));
+        let mut s = Session::genesis(Hash::of(b"status-v1"), Hash::of(b"test-spawn-nonce"));
         s.deliver(inbound(), None, &StatusReducer, &timer_cap(), &mut exec)
             .await
             .unwrap();
@@ -2136,7 +2177,7 @@ mod status_snapshot_tests {
         // delivers a `report()` message, and the fork summarizes ITSELF from local state — with the
         // original session provably untouched (non-interference).
         let mut exec = RecordingExecutor::new();
-        let mut live = Session::genesis(Hash::of(b"reporting-v1"));
+        let mut live = Session::genesis(Hash::of(b"reporting-v1"), Hash::of(b"test-spawn-nonce"));
         // The live session does ordinary work: records a private goal + public status.
         live.deliver(inbound(), None, &ReportingReducer, &timer_cap(), &mut exec)
             .await
@@ -2188,7 +2229,7 @@ mod status_snapshot_tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn closed_session_reports_closed() {
-        let mut s = Session::genesis(Hash::of(b"r"));
+        let mut s = Session::genesis(Hash::of(b"r"), Hash::of(b"test-spawn-nonce"));
         // Append a Closed event directly (a session that shut down).
         s.append(
             EventBody::Closed {
@@ -2210,7 +2251,7 @@ mod status_snapshot_tests {
         // `Closed` as a Success-close (a supervisor observes "closed" from the state, then reads the
         // success-vs-failure from the outcome SEPARATELY — §6a). Pins that a Failure-close doesn't leave the
         // session looking Active/Quiescent (which would strand a supervisor waiting on a child that's done).
-        let mut s = Session::genesis(Hash::of(b"r"));
+        let mut s = Session::genesis(Hash::of(b"r"), Hash::of(b"test-spawn-nonce"));
         s.append(
             EventBody::Closed {
                 outcome: crate::event::CloseOutcome::Failure("goal unreachable".to_string()),
@@ -2384,7 +2425,7 @@ mod monotonic_now_tests {
     #[tokio::test(flavor = "current_thread")]
     async fn now_sequence_is_strictly_increasing_even_from_a_stuck_clock() {
         let mut exec = StuckClock(1000); // same raw reading every time
-        let mut s = Session::genesis(Hash::of(b"now-v1"));
+        let mut s = Session::genesis(Hash::of(b"now-v1"), Hash::of(b"test-spawn-nonce"));
         s.deliver(inbound(), None, &NowReducer, &now_cap(), &mut exec)
             .await
             .unwrap();
@@ -2401,7 +2442,7 @@ mod monotonic_now_tests {
     #[tokio::test(flavor = "current_thread")]
     async fn replay_reconstructs_the_same_last_now_and_sequence() {
         let mut exec = StuckClock(1000);
-        let mut s = Session::genesis(Hash::of(b"now-v1"));
+        let mut s = Session::genesis(Hash::of(b"now-v1"), Hash::of(b"test-spawn-nonce"));
         s.deliver(inbound(), None, &NowReducer, &now_cap(), &mut exec)
             .await
             .unwrap();
@@ -2425,7 +2466,7 @@ mod monotonic_now_tests {
         // sync-vs-async replay equivalence check; there is only ONE async replay now — the all-async arc
         // dropped the sync twin — so this pins single-replay determinism instead.)
         let mut exec = StuckClock(1000);
-        let mut s = Session::genesis(Hash::of(b"now-v1"));
+        let mut s = Session::genesis(Hash::of(b"now-v1"), Hash::of(b"test-spawn-nonce"));
         s.deliver(inbound(), None, &NowReducer, &now_cap(), &mut exec)
             .await
             .unwrap();
@@ -2483,7 +2524,7 @@ mod monotonic_now_tests {
         // (with its payload + token), the executor NEVER saw it, and a DENY-ALL authz did NOT deny it
         // (control is exempt — a normal effect under deny_all would be AuthzDenied).
         let mut exec = RecordingExecutor::new();
-        let mut session = Session::genesis(Hash::of(b"control-v1"));
+        let mut session = Session::genesis(Hash::of(b"control-v1"), Hash::of(b"test-spawn-nonce"));
         let control = session
             .deliver_control(
                 inbound(),
@@ -2519,7 +2560,7 @@ mod monotonic_now_tests {
 
         // The common deliver path drops the control Vec but is otherwise identical (returns ()).
         let mut exec2 = RecordingExecutor::new();
-        let mut s2 = Session::genesis(Hash::of(b"control-v2"));
+        let mut s2 = Session::genesis(Hash::of(b"control-v2"), Hash::of(b"test-spawn-nonce"));
         s2.deliver(
             inbound(),
             None,
@@ -2578,7 +2619,7 @@ mod monotonic_now_tests {
         // routed to the executor in the SAME turn. The single-control test can't catch a drive loop that
         // e.g. short-circuits the whole turn on the first control family; this pins the split.
         let mut exec = RecordingExecutor::new();
-        let mut session = Session::genesis(Hash::of(b"mixed-v1"));
+        let mut session = Session::genesis(Hash::of(b"mixed-v1"), Hash::of(b"test-spawn-nonce"));
         // Grant the emit family (any resource) so the REGULAR effect authorizes; control is exempt anyway.
         let authz = Authorizer::new(vec![Capability {
             kind: EffectKind::Emit,
@@ -2662,7 +2703,7 @@ mod monotonic_now_tests {
             kind: EffectKind::Emit,
             predicate: crate::effect::ResourcePredicate::Any,
         }]);
-        let mut session = Session::genesis(Hash::of(b"caps-v1"));
+        let mut session = Session::genesis(Hash::of(b"caps-v1"), Hash::of(b"test-spawn-nonce"));
         let control = session
             .deliver_control(
                 inbound(),
@@ -2766,7 +2807,7 @@ mod monotonic_now_tests {
             kind: EffectKind::Emit,
             predicate: crate::effect::ResourcePredicate::Any,
         }]);
-        let mut session = Session::genesis(Hash::of(b"seed-v1"));
+        let mut session = Session::genesis(Hash::of(b"seed-v1"), Hash::of(b"test-spawn-nonce"));
         // Precondition: a bare genesis log has exactly the Genesis event, no manifest yet.
         assert_eq!(session.log().len(), 1);
 
@@ -2840,7 +2881,7 @@ mod monotonic_now_tests {
                 predicate: crate::effect::ResourcePredicate::Any,
             },
         ]);
-        let mut session = Session::genesis(Hash::of(b"push-v1"));
+        let mut session = Session::genesis(Hash::of(b"push-v1"), Hash::of(b"test-spawn-nonce"));
 
         // Seed the baseline manifest with an emit-only executor (http is Absent — no executor serves it).
         let mut narrow = CompositeExecutor::new().with_effect(
@@ -2941,7 +2982,8 @@ mod monotonic_now_tests {
             kind: EffectKind::Emit,
             predicate: crate::effect::ResourcePredicate::Any,
         }]);
-        let mut session = Session::genesis(Hash::of(b"seed-idem-v1"));
+        let mut session =
+            Session::genesis(Hash::of(b"seed-idem-v1"), Hash::of(b"test-spawn-nonce"));
 
         let first = session
             .seed_capabilities(&InertReducer, &authz, &mut exec)
@@ -2996,7 +3038,10 @@ mod monotonic_now_tests {
             kind: EffectKind::Emit,
             predicate: crate::effect::ResourcePredicate::Any,
         }]);
-        let mut session = Session::genesis(Hash::of(b"query-then-seed-v1"));
+        let mut session = Session::genesis(
+            Hash::of(b"query-then-seed-v1"),
+            Hash::of(b"test-spawn-nonce"),
+        );
 
         // Guest issues a control/capabilities query (via an inbound-triggered fold) BEFORE any seed.
         session
@@ -3064,7 +3109,8 @@ mod monotonic_now_tests {
             kind: EffectKind::Emit,
             predicate: crate::effect::ResourcePredicate::Any,
         }]);
-        let mut session = Session::genesis(Hash::of(b"seed-replay-v1"));
+        let mut session =
+            Session::genesis(Hash::of(b"seed-replay-v1"), Hash::of(b"test-spawn-nonce"));
         session
             .seed_capabilities(&InertReducer, &authz, &mut exec)
             .await;
@@ -3129,7 +3175,8 @@ mod monotonic_now_tests {
         // placeholder kind must ARM A TIMER (kernel-fired deadline), NOT get routed to the executor as an
         // emit. This pins that the drive loop's dispatch decision moved off the EffectKind enum onto family.
         let mut exec = RecordingExecutor::new();
-        let mut session = Session::genesis(Hash::of(b"timer-family-v1"));
+        let mut session =
+            Session::genesis(Hash::of(b"timer-family-v1"), Hash::of(b"test-spawn-nonce"));
         // A grant permitting the timer family at the "1000" target (authz keys on family too).
         let authz = Authorizer::new(vec![Capability {
             kind: EffectKind::Timer,
@@ -3155,12 +3202,12 @@ mod monotonic_now_tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn genesis_hash_is_the_first_event_hash_stable_across_replay_and_reducer_derived_today() {
+    async fn genesis_hash_is_the_first_event_hash_stable_across_replay_and_per_session_unique() {
         // genesis_hash() is the host's intended SessionId (operator ruling: SessionId = genesis-hash).
         // Pin the properties name-addressing-as-identity-map depends on. Drive a REAL fold so the
         // "stable across replay" assert exercises an actual log with post-genesis events (not a bare
         // genesis) — otherwise it degenerates to determinism-of-construction (github-liaison/#2362).
-        let mut s = Session::genesis(Hash::of(b"reducer-A"));
+        let mut s = Session::genesis(Hash::of(b"reducer-A"), Hash::of(b"nonce-1"));
         s.deliver(
             inbound(),
             None,
@@ -3202,23 +3249,42 @@ mod monotonic_now_tests {
              (the durable identity a recovered session addresses by)"
         );
 
-        // ⚠️ TODAY-ONLY property + the operator's uniqueness caveat, pinned so a future genesis-entropy
-        // change TRIPS this test (a signal to update it + the SessionId uniqueness story, not silently
-        // regress): genesis carries only the reducer, so two sessions over the SAME reducer share an id.
-        // This is exactly WHY SessionId=genesis-hash is not yet per-session-unique — flagged in the doc.
-        let twin = Session::genesis(Hash::of(b"reducer-A"));
+        // (4) PER-SESSION UNIQUE (§lifecycle I2, the whole point of spawn_nonce): two sessions over the SAME
+        // reducer but with DIFFERENT spawn_nonces get DIFFERENT genesis hashes → distinct SessionIds → no
+        // registry collision. This is what makes SessionId=genesis-hash sound (the operator's "as long as
+        // genesis is unique" caveat — the host mints a fresh getrandom nonce per spawn).
+        let sibling = Session::genesis(Hash::of(b"reducer-A"), Hash::of(b"nonce-2"));
+        assert_ne!(
+            s.genesis_hash(),
+            sibling.genesis_hash(),
+            "same reducer + DIFFERENT spawn_nonce ⇒ DIFFERENT genesis_hash (per-session uniqueness — I2)"
+        );
+        // The nonce is load-bearing: same reducer AND same nonce collide (so the host MUST mint unique
+        // nonces — a getrandom draw per spawn; this pins that the nonce, not the reducer, is the entropy).
+        let same_nonce = Session::genesis(Hash::of(b"reducer-A"), Hash::of(b"nonce-1"));
         assert_eq!(
             s.genesis_hash(),
-            twin.genesis_hash(),
-            "TODAY genesis carries only the reducer → same reducer ⇒ same genesis_hash (NOT yet \
-             per-session unique; adding spawn entropy will make this assert flip — update it then)"
+            same_nonce.genesis_hash(),
+            "same reducer + same spawn_nonce ⇒ same genesis_hash (the nonce is the sole entropy source)"
         );
-        // A DIFFERENT reducer → different id (the one uniqueness axis that DOES hold today).
-        let other = Session::genesis(Hash::of(b"reducer-B"));
+        // A DIFFERENT reducer → different id too (independent of the nonce).
+        let other = Session::genesis(Hash::of(b"reducer-B"), Hash::of(b"nonce-1"));
         assert_ne!(
             s.genesis_hash(),
             other.genesis_hash(),
             "different reducers must yield different genesis hashes"
+        );
+        // A SPAWNED child (parent=Some) differs from a root with the same reducer+nonce — parent provenance
+        // is part of the hashed genesis body, so the child-id self-certifies its parent (§6/I2).
+        let child = Session::genesis_spawned(
+            Hash::of(b"reducer-A"),
+            Hash::of(b"nonce-1"),
+            Some(Hash::of(b"parent-genesis")),
+        );
+        assert_ne!(
+            s.genesis_hash(),
+            child.genesis_hash(),
+            "parent provenance is in the hashed body → a spawned child's id differs from a root's"
         );
     }
 
@@ -3305,7 +3371,7 @@ mod monotonic_now_tests {
             predicate: ResourcePredicate::Any,
         }]);
         let mut exec = FailingHttpExecutor;
-        let mut s = Session::genesis(Hash::of(b"http-err-v1"));
+        let mut s = Session::genesis(Hash::of(b"http-err-v1"), Hash::of(b"test-spawn-nonce"));
         s.deliver(
             EventBody::Inbound {
                 content_type: ContentType {
@@ -3408,7 +3474,10 @@ mod lifecycle_tests {
     // guard (KernelError::FoldRefused), checked before the append so no event is written + no reducer runs.
     #[tokio::test(flavor = "current_thread")]
     async fn a_terminated_session_refuses_every_further_fold() {
-        let mut s = Session::genesis(Hash::of(b"lifecycle-term-v1"));
+        let mut s = Session::genesis(
+            Hash::of(b"lifecycle-term-v1"),
+            Hash::of(b"test-spawn-nonce"),
+        );
         // A normal live fold works before termination.
         s.deliver(
             inbound(),
@@ -3454,7 +3523,10 @@ mod lifecycle_tests {
     // and still refuses folds — the guard rebuilds from the log, not volatile in-memory state.
     #[tokio::test(flavor = "current_thread")]
     async fn a_recovered_terminated_session_stays_terminated_and_refuses_folds() {
-        let mut s = Session::genesis(Hash::of(b"lifecycle-term-replay-v1"));
+        let mut s = Session::genesis(
+            Hash::of(b"lifecycle-term-replay-v1"),
+            Hash::of(b"test-spawn-nonce"),
+        );
         s.deliver(
             inbound(),
             None,
@@ -3495,7 +3567,10 @@ mod lifecycle_tests {
     // false → the session is foldable again. A terminated session must fire NO due timers.
     #[tokio::test(flavor = "current_thread")]
     async fn a_terminated_session_fires_no_due_timers_and_keeps_its_terminal_tail() {
-        let mut s = Session::genesis(Hash::of(b"lifecycle-term-timer-v1"));
+        let mut s = Session::genesis(
+            Hash::of(b"lifecycle-term-timer-v1"),
+            Hash::of(b"test-spawn-nonce"),
+        );
         s.deliver(
             inbound(),
             None,
@@ -3537,7 +3612,10 @@ mod lifecycle_tests {
     // that leaves the terminal tail intact — the guard short-circuits before ANY append.
     #[tokio::test(flavor = "current_thread")]
     async fn a_terminated_session_times_out_no_effect_and_keeps_its_terminal_tail() {
-        let mut s = Session::genesis(Hash::of(b"lifecycle-term-timeout-v1"));
+        let mut s = Session::genesis(
+            Hash::of(b"lifecycle-term-timeout-v1"),
+            Hash::of(b"test-spawn-nonce"),
+        );
         // Arm a timer, so there's an OPEN obligation in the session (open_effects() > 0).
         s.deliver(
             inbound(),
@@ -3668,7 +3746,7 @@ mod store_effect_tests {
     #[tokio::test(flavor = "current_thread")]
     async fn store_set_then_resolve_round_trips_through_the_attached_name_store() {
         let mut exec = crate::executor::RecordingExecutor::new();
-        let mut s = Session::genesis(Hash::of(b"store-v1"));
+        let mut s = Session::genesis(Hash::of(b"store-v1"), Hash::of(b"test-spawn-nonce"));
         s.attach_name_store(NameStore::new());
 
         s.deliver(inbound(), None, &SetThenResolve, &AllowStore, &mut exec)
@@ -3708,7 +3786,7 @@ mod store_effect_tests {
             ),
         ]);
         let mut exec = crate::executor::RecordingExecutor::new();
-        let mut s = Session::genesis(Hash::of(b"store-v1"));
+        let mut s = Session::genesis(Hash::of(b"store-v1"), Hash::of(b"test-spawn-nonce"));
         s.attach_name_store(NameStore::new());
         s.deliver(inbound(), None, &SetThenResolve, &authz, &mut exec)
             .await
@@ -3728,7 +3806,7 @@ mod store_effect_tests {
         // to B UNLESS a driver reads A's store out and seeds B's — this proves that hand-across works with
         // only the borrowing accessor + the landed export/replay primitives (no shared handle / interior mut).
         let mut exec_a = crate::executor::RecordingExecutor::new();
-        let mut publisher = Session::genesis(Hash::of(b"store-v1"));
+        let mut publisher = Session::genesis(Hash::of(b"store-v1"), Hash::of(b"test-spawn-nonce"));
         publisher.attach_name_store(NameStore::new());
         // A publishes: store/set system/compiler/latest → compiler-wasm-v1 (then resolves it, immaterial here).
         publisher
@@ -3756,7 +3834,7 @@ mod store_effect_tests {
             NameStore::replay_set_entries(published.iter().map(|(n, h)| (n.as_str(), *h)))
                 .expect("A's exported entries replay into a fresh store");
         let mut exec_b = crate::executor::RecordingExecutor::new();
-        let mut consumer = Session::genesis(Hash::of(b"store-v1"));
+        let mut consumer = Session::genesis(Hash::of(b"store-v1"), Hash::of(b"test-spawn-nonce"));
         consumer.attach_name_store(consumer_store);
         consumer
             .deliver(inbound(), None, &ResolveOnly, &AllowStore, &mut exec_b)
@@ -3778,7 +3856,7 @@ mod store_effect_tests {
         // recover. Each primitive is unit-tested alone (snapshot round-trip in name_store.rs, read-back +
         // in-memory hand-across above); this pins them COMPOSED, the sequence the backend actually executes.
         let mut exec_a = crate::executor::RecordingExecutor::new();
-        let mut publisher = Session::genesis(Hash::of(b"store-v1"));
+        let mut publisher = Session::genesis(Hash::of(b"store-v1"), Hash::of(b"test-spawn-nonce"));
         publisher.attach_name_store(NameStore::new());
         publisher
             .deliver(inbound(), None, &SetThenResolve, &AllowStore, &mut exec_a)
@@ -3798,7 +3876,7 @@ mod store_effect_tests {
         // Attach the restored store to a SEPARATE recovered consumer session B; B store/resolve's the name A
         // published and reads back exactly the hash A set — the pointer survived the durable blob boundary.
         let mut exec_b = crate::executor::RecordingExecutor::new();
-        let mut consumer = Session::genesis(Hash::of(b"store-v1"));
+        let mut consumer = Session::genesis(Hash::of(b"store-v1"), Hash::of(b"test-spawn-nonce"));
         consumer.attach_name_store(restored);
         consumer
             .deliver(inbound(), None, &ResolveOnly, &AllowStore, &mut exec_b)
@@ -3817,7 +3895,7 @@ mod store_effect_tests {
         // outcome (folded), never a panic. The reducer's set gets an Err result → it does NOT advance to
         // "resolving", so `resolved` is never written and nothing is left open.
         let mut exec = crate::executor::RecordingExecutor::new();
-        let mut s = Session::genesis(Hash::of(b"store-v1")); // NO attach_name_store
+        let mut s = Session::genesis(Hash::of(b"store-v1"), Hash::of(b"test-spawn-nonce")); // NO attach_name_store
         s.deliver(inbound(), None, &SetThenResolve, &AllowStore, &mut exec)
             .await
             .unwrap();
@@ -3834,7 +3912,7 @@ mod store_effect_tests {
         // The store arm sits AFTER the SEC-F1 authorize gate: an authorizer that denies store/* means the
         // set never reaches the store (AuthzDenied), so a later resolve would find nothing. Here deny-all.
         let mut exec = crate::executor::RecordingExecutor::new();
-        let mut s = Session::genesis(Hash::of(b"store-v1"));
+        let mut s = Session::genesis(Hash::of(b"store-v1"), Hash::of(b"test-spawn-nonce"));
         s.attach_name_store(NameStore::new());
         s.deliver(
             inbound(),
@@ -3906,7 +3984,7 @@ mod store_effect_tests {
         // observable Err, never a silent write of the payload name. The reducer never advances past the
         // failed set, so `resolved` is never recorded — the observable signal that the set was refused.
         let mut exec = crate::executor::RecordingExecutor::new();
-        let mut s = Session::genesis(Hash::of(b"store-v1"));
+        let mut s = Session::genesis(Hash::of(b"store-v1"), Hash::of(b"test-spawn-nonce"));
         s.attach_name_store(NameStore::new());
         s.deliver(
             inbound(),
@@ -3951,7 +4029,7 @@ mod store_effect_tests {
             )
             .unwrap();
         let mut exec = crate::executor::RecordingExecutor::new();
-        let mut reader = Session::genesis(Hash::of(b"store-v1"));
+        let mut reader = Session::genesis(Hash::of(b"store-v1"), Hash::of(b"test-spawn-nonce"));
         reader.attach_name_store(store);
         reader
             .deliver(inbound(), None, &ResolveOnly, &resolve_only(), &mut exec)
@@ -3966,7 +4044,7 @@ mod store_effect_tests {
         // (b) WRITE is DENIED under the same resolve-only grant: SetThenResolve emits store/set first, which
         // has no grant → AuthzDenied → the reducer never advances to resolving, nothing written.
         let mut exec2 = crate::executor::RecordingExecutor::new();
-        let mut writer = Session::genesis(Hash::of(b"store-v1"));
+        let mut writer = Session::genesis(Hash::of(b"store-v1"), Hash::of(b"test-spawn-nonce"));
         writer.attach_name_store(NameStore::new());
         writer
             .deliver(

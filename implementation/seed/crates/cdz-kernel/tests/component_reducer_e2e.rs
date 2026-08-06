@@ -195,7 +195,7 @@ async fn the_wasm_guest_drives_the_kernel_loop_and_its_token_reaches_the_dispatc
         predicate: ResourcePredicate::HostIn(vec!["ok.host".into()]),
     }]);
     let mut exec = RecordingExecutor::new();
-    let mut session = Session::genesis(Hash::of(b"wasm-reducer-v1"));
+    let mut session = Session::genesis(Hash::of(b"wasm-reducer-v1"), Hash::of(b"test-spawn-nonce"));
 
     // Deliver an inbound "message" — the guest emits one Http effect with correlation "step-1".
     session
@@ -335,7 +335,7 @@ async fn a_failed_wasm_fold_records_a_foldfailed_event_on_the_log() {
         predicate: ResourcePredicate::HostIn(vec!["ok.host".into()]),
     }]);
     let mut exec = RecordingExecutor::new();
-    let mut session = Session::genesis(Hash::of(b"foldfail-v1"));
+    let mut session = Session::genesis(Hash::of(b"foldfail-v1"), Hash::of(b"test-spawn-nonce"));
 
     // Deliver an inbound message — the guest's fold traps on 1 fuel. deliver() must NOT panic (§17).
     session

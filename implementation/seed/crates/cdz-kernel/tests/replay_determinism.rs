@@ -109,7 +109,7 @@ async fn run_sequence(seed: u64, len: usize) -> Session {
     let reducer = BusyReducer;
     let authz = cap();
     let mut exec = RecordingExecutor::new();
-    let mut session = Session::genesis(Hash::of(b"busy-v1"));
+    let mut session = Session::genesis(Hash::of(b"busy-v1"), Hash::of(b"test-spawn-nonce"));
     let mut rng = Lcg(seed);
     for _ in 0..len {
         let byte = rng.byte();
@@ -226,7 +226,7 @@ async fn scan_order_dependent_reducer_still_replays_identically() {
     let authz = Authorizer::deny_all(); // this reducer emits no effects
     for seed in 0..100u64 {
         let mut exec = RecordingExecutor::new();
-        let mut session = Session::genesis(Hash::of(b"scan-v1"));
+        let mut session = Session::genesis(Hash::of(b"scan-v1"), Hash::of(b"test-spawn-nonce"));
         let mut rng = Lcg(seed.wrapping_mul(11400714819323198485));
         for _ in 0..((seed as usize % 30) + 1) {
             let body = EventBody::Inbound {

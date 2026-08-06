@@ -530,10 +530,27 @@ fn opt_bytes_form(b: &mut Builder, token: Option<&[u8]>) -> StructId {
 
 fn body_form(b: &mut Builder, body: &EventBody) -> StructId {
     match body {
-        EventBody::Genesis { reducer } => {
+        EventBody::Genesis {
+            reducer,
+            spawn_nonce,
+            parent,
+        } => {
             let head = b.name("genesis");
             let h = hash_form(b, reducer);
-            b.list(vec![head, h])
+            let nonce = hash_form(b, spawn_nonce);
+            // parent: (none) | (parent <hash>) — mirrors the opt_bytes_form none/present shape.
+            let par = match parent {
+                None => {
+                    let none = b.name("none");
+                    b.list(vec![none])
+                }
+                Some(p) => {
+                    let ph = b.name("parent");
+                    let pf = hash_form(b, p);
+                    b.list(vec![ph, pf])
+                }
+            };
+            b.list(vec![head, h, nonce, par])
         }
         EventBody::Inbound {
             content_type,
@@ -829,11 +846,23 @@ fn read_opt_bytes(a: &Arenas, id: StructId) -> Result<Option<Vec<u8>>, EventAstE
 fn read_body(a: &Arenas, id: StructId) -> Result<EventBody, EventAstError> {
     Ok(match head_of(a, id)? {
         "genesis" => {
-            let [h] = form(a, id, "genesis")? else {
+            let [h, nonce, par] = form(a, id, "genesis")? else {
                 return Err(shape("genesis arity"));
+            };
+            let parent = match head_of(a, *par)? {
+                "none" => None,
+                "parent" => {
+                    let [pf] = form(a, *par, "parent")? else {
+                        return Err(shape("genesis parent arity"));
+                    };
+                    Some(read_hash(a, *pf)?)
+                }
+                _ => return Err(shape("unknown genesis parent tag")),
             };
             EventBody::Genesis {
                 reducer: read_hash(a, *h)?,
+                spawn_nonce: read_hash(a, *nonce)?,
+                parent,
             }
         }
         "inbound" => {
@@ -978,7 +1007,11 @@ mod tests {
             Event {
                 seq: 0,
                 cause: None,
-                body: EventBody::Genesis { reducer: h },
+                body: EventBody::Genesis {
+                    reducer: h,
+                    spawn_nonce: Hash::of(b"spawn-nonce"),
+                    parent: Some(Hash::of(b"parent-genesis")),
+                },
             },
             Event {
                 seq: 1,

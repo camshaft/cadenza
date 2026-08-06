@@ -84,9 +84,27 @@ impl ContentType {
 /// LOG events, not ephemeral kernel metadata: `Dispatched`, `EffectResult`, and `TimerArmed`.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum EventBody {
-    /// The session's first event: names the reducer to fold with (by content hash) and the initial
-    /// capability grant. Portable/self-describing (§3 genesis).
-    Genesis { reducer: Hash },
+    /// The session's first event (§3 genesis): names the reducer to fold with (by content hash), a
+    /// caller-supplied per-spawn `spawn_nonce` (entropy), and optional `parent` provenance.
+    ///
+    /// `spawn_nonce` (§lifecycle I2 / operator "hash of spawn-time + entropy" ruling): the kernel is
+    /// clock-free + entropy-free (§9c), so the HOST mints this at spawn (32 random bytes via getrandom)
+    /// and passes it in. It lives in the durable seq-0 event, so it's replay-deterministic (recovery reads
+    /// it from the log, NEVER re-mints — a re-mint would change the genesis hash = a different SessionId on
+    /// recovery = corruption). It is what makes `genesis_hash()` per-SESSION unique: without it, two
+    /// sessions over the same reducer produced an identical Genesis event → identical SessionId → registry
+    /// collision (the gap v-agent-harness-host pinned).
+    ///
+    /// `parent` (§6 supervision / lifecycle I2): `Some(<parent's genesis hash>)` for a session SPAWNED by
+    /// another (via `lifecycle/spawn`), `None` for a root/top-level session. Baking the parent into the
+    /// hashed seq-0 body makes the child's id self-certify its provenance (the child genesis-hash is
+    /// provenance-dependent); the durable `Spawned{child_hash}` edge in the PARENT's log is the other half
+    /// of the same relation (I6's descendant-authority + §8's cascade walk it).
+    Genesis {
+        reducer: Hash,
+        spawn_nonce: Hash,
+        parent: Option<Hash>,
+    },
 
     /// An inbound message delivered into this session (from a peer via `Emit`, from a broker/ingress,
     /// or from the operator). The reducer folds it. Opaque payload.
@@ -408,6 +426,17 @@ fn decode_body(c: &mut Cursor) -> Result<EventBody, DecodeError> {
     Ok(match tag {
         0 => EventBody::Genesis {
             reducer: Hash::from_bytes(c.hash()?),
+            spawn_nonce: Hash::from_bytes(c.hash()?),
+            parent: match c.u8()? {
+                0 => None,
+                1 => Some(Hash::from_bytes(c.hash()?)),
+                t => {
+                    return Err(DecodeError::BadTag {
+                        field: "genesis.parent",
+                        tag: t,
+                    })
+                }
+            },
         },
         1 => {
             let family = c.string()?;
@@ -569,9 +598,22 @@ fn decode_outcome(c: &mut Cursor) -> Result<EffectOutcome, DecodeError> {
 /// that changes — and it must stay frozen thereafter.)
 fn encode_body(body: &EventBody, out: &mut Vec<u8>) {
     match body {
-        EventBody::Genesis { reducer } => {
+        EventBody::Genesis {
+            reducer,
+            spawn_nonce,
+            parent,
+        } => {
             out.push(0);
             out.extend_from_slice(reducer.as_bytes());
+            out.extend_from_slice(spawn_nonce.as_bytes());
+            // parent: presence byte + 32 hash bytes when Some (mirrors the Event.cause Option<Hash> wire).
+            match parent {
+                Some(p) => {
+                    out.push(1);
+                    out.extend_from_slice(p.as_bytes());
+                }
+                None => out.push(0),
+            }
         }
         EventBody::Inbound {
             content_type,
@@ -769,6 +811,8 @@ mod tests {
             cause: None,
             body: EventBody::Genesis {
                 reducer: Hash::of(b"reducer-v1"),
+                spawn_nonce: Hash::of(b"nonce-v1"),
+                parent: None,
             },
         }
     }
@@ -972,7 +1016,11 @@ mod tests {
             Event {
                 seq: 0,
                 cause: None,
-                body: EventBody::Genesis { reducer: h },
+                body: EventBody::Genesis {
+                    reducer: h,
+                    spawn_nonce: Hash::of(b"spawn-nonce"),
+                    parent: Some(Hash::of(b"parent-genesis")),
+                },
             },
             Event {
                 seq: 1,
