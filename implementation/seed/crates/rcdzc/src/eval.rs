@@ -363,7 +363,17 @@ fn sign_in_env(db: &mut Db, id: StructId, env: &HashMap<StructId, TyOrWidth>) ->
 /// unbound). A name bound WITHIN `lam_body` (its own param, a body-internal `let`-local) is left
 /// unpinned so it copies + re-resolves against the copied scope. Recurses the AST; a nested lambda's
 /// captures are relative to the SAME `lam_body` (they bind further out), so the one bound suffices.
-fn pin_free_vars(db: &mut Db, node: StructId, lam_body: StructId, own_params: &[StructId]) {
+///
+/// `pub(crate)` so the effects fold reuses the SAME capture-pin (v-effects' mv-class: the multi-shot
+/// `cont`-arm k-closure reify `(fn (#kv) C)` β-reduces C more than once, duplicating a detached C whose
+/// enclosing-fn param capture would otherwise orphan — pin C's free captures, leave `#kv` unpinned, before
+/// the reduce). Single source of truth for capture-pinning across β-reduction and the continuation reify.
+pub(crate) fn pin_free_vars(
+    db: &mut Db,
+    node: StructId,
+    lam_body: StructId,
+    own_params: &[StructId],
+) {
     if db.ast.as_name(node).is_some() {
         // A name occurrence. If it resolves (through refs) to a binder OUTSIDE `lam_body` that is NOT one
         // of the lambda's own params, it is a free capture — pin it. A param formal (substituted by
