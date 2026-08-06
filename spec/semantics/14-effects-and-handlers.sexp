@@ -2965,6 +2965,66 @@
               (export main)))
   (output (: 9 Int64)))
 
+(case "multi-shot resumes carry DIVERGENT states; two performs branch 2x2"
+  (doc    "Every multi-shot pin above resumes with the SAME state; here the two resumes carry DIFFERENT
+           next-states (`(+ s 10)` vs `(+ s 20)`), and a second perform re-branches each path under its
+           own inherited state — a 2×2 tree where each leaf's value reflects its lineage. Per branch:
+           k(v) = v + (1 + 2) under that branch's state = 2v + 3; k(1) = 5, k(2) = 7 → 12. Pins that
+           each re-reduction threads ITS OWN state forward, not a shared or last-written one.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle Amb 0
+                ((flip (u) s (+ (resume 1 (+ s 10)) (resume 2 (+ s 20)))))
+                (+ (Amb.flip) (Amb.flip))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 12 Int64)))
+
+(case "each multi-shot branch OBSERVES its own divergent state via a trailing peek"
+  (doc    "The observability face of divergent multi-shot states: branch k(1) inherits state 10, branch
+           k(2) inherits 20, and each branch's trailing `peek` reads its own — 10·1 + 10 = 20 and
+           10·2 + 20 = 40 → 60. A shared-state implementation (both branches seeing one cell) would
+           yield 50 or 70; the checksum separates the worlds.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)) (op peek (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle Amb 0
+                ((flip (u) s (+ (resume 1 (+ s 10)) (resume 2 (+ s 20))))
+                 (peek (u) s (resume s s)))
+                (+ (* 10 (Amb.flip)) (Amb.peek))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 60 Int64)))
+
+(case "divergent multi-shot states carry HEAP lineages — each branch grows its own list"
+  (doc    "The Perceus-critical face: the two resumes push DIFFERENT elements onto the list state, so
+           each branch of the 2×2 tree owns an independent heap lineage. The body is `(+ (* 10 flip₁)
+           flip₂)`: the outer flip branches k(1) and k(2), and inside each, the second flip re-branches
+           to (1 + 2) = 3 — so k(v) = 10v + 10v + 3 = 20v + 3; k(1) = 23, k(2) = 43 → 66. An FBIP
+           in-place grow shared across branches (one list mutated by both) breaks the tree's
+           independence and the checksum.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle Amb (list)
+                ((flip (u) s (+ (resume 1 (List.push s 10)) (resume 2 (List.push s 20)))))
+                (+ (* 10 (Amb.flip)) (Amb.flip))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 66 Int64)))
+
+(case "each multi-shot branch observes its own heap-lineage length"
+  (doc    "The heap observability face: each branch's trailing `size` reads the length of ITS list —
+           both branches see exactly one element (their own push), never the sibling's: 10·1 + 1 = 11
+           and 10·2 + 1 = 21 → 32. A shared list would read length 2 on the second branch.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)) (op size (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle Amb (list)
+                ((flip (u) s (+ (resume 1 (List.push s 10)) (resume 2 (List.push s 20))))
+                 (size (u) s (resume (List.len s) s)))
+                (+ (* 10 (Amb.flip)) (Amb.size))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 32 Int64)))
+
 (case "a MULTI-shot continuation APPLIES a captured closure per re-reduction"
   (doc    "The closure composition of the captured-heap multi-shot cases above: the re-reduced continuation
            `(scale (+ (Go.fork) 10))` applies `scale = (fn (x) (* x n))` — a closure over `main`'s runtime
