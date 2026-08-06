@@ -394,6 +394,7 @@ pass	TWO Tuple args with a LIST result cross the direct-call boundary
 pass	TWO Tuple args with a fixed-shape COMPOUND result
 pass	TWO Tuple args with a scalar BETWEEN them (tuple, scalar, tuple)
 pass	TWO closures capture DIFFERENT generations of one shadowed name and each sees its own
+pass	TWO closures capture one let-bound perform result — the effect fires ONCE
 pass	TWO closures capture the SAME heap map and the map outlives both applications
 pass	TWO closures capturing one let-bound host call share ONE firing (in the exported def)
 pass	TWO closures escaping one handle carry DISTINCT captured state reads
@@ -841,6 +842,7 @@ pass	a RADIX literal carries the N type suffix
 pass	a RATIONAL compound = has DISCRIMINATING power (1/2 ≠ 1/3, but 0/2 = 0/3)
 pass	a RATIONAL handler state accumulates unit fractions exactly and resumes read the prior sum
 pass	a RATIONAL leaf in a compound compares by CANONICAL form (2n/4 = n/2 inside a tuple)
+pass	a RECORD as op ARGUMENT — the arm projects the fields it is handed
 pass	a RECORD closure ARG among scalars crosses the direct-call boundary (scalar result)
 pass	a RECORD closure ARG on the MULTI-EXPORT path
 pass	a RECORD closure ARG whose fields are NOT in sorted source order
@@ -849,6 +851,7 @@ pass	a RECORD closure ARG with a narrow Bool field, among scalars
 pass	a RECORD field built from a runtime param boxes its Map handle correctly (function[27] record-path twin)
 pass	a RECORD handler state evolves a table and a counter that genuinely DIVERGE
 pass	a RECORD handler state — the arm projects one field and rebuilds the record
+pass	a RECORD op result crosses resume; the body projects both fields
 pass	a RECORD used as a map key hashes and matches by its field SET, independent of written order
 pass	a RECORD with a closure field as a map key is rejected (the record face of the compound descent)
 pass	a RECORD with a nested TUPLE field crosses the direct-call boundary
@@ -1342,6 +1345,7 @@ pass	a closure whose CALL returns a user sum crosses as the value form
 pass	a closure whose CALL returns an Option crosses as the value form
 pass	a closure whose body applies a nested lambda in place runs through a recursive HOF
 pass	a closure whose body calls a top-level helper function
+pass	a closure's captured perform result survives a LATER state advance (capture-time, not re-read)
 pass	a closure-driver result feeds a perform's ARGUMENT
 pass	a closure-payload sum picked by an if-helper, applied by a match-consumer, with a binding reused as both args
 pass	a closure-typed closure ARG on the DIRECT-CALL path is declined — host would supply the closure
@@ -2731,6 +2735,7 @@ pass	a record field holding a sum is projected then matched
 pass	a record field holding a via-remove map equals the direct-field record
 pass	a record field key that coincides with a parameter name survives the call
 pass	a record field with no value expression is rejected, not a crash
+pass	a record is built and consumed inside the arm (structural product per dispatch)
 pass	a record is constructed and a field is read
 pass	a record key with a SET field matches by set content across build orders
 pass	a record key with a float-bearing TUPLE field keys by content
@@ -4877,6 +4882,7 @@ pass	less-than compares negative operands by signed order
 pass	less-than-or-equal
 pass	less-than-or-equal of an integer and a float is rejected
 pass	let bindings' initializers are evaluated in binding order
+pass	let-bound perform results stored into record fields
 pass	list concatenation is associative by content
 pass	list ordering recurses into string elements by content across mixed reps
 pass	lists are equal by elements in order
@@ -5050,6 +5056,7 @@ pass	pattern matching over AST distinguishes forms
 pass	performing a string-parameter operation with a non-string argument is a type error
 pass	performing an operation with a wrong-type argument for a compound parameter is a type error
 pass	performing an operation with an argument of the wrong type is a type error
+pass	performs INLINE in record fields fold (records are not a strict-ctor boundary)
 pass	performs as Map keys: each key a distinct state read, lookup by the computed key
 pass	performs as Set.of elements build the set with stepping state and dedup applies to the RESULTS
 pass	performs as list-literal elements land at their POSITIONS in perform order

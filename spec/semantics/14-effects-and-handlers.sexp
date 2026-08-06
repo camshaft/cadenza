@@ -2399,6 +2399,73 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 5 Int64)))
 
+(case "performs INLINE in record fields fold (records are not a strict-ctor boundary)"
+  (doc    "The record-vs-bin ctor CONTRAST: unlike a bin segment (strict — inline performs decline,
+           see the let-bound pin above), a record constructor's fields accept performs INLINE —
+           `(record (lo (St.next)) (hi (St.next)))` folds, and the checksum doubles as a left-to-right
+           field-evaluation witness: lo gets the FIRST dispatch (5), hi the second (6) → 506. Same
+           shape, different constructor class, opposite result — pins the boundary's exact extent.")
+  (input  (do
+            (effect St (op next (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next (u) s (resume s (+ s 1))))
+                (let ((r (record (lo (St.next)) (hi (St.next)))))
+                  (+ (* 100 (. r lo)) (. r hi)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 506 Int64)))
+
+(case "let-bound perform results stored into record fields"
+  (doc    "The conservative route beside the inline pin above: both performs discharge into lets first,
+           then the record is built from pure bindings — same 506. Both routes fold for records; only
+           bin requires the let-bound spelling.")
+  (input  (do
+            (effect St (op next (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next (u) s (resume s (+ s 1))))
+                (let ((a (St.next)))
+                  (let ((b (St.next)))
+                    (let ((r (record (lo a) (hi b))))
+                      (+ (* 100 (. r lo)) (. r hi)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 506 Int64)))
+
+(case "TWO closures capture one let-bound perform result — the effect fires ONCE"
+  (doc    "The single-firing guarantee of a shared capture: `v = (St.pull)` fires once (reading 40),
+           and BOTH closures close over the same `v` — f(1) = 41, g(2) = 80 → 121. A desugar that
+           re-fired the perform per capturing closure would give g a 41 (→ 82, total 123). The
+           sharing shape the host-closure machinery relies on, in-program form.")
+  (input  (do
+            (effect St (op pull (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St 40
+                ((pull (u) s (resume s (+ s 1))))
+                (let ((v (St.pull)))
+                  (let ((f (fn ((: x Int64)) (+ x v)))
+                        (g (fn ((: x Int64)) (* x v))))
+                    (+ (f 1) (g 2))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 121 Int64)))
+
+(case "a closure's captured perform result survives a LATER state advance (capture-time, not re-read)"
+  (doc    "The temporal face of eval-once capture: `v` captures 40, a DIFFERENT op then advances the
+           state (+10), and only then does the closure fire — the captured 40 survives (41). A lazy
+           capture that re-evaluated the perform (or re-read the state) at application would give 52.
+           With the single-firing pin above, the capture-semantics pair.")
+  (input  (do
+            (effect St (op pull (-> Unit Int64)) (op bump (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St 40
+                ((pull (u) s (resume s (+ s 1)))
+                 (bump (u) s (resume s (+ s 10))))
+                (let ((v (St.pull)))
+                  (let ((f (fn ((: x Int64)) (+ x v))))
+                    (do (St.bump)
+                        (f 1))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 41 Int64)))
+
 (case "a constant bin construction folds alongside performs in the same handle body"
   (doc    "The pure-construction control of the bin × effects pair: `(bin (u16 258) (u8 7))` has only
            literal segments, so it is a pure Bytes value the fold treats as opaque data while the sibling
@@ -9163,6 +9230,49 @@
                 (Rec.entry n "abc" true 7)))
             (export main)))
   (call   main (: 5 Int64)) (output (: 1510 Int64)))
+
+(case "a RECORD op result crosses resume; the body projects both fields"
+  (doc    "A STRUCTURAL record in the op signature (records-as-STATE are pinned; the crossing was not —
+           structural products marshal differently from nominal sums and positional tuples): the arm
+           resumes `(record (x (* id 2)) (y (+ id 1)))` and the body projects both fields — 10 + 6 =
+           16. The field layout must survive the resume marshal.")
+  (input  (do
+            (effect St (op fetch (-> Int64 (Record (x Int64) (y Int64)))))
+            (def (main (: n Int64))
+              (handle St 0
+                ((fetch (id) s (resume (record (x (* id 2)) (y (+ id 1))) s)))
+                (let ((r (St.fetch n)))
+                  (+ (. r x) (. r y)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 16 Int64)))
+
+(case "a RECORD as op ARGUMENT — the arm projects the fields it is handed"
+  (doc    "The argument direction of the record crossing: the body hands `(record (hits n) (misses 3))`
+           to the op and the ARM projects both fields — 10·5 − 3 = 47. With the result-direction pin
+           above and the record-STATE pins, structural records cover all three effect positions.")
+  (input  (do
+            (effect St (op score (-> (Record (hits Int64) (misses Int64)) Int64)))
+            (def (main (: n Int64))
+              (handle St 0
+                ((score (r) s (resume (- (* (. r hits) 10) (. r misses)) s)))
+                (St.score (record (hits n) (misses 3)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 47 Int64)))
+
+(case "a record is built and consumed inside the arm (structural product per dispatch)"
+  (doc    "The arm-internal face: the record never crosses the boundary — the arm builds it from the
+           op argument, binds it via a match, and resumes the projected sum (10 + 6 = 16). Pins
+           structural-product construction + projection inside folded arm bodies.")
+  (input  (do
+            (effect St (op fetch (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle St 0
+                ((fetch (id) s
+                  (resume (match (record (x (* id 2)) (y (+ id 1)))
+                            (r (+ (. r x) (. r y)))) s)))
+                (St.fetch n)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 16 Int64)))
 
 (case "a heterogeneous TUPLE op result (String, Int64) crosses resume and destructures"
   (doc    "The result-direction twin of the heterogeneous-args pin above: the arm resumes a
