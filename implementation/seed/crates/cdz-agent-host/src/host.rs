@@ -167,12 +167,35 @@ impl HostedSession {
         authz: Box<dyn Authorize>,
         executor: CompositeExecutor,
     ) -> Self {
+        Self::genesis_spawned_with_nonce(
+            reducer_hash,
+            mint_spawn_nonce(),
+            parent_genesis_hash,
+            reducer,
+            authz,
+            executor,
+        )
+    }
+
+    /// Like [`genesis_spawned`](Self::genesis_spawned) but the caller SUPPLIES the `spawn_nonce` instead of
+    /// minting a fresh one (§lifecycle I3 spawn-executor). The `lifecycle/spawn` executor needs this: to
+    /// return the child's `SessionId` (= its genesis hash) SYNCHRONOUSLY as the effect result while the loop
+    /// registers the child AFTER `deliver` (defer-to-loop), the executor PRE-COMPUTES the child hash via
+    /// [`Session::derive_genesis_hash`](cdz_kernel::kernel::Session::derive_genesis_hash)`(reducer, nonce,
+    /// Some(parent))` — which only matches what the loop registers if the loop builds the child with the
+    /// SAME nonce (not a re-mint). So the executor mints ONCE, carries the nonce to the loop, and the loop
+    /// calls THIS. `genesis_spawned` (the mint-internally form) stays for callers that don't need a
+    /// pre-known id.
+    pub fn genesis_spawned_with_nonce(
+        reducer_hash: Hash,
+        spawn_nonce: Hash,
+        parent_genesis_hash: Hash,
+        reducer: Box<dyn Reducer>,
+        authz: Box<dyn Authorize>,
+        executor: CompositeExecutor,
+    ) -> Self {
         HostedSession {
-            session: Session::genesis_spawned(
-                reducer_hash,
-                mint_spawn_nonce(),
-                Some(parent_genesis_hash),
-            ),
+            session: Session::genesis_spawned(reducer_hash, spawn_nonce, Some(parent_genesis_hash)),
             reducer,
             authz,
             executor,
@@ -661,11 +684,45 @@ impl AgentHost {
         authz: Box<dyn Authorize>,
         executor: CompositeExecutor,
     ) -> Option<Result<SessionId, KernelError>> {
+        self.spawn_child_with_nonce(
+            parent,
+            reducer_hash,
+            mint_spawn_nonce(),
+            reducer,
+            authz,
+            executor,
+        )
+        .await
+    }
+
+    /// Like [`spawn_child`](Self::spawn_child) but the caller SUPPLIES the `spawn_nonce` (§lifecycle I3
+    /// spawn-executor). The `lifecycle/spawn` executor pre-computes the child's genesis hash from
+    /// `(reducer_hash, spawn_nonce, Some(parent_genesis))` via
+    /// [`Session::derive_genesis_hash`](cdz_kernel::kernel::Session::derive_genesis_hash) to return the child
+    /// `SessionId` synchronously; the loop then calls THIS with the SAME nonce so the registered child's id
+    /// matches the pre-computed one BYTE-FOR-BYTE (a re-mint would diverge). Same edge-first / terminated-
+    /// parent-refused / phantom-parent-None contract as `spawn_child`.
+    pub async fn spawn_child_with_nonce(
+        &mut self,
+        parent: &SessionId,
+        reducer_hash: Hash,
+        spawn_nonce: Hash,
+        reducer: Box<dyn Reducer>,
+        authz: Box<dyn Authorize>,
+        executor: CompositeExecutor,
+    ) -> Option<Result<SessionId, KernelError>> {
         // Build the child first (pure construction, no registry mutation) so we know its genesis hash = its
-        // id, which is what the parent's edge records.
+        // id, which is what the parent's edge records. The supplied nonce makes the id match a caller's
+        // pre-computation (the spawn executor's derive_genesis_hash).
         let parent_genesis = self.sessions.get(parent)?.genesis_hash();
-        let child =
-            HostedSession::genesis_spawned(reducer_hash, parent_genesis, reducer, authz, executor);
+        let child = HostedSession::genesis_spawned_with_nonce(
+            reducer_hash,
+            spawn_nonce,
+            parent_genesis,
+            reducer,
+            authz,
+            executor,
+        );
         let child_hash = child.genesis_hash();
         let child_id = SessionId::new(child_hash.to_hex());
 
@@ -1611,6 +1668,48 @@ mod tests {
             child_id.as_str(),
             "the edge's child_hash is the child's genesis hash (= its id)"
         );
+    }
+
+    #[tokio::test]
+    async fn spawn_child_with_nonce_registers_the_id_derive_genesis_hash_pre_computes() {
+        // §lifecycle I3 spawn-executor LOAD-BEARING invariant: the child id that spawn_child_with_nonce
+        // REGISTERS must equal what Session::derive_genesis_hash(reducer, nonce, Some(parent)) PRE-COMPUTES
+        // from the same triple. This is what lets the lifecycle/spawn executor return the child SessionId
+        // synchronously (via derive_genesis_hash) while the loop registers the child later (defer-to-loop)
+        // with the SAME nonce — the two must match byte-for-byte or the returned id is a lie. If a refactor
+        // ever re-minted the nonce loop-side, this test flips.
+        let mut host = AgentHost::new();
+        let parent = SessionId::new("parent");
+        host.spawn(parent.clone(), now_host());
+        let parent_genesis = host.get(&parent).unwrap().genesis_hash();
+
+        let reducer_hash = Hash::of(b"child-reducer-v1");
+        let spawn_nonce = Hash::of(b"executor-minted-nonce");
+        // What the EXECUTOR would return synchronously (pre-computed, no Session built).
+        let pre_computed =
+            Session::derive_genesis_hash(reducer_hash, spawn_nonce, Some(parent_genesis));
+
+        // What the LOOP registers (defer-to-loop), given the SAME nonce.
+        let out = host
+            .spawn_child_with_nonce(
+                &parent,
+                reducer_hash,
+                spawn_nonce,
+                Box::new(GenesisRecordingReducer),
+                Box::new(Authorizer::deny_all()),
+                CompositeExecutor::new(),
+            )
+            .await;
+        let child_id = match out {
+            Some(Ok(id)) => id,
+            other => panic!("expected Some(Ok(child_id)), got {other:?}"),
+        };
+        assert_eq!(
+            child_id.as_str(),
+            pre_computed.to_hex(),
+            "the registered child id == derive_genesis_hash's pre-computation (executor's returned id is real)"
+        );
+        assert!(host.contains(&child_id));
     }
 
     #[test]
