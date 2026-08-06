@@ -582,6 +582,7 @@ dependencies = [
  "aws-sdk-bedrockruntime",
  "bytes",
  "cdz-kernel",
+ "getrandom 0.2.17",
  "reqwest",
  "s2n-quic-dc-metrics",
  "serde",

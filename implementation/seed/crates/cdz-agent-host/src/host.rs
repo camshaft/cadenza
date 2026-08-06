@@ -82,6 +82,19 @@ impl SessionId {
     }
 }
 
+/// Mint a fresh SPAWN NONCE for a root session's genesis (§lifecycle I2a) — 32 OS-random bytes hashed into
+/// a [`Hash`]. This is the host-supplied entropy that makes `genesis_hash` (= the SessionId) per-session
+/// UNIQUE: two sessions over the same reducer get different nonces → different ids. We `Hash::of` the
+/// random bytes rather than `Hash::from_bytes` them so the value is a real content hash (blake3 domain),
+/// not raw bytes coerced into the `Hash` type — the nonce is a HASH of entropy, uniformly with every other
+/// `Hash` in the system. `getrandom` panicking is not survivable (no entropy source = we can't safely mint
+/// a unique id), so a failure is a hard error, not a silent weak-nonce fallback.
+fn mint_spawn_nonce() -> Hash {
+    let mut bytes = [0u8; 32];
+    getrandom::getrandom(&mut bytes).expect("OS entropy (getrandom) for a session spawn nonce");
+    Hash::of(&bytes)
+}
+
 /// One running agent: the kernel `Session` plus the collaborators that drive its loop. The host owns all
 /// of them for the session's lifetime, so a registry can drive the session by id (the kernel's `deliver`
 /// borrows reducer/authz/executor per call; bundling them here is what lets the host re-supply them).
@@ -100,6 +113,14 @@ impl HostedSession {
     ///
     /// `reducer` is a `Box<dyn Reducer>`: a pure-Rust reducer is passed as
     /// `Box::new(my_reducer)`, a wasm reducer as `Box::new(AsyncComponentReducer::…)`.
+    ///
+    /// A fresh, OS-random SPAWN NONCE is minted here and hashed into the seq-0 Genesis event (§lifecycle
+    /// I2a): `Session::genesis(reducer, spawn_nonce)` makes `genesis_hash` — the host's SessionId primitive
+    /// — per-session UNIQUE, so two sessions over the SAME reducer no longer collide on their id. The kernel
+    /// stays entropy-free (§9c): the host is the entropy source, the nonce rides the durable log, and
+    /// recovery reads it back from the log (never re-mints) so a recovered session keeps its id. This is a
+    /// ROOT session (`parent = None`); the `lifecycle/spawn` child path (I3) uses
+    /// [`Session::genesis_spawned`] with the parent's genesis hash instead.
     pub fn genesis(
         reducer_hash: Hash,
         reducer: Box<dyn Reducer>,
@@ -107,7 +128,7 @@ impl HostedSession {
         executor: CompositeExecutor,
     ) -> Self {
         HostedSession {
-            session: Session::genesis(reducer_hash),
+            session: Session::genesis(reducer_hash, mint_spawn_nonce()),
             reducer,
             authz,
             executor,
@@ -309,12 +330,14 @@ impl HostedSession {
     /// the SessionId directly, so cross-session routing needs no separate hash→id map — the resolved hash-hex
     /// is the routable id). A caller assigns/validates a [`SessionId`] against `hex(this)`.
     ///
-    /// ⚠️ NOT per-session-unique TODAY: the genesis event carries the reducer hash ALONE (no spawn entropy),
-    /// so two sessions over the SAME reducer produce the SAME genesis_hash — a SessionId COLLISION under the
-    /// identity ruling (see `genesis_hash_of_two_same_reducer_sessions_collides_uniqueness_gap`, which PINS
-    /// that collision). Making it per-session-unique is the documented fix path (spawn-time entropy in the
-    /// genesis event, per the operator's "hash of spawn-time + entropy" instinct — greenlit, owned by
-    /// v-agent-harness's kernel seam), NOT current behavior.
+    /// PER-SESSION UNIQUE (§lifecycle I2a): the genesis event carries a fresh OS-random SPAWN NONCE
+    /// (minted by [`mint_spawn_nonce`] at [`HostedSession::genesis`], or the parent's provenance at
+    /// `Session::genesis_spawned` for a spawned child), hashed into the seq-0 event alongside the reducer
+    /// hash. So two sessions over the SAME reducer get DIFFERENT genesis_hashes → distinct SessionIds — no
+    /// registry-key collision (see `two_same_reducer_sessions_get_distinct_genesis_hashes_uniqueness_gap_closed`).
+    /// The nonce is host-supplied (the kernel stays entropy-free, §9c) and rides the durable log, so a
+    /// recovered/replayed session reconstructs the SAME genesis_hash from its log — the id is stable across
+    /// recovery, never re-minted.
     pub fn genesis_hash(&self) -> Hash {
         self.session.genesis_hash()
     }
@@ -938,16 +961,14 @@ mod tests {
     }
 
     #[test]
-    fn genesis_hash_of_two_same_reducer_sessions_collides_uniqueness_gap() {
-        // ⚠️ SURFACED (flagged to v-agent-harness): the operator's SessionId=genesis-hash ruling assumes a
-        // genesis hash is per-session-UNIQUE, but Session::genesis(reducer) builds a Genesis{reducer} event
-        // with NO entropy — so two sessions over the SAME reducer_hash produce IDENTICAL genesis events →
-        // IDENTICAL genesis_hash. This test PINS that collision as the current (gap) behavior: under
-        // SessionId=hex(genesis_hash), spawning a second same-reducer session would COLLIDE on the registry
-        // key (replace the first). The naming increment needs genesis to carry entropy (spawn-time/nonce, per
-        // the operator's original "hash of spawn-time + entropy" instinct) OR a rule that same-reducer
-        // sessions can't coexist. If this assert_eq ever flips to assert_ne (genesis gains entropy), the gap
-        // is closed — update it then.
+    fn two_same_reducer_sessions_get_distinct_genesis_hashes_uniqueness_gap_closed() {
+        // §lifecycle I2a CLOSED the SessionId-uniqueness gap this test used to PIN. Previously
+        // `Session::genesis(reducer)` carried no entropy, so two sessions over the SAME reducer produced
+        // IDENTICAL genesis events → IDENTICAL genesis_hash → a SessionId COLLISION (a second same-reducer
+        // session would clobber the first in the registry). Now `HostedSession::genesis` mints a fresh
+        // OS-random spawn nonce into the seq-0 Genesis event (via `mint_spawn_nonce`), so two same-reducer
+        // sessions get DIFFERENT nonces → DIFFERENT genesis_hash → distinct SessionIds. This asserts the
+        // gap is closed (assert_ne, flipped from the old assert_eq pin).
         let a = HostedSession::genesis(
             Hash::of(b"same-reducer"),
             Box::new(GenesisRecordingReducer),
@@ -960,11 +981,11 @@ mod tests {
             Box::new(Authorizer::deny_all()),
             CompositeExecutor::new(),
         );
-        assert_eq!(
+        assert_ne!(
             a.genesis_hash(),
             b.genesis_hash(),
-            "two same-reducer sessions collide on genesis_hash today (no genesis entropy) — the \
-             SessionId=genesis-hash uniqueness gap, flagged to v-agent-harness"
+            "two same-reducer sessions now get DISTINCT genesis_hashes (per-session spawn nonce, \
+             §lifecycle I2a) — the SessionId=genesis-hash uniqueness gap is closed"
         );
     }
 

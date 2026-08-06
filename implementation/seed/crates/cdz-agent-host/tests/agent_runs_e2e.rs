@@ -86,7 +86,7 @@ async fn agent_loop_runs_end_to_end_through_the_real_clock_executor() {
     // will be alongside it.
     let mut exec =
         CompositeExecutor::new().with_effect(effect_ct::NOW, Box::new(ClockExecutor::new()));
-    let mut session = Session::genesis(Hash::of(b"clock-agent-v1"));
+    let mut session = Session::genesis(Hash::of(b"clock-agent-v1"), Hash::of(b"clock-agent-v1-nonce"));
 
     session
         .deliver(inbound_go(), None, &reducer, &authz, &mut exec)
@@ -124,7 +124,7 @@ async fn the_recorded_instant_makes_the_run_replayable() {
     let reducer = ClockAgent;
     let mut exec =
         CompositeExecutor::new().with_effect(effect_ct::NOW, Box::new(ClockExecutor::new()));
-    let mut session = Session::genesis(Hash::of(b"clock-agent-v1"));
+    let mut session = Session::genesis(Hash::of(b"clock-agent-v1"), Hash::of(b"clock-agent-v1-nonce"));
     session
         .deliver(inbound_go(), None, &ClockAgent, &now_cap(), &mut exec)
         .await
@@ -154,7 +154,7 @@ async fn a_now_effect_outside_the_grant_is_denied_never_reaching_the_clock() {
     let deny = Authorizer::deny_all();
     let mut exec =
         CompositeExecutor::new().with_effect(effect_ct::NOW, Box::new(ClockExecutor::new()));
-    let mut session = Session::genesis(Hash::of(b"clock-agent-v1"));
+    let mut session = Session::genesis(Hash::of(b"clock-agent-v1"), Hash::of(b"clock-agent-v1-nonce"));
     session
         .deliver(inbound_go(), None, &reducer, &deny, &mut exec)
         .await
