@@ -9136,6 +9136,97 @@
             (export main)))
   (call   main (: 7 Int64)) (output (: 2 Int64)))
 
+(case "a FOUR-arg effect op binds positionally (place-value checksum)"
+  (doc    "The arity extension of the 3-arg positional pin: four operands at four place values —
+           `(Calc.mix4 5 2 3 4)` → 1000·5 + 100·2 + 10·3 + 4 = 5234. Any operand permutation or
+           marshal-slot mixup at arity 4 diverges.")
+  (input  (do
+            (effect Calc (op mix4 (-> Int64 Int64 Int64 Int64 Int64)))
+            (def (main (: n Int64))
+              (handle Calc 0
+                ((mix4 (a b c d) s (resume (+ (* 1000 a) (+ (* 100 b) (+ (* 10 c) d))) s)))
+                (Calc.mix4 n 2 3 4)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 5234 Int64)))
+
+(case "a HETEROGENEOUS 4-arg op (Int64/String/Bool/Int64) marshals every type to its arm binder"
+  (doc    "The mixed-signature face of the op-arg marshal (the positional pins are homogeneous-Int):
+           one op carries a scalar id, a heap String, a Bool flag, and a scalar score, and the arm
+           consumes each per its type — id scaled (500), name measured (3), flag branched (1000),
+           score added (7) → 1510. Real host-effect signatures are exactly this shape.")
+  (input  (do
+            (effect Rec (op entry (-> Int64 String Bool Int64 Int64)))
+            (def (main (: n Int64))
+              (handle Rec 0
+                ((entry (id name flag score) s
+                  (resume (+ (* 100 id) (+ (String.byte-len name) (+ (if flag 1000 0) score))) s)))
+                (Rec.entry n "abc" true 7)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 1510 Int64)))
+
+(case "a heterogeneous TUPLE op result (String, Int64) crosses resume and destructures"
+  (doc    "The result-direction twin of the heterogeneous-args pin above: the arm resumes a
+           `(Tuple String Int64)` — a heap String and a scalar in one payload — and the body
+           destructures it: byte-len \\\"row\\\" + 5·10 = 53. Both marshal directions now carry
+           mixed-type payloads.")
+  (input  (do
+            (effect Rec (op fetch (-> Int64 (Tuple String Int64))))
+            (def (main (: n Int64))
+              (handle Rec 0
+                ((fetch (id) s (resume (tuple "row" (* id 10)) (+ s 1))))
+                (match (Rec.fetch n)
+                  ((tuple name score) (+ (String.byte-len name) score)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 53 Int64)))
+
+(case "three DISCARDED performs on a do-spine still advance the state"
+  (doc    "Effect-only evaluation: three `(St.bump)` results are discarded on the do-spine — evaluated
+           purely for their state effect — and the trailing peek reads the fully-advanced 8 (seed 5,
+           three advances). A fold that elided 'unused' performs would skip the advances and read 5.
+           The most imperative idiom in the language, pinned standalone.")
+  (input  (do
+            (effect St (op bump (-> Unit Int64)) (op peek (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((bump (u) s (resume s (+ s 1)))
+                 (peek (u) s (resume s s)))
+                (do
+                  (St.bump)
+                  (St.bump)
+                  (St.bump)
+                  (St.peek))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 8 Int64)))
+
+(case "a pure closure-driver call beside a perform in one handle body"
+  (doc    "A generic driver (`apply-twice`, a lambda-lifted closure call on every backend, incl. the
+           async EnvClosure emit) runs BESIDE a perform in one handle body: the driver computes
+           10 + 12 = 22 purely, the bump reads 100 → 122. The closure machinery and the effect fold
+           coexist in one body on all three targets.")
+  (input  (do
+            (effect St (op bump (-> Unit Int64)))
+            (def (apply-twice f (: a Int64)) (+ (f a) (f (+ a 1))))
+            (def (main (: n Int64))
+              (handle St 100
+                ((bump (u) s (resume s (+ s 1))))
+                (+ (apply-twice (fn ((: x Int64)) (* x 2)) n) (St.bump))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 122 Int64)))
+
+(case "a closure-driver result feeds a perform's ARGUMENT"
+  (doc    "The dataflow composition: the driver's computed 22 flows INTO the effect dispatch as the
+           op argument, and the arm scales it (220). The closure-call result must be fully reduced
+           before the dispatch marshals it.")
+  (input  (do
+            (effect St (op log (-> Int64 Int64)))
+            (def (apply-twice f (: a Int64)) (+ (f a) (f (+ a 1))))
+            (def (main (: n Int64))
+              (handle St 0
+                ((log (v) s (resume (* v 10) (+ s 1))))
+                (St.log (apply-twice (fn ((: x Int64)) (* x 2)) n))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 220 Int64)))
+
 (case "a bin PATTERN destructures a perform-result Bytes (the wire round-trip through a handler)"
   (doc    "binary-matching × effects, the codec round-trip: the ARM constructs framed Bytes from its
            state (`(bin (u16 …) (u8 7))`) and the BODY destructures the perform result with a bin
