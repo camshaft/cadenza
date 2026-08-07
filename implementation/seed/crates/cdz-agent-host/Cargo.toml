@@ -104,7 +104,7 @@ metrics-export-prometheus = ["metrics-export", "tokio/net", "tokio/io-util"]
 # types`, and adds `aws-sdk-s3`. Credentials come from the environment via the SDK default provider (same
 # contract as the Bedrock transport). The trait stays the seam: a consumer holds `Box<dyn BlobStore>` and never
 # sees an AWS type — the daemon just selects the S3 backend by config when this feature is compiled.
-live-aws-storage = ["dep:aws-config", "dep:aws-smithy-types", "dep:aws-sdk-s3"]
+live-aws-storage = ["dep:aws-config", "dep:aws-smithy-types", "dep:aws-sdk-s3", "dep:aws-sdk-dynamodb"]
 
 [dependencies]
 # The kernel whose Executor/Authorize traits + effect/event types we implement. Path dep across the
@@ -210,3 +210,8 @@ aws-smithy-types = { version = "1", optional = true }
 # chain (env/profile/IMDS) via the shared `aws-config`, exactly like the Bedrock transport — no broker, no
 # hardcoding.
 aws-sdk-s3 = { version = "1", default-features = false, features = ["rustls", "default-https-client", "rt-tokio"], optional = true }
+# aws-sdk-dynamodb — the DynamoDB-backed durable event LOG behind `live-aws-storage` (operator: AWS-native
+# backends for all host traits; `LogConfig::Dynamo { table }` selects it). OPTIONAL (default build compiles no
+# dynamodb tree). Same `default-features = false` + rustls / default-https-client / rt-tokio set as the other
+# aws-sdk crates. Credentials from the SDK default provider chain (env/profile/IMDS) via the shared aws-config.
+aws-sdk-dynamodb = { version = "1", default-features = false, features = ["rustls", "default-https-client", "rt-tokio"], optional = true }

@@ -166,8 +166,23 @@ async fn main() -> std::process::ExitCode {
         use cdz_agent_host::{FileLogSinkBuilder, LogConfig, LogSinkBuilder};
         let log_sink: Option<Box<dyn LogSinkBuilder>> = match &config.log {
             LogConfig::File { dir } => Some(Box::new(FileLogSinkBuilder::new(dir))),
-            // memory (default) → in-memory session logs; dynamo → not yet a session-log backend (later slice).
-            _ => None,
+            // DynamoDB-backed durable session log (I2, behind `live-aws-storage`). Loads the ambient AWS
+            // config ONCE here (boot path). A build WITHOUT the feature reports a clean "not compiled in"
+            // boot error rather than silently degrading to in-memory (config validates regardless of feature).
+            #[cfg(feature = "live-aws-storage")]
+            LogConfig::Dynamo { table } => Some(Box::new(
+                cdz_agent_host::DynamoLogSinkBuilder::new(table.clone()).await,
+            )),
+            #[cfg(not(feature = "live-aws-storage"))]
+            LogConfig::Dynamo { .. } => {
+                eprintln!(
+                    "cdz-agent-daemon: [log] backend=dynamo requires the `live-aws-storage` feature — \
+                     rebuild with `--features live-aws-storage` to use the DynamoDB log."
+                );
+                return std::process::ExitCode::from(1);
+            }
+            // memory (default) → in-memory session logs (no durable sink).
+            LogConfig::Memory => None,
         };
         // Build the AgentHost FIRST so its metrics registry exists — the live executor set's per-effect
         // metrics register into the SAME registry (one registry the exporter reports over: host-boundary +
