@@ -1864,7 +1864,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn terminate_evicts_the_dead_session_from_ALL_its_groups_i5_multi_group() {
+    async fn terminate_evicts_the_dead_session_from_all_its_groups_i5_multi_group() {
         // §session-directory I5 edge (the all-groups loop in retract_dead_member_from_groups): a session that
         // belongs to MULTIPLE groups is evicted from EVERY one on death, while each group's other member
         // survives. The single-group test above doesn't exercise the loop over `to_group_ops`' distinct names
