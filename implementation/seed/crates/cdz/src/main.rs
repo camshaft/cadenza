@@ -46,6 +46,11 @@ use fix::{FileTree, OriginPaths, apply_fix_to_source, fix_edits};
 mod closure;
 use closure::{declared_import_paths, load as load_import_closure_with};
 
+// cadenza-docs I2 (assembly half): the `cdz doc-module` merge — parse rcdzc's `export-types` sidecar
+// blob + graft resolved `(ty …)` into the structural doc-module from `cadenza_syntax::doc_item::project`.
+// Symbol-independent of the sidecar Query (the handler drives `run_sidecar` and hands the blob here).
+mod doc_module;
+
 /// The unified tool. The name reported in tool-level diagnostics is `cdz`.
 const PROG: &str = "cdz";
 
