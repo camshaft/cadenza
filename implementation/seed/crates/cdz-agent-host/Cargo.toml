@@ -35,7 +35,7 @@ path = "src/bin/cdz_agent_daemon.rs"
 # It enables the real transports' network deps (reqwest for the HTTP client, the aws-sdk for the Bedrock
 # model transport) — kept OPTIONAL so the default build never compiles them (no reqwest/hyper/rustls/aws
 # tree, no network types). The `dep:` bindings tie the optional dependencies to this feature only.
-live-net = ["dep:reqwest", "dep:aws-config", "dep:aws-sdk-bedrockruntime"]
+live-net = ["dep:reqwest", "dep:aws-config", "dep:aws-sdk-bedrockruntime", "dep:aws-smithy-types"]
 
 # `live-exec` gates the ShellExecutor — the executor that RUNS LOCAL COMMANDS (cargo/git/gh) so an agent can
 # do real work toward the self-hosting harness (GAP-2). OFF by default so the hermetic gate NEVER spawns a
@@ -178,3 +178,9 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 # also work out of the box, SSO would need `sso` added.
 aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "rustls", "default-https-client", "rt-tokio"], optional = true }
 aws-sdk-bedrockruntime = { version = "1", default-features = false, features = ["rustls", "default-https-client", "rt-tokio"], optional = true }
+# aws-smithy-types — for `Document`, the aws-sdk's dynamic JSON value type that a Bedrock `Converse` tool-use
+# input / tool-result / tool inputSchema is expressed in. The GAP-1 tool-calling transport owns the
+# JSON⟷Document boundary (O4: the kernel carries opaque JSON bytes, the host maps them to/from Bedrock's
+# Document). Already in the tree transitively via aws-sdk-bedrockruntime; named directly here so the
+# conversion helper can construct/destructure `Document`. Behind `live-net` (only the real transport needs it).
+aws-smithy-types = { version = "1", optional = true }
