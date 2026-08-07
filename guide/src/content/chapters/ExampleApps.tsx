@@ -95,8 +95,18 @@ export default function ExampleApps() {
         improvised one.
       </P>
 
+      <H2>The platform explorer</H2>
       <P>
-        All five run the identical in-browser compiler that powers this guide's inline examples, so geometry,
+        The <AppLink to="/explorer">platform explorer</AppLink> is a multi-file workspace: instead of one
+        buffer it holds a set of files, one marked the <em>entry</em> (the program that runs) and the rest
+        modules it can <C>import</C>. Edit any file, Run, and the whole set compiles together in the browser,
+        the same link-merge that lets the guide's showcase pages preload a library, opened up so the modules
+        are yours to write. It's the smallest look at Cadenza as a <em>platform</em>: programs composed from
+        several content-addressed pieces rather than a single snippet.
+      </P>
+
+      <P>
+        All six run the identical in-browser compiler that powers this guide's inline examples, so geometry,
         tables, charts, and values are just what Cadenza's results look like when an app renders them
         instead of printing a single number.
       </P>
