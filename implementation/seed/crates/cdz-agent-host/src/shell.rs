@@ -63,6 +63,24 @@ impl Executor for ShellExecutor {
                 req.content_type.family
             ));
         }
+        // SECURITY (authz-bypass guard, reviewer HIGH): the kernel's shell-pipeline fan-out (#2596) authorizes
+        // a `(shell-pipeline …)` payload STAGE-BY-STAGE and does NOT gate `req.target` for such an effect. This
+        // executor does not yet EXECUTE pipelines (the piped-stdio multi-stage runner + its outcome codec are a
+        // following slice), and it runs `req.target` directly. If a pipeline-payload effect reached here we
+        // would run the UN-GATED `target` — a privilege escalation (a session with one allowed stage program
+        // could smuggle an arbitrary denied command in `target`). So REJECT any effect whose payload decodes as
+        // a `(shell-pipeline …)`, using the SAME discriminant the kernel fan-out keys on (payload decodes as a
+        // pipeline), until the pipeline executor lands and runs the authorized stages instead of `target`.
+        // PERMANENT: a pipeline payload isn't a transient fault, and re-driving must not run the un-gated target.
+        if let Some(Payload::Inline(bytes)) = &req.payload {
+            if cdz_kernel::event_ast::decode_shell_pipeline(bytes).is_ok() {
+                return EffectOutcome::err(
+                    "ShellExecutor: a shell-pipeline payload is not yet executable by this host \
+                     (the per-stage pipeline runner is a following slice); refusing so the un-gated \
+                     target is never run",
+                );
+            }
+        }
         // Split the target into program + args on whitespace and exec DIRECTLY — no shell, so metacharacters
         // are literal args, not interpreted (CWE-78 / kernel PR#992 parity). This is the irreducible spawn
         // mechanism; the command itself was already authorized by the Cedar policy (SEC-F1) before dispatch.
@@ -109,6 +127,44 @@ mod tests {
             None,
             Timeliness::Interactive,
         )
+    }
+
+    #[tokio::test]
+    async fn a_shell_pipeline_payload_is_refused_so_the_ungated_target_never_runs() {
+        // SECURITY regression (reviewer HIGH): the kernel fan-out (#2596) gates a shell-pipeline payload's
+        // STAGES, not `req.target`. Until this host runs the authorized stages, a pipeline-payload effect must
+        // be REFUSED — otherwise we'd exec the un-gated `target` (a priv-esc: smuggle a denied command in
+        // `target` behind an allowed one-stage pipeline). Here `target` is a would-be-dangerous command; the
+        // payload decodes as a one-stage pipeline; the executor must reject, NOT run the target.
+        use cdz_kernel::event_ast::{encode_shell_pipeline, ShellPipeline, ShellStage};
+        let pipeline = ShellPipeline {
+            stages: vec![ShellStage {
+                program: "echo".into(),
+                args: vec!["allowed-stage".into()],
+            }],
+        };
+        // A sentinel target that WOULD write a file if it ran — proves refusal, not just a non-panic.
+        let tmp = std::env::temp_dir().join("cdz_shell_pipeline_bypass_sentinel_should_not_exist");
+        let _ = std::fs::remove_file(&tmp);
+        let target = format!("touch {}", tmp.display());
+        let req = EffectRequest::new(
+            EffectKind::Shell,
+            target,
+            Some(Payload::Inline(encode_shell_pipeline(&pipeline).into())),
+            Timeliness::Interactive,
+        );
+        let out = ShellExecutor::new().perform(&req, Hash::of(b"k")).await;
+        match out {
+            EffectOutcome::Err {
+                retryability: Retryability::Permanent,
+                ..
+            } => {}
+            other => panic!("a shell-pipeline payload must be refused PERMANENT, got {other:?}"),
+        }
+        assert!(
+            !tmp.exists(),
+            "the un-gated target must NOT have run (the sentinel file must not exist)"
+        );
     }
 
     #[tokio::test]
