@@ -46,6 +46,13 @@ live-net = ["dep:reqwest", "dep:aws-config", "dep:aws-sdk-bedrockruntime", "dep:
 # Cedar `shell`-family capability gate (two independent authz layers).
 live-exec = []
 
+# `live-fs` gates the FsExecutor — the executor that reads/writes/globs real files (GAP-3) so an agent can
+# edit the source it builds. OFF by default so the hermetic gate never touches the real filesystem (like
+# `live-exec`/`live-net` gate the process/network executors). No extra deps — uses `std::fs`; this feature
+# just compiles the `fs_exec` module. The executor is thin MECHANISM (deny-by-default path policy lives in the
+# Cedar wasm authorizer on the effect's resolved target, NOT in the host — operator standing-order).
+live-fs = []
+
 # `admin` gates the ADMIN CONTROL INTERFACE's transport — the Unix-domain-socket listener that carries
 # admin command/response frames to a running daemon (operator: "a way to communicate with the daemon + send
 # it commands as an admin"). OFF by default so the hermetic gate BINDS NO SOCKET + pulls no tokio `net`
