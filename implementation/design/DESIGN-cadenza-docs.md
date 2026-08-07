@@ -277,13 +277,33 @@ Guide chapters authored as `cdzast` sexprs (heads mirroring the typed DSL: `chap
   so `check-examples.mjs`'s regex extractor still matches (else a chapter silently extracts 0
   examples — but the <30-file/<100-example floors fail LOUD). Keep `expected` on the sexpr surface
   (guard #1123 asserts it only on the sexpr pass); `authoredIn="ml"` supported if needed.
-- Editorial invariant tests (`arc.test`/`opener`/`tenets`/`links`/`proseEmDash`) must run against the
-  sexpr form (or the generated TSX) or they go stale.
+- Editorial invariant tests (`arc.test`/`opener`/`tenets`/`links`/`forwardRefs`/`pillarBridge`/
+  `proseEmDash`) must run against the sexpr form (or the generated TSX) or they go stale.
 
-Pilot chapter (v-guide-infra): **`PlatformOverview`** — ~100 lines, ZERO Runnable/Exercise, 1 import,
-pure prose — validates the codegen pipeline + registry wiring WITHOUT the Runnable-embedding problem;
-add Runnable in a 2nd increment. Avoid Basics/Numbers/Floats/Data for the pilot (max component
-surface).
+**Editorial-gate schema requirements (v-guide-editor, owns the invariant gates).** The schema + codegen
+MUST satisfy these or the editorial gates fail spuriously — they are hard constraints, not nice-to-haves:
+- **Codegen `chapters.ts` from an EXPLICIT ORDERED manifest of the sexp set — NOT glob/filesystem
+  order.** `arc.test` asserts section contiguity + pillar order, so ordering must be DECLARED. A
+  hand-maintained registry beside the sexprs WILL drift and trip a gate.
+- **Derive, don't duplicate.** The exercises badge count = COUNT of `exercise` nodes (no separate
+  integer field). The `NON_TEACHING_SECTIONS` exemption set (keyed on section name, imported today by
+  both `opener` and `tenets`) must be codegen-DERIVABLE from content, not a second hand-list.
+- **`lede` is its OWN head, distinct from `p`.** `opener.test` asserts every teaching chapter opens
+  with a `Lede` AND has ≥1 runnable — do not collapse `lede` into the first paragraph.
+- **`why` is first-class.** `tenets.test` asserts exactly one `Why` box per TEACHING chapter.
+- **TWO link node kinds** (`links.test` treats them differently): internal chapter link (dead-link
+  checked vs slugs) vs app-route link (app-route-coverage checked vs the router). Model as
+  `(link <slug> "text")` + `(app-link <route> "text")`, or one `link` node with a `kind` field.
+  `forwardRefs` + `pillarBridge` also scan link targets — structured link nodes (not regex over free
+  JSX) are a net win for these gates.
+- **`p` and `note` are both first-class heads whose text payload is reachable** — `proseEmDash` scans
+  both string payloads.
+
+Pilot chapter (v-guide-infra + v-guide-editor): **`PlatformOverview`** — ~100 lines, ZERO Runnable/
+Exercise, 1 import, pure prose WITH a `lede` — validates the codegen pipeline + registry wiring +
+the ordered-manifest/`lede`/`proseEmDash` gate contract WITHOUT the Runnable-embedding problem; add
+Runnable in I5. Avoid Basics/Numbers/Floats/Data for the pilot (max component surface).
+v-guide-editor offered a line-by-line review of the drafted head schema before I4 lands.
 
 ---
 
@@ -402,9 +422,12 @@ SEPARATE ADDITIVE fields — I2 adds `ty`, never rewrites `sig`. (Clarified afte
 v-syntax's structured-sig fix shipped in `55d141cd6` (grafts the item's signature subtree, not a
 printed string).
 
-### 9.5 Guide content model — RESOLVED (design-agent + v-guide survey): **unify on `cadenza-ast`, with carve-outs**
-Unify; carve out the two bespoke widgets (or schematize) + the app-route showcases (out of scope);
-add a `link` node. Vetoable if the carve-out set grows. (§2.6)
+### 9.5 Guide content model — RESOLVED (design-agent + v-guide survey + v-guide-editor gates): **unify on `cadenza-ast`, with carve-outs + editorial-gate schema constraints**
+Unify; carve out the two bespoke widgets (or schematize) + the app-route showcases (out of scope).
+Schema (per v-guide-editor, §4.4): TWO link kinds (`link` slug + `app-link` route), `lede`/`why` as
+first-class heads, `p`/`note` text reachable, and `chapters.ts` codegen'd from an ORDERED manifest
+with exercises-count + non-teaching-set DERIVED from content. Vetoable if the carve-out set grows.
+(§2.6/§4.4)
 
 ### 9.6 Guide pilot chapter — RESOLVED (v-guide-infra): **`PlatformOverview`** (§4.4)
 
