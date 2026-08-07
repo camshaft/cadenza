@@ -203,12 +203,15 @@ export function renderChapter(model: ChapterModel): string {
   if (model.lede) usedProse.add("Lede");
   for (const b of model.blocks) usedProse.add(PROSE_TAGS[b.kind]);
 
-  // Does any inline anywhere use a chapter link / app link? Those import from react-router-dom / ExampleApps
-  // helpers — detected by walking the model so we import ONLY what's used (tsc noUnusedLocals).
+  // Walk every inline to learn what to import: an inline `(c …)` renders <C> (a Prose import, tracked in
+  // usedProse just like the block tags — else a chapter using inline code emits <C> with no import and fails
+  // tsc's noUnusedLocals/undefined-name check); a chapter link / app link renders <Link> (react-router-dom).
+  // Recurse into `em` since any inline can nest. We import ONLY what's actually used.
   const flags = { link: false, appLink: false };
   const scan = (ins: Inline[]) => {
     for (const i of ins) {
-      if (i.kind === "link") flags.link = true;
+      if (i.kind === "code") usedProse.add("C");
+      else if (i.kind === "link") flags.link = true;
       else if (i.kind === "app-link") flags.appLink = true;
       else if (i.kind === "em") scan(i.children);
     }
@@ -218,7 +221,7 @@ export function renderChapter(model: ChapterModel): string {
 
   const proseImport = `import { ${[...usedProse].sort().join(", ")} } from "../../components/Prose.tsx";`;
   const lines: string[] = [
-    "// @generated DO NOT EDIT — regenerated from the chapter's .sexp by scripts/codegen-chapters.mjs.",
+    "// @generated DO NOT EDIT — rendered from the chapter's .sexp by the guide sexp→TSX codegen (chapterModel.ts).",
     proseImport,
   ];
   if (flags.link || flags.appLink) lines.push(`import { Link } from "react-router-dom";`);
@@ -255,12 +258,16 @@ function renderInline(i: Inline): string {
   }
 }
 
-/// Escape text for a JSX text node. `{`/`}` and `<`/`>` are the JSX-significant characters; wrap runs
-/// containing them in a `{"…"}` string expression so they render literally. The common case (plain prose)
-/// passes through untouched, and LEADING SPACES are preserved (v-guide's (br)-indent requirement — JSX text
-/// keeps leading spaces inside an element; a `{" "}` is only needed at a line boundary the renderer controls).
+/// Escape text for a JSX text node. Wrap a run in a `{"…"}` string expression — so it renders literally —
+/// when it contains either (a) a JSX-significant character `{`/`}`/`<`/`>`, or (b) whitespace JSX would
+/// COLLAPSE: a run of 2+ consecutive spaces, or a tab/newline. Case (b) is v-guide's (br)-indent requirement
+/// made robust: JSX collapses any whitespace run to a single space, so a pseudocode line like
+/// `"  run S's reducer"` after a `<br />` would lose its two-space indent as bare text. Wrapping it as
+/// `{"  run …"}` preserves the exact spaces regardless of the renderer's line layout. A single boundary
+/// space between words/inline elements (`"run "` before `<C>`) is same-line-safe in JSX, so the common case
+/// still passes through untouched — only genuine indentation/multi-space formatting is wrapped.
 function escapeText(text: string): string {
-  if (/[{}<>]/.test(text)) return `{${JSON.stringify(text)}}`;
+  if (/[{}<>]/.test(text) || /\s\s|[\t\n]/.test(text)) return `{${JSON.stringify(text)}}`;
   return text;
 }
 

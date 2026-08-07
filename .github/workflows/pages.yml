@@ -84,6 +84,7 @@ jobs:
           VITE_BASE: /${{ github.event.repository.name }}/
         run: |
           npm ci
+          npm run check:codegen
           npm run check:examples
           npm run check:calculator
           npm run build

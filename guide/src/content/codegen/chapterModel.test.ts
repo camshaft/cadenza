@@ -124,6 +124,15 @@ test("render imports Link only when a link/app-link is present", () => {
   assert.match(withLink, /import \{ Link \} from "react-router-dom";/);
 });
 
+test("render imports C when inline code is used (else <C> is undefined — tsc noUnusedLocals/undefined bug)", () => {
+  const withCode = renderChapter(parseOk(`(chapter (slug "x") (title "X") (p "run " (c "map")))`));
+  assert.match(withCode, /import \{ C, H1, P \} from "\.\.\/\.\.\/components\/Prose\.tsx";/); // C present + sorted
+  assert.match(withCode, /<C>map<\/C>/);
+  // and NOT imported when no inline code is present
+  const noCode = renderChapter(parseOk(`(chapter (slug "x") (title "X") (p "plain"))`));
+  assert.doesNotMatch(noCode, /\bC\b,|\bC\b }/);
+});
+
 test("determinism: the same model renders byte-identically", () => {
   const src = `(chapter (slug "x") (title "X") (lede "i") (h2 "h") (p "p " (em "e") " " (c "code")) (note "n" (br) "  x"))`;
   const a = renderChapter(parseOk(src));
