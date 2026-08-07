@@ -221,6 +221,25 @@ pub trait SessionFactory {
             "this SessionFactory does not support lifecycle/spawn (reducer {reducer_hash})"
         ))
     }
+
+    /// Rebuild a [`HostedSession`] from an ALREADY-RECOVERED kernel [`Session`] (§lifecycle I4b boot-recovery)
+    /// — the recovery counterpart to [`build`](Self::build). Where `build` mints a fresh session from an
+    /// [`InstallSpec`], this wraps the `Session` that
+    /// [`Session::recover_from`](cdz_kernel::kernel::Session::recover_from) rebuilt from a durable log: reload
+    /// the reducer (by the hash in the recovered session's own genesis event) + a fresh executor set, then
+    /// [`HostedSession::from_recovered`](crate::HostedSession::from_recovered) wraps them. The boot-recovery
+    /// loop calls this per durably-logged session (enumerated via the session registry), so it must be
+    /// reachable through the boxed [`SessionFactory`] the daemon holds.
+    ///
+    /// DEFAULT: not supported — a factory that only serves admin installs (or a test stub) returns an error,
+    /// so boot-recovery against it declines cleanly rather than the trait forcing every impl to grow a
+    /// recovery path. The real [`ComponentSessionFactory`](crate::ComponentSessionFactory) overrides.
+    async fn build_recovered(
+        &mut self,
+        _session: cdz_kernel::kernel::Session,
+    ) -> Result<HostedSession, String> {
+        Err("this SessionFactory does not support boot-recovery (build_recovered)".to_string())
+    }
 }
 
 impl AgentHost {
