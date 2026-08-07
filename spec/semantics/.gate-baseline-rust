@@ -6282,3 +6282,8 @@ pass	ed4 one shared performing helper called under TWO different live handlers �
 pass	sb1 an op ARG drawn at a shadow boundary — both the arg draw and the consuming dispatch home to the INNER handler
 pass	sb3 the op ARG draws from effect B while the dispatch homes to effect A — two paired dispatches, both states advance
 pass	sb4 the innermost seed is a COMPOSITE of two effects' dispatches — B's draw feeds A's add, the result seeds a fresh B shadow
+pass	lf1 a recursive index-walk over a DRAW-BUILT list, scaled by an earlier draw — the walk itself is pure
+pass	lf2 a PERFORMING recursive walk — each element visit draws, pairing element order with state order
+pass	lf3 the arm pushes TWO elements per dispatch (both lengths read from the PRE-push list) — the third draw reads length 5
+pass	lf4 a per-element dispatch comparing each element against the RISING state — amplify-or-pass per visit
+pass	lf5 TWO lists walked in LOCKSTEP with a per-pair 2-arg dispatch — length-guarded via projection helpers
