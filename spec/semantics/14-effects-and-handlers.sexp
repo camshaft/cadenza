@@ -14237,3 +14237,47 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 23 Int64))
   (call   main (: 3 Int64)) (output (: 15 Int64)))
+
+;; ── SAME-effect performs as op ARGUMENTS (breaker pa) ────────────────────────────────────────────
+;; The delegated-effect-as-argument pin covers a HOST effect feeding an intra-program op; these pin
+;; the same-effect face: an op's argument is itself a perform against the SAME handler, so the arg
+;; dispatch advances the very state the outer dispatch's arm reads. pa1 = one draw feeding a
+;; stateful scale. pa2 = TWO draws as the two arguments of one 2-ary op — pins left-to-right
+;; argument evaluation and that the arm sees the post-args state. pa3 = a THREE-deep nested
+;; arg-feed scale(scale(next)) where scale itself advances state per dispatch.
+
+(case "pa1 a SAME-effect perform as another op's ARGUMENT — the arg dispatch advances the state the outer dispatch reads"
+  (input  (do
+            (effect St (op next (-> Int64)) (op scale (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (+ s 1)))
+                 (scale (v) s (resume (* v s) s)))
+                (+ (St.scale (St.next)) (St.next))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 36 Int64))
+  (call   main (: 3 Int64)) (output (: 16 Int64)))
+
+(case "pa2 TWO same-effect draws as the TWO arguments of one op — left-to-right arg order, the arm reads the post-args state"
+  (input  (do
+            (effect St (op next (-> Int64)) (op mix (-> Int64 Int64 Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (+ s 1)))
+                 (mix (a b) s (resume (+ (* 100 a) (+ (* 10 b) s)) s)))
+                (St.mix (St.next) (St.next))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 567 Int64))
+  (call   main (: 0 Int64)) (output (: 12 Int64)))
+
+(case "pa3 THREE-deep nested same-effect arg-feed — scale(scale(next)) with a state-advancing scale arm"
+  (input  (do
+            (effect St (op next (-> Int64)) (op scale (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (+ s 1)))
+                 (scale (v) s (resume (+ (* 10 v) s) (+ s 1))))
+                (St.scale (St.scale (St.next)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 567 Int64))
+  (call   main (: 2 Int64)) (output (: 234 Int64)))
