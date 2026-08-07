@@ -969,9 +969,23 @@ impl Session {
             // target authorize. Same "the target is what authz gated" discipline as the store name check
             // below (a stage whose program the authorizer denies can never be dispatched).
             let authz_result = match authorize_shell_pipeline(&req, authz).await {
-                // The payload decoded as a `(shell-pipeline …)` → the per-stage fan-out verdict IS the authz
-                // result (permit only if every stage's program is allowed; deny-all otherwise).
-                Some(verdict) => verdict,
+                // The payload decoded as a `(shell-pipeline …)` → require BOTH the per-stage fan-out verdict
+                // AND the single-target gate on `req.target` to pass (stages AND target, deny wins).
+                //
+                // SECURITY (reviewer HIGH on #2596): gating ONLY the stages here — dropping the `req.target`
+                // check for a pipeline payload — opened a hole while NO pipeline-executing host consumer has
+                // landed. The host `ShellExecutor` still direct-execs `req.target`; a reducer could pair a
+                // DENIED `target` with an ALLOWED one-stage pipeline payload → stages authorize → `target`
+                // ungated → the host runs the denied target. So until the host pipeline-executor lands (and
+                // ignores `target` in favor of the stages), the kernel keeps gating `target` TOO — the effect
+                // is permitted only if the target AND every stage are authorized. When the host consumer
+                // lands, this belt-and-suspenders target gate can relax (co-landed) since the host will no
+                // longer exec `target` for a pipeline. `authorize(&req)` reuses the ONE SEC-F1 seam; `and`ing
+                // the two Results short-circuits to the first denial (deny wins over either).
+                Some(stage_verdict) => match (stage_verdict, authz.authorize(&req).await) {
+                    (Ok(()), Ok(())) => Ok(()),
+                    (Err(reason), _) | (_, Err(reason)) => Err(reason),
+                },
                 // NOT a pipeline (a bare-target shell, an opaque non-pipeline payload like an M3 tool-call's
                 // raw input, a blob-ref, or any non-shell effect) → the ordinary single-target SEC-F1 gate on
                 // `req.target`. Backward-compatible: today's single-command shell + every other effect are
@@ -5029,6 +5043,7 @@ mod store_effect_tests {
 
     use crate::effect::{Capability, EffectKind, ResourcePredicate};
     use crate::event_ast::{encode_shell_pipeline, ShellPipeline, ShellStage};
+    use crate::executor::RecordingExecutor;
     use crate::hash::Hash;
 
     fn stage(program: &str, args: &[&str]) -> ShellStage {
@@ -5170,6 +5185,103 @@ mod store_effect_tests {
             authorize_shell_pipeline(&req, &authz).await,
             Some(Ok(())),
             "echo with scary-looking args is fine — the args are literal data to echo, not a second program"
+        );
+    }
+
+    // A reducer that emits ONE shell effect with a caller-chosen target + a (shell-pipeline …) payload — to
+    // drive the SEC-F1 gate's pipeline arm end-to-end (the fan-out + the target gate compose, not just the
+    // unit-level authorize_shell_pipeline).
+    struct ShellPipelineEmitReducer {
+        target: &'static str,
+        stages: Vec<ShellStage>,
+    }
+    #[async_trait::async_trait(?Send)]
+    impl Reducer for ShellPipelineEmitReducer {
+        async fn fold(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+            match &event.body {
+                EventBody::Inbound { .. } => FoldOutput::with(vec![EffectRequest::new(
+                    EffectKind::Shell,
+                    self.target,
+                    Some(Payload::Inline(
+                        encode_shell_pipeline(&ShellPipeline {
+                            stages: self.stages.clone(),
+                        })
+                        .into(),
+                    )),
+                    Timeliness::Interactive,
+                )]),
+                _ => FoldOutput::with(vec![]),
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn shell_pipeline_drive_gate_denies_a_denied_target_even_when_stages_pass() {
+        // SECURITY REGRESSION (reviewer HIGH on #2596): the drive-loop gate for a pipeline payload must gate
+        // req.target AND the stages — NOT stages only. Before the fix, a reducer could pair a DENIED target
+        // with an ALLOWED one-stage pipeline payload → stages authorize → target ungated → the host (which
+        // still direct-execs req.target) runs the denied target. Here the authorizer allows the stage program
+        // "echo" but NOT the effect target "rm" (both are shell targets; OneOf(["echo"]) admits echo, denies
+        // rm). The effect MUST be AuthzDenied (target gate fires) even though the stage fan-out would pass.
+        let authz = shell_allowlist(&["echo"]); // permits target/program "echo", denies "rm"
+        let mut exec = RecordingExecutor::new();
+        let mut s = Session::genesis(Hash::of(b"pipeline-target-gate-v1"), Hash::of(b"nonce"));
+        s.deliver(
+            inbound(),
+            None,
+            &ShellPipelineEmitReducer {
+                target: "rm",                         // DENIED target (not in the allow-list)
+                stages: vec![stage("echo", &["hi"])], // ALLOWED stage program
+            },
+            &authz,
+            &mut exec,
+        )
+        .await
+        .expect("deliver");
+        // The denied target's effect was NOT dispatched to the executor (the target gate fired)...
+        assert_eq!(
+            exec.seen.len(),
+            0,
+            "a pipeline effect whose TARGET is denied must not reach the executor, even if its stages pass"
+        );
+        // ...and it's recorded as an AuthzDenied (the gate rejected it, not silently dropped).
+        assert!(
+            s.log()
+                .iter()
+                .any(|e| matches!(e.body, EventBody::AuthzDenied { .. })),
+            "the denied-target pipeline must be AuthzDenied (target gated, not only stages)"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn shell_pipeline_drive_gate_permits_when_target_and_stages_both_pass() {
+        // The companion to the regression: when BOTH the target AND every stage are allowed, the pipeline
+        // effect is authorized + reaches the executor (the target gate doesn't over-reject a legit pipeline).
+        let authz = shell_allowlist(&["echo"]); // permits both target "echo" and stage "echo"
+        let mut exec = RecordingExecutor::new();
+        let mut s = Session::genesis(Hash::of(b"pipeline-target-gate-v2"), Hash::of(b"nonce"));
+        s.deliver(
+            inbound(),
+            None,
+            &ShellPipelineEmitReducer {
+                target: "echo",
+                stages: vec![stage("echo", &["hi"])],
+            },
+            &authz,
+            &mut exec,
+        )
+        .await
+        .expect("deliver");
+        assert_eq!(
+            exec.seen.len(),
+            1,
+            "a pipeline whose target AND stages are all allowed reaches the executor"
+        );
+        assert!(
+            !s.log()
+                .iter()
+                .any(|e| matches!(e.body, EventBody::AuthzDenied { .. })),
+            "no AuthzDenied when target + stages both pass"
         );
     }
 }
