@@ -217,6 +217,26 @@ impl ExecutorSetBuilder for LiveExecutorSet {
                 m.clone(),
             )),
         );
+        // GAP-3: wire the `fs/*` executor UNCONDITIONALLY (behind `live-fs`). Same posture as shell: WHICH
+        // paths a session may read/write is EVOLVABLE Cedar policy on the effect's resolved target (operator
+        // standing-order), so wiring the mechanism for all is safe — a session runs only the fs ops its
+        // policy permitted. The `CompositeExecutor` routes by EXACT family (not prefix), so register the
+        // FsExecutor under each fs verb (read/write/glob); it's a unit struct, so a fresh one per verb is
+        // free. Metered like the others.
+        #[cfg(feature = "live-fs")]
+        let composite = {
+            let mut c = composite;
+            for fam in [effect_ct::FS_READ, effect_ct::FS_WRITE, effect_ct::FS_GLOB] {
+                c = c.with_effect(
+                    fam,
+                    Box::new(MeteredExecutor::new(
+                        Box::new(crate::FsExecutor::new()),
+                        m.clone(),
+                    )),
+                );
+            }
+            c
+        };
         composite
     }
 }
