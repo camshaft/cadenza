@@ -57,7 +57,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@v22
       - uses: ./.github/actions/nix-store-cache
-      - name: cargo clippy shard A (via nix — rcdzc + cdz + cdz-num + cdz-calc + cadenza-syntax)
+      - name: cargo clippy shard A (via nix — rcdzc + cdz-num + cdz-calc + cadenza-syntax)
         run: nix build .#checks.x86_64-linux.clippy-shard-a --print-build-logs
 
   clippy-shard-b:
@@ -67,7 +67,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@v22
       - uses: ./.github/actions/nix-store-cache
-      - name: cargo clippy shard B (via nix — cdz-run + xtask + cadenza-ast + cdz-corpus + cdz-rt + cdz-rust-render)
+      - name: cargo clippy shard B (via nix — cdz (workspace) + cdz-run + xtask + cadenza-ast + cdz-corpus + cdz-rt + cdz-rust-render)
         run: nix build .#checks.x86_64-linux.clippy-shard-b --print-build-logs
 
   test-ubuntu:
