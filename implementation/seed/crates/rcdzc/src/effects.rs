@@ -8427,6 +8427,29 @@ fn reaches_any_perform(db: &mut Db, node: StructId) -> bool {
         if depth > 32 {
             return true; // too deep — assume it may perform (safe over-report)
         }
+        // A `let` — descend into its INIT VALUES + body EXPLICITLY (breaker tk3d). A `let`'s raw bindings
+        // sublist `((n init)…)` structurally looks like an APPLICATION `((n init))`, so the generic
+        // child-walk below would hand the bindings list to the `Apply` arm — whose `args.iter()` are the
+        // WRONG operands (it never reaches the `init` value), so a perform in a let-INIT (`(let ((out
+        // (Sink.flush))) …)`) is MISSED. That under-report made `mark_caller_observed_outstate` fail to see a
+        // let-bound perform observing a cross-fn helper's out-state → the helper was not upgraded to
+        // multi-value → its slot advance was dropped, reading the seed (tk3d: len 0 not 3, a 3-backend silent
+        // miscompile). Route the `let` (and `do`, same raw-form sublist hazard is absent but the explicit
+        // walk is uniform + cheap) through its real init/body positions so a perform anywhere in them is seen.
+        if let Some(tail) = db.ast.as_form(node, "let").map(<[_]>::to_vec)
+            && tail.len() == 2
+            && let Struct::List(pairs) = db.ast.get(tail[0]).clone()
+        {
+            for pair in pairs {
+                if let Struct::List(kv) = db.ast.get(pair).clone()
+                    && kv.len() == 2
+                    && walk(db, kv[1], depth + 1)
+                {
+                    return true;
+                }
+            }
+            return walk(db, tail[1], depth + 1);
+        }
         if let Resolved::Apply { head, args } = resolved_of(db, node) {
             // A perform of ANY effect operation — this handler's (discharged) or another's (foreign).
             if crate::eval::effect_op_of(db, head).is_some() {
