@@ -1326,7 +1326,7 @@ impl AgentHost {
 ///
 /// Hand the assembled set to [`HostedSession::genesis`] alongside a reducer + an authorizer; from then on
 /// the reducer's `Model` effects reach Bedrock and its `Http` effects reach a real client. This is the
-/// end-to-end shape of "an agent runs" (the crate's north star):
+/// end-to-end shape of "an agent runs" (the crate's primary flow):
 ///
 /// ```no_run
 /// # #[cfg(feature = "live-net")]
