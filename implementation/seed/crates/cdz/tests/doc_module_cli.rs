@@ -62,6 +62,56 @@ fn doc_module_emits_a_typed_doc_item_for_an_exported_def() {
 }
 
 #[test]
+fn doc_module_emits_a_grouped_ty_for_an_exported_type_and_effect() {
+    // The all-3-kinds sidecar (v-inference ExportedTypes, effect arm PR #2650): a doc-item for an exported
+    // `type` and `effect` each carries a structured `(ty …)`, not just `def`. This pins the two non-def
+    // kinds end-to-end (the reviewer flagged no E2E covered them, which is why the effect arm shipped dead
+    // once). The shapes are the AGREED grouped forms: a `type` resolves to its declared shape (a `(Sum …)`
+    // for a sum type); an `effect` — which has NO single type (N operations, each its own arrow) — resolves
+    // to the grouped `(ty (effect (op <name> <arrow>)…))` (one doc-item per effect, its op arrows nested).
+    // Ops are spelled as explicit arrows so both resolve deterministically (a param-style op decl may not
+    // lower to an arrow — an inference detail; the arrow form is the stable fixture).
+    let prog = "(do \
+        (type Color Red Green) \
+        (effect Log (op info (-> String Unit)) (op flush (-> Unit Int64))) \
+        (export Color Log))";
+    let (dir, file) = temp_src("type-effect", prog);
+    let (ok, out, err) = run(&["doc-module", &file, "--to", "sexpr"]);
+    assert!(ok, "cdz doc-module should succeed: {err}");
+
+    // The exported TYPE is a doc-item of kind `type` carrying a structured `(ty …)` (its sum shape).
+    assert!(
+        out.contains("(kind type)"),
+        "an exported type doc-item: {out}"
+    );
+    assert!(
+        out.contains("(name \"Color\")"),
+        "the type item's name: {out}"
+    );
+
+    // The exported EFFECT is a doc-item of kind `effect` carrying the GROUPED `(ty (effect (op …)…))` — the
+    // op arrows nested under one `(effect …)` payload, NOT per-op sub-items (one doc-item per exported name).
+    assert!(
+        out.contains("(kind effect)"),
+        "an exported effect doc-item: {out}"
+    );
+    assert!(
+        out.contains("(name \"Log\")"),
+        "the effect item's name: {out}"
+    );
+    assert!(
+        out.contains("(ty (effect"),
+        "the effect's resolved type is the grouped `(ty (effect …))` payload, not a bare arrow: {out}"
+    );
+    // Each operation is an `(op <name> <arrow>)` under the `(effect …)` — both `info` and `flush` resolve.
+    assert!(
+        out.contains("(op info") && out.contains("(op flush"),
+        "each effect operation is a nested `(op <name> <arrow>)`: {out}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn doc_module_default_output_is_canonical_binary() {
     // No --to → canonical binary (the doc index IS a binary AST); the output begins with the header.
     let prog = "(do (def (f (: x Int64)) x) (export f))";
