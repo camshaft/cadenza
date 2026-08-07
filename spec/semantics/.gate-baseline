@@ -6244,3 +6244,10 @@ pass	ic6 a draw-conditioned branch selects BETWEEN two effects — the untaken e
 pass	tr1 a TUPLE snapshot resume value — each dispatch returns (state, state*10), two snapshots differ by the stride
 pass	print renders a HUGE Ast.Int losslessly — the full 26-digit decimal, no truncation
 pass	eval of a quoted HUGE integer literal declines CDZ0201 — BigInt storage does not widen eval
+pass	dn1 a FIVE-deep same-effect shadow tower — one draw per level plus a doubled draw at the innermost
+pass	dn2b an abort under FOUR resumptive frames — the unwind abandons all four pending sums (extends the three-frame pin)
+pass	dn3 an ALTERNATING A/B/A/B tower where both effects share the op NAME next — each perform homes to its effect's innermost handler
+pass	dn4 SKIP-LEVEL performs from the innermost region — A's draws cross the B and C frames to the outermost handler twice
+pass	dn5 a tuple built INSIDE the inner region from BOTH effects' draws, destructured OUTSIDE — data crosses the region boundary
+pass	rr1 one draw consumed THREE times (squared, scaled, summed) — a single dispatch, the binder multiply-read
+pass	rr2 the SQUARE of a difference of two draws — composite arithmetic over one advancing thread, zero row included
