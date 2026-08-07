@@ -250,6 +250,21 @@ pub trait SessionFactory {
     ) -> Result<(HostedSession, cdz_kernel::kernel::RecoveryReport), String> {
         Err("this SessionFactory does not support boot-recovery (recover_and_build)".to_string())
     }
+
+    /// Fetch a content-addressed blob by hash from the factory's blob store — the seam the host LOOP uses to
+    /// resolve a `control/signature` effect's TARGET component bytes (signature-query part-1): the loop
+    /// surfaces the effect, resolves its target hash to bytes HERE, and hands them to
+    /// [`HostedSession::settle_signature_query`](crate::HostedSession::settle_signature_query) to reflect +
+    /// fold back. The factory owns the blob store (a [`HostedSession`] is blob-store-free), so the fetch lives
+    /// here. `Ok(Some(bytes))` = present, `Ok(None)` = absent (a clean miss the loop settles as an Err arm),
+    /// `Err` = a backend I/O failure.
+    ///
+    /// DEFAULT: `Ok(None)` — a factory with no blob store (a test stub) resolves every hash as absent, so the
+    /// loop settles the signature query's Err arm cleanly. The real
+    /// [`ComponentSessionFactory`](crate::ComponentSessionFactory) overrides with a real `blob.get`.
+    async fn fetch_blob(&self, _hash: &Hash) -> Result<Option<Vec<u8>>, String> {
+        Ok(None)
+    }
 }
 
 impl AgentHost {
