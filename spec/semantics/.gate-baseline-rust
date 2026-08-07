@@ -6268,3 +6268,7 @@ pass	fe3 an Int64 handler and a Float64 handler INTERLEAVED — integer ticks an
 pass	fe4 float comparisons route an integer match — the sign of the second draw picks the arm, exact identities verify inside
 pass	bs1 a BOOL toggle state — four draws alternate true/false from an input-dependent seed
 pass	bs2 a LATCH — once an op arg is false, the state stays false and every later check answers false
+pass	hr1 a HANDLE expression as a record-literal FIELD value — the region's result sits beside a pure field
+pass	hr2 a HANDLE expression as a middle LIST element — the region's result sits between pure elements
+pass	hr3 a HANDLE expression as a map-literal VALUE — the region's result is stored under a key and looked up after
+pass	hr4 a whole HANDLE region as another effect's op ARGUMENT — B's region computes the value A's dispatch consumes
