@@ -102,7 +102,8 @@ pub use blob_exec::BlobExecutor;
 pub use clock::ClockExecutor;
 pub use config::{
     AdminConfig, BlobConfig, DaemonConfig, LogConfig, MetricsTarget, NameStoreConfig,
-    ObservabilityConfig, RetryConfig, TracingConfig, TracingFormat, TracingOutput,
+    ObservabilityConfig, RetryConfig, SessionRegistryConfig, TracingConfig, TracingFormat,
+    TracingOutput,
 };
 #[cfg(feature = "live-aws-storage")]
 pub use dynamo_log::{DynamoLogSink, DynamoLogSinkBuilder};
