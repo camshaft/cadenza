@@ -222,23 +222,33 @@ pub trait SessionFactory {
         ))
     }
 
-    /// Rebuild a [`HostedSession`] from an ALREADY-RECOVERED kernel [`Session`] (§lifecycle I4b boot-recovery)
-    /// — the recovery counterpart to [`build`](Self::build). Where `build` mints a fresh session from an
-    /// [`InstallSpec`], this wraps the `Session` that
-    /// [`Session::recover_from`](cdz_kernel::kernel::Session::recover_from) rebuilt from a durable log: reload
-    /// the reducer (by the hash in the recovered session's own genesis event) + a fresh executor set, then
-    /// [`HostedSession::from_recovered`](crate::HostedSession::from_recovered) wraps them. The boot-recovery
-    /// loop calls this per durably-logged session (enumerated via the session registry), so it must be
-    /// reachable through the boxed [`SessionFactory`] the daemon holds.
+    /// Rebuild a [`HostedSession`] from a session's durably-read log for §lifecycle I4b boot-recovery — the
+    /// recovery counterpart to [`build`](Self::build). Where `build` mints a fresh session from an
+    /// [`InstallSpec`], this takes the [`Recovered`](cdz_kernel::log_store::Recovered) the daemon read back
+    /// (via [`LogSinkBuilder::recover`](crate::factory::LogSinkBuilder::recover)), reads the reducer hash from
+    /// the recovered GENESIS event (`events[0]`), reloads that reducer from the blob store, folds the log
+    /// through [`Session::recover_from`](cdz_kernel::kernel::Session::recover_from) to reconstruct the session,
+    /// and [`HostedSession::from_recovered`](crate::HostedSession::from_recovered) wraps it with a fresh
+    /// executor set. Returns the session PLUS the [`RecoveryReport`](cdz_kernel::kernel::RecoveryReport) so the
+    /// daemon can re-drive the session's `open_effects` and react to `report.is_corrupt()`.
+    ///
+    /// The reducer load is why this lives on the factory (only it holds the blob store), and why the daemon
+    /// hands it the raw `Recovered` rather than a pre-built `Session`: `recover_from` needs the reducer, which
+    /// the daemon can't materialize itself. A DENY-ALL authorizer is attached (like a spawned child): a
+    /// recovered session re-earns caps via its replayed authorizer-install or a fresh grant, not by trusting a
+    /// rebuilt-from-nothing policy. Reachable through the boxed [`SessionFactory`] the daemon holds.
     ///
     /// DEFAULT: not supported — a factory that only serves admin installs (or a test stub) returns an error,
     /// so boot-recovery against it declines cleanly rather than the trait forcing every impl to grow a
     /// recovery path. The real [`ComponentSessionFactory`](crate::ComponentSessionFactory) overrides.
-    async fn build_recovered(
+    ///
+    /// Errors (never a panic): the recovered log is empty / has no genesis at `events[0]`, the reducer bytes
+    /// are absent from the blob store, the component doesn't lift, or the replay fails.
+    async fn recover_and_build(
         &mut self,
-        _session: cdz_kernel::kernel::Session,
-    ) -> Result<HostedSession, String> {
-        Err("this SessionFactory does not support boot-recovery (build_recovered)".to_string())
+        _recovered: cdz_kernel::log_store::Recovered,
+    ) -> Result<(HostedSession, cdz_kernel::kernel::RecoveryReport), String> {
+        Err("this SessionFactory does not support boot-recovery (recover_and_build)".to_string())
     }
 }
 
