@@ -978,6 +978,12 @@ pub struct MetricSample {
     pub name: String,
     pub kind: String,
     pub value: f64,
+    /// The metric UNIT (operator Q3 round-3) — a RAW STRING vocab (`count`/`bytes`/`milliseconds`/`seconds`/
+    /// `percent`/`none`), parity with `kind`: the kernel carries it, never validates; the host maps it onto
+    /// its backend unit model (e.g. the s2n-quic-dc Registry `Unit` enum). Empty string = unspecified (the
+    /// host defaults it, e.g. Count). Encoded as an OPTIONAL `(unit <str>)` sub-form so the landed 4-field
+    /// `metric-publish` (#2545, no unit) still decodes — an absent unit reads as `""` (backward-compatible).
+    pub unit: String,
     pub labels: Vec<(String, String)>,
 }
 
@@ -990,23 +996,25 @@ pub struct MetricSample {
 /// The reducer builds it; the host `MetricExecutor` decodes it ([`decode_metric_publish`]) and records into
 /// the metrics Registry (applying its own cardinality/safety bound on the labels). Same shared-codec +
 /// total-decode discipline as the other event_ast codecs.
-pub fn encode_metric_publish(m: &MetricSample) -> Vec<u8> {
-    let mut b = Builder::new();
-    let head = b.name("metric-publish");
+/// Build one sample's `(name … kind … value … labels …)` field forms under a caller-supplied head — the
+/// shared body of both the single `(metric-publish …)` and each `(metric-sample …)` element in a batch
+/// (operator #2545 review: publish >1 metric per effect). Returns the headed list.
+fn metric_sample_form(b: &mut Builder, head_name: &'static str, m: &MetricSample) -> StructId {
+    let head = b.name(head_name);
     let name_form = {
         let h = b.name("name");
-        let v = str_leaf(&mut b, &m.name);
+        let v = str_leaf(b, &m.name);
         b.list(vec![h, v])
     };
     let kind_form = {
         let h = b.name("kind");
-        let v = str_leaf(&mut b, &m.kind);
+        let v = str_leaf(b, &m.kind);
         b.list(vec![h, v])
     };
     let value_form = {
         let h = b.name("value");
         // f64 as its 8 IEEE-754 LE bytes — exact, portable (no float leaf in the codec).
-        let v = bytes_leaf(&mut b, &m.value.to_le_bytes());
+        let v = bytes_leaf(b, &m.value.to_le_bytes());
         b.list(vec![h, v])
     };
     let labels_form = {
@@ -1016,19 +1024,49 @@ pub fn encode_metric_publish(m: &MetricSample) -> Vec<u8> {
             let lh = b.name("label");
             let key_f = {
                 let kh = b.name("key");
-                let kv = str_leaf(&mut b, k);
+                let kv = str_leaf(b, k);
                 b.list(vec![kh, kv])
             };
             let val_f = {
                 let vh = b.name("val");
-                let vv = str_leaf(&mut b, val);
+                let vv = str_leaf(b, val);
                 b.list(vec![vh, vv])
             };
             items.push(b.list(vec![lh, key_f, val_f]));
         }
         b.list(items)
     };
-    let root = b.list(vec![head, name_form, kind_form, value_form, labels_form]);
+    // UNIT (operator Q3 round-3): append an OPTIONAL `(unit <str>)` AFTER labels, ONLY when non-empty — so a
+    // unit-less sample encodes BYTE-IDENTICALLY to the landed 4-field #2545 form (no wire break); decode is
+    // arity-tolerant (4 children = no unit → "", 5 = read it).
+    let mut fields = vec![head, name_form, kind_form, value_form, labels_form];
+    if !m.unit.is_empty() {
+        let h = b.name("unit");
+        let v = str_leaf(b, &m.unit);
+        fields.push(b.list(vec![h, v]));
+    }
+    b.list(fields)
+}
+
+pub fn encode_metric_publish(m: &MetricSample) -> Vec<u8> {
+    let mut b = Builder::new();
+    let root = metric_sample_form(&mut b, "metric-publish", m);
+    codec::encode(&b.finish(root))
+}
+
+/// Encode a BATCH of metric samples as one payload (operator #2545 review — "publish more than one metric
+/// at a time in a single effect"): `(metrics-publish (metric-sample …) …)`, each element the same body as a
+/// single [`encode_metric_publish`]. Lets a reducer emit ONE `metric/publish` effect for all the metrics it
+/// records in a turn (fewer effects, one host record-batch), instead of one effect per sample. Empty batch =
+/// `(metrics-publish)`. The host `MetricExecutor` decodes via [`decode_metrics_publish`] + records each.
+pub fn encode_metrics_publish(samples: &[MetricSample]) -> Vec<u8> {
+    let mut b = Builder::new();
+    let head = b.name("metrics-publish");
+    let mut items = vec![head];
+    for m in samples {
+        items.push(metric_sample_form(&mut b, "metric-sample", m));
+    }
+    let root = b.list(items);
     codec::encode(&b.finish(root))
 }
 
@@ -1036,31 +1074,46 @@ pub fn encode_metric_publish(m: &MetricSample) -> Vec<u8> {
 /// distinguishing the two [`EventAstError`] classes: non-parseable codec bytes → [`EventAstError::Codec`];
 /// a well-formed frame with a bad head/arity / non-string field / a `value` that isn't exactly 8 bytes →
 /// [`EventAstError::Shape`]. Never a panic (the bytes ride the durable effect log / a guest reducer).
-pub fn decode_metric_publish(bytes: &[u8]) -> Result<MetricSample, EventAstError> {
-    let a = codec::decode_detailed(bytes).map_err(EventAstError::Codec)?;
-    let [name_f, kind_f, value_f, labels_f] = a
-        .as_form(a.root, "metric-publish")
-        .ok_or(shape("metric-publish head"))?
-    else {
-        return Err(shape("metric-publish arity"));
+/// Read one sample's fields from its headed form (`head_name` = `metric-publish` for a single, or
+/// `metric-sample` for a batch element) → a [`MetricSample`]. The shared body of both decoders.
+fn read_metric_sample(
+    a: &Arenas,
+    id: StructId,
+    head_name: &'static str,
+) -> Result<MetricSample, EventAstError> {
+    // Arity-tolerant (operator Q3 round-3 unit): 4 fields = the landed #2545 shape (no unit → ""), 5 = an
+    // appended optional `(unit <str>)`.
+    let fields = a
+        .as_form(id, head_name)
+        .ok_or(shape("metric-sample head"))?;
+    let (name_f, kind_f, value_f, labels_f, unit_f) = match fields {
+        [name_f, kind_f, value_f, labels_f] => (name_f, kind_f, value_f, labels_f, None),
+        [name_f, kind_f, value_f, labels_f, unit_f] => {
+            (name_f, kind_f, value_f, labels_f, Some(unit_f))
+        }
+        _ => {
+            return Err(shape(
+                "metric-sample arity (want name,kind,value,labels[,unit])",
+            ))
+        }
     };
     let name = {
         let [nv] = a.as_form(*name_f, "name").ok_or(shape("name form"))? else {
             return Err(shape("name arity"));
         };
-        read_str(&a, *nv)?
+        read_str(a, *nv)?
     };
     let kind = {
         let [kv] = a.as_form(*kind_f, "kind").ok_or(shape("kind form"))? else {
             return Err(shape("kind arity"));
         };
-        read_str(&a, *kv)?
+        read_str(a, *kv)?
     };
     let value = {
         let [vv] = a.as_form(*value_f, "value").ok_or(shape("value form"))? else {
             return Err(shape("value arity"));
         };
-        let raw = read_bytes(&a, *vv)?;
+        let raw = read_bytes(a, *vv)?;
         let arr: [u8; 8] = raw
             .as_slice()
             .try_into()
@@ -1080,16 +1133,47 @@ pub fn decode_metric_publish(bytes: &[u8]) -> Result<MetricSample, EventAstError
             let [vv] = a.as_form(*val_f, "val").ok_or(shape("val form"))? else {
                 return Err(shape("val arity"));
             };
-            out.push((read_str(&a, *kv)?, read_str(&a, *vv)?));
+            out.push((read_str(a, *kv)?, read_str(a, *vv)?));
         }
         out
+    };
+    // The optional unit form (absent = "" — the #2545 4-field shape, safe default).
+    let unit = match unit_f {
+        None => String::new(),
+        Some(uf) => {
+            let [uv] = a.as_form(*uf, "unit").ok_or(shape("unit form"))? else {
+                return Err(shape("unit arity"));
+            };
+            read_str(a, *uv)?
+        }
     };
     Ok(MetricSample {
         name,
         kind,
         value,
+        unit,
         labels,
     })
+}
+
+pub fn decode_metric_publish(bytes: &[u8]) -> Result<MetricSample, EventAstError> {
+    let a = codec::decode_detailed(bytes).map_err(EventAstError::Codec)?;
+    read_metric_sample(&a, a.root, "metric-publish")
+}
+
+/// Decode a `metrics-publish` batch frame encoded by [`encode_metrics_publish`] → the samples in order
+/// (operator #2545 review). Total, Codec-vs-Shape like the single decoder; an empty `(metrics-publish)`
+/// decodes to an empty Vec (a live-but-empty batch, distinct from a decode Err).
+pub fn decode_metrics_publish(bytes: &[u8]) -> Result<Vec<MetricSample>, EventAstError> {
+    let a = codec::decode_detailed(bytes).map_err(EventAstError::Codec)?;
+    let sample_forms = a
+        .as_form(a.root, "metrics-publish")
+        .ok_or(shape("metrics-publish head"))?;
+    let mut out = Vec::with_capacity(sample_forms.len());
+    for &sf in sample_forms {
+        out.push(read_metric_sample(&a, sf, "metric-sample")?);
+    }
+    Ok(out)
 }
 
 /// A decoded §4c store-snapshot frame — either a single-value `name-set` pointer or a group `member-op`.
@@ -2588,6 +2672,7 @@ mod tests {
             name: "agent.tool_calls".to_string(),
             kind: "counter".to_string(),
             value: 3.0,
+            unit: "count".to_string(),
             labels: vec![
                 ("tool".to_string(), "shell".to_string()),
                 ("session".to_string(), "abc".to_string()),
@@ -2602,6 +2687,7 @@ mod tests {
             name: "latency.p99".to_string(),
             kind: "gauge".to_string(),
             value: 12.3456789,
+            unit: String::new(),
             labels: vec![],
         };
         let back = decode_metric_publish(&encode_metric_publish(&gauge)).expect("round-trips");
@@ -2625,6 +2711,96 @@ mod tests {
                 Err(EventAstError::Shape(_))
             ),
             "a members frame is a Shape error (wrong head), not a metric-publish"
+        );
+    }
+
+    #[test]
+    fn metrics_publish_batch_round_trips_and_handles_empty() {
+        // operator #2545 review: publish >1 metric per effect. A batch of samples round-trips in order; each
+        // element carries the same fields as a single metric-publish (kind/value/labels).
+        let batch = vec![
+            MetricSample {
+                name: "agent.tool_calls".to_string(),
+                kind: "counter".to_string(),
+                value: 2.0,
+                unit: "count".to_string(),
+                labels: vec![("tool".to_string(), "shell".to_string())],
+            },
+            MetricSample {
+                name: "agent.latency".to_string(),
+                kind: "gauge".to_string(),
+                value: 42.5,
+                unit: "milliseconds".to_string(),
+                labels: vec![],
+            },
+        ];
+        assert_eq!(
+            decode_metrics_publish(&encode_metrics_publish(&batch)).expect("round-trips"),
+            batch
+        );
+        // An empty batch decodes to an empty Vec (a live-but-empty batch, not a decode Err).
+        assert!(decode_metrics_publish(&encode_metrics_publish(&[]))
+            .expect("empty batch round-trips")
+            .is_empty());
+        // Total Codec-vs-Shape (same discipline as the single decoder).
+        assert!(matches!(
+            decode_metrics_publish(b"not a metrics-publish frame"),
+            Err(EventAstError::Codec(_))
+        ));
+        assert!(
+            matches!(
+                decode_metrics_publish(&encode_members([&Hash::of(b"x")])),
+                Err(EventAstError::Shape(_))
+            ),
+            "a members frame is a Shape error (wrong head), not a metrics-publish batch"
+        );
+        // The single-sample codec still works (back-compat — #2545 landed it) + a single and a 1-batch carry
+        // the same sample.
+        let one = &batch[0];
+        assert_eq!(
+            decode_metric_publish(&encode_metric_publish(one)).unwrap(),
+            *one
+        );
+    }
+
+    #[test]
+    fn metric_unit_round_trips_and_empty_is_byte_identical_to_the_landed_no_unit_form() {
+        // operator Q3 round-3: the metric UNIT round-trips (single + batch), AND a unit-less sample encodes
+        // BYTE-IDENTICALLY to the landed #2545 4-field form (no wire break — the unit is an optional appended
+        // sub-form, absent = "").
+        let with_unit = MetricSample {
+            name: "req.size".to_string(),
+            kind: "gauge".to_string(),
+            value: 2048.0,
+            unit: "bytes".to_string(),
+            labels: vec![("route".to_string(), "/x".to_string())],
+        };
+        let mut no_unit = with_unit.clone();
+        no_unit.unit = String::new();
+        // Unit round-trips (single + batch).
+        assert_eq!(
+            decode_metric_publish(&encode_metric_publish(&with_unit)).unwrap(),
+            with_unit
+        );
+        assert_eq!(
+            decode_metrics_publish(&encode_metrics_publish(std::slice::from_ref(&with_unit)))
+                .unwrap(),
+            vec![with_unit.clone()]
+        );
+        // An empty unit decodes back to "" (the #2545 4-field shape's default) AND encodes to the SAME bytes
+        // a pre-unit MetricSample would (unit appended only when non-empty → no wire break for unit-less).
+        assert_eq!(
+            decode_metric_publish(&encode_metric_publish(&no_unit))
+                .unwrap()
+                .unit,
+            ""
+        );
+        // with_unit and no_unit differ ONLY by the appended unit form → their encodings differ (the unit is
+        // actually carried, not dropped).
+        assert_ne!(
+            encode_metric_publish(&with_unit),
+            encode_metric_publish(&no_unit),
+            "a non-empty unit is carried on the wire; an empty one is omitted"
         );
     }
 
