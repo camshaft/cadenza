@@ -113,8 +113,20 @@ impl DiskBlobStore {
         Ok(DiskBlobStore { root })
     }
 
+    /// The SHARDED directory a blob lives in: `root/{hex[0..2]}/{hex[2..4]}` (operator review, S3-blob PR
+    /// #2548 — "same goes for the filesystem"). Fanning the content-hash keyspace across nested dirs avoids a
+    /// single giant flat directory (filesystem perf degrades + inode/dir-entry limits bite at scale — the
+    /// standard CAS layout, cf. git's `.git/objects/{hh}/`). The blob's file basename is the REST of the hex
+    /// (`hex[4..]`). Content-addressed, so key→path derivation is the backend's private business — the
+    /// `BlobStore` trait + all callers are unaffected. A blake3 hex is 64 chars, so the two 2-char shard
+    /// segments always exist.
+    fn shard_dir(&self, hex: &str) -> PathBuf {
+        self.root.join(&hex[0..2]).join(&hex[2..4])
+    }
+
     fn path_for(&self, hash: &Hash) -> PathBuf {
-        self.root.join(hash.to_hex())
+        let hex = hash.to_hex();
+        self.shard_dir(&hex).join(&hex[4..])
     }
 }
 
@@ -139,12 +151,13 @@ impl BlobStore for DiskBlobStore {
         // and interleave into a torn write that then renames a corrupt file into place. Each put writes
         // its own temp fully, then renames — the final blob is always a complete, single writer's bytes.
         let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
-        let tmp = self.root.join(format!(
-            "{}.{}.{}.tmp",
-            hash.to_hex(),
-            std::process::id(),
-            seq
-        ));
+        // The tmp file lives in the SAME shard dir as the final path, so the rename below is intra-directory
+        // (truly atomic on every filesystem — a cross-dir rename can be non-atomic). Create the shard dir
+        // first (the sharded layout, unlike the old flat root, needs its {hh}/{hh} dirs to exist).
+        let hex = hash.to_hex();
+        let shard = self.shard_dir(&hex);
+        std::fs::create_dir_all(&shard)?;
+        let tmp = shard.join(format!("{}.{}.{}.tmp", &hex[4..], std::process::id(), seq));
         std::fs::write(&tmp, bytes)?;
         // Rename tmp → final. POSIX rename atomically REPLACES an existing target, but Windows rename
         // FAILS if the target exists — so the corrupt-rewrite path (target present but bad bytes) would
@@ -214,6 +227,40 @@ mod tests {
         p
     }
 
+    /// The SHARDED on-disk path a DiskBlobStore blob lives at: `root/{hex[0..2]}/{hex[2..4]}/{hex[4..]}`
+    /// (mirrors DiskBlobStore::path_for — tests that inspect/tamper the raw file must use the sharded layout).
+    fn sharded_path(root: &Path, hash: &Hash) -> PathBuf {
+        let hex = hash.to_hex();
+        root.join(&hex[0..2]).join(&hex[2..4]).join(&hex[4..])
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn disk_store_shards_the_content_hash_keyspace() {
+        // Operator review (PR #2548): the content-hash key/path is SHARDED {hh}/{hh}/{rest}, not flat — so a
+        // blob lands at root/{hex[0..2]}/{hex[2..4]}/{hex[4..]}, the standard CAS fan-out (no giant flat dir).
+        let dir = temp_dir("shard");
+        let mut store = DiskBlobStore::open(&dir).unwrap();
+        let h = store.put(b"sharded blob").await.unwrap();
+        let hex = h.to_hex();
+        // The blob is at the sharded path, and NOT at the old flat path.
+        assert!(
+            sharded_path(&dir, &h).is_file(),
+            "blob lives at root/{{hh}}/{{hh}}/{{rest}}"
+        );
+        assert!(
+            !dir.join(&hex).is_file(),
+            "blob is NOT at the old flat root/{{hex}} path"
+        );
+        // The two shard segments are the first two hex byte-pairs; the basename is the rest.
+        assert!(dir.join(&hex[0..2]).join(&hex[2..4]).is_dir());
+        // Round-trips through the trait (get finds it via the same sharded derivation).
+        assert_eq!(
+            store.get(&h).await.unwrap().as_deref(),
+            Some(&b"sharded blob"[..])
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     async fn round_trip<S: BlobStore>(store: &mut S) {
         let h = store.put(b"hello blob").await.unwrap();
         // The key is the content hash.
@@ -264,7 +311,7 @@ mod tests {
         let mut store = DiskBlobStore::open(&dir).unwrap();
         let h = store.put(b"genuine").await.unwrap();
         // Tamper: overwrite the blob file with different bytes under the same (now-wrong) hash name.
-        let path = dir.join(h.to_hex());
+        let path = sharded_path(&dir, &h);
         std::fs::write(&path, b"tampered").unwrap();
         let err = store.get(&h).await.unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
@@ -279,7 +326,7 @@ mod tests {
         let dir = temp_dir("heal");
         let mut store = DiskBlobStore::open(&dir).unwrap();
         let h = store.put(b"genuine").await.unwrap();
-        let path = dir.join(h.to_hex());
+        let path = sharded_path(&dir, &h);
         // Corrupt the on-disk blob (bytes no longer hash to the name).
         std::fs::write(&path, b"rotted!!").unwrap();
         // A get now refuses it (corrupt).
@@ -309,21 +356,24 @@ mod tests {
         let h1 = store.put(b"same content").await.unwrap();
         let h2 = store.put(b"same content").await.unwrap();
         assert_eq!(h1, h2);
-        // The old collision-prone temp name must not be present, and only the final blob file remains.
-        let shared_tmp = dir.join(format!("{}.tmp", h1.to_hex()));
+        // The old collision-prone temp name must not be present, and only the final blob file remains in the
+        // SHARD dir (root/{hh}/{hh}/) — the blob basename is hex[4..], no leftover temp files.
+        let hex = h1.to_hex();
+        let shard = dir.join(&hex[0..2]).join(&hex[2..4]);
+        let shared_tmp = shard.join(format!("{}.tmp", &hex[4..]));
         assert!(
             !shared_tmp.exists(),
             "the shared temp name must not be used"
         );
-        let entries: Vec<_> = std::fs::read_dir(&dir)
+        let entries: Vec<_> = std::fs::read_dir(&shard)
             .unwrap()
             .filter_map(|e| e.ok())
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .collect();
         assert_eq!(
             entries,
-            vec![h1.to_hex()],
-            "only the final blob remains — no leftover temp files"
+            vec![hex[4..].to_string()],
+            "only the final blob remains in its shard — no leftover temp files"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
