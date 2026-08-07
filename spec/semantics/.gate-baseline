@@ -6129,3 +6129,6 @@ pass	a performing record nested in a TUPLE scrutinee — bound by position, reco
 pass	za1 literal-arm dispatch on a draw — the MATCHED arm performs again, both calls exercised
 pass	za2 a COMPUTED scrutinee (difference of two draws) selects the performing arm at one input only
 pass	za3 NESTED literal-arm dispatch — each level matches a let-bound draw, the innermost arm reads a third
+pass	sh1 a NESTED handler for the SAME effect shadows the outer — inner draws hit the inner state, the draw after hits the outer
+pass	sh2d a let bound in a handle body, read by a NESTED handle's seed — declines (let-crossing scope gap)
+pass	sh2n the config-fetch idiom with its perform LET-LIFTED — declines (let-crossing scope gap)
