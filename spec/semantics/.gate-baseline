@@ -6094,3 +6094,6 @@ pass	a TWO-argument capture closure through a fold-style HOF — the capture rid
 pass	a perform-derived list SHARED by two tuples — both readers see one allocation's content
 pass	pushing onto a SHARED perform-built list — the original stays len 2 beside the grown copy
 pass	identical PURE reads of a perform-built list — safe to share, values agree
+pass	a region's RESULT seeds a second same-effect region with a DIFFERENT arm shape
+pass	a PARAMETERIZED handler helper chained through itself — the step size is a function param
+pass	the SAME op name on two DIFFERENT effects — each qualified perform routes to its own handler
