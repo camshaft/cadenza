@@ -397,6 +397,78 @@ impl HostedSession {
             .await
     }
 
+    /// Like [`deliver`](Self::deliver) but SURFACES the `control/*` effects the reducer emitted this turn
+    /// (via [`Session::deliver_control`]) so the host can answer host-surfaced control families — chiefly
+    /// `control/signature` (the composable-component-calls signature-query, part-1). The common `deliver`
+    /// path drops these; use this when the session may signature-query.
+    ///
+    /// Returns the surfaced [`ControlEffect`](cdz_kernel::effect::ControlEffect)s (usually empty). The caller
+    /// (the loop) filters for [`effect_ct::SIGNATURE`], fetches each effect's target component bytes from the
+    /// blob store (the target rides `ce.request.target` as a content-hash hex — the host holds the blob store,
+    /// this session doesn't), and calls [`settle_signature_query`](Self::settle_signature_query) to reflect +
+    /// fold the descriptor back. `control/summary` / `control/capabilities` in the returned set are handled by
+    /// their own paths (fork-scrape / kernel-inline), not here.
+    pub async fn deliver_surfacing_controls(
+        &mut self,
+        body: EventBody,
+        cause: Option<Hash>,
+    ) -> Result<Vec<cdz_kernel::effect::ControlEffect>, KernelError> {
+        self.session
+            .deliver_control(
+                body,
+                cause,
+                &*self.reducer,
+                &*self.authz,
+                &mut self.executor,
+            )
+            .await
+    }
+
+    /// Answer ONE surfaced `control/signature` effect: reflect the target component's exported signature and
+    /// FOLD the descriptor back into this session so the emitting reducer resumes with it (§signature-query
+    /// part-1, the `ControlHostSurfaced` fold-back seam `Session::settle_control_result`).
+    ///
+    /// `target_bytes` is the target component's bytes, which the CALLER fetched from the blob store by the
+    /// effect's target hash (`ce.request.target` hex) — `HostedSession` is blob-store-free, so the loop does
+    /// the async fetch + hands the bytes here. On `Some(bytes)`: reflect via the kernel's wasmtime-side
+    /// [`component_signature_from_bytes_owned`](cdz_kernel::wasm_host::component_signature_from_bytes_owned)
+    /// (the host has no wasmtime dep; this is the bytes-only kernel seam) and settle
+    /// `EffectOutcome::Ok(Some(Inline(descriptor)))`. On `None` (target blob absent) OR a reflect failure
+    /// (not a component / an undescribable type), settle a classified `EffectOutcome::err` so the reducer
+    /// folds the error arm and RESUMES cleanly rather than hanging on an open effect. Returns whether the
+    /// settle actually landed (`false` = the id was already settled / the session terminated — a benign
+    /// no-op, per `settle_control_result`).
+    pub async fn settle_signature_query(
+        &mut self,
+        ce: &cdz_kernel::effect::ControlEffect,
+        target_bytes: Option<&[u8]>,
+    ) -> bool {
+        use cdz_kernel::effect::Payload;
+        use cdz_kernel::event::EffectOutcome;
+        let outcome = match target_bytes {
+            Some(bytes) => match cdz_kernel::wasm_host::component_signature_from_bytes_owned(bytes)
+            {
+                Ok(descriptor) => EffectOutcome::Ok(Some(Payload::Inline(descriptor.into()))),
+                Err(e) => EffectOutcome::err(format!(
+                    "control/signature: could not reflect the target component's signature: {e:?}"
+                )),
+            },
+            None => EffectOutcome::err(
+                "control/signature: the target component was not found in the blob store"
+                    .to_string(),
+            ),
+        };
+        self.session
+            .settle_control_result(
+                ce.id,
+                outcome,
+                &*self.reducer,
+                &*self.authz,
+                &mut self.executor,
+            )
+            .await
+    }
+
     /// Seed the GENESIS-SETUP events into a freshly-`genesis`'d session — the host side of the bootstrap
     /// ceremony (contract with v-harness-bootstrap). Delivers, in order, a [`genesis/root`](genesis_ct::ROOT)
     /// event carrying the established trust-root identity, an optional [`genesis/authorizer`](genesis_ct::AUTHORIZER)
@@ -3523,6 +3595,127 @@ mod tests {
         assert!(
             matches!(outcome, Some(Ok(()))),
             "a share-less turn runs unchanged"
+        );
+    }
+
+    /// A signature-query agent (§signature-query part-1): on inbound, it emits a `control/signature` effect
+    /// naming a target component (by a hex hash in the effect target). When the host folds the reflected
+    /// descriptor back as the EffectResult, it records the outcome into KV — `sig-ok` + the descriptor bytes
+    /// on Ok, or `sig-err` on an Err (so a test can assert the reducer RESUMED with whichever arm).
+    struct SignatureQueryAgent {
+        target_hex: String,
+    }
+    #[async_trait::async_trait(?Send)]
+    impl Reducer for SignatureQueryAgent {
+        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+            match &event.body {
+                EventBody::Inbound { .. } => {
+                    FoldOutput::with(vec![EffectRequest::new_with_family(
+                        effect_ct::SIGNATURE,
+                        self.target_hex.clone(),
+                        None,
+                        Timeliness::Interactive,
+                    )])
+                }
+                EventBody::EffectResult { result, .. } => {
+                    match result {
+                        EffectOutcome::Ok(Some(Payload::Inline(bytes))) => {
+                            kv.put(b"sig-ok".to_vec(), bytes.to_vec());
+                        }
+                        EffectOutcome::Err { .. } => {
+                            kv.put(b"sig-err".to_vec(), b"1".to_vec());
+                        }
+                        _ => {}
+                    }
+                    FoldOutput::none()
+                }
+                _ => FoldOutput::none(),
+            }
+        }
+    }
+
+    fn signature_query_host(target_hex: &str) -> HostedSession {
+        // control/* is authz-EXEMPT (control-plane), so a deny-all authorizer still lets the signature query
+        // through — proving the introspection needs no capability grant.
+        HostedSession::genesis(
+            Hash::of(b"sigquery-agent-v1"),
+            Box::new(SignatureQueryAgent {
+                target_hex: target_hex.to_string(),
+            }),
+            Box::new(Authorizer::deny_all()),
+            CompositeExecutor::new(),
+        )
+    }
+
+    #[tokio::test]
+    async fn signature_query_surfaces_a_control_effect_the_host_can_settle() {
+        // deliver_surfacing_controls must SURFACE the reducer's control/signature effect (the common deliver
+        // drops it). Assert the surfaced set carries exactly that family, with an id (the settle key) + the
+        // target the reducer named.
+        let target = Hash::of(b"some-target-component");
+        let mut host = signature_query_host(&target.to_hex());
+        let controls = host
+            .deliver_surfacing_controls(inbound_go(), None)
+            .await
+            .expect("deliver ok");
+        let sig: Vec<_> = controls
+            .iter()
+            .filter(|ce| ce.request.content_type.matches_family(effect_ct::SIGNATURE))
+            .collect();
+        assert_eq!(sig.len(), 1, "the control/signature effect was surfaced");
+        assert_eq!(
+            sig[0].request.target.as_ref(),
+            target.to_hex(),
+            "the surfaced effect carries the reducer-named target"
+        );
+    }
+
+    #[tokio::test]
+    async fn settle_signature_query_absent_target_folds_the_err_arm_and_resumes() {
+        // The fold-back seam: a target NOT in the blob store (None) settles an Err, and the reducer RESUMES on
+        // its EffectResult-Err arm (records sig-err) rather than hanging on the open effect. Hermetic — no
+        // wasm component needed (the None path never reflects).
+        let target = Hash::of(b"missing-target");
+        let mut host = signature_query_host(&target.to_hex());
+        let controls = host
+            .deliver_surfacing_controls(inbound_go(), None)
+            .await
+            .expect("deliver ok");
+        let ce = controls
+            .into_iter()
+            .find(|ce| ce.request.content_type.matches_family(effect_ct::SIGNATURE))
+            .expect("the signature effect surfaced");
+        let settled = host.settle_signature_query(&ce, None).await;
+        assert!(settled, "an open control/signature id settles");
+        assert_eq!(
+            host.session().kv().get(b"sig-err"),
+            Some(&b"1"[..]),
+            "the reducer resumed on the Err arm (absent target → settled Err, not hung)"
+        );
+    }
+
+    #[tokio::test]
+    async fn settle_signature_query_non_component_bytes_folds_the_err_arm() {
+        // Bytes that aren't a valid component → component_signature_from_bytes_owned Errs → settle Err → the
+        // reducer resumes on its Err arm (never a panic on garbage target bytes).
+        let target = Hash::of(b"bogus-target");
+        let mut host = signature_query_host(&target.to_hex());
+        let controls = host
+            .deliver_surfacing_controls(inbound_go(), None)
+            .await
+            .expect("deliver ok");
+        let ce = controls
+            .into_iter()
+            .find(|ce| ce.request.content_type.matches_family(effect_ct::SIGNATURE))
+            .expect("the signature effect surfaced");
+        let settled = host
+            .settle_signature_query(&ce, Some(b"not a wasm component"))
+            .await;
+        assert!(settled, "the id settles even on a reflect failure");
+        assert_eq!(
+            host.session().kv().get(b"sig-err"),
+            Some(&b"1"[..]),
+            "un-reflectable target bytes settle an Err the reducer folds, not a panic"
         );
     }
 }
