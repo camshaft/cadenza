@@ -1,15 +1,6 @@
 import { H1, Lede, H2, P, C, Note } from "../../components/Prose.tsx";
 import { Why } from "../../components/Why.tsx";
-import { Link } from "react-router-dom";
-
-/// A router-aware internal link to another chapter (respects the Pages sub-path basename).
-function Ch({ to, children }: { to: string; children: React.ReactNode }) {
-  return (
-    <Link to={to} className="text-cadenza-300 underline-offset-2 hover:underline">
-      {children}
-    </Link>
-  );
-}
+import { Ch } from "../../components/ChapterLink.tsx";
 
 export default function CdzToolchain() {
   return (

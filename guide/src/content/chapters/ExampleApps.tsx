@@ -1,23 +1,5 @@
 import { H1, Lede, H2, P, C } from "../../components/Prose.tsx";
-import { Link } from "react-router-dom";
-
-/// A router-aware link to an app route (respects the Pages sub-path basename).
-function AppLink({ to, children }: { to: string; children: React.ReactNode }) {
-  return (
-    <Link to={to} className="font-medium text-cadenza-300 underline-offset-2 hover:underline">
-      {children}
-    </Link>
-  );
-}
-
-/// A router-aware internal link to another chapter.
-function Ch({ to, children }: { to: string; children: React.ReactNode }) {
-  return (
-    <Link to={to} className="text-cadenza-300 underline-offset-2 hover:underline">
-      {children}
-    </Link>
-  );
-}
+import { Ch, AppLink } from "../../components/ChapterLink.tsx";
 
 export default function ExampleApps() {
   return (

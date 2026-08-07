@@ -1,15 +1,6 @@
 import { H1, Lede, H2, P, C } from "../../components/Prose.tsx";
 import { Runnable } from "../../components/Runnable.tsx";
-import { Link } from "react-router-dom";
-
-/// A small internal link that respects the router basename (works under a Pages sub-path).
-function Ch({ to, children }: { to: string; children: React.ReactNode }) {
-  return (
-    <Link to={to} className="text-cadenza-300 underline-offset-2 hover:underline">
-      {children}
-    </Link>
-  );
-}
+import { Ch } from "../../components/ChapterLink.tsx";
 
 export default function WhatsNext() {
   return (

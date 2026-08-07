@@ -1,30 +1,15 @@
 import { H1, Lede, H2, P, C, Note } from "../../components/Prose.tsx";
-import { Link } from "react-router-dom";
+import { Ch, AppLink } from "../../components/ChapterLink.tsx";
+import type { ReactNode } from "react";
 
-/// A router-aware link that respects the Pages sub-path basename.
-function PlaygroundLink({ children }: { children: React.ReactNode }) {
-  return (
-    <Link to="/playground" className="font-medium text-cadenza-300 underline-offset-2 hover:underline">
-      {children}
-    </Link>
-  );
+/// Fixed-route app links to the two full-screen apps this chapter points at — thin wrappers over the shared
+/// AppLink so the (heavier) app-route styling lives in one place (components/ChapterLink).
+function PlaygroundLink({ children }: { children: ReactNode }) {
+  return <AppLink to="/playground">{children}</AppLink>;
 }
 
-function CalculatorLink({ children }: { children: React.ReactNode }) {
-  return (
-    <Link to="/calculator" className="font-medium text-cadenza-300 underline-offset-2 hover:underline">
-      {children}
-    </Link>
-  );
-}
-
-/// A router-aware internal link to another chapter (respects the Pages sub-path basename).
-function Ch({ to, children }: { to: string; children: React.ReactNode }) {
-  return (
-    <Link to={to} className="text-cadenza-300 underline-offset-2 hover:underline">
-      {children}
-    </Link>
-  );
+function CalculatorLink({ children }: { children: ReactNode }) {
+  return <AppLink to="/calculator">{children}</AppLink>;
 }
 
 export default function Playground() {

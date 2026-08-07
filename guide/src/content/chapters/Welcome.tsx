@@ -2,17 +2,7 @@ import { H1, Lede, H2, P, C, Note } from "../../components/Prose.tsx";
 import { Runnable } from "../../components/Runnable.tsx";
 import { StatusLegend } from "../../components/StatusIcon.tsx";
 import { Why } from "../../components/Why.tsx";
-import { Link } from "react-router-dom";
-
-/// A small internal link that respects the router basename (works under a Pages sub-path). Mirrors the
-/// same inline helper used by the other chapters (WhatsNext / ExampleApps).
-function Ch({ to, children }: { to: string; children: React.ReactNode }) {
-  return (
-    <Link to={to} className="text-cadenza-300 underline-offset-2 hover:underline">
-      {children}
-    </Link>
-  );
-}
+import { Ch } from "../../components/ChapterLink.tsx";
 
 export default function Welcome() {
   return (
