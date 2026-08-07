@@ -6183,3 +6183,15 @@ pass	se3 a DRAIN-style arm removes on hit — the second take of the same key ro
 pass	bc1 short-circuit AND over two draws — the false-first row skips the second draw, observed by the branch draw
 pass	bc2 short-circuit OR over two draws — the true-first row skips the second draw
 pass	bc3 a nested and-of-or short-circuit tree over draws — each row exercises a distinct skip pattern
+pass	da1 THREE draws inside one list literal passed to a helper — left-to-right element order, the post-call draw sees all three
+pass	da2 draws as MAP-literal keys and values — two entries built from three sequential draws
+pass	da3 draws as SET-literal elements — n=7 collides the first draw with the fixed element, n=6 collides the second
+pass	sa1 STRING op arguments measured into a scalar state — the empty string is a real zero-length argument
+pass	sa2 a string BUILT from a prior draw's branch becomes the next op's argument — the tag arm reads the post-pick state
+pass	sa3 STRING resume values — the arm builds a rope per dispatch branching op-arg vs live state, body concatenates two
+pass	rs1 a RECORD state where each op owns a FIELD — bump advances a, scale multiplies b, interleaved
+pass	rs2 the arm updates the record state via Record.with — field b is held by the functional update across dispatches
+pass	rs3 a NESTED record state — the arm functionally updates the inner record's x by y and bumps the outer counter
+pass	mx1 a THREE-arg op mixing Int64/String/Bool — one arm consumes all three kinds beside the live state
+pass	mx2 mixed-arg op with BOTH args draw-derived — the int arg is a draw, the string arg branches on a second draw
+pass	mx3 a TUPLE-arg op chained through a tuple RESULT — the second dispatch consumes the first's destructured output
