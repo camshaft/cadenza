@@ -169,6 +169,25 @@ export { Color, Log }";
 }
 
 #[test]
+fn a_def_nested_inside_another_form_is_not_a_top_level_doc_item() {
+    // The selection is a QUERY over the whole program, but a doc-item is a TOP-LEVEL public item —
+    // a `def` nested inside another form's body (here a `def` bound inside `outer`'s body via a `do`)
+    // must NOT surface as a module item, even though the query matches it structurally. This pins the
+    // top-level scope filter that distinguishes "module's public surface" from "any def anywhere".
+    let src = "\
+def outer(x) = (do (def inner(y) = y) (inner x))
+export { outer }";
+    let doc = doc_item::project(&program(src), "m");
+    let items = doc_items(&doc);
+    let names: Vec<_> = items.iter().filter_map(|&i| item_name(&doc, i)).collect();
+    assert_eq!(
+        names,
+        vec!["outer"],
+        "only the top-level exported `outer` is a doc-item; the nested `inner` def is not"
+    );
+}
+
+#[test]
 fn the_projected_doc_ast_round_trips_through_the_codec_byte_identically() {
     // THE GATE (design §7.2): a doc-module is ordinary cdzast — encode → \x00\x01 → decode is
     // structurally identical, and re-encoding the decoded arena is BYTE-identical (the bijection).
