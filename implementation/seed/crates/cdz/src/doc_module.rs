@@ -23,12 +23,8 @@
 //! `(ty …)` payload subtree. An export whose type does not resolve is OMITTED from the blob (so a
 //! `doc-item` whose name is absent from the map simply gets no `(ty …)` — the graceful-degrade rule).
 
-// The `cdz doc-module` HANDLER that calls these (drive `run_sidecar(Query::ExportedTypes)` → feed the
-// blob to `parse_export_types` → `merge_types`) is wired in a follow-up once v-inference's
-// `rcdzc::sidecar::Query::ExportedTypes` + `KIND_EXPORT_TYPES` land on trunk (queued as b6cb71019).
-// Until then this merge half is dead-but-tested (its `#[cfg(test)]` suite exercises the full
-// parse+graft against a synthetic blob); the allow is removed when the handler makes it live.
-#![allow(dead_code)]
+// The `cdz doc-module` handler (`run_doc_module` in main.rs) drives `run_sidecar(Query::ExportedTypes)`
+// → `parse_export_types` → `doc_item::project` → `merge_types` — so these are live.
 
 use cadenza_syntax::ast::{Arenas, Builder, Struct, StructId};
 use std::collections::BTreeMap;
