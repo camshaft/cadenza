@@ -87,7 +87,7 @@ pub use async_host::{AdminChannel, AdminRequest, AsyncAgentHost, Inbound, Inbox}
 pub use clock::ClockExecutor;
 pub use config::{
     AdminConfig, BlobConfig, DaemonConfig, LogConfig, MetricsTarget, ObservabilityConfig,
-    RetryConfig, TracingConfig, TracingFormat, TracingOutput,
+    RetryConfig, ShellConfig, TracingConfig, TracingFormat, TracingOutput,
 };
 pub use emit::EmitExecutor;
 #[cfg(feature = "metrics-export-prometheus")]

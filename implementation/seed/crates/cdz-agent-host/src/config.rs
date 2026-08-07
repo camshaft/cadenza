@@ -47,6 +47,29 @@ pub struct DaemonConfig {
     /// this section always parses ahead of that (config first, subscriber follows — like `[observability]`).
     #[serde(default)]
     pub tracing: TracingConfig,
+    /// The SHELL command policy (GAP-2, self-hosting harness): the deny-by-default program allow-list a
+    /// session's [`ShellExecutor`](crate::ShellExecutor) may run. Defaults to an EMPTY allow-list — no
+    /// command may run (an unconfigured daemon serves no `shell` effect at all). The executor itself is
+    /// behind the `live-exec` cargo feature; this section always parses (config first, executor wiring
+    /// gated), so a config-path smoke test needs no feature.
+    #[serde(default)]
+    pub shell: ShellConfig,
+}
+
+/// The shell command policy — the deny-by-default program ALLOW-LIST (GAP-2). `allowed_programs` is the set
+/// of program BASENAMES an installed session may run (e.g. `["cargo", "git", "gh"]`); EMPTY (the default)
+/// means no `shell` effect is served — a session can't run commands. This is host-side defense-in-depth ON
+/// TOP of the kernel's Cedar `shell`-family capability gate (SEC-F1): Cedar decides policy, the allow-list is
+/// a hard structural cap on WHICH programs regardless of an over-broad grant. The daemon threads this into
+/// [`LiveExecutorSet::with_shell_allowlist`](crate::factory::LiveExecutorSet) at boot when built with
+/// `live-exec`.
+#[derive(Debug, Clone, Deserialize, PartialEq, Default)]
+#[serde(deny_unknown_fields)]
+pub struct ShellConfig {
+    /// The program basenames a session may run (deny-by-default: empty = none). Matched on the program's
+    /// basename, so an absolute path (`/usr/bin/git`) matches an allow-listed bare name (`git`).
+    #[serde(default)]
+    pub allowed_programs: Vec<String>,
 }
 
 /// The durable-log backend — config-SELECTABLE (the operator's "selectable backends"): `memory` for dev,
@@ -1167,5 +1190,44 @@ mod tests {
         .expect("disabled tracing skips filter validation");
         assert!(!cfg.tracing.enabled);
         assert_eq!(cfg.tracing.filter, "");
+    }
+
+    #[test]
+    fn shell_allowlist_defaults_empty_and_parses_a_configured_list() {
+        // GAP-2 deny-by-default: no [shell] section → empty allow-list (the daemon serves no `shell` effect).
+        let cfg = DaemonConfig::from_toml_str("").expect("empty config valid");
+        assert!(
+            cfg.shell.allowed_programs.is_empty(),
+            "shell allow-list defaults to empty (deny-by-default)"
+        );
+        // A configured allow-list parses into the program basenames a session may run.
+        let cfg = DaemonConfig::from_toml_str(
+            r#"
+            [shell]
+            allowed_programs = ["cargo", "git", "gh"]
+            "#,
+        )
+        .expect("a [shell] allow-list parses");
+        assert_eq!(
+            cfg.shell.allowed_programs,
+            vec!["cargo".to_string(), "git".to_string(), "gh".to_string()],
+            "the configured programs parse in order"
+        );
+    }
+
+    #[test]
+    fn shell_section_rejects_an_unknown_key() {
+        // deny_unknown_fields on ShellConfig: a typo'd key is a loud error, not a silently-dropped policy.
+        let err = DaemonConfig::from_toml_str(
+            r#"
+            [shell]
+            allowed_program = ["git"]
+            "#,
+        )
+        .unwrap_err();
+        assert!(
+            err.0.contains("allowed_program"),
+            "the unknown [shell] key is named in the error: {err}"
+        );
     }
 }

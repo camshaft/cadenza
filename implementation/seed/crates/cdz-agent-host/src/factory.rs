@@ -144,6 +144,15 @@ pub struct LiveExecutorSet {
     /// a [`MeteredExecutor`] sharing a CLONE of this `Arc`, so all sessions' effect outcomes aggregate into
     /// one daemon-wide set the exporter reports over.
     metrics: Arc<EffectMetrics>,
+    /// The DENY-BY-DEFAULT shell program allow-list (GAP-2): the program basenames a session's
+    /// [`ShellExecutor`](crate::ShellExecutor) may run (e.g. `["cargo", "git", "gh"]`). EMPTY (the default)
+    /// = no `shell` effect is served at all (the executor isn't even wired — see `build`), so the hermetic /
+    /// unconfigured daemon serves no commands. Populated from config via
+    /// [`with_shell_allowlist`](Self::with_shell_allowlist). Behind `live-exec`: the whole shell path only
+    /// compiles when the daemon opts into command execution. This is host-side defense-in-depth ON TOP of the
+    /// kernel's Cedar `shell`-family gate.
+    #[cfg(feature = "live-exec")]
+    shell_allowed: Vec<String>,
 }
 
 #[cfg(feature = "live-net")]
@@ -161,6 +170,8 @@ impl LiveExecutorSet {
             http,
             model,
             metrics: Arc::new(EffectMetrics::new(registry)),
+            #[cfg(feature = "live-exec")]
+            shell_allowed: Vec::new(),
         })
     }
 
@@ -168,6 +179,21 @@ impl LiveExecutorSet {
     /// observes every session's dispatches. (Held so the wrap in `build` shares one `Arc`.)
     pub fn metrics(&self) -> Arc<EffectMetrics> {
         self.metrics.clone()
+    }
+
+    /// Configure the DENY-BY-DEFAULT shell program allow-list (GAP-2): the program basenames every installed
+    /// session's [`ShellExecutor`](crate::ShellExecutor) may run. Called ONCE at daemon boot from the parsed
+    /// config. An EMPTY list (the default) means [`build`](ExecutorSetBuilder::build) does NOT wire a
+    /// `ShellExecutor` at all — the daemon serves no `shell` effect, so an unconfigured daemon can't run
+    /// commands (fail-safe). A non-empty list wires a shell executor scoped to exactly those programs.
+    /// Behind `live-exec` (the whole command-execution path is feature-gated).
+    #[cfg(feature = "live-exec")]
+    pub fn with_shell_allowlist(
+        mut self,
+        allowed: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        self.shell_allowed = allowed.into_iter().map(Into::into).collect();
+        self
     }
 }
 
@@ -181,7 +207,7 @@ impl ExecutorSetBuilder for LiveExecutorSet {
         // every session's ok/retryable/permanent/timed-out outcomes tally into one daemon-wide set. No
         // network / IMDS work here, so it never stalls the loop.
         let m = &self.metrics;
-        CompositeExecutor::new()
+        let composite = CompositeExecutor::new()
             .with_effect(
                 effect_ct::NOW,
                 Box::new(MeteredExecutor::new(
@@ -202,7 +228,24 @@ impl ExecutorSetBuilder for LiveExecutorSet {
                     Box::new(crate::ModelExecutor::new(self.model.clone())),
                     m.clone(),
                 )),
+            );
+        // GAP-2: wire the ShellExecutor ONLY when a non-empty allow-list is configured (deny-by-default — an
+        // unconfigured daemon serves no `shell` effect at all, so a session can't run commands). The executor
+        // is scoped to exactly the configured program basenames; it sits behind the kernel's Cedar
+        // `shell`-family gate (two independent authz layers). Metered like the others.
+        #[cfg(feature = "live-exec")]
+        let composite = if self.shell_allowed.is_empty() {
+            composite
+        } else {
+            composite.with_effect(
+                effect_ct::SHELL,
+                Box::new(MeteredExecutor::new(
+                    Box::new(crate::ShellExecutor::new(self.shell_allowed.clone())),
+                    m.clone(),
+                )),
             )
+        };
+        composite
     }
 }
 

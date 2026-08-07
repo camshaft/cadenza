@@ -184,6 +184,11 @@ async fn main() -> std::process::ExitCode {
                 return std::process::ExitCode::from(1);
             }
         };
+        // GAP-2: apply the configured shell program allow-list (deny-by-default — an empty list serves no
+        // `shell` effect). Behind `live-exec`: only a daemon built with command-execution reads this.
+        #[cfg(feature = "live-exec")]
+        let executors =
+            executors.with_shell_allowlist(config.shell.allowed_programs.iter().cloned());
         // Attach the optional log-sink builder to whichever blob-backed factory we build, then box it. (The
         // two arms are distinct concrete factory types, so the with_log_sink + Box happens per-arm; the
         // executor set is moved into the one arm that runs.)
