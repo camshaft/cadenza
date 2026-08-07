@@ -2323,7 +2323,7 @@ fn closure_boundary_reject(role: &str, ty: &crate::ty::Ty) -> Reject {
 /// value-heap ops), because a closure's `call` boundary is a plain component functype — it needs only the
 /// component primitive byte + the core valtype (from `valtype_of`), neither tied to the runtime-op set.
 ///
-/// ⚠ Restricted to genuine SCALARS: `comp_valtype_of` ALSO returns a byte for a `Tuple` (the u32 HANDLE it
+/// WARNING: Restricted to genuine SCALARS: `comp_valtype_of` ALSO returns a byte for a `Tuple` (the u32 HANDLE it
 /// is threaded as BETWEEN in-program functions) and for a `Nominal`-over-compound, but those are opaque
 /// runtime handles, NOT values the host can construct or read across the `call` boundary — a closure with a
 /// COMPOUND arg/result must decline (that widening is a separate later increment). So this accepts only

@@ -117,6 +117,12 @@ enum Cmd {
     /// (`target/xtask-logs/`); the console shows one ✓ per step, and the first failing step prints
     /// the whole log + its path.
     Check,
+    /// Emoji-ban lint, standalone (operator directive): fail if any emoji/pictographic/dingbat char
+    /// appears in an `implementation/**/*.rs` source COMMENT. This is the same `emoji_free_lint` the
+    /// omnibus `check` runs, exposed as its own fast subcommand so CI can gate it as an isolated
+    /// advisory job (no full build). Comment-scoped + Unicode-test-doc-excluded, so functional emoji in
+    /// string/char literals (the language's own lex/parse/print fixtures) are correctly left alone.
+    LintEmoji,
     /// Round-trip every corpus program through the syntax surfaces: `sexpr` must reproduce the exact
     /// binary AST; `ml` (the long-term syntax, allowed to canonicalize once) must round-trip to a
     /// FIXED POINT (`ml(ml(x)) == ml(x)`). Guards `cadenza-syntax` independently of the compiler.
@@ -258,6 +264,13 @@ fn main() {
             }
         }
         Cmd::Check => check(&paths, profile),
+        Cmd::LintEmoji => match emoji_free_lint(&paths) {
+            Ok(()) => println!("lint-emoji: ok — no emoji in source comments"),
+            Err(msg) => {
+                eprintln!("lint-emoji: {msg}");
+                std::process::exit(1);
+            }
+        },
         Cmd::Roundtrip { files } => roundtrip(&paths, profile, files),
         Cmd::Fmt { files, to, check } => fmt(&paths, profile, files, &to, check),
         Cmd::Emit { file, from, out } => emit(&paths, profile, &file, &from, out),
@@ -5251,22 +5264,36 @@ fn line_is_comment(line: &str) -> bool {
     t.starts_with("///") || t.starts_with("//!") || t.starts_with("//") || t.starts_with('*')
 }
 
-/// True if a comment line legitimately REFERENCES a character as the subject of Unicode-handling test
-/// documentation (e.g. "surrogate PAIR U+1F600", "a😀b scalar 1", "multibyte: é (2 bytes)"). Such a
-/// comment names the emoji ON PURPOSE to document what byte/scalar a test exercises — stripping it would
-/// break the comment's meaning, and the operator explicitly excludes deliberate-Unicode test data. Keyed
-/// on the vocabulary those comments use; deliberately conservative (an over-match only spares a comment).
+/// True if a comment line legitimately DOCUMENTS a character as the subject of Unicode-handling test
+/// data (e.g. "surrogate PAIR U+1F600 😀", `"😀" = 4 bytes`) — stripping the emoji there would break the
+/// comment's meaning, and the operator excludes deliberate-Unicode test data. The distinction that
+/// matters is whether the emoji is the SUBJECT (documented test data) vs a decorative MARKER: a marker
+/// (⚠/⚡ opening a warning) is banned even on a comment that happens to say "byte"/"scalar" in prose (a
+/// compiler discusses byte-lengths + scalars constantly). So exclude ONLY on a STRONG codepoint signal
+/// (`U+…`, surrogate/astral/codepoint) OR when an emoji appears INSIDE a quoted `"…"` string in the
+/// comment (the emoji quoted AS the datum under test). Bare "byte"/"scalar" no longer excludes — that
+/// over-match was letting decorative ⚠ markers through (v-agent-harness caught component_store.rs:80).
 fn is_unicode_test_doc(line: &str) -> bool {
-    let l = line;
-    l.contains("U+")
-        || l.contains("scalar")
-        || l.contains("byte")
-        || l.contains("surrogate")
-        || l.contains("multibyte")
-        || l.contains("astral")
-        || l.contains("codepoint")
-        || l.contains("UTF-8")
-        || l.contains("\\u")
+    let strong = line.contains("U+")
+        || line.contains("surrogate")
+        || line.contains("astral")
+        || line.contains("codepoint");
+    strong || emoji_inside_a_quote(line)
+}
+
+/// True if any emoji char appears inside a double-quoted `"…"` substring of `line` — i.e. the emoji is
+/// quoted as a literal datum (a Unicode test string the comment documents, like `"😀" = 4 bytes`), not a
+/// bare decorative marker. A simple quote-state scan; pure + unit-tested.
+fn emoji_inside_a_quote(line: &str) -> bool {
+    let mut in_quote = false;
+    for c in line.chars() {
+        if c == '"' {
+            in_quote = !in_quote;
+        } else if in_quote && is_emoji_char(c) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Every (1-based line, emoji char) an emoji-ban lint would FLAG in `text`: emoji chars that appear in a
@@ -6833,9 +6860,18 @@ mod trap_grading_tests {
         assert!(banned_emoji_hits("let s = \"👍\".repeat(3);\n").is_empty());
         assert!(banned_emoji_hits("let mark = if act { \"⚑\" } else { \".\" };\n").is_empty());
 
-        // NOT flagged: a COMMENT that documents Unicode test data (names the emoji as the test subject).
+        // NOT flagged: a COMMENT that documents Unicode test data — via a STRONG codepoint signal...
         assert!(banned_emoji_hits("// surrogate PAIR U+1F600 😀 is a 4-byte scalar\n").is_empty());
         assert!(banned_emoji_hits("// a😀b: scalar 1 = U+1F600\n").is_empty());
+        // ...OR the emoji QUOTED as the datum under test (no U+ needed, e.g. `"😀" = 4 bytes`).
+        assert!(banned_emoji_hits("// `\"😀\"` = 4 (four bytes vs one scalar)\n").is_empty());
+
+        // BUT a DECORATIVE marker is flagged even on a comment that says byte/scalar in prose — the
+        // over-broad bare-"byte" exclusion was letting these through (v-agent-harness, component_store).
+        assert_eq!(
+            banned_emoji_hits("/// ⚠ the 32-byte SHA-256 address — a scalar walk\n"),
+            vec![(1, '⚠')]
+        );
     }
 
     #[test]

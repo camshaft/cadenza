@@ -51871,7 +51871,7 @@ mod match_engine {
     #[test]
     fn a_br_table_match_in_non_tail_position_yields_into_the_enclosing_expression() {
         use wasmtime::component::Val;
-        // ⚠ REGRESSION (silent WRONG VALUE, valid wasm): a ≥4-arm scalar match (a `br_table` jump-table
+        // WARNING: REGRESSION (silent WRONG VALUE, valid wasm): a ≥4-arm scalar match (a `br_table` jump-table
         // lowering) consumed in NON-TAIL position escaped to the FUNCTION result — each arm branched ONE
         // BLOCK PAST the match's `$join` (depth `n_arms - k + 1` instead of `n_arms - k`), so the arm value
         // became the whole result and the consuming code never ran. `(+ (match a …4…) 100)`: a=0 must be

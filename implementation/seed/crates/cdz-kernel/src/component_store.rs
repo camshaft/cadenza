@@ -77,7 +77,7 @@ impl ComponentStore {
     /// Fetch a component's bytes BY CONTENT HASH — a reducer's `+<hash>` dep import (the hash is in the
     /// import name). Reads `<root>/<hash>.wasm` and verifies its content address matches `hash`.
     ///
-    /// ⚠️ `hash` is the EXTERNAL store's **SHA-256** address (the 32-byte value carried in the dep's
+    /// WARNING:`hash` is the EXTERNAL store's **SHA-256** address (the 32-byte value carried in the dep's
     /// `+<hash>` import name, e.g. via `Hash::from_hex(sha256hex)`), even though the parameter is typed as
     /// the kernel's [`Hash`] (a scheme-agnostic 32-byte container). Do NOT pass `Hash::of(bytes)` — that is
     /// the kernel-internal **blake3** address and will fail the SHA-256 content-verify below, surfacing as
