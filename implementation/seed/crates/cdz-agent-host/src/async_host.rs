@@ -147,6 +147,10 @@ async fn apply_lifecycle_ops(
     host: &mut AgentHost,
     lifecycle_rx: &mut mpsc::UnboundedReceiver<LifecycleOp>,
     factory: Option<&mut (dyn SessionFactory + '_)>,
+    #[cfg(feature = "live-aws-storage")] session_registry: Option<
+        &crate::session_registry::DynamoSessionRegistry,
+    >,
+    #[cfg(feature = "live-aws-storage")] now_ms: u64,
 ) -> Result<(), KernelError> {
     // The factory is consumed by at most one Spawn op per drain in practice, but a single drain can carry
     // several ops; re-borrow per Spawn via `as_deref_mut` on an Option we hold across the loop.
@@ -165,7 +169,24 @@ async fn apply_lifecycle_ops(
                 match host.terminate(&target, by_hash, reason).await {
                     // Terminated, or a benign no-op (already-terminated FoldRefused / absent None) — nothing
                     // more to do; the durable marker (if fresh) + registry removal are done inside terminate.
-                    Some(Ok(_)) | Some(Err(KernelError::FoldRefused)) | None => {}
+                    Some(Ok(_)) | Some(Err(KernelError::FoldRefused)) | None => {
+                        // I4b (slice 2c-b2): mark the session TERMINATED in the durable registry so boot-
+                        // recovery skips it (an already-terminated FoldRefused is still terminated → mark it;
+                        // an absent `None` session is gone — mark_terminated is idempotent + a no-op-ish put).
+                        // BEST-EFFORT: a registry write failure is logged, never fails the loop (the durable
+                        // log's Terminated tail is the source of truth; the registry is an index over it).
+                        #[cfg(feature = "live-aws-storage")]
+                        if let Some(registry) = session_registry {
+                            if let Err(e) = registry.mark_terminated(target.as_str(), now_ms).await
+                            {
+                                tracing::warn!(
+                                    target: "cdz_agent_host::session_registry",
+                                    session_id = target.as_str(),
+                                    "session-registry mark_terminated failed (best-effort; terminate still applied): {e}"
+                                );
+                            }
+                        }
+                    }
                     // A real kernel error on the target's terminate-append is corruption — fail fast, same
                     // as the deliver arm (a reducer fault would be a FoldFailed event, not a KernelError).
                     Some(Err(e)) => return Err(e),
@@ -705,7 +726,16 @@ impl AsyncAgentHost {
             // (§lifecycle I5 defer-to-loop): the executor couldn't mutate the registry from inside `perform`
             // (registry borrowed for the driven session), so it enqueued the op here — now `&mut host` is
             // free. Drained synchronously (the ops were produced on THIS task, so there's nothing to await).
-            apply_lifecycle_ops(&mut host, &mut lifecycle_rx, factory.as_deref_mut()).await?;
+            apply_lifecycle_ops(
+                &mut host,
+                &mut lifecycle_rx,
+                factory.as_deref_mut(),
+                #[cfg(feature = "live-aws-storage")]
+                session_registry.as_ref(),
+                #[cfg(feature = "live-aws-storage")]
+                now_ms(),
+            )
+            .await?;
 
             // A lifecycle op may have RESUMED a session (§lifecycle I4): replay any inbound held for a
             // now-un-suspended target. Deliver each in-place (still-suspended ones stay held). Partition:
