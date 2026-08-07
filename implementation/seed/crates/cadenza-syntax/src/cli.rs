@@ -76,6 +76,11 @@ pub enum Cmd {
     Lint(LintArgs),
     /// Find duplicated subtrees (clones) within/across programs — copy-paste to factor out.
     Clones(ClonesArgs),
+    /// Extract a program's public doc surface into a derived `doc-module` doc-AST (cadenza-docs I1):
+    /// per exported `def`/`type`/`effect`, a `doc-item` with its name, printed signature, and `///`
+    /// prose. Reads FILE or stdin; writes the doc-AST to stdout (canonical binary by default, or a
+    /// surface via `--to` for inspection). The output IS `cdzast` — a queryable structured doc index.
+    Doc(DocArgs),
     /// Apply a canonicalizing NORMALIZATION codemod (opt-in, distinct from `fmt`). Currently the
     /// single-clause-irrefutable-`match`→`let` rewrite (`--match-to-let`), an idiom cleanup that
     /// `fmt` deliberately does NOT do (it would change the AST shape). Reads FILE(s) or stdin; writes
@@ -315,6 +320,30 @@ pub struct ConvertArgs {
 }
 
 #[derive(Args)]
+pub struct DocArgs {
+    /// Input format of the PROGRAM. Inferred from FILE's extension when omitted; required for stdin.
+    #[arg(short, long, value_enum)]
+    from: Option<Fmt>,
+
+    /// Output format for the doc-AST. Defaults to `binary` (canonical `cdzast\x00\x01` — the doc index
+    /// is a binary AST); use `sexpr`/`ml` to inspect it, or `json`/etc. as any surface of the arena.
+    #[arg(short, long, value_enum)]
+    to: Option<Fmt>,
+
+    /// The module name recorded in the emitted `(doc-module "…")`. Defaults to the input file's stem
+    /// (or `module` for stdin).
+    #[arg(short, long)]
+    module: Option<String>,
+
+    /// Target line width for a text output surface.
+    #[arg(short, long, default_value_t = Options::default().width)]
+    width: usize,
+
+    /// Input file; omit or use `-` to read stdin.
+    file: Option<String>,
+}
+
+#[derive(Args)]
 pub struct FmtArgs {
     /// Files or directories to format (directories are recursed by extension). Omit (or use `-`) to
     /// read stdin and write the formatted program to stdout.
@@ -448,6 +477,7 @@ pub fn run(command: Cmd, prog: &str) -> ExitCode {
     }
     let result = match command {
         Cmd::Convert(args) => run_convert(&args),
+        Cmd::Doc(args) => run_doc(&args),
         Cmd::Query(args) => run_query(&args),
         Cmd::Rewrite(args) => run_rewrite(&args),
         Cmd::Diff(args) => run_diff(&args),
@@ -484,6 +514,62 @@ fn run_convert(args: &ConvertArgs) -> Result<(), String> {
         let _ = std::io::stdout().write_all(b"\n");
     }
     Ok(())
+}
+
+/// `cdz doc` (cadenza-docs I1): read a PROGRAM, project its public doc surface into a `doc-module`
+/// doc-AST, and emit that doc-AST. The projection is `doc_item::project` (a compiler query over the
+/// program); the result is ordinary `cdzast`, so it emits through the SAME surface writer as `convert`
+/// — canonical binary `\x00\x01` by default (the doc index is a binary AST), or a text surface via
+/// `--to` for inspection. The doc-module name is `--module`, else the input file's stem, else `module`.
+fn run_doc(args: &DocArgs) -> Result<(), String> {
+    let from = resolve_from(args.from, args.file.as_deref())?;
+    // Default output = canonical binary (the doc-AST is a binary index); `--to` overrides for inspection.
+    let to = args.to.map(Format::from).unwrap_or(Format::Binary);
+    let module_name = args
+        .module
+        .clone()
+        .unwrap_or_else(|| module_stem(args.file.as_deref()));
+
+    let input = read_input(args.file.as_deref())?;
+    let output = doc_bytes(&input, from, to, &module_name, args.width)?;
+
+    std::io::stdout()
+        .write_all(&output)
+        .map_err(|e| format!("writing stdout: {e}"))?;
+    if to != Format::Binary {
+        let _ = std::io::stdout().write_all(b"\n");
+    }
+    Ok(())
+}
+
+/// The byte-producing core of `cdz doc` (factored out of [`run_doc`] so it's testable without stdout):
+/// read `input` as a program in `from`, project its public doc surface into a `doc-module` doc-AST, and
+/// write that doc-AST in `to`. The projection ([`crate::doc_item::project`]) is a compiler query over
+/// the program; the result is ordinary `cdzast`, emitted through the shared surface writer.
+fn doc_bytes(
+    input: &[u8],
+    from: Format,
+    to: Format,
+    module_name: &str,
+    width: usize,
+) -> Result<Vec<u8>, String> {
+    let program = convert::read(input, from).map_err(|e| e.to_string())?;
+    let doc_ast = crate::doc_item::project(&program, module_name);
+    let opts = Options {
+        width,
+        ..Options::default()
+    };
+    convert::write_with(&doc_ast, to, opts).map_err(|e| e.to_string())
+}
+
+/// The default `doc-module` name for a program: the input file's stem (`lib.cdz` → `lib`), or `module`
+/// for stdin / a path with no usable stem.
+fn module_stem(file: Option<&str>) -> String {
+    file.filter(|p| *p != "-")
+        .and_then(|p| std::path::Path::new(p).file_stem())
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "module".to_string())
 }
 
 /// Format the targets: read each, reprint it CANONICALLY in its OWN surface (a same-surface round-trip
@@ -2022,5 +2108,47 @@ mod tests {
         assert_eq!(label(&None), "(stdin)");
         assert_eq!(with_path(&Some("f.ml".to_string()), "boom"), "f.ml: boom");
         assert_eq!(with_path(&None, "boom"), "(stdin): boom");
+    }
+
+    #[test]
+    fn doc_bytes_projects_a_program_to_a_binary_doc_module() {
+        // `cdz doc`'s core: an ML program → its public doc surface as a canonical-binary doc-module.
+        // The bytes are `cdzast\x00\x01` and decode to a (doc-module …) carrying the exported item.
+        let src = b"/// Doubles n.\ndef double(n) = n\nexport { double }";
+        let out = doc_bytes(src, Format::Ml, Format::Binary, "mymod", 100).expect("doc_bytes");
+        assert_eq!(&out[..8], b"cdzast\x00\x01", "doc-AST is canonical binary");
+        let arenas = crate::codec::decode(&out).expect("doc-AST decodes");
+        let mod_args = arenas
+            .as_form(arenas.root, "doc-module")
+            .expect("root is a doc-module");
+        assert_eq!(arenas.as_str(mod_args[0]), Some("mymod"), "module name");
+        // some doc-item names `double`
+        let has_double = mod_args.iter().any(|&c| {
+            arenas.as_form(c, "doc-item").is_some_and(|item| {
+                item.iter().any(|&f| {
+                    arenas.as_form(f, "name").and_then(|a| arenas.as_str(a[0])) == Some("double")
+                })
+            })
+        });
+        assert!(has_double, "the exported `double` is a doc-item");
+    }
+
+    #[test]
+    fn doc_bytes_can_emit_a_text_surface_for_inspection() {
+        // `--to sexpr` renders the doc-module as readable s-expr (not binary) — the inspection path.
+        let src = b"def f(x) = x\nexport { f }";
+        let out = doc_bytes(src, Format::Ml, Format::Sexpr, "m", 100).expect("doc_bytes sexpr");
+        let text = String::from_utf8(out).expect("sexpr is utf-8");
+        assert!(text.contains("doc-module"), "renders the doc-module head");
+        assert!(text.contains("doc-item"), "renders a doc-item");
+        assert!(text.contains("\"f\""), "names the exported item");
+    }
+
+    #[test]
+    fn module_stem_defaults_from_file_or_falls_back() {
+        assert_eq!(module_stem(Some("src/lib.cdz")), "lib");
+        assert_eq!(module_stem(Some("a/b/thing.sexp")), "thing");
+        assert_eq!(module_stem(Some("-")), "module", "stdin falls back");
+        assert_eq!(module_stem(None), "module", "no file falls back");
     }
 }
