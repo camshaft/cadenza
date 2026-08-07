@@ -14828,3 +14828,96 @@
                       (* 1000 (M.step 2))))))
             (export main)))
   (declines))
+
+;; ── SET-state gated arms (breaker se) ────────────────────────────────────────────────────────────
+;; The insert+measure Set-state pin above never GATES on membership; these pin gated dynamics:
+;; se1 = dedup (re-adding an existing element leaves the size fixed); se2 = a membership-GATED
+;; arm, the visited-set idiom (first visit admits+records, a revisit answers negated without
+;; growing); se3 = a DRAIN-style arm (remove on hit — the second take of the same key routes to
+;; the miss path).
+
+(case "se1 a SET handler state with dedup dynamics — re-adding an existing element leaves the size fixed"
+  (input  (do
+            (effect Sx (op add (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle Sx (Set.of (list 1 2))
+                ((add (v) s (resume (Set.len s) (Set.insert s v))))
+                (+ (Sx.add n) (+ (* 10 (Sx.add 2)) (* 100 (Sx.add n))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 332 Int64))
+  (call   main (: 1 Int64)) (output (: 222 Int64)))
+
+(case "se2 a membership-GATED arm — first visit admits and records, a revisit answers negated without growing"
+  (input  (do
+            (effect Sx (op visit (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle Sx (Set.of (list 3))
+                ((visit (v) s (if (Set.contains s v)
+                                  (resume (- 0 v) s)
+                                  (resume v (Set.insert s v)))))
+                (+ (Sx.visit n) (+ (* 10 (Sx.visit 3)) (* 100 (Sx.visit n))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: -525 Int64))
+  (call   main (: 3 Int64)) (output (: -333 Int64)))
+
+(case "se3 a DRAIN-style arm removes on hit — the second take of the same key routes to the miss path"
+  (input  (do
+            (effect Sx (op take (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle Sx (Set.of (list 1 2 3))
+                ((take (v) s (if (Set.contains s v)
+                                 (resume (Set.len (Set.remove s v)) (Set.remove s v))
+                                 (resume (* 100 (Set.len s)) s))))
+                (+ (Sx.take n) (+ (* 10 (Sx.take n)) (Sx.take 2)))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 2003 Int64))
+  (call   main (: 9 Int64)) (output (: 3302 Int64)))
+
+;; ── short-circuit connectives whose OPERANDS perform (breaker bc) ────────────────────────────────
+;; The untaken-BRANCH pins forbid a speculative branch perform; these pin the skipped-OPERAND face:
+;; a short-circuited connective operand must NOT dispatch, and the skip is observable through the
+;; state the NEXT draw reads. bc1 = AND (false-first skips), bc2 = OR (true-first skips), bc3 = a
+;; nested and-of-or tree where each call row exercises a distinct skip pattern.
+
+(case "bc1 short-circuit AND over two draws — the false-first row skips the second draw, observed by the branch draw"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (+ s 1))))
+                (if (and (> (St.next) 2) (> (St.next) 4))
+                    (St.next)
+                    (- 0 (St.next)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 7 Int64))
+  (call   main (: 3 Int64)) (output (: -5 Int64))
+  (call   main (: 0 Int64)) (output (: -1 Int64)))
+
+(case "bc2 short-circuit OR over two draws — the true-first row skips the second draw"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (+ s 1))))
+                (if (or (> (St.next) 4) (> (St.next) 1))
+                    (St.next)
+                    (- 0 (St.next)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 6 Int64))
+  (call   main (: 2 Int64)) (output (: 4 Int64))
+  (call   main (: 0 Int64)) (output (: -2 Int64)))
+
+(case "bc3 a nested and-of-or short-circuit tree over draws — each row exercises a distinct skip pattern"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (+ s 1))))
+                (if (and (or (> (St.next) 8) (> (St.next) 2)) (> (St.next) 5))
+                    (St.next)
+                    (- 0 (St.next)))))
+            (export main)))
+  (call   main (: 9 Int64)) (output (: 11 Int64))
+  (call   main (: 4 Int64)) (output (: 7 Int64))
+  (call   main (: 1 Int64)) (output (: -3 Int64))
+  (call   main (: 0 Int64)) (output (: -2 Int64)))
