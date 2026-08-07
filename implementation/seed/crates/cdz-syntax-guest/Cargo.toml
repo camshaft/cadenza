@@ -1,0 +1,46 @@
+# The cadenza-syntax REDUCER-FACING wasm-COMPONENT guest — a wit-bindgen Rust guest that exports the
+# `cadenza:syntax` world (parse / query / doc) by delegating to the `cadenza-syntax` pure library. This
+# is P2 (design note `p2-reducer-invoke-cadenza-syntax-as-composable-wit-dep`; operator Option-A): a
+# content-addressed, in-wasm linked pure-library dep a reducer imports directly — NOT a host effect.
+# v-ah's `compose_dep_into_linker` composes this leaves-first by content hash (`store_provider = None`,
+# it imports nothing world-touching).
+#
+# Compiled to a wasm32-unknown-unknown core module then lifted to a component with
+# `wasm-tools component new` (NOT wasm32-wasip1 — a WASI target emits wasi_snapshot_preview1 imports the
+# lift can't resolve; same reason as cedar-policy-guest / reducer-guest). `cadenza-syntax` builds for
+# wasm32-unknown-unknown with `--no-default-features` (the lean build: no cedar/cli, so no
+# clap/cedar-policy native tree — P1 feature-gate #2568) — only the pure front-end + codec + query +
+# doc_item core, exactly the reducer-relevant surface.
+#
+# Its OWN workspace (empty `[workspace]`) — NOT part of the parent workspace: it builds for a different
+# target (wasm32-unknown-unknown, cdylib), so a native `cargo test` of the parent must never try to
+# build it. A build step / CI job compiles it on demand + lifts it to a component; the ABI values cross
+# as cdzast\x00\x01 bytes (`list<u8>`) per the WIT world, so the guest just codec-encodes/decodes at the
+# boundary and delegates to the library. (Mirrors the cedar-policy-guest fixture's crate shape.)
+[workspace]
+
+[package]
+name = "cdz-syntax-guest"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# wit-bindgen: generate the `cadenza:syntax` world guest bindings (export parse/query/doc). Same version
+# the cedar/dogwood/reducer guests use so all guests agree on the bindgen ABI.
+wit-bindgen = "0.45"
+
+# The pure front-end + codec + query + doc_item core, LEAN (no cedar/cli): exactly the reducer-relevant
+# surface, and the only thing that must build for wasm32-unknown-unknown. `default-features = false`
+# sheds the cedar-policy + clap native trees (P1 gate), leaving parse/printer/sexpr/convert/query/codec/
+# doc_item — all of which the P2 exports delegate to.
+cadenza-syntax = { path = "../cadenza-syntax", default-features = false }
+
+[profile.release]
+# Small, fast-loading wasm for the component.
+opt-level = "s"
+lto = true
+codegen-units = 1

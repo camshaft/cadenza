@@ -1,0 +1,6 @@
+# cdz-syntax-guest is a SEPARATE, dependency-declaring wasm32 component crate whose build MUST be
+# byte-reproducible: its lifted component is content-addressed (a reducer imports it by hash; the CI
+# job's `wasm-tools component new` needs a stable output hash), and floating deps would break that. So
+# we COMMIT this crate's Cargo.lock — un-ignore it here (scoped to this dir) — while still ignoring
+# build output. `--locked` guest builds are then deterministic in CI + Nix.
+!Cargo.lock
