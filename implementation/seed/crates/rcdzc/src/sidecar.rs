@@ -275,9 +275,11 @@ pub enum Query {
     /// string. Bulk (no args) so `cdz doc` makes ONE round-trip. Answered as the `KIND_EXPORT_TYPES` blob:
     /// `u32_le count` then per export `u32_le name_len | name | u32_le ty_len | ty_bytes`, where `ty_bytes`
     /// is `codec::encode` of a standalone arena rooted at `eval::encode_ty_payload(db, &scheme.ty)` — a
-    /// full cdzast artifact the consumer's byte-identical codec decodes directly. An export whose type does
-    /// not resolve (`def_scheme` = `None`) is OMITTED (graceful-degrade: the doc-item's `(ty …)` is
-    /// optional). Deterministic (export order). Co-owned with v-syntax.
+    /// full cdzast artifact the consumer's byte-identical codec decodes directly. Covers all THREE exported
+    /// item kinds — a value DEF (`def_scheme.ty`), a TYPE decl, and an EFFECT decl (the latter two via
+    /// `typeval_of`), resolved by trying the def slot then the type/effect lookup by name. An export whose
+    /// type does not resolve in any kind is OMITTED (graceful-degrade: the doc-item's `(ty …)` is optional).
+    /// Deterministic (export order). Co-owned with v-syntax.
     ExportedTypes,
     /// The DOCUMENTATION of a definition or built-in, BY NAME — the doc companion of `TypeOf`. Answered
     /// from an ordered fallback, all reads of columns the compiler already fills:
@@ -811,26 +813,37 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
         }
         Query::ExportedTypes => {
             // The STRUCTURED companion of `Exports` (cadenza-docs I2, architecture `(C)`): each exported
-            // def's resolved type as a cdzast sub-AST, so `cdz doc` grafts a queryable `(ty …)` rather than
-            // a printed string. For each export with a def whose scheme resolves, encode the GENERALIZED
-            // type (`scheme.ty` — polymorphic, `(Var N)` for quantified vars, the right DOC shape) as a
-            // standalone cdzast artifact and frame it into the bulk blob. An export whose scheme is `None`
-            // (un-inferable / declined / names no def) is OMITTED — the graceful-degrade the doc-item's
-            // optional `(ty …)` expects. Deterministic (export order). Blob framing (see `KIND_EXPORT_TYPES`):
-            // `u32_le count` then per record `u32_le name_len | name | u32_le ty_len | ty_bytes`.
+            // item's resolved type as a cdzast sub-AST, so `cdz doc` grafts a queryable `(ty …)` rather than
+            // a printed string. Covers ALL THREE exported item kinds (v-syntax's ask): a value DEF (its
+            // GENERALIZED `def_scheme.ty` — polymorphic `(Var N)`, the right DOC shape), a TYPE decl, and an
+            // EFFECT decl (each resolved to its type-value via `typeval_of`). An export is resolved by trying
+            // the value-def first (the `e.def` slot); when that is absent — a type/effect export carries
+            // `def: None` — fall back to the type-decl then effect-decl lookup BY NAME. An export whose type
+            // does not resolve in ANY kind is OMITTED (graceful-degrade: the doc-item's `(ty …)` is optional).
+            // Deterministic (export order). Blob framing (see `KIND_EXPORT_TYPES`): `u32_le count` then per
+            // record `u32_le name_len | name | u32_le ty_len | ty_bytes`.
             let exports: Vec<(String, Option<usize>)> =
                 db.exports.iter().map(|e| (e.name.clone(), e.def)).collect();
             let mut records: Vec<(String, Vec<u8>)> = Vec::new();
             for (name, def) in exports {
-                let Some(d) = def else { continue };
-                let Some(scheme) = crate::infer::def_scheme(db, d) else {
-                    continue;
-                };
+                // Resolve the export to a `Ty`, trying each kind: value def (generalized scheme), then type
+                // decl, then effect decl. `None` from all three → omit this export.
+                let ty = def
+                    .and_then(|d| crate::infer::def_scheme(db, d).map(|s| s.ty))
+                    .or_else(|| {
+                        db.type_decl_by_name(&name)
+                            .and_then(|occ| crate::eval::typeval_of(db, occ))
+                    })
+                    .or_else(|| {
+                        db.effect_decl_by_name(&name)
+                            .and_then(|synth| crate::eval::typeval_of(db, synth))
+                    });
+                let Some(ty) = ty else { continue };
                 // Build the bare type sub-AST in `db.ast`, then EXTRACT it into a standalone arena (rcdzc
                 // cannot hand a `db.ast` subtree StructId across the tool boundary; `codec::encode` wants a
                 // whole arena rooted at the type). The extracted arena's bytes are a full cdzast artifact the
                 // consumer's byte-identical codec decodes directly into the `(ty …)` payload.
-                let ty_root = crate::eval::encode_ty_payload(db, &scheme.ty);
+                let ty_root = crate::eval::encode_ty_payload(db, &ty);
                 let ty_arena = extract_subtree(&db.ast, ty_root);
                 let ty_bytes = crate::codec::encode(&ty_arena);
                 records.push((name, ty_bytes));
