@@ -4268,6 +4268,206 @@ mod store_effect_tests {
         assert_eq!(s.open_effects(), 0, "all group store effects settled");
     }
 
+    // ── §GAP-1 M3: the tool-calling AGENT LOOP is a FOLD over existing effects (NO new kernel mechanism) ──
+
+    /// A test authorizer that permits ANY effect — isolates the loop mechanics (the real harness gates
+    /// model/shell via Cedar; this proves the FOLD composes, not the authz).
+    struct AllowAllAuthz;
+    #[async_trait::async_trait(?Send)]
+    impl Authorize for AllowAllAuthz {
+        async fn authorize(&self, _req: &EffectRequest) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    /// A scripted LLM+tool transport: a `model` effect returns a canned `model-response` (first a `tool_use`
+    /// asking to run the `shell` tool, then — after the tool result comes back — an `end_turn` with the
+    /// answer); a `shell` effect returns a canned tool output. This stands in for v-ah-host's real Bedrock
+    /// Converse transport + shell executor, so the kernel-side test proves the reducer's FOLD drives the loop.
+    struct ScriptedAgentExecutor {
+        model_calls: u8,
+    }
+    #[async_trait::async_trait(?Send)]
+    impl crate::executor::Executor for ScriptedAgentExecutor {
+        async fn perform(&mut self, req: &EffectRequest, _key: Hash) -> EffectOutcome {
+            let family = req.content_type.family.as_ref();
+            if family == effect_ct::MODEL {
+                self.model_calls += 1;
+                let resp = if self.model_calls == 1 {
+                    // First model turn → ask to run a tool.
+                    crate::event_ast::ModelResponse {
+                        stop_reason: "tool_use".to_string(),
+                        content: vec![crate::event_ast::ContentBlock::ToolCall {
+                            id: "call-1".to_string(),
+                            name: "shell".to_string(),
+                            input: br#"{"cmd":"cargo test"}"#.to_vec(),
+                        }],
+                    }
+                } else {
+                    // Second model turn (after the tool result folded back) → done.
+                    crate::event_ast::ModelResponse {
+                        stop_reason: "end_turn".to_string(),
+                        content: vec![crate::event_ast::ContentBlock::Text(
+                            "all green".to_string(),
+                        )],
+                    }
+                };
+                EffectOutcome::Ok(Some(Payload::Inline(
+                    crate::event_ast::encode_model_response(&resp).into(),
+                )))
+            } else if family == effect_ct::SHELL {
+                // The dispatched tool → a canned result the reducer folds back into the conversation.
+                EffectOutcome::Ok(Some(Payload::Inline(
+                    b"test result: 277 passed".to_vec().into(),
+                )))
+            } else {
+                EffectOutcome::Err(format!("unexpected effect family {family:?}"))
+            }
+        }
+    }
+
+    /// The agent-loop reducer (native `impl Reducer`, the reference shape §GAP-1 M3). The loop is a FOLD —
+    /// NO new kernel mechanism, just existing effects composed:
+    /// - inbound → emit a `model` effect carrying an `encode_model_request` (the task + the `shell` tool).
+    /// - model EffectResult → `decode_model_response`: `tool_use` ⇒ dispatch each tool-call as its effect
+    ///   (here `shell`); `end_turn` ⇒ record the answer (loop done).
+    /// - shell EffectResult (a tool result) → emit the NEXT `model` effect (a real reducer appends a
+    ///   ToolResult turn to its KV conversation; here we just re-emit to drive the loop) → back to model.
+    struct AgentLoopReducer {
+        model: &'static str,
+    }
+    impl AgentLoopReducer {
+        fn model_effect(&self, req: &crate::event_ast::ModelRequest) -> EffectRequest {
+            EffectRequest::new_with_family(
+                effect_ct::MODEL,
+                self.model,
+                Some(Payload::Inline(
+                    crate::event_ast::encode_model_request(req).into(),
+                )),
+                Timeliness::Interactive,
+            )
+        }
+    }
+    #[async_trait::async_trait(?Send)]
+    impl Reducer for AgentLoopReducer {
+        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+            match &event.body {
+                EventBody::Inbound { .. } => {
+                    // Kick the loop: a model request with the task + the shell tool offered.
+                    let req = crate::event_ast::ModelRequest {
+                        model: self.model.to_string(),
+                        messages: vec![crate::event_ast::ChatMessage {
+                            role: "user".to_string(),
+                            content: vec![crate::event_ast::ContentBlock::Text(
+                                "run the tests".to_string(),
+                            )],
+                        }],
+                        tools: vec![crate::event_ast::ToolDef {
+                            name: "shell".to_string(),
+                            schema: br#"{"type":"object"}"#.to_vec(),
+                        }],
+                        max_tokens: Some(1024),
+                    };
+                    FoldOutput::with(vec![self.model_effect(&req)])
+                }
+                EventBody::EffectResult {
+                    result: EffectOutcome::Ok(Some(Payload::Inline(bytes))),
+                    ..
+                } => {
+                    // Is this a MODEL response or a TOOL (shell) result? A model-response decodes; a shell
+                    // result doesn't (it's raw tool output) — the reducer distinguishes by trying the codec.
+                    if let Ok(resp) = crate::event_ast::decode_model_response(bytes) {
+                        match resp.stop_reason.as_str() {
+                            "tool_use" => {
+                                // Dispatch each tool-call as its effect (reducer-defined tool→effect map: the
+                                // `shell` tool → the `shell` family). Here: exactly one call.
+                                let mut effects = Vec::new();
+                                for blk in &resp.content {
+                                    if let crate::event_ast::ContentBlock::ToolCall {
+                                        name,
+                                        input,
+                                        ..
+                                    } = blk
+                                    {
+                                        if name == "shell" {
+                                            effects.push(EffectRequest::new_with_family(
+                                                effect_ct::SHELL,
+                                                "cargo test",
+                                                Some(Payload::Inline(input.clone().into())),
+                                                Timeliness::Interactive,
+                                            ));
+                                        }
+                                    }
+                                }
+                                FoldOutput::with(effects)
+                            }
+                            _ => {
+                                // end_turn (or any non-tool_use) → the loop is DONE; record the answer text.
+                                let answer: String = resp
+                                    .content
+                                    .iter()
+                                    .filter_map(|b| match b {
+                                        crate::event_ast::ContentBlock::Text(t) => Some(t.as_str()),
+                                        _ => None,
+                                    })
+                                    .collect();
+                                kv.put(b"answer".to_vec(), answer.into_bytes());
+                                FoldOutput::none()
+                            }
+                        }
+                    } else {
+                        // A TOOL result → append it to the conversation + re-emit the next model turn (with the
+                        // ToolResult carrying the call id, so the model correlates it). This closes the loop.
+                        let req = crate::event_ast::ModelRequest {
+                            model: self.model.to_string(),
+                            messages: vec![crate::event_ast::ChatMessage {
+                                role: "tool".to_string(),
+                                content: vec![crate::event_ast::ContentBlock::ToolResult {
+                                    id: "call-1".to_string(),
+                                    result: bytes.to_vec(),
+                                }],
+                            }],
+                            tools: vec![],
+                            max_tokens: Some(1024),
+                        };
+                        FoldOutput::with(vec![self.model_effect(&req)])
+                    }
+                }
+                _ => FoldOutput::none(),
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn agent_loop_reducer_folds_model_tool_call_result_reemit_to_end_turn() {
+        // §GAP-1 M3 — the KEYSTONE proof: a tool-calling agent loop is a FOLD over EXISTING effects, with NO
+        // new kernel mechanism. The reducer: inbound → model → (tool_use) → shell → (result) → model →
+        // (end_turn) → records the answer. Driven to quiescence by one deliver() through the scripted
+        // model+shell transport. Proves M1+M2 codecs compose into the loop the self-hosting harness needs.
+        let mut exec = ScriptedAgentExecutor { model_calls: 0 };
+        let mut s = Session::genesis(Hash::of(b"agent-reducer"), Hash::of(b"nonce"));
+        let reducer = AgentLoopReducer {
+            model: "anthropic.claude",
+        };
+
+        s.deliver(inbound(), None, &reducer, &AllowAllAuthz, &mut exec)
+            .await
+            .unwrap();
+
+        // The loop ran to end_turn and recorded the final answer.
+        assert_eq!(
+            s.kv().get(b"answer"),
+            Some(b"all green".as_slice()),
+            "the agent loop folded through model→tool→model→end_turn and recorded the answer"
+        );
+        // The scripted transport saw exactly TWO model calls (initial + post-tool) and one shell tool call.
+        assert_eq!(
+            exec.model_calls, 2,
+            "two model turns: tool_use then end_turn"
+        );
+        assert_eq!(s.open_effects(), 0, "every effect in the loop settled");
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn store_effects_are_grantable_via_capability_for_family() {
         // PRODUCTION grantability: the real Authorizer + Capability::for_family grants store/set + store/
