@@ -15771,3 +15771,129 @@
             (export main)))
   (call   main (: 2 Int64)) (output (: 4060 Int64))
   (call   main (: 0 Int64)) (output (: 20 Int64)))
+
+;; ── DEPTH-stress towers + multiply-consumed draws (breaker dn/rr) ────────────────────────────────
+;; dn = handler towers past the pinned depths: dn1 a FIVE-deep same-effect shadow tower (strides
+;; 1-5); dn2b an abort under FOUR resumptive frames (extends the three-frame pin; the conditional
+;; variant in a strict-plus tail stays not-yet-reducible); dn3 an alternating A/B/A/B tower where
+;; BOTH effects share the op name `next` (routing is by effect identity, not op name); dn4
+;; SKIP-LEVEL performs crossing two foreign frames to the outermost handler; dn5 a tuple built
+;; inside the inner region from BOTH effects' draws, destructured outside. rr = one draw
+;; multiply-consumed (squared/scaled/summed) and the square of a draw difference.
+
+(case "dn1 a FIVE-deep same-effect shadow tower — one draw per level plus a doubled draw at the innermost"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (+ s 1))))
+                (+ (St.next)
+                   (handle St 10
+                     ((next () s (resume s (+ s 2))))
+                     (+ (St.next)
+                        (handle St 100
+                          ((next () s (resume s (+ s 3))))
+                          (+ (St.next)
+                             (handle St 1000
+                               ((next () s (resume s (+ s 4))))
+                               (+ (St.next)
+                                  (handle St 10000
+                                    ((next () s (resume s (+ s 5))))
+                                    (+ (St.next) (St.next))))))))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 21120 Int64))
+  (call   main (: 0 Int64)) (output (: 21115 Int64)))
+
+(case "dn2b an abort under FOUR resumptive frames — the unwind abandons all four pending sums (extends the three-frame pin)"
+  (input  (do
+            (effect A (op a (-> Int64)))
+            (effect B (op b (-> Int64)))
+            (effect C (op c (-> Int64)))
+            (effect D (op d (-> Int64)))
+            (effect Bail (op bail (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle Bail 0
+                ((bail (v) s v))
+                (handle A 1 ((a () s (resume s (+ s 1))))
+                  (handle B 10 ((b () s (resume s (+ s 1))))
+                    (handle C 100 ((c () s (resume s (+ s 1))))
+                      (handle D 1000 ((d () s (resume s (+ s 1))))
+                        (+ (A.a) (+ (B.b) (+ (C.c) (+ (D.d) (Bail.bail 7)))))))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 7 Int64)))
+
+(case "dn3 an ALTERNATING A/B/A/B tower where both effects share the op NAME next — each perform homes to its effect's innermost handler"
+  (input  (do
+            (effect A (op next (-> Int64)))
+            (effect B (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle A n
+                ((next () s (resume s (+ s 1))))
+                (handle B 10
+                  ((next () s (resume s (+ s 2))))
+                  (handle A 100
+                    ((next () s (resume s (+ s 3))))
+                    (handle B 1000
+                      ((next () s (resume s (+ s 4))))
+                      (+ (A.next) (+ (B.next) (+ (A.next) (B.next)))))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 2207 Int64)))
+
+(case "dn4 SKIP-LEVEL performs from the innermost region — A's draws cross the B and C frames to the outermost handler twice"
+  (input  (do
+            (effect A (op a (-> Int64)))
+            (effect B (op b (-> Int64)))
+            (effect C (op c (-> Int64)))
+            (def (main (: n Int64))
+              (handle A n
+                ((a () s (resume s (* s 2))))
+                (handle B 10
+                  ((b () s (resume s (+ s 1))))
+                  (handle C 100
+                    ((c () s (resume s (+ s 1))))
+                    (+ (A.a) (+ (A.a) (+ (B.b) (C.c))))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 125 Int64))
+  (call   main (: 1 Int64)) (output (: 113 Int64)))
+
+(case "dn5 a tuple built INSIDE the inner region from BOTH effects' draws, destructured OUTSIDE — data crosses the region boundary"
+  (input  (do
+            (effect A (op a (-> Int64)))
+            (effect B (op b (-> Int64)))
+            (def (main (: n Int64))
+              (handle A n
+                ((a () s (resume s (+ s 1))))
+                (match (handle B 50
+                         ((b () t (resume t (* t 2))))
+                         (tuple (B.b) (+ (A.a) (B.b))))
+                  ((tuple x y) (+ (* 100 x) (+ (* 10 y) (A.a)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 6056 Int64))
+  (call   main (: 0 Int64)) (output (: 6001 Int64)))
+
+(case "rr1 one draw consumed THREE times (squared, scaled, summed) — a single dispatch, the binder multiply-read"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (+ s 1))))
+                (let ((d (St.next)))
+                  (+ (* d d) (+ (* 10 d) (St.next))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 81 Int64))
+  (call   main (: 0 Int64)) (output (: 1 Int64))
+  (call   main (: -3 Int64)) (output (: -23 Int64)))
+
+(case "rr2 the SQUARE of a difference of two draws — composite arithmetic over one advancing thread, zero row included"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (* s 3))))
+                (let ((a (St.next)))
+                  (let ((b (St.next)))
+                    (* (- b a) (- b a))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 100 Int64))
+  (call   main (: -2 Int64)) (output (: 16 Int64))
+  (call   main (: 0 Int64)) (output (: 0 Int64)))
