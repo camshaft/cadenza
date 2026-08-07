@@ -1752,9 +1752,29 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 None
             };
             let use_ctx = elem_ctx.as_ref().unwrap_or(ctx);
+            // The list's SETTLED element WIDTH, if integer — a bare in-range literal element defaults its
+            // OWN `type_of` to Int64 (`Nu64 as i64`), but the list is `Vec<ew>`, so a MIXED-width literal
+            // list `(list (: 127 Int32) 32767)` emits `vec![(127u32 as i32), (32767u64 as i64)]` — a
+            // HETEROGENEOUS `Vec` rustc rejects (E0308). The front-end + wasm UNIFY the element type (wasm
+            // coerces both to Int32); the rust `vec!` must too. Ground each element to the list's element
+            // width (`emit_grounded` renders a bare literal at that width, a no-op when already width-
+            // carrying) — the List twin of the Map entry-key/value + Set-element sibling-width render
+            // (corpus-bugfix, fuzzer cdz-smith differential). Only INTEGER elements ground; a non-int
+            // element type leaves the bare emit (a wrong render would still error LOUD at rustc).
+            let elem_it: Option<IntTy> = match type_of(db, id).strip_nominal() {
+                Ty::List(elem) => match elem.strip_nominal() {
+                    Ty::Int(it) => Some(*it),
+                    _ => None,
+                },
+                _ => None,
+            };
             let mut parts = Vec::with_capacity(elems.len());
             for &e in &elems {
-                parts.push(emit(db, e, env, use_ctx)?);
+                let part = match elem_it {
+                    Some(it) => emit_grounded(db, e, it, env, use_ctx)?,
+                    None => emit(db, e, env, use_ctx)?,
+                };
+                parts.push(part);
             }
             Ok(format!("vec![{}]", parts.join(", ")))
         }
