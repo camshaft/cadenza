@@ -81,14 +81,27 @@ pub type LifecycleChannel = mpsc::UnboundedSender<LifecycleOp>;
 pub struct LifecycleExecutor {
     channel: LifecycleChannel,
     owner: SessionId,
+    /// The owner session's GENESIS HASH — its provenance identity (`Session::genesis_hash()`), threaded at
+    /// wiring time. Used as the PARENT genesis when this owner spawns a child (`perform_spawn`), instead of
+    /// re-parsing the owner SessionId as hex. The id is a host registry LABEL (may be a vanity string like
+    /// "concierge" for a root/named supervisor); the genesis hash is the stable identity `derive_genesis_hash`
+    /// needs. Threading the Hash (not `Hash::from_hex(owner)`) keeps a vanity-id supervisor spawn-capable
+    /// (#2484 c1 / tick-#784 class: SessionId is opaque, resolve by genesis-hash content, never assume hex==id).
+    owner_genesis: Hash,
 }
 
 impl LifecycleExecutor {
     /// Build over the loop's [`LifecycleChannel`] for the session `owner` (the controller whose
     /// `CompositeExecutor` this registers in under the `lifecycle/*` families). `owner` is stamped as `by`
-    /// on every recorded op (who terminated/spawned).
-    pub fn new(channel: LifecycleChannel, owner: SessionId) -> Self {
-        LifecycleExecutor { channel, owner }
+    /// on every recorded op (who terminated/spawned); `owner_genesis` is that session's genesis hash
+    /// (`Session::genesis_hash()`), the parent-provenance for a spawn — threaded so it's never re-parsed from
+    /// the id string (which may be a vanity label, not genesis-hex).
+    pub fn new(channel: LifecycleChannel, owner: SessionId, owner_genesis: Hash) -> Self {
+        LifecycleExecutor {
+            channel,
+            owner,
+            owner_genesis,
+        }
     }
 
     /// Handle `lifecycle/spawn` (§lifecycle I3): the OWNER (parent) spawns a CHILD running `reducer_hash`.
@@ -120,15 +133,12 @@ impl LifecycleExecutor {
                 ));
             }
         };
-        // The parent genesis hash = the OWNER's SessionId parsed back to a Hash (the id IS the parent's
-        // genesis-hash-hex — the operator's SessionId ruling). A non-hex owner (a test/legacy string id, not a
-        // real genesis hash) can't be a spawn parent → PERMANENT (spawn needs a real provenance hash).
+        // The parent genesis hash = the owner's GENESIS HASH, threaded at wiring time (NOT re-parsed from the
+        // owner id string). This is what keeps a VANITY-id supervisor ("concierge") spawn-capable: the id is a
+        // registry label, but derive_genesis_hash needs the stable provenance identity (§tick-#784 / #2484 c1
+        // — SessionId is opaque, resolve provenance by genesis-hash, never assume hex==id).
         let parent = self.owner.clone();
-        let Some(parent_genesis) = Hash::from_hex(parent.as_str()) else {
-            return EffectOutcome::Err(crate::retry::permanent(
-                "LifecycleExecutor: lifecycle/spawn parent (owner) SessionId is not a genesis-hash-hex; cannot derive child provenance",
-            ));
-        };
+        let parent_genesis = self.owner_genesis;
         // Mint the nonce ONCE + pre-compute the child id from the SAME triple the loop will build with, so
         // the id returned here == the id the loop registers (byte-for-byte). This is the load-bearing bit.
         let spawn_nonce = crate::host::mint_spawn_nonce();
@@ -276,7 +286,7 @@ mod tests {
         let parent_id = SessionId::new(parent_hash.to_hex());
         let reducer_hash = Hash::of(b"child-reducer");
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let mut exec = LifecycleExecutor::new(tx, parent_id.clone());
+        let mut exec = LifecycleExecutor::new(tx, parent_id.clone(), parent_hash);
         let req = EffectRequest::new_with_family(
             effect_ct::LIFECYCLE_SPAWN,
             String::new(), // spawn has no peer target
@@ -327,7 +337,7 @@ mod tests {
     async fn spawn_without_a_reducer_hash_payload_is_permanent() {
         let parent_id = SessionId::new(Hash::of(b"p").to_hex());
         let (tx, _rx) = mpsc::unbounded_channel();
-        let mut exec = LifecycleExecutor::new(tx, parent_id);
+        let mut exec = LifecycleExecutor::new(tx, parent_id, Hash::of(b"p"));
         let req = EffectRequest::new_with_family(
             effect_ct::LIFECYCLE_SPAWN,
             String::new(),
@@ -342,30 +352,66 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn spawn_with_a_non_hex_owner_is_permanent() {
-        // A parent whose SessionId isn't a genesis-hash-hex (a test/legacy string id) can't be a spawn parent
-        // — the child's provenance needs a real parent genesis Hash.
-        let (tx, _rx) = mpsc::unbounded_channel();
-        let mut exec = LifecycleExecutor::new(tx, SessionId::new("not-a-hash"));
+    async fn spawn_with_a_vanity_id_owner_succeeds_using_the_threaded_genesis_hash() {
+        // §tick-#784 fix (regression pin): a parent whose SessionId is a VANITY string ("concierge") — NOT
+        // genesis-hash-hex — CAN spawn. The provenance comes from the owner's GENESIS HASH threaded at wiring
+        // time (not Hash::from_hex(id)), so a vanity-id supervisor is spawn-capable (the self-hosting use
+        // case). The child id is derived from that genesis, independent of the vanity id string.
+        let owner_genesis = Hash::of(b"concierge-genesis");
+        let reducer_hash = Hash::of(b"worker-reducer");
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut exec = LifecycleExecutor::new(tx, SessionId::new("concierge"), owner_genesis);
         let req = EffectRequest::new_with_family(
             effect_ct::LIFECYCLE_SPAWN,
             String::new(),
-            Some(Payload::Inline(
-                Hash::of(b"child").as_bytes().to_vec().into(),
-            )),
+            Some(Payload::Inline(reducer_hash.as_bytes().to_vec().into())),
             Timeliness::Interactive,
         );
-        assert!(
-            matches!(&exec.perform(&req, Hash::of(b"k")).await,
-                EffectOutcome::Err(r) if r.starts_with("PERMANENT:") && r.contains("genesis-hash-hex")),
-            "spawn with a non-hex owner is PERMANENT"
+        let out = exec.perform(&req, Hash::of(b"k")).await;
+        // Spawn ACCEPTED (Ok) despite the vanity id — and the returned child id == derive_genesis_hash from
+        // the THREADED genesis (not from the id string).
+        let EffectOutcome::Ok(Some(Payload::Inline(bytes))) = &out else {
+            panic!("expected Ok(child_id) for a vanity-id owner spawn, got {out:?}");
+        };
+        let expected_child = cdz_kernel::kernel::Session::derive_genesis_hash(
+            reducer_hash,
+            // the nonce the op recorded (read it off the channel below) — assert the id matches that op.
+            match rx.try_recv().expect("a Spawn op was recorded") {
+                LifecycleOp::Spawn {
+                    spawn_nonce,
+                    child_id,
+                    parent,
+                    ..
+                } => {
+                    assert_eq!(
+                        parent.as_str(),
+                        "concierge",
+                        "op records the vanity owner as parent"
+                    );
+                    // child_id in the op == the returned id == derive from (reducer, nonce, owner_genesis).
+                    assert_eq!(
+                        child_id.as_str().as_bytes(),
+                        &bytes[..],
+                        "returned child id == the op's child_id"
+                    );
+                    spawn_nonce
+                }
+                other => panic!("expected Spawn op, got {other:?}"),
+            },
+            Some(owner_genesis),
+        );
+        assert_eq!(
+            String::from_utf8_lossy(bytes),
+            expected_child.to_hex(),
+            "child id derives from the THREADED owner genesis, not the vanity id string"
         );
     }
 
     #[tokio::test]
     async fn terminate_records_a_lifecycle_op_for_the_loop() {
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let mut exec = LifecycleExecutor::new(tx, SessionId::new("controller"));
+        let mut exec =
+            LifecycleExecutor::new(tx, SessionId::new("controller"), Hash::of(b"controller"));
         let out = exec
             .perform(
                 &terminate_req("victim", Some(b"operator kill")),
@@ -389,7 +435,7 @@ mod tests {
     #[tokio::test]
     async fn a_payloadless_terminate_records_an_empty_reason() {
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let mut exec = LifecycleExecutor::new(tx, SessionId::new("ctl"));
+        let mut exec = LifecycleExecutor::new(tx, SessionId::new("ctl"), Hash::of(b"ctl"));
         let out = exec
             .perform(&terminate_req("b", None), Hash::of(b"k"))
             .await;
@@ -403,7 +449,7 @@ mod tests {
     #[tokio::test]
     async fn suspend_and_resume_record_their_ops_and_handles_family_covers_all_three() {
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let mut exec = LifecycleExecutor::new(tx, SessionId::new("ctl"));
+        let mut exec = LifecycleExecutor::new(tx, SessionId::new("ctl"), Hash::of(b"ctl"));
         // handles_family covers terminate + suspend + resume, not an unrelated family.
         assert!(exec.handles_family(effect_ct::LIFECYCLE_TERMINATE));
         assert!(exec.handles_family(effect_ct::LIFECYCLE_SUSPEND));
@@ -448,7 +494,7 @@ mod tests {
         // payload (esp. a Blob ref) must be rejected PERMANENT, not silently dropped — mirroring terminate's
         // payload guard, the inconsistency the finding flagged.
         let (tx, _rx) = mpsc::unbounded_channel();
-        let mut exec = LifecycleExecutor::new(tx, SessionId::new("ctl"));
+        let mut exec = LifecycleExecutor::new(tx, SessionId::new("ctl"), Hash::of(b"ctl"));
         for family in [effect_ct::LIFECYCLE_SUSPEND, effect_ct::LIFECYCLE_RESUME] {
             // Inline payload → PERMANENT.
             let inline = EffectRequest::new_with_family(
@@ -480,7 +526,7 @@ mod tests {
     #[tokio::test]
     async fn suspending_self_is_a_permanent_error() {
         let (tx, _rx) = mpsc::unbounded_channel();
-        let mut exec = LifecycleExecutor::new(tx, SessionId::new("me"));
+        let mut exec = LifecycleExecutor::new(tx, SessionId::new("me"), Hash::of(b"me"));
         let req = EffectRequest::new_with_family(
             effect_ct::LIFECYCLE_SUSPEND,
             "me".to_string(),
@@ -499,7 +545,7 @@ mod tests {
         // A blob-ref reason can't be resolved here (no blob-store handle) — reject PERMANENT, mirroring
         // Http/Emit, rather than silently dropping a provided reason (#2425 review consistency).
         let (tx, _rx) = mpsc::unbounded_channel();
-        let mut exec = LifecycleExecutor::new(tx, SessionId::new("ctl"));
+        let mut exec = LifecycleExecutor::new(tx, SessionId::new("ctl"), Hash::of(b"ctl"));
         let req = EffectRequest::new_with_family(
             effect_ct::LIFECYCLE_TERMINATE,
             "victim".to_string(),
@@ -516,7 +562,7 @@ mod tests {
     #[tokio::test]
     async fn terminating_self_is_a_permanent_error() {
         let (tx, _rx) = mpsc::unbounded_channel();
-        let mut exec = LifecycleExecutor::new(tx, SessionId::new("me"));
+        let mut exec = LifecycleExecutor::new(tx, SessionId::new("me"), Hash::of(b"me"));
         let out = exec
             .perform(&terminate_req("me", None), Hash::of(b"k"))
             .await;
@@ -529,7 +575,7 @@ mod tests {
     #[tokio::test]
     async fn an_empty_target_is_a_permanent_error() {
         let (tx, _rx) = mpsc::unbounded_channel();
-        let mut exec = LifecycleExecutor::new(tx, SessionId::new("ctl"));
+        let mut exec = LifecycleExecutor::new(tx, SessionId::new("ctl"), Hash::of(b"ctl"));
         let out = exec.perform(&terminate_req("", None), Hash::of(b"k")).await;
         assert!(
             matches!(&out, EffectOutcome::Err(r) if r.starts_with("PERMANENT:") && r.contains("non-empty target")),
@@ -541,7 +587,7 @@ mod tests {
     async fn a_closed_channel_is_a_retryable_error() {
         let (tx, rx) = mpsc::unbounded_channel();
         drop(rx);
-        let mut exec = LifecycleExecutor::new(tx, SessionId::new("ctl"));
+        let mut exec = LifecycleExecutor::new(tx, SessionId::new("ctl"), Hash::of(b"ctl"));
         let out = exec
             .perform(&terminate_req("b", None), Hash::of(b"k"))
             .await;
@@ -554,7 +600,7 @@ mod tests {
     #[tokio::test]
     async fn a_non_lifecycle_family_is_a_permanent_error() {
         let (tx, _rx) = mpsc::unbounded_channel();
-        let mut exec = LifecycleExecutor::new(tx, SessionId::new("ctl"));
+        let mut exec = LifecycleExecutor::new(tx, SessionId::new("ctl"), Hash::of(b"ctl"));
         let req = EffectRequest::new_with_family(
             effect_ct::HTTP,
             "b".to_string(),

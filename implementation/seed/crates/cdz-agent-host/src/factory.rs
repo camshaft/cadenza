@@ -40,22 +40,25 @@ use std::sync::Arc;
 /// `LiveExecutorSet` (behind `live-net`), whose `build` `.await`s the live executor assembly (it loads AWS
 /// config for the Bedrock transport). A synchronous builder (a plain closure) satisfies it with no real
 /// await via the blanket impl.
-/// `build` takes the installed session's `id` (the SessionId it's registered under) so a per-session executor
-/// that needs the session's own identity — the [`LifecycleExecutor`](crate::LifecycleExecutor), whose `by`
-/// on every lifecycle op is this owner — can be built correctly. The lifecycle CHANNEL (the loop's) is held
-/// by the concrete builder (e.g. [`LiveExecutorSet`], set at construction), not passed per-build, since it's
-/// one-per-loop. A builder that serves no lifecycle effects simply ignores `id`.
+/// `build` takes the installed session's `id` (the registry label) AND its `owner_genesis` (the session's
+/// genesis hash) so a per-session executor that needs the session identity — the
+/// [`LifecycleExecutor`](crate::LifecycleExecutor), whose `by` is the id + whose spawn-provenance is the
+/// genesis hash — is built correctly. Both are threaded because the id is an opaque label (may be a vanity
+/// string) while the genesis hash is the stable provenance a spawn derives from (never re-parse the id as
+/// hex; §tick-#784). The lifecycle CHANNEL (the loop's) is held by the concrete builder (e.g.
+/// [`LiveExecutorSet`], set at construction), one-per-loop. A builder serving no lifecycle effects ignores both.
 #[async_trait::async_trait(?Send)]
 pub trait ExecutorSetBuilder {
-    async fn build(&self, id: &crate::host::SessionId) -> CompositeExecutor;
+    async fn build(&self, id: &crate::host::SessionId, owner_genesis: Hash) -> CompositeExecutor;
 }
 
 /// A synchronous `Fn() -> CompositeExecutor` (a test's hermetic set, or any non-async assembly) is an
-/// `ExecutorSetBuilder` for free — its `build` just calls the closure (no real await). It ignores `id` (a
-/// closure-built set serves no per-session-identity executor; a caller that needs one uses a real builder).
+/// `ExecutorSetBuilder` for free — its `build` just calls the closure (no real await). It ignores `id` +
+/// `owner_genesis` (a closure-built set serves no per-session-identity executor; a caller that needs one
+/// uses a real builder).
 #[async_trait::async_trait(?Send)]
 impl<F: Fn() -> CompositeExecutor> ExecutorSetBuilder for F {
-    async fn build(&self, _id: &crate::host::SessionId) -> CompositeExecutor {
+    async fn build(&self, _id: &crate::host::SessionId, _owner_genesis: Hash) -> CompositeExecutor {
         self()
     }
 }
@@ -198,7 +201,7 @@ impl LiveExecutorSet {
 #[cfg(feature = "live-net")]
 #[async_trait::async_trait(?Send)]
 impl ExecutorSetBuilder for LiveExecutorSet {
-    async fn build(&self, id: &crate::host::SessionId) -> CompositeExecutor {
+    async fn build(&self, id: &crate::host::SessionId, owner_genesis: Hash) -> CompositeExecutor {
         use cdz_kernel::effect::effect_ct;
         // Cheap per-install assembly: CLONE the shared transports (Arc bumps) into fresh executors, each
         // WRAPPED in a MeteredExecutor sharing the host-wide Arc<EffectMetrics> (an Arc-clone, also cheap) so
@@ -279,7 +282,11 @@ impl ExecutorSetBuilder for LiveExecutorSet {
                 c = c.with_effect(
                     fam,
                     Box::new(MeteredExecutor::new(
-                        Box::new(crate::LifecycleExecutor::new(lifecycle.clone(), id.clone())),
+                        Box::new(crate::LifecycleExecutor::new(
+                            lifecycle.clone(),
+                            id.clone(),
+                            owner_genesis,
+                        )),
                         m.clone(),
                     )),
                 );
@@ -520,12 +527,18 @@ where
                 spec.reducer_hash
             )
         })?;
-        // 3. Assemble the session with a fresh executor set + the session's authorizer. genesis records the
-        //    reducer hash as the session's genesis identity (so replay reconstructs it).
-        // Build the executor set for THIS session (its id owns any per-session executor, e.g. lifecycle).
-        let executors = self.executors.build(&spec.id).await;
-        let mut hosted = HostedSession::genesis(
+        // 3. Assemble the session. MINT THE NONCE FIRST so we can derive the session's genesis hash BEFORE
+        //    building the executor set — a lifecycle executor needs the owner's genesis hash (its spawn
+        //    provenance), which isn't the id string (a vanity install id). Then build the session with the
+        //    SAME nonce (`genesis_with_nonce`), so its genesis_hash matches what we derived + handed the
+        //    executors (a root install has no parent → derive with `None`).
+        let spawn_nonce = crate::host::mint_spawn_nonce();
+        let owner_genesis =
+            cdz_kernel::kernel::Session::derive_genesis_hash(spec.reducer_hash, spawn_nonce, None);
+        let executors = self.executors.build(&spec.id, owner_genesis).await;
+        let mut hosted = HostedSession::genesis_with_nonce(
             spec.reducer_hash,
+            spawn_nonce,
             Box::new(reducer),
             self.authz.build(),
             executors,
@@ -563,18 +576,16 @@ where
         let reducer = AsyncComponentReducer::from_component_bytes(&bytes).map_err(|e| {
             format!("child reducer component for {reducer_hash} did not lift: {e:?}")
         })?;
-        // The child's own SessionId = hex(its genesis hash), derived from (reducer, nonce, parent) — the same
-        // id the loop registers it under. Thread it as the executor-set owner so a spawned child's own
-        // lifecycle executor (if wired) is owned by the child, not a stale/absent id.
-        let child_id = crate::host::SessionId::new(
-            cdz_kernel::kernel::Session::derive_genesis_hash(
-                reducer_hash,
-                spawn_nonce,
-                Some(parent_genesis),
-            )
-            .to_hex(),
+        // The child's own genesis hash, derived from (reducer, nonce, parent) — its SessionId is that hash's
+        // hex (the id the loop registers it under) AND its genesis-provenance for the executor set (a spawned
+        // child that itself spawns uses this as its parent-genesis).
+        let child_genesis = cdz_kernel::kernel::Session::derive_genesis_hash(
+            reducer_hash,
+            spawn_nonce,
+            Some(parent_genesis),
         );
-        let executors = self.executors.build(&child_id).await;
+        let child_id = crate::host::SessionId::new(child_genesis.to_hex());
+        let executors = self.executors.build(&child_id, child_genesis).await;
         // DENY-ALL child authorizer (NOT self.authz.build() — a spawned child does not inherit the install
         // policy; it starts deny-by-default and earns caps via a later explicit grant).
         let hosted = HostedSession::genesis_spawned_with_nonce(
