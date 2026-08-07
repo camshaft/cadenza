@@ -441,16 +441,22 @@ jobs:
     # Every corpus program must round-trip through the syntax surfaces — guards cadenza-syntax
     # independently of the compiler. Full-CI-in-nix cutover (Model A): body runs the nix `checks.roundtrip`
     # derivation (identical `cargo xtask roundtrip`, hermetic), keeping `name: syntax roundtrip` so the
-    # required context `checks / syntax roundtrip` is UNCHANGED (no ruleset edit). ARCH-INDEPENDENT
-    # (corpus-only, no runtime build) → x86 default runner via `checks.x86_64-linux.roundtrip`.
+    # required context `checks / syntax roundtrip` is UNCHANGED (no ruleset edit — only the RUNNER moves).
+    # ARCH-INDEPENDENT (corpus-only syntax round-trip: `cdz-syntax --from binary --to <surface>` parse/print,
+    # NO runtime store / per-arch hash / wasmtime — v-nix verified 2026-08-07). QUEUE-BALANCE swap (v-nix+v-ft):
+    # moved x86→ARM. The x86 required pool carried 3.1x arm's run-minutes (28.9m/7 jobs incl. all 3 ~7m heavies
+    # vs 9.3m/3), which IS the queue-wait p90 tail (x86 slot-pool oversubscribed, arm idle). roundtrip (7.2m) is
+    # the biggest ARCH-PORTABLE non-test-ubuntu x86 job → moving it to arm takes the most x86 load off (28.9→21.7m,
+    # -25%) without creating an arm pole (arm 9.3→16.5m, still < x86's 21.7m). Drops the p90 tail for ALL x86 jobs
+    # incl. the 2 remaining heavies (clippy-shard-b + test-ubuntu). (Was on x86 to free arm; the imbalance reversed.)
     name: syntax roundtrip
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@v22
       - uses: ./.github/actions/nix-store-cache
       - name: cargo xtask roundtrip (via nix)
-        run: nix build .#checks.x86_64-linux.roundtrip --print-build-logs
+        run: nix build .#checks.aarch64-linux.roundtrip --print-build-logs
 
   bench:
     # Runtime allocation regression check (allocation COUNT, deterministic native↔wasm) vs the
