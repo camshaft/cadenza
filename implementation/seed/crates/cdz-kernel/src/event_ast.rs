@@ -1176,6 +1176,121 @@ pub fn decode_metrics_publish(bytes: &[u8]) -> Result<Vec<MetricSample>, EventAs
     Ok(out)
 }
 
+/// One stage of a shell PIPELINE (the shell effect's structured-pipeline payload — operator security
+/// directive, `shell` should MODEL pipes with EACH stage authorized). A stage is a `program` + its
+/// `args` (a `Vec<String>`), the SAME structured `{program, args}` shape a single direct-exec command
+/// splits its target into today — but explicit, so a pipeline stage is an authorized unit (not a
+/// whitespace-split of one string) and metacharacters can never be re-interpreted (the CWE-78 direct-exec
+/// discipline, extended to pipes: no `sh -c`, every token a literal arg). The HOST spawns each stage with
+/// piped stdio and wires stdout→stdin; the KERNEL authorizes each stage's `program` as the resolved target
+/// of one authz call (deny-all-if-any-denied), so the [`crate::authz::Authorize`] signature is unchanged —
+/// the v0 predicate authorizer and a future Cedar-as-wasm authorizer both gate a pipeline with zero codec
+/// knowledge (the per-stage program simply IS the target of each SEC-F1 gate).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ShellStage {
+    pub program: String,
+    pub args: Vec<String>,
+}
+
+/// A shell PIPELINE: an ORDERED list of [`ShellStage`]s whose stdout→stdin the host wires (`a | b | c`).
+/// Rides the `shell` effect's PAYLOAD (unused by the bare-target single-command path today), so it is
+/// ADDITIVE: a shell effect with NO payload keeps today's `target`-is-the-command behavior; a payload
+/// carrying a `(shell-pipeline …)` selects the structured multi-stage path. A single-element pipeline is a
+/// well-formed one-stage "pipeline" (the structured successor to a bare target); an empty pipeline is a
+/// live-but-empty `(shell-pipeline)` (distinct from a decode Err — the kernel rejects it as an empty
+/// command at authz/dispatch, never a panic).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ShellPipeline {
+    pub stages: Vec<ShellStage>,
+}
+
+/// Build one stage's `(stage (program <str>) (args (arg <str>) …))` form. Shared by encode; args ride as an
+/// ordered `(args (arg <str>) …)` list (each arg a literal string — no whitespace re-splitting, so an arg
+/// with spaces survives, unlike the bare-target v0 path).
+fn shell_stage_form(b: &mut Builder, s: &ShellStage) -> StructId {
+    let head = b.name("stage");
+    let program_form = {
+        let h = b.name("program");
+        let v = str_leaf(b, &s.program);
+        b.list(vec![h, v])
+    };
+    let args_form = {
+        let h = b.name("args");
+        let mut items = vec![h];
+        for arg in &s.args {
+            let ah = b.name("arg");
+            let av = str_leaf(b, arg);
+            items.push(b.list(vec![ah, av]));
+        }
+        b.list(items)
+    };
+    b.list(vec![head, program_form, args_form])
+}
+
+/// Encode a [`ShellPipeline`] as canonical AST — the `shell` effect's structured-pipeline payload. Shape:
+///
+///   `(shell-pipeline (stage (program <str>) (args (arg <str>) …)) …)`
+///
+/// The reducer builds it (one stage per `program | program | …` segment); the HOST decodes it
+/// ([`decode_shell_pipeline`]), spawns each stage with piped stdio, and wires stdout→stdin — no `sh -c`,
+/// every arg a literal token. Same shared-codec + total-decode discipline as the other event_ast codecs.
+pub fn encode_shell_pipeline(p: &ShellPipeline) -> Vec<u8> {
+    let mut b = Builder::new();
+    let head = b.name("shell-pipeline");
+    let mut items = vec![head];
+    for s in &p.stages {
+        items.push(shell_stage_form(&mut b, s));
+    }
+    let root = b.list(items);
+    codec::encode(&b.finish(root))
+}
+
+/// Read one `(stage (program <str>) (args (arg <str>) …))` form → a [`ShellStage`]. The shared body of the
+/// pipeline decoder.
+fn read_shell_stage(a: &Arenas, id: StructId) -> Result<ShellStage, EventAstError> {
+    let [program_f, args_f] = a.as_form(id, "stage").ok_or(shape("stage head"))? else {
+        return Err(shape("stage arity (want (program)(args))"));
+    };
+    let program = {
+        let [pv] = a
+            .as_form(*program_f, "program")
+            .ok_or(shape("program form"))?
+        else {
+            return Err(shape("program arity"));
+        };
+        read_str(a, *pv)?
+    };
+    let args = {
+        let arg_forms = a.as_form(*args_f, "args").ok_or(shape("args form"))?;
+        let mut out = Vec::with_capacity(arg_forms.len());
+        for &af in arg_forms {
+            let [av] = a.as_form(af, "arg").ok_or(shape("arg form"))? else {
+                return Err(shape("arg arity"));
+            };
+            out.push(read_str(a, *av)?);
+        }
+        out
+    };
+    Ok(ShellStage { program, args })
+}
+
+/// Decode a `shell-pipeline` frame encoded by [`encode_shell_pipeline`] → the ordered stages. Total,
+/// Codec-vs-Shape like the other decoders: non-parseable bytes → [`EventAstError::Codec`]; a well-formed
+/// frame with a bad head/arity / non-string field → [`EventAstError::Shape`]. An empty `(shell-pipeline)`
+/// decodes to an empty stage list (a live-but-empty pipeline, distinct from a decode Err — the caller
+/// rejects an empty command). Never a panic (the bytes ride the durable effect log / a guest reducer).
+pub fn decode_shell_pipeline(bytes: &[u8]) -> Result<ShellPipeline, EventAstError> {
+    let a = codec::decode_detailed(bytes).map_err(EventAstError::Codec)?;
+    let stage_forms = a
+        .as_form(a.root, "shell-pipeline")
+        .ok_or(shape("shell-pipeline head"))?;
+    let mut stages = Vec::with_capacity(stage_forms.len());
+    for &sf in stage_forms {
+        stages.push(read_shell_stage(&a, sf)?);
+    }
+    Ok(ShellPipeline { stages })
+}
+
 /// A decoded §4c store-snapshot frame — either a single-value `name-set` pointer or a group `member-op`.
 /// This is the durable-snapshot restore discriminant: [`decode_store_frame`] decodes the shared codec
 /// ONCE and routes on the frame's self-describing AST head, so [`crate::name_store::NameStore::from_snapshot_bytes`]
@@ -2801,6 +2916,76 @@ mod tests {
             encode_metric_publish(&with_unit),
             encode_metric_publish(&no_unit),
             "a non-empty unit is carried on the wire; an empty one is omitted"
+        );
+    }
+
+    #[test]
+    fn shell_pipeline_round_trips_multi_stage_and_preserves_arg_order_and_spaces() {
+        // Operator security directive: the shell effect MODELS pipes as a structured list of {program, args}
+        // stages (each an authorized unit), not a whitespace-split of one target string. A multi-stage
+        // pipeline round-trips with stage + arg ORDER preserved, and — unlike the bare-target v0 path — an
+        // arg containing SPACES survives (it's a literal string, never re-split).
+        let p = ShellPipeline {
+            stages: vec![
+                ShellStage {
+                    program: "grep".to_string(),
+                    args: vec!["-e".to_string(), "needle in haystack".to_string()],
+                },
+                ShellStage {
+                    program: "sort".to_string(),
+                    args: vec![],
+                },
+                ShellStage {
+                    program: "head".to_string(),
+                    args: vec!["-n".to_string(), "5".to_string()],
+                },
+            ],
+        };
+        let back = decode_shell_pipeline(&encode_shell_pipeline(&p)).expect("round-trips");
+        assert_eq!(back, p);
+        // The space-bearing arg survived as ONE arg (not split into two) — the point of the structured payload.
+        assert_eq!(back.stages[0].args[1], "needle in haystack");
+    }
+
+    #[test]
+    fn shell_pipeline_handles_single_stage_and_empty() {
+        // A single-stage pipeline is well-formed (the structured successor to a bare target).
+        let one = ShellPipeline {
+            stages: vec![ShellStage {
+                program: "echo".to_string(),
+                args: vec!["ok".to_string()],
+            }],
+        };
+        assert_eq!(
+            decode_shell_pipeline(&encode_shell_pipeline(&one)).unwrap(),
+            one
+        );
+        // An empty pipeline decodes to an empty stage list (a live-but-empty `(shell-pipeline)`, distinct from
+        // a decode Err — the CALLER rejects an empty command; the codec is faithful).
+        let empty = ShellPipeline { stages: vec![] };
+        assert!(decode_shell_pipeline(&encode_shell_pipeline(&empty))
+            .unwrap()
+            .stages
+            .is_empty());
+    }
+
+    #[test]
+    fn shell_pipeline_decode_is_total_codec_vs_shape() {
+        // Two EventAstError classes, never panics (the payload rides the durable effect log / a guest reducer):
+        // non-decodable bytes → Codec; a well-formed frame with the WRONG head → Shape.
+        assert!(
+            matches!(
+                decode_shell_pipeline(b"not a shell-pipeline frame"),
+                Err(EventAstError::Codec(_))
+            ),
+            "non-decodable bytes are a Codec error"
+        );
+        assert!(
+            matches!(
+                decode_shell_pipeline(&encode_members([&Hash::of(b"x")])),
+                Err(EventAstError::Shape(_))
+            ),
+            "a members frame is a Shape error (wrong head), not a shell-pipeline"
         );
     }
 
