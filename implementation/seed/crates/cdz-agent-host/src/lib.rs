@@ -75,6 +75,8 @@ pub mod lifecycle;
 pub mod metrics;
 pub mod model;
 pub mod retry;
+#[cfg(feature = "live-aws-storage")]
+pub mod s3_blob;
 #[cfg(feature = "live-exec")]
 pub mod shell;
 pub mod status;
@@ -121,6 +123,8 @@ pub use metrics::{EffectMetrics, HostMetrics};
 pub use model::BedrockModelTransport;
 pub use model::{ModelExecutor, ModelTransport};
 pub use retry::{classify, permanent, retryable, Retryability};
+#[cfg(feature = "live-aws-storage")]
+pub use s3_blob::S3BlobStore;
 #[cfg(feature = "live-exec")]
 pub use shell::ShellExecutor;
 pub use status::{host_session_status_json, session_status_json, DEFAULT_STALL_AFTER_MS};

@@ -94,6 +94,18 @@ metrics-export-otlp = ["metrics-export", "dep:reqwest", "s2n-quic-dc-metrics/ote
 # validation unless `allow_non_loopback = true` (opt-in by intent), and still warned at boot.
 metrics-export-prometheus = ["metrics-export", "tokio/net", "tokio/io-util"]
 
+# `live-aws-storage` gates the AWS-NATIVE storage backends (operator directive: "AWS native backends for all of
+# the host traits") — the S3-backed BlobStore (and, as later increments land, the DynamoDB-backed LogSink +
+# name/session stores). OFF by default so the hermetic gate pulls NO AWS SDK and the default build/tests use the
+# in-memory / local-disk backends (MemBlobStore / DiskBlobStore etc.) with no credentials. It's SEPARATE from
+# `live-net` (which gates network EGRESS EFFECTS — the Bedrock model / HTTP executors a reducer performs);
+# storage backends are the host's OWN durability, a distinct concern, so they get their own gate. It reuses the
+# already-optional `aws-config` (the SDK-default credential chain — env/profile/IMDS, no broker) + `aws-smithy-
+# types`, and adds `aws-sdk-s3`. Credentials come from the environment via the SDK default provider (same
+# contract as the Bedrock transport). The trait stays the seam: a consumer holds `Box<dyn BlobStore>` and never
+# sees an AWS type — the daemon just selects the S3 backend by config when this feature is compiled.
+live-aws-storage = ["dep:aws-config", "dep:aws-smithy-types", "dep:aws-sdk-s3"]
+
 [dependencies]
 # The kernel whose Executor/Authorize traits + effect/event types we implement. Path dep across the
 # workspace boundary (both are their own workspaces). We CONSUME these traits; we never edit its src.
@@ -191,3 +203,10 @@ aws-sdk-bedrockruntime = { version = "1", default-features = false, features = [
 # Document). Already in the tree transitively via aws-sdk-bedrockruntime; named directly here so the
 # conversion helper can construct/destructure `Document`. Behind `live-net` (only the real transport needs it).
 aws-smithy-types = { version = "1", optional = true }
+# aws-sdk-s3 — the S3-backed BlobStore behind `live-aws-storage` (operator: content-addressed blobs are "the
+# obvious thing to put in S3"). OPTIONAL (default build compiles no S3 tree). Same `default-features = false` +
+# rustls / default-https-client / rt-tokio enabled set as aws-sdk-bedrockruntime above (drop native-tls, keep
+# the HTTPS connector + tokio runtime `.send().await` needs). Credentials come from the SDK default provider
+# chain (env/profile/IMDS) via the shared `aws-config`, exactly like the Bedrock transport — no broker, no
+# hardcoding.
+aws-sdk-s3 = { version = "1", default-features = false, features = ["rustls", "default-https-client", "rt-tokio"], optional = true }
