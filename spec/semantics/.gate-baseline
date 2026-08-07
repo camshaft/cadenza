@@ -6139,3 +6139,6 @@ pass	mo5 LIST-state shadowing — inner and outer thread independent heap lists,
 pass	is1 a draw-SELECTED match arm installs a nested same-effect shadow — outer state resumes after the branch-local region
 pass	is2 the ARM's resume-value is a nested SAME-effect handle — a fresh shadow instantiated per dispatch from the live state
 pass	is3 the ARM's NEXT-STATE is computed by a nested SAME-effect handle — the shadow feeds the outer state thread
+pass	hp1 a RECURSIVE fn installs a fresh same-effect handler per frame — the base case draws from the deepest, each frame from its own
+pass	hp2 per-frame handlers with a POST-ORDER draw — each frame draws its own state AFTER the recursive call returns
+pass	hp3 the recursive call sits in the SEED — each frame's handler is seeded by the whole subtree below it

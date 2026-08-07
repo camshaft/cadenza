@@ -14176,3 +14176,64 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 320 Int64))
   (call   main (: 0 Int64)) (output (: 300 Int64)))
+
+;; ── a fresh same-effect handler per RECURSION frame (breaker hp) ─────────────────────────────────
+;; A recursive fn that installs a handler around its own recursive call — a dynamic handler STACK
+;; grown per frame. This folds (the mutual-recursion ≥2-call-site decline does not bite: one
+;; recursive call site, handle wrapped around the recursion). hp1 draws PRE-order (each frame
+;; draws its own seed, the base case draws from the DEEPEST frame); hp2 draws POST-order (after
+;; the recursive return — each frame's state must survive its entire subtree); hp3 puts the
+;; recursive call in the SEED position (each frame's handler seeded by the whole subtree below,
+;; the seed evaluating in the CALLER's ambient handler).
+
+(case "hp1 a RECURSIVE fn installs a fresh same-effect handler per frame — the base case draws from the deepest, each frame from its own"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (level (: d Int64))
+              (if (<= d 0)
+                  (St.next)
+                  (handle St (* d 100)
+                    ((next () s (resume s (+ s 1))))
+                    (+ (St.next) (level (- d 1))))))
+            (def (main (: n Int64))
+              (handle St 7
+                ((next () s (resume s (+ s 1))))
+                (level n)))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 401 Int64))
+  (call   main (: 0 Int64)) (output (: 7 Int64))
+  (call   main (: 3 Int64)) (output (: 701 Int64)))
+
+(case "hp2 per-frame handlers with a POST-ORDER draw — each frame draws its own state AFTER the recursive call returns"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (level (: d Int64))
+              (if (<= d 0)
+                  (St.next)
+                  (handle St (* d 100)
+                    ((next () s (resume s (+ s 1))))
+                    (+ (level (- d 1)) (* 1000 (St.next))))))
+            (def (main (: n Int64))
+              (handle St 7
+                ((next () s (resume s (+ s 1))))
+                (level n)))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 301100 Int64))
+  (call   main (: 1 Int64)) (output (: 101100 Int64)))
+
+(case "hp3 the recursive call sits in the SEED — each frame's handler is seeded by the whole subtree below it"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (level (: d Int64))
+              (if (<= d 0)
+                  (St.next)
+                  (handle St (level (- d 1))
+                    ((next () s (resume s (+ s 1))))
+                    (+ (St.next) (St.next)))))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (* s 2))))
+                (level 2)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 23 Int64))
+  (call   main (: 3 Int64)) (output (: 15 Int64)))
