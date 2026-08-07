@@ -205,6 +205,28 @@ pub mod effect_ct {
         family.starts_with(FS_PREFIX)
     }
 
+    /// The `metric/*` namespace PREFIX — the reducer METRICS-PUBLISH partition (operator Q3): a reducer emits
+    /// a metric that the HOST forwards to its existing metric backends (statsd/otlp/prometheus). Like
+    /// `fs/*`/`lifecycle/*` it is AUTHZ-GATED + EXECUTOR-ROUTED (register-by-string, `Emit` placeholder kind,
+    /// no kernel drive-loop arm): the host registers a `MetricExecutor` (mirroring `EmitExecutor`) that
+    /// `handles_family` the metric names, records into the shared metrics Registry, and applies its OWN
+    /// cardinality bound + guest-string safety (host concern, not kernel). The kernel only carries the metric
+    /// payload bytes (the `metric-publish` codec) + the family vocab. Metric SEMANTICS (what to measure, when)
+    /// live in the reducer — the minimize-kernel/host-logic standing order: policy on the log, not baked in.
+    pub const METRIC_PREFIX: &str = "metric/";
+
+    /// `metric/publish` — publish one metric sample (target = the metric name; payload = the
+    /// `metric-publish` blob via [`crate::event_ast::encode_metric_publish`]: name + kind + value + labels).
+    /// The host `MetricExecutor` records it into the metrics Registry; a broad `metric/*` grant admits it.
+    pub const METRIC_PUBLISH: &str = "metric/publish";
+
+    /// Is `family` in the `metric/*` namespace (the reducer metrics-publish partition)? A prefix test (like
+    /// [`is_fs_family`]). Executor-routed, so the drive loop needs no special arm — here for the manifest +
+    /// discoverability + one source of truth for the partition boundary.
+    pub fn is_metric_family(family: &str) -> bool {
+        family.starts_with(METRIC_PREFIX)
+    }
+
     /// Is `family` in the `control/*` namespace (authz-exempt, host/kernel-answered, never executor-routed)?
     /// The partition test the drive loop applies BEFORE authorize/route: `true` → control path, `false` →
     /// the effect path (authorize → executor). A simple prefix check on [`CONTROL_PREFIX`] — one source of
@@ -244,13 +266,14 @@ pub mod effect_ct {
         FS_READ,
         FS_WRITE,
         FS_GLOB,
+        METRIC_PUBLISH,
     ];
 
     /// If `family` is a WELL-KNOWN family whose string is a FIXED, kernel-defined `&'static` — one of the
-    /// built-in effect verbs ([`ALL`], via [`super::EffectKind::from_family`]) or the exact control/store/fs
-    /// families (`control/capabilities`, `control/summary`, `store/set`, `store/resolve`, `store/add`,
-    /// `store/remove`, `store/resolve-all`, `fs/read`, `fs/write`, `fs/glob`) — return that canonical
-    /// `&'static str`. `None` for an EXTENSION family (register-by-string).
+    /// built-in effect verbs ([`ALL`], via [`super::EffectKind::from_family`]) or the exact control/store/fs/
+    /// metric families (`control/capabilities`, `control/summary`, `store/set`, `store/resolve`, `store/add`,
+    /// `store/remove`, `store/resolve-all`, `fs/read`, `fs/write`, `fs/glob`, `metric/publish`) — return that
+    /// canonical `&'static str`. `None` for an EXTENSION family (register-by-string).
     ///
     /// The distinction matters for LOGGING (github-liaison #2180 residual): `ContentType.family` is a
     /// `Cow<'static, str>` and for an extension family it carries the CALLER's `Cow::Owned` verbatim — i.e.
@@ -279,6 +302,7 @@ pub mod effect_ct {
             FS_READ => Some(FS_READ),
             FS_WRITE => Some(FS_WRITE),
             FS_GLOB => Some(FS_GLOB),
+            METRIC_PUBLISH => Some(METRIC_PUBLISH),
             _ => None,
         }
     }
@@ -846,6 +870,7 @@ mod tests {
         assert_eq!(wellknown_static_str(FS_READ), Some(FS_READ));
         assert_eq!(wellknown_static_str(FS_WRITE), Some(FS_WRITE));
         assert_eq!(wellknown_static_str(FS_GLOB), Some(FS_GLOB));
+        assert_eq!(wellknown_static_str(METRIC_PUBLISH), Some(METRIC_PUBLISH));
         // Extension families (register-by-string, guest-controlled) → None (redacted).
         assert_eq!(wellknown_static_str("my/custom-effect"), None);
         assert_eq!(wellknown_static_str("weather"), None);
@@ -1150,6 +1175,32 @@ mod tests {
         assert_eq!(effect_ct::wellknown_static_str("fs/secret-x"), None);
         assert!(effect_ct::is_fs_family("fs/secret-x"));
         assert!(!effect_ct::is_fs_family("myfs"));
+    }
+
+    #[test]
+    fn metric_family_partition_consts_predicate_manifest_and_safe_logging() {
+        // §operator-Q3 metrics-publish partition: metric/publish — authz-gated, executor-routed to the host
+        // MetricExecutor, register-by-string (no new EffectKind), gated on the metric NAME target.
+        assert_eq!(effect_ct::METRIC_PREFIX, "metric/");
+        assert_eq!(effect_ct::METRIC_PUBLISH, "metric/publish");
+        assert!(effect_ct::is_metric_family(effect_ct::METRIC_PUBLISH));
+        assert!(effect_ct::METRIC_PUBLISH.starts_with(effect_ct::METRIC_PREFIX));
+        // SAFE-LOGGING (#2180): the exact string is kernel-defined fixed &'static → log VERBATIM.
+        assert_eq!(
+            effect_ct::wellknown_static_str(effect_ct::METRIC_PUBLISH),
+            Some(effect_ct::METRIC_PUBLISH)
+        );
+        // In the manifest family set → the capability projection reports metric grant-states.
+        assert!(effect_ct::ALL.contains(&effect_ct::METRIC_PUBLISH));
+        // DISJOINT from the other partitions.
+        assert!(!effect_ct::is_store_family(effect_ct::METRIC_PUBLISH));
+        assert!(!effect_ct::is_fs_family(effect_ct::METRIC_PUBLISH));
+        assert!(!effect_ct::is_lifecycle_family(effect_ct::METRIC_PUBLISH));
+        assert!(!effect_ct::is_metric_family(effect_ct::FS_READ));
+        // A guest fake metric-ish name that isn't the exact const logs redacted (None); prefix still classifies.
+        assert_eq!(effect_ct::wellknown_static_str("metric/secret-x"), None);
+        assert!(effect_ct::is_metric_family("metric/secret-x"));
+        assert!(!effect_ct::is_metric_family("mymetric"));
     }
 
     #[test]
