@@ -4687,6 +4687,100 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 304 Int64)))
 
+(case "a byte-walk lexer performing per byte — Bytes.at pairs with an advancing draw per position"
+  (doc    "The iteration-triad discipline extended to BYTES walks (the bin-decode pins parse frames
+           whole): each Bytes.at read pairs with an advancing draw — digits 1,2,3 + draws 0,1,2
+           positionally encoded → 135. The incremental-lexer idiom.")
+  (input  (do
+            (effect Tok (op take (-> Unit Int64)))
+            (def (lex (: b Bytes) (: i Int64) (: acc Int64))
+              (match (Bytes.at b i)
+                ((Some c) (lex b (+ i 1) (+ (* acc 10) (+ c (Tok.take)))))
+                ((None _u) acc)))
+            (def (main (: n Int64))
+              (handle Tok 0
+                ((take (u) s (resume s (+ s 1))))
+                (lex (bin (u8 (UInt8.wrap 1)) (u8 (UInt8.wrap 2)) (u8 (UInt8.wrap 3))) 0 0)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 135 Int64)))
+
+(case "an emit/flush byte-writer seeded EMPTY — three emits accumulate, flush reads the frame back"
+  (doc    "The empty-seed writer (the wire-accumulator pin seeds non-empty and returns lengths):
+           three Unit-returning emits accumulate onto an empty `(bin)` state and a separate flush op
+           reads the whole frame — [5,9,2], len 3, byte [1] = 9 → 309.")
+  (input  (do
+            (effect Sink (op emit (-> Int64 Unit)) (op flush (-> Unit Bytes)))
+            (def (main (: n Int64))
+              (handle Sink (bin)
+                ((emit (v) b (resume unit (Bytes.concat b (bin (u8 (UInt8.wrap v))))))
+                 (flush (u) b (resume b b)))
+                (do
+                  (Sink.emit n)
+                  (Sink.emit 9)
+                  (Sink.emit 2)
+                  (let ((out (Sink.flush)))
+                    (+ (* 100 (Bytes.len out))
+                       (match (Bytes.at out 1) ((Some x) x) ((None _u) -1)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 309 Int64)))
+
+(case "a reader→writer PUMP then a LET-bound flush reads the FULL accumulation (breaker tk3d class)"
+  (doc    "FINDING repro (tk3d, fixed): a cross-function performing helper (`pump` emits 3 draws
+           onto the Sink state) followed by a LET-BOUND flush — the perform-walk once mis-treated
+           the let's bindings as an Apply and never saw the flush observing pump's out-state, so
+           the let read the SEED (len 0, or -1 through the at-readout). Now the full pipeline
+           reads [5,6,7]: len 3, byte [2] = 7 → 307. (The scalar face is pinned alongside by the
+           fix; the strict-operand and no-helper shapes always worked.)")
+  (input  (do
+            (effect Src (op read (-> Unit Int64)))
+            (effect Sink (op emit (-> Int64 Unit)) (op flush (-> Unit Bytes)))
+            (def (pump (: k Int64))
+              (if (= k 0) unit
+                  (do (Sink.emit (Src.read)) (pump (- k 1)))))
+            (def (main (: n Int64))
+              (handle Src n
+                ((read (u) s (resume s (+ s 1))))
+                (handle Sink (bin)
+                  ((emit (v) b (resume unit (Bytes.concat b (bin (u8 (UInt8.wrap v))))))
+                   (flush (u) b (resume b b)))
+                  (do
+                    (pump 3)
+                    (let ((out (Sink.flush)))
+                      (+ (* 100 (Bytes.len out))
+                         (match (Bytes.at out 2) ((Some x) x) ((None _u) -1))))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 307 Int64)))
+
+(case "a BigInt arithmetic tower over one perform draw — cube then divide, narrowed once"
+  (doc    "Multi-step exact arithmetic downstream of a single crossing (the argument pins do one op
+           per crossing): the draw cubes then integer-divides — 5³/5 = 25, narrowed once through
+           checked Int64.of.")
+  (input  (do
+            (effect St (op next (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next (u) s (resume s (+ s 1))))
+                (let ((b (BigInt.of (St.next))))
+                  (let ((big (* b (* b b))))
+                    (Int64.of (/ big (BigInt.of 5)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 25 Int64)))
+
+(case "a Rational SQUARE over a perform draw — 1/5 squared stays exactly 1/25"
+  (doc    "The exact-fraction tower sibling: 1/draw squared must stay exact — (1/5)² = 1/25 →
+           10·1 + 25 = 35.")
+  (input  (do
+            (effect St (op next (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next (u) s (resume s (+ s 1))))
+                (let ((r (Rational.of 1 (St.next))))
+                  (let ((sq (* r r)))
+                    (+ (* 10 (Int64.of (Rational.numerator sq)))
+                       (Int64.of (Rational.denominator sq)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 35 Int64)))
+
 ; ============ Guarded match × effects (breaker FINDING, ag5 → fixed #2333). A guarded match on a
 ; perform-result scrutinee whose FALLBACK arm also performs used to leak the fold-synthesized #seed
 ; binder as a false CDZ0101: the guard desugar's arm-body copy reparented a reused (shared) body
