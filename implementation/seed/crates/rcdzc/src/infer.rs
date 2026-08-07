@@ -13246,6 +13246,27 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 // descend into it so a fault INSIDE the guard (an unbound name, a type error) also surfaces.
                 if let Some(g) = db.ast.as_form(*pat, "guard").filter(|g| g.len() == 2) {
                     let cond = g[1];
+                    // GUARDS MUST BE SIDE-EFFECT-FREE (operator directive, PR #2543): a guard condition that
+                    // PERFORMS an effect is a compile error (CDZ0407). A guard is a boolean predicate the
+                    // pattern engine may evaluate speculatively or repeatedly, so an effect performed in it has
+                    // no well-defined evaluation count/order — the re-evaluation miscompile breaker finding #9
+                    // exposed (an inline performing scrutinee + performing guard on a miss re-drew the
+                    // scrutinee). Forbid ALL effects in guards (no non-mutating carve-out — operator's
+                    // consistency call), rejecting at the offending `(E.op …)` node (perform-detection owned by
+                    // v-effects, `effects::effect_op_in_guard_cond`). Checked BEFORE the Bool-type check so a
+                    // performing guard names the real fault (the effect) rather than a downstream type message.
+                    if let Some(op) = crate::effects::effect_op_in_guard_cond(db, cond) {
+                        trace!(target: "rcdzc::infer", node = op.0, "fault: effect performed in guard (CDZ0407)");
+                        out.push(
+                            Reject::coded(
+                                Code::EffectInGuard,
+                                "a guard must be side-effect-free — an effect is performed in this guard, \
+                                 which the pattern engine may evaluate speculatively or repeatedly; lift it \
+                                 to a `let` evaluated once before the `match` and guard on the bound value",
+                            )
+                            .at(op),
+                        );
+                    }
                     let cond_ty = type_of(db, cond);
                     if !cond_ty.agrees_with(&Ty::Bool) {
                         trace!(target: "rcdzc::infer", node = cond.0, cond_ty = %cond_ty.render_name(), "fault: guard condition not Bool (CDZ0203)");
