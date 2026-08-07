@@ -6121,3 +6121,8 @@ pass	a perform-drawn quantity DIVIDES across dimensions — the meter/second quo
 pass	host calls in the seed AND the next-state slot — the FINAL dispatch's state call is elided
 pass	two host-seeded SIBLING handlers — each region's seed consumes its response in evaluation order
 pass	a host call SANDWICHED between two in-program dispatches — state survives the boundary crossing
+pass	a TUPLE-literal scrutinee with performing fields — draws fire once, bind by position
+pass	a USER-SUM-literal scrutinee with a performing payload — the ctor pattern binds once
+pass	a STD-SUM (Option) literal scrutinee — single eval, payload binds by position
+pass	a LIST-literal scrutinee with performing elements — draws fire once, bind by position
+pass	a performing record nested in a TUPLE scrutinee — bound by position, record-matched after

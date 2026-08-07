@@ -4939,6 +4939,86 @@
   (host-calls (call ask.ask))
   (output (: 71 Int64)))
 
+; ============ Performing LITERAL scrutinees by kind (breaker rw/gv survey). Every BY-POSITION
+; destructure — tuple, user sum, std sum, list — evaluates a performing literal scrutinee ONCE and
+; binds the materialized value. The RECORD pattern (the sole by-NAME projection kind) is the known
+; exception: its projection desugar re-lowers a literal scrutinee per bound field (a rejected
+; conjunction pending the bind-once fold fix — the fix's acceptance flips it to these siblings'
+; semantics). These pin the four correct kinds' single-eval discipline. ============
+
+(case "a TUPLE-literal scrutinee with performing fields — draws fire once, bind by position"
+  (doc    "The tuple kind: `(match (tuple (St.next) (St.next)) ((tuple x y) …))` — the literal
+           evaluates once, x=5 y=6 → 56.")
+  (input  (do
+            (effect St (op next (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next (u) s (resume s (+ s 1))))
+                (match (tuple (St.next) (St.next))
+                  ((tuple x y) (+ (* 10 x) y)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 56 Int64)))
+
+(case "a USER-SUM-literal scrutinee with a performing payload — the ctor pattern binds once"
+  (doc    "The user-sum kind, with a dispatch-count witness: `(Box.Box (St.next))` matched by the
+           ctor pattern binds the payload from ONE evaluation (v=5 → 500) and the post-match draw
+           reads the committed advance (6) → 506.")
+  (input  (do
+            (type Box (Box Int64))
+            (effect St (op next (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next (u) s (resume s (+ s 1))))
+                (+ (* 100 (match (Box.Box (St.next))
+                            (((. Box Box) v) v)))
+                   (St.next))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 506 Int64)))
+
+(case "a STD-SUM (Option) literal scrutinee — single eval, payload binds by position"
+  (doc    "The std-sum kind with the same witness: `(Some (St.next))` binds x=5 from one evaluation
+           (→ 5000) and the post-draw reads 6 → 5006.")
+  (input  (do
+            (effect St (op next (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next (u) s (resume s (+ s 1))))
+                (+ (* 100 (match (Some (St.next))
+                            ((Some x) (* x 10))
+                            ((None _u) -1)))
+                   (St.next))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 5006 Int64)))
+
+(case "a LIST-literal scrutinee with performing elements — draws fire once, bind by position"
+  (doc    "The list kind: `(match (list (St.next) (St.next)) ((list x y) …))` evaluates once —
+           x=5 y=6 → 56.")
+  (input  (do
+            (effect St (op next (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next (u) s (resume s (+ s 1))))
+                (match (list (St.next) (St.next))
+                  ((list x y) (+ (* 10 x) y))
+                  (_other -1))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 56 Int64)))
+
+(case "a performing record nested in a TUPLE scrutinee — bound by position, record-matched after"
+  (doc    "The safe composition (and the workaround for the record-literal conjunction): the tuple
+           destructure binds the record by POSITION from one evaluation, and the record-match of
+           the BOUND value projects without re-evaluation — x=5 y=6 → 56.")
+  (input  (do
+            (effect St (op next (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next (u) s (resume s (+ s 1))))
+                (match (tuple (record (a (St.next))) (St.next))
+                  ((tuple r y)
+                    (match r ((record (a x)) (+ (* 10 x) y)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 56 Int64)))
+
 ; ============ Guarded match × effects (breaker FINDING, ag5 → fixed #2333). A guarded match on a
 ; perform-result scrutinee whose FALLBACK arm also performs used to leak the fold-synthesized #seed
 ; binder as a false CDZ0101: the guard desugar's arm-body copy reparented a reused (shared) body
