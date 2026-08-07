@@ -9218,7 +9218,21 @@ fn advance_trunk_for_merged_pr(fleet: &Fleet, pr: u64) -> Result<String, String>
     // divergence), so we cleanly fall back to the cherry-pick that re-parents the delta. Forward-only is
     // preserved on BOTH paths (FF only advances; cherry-pick only appends). The `already_ancestor` guard
     // above already returned for a merge_oid already on trunk, so FF here always strictly advances.
+    // After a successful land, HARD-SYNC the trunk worktree's index+working-tree to the advanced HEAD.
+    // WHY (pr-sync, every reap): a land leaves the trunk worktree's INDEX stale relative to the advanced
+    // HEAD — `git status` then shows the just-landed content as staged phantom DELETIONS (index-vs-HEAD:
+    // present in HEAD, absent in the stale index), which trips the NEXT `fleet sync`'s dirty-worktree
+    // refusal. `git reset --hard HEAD` re-syncs index+worktree to the new trunk tip so the residue is
+    // gone and the next sync is clean. SAFE because `trunk` is single-writer and pr-sync NEVER authors on
+    // it (the worktree only ever holds reap output) — there is no uncommitted human/agent work a hard
+    // reset could destroy; the same invariant the FF/cherry-pick above already relies on. Doing it after
+    // EACH land (not once at pass end) also leaves a clean index for the NEXT PR's cherry-pick in a
+    // multi-merge pass (cherry-pick refuses on a dirty index). A no-op when already clean.
+    let sync_worktree = || {
+        let _ = git_wt(&["reset", "--hard", "HEAD"]);
+    };
     if git_wt_ok(&["merge", "--ff-only", &merge_oid]) {
+        sync_worktree();
         return rev(TRUNK)
             .ok_or_else(|| "cannot re-resolve trunk after ff-only advance".to_string());
     }
@@ -9231,6 +9245,7 @@ fn advance_trunk_for_merged_pr(fleet: &Fleet, pr: u64) -> Result<String, String>
             "PR #{pr}: mergeCommit {merge_oid} onto trunk neither fast-forwarded NOR cherry-picked (CONFLICTED — its base wasn't trunk's tree); aborted, trunk left at {trunk_before}. Manual reconcile."
         ));
     }
+    sync_worktree();
     rev(TRUNK).ok_or_else(|| "cannot re-resolve trunk after advance".to_string())
 }
 
