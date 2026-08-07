@@ -9325,6 +9325,26 @@ fn schedule_pass_execute(fleet: &Fleet, cap: usize) {
             ReapAction::KeepWaiting => {} // still gating — leave it.
         }
     }
+    // ── FINAL index-sync after ALL reaps. ── (pr-sync, pinned via git diff --cached across a 2-reap
+    // pass.) The per-land `reset --hard HEAD` inside advance_trunk_for_merged_pr keeps the index clean
+    // BETWEEN sequential lands (so a later cherry-pick has a clean index), but when a single pass
+    // FF-lands ≥2 PRs, the trunk worktree's INDEX ends up stale vs the FINAL HEAD by the whole pass's
+    // delta — worktree matches HEAD (git diff empty), only the index is behind (git diff --cached shows
+    // every landed file as a phantom deletion), which trips the NEXT `fleet sync`'s dirty refusal. A
+    // single-reap pass was clean (one land, one sync); the residue only appeared on multi-reap passes.
+    // Reconcile ONCE more here, after the whole reap loop, so the index matches the final trunk tip
+    // regardless of how many PRs landed. Only when something merged (a no-merge pass can't dirty it), and
+    // route through the trunk worktree (bare hub has no index/worktree). SAFE: trunk is single-writer +
+    // pr-sync never authors on it, the same invariant the per-land reset relies on. Idempotent no-op when
+    // already clean.
+    if reaped_merged > 0
+        && let Some(wt) = trunk_worktree_dir(fleet)
+    {
+        let _ = Command::new("git")
+            .current_dir(&wt)
+            .args(["reset", "--hard", "HEAD"])
+            .output();
+    }
     // ── PRUNE stale cand remote-tracking refs. ── `gh pr merge --delete-branch` (armed at dispatch)
     // deletes the REMOTE `cand/<agent>-<sha>` branch when a candidate merges, but the LOCAL
     // remote-tracking ref (`refs/remotes/origin/cand/*`, in the SHARED object store) lingers until a
