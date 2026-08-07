@@ -394,6 +394,25 @@ pub trait LogSinkBuilder {
         &self,
         id: &crate::host::SessionId,
     ) -> Result<Option<Box<dyn cdz_kernel::log_store::LogSink>>, String>;
+
+    /// Read back a session's durable log for BOOT-RECOVERY (§lifecycle I4b): the recovery counterpart to
+    /// [`build`](Self::build). Where `build` opens a sink to APPEND a live session's events, this reads the
+    /// PERSISTED events for `id` into a [`Recovered`](cdz_kernel::log_store::Recovered) the daemon feeds to
+    /// [`Session::recover_from`](cdz_kernel::kernel::Session::recover_from). `Ok(None)` = this backend has no
+    /// durable log to recover from (the `memory` backend — nothing persisted, so nothing to recover);
+    /// `Ok(Some(recovered))` carries the events + a recovery kind (Clean / a Corrupt-or-torn prefix the loop
+    /// alarms on but still recovers the good prefix of); `Err` = the read itself failed (an I/O / backend
+    /// error, distinct from an absent log).
+    ///
+    /// DEFAULT: `Ok(None)` — a builder with no recovery-read (a test stub, or a backend that doesn't persist)
+    /// declines cleanly, so the boot-recovery loop skips it rather than the trait forcing every impl to grow a
+    /// read path. The durable [`FileLogSinkBuilder`] / `DynamoLogSinkBuilder` override it.
+    async fn recover(
+        &self,
+        _id: &crate::host::SessionId,
+    ) -> Result<Option<cdz_kernel::log_store::Recovered>, String> {
+        Ok(None)
+    }
 }
 
 /// A [`LogSinkBuilder`] that opens a per-session file-backed [`LogStore`](cdz_kernel::log_store::LogStore)
@@ -409,6 +428,18 @@ impl FileLogSinkBuilder {
     pub fn new(root: impl Into<std::path::PathBuf>) -> Self {
         FileLogSinkBuilder { root: root.into() }
     }
+
+    /// The per-session log path for `id`: `<root>/<sanitized-id>.log`. The id is sanitized into a single safe
+    /// filename component (path separators → `_`) so a crafted id can't escape the root. `build` (append) and
+    /// `recover` (read-back) MUST agree on this path, so both go through here.
+    fn log_path(&self, id: &crate::host::SessionId) -> std::path::PathBuf {
+        let safe: String = id
+            .as_str()
+            .chars()
+            .map(|c| if c == '/' || c == '\\' { '_' } else { c })
+            .collect();
+        self.root.join(format!("{safe}.log"))
+    }
 }
 
 #[async_trait::async_trait(?Send)]
@@ -417,21 +448,31 @@ impl LogSinkBuilder for FileLogSinkBuilder {
         &self,
         id: &crate::host::SessionId,
     ) -> Result<Option<Box<dyn cdz_kernel::log_store::LogSink>>, String> {
-        // Sanitize the id into a single safe filename component — no '/' or '\\' so a crafted id can't
-        // write outside the root; a `.log` suffix keeps the files recognizable.
-        let safe: String = id
-            .as_str()
-            .chars()
-            .map(|c| if c == '/' || c == '\\' { '_' } else { c })
-            .collect();
         // Ensure the root dir exists (LogStore::open opens a file, it does NOT create parent dirs — unlike
         // DiskBlobStore::open). Create it once here so a fresh [log].dir just works.
         std::fs::create_dir_all(&self.root)
             .map_err(|e| format!("could not create log dir {}: {e}", self.root.display()))?;
-        let path = self.root.join(format!("{safe}.log"));
+        let path = self.log_path(id);
         let store = cdz_kernel::log_store::LogStore::open(&path)
             .map_err(|e| format!("could not open durable log {}: {e}", path.display()))?;
         Ok(Some(Box::new(store)))
+    }
+
+    /// Read back this session's file log for boot-recovery. A MISSING file = `Ok(None)` (no such session
+    /// persisted — the daemon skips it), NOT an error; the file backend recovers a real on-disk log via the
+    /// kernel's `LogStore::recover` (which reports Clean / a torn-tail good-prefix). A genuine read/parse I/O
+    /// failure is `Err`.
+    async fn recover(
+        &self,
+        id: &crate::host::SessionId,
+    ) -> Result<Option<cdz_kernel::log_store::Recovered>, String> {
+        let path = self.log_path(id);
+        if !path.exists() {
+            return Ok(None);
+        }
+        cdz_kernel::log_store::LogStore::recover(&path)
+            .map(Some)
+            .map_err(|e| format!("could not recover durable log {}: {e}", path.display()))
     }
 }
 
@@ -961,6 +1002,85 @@ mod tests {
             "{entries:?}"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn file_log_sink_builder_recovers_an_appended_log_round_trip() {
+        // Boot-recovery read path (I4b): append events through the SAME builder's sink, then recover(id) reads
+        // them back in order via LogStore::recover. build (append) + recover (read) must agree on the path, so
+        // this proves the round-trip through the LogSinkBuilder trait the daemon uses.
+        use cdz_kernel::event::{Event, EventBody};
+        use cdz_kernel::hash::Hash;
+        use cdz_kernel::log_store::RecoveryKind;
+
+        let root = crate::testutil::unique_temp_dir("filelog-recover");
+        let builder = FileLogSinkBuilder::new(&root);
+        let id = SessionId::new("sess-recover");
+        let genesis = Event {
+            seq: 0,
+            cause: None,
+            body: EventBody::Genesis {
+                reducer: Hash::of(b"reducer"),
+                spawn_nonce: Hash::of(b"nonce"),
+                parent: None,
+            },
+        };
+        {
+            let mut sink = builder
+                .build(&id)
+                .await
+                .expect("build ok")
+                .expect("file backend yields a sink");
+            sink.append(&genesis).await.expect("append genesis");
+        } // drop the sink so the file is fully flushed/closed before recovery reads it.
+
+        let recovered = builder
+            .recover(&id)
+            .await
+            .expect("recover ok")
+            .expect("an existing file log recovers to Some");
+        assert_eq!(recovered.kind, RecoveryKind::Clean, "a whole log is Clean");
+        assert_eq!(recovered.events.len(), 1, "the one appended event recovers");
+        assert!(
+            matches!(recovered.events[0].body, EventBody::Genesis { .. }),
+            "the recovered event is the genesis we appended"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn file_log_sink_builder_recover_of_a_missing_session_is_none() {
+        // A session that was never persisted → recover is Ok(None) (nothing to resurrect), NOT an error — the
+        // boot loop skips it cleanly.
+        let root = crate::testutil::unique_temp_dir("filelog-recover-missing");
+        let builder = FileLogSinkBuilder::new(&root);
+        let got = builder
+            .recover(&SessionId::new("never-existed"))
+            .await
+            .expect("recover of a missing log is Ok, not Err");
+        assert!(got.is_none(), "a missing session log recovers as None");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn log_sink_builder_recover_defaults_to_none() {
+        // The trait default (a builder that doesn't override recover) declines boot-recovery cleanly — the
+        // memory/no-durable-log backend has nothing to recover.
+        struct NoRecoverBuilder;
+        #[async_trait::async_trait(?Send)]
+        impl LogSinkBuilder for NoRecoverBuilder {
+            async fn build(
+                &self,
+                _id: &SessionId,
+            ) -> Result<Option<Box<dyn cdz_kernel::log_store::LogSink>>, String> {
+                Ok(None)
+            }
+        }
+        let got = NoRecoverBuilder
+            .recover(&SessionId::new("any"))
+            .await
+            .expect("default recover is Ok");
+        assert!(got.is_none(), "the trait default declines with None");
     }
 
     /// A stub executor that returns a SCRIPTED sequence of outcomes (one per `perform`), for exercising the

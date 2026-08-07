@@ -308,6 +308,25 @@ impl crate::factory::LogSinkBuilder for DynamoLogSinkBuilder {
             id.as_str(),
         ))))
     }
+
+    /// Read back this session's Dynamo-partition log for boot-recovery (§lifecycle I4b). Builds the same
+    /// per-session sink `build` does, then `read_recovered` Queries the `session_id` partition ascending +
+    /// decodes to a `Recovered` — ending the good prefix at the first undecodable item + flagging Corrupt
+    /// (the I4b default-#3 contract), NOT hard-erroring like `read_all`. An empty partition recovers as a
+    /// clean empty log (the caller treats a genesis-less recovery as nothing to resurrect). A Query/transport
+    /// failure is `Err`.
+    async fn recover(
+        &self,
+        id: &crate::host::SessionId,
+    ) -> Result<Option<cdz_kernel::log_store::Recovered>, String> {
+        let sink = DynamoLogSink::from_conf(&self.config, self.table.clone(), id.as_str());
+        sink.read_recovered().await.map(Some).map_err(|e| {
+            format!(
+                "could not recover Dynamo log for session {}: {e}",
+                id.as_str()
+            )
+        })
+    }
 }
 
 #[cfg(test)]
