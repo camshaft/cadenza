@@ -119,9 +119,22 @@ test("render emits a @generated header, a sorted tsc-clean import, and the Pasca
   assert.doesNotMatch(tsx, /react-router-dom/);
 });
 
-test("render imports Link only when a link/app-link is present", () => {
-  const withLink = renderChapter(parseOk(`(chapter (slug "x") (title "X") (p (link (slug "y") "y")))`));
-  assert.match(withLink, /import \{ Link \} from "react-router-dom";/);
+test("render imports Ch/AppLink from the shared ChapterLink module, only the kinds used", () => {
+  // an internal (link …) → <Ch>, imports Ch (not a bare react-router Link)
+  const withCh = renderChapter(parseOk(`(chapter (slug "x") (title "X") (p (link (slug "y") "y")))`));
+  assert.match(withCh, /import \{ Ch \} from "\.\.\/\.\.\/components\/ChapterLink\.tsx";/);
+  assert.match(withCh, /<Ch to="\/y">y<\/Ch>/);
+  assert.doesNotMatch(withCh, /react-router-dom/);
+  assert.doesNotMatch(withCh, /\bAppLink\b/); // app-link not used → not imported
+
+  // an (app-link …) → <AppLink>, imports AppLink
+  const withApp = renderChapter(parseOk(`(chapter (slug "x") (title "X") (p (app-link (route "/explorer") "the explorer")))`));
+  assert.match(withApp, /import \{ AppLink \} from "\.\.\/\.\.\/components\/ChapterLink\.tsx";/);
+  assert.match(withApp, /<AppLink to="\/explorer">the explorer<\/AppLink>/);
+
+  // both kinds → both imported, sorted (AppLink, Ch)
+  const both = renderChapter(parseOk(`(chapter (slug "x") (title "X") (p (link (slug "y") "y") " " (app-link (route "/cad") "cad")))`));
+  assert.match(both, /import \{ AppLink, Ch \} from "\.\.\/\.\.\/components\/ChapterLink\.tsx";/);
 });
 
 test("render imports C when inline code is used (else <C> is undefined — tsc noUnusedLocals/undefined bug)", () => {

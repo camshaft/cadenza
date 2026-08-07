@@ -1,6 +1,6 @@
 // @generated DO NOT EDIT — rendered from the chapter's .sexp by the guide sexp→TSX codegen (chapterModel.ts).
 import { C, H1, H2, Lede, Note, P } from "../../components/Prose.tsx";
-import { Link } from "react-router-dom";
+import { AppLink, Ch } from "../../components/ChapterLink.tsx";
 
 export default function SampleChapter() {
   return (
@@ -8,7 +8,7 @@ export default function SampleChapter() {
       <H1>A Sample Chapter</H1>
       <Lede>This fixture drives the sexp→TSX codegen gate: it uses <em>every</em> head the I4 schema defines, so a regression in parse or render trips <C>check-codegen</C>.</Lede>
       <H2>Prose and emphasis</H2>
-      <P>An ordinary paragraph with <em>emphasis</em>, some <C>inline code</C>, and a link to <Link to="/effects">effects & handlers</Link> plus the <Link to="/explorer">platform explorer</Link>.</P>
+      <P>An ordinary paragraph with <em>emphasis</em>, some <C>inline code</C>, and a link to <Ch to="/effects">effects & handlers</Ch> plus the <AppLink to="/explorer">platform explorer</AppLink>.</P>
       <H2>A pseudocode note</H2>
       <Note>on an event arriving in session S:<br />{"  run S's reducer over the event → a list of effects"}<br />{"  for each effect: if authorized, perform it; else append a denial"}<br />{"  each appended result is a new event → the loop runs again"}</Note>
     </article>

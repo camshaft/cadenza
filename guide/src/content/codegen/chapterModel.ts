@@ -224,7 +224,11 @@ export function renderChapter(model: ChapterModel): string {
     "// @generated DO NOT EDIT — rendered from the chapter's .sexp by the guide sexp→TSX codegen (chapterModel.ts).",
     proseImport,
   ];
-  if (flags.link || flags.appLink) lines.push(`import { Link } from "react-router-dom";`);
+  // Links render via the shared styled components (Ch = internal chapter link, AppLink = app route) — NOT a
+  // bare react-router <Link> — so a generated chapter styles links exactly as the hand-written ones do. Import
+  // only the kinds actually used (tsc noUnusedLocals), sorted for determinism.
+  const linkImports = [flags.link && "Ch", flags.appLink && "AppLink"].filter(Boolean).sort();
+  if (linkImports.length) lines.push(`import { ${linkImports.join(", ")} } from "../../components/ChapterLink.tsx";`);
   lines.push("");
   lines.push(`export default function ${pascal(model.slug)}() {`);
   lines.push("  return (");
@@ -241,8 +245,9 @@ export function renderChapter(model: ChapterModel): string {
   return lines.join("\n") + "\n";
 }
 
-/// Render inline children to JSX text. `br` → `<br />`; a chapter link → `<Link to="/slug">`; an app link →
-/// `<Link to="/route">`. Text is JSX-escaped (`{`, `}`, `<` would otherwise be parsed as JSX).
+/// Render inline children to JSX text. `br` → `<br />`; a chapter link → `<Ch to="/slug">`; an app link →
+/// `<AppLink to="/route">` (the shared styled components). Text is JSX-escaped (`{`, `}`, `<` would otherwise
+/// be parsed as JSX).
 function renderInlines(inlines: Inline[]): string {
   return inlines.map(renderInline).join("");
 }
@@ -253,8 +258,8 @@ function renderInline(i: Inline): string {
     case "em": return `<em>${renderInlines(i.children)}</em>`;
     case "code": return `<C>${escapeText(i.text)}</C>`;
     case "br": return "<br />";
-    case "link": return `<Link to="/${i.slug}">${renderInlines(i.children)}</Link>`;
-    case "app-link": return `<Link to="${i.route}">${renderInlines(i.children)}</Link>`;
+    case "link": return `<Ch to="/${i.slug}">${renderInlines(i.children)}</Ch>`;
+    case "app-link": return `<AppLink to="${i.route}">${renderInlines(i.children)}</AppLink>`;
   }
 }
 
