@@ -28,16 +28,22 @@
 //! extracts the public surface; a later pass can carry `(visibility …)` to include internals).
 
 use crate::ast::{Arenas, Builder, Leaf, StructId};
+use crate::query::{self, Pattern, Tree};
 use std::collections::BTreeSet;
 
 /// Project a program's canonical `Arenas` into a `doc-module` doc-AST, named `module_name`.
 ///
-/// Walks the program's top-level forms: each exported `def`/`type`/`effect` becomes a `doc-item`
-/// (name + printed syntactic signature + concatenated `(doc …)` prose); leading `(module-doc …)`
-/// siblings become the module's `(module-doc …)`. The result is a fresh, canonical-ready `Arenas`
-/// rooted at the `doc-module` node — ready to `encode`, `canonicalize`, or print.
+/// Doc-extraction is a COMPILER QUERY (operator: "just like any other query the compiler supports"):
+/// the item selection runs on the [`crate::query`] machinery — each documentable item is found by a
+/// structural `query::search` over the program, so this composes with the other compiler queries (and
+/// an IDE outline / syntax-only preview reuses the same selection). For each EXPORTED, TOP-LEVEL
+/// `def`/`type`/`effect` it emits a `doc-item` (name + printed syntactic signature + concatenated
+/// `(doc …)` prose); leading `(module-doc …)` siblings become the module's `(module-doc …)`. The result
+/// is a fresh, canonical-ready `Arenas` rooted at the `doc-module` node — ready to `encode`,
+/// `canonicalize`, or print.
 pub fn project(program: &Arenas, module_name: &str) -> Arenas {
     let forms = top_level_forms(program);
+    let top_level: BTreeSet<u32> = forms.iter().map(|s| s.0).collect();
     let exported = exported_names(program, &forms);
 
     let mut b = Builder::new();
@@ -55,15 +61,17 @@ pub fn project(program: &Arenas, module_name: &str) -> Arenas {
         children.push(node);
     }
 
-    // One `doc-item` per exported def/type/effect, in source order.
-    for &form in &forms {
-        let Some((kind, name)) = item_kind_and_name(program, form) else {
-            continue;
-        };
-        if !exported.contains(name) {
-            continue;
-        }
-        let item = build_doc_item(&mut b, program, form, kind, name);
+    // Select the documentable items via the QUERY machinery, in source (StructId) order, keeping only
+    // TOP-LEVEL exported items (an item found nested inside another form is not a module's public API).
+    let mut items: Vec<(u32, StructId, String)> = select_items(program)
+        .into_iter()
+        .filter(|(id, name)| top_level.contains(&id.0) && exported.contains(name.as_str()))
+        .map(|(id, name)| (id.0, id, name))
+        .collect();
+    items.sort_by_key(|(order, _, _)| *order);
+
+    for (_, form, name) in items {
+        let item = build_doc_item(&mut b, program, form, &name);
         children.push(item);
     }
 
@@ -71,28 +79,61 @@ pub fn project(program: &Arenas, module_name: &str) -> Arenas {
     b.finish(root)
 }
 
-/// The head names this pass treats as a documentable item, paired with how to read the item's name.
-/// `def`'s name is either a bare `(name …)` (value def) or the head of a `(name p…)` sig list
-/// (function def); `type`/`effect` name it directly as their first argument.
-fn item_kind_and_name(program: &Arenas, form: StructId) -> Option<(&'static str, &str)> {
-    for (head, kind) in [("def", "def"), ("type", "type"), ("effect", "effect")] {
-        if let Some(args) = program.as_form(form, head) {
-            let name = item_name(program, kind, args)?;
-            return Some((kind, name));
+/// The documentable items in `program`, as `(origin arena node, public name)` pairs — found by
+/// COMPILER QUERY. A `def`/`type`/`effect` is matched by a structural [`Pattern`] over the program
+/// tree; the match's `origin()` is the item's node in the original arena (so the sig/docs project from
+/// it), and the bound `,name` metavar is the item's identifier.
+///
+/// The `def` case needs TWO patterns because a value def `(def name val)` and a function def
+/// `(def (name params…) body)` bind the name differently: the FUNCTION pattern `(def (,name …) …)`
+/// binds `,name` to the identifier, while the VALUE pattern `(def ,name …)` binds it to the identifier
+/// only when the first arg is atomic (for a function def it would bind the whole `(name params)` sig
+/// list — wrong). So we try the function pattern first and fall back to the value pattern for the
+/// nodes it didn't match.
+fn select_items(program: &Arenas) -> Vec<(StructId, String)> {
+    let tree = Tree::of(program);
+    let mut out: Vec<(StructId, String)> = Vec::new();
+    let mut seen: BTreeSet<u32> = BTreeSet::new();
+
+    // (pattern, whether a bare-name bind is required) — function-def FIRST so a function def binds the
+    // identifier, not its sig list; then value-def, type, effect.
+    let patterns = [
+        "(def (,name ,@params) ,@body)",
+        "(def ,name ,@rest)",
+        "(type ,name ,@rest)",
+        "(effect ,name ,@rest)",
+    ];
+    for src in patterns {
+        let pat = match Pattern::compile(src) {
+            Ok(p) => p,
+            Err(_) => continue, // a malformed pattern is a bug, but never panic the projection
+        };
+        for m in query::search(&pat, &tree, None) {
+            let Some(origin) = m.node.origin() else {
+                continue;
+            };
+            if seen.contains(&origin.0) {
+                continue; // already claimed by an earlier (more specific) pattern
+            }
+            // The bound `,name` must be a bare identifier (an `Atom(Name)`). For the value-def pattern
+            // this rejects a function def (whose `,name` is the `(name params)` sig LIST), leaving it to
+            // the function pattern that already claimed it.
+            let Some(name) = m.bindings.get("name").and_then(bound_name) else {
+                continue;
+            };
+            seen.insert(origin.0);
+            out.push((origin, name));
         }
     }
-    None
+    out
 }
 
-/// Read an item's public name from its form arguments.
-/// - `def`: arg 0 is either an `Atom(Name)` (value def `(def name … value)`) or a `List` whose head is
-///   the name (function def `(def (name p…) … body)`).
-/// - `type` / `effect`: arg 0 is the `Atom(Name)` naming the declaration.
-fn item_name<'a>(program: &'a Arenas, kind: &str, args: &[StructId]) -> Option<&'a str> {
-    let first = *args.first()?;
-    match kind {
-        "def" => program.as_name(first).or_else(|| program.head_name(first)),
-        _ => program.as_name(first),
+/// If a matched `,name` binding is a bare `Name` atom, its text — the identifier. A non-atom binding
+/// (e.g. a function def's `(name params)` sig list captured by the value-def pattern) yields `None`.
+fn bound_name(t: &Tree) -> Option<String> {
+    match t {
+        Tree::Atom(Leaf::Name(n), _) => Some(n.clone()),
+        _ => None,
     }
 }
 
@@ -100,13 +141,7 @@ fn item_name<'a>(program: &'a Arenas, kind: &str, args: &[StructId]) -> Option<&
 /// form printed via the ML printer (the syntactic signature as written — a def's params + a value
 /// body's shape, a type/effect's decl); `doc` is the concatenated leading `(doc …)` prose, omitted
 /// when the item carries none.
-fn build_doc_item(
-    b: &mut Builder,
-    program: &Arenas,
-    form: StructId,
-    _kind: &str,
-    name: &str,
-) -> StructId {
+fn build_doc_item(b: &mut Builder, program: &Arenas, form: StructId, name: &str) -> StructId {
     let mut item = vec![b.name("doc-item")];
 
     // (name "…")
