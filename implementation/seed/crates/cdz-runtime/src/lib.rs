@@ -3676,8 +3676,13 @@ fn op_sum_new_reuse(disc: u32, payload: Handle, token: Handle) -> Handle {
 // 32-way radix trie over the SAME tagless `Node`. No new node field and no change to the free
 // cascade — exactly the bytes rope's trick: a vector's nodes are ordinary
 // `Node`s whose children live in `handles`, so structural sharing is just `rc > 1` on a shared
-// subtree and the existing iterative `op_drop` reclaims a whole trie transitively. Tagless dispatch
-// keeps this from colliding with tuples/lists: the compiler only ever calls `vec-*` on a value whose
+// subtree and the existing iterative `op_drop` reclaims a whole trie transitively. Sharing a subtree
+// is transparent: a shared node is immutable and byte-identical to a copied one, so whether a version
+// shares its predecessor's storage or copies it never changes what any op observes — the persistent
+// update path-copies the spine and `op_dup`s the retained children, so the two are indistinguishable.
+//= spec/capabilities/memory-and-resource-model.md#sharing-is-not-observable
+//# When the compiler represents a value by sharing another value's storage rather than by copying it, that sharing MUST NOT change the program's observable behavior, so that sharing storage is a transparent optimization rather than a distinction between two equal values.
+// Tagless dispatch keeps this from colliding with tuples/lists: the compiler only ever calls `vec-*` on a value whose
 // static type is a Vec and `arr-*` on a tuple/list, so `handles`/`raw` are interpreted as a vector
 // only inside these ops (same argument as the rope, §3 of that doc).
 //
