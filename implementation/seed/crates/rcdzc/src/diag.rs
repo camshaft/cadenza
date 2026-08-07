@@ -264,6 +264,21 @@ pub enum Code {
     /// an effect with NO delegation anywhere; here the effect IS delegated, but the delegation cannot travel
     /// with the escaping closure.
     ClosureEscapesEffect,
+    /// An EFFECT / perform is executed in a GUARD position — a `(guard <pattern> <cond>)` match-arm
+    /// condition (and, per the operator directive, any position required to be side-effect-free). A guard
+    /// decides WHICH arm matches; the pattern engine may evaluate it speculatively, more than once, or not
+    /// at all (a guard that fails falls through to the next arm), so an effect performed there has no
+    /// well-defined single execution — it would perform zero, one, or several times depending on match
+    /// order, a miscompile the fold cannot represent (the performing-guard class, breaker #9). Rejected at
+    /// compile time so a guard stays a pure decision: lift the effect to a `let`-binding evaluated once
+    /// BEFORE the `match`, then guard on the bound pure value. DISTINCT from `EffectNoHome` (CDZ0401): the
+    /// effect may well have a handler — the defect is its POSITION (a guard), not a missing home. The
+    /// PERFORM-IN-GUARD detection is v-effects' (perform-detection); this code + its message are the
+    /// diagnostic surface. (The exact SCOPE — forbid all effects vs permit provably-non-mutating ones — is
+    /// an operator decision the detection predicate encodes; this code names the rejection either way.)
+    //= spec/capabilities/capabilities-and-effects.md#a-guard-is-side-effect-free
+    //# An effect operation performed in a match-arm guard MUST be rejected at compile time, so that a guard is a pure decision the pattern engine may evaluate speculatively or repeatedly without observable effect.
+    EffectInGuard,
     /// An ILL-FORMED binary form `(bin …)` — a compile-time well-formedness defect decidable from the
     /// segment list alone (`options/binary-syntax/`): bit-fields whose widths do not close a whole byte
     /// (the whole `bin` must be byte-aligned), a non-final unsized `(bytes …)` segment, or a `bits` width
@@ -382,6 +397,7 @@ impl Code {
             Code::HandlerNotExhaustive => "CDZ0405",
             Code::LatentAuthority => "CDZ0404",
             Code::ClosureEscapesEffect => "CDZ0406",
+            Code::EffectInGuard => "CDZ0407",
             Code::IllFormedBinary => "CDZ0220",
             Code::NonFinalSplice => "CDZ0221",
             Code::DimensionMismatch => "CDZ0501",
