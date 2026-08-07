@@ -41,6 +41,11 @@ pub struct DaemonConfig {
     /// only works for a reducer already `put` into the store this run). A real deployment sets a `dir`.
     #[serde(default)]
     pub blob: BlobConfig,
+    /// The canonical §4c NAME STORE durability backend — where the daemon snapshots its shared name directory
+    /// on mutation + restores it on boot (AWS-backends arc I4a). Defaults to `memory` (no durability — the
+    /// daemon boots share-less, today's behavior). `s3` makes the canonical store DURABLE across a restart.
+    #[serde(default)]
+    pub name_store: NameStoreConfig,
     /// Structured TRACING — spans/events on the host loop + session/effect surface (operator directive:
     /// "add tracing to the harness, configured via the toml"). Defaults to disabled (no subscriber
     /// installed). The subscriber the daemon initializes from this section is wired in a following slice;
@@ -250,6 +255,33 @@ pub enum BlobConfig {
     /// selects [`S3BlobStore`](crate::S3BlobStore)); parsing/validation is always-on (infra-core), so a config
     /// naming `backend = "s3"` validates regardless of feature, and a build WITHOUT `live-aws-storage` reports a
     /// clean "not compiled in" error at boot rather than silently falling back.
+    S3 {
+        bucket: String,
+        #[serde(default)]
+        prefix: String,
+    },
+}
+
+/// The canonical §4c NAME STORE durability backend — how the daemon persists its shared name directory so
+/// it survives a restart (AWS-backends arc I4a). UNLIKE [`BlobConfig`] (a content-addressed store), this is
+/// a FIXED-location snapshot: the daemon snapshots the canonical store on mutation + restores it on boot from
+/// a known location. `memory` (default) = NO durability (the daemon boots share-less, today's behavior); `s3`
+/// = a durable canonical store snapshotted to a fixed S3 key under `bucket`/`prefix`. Selected backend wired
+/// only when its feature is compiled: the `s3` RUNTIME backend
+/// ([`S3NameStoreSnapshot`](crate::S3NameStoreSnapshot)) needs `live-aws-storage`; parsing/validation is
+/// always-on (infra-core), so a config naming `backend = "s3"` validates regardless of feature, and a build
+/// WITHOUT `live-aws-storage` reports a clean "not compiled in" error at boot rather than silently degrading.
+#[derive(Debug, Clone, Deserialize, PartialEq, Default)]
+#[serde(tag = "backend", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum NameStoreConfig {
+    /// No durability — the daemon boots WITHOUT a canonical name store (share-less, today's behavior). The
+    /// default: a daemon with no `[name_store]` section keeps its existing share-less shape. (`memory` names
+    /// the "in-memory / non-durable" intent uniformly with [`BlobConfig::Memory`] / [`LogConfig::Memory`].)
+    #[default]
+    Memory,
+    /// S3-backed durable canonical store — snapshotted to a FIXED key under `bucket` (+ an optional key
+    /// `prefix`) on mutation, restored from it on boot. The AWS-native production name directory. Wired only
+    /// when `live-aws-storage` is compiled; validation (non-empty bucket) is always-on.
     S3 {
         bucket: String,
         #[serde(default)]
@@ -570,6 +602,13 @@ impl DaemonConfig {
             if bucket.trim().is_empty() {
                 return Err(ConfigError(
                     "[blob] backend=s3 needs a non-empty bucket".into(),
+                ));
+            }
+        }
+        if let NameStoreConfig::S3 { bucket, .. } = &self.name_store {
+            if bucket.trim().is_empty() {
+                return Err(ConfigError(
+                    "[name_store] backend=s3 needs a non-empty bucket".into(),
                 ));
             }
         }
@@ -1179,6 +1218,61 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.0.contains("bucket"), "{err}");
+    }
+
+    #[test]
+    fn name_store_defaults_to_memory_and_selects_an_s3_backend() {
+        // Default: no [name_store] section → memory (no durability, share-less — today's behavior).
+        let cfg = DaemonConfig::from_toml_str("").unwrap();
+        assert_eq!(cfg.name_store, NameStoreConfig::Memory);
+
+        // An s3 backend carries its bucket + optional prefix (mirrors BlobConfig::S3).
+        let cfg = DaemonConfig::from_toml_str(
+            r#"
+            [name_store]
+            backend = "s3"
+            bucket = "cdz-names"
+            prefix = "names/"
+            "#,
+        )
+        .expect("name_store s3 config parses");
+        assert_eq!(
+            cfg.name_store,
+            NameStoreConfig::S3 {
+                bucket: "cdz-names".into(),
+                prefix: "names/".into()
+            }
+        );
+        // Prefix is optional → defaults to empty (bucket root).
+        let cfg = DaemonConfig::from_toml_str(
+            r#"
+            [name_store]
+            backend = "s3"
+            bucket = "cdz-names"
+            "#,
+        )
+        .expect("name_store s3 config parses without a prefix");
+        assert_eq!(
+            cfg.name_store,
+            NameStoreConfig::S3 {
+                bucket: "cdz-names".into(),
+                prefix: String::new()
+            }
+        );
+    }
+
+    #[test]
+    fn an_empty_name_store_s3_bucket_is_rejected() {
+        let err = DaemonConfig::from_toml_str(
+            r#"
+            [name_store]
+            backend = "s3"
+            bucket = ""
+            "#,
+        )
+        .unwrap_err();
+        assert!(err.0.contains("bucket"), "{err}");
+        assert!(err.0.contains("name_store"), "names the section: {err}");
     }
 
     #[test]

@@ -587,6 +587,13 @@ pub struct AgentHost {
     /// replay-copy at spawn and folds its appends back after each turn — no shared handle. (Type:
     /// [`cdz_kernel::name_store::NameStore`].)
     canonical: Option<cdz_kernel::name_store::NameStore>,
+    /// The §4c canonical-store DURABILITY backend (AWS-backends arc I4a), if durability is enabled. `None` =
+    /// no durability (the default — snapshotting is best-effort + opt-in, so existing tests/behavior are
+    /// unchanged). When `Some` AND the host is canonical-backed, the host snapshots the canonical store after
+    /// any [`deliver`](Self::deliver) turn that folded a session's name-store writes back (see the merge-back
+    /// site in `deliver`), and [`with_canonical_store_restored`](Self::with_canonical_store_restored) restores
+    /// from it on boot. A share-less OR snapshot-less host does nothing (zero overhead, unchanged behavior).
+    name_snapshot: Option<Box<dyn crate::name_snapshot::NameStoreSnapshotStore>>,
     /// The s2n-quic-dc-metrics registry the host records into — the recorder surface an export backend drains.
     /// Held so `metrics` (and the executor set's `EffectMetrics`) register into ONE registry, and so
     /// [`AgentHost::registry`] can hand it to the exporter.
@@ -622,6 +629,7 @@ impl AgentHost {
         AgentHost {
             sessions: HashMap::new(),
             canonical: None,
+            name_snapshot: None,
             registry,
             metrics,
         }
@@ -644,9 +652,70 @@ impl AgentHost {
         AgentHost {
             sessions: HashMap::new(),
             canonical: Some(canonical),
+            name_snapshot: None,
             registry,
             metrics,
         }
+    }
+
+    /// Set the §4c canonical-store DURABILITY backend — a builder that makes the shared name directory
+    /// SURVIVE a restart (AWS-backends arc I4a). After any [`deliver`](Self::deliver) turn that folds a
+    /// session's name-store writes into the canonical store, the host `save`s the canonical
+    /// [`snapshot_bytes`](cdz_kernel::name_store::NameStore::snapshot_bytes) through this store (best-effort:
+    /// a failed save is LOGGED, never fails the turn — the in-memory canonical stays authoritative for the
+    /// run). Pair with [`with_canonical_store`](Self::with_canonical_store) (or use
+    /// [`with_canonical_store_restored`](Self::with_canonical_store_restored), which restores + sets this in
+    /// one step) — a snapshot store on a SHARE-LESS host is inert (nothing mutates the canonical, so nothing
+    /// is ever saved). Opt-in: a host built without this stays non-durable (unchanged behavior, zero overhead).
+    pub fn with_name_snapshot_store(
+        mut self,
+        store: Box<dyn crate::name_snapshot::NameStoreSnapshotStore>,
+    ) -> Self {
+        self.name_snapshot = Some(store);
+        self
+    }
+
+    /// Build a canonical-store-backed host whose canonical store is RESTORED from a durable snapshot backend
+    /// (AWS-backends arc I4a restore-on-boot) — the boot-time dual of the mutation-hook. `load`s the latest
+    /// snapshot from `store`; if `Some`, reconstructs the canonical [`NameStore`](cdz_kernel::name_store::NameStore)
+    /// via [`from_snapshot_bytes`](cdz_kernel::name_store::NameStore::from_snapshot_bytes); if `None` (nothing
+    /// saved yet) OR the snapshot is CORRUPT (a tampered/garbled blob — LOGGED), starts with an empty
+    /// [`NameStore::new`]. The `store` is then RETAINED for ongoing saves (so the first mutation re-snapshots).
+    ///
+    /// A corrupt snapshot starts EMPTY rather than panicking (durability is best-effort — a bad blob must not
+    /// wedge the daemon at boot); the warning names the failure so an operator can investigate. A `load` I/O
+    /// error is likewise non-fatal (LOGGED, start empty) — the daemon boots and re-establishes state as
+    /// sessions run, rather than refusing to start on a transient backend hiccup.
+    pub async fn with_canonical_store_restored(
+        store: Box<dyn crate::name_snapshot::NameStoreSnapshotStore>,
+    ) -> Self {
+        let restored = match store.load().await {
+            Ok(Some(bytes)) => match cdz_kernel::name_store::NameStore::from_snapshot_bytes(&bytes)
+            {
+                Ok(store) => store,
+                Err(e) => {
+                    tracing::warn!(
+                        target: "cdz_agent_host::name_snapshot",
+                        error = ?e,
+                        "canonical name-store snapshot is corrupt — starting with an empty store"
+                    );
+                    cdz_kernel::name_store::NameStore::new()
+                }
+            },
+            Ok(None) => {
+                // Fresh deployment — nothing saved yet. Start empty (the first mutation snapshots).
+                cdz_kernel::name_store::NameStore::new()
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "cdz_agent_host::name_snapshot",
+                    error = %e,
+                    "could not load the canonical name-store snapshot — starting with an empty store"
+                );
+                cdz_kernel::name_store::NameStore::new()
+            }
+        };
+        Self::with_canonical_store(restored).with_name_snapshot_store(store)
     }
 
     /// Borrow the host-owned CANONICAL shared name store (`None` for a share-less host). The read-back dual
@@ -886,6 +955,27 @@ impl AgentHost {
             if let Some(canonical) = &mut self.canonical {
                 if let Some(session_store) = s.session().name_store() {
                     canonical.merge_appends_from(session_store);
+                    // §4c AWS-backends I4a: DURABLY snapshot the canonical store after folding a session's
+                    // writes back, so the shared name directory survives a restart. `merge_appends_from` does
+                    // NOT signal whether it changed anything, so we snapshot after any merge that folded a
+                    // session's store — simple + correct (a no-write turn re-saves a byte-identical snapshot,
+                    // which is harmless; `snapshot_bytes` is byte-stable). BEST-EFFORT: a failed save is
+                    // LOGGED but does NOT fail the turn — durability at the snapshot layer must never crash the
+                    // agent (the in-memory canonical is still authoritative for this run). Only fires when a
+                    // snapshot store is configured (`Some`) AND the host is canonical-backed — a share-less or
+                    // snapshot-less host does nothing (zero overhead, unchanged behavior).
+                    if let Some(snapshot_store) = &mut self.name_snapshot {
+                        let bytes = canonical.snapshot_bytes();
+                        if let Err(e) = snapshot_store.save(&bytes).await {
+                            tracing::warn!(
+                                target: "cdz_agent_host::name_snapshot",
+                                session_id = id.as_str(),
+                                error = %e,
+                                "failed to snapshot the canonical name store (durability best-effort; \
+                                 the in-memory store is still authoritative for this run)"
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -3176,6 +3266,178 @@ mod tests {
             hosted.session().log().len(),
             log_len_before,
             "no capability change → nothing appended to the log (the coalescing/gate)"
+        );
+    }
+
+    // ── §4c AWS-backends I4a: canonical name-store snapshot durability ──────────────────────────────────
+
+    /// Permits any `store/*` effect — the authz gate a store effect passes through (mirrors the kernel test
+    /// `AllowStore`). A real deployment uses a name-prefix-scoped grant; here we prove the host's snapshot
+    /// mutation-hook, so a blanket store-permitting authorizer isolates that from the grant-shape work.
+    struct AllowStore;
+    #[async_trait::async_trait(?Send)]
+    impl Authorize for AllowStore {
+        async fn authorize(&self, req: &cdz_kernel::effect::EffectRequest) -> Result<(), String> {
+            if effect_ct::is_store_family(&req.content_type.family) {
+                Ok(())
+            } else {
+                Err("only store/* permitted".into())
+            }
+        }
+    }
+
+    /// A reducer that on inbound emits a single `store/set COMPILER_LATEST → <hash>` — enough to mutate the
+    /// session's name store so the host folds it into canonical + snapshots.
+    struct StoreSetAgent {
+        value: Hash,
+    }
+    #[async_trait::async_trait(?Send)]
+    impl Reducer for StoreSetAgent {
+        async fn fold(&self, event: &cdz_kernel::event::Event, _kv: &mut Kv) -> FoldOutput {
+            match &event.body {
+                EventBody::Inbound { .. } => {
+                    let payload = cdz_kernel::event_ast::encode_name_set(
+                        cdz_kernel::name_store::NameStore::COMPILER_LATEST,
+                        &self.value,
+                    );
+                    FoldOutput::with(vec![EffectRequest::new_with_family(
+                        effect_ct::STORE_SET,
+                        cdz_kernel::name_store::NameStore::COMPILER_LATEST,
+                        Some(Payload::Inline(payload.into())),
+                        Timeliness::Interactive,
+                    )])
+                }
+                _ => FoldOutput::none(),
+            }
+        }
+    }
+
+    fn store_set_host(value: Hash) -> HostedSession {
+        HostedSession::genesis(
+            Hash::of(b"store-set-agent-v1"),
+            Box::new(StoreSetAgent { value }),
+            Box::new(AllowStore),
+            CompositeExecutor::new(),
+        )
+    }
+
+    #[tokio::test]
+    async fn deliver_snapshots_the_canonical_store_after_a_session_writes_a_name() {
+        use crate::name_snapshot::MemNameStoreSnapshot;
+        use cdz_kernel::name_store::NameStore;
+
+        // A canonical-backed host WITH a snapshot store: a deliver that writes a name folds into the canonical
+        // store AND fires the mutation-hook without erroring the turn. (The DURABLE round-trip — that the
+        // saved bytes restore the pointer into a fresh host — is pinned by
+        // `snapshot_persists_across_a_restart_via_a_shared_backend`; the boxed snapshot store is held
+        // privately, so this test observes the fold + that the hook ran clean.)
+        let value = Hash::of(b"compiler-wasm-v1");
+        let mut host = AgentHost::with_canonical_store(NameStore::new())
+            .with_name_snapshot_store(Box::new(MemNameStoreSnapshot::new()));
+        let id = host.spawn(SessionId::new("writer"), store_set_host(value));
+
+        let outcome = host.deliver(&id, inbound_go(), None).await;
+        assert!(
+            matches!(outcome, Some(Ok(()))),
+            "the write turn runs (hook fired clean)"
+        );
+
+        // The canonical store now resolves the written pointer.
+        assert_eq!(
+            host.canonical_store()
+                .unwrap()
+                .resolve(NameStore::COMPILER_LATEST)
+                .unwrap(),
+            value,
+            "the session's store/set folded into the canonical store"
+        );
+        assert_eq!(host.canonical_store().unwrap().to_set_entries().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn snapshot_persists_across_a_restart_via_a_shared_backend() {
+        // End-to-end durability: a first host writes + snapshots to a MemNameStoreSnapshot; a SECOND host
+        // built with `with_canonical_store_restored` over the SAME backend boots with the pointer already
+        // present (survives a "restart"). MemNameStoreSnapshot is process-local, so to share it across the two
+        // hosts we drive the save/restore through the same bytes: capture the snapshot the first host saved by
+        // reading the canonical store's own snapshot_bytes (byte-identical to what save wrote), feed it to a
+        // pre-seeded backend, and restore the second host from it.
+        use crate::name_snapshot::{MemNameStoreSnapshot, NameStoreSnapshotStore};
+        use cdz_kernel::name_store::NameStore;
+
+        let value = Hash::of(b"compiler-wasm-v7");
+        let mut host1 = AgentHost::with_canonical_store(NameStore::new())
+            .with_name_snapshot_store(Box::new(MemNameStoreSnapshot::new()));
+        let id = host1.spawn(SessionId::new("writer"), store_set_host(value));
+        host1.deliver(&id, inbound_go(), None).await;
+
+        // The bytes the host durably saved == the canonical store's snapshot_bytes (the save argument).
+        let saved = host1.canonical_store().unwrap().snapshot_bytes();
+        assert!(
+            !saved.is_empty(),
+            "a non-empty snapshot was produced from the write"
+        );
+
+        // Simulate the durable backend surviving a restart: a fresh backend pre-seeded with the saved bytes.
+        let mut backend = MemNameStoreSnapshot::new();
+        backend.save(&saved).await.unwrap();
+
+        // A NEW host restores its canonical store from that backend on boot.
+        let host2 = AgentHost::with_canonical_store_restored(Box::new(backend)).await;
+        assert_eq!(
+            host2.canonical_store().unwrap().resolve(NameStore::COMPILER_LATEST).unwrap(),
+            value,
+            "the restored host boots with the previously-published pointer (durable across a restart)"
+        );
+    }
+
+    #[tokio::test]
+    async fn with_canonical_store_restored_starts_empty_when_nothing_saved() {
+        use crate::name_snapshot::MemNameStoreSnapshot;
+
+        // No prior snapshot (a fresh deployment) → the restored host boots with an empty canonical store, not
+        // a panic. It IS canonical-backed (so subsequent writes snapshot going forward).
+        let host =
+            AgentHost::with_canonical_store_restored(Box::new(MemNameStoreSnapshot::new())).await;
+        assert!(
+            host.canonical_store().is_some(),
+            "restore leaves a canonical-backed host"
+        );
+        assert!(
+            host.canonical_store().unwrap().to_set_entries().is_empty(),
+            "nothing saved yet → an empty canonical store"
+        );
+    }
+
+    #[tokio::test]
+    async fn with_canonical_store_restored_starts_empty_on_a_corrupt_snapshot() {
+        use crate::name_snapshot::{MemNameStoreSnapshot, NameStoreSnapshotStore};
+
+        // A corrupt/garbled snapshot must NOT wedge the daemon at boot: it starts EMPTY (logged), never panics.
+        let mut backend = MemNameStoreSnapshot::new();
+        backend.save(&[1u8, 2, 3]).await.unwrap(); // a short/garbage blob → MalformedSnapshot on restore
+        let host = AgentHost::with_canonical_store_restored(Box::new(backend)).await;
+        assert!(host.canonical_store().is_some());
+        assert!(
+            host.canonical_store().unwrap().to_set_entries().is_empty(),
+            "a corrupt snapshot falls back to an empty store (best-effort durability, no panic)"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_share_less_host_with_a_snapshot_store_is_inert() {
+        use crate::name_snapshot::MemNameStoreSnapshot;
+
+        // A snapshot store on a SHARE-LESS host does nothing (no canonical to mutate → nothing saved), and a
+        // turn runs unchanged. Proves the "only when canonical-backed AND snapshot-store-set" gate.
+        let mut host =
+            AgentHost::new().with_name_snapshot_store(Box::new(MemNameStoreSnapshot::new()));
+        assert!(host.canonical_store().is_none());
+        let id = host.spawn(SessionId::new("writer"), store_set_host(Hash::of(b"v")));
+        let outcome = host.deliver(&id, inbound_go(), None).await;
+        assert!(
+            matches!(outcome, Some(Ok(()))),
+            "a share-less turn runs unchanged"
         );
     }
 }

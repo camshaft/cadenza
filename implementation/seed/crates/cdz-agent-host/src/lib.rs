@@ -78,6 +78,7 @@ pub mod lifecycle;
 pub mod metric_exec;
 pub mod metrics;
 pub mod model;
+pub mod name_snapshot;
 pub mod retry;
 #[cfg(feature = "live-aws-storage")]
 pub mod s3_blob;
@@ -97,8 +98,8 @@ pub use admin_wire::{
 pub use async_host::{AdminChannel, AdminRequest, AsyncAgentHost, Inbound, Inbox};
 pub use clock::ClockExecutor;
 pub use config::{
-    AdminConfig, BlobConfig, DaemonConfig, LogConfig, MetricsTarget, ObservabilityConfig,
-    RetryConfig, TracingConfig, TracingFormat, TracingOutput,
+    AdminConfig, BlobConfig, DaemonConfig, LogConfig, MetricsTarget, NameStoreConfig,
+    ObservabilityConfig, RetryConfig, TracingConfig, TracingFormat, TracingOutput,
 };
 #[cfg(feature = "live-aws-storage")]
 pub use dynamo_log::{DynamoLogSink, DynamoLogSinkBuilder};
@@ -131,6 +132,9 @@ pub use metrics::{EffectMetrics, HostMetrics};
 #[cfg(feature = "live-net")]
 pub use model::BedrockModelTransport;
 pub use model::{ModelExecutor, ModelTransport};
+#[cfg(feature = "live-aws-storage")]
+pub use name_snapshot::S3NameStoreSnapshot;
+pub use name_snapshot::{MemNameStoreSnapshot, NameStoreSnapshotStore};
 pub use retry::Retryability;
 #[cfg(feature = "live-aws-storage")]
 pub use s3_blob::S3BlobStore;

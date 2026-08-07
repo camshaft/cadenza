@@ -187,7 +187,36 @@ async fn main() -> std::process::ExitCode {
         // Build the AgentHost FIRST so its metrics registry exists — the live executor set's per-effect
         // metrics register into the SAME registry (one registry the exporter reports over: host-boundary +
         // per-effect metrics together).
-        let agent_host = AgentHost::new();
+        //
+        // §4c AWS-backends I4a — the canonical NAME STORE durability backend, per [name_store] config:
+        // - `memory` (default): NO durability → the SHARE-LESS host (today's behavior, less-invasive — no
+        //   canonical store, so a `store/*` folds per-session with no shared directory + no snapshot).
+        // - `s3` (behind `live-aws-storage`): a DURABLE canonical store — RESTORED from the fixed S3 snapshot
+        //   key on boot + snapshotted on each mutation. A build WITHOUT the feature reports a clean "not
+        //   compiled in" boot error (config validates regardless of feature, like [blob]/[log]).
+        use cdz_agent_host::NameStoreConfig;
+        let agent_host = match &config.name_store {
+            NameStoreConfig::Memory => AgentHost::new(),
+            #[cfg(feature = "live-aws-storage")]
+            NameStoreConfig::S3 { bucket, prefix } => {
+                let snapshot =
+                    cdz_agent_host::S3NameStoreSnapshot::new(bucket.clone(), prefix.clone()).await;
+                AgentHost::with_canonical_store_restored(Box::new(snapshot)).await
+            }
+            #[cfg(not(feature = "live-aws-storage"))]
+            NameStoreConfig::S3 { .. } => {
+                eprintln!(
+                    "cdz-agent-daemon: [name_store] backend=s3 requires the `live-aws-storage` feature — \
+                     rebuild with `--features live-aws-storage` to use the durable S3 name store."
+                );
+                return std::process::ExitCode::from(1);
+            }
+        };
+        eprintln!(
+            "cdz-agent-daemon: canonical name store = {:?} (durable={})",
+            config.name_store,
+            agent_host.canonical_store().is_some()
+        );
         // Build the LIVE executor transports ONCE, here at startup (this is where the AWS config / IMDS load
         // happens — on the boot path, NOT per install). Each install then CLONES these into a fresh executor
         // set cheaply, so a slow IMDS probe can't stall the host loop mid-run (#1987 review). The per-effect
