@@ -383,6 +383,291 @@ impl MetricsReporter {
     }
 }
 
+// ─── CloudWatch backend (feature `metrics-export-cloudwatch`) ──────────────────────────────────────────
+//
+// CloudWatch is a PUSH backend like statsd/otlp, but its "payload" is a batch of `MetricDatum` sent via the
+// AWS SDK's `PutMetricData` API — an ASYNC network call. As with OTLP, the backend's `report_end` runs inside
+// the SYNC `MetricsReporter::report`, so it CANNOT block or `.await`. The shape mirrors OTLP exactly: the
+// backend ACCUMULATES a report's data into an in-memory batch (each `record_*` pushes an owned datum), and on
+// `report_end` hands the whole owned batch off to an async forwarder over a BOUNDED channel via a NON-blocking
+// `try_send`; a separate `run_cloudwatch_forwarder` task drains the channel and calls `PutMetricData`. Unlike
+// OTLP (whose payload is opaque protobuf bytes the crate's `OtlpBackend` builds), CloudWatch has no crate
+// backend — we implement `Backend` directly here and carry OWNED `CloudWatchDatum` structs (NOT AWS SDK types)
+// across the channel, so the AWS type construction happens in the async forwarder, off the report path.
+// Backpressure / a failed PutMetricData is DROP + log — telemetry is best-effort and must never block or crash
+// the agent host (guard 2).
+
+/// One resolved CloudWatch export target. OWNED so the reporter/forwarder hold it for the daemon's lifetime.
+#[cfg(feature = "metrics-export-cloudwatch")]
+#[derive(Debug, Clone)]
+pub struct CloudWatchTarget {
+    /// The CloudWatch metric NAMESPACE every datum is published under (e.g. `"CDZ/AgentHost"`). CloudWatch
+    /// metrics are always scoped to a namespace, so this is required (validated non-empty at config time).
+    pub namespace: String,
+}
+
+/// One accumulated CloudWatch metric datum: the metric NAME, its numeric VALUE, and any DIMENSIONS (the
+/// `(name, value)` label pairs derived from the metric's aggregation). OWNED (not borrowed from `MetricInfo`)
+/// so the whole batch can be moved onto the hand-off channel and turned into AWS SDK `MetricDatum`s in the
+/// async forwarder, OFF the sync report path.
+#[cfg(feature = "metrics-export-cloudwatch")]
+#[derive(Debug, Clone, PartialEq)]
+pub struct CloudWatchDatum {
+    /// The metric name (from `MetricInfo::name`).
+    pub metric_name: String,
+    /// The numeric value for this interval (a counter delta, a gauge reading, a callback sum, or a
+    /// histogram's sample count) as an `f64` — CloudWatch's datum value type.
+    pub value: f64,
+    /// The metric's dimensions as `(name, value)` pairs, derived from the aggregation convention string
+    /// (`Kind|value` → `(kind, value)`, a bare string → `(aggregation, string)`). Empty for an undimensioned
+    /// metric. CloudWatch caps a datum at 30 dimensions; we emit at most what the aggregation carries (few).
+    pub dimensions: Vec<(String, String)>,
+}
+
+/// The bound on the CloudWatch hand-off channel. Small, for the same reason as [`OTLP_CHANNEL_BOUND`]: one
+/// report per `report_interval_secs` produces one batch, so a healthy forwarder keeps this near-empty; the
+/// bound only matters when CloudWatch is slow/unreachable, and then we WANT to drop (best-effort).
+#[cfg(feature = "metrics-export-cloudwatch")]
+const CLOUDWATCH_CHANNEL_BOUND: usize = 8;
+
+/// CloudWatch's hard limit of metric data per `PutMetricData` call — the forwarder chunks a larger batch into
+/// several calls. (AWS: "no more than 1000 metrics per call".)
+#[cfg(feature = "metrics-export-cloudwatch")]
+const CLOUDWATCH_MAX_DATA_PER_CALL: usize = 1000;
+
+/// A [`Backend`](s2n_quic_dc_metrics::backend::Backend) that ACCUMULATES each report's metrics into an
+/// in-memory batch and, on `report_end`, hands the owned batch off to the async CloudWatch forwarder over a
+/// BOUNDED channel WITHOUT blocking. Its `record_*` methods run inside the sync report cycle, so nothing here
+/// blocks or `.await`s: they just push an owned [`CloudWatchDatum`] into `batch`. `report_start` clears the
+/// accumulator (retaining capacity, per the trait's reuse contract). `report_end` `try_send`s the drained
+/// batch and, if the channel is full (CloudWatch backpressured) or closed (forwarder gone), DROPS it + logs —
+/// never blocks, never panics (guard 2).
+#[cfg(feature = "metrics-export-cloudwatch")]
+pub struct CloudWatchBackend {
+    tx: tokio::sync::mpsc::Sender<Vec<CloudWatchDatum>>,
+    /// The per-report accumulator: cleared in `report_start`, filled by each `record_*`, drained + sent in
+    /// `report_end`. Reused across reports (capacity retained) — the trait's steady-state no-alloc contract.
+    batch: Vec<CloudWatchDatum>,
+    /// The report-wide `include_sparse` hint captured in `report_start`, so a zero-valued metric is dropped
+    /// unless the report (or the metric's own sparsity) asks for it — mirrors the OTLP backend's zero policy.
+    include_sparse: bool,
+}
+
+#[cfg(feature = "metrics-export-cloudwatch")]
+impl CloudWatchBackend {
+    /// Derive a datum's CloudWatch dimensions from the metric's aggregation convention string, mirroring the
+    /// OTLP backend's `aggregation → attributes` mapping: `"Kind|value"` → `(kind, value)` (key lowercased),
+    /// a bare non-empty string → `("aggregation", string)`, and `None`/empty → no dimensions. A dimension with
+    /// an empty name or value is skipped (CloudWatch rejects empty dimension components).
+    fn dimensions_of(info: &s2n_quic_dc_metrics::backend::MetricInfo<'_>) -> Vec<(String, String)> {
+        let mut dims = Vec::new();
+        for tag in info.aggregation_tags().iter() {
+            // A keyless (bare) dimension uses the "aggregation" name, matching the OTLP backend.
+            let name = if tag.key.is_empty() {
+                "aggregation".to_string()
+            } else {
+                tag.key.to_ascii_lowercase()
+            };
+            if name.is_empty() || tag.value.is_empty() {
+                continue;
+            }
+            dims.push((name, tag.value.to_string()));
+        }
+        dims
+    }
+
+    /// Push one datum into the per-report batch (shared by every `record_*`).
+    fn push(
+        &mut self,
+        info: &s2n_quic_dc_metrics::backend::MetricInfo<'_>,
+        value: f64,
+        dimensions: Vec<(String, String)>,
+    ) {
+        self.batch.push(CloudWatchDatum {
+            metric_name: info.name.to_string(),
+            value,
+            dimensions,
+        });
+    }
+}
+
+#[cfg(feature = "metrics-export-cloudwatch")]
+impl s2n_quic_dc_metrics::backend::Backend for CloudWatchBackend {
+    fn report_start(&mut self, options: &s2n_quic_dc_metrics::backend::ReportOptions) {
+        // Reset the accumulator for this report (retain capacity — the trait's reuse contract).
+        self.batch.clear();
+        self.include_sparse = options.include_sparse;
+    }
+
+    fn record_counter(&mut self, info: &s2n_quic_dc_metrics::backend::MetricInfo<'_>, value: u64) {
+        if value == 0 && !info.emit_zero(self.include_sparse) {
+            return;
+        }
+        let dims = Self::dimensions_of(info);
+        self.push(info, value as f64, dims);
+    }
+
+    fn record_gauge(&mut self, info: &s2n_quic_dc_metrics::backend::MetricInfo<'_>, value: i64) {
+        if value == 0 && !info.emit_zero(self.include_sparse) {
+            return;
+        }
+        let dims = Self::dimensions_of(info);
+        self.push(info, value as f64, dims);
+    }
+
+    fn record_bool(
+        &mut self,
+        info: &s2n_quic_dc_metrics::backend::MetricInfo<'_>,
+        true_count: u64,
+        false_count: u64,
+    ) {
+        // Two datums, one per outcome, dimensioned `result=true/false` (mirrors the OTLP backend). A zero
+        // count is dropped unless the sparse policy asks for it.
+        let emit_zero = info.emit_zero(self.include_sparse);
+        for (label, count) in [("true", true_count), ("false", false_count)] {
+            if count == 0 && !emit_zero {
+                continue;
+            }
+            let mut dims = Self::dimensions_of(info);
+            dims.push(("result".to_string(), label.to_string()));
+            self.push(info, count as f64, dims);
+        }
+    }
+
+    fn record_histogram(
+        &mut self,
+        info: &s2n_quic_dc_metrics::backend::MetricInfo<'_>,
+        hist: s2n_quic_dc_metrics::backend::Histogram<'_>,
+    ) {
+        // A pre-aggregated distribution: emit the interval's SAMPLE COUNT as the datum value (a total, best-
+        // effort scalar — CloudWatch statistic sets are a later refinement). A zero-count histogram is dropped
+        // unless the sparse policy asks for it.
+        let count = hist.count();
+        if count == 0 && !info.emit_zero(self.include_sparse) {
+            return;
+        }
+        let dims = Self::dimensions_of(info);
+        self.push(info, count as f64, dims);
+    }
+
+    fn record_callback(
+        &mut self,
+        info: &s2n_quic_dc_metrics::backend::MetricInfo<'_>,
+        values: &[&dyn s2n_quic_dc_metrics::backend::CallbackValue],
+    ) {
+        if values.is_empty() {
+            return;
+        }
+        let sum: f64 = values.iter().map(|v| v.as_f64()).sum();
+        if sum == 0.0 && !info.emit_zero(self.include_sparse) {
+            return;
+        }
+        let dims = Self::dimensions_of(info);
+        self.push(info, sum, dims);
+    }
+
+    fn report_end(&mut self) {
+        // Nothing recorded this interval → nothing to send (mirrors the OTLP backend's empty-report skip).
+        if self.batch.is_empty() {
+            return;
+        }
+        // Drain the accumulator (retaining its capacity for the next report) and hand the owned batch off.
+        // Non-blocking: `try_send` never awaits; on Full/Closed we drop + log — best-effort telemetry must
+        // not stall the sync report cycle waiting on a slow/down CloudWatch (guard 2).
+        let batch = std::mem::take(&mut self.batch);
+        match self.tx.try_send(batch) {
+            Ok(()) => {}
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                tracing::warn!(
+                    "metrics-export cloudwatch: forwarder channel full — dropping this report's batch"
+                );
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                tracing::debug!("metrics-export cloudwatch: forwarder gone — dropping batch");
+            }
+        }
+    }
+}
+
+/// The async CloudWatch forwarder: drains the bounded channel and publishes each accumulated batch to
+/// CloudWatch via `PutMetricData` under `namespace`. A batch larger than CloudWatch's 1000-datum-per-call
+/// limit is CHUNKED into several calls. A failed call is DROPPED + logged (best-effort). Runs until the
+/// channel closes (all senders dropped, i.e. the reporter is gone at daemon shutdown). Spawned by the daemon
+/// alongside the export loop.
+///
+/// The AWS client is built from the SDK DEFAULT config (`aws_config::load_defaults` — env/profile/IMDS
+/// credential chain, matching the S3/dynamo/Bedrock backends; no broker, no hardcoding), the analogue of the
+/// OTLP forwarder building its own reqwest client. Construction is inside the forwarder (async), so the daemon
+/// hands it only `(namespace, rx)` — the same detached spawn shape as the OTLP forwarder.
+#[cfg(feature = "metrics-export-cloudwatch")]
+pub async fn run_cloudwatch_forwarder(
+    namespace: String,
+    mut rx: tokio::sync::mpsc::Receiver<Vec<CloudWatchDatum>>,
+) {
+    // Load the ambient AWS config once (the credential chain may probe the environment / IMDS). This is the
+    // analogue of run_otlp_forwarder building its HTTP client up front.
+    let config = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
+    let client = aws_sdk_cloudwatch::Client::new(&config);
+
+    while let Some(batch) = rx.recv().await {
+        // Chunk into <=1000-datum PutMetricData calls (CloudWatch's per-call limit).
+        for chunk in batch.chunks(CLOUDWATCH_MAX_DATA_PER_CALL) {
+            let data: Vec<aws_sdk_cloudwatch::types::MetricDatum> = chunk
+                .iter()
+                .map(|d| {
+                    let mut datum = aws_sdk_cloudwatch::types::MetricDatum::builder()
+                        .metric_name(&d.metric_name)
+                        .value(d.value);
+                    for (name, value) in &d.dimensions {
+                        datum = datum.dimensions(
+                            aws_sdk_cloudwatch::types::Dimension::builder()
+                                .name(name)
+                                .value(value)
+                                .build(),
+                        );
+                    }
+                    datum.build()
+                })
+                .collect();
+            let resp = client
+                .put_metric_data()
+                .namespace(&namespace)
+                .set_metric_data(Some(data))
+                .send()
+                .await;
+            if let Err(e) = resp {
+                tracing::warn!(
+                    error = %aws_sdk_cloudwatch::error::DisplayErrorContext(&e),
+                    namespace = %namespace,
+                    "metrics-export cloudwatch: PutMetricData failed — dropping"
+                );
+            }
+        }
+    }
+    tracing::debug!(namespace = %namespace, "metrics-export cloudwatch: forwarder shut down (channel closed)");
+}
+
+#[cfg(feature = "metrics-export-cloudwatch")]
+impl MetricsReporter {
+    /// Register a CloudWatch backend into the reporter and return the channel receiver the daemon hands to
+    /// [`run_cloudwatch_forwarder`]. The backend accumulates each report's data into a batch and pushes the
+    /// owned batch onto a bounded channel (non-blocking); the forwarder calls `PutMetricData`. One call per
+    /// CloudWatch target (each gets its own channel + forwarder task, so a slow publish on one target can't
+    /// backpressure another).
+    pub fn push_cloudwatch(
+        &mut self,
+        _target: &CloudWatchTarget,
+    ) -> tokio::sync::mpsc::Receiver<Vec<CloudWatchDatum>> {
+        let (tx, rx) = tokio::sync::mpsc::channel(CLOUDWATCH_CHANNEL_BOUND);
+        self.backends.push(Box::new(CloudWatchBackend {
+            tx,
+            batch: Vec::new(),
+            include_sparse: false,
+        }));
+        rx
+    }
+}
+
 // ─── Prometheus backend (feature `metrics-export-prometheus`) ──────────────────────────────────────────
 //
 // Prometheus is PULL, not push: the crate's `PrometheusBackend` IS a `Backend` (so it still pushes into the
@@ -909,6 +1194,104 @@ mod tests {
                       // The forwarder must terminate (a dead endpoint doesn't wedge it). Bound the wait so a hang fails
                       // the test rather than hanging CI.
             let joined = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
+            assert!(
+                joined.is_ok(),
+                "forwarder terminated after the channel closed"
+            );
+        }
+    }
+
+    #[cfg(feature = "metrics-export-cloudwatch")]
+    mod cloudwatch {
+        use super::*;
+        use s2n_quic_dc_metrics::backend::{Backend, MetricInfo, MetricKind, ReportOptions};
+        use s2n_quic_dc_metrics::Unit;
+        use std::sync::Arc;
+
+        #[tokio::test]
+        async fn cloudwatch_backend_registers_and_a_report_enqueues_a_batch() {
+            // Push a CloudWatch target into the reporter + drive a report: the report cycle must complete
+            // without blocking on the (undrained) channel, and a non-empty batch must be enqueued for the
+            // forwarder.
+            let target = CloudWatchTarget {
+                namespace: "CDZ/Test".into(),
+            };
+            let (mut reporter, _) = MetricsReporter::from_statsd_targets(&[]);
+            let mut rx = reporter.push_cloudwatch(&target);
+            assert_eq!(reporter.backend_count(), 1);
+
+            let registry = Registry::new();
+            let host = HostMetrics::new(&registry);
+            host.record_session_installed();
+            host.record_turn(true);
+            reporter.report(&registry); // must not block on the undrained channel
+
+            // A batch of accumulated data was enqueued for the forwarder.
+            let batch = rx.try_recv().expect("a batch was enqueued");
+            assert!(
+                !batch.is_empty(),
+                "the report accumulated at least one datum"
+            );
+        }
+
+        #[tokio::test]
+        async fn report_end_is_nonblocking_and_drops_when_channel_full() {
+            // Guard 2: report_end runs inside the sync report cycle, so the hand-off must NEVER block. Build a
+            // backend over a tiny channel, DON'T drain it, and drive more reports than the bound — every
+            // report_end must return immediately (dropping on full), never block or panic.
+            let (tx, _rx) = tokio::sync::mpsc::channel::<Vec<CloudWatchDatum>>(2);
+            let mut backend = CloudWatchBackend {
+                tx,
+                batch: Vec::new(),
+                include_sparse: false,
+            };
+            let name: Arc<str> = Arc::from("m");
+            for _ in 0..10 {
+                backend.report_start(&ReportOptions::default());
+                backend.record_counter(
+                    &MetricInfo::new(&name, None, Unit::Count, MetricKind::Counter),
+                    5,
+                );
+                backend.report_end();
+            }
+            // Reaching here without hanging is the assertion (report_end never blocks).
+        }
+
+        #[test]
+        fn dimensions_derive_from_the_aggregation_convention() {
+            // The aggregation → dimensions mapping mirrors the OTLP backend: `Kind|value` → (kind, value)
+            // (key lowercased), a bare string → (aggregation, string).
+            let name: Arc<str> = Arc::from("m");
+            let agg: Arc<str> = Arc::from("Variant|ect0");
+            let info = MetricInfo::new(&name, Some(&agg), Unit::Count, MetricKind::Counter);
+            let dims = CloudWatchBackend::dimensions_of(&info);
+            assert_eq!(dims, vec![("variant".to_string(), "ect0".to_string())]);
+
+            let bare: Arc<str> = Arc::from("custom");
+            let info = MetricInfo::new(&name, Some(&bare), Unit::Count, MetricKind::Counter);
+            let dims = CloudWatchBackend::dimensions_of(&info);
+            assert_eq!(
+                dims,
+                vec![("aggregation".to_string(), "custom".to_string())]
+            );
+
+            // No aggregation → no dimensions.
+            let info = MetricInfo::new(&name, None, Unit::Count, MetricKind::Counter);
+            assert!(CloudWatchBackend::dimensions_of(&info).is_empty());
+        }
+
+        #[tokio::test]
+        async fn forwarder_with_no_config_terminates_when_channel_closes() {
+            // The forwarder must self-terminate when its channel closes (all senders dropped) — the
+            // channel-close→terminate contract, like the OTLP forwarder. We can't reach real CloudWatch here,
+            // but with NO batch ever sent + the sender dropped immediately, recv() returns None on the first
+            // poll and the forwarder returns without ever building a client-dependent call. Bound the wait so a
+            // hang fails the test rather than hanging CI. (Client construction loads ambient AWS config, which
+            // is offline-safe — it just wires the default provider chain, no network until a call is made.)
+            let (tx, rx) = tokio::sync::mpsc::channel::<Vec<CloudWatchDatum>>(2);
+            let handle = tokio::spawn(run_cloudwatch_forwarder("CDZ/Test".into(), rx));
+            drop(tx); // close the channel → forwarder returns after draining (nothing to drain)
+            let joined = tokio::time::timeout(std::time::Duration::from_secs(10), handle).await;
             assert!(
                 joined.is_ok(),
                 "forwarder terminated after the channel closed"

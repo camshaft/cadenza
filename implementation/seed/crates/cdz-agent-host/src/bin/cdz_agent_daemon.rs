@@ -274,6 +274,7 @@ async fn main() -> std::process::ExitCode {
             export_reporter,
             export_interval,
             otlp_forwarders,
+            cloudwatch_forwarders,
             prometheus_servers,
         ) = {
             use cdz_agent_host::{MetricsReporter, MetricsTarget, StatsdTarget};
@@ -322,6 +323,27 @@ async fn main() -> std::process::ExitCode {
             } else {
                 Vec::new()
             };
+            // CloudWatch targets are exportable with the metrics-export-cloudwatch feature, unexportable
+            // without it (counted toward the diagnostic below). Same collect-then-push shape as otlp.
+            #[cfg(feature = "metrics-export-cloudwatch")]
+            let cloudwatch_targets: Vec<cdz_agent_host::CloudWatchTarget> =
+                if config.observability.enabled {
+                    config
+                        .observability
+                        .targets
+                        .iter()
+                        .filter_map(|t| match t {
+                            MetricsTarget::CloudWatch { namespace } => {
+                                Some(cdz_agent_host::CloudWatchTarget {
+                                    namespace: namespace.clone(),
+                                })
+                            }
+                            _ => None,
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
             // Prometheus (PULL) targets are exportable with the metrics-export-prometheus feature. Collected
             // like otlp: with the feature they become backends + scrape servers; without it they count toward
             // the unexportable diagnostic below.
@@ -356,6 +378,8 @@ async fn main() -> std::process::ExitCode {
                 .filter(|t| {
                     (matches!(t, MetricsTarget::Otlp { .. })
                         && !cfg!(feature = "metrics-export-otlp"))
+                        || (matches!(t, MetricsTarget::CloudWatch { .. })
+                            && !cfg!(feature = "metrics-export-cloudwatch"))
                         || (matches!(t, MetricsTarget::Prometheus { .. })
                             && !cfg!(feature = "metrics-export-prometheus"))
                 })
@@ -363,7 +387,11 @@ async fn main() -> std::process::ExitCode {
             // `mut` only when a push backend (otlp/prometheus) registers into the reporter; a statsd-only build
             // never mutates it after construction.
             #[cfg_attr(
-                not(any(feature = "metrics-export-otlp", feature = "metrics-export-prometheus")),
+                not(any(
+                    feature = "metrics-export-otlp",
+                    feature = "metrics-export-cloudwatch",
+                    feature = "metrics-export-prometheus"
+                )),
                 allow(unused_mut)
             )]
             let (mut reporter, failed) = MetricsReporter::from_statsd_targets(&statsd_targets);
@@ -379,6 +407,19 @@ async fn main() -> std::process::ExitCode {
                 .collect();
             #[cfg(not(feature = "metrics-export-otlp"))]
             let otlp_forwarders: Vec<((), ())> = Vec::new();
+            // Push each CloudWatch target into the SAME reporter (one drain fans out to statsd + otlp +
+            // cloudwatch + prometheus together) and keep its (namespace, receiver) so we can spawn a forwarder
+            // task per target below.
+            #[cfg(feature = "metrics-export-cloudwatch")]
+            let cloudwatch_forwarders: Vec<(
+                String,
+                tokio::sync::mpsc::Receiver<Vec<cdz_agent_host::CloudWatchDatum>>,
+            )> = cloudwatch_targets
+                .iter()
+                .map(|t| (t.namespace.clone(), reporter.push_cloudwatch(t)))
+                .collect();
+            #[cfg(not(feature = "metrics-export-cloudwatch"))]
+            let cloudwatch_forwarders: Vec<((), ())> = Vec::new();
             // Push each prometheus target's backend into the reporter + keep (bind, handle) so we can spawn a
             // scrape server per target below (the handle reads the exposition text the backend re-renders).
             #[cfg(feature = "metrics-export-prometheus")]
@@ -419,6 +460,7 @@ async fn main() -> std::process::ExitCode {
                 reporter,
                 std::time::Duration::from_secs(config.observability.report_interval_secs),
                 otlp_forwarders,
+                cloudwatch_forwarders,
                 prometheus_servers,
             )
         };
@@ -467,6 +509,20 @@ async fn main() -> std::process::ExitCode {
         // Bind the non-otlp placeholder so the value is consumed in a build without the OTLP feature.
         #[cfg(all(feature = "metrics-export", not(feature = "metrics-export-otlp")))]
         let _ = otlp_forwarders;
+        // Spawn one async CloudWatch forwarder per CloudWatch target. Each drains its bounded channel + calls
+        // PutMetricData off the report path (the backend's report_end only enqueues). A forwarder self-
+        // terminates when its channel closes (the reporter owning the senders is dropped as run_export_loop
+        // returns at shutdown). Detached, like the OTLP forwarders (best-effort telemetry).
+        #[cfg(feature = "metrics-export-cloudwatch")]
+        for (namespace, rx) in cloudwatch_forwarders {
+            eprintln!(
+                "cdz-agent-daemon: metrics export → CloudWatch forwarder for namespace {namespace}"
+            );
+            tokio::spawn(cdz_agent_host::run_cloudwatch_forwarder(namespace, rx));
+        }
+        // Consume the placeholder in a build without the CloudWatch feature.
+        #[cfg(all(feature = "metrics-export", not(feature = "metrics-export-cloudwatch")))]
+        let _ = cloudwatch_forwarders;
         // Spawn one prometheus scrape server per prometheus target. Each binds its configured address (a
         // loopback bind is recommended; a non-loopback bind is warned by the server) and serves GET /metrics
         // from its handle until shut down. Collect their shutdown senders so they're torn down after the host

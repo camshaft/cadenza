@@ -161,6 +161,18 @@ pub enum MetricsTarget {
         #[serde(default)]
         scope_version: Option<String>,
     },
+    /// The `cloudwatch` backend — the AWS-native metrics export (I3). Like statsd/otlp it's a PUSH backend,
+    /// but the "endpoint" is the AWS CloudWatch `PutMetricData` API (region + credentials from the SDK default
+    /// provider chain — env/profile/IMDS, no endpoint field needed), so its config is a metric `namespace` (the
+    /// CloudWatch scope every published datum lands under), NOT a push endpoint. `namespace` is REQUIRED and
+    /// validated non-empty. Exportable only when the `metrics-export-cloudwatch` feature is compiled; the
+    /// variant is always PARSED (feature-independent, like the others), and a build without the feature reports
+    /// it as unexportable at boot rather than silently no-op'ing.
+    #[serde(rename = "cloudwatch")]
+    CloudWatch {
+        /// The CloudWatch metric namespace every datum is published under (e.g. `"CDZ/AgentHost"`).
+        namespace: String,
+    },
     /// The `prometheus` backend — `s2n-quic-dc-metrics`' `PrometheusBackend`. UNLIKE statsd/otlp (outbound
     /// PUSH), prometheus is PULL: the daemon SERVES an HTTP scrape endpoint (`GET /metrics`) that a scraper
     /// reads, so its config is a `bind` LISTEN address (not a push endpoint). `bind` is REQUIRED (no default),
@@ -190,6 +202,7 @@ impl MetricsTarget {
         match self {
             MetricsTarget::Statsd { .. } => "statsd",
             MetricsTarget::Otlp { .. } => "otlp",
+            MetricsTarget::CloudWatch { .. } => "cloudwatch",
             MetricsTarget::Prometheus { .. } => "prometheus",
         }
     }
@@ -495,6 +508,13 @@ impl DaemonConfig {
                             t.kind()
                         )));
                     }
+                    // The CloudWatch PUSH backend requires a non-empty namespace (its metric scope; there's no
+                    // endpoint — region/creds come from the SDK env).
+                    MetricsTarget::CloudWatch { namespace } if namespace.trim().is_empty() => {
+                        return Err(ConfigError(format!(
+                            "[observability] target {i} (cloudwatch) needs a non-empty namespace"
+                        )));
+                    }
                     // The PULL backend requires a non-empty bind (LISTEN) address.
                     MetricsTarget::Prometheus { bind, .. } if bind.trim().is_empty() => {
                         return Err(ConfigError(format!(
@@ -782,6 +802,46 @@ mod tests {
             }
         );
         assert_eq!(cfg.observability.targets[1].kind(), "otlp");
+    }
+
+    #[test]
+    fn observability_cloudwatch_target_parses_and_validates_namespace() {
+        // The cloudwatch PUSH backend: namespace required (no endpoint — region/creds come from the SDK env).
+        let cfg = DaemonConfig::from_toml_str(
+            r#"
+            [observability]
+            enabled = true
+            [[observability.target]]
+            kind = "cloudwatch"
+            namespace = "CDZ/AgentHost"
+            "#,
+        )
+        .expect("cloudwatch target parses");
+        assert_eq!(cfg.observability.targets.len(), 1);
+        assert_eq!(
+            cfg.observability.targets[0],
+            MetricsTarget::CloudWatch {
+                namespace: "CDZ/AgentHost".into(),
+            }
+        );
+        assert_eq!(cfg.observability.targets[0].kind(), "cloudwatch");
+    }
+
+    #[test]
+    fn observability_cloudwatch_empty_namespace_is_rejected() {
+        // A present-but-blank namespace exercises the trim-check validation.
+        let err = DaemonConfig::from_toml_str(
+            r#"
+            [observability]
+            enabled = true
+            [[observability.target]]
+            kind = "cloudwatch"
+            namespace = ""
+            "#,
+        )
+        .unwrap_err();
+        assert!(err.0.contains("namespace"), "{err}");
+        assert!(err.0.contains("cloudwatch"), "names the kind: {err}");
     }
 
     #[test]

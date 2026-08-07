@@ -105,6 +105,8 @@ pub use dynamo_log::{DynamoLogSink, DynamoLogSinkBuilder};
 pub use emit::EmitExecutor;
 #[cfg(feature = "metrics-export-prometheus")]
 pub use export::{is_loopback_bind, run_prometheus_scrape_server, PrometheusTarget};
+#[cfg(feature = "metrics-export-cloudwatch")]
+pub use export::{run_cloudwatch_forwarder, CloudWatchBackend, CloudWatchDatum, CloudWatchTarget};
 #[cfg(feature = "metrics-export")]
 pub use export::{run_export_loop, MetricsReporter, StatsdTarget, UdpStatsdSink};
 #[cfg(feature = "metrics-export-otlp")]

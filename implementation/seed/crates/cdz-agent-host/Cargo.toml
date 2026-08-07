@@ -82,6 +82,20 @@ metrics-export = []
 # backpressure or a failed POST (guard 2: telemetry is best-effort, must never block/panic the report loop).
 metrics-export-otlp = ["metrics-export", "dep:reqwest", "s2n-quic-dc-metrics/otel"]
 
+# `metrics-export-cloudwatch` adds the AWS CloudWatch export backend on top of `metrics-export`. STRICTLY
+# opt-in + kept SEPARATE from the base so the hermetic default (and a statsd/otlp/prometheus build) NEVER
+# links the AWS SDK tree (verify `cargo tree` on the default build + a plain `metrics-export` build shows no
+# aws-sdk-cloudwatch). It enables (a) `dep:aws-sdk-cloudwatch` — the CloudWatch `PutMetricData` client the
+# forwarder pushes batched metric data to, and (b) reuses the already-optional `dep:aws-config` (the SDK
+# default credential provider chain — env/profile/IMDS, no broker, matching the S3/dynamo/Bedrock backends).
+# CloudWatch is a PUSH backend: the backend ACCUMULATES a report's metric data (name + value + dimensions) into
+# an in-memory batch, then on `report_end` hands the owned batch to the async forwarder over a bounded channel
+# via a NON-blocking `try_send` (its accumulation runs inside the sync report cycle, so the hand-off must not
+# block); a separate `run_cloudwatch_forwarder` task drains the channel and calls `PutMetricData`, chunking to
+# CloudWatch's 1000-datum-per-call limit and dropping + logging on backpressure or a failed API call (guard 2:
+# telemetry is best-effort, must never block/panic the report loop).
+metrics-export-cloudwatch = ["metrics-export", "dep:aws-sdk-cloudwatch", "dep:aws-config"]
+
 # `metrics-export-prometheus` adds the PULL prometheus export backend: the daemon SERVES an HTTP scrape
 # endpoint (`GET /metrics`) rather than pushing. STRICTLY opt-in + separate so the hermetic default (and a
 # statsd/otlp build) NEVER pulls tokio's `net` tree (guard: verify `cargo tree` on the default build shows no
@@ -215,3 +229,8 @@ aws-sdk-s3 = { version = "1", default-features = false, features = ["rustls", "d
 # dynamodb tree). Same `default-features = false` + rustls / default-https-client / rt-tokio set as the other
 # aws-sdk crates. Credentials from the SDK default provider chain (env/profile/IMDS) via the shared aws-config.
 aws-sdk-dynamodb = { version = "1", default-features = false, features = ["rustls", "default-https-client", "rt-tokio"], optional = true }
+# aws-sdk-cloudwatch — the CloudWatch `PutMetricData` client behind `metrics-export-cloudwatch` (the AWS-native
+# metrics export backend, I3). OPTIONAL (default + a plain `metrics-export` build compile no cloudwatch tree).
+# Same `default-features = false` + rustls / default-https-client / rt-tokio enabled set as the other aws-sdk
+# crates. Credentials from the SDK default provider chain (env/profile/IMDS) via the shared aws-config.
+aws-sdk-cloudwatch = { version = "1", default-features = false, features = ["rustls", "default-https-client", "rt-tokio"], optional = true }
