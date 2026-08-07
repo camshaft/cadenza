@@ -16040,3 +16040,103 @@
   (call   main (: 2 Int64)) (output (: -4611686018427387904 Int64))
   (call   main (: -2 Int64)) (output (: 4611686018427387904 Int64))
   (call   main (: 1 Int64)) (output (: -9223372036854775808 Int64)))
+
+;; ── Float64 effect boundaries + BOOL handler states (breaker fe/bs) ──────────────────────────────
+;; fe = Float64 through the effect machinery using EXACT binary fractions (so float equality is
+;; legitimate): fe1 a halving state whose three draws sum to exactly 1.75x the seed; fe2 a
+;; CLAMP-style arm with a rising floor (single-site resume; the two-site x Float64 form stays
+;; not-yet-reducible, matching the two-site x Option boundary); fe3 an Int64 and a Float64 handler
+;; INTERLEAVED (the float identity gates the int readout); fe4 float comparisons ROUTING an
+;; integer match (the second draw's sign picks the arm). bs = Bool states completing the scalar
+;; kind coverage: bs1 a TOGGLE (complementary bit patterns per seed); bs2 a LATCH (once false,
+;; every later check answers false).
+
+(case "fe1 a Float64 handler state HALVING per dispatch — three draws sum to exactly 1.75x the seed (exact binary fractions)"
+  (input  (do
+            (effect F (op next (-> Float64)))
+            (def (main (: n Int64))
+              (handle F (Float64.of-int n)
+                ((next () s (resume s (* s 0.5))))
+                (let ((a (F.next)))
+                  (let ((b (F.next)))
+                    (let ((c (F.next)))
+                      (if (= (+ a (+ b c)) (* (Float64.of-int n) 1.75)) 1 0))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 1 Int64))
+  (call   main (: -12 Int64)) (output (: 1 Int64))
+  (call   main (: 0 Int64)) (output (: 1 Int64)))
+
+(case "fe2 a CLAMP-style Float64 arm (single-site resume) — below-state args are lifted to the rising floor"
+  (input  (do
+            (effect F (op clip (-> Float64 Float64)))
+            (def (main (: n Int64))
+              (handle F 0.0
+                ((clip (v) s (resume (if (< v s) s v) (+ s 1.0))))
+                (let ((a (F.clip (Float64.of-int n))))
+                  (let ((b (F.clip -2.5)))
+                    (let ((c (F.clip 3.5)))
+                      (if (= (+ a (+ b c)) (+ (Float64.of-int n) 4.5)) 7 (if (= (+ a (+ b c)) 8.0) 8 9)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 7 Int64))
+  (call   main (: -3 Int64)) (output (: 9 Int64))
+  (call   main (: 0 Int64)) (output (: 7 Int64)))
+
+(case "fe3 an Int64 handler and a Float64 handler INTERLEAVED — integer ticks and exact float halving thread independently"
+  (input  (do
+            (effect I (op tick (-> Int64)))
+            (effect F (op half (-> Float64)))
+            (def (main (: n Int64))
+              (handle I n
+                ((tick () s (resume s (+ s 1))))
+                (handle F 8.0
+                  ((half () t (resume t (* t 0.5))))
+                  (let ((i1 (I.tick)))
+                    (let ((f1 (F.half)))
+                      (let ((i2 (I.tick)))
+                        (let ((f2 (F.half)))
+                          (if (= (+ f1 f2) 12.0) (+ (* 10 i1) i2) -1))))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 56 Int64))
+  (call   main (: 0 Int64)) (output (: 1 Int64)))
+
+(case "fe4 float comparisons route an integer match — the sign of the second draw picks the arm, exact identities verify inside"
+  (input  (do
+            (effect F (op next (-> Float64)))
+            (def (main (: n Int64))
+              (handle F (Float64.of-int n)
+                ((next () s (resume s (- s 1.5))))
+                (let ((a (F.next)))
+                  (let ((b (F.next)))
+                    (match (if (< b 0.0) 0 1)
+                      (0 (if (= (- a b) 1.5) 11 12))
+                      (_o (if (= (+ a b) (- (* 2.0 (Float64.of-int n)) 1.5)) 21 22)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 21 Int64))
+  (call   main (: 1 Int64)) (output (: 11 Int64))
+  (call   main (: 0 Int64)) (output (: 11 Int64)))
+
+(case "bs1 a BOOL toggle state — four draws alternate true/false from an input-dependent seed"
+  (input  (do
+            (effect T (op flip (-> Bool)))
+            (def (main (: n Int64))
+              (handle T (> n 3)
+                ((flip () s (resume s (not s))))
+                (+ (if (T.flip) 1 0)
+                   (+ (if (T.flip) 10 0)
+                      (+ (if (T.flip) 100 0) (if (T.flip) 1000 0))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 101 Int64))
+  (call   main (: 0 Int64)) (output (: 1010 Int64)))
+
+(case "bs2 a LATCH — once an op arg is false, the state stays false and every later check answers false"
+  (input  (do
+            (effect T (op check (-> Bool Bool)))
+            (def (main (: n Int64))
+              (handle T true
+                ((check (v) s (resume (and s v) (and s v))))
+                (+ (if (T.check true) 1 0)
+                   (+ (if (T.check (> n 3)) 10 0)
+                      (+ (if (T.check true) 100 0) (if (T.check true) 1000 0))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 1111 Int64))
+  (call   main (: 0 Int64)) (output (: 1 Int64)))

@@ -6262,3 +6262,9 @@ pass	nm1 NEGATIVE remainder is TRUNCATED (sign of the dividend) uniformly — ba
 pass	nm2 NEGATIVE division TRUNCATES toward zero uniformly — bare and through a handler arm
 pass	nm3 the only overflowing DIVISION (Int64.min / -1) is a CONSTANT-fold reject — the runtime-divisor form runs for every other divisor
 pass	nm4 Int64.min divided by RUNTIME divisors — every non-(-1) divisor has an exact Int64 quotient
+pass	fe1 a Float64 handler state HALVING per dispatch — three draws sum to exactly 1.75x the seed (exact binary fractions)
+pass	fe2 a CLAMP-style Float64 arm (single-site resume) — below-state args are lifted to the rising floor
+pass	fe3 an Int64 handler and a Float64 handler INTERLEAVED — integer ticks and exact float halving thread independently
+pass	fe4 float comparisons route an integer match — the sign of the second draw picks the arm, exact identities verify inside
+pass	bs1 a BOOL toggle state — four draws alternate true/false from an input-dependent seed
+pass	bs2 a LATCH — once an op arg is false, the state stays false and every later check answers false
