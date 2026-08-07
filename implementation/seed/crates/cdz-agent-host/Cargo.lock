@@ -580,6 +580,7 @@ dependencies = [
  "async-trait",
  "aws-config",
  "aws-sdk-bedrockruntime",
+ "aws-smithy-types",
  "bytes",
  "cdz-kernel",
  "getrandom 0.2.17",

@@ -61,6 +61,8 @@ pub mod async_host;
 pub mod clock;
 pub mod config;
 pub mod converse;
+#[cfg(feature = "live-net")]
+pub mod converse_json;
 pub mod emit;
 #[cfg(feature = "metrics-export")]
 pub mod export;
