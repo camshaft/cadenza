@@ -1645,28 +1645,36 @@
             '';
             # 2-WAY CLIPPY SHARD (v-nix+v-fleet-tooling 2026-08-07, data-driven CI-speed): clippy is the sole
             # critical-path pole (~8.8m) and RUN-TIME-bound (queue ~0.1m / run ~8.9m — v-ft calm-window n=119),
-            # so splitting it into 2 PARALLEL GHA jobs directly halves the pole (~8.8→~5m) for only +1 x86
-            # slot/candidate. These two sub-aggregates each force ~half the per-crate clippy checks, BALANCED BY
-            # BUILD WEIGHT (not count): the 3 heaviest — rcdzc (spec+compiler-ml+bigint), cdz-run (compiler-ml),
-            # xtask (spec+compiler-ml) — are split across shards, and crateCdzCheck's whole-workspace clippy goes
-            # on A to balance rcdzc+cdz-run+xtask≈A+B weight. Both cache-HIT the shared cargoArtifacts (no dep
-            # recompile). Exposed as checks.<sys>.clippy-shard-{a,b}; checks.yml runs them as 2 parallel jobs.
+            # so splitting it into 2 PARALLEL GHA jobs directly halves the pole for only +1 x86 slot/candidate.
+            # These two sub-aggregates each force ~half the per-crate clippy checks, BALANCED BY BUILD WEIGHT (not
+            # count): the 2 HEAVIEST units — rcdzc (spec+compiler-ml+bigint closure) and crateCdzCheck (the
+            # whole-workspace `cargo clippy -p cdz`, builds every rlib) — are split ACROSS shards (rcdzc on A,
+            # crate-cdz on B, each shard's anchor), with cdz-run/xtask (next-heaviest) both on B and the light
+            # units filling A. See the REBALANCED note on clippyShardA below for the measured-imbalance history.
+            # Both cache-HIT the shared cargoArtifacts (no dep recompile). Exposed as checks.<sys>.clippy-shard-{a,b};
+            # checks.yml runs them as 2 parallel jobs.
             # The union {A} ∪ {B} == clippyCraneAggregate's set exactly (coverage parity — no clippy unit dropped).
             # clippyCraneAggregate (the old `clippy` context) is KEPT during the additive-first cutover (STEP 1);
             # v-ft flips the ruleset to require the shards (STEP 2), then the old `clippy` job is dropped (STEP 3).
+            # REBALANCED 2-way (STEP 4, 2026-08-07): the initial split put BOTH heavies — rcdzc AND crate-cdz
+            # (the whole-workspace `cargo clippy -p cdz`, which builds every rlib) — on shard A → A=7m31s vs
+            # B=2m34s (CI, #2503), so wall-clock = A = 7.5m (only ~1.6m under the old 9m). Fix: split the two
+            # heavies ACROSS shards — rcdzc anchors A, crate-cdz moves to B — so each shard carries exactly one
+            # heavyweight. Union unchanged (still the same 11 units, 4+7); pure flake edit, SAME 2 required
+            # contexts → NO ruleset change (v-ft: a 2-way rebalance keeps the contexts). Target: both ~4-5m.
             clippyShardA = pkgs.runCommand "cargo-clippy-shard-a"
               {
-                inherit crateCdzCheck;
                 inherit (perCrateClippyCrane) clippy-rcdzc clippy-cdz-num clippy-cdz-calc clippy-cadenza-syntax;
               } ''
-              echo "ok: clippy shard A — rcdzc + cdz (workspace) + cdz-num + cdz-calc + cadenza-syntax" > $out
+              echo "ok: clippy shard A — rcdzc + cdz-num + cdz-calc + cadenza-syntax" > $out
             '';
             clippyShardB = pkgs.runCommand "cargo-clippy-shard-b"
               {
+                inherit crateCdzCheck;
                 inherit (perCrateClippyCrane)
                   clippy-cdz-run clippy-xtask clippy-cadenza-ast clippy-cdz-corpus clippy-cdz-rt clippy-cdz-rust-render;
               } ''
-              echo "ok: clippy shard B — cdz-run + xtask + cadenza-ast + cdz-corpus + cdz-rt + cdz-rust-render" > $out
+              echo "ok: clippy shard B — cdz (workspace) + cdz-run + xtask + cadenza-ast + cdz-corpus + cdz-rt + cdz-rust-render" > $out
             '';
             # flakeReproBackstop: the REPRODUCIBILITY-BACKSTOP subset — the checks the `nix-flake (advisory)`
             # CI job should run INSTEAD of a whole `nix flake check`. Data-driven CI-speed (operator standing
