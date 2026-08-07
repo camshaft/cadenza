@@ -60,6 +60,7 @@ pub mod admin_wire;
 pub mod async_host;
 pub mod clock;
 pub mod config;
+pub mod converse;
 pub mod emit;
 #[cfg(feature = "metrics-export")]
 pub mod export;

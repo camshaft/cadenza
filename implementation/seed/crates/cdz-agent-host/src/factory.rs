@@ -181,7 +181,7 @@ impl ExecutorSetBuilder for LiveExecutorSet {
         // every session's ok/retryable/permanent/timed-out outcomes tally into one daemon-wide set. No
         // network / IMDS work here, so it never stalls the loop.
         let m = &self.metrics;
-        CompositeExecutor::new()
+        let composite = CompositeExecutor::new()
             .with_effect(
                 effect_ct::NOW,
                 Box::new(MeteredExecutor::new(
@@ -202,7 +202,22 @@ impl ExecutorSetBuilder for LiveExecutorSet {
                     Box::new(crate::ModelExecutor::new(self.model.clone())),
                     m.clone(),
                 )),
-            )
+            );
+        // GAP-2: wire the `shell` executor UNCONDITIONALLY (behind `live-exec`). No host-side allow-list or
+        // config gate — WHICH commands a session may run is EVOLVABLE POLICY the Cedar wasm authorizer decides
+        // on the effect's resolved target BEFORE dispatch (operator standing-order: host = inevolvable
+        // MECHANISM, policy = wasm on the log). A session with no `shell` capability in its policy simply
+        // never has a shell effect authorized, so wiring the mechanism for all is safe: the executor runs only
+        // what Cedar already permitted. Metered like the others.
+        #[cfg(feature = "live-exec")]
+        let composite = composite.with_effect(
+            effect_ct::SHELL,
+            Box::new(MeteredExecutor::new(
+                Box::new(crate::ShellExecutor::new()),
+                m.clone(),
+            )),
+        );
+        composite
     }
 }
 
