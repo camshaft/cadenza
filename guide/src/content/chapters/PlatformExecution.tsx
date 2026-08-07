@@ -77,13 +77,13 @@ export default function PlatformExecution() {
         are.
       </P>
       <P>
-        It's the same discipline you've seen since{" "}
-        <Link to="/recorded-log" className="text-cadenza-300 underline-offset-2 hover:underline">
-          History as a value
+        It's the same discipline from{" "}
+        <Link to="/platform-state" className="text-cadenza-300 underline-offset-2 hover:underline">
+          Events &amp; state
         </Link>
         , now carried all the way up to a concurrent runtime: nondeterminism is allowed at the edges, as
         long as its outcome is recorded, so the fold in the middle stays pure. That single rule, held from a
-        one-line miniature up to a kernel multiplexing many agents, is what the whole platform is built to
+        one-line fold up to a kernel multiplexing many agents, is what the whole platform is built to
         protect.
       </P>
 

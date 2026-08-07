@@ -5,21 +5,20 @@ import { Link } from "react-router-dom";
 /// content is deliberately light per operator direction). Source of truth for every kernel claim here is
 /// v-agent-harness's design/agent-harness-kernel.md — §0 vision, §1 principles, §2 core loop, §9b
 /// Cadenza-as-lingua-franca. Kept to DECIDED concepts (no mid-flight implementation surface). This chapter
-/// bridges from the language pillar's "History as a value" chapter: the fold-over-an-event-log idea, scaled
-/// up into a running system.
+/// introduces the fold-over-an-event-log idea directly (it used to live in a language-pillar "History as a
+/// value" chapter, removed per operator direction as out-of-place in a language guide; the concept is a
+/// platform concept and now lives here and in "Events & state").
 export default function PlatformOverview() {
   return (
     <article>
       <H1>Cadenza the Platform</H1>
       <Lede>
         The rest of this guide is about Cadenza <em>the language</em>. This is about Cadenza{" "}
-        <em>the platform</em>: the runtime that runs long-lived agents built in it. You already met its
-        central idea in the language tour, where{" "}
-        <Link to="/recorded-log" className="text-cadenza-300 underline-offset-2 hover:underline">
-          an agent's history was an event log and running it was a fold
-        </Link>
-        . The platform is that idea made into a system. This section is a concept tour, not a reference:
-        the kernel is early, and these are the shapes it's built from.
+        <em>the platform</em>: the runtime that runs long-lived agents built in it. Its central idea is a
+        simple one, since an agent's whole history is an ordinary <em>event log</em> and running the agent
+        is a <em>fold</em> over that log, so replaying it, forking it, and recovering from a crash are all
+        just re-folding a value. This section is a concept tour, not a reference: the kernel is early, and
+        these are the shapes it's built from.
       </Lede>
 
       <H2>A kernel that knows nothing</H2>
@@ -70,14 +69,12 @@ export default function PlatformOverview() {
         recorded event, never as something the reducer reaches out and grabs mid-computation.
       </P>
       <P>
-        This is the same determinism you saw in the language chapter, now load-bearing for a whole system.
         Because the state is nothing but a fold over recorded history, replaying an agent, migrating it to
         another machine, auditing what it did, or letting it safely rewrite its own logic are all just{" "}
-        re-folding a value, the exact three moves, replay, fork, recover, from{" "}
-        <Link to="/recorded-log" className="text-cadenza-300 underline-offset-2 hover:underline">
-          History as a value
-        </Link>
-        , at the scale of a running agent.
+        re-folding a value, since they are the same three moves of replay, fork, and recover, now at the
+        scale of a running agent. The next chapter, <Link to="/platform-state" className="text-cadenza-300 underline-offset-2 hover:underline">
+          Events &amp; state
+        </Link>, shows that fold concretely.
       </P>
 
       <H2>Where Cadenza fits</H2>

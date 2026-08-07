@@ -55,9 +55,7 @@ export default function WhatsNext() {
         program is an ordinary AST value you can quote, take apart, build, and eval;{" "}
         <Ch to="/property-testing">testing</Ch>, where <C>@test</C> marks a function as a test and
         parameters make it generative, so the runner synthesizes the inputs and shrinks any failure, no
-        testing DSL required; and <Ch to="/recorded-log">history as a value</Ch>, where an agent's whole
-        past is an event log and running it is a fold, so replay, fork, and recovery are just re-folding
-        that value.
+        testing DSL required.
       </P>
       <P>
         More importantly, you've seen the ideas underneath, the{" "}
@@ -102,11 +100,11 @@ export default function WhatsNext() {
       </P>
       <P>
         Finally, if you want to see where the language leads, there's a second pillar to this guide:{" "}
-        <Ch to="/platform-overview">Cadenza the Platform</Ch>. It takes the{" "}
-        <Ch to="/recorded-log">history-as-a-value</Ch> idea you just met and scales it into a running
-        system, an agent kernel where an agent's whole state is a pure fold over an event log and Cadenza
-        is what flows through it. It's a concept tour rather than more language to learn, so read it when
-        you're curious how these ideas add up to a platform.
+        <Ch to="/platform-overview">Cadenza the Platform</Ch>. It's the agent kernel Cadenza was built to
+        run on, where an agent's whole state is a pure fold over an event log and the language is what
+        flows through it, so the effects, sum types, and total functions you just met become the way a
+        real agent records its history and replays it. It's a concept tour rather than more language to
+        learn, so read it when you're curious how these ideas add up to a platform.
       </P>
     </article>
   );
