@@ -969,6 +969,12 @@ impl AgentHost {
         reason: String,
     ) -> Option<Result<Hash, KernelError>> {
         let session = self.sessions.get_mut(id)?;
+        // §lifecycle I7 — snapshot the child's identity + its parent link BEFORE `terminate` (which moves
+        // `reason`) and BEFORE `remove` (which drops the session from the registry). The child's genesis
+        // hash IS its SessionId; `parent()` is the spawning session's genesis hash (None for a root).
+        let child_hash = session.genesis_hash();
+        let parent = session.session().parent();
+        let i7_reason = reason.clone();
         let outcome = session.terminate(by, reason).await;
         // Only drop it from the registry on a FRESH termination — an already-terminated session
         // (FoldRefused) was already removed by its first terminate, so there is nothing to remove and the
@@ -980,6 +986,33 @@ impl AgentHost {
             // retract by that hash. Done BEFORE `remove` while the id is in hand.
             self.retract_dead_member_from_groups(id);
             self.remove(id);
+            // §lifecycle I7 host-mechanism half: after the durable Terminated marker + the I5 group-evict,
+            // emit a `ChildExited` INBOUND into the PARENT's inbox (host-as-sender, reusing the deliver/inbox
+            // path — NOT an authz-gated `lifecycle/*` EFFECT the parent performs; the family string is just
+            // the Inbound content-type the prelude I7 supervisor matches on before `decode_child_exited`).
+            // A terminate is a FAILURE close, so the outcome is `CloseOutcome::Failure(reason)`. Fire only
+            // when the child HAS a parent that is STILL registered — a root session (`None`) or a gone/
+            // already-terminated parent = no-op, no bounce (the supervisor, if any, is gone too).
+            if let Some(parent_hash) = parent {
+                let parent_id = SessionId::new(parent_hash.to_hex());
+                if self.sessions.contains_key(&parent_id) {
+                    let payload = cdz_kernel::event_ast::encode_child_exited(
+                        &child_hash,
+                        &cdz_kernel::event::CloseOutcome::Failure(i7_reason),
+                    );
+                    let body = EventBody::Inbound {
+                        content_type: cdz_kernel::event::ContentType {
+                            family: "lifecycle/child-exited".into(),
+                            version: 1,
+                        },
+                        payload: cdz_kernel::effect::Payload::Inline(payload.into()),
+                    };
+                    // `cause = None` (v1) — a provenance link to the terminate is a cheap later add. The
+                    // parent's turn outcome is not surfaced here: a supervisor fold that errors is the
+                    // parent's own concern, logged at the deliver boundary.
+                    let _ = self.deliver(&parent_id, body, None).await;
+                }
+            }
         }
         Some(outcome)
     }
@@ -1766,6 +1799,165 @@ mod tests {
             members.contains(&survivor_hash),
             "a non-terminated member stays in the group"
         );
+    }
+
+    /// §lifecycle I7 test reducer: a parent supervisor that folds a `lifecycle/child-exited` Inbound. It
+    /// decodes the canonical codec payload and records the exited child's hash + the failure reason into KV,
+    /// so a test can observe that the host actually delivered the supervision signal. Any other inbound is a
+    /// no-op (a real supervisor would also decide restart/escalate — out of scope for the host-mechanism E2E).
+    struct ChildExitedFoldingReducer;
+    #[async_trait::async_trait(?Send)]
+    impl Reducer for ChildExitedFoldingReducer {
+        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+            if let EventBody::Inbound {
+                content_type,
+                payload,
+            } = &event.body
+            {
+                if content_type.matches_family("lifecycle/child-exited") {
+                    if let Payload::Inline(bytes) = payload {
+                        if let Ok((child, outcome)) =
+                            cdz_kernel::event_ast::decode_child_exited(bytes)
+                        {
+                            kv.put(b"exited-child".to_vec(), child.to_hex().into_bytes());
+                            let reason = match outcome {
+                                cdz_kernel::event::CloseOutcome::Failure(r) => r.into_bytes(),
+                                cdz_kernel::event::CloseOutcome::Success(_) => b"success".to_vec(),
+                            };
+                            kv.put(b"exit-reason".to_vec(), reason);
+                        }
+                    }
+                }
+            }
+            FoldOutput::none()
+        }
+    }
+
+    #[tokio::test]
+    async fn terminating_a_child_delivers_child_exited_into_the_parents_inbox_i7() {
+        // §lifecycle I7 host-mechanism half: when a child is TERMINATED, the host emits a `ChildExited`
+        // Inbound (family "lifecycle/child-exited", canonical codec payload) into the PARENT's inbox — the
+        // input the prelude supervisor folds. End-to-end: spawn a supervisor parent, spawn a real child under
+        // it, terminate the child, and observe the parent folded the signal (child hash + failure reason).
+        let mut host = AgentHost::new();
+        // Register the parent under its GENESIS-HASH hex (the SessionId ruling real spawns follow) — the
+        // emit path looks the parent up by `child.parent()` = the parent's genesis hash, so a vanity id
+        // would never match and the signal would silently no-op (which is exactly the "parent gone" path).
+        let supervisor = HostedSession::genesis(
+            Hash::of(b"supervisor-v1"),
+            Box::new(ChildExitedFoldingReducer),
+            Box::new(Authorizer::deny_all()),
+            CompositeExecutor::new(),
+        );
+        let parent = SessionId::new(supervisor.genesis_hash().to_hex());
+        host.spawn(parent.clone(), supervisor);
+
+        // Spawn a real child UNDER the parent (records the parent→child edge; the child's SessionId is its
+        // provenance-dependent genesis hash, and its `parent()` points back at the supervisor).
+        let child_id = host
+            .spawn_child(
+                &parent,
+                Hash::of(b"child-reducer-v1"),
+                Box::new(GenesisRecordingReducer),
+                Box::new(Authorizer::deny_all()),
+                CompositeExecutor::new(),
+            )
+            .await
+            .expect("parent present")
+            .expect("child spawned");
+        let child_hash = Hash::from_hex(child_id.as_str()).expect("child id is genesis-hash hex");
+
+        // Nothing folded yet — the parent has seen no child-exited signal.
+        assert!(
+            host.get(&parent)
+                .unwrap()
+                .session()
+                .kv()
+                .get(b"exited-child")
+                .is_none(),
+            "no child-exited folded before the child dies"
+        );
+
+        // Terminate the child → host emits ChildExited into the supervisor's inbox.
+        host.terminate(&child_id, Hash::of(b"ctl"), "boom".into())
+            .await
+            .expect("child present")
+            .expect("fresh terminate");
+
+        // The supervisor folded the signal: the exited child's hash + the Failure reason round-tripped
+        // through the canonical codec.
+        let kv = host.get(&parent).unwrap();
+        let kv = kv.session().kv();
+        assert_eq!(
+            kv.get(b"exited-child").map(|v| v.to_vec()),
+            Some(child_hash.to_hex().into_bytes()),
+            "the parent folded ChildExited carrying the terminated child's hash"
+        );
+        assert_eq!(
+            kv.get(b"exit-reason").map(|v| v.to_vec()),
+            Some(b"boom".to_vec()),
+            "a terminate is a Failure close — the reason round-trips to the supervisor"
+        );
+        // The child itself is gone from the registry (terminate removed it).
+        assert!(
+            !host.contains(&child_id),
+            "the terminated child is unregistered"
+        );
+    }
+
+    #[tokio::test]
+    async fn terminating_a_root_session_emits_no_child_exited_no_bounce_i7() {
+        // §lifecycle I7 edge: a ROOT session (parent() == None) has no supervisor to notify — terminating it
+        // is a clean no-op on the emit path (no panic, no bounce). Proven by terminating a plain root session.
+        let mut host = AgentHost::new();
+        let root = SessionId::new("root");
+        host.spawn(root.clone(), now_host());
+        assert!(
+            host.get(&root).unwrap().session().parent().is_none(),
+            "a root session has no parent"
+        );
+        // Terminates cleanly (the emit arm sees parent()==None and does nothing).
+        host.terminate(&root, Hash::of(b"ctl"), "kill".into())
+            .await
+            .expect("root present")
+            .expect("fresh terminate");
+        assert!(
+            !host.contains(&root),
+            "the root is unregistered after terminate"
+        );
+    }
+
+    #[tokio::test]
+    async fn terminating_a_child_whose_parent_is_gone_emits_nothing_i7() {
+        // §lifecycle I7 edge: if the parent is no longer registered (already terminated / never present) when
+        // the child dies, the emit is a no-op — no delivery-to-unknown, no panic. Terminate the parent FIRST,
+        // then the child, and confirm the child terminate still completes cleanly.
+        let mut host = AgentHost::new();
+        let parent = SessionId::new("gone-parent");
+        host.spawn(parent.clone(), now_host());
+        let child_id = host
+            .spawn_child(
+                &parent,
+                Hash::of(b"child-reducer-v1"),
+                Box::new(GenesisRecordingReducer),
+                Box::new(Authorizer::deny_all()),
+                CompositeExecutor::new(),
+            )
+            .await
+            .expect("parent present")
+            .expect("child spawned");
+        // Kill the parent first — now the child's parent() still points at it, but it's no longer registered.
+        host.terminate(&parent, Hash::of(b"ctl"), "parent-dies".into())
+            .await
+            .expect("parent present")
+            .expect("fresh terminate");
+        assert!(!host.contains(&parent), "parent gone");
+        // Terminating the child with a gone parent completes cleanly (emit no-op — parent not registered).
+        host.terminate(&child_id, Hash::of(b"ctl"), "child-dies".into())
+            .await
+            .expect("child present")
+            .expect("fresh terminate");
+        assert!(!host.contains(&child_id), "child gone too");
     }
 
     #[tokio::test]
