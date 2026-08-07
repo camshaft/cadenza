@@ -14523,3 +14523,48 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 61 Int64))
   (call   main (: 0 Int64)) (output (: 51 Int64)))
+
+;; ── STRING handler state (breaker ss) ────────────────────────────────────────────────────────────
+;; A heap STRING as the threaded handler state: ss1 grows it per dispatch with the growth chunk
+;; branching on the op ARGUMENT (the arm returns the pre-growth byte-len); ss2 grows it across a
+;; DO sequence where discarded draws still advance the rope; ss3 nests SAME-effect handlers with
+;; independent string states — the inner self-DOUBLES (a rope-of-ropes) while the outer appends.
+
+(case "ss1 a STRING handler state grows per dispatch — each arm returns the pre-growth length, growth is op-arg-branchy"
+  (input  (do
+            (effect Log (op emit (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle Log "x"
+                ((emit (v) s (resume (String.byte-len s) (String.concat s (if (> v 0) "ab" "c")))))
+                (+ (Log.emit n) (+ (* 10 (Log.emit n)) (* 100 (Log.emit 0))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 531 Int64))
+  (call   main (: 0 Int64)) (output (: 321 Int64)))
+
+(case "ss2 string state grows across a DO sequence — discarded draws still advance the rope"
+  (input  (do
+            (effect Log (op emit (-> Int64)))
+            (def (main (: n Int64))
+              (handle Log "s"
+                ((emit () s (resume (String.byte-len s) (String.concat s "yz"))))
+                (do
+                  (Log.emit)
+                  (Log.emit)
+                  (+ (* 10 (Log.emit)) n))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 55 Int64))
+  (call   main (: 0 Int64)) (output (: 50 Int64)))
+
+(case "ss3 nested SAME-effect handlers with independent STRING states — inner self-doubles, outer appends"
+  (input  (do
+            (effect Log (op emit (-> Int64)))
+            (def (main (: n Int64))
+              (handle Log "aa"
+                ((emit () s (resume (String.byte-len s) (String.concat s "b"))))
+                (+ (Log.emit)
+                   (+ (* 10 (handle Log "wxyz"
+                              ((emit () t (resume (String.byte-len t) (String.concat t t))))
+                              (+ (Log.emit) (Log.emit))))
+                      (* 1000 (Log.emit))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 3122 Int64)))

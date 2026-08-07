@@ -6158,3 +6158,6 @@ pass	ti2b the inner arm's resume-VALUE performs the outer effect on EVERY dispat
 pass	ti3 cross-effect resume-value feed PLUS direct body interleave — B's arm and the body both advance A
 pass	ti4 THREE-effect chained cross-feed — C's arm performs B, B's arm performs A, two C dispatches walk the whole chain twice
 pass	ti5 a FOREIGN outer perform inside the inner region — A advances inside B's body, the post-region draw sees it
+pass	ss1 a STRING handler state grows per dispatch — each arm returns the pre-growth length, growth is op-arg-branchy
+pass	ss2 string state grows across a DO sequence — discarded draws still advance the rope
+pass	ss3 nested SAME-effect handlers with independent STRING states — inner self-doubles, outer appends
