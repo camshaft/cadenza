@@ -6069,3 +6069,6 @@ pass	a pre-abort HOST call inside a NESTED strict operand is ISSUED before the a
 pass	a later let-binding abort preserves an EARLIER binding's committed advance (multi-binding prefix)
 pass	an inner ABORT handle inside a MULTI-SHOT region — each forked branch runs its own abort
 pass	a single MUTUAL-recursion chain performs at its base — the cross-function fold serves it
+pass	a host response captured BEFORE a multi-shot region is shared by both branches — one host call
+pass	an inner arm performs TWO DISTINCT outer effects in one resume value — both thread per dispatch
+pass	the state-SWAP idiom — the op argument becomes the state and the OLD state returns

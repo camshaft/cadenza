@@ -4103,6 +4103,61 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 0 Int64)))
 
+(case "a host response captured BEFORE a multi-shot region is shared by both branches — one host call"
+  (doc    "The safe complement of the host-composition invariant (a host call INSIDE a multi-shot
+           region stays a decline — it would re-issue per fork): captured BEFORE the region, the
+           response is a plain value both forks share — h=100, k(v) = 10v + 100, 110+120 → 230,
+           with exactly ONE observed host call.")
+  (input  (do
+            (effect ask (op ask (-> Unit Int64)))
+            (effect Amb (op pick (-> Unit Int64)))
+            (def (main)
+              (host (ask)
+                (let ((h (ask.ask)))
+                  (handle Amb 0
+                    ((pick (u) s (+ (resume 1 s) (resume 2 s))))
+                    (+ (* 10 (Amb.pick)) h)))))
+            (export main)))
+  (host-responses (respond ask.ask (: 100 Int64)))
+  (host-calls (call ask.ask))
+  (output (: 230 Int64)))
+
+(case "an inner arm performs TWO DISTINCT outer effects in one resume value — both thread per dispatch"
+  (doc    "One arm consulting two separate outer services (the config+counter idiom; the
+           single-outer-effect arm-perform is pinned): each dispatch performs A AND B, and both
+           states advance independently — d1: 5+100 = 105 (A 5→6, B 100→110), d2: 6+110 = 116 →
+           105116.")
+  (input  (do
+            (effect A (op geta (-> Unit Int64)))
+            (effect B (op getb (-> Unit Int64)))
+            (effect In (op go (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle A n
+                ((geta (u) s (resume s (+ s 1))))
+                (handle B 100
+                  ((getb (u) t (resume t (+ t 10))))
+                  (handle In 0
+                    ((go (u) w (resume (+ (A.geta) (B.getb)) w)))
+                    (+ (* 1000 (In.go)) (In.go))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 105116 Int64)))
+
+(case "the state-SWAP idiom — the op argument becomes the state and the OLD state returns"
+  (doc    "A full heap-state exchange per dispatch: `(swap (xs) s (resume s xs))` — the resumed
+           value is the PRIOR state and the argument is installed as the next. Two swaps: the seed
+           [1,2] comes back first (len 2), then the installed 4-element list (len 4) → 204. Both
+           heap handles change hands without copies colliding.")
+  (input  (do
+            (effect St (op swap (-> (List Int64) (List Int64))))
+            (def (main (: n Int64))
+              (handle St (list 1 2)
+                ((swap (xs) s (resume s xs)))
+                (let ((old (St.swap (list n 7 8 9))))
+                  (let ((cur (St.swap (list))))
+                    (+ (* 100 (List.len old)) (List.len cur))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 204 Int64)))
+
 ; ============ Guarded match × effects (breaker FINDING, ag5 → fixed #2333). A guarded match on a
 ; perform-result scrutinee whose FALLBACK arm also performs used to leak the fold-synthesized #seed
 ; binder as a false CDZ0101: the guard desugar's arm-body copy reparented a reused (shared) body
