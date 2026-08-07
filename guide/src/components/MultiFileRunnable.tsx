@@ -45,10 +45,14 @@ type Status =
 export function MultiFileRunnable({
   files,
   expect = "value",
+  expected,
   title,
 }: {
   files: readonly RunnableFile[];
   expect?: "value" | "error";
+  /** When set, the exact rendered value the file set must run to — the result pane shows it (and flags a
+   *  mismatch), and the check-examples gate asserts the run result equals it. */
+  expected?: string;
   title?: string;
 }) {
   // Seed the workspace once from the authored files. A malformed set (no entry / dup names) is an AUTHORING
@@ -166,13 +170,13 @@ export function MultiFileRunnable({
       </div>
 
       {status.phase !== "idle" && (
-        <StatusLine status={status} expect={expect} />
+        <StatusLine status={status} expect={expect} expected={expected} />
       )}
     </div>
   );
 }
 
-function StatusLine({ status, expect }: { status: Status; expect: "value" | "error" }) {
+function StatusLine({ status, expect, expected }: { status: Status; expect: "value" | "error"; expected?: string }) {
   if (status.phase === "busy") {
     return (
       <div className="border-t border-slate-700/60 bg-slate-800/40 px-4 py-2.5 font-mono text-[13px] text-slate-400">
@@ -181,10 +185,18 @@ function StatusLine({ status, expect }: { status: Status; expect: "value" | "err
     );
   }
   if (status.phase === "value") {
+    // When the author pinned an `expected` value, compare the run result against it: a match reads as a
+    // confirmed assertion (green), a mismatch as a problem (rose) — the same VALUE the check-examples gate
+    // asserts, shown to the reader. Normalize layout (newlines→space) so a pinned compound is stable.
+    const norm = (s: string) => s.replace(/\s*\n\s*/g, " ").trim();
+    const mismatch = expected != null && norm(status.text) !== norm(expected);
     return (
-      <div className="flex items-start gap-2 border-t border-slate-700/60 bg-emerald-950/30 px-4 py-2.5 font-mono text-[13px] text-emerald-300">
-        <span className="mt-0.5 shrink-0"><StatusIcon kind="ok" /></span>
-        <div className="min-w-0"><code>{status.text}</code></div>
+      <div className={`flex items-start gap-2 border-t border-slate-700/60 px-4 py-2.5 font-mono text-[13px] ${mismatch ? "bg-rose-950/30 text-rose-300" : "bg-emerald-950/30 text-emerald-300"}`}>
+        <span className="mt-0.5 shrink-0"><StatusIcon kind={mismatch ? "error" : "ok"} /></span>
+        <div className="min-w-0">
+          <code>{status.text}</code>
+          {mismatch && <div className="mt-1 text-rose-400/80">expected: <code>{expected}</code></div>}
+        </div>
       </div>
     );
   }

@@ -65,6 +65,11 @@ interface Props {
   wrap?: boolean;
   /** What this example is meant to do — tunes the status pane. */
   expect?: "value" | "error";
+  /** (MULTI-FILE only) The exact rendered value the file set must run to — when set, the check-examples gate
+   *  asserts the run result equals it (not just that it runs), and the result pane shows it as the expected
+   *  value. A single-file Runnable pins values via `<Exercise>` instead, so this is specifically for a
+   *  `files=` runnable that wants to pin a trace (e.g. the agent-loop's terminal fold value). */
+  expected?: string;
   /** Optional caption shown above the editor. */
   title?: string;
   /** "run" (default) = compile + run the entry, showing its value. "test" = run the snippet's `@test`
@@ -85,10 +90,10 @@ type TestStatus =
   | { phase: "busy" }
   | { phase: "done"; outcome: TestRunOutcome };
 
-export function Runnable({ id, files, source, authoredIn = "sexpr", wrap = true, expect = "value", title, mode = "run", prelude = true }: Props) {
+export function Runnable({ id, files, source, authoredIn = "sexpr", wrap = true, expect = "value", expected, title, mode = "run", prelude = true }: Props) {
   // MULTI-FILE mode (operator-mandated): a set of files compiled together via compileWithPreloaded. Takes
   // precedence over the single-source paths; the explorer seam owns the file-set invariants + run wiring.
-  if (files) return <MultiFileRunnable files={files} expect={expect} title={title} />;
+  if (files) return <MultiFileRunnable files={files} expect={expect} expected={expected} title={title} />;
   // Below here `source` is required — a non-multi-file Runnable must carry one. A missing source is an
   // authoring bug; render it loudly rather than compiling an empty program.
   if (source == null) {
