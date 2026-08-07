@@ -496,6 +496,15 @@ fn int_valtype(it: IntTy) -> ValType {
 ///
 //= spec/contracts/component-abi.md#every-exported-type-has-a-stable-boundary-representation
 //# The boundary representation of a type MUST be a function of the type alone, independent of the compiler generation that emits it.
+///
+/// This mapping IS the pinned lowering: total over every type (a representable type yields its one fixed
+/// component valtype, a no-boundary-form type yields `None`, so the function is defined everywhere), and
+/// fixed by the ABI table rather than the emitting generation. The canonical ABI's lift of the same
+/// primitive↔core representation is its inverse over the lowering's range.
+//= spec/contracts/component-abi.md#lowering-and-lifting-are-fixed-inverses
+//# The lowering of a Cadenza value to its boundary representation MUST be a total function fixed by this contract.
+//= spec/contracts/component-abi.md#lowering-and-lifting-are-fixed-inverses
+//# The lifting of a boundary representation to a Cadenza value MUST be the inverse of the pinned lowering for every value in the lowering's range.
 pub fn comp_valtype_of(ty: &Ty) -> Option<u8> {
     match ty {
         Ty::Int(it) => {
