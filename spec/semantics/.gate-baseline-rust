@@ -6072,3 +6072,5 @@ pass	a single MUTUAL-recursion chain performs at its base — the cross-function
 pass	a host response captured BEFORE a multi-shot region is shared by both branches — one host call
 pass	an inner arm performs TWO DISTINCT outer effects in one resume value — both thread per dispatch
 pass	the state-SWAP idiom — the op argument becomes the state and the OLD state returns
+pass	a LIST built from three performs ESCAPES the handle — read intact outside the region
+pass	a MAP valued with perform results ESCAPES the handle — looked up outside the region

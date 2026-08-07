@@ -4158,6 +4158,37 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 204 Int64)))
 
+(case "a LIST built from three performs ESCAPES the handle — read intact outside the region"
+  (doc    "The region-lifetime face of heap × handlers (the escaping-closure pins cover captured
+           VALUES): a list assembled from three advancing performs becomes the handle's RESULT and
+           is read OUTSIDE the region — len 3, element [2] = 7 → 307. The handler's heap
+           allocations must outlive its region.")
+  (input  (do
+            (effect Cfg (op get (-> Unit Int64)))
+            (def (main (: n Int64))
+              (let ((xs (handle Cfg n
+                          ((get (u) s (resume s (+ s 1))))
+                          (list (Cfg.get) (Cfg.get) (Cfg.get)))))
+                (+ (* 100 (List.len xs))
+                   (match (List.at xs 2) ((Some v) v) ((None _u) -1)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 307 Int64)))
+
+(case "a MAP valued with perform results ESCAPES the handle — looked up outside the region"
+  (doc    "The keyed sibling of the escaping-list pin: a Map whose two values are advancing perform
+           results (5, then 15 at +10 per dispatch) escapes as the handle's result and both keys
+           look up correctly outside — 10·5 + 15 → 65.")
+  (input  (do
+            (effect Cfg (op get (-> Unit Int64)))
+            (def (main (: n Int64))
+              (let ((m (handle Cfg n
+                         ((get (u) s (resume s (+ s 10))))
+                         (Map.insert (Map.insert Map.empty "a" (Cfg.get)) "b" (Cfg.get)))))
+                (+ (* 10 (match (Map.lookup m "a") ((Some a) a) ((None _u) -1)))
+                   (match (Map.lookup m "b") ((Some b) b) ((None _u) -1)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 65 Int64)))
+
 ; ============ Guarded match × effects (breaker FINDING, ag5 → fixed #2333). A guarded match on a
 ; perform-result scrutinee whose FALLBACK arm also performs used to leak the fold-synthesized #seed
 ; binder as a false CDZ0101: the guard desugar's arm-body copy reparented a reused (shared) body
