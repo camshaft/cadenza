@@ -958,7 +958,28 @@ impl Session {
             // authority check: a capability whose family is `store/*` and whose predicate admits the name
             // (e.g. `Prefix("system/")`) permits `store/set system/…`; a session without it is denied here,
             // exactly as an unauthorized HTTP host would be. So store effects reuse the ONE authz seam.
-            if let Err(reason) = authz.authorize(&req).await {
+            //
+            // SHELL PIPELINE FAN-OUT (operator security directive): a `shell` effect carrying a structured
+            // `(shell-pipeline …)` payload is authorized STAGE-BY-STAGE — each stage's PROGRAM is the resolved
+            // target of one authz call, deny-all-if-ANY-denied — instead of the single bare `target`. This
+            // keeps the ONE SEC-F1 authz seam AND an UNCHANGED [`Authorize`] signature: the authorizer still
+            // gates one program-target per call, so the v0 predicate authorizer and a future Cedar-as-wasm
+            // authorizer both gate a whole pipeline with ZERO pipeline-codec knowledge (a stage program is
+            // just another target). A bare-target shell (no payload) + every other effect take the single-
+            // target authorize. Same "the target is what authz gated" discipline as the store name check
+            // below (a stage whose program the authorizer denies can never be dispatched).
+            let authz_result = match authorize_shell_pipeline(&req, authz).await {
+                // The payload decoded as a `(shell-pipeline …)` → the per-stage fan-out verdict IS the authz
+                // result (permit only if every stage's program is allowed; deny-all otherwise).
+                Some(verdict) => verdict,
+                // NOT a pipeline (a bare-target shell, an opaque non-pipeline payload like an M3 tool-call's
+                // raw input, a blob-ref, or any non-shell effect) → the ordinary single-target SEC-F1 gate on
+                // `req.target`. Backward-compatible: today's single-command shell + every other effect are
+                // unchanged. The host MUST use the SAME "decodes as (shell-pipeline …)" discriminant so a guest
+                // can't get multi-stage execution without a decodable pipeline (which is what triggers fan-out).
+                None => authz.authorize(&req).await,
+            };
+            if let Err(reason) = authz_result {
                 // SEC-F1 denial — WARN (an authorization boundary was hit). Log only NON-SENSITIVE
                 // metadata: `target` is GUEST-controlled (a URL with a token/query, a PII path) and
                 // `reason` is formatted FROM it (authz.rs), so neither goes into the tracing stream —
@@ -1730,6 +1751,73 @@ pub struct InFlight {
 /// `store/<secret>` inside the "trusted" namespace).
 fn loggable_family(family: &str) -> &'static str {
     crate::effect::effect_ct::wellknown_static_str(family).unwrap_or("<extension>")
+}
+
+/// Authorize a `shell` effect that carries a structured `(shell-pipeline …)` payload STAGE-BY-STAGE
+/// (operator security directive: each pipeline stage's program is Cedar-authorized; deny the whole
+/// pipeline if ANY stage is denied). Mechanism only — the WHICH-programs-allowed decision stays entirely
+/// in `authz`; this just resolves each stage's program to a target and fans the EXISTING authz seam over
+/// the stages, so the [`Authorize`] signature is unchanged.
+///
+/// Returns:
+/// - `None` — this effect is NOT a shell-pipeline: a non-`shell` family, a payload-less shell (a bare
+///   `target` command), a blob-ref payload (the drive loop has no blob store to resolve it), or an inline
+///   payload that does NOT decode as a `(shell-pipeline …)` (e.g. an M3 tool-call's opaque raw input). The
+///   caller falls back to the ordinary single-target `authorize(&req)`, so today's single-command shell +
+///   every other effect are unchanged. The HOST must use this SAME "decodes as `(shell-pipeline …)`"
+///   discriminant, so a guest can't get multi-stage execution without a decodable pipeline.
+/// - `Some(Ok(()))` — the payload IS a pipeline and EVERY stage's program is permitted.
+/// - `Some(Err(reason))` — the payload IS a pipeline but a stage's program is denied (deny-all: the FIRST
+///   denied stage fails the whole pipeline) OR the pipeline is malformed for authorization (empty, or a
+///   stage with an empty program). Never panics.
+///
+/// A synthetic per-stage [`EffectRequest`] carries the stage's program as its `target` (the SEC-F1 unit)
+/// under the same `shell` family, no payload (a stage is a leaf program, not itself a pipeline).
+async fn authorize_shell_pipeline(
+    req: &EffectRequest,
+    authz: &(impl Authorize + ?Sized),
+) -> Option<Result<(), String>> {
+    // Only a `shell` effect with an INLINE payload can be a pipeline. Everything else → None (single-target).
+    if !req
+        .content_type
+        .matches_family(crate::effect::effect_ct::SHELL)
+    {
+        return None;
+    }
+    let bytes = match &req.payload {
+        Some(crate::effect::Payload::Inline(bytes)) => bytes,
+        // A blob-ref (no blob store to resolve here) or no payload → not a decodable pipeline → single-target.
+        _ => return None,
+    };
+    // The DISCRIMINANT: does the payload decode as a `(shell-pipeline …)`? A non-pipeline inline payload
+    // (e.g. an opaque tool-call input) fails the codec's head/shape check → None → the bare target gates.
+    let pipeline = crate::event_ast::decode_shell_pipeline(bytes).ok()?;
+    if pipeline.stages.is_empty() {
+        return Some(Err(
+            "shell pipeline: empty pipeline (no stages to authorize)".to_string(),
+        ));
+    }
+    for (i, stage) in pipeline.stages.iter().enumerate() {
+        if stage.program.is_empty() {
+            return Some(Err(format!(
+                "shell pipeline: stage {i} has an empty program"
+            )));
+        }
+        // Each stage's PROGRAM is the resolved target of one authz call (the SEC-F1 unit). Same `shell`
+        // family, no payload (a leaf program). Deny-all: the FIRST denied stage fails the whole pipeline.
+        let stage_req = EffectRequest::new(
+            EffectKind::Shell,
+            stage.program.as_str(),
+            None,
+            req.timeliness.clone(),
+        );
+        if let Err(reason) = authz.authorize(&stage_req).await {
+            return Some(Err(format!(
+                "shell pipeline: stage {i} program denied — {reason}"
+            )));
+        }
+    }
+    Some(Ok(()))
 }
 
 /// The variant name of an event body, for a [`StatusSnapshot`]'s human-readable "last event kind" (a
@@ -4934,6 +5022,154 @@ mod store_effect_tests {
                 .iter()
                 .all(|(n, _)| n != "session/victim"),
             "a store/set on session/victim without the session/ grant must be denied, not applied"
+        );
+    }
+
+    // ---- shell pipeline per-stage authz fan-out (operator security directive) --------------------------
+
+    use crate::effect::{Capability, EffectKind, ResourcePredicate};
+    use crate::event_ast::{encode_shell_pipeline, ShellPipeline, ShellStage};
+    use crate::hash::Hash;
+
+    fn stage(program: &str, args: &[&str]) -> ShellStage {
+        ShellStage {
+            program: program.to_string(),
+            args: args.iter().map(|a| a.to_string()).collect(),
+        }
+    }
+
+    fn shell_pipeline_effect(stages: Vec<ShellStage>) -> EffectRequest {
+        // A shell effect whose PAYLOAD carries a (shell-pipeline …) — the structured multi-stage path.
+        EffectRequest::new(
+            EffectKind::Shell,
+            "pipeline", // bare target is ignored for a payload-carrying pipeline (stages are the authz unit)
+            Some(Payload::Inline(
+                encode_shell_pipeline(&ShellPipeline { stages }).into(),
+            )),
+            Timeliness::Interactive,
+        )
+    }
+
+    // An authorizer that permits ONLY the named shell programs (OneOf allow-list), denying every other.
+    fn shell_allowlist(programs: &[&str]) -> Authorizer {
+        Authorizer::new(vec![Capability {
+            kind: EffectKind::Shell,
+            predicate: ResourcePredicate::OneOf(programs.iter().map(|p| (*p).into()).collect()),
+        }])
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn shell_pipeline_authz_permits_only_when_every_stage_is_allowed() {
+        // Each stage's PROGRAM is authorized; the whole pipeline is permitted only if EVERY stage's program
+        // is allowed. `grep | sort | head` with all three allow-listed → Ok.
+        let authz = shell_allowlist(&["grep", "sort", "head"]);
+        let req = shell_pipeline_effect(vec![
+            stage("grep", &["-e", "needle in haystack"]),
+            stage("sort", &[]),
+            stage("head", &["-n", "5"]),
+        ]);
+        assert_eq!(
+            authorize_shell_pipeline(&req, &authz).await,
+            Some(Ok(())),
+            "a pipeline whose every stage program is allow-listed must be authorized"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn shell_pipeline_authz_denies_whole_pipeline_if_any_stage_denied() {
+        // Deny-all: `head` is NOT allow-listed → the whole pipeline is denied (even though grep+sort are), and
+        // the denial names the offending stage index.
+        let authz = shell_allowlist(&["grep", "sort"]);
+        let req = shell_pipeline_effect(vec![
+            stage("grep", &["x"]),
+            stage("sort", &[]),
+            stage("head", &["-n", "5"]),
+        ]);
+        let verdict = authorize_shell_pipeline(&req, &authz)
+            .await
+            .expect("a pipeline is recognized (Some)");
+        let err = verdict.expect_err("a pipeline with a denied stage must be denied as a whole");
+        assert!(
+            err.contains("stage 2"),
+            "the denial should identify the offending stage (2 = head), got {err:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn shell_pipeline_authz_rejects_empty_pipeline_and_empty_program() {
+        let authz = shell_allowlist(&["echo"]);
+        // Empty pipeline: recognized as a pipeline (Some) but nothing to authorize → a clean Err.
+        let empty = shell_pipeline_effect(vec![]);
+        assert!(authorize_shell_pipeline(&empty, &authz)
+            .await
+            .expect("empty pipeline is still a recognized pipeline")
+            .expect_err("empty pipeline is denied")
+            .contains("empty pipeline"));
+        // A stage with an empty program is a malformed command → Err.
+        let empty_prog = shell_pipeline_effect(vec![stage("", &["x"])]);
+        assert!(authorize_shell_pipeline(&empty_prog, &authz)
+            .await
+            .expect("a one-stage pipeline is recognized")
+            .expect_err("empty program is denied")
+            .contains("empty program"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn shell_pipeline_authz_falls_back_to_single_target_for_non_pipeline_payloads() {
+        // The DISCRIMINANT is "the payload decodes as a (shell-pipeline …)". A shell effect whose payload is
+        // NOT a pipeline (an opaque tool-call input, per the M3 agent loop), a blob-ref, or no payload at all
+        // → None: the caller falls back to the ordinary single-target authorize on `req.target`. This is what
+        // keeps the M3 tool-calling loop (shell effect + raw JSON input payload) working unchanged.
+        let authz = shell_allowlist(&["echo"]);
+        // Opaque non-pipeline inline payload (like an M3 shell tool-call's raw input) → None (not a pipeline).
+        let tool_call = EffectRequest::new(
+            EffectKind::Shell,
+            "cargo test",
+            Some(Payload::Inline(b"{\"cmd\":\"cargo test\"}".to_vec().into())),
+            Timeliness::Interactive,
+        );
+        assert_eq!(
+            authorize_shell_pipeline(&tool_call, &authz).await,
+            None,
+            "an opaque non-pipeline payload is NOT a pipeline → fall back to single-target authz"
+        );
+        // A blob-ref payload → None (the drive loop has no blob store; the bare target gates instead).
+        let blob_req = EffectRequest::new(
+            EffectKind::Shell,
+            "cargo test",
+            Some(Payload::Blob(Hash::of(b"some blob"))),
+            Timeliness::Interactive,
+        );
+        assert_eq!(authorize_shell_pipeline(&blob_req, &authz).await, None);
+        // No payload (a bare-target single command) → None.
+        let bare = EffectRequest::new(EffectKind::Shell, "echo ok", None, Timeliness::Interactive);
+        assert_eq!(authorize_shell_pipeline(&bare, &authz).await, None);
+        // A NON-shell effect (even with a pipeline-looking payload) → None (only shell effects fan out).
+        let http = EffectRequest::new(
+            EffectKind::Http,
+            "https://x",
+            Some(Payload::Inline(
+                encode_shell_pipeline(&ShellPipeline {
+                    stages: vec![stage("echo", &[])],
+                })
+                .into(),
+            )),
+            Timeliness::Interactive,
+        );
+        assert_eq!(authorize_shell_pipeline(&http, &authz).await, None);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn shell_pipeline_authz_gates_the_program_not_the_args() {
+        // The authorized unit is the stage PROGRAM, not its args — an allow-listed program with arbitrary
+        // args (even ones that look like other commands) is permitted, because args are literal data to that
+        // program, never re-interpreted (the CWE-78 discipline: no shell, args can't spawn a second program).
+        let authz = shell_allowlist(&["echo"]);
+        let req = shell_pipeline_effect(vec![stage("echo", &["rm", "-rf", "/"])]);
+        assert_eq!(
+            authorize_shell_pipeline(&req, &authz).await,
+            Some(Ok(())),
+            "echo with scary-looking args is fine — the args are literal data to echo, not a second program"
         );
     }
 }
