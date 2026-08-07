@@ -184,6 +184,28 @@ async fn main() -> std::process::ExitCode {
             // memory (default) → in-memory session logs (no durable sink).
             LogConfig::Memory => None,
         };
+        // The durable SESSION REGISTRY (I4b), per [session_registry] config — the index the host loop keeps
+        // current (register on install, mark_terminated on terminate) so a restart can boot-recover durably
+        // logged sessions WITHOUT an O(all-events) log scan. `dynamo` builds a DynamoSessionRegistry over
+        // `table` (loading the ambient AWS config ONCE here, on the boot path, like the Dynamo log sink); a
+        // build WITHOUT `live-aws-storage` reports a clean "not compiled in" boot error rather than silently
+        // degrading (config validates regardless of feature). `memory` (default) = no durable registry.
+        use cdz_agent_host::SessionRegistryConfig;
+        #[cfg(feature = "live-aws-storage")]
+        let session_registry = match &config.session_registry {
+            SessionRegistryConfig::Dynamo { table } => {
+                Some(cdz_agent_host::DynamoSessionRegistry::new(table.clone()).await)
+            }
+            SessionRegistryConfig::Memory => None,
+        };
+        #[cfg(not(feature = "live-aws-storage"))]
+        if let SessionRegistryConfig::Dynamo { .. } = &config.session_registry {
+            eprintln!(
+                "cdz-agent-daemon: [session_registry] backend=dynamo requires the `live-aws-storage` \
+                 feature — rebuild with `--features live-aws-storage` to use the durable session registry."
+            );
+            return std::process::ExitCode::from(1);
+        }
         // Build the AgentHost FIRST so its metrics registry exists — the live executor set's per-effect
         // metrics register into the SAME registry (one registry the exporter reports over: host-boundary +
         // per-effect metrics together).
@@ -514,6 +536,14 @@ async fn main() -> std::process::ExitCode {
             lifecycle_rx,
         )
         .with_admin_authz(Box::new(AllowList::allow_all_for_local_admin()));
+        // Wire the durable session registry (I4b) when [session_registry] backend=dynamo — the loop then keeps
+        // it current (register on install, mark_terminated on terminate) for boot-recovery. `memory` leaves the
+        // loop with no external index (lossy-on-restart), so nothing is chained.
+        #[cfg(feature = "live-aws-storage")]
+        let host = match session_registry {
+            Some(registry) => host.with_session_registry(registry),
+            None => host,
+        };
         // Drop our inbox sender so an idle inbox doesn't hold the loop open; the admin socket's AdminChannel
         // is what keeps the loop alive as a control plane.
         drop(host.inbox());
