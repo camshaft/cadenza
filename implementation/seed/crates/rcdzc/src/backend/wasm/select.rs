@@ -7355,7 +7355,7 @@ fn emit(
         // then for each element `[buf] ; index ; byte ; bytes-set` — and `bytes-set(buf,index,value) ->
         // buf` RETURNS the buffer (FBIP in-place), so the buffer threads through with no scratch local. A
         // byte is a RAW i32 in `0..=255` (NOT boxed like a list element); every element folded to a
-        // constant in range at lowering (`lower_bytes_of`), so each is pushed as an `i32.const`. ⚠ the
+        // constant in range at lowering (`lower_bytes_of`), so each is pushed as an `i32.const`. WARNING: the
         // byte value uses `Lir::ConstI32`, which the serializer writes as a SIGNED LEB — a raw byte ≥ 64
         // would sign-extend negative if hand-emitted, but `Lir::ConstI32` handles the signed encoding, so
         // there is no raw-opcode hazard here (the seed's `sleb128` bug was in hand-written opcode bytes).
@@ -9404,7 +9404,7 @@ fn emit(
         // scratch slots (bytes i32, start i64, len i64, byte-count i64) above `base`; operand recursions
         // float above them.
         //
-        // ⚠ The predicate is OVERFLOW-SAFE. The naive `start + len <= bytes-len` OVERFLOWS: for
+        // WARNING: The predicate is OVERFLOW-SAFE. The naive `start + len <= bytes-len` OVERFLOWS: for
         // attacker-chosen `start`/`len` near i64::MAX the i64 sum wraps to a negative value that trivially
         // passes the signed `<=`, wrongly taking the in-range path (a wrong `Some`, or a trap when the
         // i32-wrapped index exceeds the runtime's u32 range) — a soundness hole in a FALLIBLE op that
@@ -9889,7 +9889,7 @@ fn emit(
             // (`mark_binder_dups`' `SumExpect` arm) is a compound payload consumed while its scrutinee stays
             // live, so `dup` the child (rc++) before it flows into the consuming op — else the shared payload
             // is FBIP-mutated at rc==1 and the still-live scrutinee drifts. Only a COMPOUND leaf (`unboxed`
-            // None AND not Unit — a real handle) aliases; a scalar unboxes/copies and is never a site. ⚠
+            // None AND not Unit — a real handle) aliases; a scalar unboxes/copies and is never a site. WARNING:
             // `get_op` returns `None` for BOTH a compound handle AND a `Unit` payload; a Unit has no heap cell
             // to alias and its `IMM_UNIT` sentinel must be DROPPED by `emit_heap_read_tail` — taking the dup
             // fast path would leave the sentinel un-dropped → an extra stack value in the block → INVALID
@@ -10261,7 +10261,7 @@ fn emit(
             // cell per call (a `(match (List.at (build …) i) …)` in a loop leaks N — value-correct, caught by
             // the live-objects gate). Drop the shell after the match — but ONLY when NO arm can borrow a HEAP
             // PAYLOAD HANDLE out of the shell that OUTLIVES the block: `sum_has_only_scalar_payloads` (every
-            // variant carries a scalar or nothing). ⚠ A SCALAR-RESULT gate is NOT sufficient (the bug
+            // variant carries a scalar or nothing). WARNING: A SCALAR-RESULT gate is NOT sufficient (the bug
             // v-patterns caught): the HOL-kernel `term-eq (Comb x y)` returns a scalar Bool but its arms bind
             // `x`/`y` = `sum-payload` HANDLES borrowed from the shell and thread them into a recursive walk
             // that reads them AFTER the match — freeing the shell there frees `x`/`y` mid-use (OOB/UAF). With

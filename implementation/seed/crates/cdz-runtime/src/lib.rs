@@ -3273,7 +3273,7 @@ fn op_str_from_bytes(buf: Handle) -> Handle {
 /// no consume). Decodes the flat leaf as UTF-8 and takes the Nth `char`; a well-formed String always
 /// decodes, but an ill-formed buffer (defensive) reads as `NO_SCALAR`, never a trap.
 ///
-/// ⚠ NOT YET WIT-EXPORTED — the ready runtime half of a coordinated `str-scalar-at` op (the compiler
+/// WARNING: NOT YET WIT-EXPORTED — the ready runtime half of a coordinated `str-scalar-at` op (the compiler
 /// declines `String.scalar-at` on a RUNTIME string at lower.rs `lower_str_scalar_at`, "constant strings
 /// only"; the constant case folds to a `Leaf::Char`). Kept UNEXPORTED (no WIT line, no `Guest` method) →
 /// DCE'd from the shipped wasm → frozen runtime hash UNCHANGED. When the compiler wires
@@ -3282,7 +3282,7 @@ fn op_str_from_bytes(buf: Handle) -> Handle {
 /// the flatten + UTF-8 scalar walk is done and proven here. The SCALAR-indexed String family
 /// (`scalar-len`/`scalar-at`/`slice`) all rest on this same UTF-8 walk.
 ///
-/// ⚡ COST — O(scalar_index): reaching the i-th scalar walks the UTF-8 from the START (a String is not
+/// COST: COST — O(scalar_index): reaching the i-th scalar walks the UTF-8 from the START (a String is not
 /// scalar-indexable in O(1) — variable-width encoding). This is INHERENT to random access by scalar
 /// index, NOT a defect. WARNING: CONSEQUENCE for the compiler agent: a LEXER that scans a string left-to-right
 /// via repeated `scalar-at(s, 0)`, `scalar-at(s, 1)`, … is O(N²) (measured: ~67 ns/scalar at N=64 rising
@@ -17903,7 +17903,7 @@ mod tests {
     /// CONTRACT-BOUNDARY TRIPWIRE for `value-eq` (op 61, the language `=`): it is `champ_eq` — a PHYSICAL-
     /// byte compare, BY CONTRACT (fast, shared with the map-key path). So a ROPE Bytes/String value is
     /// value-eq-DISTINCT from its flat twin even with equal CONTENT — the COMPILER must canonicalize
-    /// (`bytes-compact`) an operand before `value-eq`, exactly as for a map key. ⚠⚠ This documents a KNOWN
+    /// (`bytes-compact`) an operand before `value-eq`, exactly as for a map key. WARNING:WARNING: This documents a KNOWN
     /// LATENT COMPILER MISCOMPILE (`spec@b4700bb9`): `ty_heap_walkable::Ty::String => true` admits a runtime
     /// String to `value-eq` on a stale premise ("String.concat never makes a rope"), but runtime
     /// `String.concat` now emits `bytes-concat` (a rope), so `(= (String.concat rt_a rt_b) other)` compares
@@ -22015,7 +22015,7 @@ mod tests {
     // differential: random concat / slice / compact / read / fork sequences vs a `Vec<u8>` reference.
     // Like the RRB vector, the rope is ELEMENT-canonical but NOT shape-canonical (a concat/slice tree
     // is a different rep from a flat leaf of the same bytes), so the invariant is CONTENT equivalence
-    // (`bytes_to_vec` + `bytes-len`), NOT `champ_eq`. ⚠ `op_bytes_get`/`bytes_to_vec` FLATTEN a rope in
+    // (`bytes_to_vec` + `bytes-len`), NOT `champ_eq`. WARNING: `op_bytes_get`/`bytes_to_vec` FLATTEN a rope in
     // place — content-preserving + unobservable, but it mutates shape, so read each handle's content
     // ONCE and compare to its reference; a forked snapshot is verified by its OWN content read.
     #[derive(Debug, bolero::TypeGenerator)]
