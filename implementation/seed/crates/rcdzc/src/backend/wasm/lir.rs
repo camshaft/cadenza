@@ -329,7 +329,11 @@ pub enum Lir {
     I64ShrU,
     /// `i64.div_s` / `i64.div_u` — signed / unsigned division. Trap natively on division by zero, and
     /// `div_s` also on `MIN/-1` (the two defined division traps, and the sole mul-overflow case the
-    /// `r/a≠b` guard can't catch). `div_s` is reused by the mul overflow guard (`r/a`).
+    /// `r/a≠b` guard can't catch). `div_s` is reused by the mul overflow guard (`r/a`). Each native trap
+    /// carries wasm's defined kind naming why it halted — "integer divide by zero" vs "integer overflow" —
+    /// not a bare `unreachable`.
+    //= spec/capabilities/core-semantics.md#a-trap-halts-execution-at-a-defined-point
+    //# A trap MUST carry a defined kind that identifies why the program halted.
     I64DivS,
     I64DivU,
     /// `i64.rem_s` / `i64.rem_u` — signed / unsigned remainder. Trap on division by zero; `rem_s` yields
