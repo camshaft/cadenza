@@ -326,6 +326,36 @@ impl AsyncAgentHost {
         Self::build(host, Some(factory), Box::new(AllowList::deny_all()))
     }
 
+    /// A fresh, unconnected [`LifecycleChannel`] pair (sender, receiver) the DAEMON mints BEFORE building the
+    /// factory + host, so the SAME channel can be wired into both the session executors
+    /// ([`LiveExecutorSet::with_lifecycle_channel`](crate::factory::LiveExecutorSet)) and this loop (via
+    /// [`with_factory_and_lifecycle`](Self::with_factory_and_lifecycle)). Solves the construction chicken-egg:
+    /// the factory (which needs the sender) is built before the host, but `build` otherwise mints the channel
+    /// internally. Callers/tests that don't pre-wire lifecycle executors keep using [`with_factory`] (which
+    /// mints its own).
+    pub fn new_lifecycle_channel() -> (LifecycleChannel, mpsc::UnboundedReceiver<LifecycleOp>) {
+        mpsc::unbounded_channel()
+    }
+
+    /// Like [`with_factory`](Self::with_factory) but the loop uses a caller-supplied lifecycle channel
+    /// (from [`new_lifecycle_channel`](Self::new_lifecycle_channel)) — the SAME `tx` the daemon wired into the
+    /// session executors, so a session's `LifecycleExecutor` sends ops the loop actually drains. Use this
+    /// (not `with_factory`) whenever the executor set was built with a lifecycle channel.
+    pub fn with_factory_and_lifecycle(
+        host: AgentHost,
+        factory: Box<dyn SessionFactory>,
+        lifecycle_tx: LifecycleChannel,
+        lifecycle_rx: mpsc::UnboundedReceiver<LifecycleOp>,
+    ) -> Self {
+        Self::build_with_lifecycle(
+            host,
+            Some(factory),
+            Box::new(AllowList::deny_all()),
+            lifecycle_tx,
+            lifecycle_rx,
+        )
+    }
+
     /// Install the admin authorizer that gates every admin command (deny-by-default). Builder-style — the
     /// deployed daemon calls e.g. `AsyncAgentHost::with_factory(..).with_admin_authz(Box::new(AllowList::allow_all_for_local_admin()))`
     /// (the trusted-local-admin preset behind the `0o600` socket) or a Cedar-policy-component authorizer.
@@ -340,9 +370,23 @@ impl AsyncAgentHost {
         factory: Option<Box<dyn SessionFactory>>,
         admin_authz: Box<dyn AdminAuthorizer>,
     ) -> Self {
+        // Mint the lifecycle channel internally (the common path — callers that don't pre-wire lifecycle
+        // executors don't need to supply one).
+        let (lifecycle_tx, lifecycle_rx) = mpsc::unbounded_channel();
+        Self::build_with_lifecycle(host, factory, admin_authz, lifecycle_tx, lifecycle_rx)
+    }
+
+    /// The shared constructor: build with a CALLER-SUPPLIED lifecycle channel (so the daemon can wire the
+    /// SAME channel into the session executors). [`build`](Self::build) mints its own + delegates here.
+    fn build_with_lifecycle(
+        host: AgentHost,
+        factory: Option<Box<dyn SessionFactory>>,
+        admin_authz: Box<dyn AdminAuthorizer>,
+        lifecycle_tx: LifecycleChannel,
+        lifecycle_rx: mpsc::UnboundedReceiver<LifecycleOp>,
+    ) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
         let (admin_tx, admin_rx) = mpsc::unbounded_channel();
-        let (lifecycle_tx, lifecycle_rx) = mpsc::unbounded_channel();
         AsyncAgentHost {
             host,
             rx,

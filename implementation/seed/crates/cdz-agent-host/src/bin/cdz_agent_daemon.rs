@@ -177,8 +177,14 @@ async fn main() -> std::process::ExitCode {
         // happens — on the boot path, NOT per install). Each install then CLONES these into a fresh executor
         // set cheaply, so a slow IMDS probe can't stall the host loop mid-run (#1987 review). The per-effect
         // metrics register into the host's registry (shared).
+        // §lifecycle: mint the loop's lifecycle channel HERE, BEFORE the factory, so the SAME channel is wired
+        // into (a) each session's LifecycleExecutor (via LiveExecutorSet::with_lifecycle_channel below) and
+        // (b) the host loop (via with_factory_and_lifecycle) — a session's lifecycle op then lands on the loop
+        // the daemon runs. (The construction chicken-egg: the factory needs the sender, but the host — which
+        // otherwise mints the channel — is built last.)
+        let (lifecycle_tx, lifecycle_rx) = AsyncAgentHost::new_lifecycle_channel();
         let executors = match LiveExecutorSet::new(agent_host.registry()).await {
-            Ok(e) => e,
+            Ok(e) => e.with_lifecycle_channel(lifecycle_tx.clone()),
             Err(e) => {
                 eprintln!("cdz-agent-daemon: could not build the live executor transports: {e}");
                 return std::process::ExitCode::from(1);
@@ -381,8 +387,11 @@ async fn main() -> std::process::ExitCode {
             )
         };
 
-        let host = AsyncAgentHost::with_factory(agent_host, factory)
-            .with_admin_authz(Box::new(AllowList::allow_all_for_local_admin()));
+        // Use the SAME lifecycle channel the session executors were wired with (not the internally-minted one)
+        // so a session's lifecycle op reaches this loop.
+        let host =
+            AsyncAgentHost::with_factory_and_lifecycle(agent_host, factory, lifecycle_tx, lifecycle_rx)
+                .with_admin_authz(Box::new(AllowList::allow_all_for_local_admin()));
         // Drop our inbox sender so an idle inbox doesn't hold the loop open; the admin socket's AdminChannel
         // is what keeps the loop alive as a control plane.
         drop(host.inbox());
