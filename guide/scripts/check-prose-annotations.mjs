@@ -71,6 +71,12 @@ for (const file of files) {
     process.exit(1);
   }
   const rel = file.replace(guideRoot + "/", "");
+  // Strip a machine-generated `// @generated …` header line before scanning: a codegen'd chapter (the
+  // cadenza-docs sexp→TSX pilot) carries a `// @generated DO NOT EDIT …` marker, and `@generated` is a
+  // widely-recognized machine-generated-file convention, NOT a prose annotation claim about the compiler.
+  // The lint targets invented @annotations in reader-facing PROSE; the header comment isn't prose (and the
+  // chapter's real content still gets scanned). Only the exact `@generated` header line is removed.
+  src = src.replace(/^\/\/ @generated\b.*$/m, "");
   // Every `@word` occurrence (annotation-shaped: `@` + a kebab identifier). This catches prose in
   // `<C>@foo</C>`, `<Note>`, paragraphs — anywhere in the chapter source. A `@tag("slow")` matches
   // `@tag` (the annotation) and NOT `slow` (its string argument), which is correct.
