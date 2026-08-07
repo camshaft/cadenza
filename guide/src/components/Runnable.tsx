@@ -22,6 +22,7 @@ import { fixConfidence, fixIsApplicable } from "../playground/applyFix.ts";
 import { runTests, type TestRunOutcome } from "../runner/client.ts";
 import { useSyntax } from "../syntax/SyntaxContext.tsx";
 import { assertPreludeFor } from "./assertPrelude.ts";
+import { MultiFileRunnable, type RunnableFile } from "./MultiFileRunnable.tsx";
 
 /// Shared example-control button classes. Both carry a 44px mobile touch target (`min-h-11` below `sm`,
 /// the touch guideline) that collapses to the compact desktop density at `sm+`. `BTN_PRIMARY` is the
@@ -50,8 +51,14 @@ interface Props {
    *  on the page resolves to THIS Runnable (via the RunnableRegistry) and drives its buffer + run. Only
    *  needed on a Runnable that clickable prose refers to; the id must be unique on the page (gated). */
   id?: string;
-  /** The snippet source, in `authoredIn` surface. Made runnable (export/main supplied) if `wrap`. */
-  source: string;
+  /** MULTI-FILE mode (operator-mandated): a set of files — one `entry`, the rest link-merged modules it can
+   *  `import` — compiled together via compileWithPreloaded (the platform-explorer seam). When present, `source`
+   *  is ignored and the example renders as a multi-file editor (tabs). Absent → the single-`source` path below,
+   *  unchanged. Use this to show a decoupled boundary, e.g. an events file + a reducer file. */
+  files?: readonly RunnableFile[];
+  /** The snippet source, in `authoredIn` surface. Made runnable (export/main supplied) if `wrap`. Optional
+   *  only because a multi-file (`files`) Runnable carries its sources in the file set instead. */
+  source?: string;
   /** Surface the `source` prop is written in. Default s-expr (the corpus form). */
   authoredIn?: Surface;
   /** Supply the `export`/`main` a bare snippet needs (`(do (def (main) <expr>) (export main))`). Default true. */
@@ -78,12 +85,24 @@ type TestStatus =
   | { phase: "busy" }
   | { phase: "done"; outcome: TestRunOutcome };
 
-export function Runnable({ id, source, authoredIn = "sexpr", wrap = true, expect = "value", title, mode = "run", prelude = true }: Props) {
+export function Runnable({ id, files, source, authoredIn = "sexpr", wrap = true, expect = "value", title, mode = "run", prelude = true }: Props) {
+  // MULTI-FILE mode (operator-mandated): a set of files compiled together via compileWithPreloaded. Takes
+  // precedence over the single-source paths; the explorer seam owns the file-set invariants + run wiring.
+  if (files) return <MultiFileRunnable files={files} expect={expect} title={title} />;
+  // Below here `source` is required — a non-multi-file Runnable must carry one. A missing source is an
+  // authoring bug; render it loudly rather than compiling an empty program.
+  if (source == null) {
+    return (
+      <div className="my-6 rounded-xl border border-rose-700/60 bg-rose-950/30 px-4 py-3 font-mono text-[13px] text-rose-300">
+        &lt;Runnable&gt; needs either a `source` or a `files` prop.
+      </div>
+    );
+  }
   if (mode === "test") return <TestRunnable source={source} authoredIn={authoredIn} title={title} prelude={prelude} />;
   return <RunRunnable id={id} source={source} authoredIn={authoredIn} wrap={wrap} expect={expect} title={title} />;
 }
 
-function RunRunnable({ id, source, authoredIn = "sexpr", wrap = true, expect = "value", title }: Props) {
+function RunRunnable({ id, source, authoredIn = "sexpr", wrap = true, expect = "value", title }: Props & { source: string }) {
   const editor = useCadenzaEditor(source, authoredIn, wrap);
   const [status, setStatus] = useState<Status>({ phase: "idle" });
   // The minimal IDE (squiggles + hover) turns on once the reader focuses the editor, so a page full
@@ -294,7 +313,7 @@ function fixActionLabel(d: Diag): string {
 /// as tests (like `cdz test`), showing inline ✓/✗ per test. `wrap` is off — a test build lays its
 /// boundary out from the @test defs, not an export/main. Uses the shared editor (same Cadenza IDE
 /// highlighting) so the reader sees + edits real test code.
-function TestRunnable({ source, authoredIn = "sexpr", title, prelude = true }: Pick<Props, "source" | "authoredIn" | "title" | "prelude">) {
+function TestRunnable({ source, authoredIn = "sexpr", title, prelude = true }: Pick<Props, "authoredIn" | "title" | "prelude"> & { source: string }) {
   const editor = useCadenzaEditor(source, authoredIn, false);
   const { surface } = useSyntax();
   const [status, setStatus] = useState<TestStatus>({ phase: "idle" });
