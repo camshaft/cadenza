@@ -472,10 +472,11 @@ pub fn encode_members<'a>(members: impl IntoIterator<Item = &'a Hash>) -> Vec<u8
 }
 
 /// Decode a `members` frame encoded by [`encode_members`] → the member hashes in ENCODED order (which
-/// `encode_members` writes ascending, so a round-trip through a `BTreeSet` reproduces the same set). Total:
-/// non-conforming bytes / a non-`member` child / a bad hash are a clean `Shape` error, never a panic
-/// (durable-log / untrusted-store bytes). Returns a `Vec` (not a set) so a caller can observe the exact
-/// encoded order; collecting into a `BTreeSet` recovers the canonical membership.
+/// `encode_members` writes ascending, so a round-trip through a `BTreeSet` reproduces the same set). Total,
+/// distinguishing the two [`EventAstError`] classes: bytes that don't parse as a canonical codec frame →
+/// [`EventAstError::Codec`]; a well-formed frame with the wrong head / a non-`member` child / a bad hash →
+/// [`EventAstError::Shape`]. Never a panic (durable-log / untrusted-store bytes). Returns a `Vec` (not a set)
+/// so a caller can observe the exact encoded order; collecting into a `BTreeSet` recovers the canonical set.
 pub fn decode_members(bytes: &[u8]) -> Result<Vec<Hash>, EventAstError> {
     let a = codec::decode_detailed(bytes).map_err(EventAstError::Codec)?;
     let member_forms = a.as_form(a.root, "members").ok_or(shape("members head"))?;
@@ -1771,13 +1772,22 @@ mod tests {
                 .is_empty(),
             "an empty membership decodes to an empty vec, not an error"
         );
-        // Non-conforming bytes are a clean Shape error, never a panic (durable/untrusted bytes).
-        assert!(decode_members(b"not a members frame").is_err());
-        // A frame with the WRONG head (a member-op, not members) is rejected — no cross-decode.
+        // The two EventAstError classes are distinguished, not conflated: non-decodable bytes → Codec;
+        // a well-formed frame with the WRONG head (a member-op, not members) → Shape. Both non-panic.
+        assert!(
+            matches!(
+                decode_members(b"not a members frame"),
+                Err(EventAstError::Codec(_))
+            ),
+            "non-decodable bytes are a Codec error, not Shape"
+        );
         let (m, o) = (Hash::of(b"m"), Hash::of(b"o"));
         assert!(
-            decode_members(&encode_member_op("session/g", true, &m, &(o, 0))).is_err(),
-            "a member-op frame is not a members frame"
+            matches!(
+                decode_members(&encode_member_op("session/g", true, &m, &(o, 0))),
+                Err(EventAstError::Shape(_))
+            ),
+            "a member-op frame is a Shape error (wrong head), not a members frame"
         );
     }
 
@@ -1810,11 +1820,22 @@ mod tests {
             }
             other => panic!("expected Failure, got {other:?}"),
         }
-        // Non-conforming bytes / a wrong-head frame are clean Shape errors, never a panic.
-        assert!(decode_child_exited(b"not a child-exited frame").is_err());
+        // The two EventAstError classes are distinguished, not conflated (matches the decode_child_exited
+        // contract): bytes that don't parse as a codec frame → Codec; a well-formed frame with the WRONG head
+        // (a members frame) → Shape. Both non-panic.
         assert!(
-            decode_child_exited(&encode_members([&child])).is_err(),
-            "a members frame is not a child-exited frame"
+            matches!(
+                decode_child_exited(b"not a child-exited frame"),
+                Err(EventAstError::Codec(_))
+            ),
+            "non-decodable bytes are a Codec error, not Shape"
+        );
+        assert!(
+            matches!(
+                decode_child_exited(&encode_members([&child])),
+                Err(EventAstError::Shape(_))
+            ),
+            "a well-formed members frame is a Shape error (wrong head), not a child-exited frame"
         );
     }
 
