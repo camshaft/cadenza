@@ -41,6 +41,11 @@ pub struct DaemonConfig {
     /// only works for a reducer already `put` into the store this run). A real deployment sets a `dir`.
     #[serde(default)]
     pub blob: BlobConfig,
+    /// The reducer-blob CACHE (S3-FIFO, in front of `blob`). Defaults to ON (128 MiB in-memory, 2 GiB disk);
+    /// a `0` per-tier budget disables that tier. Content-addressed blobs are immutable → cache hits are always
+    /// correct with no invalidation.
+    #[serde(default)]
+    pub blob_cache: BlobCacheConfig,
     /// The canonical §4c NAME STORE durability backend — where the daemon snapshots its shared name directory
     /// on mutation + restores it on boot (AWS-backends arc I4a). Defaults to `memory` (no durability — the
     /// daemon boots share-less, today's behavior). `s3` makes the canonical store DURABLE across a restart.
@@ -392,6 +397,47 @@ impl Default for RetryConfig {
             max_attempts: Self::default_max_attempts(),
             base_ms: Self::default_base_ms(),
             max_ms: Self::default_max_ms(),
+        }
+    }
+}
+
+/// The reducer-blob CACHE in front of the [`BlobConfig`] backing store (operator directive: "for the blob
+/// store we should have a bounded cache … multi-tier to disk … S3-FIFO"). Content-addressed blobs are
+/// immutable, so a cache hit is always correct with no invalidation; the S3-FIFO eviction resists the
+/// one-hit-wonder pollution a plain LRU suffers. ON by default (a bounded cache is strictly beneficial); a
+/// `0` byte budget disables that tier.
+///
+/// **Current daemon behavior:** the in-MEMORY tier ([`mem_bytes`](Self::mem_bytes)) wraps the configured
+/// backing store in a [`CachingBlobStore`](crate::CachingBlobStore). The `disk_bytes` on-DISK tier (mem over
+/// disk over the backing store) is defined here ahead of its wiring (a following slice adds the disk cache
+/// layer) — the config is set now so the deployment knob is stable.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct BlobCacheConfig {
+    /// In-memory cache byte budget (S3-FIFO, small+main). `0` disables the in-memory cache (the backing store
+    /// is used directly). Default 128 MiB — hot in-memory, safe on a modest host.
+    #[serde(default = "BlobCacheConfig::default_mem_bytes")]
+    pub mem_bytes: usize,
+    /// On-disk cache byte budget (the tier between memory and the backing store). `0` disables the disk tier.
+    /// Default 2 GiB. Defined ahead of the disk-tier wiring slice (the config knob is stable now).
+    #[serde(default = "BlobCacheConfig::default_disk_bytes")]
+    pub disk_bytes: usize,
+}
+
+impl BlobCacheConfig {
+    fn default_mem_bytes() -> usize {
+        128 * 1024 * 1024
+    }
+    fn default_disk_bytes() -> usize {
+        2 * 1024 * 1024 * 1024
+    }
+}
+
+impl Default for BlobCacheConfig {
+    fn default() -> Self {
+        BlobCacheConfig {
+            mem_bytes: Self::default_mem_bytes(),
+            disk_bytes: Self::default_disk_bytes(),
         }
     }
 }
@@ -1239,6 +1285,26 @@ mod tests {
                 dir: "/var/lib/cdz/reducers".into()
             }
         );
+    }
+
+    #[test]
+    fn blob_cache_defaults_to_128mib_mem_2gib_disk_and_is_overridable() {
+        // Default: no [blob_cache] section → 128 MiB in-memory, 2 GiB disk (concierge-confirmed defaults).
+        let cfg = DaemonConfig::from_toml_str("").unwrap();
+        assert_eq!(cfg.blob_cache.mem_bytes, 128 * 1024 * 1024);
+        assert_eq!(cfg.blob_cache.disk_bytes, 2 * 1024 * 1024 * 1024);
+
+        // Overridable per tier; 0 disables a tier.
+        let cfg = DaemonConfig::from_toml_str(
+            r#"
+            [blob_cache]
+            mem_bytes = 0
+            disk_bytes = 1048576
+            "#,
+        )
+        .expect("blob_cache config parses");
+        assert_eq!(cfg.blob_cache.mem_bytes, 0, "0 disables the in-memory tier");
+        assert_eq!(cfg.blob_cache.disk_bytes, 1048576);
     }
 
     #[test]
