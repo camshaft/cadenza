@@ -14124,3 +14124,55 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 210 Int64))
   (call   main (: 0 Int64)) (output (: 210 Int64)))
+
+;; ── same-effect shadows installed from INSIDE handler machinery (breaker is) ─────────────────────
+;; The mo chapter shadows in the handle BODY; these install the shadow from handler-adjacent
+;; positions. is1: a draw-SELECTED match arm installs a branch-local shadow — the inner region
+;; exists on one dispatch path only, and the outer thread resumes after it. is2: the ARM's
+;; RESUME-VALUE is a nested same-effect handle instantiated per dispatch from the live state s.
+;; is3: the ARM's NEXT-STATE slot is computed by a nested same-effect handle — the shadow's
+;; result feeds the outer state thread itself (s' = 3·(s+100) per dispatch).
+
+(case "is1 a draw-SELECTED match arm installs a nested same-effect shadow — outer state resumes after the branch-local region"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (+ s 1))))
+                (let ((k (St.next)))
+                  (+ (match k
+                       (5 (handle St 70
+                            ((next () s (resume s (+ s 7))))
+                            (+ (St.next) (St.next))))
+                       (_o (* 2 _o)))
+                     (St.next)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 153 Int64))
+  (call   main (: 3 Int64)) (output (: 10 Int64)))
+
+(case "is2 the ARM's resume-value is a nested SAME-effect handle — a fresh shadow instantiated per dispatch from the live state"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume (handle St (* s 10)
+                                      ((next () t (resume t (+ t 1))))
+                                      (+ (St.next) (St.next)))
+                                    (+ s 1))))
+                (+ (St.next) (St.next))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 222 Int64))
+  (call   main (: 2 Int64)) (output (: 102 Int64)))
+
+(case "is3 the ARM's NEXT-STATE is computed by a nested SAME-effect handle — the shadow feeds the outer state thread"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (handle St (+ s 100)
+                                        ((next () t (resume t (* t 2))))
+                                        (+ (St.next) (St.next))))))
+                (+ (St.next) (St.next))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 320 Int64))
+  (call   main (: 0 Int64)) (output (: 300 Int64)))
