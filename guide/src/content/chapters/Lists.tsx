@@ -79,7 +79,7 @@ export default function Lists() {
       <P>
         The answer is <C>20</C>, not <C>99</C>: <C>original</C> never changed. The <C>99</C> lives only in{" "}
         <C>bumped</C>. Swap <C>original</C> for <C>bumped</C> in the <C>List.at</C> line and Run again to
-        see <C>99</C>. Two lists, sharing most of their structure under the hood, each with its
+        see <C>99</C>. Two lists, sharing most of their structure internally, each with its
         own value.
       </P>
       <P>

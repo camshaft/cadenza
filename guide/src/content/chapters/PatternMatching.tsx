@@ -67,7 +67,7 @@ export default function PatternMatching() {
 
       <H2>The compiler checks you covered every case</H2>
       <P>
-        Here's the payoff. Drop the <C>None</C> arm and the compiler <em>refuses</em> to compile, because it
+        Exhaustiveness is what this buys you. Drop the <C>None</C> arm and the compiler <em>refuses</em> to compile, because it
         can see, from the type, that a case is unhandled:
       </P>
       <Note>

@@ -50,7 +50,7 @@ export default function PropertyTesting() {
       />
       <P>
         The second test's condition is false, so <C>assert</C> traps and the runner marks it ✗ with the
-        message you gave. That message is the whole point of a good assert: when a test fails, it tells you{" "}
+        message you gave. That message is what a good assert is for: when a test fails, it tells you{" "}
         <em>what</em> broke, not just that something did.
       </P>
 
@@ -69,7 +69,7 @@ export default function PropertyTesting() {
       />
       <P>
         There's nothing special about a test beyond the <C>@test</C> mark; it's a function the runner knows
-        to call. That's the whole testing story: no framework, no assertion library baked into the language,
+        to call. That's all there is to testing here: no framework, no assertion library built into the language,
         just functions that trap when an expectation is violated.
       </P>
 
@@ -148,7 +148,7 @@ export default function PropertyTesting() {
         Cadenza doesn't add a property-testing DSL with its own generators and combinators. A test is a
         function marked <C>@test</C>; a <em>property</em> is that same idea with parameters, and the compiler
         synthesizes the generator from the types you already wrote, so there's nothing extra to learn. The
-        runner drives generation, shrinking, and a recorded seed under the hood, but the surface you touch is
+        runner drives generation, shrinking, and a recorded seed internally, but the surface you touch is
         just this: write a function, assert what should hold, mark it, and if it takes arguments the runner
         tries to break it for you.
       </Why>

@@ -258,7 +258,7 @@ def main() = decision({ family = "message", version = 1 }, None(), None())`}
         fail. The branches that don't perform a host effect, the resume-stops and non-message-ignored
         invariants, test standalone exactly like the runnable examples above; the branch that performs{" "}
         <C>Kv</C> needs the kernel's host handler, so its behaviour is covered by the kernel's end-to-end
-        test instead. The rule of thumb: pure branches test on the compiler, host-effect branches test
+        test instead. The general rule: pure branches test on the compiler, host-effect branches test
         against the kernel.
       </P>
 

@@ -104,7 +104,7 @@ export default function PlatformExecution() {
 
       <H2>An agent is just a reducer</H2>
       <P>
-        Everything so far has been about running <em>a reducer</em> over an event log. Here's the payoff, and
+        Everything so far has been about running <em>a reducer</em> over an event log. Here's where it leads, and
         it's the point of the whole platform: <strong>an AI agent is one of those reducers</strong>, with no
         new machinery at all. The turn-taking loop you'd expect to be the agent's special engine is, once
         again, just a fold over effects.
@@ -122,7 +122,7 @@ export default function PlatformExecution() {
       <Note>
         event in → reducer emits a model-call effect → fold reply → reply wants tools? emit each as an effect → fold results → emit model-call again → … → end-of-turn
         <br />
-        no bespoke agent runtime: the loop IS the fold; the model and tools are ordinary authorized effects on the log
+        no bespoke agent runtime: the loop is itself the fold; the model and tools are ordinary authorized effects on the log
       </Note>
       <P>
         You can watch a whole turn happen as one fold, and it's worth splitting into two files so the
@@ -238,7 +238,7 @@ export default function PlatformExecution() {
           one gate
         </Link>{" "}
         where capability and safety live; and an execution model that runs many agents concurrently while
-        keeping every one of them perfectly replayable. And the payoff of all four: an agent itself is just a
+        keeping every one of them perfectly replayable. And what all four add up to: an agent itself is just a
         reducer folding model calls and tool calls as effects, so nothing about running an AI agent needs
         machinery beyond the fold, right down to its failures, which are just more events a supervisor folds
         and recovers from. The kernel is early, and this section will grow with it, eventually into

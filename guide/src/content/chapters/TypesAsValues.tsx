@@ -76,7 +76,7 @@ export default function TypesAsValues() {
         drives <em>ad-hoc polymorphism</em> (one name, a per-type implementation chosen at compile time),
         and a <C>const</C> parameter lets a caller fix a compile-time-known argument that's then erased.
         Both compile to specialized, type-free code, and the observable <em>value</em> is identical to the
-        hand-written monomorphic version, which is the whole point: the abstraction costs nothing at
+        hand-written monomorphic version, so the abstraction costs nothing at
         runtime.
       </Note>
 

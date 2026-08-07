@@ -103,7 +103,7 @@ export default function BinaryMatching() {
 
       <H2>A segment's size can be a value</H2>
       <P>
-        The payoff: a segment's <em>length</em> can be a name bound earlier in the same pattern, the
+        Here is what that enables: a segment's <em>length</em> can be a name bound earlier in the same pattern, the
         length-prefixed frame that every wire format is built on. Read a count <C>n</C>, then bind exactly{" "}
         <C>n</C> bytes to <C>body</C>, and let a final <C>rest</C> take what's left:
       </P>

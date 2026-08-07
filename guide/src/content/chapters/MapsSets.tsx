@@ -69,7 +69,7 @@ export default function MapsSets() {
   (Map.len (Map.insert (Map.insert (Map.empty) 1 10) 2 20)))`}
       />
       <P>
-        <C>Map.lookup</C> is the payoff, and like reaching into a list, it can miss. So it returns an{" "}
+        <C>Map.lookup</C> is what you reach for a map to do, and like reaching into a list, it can miss. So it returns an{" "}
         <C>Option</C>: <C>(Some v)</C> when the key is present, <C>(None unit)</C> when it isn't. You take
         it apart with <C>match</C>:
       </P>

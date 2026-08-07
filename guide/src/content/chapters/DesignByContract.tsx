@@ -174,8 +174,8 @@ export default function DesignByContract() {
       <P>
         These contracts are checked at run time today. They're also the first step of a larger story: the
         same <C>@requires</C> a compiler could one day <em>prove</em> and remove, the assumption verified
-        once, statically, instead of on every call. For now, a contract is a guarantee you get for free
-        just by writing down what you already assumed. Next,{" "}
+        once, statically, instead of on every call. For now, a contract turns something you already assumed
+        into a checked guarantee, just by writing it down. Next,{" "}
         <Link to="/modules" className="text-cadenza-300 underline-offset-2 hover:underline">
           Modules
         </Link>{" "}

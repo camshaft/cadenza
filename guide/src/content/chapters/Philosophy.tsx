@@ -17,10 +17,10 @@ export default function Philosophy() {
         everything below falls out of taking that question seriously.
       </P>
 
-      <H2>Trust is built in, not bolted on</H2>
+      <H2>Trust is built in, not added afterward</H2>
       <P>
-        Two properties are not features you opt into, but the floor the language stands on, and no
-        compiler flag can turn them off.
+        Two properties hold for every Cadenza program; they aren't features you opt into, and no compiler
+        flag can turn them off.
       </P>
 
       <Why tenet="Determinism by construction">
@@ -32,7 +32,7 @@ export default function Philosophy() {
         fake.
       </Why>
 
-      <Why tenet="Capability-safety is the floor">
+      <Why tenet="Capability-safety holds for every program">
         A program declares every outside operation it might perform, and the component it compiles to
         imports exactly those and <em>nothing else</em>. There's no ambient authority to reach for,
         because the means to reach anything undeclared simply isn't present in the compiled component.

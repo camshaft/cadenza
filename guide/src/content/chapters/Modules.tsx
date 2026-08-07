@@ -99,8 +99,8 @@ export default function Modules() {
         Cadenza doesn't bolt on a separate "module system" with its own rules, since a module is just a{" "}
         <em>value</em>, a record whose fields are its definitions, bound to a name. That's why you reach
         into it with the same <C>.</C> you use for any record: there's one idea of "a named thing with
-        fields", not two. Grouping and namespacing fall out of a feature the language already has. The
-        payoff is that everything you know about records, how they're built, accessed, and passed around,
+        fields", not two. Grouping and namespacing fall out of a feature the language already has, so
+        everything you know about records, how they're built, accessed, and passed around,
         already tells you how modules behave.
       </Why>
 

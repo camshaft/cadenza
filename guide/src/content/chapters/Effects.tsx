@@ -19,7 +19,7 @@ export default function Effects() {
         apart, because a function performs an operation by naming what it needs while a <C>handle</C>{" "}
         around it decides what performing that operation means, and the performing code never knows or
         cares who is listening. We'll build up from a handler sitting right next to the performance toward
-        the real payoff, where a function performs an operation that some other function further out
+        the case that matters, where a function performs an operation that some other function further out
         decides how to answer.
       </P>
 
@@ -278,7 +278,7 @@ export default function Effects() {
 
       <H2>Why this matters: mock now, real later</H2>
       <P>
-        Here's the payoff for real programs. Because the performer doesn't know who answers, the{" "}
+        This is what makes effects useful in real programs. Because the performer doesn't know who answers, the{" "}
         <em>same</em> code runs against a test mock or a real external service just by choosing a different
         handler. Picture a step of an agent loop: <C>turn</C> performs <C>Model.converse</C>, a call to a
         language model. It names what it needs; it doesn't reach out itself. Run it under a{" "}
@@ -323,7 +323,7 @@ export default function Effects() {
         The <C>run</C> loop is pure Cadenza: no HTTP, no SDK, no knowledge of what a model or a tool{" "}
         <em>is</em>. Point the two handlers at a real language model and a real tool dispatcher (the program
         does this at its edge, where the effects show up in its manifest) and the identical loop drives a
-        live agent. That's the payoff: the logic you test with mocks is byte-for-byte the logic that runs in
+        live agent, so the logic you test with mocks is byte-for-byte the logic that runs in
         production, and the handler is the only thing that changed.
       </P>
       <P>

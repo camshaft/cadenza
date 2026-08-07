@@ -101,7 +101,7 @@ export default function Iteration() {
 
       <Note>
         Notice the recursive call is the <em>last</em> thing each step does: it sits in <em>tail
-        position</em>. A recursion in tail position is a loop under the hood. It reuses one stack frame
+        position</em>. A recursion in tail position compiles to a loop. It reuses one stack frame
         rather than stacking a new one per element, so an accumulator over a long list runs in constant
         stack space. Threading the accumulator is what puts the call in tail position; a version that adds{" "}
         <em>after</em> the recursive call (<C>{`(+ x (sum rest))`}</C>) does not, and you meet exactly that
