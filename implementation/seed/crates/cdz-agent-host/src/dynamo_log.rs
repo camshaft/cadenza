@@ -33,13 +33,55 @@
 
 use cdz_kernel::event::Event;
 use cdz_kernel::event_ast;
-use cdz_kernel::log_store::LogSink;
+use cdz_kernel::log_store::{LogSink, Recovered, RecoveryKind};
 use std::io;
 
 /// Dynamo attribute names — one place so `append` + `read_all` agree.
 const ATTR_SESSION: &str = "session_id";
 const ATTR_SEQ: &str = "seq";
 const ATTR_EVENT: &str = "event";
+
+/// Decode a session's stored event blobs (already read in ascending `seq` order) into a kernel
+/// [`Recovered`] — the pure, backend-agnostic core of the Dynamo recovery-read (I4b slice 1). Kept
+/// separate from the AWS Query so it is hermetically testable without a client, and so the corruption
+/// discrimination is auditable in one place.
+///
+/// **Corruption discrimination (I4b greenlit default #3: alarm-and-skip, never silent-drop).** Decode
+/// each blob in `seq` order. The FIRST blob that fails to decode ends the good prefix and marks the read
+/// [`RecoveryKind::Corrupt`] — an alarm the boot-recovery loop must not miss: it halts recovery of THAT
+/// session loud and skips it, while recovering the healthy sessions. Every blob decoding cleanly is a
+/// [`RecoveryKind::Clean`] read. There is no `TornTail` from Dynamo: a `PutItem` is atomic per item, so a
+/// stored item is never a half-written frame (unlike the on-disk log's byte stream) — a present-but-
+/// undecodable item is genuine corruption, not a torn write.
+///
+/// `good_prefix_len` is the summed encoded byte length of the good-prefix events. Unlike the on-disk log
+/// (where it is the truncation offset), Dynamo truncation would delete items by their `seq` range, so for
+/// this backend the field is informational (the count/extent of the good prefix), not a byte offset to
+/// seek to. The recovery core (`Session::recover_from`) uses only `events` + `kind`, not this field.
+fn recovered_from_event_blobs<'a>(blobs: impl IntoIterator<Item = &'a [u8]>) -> Recovered {
+    let mut events = Vec::new();
+    let mut good_prefix_len: u64 = 0;
+    let mut kind = RecoveryKind::Clean;
+    for blob in blobs {
+        match event_ast::decode(blob) {
+            Ok(event) => {
+                good_prefix_len += event_ast::encode(&event).len() as u64;
+                events.push(event);
+            }
+            // First undecodable item: genuine corruption (atomic PutItem rules out a torn frame). End the
+            // good prefix here and flag Corrupt so the boot loop alarms + skips this session, not the rest.
+            Err(_) => {
+                kind = RecoveryKind::Corrupt;
+                break;
+            }
+        }
+    }
+    Recovered {
+        events,
+        kind,
+        good_prefix_len,
+    }
+}
 
 /// A DynamoDB-backed durable event log for ONE session (the `LogSinkBuilder` builds one per installed session,
 /// so the session id — the log partition key — is fixed at construction, matching the `LogSink` trait whose
@@ -121,6 +163,65 @@ impl DynamoLogSink {
             }
         }
         Ok(events)
+    }
+
+    /// Read this session's log as a kernel [`Recovered`] for boot-recovery (I4b slice 1) — the input to
+    /// [`cdz_kernel::kernel::Session::recover_from`]. Query the partition in ascending `seq`, then decode
+    /// through [`recovered_from_event_blobs`], which yields the good prefix + a [`RecoveryKind`].
+    ///
+    /// This differs from [`read_all`](Self::read_all) in its CORRUPTION contract (I4b greenlit default #3):
+    /// where `read_all` returns `Err` on the first undecodable event (it is a general read that treats any
+    /// bad event as a hard failure), `read_recovered` instead ends the good prefix at the first bad item and
+    /// reports [`RecoveryKind::Corrupt`] — so the boot loop keeps the recovered good prefix, alarms on the
+    /// corrupt session, skips re-registering IT, and recovers the healthy sessions (never a silent drop, and
+    /// never one poisoned session aborting the whole daemon's recovery). A transport/query error is still a
+    /// hard `Err` (the read itself failed — distinct from a stored-event decode failure).
+    pub async fn read_recovered(&self) -> io::Result<Recovered> {
+        let mut blobs: Vec<Vec<u8>> = Vec::new();
+        let mut last_key = None;
+        loop {
+            let resp = self
+                .client
+                .query()
+                .table_name(&self.table)
+                .key_condition_expression("#s = :sid")
+                .expression_attribute_names("#s", ATTR_SESSION)
+                .expression_attribute_values(
+                    ":sid",
+                    aws_sdk_dynamodb::types::AttributeValue::S(self.session_id.clone()),
+                )
+                .scan_index_forward(true) // ascending seq
+                .set_exclusive_start_key(last_key)
+                .send()
+                .await
+                .map_err(|e| {
+                    io::Error::other(format!(
+                        "DynamoLogSink read_recovered query failed: {}",
+                        aws_sdk_dynamodb::error::DisplayErrorContext(&e)
+                    ))
+                })?;
+            for item in resp.items() {
+                match item.get(ATTR_EVENT) {
+                    Some(aws_sdk_dynamodb::types::AttributeValue::B(b)) => {
+                        blobs.push(b.as_ref().to_vec())
+                    }
+                    // A missing/mis-typed event attribute is a schema break, not a benign decode failure —
+                    // the item exists but has no readable body. Treat it as the read failing (hard Err),
+                    // like read_all, rather than silently marking corruption.
+                    _ => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "DynamoLogSink read_recovered: an item is missing the `event` binary attribute",
+                        ));
+                    }
+                }
+            }
+            match resp.last_evaluated_key() {
+                Some(k) if !k.is_empty() => last_key = Some(k.clone()),
+                _ => break,
+            }
+        }
+        Ok(recovered_from_event_blobs(blobs.iter().map(|b| b.as_slice())))
     }
 }
 
@@ -211,6 +312,22 @@ impl crate::factory::LogSinkBuilder for DynamoLogSinkBuilder {
 mod tests {
     use super::*;
     use crate::factory::LogSinkBuilder; // the trait, so `.build(...)` resolves on the builder
+    use cdz_kernel::event::EventBody;
+    use cdz_kernel::hash::Hash;
+
+    /// A minimal well-formed event that round-trips through `event_ast::encode/decode` — a Genesis at
+    /// `seq` (or a later Inbound), so the pure recovery-adapter test uses real canonical bytes.
+    fn genesis_event(seq: u64) -> Event {
+        Event {
+            seq,
+            cause: None,
+            body: EventBody::Genesis {
+                reducer: Hash::of(b"reducer"),
+                spawn_nonce: Hash::of(b"nonce"),
+                parent: None,
+            },
+        }
+    }
 
     fn test_cfg() -> aws_config::SdkConfig {
         // A minimal config never makes a call until an operation runs — lets us construct the sink/builder
@@ -239,6 +356,59 @@ mod tests {
             sink.is_some(),
             "dynamo builder always yields a durable sink"
         );
+    }
+
+    #[test]
+    fn recovered_all_clean_yields_clean_prefix() {
+        // Every stored blob decodes → a Clean read of the whole good prefix, in order.
+        let e0 = event_ast::encode(&genesis_event(0));
+        let e1 = event_ast::encode(&genesis_event(1));
+        let expected_len = (e0.len() + e1.len()) as u64;
+        let rec =
+            recovered_from_event_blobs([e0.as_slice(), e1.as_slice()]);
+        assert_eq!(rec.kind, RecoveryKind::Clean);
+        assert_eq!(rec.events.len(), 2);
+        assert_eq!(rec.events[0].seq, 0);
+        assert_eq!(rec.events[1].seq, 1);
+        assert_eq!(rec.good_prefix_len, expected_len);
+        assert!(!rec.is_corrupt());
+    }
+
+    #[test]
+    fn recovered_stops_at_first_corrupt_and_flags_corrupt() {
+        // A bad blob after a good prefix (I4b default #3): keep the good prefix, mark Corrupt, DON'T include
+        // the bad one — the boot loop then alarms + skips this session while recovering the healthy rest.
+        let good = event_ast::encode(&genesis_event(0));
+        let good_len = good.len() as u64;
+        let garbage: &[u8] = b"\xff\xff not a valid canonical event frame";
+        let after = event_ast::encode(&genesis_event(2)); // must NOT be reached
+        let rec = recovered_from_event_blobs([good.as_slice(), garbage, after.as_slice()]);
+        assert_eq!(rec.kind, RecoveryKind::Corrupt);
+        assert!(rec.is_corrupt());
+        assert_eq!(rec.events.len(), 1, "only the pre-corruption good prefix is kept");
+        assert_eq!(rec.events[0].seq, 0);
+        assert_eq!(rec.good_prefix_len, good_len);
+    }
+
+    #[test]
+    fn recovered_empty_is_clean_empty() {
+        // No stored events → an empty Clean Recovered. recover_from turns this into EmptyLog (caller
+        // genesis()es fresh) — the pure adapter just reports "nothing, cleanly".
+        let rec = recovered_from_event_blobs(std::iter::empty::<&[u8]>());
+        assert_eq!(rec.kind, RecoveryKind::Clean);
+        assert!(rec.events.is_empty());
+        assert_eq!(rec.good_prefix_len, 0);
+    }
+
+    #[test]
+    fn recovered_corrupt_first_item_yields_empty_corrupt() {
+        // Corruption at the very head: no good prefix, Corrupt kind — the whole session's log is unusable,
+        // the boot loop alarms and skips it (never silently drops it).
+        let garbage: &[u8] = b"not an event";
+        let rec = recovered_from_event_blobs([garbage]);
+        assert_eq!(rec.kind, RecoveryKind::Corrupt);
+        assert!(rec.events.is_empty());
+        assert_eq!(rec.good_prefix_len, 0);
     }
 
     #[test]
