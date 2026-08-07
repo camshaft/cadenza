@@ -37,6 +37,15 @@ path = "src/bin/cdz_agent_daemon.rs"
 # tree, no network types). The `dep:` bindings tie the optional dependencies to this feature only.
 live-net = ["dep:reqwest", "dep:aws-config", "dep:aws-sdk-bedrockruntime"]
 
+# `live-exec` gates the ShellExecutor — the executor that RUNS LOCAL COMMANDS (cargo/git/gh) so an agent can
+# do real work toward the self-hosting harness (GAP-2). OFF by default so the hermetic gate NEVER spawns a
+# subprocess (exactly like `live-net` gates the network executors + mirrors cdz-kernel's own `live-exec`
+# gate on its subprocess executor). No extra deps — the executor uses `std::process` from std; this feature
+# just compiles the `shell` module + its LiveExecutorSet wiring. The executor is deny-by-default (an explicit
+# program allow-list) and exec's directly (no `sh -c` — CWE-78 injection-safe); it sits behind the kernel's
+# Cedar `shell`-family capability gate (two independent authz layers).
+live-exec = []
+
 # `admin` gates the ADMIN CONTROL INTERFACE's transport — the Unix-domain-socket listener that carries
 # admin command/response frames to a running daemon (operator: "a way to communicate with the daemon + send
 # it commands as an admin"). OFF by default so the hermetic gate BINDS NO SOCKET + pulls no tokio `net`

@@ -70,6 +70,8 @@ pub mod lifecycle;
 pub mod metrics;
 pub mod model;
 pub mod retry;
+#[cfg(feature = "live-exec")]
+pub mod shell;
 pub mod status;
 
 pub use admin::{
@@ -112,6 +114,8 @@ pub use metrics::{EffectMetrics, HostMetrics};
 pub use model::BedrockModelTransport;
 pub use model::{ModelExecutor, ModelTransport};
 pub use retry::{classify, permanent, retryable, Retryability};
+#[cfg(feature = "live-exec")]
+pub use shell::ShellExecutor;
 pub use status::{host_session_status_json, session_status_json, DEFAULT_STALL_AFTER_MS};
 
 /// Shared test-only helpers (compiled only under `#[cfg(test)]`; placed LAST so no non-test item follows a
