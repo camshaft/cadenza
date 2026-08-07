@@ -15307,3 +15307,94 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 3368 Int64))
   (call   main (: 0 Int64)) (output (: 1263 Int64)))
+
+;; ── BYTES handler states + std-Option state/resume coverage (breaker by/op) ──────────────────────
+;; by = a BYTES buffer as the threaded state: growth per dispatch, a SLICE view (start,LEN) read
+;; with in-range and out-of-range rows, op-arg values WRAPPED to bytes at runtime, and nested
+;; SAME-effect handlers with independent buffers (outer self-doubles, inner appends) — completing
+;; the shadow state-kind matrix (scalar/list/string/sum/bytes). op = the STD Option: op1 threads
+;; it as the STATE (None seeds to Some, payload accumulates — the std twin of the custom-sum
+;; machine); op2 resumes an OPTION value from a single-site arm (Some and None rows both
+;; exercised; the two-site-resume x Option-value conjunction stays not-yet-reducible).
+
+(case "by1 a BYTES handler state grows two bytes per dispatch — each arm returns the pre-growth length"
+  (input  (do
+            (effect B (op put (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle B (Bytes.of (list (UInt8.wrap 65)))
+                ((put (v) s (resume (Bytes.len s)
+                                    (Bytes.concat s (Bytes.of (list (UInt8.wrap 66) (UInt8.wrap 67)))))))
+                (+ (B.put n) (+ (* 10 (B.put n)) (* 100 (B.put n))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 531 Int64)))
+
+(case "by2 a SLICE view (start,LEN) of the Bytes state read per dispatch — in-range bytes returned, out-of-range answers -1"
+  (input  (do
+            (effect B (op peek (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle B (Bytes.of (list (UInt8.wrap 10) (UInt8.wrap 20) (UInt8.wrap 30) (UInt8.wrap 40)))
+                ((peek (i) s (resume (match (Bytes.slice s 1 2)
+                                       ((Some sl) (match (Bytes.at sl i)
+                                                    ((Some b) (Int64.of b))
+                                                    ((None) -1)))
+                                       ((None) -99))
+                                    s)))
+                (+ (B.peek n) (+ (* 10 (B.peek 1)) (* 100 (B.peek 2))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 220 Int64))
+  (call   main (: 1 Int64)) (output (: 230 Int64)))
+
+(case "by3 op-arg values WRAPPED to bytes at runtime accumulate in the state — the fourth emit sees three prior"
+  (input  (do
+            (effect B (op emit (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle B (Bytes.of (list))
+                ((emit (v) s (resume (Bytes.len s)
+                                     (Bytes.concat s (Bytes.of (list (UInt8.wrap v)))))))
+                (do
+                  (B.emit n)
+                  (B.emit 77)
+                  (B.emit 200)
+                  (B.emit 0))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 3 Int64))
+  (call   main (: 255 Int64)) (output (: 3 Int64)))
+
+(case "by4 nested SAME-effect handlers with independent BYTES states — the outer buffer self-doubles, the inner appends"
+  (input  (do
+            (effect B (op put (-> Int64)))
+            (def (main (: n Int64))
+              (handle B (Bytes.of (list (UInt8.wrap 1)))
+                ((put () s (resume (Bytes.len s) (Bytes.concat s s))))
+                (+ (B.put)
+                   (+ (* 10 (handle B (Bytes.of (list (UInt8.wrap 9) (UInt8.wrap 8) (UInt8.wrap 7)))
+                              ((put () t (resume (Bytes.len t) (Bytes.concat t (Bytes.of (list (UInt8.wrap 0)))))))
+                              (+ (B.put) (B.put))))
+                      (* 1000 (B.put))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 2071 Int64)))
+
+(case "op1 the STD Option as handler state — None seeds to Some on first feed, the payload accumulates thereafter"
+  (input  (do
+            (effect O (op feed (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle O (None)
+                ((feed (v) s (match s
+                               ((None) (resume 0 (Some v)))
+                               ((Some k) (resume k (Some (+ k v)))))))
+                (+ (O.feed n) (+ (* 10 (O.feed 3)) (* 100 (O.feed 1))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 850 Int64))
+  (call   main (: 0 Int64)) (output (: 300 Int64)))
+
+(case "op2 an Option RESUME value from a single-site arm — Some carries the excess, None answers the shortfall row"
+  (input  (do
+            (effect O (op get (-> Int64 (Option Int64))))
+            (def (main (: n Int64))
+              (handle O n
+                ((get (k) s (resume (if (> k s) (Some (- k s)) (None)) (+ s 1))))
+                (+ (match (O.get 10) ((Some d) d) ((None) -100))
+                   (* 10 (match (O.get 0) ((Some d) d) ((None) -100))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: -995 Int64))
+  (call   main (: 20 Int64)) (output (: -1100 Int64)))
