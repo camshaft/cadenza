@@ -14921,3 +14921,156 @@
   (call   main (: 4 Int64)) (output (: 7 Int64))
   (call   main (: 1 Int64)) (output (: -3 Int64))
   (call   main (: 0 Int64)) (output (: -2 Int64)))
+
+;; ── draws in literal-ELEMENT and mixed-signature positions (breaker da/sa/rs/mx) ─────────────────
+;; da = performs as collection-LITERAL elements (list positions, map keys+values, set elements with
+;; input-selected collisions). sa = STRING boundary crossings (string op args incl. the empty
+;; string, a draw-branch-derived string arg, string RESUME values concatenated). rs = RECORD-state
+;; dynamics (per-op field ownership, Record.with functional update in the arm, NESTED records).
+;; mx = mixed-arity/mixed-TYPE op signatures (Int64+String+Bool in one op, both-args-draw-derived,
+;; a tuple-arg op chained through its tuple result).
+
+(case "da1 THREE draws inside one list literal passed to a helper — left-to-right element order, the post-call draw sees all three"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (sum3 (: xs (List Int64)))
+              (match (List.at xs 0) ((Some a) (match (List.at xs 1) ((Some b) (match (List.at xs 2) ((Some c) (+ a (+ b c))) ((None) 0))) ((None) 0))) ((None) 0)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (* s 2))))
+                (+ (sum3 (list (St.next) (St.next) (St.next))) (St.next))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 75 Int64))
+  (call   main (: 1 Int64)) (output (: 15 Int64)))
+
+(case "da2 draws as MAP-literal keys and values — two entries built from three sequential draws"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (+ s 1))))
+                (+ (Map.len (map ((St.next) (St.next)) ((St.next) 100)))
+                   (* 10 (St.next)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 82 Int64))
+  (call   main (: 0 Int64)) (output (: 32 Int64)))
+
+(case "da3 draws as SET-literal elements — n=7 collides the first draw with the fixed element, n=6 collides the second"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (+ s 1))))
+                (+ (Set.len (Set.of (list 7 (St.next) (St.next))))
+                   (* 100 (St.next)))))
+            (export main)))
+  (call   main (: 7 Int64)) (output (: 902 Int64))
+  (call   main (: 6 Int64)) (output (: 802 Int64))
+  (call   main (: 0 Int64)) (output (: 203 Int64)))
+
+(case "sa1 STRING op arguments measured into a scalar state — the empty string is a real zero-length argument"
+  (input  (do
+            (effect Log (op tag (-> String Int64)))
+            (def (main (: n Int64))
+              (handle Log n
+                ((tag (w) s (resume (+ (String.byte-len w) s) (+ s (String.byte-len w)))))
+                (+ (Log.tag "ab") (+ (* 10 (Log.tag "xyz")) (* 100 (Log.tag ""))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 1107 Int64))
+  (call   main (: 0 Int64)) (output (: 552 Int64)))
+
+(case "sa2 a string BUILT from a prior draw's branch becomes the next op's argument — the tag arm reads the post-pick state"
+  (input  (do
+            (effect Log (op pick (-> Int64)) (op tag (-> String Int64)))
+            (def (main (: n Int64))
+              (handle Log n
+                ((pick () s (resume s (+ s 1)))
+                 (tag (w) s (resume (* (String.byte-len w) s) s)))
+                (Log.tag (String.concat "id-" (if (> (Log.pick) 3) "long" "s")))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 42 Int64))
+  (call   main (: 1 Int64)) (output (: 8 Int64)))
+
+(case "sa3 STRING resume values — the arm builds a rope per dispatch branching op-arg vs live state, body concatenates two"
+  (input  (do
+            (effect Log (op name (-> Int64 String)))
+            (def (main (: n Int64))
+              (handle Log n
+                ((name (k) s (resume (String.concat "u" (if (> k s) "-big" "-sm")) (+ s 1))))
+                (+ (String.byte-len (Log.name 3))
+                   (* 10 (String.byte-len (String.concat (Log.name 99) (Log.name 0)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 94 Int64))
+  (call   main (: 2 Int64)) (output (: 95 Int64)))
+
+(case "rs1 a RECORD state where each op owns a FIELD — bump advances a, scale multiplies b, interleaved"
+  (input  (do
+            (effect R (op bump (-> Int64)) (op scale (-> Int64)))
+            (def (main (: n Int64))
+              (handle R (record (a n) (b 3))
+                ((bump () s (resume (. s a) (record (a (+ (. s a) 1)) (b (. s b)))))
+                 (scale () s (resume (. s b) (record (a (. s a)) (b (* (. s b) 10))))))
+                (+ (R.bump) (+ (R.scale) (+ (R.bump) (R.scale))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 44 Int64))
+  (call   main (: 0 Int64)) (output (: 34 Int64)))
+
+(case "rs2 the arm updates the record state via Record.with — field b is held by the functional update across dispatches"
+  (input  (do
+            (effect R (op bump (-> Int64)))
+            (def (main (: n Int64))
+              (handle R (record (a n) (b 100))
+                ((bump () s (resume (+ (. s a) (. s b)) (Record.with s #"a" (+ (. s a) 1)))))
+                (+ (R.bump) (+ (R.bump) (R.bump)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 318 Int64))
+  (call   main (: 0 Int64)) (output (: 303 Int64)))
+
+(case "rs3 a NESTED record state — the arm functionally updates the inner record's x by y and bumps the outer counter"
+  (input  (do
+            (effect R (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle R (record (inner (record (x n) (y 2))) (cnt 0))
+                ((tick () s (resume (+ (. (. s inner) x) (* 100 (. s cnt)))
+                                    (record (inner (Record.with (. s inner) #"x" (+ (. (. s inner) x) (. (. s inner) y))))
+                                            (cnt (+ (. s cnt) 1))))))
+                (+ (R.tick) (+ (R.tick) (R.tick)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 321 Int64))
+  (call   main (: 0 Int64)) (output (: 306 Int64)))
+
+(case "mx1 a THREE-arg op mixing Int64/String/Bool — one arm consumes all three kinds beside the live state"
+  (input  (do
+            (effect E (op mix (-> Int64 String Bool Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((mix (k w f) s (resume (+ (* (if f 10 1) k) (+ (String.byte-len w) s)) (+ s 1))))
+                (+ (E.mix 3 "ab" true) (E.mix 4 "xyz" false))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 50 Int64))
+  (call   main (: 0 Int64)) (output (: 40 Int64)))
+
+(case "mx2 mixed-arg op with BOTH args draw-derived — the int arg is a draw, the string arg branches on a second draw"
+  (input  (do
+            (effect E (op pick (-> Int64)) (op mix (-> Int64 String Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((pick () s (resume s (+ s 2)))
+                 (mix (k w) s (resume (+ (* k (String.byte-len w)) s) s)))
+                (E.mix (E.pick) (if (> (E.pick) 6) "wide" "nn"))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 29 Int64))
+  (call   main (: 1 Int64)) (output (: 7 Int64)))
+
+(case "mx3 a TUPLE-arg op chained through a tuple RESULT — the second dispatch consumes the first's destructured output"
+  (input  (do
+            (effect E (op quo (-> (Tuple Int64 Int64) (Tuple Int64 Int64))))
+            (def (main (: n Int64))
+              (handle E n
+                ((quo (p) s (match p ((tuple q r) (resume (tuple (+ q s) (* r 2)) (+ s 10))))))
+                (match (E.quo (tuple 3 4))
+                  ((tuple x y) (match (E.quo (tuple x y))
+                                 ((tuple u v) (+ (* 100 u) v)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 2316 Int64))
+  (call   main (: 0 Int64)) (output (: 1316 Int64)))
