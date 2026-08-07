@@ -16,7 +16,8 @@ export default function PlatformSafety() {
         An agent that can run shell commands, call the network, and message other agents is an agent that
         can do real damage. The platform's answer to "what is this thing allowed to do?" reuses a single
         idea you've already seen twice: an <em>effect</em>. Every risky thing an agent does is an effect,
-        every effect passes one gate, and the language makes what a program can do legible before it runs.
+        every effect that acts on the world passes one gate, and the language makes what a program can do
+        legible before it runs.
       </Lede>
 
       <H2>Every reach outward is an effect, through one gate</H2>

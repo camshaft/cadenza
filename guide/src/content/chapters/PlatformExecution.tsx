@@ -87,6 +87,37 @@ export default function PlatformExecution() {
         protect.
       </P>
 
+      <H2>An agent is just a reducer</H2>
+      <P>
+        Everything so far has been about running <em>a reducer</em> over an event log. Here's the payoff, and
+        it's the point of the whole platform: <strong>an AI agent is one of those reducers</strong>, with no
+        new machinery at all. The turn-taking loop you'd expect to be the agent's special engine is, once
+        again, just a fold over effects.
+      </P>
+      <P>
+        Trace one turn. A message arrives as an event; the reducer folds it and, to think, <em>emits a model
+        call as an effect</em>. The kernel authorizes and performs it, and folds the model's reply back in as
+        the next event. If that reply asks to use tools, each tool call is itself an effect the reducer
+        emits, the kernel runs them (through the very same authorization gate as any other effect), and their
+        results fold back in. The reducer emits another model call with those results, and the cycle repeats
+        until the model ends the turn. Inbound, model, tools, model, done: every step is an effect requested
+        and an event folded back, so the "agent loop" is not a loop the runtime hardcodes, it's what the fold
+        naturally does when the effects happen to be a model and its tools.
+      </P>
+      <Note>
+        event in → reducer emits a model-call effect → fold reply → reply wants tools? emit each as an effect → fold results → emit model-call again → … → end-of-turn
+        <br />
+        no bespoke agent runtime: the loop IS the fold; the model and tools are ordinary authorized effects on the log
+      </Note>
+      <P>
+        Because the turn is nothing but recorded events, everything the platform promised comes along for
+        free here too. The agent replays deterministically (the model's replies and tool results are facts on
+        the log, not re-run), you can fork a conversation from any point, and a crash mid-turn resumes from
+        the last recorded event without re-calling the model or re-running a tool. An agent's entire
+        existence, its whole reasoning history, is an ordinary value you can inspect, branch, and hand to the
+        next generation of itself.
+      </P>
+
       <H2>Where this leaves you</H2>
       <P>
         Four ideas carry the platform: a kernel that knows nothing and runs a{" "}
@@ -101,10 +132,12 @@ export default function PlatformExecution() {
           one gate
         </Link>{" "}
         where capability and safety live; and an execution model that runs many agents concurrently while
-        keeping every one of them perfectly replayable. The kernel is early, and this section will grow with
-        it, eventually into something you can run and inspect in the browser the way you can the language.
-        For now, you've seen the shape of the thing: the same idea that made a value out of a program's
-        history, scaled into a runtime for agents built in Cadenza.
+        keeping every one of them perfectly replayable. And the payoff of all four: an agent itself is just a
+        reducer folding model calls and tool calls as effects, so nothing about running an AI agent needs
+        machinery beyond the fold. The kernel is early, and this section will grow with it, eventually into
+        something you can run and inspect in the browser the way you can the language. For now, you've seen
+        the shape of the thing: the same idea that made a value out of a program's history, scaled into a
+        runtime for agents built in Cadenza.
       </P>
     </article>
   );
