@@ -15398,3 +15398,9 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: -995 Int64))
   (call   main (: 20 Int64)) (output (: -1100 Int64)))
+
+(case "dw1 a list literal mixing an Int32-annotated element with a wider-inferred literal unifies to (List Int32) — every element renders at the unified element width, uniform across backends (fuzzer cdz-smith differential: rust once emitted a heterogeneous vec![i32,i64])"
+  (input  (do
+            (def (main) (list (: 127 Int32) 32767))
+            (export main)))
+  (call   main) (output (: (list 127 32767) (List Int32))))
