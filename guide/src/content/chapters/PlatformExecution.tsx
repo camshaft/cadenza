@@ -21,8 +21,8 @@ import { Link } from "react-router-dom";
 /// STRUCTURAL records (kind-symbol + val), NOT a custom sum type, because cross-module sum-type constructors
 /// are unsupported today (importing a type doesn't bring its ctors into scope). Field order name/source/
 /// surface/entry is REQUIRED by the check-examples extractor regex. Verified compile+link via
-/// compile_with_preloaded; the gate asserts run-to-value (Runnable's Props has no `expected` for a
-/// multi-file runnable yet, flagged to v-guide-infra to add it; upgrade to assert the exact trace once it lands).
+/// compile_with_preloaded; the `expected` attr pins the exact trace so the gate asserts the VALUE
+/// (not just run-to-value), now that Runnable Props carries `expected` (v-guide-infra #9305dc84b).
 export default function PlatformExecution() {
   return (
     <article>
@@ -135,6 +135,7 @@ export default function PlatformExecution() {
       </P>
       <Runnable
         expect="value"
+        expected={`(: "asked-model; run-tool:shell; folded-result:3; done:there are 3" String)`}
         files={[
           {
             name: "events",
