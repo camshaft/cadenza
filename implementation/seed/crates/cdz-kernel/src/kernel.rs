@@ -5284,4 +5284,220 @@ mod store_effect_tests {
             "no AuthzDenied when target + stages both pass"
         );
     }
+
+    // ---- cadenza-docs I3: reducer-owned doc-index publish→query-back FOLD-PROOF -------------------------
+    //
+    // Proves the doc-publish REDUCER fold composes over LANDED mechanism — blob/* (executor-routed, here a
+    // STUB blob executor stands in for v-ah-host's real BlobExecutor) + store/* (KERNEL-applied to the
+    // attached NameStore) — with ZERO new kernel mechanism. The M3 precedent: prove the fold in-kernel with
+    // a scripted executor before the host E2E (which needs the real BlobExecutor). corpus-bugfix I3 ruling:
+    // docs register at `memory/doc/<pkg>` (memory/ = the promotion authority = the writable scope for durable
+    // cross-session artifacts; `doc/` alone is Unscoped→UnscopedNameUnwritable). Effect-wire settled with
+    // v-ah-host: blob/put → Ok(Inline(hash.to_hex())); blob/get(hex target) → Ok(Some(Inline(bytes)))/Ok(None).
+
+    /// A STUB content-addressed store executor: blob/put stores bytes keyed by content hash + returns the hex
+    /// hash (v-ah-host's BlobExecutor convention); blob/get(hex target) returns the stored bytes (or Ok(None)
+    /// if absent). Stands in for the real host BlobExecutor so the reducer FOLD is provable in-kernel.
+    struct StubBlobExecutor {
+        blobs: std::collections::HashMap<String, Vec<u8>>,
+    }
+    #[async_trait::async_trait(?Send)]
+    impl Executor for StubBlobExecutor {
+        async fn perform(&mut self, req: &EffectRequest, _key: Hash) -> EffectOutcome {
+            let family = req.content_type.family.as_ref();
+            match family {
+                effect_ct::BLOB_PUT => {
+                    let bytes = match &req.payload {
+                        Some(Payload::Inline(b)) => b.to_vec(),
+                        _ => {
+                            return EffectOutcome::err(
+                                "blob/put: expected inline bytes".to_string(),
+                            )
+                        }
+                    };
+                    let hex = Hash::of(&bytes).to_hex();
+                    self.blobs.insert(hex.clone(), bytes);
+                    EffectOutcome::Ok(Some(Payload::Inline(hex.into_bytes().into())))
+                }
+                effect_ct::BLOB_GET => {
+                    // Target = the hex hash (the handle blob/put returned + the reducer store/resolve'd).
+                    match self.blobs.get(req.target.as_ref()) {
+                        Some(bytes) => {
+                            EffectOutcome::Ok(Some(Payload::Inline(bytes.clone().into())))
+                        }
+                        None => EffectOutcome::Ok(None), // absent = a normal answer, not an Err
+                    }
+                }
+                other => {
+                    EffectOutcome::err(format!("StubBlobExecutor: unexpected family {other:?}"))
+                }
+            }
+        }
+    }
+
+    // Permits store/* AND blob/* (the two families the doc-publish fold uses). A real deployment scopes the
+    // store grant to a memory/ prefix + the blob grant to a label; here a blanket permit isolates the FOLD
+    // ROUTING+APPLY from the (coordinated) grant-shape work, same as AllowStore above.
+    struct AllowStoreAndBlob;
+    #[async_trait::async_trait(?Send)]
+    impl Authorize for AllowStoreAndBlob {
+        async fn authorize(&self, req: &EffectRequest) -> Result<(), String> {
+            let fam = &req.content_type.family;
+            if effect_ct::is_store_family(fam) || effect_ct::is_blob_family(fam) {
+                Ok(())
+            } else {
+                Err("only store/* + blob/* permitted".into())
+            }
+        }
+    }
+
+    /// The doc-publish reducer (I3 reducer-owned doc-index). A FOLD over blob/* + store/* — NO new kernel
+    /// mechanism. Two inbound messages drive it (content_type family distinguishes publish vs query):
+    /// - publish (family "doc/publish"): payload = the doc-AST bytes → emit blob/put(doc-AST).
+    /// - blob/put result (hex hash): emit store/set memory/doc/<pkg> = that hash (register the doc in the index).
+    /// - query (family "doc/query"): emit store/resolve memory/doc/<pkg>.
+    /// - store/resolve result (the name-set hash): emit blob/get(hex) to fetch the doc-AST back.
+    /// - blob/get result (bytes): record the recovered doc-AST in KV under "recovered".
+    struct DocPublishReducer {
+        name: &'static str, // e.g. "memory/doc/cadenza-syntax"
+    }
+    #[async_trait::async_trait(?Send)]
+    impl Reducer for DocPublishReducer {
+        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+            match &event.body {
+                EventBody::Inbound {
+                    content_type,
+                    payload,
+                } => {
+                    match content_type.family.as_ref() {
+                        "doc/publish" => {
+                            // Publish: put the doc-AST bytes into the CAS.
+                            let doc = match payload {
+                                Payload::Inline(b) => b.clone(),
+                                Payload::Blob(_) => return FoldOutput::none(),
+                            };
+                            FoldOutput::with(vec![EffectRequest::new_with_family(
+                                effect_ct::BLOB_PUT,
+                                "doc", // label (the authz unit for the blob write)
+                                Some(Payload::Inline(doc)),
+                                Timeliness::Interactive,
+                            )])
+                        }
+                        "doc/query" => {
+                            // Query: resolve the doc name to its content hash.
+                            FoldOutput::with(vec![EffectRequest::new_with_family(
+                                effect_ct::STORE_RESOLVE,
+                                self.name,
+                                None,
+                                Timeliness::Interactive,
+                            )])
+                        }
+                        _ => FoldOutput::none(),
+                    }
+                }
+                EventBody::EffectResult {
+                    result: EffectOutcome::Ok(Some(Payload::Inline(bytes))),
+                    ..
+                } => {
+                    // Distinguish the results by which phase we're in (recorded in KV):
+                    // 1) blob/put result = the hex hash → store/set the doc name at it.
+                    // 2) store/resolve result = a name-set payload (name, hash) → blob/get the hash.
+                    // 3) blob/get result = the doc-AST bytes → record recovered.
+                    if kv.get(b"published").is_none() {
+                        // Phase 1: blob/put returned the hex hash. Register it in the doc index.
+                        kv.put(b"published".to_vec(), bytes.to_vec()); // remember the hex hash
+                        let hex = String::from_utf8_lossy(bytes).into_owned();
+                        let hash = match Hash::from_hex(&hex) {
+                            Some(h) => h,
+                            None => return FoldOutput::none(),
+                        };
+                        let payload = crate::event_ast::encode_name_set(self.name, &hash);
+                        FoldOutput::with(vec![EffectRequest::new_with_family(
+                            effect_ct::STORE_SET,
+                            self.name,
+                            Some(Payload::Inline(payload.into())),
+                            Timeliness::Interactive,
+                        )])
+                    } else if let Ok((_n, h)) = crate::event_ast::decode_name_set(bytes) {
+                        // Phase 2: store/resolve returned the name-set (name, hash) → fetch the doc bytes.
+                        FoldOutput::with(vec![EffectRequest::new_with_family(
+                            effect_ct::BLOB_GET,
+                            h.to_hex(), // the hex hash is the blob/get target
+                            None,
+                            Timeliness::Interactive,
+                        )])
+                    } else {
+                        // Phase 3: blob/get returned the doc-AST bytes → recovered.
+                        kv.put(b"recovered".to_vec(), bytes.to_vec());
+                        FoldOutput::none()
+                    }
+                }
+                _ => FoldOutput::none(),
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn doc_publish_index_round_trips_a_doc_ast_through_blob_put_store_set_resolve_blob_get() {
+        // I3 fold-proof: a reducer PUBLISHES a doc-AST (blob/put → hex → store/set memory/doc/<pkg>) then a
+        // later QUERY (store/resolve → blob/get) recovers the SAME doc-AST bytes — composing the landed
+        // blob/* (stub executor) + store/* (kernel-applied) with zero new kernel mechanism.
+        use crate::event::ContentType;
+        let doc_ast = b"(doc-module (doc-item (name parse) (summary \"parse source\")))".to_vec();
+        let name = "memory/doc/cadenza-syntax";
+
+        let mut exec = StubBlobExecutor {
+            blobs: std::collections::HashMap::new(),
+        };
+        let reducer = DocPublishReducer { name };
+        let mut s = Session::genesis(Hash::of(b"doc-publish-v1"), Hash::of(b"nonce"));
+        s.attach_name_store(NameStore::new());
+
+        // PUBLISH: deliver a doc/publish inbound carrying the doc-AST bytes.
+        let publish = EventBody::Inbound {
+            content_type: ContentType {
+                family: "doc/publish".into(),
+                version: 1,
+            },
+            payload: Payload::Inline(doc_ast.clone().into()),
+        };
+        s.deliver(publish, None, &reducer, &AllowStoreAndBlob, &mut exec)
+            .await
+            .expect("publish delivers");
+
+        // The doc index now points memory/doc/<pkg> at the content hash (registered via store/set).
+        let published_hex = s
+            .kv()
+            .get(b"published")
+            .expect("published a hex hash")
+            .to_vec();
+        assert_eq!(
+            String::from_utf8_lossy(&published_hex),
+            Hash::of(&doc_ast).to_hex(),
+            "the doc-index registered the content hash of the published doc-AST"
+        );
+
+        // QUERY: deliver a doc/query inbound → resolve the name → blob/get → recover the doc-AST.
+        let query = EventBody::Inbound {
+            content_type: ContentType {
+                family: "doc/query".into(),
+                version: 1,
+            },
+            payload: Payload::Inline(b"".to_vec().into()),
+        };
+        s.deliver(query, None, &reducer, &AllowStoreAndBlob, &mut exec)
+            .await
+            .expect("query delivers");
+
+        // The recovered doc-AST bytes are byte-identical to what was published (round-trip through the index).
+        let recovered = s
+            .kv()
+            .get(b"recovered")
+            .expect("recovered the doc-AST")
+            .to_vec();
+        assert_eq!(
+            recovered, doc_ast,
+            "querying the doc index recovered the exact published doc-AST (blob/put→store/set→resolve→blob/get)"
+        );
+    }
 }
