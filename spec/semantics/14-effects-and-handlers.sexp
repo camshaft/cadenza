@@ -13939,3 +13939,59 @@
                   (+ (* 10 (. r a)) (. r b)))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 56 Int64)))
+
+;; ── literal-arm dispatch on effectful draws (breaker za) ─────────────────────────────────────────
+;; A match whose LITERAL arms are selected by a state draw, where the SELECTED arm performs again.
+;; Three escalations: dispatch on a raw draw (za1), on a scrutinee COMPUTED from two draws — the
+;; derived-key dispatch idiom (za2), and NESTED two-level literal dispatch where each level matches
+;; a let-bound draw and only the innermost arm performs a third time (za3). Pins that arm selection
+;; sees the PRE-arm state while the arm body sees the POST-selection state — the draw that chose the
+;; arm and the draw the arm reads are distinct dispatches of the same op against an advancing state.
+
+(case "za1 literal-arm dispatch on a draw — the MATCHED arm performs again, both calls exercised"
+  (input  (do
+            (effect St (op next (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next (u) s (resume s (+ s 1))))
+                (let ((k (St.next)))
+                  (match k
+                    (5 (+ 100 (St.next)))
+                    (6 200)
+                    (_o 300)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 106 Int64))
+  (call   main (: 6 Int64)) (output (: 200 Int64))
+  (call   main (: 9 Int64)) (output (: 300 Int64)))
+
+(case "za2 a COMPUTED scrutinee (difference of two draws) selects the performing arm at one input only"
+  (input  (do
+            (effect St (op next (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next (u) s (resume s (* s 2))))
+                (let ((a (St.next)))
+                  (let ((b (St.next)))
+                    (match (- b a)
+                      (5 (+ 1000 (St.next)))
+                      (_o (- 0 (- b a))))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 1020 Int64))
+  (call   main (: 3 Int64)) (output (: -3 Int64)))
+
+(case "za3 NESTED literal-arm dispatch — each level matches a let-bound draw, the innermost arm reads a third"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (+ s 3))))
+                (let ((d1 (St.next)))
+                  (match d1
+                    (5 (let ((d2 (St.next)))
+                         (match d2
+                           (8 (+ 100 (St.next)))
+                           (_i (- 0 _i)))))
+                    (_o (* 10 _o))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 111 Int64))
+  (call   main (: 3 Int64)) (output (: 30 Int64)))

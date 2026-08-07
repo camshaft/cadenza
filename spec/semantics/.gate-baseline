@@ -6126,3 +6126,6 @@ pass	a USER-SUM-literal scrutinee with a performing payload — the ctor pattern
 pass	a STD-SUM (Option) literal scrutinee — single eval, payload binds by position
 pass	a LIST-literal scrutinee with performing elements — draws fire once, bind by position
 pass	a performing record nested in a TUPLE scrutinee — bound by position, record-matched after
+pass	za1 literal-arm dispatch on a draw — the MATCHED arm performs again, both calls exercised
+pass	za2 a COMPUTED scrutinee (difference of two draws) selects the performing arm at one input only
+pass	za3 NESTED literal-arm dispatch — each level matches a let-bound draw, the innermost arm reads a third
