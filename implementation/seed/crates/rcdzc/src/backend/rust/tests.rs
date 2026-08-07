@@ -801,6 +801,39 @@ fn rustc_roundtrip_list_builds_and_runs() {
 }
 
 #[test]
+fn a_mixed_width_literal_list_grounds_every_element_to_the_unified_element_width() {
+    // REGRESSION (corpus-bugfix, fuzzer cdz-smith differential): a `(list (: 127 Int32) 32767)` whose
+    // elements are LITERALS of DIFFERING inferred widths — the annotated `(: 127 Int32)` is Int32, the
+    // bare `32767` defaults its OWN `type_of` to Int64 — USED to emit a HETEROGENEOUS
+    // `vec![(127u32 as i32), (32767u64 as i64)]`, which rustc rejects (E0308: a `Vec` is homogeneous).
+    // The front-end + wasm UNIFY the list's element type (both coerce to Int32, the list is `List Int32`);
+    // the rust `vec!` must too. `Core::ListNew` now grounds each element to the list's SOLVED element
+    // width via `emit_grounded` (the List twin of the Map entry + Set element sibling-width render). A
+    // correctness-class differential: rust REJECTED a program wasm accepts.
+    let m = compile_rust("(module m (def (main) (list (: 127 Int32) 32767)) (export main))");
+    assert!(
+        m.contains("vec![(127u32 as i32), (32767u32 as i32)]"),
+        "both literal elements ground to the unified Int32 element width (homogeneous Vec<i32>):\n{m}"
+    );
+    // e2e: compiles + runs to the canonical list form (both elements Int32), matching wasm.
+    let driver = "fn main() { let v = prog::main(); let mut s = String::from(\"(list\"); \
+                  for e in v.iter() { s.push(' '); s.push_str(&format!(\"{}\", e)); } s.push(')'); \
+                  println!(\"{}\", s); }";
+    if let Some(out) = rustc_run_driver(&m, driver) {
+        assert_eq!(
+            out, "(list 127 32767)",
+            "the mixed-width list builds + runs, both elements at Int32:\n{m}"
+        );
+    }
+    // A plain same-width list is byte-identical to before (grounding a same-width literal is a no-op).
+    let plain = compile_rust("(module m (def (main) (list 1 2 3)) (export main))");
+    assert!(
+        plain.contains("vec![(1u64 as i64), (2u64 as i64), (3u64 as i64)]"),
+        "a plain Int64 list still grounds each element to i64 (no regression):\n{plain}"
+    );
+}
+
+#[test]
 fn rustc_roundtrip_all_nullary_sum_orders_by_discriminant() {
     // breaker #43 cross-backend guard: the shared-lowering fix routes an ALL-NULLARY sum's `<`/`compare`
     // to a scalar `Core::Compare` (i32/enum tag) instead of the `Core::ValueCmp` heap walk. The finding is
