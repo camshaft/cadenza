@@ -1,0 +1,64 @@
+(chapter
+  (slug "platform-overview")
+  (title "Cadenza the Platform")
+  (pillar "platform")
+  (section "The kernel model")
+  (blurb "The agent kernel: a generic runtime where an agent's state is a pure fold over an event log, and the language is what flows through it.")
+  (lede
+    "The rest of this guide is about Cadenza " (em "the language") ". This is about Cadenza "
+    (em "the platform") ": the runtime that runs long-lived agents built in it. Its central idea is a "
+    "simple one, since an agent's whole history is an ordinary " (em "event log") " and running the agent "
+    "is a " (em "fold") " over that log, so replaying it, forking it, and recovering from a crash are all "
+    "just re-folding a value. This section is a concept tour, not a reference: the kernel is early, and "
+    "these are the shapes it's built from.")
+  (h2 "A kernel that knows nothing")
+  (p "The platform's core is a small, generic runtime with one job: accept " (em "events") " into an "
+    "append-only log, run the current program (the " (em "reducer") ") to decide what to do next, "
+    (em "authorize") " the effects it asks for, carry them out, and fold the results back in as new "
+    "events. Deliberately, the kernel knows nothing about Cadenza, about agents, about models or tools. "
+    "All of that lives outside it, as programs and events. Adding a new capability, say \"query a data "
+    "lake\", takes zero kernel changes: it's a new event and a new handler, never a new kernel.")
+  (p "That \"knows nothing\" rule is the whole design discipline. If a feature would teach the kernel "
+    "something specific, the feature is built wrong. Supervision, cross-agent reads, memory, scheduling, "
+    "all of it has so far been added without the kernel learning a thing, because each is just more "
+    "events flowing through the same loop.")
+  (h2 "The whole loop, in one breath")
+  (p "Everything the kernel does is one small cycle, repeated. An event lands in a session's log. The "
+    "kernel runs that session's reducer over it, which returns a list of " (em "effects") " it would like "
+    "to perform. Each effect is checked against the session's capabilities; a permitted one is carried "
+    "out and its result appended as a new event, a denied one is appended as a denial. That new event is "
+    "itself an append, so the loop turns again.")
+  (note "on an event arriving in session S:" (br)
+    "  run S's reducer over the event → a list of effects" (br)
+    "  for each effect: if authorized, perform it and append the result; else append a denial" (br)
+    "  each appended result is a new event → the loop runs again")
+  (p "That is the kernel, in full. Authorize an effect, route it to whatever performs it, fold the result "
+    "back as an event. Because the loop never grows, the interesting behavior lives entirely in the "
+    "reducers and the events, which is exactly where Cadenza comes in.")
+  (h2 "Everything is an event; the reducer is a pure fold")
+  (p "Two principles carry the weight. First, " (em "everything is an event") ": a model's answer, a tool "
+    "call, a decision, a spawn, even the agent swapping out its own reducer, all one ordered, "
+    "content-addressed stream. Second, " (em "the reducer is a pure fold over that stream") ". Every source "
+    "of nondeterminism, a model's output, an HTTP response, the clock, randomness, enters only as a "
+    "recorded event, never as something the reducer reaches out and grabs mid-computation.")
+  (p "Because the state is nothing but a fold over recorded history, replaying an agent, migrating it to "
+    "another machine, auditing what it did, or letting it safely rewrite its own logic are all just "
+    "re-folding a value, since they are the same three moves of replay, fork, and recover, now at the "
+    "scale of a running agent. The next chapter, " (link (slug "platform-state") "Events & state")
+    ", shows that fold concretely.")
+  (h2 "Where Cadenza fits")
+  (p "The kernel is agnostic to Cadenza on purpose, so the language can evolve without redeploying "
+    "infrastructure. Cadenza is the lingua franca of what flows " (em "through") " the kernel: reducers are "
+    "Cadenza programs compiled to WebAssembly. The compiler itself is just another program in the store, "
+    "addressed by content hash, with many versions coexisting and each agent pinning the exact one it was "
+    "built with, but that's a " (em "build-time") " relationship: the compiler produces a reducer's "
+    "WebAssembly, and the kernel then runs that already-compiled reducer without ever invoking or linking "
+    "the compiler. At run time the kernel resolves a reducer's declared component dependencies by hash from "
+    "the content-addressed store, so nothing is hard-wired to a fixed runtime.")
+  (p "One language feature fits this so well it's worth calling out: because Cadenza has "
+    (link (slug "effects") "algebraic effects") ", a program's type already declares the effects it performs. "
+    "That effect row " (em "is") " the set of capabilities the program needs, readable from its type before "
+    "it ever runs. So what a program " (em "needs") ", what an agent " (em "may do") ", and what the "
+    "authorizer " (em "checks") " turn out to be the same object, an effect row, seen from three sides. "
+    "The chapters ahead follow that thread through the platform's design."))
+
