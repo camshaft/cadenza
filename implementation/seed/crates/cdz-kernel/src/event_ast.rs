@@ -883,6 +883,90 @@ pub fn decode_model_request(bytes: &[u8]) -> Result<ModelRequest, EventAstError>
     })
 }
 
+/// A tool-calling model RESPONSE (§GAP-1 M2) — what the host transport produces from the LLM (mapping
+/// Bedrock Converse output back) and the reducer folds to drive the next loop step. The reducer matches on
+/// `stop_reason` (a RAW STRING, never a kernel enum — Bedrock adds stopReason values over time; the kernel
+/// carries the string verbatim and the reducer decides, so a new AWS value folds as not-`tool_use`=done) +
+/// walks `content` (assistant text and/or tool-calls the reducer must dispatch as effects).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ModelResponse {
+    /// The transport's raw stop reason (e.g. `end_turn`, `tool_use`, `max_tokens`, `stop_sequence`, …). A
+    /// free string — the kernel does NOT validate the set (host/reducer own the vocab). `tool_use` ⇒ the
+    /// reducer dispatches the `content`'s tool-calls; anything else ⇒ the turn is done.
+    pub stop_reason: String,
+    /// The assistant's output blocks, in order: [`ContentBlock::Text`] prose and/or
+    /// [`ContentBlock::ToolCall`]s (id + name + opaque input bytes). A response never carries a
+    /// `ToolResult` (that's the reducer's next REQUEST turn), but the shared [`ContentBlock`] grammar keeps
+    /// ONE block codec across request+response.
+    pub content: Vec<ContentBlock>,
+}
+
+/// Encode a §GAP-1 M2 [`ModelResponse`] as canonical AST — the `model` effect's structured RESULT payload
+/// (the host builds it from the LLM; the reducer folds it). Shape:
+///
+///   `(model-response (stop-reason <str>) (content <block> …))`
+///
+/// where `<block>` is the SHARED `content_block_form` grammar (`(text …)` / `(tool-call (id)(name)(input
+/// <bytes>))`; a response won't emit `(tool-result …)` but the codec accepts the shared set). `stop-reason`
+/// is a RAW STRING — never narrowed to an enum, so a future transport stop-reason decodes fine and the
+/// reducer folds it. Same shared-codec + total-decode discipline as the other event_ast codecs.
+pub fn encode_model_response(resp: &ModelResponse) -> Vec<u8> {
+    let mut b = Builder::new();
+    let head = b.name("model-response");
+    let stop_form = {
+        let h = b.name("stop-reason");
+        let v = str_leaf(&mut b, &resp.stop_reason);
+        b.list(vec![h, v])
+    };
+    let content_form = {
+        let h = b.name("content");
+        let mut blocks = vec![h];
+        for blk in &resp.content {
+            blocks.push(content_block_form(&mut b, blk));
+        }
+        b.list(blocks)
+    };
+    let root = b.list(vec![head, stop_form, content_form]);
+    codec::encode(&b.finish(root))
+}
+
+/// Decode a `model-response` frame encoded by [`encode_model_response`] → a [`ModelResponse`]. Total,
+/// distinguishing the two [`EventAstError`] classes: non-parseable codec bytes → [`EventAstError::Codec`];
+/// a well-formed frame with a bad head/arity / non-string stop-reason / bad content block →
+/// [`EventAstError::Shape`]. Never a panic (the bytes ride the durable effect-result log / the host).
+pub fn decode_model_response(bytes: &[u8]) -> Result<ModelResponse, EventAstError> {
+    let a = codec::decode_detailed(bytes).map_err(EventAstError::Codec)?;
+    let [stop_f, content_f] = a
+        .as_form(a.root, "model-response")
+        .ok_or(shape("model-response head"))?
+    else {
+        return Err(shape("model-response arity"));
+    };
+    let stop_reason = {
+        let [sv] = a
+            .as_form(*stop_f, "stop-reason")
+            .ok_or(shape("stop-reason form"))?
+        else {
+            return Err(shape("stop-reason arity"));
+        };
+        read_str(&a, *sv)?
+    };
+    let content = {
+        let block_forms = a
+            .as_form(*content_f, "content")
+            .ok_or(shape("content form"))?;
+        let mut out = Vec::with_capacity(block_forms.len());
+        for &bf in block_forms {
+            out.push(read_content_block(&a, bf)?);
+        }
+        out
+    };
+    Ok(ModelResponse {
+        stop_reason,
+        content,
+    })
+}
+
 /// A decoded §4c store-snapshot frame — either a single-value `name-set` pointer or a group `member-op`.
 /// This is the durable-snapshot restore discriminant: [`decode_store_frame`] decodes the shared codec
 /// ONCE and routes on the frame's self-describing AST head, so [`crate::name_store::NameStore::from_snapshot_bytes`]
@@ -2261,6 +2345,66 @@ mod tests {
                 Err(EventAstError::Shape(_))
             ),
             "a members frame is a Shape error (wrong head), not a model-request"
+        );
+    }
+
+    #[test]
+    fn model_response_round_trips_tool_use_and_end_turn() {
+        // §GAP-1 M2: a tool_use response (text + tool-calls the reducer dispatches) and a plain end_turn
+        // response both round-trip. stop_reason is a raw string the reducer matches on.
+        let tool_use = ModelResponse {
+            stop_reason: "tool_use".to_string(),
+            content: vec![
+                ContentBlock::Text("I'll run the tests".to_string()),
+                ContentBlock::ToolCall {
+                    id: "call-1".to_string(),
+                    name: "shell".to_string(),
+                    input: br#"{"cmd":"cargo test"}"#.to_vec(),
+                },
+            ],
+        };
+        assert_eq!(
+            decode_model_response(&encode_model_response(&tool_use)).expect("round-trips"),
+            tool_use
+        );
+        let done = ModelResponse {
+            stop_reason: "end_turn".to_string(),
+            content: vec![ContentBlock::Text("all green".to_string())],
+        };
+        assert_eq!(
+            decode_model_response(&encode_model_response(&done)).expect("round-trips"),
+            done
+        );
+    }
+
+    #[test]
+    fn model_response_stop_reason_is_a_raw_string_not_a_narrowed_enum() {
+        // The transport-constraint: a NOVEL/unknown stop-reason (a future Bedrock value) decodes fine — the
+        // kernel carries the raw string, the reducer folds it as not-tool_use=done. No enum narrowing.
+        let novel = ModelResponse {
+            stop_reason: "some_future_aws_reason".to_string(),
+            content: vec![ContentBlock::Text("x".to_string())],
+        };
+        let decoded = decode_model_response(&encode_model_response(&novel)).expect("round-trips");
+        assert_eq!(decoded.stop_reason, "some_future_aws_reason");
+    }
+
+    #[test]
+    fn model_response_decode_is_total_codec_vs_shape() {
+        // Two EventAstError classes, never panics: non-decodable → Codec; wrong-head frame → Shape.
+        assert!(
+            matches!(
+                decode_model_response(b"not a model-response frame"),
+                Err(EventAstError::Codec(_))
+            ),
+            "non-decodable bytes are a Codec error"
+        );
+        assert!(
+            matches!(
+                decode_model_response(&encode_members([&Hash::of(b"x")])),
+                Err(EventAstError::Shape(_))
+            ),
+            "a members frame is a Shape error (wrong head), not a model-response"
         );
     }
 
