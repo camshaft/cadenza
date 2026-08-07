@@ -813,6 +813,10 @@ pub enum Core {
     //# The value-heap runtime MUST NOT hold the field names of a record, the variant names of a sum, or any other source-level name of a value, so that a record is a positional product and a sum is a discriminated payload at run time and the association of a position with a name is compile-time knowledge the runtime does not carry.
     //= spec/contracts/component-abi.md#the-runtime-does-not-name-or-render-values
     //# The value-heap runtime MUST NOT hold a value's TYPE as a per-value tag, so that — because the language has no type erasure and the compiler therefore knows a value's static type at every use site — the runtime stores only structure and data (a product's elements, a sum's variant discriminant, a leaf's payload) and never a type identity a reader would dispatch on. The variant discriminant a sum carries is the runtime datum recording WHICH variant a value is, not the sum's type; the compiler maps a discriminant to a variant name.
+    // Because the runtime holds neither the names nor the type, it CANNOT render a value to canonical text —
+    // rendering is the compiler-emitted `value-encode` shape-descriptor walk (`lower.rs`), not a runtime service.
+    //= spec/contracts/component-abi.md#the-runtime-does-not-name-or-render-values
+    //# The value-heap runtime MUST NOT render a value to its canonical text, so that rendering — which requires the names and the type the runtime does not hold — is type-directed code the compiler emits (walking a value of statically-known shape through the runtime's accessors) rather than a service the runtime provides.
     //= spec/capabilities/core-semantics.md#a-sum-type-constructor-is-a-single-arity-function-producing-the-tagged-variant
     //# A sum type constructor MUST be represented as a single-arity function that, when applied to exactly one argument, produces a Sum value tagged with the constructor's variant name.
     //= spec/capabilities/type-system.md#sum-types-are-constructed-and-deconstructed
