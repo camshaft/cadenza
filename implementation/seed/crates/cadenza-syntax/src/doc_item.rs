@@ -251,14 +251,30 @@ fn collect_doc_text(
     }
 }
 
-/// The top-level forms of a program: the children of a top-level `(do …)`, or the single root form
-/// when the program is one form (not wrapped in a `do`).
+/// The top-level forms of a program — the module-member scope whose exported `def`/`type`/`effect` are
+/// documentable. This is the children of a top-level `(do …)`, or the single root form when unwrapped;
+/// AND, when the program is (or wraps) a `(module <name> member…)`, that module's MEMBERS (a program's
+/// public surface can live inside a `module` form, e.g. a `.sexp` module — its `def`/`export` are the
+/// members, not top-level siblings). A `(module …)` found among the `do` children is likewise unwrapped
+/// to its members, so `cdz doc-module` documents a module-wrapped program the same as a flat one.
 fn top_level_forms(program: &Arenas) -> Vec<StructId> {
-    if let Some(items) = program.as_form(program.root, "do") {
+    let roots = if let Some(items) = program.as_form(program.root, "do") {
         items.to_vec()
     } else {
         vec![program.root]
+    };
+    // Unwrap a `(module <name> member…)` to its members (the name is arg 0; members are the rest). A
+    // non-module form passes through unchanged. One level of unwrap — nested modules are a later concern.
+    let mut out = Vec::new();
+    for form in roots {
+        if let Some(args) = program.as_form(form, "module") {
+            // args[0] is the module name; args[1..] are its members.
+            out.extend(args.iter().skip(1).copied());
+        } else {
+            out.push(form);
+        }
     }
+    out
 }
 
 /// The set of names the program `export`s — the public surface. An `(export a b …)` form lists the

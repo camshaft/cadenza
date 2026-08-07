@@ -121,6 +121,31 @@ export { map }";
 }
 
 #[test]
+fn projects_the_members_of_a_module_wrapped_program() {
+    // A program's public surface can live inside a `(module <name> member…)` form (e.g. a `.sexp`
+    // module), NOT only as top-level siblings. The projection unwraps a top-level `(module …)` to its
+    // members, so a module-wrapped def/type/effect is documented the same as a flat one. (Built via the
+    // s-expr reader, which produces the `(module …)` form directly.)
+    let arena = sexpr::read("(module m (def (inc (: n Int64)) (+ n 1)) (export inc))")
+        .expect("module s-expr reads");
+    let doc = doc_item::project(&arena, "m");
+    let items = doc_items(&doc);
+    let names: Vec<_> = items.iter().filter_map(|&i| item_name(&doc, i)).collect();
+    assert_eq!(
+        names,
+        vec!["inc"],
+        "the module's exported member `inc` is projected as a doc-item"
+    );
+    // And it carries the structured signature head (the member is projected exactly like a top-level def).
+    let sig = item_sig_node(&doc, items[0]).expect("a sig node");
+    assert_eq!(
+        doc.head_name(sig),
+        Some("inc"),
+        "the member's signature head"
+    );
+}
+
+#[test]
 fn projects_only_the_exported_public_surface() {
     // `helper` is defined but NOT exported → it must NOT appear; only the exported `pub_fn` does.
     let src = "\
