@@ -1,4 +1,5 @@
-import { H1, Lede, H2, P, Note } from "../../components/Prose.tsx";
+import { H1, Lede, H2, P, C, Note } from "../../components/Prose.tsx";
+import { Runnable } from "../../components/Runnable.tsx";
 import { Link } from "react-router-dom";
 
 /// "Cadenza the Platform" pillar, section B — events & state. Concept-level (kernel early-stage, content
@@ -21,6 +22,50 @@ export default function PlatformState() {
         hopelessly slow, and where does a running agent actually keep what it knows? The platform's answer
         is a small, careful state model, and it's what keeps the pure-fold idea practical.
       </Lede>
+
+      <H2>The fold, concretely</H2>
+      <P>
+        Before the practicalities, it's worth seeing the fold as a real program, because the whole platform
+        is built on it and it's smaller than you'd expect. Picture an agent driving an account. Every action
+        it takes is appended to a log as an event, a <C>Deposit</C> or a <C>Withdraw</C>, and the current
+        balance isn't stored separately: it's what you get by <em>replaying</em> the log from the start.
+        Replaying is a fold, written as a plain recursion over the events:
+      </P>
+      <Runnable
+        source={`(type Event (Deposit Int64) (Withdraw Int64))
+(def (replay log acc)
+  (match log
+    ((list) acc)
+    ((list e .. rest)
+      (match e
+        ((Deposit n) (replay rest (+ acc n)))
+        ((Withdraw n) (replay rest (- acc n)))))))
+(def (main)
+  (replay (list (Deposit 100) (Withdraw 30) (Deposit 5)) 0))`}
+      />
+      <P>
+        The balance is <C>75</C>, computed straight from the history, since the log <em>is</em> the state
+        and there's nothing separate to keep in sync with it. And because that history is an ordinary list,
+        the three moves the overview promised fall out as ordinary things you do with the fold. <em>Replay</em>{" "}
+        is the fold above. <em>Fork</em> is folding a <em>prefix</em>: replay only the first two events and
+        you get the balance as it stood before the last deposit, a divergent timeline you carry forward
+        without touching the original. <em>Recover</em> is folding from a <em>cursor</em>: record how far the
+        agent got plus the balance there, and on restart replay only the events after that point to arrive at
+        the same answer, so a crashed agent resumes exactly where it left off and never performs an action
+        twice. All three are the same fold, applied to a value that happens to be a program's whole past.
+      </P>
+      <Note>
+        replay = fold the whole log · fork = fold a prefix · recover = fold from a saved cursor
+        <br />
+        no snapshot format, no checkpoint machinery, just three things you do with one recursion over a list
+      </Note>
+      <P>
+        The miniature above is the model exactly. In production the same fold runs over a real, durable log
+        on disk whose events aren't toy deposits but genuine host actions the agent performed, a message
+        received, a file written, a tool invoked, and recovering or replaying the agent is this exact fold
+        over that history. The rest of this chapter is how the platform keeps that fold <em>practical</em> at
+        scale.
+      </P>
 
       <H2>The reducer is stateless between events</H2>
       <P>

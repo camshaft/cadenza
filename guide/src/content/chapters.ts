@@ -309,14 +309,6 @@ export const CHAPTERS: Chapter[] = [
     Component: lazy(() => import("./chapters/PropertyTesting.tsx")),
   },
   {
-    slug: "recorded-log",
-    title: "History as a value",
-    blurb: "An agent's whole history is an event log, and running it is a fold over that log, so replay, fork, and recovery are just re-folding a value.",
-    section: "What makes Cadenza different",
-    exercises: 1,
-    Component: lazy(() => import("./chapters/RecordedLog.tsx")),
-  },
-  {
     slug: "example-apps",
     title: "Example applications",
     blurb: "Full interactive apps built in Cadenza, the differentiators running for real: playground, calculator, CAD, notebook.",
