@@ -1506,6 +1506,7 @@ pub mod driver {
                     Vec::new(),
                 ))
             }
+            #[cfg(feature = "cedar")]
             Format::Cedar => {
                 // A Cedar policy is a queryable/rewritable tree like any surface (its `(cedar-policyset
                 // …)` nodes — effects, scope constraints, `when`/`unless` expressions — are all
@@ -1522,6 +1523,12 @@ pub mod driver {
                     Vec::new(),
                 ))
             }
+            // Lean build (no `cedar` feature): the Cedar surface isn't compiled — a clean error, not a panic.
+            #[cfg(not(feature = "cedar"))]
+            Format::Cedar => Err(
+                "the `cedar` surface is not compiled in this build (enable the `cedar` feature)"
+                    .to_string(),
+            ),
             Format::Debug | Format::Flat => Err(format!(
                 "`{}` is an output-only format, not an input",
                 from.name()
@@ -1716,7 +1723,14 @@ pub mod driver {
             Format::Markdown => Ok(crate::markdown::print(arena, width)),
             Format::Json => Ok(crate::json::print(arena, width)),
             Format::Toml => Ok(crate::toml_surface::print(arena, width)),
+            #[cfg(feature = "cedar")]
             Format::Cedar => Ok(crate::cedar::print(arena, width)),
+            // Lean build (no `cedar` feature): the Cedar surface isn't compiled — a clean error, not a panic.
+            #[cfg(not(feature = "cedar"))]
+            Format::Cedar => Err(
+                "the `cedar` surface is not compiled in this build (enable the `cedar` feature)"
+                    .to_string(),
+            ),
             Format::Debug => Ok(crate::debug::print(arena)),
             Format::Flat => Ok(crate::debug::print_flat(arena)),
             Format::Binary => Err("binary output is not supported for query results".to_string()),

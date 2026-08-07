@@ -16,6 +16,25 @@ name = "cadenza-syntax"
 version = "0.1.0"
 edition = "2024"
 
+# Optional-surface FEATURES so a lean reducer/wasm build can shed the HEAVY optional surfaces (operator:
+# compile cadenza-syntax to wasm for reducers). Boundary confirmed with v-syntax: gate ONLY `cedar` + `cli`;
+# json/toml/markdown stay CORE. Why only these two: the ML core is HOMOICONIC — parser/printer embed json +
+# toml as fenced sub-documents, so those surfaces MUST stay core (gating them would break embedded-block
+# parsing, a real language feature); markdown is light (pure-Rust, only in the Format driver, not the ML
+# embedding) so gating buys ~nothing. `cedar` is the ONLY heavy tree (cedar-policy → stacker/psm/chrono/
+# lalrpop) and `cli` pulls clap — NEITHER is referenced by the ML-embedding core, so gating them sheds the
+# big transitive tree cleanly. `default` = both on → every current dependent (rcdzc/cdz/cdz-wasm/cdz-corpus/
+# cdz-calc/cdz-run/cdz-smith) is UNCHANGED. A `--no-default-features` build keeps full ML + embedded json/toml
+# + markdown + query + doc surface, dropping only cedar-policy + clap.
+[features]
+default = ["cedar", "cli"]
+# The Cedar authorization-policy surface (`mod cedar`) — the ONLY cedar-policy user; its transitive tree
+# (stacker/psm/chrono/lalrpop) is the biggest thing a lean reducer build sheds. Referenced by the Format
+# driver (query.rs) + convert's Format enum only, NOT the ML-embedding core.
+cedar = ["dep:cedar-policy"]
+# The `cdz-syntax` command surface (`mod cli`) — the ONLY clap user; CLI-shaped, not reducer-relevant.
+cli = ["dep:clap"]
+
 [dependencies]
 # The AST value model + canonical binary form, extracted to a shared bottom crate (so rcdzc + the
 # agent-harness kernel depend on the same wire format). `cadenza-syntax` RE-EXPORTS what moved there
@@ -38,6 +57,6 @@ toml_edit = { version = "0.22", default-features = false, features = ["parse", "
 # policy language). Same REFERENCE-only rationale as pulldown-cmark/toml_edit: the durable artifact is
 # the `cedar-*` node vocabulary + round-trip, not this parser. We use only its syntax layer
 # (PolicySet::from_str -> pst -> Display); NO evaluation/authorization engine is pulled into meaning.
-cedar-policy = "4"
+cedar-policy = { version = "4", optional = true }
 # Used ONLY by the `cdz-syntax` bin for arg parsing; the library itself takes no CLI dependency.
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive"], optional = true }
