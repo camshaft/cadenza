@@ -1,4 +1,5 @@
 import { H1, Lede, H2, P, C, Note } from "../../components/Prose.tsx";
+import { Runnable } from "../../components/Runnable.tsx";
 import { Link } from "react-router-dom";
 
 /// "Cadenza the Platform" pillar, section D (last planned concept chapter) — the execution model.
@@ -115,6 +116,34 @@ export default function PlatformExecution() {
         <br />
         no bespoke agent runtime: the loop IS the fold; the model and tools are ordinary authorized effects on the log
       </Note>
+      <P>
+        You can watch the whole loop happen as one fold. This runnable stands in for the model and the
+        tools with fixtures, one turn's worth of events, so it runs in your browser with no network: a task
+        arrives, the model replies asking to use a tool, the tool result comes back, and the model ends the
+        turn. The reducer folds that sequence into a trace of what it did, which is exactly the shape a real
+        agent's log takes, just with a live model and real tools in place of the fixtures.
+      </P>
+      <Runnable
+        source={`(type Ev (TaskIn String) (ModelReply Symbol String) (ToolResult String) (Done String))
+(def (step acc e)
+  (match e
+    ((TaskIn t) (String.concat acc "asked-model; "))
+    ((ModelReply stop tool)
+      (if (= stop #"tool_use")
+          (String.concat acc (String.concat "run-tool:" (String.concat tool "; ")))
+          (String.concat acc "end-turn; ")))
+    ((ToolResult r) (String.concat acc (String.concat "folded-result:" (String.concat r "; "))))
+    ((Done answer) (String.concat acc (String.concat "done:" answer)))))
+(def (run events acc)
+  (match events
+    ((list) acc)
+    ((list e .. rest) (run rest (step acc e)))))
+(def (main)
+  (run (list (TaskIn "count files")
+             (ModelReply #"tool_use" "shell")
+             (ToolResult "3")
+             (Done "there are 3")) ""))`}
+      />
       <P>
         Because the turn is nothing but recorded events, everything the platform promised comes along for
         free here too. The agent replays deterministically (the model's replies and tool results are facts on
