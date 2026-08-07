@@ -2187,6 +2187,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn terminating_a_child_delivers_child_exited_even_when_the_parent_is_suspended_i7() {
+        // §lifecycle I7 × I4 interaction (pins the intended semantics): the I7 emit calls AgentHost::deliver
+        // on the parent DIRECTLY (host-as-sender inside terminate), which folds immediately — it does NOT go
+        // through the loop's inbox channel, so the scheduler `suspended` bit (which only HOLDS inbound
+        // arriving via the loop) does NOT hold it. So a SUSPENDED supervisor still receives + folds
+        // ChildExited the moment its child dies. This is deliberate: a supervision signal is a durable fold
+        // that must reach the supervisor's log regardless of scheduler state (a suspended supervisor resumes
+        // to an already-recorded child death, not a lost one). If a future refactor routes the I7 emit through
+        // the loop channel (and thus the suspend-hold), this test flips — forcing a conscious re-decision.
+        let mut host = AgentHost::new();
+        let supervisor = HostedSession::genesis(
+            Hash::of(b"supervisor-v1"),
+            Box::new(ChildExitedFoldingReducer),
+            Box::new(Authorizer::deny_all()),
+            CompositeExecutor::new(),
+        );
+        let parent = SessionId::new("concierge"); // vanity id (also exercises the c1 genesis-hash lookup)
+        host.spawn(parent.clone(), supervisor);
+
+        let child_id = host
+            .spawn_child(
+                &parent,
+                Hash::of(b"child-reducer-v1"),
+                Box::new(GenesisRecordingReducer),
+                Box::new(Authorizer::deny_all()),
+                CompositeExecutor::new(),
+            )
+            .await
+            .expect("parent present")
+            .expect("child spawned");
+        let child_hash = Hash::from_hex(child_id.as_str()).expect("child id is genesis-hash hex");
+
+        // SUSPEND the supervisor BEFORE the child dies — the scheduler bit is set.
+        assert!(host.suspend(&parent), "supervisor suspended");
+        assert!(host.is_suspended(&parent), "the suspend bit is set");
+
+        // Terminate the child → the I7 emit delivers ChildExited to the (suspended) supervisor immediately.
+        host.terminate(&child_id, Hash::of(b"ctl"), "boom".into())
+            .await
+            .expect("child present")
+            .expect("fresh terminate");
+
+        // The suspended supervisor folded it anyway (direct deliver bypasses the loop's suspend-hold), and it
+        // is still suspended (the emit doesn't resume it — orthogonal scheduler state).
+        let hosted = host.get(&parent).unwrap();
+        assert!(
+            hosted.is_suspended(),
+            "the supervisor stays suspended (the I7 emit doesn't flip the scheduler bit)"
+        );
+        assert_eq!(
+            hosted.session().kv().get(b"exited-child").map(|v| v.to_vec()),
+            Some(child_hash.to_hex().into_bytes()),
+            "a SUSPENDED supervisor still folds ChildExited (direct deliver bypasses the loop suspend-hold)"
+        );
+    }
+
+    #[tokio::test]
     async fn terminating_an_absent_session_is_a_none_noop() {
         // No such id (already gone / never registered) → None, not a panic — matching remove().
         let mut host = AgentHost::new();
