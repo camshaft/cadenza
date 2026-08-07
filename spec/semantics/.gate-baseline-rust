@@ -2785,6 +2785,7 @@ pass	a record whose field is misnamed is both missing and extra
 pass	a record with a duplicate field name is a type error
 pass	a record with a non-adjacent duplicate field name is a type error
 pass	a record with a runtime field is returned as a program result
+pass	a record-LITERAL scrutinee whose fields perform, destructured by a `(record …)` arm, DECLINES (breaker finding #8)
 pass	a record-field loop invariant consumed per iteration accumulates stably
 pass	a record-keyed trie churned back equals the direct build with the seed resolving
 pass	a record-parameter export returns a tuple computed from its fields
@@ -5628,6 +5629,7 @@ pass	the program manifest is the union of its entrypoints' delegations
 pass	the read primitive skips a line comment inside program text
 pass	the reader literal reads to Symbol.of
 pass	the ready-queue is a plain FIFO — spawned-ready tasks run in enqueue order
+pass	the record-perform workaround — `let`-bind then read by `(. r field)` projection — folds once each (finding #8 control)
 pass	the remainder takes the sign of the dividend for a negative dividend
 pass	the remainder takes the sign of the dividend for a negative divisor
 pass	the rest binder carries the unmatched runtime-keyed remainder
