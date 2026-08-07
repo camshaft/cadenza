@@ -4583,6 +4583,52 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 150 Int64)))
 
+(case "a SYMBOL-keyed Map built from performs — interned keys look up across separate interns"
+  (doc    "Interner-hash-keyed CHAMP coherence under a handler (the Symbol-key pins are pure-side):
+           the map's values come from performs, and the lookups re-intern \\\"a\\\"/\\\"b\\\" as
+           SEPARATE Symbol.of calls — content identity must route to the stored slots: 10·5 + 6 →
+           56.")
+  (input  (do
+            (effect St (op next (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next (u) s (resume s (+ s 1))))
+                (let ((m (Map.insert (Map.insert Map.empty (Symbol.of "a") (St.next)) (Symbol.of "b") (St.next))))
+                  (+ (* 10 (match (Map.lookup m (Symbol.of "a")) ((Some v) v) ((None _u) -1)))
+                     (match (Map.lookup m (Symbol.of "b")) ((Some v) v) ((None _u) -1))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 56 Int64)))
+
+(case "a SET of arm-interned symbols dedups across dispatches — warm appears twice, stored once"
+  (doc    "Dedup of symbols that each crossed the boundary in DIFFERENT dispatches: three dispatches
+           intern cold, warm, warm (branch-selected on the advancing state) — the Set stores the
+           content-identical pair once → len 2.")
+  (input  (do
+            (effect St (op label (-> Unit Symbol)))
+            (def (main (: n Int64))
+              (handle St 0
+                ((label (u) s (resume (Symbol.of (if (> s 0) "warm" "cold")) (+ s 1))))
+                (let ((xs (Set.of (list (St.label) (St.label) (St.label)))))
+                  (Set.len xs))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 2 Int64)))
+
+(case "a symbol round-trip between TWO ops of one effect — interned by one, judged by the other"
+  (doc    "The two-op interner service: op 1 interns and returns the symbol; op 2 receives it BACK
+           as an argument and compares against its own intern — the round-tripped symbol matches
+           (10 at s=1), a different content does not (-1) → 999.")
+  (input  (do
+            (effect Reg (op intern (-> String Symbol)) (op which (-> Symbol Int64)))
+            (def (main (: n Int64))
+              (handle Reg 0
+                ((intern (t) s (resume (Symbol.of t) (+ s 1)))
+                 (which (sym) s (resume (if (= sym (Symbol.of "hot")) (* s 10) (- 0 s)) s)))
+                (let ((a (Reg.intern "hot")))
+                  (+ (* 100 (Reg.which a))
+                     (Reg.which (Symbol.of "cold"))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 999 Int64)))
+
 ; ============ Guarded match × effects (breaker FINDING, ag5 → fixed #2333). A guarded match on a
 ; perform-result scrutinee whose FALLBACK arm also performs used to leak the fold-synthesized #seed
 ; binder as a false CDZ0101: the guard desugar's arm-body copy reparented a reused (shared) body
