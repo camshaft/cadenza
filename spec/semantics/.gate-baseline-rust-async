@@ -6258,3 +6258,7 @@ pass	aa4 a THREE-WAY comparison arm — the resume value encodes gt/eq/lt as 1/1
 pass	aa5 DIVISION in the resume value with a subtracting stride — quotients shrink as the state walks down
 pass	sc1 STRING literal-arm dispatch on a draw — the hi arm re-performs and measures, the lo arm is constant
 pass	sc2 EQUALITY of two string draws routes the branch — the n=3 row crosses the threshold between draws
+pass	nm1 NEGATIVE remainder is TRUNCATED (sign of the dividend) uniformly — bare and through a handler arm
+pass	nm2 NEGATIVE division TRUNCATES toward zero uniformly — bare and through a handler arm
+pass	nm3 the only overflowing DIVISION (Int64.min / -1) is a CONSTANT-fold reject — the runtime-divisor form runs for every other divisor
+pass	nm4 Int64.min divided by RUNTIME divisors — every non-(-1) divisor has an exact Int64 quotient
