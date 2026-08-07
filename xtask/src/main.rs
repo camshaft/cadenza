@@ -117,6 +117,12 @@ enum Cmd {
     /// (`target/xtask-logs/`); the console shows one ✓ per step, and the first failing step prints
     /// the whole log + its path.
     Check,
+    /// Emoji-ban lint, standalone (operator directive): fail if any emoji/pictographic/dingbat char
+    /// appears in an `implementation/**/*.rs` source COMMENT. This is the same `emoji_free_lint` the
+    /// omnibus `check` runs, exposed as its own fast subcommand so CI can gate it as an isolated
+    /// advisory job (no full build). Comment-scoped + Unicode-test-doc-excluded, so functional emoji in
+    /// string/char literals (the language's own lex/parse/print fixtures) are correctly left alone.
+    LintEmoji,
     /// Round-trip every corpus program through the syntax surfaces: `sexpr` must reproduce the exact
     /// binary AST; `ml` (the long-term syntax, allowed to canonicalize once) must round-trip to a
     /// FIXED POINT (`ml(ml(x)) == ml(x)`). Guards `cadenza-syntax` independently of the compiler.
@@ -258,6 +264,13 @@ fn main() {
             }
         }
         Cmd::Check => check(&paths, profile),
+        Cmd::LintEmoji => match emoji_free_lint(&paths) {
+            Ok(()) => println!("lint-emoji: ok — no emoji in source comments"),
+            Err(msg) => {
+                eprintln!("lint-emoji: {msg}");
+                std::process::exit(1);
+            }
+        },
         Cmd::Roundtrip { files } => roundtrip(&paths, profile, files),
         Cmd::Fmt { files, to, check } => fmt(&paths, profile, files, &to, check),
         Cmd::Emit { file, from, out } => emit(&paths, profile, &file, &from, out),
