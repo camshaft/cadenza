@@ -705,7 +705,7 @@ fn lsp_closing_an_open_library_reverts_its_importers_to_the_on_disk_version() {
 
 #[test]
 fn lsp_opening_a_library_re_lints_an_already_open_importer() {
-    // Third leg of the reverse-dep family (didChange ✓, didClose ✓): the didOpen path. The importer is
+    // Third leg of the reverse-dep family (didChange done, didClose done): the didOpen path. The importer is
     // opened FIRST while the on-disk lib does NOT export `helper` — so it is RED (CDZ0201 does-not-export).
     // Then we open the LIB buffer WITH the export: opening a library must refresh the diagnostics of every
     // already-open importer (its live buffer now overlays the on-disk version), re-linting the importer
