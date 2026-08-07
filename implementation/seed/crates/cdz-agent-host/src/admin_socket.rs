@@ -518,4 +518,102 @@ mod tests {
         );
         let _ = std::fs::remove_file(&path);
     }
+
+    #[tokio::test]
+    async fn the_full_v0_admin_lifecycle_over_a_real_socket() {
+        // The transport-completeness capstone: the sibling socket tests exercise only install + list; this
+        // drives the WHOLE v0 command set — install → status → stop → list-confirms-gone, plus a
+        // status-of-unknown error — end to end over a REAL UnixStream through the actual serve()/dispatch
+        // transport + a live host loop. It proves every AdminCommand round-trips over the real socket (not
+        // just in-process apply_admin), the completeness proof for "operate the running daemon over its
+        // socket". (A subprocess smoke of the deployed binary itself would need live-net + AWS at boot —
+        // aws_config::load_defaults — so it can't run hermetically in CI; this covers the transport layer
+        // that CAN, under --features admin, with the real listener + codec + host loop.)
+        let path = socket_path("full-lifecycle");
+        let _ = std::fs::remove_file(&path);
+        let sock = AdminSocket::bind(&path).expect("bind");
+        let async_host = AsyncAgentHost::with_factory(AgentHost::new(), Box::new(StubFactory))
+            .with_admin_authz(Box::new(AllowList::allow_all_for_local_admin()));
+        let admin = async_host.admin_channel();
+        let (host_sd_tx, host_sd_rx) = tokio::sync::oneshot::channel();
+        let (sock_sd_tx, sock_sd_rx) = tokio::sync::oneshot::channel();
+
+        let client = async {
+            let mut stream = UnixStream::connect(&path).await.expect("connect");
+
+            // INSTALL a session.
+            let installed = client_call(
+                &mut stream,
+                AdminCommand::InstallSession(InstallSpec {
+                    id: SessionId::new("w1"),
+                    reducer_hash: Hash::of(b"w1"),
+                    goal: Some("do the thing".into()),
+                }),
+            )
+            .await;
+            assert_eq!(installed, AdminResponseWire::Installed { id: "w1".into() });
+
+            // STATUS: the installed session is observable over the socket (a status JSON object comes back).
+            let status = client_call(
+                &mut stream,
+                AdminCommand::SessionStatus {
+                    id: SessionId::new("w1"),
+                },
+            )
+            .await;
+            match status {
+                AdminResponseWire::Status { status } => {
+                    assert_eq!(
+                        status.get("session_id").and_then(|v| v.as_str()),
+                        Some("w1"),
+                        "the status snapshot names the session: {status}"
+                    );
+                }
+                other => panic!("expected a Status snapshot over the socket, got {other:?}"),
+            }
+
+            // STATUS of an UNKNOWN session → a clean Error frame (not a crash / not a torn-down connection —
+            // the connection is still usable for the stop below).
+            let unknown = client_call(
+                &mut stream,
+                AdminCommand::SessionStatus {
+                    id: SessionId::new("nope"),
+                },
+            )
+            .await;
+            assert!(
+                matches!(&unknown, AdminResponseWire::Error { message } if message.contains("nope")),
+                "status of an unknown session is a clean error over the socket, got {unknown:?}"
+            );
+
+            // STOP the session over the socket.
+            let stopped = client_call(
+                &mut stream,
+                AdminCommand::StopSession {
+                    id: SessionId::new("w1"),
+                },
+            )
+            .await;
+            assert_eq!(stopped, AdminResponseWire::Stopped { id: "w1".into() });
+
+            // LIST confirms it's gone — the full install→stop lifecycle round-tripped over the transport.
+            let listed = client_call(&mut stream, AdminCommand::ListSessions).await;
+            assert_eq!(
+                listed,
+                AdminResponseWire::Sessions { ids: vec![] },
+                "after a socket stop, the session is gone from the registry"
+            );
+
+            drop(stream);
+            let _ = sock_sd_tx.send(());
+            let _ = host_sd_tx.send(());
+        };
+
+        let (_host, (), ()) = tokio::join!(
+            async_host.run(host_sd_rx, || 0),
+            sock.serve(admin, sock_sd_rx),
+            client,
+        );
+        let _ = std::fs::remove_file(&path);
+    }
 }
