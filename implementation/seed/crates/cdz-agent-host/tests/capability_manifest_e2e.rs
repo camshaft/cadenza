@@ -45,7 +45,7 @@ impl HttpTransport for UnusedHttp {
         _headers: &[(String, String)],
         _body: Option<&[u8]>,
         _key: Hash,
-    ) -> Result<HttpResponse, String> {
+    ) -> Result<HttpResponse, cdz_kernel::event::EffectOutcome> {
         unreachable!("manifest projection probes policy; it never performs an effect")
     }
 }
@@ -53,7 +53,12 @@ impl HttpTransport for UnusedHttp {
 struct UnusedModel;
 #[async_trait::async_trait(?Send)]
 impl ModelTransport for UnusedModel {
-    async fn invoke(&self, _model_id: &str, _body: &[u8], _key: Hash) -> Result<Bytes, String> {
+    async fn invoke(
+        &self,
+        _model_id: &str,
+        _body: &[u8],
+        _key: Hash,
+    ) -> Result<Bytes, cdz_kernel::event::EffectOutcome> {
         unreachable!("manifest projection probes policy; it never performs an effect")
     }
 }

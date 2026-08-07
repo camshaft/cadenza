@@ -30,7 +30,7 @@ impl HttpTransport for StubHttp {
         _headers: &[(String, String)],
         _body: Option<&[u8]>,
         _key: Hash,
-    ) -> Result<HttpResponse, String> {
+    ) -> Result<HttpResponse, EffectOutcome> {
         assert_eq!(method, HttpMethod::Get, "the reducer emitted a GET");
         Ok(HttpResponse {
             status: 200,
@@ -140,7 +140,7 @@ async fn a_fetch_to_an_unpermitted_host_is_denied_before_the_client() {
             _h: &[(String, String)],
             _b: Option<&[u8]>,
             _k: Hash,
-        ) -> Result<HttpResponse, String> {
+        ) -> Result<HttpResponse, EffectOutcome> {
             panic!("a denied Http effect must never reach the client");
         }
     }

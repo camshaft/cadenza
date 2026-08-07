@@ -150,7 +150,7 @@ async fn a_real_bedrock_invoke_returns_a_completion() {
             );
         }
         Err(reason) => panic!(
-            "live Bedrock invoke failed (creds/region/model-id/schema?): {reason}\n\
+            "live Bedrock invoke failed (creds/region/model-id/schema?): {reason:?}\n\
              (this test only runs when CDZ_LIVE_BEDROCK_MODEL_ID is set — check the env is complete)"
         ),
     }

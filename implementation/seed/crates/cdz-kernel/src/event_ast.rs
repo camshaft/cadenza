@@ -1289,10 +1289,25 @@ fn outcome_form(b: &mut Builder, o: &EffectOutcome) -> StructId {
             let pf = opt_payload_form(b, p);
             b.list(vec![head, pf])
         }
-        EffectOutcome::Err(msg) => {
+        EffectOutcome::Err {
+            message,
+            retryability,
+        } => {
             let head = b.name("err");
-            let m = str_leaf(b, msg);
-            b.list(vec![head, m])
+            let m = str_leaf(b, message);
+            // BACKWARD-COMPATIBLE (operator Q2): a Permanent error encodes as the BARE `(err <str>)` —
+            // BYTE-IDENTICAL to a legacy pre-Q2 Err, so no durable-wire break for the common case. A
+            // Retryable error appends `(retryability retryable)`; read_outcome is arity-tolerant (2 = legacy
+            // Permanent, 3 = read the retryability form). A future arm just adds a retryability token.
+            match retryability {
+                crate::event::Retryability::Permanent => b.list(vec![head, m]),
+                crate::event::Retryability::Retryable => {
+                    let rh = b.name("retryability");
+                    let rv = str_leaf(b, "retryable");
+                    let rf = b.list(vec![rh, rv]);
+                    b.list(vec![head, m, rf])
+                }
+            }
         }
         EffectOutcome::TimedOut => {
             let head = b.name("timed-out");
@@ -1573,6 +1588,25 @@ fn read_kind(a: &Arenas, id: StructId) -> Result<EffectKind, EventAstError> {
     EffectKind::from_family(family).ok_or(shape("unknown effect kind"))
 }
 
+/// Decode a `(retryability <permanent|retryable>)` form → [`crate::event::Retryability`] (operator Q2).
+/// An unknown token is a `Shape` error (fail-closed — don't guess retryable). Total.
+fn read_retryability(
+    a: &Arenas,
+    id: StructId,
+) -> Result<crate::event::Retryability, EventAstError> {
+    let [v] = a
+        .as_form(id, "retryability")
+        .ok_or(shape("retryability form"))?
+    else {
+        return Err(shape("retryability arity"));
+    };
+    match a.as_str(*v) {
+        Some("permanent") => Ok(crate::event::Retryability::Permanent),
+        Some("retryable") => Ok(crate::event::Retryability::Retryable),
+        _ => Err(shape("unknown retryability token")),
+    }
+}
+
 fn read_outcome(a: &Arenas, id: StructId) -> Result<EffectOutcome, EventAstError> {
     match head_of(a, id)? {
         "ok" => {
@@ -1582,10 +1616,23 @@ fn read_outcome(a: &Arenas, id: StructId) -> Result<EffectOutcome, EventAstError
             Ok(EffectOutcome::Ok(read_opt_payload(a, *p)?))
         }
         "err" => {
-            let [m] = form(a, id, "err")? else {
-                return Err(shape("err arity"));
+            // Arity-tolerant (operator Q2): `(err <str>)` = legacy/Permanent (2-form incl the head);
+            // `(err <str> (retryability retryable))` = the typed retryable case. A missing retryability form
+            // ⇒ Permanent (the safe default — an un-annotated error must not auto-retry, fail-closed).
+            let kids = form(a, id, "err")?;
+            let (m, retryability) = match kids {
+                [m] => (m, crate::event::Retryability::Permanent),
+                [m, rf] => (m, read_retryability(a, *rf)?),
+                _ => {
+                    return Err(shape(
+                        "err arity (want (err <str>) or (err <str> <retryability>))",
+                    ))
+                }
             };
-            Ok(EffectOutcome::Err(read_str(a, *m)?))
+            Ok(EffectOutcome::Err {
+                message: read_str(a, *m)?,
+                retryability,
+            })
         }
         "timed-out" => Ok(EffectOutcome::TimedOut),
         _ => Err(shape("unknown outcome tag")),
@@ -1909,7 +1956,7 @@ mod tests {
                 cause: None,
                 body: EventBody::EffectResult {
                     id: EffectId(9),
-                    result: EffectOutcome::Err("boom".into()),
+                    result: EffectOutcome::err("boom"),
                     token: None,
                 },
             },
@@ -2711,6 +2758,83 @@ mod tests {
             },
             "a #1938-window (closed (success …)) decodes as Success (all 3 shapes accepted)"
         );
+    }
+
+    #[test]
+    fn effect_result_err_round_trips_retryability_and_is_legacy_backward_compatible() {
+        // operator Q2: a typed EffectOutcome::Err retryability survives the durable shared codec both arms,
+        // AND a legacy `(err <str>)` (pre-Q2, no retryability form) decodes as Permanent (fail-closed default).
+        use crate::effect::EffectId;
+        use crate::event::Retryability;
+        let permanent = Event {
+            seq: 1,
+            cause: None,
+            body: EventBody::EffectResult {
+                id: EffectId(7),
+                result: EffectOutcome::err("malformed request"),
+                token: None,
+            },
+        };
+        let retryable = Event {
+            seq: 2,
+            cause: None,
+            body: EventBody::EffectResult {
+                id: EffectId(8),
+                result: EffectOutcome::err_retryable("bedrock throttled"),
+                token: None,
+            },
+        };
+        assert_eq!(decode(&encode(&permanent)).unwrap(), permanent);
+        assert_eq!(decode(&encode(&retryable)).unwrap(), retryable);
+        // The two retryabilities are DISTINGUISHABLE after a round-trip (a reducer folds on them structurally).
+        assert_ne!(encode(&permanent), encode(&retryable));
+        // Permanent encodes BYTE-IDENTICALLY to a legacy `(err <str>)` — no durable-wire break (the point of
+        // the additive optional retryability form): build the legacy bare-`(err <str>)` body by hand + prove
+        // it decodes as Err{Permanent}.
+        let legacy_bytes = {
+            let mut b = Builder::new();
+            let head = b.name("event");
+            let seq = u64_leaf(&mut b, 3);
+            let cause = {
+                let n = b.name("none");
+                b.list(vec![n])
+            };
+            let er_head = b.name("effect-result");
+            let idv = u64_leaf(&mut b, 9);
+            let outcome = {
+                let eh = b.name("err");
+                let m = str_leaf(&mut b, "legacy permanent");
+                b.list(vec![eh, m]) // BARE (err <str>) — the pre-Q2 shape
+            };
+            let tok = {
+                let n = b.name("none");
+                b.list(vec![n])
+            };
+            let body = b.list(vec![er_head, idv, outcome, tok]);
+            let root = b.list(vec![head, seq, cause, body]);
+            codec::encode(&b.finish(root))
+        };
+        match decode(&legacy_bytes)
+            .expect("legacy (err <str>) still decodes")
+            .body
+        {
+            EventBody::EffectResult {
+                result:
+                    EffectOutcome::Err {
+                        message,
+                        retryability,
+                    },
+                ..
+            } => {
+                assert_eq!(message, "legacy permanent");
+                assert_eq!(
+                    retryability,
+                    Retryability::Permanent,
+                    "a legacy un-annotated (err <str>) decodes as Permanent (safe default)"
+                );
+            }
+            other => panic!("expected EffectResult Err, got {other:?}"),
+        }
     }
 
     #[test]

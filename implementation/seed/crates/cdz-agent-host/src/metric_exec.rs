@@ -103,25 +103,25 @@ impl Executor for MetricExecutor {
         // Family-keyed, matching the router + authz decision. A non-metric/publish family is structural →
         // PERMANENT (§17: observable Err, never a panic).
         if !req.content_type.matches_family(effect_ct::METRIC_PUBLISH) {
-            return EffectOutcome::Err(crate::retry::permanent(format!(
+            return EffectOutcome::err(format!(
                 "MetricExecutor only handles the {} family, got {}",
                 effect_ct::METRIC_PUBLISH,
                 req.content_type.family
-            )));
+            ));
         }
         // The payload IS the encoded MetricSample. A blob-ref / missing payload can't be a metric sample →
         // structural PERMANENT.
         let bytes: &[u8] = match &req.payload {
             Some(Payload::Inline(bytes)) => bytes,
             Some(Payload::Blob(_)) => {
-                return EffectOutcome::Err(crate::retry::permanent(
+                return EffectOutcome::err(
                     "MetricExecutor: a blob-ref metric/publish payload is unsupported — inline the metric sample",
-                ));
+                );
             }
             None => {
-                return EffectOutcome::Err(crate::retry::permanent(
+                return EffectOutcome::err(
                     "MetricExecutor: a metric/publish effect requires a payload (the encoded metric sample)",
-                ));
+                );
             }
         };
         // Decode the kernel-side MetricSample. A malformed frame is a clean PERMANENT (the reducer built a bad
@@ -129,9 +129,9 @@ impl Executor for MetricExecutor {
         let sample = match decode_metric_publish(bytes) {
             Ok(s) => s,
             Err(e) => {
-                return EffectOutcome::Err(crate::retry::permanent(format!(
+                return EffectOutcome::err(format!(
                     "MetricExecutor: metric/publish payload did not decode: {e:?}"
-                )));
+                ));
             }
         };
 
@@ -139,15 +139,15 @@ impl Executor for MetricExecutor {
         // charset + length). Reject the whole publish PERMANENT otherwise — never record or log an unsafe
         // guest string into the telemetry pipeline.
         if !Self::is_safe_str(&sample.name) {
-            return EffectOutcome::Err(crate::retry::permanent(
+            return EffectOutcome::err(
                 "MetricExecutor: metric name is empty/too-long/has unsafe chars (rejected before off-box export)",
-            ));
+            );
         }
         for (k, v) in &sample.labels {
             if !Self::is_safe_str(k) || !Self::is_safe_str(v) {
-                return EffectOutcome::Err(crate::retry::permanent(
+                return EffectOutcome::err(
                     "MetricExecutor: a metric label key/value is empty/too-long/has unsafe chars (rejected before off-box export)",
-                ));
+                );
             }
         }
 
@@ -155,9 +155,9 @@ impl Executor for MetricExecutor {
         // records. This bounds the guest's contribution to registry/backend cardinality.
         if !self.admitted.contains(&sample.name) {
             if self.admitted.len() >= MAX_DISTINCT_NAMES {
-                return EffectOutcome::Err(crate::retry::permanent(format!(
+                return EffectOutcome::err(format!(
                     "MetricExecutor: session exceeded its distinct-metric-name cap ({MAX_DISTINCT_NAMES}) — new metric names rejected (cardinality bound)"
-                )));
+                ));
             }
             self.admitted.insert(sample.name.clone());
         }
@@ -206,9 +206,9 @@ impl Executor for MetricExecutor {
                     .record_f64(sample.value);
             }
             other => {
-                return EffectOutcome::Err(crate::retry::permanent(format!(
+                return EffectOutcome::err(format!(
                     "MetricExecutor: unknown metric kind {other:?} (expected counter/gauge/timing)"
-                )));
+                ));
             }
         }
         // Recorded — fire-and-forget: Ok(None) acks the publish (no result payload for the reducer to fold).
@@ -225,6 +225,7 @@ impl Executor for MetricExecutor {
 mod tests {
     use super::*;
     use cdz_kernel::effect::Timeliness;
+    use cdz_kernel::event::Retryability;
     use cdz_kernel::event_ast::encode_metric_publish;
 
     fn publish_req(sample: &MetricSample) -> EffectRequest {
@@ -304,7 +305,7 @@ mod tests {
             )
             .await;
         assert!(
-            matches!(&out, EffectOutcome::Err(r) if r.starts_with("PERMANENT:") && r.contains("unknown metric kind")),
+            matches!(&out, EffectOutcome::Err { message, retryability } if *retryability == Retryability::Permanent && message.contains("unknown metric kind")),
             "an unmapped kind is PERMANENT, got {out:?}"
         );
     }
@@ -321,7 +322,7 @@ mod tests {
             )
             .await;
         assert!(
-            matches!(&out, EffectOutcome::Err(r) if r.starts_with("PERMANENT:") && r.contains("unsafe chars")),
+            matches!(&out, EffectOutcome::Err { message, retryability } if *retryability == Retryability::Permanent && message.contains("unsafe chars")),
             "an unsafe metric name is rejected before off-box export, got {out:?}"
         );
         // A control char likewise.
@@ -331,7 +332,9 @@ mod tests {
                 Hash::of(b"k"),
             )
             .await;
-        assert!(matches!(&out, EffectOutcome::Err(r) if r.contains("unsafe chars")));
+        assert!(
+            matches!(&out, EffectOutcome::Err { message, .. } if message.contains("unsafe chars"))
+        );
     }
 
     #[tokio::test]
@@ -356,7 +359,7 @@ mod tests {
             )
             .await;
         assert!(
-            matches!(&out, EffectOutcome::Err(r) if r.starts_with("PERMANENT:") && r.contains("cardinality")),
+            matches!(&out, EffectOutcome::Err { message, retryability } if *retryability == Retryability::Permanent && message.contains("cardinality")),
             "a new name beyond the cap is rejected, got {out:?}"
         );
         // But an ALREADY-ADMITTED name still records fine (the cap bounds distinct names, not volume).
@@ -381,7 +384,7 @@ mod tests {
             Timeliness::Interactive,
         );
         assert!(
-            matches!(exec.perform(&wrong, Hash::of(b"k")).await, EffectOutcome::Err(r) if r.contains("only handles"))
+            matches!(exec.perform(&wrong, Hash::of(b"k")).await, EffectOutcome::Err { message, .. } if message.contains("only handles"))
         );
         assert!(
             exec.handles_family(effect_ct::METRIC_PUBLISH) && !exec.handles_family(effect_ct::EMIT)
@@ -394,7 +397,7 @@ mod tests {
             Timeliness::Interactive,
         );
         assert!(
-            matches!(exec.perform(&no_payload, Hash::of(b"k")).await, EffectOutcome::Err(r) if r.contains("requires a payload"))
+            matches!(exec.perform(&no_payload, Hash::of(b"k")).await, EffectOutcome::Err { message, .. } if message.contains("requires a payload"))
         );
         // Undecodable payload.
         let garbage = EffectRequest::new_with_family(
@@ -404,7 +407,7 @@ mod tests {
             Timeliness::Interactive,
         );
         assert!(
-            matches!(exec.perform(&garbage, Hash::of(b"k")).await, EffectOutcome::Err(r) if r.contains("did not decode"))
+            matches!(exec.perform(&garbage, Hash::of(b"k")).await, EffectOutcome::Err { message, .. } if message.contains("did not decode"))
         );
     }
 }

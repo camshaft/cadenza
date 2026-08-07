@@ -3582,7 +3582,7 @@ fn effect_outcome_bytes(o: &EffectOutcome) -> Option<Vec<u8>> {
     match o {
         EffectOutcome::Ok(Some(p)) => Some(payload_bytes(p)),
         EffectOutcome::Ok(None) => None,
-        EffectOutcome::Err(msg) => Some(msg.clone().into_bytes()),
+        EffectOutcome::Err { message: msg, .. } => Some(msg.clone().into_bytes()),
         EffectOutcome::TimedOut => None,
     }
 }

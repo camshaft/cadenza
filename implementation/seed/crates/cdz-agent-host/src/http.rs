@@ -21,7 +21,6 @@
 //! a deep copy. **Trust boundary:** the kernel already gated the resolved URL's host (SEC-F1) before
 //! dispatch; this executor does not re-authorize.
 
-use crate::retry;
 use bytes::Bytes;
 use cdz_kernel::effect::{effect_ct, EffectRequest, Payload};
 use cdz_kernel::event::EffectOutcome;
@@ -93,13 +92,15 @@ impl HttpMethod {
 /// 500) and read response headers (content-type, …). The `idempotency_key` lets a side-effecting transport
 /// dedup a crash-re-driven request (§16c-S1/D) — relevant for a non-idempotent method.
 ///
-/// **Error classification (supervision, [`crate::retry`]).** `Err` is strictly a TRANSPORT-LEVEL failure
-/// (the request never completed) — NOT an HTTP status: a completed request with a 4xx/5xx STATUS comes back
-/// as `Ok(HttpResponse)` carrying that status, and the reducer decides what a 404/500 means, not the
-/// transport. An `Err(reason)` MUST lead with a retryability token classifying that transport failure — a
-/// transient one (timeout, connection reset/refused) as [`crate::retry::retryable`], a permanent one (DNS
-/// failure, malformed URL, TLS error) as [`crate::retry::permanent`]. Unprefixed reasons are treated
-/// PERMANENT (fail-closed). The retryability guidance applies to `Err` only, never to app-level statuses.
+/// **Error classification (supervision).** `Err` is strictly a TRANSPORT-LEVEL failure (the request never
+/// completed) — NOT an HTTP status: a completed request with a 4xx/5xx STATUS comes back as
+/// `Ok(HttpResponse)` carrying that status, and the reducer decides what a 404/500 means, not the transport.
+/// The `Err` half is a classified [`EffectOutcome`](cdz_kernel::event::EffectOutcome) carrying a typed
+/// [`Retryability`](cdz_kernel::event::Retryability) — a transient failure (timeout, connection
+/// reset/refused) via [`EffectOutcome::err_retryable`](cdz_kernel::event::EffectOutcome::err_retryable), a
+/// permanent one (DNS failure, malformed URL, TLS error) via
+/// [`EffectOutcome::err`](cdz_kernel::event::EffectOutcome::err) (`Permanent` is the fail-closed default).
+/// The retryability applies to `Err` only, never to app-level statuses.
 /// `#[async_trait(?Send)]` — a real HTTP request awaits the socket; not `Send` (single-threaded host).
 #[async_trait::async_trait(?Send)]
 pub trait HttpTransport {
@@ -110,7 +111,7 @@ pub trait HttpTransport {
         headers: &[(String, String)],
         body: Option<&[u8]>,
         idempotency_key: Hash,
-    ) -> Result<HttpResponse, String>;
+    ) -> Result<HttpResponse, EffectOutcome>;
 }
 
 /// A completed HTTP response — the STATUS code, response HEADERS (ordered name/value pairs), and BODY. The
@@ -143,11 +144,11 @@ impl<T: HttpTransport> Executor for HttpExecutor<T> {
         // Family-keyed (seq-39), not the EffectKind enum — the same decision the router + authz make.
         if !req.content_type.matches_family(effect_ct::HTTP) {
             // Structural — PERMANENT, a supervisor must not retry it (§17: observable Err, never a panic).
-            return EffectOutcome::Err(retry::permanent(format!(
+            return EffectOutcome::err(format!(
                 "HttpExecutor only handles the {} family, got {}",
                 effect_ct::HTTP,
                 req.content_type.family
-            )));
+            ));
         }
         // The payload is a `(http-request (method <name>) (headers ((k v)…)) (body <opt>))` binary-sexpr —
         // decode the caller-specified method + headers + body (NO body-presence heuristic). A blob-ref
@@ -160,20 +161,20 @@ impl<T: HttpTransport> Executor for HttpExecutor<T> {
                         (HttpMethod::from_name(&method_name), headers, body)
                     }
                     Err(e) => {
-                        return EffectOutcome::Err(retry::permanent(format!(
+                        return EffectOutcome::err(format!(
                             "HttpExecutor: malformed http-request payload: {e:?}"
-                        )));
+                        ));
                     }
                 },
                 Some(Payload::Blob(_)) => {
-                    return EffectOutcome::Err(retry::permanent(
+                    return EffectOutcome::err(
                         "HttpExecutor: blob-ref request payload unsupported — this executor has no blob-store access; inline the http-request",
-                    ));
+                    );
                 }
                 None => {
-                    return EffectOutcome::Err(retry::permanent(
+                    return EffectOutcome::err(
                         "HttpExecutor: an Http effect requires an http-request payload (method + optional body)",
-                    ));
+                    );
                 }
             };
         match self
@@ -194,7 +195,7 @@ impl<T: HttpTransport> Executor for HttpExecutor<T> {
                 let payload = encode_http_response(resp.status, &resp.headers, &resp.body);
                 EffectOutcome::Ok(Some(Payload::Inline(payload.into())))
             }
-            Err(reason) => EffectOutcome::Err(reason),
+            Err(outcome) => outcome,
         }
     }
 
@@ -213,8 +214,8 @@ impl<T: HttpTransport> Executor for HttpExecutor<T> {
 /// The kernel already gated the resolved URL's host (SEC-F1 SSRF/exfil guard) BEFORE dispatch, so this
 /// does NOT re-authorize — it just performs the request. It maps a completed request (any status) to
 /// `Ok(HttpResponse)` and a TRANSPORT failure to a retryability-classified `Err` (§9d/§17): a timeout or
-/// connect error is [`retry::retryable`], a builder/decode/redirect-policy failure is
-/// [`retry::permanent`]. Credentials come from the ambient environment where relevant (none needed here).
+/// connect error is `err_retryable`, a builder/decode/redirect-policy failure is `err` (Permanent).
+/// Credentials come from the ambient environment where relevant (none needed here).
 ///
 /// **Redirects are NOT followed** (SEC-F1). The kernel authorizes the host of the ORIGINAL URL; a 3xx to a
 /// different host would let an authorized fetch be silently redirected to a DISALLOWED host after the
@@ -242,7 +243,7 @@ impl ReqwestHttpTransport {
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .map(|client| ReqwestHttpTransport { client })
-            .map_err(|e| retry::permanent(format!("failed to build the HTTP client: {e}")))
+            .map_err(|e| format!("failed to build the HTTP client: {e}"))
     }
 }
 
@@ -256,12 +257,12 @@ impl HttpTransport for ReqwestHttpTransport {
         headers: &[(String, String)],
         body: Option<&[u8]>,
         _idempotency_key: Hash,
-    ) -> Result<HttpResponse, String> {
+    ) -> Result<HttpResponse, EffectOutcome> {
         // Method + URL. reqwest parses the method string; an unparseable custom method (control chars,
         // spaces) is a structural PERMANENT error (the request line can't be formed).
         let reqwest_method =
             reqwest::Method::from_bytes(method.as_str().as_bytes()).map_err(|e| {
-                retry::permanent(format!("invalid HTTP method {:?}: {e}", method.as_str()))
+                EffectOutcome::err(format!("invalid HTTP method {:?}: {e}", method.as_str()))
             })?;
         let mut builder = self.client.request(reqwest_method, url);
         for (k, v) in headers {
@@ -273,13 +274,13 @@ impl HttpTransport for ReqwestHttpTransport {
 
         // A transport-level failure (the request never completed) → classified Err. A COMPLETED request
         // with any status (incl. 4xx/5xx) is Ok — the reducer decides what a status means, not us.
-        let resp =
-            self.client
-                .execute(builder.build().map_err(|e| {
-                    retry::permanent(format!("failed to build the HTTP request: {e}"))
-                })?)
-                .await
-                .map_err(classify_reqwest_error)?;
+        let resp = self
+            .client
+            .execute(builder.build().map_err(|e| {
+                EffectOutcome::err(format!("failed to build the HTTP request: {e}"))
+            })?)
+            .await
+            .map_err(classify_reqwest_error)?;
 
         let status = resp.status().as_u16();
         let resp_headers: Vec<(String, String)> = resp
@@ -310,11 +311,11 @@ impl HttpTransport for ReqwestHttpTransport {
 /// failure is transient (the endpoint may recover) → retryable; anything else (a redirect-policy or
 /// decode failure, a malformed URL that slipped the builder) is permanent by default (fail-closed).
 #[cfg(feature = "live-net")]
-fn classify_reqwest_error(e: reqwest::Error) -> String {
+fn classify_reqwest_error(e: reqwest::Error) -> EffectOutcome {
     if e.is_timeout() || e.is_connect() {
-        retry::retryable(format!("HTTP transport failure: {e}"))
+        EffectOutcome::err_retryable(format!("HTTP transport failure: {e}"))
     } else {
-        retry::permanent(format!("HTTP transport failure: {e}"))
+        EffectOutcome::err(format!("HTTP transport failure: {e}"))
     }
 }
 
@@ -322,6 +323,7 @@ fn classify_reqwest_error(e: reqwest::Error) -> String {
 mod tests {
     use super::*;
     use cdz_kernel::effect::Timeliness;
+    use cdz_kernel::event::Retryability;
     use cdz_kernel::event_ast::{
         decode_http_response, encode_http_request, encode_http_request_with_headers,
     };
@@ -343,7 +345,7 @@ mod tests {
             headers: &[(String, String)],
             body: Option<&[u8]>,
             _key: Hash,
-        ) -> Result<HttpResponse, String> {
+        ) -> Result<HttpResponse, EffectOutcome> {
             assert_eq!(url, "https://ok.host/x");
             assert_eq!(
                 method, self.expect_method,
@@ -530,7 +532,7 @@ mod tests {
                 _h: &[(String, String)],
                 _b: Option<&[u8]>,
                 _k: Hash,
-            ) -> Result<HttpResponse, String> {
+            ) -> Result<HttpResponse, EffectOutcome> {
                 panic!("transport must not be called for a blob-ref payload");
             }
         }
@@ -542,13 +544,12 @@ mod tests {
             Timeliness::Interactive,
         );
         match exec.perform(&req, Hash::of(b"k")).await {
-            EffectOutcome::Err(msg) => {
-                assert!(msg.contains("no blob-store access"), "{msg}");
-                assert_eq!(
-                    retry::classify(&msg),
-                    retry::Retryability::Permanent,
-                    "{msg}"
-                );
+            EffectOutcome::Err {
+                message,
+                retryability,
+            } => {
+                assert!(message.contains("no blob-store access"), "{message}");
+                assert_eq!(retryability, Retryability::Permanent, "{message}");
             }
             other => panic!("expected Err for a blob-ref payload, got {other:?}"),
         }
@@ -566,7 +567,7 @@ mod tests {
                 _h: &[(String, String)],
                 _b: Option<&[u8]>,
                 _k: Hash,
-            ) -> Result<HttpResponse, String> {
+            ) -> Result<HttpResponse, EffectOutcome> {
                 panic!("transport must not be called for a malformed request");
             }
         }
@@ -578,13 +579,12 @@ mod tests {
             Timeliness::Interactive,
         );
         match exec.perform(&no_payload, Hash::of(b"k")).await {
-            EffectOutcome::Err(msg) => {
-                assert!(msg.contains("http-request payload"), "{msg}");
-                assert_eq!(
-                    retry::classify(&msg),
-                    retry::Retryability::Permanent,
-                    "{msg}"
-                );
+            EffectOutcome::Err {
+                message,
+                retryability,
+            } => {
+                assert!(message.contains("http-request payload"), "{message}");
+                assert_eq!(retryability, Retryability::Permanent, "{message}");
             }
             other => panic!("expected Err for a missing payload, got {other:?}"),
         }
@@ -596,13 +596,12 @@ mod tests {
             Timeliness::Interactive,
         );
         match exec.perform(&garbage, Hash::of(b"k")).await {
-            EffectOutcome::Err(msg) => {
-                assert!(msg.contains("malformed"), "{msg}");
-                assert_eq!(
-                    retry::classify(&msg),
-                    retry::Retryability::Permanent,
-                    "{msg}"
-                );
+            EffectOutcome::Err {
+                message,
+                retryability,
+            } => {
+                assert!(message.contains("malformed"), "{message}");
+                assert_eq!(retryability, Retryability::Permanent, "{message}");
             }
             other => panic!("expected Err for a garbage payload, got {other:?}"),
         }
@@ -620,19 +619,18 @@ mod tests {
                 _h: &[(String, String)],
                 _b: Option<&[u8]>,
                 _k: Hash,
-            ) -> Result<HttpResponse, String> {
-                Err(retry::retryable("connection refused"))
+            ) -> Result<HttpResponse, EffectOutcome> {
+                Err(EffectOutcome::err_retryable("connection refused"))
             }
         }
         let mut exec = HttpExecutor::new(FlakyHttp);
         match exec.perform(&http_req("get", None), Hash::of(b"k")).await {
-            EffectOutcome::Err(msg) => {
-                assert!(msg.contains("connection refused"), "{msg}");
-                assert_eq!(
-                    retry::classify(&msg),
-                    retry::Retryability::Retryable,
-                    "{msg}"
-                );
+            EffectOutcome::Err {
+                message,
+                retryability,
+            } => {
+                assert!(message.contains("connection refused"), "{message}");
+                assert_eq!(retryability, Retryability::Retryable, "{message}");
             }
             other => panic!("expected the transport error to fold as Err, got {other:?}"),
         }
@@ -650,7 +648,7 @@ mod tests {
                 _h: &[(String, String)],
                 _b: Option<&[u8]>,
                 _k: Hash,
-            ) -> Result<HttpResponse, String> {
+            ) -> Result<HttpResponse, EffectOutcome> {
                 panic!("transport must not be called for a non-http-family effect");
             }
         }
@@ -662,16 +660,15 @@ mod tests {
             Timeliness::Interactive,
         );
         match exec.perform(&req, Hash::of(b"k")).await {
-            EffectOutcome::Err(msg) => {
+            EffectOutcome::Err {
+                message,
+                retryability,
+            } => {
                 assert!(
-                    msg.contains(effect_ct::HTTP) && msg.contains(effect_ct::MODEL),
-                    "err names the handled (http) + rejected (model) families: {msg}"
+                    message.contains(effect_ct::HTTP) && message.contains(effect_ct::MODEL),
+                    "err names the handled (http) + rejected (model) families: {message}"
                 );
-                assert_eq!(
-                    retry::classify(&msg),
-                    retry::Retryability::Permanent,
-                    "{msg}"
-                );
+                assert_eq!(retryability, Retryability::Permanent, "{message}");
             }
             other => panic!("expected Err for a non-http-family effect, got {other:?}"),
         }

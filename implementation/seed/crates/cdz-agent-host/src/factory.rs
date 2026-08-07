@@ -105,17 +105,18 @@ impl Executor for MeteredExecutor {
                 self.metrics.record_ok();
                 tracing::debug!(target: "cdz_agent_host::effect", family, "effect ok");
             }
-            EffectOutcome::Err(reason) => {
-                // Classify ONCE + reuse for both the metric and the trace, so the event carries the derived
-                // Retryability as a structured field (filterable without parsing the reason string) — #2069
-                // review.
-                let retryability = crate::retry::classify(reason);
-                self.metrics.record_err(retryability);
+            EffectOutcome::Err {
+                message,
+                retryability,
+            } => {
+                // Read the TYPED retryability straight off the outcome (no string parsing) for both the
+                // metric and the trace, so the event carries it as a structured field — #2069 review.
+                self.metrics.record_err(*retryability);
                 tracing::warn!(
                     target: "cdz_agent_host::effect",
                     family,
                     retryability = ?retryability,
-                    reason,
+                    reason = message,
                     "effect errored"
                 );
             }
@@ -838,18 +839,17 @@ mod tests {
 
     #[tokio::test]
     async fn metered_executor_tallies_outcomes_and_passes_them_through() {
-        use crate::retry::{permanent, retryable};
         use cdz_kernel::effect::{EffectKind, Payload, Timeliness};
 
-        // Script Ok, a retryable Err, a permanent Err, an UNPREFIXED Err (fail-closed → permanent), and a
+        // Script Ok, a retryable Err, a permanent Err, an err() default (fail-closed → permanent), and a
         // TimedOut (its own counter, not an Err).
         let scripted = ScriptedExecutor {
             outcomes: std::cell::RefCell::new(
                 vec![
                     EffectOutcome::Ok(Some(Payload::Inline(b"ok".to_vec().into()))),
-                    EffectOutcome::Err(retryable("bedrock throttled (429)")),
-                    EffectOutcome::Err(permanent("bad request (400)")),
-                    EffectOutcome::Err("no token here".to_string()),
+                    EffectOutcome::err_retryable("bedrock throttled (429)"),
+                    EffectOutcome::err("bad request (400)"),
+                    EffectOutcome::err("no token here"),
                     EffectOutcome::TimedOut,
                 ]
                 .into(),
@@ -878,7 +878,7 @@ mod tests {
         ));
         assert!(matches!(
             metered.perform(&req, Hash::of(b"k")).await,
-            EffectOutcome::Err(_)
+            EffectOutcome::Err { .. }
         ));
         metered.perform(&req, Hash::of(b"k")).await;
         metered.perform(&req, Hash::of(b"k")).await;

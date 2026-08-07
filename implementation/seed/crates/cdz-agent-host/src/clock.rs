@@ -18,7 +18,6 @@
 //! `u64::from_le_bytes(bytes.try_into()?)`. (`Now`'s target is empty; a capability gates it by kind, e.g.
 //! `Capability { kind: Now, predicate: Any }`.)
 
-use crate::retry;
 use cdz_kernel::effect::{effect_ct, EffectRequest, Payload};
 use cdz_kernel::event::EffectOutcome;
 use cdz_kernel::executor::Executor;
@@ -57,11 +56,11 @@ impl Executor for ClockExecutor {
         if !req.content_type.matches_family(effect_ct::NOW) {
             // A wrong-family request is structural — PERMANENT, a supervisor must not retry it (§17: an
             // observable Err, never a panic).
-            return EffectOutcome::Err(retry::permanent(format!(
+            return EffectOutcome::err(format!(
                 "ClockExecutor only handles the {} family, got {}",
                 effect_ct::NOW,
                 req.content_type.family
-            )));
+            ));
         }
         // Nanoseconds since the Unix epoch as a u64 LITTLE-ENDIAN 8-byte integer (operator binary-ns
         // directive + the kernel monotonic-clamp payload spec): the kernel's clamp reads exactly this
@@ -76,9 +75,7 @@ impl Executor for ClockExecutor {
                 let ns = dur.as_nanos() as u64;
                 EffectOutcome::Ok(Some(Payload::Inline(ns.to_le_bytes().to_vec().into())))
             }
-            Err(e) => EffectOutcome::Err(retry::permanent(format!(
-                "system clock is before the Unix epoch: {e}"
-            ))),
+            Err(e) => EffectOutcome::err(format!("system clock is before the Unix epoch: {e}")),
         }
     }
 
@@ -94,6 +91,7 @@ impl Executor for ClockExecutor {
 mod tests {
     use super::*;
     use cdz_kernel::effect::{EffectKind, Timeliness};
+    use cdz_kernel::event::Retryability;
 
     fn req(kind: EffectKind, target: &str) -> EffectRequest {
         EffectRequest::new(kind, target.to_string(), None, Timeliness::Interactive)
@@ -181,16 +179,15 @@ mod tests {
             .perform(&req(EffectKind::Http, "https://x/"), Hash::of(b"k"))
             .await
         {
-            EffectOutcome::Err(msg) => {
+            EffectOutcome::Err {
+                message,
+                retryability,
+            } => {
                 assert!(
-                    msg.contains(effect_ct::NOW),
-                    "err names the handled family: {msg}"
+                    message.contains(effect_ct::NOW),
+                    "err names the handled family: {message}"
                 );
-                assert_eq!(
-                    retry::classify(&msg),
-                    retry::Retryability::Permanent,
-                    "{msg}"
-                );
+                assert_eq!(retryability, Retryability::Permanent, "{message}");
             }
             other => panic!("expected Err for a non-Now kind, got {other:?}"),
         }

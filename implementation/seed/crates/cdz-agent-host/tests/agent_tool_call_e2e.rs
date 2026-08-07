@@ -51,7 +51,7 @@ impl ModelTransport for ScriptedConverse {
         _model_id: &str,
         _body: &[u8],
         _key: Hash,
-    ) -> Result<bytes::Bytes, String> {
+    ) -> Result<bytes::Bytes, EffectOutcome> {
         let n = self.calls.get();
         self.calls.set(n + 1);
         let resp = if n == 0 {

@@ -21,7 +21,6 @@
 //! classified `EffectOutcome::Err`, never a panic. Most fs errors are PERMANENT for a given path+op (a
 //! missing file won't appear on a blind retry); the reducer decides what to do.
 
-use crate::retry;
 use cdz_kernel::effect::{effect_ct, EffectRequest, Payload};
 use cdz_kernel::event::EffectOutcome;
 use cdz_kernel::executor::Executor;
@@ -56,7 +55,7 @@ impl Executor for FsExecutor {
         if req.content_type.matches_family(effect_ct::FS_READ) {
             match std::fs::read(path) {
                 Ok(bytes) => EffectOutcome::Ok(Some(Payload::Inline(bytes.into()))),
-                Err(e) => EffectOutcome::Err(retry::permanent(format!("fs/read {path}: {e}"))),
+                Err(e) => EffectOutcome::err(format!("fs/read {path}: {e}")),
             }
         } else if req.content_type.matches_family(effect_ct::FS_WRITE) {
             // The payload IS the file content. A blob-ref payload can't be resolved here (no blob-store
@@ -64,29 +63,29 @@ impl Executor for FsExecutor {
             let content: &[u8] = match &req.payload {
                 Some(Payload::Inline(bytes)) => bytes,
                 Some(Payload::Blob(_)) => {
-                    return EffectOutcome::Err(retry::permanent(
+                    return EffectOutcome::err(
                         "fs/write: blob-ref payload unsupported — this executor has no blob-store access; inline the bytes",
-                    ));
+                    );
                 }
                 None => {
-                    return EffectOutcome::Err(retry::permanent(
+                    return EffectOutcome::err(
                         "fs/write: a write requires a payload (the file bytes)",
-                    ));
+                    );
                 }
             };
             match std::fs::write(path, content) {
                 // A write returns no data — an empty inline payload is the unit ack the reducer folds.
                 Ok(()) => EffectOutcome::Ok(Some(Payload::Inline(Vec::new().into()))),
-                Err(e) => EffectOutcome::Err(retry::permanent(format!("fs/write {path}: {e}"))),
+                Err(e) => EffectOutcome::err(format!("fs/write {path}: {e}")),
             }
         } else if req.content_type.matches_family(effect_ct::FS_GLOB) {
             glob_paths(path)
         } else {
             // A non-fs family is structural (this executor serves only fs/*) → PERMANENT.
-            EffectOutcome::Err(retry::permanent(format!(
+            EffectOutcome::err(format!(
                 "FsExecutor only handles the fs/* families, got {}",
                 req.content_type.family
-            )))
+            ))
         }
     }
 
@@ -115,9 +114,7 @@ fn glob_paths(pattern: &str) -> EffectOutcome {
                 v.sort();
                 v
             }
-            Err(e) => {
-                return EffectOutcome::Err(retry::permanent(format!("fs/glob {pattern}: {e}")))
-            }
+            Err(e) => return EffectOutcome::err(format!("fs/glob {pattern}: {e}")),
         }
     } else if std::path::Path::new(pattern).exists() {
         vec![pattern.to_string()]
@@ -133,6 +130,7 @@ fn glob_paths(pattern: &str) -> EffectOutcome {
 mod tests {
     use super::*;
     use cdz_kernel::effect::{EffectKind, Timeliness};
+    use cdz_kernel::event::Retryability;
 
     fn fs_req(family: &'static str, path: &str, payload: Option<&[u8]>) -> EffectRequest {
         EffectRequest::new_with_family(
@@ -187,7 +185,7 @@ mod tests {
             )
             .await;
         assert!(
-            matches!(&out, EffectOutcome::Err(r) if r.starts_with("PERMANENT:") && r.contains("fs/read")),
+            matches!(&out, EffectOutcome::Err { message, retryability } if *retryability == Retryability::Permanent && message.contains("fs/read")),
             "a missing path read is PERMANENT, got {out:?}"
         );
     }
@@ -201,7 +199,7 @@ mod tests {
             .perform(&fs_req(effect_ct::FS_WRITE, &ps, None), Hash::of(b"k"))
             .await;
         assert!(
-            matches!(&out, EffectOutcome::Err(r) if r.contains("requires a payload")),
+            matches!(&out, EffectOutcome::Err { message, .. } if message.contains("requires a payload")),
             "a payload-less write is PERMANENT, got {out:?}"
         );
     }
@@ -242,7 +240,7 @@ mod tests {
         );
         let out = exec.perform(&req, Hash::of(b"k")).await;
         assert!(
-            matches!(&out, EffectOutcome::Err(r) if r.starts_with("PERMANENT:") && r.contains("only handles")),
+            matches!(&out, EffectOutcome::Err { message, retryability } if *retryability == Retryability::Permanent && message.contains("only handles")),
             "a non-fs family is PERMANENT, got {out:?}"
         );
         assert!(exec.handles_family(effect_ct::FS_READ) && !exec.handles_family(effect_ct::SHELL));

@@ -194,7 +194,7 @@ async fn a_store_effect_with_no_name_store_attached_folds_an_error_not_a_panic()
         session.session().log().iter().any(|e| matches!(
             &e.body,
             EventBody::EffectResult {
-                result: EffectOutcome::Err(_),
+                result: EffectOutcome::Err { .. },
                 ..
             }
         )),

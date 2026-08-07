@@ -128,9 +128,9 @@ impl LifecycleExecutor {
                 Hash::from_bytes(arr)
             }
             _ => {
-                return EffectOutcome::Err(crate::retry::permanent(
+                return EffectOutcome::err(
                     "LifecycleExecutor: lifecycle/spawn requires the child reducer_hash as a 32-byte inline payload",
-                ));
+                );
             }
         };
         // The parent genesis hash = the owner's GENESIS HASH, threaded at wiring time (NOT re-parsed from the
@@ -160,9 +160,9 @@ impl LifecycleExecutor {
             Ok(()) => EffectOutcome::Ok(Some(cdz_kernel::effect::Payload::Inline(
                 child_id.as_str().as_bytes().to_vec().into(),
             ))),
-            Err(_) => EffectOutcome::Err(crate::retry::retryable(
+            Err(_) => EffectOutcome::err_retryable(
                 "LifecycleExecutor: the host loop lifecycle channel is closed — cannot record the spawn op (host shutting down?)",
-            )),
+            ),
         }
     }
 }
@@ -187,24 +187,24 @@ impl Executor for LifecycleExecutor {
             .matches_family(effect_ct::LIFECYCLE_SUSPEND);
         let is_resume = req.content_type.matches_family(effect_ct::LIFECYCLE_RESUME);
         if !(is_terminate || is_suspend || is_resume) {
-            return EffectOutcome::Err(crate::retry::permanent(format!(
+            return EffectOutcome::err(format!(
                 "LifecycleExecutor handles only lifecycle/spawn|terminate|suspend|resume, got {family}"
-            )));
+            ));
         }
         // `target` is the peer session id (raw SessionId string). Empty = structural PERMANENT.
         if req.target.is_empty() {
-            return EffectOutcome::Err(crate::retry::permanent(format!(
+            return EffectOutcome::err(format!(
                 "LifecycleExecutor: {family} requires a non-empty target (the peer session id)"
-            )));
+            ));
         }
         let target = SessionId::new(req.target.clone());
         // A session controlling ITSELF via lifecycle/* is rejected — self-lifecycle is the `close`/own-loop
         // path, not the controller-controls-a-peer path this family is for (and it avoids the loop mutating
         // the very session it's mid-deliver on).
         if target == self.owner {
-            return EffectOutcome::Err(crate::retry::permanent(format!(
+            return EffectOutcome::err(format!(
                 "LifecycleExecutor: a session cannot {family} itself; target == controller"
-            )));
+            ));
         }
         let by = self.owner.clone();
         // RECORD the op for the loop to apply after deliver (defer-to-loop). Ok(None) = accepted + enqueued
@@ -220,9 +220,9 @@ impl Executor for LifecycleExecutor {
                 }
                 None => String::new(),
                 Some(cdz_kernel::effect::Payload::Blob(_)) => {
-                    return EffectOutcome::Err(crate::retry::permanent(
+                    return EffectOutcome::err(
                         "LifecycleExecutor: a blob-ref reason is unsupported — this executor has no blob-store access; inline the reason (or omit it)",
-                    ));
+                    );
                 }
             };
             LifecycleOp::Terminate { target, by, reason }
@@ -233,9 +233,9 @@ impl Executor for LifecycleExecutor {
             // building their op WITHOUT reading req.payload, so a payload, esp. a Blob ref, vanished silently
             // — the exact inconsistency terminate's exhaustive match guards against).
             if req.payload.is_some() {
-                return EffectOutcome::Err(crate::retry::permanent(format!(
+                return EffectOutcome::err(format!(
                     "LifecycleExecutor: {family} takes no payload (it flips a scheduler bit); drop the payload"
-                )));
+                ));
             }
             if is_suspend {
                 LifecycleOp::Suspend { target, by }
@@ -245,9 +245,9 @@ impl Executor for LifecycleExecutor {
         };
         match self.channel.send(op) {
             Ok(()) => EffectOutcome::Ok(None),
-            Err(_) => EffectOutcome::Err(crate::retry::retryable(
+            Err(_) => EffectOutcome::err_retryable(
                 "LifecycleExecutor: the host loop lifecycle channel is closed — cannot record the op (host shutting down?)",
-            )),
+            ),
         }
     }
 
@@ -267,6 +267,7 @@ impl Executor for LifecycleExecutor {
 mod tests {
     use super::*;
     use cdz_kernel::effect::{Payload, Timeliness};
+    use cdz_kernel::event::Retryability;
 
     fn terminate_req(target: &str, reason: Option<&[u8]>) -> EffectRequest {
         EffectRequest::new_with_family(
@@ -346,7 +347,7 @@ mod tests {
         );
         assert!(
             matches!(&exec.perform(&req, Hash::of(b"k")).await,
-                EffectOutcome::Err(r) if r.starts_with("PERMANENT:") && r.contains("reducer_hash")),
+                EffectOutcome::Err { message, retryability } if *retryability == Retryability::Permanent && message.contains("reducer_hash")),
             "spawn with no reducer_hash payload is PERMANENT"
         );
     }
@@ -505,7 +506,7 @@ mod tests {
             );
             assert!(
                 matches!(&exec.perform(&inline, Hash::of(b"k")).await,
-                    EffectOutcome::Err(r) if r.starts_with("PERMANENT:") && r.contains("takes no payload")),
+                    EffectOutcome::Err { message, retryability } if *retryability == Retryability::Permanent && message.contains("takes no payload")),
                 "{family} with an inline payload is PERMANENT"
             );
             // Blob-ref payload → PERMANENT (the specific silent-drop the finding called out).
@@ -517,7 +518,7 @@ mod tests {
             );
             assert!(
                 matches!(&exec.perform(&blob, Hash::of(b"k")).await,
-                    EffectOutcome::Err(r) if r.starts_with("PERMANENT:") && r.contains("takes no payload")),
+                    EffectOutcome::Err { message, retryability } if *retryability == Retryability::Permanent && message.contains("takes no payload")),
                 "{family} with a blob-ref payload is PERMANENT (no silent drop)"
             );
         }
@@ -535,7 +536,7 @@ mod tests {
         );
         assert!(
             matches!(&exec.perform(&req, Hash::of(b"k")).await,
-                EffectOutcome::Err(r) if r.starts_with("PERMANENT:") && r.contains("cannot lifecycle/suspend itself")),
+                EffectOutcome::Err { message, retryability } if *retryability == Retryability::Permanent && message.contains("cannot lifecycle/suspend itself")),
             "self-suspend is PERMANENT"
         );
     }
@@ -554,7 +555,7 @@ mod tests {
         );
         let out = exec.perform(&req, Hash::of(b"k")).await;
         assert!(
-            matches!(&out, EffectOutcome::Err(r) if r.starts_with("PERMANENT:") && r.contains("blob-ref reason is unsupported")),
+            matches!(&out, EffectOutcome::Err { message, retryability } if *retryability == Retryability::Permanent && message.contains("blob-ref reason is unsupported")),
             "a blob-ref reason is rejected PERMANENT, got {out:?}"
         );
     }
@@ -567,7 +568,7 @@ mod tests {
             .perform(&terminate_req("me", None), Hash::of(b"k"))
             .await;
         assert!(
-            matches!(&out, EffectOutcome::Err(r) if r.starts_with("PERMANENT:") && r.contains("cannot lifecycle/terminate itself")),
+            matches!(&out, EffectOutcome::Err { message, retryability } if *retryability == Retryability::Permanent && message.contains("cannot lifecycle/terminate itself")),
             "self-terminate is PERMANENT, got {out:?}"
         );
     }
@@ -578,7 +579,7 @@ mod tests {
         let mut exec = LifecycleExecutor::new(tx, SessionId::new("ctl"), Hash::of(b"ctl"));
         let out = exec.perform(&terminate_req("", None), Hash::of(b"k")).await;
         assert!(
-            matches!(&out, EffectOutcome::Err(r) if r.starts_with("PERMANENT:") && r.contains("non-empty target")),
+            matches!(&out, EffectOutcome::Err { message, retryability } if *retryability == Retryability::Permanent && message.contains("non-empty target")),
             "empty target is PERMANENT, got {out:?}"
         );
     }
@@ -592,7 +593,7 @@ mod tests {
             .perform(&terminate_req("b", None), Hash::of(b"k"))
             .await;
         assert!(
-            matches!(&out, EffectOutcome::Err(r) if r.starts_with("RETRYABLE:") && r.contains("channel is closed")),
+            matches!(&out, EffectOutcome::Err { message, retryability } if *retryability == Retryability::Retryable && message.contains("channel is closed")),
             "a closed lifecycle channel is RETRYABLE, got {out:?}"
         );
     }
@@ -608,7 +609,9 @@ mod tests {
             Timeliness::Interactive,
         );
         let out = exec.perform(&req, Hash::of(b"k")).await;
-        assert!(matches!(&out, EffectOutcome::Err(r) if r.starts_with("PERMANENT:")));
+        assert!(
+            matches!(&out, EffectOutcome::Err { retryability, .. } if *retryability == Retryability::Permanent)
+        );
         assert!(
             exec.handles_family(effect_ct::LIFECYCLE_TERMINATE)
                 && !exec.handles_family(effect_ct::HTTP)
