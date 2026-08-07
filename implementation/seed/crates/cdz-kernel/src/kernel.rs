@@ -914,7 +914,7 @@ impl Session {
                     // S1 latch: an un-durable dispatch folds an Err, never a phantom answer (same tier-B
                     // rule the routed path applies before executing).
                     let outcome = if self.persist_error.is_some() {
-                        EffectOutcome::Err(
+                        EffectOutcome::err(
                             "dispatch not durably logged (persist failure) — capabilities NOT answered (S1)"
                                 .to_string(),
                         )
@@ -1008,7 +1008,7 @@ impl Session {
                 let outcome = if self.persist_error.is_some() {
                     // S1 latch: an un-durable dispatch never mutates the store (same tier-B rule the routed
                     // path applies before executing) — the set/resolve is NOT applied.
-                    EffectOutcome::Err(
+                    EffectOutcome::err(
                         "dispatch not durably logged (persist failure) — store effect NOT applied (S1)"
                             .to_string(),
                     )
@@ -1102,7 +1102,7 @@ impl Session {
 
             // S1 latch-check BEFORE routing (tier B): an un-durable dispatch is NOT routed.
             if self.persist_error.is_some() {
-                let outcome = EffectOutcome::Err(
+                let outcome = EffectOutcome::err(
                     "dispatch not durably logged (persist failure) — effect NOT routed (S1)"
                         .to_string(),
                 );
@@ -1297,7 +1297,7 @@ impl Session {
                         // resolve-with-payload as MalformedStoreEffect below, so don't apply the set-specific
                         // name-mismatch error to a non-set family.
                         if is_set && payload_name != name {
-                            return EffectOutcome::Err(format!(
+                            return EffectOutcome::err(format!(
                                 "store/set payload name {payload_name:?} != authorized target {name:?} \
                                  — refusing (the target is what authz gated)"
                             ));
@@ -1305,21 +1305,21 @@ impl Session {
                         Some(h)
                     }
                     Err(e) => {
-                        return EffectOutcome::Err(format!(
+                        return EffectOutcome::err(format!(
                             "store effect: malformed name-set payload: {e:?}"
                         ));
                     }
                 }
             }
             Some(crate::effect::Payload::Blob(_)) => {
-                return EffectOutcome::Err(
+                return EffectOutcome::err(
                     "store effect: blob-ref payload unsupported — inline the name-set".to_string(),
                 );
             }
             None => None,
         };
         let Some(store) = self.name_store.as_mut() else {
-            return EffectOutcome::Err(
+            return EffectOutcome::err(
                 "store effect: no name store attached to this session (attach_name_store)"
                     .to_string(),
             );
@@ -1342,11 +1342,11 @@ impl Session {
             Ok(
                 crate::name_store::StoreOutcome::GroupOpApplied
                 | crate::name_store::StoreOutcome::Members(_),
-            ) => EffectOutcome::Err(format!(
+            ) => EffectOutcome::err(format!(
                 "store effect on {name:?}: a group OR-set outcome from the pointer path \
                  (misroute — group verbs use apply_group_effect)"
             )),
-            Err(e) => EffectOutcome::Err(format!("store effect on {name:?}: {e:?}")),
+            Err(e) => EffectOutcome::err(format!("store effect on {name:?}: {e:?}")),
         }
     }
 
@@ -1376,7 +1376,7 @@ impl Session {
                 match crate::event_ast::decode_member_op(bytes) {
                     Ok((payload_name, add, member, tag)) => {
                         if payload_name != name {
-                            return EffectOutcome::Err(format!(
+                            return EffectOutcome::err(format!(
                                 "group store effect payload name {payload_name:?} != authorized target \
                                  {name:?} — refusing (the target is what authz gated)"
                             ));
@@ -1384,14 +1384,14 @@ impl Session {
                         Some(crate::name_store::MemberOp { add, member, tag })
                     }
                     Err(e) => {
-                        return EffectOutcome::Err(format!(
+                        return EffectOutcome::err(format!(
                             "group store effect: malformed member-op payload: {e:?}"
                         ));
                     }
                 }
             }
             Some(crate::effect::Payload::Blob(_)) => {
-                return EffectOutcome::Err(
+                return EffectOutcome::err(
                     "group store effect: blob-ref payload unsupported — inline the member-op"
                         .to_string(),
                 );
@@ -1399,7 +1399,7 @@ impl Session {
             None => None,
         };
         let Some(store) = self.name_store.as_mut() else {
-            return EffectOutcome::Err(
+            return EffectOutcome::err(
                 "group store effect: no name store attached to this session (attach_name_store)"
                     .to_string(),
             );
@@ -1422,10 +1422,10 @@ impl Session {
             Ok(
                 crate::name_store::StoreOutcome::Set(_)
                 | crate::name_store::StoreOutcome::Resolved(_),
-            ) => EffectOutcome::Err(format!(
+            ) => EffectOutcome::err(format!(
                 "group store effect on {name:?}: a single-value outcome from the group path (misroute)"
             )),
-            Err(e) => EffectOutcome::Err(format!("group store effect on {name:?}: {e:?}")),
+            Err(e) => EffectOutcome::err(format!("group store effect on {name:?}: {e:?}")),
         }
     }
 
@@ -1774,7 +1774,7 @@ fn clamp_now_outcome(outcome: EffectOutcome, last_now: &mut u64) -> EffectOutcom
             let raw = u64::from_le_bytes(arr);
             let Some(floor) = last_now.checked_add(1) else {
                 // last_now == u64::MAX: no strictly-greater value exists. Fail loud, don't regress.
-                return EffectOutcome::Err(
+                return EffectOutcome::err(
                     "PERMANENT: monotonic clock exhausted (last_now at u64::MAX ns)".to_string(),
                 );
             };
@@ -2516,7 +2516,7 @@ mod monotonic_now_tests {
             u64::MAX.to_le_bytes().to_vec().into(),
         )));
         match clamp_now_outcome(reading, &mut last) {
-            EffectOutcome::Err(msg) => {
+            EffectOutcome::Err { message: msg, .. } => {
                 assert!(
                     msg.starts_with("PERMANENT:"),
                     "clock-exhausted is a PERMANENT error: {msg}"
@@ -2535,8 +2535,8 @@ mod monotonic_now_tests {
     async fn clamp_now_passes_through_non_now_shapes() {
         let mut last = 42u64;
         // An Err passes through, last unchanged.
-        let e = clamp_now_outcome(EffectOutcome::Err("boom".into()), &mut last);
-        assert!(matches!(e, EffectOutcome::Err(_)));
+        let e = clamp_now_outcome(EffectOutcome::err("boom"), &mut last);
+        assert!(matches!(e, EffectOutcome::Err { .. }));
         assert_eq!(last, 42);
         // A non-8-byte Inline payload (not a u64 ns) passes through untouched.
         let weird = EffectOutcome::Ok(Some(Payload::Inline(b"not-8".to_vec().into())));
@@ -3523,7 +3523,7 @@ mod monotonic_now_tests {
     impl Executor for FailingHttpExecutor {
         async fn perform(&mut self, req: &EffectRequest, _key: Hash) -> EffectOutcome {
             assert_eq!(req.kind, EffectKind::Http);
-            EffectOutcome::Err("PERMANENT: 400 bad request".to_string())
+            EffectOutcome::err("PERMANENT: 400 bad request".to_string())
         }
     }
 
@@ -3544,7 +3544,10 @@ mod monotonic_now_tests {
                     token: None,
                 }]),
                 EventBody::EffectResult {
-                    result: EffectOutcome::Err(reason),
+                    result:
+                        EffectOutcome::Err {
+                            message: reason, ..
+                        },
                     ..
                 } => {
                     kv.put(b"last_err".to_vec(), reason.clone().into_bytes());
@@ -3599,7 +3602,7 @@ mod monotonic_now_tests {
             s.log().iter().any(|e| matches!(
                 &e.body,
                 EventBody::EffectResult {
-                    result: EffectOutcome::Err(_),
+                    result: EffectOutcome::Err { .. },
                     ..
                 }
             )),
@@ -4321,7 +4324,7 @@ mod store_effect_tests {
                     b"test result: 277 passed".to_vec().into(),
                 )))
             } else {
-                EffectOutcome::Err(format!("unexpected effect family {family:?}"))
+                EffectOutcome::err(format!("unexpected effect family {family:?}"))
             }
         }
     }

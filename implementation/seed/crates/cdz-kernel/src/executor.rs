@@ -102,7 +102,7 @@ impl Executor for CompositeExecutor {
         // executor is an OBSERVABLE Err (§9d anti-stuck), never a panic/drop.
         match self.by_family.get_mut(req.content_type.family.as_ref()) {
             Some(inner) => inner.perform(req, idempotency_key).await,
-            None => EffectOutcome::Err(format!(
+            None => EffectOutcome::err(format!(
                 "no executor registered for effect family {:?} (target {:?})",
                 req.content_type.family, req.target
             )),
@@ -184,7 +184,7 @@ impl Executor for ShellExecutor {
     async fn perform(&mut self, req: &EffectRequest, _idempotency_key: Hash) -> EffectOutcome {
         use crate::effect::EffectKind;
         if req.kind != EffectKind::Shell {
-            return EffectOutcome::Err(format!(
+            return EffectOutcome::err(format!(
                 "ShellExecutor only handles Shell effects, got {:?}",
                 req.kind
             ));
@@ -193,7 +193,7 @@ impl Executor for ShellExecutor {
         // metacharacters are literal arguments, not interpreted (PR#992 CWE-78 fix).
         let mut parts = req.target.split_whitespace();
         let Some(program) = parts.next() else {
-            return EffectOutcome::Err("empty command".to_string());
+            return EffectOutcome::err("empty command".to_string());
         };
         let args: Vec<&str> = parts.collect();
         let output = std::process::Command::new(program).args(&args).output();
@@ -201,12 +201,12 @@ impl Executor for ShellExecutor {
             Ok(out) if out.status.success() => {
                 EffectOutcome::Ok(Some(Payload::Inline(out.stdout.into())))
             }
-            Ok(out) => EffectOutcome::Err(format!(
+            Ok(out) => EffectOutcome::err(format!(
                 "exit {}: {}",
                 out.status.code().unwrap_or(-1),
                 String::from_utf8_lossy(&out.stderr).trim()
             )),
-            Err(e) => EffectOutcome::Err(format!("spawn failed: {e}")),
+            Err(e) => EffectOutcome::err(format!("spawn failed: {e}")),
         }
     }
 }
@@ -281,7 +281,7 @@ mod tests {
             .perform(&req(EffectKind::Model, "gpt"), Hash::of(b"k"))
             .await
         {
-            EffectOutcome::Err(msg) => {
+            EffectOutcome::Err { message: msg, .. } => {
                 // The message names the unroutable FAMILY (seq-39: routing keys on the family string).
                 assert!(
                     msg.contains(EffectKind::Model.family()),
@@ -407,7 +407,7 @@ mod tests {
         let mut ext = req(EffectKind::Http, "x");
         ext.content_type.family = "embedding".into();
         match exec.perform(&ext, Hash::of(b"k")).await {
-            EffectOutcome::Err(msg) => assert!(
+            EffectOutcome::Err { message: msg, .. } => assert!(
                 msg.contains("embedding"),
                 "unroutable extension family named in the err: {msg}"
             ),

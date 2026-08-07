@@ -276,15 +276,59 @@ pub enum CloseOutcome {
     Failure(String),
 }
 
+/// Whether a failed effect is worth RETRYING — a FIRST-CLASS typed field on [`EffectOutcome::Err`] (operator
+/// Q2), so a reducer's fold matches STRUCTURALLY on the retryability rather than parsing a `RETRYABLE:`/
+/// `PERMANENT:` prefix out of the message string (the old host convention this replaces). RETRY POLICY lives
+/// in the reducer (re-emit + timer backoff = evolvable-on-log), not the host — the kernel/host only CLASSIFY
+/// (e.g. a Bedrock throttle → `Retryable`, a malformed request → `Permanent`); the standing-order split.
+/// An enum (not a bool) for additive room (a future `Unknown`/`RetryAfter` arm appends without a wire break).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Retryability {
+    /// The failure is permanent — retrying can't help (malformed input, an auth denial, a logic error). The
+    /// SAFE DEFAULT: an un-annotated / legacy error is `Permanent` (fail-closed — never auto-retry blindly).
+    #[default]
+    Permanent,
+    /// The failure is transient — a retry (the reducer's policy: backoff + re-emit) may succeed (a throttle,
+    /// a timeout, a 5xx). The host CLASSIFIES the error as this; the reducer DECIDES whether/how to retry.
+    Retryable,
+}
+
 /// The outcome of an executed effect: success payload, a failure, or a timeout (the §9d anti-stuck
 /// path — a hung effect becomes a normal event, not a wedge).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum EffectOutcome {
     Ok(Option<Payload>),
-    Err(String),
+    /// A failure: a human/diagnostic `message` + a typed [`Retryability`] (operator Q2 — the reducer folds
+    /// on the retryability, not a string token). Construct a permanent error ergonomically via
+    /// [`EffectOutcome::err`]; a retryable one via [`EffectOutcome::err_retryable`].
+    Err {
+        message: String,
+        retryability: Retryability,
+    },
     /// The effect's deadline elapsed with no result. Per the v0 decision (§16c-S4), a timeout CANCELS
     /// the dispatch — the kernel guarantees no late `Ok`/`Err` for this id will ever be folded.
     TimedOut,
+}
+
+impl EffectOutcome {
+    /// A PERMANENT failure (the common case — a malformed effect, a no-store, an internal error): retrying
+    /// can't help. The ergonomic constructor the ~all kernel-internal error sites use (they were `Err(msg)`
+    /// before Q2 added the typed field; `err(msg)` preserves their intent = `Permanent`).
+    pub fn err(message: impl Into<String>) -> Self {
+        EffectOutcome::Err {
+            message: message.into(),
+            retryability: Retryability::Permanent,
+        }
+    }
+
+    /// A RETRYABLE failure (the host sets this when it classifies a transient error — a throttle/timeout/5xx);
+    /// the reducer's fold decides whether/how to retry (backoff + re-emit).
+    pub fn err_retryable(message: impl Into<String>) -> Self {
+        EffectOutcome::Err {
+            message: message.into(),
+            retryability: Retryability::Retryable,
+        }
+    }
 }
 
 /// An event plus its envelope. The envelope fields are the day-one commitments from the review/§10:
@@ -598,7 +642,23 @@ fn decode_outcome(c: &mut Cursor) -> Result<EffectOutcome, DecodeError> {
                 })
             }
         }),
-        1 => EffectOutcome::Err(c.string()?),
+        1 => {
+            let message = c.string()?;
+            let retryability = match c.u8()? {
+                0 => Retryability::Permanent,
+                1 => Retryability::Retryable,
+                t => {
+                    return Err(DecodeError::BadTag {
+                        field: "retryability",
+                        tag: t,
+                    })
+                }
+            };
+            EffectOutcome::Err {
+                message,
+                retryability,
+            }
+        }
         2 => EffectOutcome::TimedOut,
         t => {
             return Err(DecodeError::BadTag {
@@ -779,9 +839,18 @@ fn encode_outcome(o: &EffectOutcome, out: &mut Vec<u8>) {
                 None => out.push(0),
             }
         }
-        EffectOutcome::Err(msg) => {
+        EffectOutcome::Err {
+            message,
+            retryability,
+        } => {
             out.push(1);
-            encode_str(msg, out);
+            encode_str(message, out);
+            // Retryability rides as a fixed byte AFTER the message (this bespoke binary codec is NOT the
+            // durable log — that's event_ast; here always-write is safe + keeps decode positional).
+            out.push(match retryability {
+                Retryability::Permanent => 0,
+                Retryability::Retryable => 1,
+            });
         }
         EffectOutcome::TimedOut => out.push(2),
     }
@@ -1107,7 +1176,7 @@ mod tests {
                 cause: None,
                 body: EventBody::EffectResult {
                     id: EffectId(9),
-                    result: EffectOutcome::Err("boom".into()),
+                    result: EffectOutcome::err("boom"),
                     token: None,
                 },
             },

@@ -756,7 +756,7 @@ async fn s1_route_guard_does_not_perform_an_effect_whose_dispatch_failed_to_pers
     assert_eq!(session.open_effects(), 0);
     assert!(session.log().iter().any(|e| matches!(
         &e.body,
-        EventBody::EffectResult { result: EffectOutcome::Err(msg), .. } if msg.contains("not durably logged")
+        EventBody::EffectResult { result: EffectOutcome::Err { message: msg, .. }, .. } if msg.contains("not durably logged")
     )));
 }
 
