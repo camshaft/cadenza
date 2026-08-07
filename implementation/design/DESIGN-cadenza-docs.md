@@ -55,11 +55,29 @@ NEW binary-AST construct built from the same `cadenza-ast` arenas — new head *
 per the frozen 2-variant `Struct`). Rationale: reuses the arena model + codec + every AST surface;
 honors the standing binary-AST-reuse order; a doc index is itself matchable/queryable as `Ast`.
 
-**Structured, not rendered (operator ruling).** The emitted doc-AST carries the *structured*
-signature as a type sub-AST — NOT a pre-printed display string. Rendering (turning `(sig …)` into
+**Structured, not rendered (operator ruling).** Every field the doc-AST carries is a *structured*
+sub-AST — NOT a pre-printed display string. Rendering (turning a signature into
 `(a -> b) -> List a -> List b`, HTML, markdown) is the CONSUMER's job: it runs the ML printer over
 the structured node. This keeps the doc-AST a faithful data projection and avoids the compiler
 choosing a rendering.
+
+**`sig` and `ty` are TWO SEPARATE, ADDITIVE fields — one never rewrites the other** (clarified after
+v-syntax's I1a, 2026-08-07). They carry genuinely distinct information and neither subsumes the
+other, so I2 ADDS `ty`; it does NOT mutate `sig`:
+- **`(sig <sub-ast>)` — the SYNTACTIC signature (I1, structural, always present).** The item's
+  declared signature structure as-written: the param-name list + any explicit `(: p T)` annotations +
+  any return annotation — but NOT the body. For `def map(f, xs) = f` that is the head-with-params
+  `(map f xs)` (arity + param names), sans the body `f`. Un-annotated positions carry the param NAME
+  only (no type) — the syntactic signature is often names-with-holes pre-typecheck, and that is fine:
+  it gives a consumer arity + names without any typecheck. This field is stable across I1→I2.
+- **`(ty <sub-ast>)` — the RESOLVED type (I2, semantic, present post-typecheck).** The inferred/
+  resolved arrow type, e.g. `(-> (-> a b) (List a) (List b))` — reified to a cdzast sub-AST via the
+  existing `eval::encode_typeval` (no printed-string type, no new reifier; confirmed by v-inference).
+  Added by the rcdzc post-typecheck query; absent in a syntax-only (I1) projection.
+
+Keeping them separate is what lets I1 stand alone off the parser (names-structure, no types) while I2
+layers resolved types ADDITIVELY — and it preserves both the source-written names (which the arrow
+type has thrown away) and the resolved types (which the syntax never had).
 
 ```
 (doc-module "mymod"
@@ -67,15 +85,15 @@ choosing a rendering.
   (doc-item
     (name "map")
     (doc  "Applies f to each element.")
-    (sig  (-> (-> a b) (List a) (List b)))         ; STRUCTURED signature sub-AST — consumer prints it
+    (sig  (map f xs))                              ; I1: SYNTACTIC signature — param names + written annos, NO body
+    (ty   (-> (-> a b) (List a) (List b)))         ; I2: RESOLVED type — reified via encode_typeval (post-typecheck)
     (kind def)
     (visibility public))
   (doc-item …))
 ```
 
-`(sig …)` is the structured signature sub-AST (the source annotation as-written pre-typecheck;
-enriched with the resolved type post-typecheck — see §4.2). No separate printed-string field: a
-display string is `printer(sig)`, computed by the consumer, never stored.
+No printed-string field anywhere: a display string is `printer(sig)` / `printer(ty)`, computed by
+the consumer, never stored.
 
 ### 2.2 Guide direction — DECIDED (operator): **codegen TSX from sexprs**
 Author guide content as sexprs; a build step emits the TSX chapter modules. The existing React site,
@@ -187,10 +205,16 @@ A doc document is a `doc-module` construct: a module name, optional `module-doc`
 `doc-item`s. Each `doc-item` carries STRUCTURED fields only (no rendered strings):
 - `(name "…")` — the item's public identifier.
 - `(doc "…")` — doc prose (from the leading `(doc …)` node(s)).
-- `(sig <sub-ast>)` — the STRUCTURED signature sub-AST: the syntactic annotation as-written
-  (structural pass), enriched with the resolved type post-typecheck (rcdzc pass). A consumer renders
-  it via the ML printer.
-- `(kind def|type|effect|module)`, `(visibility public|…)` — for filtering.
+- `(sig <sub-ast>)` — the SYNTACTIC signature sub-AST (I1): the item's declared signature structure
+  as-written — param-name list + explicit `(: p T)` annotations + return annotation, NO body.
+  Un-annotated positions carry the param name only. Always present. A consumer renders it via the ML
+  printer.
+- `(ty <sub-ast>)` — the RESOLVED type sub-AST (I2, post-typecheck): the inferred/resolved arrow type,
+  reified via `eval::encode_typeval`. ADDED by rcdzc; absent in a syntax-only projection. Never
+  rewrites `(sig …)` — the two are separate, additive fields (see §2.1).
+- `(kind def|type|effect|module)`, `(visibility public|…)` — for filtering. `(kind)` known at
+  selection; `(visibility public)` is constant in v1 (exported surface only) but emitted for
+  forward-compat with the deferred internal-docs pass.
 - byte payloads (if any) use the `b"…"` `Ast.Bytes` leaf (one length-prefixed node), never a
   node-per-byte list (v-metaprog).
 
@@ -207,14 +231,18 @@ OPTIONAL — populated by rcdzc, `None` in the syntax-only projection.
 Per v-syntax's seam analysis — SPLIT by what each layer knows, both as compiler queries:
 - **`cadenza-syntax` owns the STRUCTURAL query:** `doc_items(&Arenas) -> Vec<DocItem>` — an
   AST→AST projection that, per public def/type/effect, emits `{name, doc-text, syntactic-sig
-  subtree, visibility, resolved-ty = None}`. Purely structural, no types needed; reusable by tools
-  that don't typecheck (fast doc outline, IDE symbol list, syntax-only preview). Same kind of Arenas
-  projection cadenza-syntax already does (json/markdown/cedar/toml).
-- **`rcdzc` owns the TYPE-ENRICHMENT query:** post-typecheck, fill the resolved type (inferred
-  return, resolved generic, effect row) into `(sig …)` — rcdzc is the only place that type exists.
-- **Boundary case (v-syntax flag):** an un-annotated public def yields a `doc-item` with an EMPTY
-  syntactic sig in the structural pass (so the item list is COMPLETE pre-typecheck); rcdzc fills the
-  resolved type. (Chosen default — keep it in the structural pass.)
+  subtree (param names + written annotations, no body), visibility, resolved-ty = None}`. Purely
+  structural, no types needed; reusable by tools that don't typecheck (fast doc outline, IDE symbol
+  list, syntax-only preview). Same kind of Arenas projection cadenza-syntax already does
+  (json/markdown/cedar/toml).
+- **`rcdzc` owns the TYPE-ENRICHMENT query:** post-typecheck, ADD the resolved type (inferred return,
+  resolved generic, effect row) as a NEW `(ty …)` field (reified via `eval::encode_typeval`) — rcdzc
+  is the only place that type exists. It does NOT rewrite `(sig …)`.
+- **Boundary case (v-syntax flag), RESOLVED:** an un-annotated public def carries its param-NAME
+  structure in `(sig …)` (e.g. `(map f xs)` — arity + names, no types), NOT an empty sig — so the
+  item list AND its shape are complete + useful pre-typecheck. rcdzc then adds `(ty …)` with the
+  resolved arrow type. `sig` (names, syntactic) and `ty` (arrow, resolved) coexist; neither is empty
+  nor overwrites the other.
 
 Exposed as a `cdz doc` / `cadenza doc` subcommand that runs the query and emits canonical `cdzast`
 (displayable as sexpr/ML for inspection).
@@ -351,8 +379,9 @@ Each increment is independently gate-green and a MEANINGFUL merge-request.
 
 ### 9.1 Extraction timing — RESOLVED (v-syntax): **SPLIT**
 Structural query in cadenza-syntax (no types); resolved-type enrichment in rcdzc post-typecheck.
-Shared `DocItem` with optional resolved-ty. Un-annotated defs kept in the structural pass with an
-empty syntactic sig. (§4.2)
+Shared `DocItem` with `sig` (syntactic, always present) + optional `ty` (resolved). Un-annotated
+defs carry their param-NAME structure in `sig` (e.g. `(map f xs)`), NOT an empty sig; rcdzc adds
+`ty`. (§4.2)
 
 ### 9.2 Multi-module transport — RESOLVED (v-metaprog): **canonical inline per module (v1)**
 The `\x00\x02` dictionary transport is NON-CANONICAL (operator option A) and a compaction-only
@@ -365,9 +394,13 @@ a dependency to sequence).
 No doc effect family, reducer-owned index. But add the missing generic reducer-facing `blob/put`
 (+`blob/get`) CAS-write mechanism (§2.3/§4.3/I3). (§4.3)
 
-### 9.4 Signature representation — RESOLVED (operator + v-syntax): **structured sub-AST is truth; consumer renders**
-Emit the structured signature sub-AST only; NO pre-printed string in the doc-AST. A display string is
-`printer(sig)`, computed by the consumer. (§2.1)
+### 9.4 Signature representation — RESOLVED (operator + v-syntax): **structured sub-ASTs; consumer renders; `sig`≠`ty`**
+Emit structured sub-ASTs only; NO pre-printed string in the doc-AST. A display string is
+`printer(sig)`/`printer(ty)`, computed by the consumer. `sig` (syntactic signature: param names +
+written annotations, no body, I1) and `ty` (resolved arrow type via `encode_typeval`, I2) are TWO
+SEPARATE ADDITIVE fields — I2 adds `ty`, never rewrites `sig`. (Clarified after v-syntax's I1a; §2.1.)
+v-syntax's structured-sig fix shipped in `55d141cd6` (grafts the item's signature subtree, not a
+printed string).
 
 ### 9.5 Guide content model — RESOLVED (design-agent + v-guide survey): **unify on `cadenza-ast`, with carve-outs**
 Unify; carve out the two bespoke widgets (or schematize) + the app-route showcases (out of scope);
