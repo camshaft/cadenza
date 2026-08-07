@@ -6105,3 +6105,8 @@ pass	a map-via-effects walk — each element transformed by a dispatch, output o
 pass	filter-via-effects — a STATEFUL predicate dispatch decides each element's survival
 pass	a LET-BOUND perform after a cross-function recursive helper observes the helper's out-state
 pass	the let-bound-after-helper observation is state-type-general (scalar counter)
+pass	a byte-walk lexer performing per byte — Bytes.at pairs with an advancing draw per position
+pass	an emit/flush byte-writer seeded EMPTY — three emits accumulate, flush reads the frame back
+pass	a reader→writer PUMP then a LET-bound flush reads the FULL accumulation (breaker tk3d class)
+pass	a BigInt arithmetic tower over one perform draw — cube then divide, narrowed once
+pass	a Rational SQUARE over a perform draw — 1/5 squared stays exactly 1/25
