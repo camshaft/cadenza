@@ -40,7 +40,7 @@ export default function OpaqueTypes() {
 (def (main) (rate (percent 150)))`}
       />
       <P>
-        The payoff isn't the clamping itself but what every <em>downstream</em> function can now assume.
+        What this buys you isn't the clamping itself but what every <em>downstream</em> function can now assume.
         Because a <C>Percent</C> can only come from <C>percent</C>, any code that receives one <em>knows</em>{" "}
         it's in range, with no re-checking. Here <C>apply-discount</C> takes a price and a <C>Percent</C> and
         subtracts that fraction, so a 25% discount off 200 is 150:

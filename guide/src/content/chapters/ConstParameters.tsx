@@ -122,7 +122,7 @@ export default function ConstParameters() {
         expected="20"
         hint={
           <>
-            <C>k * 5 = 20</C> needs <C>k = 4</C>. That <C>4</C> is baked into the specialized <C>scale</C> at
+            <C>k * 5 = 20</C> needs <C>k = 4</C>. That <C>4</C> is inlined into the specialized <C>scale</C> at
             compile time, so being a const argument it must be a literal rather than a runtime value.
           </>
         }

@@ -93,7 +93,7 @@ export default function PlatformState() {
         same key-value view.
       </P>
 
-      <H2>Snapshots come for free</H2>
+      <H2>Snapshots cost nothing extra</H2>
       <P>
         Here's where the platform reuses a piece of the language you've already met. The key-value store is
         a{" "}
@@ -143,7 +143,7 @@ export default function PlatformState() {
         log
       </Note>
       <P>
-        One rule, cleanly drawn, and the crown-jewel property survives contact with a whole system of
+        One rule, cleanly drawn, and replayability survives contact with a whole system of
         agents reading each other: everything a fold depends on is either an unchanging value or a recorded
         answer, so an agent's history always replays to exactly the same place.
       </P>

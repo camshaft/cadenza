@@ -74,7 +74,7 @@ export default function AdHocPolymorphism() {
         is <C>const</C> and left <em>unannotated</em>, <C>show-with</C> stays fully generic and works for{" "}
         <em>any</em> type whose dictionary carries a <C>describe</C>, yet the compiler still inlines each
         call into a specialized copy and erases the record. This is exactly what a typeclass system does
-        under the hood by threading a dictionary to the use site, except here the dictionary is an ordinary
+        internally by threading a dictionary to the use site, except here the dictionary is an ordinary
         record you can see, and the erasure is the general <C>const</C> mechanism rather than special trait
         plumbing.
       </P>

@@ -37,7 +37,7 @@ export default function Functions() {
       </P>
 
       <Why tenet="One program, many syntaxes">
-        <C>|&gt;</C> isn't a magic construct baked into the compiler, but an ordinary operator the
+        <C>|&gt;</C> isn't a special construct the compiler treats differently, but an ordinary operator the
         resolver rewrites into a plain application, so <C>x |&gt; f</C> and <C>(f x)</C> are the very
         same program underneath. That's the pattern throughout Cadenza: surface conveniences desugar to
         the one homoiconic core, which is why the syntax toggle can always show you the other view. The
@@ -90,7 +90,7 @@ export default function Functions() {
       </P>
 
       <Why tenet="Uniformity over special cases">
-        Currying isn't a bolted-on feature, since it falls out of a single rule: every function takes
+        Currying isn't a separate feature, since it falls out of a single rule: every function takes
         exactly one argument. Multi-argument functions, partial application, and the pipeline operator are all
         just consequences of that one uniform shape. Cadenza would rather have one rule with no
         exceptions than a pile of special cases, because a smaller set of rules is a smaller set of

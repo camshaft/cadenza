@@ -57,7 +57,7 @@ export default function PlatformSafety() {
       <P>
         When a program needs more than an agent currently holds, the gap is itself something to request, and
         requesting a capability is just another effect, flowing down the same authorized path. Permissions
-        stop being bolted-on access-control lists and become a property of the code the type system already
+        stop being separate access-control lists and become a property of the code the type system already
         tracks.
       </P>
 
@@ -115,7 +115,7 @@ export default function PlatformSafety() {
         without the kernel learning anything new.
       </P>
       <P>
-        Either way the payoff holds: the security policy is data, not baked-in code, so swapping the
+        Either way the result is the same: the security policy is data, not fixed code, so swapping the
         authorizer or changing a policy is an authorized, logged event rather than a redeploy, auditable and
         versioned like any other content, and the kernel stays true to its one discipline of knowing nothing.
         Next, how the kernel runs many agents at once without losing any of this.

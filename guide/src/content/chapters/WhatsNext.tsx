@@ -51,9 +51,9 @@ export default function WhatsNext() {
       <P>
         More importantly, you've seen the ideas underneath, the{" "}
         <Ch to="/philosophy">tenets</Ch> that explain <em>why</em> the language makes the choices it
-        does. Determinism and capability-safety as the floor. Declining rather than miscompiling. One
-        program, many syntaxes. Refusing the ambiguous conversion. These aren't trivia; they're the
-        through-line, and they'll make the rest of Cadenza feel predictable.
+        does. Determinism and capability-safety holding for every program. Declining rather than
+        miscompiling. One program, many syntaxes. Refusing the ambiguous conversion. These aren't trivia;
+        they're the through-line, and they'll make the rest of Cadenza feel predictable.
       </P>
 
       <H2>One last program</H2>

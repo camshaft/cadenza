@@ -36,7 +36,7 @@
     "back as an event. Because the loop never grows, the interesting behavior lives entirely in the "
     "reducers and the events, which is exactly where Cadenza comes in.")
   (h2 "Everything is an event; the reducer is a pure fold")
-  (p "Two principles carry the weight. First, " (em "everything is an event") ": a model's answer, a tool "
+  (p "Two principles do the work. First, " (em "everything is an event") ": a model's answer, a tool "
     "call, a decision, a spawn, even the agent swapping out its own reducer, all one ordered, "
     "content-addressed stream. Second, " (em "the reducer is a pure fold over that stream") ". Every source "
     "of nondeterminism, a model's output, an HTTP response, the clock, randomness, enters only as a "

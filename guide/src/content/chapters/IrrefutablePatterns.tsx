@@ -98,7 +98,7 @@ export default function IrrefutablePatterns() {
       />
 
       <Why tenet="A pattern that always matches can bind anywhere; one that might fail belongs in a match">
-        Irrefutable destructuring isn't a separate feature bolted on, but the same pattern language from{" "}
+        Irrefutable destructuring isn't a separate feature, but the same pattern language from{" "}
         <C>match</C>, allowed in the places where the compiler can prove it can't fail: a <C>let</C> binder
         and a parameter. So there's one consistent way to take a value apart, and the compiler draws the
         safe line for you. A tuple or single-constructor pattern binds directly, and a refutable one is

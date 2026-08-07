@@ -63,7 +63,7 @@ export default function Strings() {
       />
       <Note>
         The compiler itself builds its diagnostics and export names out of strings this way, so string
-        handling isn't a library bolted on but part of how Cadenza describes itself.
+        handling isn't a separate library but part of how Cadenza describes itself.
       </Note>
 
       <H2>Compared by value</H2>

@@ -25,7 +25,7 @@ export default function Ordering() {
 
       <H2>Building on comparison</H2>
       <P>
-        Small decisions built from comparisons are the bread and butter of everyday code. Here is{" "}
+        Small decisions built from comparisons are a large part of everyday code. Here is{" "}
         <C>min</C>, and a <C>clamp</C> that keeps a value within a range:
       </P>
       <Runnable

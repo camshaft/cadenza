@@ -128,7 +128,7 @@ export default function Playground() {
         <Ch to="/units">Units of measure</Ch> made visible), which you can orbit and inspect. And the{" "}
         <Ch to="/notebook">notebook</Ch> is a live document: markdown prose interleaved with runnable code
         cells and interactive widgets: drag a slider and every dependent cell recomputes, so a
-        compound-interest model or a data table stays parametric. Both are ordinary Cadenza under the hood;
+        compound-interest model or a data table stays parametric. Both are ordinary Cadenza programs;
         they just render its results as geometry, tables, and charts instead of a single value.
       </P>
 
