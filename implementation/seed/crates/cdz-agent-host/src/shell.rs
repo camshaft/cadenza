@@ -124,6 +124,7 @@ impl Executor for ShellExecutor {
 /// authz/dispatch, but guard here too so a stage-less pipeline is a clean error, never an index panic.
 fn run_pipeline(pipeline: &cdz_kernel::event_ast::ShellPipeline) -> EffectOutcome {
     use cdz_kernel::event_ast::{encode_shell_pipeline_outcome, ShellPipelineOutcome};
+    use std::io::{self, Read};
     use std::process::{Command, Stdio};
 
     if pipeline.stages.is_empty() {
@@ -136,6 +137,13 @@ fn run_pipeline(pipeline: &cdz_kernel::event_ast::ShellPipeline) -> EffectOutcom
     let mut children = Vec::with_capacity(pipeline.stages.len());
     let mut prev_stdout: Option<std::process::ChildStdout> = None;
     let last_index = pipeline.stages.len() - 1;
+    // The FINAL stage's stdout (the pipeline output) is drained on a DEDICATED THREAD, concurrently with
+    // waiting all stages — see the deadlock note below. Held here so we can join it after the waits.
+    let mut final_stdout_reader: Option<std::thread::JoinHandle<io::Result<Vec<u8>>>> = None;
+    // Each stage's stderr is ALSO drained concurrently (threads), for the same reason: a stage that emits
+    // >~64KB stderr would block on its full stderr pipe before we `wait` it, deadlocking the pipeline. We
+    // collect all stderr readers + join them, so `Failed{stderr}` reports the failing stage's full stderr.
+    let mut stderr_readers: Vec<Option<std::thread::JoinHandle<io::Result<Vec<u8>>>>> = Vec::new();
     for (index, stage) in pipeline.stages.iter().enumerate() {
         let stdin = match prev_stdout.take() {
             Some(out) => Stdio::from(out),
@@ -149,10 +157,31 @@ fn run_pipeline(pipeline: &cdz_kernel::event_ast::ShellPipeline) -> EffectOutcom
             .spawn()
         {
             Ok(mut c) => {
-                // Take a NON-final stage's stdout to feed the NEXT stage's stdin. The LAST stage's stdout is
-                // left on the child so `wait_with_output` below drains it as the pipeline's final output.
+                // Drain this stage's STDERR on a thread (concurrent with the pipeline running) so a large
+                // stderr can't fill its pipe + block the stage + deadlock the pipeline.
+                let stderr_handle = c.stderr.take().map(|mut e| {
+                    std::thread::spawn(move || {
+                        let mut buf = Vec::new();
+                        e.read_to_end(&mut buf).map(|_| buf)
+                    })
+                });
+                stderr_readers.push(stderr_handle);
                 if index != last_index {
+                    // Feed a NON-final stage's stdout into the NEXT stage's stdin.
                     prev_stdout = c.stdout.take();
+                } else {
+                    // 🔴 DEADLOCK FIX (reviewer MED-HIGH DoS): the FINAL stage's stdout must be drained
+                    // CONCURRENTLY with the waits, NOT read after them. If we waited stage 0..n in order and
+                    // only read the final stdout at its (last) wait, a final stage emitting > one pipe buffer
+                    // (~64KB) blocks on its full stdout pipe, stops reading stdin, upstream backs up on ITS
+                    // stdout pipe, and the earlier `wait` on an upstream stage blocks FOREVER. So take the
+                    // final stdout NOW + read it to EOF on a dedicated thread while the waits proceed.
+                    final_stdout_reader = c.stdout.take().map(|mut o| {
+                        std::thread::spawn(move || {
+                            let mut buf = Vec::new();
+                            o.read_to_end(&mut buf).map(|_| buf)
+                        })
+                    });
                 }
                 children.push(c);
             }
@@ -167,25 +196,15 @@ fn run_pipeline(pipeline: &cdz_kernel::event_ast::ShellPipeline) -> EffectOutcom
         }
     }
 
-    // Wait for all stages in order + collect the outcome. `wait_with_output` consumes the child + drains its
-    // remaining stdout/stderr. The FINAL stage's stdout is the pipeline stdout; the FIRST nonzero exit
-    // (deny-all pipefail) is the Failed outcome (no partial stdout).
-    let mut final_stdout = Vec::new();
-    for (index, child) in children.into_iter().enumerate() {
-        match child.wait_with_output() {
-            Ok(out) => {
-                if out.status.success() {
-                    final_stdout = out.stdout; // only the last stage's stdout is non-empty (others were taken)
-                } else {
-                    let outcome = ShellPipelineOutcome::Failed {
-                        stage_index: index as u64,
-                        program: pipeline.stages[index].program.clone(),
-                        exit_code: out.status.code().map(i64::from).unwrap_or(-1),
-                        stderr: out.stderr,
-                    };
-                    return EffectOutcome::Ok(Some(Payload::Inline(
-                        encode_shell_pipeline_outcome(&outcome).into(),
-                    )));
+    // Wait all stages for their EXIT STATUS (stdout/stderr are already being drained on threads above, so a
+    // `wait` can't deadlock on a full pipe). Record the FIRST nonzero exit (deny-all pipefail). We still wait
+    // ALL stages (even after a failure) so no child is left zombied.
+    let mut first_failure: Option<(usize, i32)> = None;
+    for (index, child) in children.iter_mut().enumerate() {
+        match child.wait() {
+            Ok(status) => {
+                if !status.success() && first_failure.is_none() {
+                    first_failure = Some((index, status.code().unwrap_or(-1)));
                 }
             }
             Err(e) => {
@@ -195,6 +214,41 @@ fn run_pipeline(pipeline: &cdz_kernel::event_ast::ShellPipeline) -> EffectOutcom
             }
         }
     }
+
+    // Join the stderr drain threads (indexed by stage) + the final-stdout drain thread. A thread panic or an
+    // IO error draining a pipe is a host fault → Err.
+    let join_reader =
+        |h: Option<std::thread::JoinHandle<io::Result<Vec<u8>>>>| -> io::Result<Vec<u8>> {
+            match h {
+                Some(handle) => handle.join().map_err(|_| {
+                    io::Error::other("shell-pipeline: a pipe-drain thread panicked")
+                })?,
+                None => Ok(Vec::new()),
+            }
+        };
+
+    // First nonzero exit → Failed (deny-all pipefail, no partial stdout). Report that stage's stderr.
+    if let Some((index, exit_code)) = first_failure {
+        let stderr = match join_reader(stderr_readers.into_iter().nth(index).flatten()) {
+            Ok(b) => b,
+            Err(e) => return EffectOutcome::err(format!("shell-pipeline: {e}")),
+        };
+        let outcome = ShellPipelineOutcome::Failed {
+            stage_index: index as u64,
+            program: pipeline.stages[index].program.clone(),
+            exit_code: i64::from(exit_code),
+            stderr,
+        };
+        return EffectOutcome::Ok(Some(Payload::Inline(
+            encode_shell_pipeline_outcome(&outcome).into(),
+        )));
+    }
+
+    // All stages exited 0 → Ok with the final stage's fully-drained stdout.
+    let final_stdout = match join_reader(final_stdout_reader) {
+        Ok(b) => b,
+        Err(e) => return EffectOutcome::err(format!("shell-pipeline: {e}")),
+    };
     let outcome = ShellPipelineOutcome::Ok {
         stdout: final_stdout,
     };
@@ -268,6 +322,60 @@ mod tests {
             !tmp.exists(),
             "req.target must NOT have run — the runner runs the authorized stages, not the bare target"
         );
+    }
+
+    #[tokio::test]
+    async fn a_large_final_stdout_does_not_deadlock_the_pipeline() {
+        // REGRESSION (reviewer MED-HIGH DoS/hang): a >=2-stage pipeline whose FINAL stage emits > one pipe
+        // buffer (~64KB) used to deadlock — the forward-order waits didn't drain the final stdout until last,
+        // so the full final-stdout pipe backed up the whole chain. Fix drains the final stdout on a thread
+        // concurrently. Here: stage0 `yes` (unbounded) | stage1 `head -c 262144` (emits 256KB then closes) —
+        // 256KB >> 64KB, so a deadlocked runner would hang; a correct one returns the 256KB promptly.
+        use cdz_kernel::event_ast::{
+            decode_shell_pipeline_outcome, encode_shell_pipeline, ShellPipeline,
+            ShellPipelineOutcome, ShellStage,
+        };
+        let pipeline = ShellPipeline {
+            stages: vec![
+                ShellStage {
+                    program: "yes".into(),
+                    args: vec!["ABCDEFGH".into()],
+                },
+                ShellStage {
+                    program: "head".into(),
+                    args: vec!["-c".into(), "262144".into()],
+                },
+            ],
+        };
+        let req = EffectRequest::new(
+            EffectKind::Shell,
+            String::new(),
+            Some(Payload::Inline(encode_shell_pipeline(&pipeline).into())),
+            Timeliness::Interactive,
+        );
+        // A generous timeout: a correct runner finishes in ms; a deadlocked one never returns (the bug).
+        let out = tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            ShellExecutor::new().perform(&req, Hash::of(b"k")),
+        )
+        .await
+        .expect("pipeline must not deadlock on a large final stdout (>64KB)");
+        match out {
+            EffectOutcome::Ok(Some(Payload::Inline(bytes))) => {
+                match decode_shell_pipeline_outcome(&bytes).expect("decodes") {
+                    ShellPipelineOutcome::Ok { stdout } => assert_eq!(
+                        stdout.len(),
+                        262144,
+                        "the full 256KB final stdout is captured, not truncated/hung"
+                    ),
+                    // `yes | head` can surface as `yes` exiting nonzero (SIGPIPE) on some platforms — that's a
+                    // Failed outcome, still NOT a hang; the point of this test is no-deadlock, which the
+                    // timeout above already proves. Accept either a clean Ok(256KB) or a Failed (no hang).
+                    ShellPipelineOutcome::Failed { .. } => {}
+                }
+            }
+            other => panic!("expected a pipeline-outcome frame (Ok or Failed), got {other:?}"),
+        }
     }
 
     #[tokio::test]
