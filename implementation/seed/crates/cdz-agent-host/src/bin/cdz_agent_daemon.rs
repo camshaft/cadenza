@@ -218,6 +218,27 @@ async fn main() -> std::process::ExitCode {
                     return std::process::ExitCode::from(1);
                 }
             },
+            // S3-backed store: the AWS-native reducer blob store, behind `live-aws-storage`. A build WITHOUT
+            // that feature reports a clean "not compiled in" boot error rather than silently degrading (the
+            // config validates regardless of feature, so `backend = "s3"` parses; only the RUNTIME backend is
+            // gated). `S3BlobStore::new` loads SDK-default creds from the environment (async, at boot).
+            #[cfg(feature = "live-aws-storage")]
+            BlobConfig::S3 { bucket, prefix } => {
+                let store = cdz_agent_host::S3BlobStore::new(bucket.clone(), prefix.clone()).await;
+                let mut f = ComponentSessionFactory::new(store, executors, session_authz);
+                if let Some(b) = log_sink {
+                    f = f.with_log_sink(b);
+                }
+                Box::new(f)
+            }
+            #[cfg(not(feature = "live-aws-storage"))]
+            BlobConfig::S3 { .. } => {
+                eprintln!(
+                    "cdz-agent-daemon: [blob] backend=s3 requires the `live-aws-storage` feature — \
+                     rebuild with `--features live-aws-storage` to use the S3 blob store."
+                );
+                return std::process::ExitCode::from(1);
+            }
         };
         eprintln!(
             "cdz-agent-daemon: reducer blob store = {:?}, session log = {:?}",

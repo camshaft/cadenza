@@ -232,6 +232,16 @@ pub enum BlobConfig {
     Memory,
     /// Disk-backed content-addressed store rooted at `dir` — the single-host durable reducer store.
     Dir { dir: String },
+    /// S3-backed content-addressed store — the AWS-native production reducer store (blobs live in `bucket`
+    /// under an optional key `prefix`). Wired only when the `live-aws-storage` feature is compiled (the daemon
+    /// selects [`S3BlobStore`](crate::S3BlobStore)); parsing/validation is always-on (infra-core), so a config
+    /// naming `backend = "s3"` validates regardless of feature, and a build WITHOUT `live-aws-storage` reports a
+    /// clean "not compiled in" error at boot rather than silently falling back.
+    S3 {
+        bucket: String,
+        #[serde(default)]
+        prefix: String,
+    },
 }
 
 /// Effect-retry policy: a bounded exponential backoff the daemon's supervisor applies to a RETRYABLE
@@ -533,6 +543,13 @@ impl DaemonConfig {
             if dir.trim().is_empty() {
                 return Err(ConfigError(
                     "[blob] backend=dir needs a non-empty dir".into(),
+                ));
+            }
+        }
+        if let BlobConfig::S3 { bucket, .. } = &self.blob {
+            if bucket.trim().is_empty() {
+                return Err(ConfigError(
+                    "[blob] backend=s3 needs a non-empty bucket".into(),
                 ));
             }
         }
@@ -1052,6 +1069,56 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.0.contains("dir"), "{err}");
+    }
+
+    #[test]
+    fn an_s3_blob_backend_parses_with_bucket_and_optional_prefix() {
+        // Bucket + explicit prefix.
+        let cfg = DaemonConfig::from_toml_str(
+            r#"
+            [blob]
+            backend = "s3"
+            bucket = "cdz-reducers"
+            prefix = "reducers/"
+            "#,
+        )
+        .expect("blob s3 config parses");
+        assert_eq!(
+            cfg.blob,
+            BlobConfig::S3 {
+                bucket: "cdz-reducers".into(),
+                prefix: "reducers/".into()
+            }
+        );
+        // Prefix is optional → defaults to empty (bucket root).
+        let cfg = DaemonConfig::from_toml_str(
+            r#"
+            [blob]
+            backend = "s3"
+            bucket = "cdz-reducers"
+            "#,
+        )
+        .expect("blob s3 config parses without a prefix");
+        assert_eq!(
+            cfg.blob,
+            BlobConfig::S3 {
+                bucket: "cdz-reducers".into(),
+                prefix: String::new()
+            }
+        );
+    }
+
+    #[test]
+    fn an_empty_s3_bucket_is_rejected() {
+        let err = DaemonConfig::from_toml_str(
+            r#"
+            [blob]
+            backend = "s3"
+            bucket = ""
+            "#,
+        )
+        .unwrap_err();
+        assert!(err.0.contains("bucket"), "{err}");
     }
 
     #[test]
