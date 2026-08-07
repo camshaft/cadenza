@@ -6195,3 +6195,20 @@ pass	rs3 a NESTED record state — the arm functionally updates the inner record
 pass	mx1 a THREE-arg op mixing Int64/String/Bool — one arm consumes all three kinds beside the live state
 pass	mx2 mixed-arg op with BOTH args draw-derived — the int arg is a draw, the string arg branches on a second draw
 pass	mx3 a TUPLE-arg op chained through a tuple RESULT — the second dispatch consumes the first's destructured output
+pass	hc1 a THREE-deep pure helper chain whose LEAF performs — two top-level calls thread the state through the depth
+pass	hc2 helpers at TWO depths both perform — the call-site draw, mid's draw, and leaf's draw arrive in order
+pass	hc3 the SAME performing helper under two SEQUENTIAL handlers — each handle interprets its draws with its own arm and seed
+pass	hc4 a performing helper COMPOSED with itself — probe(probe(draw)), three dispatches through two call frames
+pass	hc5 a helper RETURNS a tuple of two draws — the caller destructures it and re-performs
+pass	nx1 a SUBTRACTING stride crosses zero — negative states thread and sum correctly
+pass	nx2 a 2^62 seed threads exactly — the difference of consecutive draws recovers the stride
+pass	nx3 the arm branches on the op arg's SIGN — negation on the negative path, n and -n both exercised
+pass	nx4 an alternating-sign GEOMETRIC stride (*-2) — the sign flips per dispatch and the sum telescopes
+pass	nx5 i64::MIN-adjacent op arguments — the arm's subtraction stays in range and the two dispatches differ by exactly the state stride
+pass	mf1 a helper performing TWO different effects — both handlers discharge it, both states advance per call
+pass	mf2 the SAME two-effect helper under the OPPOSITE handler nesting order — distinct effects commute
+pass	mf3 one performing helper called from an ARM's resume-value AND the body — three calls, one advancing thread
+pass	st1 a handle expression as ONE operand of an enclosing pure sum — the pure operand and the handled region compose
+pass	st2 TWO sibling handle expressions as operands of one sum — independent regions with different arms and seeds
+pass	lt1 the arm SWAPS its list state's ends per dispatch — the head alternates between the original ends
+pass	lt2 the arm DOUBLES every list element per dispatch (via a projection helper) — the sum geometrically grows
