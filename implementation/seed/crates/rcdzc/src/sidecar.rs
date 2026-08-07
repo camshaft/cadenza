@@ -276,10 +276,13 @@ pub enum Query {
     /// `u32_le count` then per export `u32_le name_len | name | u32_le ty_len | ty_bytes`, where `ty_bytes`
     /// is `codec::encode` of a standalone arena rooted at `eval::encode_ty_payload(db, &scheme.ty)` — a
     /// full cdzast artifact the consumer's byte-identical codec decodes directly. Covers all THREE exported
-    /// item kinds — a value DEF (`def_scheme.ty`), a TYPE decl, and an EFFECT decl (the latter two via
-    /// `typeval_of`), resolved by trying the def slot then the type/effect lookup by name. An export whose
-    /// type does not resolve in any kind is OMITTED (graceful-degrade: the doc-item's `(ty …)` is optional).
-    /// Deterministic (export order). Co-owned with v-syntax.
+    /// item kinds: a value DEF (its `def_scheme.ty` via `encode_ty_payload` → a `(-> …)`/scalar), a TYPE
+    /// decl (`typeval_of` → a `(Sum …)`/`(Record …)`), and an EFFECT decl — the effect is a GROUPED
+    /// op-signature payload `(effect (op <name> <arrow>)…)` (an effect has no single `Ty`; each op's arrow
+    /// is encoded like a def/type, via `effect_op_types_node`). Resolved by trying the def slot, then the
+    /// type-decl, then the effect-decl by name. An export whose type does not resolve in any kind — a def
+    /// with an ill-typed annotation, an effect with no resolvable op — is OMITTED (graceful-degrade: the
+    /// doc-item's `(ty …)` is optional). Deterministic (export order). Co-owned with v-syntax.
     ExportedTypes,
     /// The DOCUMENTATION of a definition or built-in, BY NAME — the doc companion of `TypeOf`. Answered
     /// from an ordered fallback, all reads of columns the compiler already fills:
@@ -826,24 +829,28 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
                 db.exports.iter().map(|e| (e.name.clone(), e.def)).collect();
             let mut records: Vec<(String, Vec<u8>)> = Vec::new();
             for (name, def) in exports {
-                // Resolve the export to a `Ty`, trying each kind: value def (generalized scheme), then type
-                // decl, then effect decl. `None` from all three → omit this export.
-                let ty = def
+                // Resolve the export to a cdzast type sub-AST ROOT (in `db.ast`), trying each kind:
+                //   • value DEF  → the generalized `def_scheme.ty` (polymorphic `(Var N)`) via
+                //     `encode_ty_payload` → a `(-> …)`/scalar payload.
+                //   • TYPE decl  → `typeval_of` on its occ → `encode_ty_payload` → a `(Sum …)`/`(Record …)`.
+                //   • EFFECT decl → a GROUPED op-signature payload `(effect (op <name> <arrow>)…)` — an
+                //     effect has NO single `Ty` (it is N ops), so build the shape directly from its `ops`,
+                //     each `op.ty` arrow via `typeval_of`→`encode_ty_payload`. `effect_op_types_node` returns
+                //     `None` when NO op resolves (omit the whole `(ty …)`, per the doc-model's degrade rule).
+                // `None` from all kinds → omit this export.
+                let ty_root = def
                     .and_then(|d| crate::infer::def_scheme(db, d).map(|s| s.ty))
                     .or_else(|| {
                         db.type_decl_by_name(&name)
                             .and_then(|occ| crate::eval::typeval_of(db, occ))
                     })
-                    .or_else(|| {
-                        db.effect_decl_by_name(&name)
-                            .and_then(|synth| crate::eval::typeval_of(db, synth))
-                    });
-                let Some(ty) = ty else { continue };
-                // Build the bare type sub-AST in `db.ast`, then EXTRACT it into a standalone arena (rcdzc
-                // cannot hand a `db.ast` subtree StructId across the tool boundary; `codec::encode` wants a
-                // whole arena rooted at the type). The extracted arena's bytes are a full cdzast artifact the
-                // consumer's byte-identical codec decodes directly into the `(ty …)` payload.
-                let ty_root = crate::eval::encode_ty_payload(db, &ty);
+                    .map(|ty| crate::eval::encode_ty_payload(db, &ty))
+                    .or_else(|| effect_op_types_node(db, &name));
+                let Some(ty_root) = ty_root else { continue };
+                // EXTRACT the sub-AST into a standalone arena (rcdzc cannot hand a `db.ast` subtree StructId
+                // across the tool boundary; `codec::encode` wants a whole arena rooted at the type). The
+                // extracted arena's bytes are a full cdzast artifact the consumer's byte-identical codec
+                // decodes directly into the `(ty …)` payload — a `(-> …)`/`(Sum …)`/`(effect …)` root alike.
                 let ty_arena = extract_subtree(&db.ast, ty_root);
                 let ty_bytes = crate::codec::encode(&ty_arena);
                 records.push((name, ty_bytes));
@@ -990,6 +997,49 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
 /// `ExportedTypes` fact extracts each type sub-AST into its own arena, encodes it, and frames the bytes.
 /// Recurses the structure; leaves are re-interned in the fresh `Builder` (its dedup is harmless — a
 /// distinct occurrence is not required for a serialized type payload, unlike the value-form template).
+/// Build the GROUPED op-signature type sub-AST for an EFFECT export (cadenza-docs I2, reviewer #2619
+/// follow-up): `(effect (op <name> <arrow-sub-AST>)…)` in `db.ast`, rooted at the `(effect …)` node.
+/// An effect has NO single `Ty` (it is a capability with N operations, each its own arrow), so — unlike a
+/// def/type which resolves to one `Ty` — its structured `(ty …)` is the LIST of its operations' signatures.
+/// Each `op`'s arrow (`OpDecl::ty`, a `(-> Param Result)` occurrence) is reduced via `typeval_of` and
+/// re-encoded via `encode_ty_payload`, so the op arrows are the SAME structured sub-ASTs a def/type carries
+/// (structured-is-truth). Head-names are the ordinary List heads `"effect"` and `"op"` (keywords-are-data,
+/// no new arena variant) — the exact spellings v-syntax's doc-model + renderer key off. GRACEFUL-DEGRADE
+/// per op: an op whose arrow does not resolve (`typeval_of` = `None`, or a malformed `(op NAME)` with no
+/// type) is OMITTED from the list; if NO op resolves, return `None` so the caller omits the whole `(ty …)`
+/// (a bare `(effect)` with no ops says nothing — the doc-model's "omit when nothing resolved" rule). Only
+/// fires for a name that is an effect declaration; a non-effect name returns `None`.
+fn effect_op_types_node(db: &mut Db, name: &str) -> Option<StructId> {
+    // Recover the effect declaration's operations (name + arrow occ), CLONED out so the `&mut db` encode
+    // calls below don't hold a borrow of the decl. `effect_decl_by_name` gives the synth record; map it to
+    // the `EffectDecl` (which carries `ops`).
+    let synth = db.effect_decl_by_name(name)?;
+    let ops: Vec<(String, Option<StructId>)> = db
+        .effect_decl_by_synth(synth)?
+        .ops
+        .iter()
+        .map(|op| (op.name.clone(), op.ty))
+        .collect();
+    let mut op_nodes: Vec<StructId> = Vec::new();
+    for (op_name, op_ty) in ops {
+        // The op's arrow → a `Ty` → an `encode_ty_payload` sub-AST. Omit an op with no resolvable arrow.
+        let Some(ty) = op_ty.and_then(|t| crate::eval::typeval_of(db, t)) else {
+            continue;
+        };
+        let arrow = crate::eval::encode_ty_payload(db, &ty);
+        let op_head = db.push_name("op");
+        let nm = db.push_name(&op_name);
+        op_nodes.push(db.push_list(vec![op_head, nm, arrow]));
+    }
+    if op_nodes.is_empty() {
+        return None; // no op resolved — omit the whole (ty …) rather than an empty (effect)
+    }
+    let eff_head = db.push_name("effect");
+    let mut children = vec![eff_head];
+    children.extend(op_nodes);
+    Some(db.push_list(children))
+}
+
 fn extract_subtree(src: &crate::ast::Arenas, root: StructId) -> crate::ast::Arenas {
     fn copy(src: &crate::ast::Arenas, id: StructId, b: &mut crate::ast::Builder) -> StructId {
         match src.get(id) {
@@ -2692,6 +2742,84 @@ mod tests {
                 assert_eq!(decoded.as_name(kids[2]), Some("Bool"));
             }
             _ => panic!("decoded root should be the `(-> …)` list"),
+        }
+    }
+
+    /// Parse the KIND_EXPORT_TYPES blob into `name → decoded-ty-arena` (the consumer's parse).
+    fn parse_export_types(bytes: &[u8]) -> Vec<(String, crate::ast::Arenas)> {
+        let mut out = Vec::new();
+        let count = u32::from_le_bytes(bytes[0..4].try_into().unwrap()) as usize;
+        let mut off = 4;
+        for _ in 0..count {
+            let nl = u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap()) as usize;
+            off += 4;
+            let name = String::from_utf8(bytes[off..off + nl].to_vec()).unwrap();
+            off += nl;
+            let tl = u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap()) as usize;
+            off += 4;
+            let arena = crate::codec::decode(&bytes[off..off + tl]).expect("decode ty artifact");
+            off += tl;
+            out.push((name, arena));
+        }
+        out
+    }
+
+    #[test]
+    fn exported_types_covers_def_type_and_effect_kinds() {
+        // The reviewer #2619 follow-up: ExportedTypes must emit a structured type for ALL THREE export
+        // kinds. A def → a `(-> …)`; a type → a `(Sum …)`; an EFFECT → the grouped
+        // `(effect (op <name> <arrow>)…)` shape (the kind that was silently omitted before this fix).
+        let src = "(do \
+            (effect Log (op emit (-> String Unit))) \
+            (type Color (Red) (Green)) \
+            (def (inc (: n Int64)) n) \
+            (export Log) (export Color) (export inc))";
+        let mut db = crate::db::Db::load(crate::testkit::parse(src));
+        let result = run_query(&mut db, &Query::ExportedTypes);
+        assert_eq!(result.kind, KIND_EXPORT_TYPES);
+        let records = parse_export_types(&result.bytes);
+        let by_name: std::collections::HashMap<&str, &crate::ast::Arenas> =
+            records.iter().map(|(n, a)| (n.as_str(), a)).collect();
+
+        // DEF `inc : (-> Int64 Int64)` → a `(-> …)` root.
+        let inc = by_name.get("inc").expect("inc export has a (ty …)");
+        match inc.get(inc.root) {
+            Struct::List(kids) => assert_eq!(inc.as_name(kids[0]), Some("->")),
+            _ => panic!("inc type root should be a `(-> …)` list"),
+        }
+
+        // TYPE `Color` → a `(Sum …)` root.
+        let color = by_name.get("Color").expect("Color export has a (ty …)");
+        match color.get(color.root) {
+            Struct::List(kids) => assert_eq!(color.as_name(kids[0]), Some("Sum")),
+            _ => panic!("Color type root should be a `(Sum …)` list"),
+        }
+
+        // EFFECT `Log` → the grouped `(effect (op emit (-> String Unit)))` root — the #2619 fix.
+        let log = by_name
+            .get("Log")
+            .expect("Log effect export has a (ty …) — the #2619 effect fix");
+        match log.get(log.root) {
+            Struct::List(kids) => {
+                assert_eq!(
+                    log.as_name(kids[0]),
+                    Some("effect"),
+                    "effect payload roots at `effect`"
+                );
+                assert!(kids.len() >= 2, "effect has at least one `(op …)`");
+                match log.get(kids[1]) {
+                    Struct::List(op) => {
+                        assert_eq!(log.as_name(op[0]), Some("op"));
+                        assert_eq!(log.as_name(op[1]), Some("emit"));
+                        match log.get(op[2]) {
+                            Struct::List(arr) => assert_eq!(log.as_name(arr[0]), Some("->")),
+                            _ => panic!("op arrow should be a `(-> …)`"),
+                        }
+                    }
+                    _ => panic!("effect child should be an `(op …)` list"),
+                }
+            }
+            _ => panic!("Log type root should be an `(effect …)` list"),
         }
     }
 }
