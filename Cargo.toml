@@ -64,6 +64,16 @@ exclude = [
     # runtime does not. Leaf crate (nothing in the seed depends on it; the compiler emits an IMPORT on it,
     # not a build dep), own `[workspace]` table, built to wasm + published to CAS on demand.
     "implementation/seed/crates/cdz-nfc",
+    # `cdz-syntax-guest` (the cadenza:syntax reducer-facing WIT component, v-syntax P2 — design note
+    # `p2-reducer-invoke-cadenza-syntax-as-composable-wit-dep`) is excluded because it ONLY builds for
+    # wasm32-unknown-unknown (a cadenza:syntax component a reducer imports by content-hash and
+    # `compose_dep_into_linker` links leaves-first), like cdz-nfc/cdz-runtime — the native seed
+    # `--workspace` build + corpus gate must never build a cdylib-for-wasm crate. It is a thin wit-bindgen
+    # guest over the `cadenza-syntax` member library (lean, no cedar/cli), delegating parse/query/doc to
+    # it and carrying ASTs across the boundary as cdzast bytes. Leaf crate (nothing in the seed depends on
+    # it; a reducer imports the lifted component, not a build dep), own `[workspace]` table, built to wasm
+    # + lifted with `wasm-tools component new` on demand.
+    "implementation/seed/crates/cdz-syntax-guest",
 ]
 
 [profile.dev]
