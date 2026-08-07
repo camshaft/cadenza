@@ -24,6 +24,9 @@ const NotebookPage = lazy(() => import("./notebook/NotebookPage.tsx"));
 // The music showcase is a full-screen route that pulls in the compile + run workers + the preloaded music
 // libs (like /cad) — lazy so it code-splits behind /music.
 const MusicPage = lazy(() => import("./music/MusicPage.tsx"));
+// The platform explorer is a full-screen multi-file route that pulls in the compile + run workers + the
+// CodeMirror editor stack (like /calculator) — lazy so it code-splits behind /explorer.
+const ExplorerPage = lazy(() => import("./explorer/ExplorerPage.tsx"));
 
 // Root layout: `ScrollRestoration` scrolls a new navigation to the top and RESTORES the previous
 // scroll position on back/forward (a per-history-entry memory). The playground manages its own
@@ -90,6 +93,14 @@ const router = createBrowserRouter(
           element: (
             <Suspense fallback={<div className="p-6 text-slate-500">Loading music showcase…</div>}>
               <MusicPage />
+            </Suspense>
+          ),
+        },
+        {
+          path: "/explorer",
+          element: (
+            <Suspense fallback={<div className="p-6 text-slate-500">Loading platform explorer…</div>}>
+              <ExplorerPage />
             </Suspense>
           ),
         },
