@@ -2809,11 +2809,33 @@ fn desugar_performing_guard_match(
             && is_irrefutable_pattern(db, pat1)
         {
             let cond = g[1];
-            // Bind the scrutinee to each arm's binder (if a name, not `_`) so the arm bodies + guard read it.
-            // Both arms bind the SAME scrutinee value; if either inner pattern is a name, wrap the `if` in a
-            // `let` for that name. (The two arms' binders may differ in name; a name in arm 2's body reads
-            // the same scrutinee, so bind whichever names appear. Here we bind arm 0's name — the guard and
-            // body0 reference it; arm 1's binder, if a distinct name, is handled by binding it too.)
+            // REJECT-DON'T-MISCOMPILE (v-effects finding #9): this desugar binds the scrutinee to each named
+            // arm binder via `copy_pure(scrutinee)` (below) — a fresh COPY per binder. When the scrutinee
+            // itself PERFORMS and there are ≥2 named binders (arm-0's guard binder AND a named arm-1 fallback
+            // binder, e.g. `((guard x cond) x)` + `(_o _o)`), each copy RE-EVALUATES the performing scrutinee:
+            // `(match (St.next) ((guard x (> x (St.next))) …) (_o _o))` emits `(let ((x (St.next)) (_o
+            // (St.next))) …)` → the fallback `_o` reads a RE-DRAWN scrutinee (breaker f1: 6 not 3; f2
+            // dispatch-witness confirms the third hidden draw). Correctness is INPUT-DEPENDENT — the SAME
+            // program is correct when the guard HITS (c2: -400) and wrong when it MISSES (f1) — so the whole
+            // shape must reject. The correct fix (bind the performing scrutinee ONCE to a temp, then ALIAS
+            // both binders to it — `(let ((k S)) (let ((x k) (_o k)) …))`) is the fresh-context bind-once /
+            // let-threading arc (shared root with findings #8/lb/sh). A SINGLE named binder is sound (one copy
+            // = one eval — c1's pure-guard shape never enters here, and a lone-binder performing scrutinee
+            // folds correctly), so gate ONLY on ≥2 named binders over a performing scrutinee. Names the
+            // `let`-lift workaround (c3: 3 — bind the draw once outside the match).
+            let named_binder_count = [g[0], pat1]
+                .iter()
+                .filter(|&&p| db.ast.as_name(p).is_some_and(|n| n != "_"))
+                .count();
+            if named_binder_count >= 2 && subtree_performs(db, scrutinee, ctx) {
+                // DECLINE (return None) rather than rewrite: the caller's `None` arm sees
+                // `body_has_performing_match_guard` = true (this same performing-guard shape) and returns
+                // `None` for the whole fold — the honest HANDLER_NOT_REDUCIBLE "not yet reducible" todo
+                // decline, not the re-evaluation miscompile the copy-per-binder rewrite would produce. Flips to
+                // a fold when the bind-once arc materializes the performing scrutinee once and aliases both
+                // binders to it.
+                return None;
+            }
             let if_head = db.push_name("if");
             let if_node = db.push_list(vec![if_head, cond, body0, body1]);
             // Wrap in `let` bindings for any named (non-`_`) inner patterns, so the guard/bodies resolve them

@@ -14334,3 +14334,50 @@
                     (_o (- 0 (St.next)))))))
             (export main)))
   (declines))
+
+(case "a performing scrutinee matched by a performing guard with a NAMED fallback binder DECLINES (breaker finding #9)"
+  (doc    "REJECT-DON'T-MISCOMPILE (v-effects finding #9, breaker f1, 3-backend-agree-wrong). The performing-
+           guard-match desugar (`desugar_performing_guard_match`) rewrites `(match S ((guard x cond) b) (_o
+           b2))` into `(let ((x S') (_o S'')) (if cond b b2))`, binding the scrutinee to EACH named arm binder
+           via a fresh `copy_pure(S)`. When the scrutinee S itself PERFORMS and there are >=2 named binders
+           (arm-0's guard binder `x` AND a NAMED fallback binder `_o`), each copy RE-EVALUATES the performing
+           scrutinee: on a guard MISS the fallback `_o` reads a RE-DRAWN value — this shape silently returned 6
+           not 3 (f1), with a third hidden draw (f2 dispatch-witness). Correctness is INPUT-DEPENDENT (the SAME
+           program is correct when the guard HITS, wrong when it MISSES), so the whole shape declines rather
+           than miscompile. The correct fix (bind the performing scrutinee ONCE to a temp, alias both binders
+           to it) is the fresh-context bind-once/let-threading arc (shared root with findings #8/lb/sh). The
+           workaround — `let`-bind the scrutinee first, then match the bound value — folds correctly (breaker
+           c3). A SINGLE named binder is sound (one copy = one eval — the control below). The desugar now
+           DECLINES this shape (returns None → the honest 'not yet reducible' todo) rather than emit the
+           copy-per-binder re-eval, so this is a TODO decline-witness pinned with its post-fix value: n=3 draws
+           scrutinee 3 (s->6), guard performs 6 (s->12), 3 > 6 false → the `_o` fallback yields the correctly-
+           bound 3. Flips todo->3 when the bind-once arc binds the scrutinee once and aliases both binders.")
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (* s 2))))
+                (match (St.next)
+                  ((guard x (> x (St.next))) (* 100 x))
+                  (_o _o))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 3 Int64)))
+
+(case "a performing scrutinee + performing guard with a WILDCARD (unnamed) fallback folds — the finding #9 single-binder control"
+  (doc    "The scoping control for finding #9's decline above: the SAME performing-scrutinee + performing-guard
+           shape but with a WILDCARD `_` fallback (NOT a named binder), so only ONE named binder (`x`) exists.
+           The desugar then does a SINGLE `copy_pure(scrutinee)` (one eval, not two), so it folds soundly — the
+           `>=2 named binders over a performing scrutinee` gate does NOT fire. `next` returns s then doubles it
+           (n=3: draw 3 s->6, guard draws 6 s->12; 3 > 6 is false → the `_` fallback = 99). Pins that the
+           finding-#9 reject is SCOPED to the >=2-named-binder re-copy shape and does not over-decline the
+           sound single-binder performing guard.")
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (* s 2))))
+                (match (St.next)
+                  ((guard x (> x (St.next))) (* 100 x))
+                  (_ 99))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 99 Int64)))
