@@ -6153,3 +6153,8 @@ pass	gp2 TWO guard arms where a guard PERFORMS — declines (multi-guard perform
 pass	hs1 an inner SAME-effect handle's result is the match SCRUTINEE — the selected arm and the trailing draw hit the OUTER state
 pass	hs2 an OUTER-seeded inner handle builds a tuple scrutinee — the destructured arm re-performs against the outer
 pass	hs3 an inner SAME-effect handle's result is the IF condition — the taken branch re-performs against the outer
+pass	ti1 A-B-A-B interleaved draws in ONE expression — each effect threads its own state independently
+pass	ti2b the inner arm's resume-VALUE performs the outer effect on EVERY dispatch — three dispatches, both states advancing
+pass	ti3 cross-effect resume-value feed PLUS direct body interleave — B's arm and the body both advance A
+pass	ti4 THREE-effect chained cross-feed — C's arm performs B, B's arm performs A, two C dispatches walk the whole chain twice
+pass	ti5 a FOREIGN outer perform inside the inner region — A advances inside B's body, the post-region draw sees it

@@ -14434,3 +14434,88 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 106 Int64))
   (call   main (: 50 Int64)) (output (: -51 Int64)))
+
+;; ── two-effect interleaving under nested handlers (breaker ti) ───────────────────────────────────
+;; Distinct effects A/B(/C) with both handlers live, states advancing in one expression. ti1 =
+;; A-B-A-B draws interleaved in ONE sum, each effect threading its own state. ti2b = B's arm
+;; performs A in its resume-VALUE on EVERY dispatch (three dispatches — deepens the single-dispatch
+;; resume-value pin). ti3 = arm cross-feed PLUS direct body interleave in the same program. ti4 =
+;; THREE-effect chained cross-feed (C's arm performs B, B's arm performs A; two C dispatches walk
+;; the whole chain twice). ti5 = the region face: a FOREIGN outer perform in the inner handle's
+;; BODY (not its arm) — A advances inside B's region and the post-region draw sees it. (The
+;; cross-effect perform in a NEXT-STATE slot stays the corpus-pinned honest decline.)
+
+(case "ti1 A-B-A-B interleaved draws in ONE expression — each effect threads its own state independently"
+  (input  (do
+            (effect A (op a (-> Int64)))
+            (effect B (op b (-> Int64)))
+            (def (main (: n Int64))
+              (handle A n
+                ((a () s (resume s (+ s 1))))
+                (handle B (* n 10)
+                  ((b () t (resume t (+ t 100))))
+                  (+ (A.a) (+ (B.b) (+ (A.a) (B.b)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 211 Int64))
+  (call   main (: 1 Int64)) (output (: 123 Int64)))
+
+(case "ti2b the inner arm's resume-VALUE performs the outer effect on EVERY dispatch — three dispatches, both states advancing"
+  (input  (do
+            (effect A (op a (-> Int64)))
+            (effect B (op b (-> Int64)))
+            (def (main (: n Int64))
+              (handle A n
+                ((a () s (resume s (+ s 1))))
+                (handle B 0
+                  ((b () t (resume (+ t (A.a)) (+ t 1))))
+                  (+ (B.b) (+ (B.b) (B.b))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 21 Int64))
+  (call   main (: 2 Int64)) (output (: 12 Int64)))
+
+(case "ti3 cross-effect resume-value feed PLUS direct body interleave — B's arm and the body both advance A"
+  (input  (do
+            (effect A (op a (-> Int64)))
+            (effect B (op b (-> Int64)))
+            (def (main (: n Int64))
+              (handle A n
+                ((a () s (resume s (* s 2))))
+                (handle B 1000
+                  ((b () t (resume (+ t (A.a)) (- t 1))))
+                  (+ (B.b) (+ (A.a) (B.b))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 2034 Int64))
+  (call   main (: 1 Int64)) (output (: 2006 Int64)))
+
+(case "ti4 THREE-effect chained cross-feed — C's arm performs B, B's arm performs A, two C dispatches walk the whole chain twice"
+  (input  (do
+            (effect A (op a (-> Int64)))
+            (effect B (op b (-> Int64)))
+            (effect C (op c (-> Int64)))
+            (def (main (: n Int64))
+              (handle A n
+                ((a () s (resume s (+ s 1))))
+                (handle B 100
+                  ((b () t (resume (+ t (A.a)) (+ t 1))))
+                  (handle C 10000
+                    ((c () u (resume (+ u (B.b)) (+ u 1))))
+                    (+ (C.c) (C.c))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 20213 Int64))
+  (call   main (: 0 Int64)) (output (: 20203 Int64)))
+
+(case "ti5 a FOREIGN outer perform inside the inner region — A advances inside B's body, the post-region draw sees it"
+  (input  (do
+            (effect A (op a (-> Int64)))
+            (effect B (op b (-> Int64)))
+            (def (main (: n Int64))
+              (handle A n
+                ((a () s (resume s (+ s 1))))
+                (+ (handle B 50
+                     ((b () t (resume t (* t 2))))
+                     (let ((x (B.b)))
+                       (+ x (A.a))))
+                   (A.a))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 61 Int64))
+  (call   main (: 0 Int64)) (output (: 51 Int64)))
