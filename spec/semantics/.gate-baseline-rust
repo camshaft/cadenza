@@ -6212,3 +6212,9 @@ pass	st1 a handle expression as ONE operand of an enclosing pure sum — the pur
 pass	st2 TWO sibling handle expressions as operands of one sum — independent regions with different arms and seeds
 pass	lt1 the arm SWAPS its list state's ends per dispatch — the head alternates between the original ends
 pass	lt2 the arm DOUBLES every list element per dispatch (via a projection helper) — the sum geometrically grows
+pass	by1 a BYTES handler state grows two bytes per dispatch — each arm returns the pre-growth length
+pass	by2 a SLICE view (start,LEN) of the Bytes state read per dispatch — in-range bytes returned, out-of-range answers -1
+pass	by3 op-arg values WRAPPED to bytes at runtime accumulate in the state — the fourth emit sees three prior
+pass	by4 nested SAME-effect handlers with independent BYTES states — the outer buffer self-doubles, the inner appends
+pass	op1 the STD Option as handler state — None seeds to Some on first feed, the payload accumulates thereafter
+pass	op2 an Option RESUME value from a single-site arm — Some carries the excess, None answers the shortfall row
