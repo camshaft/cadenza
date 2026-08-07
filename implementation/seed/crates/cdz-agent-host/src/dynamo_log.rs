@@ -295,6 +295,53 @@ impl DynamoLogSinkBuilder {
             table: table.into(),
         }
     }
+
+    /// Enumerate the DISTINCT `session_id` partition keys in the log table — the "which sessions have a
+    /// durable log?" step the I4b daemon boot-recovery loop runs to know what to recover (for each id it then
+    /// builds a per-session [`DynamoLogSink`] and calls [`read_recovered`](DynamoLogSink::read_recovered)).
+    ///
+    /// v0 does a full-table `Scan` PROJECTING ONLY the `session_id` attribute (not the event bytes) and
+    /// dedups client-side — a boot-time scan is acceptable (it runs ONCE at daemon start, not on the hot
+    /// path), and it needs no extra table. A dedicated session-REGISTRY index table (a table listing installed
+    /// ids, so recovery is a cheap query instead of a scan) is a later scale optimization — flagged, not built
+    /// for v0. Paginates so a table larger than one Scan page is fully enumerated. Returns the ids sorted for
+    /// a deterministic recovery order (the loop re-registers in this order; recovery itself is per-session
+    /// independent, so the order only affects logging/observability, not correctness).
+    pub async fn list_session_ids(&self) -> io::Result<Vec<String>> {
+        let client = aws_sdk_dynamodb::Client::new(&self.config);
+        let mut ids = std::collections::BTreeSet::new();
+        let mut last_key = None;
+        loop {
+            let resp = client
+                .scan()
+                .table_name(&self.table)
+                // Project ONLY the partition key — we want distinct ids, not the (large) event bodies.
+                .projection_expression("#s")
+                .expression_attribute_names("#s", ATTR_SESSION)
+                .set_exclusive_start_key(last_key)
+                .send()
+                .await
+                .map_err(|e| {
+                    io::Error::other(format!(
+                        "DynamoLogSinkBuilder list_session_ids scan failed: {}",
+                        aws_sdk_dynamodb::error::DisplayErrorContext(&e)
+                    ))
+                })?;
+            for item in resp.items() {
+                if let Some(aws_sdk_dynamodb::types::AttributeValue::S(id)) = item.get(ATTR_SESSION)
+                {
+                    ids.insert(id.clone());
+                }
+                // An item missing the partition key is impossible (it IS the key), so no error arm needed —
+                // a projected scan only returns items, each of which has the projected key.
+            }
+            match resp.last_evaluated_key() {
+                Some(k) if !k.is_empty() => last_key = Some(k.clone()),
+                _ => break,
+            }
+        }
+        Ok(ids.into_iter().collect())
+    }
 }
 
 #[async_trait::async_trait(?Send)]
