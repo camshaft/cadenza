@@ -1,4 +1,5 @@
 import { H1, Lede, H2, P, C, Note } from "../../components/Prose.tsx";
+import { Runnable } from "../../components/Runnable.tsx";
 import { Link } from "react-router-dom";
 
 /// "Cadenza the Platform" pillar, section D (last planned concept chapter) — the execution model.
@@ -14,6 +15,14 @@ import { Link } from "react-router-dom";
 /// the outcome variants are stated as what the platform MODELS, not both auto-delivered today); retryability
 /// is the typed EffectOutcome::Err{retryability} enum (#2554). OPEN + NOT stated: the orphan rule. The
 /// supervisor LIBRARY + a worked multi-level subtree stay forward-tense.
+/// The agent-loop MULTI-FILE <Runnable files=/> (events.cdz data + reducer.cdz fold, entry=reducer) is
+/// operator-directed (decouple events from the reducer so the boundary is explicit) and rides v-guide-infra's
+/// explorer seam (compileWithPreloaded); it replaces the withdrawn single-file #2616. The split uses
+/// STRUCTURAL records (kind-symbol + val), NOT a custom sum type, because cross-module sum-type constructors
+/// are unsupported today (importing a type doesn't bring its ctors into scope). Field order name/source/
+/// surface/entry is REQUIRED by the check-examples extractor regex. Verified compile+link via
+/// compile_with_preloaded; the gate asserts run-to-value (Runnable's Props has no `expected` for a
+/// multi-file runnable yet, flagged to v-guide-infra to add it; upgrade to assert the exact trace once it lands).
 export default function PlatformExecution() {
   return (
     <article>
@@ -115,6 +124,49 @@ export default function PlatformExecution() {
         <br />
         no bespoke agent runtime: the loop IS the fold; the model and tools are ordinary authorized effects on the log
       </Note>
+      <P>
+        You can watch a whole turn happen as one fold, and it's worth splitting into two files so the
+        boundary is explicit. <C>events</C> is the turn's history: the messages that arrived, as plain data,
+        a task coming in, the model replying that it wants a tool, the tool's result, the model ending the
+        turn. <C>reducer</C> is the behavior: the fold that consumes that history and decides what to do,
+        here just accumulating a trace of each step. Fixtures stand in for the live model and tools, so the
+        whole thing runs in your browser with no network, and the split is the same one a real agent lives
+        by: its history is one thing, the program that folds it is another.
+      </P>
+      <Runnable
+        expect="value"
+        files={[
+          {
+            name: "events",
+            source: `(do
+  (def turn (list (record (kind #"task")  (val "count files"))
+                  (record (kind #"model") (val "shell"))
+                  (record (kind #"tool")  (val "3"))
+                  (record (kind #"done")  (val "there are 3"))))
+  (export turn))`,
+            surface: "sexpr",
+          },
+          {
+            name: "reducer",
+            source: `(do
+  (import "events" (turn))
+  (def (step acc e)
+    (let ((k (. e kind)) (v (. e val)))
+      (if (= k #"task")  (String.concat acc "asked-model; ")
+      (if (= k #"model") (String.concat acc (String.concat "run-tool:" (String.concat v "; ")))
+      (if (= k #"tool")  (String.concat acc (String.concat "folded-result:" (String.concat v "; ")))
+      (String.concat acc (String.concat "done:" v)))))))
+  (def (run xs acc)
+    (match xs
+      ((list) acc)
+      ((list e .. rest) (run rest (step acc e)))))
+  (def (main) (run turn ""))
+  (export main))`,
+            surface: "sexpr",
+            entry: true,
+          },
+        ]}
+      />
       <P>
         Because the turn is nothing but recorded events, everything the platform promised comes along for
         free here too. The agent replays deterministically (the model's replies and tool results are facts on
