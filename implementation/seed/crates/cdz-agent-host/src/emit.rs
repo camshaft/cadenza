@@ -257,6 +257,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_blob_ref_emit_payload_is_a_permanent_error() {
+        // The EmitExecutor has no blob-store handle, so it can't forward a blob-ref payload inline into the
+        // peer's Inbound → structural PERMANENT (a malformed request for THIS executor, not transient). The
+        // inline + payloadless paths are covered above; this pins the third payload arm. Distinct from the
+        // closed-inbox RETRYABLE: a blob ref is a request-shape problem, retrying won't help.
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut exec = EmitExecutor::new(tx, SessionId::new("sender-a"));
+        let req = EffectRequest::new_with_family(
+            effect_ct::EMIT,
+            "b".to_string(),
+            Some(Payload::Blob(Hash::of(b"some-blob-ref"))),
+            Timeliness::Interactive,
+        );
+        let out = exec.perform(&req, Hash::of(b"k")).await;
+        assert!(
+            matches!(&out, EffectOutcome::Err(r) if r.starts_with("PERMANENT:") && r.contains("blob-ref")),
+            "a blob-ref Emit payload is rejected PERMANENT (no blob-store access to forward it), got {out:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn a_closed_inbox_is_a_retryable_error() {
         // The host loop's receiver is gone (shutdown) → the emit can't route → RETRYABLE (transient), not a
         // malformed-request PERMANENT.
