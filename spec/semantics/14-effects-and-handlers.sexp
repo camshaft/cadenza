@@ -4535,6 +4535,54 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 202 Int64)))
 
+(case "a region's RESULT seeds a second same-effect region with a DIFFERENT arm shape"
+  (doc    "The pipeline-of-interpreters idiom (the sequential pins prove fresh-start with the SAME
+           arm): region 1's add-arm computes 11, which seeds region 2 under a DOUBLING arm — the
+           same op name means different things per region: 11 + 22 → 33.")
+  (input  (do
+            (effect St (op next (-> Unit Int64)))
+            (def (main (: n Int64))
+              (let ((total (handle St n
+                             ((next (u) s (resume s (+ s 1))))
+                             (+ (St.next) (St.next)))))
+                (handle St total
+                  ((next (u) s (resume s (* s 2))))
+                  (+ (St.next) (St.next)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 33 Int64)))
+
+(case "a PARAMETERIZED handler helper chained through itself — the step size is a function param"
+  (doc    "An arm referencing the enclosing FUNCTION's parameter directly (the closure pins
+           parameterize via captures): `run seed mul` steps by `mul` per dispatch, chained —
+           `(run (run n 1) 10)` = inner 5+6 = 11, outer 11+21 → 32. Two instantiations, two
+           different step sizes through one textual arm.")
+  (input  (do
+            (effect St (op next (-> Unit Int64)))
+            (def (run (: seed Int64) (: mul Int64))
+              (handle St seed
+                ((next (u) s (resume s (+ s mul))))
+                (+ (St.next) (St.next))))
+            (def (main (: n Int64))
+              (run (run n 1) 10))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 32 Int64)))
+
+(case "the SAME op name on two DIFFERENT effects — each qualified perform routes to its own handler"
+  (doc    "Name-collision routing: effects A and B both declare `get`; the qualified performs
+           `(A.get)` and `(B.get)` each resolve to their OWN effect's handler (5 and 100) → 150.
+           Routing is by effect identity, not op-name string.")
+  (input  (do
+            (effect A (op get (-> Unit Int64)))
+            (effect B (op get (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle A n
+                ((get (u) s (resume s (+ s 1))))
+                (handle B 100
+                  ((get (u) t (resume t (+ t 10))))
+                  (+ (* 10 (A.get)) (B.get)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 150 Int64)))
+
 ; ============ Guarded match × effects (breaker FINDING, ag5 → fixed #2333). A guarded match on a
 ; perform-result scrutinee whose FALLBACK arm also performs used to leak the fold-synthesized #seed
 ; binder as a false CDZ0101: the guard desugar's arm-body copy reparented a reused (shared) body
