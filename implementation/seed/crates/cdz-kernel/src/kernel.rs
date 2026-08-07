@@ -4047,6 +4047,140 @@ mod monotonic_now_tests {
             "the Err outcome is a first-class log event"
         );
     }
+
+    // ---- GAP-4 context-compaction (Option A: pure reducer policy, ZERO kernel change) --------------------
+    //
+    // The /compact problem for a self-hosting agent-reducer: its context is its event log + KV, so without a
+    // summarize-and-compact strategy the WORKING SET (kv) grows unbounded turn over turn. Option A (concierge
+    // ruling 2026-08-07, aligned with minimize-kernel-logic): the compaction is PURE REDUCER POLICY over the
+    // EXISTING kv mechanism (put/delete) — the reducer folds accumulated detail entries into a single summary
+    // entry and DELETES the detail keys, bounding the working set. NO kernel mechanism (no log pruning, no
+    // Checkpoint event, no replay-contract change — those are B/C, deferred to an operator ruling). This
+    // fold-proof pins that the pattern composes on the existing fold+kv seam, the M3/I3 precedent: prove the
+    // reducer fold in-kernel with a native Reducer before any host policy drives it.
+    //
+    // The reducer keys off the inbound payload: b"detail:<x>" accumulates a per-turn detail entry under
+    // detail/<seq>; b"compact" folds ALL detail/* into one summary/latest entry (a trivial concatenation
+    // stands in for a real model summary — the SHAPE is what's proven) + deletes every detail/* key.
+    struct CompactingReducer;
+    #[async_trait::async_trait(?Send)]
+    impl Reducer for CompactingReducer {
+        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+            if let EventBody::Inbound { payload, .. } = &event.body {
+                let crate::effect::Payload::Inline(bytes) = payload else {
+                    return FoldOutput::none();
+                };
+                let msg = bytes.as_ref();
+                if let Some(detail) = msg.strip_prefix(b"detail:") {
+                    // Accumulate a detail entry keyed by a monotonic index (the count of existing detail/*).
+                    let n = (0u64..)
+                        .take_while(|i| kv.get(format!("detail/{i}").as_bytes()).is_some())
+                        .count();
+                    kv.put(format!("detail/{n}").into_bytes(), detail.to_vec());
+                } else if msg == b"compact" {
+                    // Fold ALL detail/* into one summary + prune the detail keys (bound the working set).
+                    let mut keys: Vec<Vec<u8>> = Vec::new();
+                    let mut summary: Vec<u8> = Vec::new();
+                    for i in 0u64.. {
+                        let k = format!("detail/{i}").into_bytes();
+                        match kv.get(&k) {
+                            Some(v) => {
+                                if !summary.is_empty() {
+                                    summary.push(b'|');
+                                }
+                                summary.extend_from_slice(v);
+                                keys.push(k);
+                            }
+                            None => break,
+                        }
+                    }
+                    kv.put(b"summary/latest".to_vec(), summary);
+                    for k in keys {
+                        kv.delete(&k);
+                    }
+                }
+            }
+            FoldOutput::none()
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn gap4_option_a_compaction_folds_detail_into_a_summary_and_bounds_the_working_set() {
+        // Option A end-to-end: accumulate detail across turns → the working set grows → a compact turn folds
+        // it into one summary + prunes the detail, so kv shrinks back. Pure reducer policy over put/delete —
+        // no kernel change, no log pruning (the LOG still records every turn; only the KV working set is
+        // bounded, which is what drives the per-turn /compact problem).
+        let mut exec = RecordingExecutor::new();
+        let mut s = Session::genesis(Hash::of(b"gap4-compact-v1"), Hash::of(b"nonce"));
+        let authz = Authorizer::deny_all(); // the reducer emits no effects; authz is irrelevant here
+        let feed = |body: &[u8]| EventBody::Inbound {
+            content_type: ContentType {
+                family: "message".into(),
+                version: 1,
+            },
+            payload: crate::effect::Payload::Inline(body.to_vec().into()),
+        };
+
+        // Three detail turns → three detail/* entries in the working set.
+        for msg in [b"detail:alpha".as_slice(), b"detail:beta", b"detail:gamma"] {
+            s.deliver(feed(msg), None, &CompactingReducer, &authz, &mut exec)
+                .await
+                .expect("deliver detail");
+        }
+        assert_eq!(s.kv().get(b"detail/0"), Some(&b"alpha"[..]));
+        assert_eq!(s.kv().get(b"detail/2"), Some(&b"gamma"[..]));
+        assert_eq!(
+            s.kv().len(),
+            3,
+            "three detail entries accumulated in the working set"
+        );
+
+        // A compact turn: fold detail/* → summary/latest + prune the detail keys.
+        s.deliver(
+            feed(b"compact"),
+            None,
+            &CompactingReducer,
+            &authz,
+            &mut exec,
+        )
+        .await
+        .expect("deliver compact");
+
+        // The working set is now BOUNDED — one summary entry, all detail pruned.
+        assert_eq!(
+            s.kv().get(b"summary/latest"),
+            Some(&b"alpha|beta|gamma"[..]),
+            "compaction folds every detail entry into one summary"
+        );
+        assert_eq!(
+            s.kv().get(b"detail/0"),
+            None,
+            "detail keys are pruned by the fold"
+        );
+        assert_eq!(s.kv().get(b"detail/1"), None);
+        assert_eq!(s.kv().get(b"detail/2"), None);
+        assert_eq!(
+            s.kv().len(),
+            1,
+            "the working set shrank to the single summary — bounded regardless of turns folded"
+        );
+
+        // The pattern is REPLAY-DETERMINISTIC (no kernel change): a fresh replay of the same log reconstructs
+        // the identical post-compaction kv (the compaction is an ordinary fold, already on the log).
+        let replayed = Session::replay(s.log().to_vec(), &CompactingReducer)
+            .await
+            .expect("replay a compacted session");
+        assert_eq!(
+            replayed.kv().get(b"summary/latest"),
+            Some(&b"alpha|beta|gamma"[..])
+        );
+        assert_eq!(replayed.kv().get(b"detail/0"), None);
+        assert_eq!(
+            replayed.kv().len(),
+            1,
+            "replay reconstructs the identical bounded working set — compaction is just a fold on the log"
+        );
+    }
 }
 
 // §lifecycle I1: the Terminated marker + the first-class FoldRefused guard. A session terminated by another
