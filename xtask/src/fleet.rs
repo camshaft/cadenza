@@ -9206,10 +9206,29 @@ fn advance_trunk_for_merged_pr(fleet: &Fleet, pr: u64) -> Result<String, String>
     })?;
     let git_wt = |args: &[&str]| Command::new("git").current_dir(&wt).args(args).output();
     let git_wt_ok = |args: &[&str]| git_wt(args).map(|o| o.status.success()).unwrap_or(false);
+    // FF FAST-PATH (pr-sync, recurring every reap post-outage-drain). The re-parent model normally makes
+    // trunk & origin/main tree-equal but COMMIT-DISTINCT, so a literal FF is impossible and cherry-pick
+    // re-parents the delta. But they can become COMMIT-IDENTICAL — e.g. after a direct-to-main outage
+    // drain where trunk was re-parented onto the very commits pushed to main (verified 0/0). Then a
+    // candidate cut on trunk squash-merges onto origin/main with its mergeCommit's SINGLE parent ==
+    // trunk's tip, so merge_oid is a LINEAR DESCENDANT of trunk and `git merge --ff-only` lands it as a
+    // pure forward pointer advance — no 3-way merge, so none of the spurious CONFLICT that cherry-pick of
+    // that same commit hits. Try FF first: it is NON-MUTATING on failure (refuses + exits non-zero without
+    // touching HEAD/worktree when trunk ISN'T an ancestor of merge_oid, i.e. genuine re-parent
+    // divergence), so we cleanly fall back to the cherry-pick that re-parents the delta. Forward-only is
+    // preserved on BOTH paths (FF only advances; cherry-pick only appends). The `already_ancestor` guard
+    // above already returned for a merge_oid already on trunk, so FF here always strictly advances.
+    if git_wt_ok(&["merge", "--ff-only", &merge_oid]) {
+        return rev(TRUNK)
+            .ok_or_else(|| "cannot re-resolve trunk after ff-only advance".to_string());
+    }
+    // Not fast-forwardable (merge_oid's base isn't trunk's tip — the commit-distinct re-parent case):
+    // cherry-pick re-parents this PR's delta onto trunk (its parent's TREE == trunk's tree, so it applies
+    // cleanly). A real conflict here means the base wasn't trunk's tree (stale-base that slipped dispatch).
     if !git_wt_ok(&["cherry-pick", "--allow-empty", &merge_oid]) {
         let _ = git_wt(&["cherry-pick", "--abort"]);
         return Err(format!(
-            "PR #{pr}: cherry-pick of its mergeCommit {merge_oid} onto trunk CONFLICTED — its base wasn't trunk's tree; aborted, trunk left at {trunk_before}. Manual reconcile."
+            "PR #{pr}: mergeCommit {merge_oid} onto trunk neither fast-forwarded NOR cherry-picked (CONFLICTED — its base wasn't trunk's tree); aborted, trunk left at {trunk_before}. Manual reconcile."
         ));
     }
     rev(TRUNK).ok_or_else(|| "cannot re-resolve trunk after advance".to_string())
