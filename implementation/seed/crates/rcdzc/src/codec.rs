@@ -311,7 +311,10 @@ pub fn decode(bytes: &[u8]) -> Option<Arenas> {
         }
     }
 
-    // No trailing bytes.
+    // No trailing bytes: valid canonical bytes followed by extra bytes are a DETECTED error, not the
+    // value those valid bytes encode — `decode` refuses (returns `None`) rather than silently ignore them.
+    //= spec/contracts/deterministic-value-form.md#decoding-refuses-bytes-that-are-not-a-value-of-the-expected-type
+    //# A byte sequence that has valid canonical bytes followed by additional bytes MUST NOT decode as the value those valid bytes encode, so that trailing bytes are a detected error rather than silently ignored.
     if !r.at_end() {
         return None;
     }
