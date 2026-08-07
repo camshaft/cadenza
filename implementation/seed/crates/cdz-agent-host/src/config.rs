@@ -245,7 +245,7 @@ pub enum BlobConfig {
 }
 
 /// Effect-retry policy: a bounded exponential backoff the daemon's supervisor applies to a RETRYABLE
-/// effect outcome (a transient Bedrock/HTTP failure classified `RETRYABLE:` by [`crate::retry`]). A
+/// effect outcome (a transient Bedrock/HTTP failure the host classified `Retryability::Retryable`). A
 /// PERMANENT failure is never retried. This is the POLICY; the retry MECHANISM (re-emit via Timer on a
 /// RETRYABLE `EffectResult`) is a userspace/kernel-supervisor concern that reads it. The policy math —
 /// [`should_retry`](Self::should_retry) (attempt within `max_attempts`?) + [`backoff_ms`](Self::backoff_ms)

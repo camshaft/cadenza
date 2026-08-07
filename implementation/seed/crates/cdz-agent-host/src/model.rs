@@ -17,7 +17,6 @@
 //! kernel's `idempotency_key` and passes it to the transport, so a real Bedrock transport can dedup a
 //! re-driven dispatch after a crash (or at least be aware the same key means "the same logical call").
 
-use crate::retry;
 use bytes::Bytes;
 use cdz_kernel::effect::{effect_ct, EffectRequest, Payload};
 use cdz_kernel::event::EffectOutcome;
@@ -34,11 +33,13 @@ use cdz_kernel::hash::Hash;
 /// deep copy (operator perf directive). A transport holding a `Vec<u8>` freezes it with `.into()` (a
 /// move, no copy).
 ///
-/// **Error classification (supervision, [`crate::retry`]):** an `Err(reason)` MUST lead with a
-/// retryability token so the kernel supervisor can decide backoff-retry vs give-up — a transient failure
-/// (Bedrock 429/5xx/timeout, throttle, connection reset) as [`crate::retry::retryable`], a permanent one
-/// (400/auth/malformed) as [`crate::retry::permanent`]. An unprefixed reason is treated PERMANENT
-/// (fail-closed), so forgetting the prefix means "not retried," never "retried forever."
+/// **Error classification (supervision):** the `Err` half is a classified
+/// [`EffectOutcome`](cdz_kernel::event::EffectOutcome) carrying a typed
+/// [`Retryability`](cdz_kernel::event::Retryability), so the kernel supervisor decides backoff-retry vs
+/// give-up structurally — a transient failure (Bedrock 429/5xx/timeout, throttle, connection reset) via
+/// [`EffectOutcome::err_retryable`](cdz_kernel::event::EffectOutcome::err_retryable), a permanent one
+/// (400/auth/malformed) via [`EffectOutcome::err`](cdz_kernel::event::EffectOutcome::err) (`Permanent` is the
+/// fail-closed default). The executor folds the returned outcome through unchanged.
 /// `#[async_trait(?Send)]` — the invoke is async (a real Bedrock call awaits the socket) and not `Send`
 /// (single-threaded host, no cross-thread futures; §15b), matching the kernel's `Executor`/`Reducer`.
 #[async_trait::async_trait(?Send)]
@@ -51,7 +52,7 @@ pub trait ModelTransport {
         model_id: &str,
         body: &[u8],
         idempotency_key: Hash,
-    ) -> Result<Bytes, String>;
+    ) -> Result<Bytes, EffectOutcome>;
 }
 
 /// Performs `Model` effects by delegating the network call to a [`ModelTransport`]. Single-KIND: a
@@ -76,11 +77,11 @@ impl<T: ModelTransport> Executor for ModelExecutor<T> {
         // enum — the same decision the router and authz make. Decouples this executor from the enum ahead
         // of its retirement; matches_family is the one-source-of-truth family compare.
         if !req.content_type.matches_family(effect_ct::MODEL) {
-            return EffectOutcome::Err(retry::permanent(format!(
+            return EffectOutcome::err(format!(
                 "ModelExecutor only handles the {} family, got {}",
                 effect_ct::MODEL,
                 req.content_type.family
-            )));
+            ));
         }
         // A model call needs a request body. An inline payload IS the request; a blob-ref payload is
         // rejected because this executor has no blob-store handle to resolve it, and a payload-free Model
@@ -88,14 +89,14 @@ impl<T: ModelTransport> Executor for ModelExecutor<T> {
         let body: &[u8] = match &req.payload {
             Some(Payload::Inline(bytes)) => bytes,
             Some(Payload::Blob(_)) => {
-                return EffectOutcome::Err(retry::permanent(
+                return EffectOutcome::err(
                     "ModelExecutor: blob-ref payload unsupported — this executor has no blob-store access; inline the request body",
-                ));
+                );
             }
             None => {
-                return EffectOutcome::Err(retry::permanent(
+                return EffectOutcome::err(
                     "ModelExecutor: a Model effect requires a request payload",
-                ));
+                );
             }
         };
         match self
@@ -104,10 +105,10 @@ impl<T: ModelTransport> Executor for ModelExecutor<T> {
             .await
         {
             // The transport's `Bytes` completion moves straight into `Payload::Inline` (ref-counted
-            // `Bytes`) — no copy. The transport's Err reason already carries its own retryability token
-            // (RETRYABLE:/PERMANENT:, per the trait contract), so pass it through unchanged.
+            // `Bytes`) — no copy. The transport's Err is already a classified `EffectOutcome::Err` carrying
+            // its typed retryability (per the trait contract), so pass it through unchanged.
             Ok(response) => EffectOutcome::Ok(Some(Payload::Inline(response))),
-            Err(reason) => EffectOutcome::Err(reason),
+            Err(outcome) => outcome,
         }
     }
 
@@ -139,8 +140,8 @@ impl<T: ModelTransport> Executor for ModelExecutor<T> {
 /// the standard regional Bedrock endpoint for the resolved model id.
 ///
 /// **Error classification (§17):** a throttle / server / timeout / dispatch failure is
-/// [`retry::retryable`]; a request-construction or other service error is [`retry::permanent`]
-/// (fail-closed — an unprefixed reason is treated permanent, so a misclassification never retries forever).
+/// `err_retryable`; a request-construction or other service error is `err` (Permanent, the fail-closed
+/// default — a misclassification never retries forever).
 // `Clone` is cheap: an `aws_sdk_bedrockruntime::Client` is an `Arc`-backed handle over a shared
 // `SdkConfig` (connection pool + credential cache), so cloning is a refcount bump, NOT a re-resolution of
 // AWS config / IMDS. This lets the daemon build ONE Bedrock client at startup and clone it into a fresh
@@ -182,7 +183,7 @@ impl ModelTransport for BedrockModelTransport {
         model_id: &str,
         body: &[u8],
         _idempotency_key: Hash,
-    ) -> Result<Bytes, String> {
+    ) -> Result<Bytes, EffectOutcome> {
         use aws_sdk_bedrockruntime::primitives::Blob;
 
         // GAP-1 tool-calling (ADDITIVE): if `body` decodes as an M1 `model-request` (the kernel's
@@ -201,7 +202,7 @@ impl ModelTransport for BedrockModelTransport {
             .body(Blob::new(body.to_vec()))
             .send()
             .await
-            .map_err(classify_bedrock_error)?;
+            .map_err(classify_bedrock_error)?; // -> EffectOutcome
 
         // The response body is the model's native completion JSON — folded back verbatim as Bytes.
         Ok(Bytes::from(resp.body.into_inner()))
@@ -220,7 +221,7 @@ impl BedrockModelTransport {
     async fn converse_tool_calling(
         &self,
         req: &cdz_kernel::event_ast::ModelRequest,
-    ) -> Result<Bytes, String> {
+    ) -> Result<Bytes, EffectOutcome> {
         use crate::converse::{
             from_model_request, to_model_response, ConverseResponse, ConverseRole,
         };
@@ -235,7 +236,7 @@ impl BedrockModelTransport {
 
         // Decode + interpret M1 → transport-agnostic ConverseRequest (system-hoist, role-normalize). A
         // malformed request (unknown role) is a PERMANENT structural error the reducer built.
-        let cr = from_model_request(req).map_err(|e| retry::permanent(e.to_string()))?;
+        let cr = from_model_request(req).map_err(|e| EffectOutcome::err(e.to_string()))?;
 
         // ── Build the Converse call ──────────────────────────────────────────────────────────────────
         let mut call = self.client.converse().model_id(&cr.model_id);
@@ -256,25 +257,28 @@ impl BedrockModelTransport {
                 let bd = match block {
                     KContentBlock::Text(t) => BdContentBlock::Text(t.clone()),
                     KContentBlock::ToolCall { id, name, input } => {
-                        let input_doc = json_bytes_to_document(input).map_err(retry::permanent)?;
+                        let input_doc =
+                            json_bytes_to_document(input).map_err(EffectOutcome::err)?;
                         BdContentBlock::ToolUse(
                             ToolUseBlock::builder()
                                 .tool_use_id(id)
                                 .name(name)
                                 .input(input_doc)
                                 .build()
-                                .map_err(|e| retry::permanent(format!("tool-use block: {e}")))?,
+                                .map_err(|e| EffectOutcome::err(format!("tool-use block: {e}")))?,
                         )
                     }
                     KContentBlock::ToolResult { id, result } => {
                         let result_doc =
-                            json_bytes_to_document(result).map_err(retry::permanent)?;
+                            json_bytes_to_document(result).map_err(EffectOutcome::err)?;
                         BdContentBlock::ToolResult(
                             ToolResultBlock::builder()
                                 .tool_use_id(id)
                                 .content(ToolResultContentBlock::Json(result_doc))
                                 .build()
-                                .map_err(|e| retry::permanent(format!("tool-result block: {e}")))?,
+                                .map_err(|e| {
+                                    EffectOutcome::err(format!("tool-result block: {e}"))
+                                })?,
                         )
                     }
                 };
@@ -282,7 +286,7 @@ impl BedrockModelTransport {
             }
             let msg = msg
                 .build()
-                .map_err(|e| retry::permanent(format!("message: {e}")))?;
+                .map_err(|e| EffectOutcome::err(format!("message: {e}")))?;
             call = call.messages(msg);
         }
 
@@ -290,17 +294,17 @@ impl BedrockModelTransport {
         if !cr.tools.is_empty() {
             let mut tc = ToolConfiguration::builder();
             for t in &cr.tools {
-                let schema_doc = json_bytes_to_document(&t.schema).map_err(retry::permanent)?;
+                let schema_doc = json_bytes_to_document(&t.schema).map_err(EffectOutcome::err)?;
                 let spec = ToolSpecification::builder()
                     .name(&t.name)
                     .input_schema(ToolInputSchema::Json(schema_doc))
                     .build()
-                    .map_err(|e| retry::permanent(format!("tool spec: {e}")))?;
+                    .map_err(|e| EffectOutcome::err(format!("tool spec: {e}")))?;
                 tc = tc.tools(Tool::ToolSpec(spec));
             }
             let tc = tc
                 .build()
-                .map_err(|e| retry::permanent(format!("tool config: {e}")))?;
+                .map_err(|e| EffectOutcome::err(format!("tool config: {e}")))?;
             call = call.tool_config(tc);
         }
 
@@ -364,7 +368,7 @@ fn classify_bedrock_error(
     e: aws_sdk_bedrockruntime::error::SdkError<
         aws_sdk_bedrockruntime::operation::invoke_model::InvokeModelError,
     >,
-) -> String {
+) -> EffectOutcome {
     use aws_sdk_bedrockruntime::error::SdkError;
     // Transport-level failures that never reached, or didn't cleanly complete at, the service → transient:
     // a timeout, a dispatch (connect/IO) failure, or a ResponseError (a reply arrived but was unparseable /
@@ -375,19 +379,19 @@ fn classify_bedrock_error(
         SdkError::TimeoutError(_) | SdkError::DispatchFailure(_) | SdkError::ResponseError(_)
     );
     if transient_transport {
-        return retry::retryable(format!("Bedrock transport failure: {e}"));
+        return EffectOutcome::err_retryable(format!("Bedrock transport failure: {e}"));
     }
     // A completed service error: throttling / 5xx are transient; other 4xx are permanent.
     if let SdkError::ServiceError(ref svc) = e {
         let err = svc.err();
         if err.is_throttling_exception() || err.is_model_timeout_exception() {
-            return retry::retryable(format!("Bedrock throttled/timed out: {e}"));
+            return EffectOutcome::err_retryable(format!("Bedrock throttled/timed out: {e}"));
         }
         if err.is_internal_server_exception() || err.is_service_unavailable_exception() {
-            return retry::retryable(format!("Bedrock server error: {e}"));
+            return EffectOutcome::err_retryable(format!("Bedrock server error: {e}"));
         }
     }
-    retry::permanent(format!("Bedrock invoke failed: {e}"))
+    EffectOutcome::err(format!("Bedrock invoke failed: {e}"))
 }
 
 /// Classify a Bedrock `Converse` error (§17), same policy as [`classify_bedrock_error`] but over the Converse
@@ -399,31 +403,34 @@ fn classify_converse_error(
     e: aws_sdk_bedrockruntime::error::SdkError<
         aws_sdk_bedrockruntime::operation::converse::ConverseError,
     >,
-) -> String {
+) -> EffectOutcome {
     use aws_sdk_bedrockruntime::error::SdkError;
     let transient_transport = matches!(
         e,
         SdkError::TimeoutError(_) | SdkError::DispatchFailure(_) | SdkError::ResponseError(_)
     );
     if transient_transport {
-        return retry::retryable(format!("Bedrock Converse transport failure: {e}"));
+        return EffectOutcome::err_retryable(format!("Bedrock Converse transport failure: {e}"));
     }
     if let SdkError::ServiceError(ref svc) = e {
         let err = svc.err();
         if err.is_throttling_exception() || err.is_model_timeout_exception() {
-            return retry::retryable(format!("Bedrock Converse throttled/timed out: {e}"));
+            return EffectOutcome::err_retryable(format!(
+                "Bedrock Converse throttled/timed out: {e}"
+            ));
         }
         if err.is_internal_server_exception() || err.is_service_unavailable_exception() {
-            return retry::retryable(format!("Bedrock Converse server error: {e}"));
+            return EffectOutcome::err_retryable(format!("Bedrock Converse server error: {e}"));
         }
     }
-    retry::permanent(format!("Bedrock Converse failed: {e}"))
+    EffectOutcome::err(format!("Bedrock Converse failed: {e}"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use cdz_kernel::effect::Timeliness;
+    use cdz_kernel::event::Retryability;
 
     /// A transport that echoes a canned completion, recording what it was asked to invoke so a test can
     /// assert the executor extracted the model id + body correctly.
@@ -432,7 +439,12 @@ mod tests {
     }
     #[async_trait::async_trait(?Send)]
     impl ModelTransport for StubTransport {
-        async fn invoke(&self, model_id: &str, body: &[u8], _key: Hash) -> Result<Bytes, String> {
+        async fn invoke(
+            &self,
+            model_id: &str,
+            body: &[u8],
+            _key: Hash,
+        ) -> Result<Bytes, EffectOutcome> {
             // Prove the executor passed the model id (target) + the request body (payload) through.
             assert_eq!(model_id, "test-model");
             assert_eq!(body, b"prompt");
@@ -474,14 +486,13 @@ mod tests {
             response: Bytes::new(),
         });
         match exec.perform(&model_req(None), Hash::of(b"k")).await {
-            EffectOutcome::Err(msg) => {
-                assert!(msg.contains("requires a request payload"), "{msg}");
+            EffectOutcome::Err {
+                message,
+                retryability,
+            } => {
+                assert!(message.contains("requires a request payload"), "{message}");
                 // A structural request error is PERMANENT — a supervisor must not retry it.
-                assert_eq!(
-                    retry::classify(&msg),
-                    retry::Retryability::Permanent,
-                    "{msg}"
-                );
+                assert_eq!(retryability, Retryability::Permanent, "{message}");
             }
             other => panic!("expected Err for a payload-free Model effect, got {other:?}"),
         }
@@ -499,14 +510,13 @@ mod tests {
             )
             .await
         {
-            EffectOutcome::Err(msg) => {
+            EffectOutcome::Err {
+                message,
+                retryability,
+            } => {
                 // Rejected because this executor has no blob-store access (an invariant, not a "yet").
-                assert!(msg.contains("no blob-store access"), "{msg}");
-                assert_eq!(
-                    retry::classify(&msg),
-                    retry::Retryability::Permanent,
-                    "{msg}"
-                );
+                assert!(message.contains("no blob-store access"), "{message}");
+                assert_eq!(retryability, Retryability::Permanent, "{message}");
             }
             other => panic!("expected Err for a blob-ref payload, got {other:?}"),
         }
@@ -519,8 +529,8 @@ mod tests {
         struct ThrottledTransport;
         #[async_trait::async_trait(?Send)]
         impl ModelTransport for ThrottledTransport {
-            async fn invoke(&self, _m: &str, _b: &[u8], _k: Hash) -> Result<Bytes, String> {
-                Err(retry::retryable("bedrock throttled (429)"))
+            async fn invoke(&self, _m: &str, _b: &[u8], _k: Hash) -> Result<Bytes, EffectOutcome> {
+                Err(EffectOutcome::err_retryable("bedrock throttled (429)"))
             }
         }
         let mut exec = ModelExecutor::new(ThrottledTransport);
@@ -531,13 +541,12 @@ mod tests {
             )
             .await
         {
-            EffectOutcome::Err(msg) => {
-                assert!(msg.contains("throttled"), "{msg}");
-                assert_eq!(
-                    retry::classify(&msg),
-                    retry::Retryability::Retryable,
-                    "{msg}"
-                );
+            EffectOutcome::Err {
+                message,
+                retryability,
+            } => {
+                assert!(message.contains("throttled"), "{message}");
+                assert_eq!(retryability, Retryability::Retryable, "{message}");
             }
             other => panic!("expected the transport error to fold as Err, got {other:?}"),
         }
@@ -548,7 +557,7 @@ mod tests {
         struct NeverCalled;
         #[async_trait::async_trait(?Send)]
         impl ModelTransport for NeverCalled {
-            async fn invoke(&self, _m: &str, _b: &[u8], _k: Hash) -> Result<Bytes, String> {
+            async fn invoke(&self, _m: &str, _b: &[u8], _k: Hash) -> Result<Bytes, EffectOutcome> {
                 panic!("transport must not be called for a non-model-family effect");
             }
         }
@@ -562,16 +571,15 @@ mod tests {
             Timeliness::Interactive,
         );
         match exec.perform(&req, Hash::of(b"k")).await {
-            EffectOutcome::Err(msg) => {
+            EffectOutcome::Err {
+                message,
+                retryability,
+            } => {
                 assert!(
-                    msg.contains(effect_ct::MODEL) && msg.contains(effect_ct::HTTP),
-                    "err names the handled family (model) + the rejected one (http): {msg}"
+                    message.contains(effect_ct::MODEL) && message.contains(effect_ct::HTTP),
+                    "err names the handled family (model) + the rejected one (http): {message}"
                 );
-                assert_eq!(
-                    retry::classify(&msg),
-                    retry::Retryability::Permanent,
-                    "{msg}"
-                );
+                assert_eq!(retryability, Retryability::Permanent, "{message}");
             }
             other => panic!("expected Err for a non-model-family effect, got {other:?}"),
         }

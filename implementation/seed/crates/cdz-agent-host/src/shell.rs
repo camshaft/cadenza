@@ -26,7 +26,6 @@
 //! dedup handle a re-driven dispatch (post-crash) can key on. v0 runs the command each perform (documented);
 //! a dedup cache is a later refinement.
 
-use crate::retry;
 use cdz_kernel::effect::{effect_ct, EffectRequest, Payload};
 use cdz_kernel::event::EffectOutcome;
 use cdz_kernel::executor::Executor;
@@ -58,18 +57,18 @@ impl Executor for ShellExecutor {
         // Family guard (seq-39 family-string source of truth, same as Clock/Http/Model). A wrong family is
         // structural → PERMANENT (§17: an observable Err, never a panic; a supervisor must not retry it).
         if !req.content_type.matches_family(effect_ct::SHELL) {
-            return EffectOutcome::Err(retry::permanent(format!(
+            return EffectOutcome::err(format!(
                 "ShellExecutor only handles the {} family, got {}",
                 effect_ct::SHELL,
                 req.content_type.family
-            )));
+            ));
         }
         // Split the target into program + args on whitespace and exec DIRECTLY — no shell, so metacharacters
         // are literal args, not interpreted (CWE-78 / kernel PR#992 parity). This is the irreducible spawn
         // mechanism; the command itself was already authorized by the Cedar policy (SEC-F1) before dispatch.
         let mut parts = req.target.split_whitespace();
         let Some(program) = parts.next() else {
-            return EffectOutcome::Err(retry::permanent("empty command"));
+            return EffectOutcome::err("empty command");
         };
         let args: Vec<&str> = parts.collect();
         match std::process::Command::new(program).args(&args).output() {
@@ -79,14 +78,14 @@ impl Executor for ShellExecutor {
             // A non-zero exit is a REAL command outcome the reducer folds (a failed build/test), not a
             // transient host fault → PERMANENT (retrying the identical command re-fails the same way; the
             // reducer decides what to do with the failure). Carries the exit code + stderr for the fold.
-            Ok(out) => EffectOutcome::Err(retry::permanent(format!(
+            Ok(out) => EffectOutcome::err(format!(
                 "exit {}: {}",
                 out.status.code().unwrap_or(-1),
                 String::from_utf8_lossy(&out.stderr).trim()
-            ))),
+            )),
             // A spawn failure (program missing on PATH, fork error) is a host/environment fault → PERMANENT
             // (a missing program won't appear on a retry); the message carries the OS error.
-            Err(e) => EffectOutcome::Err(retry::permanent(format!("spawn failed: {e}"))),
+            Err(e) => EffectOutcome::err(format!("spawn failed: {e}")),
         }
     }
 
@@ -101,6 +100,7 @@ impl Executor for ShellExecutor {
 mod tests {
     use super::*;
     use cdz_kernel::effect::{EffectKind, Timeliness};
+    use cdz_kernel::event::Retryability;
 
     fn shell_req(target: &str) -> EffectRequest {
         EffectRequest::new(
@@ -154,7 +154,7 @@ mod tests {
         let mut exec = ShellExecutor::new();
         let out = exec.perform(&shell_req("false"), Hash::of(b"k")).await;
         assert!(
-            matches!(&out, EffectOutcome::Err(r) if r.starts_with("PERMANENT:") && r.contains("exit ")),
+            matches!(&out, EffectOutcome::Err { message, retryability } if *retryability == Retryability::Permanent && message.contains("exit ")),
             "a non-zero exit is a PERMANENT command-failure, got {out:?}"
         );
     }
@@ -169,7 +169,7 @@ mod tests {
             )
             .await;
         assert!(
-            matches!(&out, EffectOutcome::Err(r) if r.starts_with("PERMANENT:") && r.contains("spawn failed")),
+            matches!(&out, EffectOutcome::Err { message, retryability } if *retryability == Retryability::Permanent && message.contains("spawn failed")),
             "a missing program is a PERMANENT spawn failure, got {out:?}"
         );
     }
@@ -185,7 +185,7 @@ mod tests {
         );
         let out = exec.perform(&req, Hash::of(b"k")).await;
         assert!(
-            matches!(&out, EffectOutcome::Err(r) if r.starts_with("PERMANENT:") && r.contains("only handles")),
+            matches!(&out, EffectOutcome::Err { message, retryability } if *retryability == Retryability::Permanent && message.contains("only handles")),
             "a non-Shell family is rejected PERMANENT, got {out:?}"
         );
         assert!(exec.handles_family(effect_ct::SHELL) && !exec.handles_family(effect_ct::HTTP));
@@ -196,7 +196,7 @@ mod tests {
         let mut exec = ShellExecutor::new();
         let out = exec.perform(&shell_req("   "), Hash::of(b"k")).await;
         assert!(
-            matches!(&out, EffectOutcome::Err(r) if r.contains("empty command")),
+            matches!(&out, EffectOutcome::Err { message, .. } if message.contains("empty command")),
             "an empty/whitespace target is PERMANENT, got {out:?}"
         );
     }

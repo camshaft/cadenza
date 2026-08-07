@@ -33,7 +33,7 @@ impl ModelTransport for StubModel {
         model_id: &str,
         body: &[u8],
         _key: Hash,
-    ) -> Result<bytes::Bytes, String> {
+    ) -> Result<bytes::Bytes, EffectOutcome> {
         // Echo enough that the test can prove the executor threaded the model id + prompt through.
         Ok(
             format!("{model_id} says: {}", String::from_utf8_lossy(body))
@@ -218,7 +218,12 @@ async fn a_model_call_to_an_unpermitted_id_is_denied_before_the_transport() {
     struct MustNotCall;
     #[async_trait::async_trait(?Send)]
     impl ModelTransport for MustNotCall {
-        async fn invoke(&self, _m: &str, _b: &[u8], _k: Hash) -> Result<bytes::Bytes, String> {
+        async fn invoke(
+            &self,
+            _m: &str,
+            _b: &[u8],
+            _k: Hash,
+        ) -> Result<bytes::Bytes, EffectOutcome> {
             panic!("a denied Model effect must never reach the transport");
         }
     }

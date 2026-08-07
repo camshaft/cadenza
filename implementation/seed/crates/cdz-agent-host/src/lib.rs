@@ -48,8 +48,9 @@
 //! authorization of each command is the following slice.
 //!
 //! All executor errors are RECOVERABLE + classified for the kernel's supervision tree (see [`retry`]):
-//! an `EffectOutcome::Err` reason leads with a `RETRYABLE:`/`PERMANENT:` token so a supervisor decides
-//! backoff-retry vs give-up — never a panic, never a silent drop (the operator's error-resilience floor).
+//! an `EffectOutcome::Err` carries a typed [`Retryability`](cdz_kernel::event::Retryability) field so a
+//! supervisor decides backoff-retry vs give-up — never a panic, never a silent drop (the operator's
+//! error-resilience floor).
 //!
 //! The shared surface with `cdz-kernel` is ONLY the trait signatures; this crate never edits kernel src.
 
@@ -124,7 +125,7 @@ pub use metrics::{EffectMetrics, HostMetrics};
 #[cfg(feature = "live-net")]
 pub use model::BedrockModelTransport;
 pub use model::{ModelExecutor, ModelTransport};
-pub use retry::{classify, permanent, retryable, Retryability};
+pub use retry::Retryability;
 #[cfg(feature = "live-aws-storage")]
 pub use s3_blob::S3BlobStore;
 #[cfg(feature = "live-exec")]

@@ -35,7 +35,7 @@ impl ModelTransport for StubModel {
         _model_id: &str,
         _body: &[u8],
         _key: Hash,
-    ) -> Result<bytes::Bytes, String> {
+    ) -> Result<bytes::Bytes, EffectOutcome> {
         Ok(bytes::Bytes::from_static(b"a completion"))
     }
 }

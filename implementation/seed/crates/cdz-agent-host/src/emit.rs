@@ -71,19 +71,19 @@ impl Executor for EmitExecutor {
         // Family-keyed (seq-39), matching the router + authz decision. A non-Emit family is structural →
         // PERMANENT (§17: observable Err, never a panic).
         if !req.content_type.matches_family(effect_ct::EMIT) {
-            return EffectOutcome::Err(crate::retry::permanent(format!(
+            return EffectOutcome::err(format!(
                 "EmitExecutor only handles the {} family, got {}",
                 effect_ct::EMIT,
                 req.content_type.family
-            )));
+            ));
         }
 
         // `target` is the peer session id (raw SessionId string, opaque routing hint). An empty target has
         // no peer to route to — structural PERMANENT.
         if req.target.is_empty() {
-            return EffectOutcome::Err(crate::retry::permanent(
+            return EffectOutcome::err(
                 "EmitExecutor: an Emit effect requires a non-empty target (the peer session id to route to)",
-            ));
+            );
         }
         // Clone the `Arc<str>` (O(1) refcount bump) rather than round-tripping `as_ref()` → a fresh alloc
         // (#2351 review c3): `SessionId` IS an `Arc<str>` and `req.target` already is one.
@@ -96,9 +96,9 @@ impl Executor for EmitExecutor {
             Some(Payload::Inline(bytes)) => Payload::Inline(bytes.clone()),
             None => Payload::Inline(Vec::new().into()),
             Some(Payload::Blob(_)) => {
-                return EffectOutcome::Err(crate::retry::permanent(
+                return EffectOutcome::err(
                     "EmitExecutor: a blob-ref Emit payload is unsupported — this executor has no blob-store access; inline the message",
-                ));
+                );
             }
         };
 
@@ -127,9 +127,9 @@ impl Executor for EmitExecutor {
             // The loop's receiver is gone (host shutting down / dropped). The signal couldn't be routed;
             // classify RETRYABLE — a supervisor may re-drive after the loop is back (transient, not a
             // malformed request).
-            Err(_) => EffectOutcome::Err(crate::retry::retryable(
+            Err(_) => EffectOutcome::err_retryable(
                 "EmitExecutor: the host loop inbox is closed — cannot route the Emit (host shutting down?)",
-            )),
+            ),
         }
     }
 
@@ -144,6 +144,7 @@ impl Executor for EmitExecutor {
 mod tests {
     use super::*;
     use cdz_kernel::effect::Timeliness;
+    use cdz_kernel::event::Retryability;
     use tokio::sync::mpsc;
 
     /// Build an Emit effect request to `target` with an inline `payload` (or none).
@@ -227,12 +228,16 @@ mod tests {
             .perform(&emit_req("", Some(b"x")), Hash::of(b"k"))
             .await;
         match out {
-            EffectOutcome::Err(reason) => {
-                assert!(
-                    reason.starts_with("PERMANENT:"),
-                    "empty target is structural: {reason}"
+            EffectOutcome::Err {
+                message,
+                retryability,
+            } => {
+                assert_eq!(
+                    retryability,
+                    Retryability::Permanent,
+                    "empty target is structural: {message}"
                 );
-                assert!(reason.contains("non-empty target"));
+                assert!(message.contains("non-empty target"));
             }
             other => panic!("expected a PERMANENT Err, got {other:?}"),
         }
@@ -250,7 +255,7 @@ mod tests {
         );
         let out = exec.perform(&req, Hash::of(b"k")).await;
         assert!(
-            matches!(out, EffectOutcome::Err(r) if r.starts_with("PERMANENT:") && r.contains("only handles")),
+            matches!(out, EffectOutcome::Err { message, retryability } if retryability == Retryability::Permanent && message.contains("only handles")),
             "a non-Emit family is rejected PERMANENT"
         );
         assert!(exec.handles_family(effect_ct::EMIT) && !exec.handles_family(effect_ct::HTTP));
@@ -272,7 +277,7 @@ mod tests {
         );
         let out = exec.perform(&req, Hash::of(b"k")).await;
         assert!(
-            matches!(&out, EffectOutcome::Err(r) if r.starts_with("PERMANENT:") && r.contains("blob-ref")),
+            matches!(&out, EffectOutcome::Err { message, retryability } if *retryability == Retryability::Permanent && message.contains("blob-ref")),
             "a blob-ref Emit payload is rejected PERMANENT (no blob-store access to forward it), got {out:?}"
         );
     }
@@ -288,7 +293,7 @@ mod tests {
             .perform(&emit_req("b", Some(b"x")), Hash::of(b"k"))
             .await;
         assert!(
-            matches!(&out, EffectOutcome::Err(r) if r.starts_with("RETRYABLE:") && r.contains("inbox is closed")),
+            matches!(&out, EffectOutcome::Err { message, retryability } if *retryability == Retryability::Retryable && message.contains("inbox is closed")),
             "a closed inbox is a transient RETRYABLE, got {out:?}"
         );
     }

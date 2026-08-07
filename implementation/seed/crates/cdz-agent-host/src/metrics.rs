@@ -15,7 +15,8 @@
 //!   [`Summary`].
 //! - [`EffectMetrics`] — PER-EFFECT dispatch outcomes captured by the
 //!   [`MeteredExecutor`](crate::factory::MeteredExecutor) decorator: ok / retryable-err / permanent-err /
-//!   timed-out (classified via [`crate::retry::classify`]), + an effect-latency [`Summary`]. `Arc`-shared so
+//!   timed-out (read off the outcome's typed [`Retryability`](crate::retry::Retryability)), + an
+//!   effect-latency [`Summary`]. `Arc`-shared so
 //!   all of a session's per-family decorators tally into one set.
 
 use s2n_quic_dc_metrics::{Counter, Summary, Unit};
@@ -149,8 +150,9 @@ impl EffectMetrics {
         self.effects_ok.increment(1);
     }
 
-    /// Record one FAILED effect dispatch, split by its [`retry`](crate::retry) classification (the metering
-    /// decorator passes the [`classify`](crate::retry::classify)d result; fail-closed unprefixed → Permanent).
+    /// Record one FAILED effect dispatch, split by its typed [`Retryability`](crate::retry::Retryability)
+    /// (the metering decorator reads it straight off `EffectOutcome::Err { retryability, .. }`; the
+    /// fail-closed default an un-annotated error carries is `Permanent`).
     pub(crate) fn record_err(&self, retryability: crate::retry::Retryability) {
         match retryability {
             crate::retry::Retryability::Retryable => self.effects_retryable_err.increment(1),

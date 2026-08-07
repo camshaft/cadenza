@@ -3064,7 +3064,7 @@ mod tests {
             _h: &[(String, String)],
             _b: Option<&[u8]>,
             _k: Hash,
-        ) -> Result<crate::HttpResponse, String> {
+        ) -> Result<crate::HttpResponse, cdz_kernel::event::EffectOutcome> {
             unreachable!("mechanism-surface test never performs the request")
         }
     }
