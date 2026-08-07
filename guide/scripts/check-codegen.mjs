@@ -81,3 +81,66 @@ if (WRITE) {
 } else {
   console.log(`check-codegen: ${sexpFiles.length} fixture(s) render byte-identically ✓`);
 }
+
+// ---- CHAPTER-FIDELITY: each chapters/*.sexp must reproduce the still-hand-written chapters/<Name>.tsx ----
+// This STAGES the sexp→TSX cutover on real content BEFORE flipping the source of truth: for every authored
+// chapter .sexp, generate its TSX and compare NORMALIZED VISIBLE TEXT (not raw bytes) against the committed
+// hand-written chapter. Byte-identity is the wrong bar — the hand file has incidental JSX layout (a link's
+// inner text on its own indented line, {" "} spacers) that renders identically but differs byte-wise; what
+// must match is the reader-visible DOM. So we strip tags/className/JSX-whitespace-exprs + collapse spaces on
+// BOTH sides and require equality. When a chapter's .tsx is later REPLACED by the @generated output (the
+// actual cutover), this check still holds (generated vs generated) and guards regressions. A .sexp with no
+// sibling .tsx is skipped (a future generated-only chapter); today every .sexp shadows a hand file.
+const chaptersSrcDir = join(guideRoot, "src/content/chapters");
+const chapterSexps = readdirSync(chaptersSrcDir).filter((f) => f.endsWith(".sexp")).sort();
+let fidelityFails = 0;
+const visibleText = (tsx) => {
+  const m = tsx.match(/<article>([\s\S]*)<\/article>/);
+  if (!m) return "(no article)";
+  return m[1]
+    .replace(/className="[^"]*"/g, "")
+    // Model JSX's whitespace collapsing, in the ORDER that matters:
+    // 1. A whitespace run CONTAINING A NEWLINE adjacent to a tag (`>`/`<`) is REMOVED by JSX, not rendered as
+    //    a space — so `<Link>\n  text\n</Link>, x` renders "text, x" (no stray pre-comma space), and
+    //    `Cadenza\n<em>` renders "Cadenza<em>". Do this BEFORE expanding {" "} so an EXPLICIT `{" "}` space
+    //    (which contains no newline) survives while incidental source-layout newlines are dropped. This is
+    //    exactly why the author WROTE `{" "}` at those wrap points: to force a space JSX would otherwise eat.
+    .replace(/>\s*\n\s*/g, ">")
+    .replace(/\s*\n\s*</g, "<")
+    // 2. Now the explicit author-written spaces/indents become literal text.
+    .replace(/\{"([^"]*)"\}/g, "$1")
+    .replace(/<br\s*\/?>/g, " ")     // a hard break renders as a line break; for VISIBLE-TEXT it's whitespace
+    .replace(/<[^>]+>/g, "")         // strip all remaining JSX tags (Ch/AppLink/em/C/H1/…)
+    .replace(/&amp;/g, "&")
+    .replace(/\s+/g, " ")
+    .trim();
+};
+for (const sexp of chapterSexps) {
+  const src = readFileSync(join(chaptersSrcDir, sexp), "utf8");
+  const parsed = parseChapter(src);
+  if (!parsed.ok) {
+    console.error(`check-codegen [chapter-fidelity]: ${sexp} — parse declined: ${parsed.reason}`);
+    fidelityFails++;
+    continue;
+  }
+  const pascal = parsed.model.slug.split(/[-_]/).filter(Boolean).map((w) => w[0].toUpperCase() + w.slice(1)).join("");
+  const handPath = join(chaptersSrcDir, `${pascal}.tsx`);
+  let hand;
+  try { hand = readFileSync(handPath, "utf8"); } catch { continue; } // generated-only chapter: nothing to compare
+  const genVisible = visibleText(renderChapter(parsed.model));
+  const handVisible = visibleText(hand);
+  if (genVisible !== handVisible) {
+    fidelityFails++;
+    let i = 0; while (i < genVisible.length && i < handVisible.length && genVisible[i] === handVisible[i]) i++;
+    console.error(
+      `check-codegen [chapter-fidelity]: ${sexp} does NOT reproduce ${pascal}.tsx's visible text.\n` +
+        `  first divergence @${i}:\n    hand: …${JSON.stringify(handVisible.slice(Math.max(0, i - 40), i + 40))}\n` +
+        `    gen:  …${JSON.stringify(genVisible.slice(Math.max(0, i - 40), i + 40))}`,
+    );
+  }
+}
+if (fidelityFails > 0) {
+  console.error(`check-codegen [chapter-fidelity]: ${fidelityFails} chapter .sexp(s) don't reproduce their hand-written .tsx.`);
+  process.exit(1);
+}
+if (chapterSexps.length) console.log(`check-codegen [chapter-fidelity]: ${chapterSexps.length} chapter .sexp(s) reproduce their hand-written .tsx (visible text) ✓`);
