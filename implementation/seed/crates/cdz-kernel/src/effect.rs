@@ -175,6 +175,36 @@ pub mod effect_ct {
         family.starts_with(LIFECYCLE_PREFIX)
     }
 
+    /// The `fs/*` namespace PREFIX — the §GAP-3 filesystem partition (a first-class file effect so an agent
+    /// edits code SAFELY + gate-ably, rather than shelling out to `sed`). Like `lifecycle/*` it is AUTHZ-GATED
+    /// and EXECUTOR-ROUTED through the normal authorize→executor path: the HOST registers a thin `FsExecutor`
+    /// that `handles_family` the fs names (read/write/glob = the irreducible syscalls), so the kernel needs no
+    /// drive-loop arm, only these family consts (one source of truth across a reducer, the host executor, and
+    /// the manifest). Authority is a `FamilyGrant` (`Capability::for_family`) whose `ResourcePredicate` gates
+    /// the effect TARGET = the resolved PATH: path-scoping is an evolvable Cedar policy
+    /// (`permit(action=="fs/write") when resource.target like "implementation/**"`), NOT a host allow-list —
+    /// the minimize-host-logic standing order, same lesson as the shell allow-list. Register-by-string
+    /// (`Emit` placeholder kind). NO path allow-list in the kernel OR host; Cedar owns the path policy.
+    pub const FS_PREFIX: &str = "fs/";
+
+    /// `fs/read` — read a file's bytes (target = the path; result = the file contents as an inline payload).
+    pub const FS_READ: &str = "fs/read";
+
+    /// `fs/write` — create-or-overwrite a file (target = the path; payload = the bytes to write). The
+    /// agent-edit loop is `fs/read` → modify in the reducer → `fs/write`; a dedicated `fs/edit` may come later.
+    pub const FS_WRITE: &str = "fs/write";
+
+    /// `fs/glob` — list paths matching a glob / under a directory (target = the glob or dir; result = the
+    /// matching paths). Lets an agent discover files to read/edit within its Cedar-granted path scope.
+    pub const FS_GLOB: &str = "fs/glob";
+
+    /// Is `family` in the `fs/*` namespace (the §GAP-3 filesystem partition, authz-gated on the resolved
+    /// PATH target)? A prefix test (like [`is_lifecycle_family`]/[`is_store_family`]). Executor-routed, so
+    /// the drive loop needs no special arm — here for the manifest + discoverability + one source of truth.
+    pub fn is_fs_family(family: &str) -> bool {
+        family.starts_with(FS_PREFIX)
+    }
+
     /// Is `family` in the `control/*` namespace (authz-exempt, host/kernel-answered, never executor-routed)?
     /// The partition test the drive loop applies BEFORE authorize/route: `true` → control path, `false` →
     /// the effect path (authorize → executor). A simple prefix check on [`CONTROL_PREFIX`] — one source of
@@ -211,13 +241,16 @@ pub mod effect_ct {
         LIFECYCLE_SUSPEND,
         LIFECYCLE_RESUME,
         LIFECYCLE_TERMINATE,
+        FS_READ,
+        FS_WRITE,
+        FS_GLOB,
     ];
 
     /// If `family` is a WELL-KNOWN family whose string is a FIXED, kernel-defined `&'static` — one of the
-    /// built-in effect verbs ([`ALL`], via [`super::EffectKind::from_family`]) or the exact control/store
+    /// built-in effect verbs ([`ALL`], via [`super::EffectKind::from_family`]) or the exact control/store/fs
     /// families (`control/capabilities`, `control/summary`, `store/set`, `store/resolve`, `store/add`,
-    /// `store/remove`, `store/resolve-all`) — return that canonical `&'static str`. `None` for an EXTENSION
-    /// family (register-by-string).
+    /// `store/remove`, `store/resolve-all`, `fs/read`, `fs/write`, `fs/glob`) — return that canonical
+    /// `&'static str`. `None` for an EXTENSION family (register-by-string).
     ///
     /// The distinction matters for LOGGING (github-liaison #2180 residual): `ContentType.family` is a
     /// `Cow<'static, str>` and for an extension family it carries the CALLER's `Cow::Owned` verbatim — i.e.
@@ -243,6 +276,9 @@ pub mod effect_ct {
             LIFECYCLE_SUSPEND => Some(LIFECYCLE_SUSPEND),
             LIFECYCLE_RESUME => Some(LIFECYCLE_RESUME),
             LIFECYCLE_TERMINATE => Some(LIFECYCLE_TERMINATE),
+            FS_READ => Some(FS_READ),
+            FS_WRITE => Some(FS_WRITE),
+            FS_GLOB => Some(FS_GLOB),
             _ => None,
         }
     }
@@ -807,6 +843,9 @@ mod tests {
             wellknown_static_str(STORE_RESOLVE_ALL),
             Some(STORE_RESOLVE_ALL)
         );
+        assert_eq!(wellknown_static_str(FS_READ), Some(FS_READ));
+        assert_eq!(wellknown_static_str(FS_WRITE), Some(FS_WRITE));
+        assert_eq!(wellknown_static_str(FS_GLOB), Some(FS_GLOB));
         // Extension families (register-by-string, guest-controlled) → None (redacted).
         assert_eq!(wellknown_static_str("my/custom-effect"), None);
         assert_eq!(wellknown_static_str("weather"), None);
@@ -1079,6 +1118,38 @@ mod tests {
         // But the prefix predicate still classifies it (routing/authz partition is prefix-based).
         assert!(effect_ct::is_lifecycle_family("lifecycle/secret-x"));
         assert!(!effect_ct::is_lifecycle_family("my-lifecycle"));
+    }
+
+    #[test]
+    fn fs_family_partition_consts_predicate_manifest_and_safe_logging() {
+        // §GAP-3 filesystem partition: fs/{read,write,glob} — a NEW authz-gated partition (executor-routed
+        // to the host FsExecutor, NOT kernel-handled like store/control), gated on the resolved PATH target.
+        assert_eq!(effect_ct::FS_PREFIX, "fs/");
+        for f in [effect_ct::FS_READ, effect_ct::FS_WRITE, effect_ct::FS_GLOB] {
+            assert!(f.starts_with(effect_ct::FS_PREFIX));
+            assert!(effect_ct::is_fs_family(f), "{f:?} is an fs family");
+            // SAFE-LOGGING (#2180): the exact fs strings are kernel-defined fixed &'static → log VERBATIM.
+            assert_eq!(effect_ct::wellknown_static_str(f), Some(f));
+            // In the manifest family set → the capability projection reports fs grant-states.
+            assert!(
+                effect_ct::ALL.contains(&f),
+                "{f:?} is projected in the capability manifest"
+            );
+        }
+        assert_eq!(effect_ct::FS_READ, "fs/read");
+        assert_eq!(effect_ct::FS_WRITE, "fs/write");
+        assert_eq!(effect_ct::FS_GLOB, "fs/glob");
+        // DISJOINT from the other partitions.
+        assert!(!effect_ct::is_store_family(effect_ct::FS_READ));
+        assert!(!effect_ct::is_control_family(effect_ct::FS_READ));
+        assert!(!effect_ct::is_lifecycle_family(effect_ct::FS_READ));
+        assert!(!effect_ct::is_fs_family(effect_ct::STORE_SET));
+        assert!(!effect_ct::is_fs_family(effect_ct::LIFECYCLE_SPAWN));
+        // A guest-controlled extension family under a fake fs-ish name that ISN'T an exact const logs
+        // redacted (None), not verbatim (#2180 prefix-isn't-enough); the prefix predicate still classifies it.
+        assert_eq!(effect_ct::wellknown_static_str("fs/secret-x"), None);
+        assert!(effect_ct::is_fs_family("fs/secret-x"));
+        assert!(!effect_ct::is_fs_family("myfs"));
     }
 
     #[test]
