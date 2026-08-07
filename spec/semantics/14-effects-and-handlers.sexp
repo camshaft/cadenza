@@ -4834,6 +4834,49 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 205 Int64)))
 
+(case "two perform-drawn quantities of one dimension ADD — same-unit combine over two crossings"
+  (doc    "Dimension arithmetic over draws (the qy pins do crossings, not arithmetic): two separately
+           drawn meter quantities add — the erased-unit typing must agree across two crossings:
+           5m + 6m → 11.")
+  (input  (do
+            (effect St (op next (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next (u) s (resume s (+ s 1))))
+                (let ((q1 (Qty.of (St.next) (Unit.base #"meter"))))
+                  (let ((q2 (Qty.of (St.next) (Unit.base #"meter"))))
+                    (Qty.value (+ q1 q2))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 11 Int64)))
+
+(case "a perform-drawn quantity MULTIPLIES across dimensions — meter·second product value"
+  (doc    "The free-abelian product over an effect-derived magnitude: 5m · 2s = 10 m·s — the
+           dimension algebra composes with a drawn operand.")
+  (input  (do
+            (effect St (op next (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next (u) s (resume s (+ s 1))))
+                (let ((d (Qty.of (St.next) (Unit.base #"meter"))))
+                  (let ((t (Qty.of 2 (Unit.base #"second"))))
+                    (Qty.value (* d t))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 10 Int64)))
+
+(case "a perform-drawn quantity DIVIDES across dimensions — the meter/second quotient value"
+  (doc    "The quotient face (velocity dimension): 30m / 3s = 10 m/s over a drawn dividend — the
+           dimension quotient composes with effect-derived magnitudes.")
+  (input  (do
+            (effect St (op next (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next (u) s (resume s (+ s 1))))
+                (let ((d (Qty.of (* (St.next) 6) (Unit.base #"meter"))))
+                  (let ((t (Qty.of 3 (Unit.base #"second"))))
+                    (Qty.value (/ d t))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 10 Int64)))
+
 ; ============ Guarded match × effects (breaker FINDING, ag5 → fixed #2333). A guarded match on a
 ; perform-result scrutinee whose FALLBACK arm also performs used to leak the fold-synthesized #seed
 ; binder as a false CDZ0101: the guard desugar's arm-body copy reparented a reused (shared) body

@@ -6113,3 +6113,6 @@ pass	a Rational SQUARE over a perform draw — 1/5 squared stays exactly 1/25
 pass	a perform-derived rope SELF-concatenated — the shared subtree measures correctly
 pass	a perform-derived byte-rope SELF-concatenated — both halves read the same draw
 pass	a nested-list DAG — one perform-derived inner list aliased TWICE in the outer
+pass	two perform-drawn quantities of one dimension ADD — same-unit combine over two crossings
+pass	a perform-drawn quantity MULTIPLIES across dimensions — meter·second product value
+pass	a perform-drawn quantity DIVIDES across dimensions — the meter/second quotient value
