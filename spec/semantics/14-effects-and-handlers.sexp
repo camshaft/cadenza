@@ -14052,3 +14052,75 @@
                     (+ (B.step) (B.step))))))
             (export main)))
   (error  CDZ0101))
+
+;; ── multi-op, deep, and heap-state same-effect shadowing (breaker mo) ────────────────────────────
+;; Escalations of the sh1 shadowing pin: mo1 shadows a TWO-op effect (the inner handler
+;; re-interprets BOTH ops with different arms — doubling get, striding bump); mo2 stacks the same
+;; effect THREE deep with draws interleaved before/inside/after each region (three independent
+;; state threads); mo4 pins the shadow REGION boundary — a same-effect draw in the inner handle's
+;; SEED homes to the OUTER handler (the shadow starts at the body, not the seed); mo5 threads
+;; independent heap LISTS as the two states (interleaved pushes, each arm measuring its own list).
+
+(case "mo1 a TWO-op effect fully shadowed — the inner handler re-interprets BOTH ops with different arms"
+  (input  (do
+            (effect St (op get (-> Int64)) (op bump (-> Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((get () s (resume s s))
+                 (bump () s (resume s (+ s 1))))
+                (+ (handle St 50
+                     ((get () s (resume (* s 2) s))
+                      (bump () s (resume s (+ s 10))))
+                     (+ (St.bump) (St.get)))
+                   (St.get))))
+            (export main)))
+  (call   main (: 7 Int64)) (output (: 177 Int64))
+  (call   main (: 100 Int64)) (output (: 270 Int64)))
+
+(case "mo2 THREE-deep same-effect shadowing — each depth's draws thread its own state, interleaved before/inside/after"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (+ s 1))))
+                (+ (St.next)
+                   (+ (handle St 100
+                        ((next () s (resume s (+ s 20))))
+                        (+ (St.next)
+                           (+ (handle St 7
+                                ((next () s (resume s (* s 3))))
+                                (+ (St.next) (St.next)))
+                              (St.next))))
+                      (St.next)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 259 Int64))
+  (call   main (: 0 Int64)) (output (: 249 Int64)))
+
+(case "mo4 a SAME-effect draw in the inner handle's SEED homes to the OUTER handler — the shadow starts at the body, not the seed"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (+ s 1))))
+                (+ (handle St (* (St.next) 10)
+                     ((next () s (resume s (+ s 100))))
+                     (+ (St.next) (St.next)))
+                   (St.next))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 206 Int64))
+  (call   main (: 2 Int64)) (output (: 143 Int64)))
+
+(case "mo5 LIST-state shadowing — inner and outer thread independent heap lists, growth interleaved"
+  (input  (do
+            (effect St (op push (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle St (list n)
+                ((push (v) s (resume (List.len s) (List.push s v))))
+                (+ (St.push 10)
+                   (+ (handle St (list 7 8 9)
+                        ((push (v) s (resume (+ (List.len s) 100) (List.push s v))))
+                        (+ (St.push 1) (St.push 2)))
+                      (St.push 20)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 210 Int64))
+  (call   main (: 0 Int64)) (output (: 210 Int64)))
