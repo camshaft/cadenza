@@ -43,27 +43,13 @@ jobs:
       - name: cargo fmt (via nix)
         run: nix build .#checks.x86_64-linux.fmt --print-build-logs
 
-  clippy:
-    # Full-CI-in-nix cutover (Model A): body runs the nix `checks.clippy` derivation (identical
-    # `cargo clippy --workspace --all-targets -- -D warnings`, hermetic), keeping `name: clippy` so the
-    # required context `checks / clippy` is unchanged (no ruleset edit). ARCH-INDEPENDENT → x86 default
-    # runner via `checks.x86_64-linux.clippy` (frees ARM; #2054 + v-ft affirmed).
-    name: clippy
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: DeterminateSystems/nix-installer-action@v22
-      - uses: ./.github/actions/nix-store-cache
-      - name: cargo clippy (via nix)
-        run: nix build .#checks.x86_64-linux.clippy --print-build-logs
-
   # 2-WAY CLIPPY SHARD (v-nix+v-fleet-tooling 2026-08-07, data-driven CI-speed): clippy is the sole ~8.8m
   # critical-path pole and RUN-TIME-bound, so these two run the flake's balanced-by-build-weight sub-aggregates
   # in PARALLEL, halving the pole (~8.8→~5m) for +1 x86 slot/candidate. Both cache-hit the shared cargoArtifacts.
-  # ADDITIVE-FIRST cutover (zero gate-gap): the old `clippy` job above STAYS required + reporting while these
-  # two report as NON-required; once they're green on a real candidate, v-fleet-tooling flips ruleset 10560470
-  # (ADD `checks / clippy-shard-a` + `checks / clippy-shard-b`, REMOVE `checks / clippy`) atomically, THEN the
-  # old `clippy` job is dropped (STEP 3). Job names match the ruleset contexts EXACTLY. x86 (arch-independent).
+  # These are the REQUIRED clippy contexts (ruleset 10560470 flipped 2026-08-07: added checks/clippy-shard-a +
+  # checks/clippy-shard-b, removed checks/clippy — v-ft STEP 2). The old single `clippy` job was dropped here
+  # (STEP 3) after the flip, gap-free (it was no longer required). Job names match the ruleset contexts EXACTLY.
+  # x86 (arch-independent). Union == the former whole-clippy set (flake clippyShardA ∪ clippyShardB, 5+6=11).
   clippy-shard-a:
     name: clippy-shard-a
     runs-on: ubuntu-latest
