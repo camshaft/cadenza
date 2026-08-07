@@ -102,7 +102,10 @@ export default function ExampleApps() {
         modules it can <C>import</C>. Edit any file, Run, and the whole set compiles together in the browser,
         the same link-merge that lets the guide's showcase pages preload a library, opened up so the modules
         are yours to write. It's the smallest look at Cadenza as a <em>platform</em>: programs composed from
-        several content-addressed pieces rather than a single snippet.
+        several content-addressed pieces rather than a single snippet. That composition is the same one the{" "}
+        <Ch to="/platform-overview">platform pillar</Ch> builds on, where an agent is a reducer split across
+        files, its events in one and the fold that consumes them in another, so the boundary you can see in
+        the explorer is the boundary between an agent's history and its behavior.
       </P>
 
       <P>
