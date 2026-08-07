@@ -25,6 +25,9 @@ pub mod cli;
 pub mod convert;
 pub mod debug;
 pub mod doc;
+/// The doc-item projection: fold a program's public surface into a derived `doc-module` doc-AST
+/// (`cadenza doc`, design/DESIGN-cadenza-docs.md I1). Structural/syntactic — no typecheck dependency.
+pub mod doc_item;
 pub mod extern_name;
 pub mod iter;
 /// The JSON surface: a faithful data document (`(json-object …)`/`(json-array …)`/`(json-null)` plus
