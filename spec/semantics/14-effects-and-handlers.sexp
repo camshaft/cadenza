@@ -16253,3 +16253,124 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 116 Int64))
   (call   main (: 0 Int64)) (output (: 111 Int64)))
+
+;; ── cross-DEF handler composition + shadow-boundary ARG homing (breaker ed/sb) ───────────────────
+;; ed = handlers meeting function boundaries: ed1 two defs each installing their OWN handler for
+;; one effect; ed2 a handled def CALLED from inside another def's handle (call-boundary shadowing);
+;; ed3 a RECURSIVE def handling per frame under a handled main (the base case draws from the
+;; deepest frame); ed4 ONE shared performing helper under TWO different live handlers — each call
+;; homes to its caller's region (dynamic scoping). sb = where an op ARG is drawn vs where its
+;; dispatch lands: sb1 both home to the INNER handler at a same-effect shadow boundary
+;; (n-independent result = outer thread untouched); sb3 the arg draws from B while the dispatch
+;; homes to A (both states advance across paired dispatches); sb4 a COMPOSITE seed — B's draw
+;; feeds A's add and the result seeds a fresh B shadow.
+
+(case "ed1 TWO defs each install their OWN handler for one effect — main calls both, seeds and arms fully independent"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (f1 (: n Int64))
+              (handle St n
+                ((next () s (resume s (+ s 1))))
+                (+ (St.next) (St.next))))
+            (def (f2 (: n Int64))
+              (handle St (* n 10)
+                ((next () s (resume s (* s 2))))
+                (+ (St.next) (St.next))))
+            (def (main (: n Int64))
+              (+ (f1 n) (* 100 (f2 n))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 15011 Int64))
+  (call   main (: 1 Int64)) (output (: 3003 Int64)))
+
+(case "ed2 a handled def CALLED from inside another def's handle — the callee's region shadows the caller's mid-body"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (inner (: k Int64))
+              (handle St (* k 100)
+                ((next () s (resume s (+ s 7))))
+                (+ (St.next) (St.next))))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (+ s 1))))
+                (+ (St.next) (+ (inner 2) (St.next)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 418 Int64))
+  (call   main (: 0 Int64)) (output (: 408 Int64)))
+
+(case "ed3 a RECURSIVE def that handles per frame, called from a handled main — the base case draws from the deepest frame's handler"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (tower (: d Int64))
+              (if (<= d 0)
+                  (St.next)
+                  (handle St (* d 1000)
+                    ((next () s (resume s (+ s 1))))
+                    (+ (St.next) (tower (- d 1))))))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (* s 3))))
+                (+ (St.next) (tower 2))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 4006 Int64))
+  (call   main (: 0 Int64)) (output (: 4001 Int64)))
+
+(case "ed4 one shared performing helper called under TWO different live handlers — each call homes to its caller's region"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (helper (: k Int64))
+              (+ (St.next) k))
+            (def (region (: k Int64))
+              (handle St (* k 10)
+                ((next () s (resume s (+ s 1))))
+                (+ (helper 500) (helper 6000))))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (+ s 2))))
+                (+ (St.next) (+ (region 3) (helper 70)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 6643 Int64))
+  (call   main (: 0 Int64)) (output (: 6633 Int64)))
+
+(case "sb1 an op ARG drawn at a shadow boundary — both the arg draw and the consuming dispatch home to the INNER handler" (input (do
+  (effect St (op add (-> Int64 Int64)) (op next (-> Int64)))
+  (def (main (: n Int64))
+    (handle St n
+      ((add (v) s (resume (+ v s) s))
+       (next () s (resume s (+ s 1))))
+      (handle St 100
+        ((add (v) s (resume (* v s) s))
+         (next () s (resume s (+ s 10))))
+        (St.add (St.next)))))
+  (export main)))
+  (call main (: 5 Int64)) (output (: 11000 Int64))
+  (call main (: 0 Int64)) (output (: 11000 Int64)))
+
+(case "sb3 the op ARG draws from effect B while the dispatch homes to effect A — two paired dispatches, both states advance"
+  (input  (do
+            (effect A (op add (-> Int64 Int64)))
+            (effect B (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle A 10
+                ((add (v) s (resume (+ v s) (+ s 1))))
+                (handle B n
+                  ((next () t (resume t (* t 2))))
+                  (+ (A.add (B.next)) (A.add (B.next))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 36 Int64))
+  (call   main (: 0 Int64)) (output (: 21 Int64)))
+
+(case "sb4 the innermost seed is a COMPOSITE of two effects' dispatches — B's draw feeds A's add, the result seeds a fresh B shadow"
+  (input  (do
+            (effect A (op add (-> Int64 Int64)))
+            (effect B (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle A 10
+                ((add (v) s (resume (+ v s) (+ s 1))))
+                (handle B n
+                  ((next () t (resume t (* t 2))))
+                  (handle B (A.add (B.next))
+                    ((next () t (resume t (- t 3))))
+                    (+ (B.next) (B.next))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 27 Int64))
+  (call   main (: 0 Int64)) (output (: 17 Int64)))
