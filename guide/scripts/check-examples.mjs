@@ -700,11 +700,33 @@ async function checkMultiFile(ex) {
     return `${ex.file} [Runnable multi-file] (${brief}): compiled but FAILED TO RUN — ${String(e.message || e).slice(0, 100)}`;
   }
   if (ex.expected != null) {
-    const normLayout = (s) => String(s).replace(/\s*\n\s*/g, " ").trim();
-    if (normLayout(got) !== normLayout(ex.expected))
+    // Compare `got` vs `expected` after normalizing BOTH the same way, so an author can pin EITHER the bare
+    // value (e.g. `asked-model; …`, matching the single-file scalar convention — a String result renders via
+    // the compound path as `(: "…" String)`, which is verbose) OR the full render form. normValue: collapse
+    // layout, strip a `(: <value> <type>)` ascription wrapper, and unquote a `"…"` string leaf. Applied to
+    // both sides so it's backward-compatible (a landed render-form pin still matches) AND ergonomic (a bare
+    // trace matches too) — v-guide-editor's authoring nicety without breaking the shipped agent-loop pin.
+    if (normValue(got) !== normValue(ex.expected))
       return `${ex.file} [Runnable multi-file] (${brief}): ran to ${JSON.stringify(String(got))}, expected ${JSON.stringify(ex.expected)}`;
   }
   return null;
+}
+
+/// Normalize a multi-file result / expected for comparison: collapse layout whitespace, strip an outer
+/// `(: <value> <type>)` ascription (the render form of a non-scalar), and unquote a `"…"` string leaf — so
+/// `(: "hi" String)`, `"hi"`, and `hi` all compare equal. A scalar (bare number/bool) is untouched (no
+/// ascription, no quotes). Pure + deterministic; unit-tested in check-examples' multi-file self-check.
+function normValue(s) {
+  let t = String(s).replace(/\s*\n\s*/g, " ").trim();
+  // strip a single outer (: <value> <type>) ascription — the value is everything between `(:␠` and the
+  // LAST top-level space+type. Simplest robust form for the common `(: "…" String)` / `(: 3 Int64)` shapes:
+  const asc = t.match(/^\(:\s+([\s\S]*)\s+[A-Za-z][\w.]*\)$/);
+  if (asc) t = asc[1].trim();
+  // unquote a "…" string leaf (resolve the common \" and \\ escapes), leaving a bare scalar as-is.
+  if (t.length >= 2 && t.startsWith('"') && t.endsWith('"')) {
+    t = t.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+  }
+  return t;
 }
 
 // ---- check one example in BOTH surfaces (the reader can toggle); null on success, else a reason ----
@@ -993,6 +1015,21 @@ for (const [src, ann] of [["@test\ndef attr_above_probe() = 1", "@test"], ['@tag
       throw new Error("entry (reducer) is not the lowered `text`");
     if (low.lowered.names.length !== low.lowered.sources.length || low.lowered.names.length !== low.lowered.formats.length)
       throw new Error("preload arrays are not equal length");
+    // normValue ergonomics + backward-compat: a bare value, a quoted string, and the full ascription form
+    // must all compare equal, so an author can pin `expected="asked-model; …"` OR `(: "…" String)`.
+    const cases = [
+      ['(: "asked-model; done" String)', "asked-model; done"],
+      ['"asked-model; done"', "asked-model; done"],
+      ["asked-model; done", "asked-model; done"],
+      ["(: 3 Int64)", "3"],
+      ["true", "true"], // scalar untouched
+    ];
+    for (const [input, want] of cases) {
+      if (normValue(input) !== want) throw new Error(`normValue(${JSON.stringify(input)}) = ${JSON.stringify(normValue(input))}, want ${JSON.stringify(want)}`);
+    }
+    // and the three forms of the same value are mutually equal (the whole point):
+    if (normValue('(: "x" String)') !== normValue('"x"') || normValue('"x"') !== normValue("x"))
+      throw new Error("normValue does not unify render-form / quoted / bare for the same string");
   } catch (e) {
     failures.push(`[multi-file extractor self-check] ${String(e.message || e)}`);
   }
