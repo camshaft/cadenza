@@ -267,16 +267,22 @@ async fn main() -> std::process::ExitCode {
         } else {
             executors
         };
+        // Wrap the configured backing store in the S3-FIFO in-memory CACHE ([blob_cache], operator directive)
+        // so repeated reducer/blob fetches (content-addressed → immutable, always-correct hits) serve from
+        // memory instead of re-hitting the backing store. `mem_bytes = 0` disables the cache (the
+        // CachingBlobStore becomes a pass-through), so wrapping unconditionally is safe. The disk tier
+        // ([blob_cache].disk_bytes) is a following slice. Applied per-arm since each blob backend is a distinct
+        // concrete store type (the factory is generic over it).
+        use cdz_agent_host::CachingBlobStore;
+        let cache_mem_bytes = config.blob_cache.mem_bytes;
         // Attach the optional log-sink builder to whichever blob-backed factory we build, then box it. (The
         // two arms are distinct concrete factory types, so the with_log_sink + Box happens per-arm; the
         // executor set is moved into the one arm that runs.)
         let factory: Box<dyn SessionFactory> = match &config.blob {
             BlobConfig::Memory => {
-                let mut f = ComponentSessionFactory::new(
-                    cdz_kernel::blob::MemBlobStore::new(),
-                    executors,
-                    session_authz,
-                );
+                let store =
+                    CachingBlobStore::new(cdz_kernel::blob::MemBlobStore::new(), cache_mem_bytes);
+                let mut f = ComponentSessionFactory::new(store, executors, session_authz);
                 if let Some(b) = log_sink {
                     f = f.with_log_sink(b);
                 }
@@ -284,6 +290,7 @@ async fn main() -> std::process::ExitCode {
             }
             BlobConfig::Dir { dir } => match cdz_kernel::blob::DiskBlobStore::open(dir) {
                 Ok(store) => {
+                    let store = CachingBlobStore::new(store, cache_mem_bytes);
                     let mut f = ComponentSessionFactory::new(store, executors, session_authz);
                     if let Some(b) = log_sink {
                         f = f.with_log_sink(b);
@@ -302,6 +309,7 @@ async fn main() -> std::process::ExitCode {
             #[cfg(feature = "live-aws-storage")]
             BlobConfig::S3 { bucket, prefix } => {
                 let store = cdz_agent_host::S3BlobStore::new(bucket.clone(), prefix.clone()).await;
+                let store = CachingBlobStore::new(store, cache_mem_bytes);
                 let mut f = ComponentSessionFactory::new(store, executors, session_authz);
                 if let Some(b) = log_sink {
                     f = f.with_log_sink(b);
@@ -318,8 +326,11 @@ async fn main() -> std::process::ExitCode {
             }
         };
         eprintln!(
-            "cdz-agent-daemon: reducer blob store = {:?}, session log = {:?}",
-            config.blob, config.log
+            "cdz-agent-daemon: reducer blob store = {:?}, session log = {:?}, blob cache = {} MiB in-memory \
+             (S3-FIFO; 0 = disabled)",
+            config.blob,
+            config.log,
+            cache_mem_bytes / (1024 * 1024)
         );
 
         // Metrics EXPORT: when the `metrics-export` feature is compiled AND `[observability]` is enabled,
