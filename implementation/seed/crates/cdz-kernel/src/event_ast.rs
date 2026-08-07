@@ -558,6 +558,200 @@ pub fn decode_child_exited(
     Ok((child, outcome))
 }
 
+/// One conversation turn in a tool-calling model request (§GAP-1 M1). `role` ∈ {system, user, assistant,
+/// tool} — an OPEN sum (tolerant: the kernel carries the string, the host maps it to the transport's role
+/// vocab; an unknown role is a host concern, not a decode error). `content` is the turn's text (an
+/// assistant tool-call turn / a tool-result turn ride as text here in M1 — a richer structured turn is an
+/// additive M-later concern; the reducer serializes what its transport needs).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ChatMessage {
+    pub role: String,
+    pub content: String,
+}
+
+/// A tool definition offered to the model this turn (§GAP-1 M1): a `name` the model calls back by, plus an
+/// opaque `schema` (JSON-schema bytes the kernel does NOT interpret — the host maps it to the transport's
+/// tool-config; O4: the kernel carries bytes, the host owns the JSON⟷Bedrock boundary).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ToolDef {
+    pub name: String,
+    pub schema: Vec<u8>,
+}
+
+/// A tool-calling model request (§GAP-1 M1 — the keystone of the self-hosting agent loop). The reducer
+/// builds this from its accumulated conversation (KV state) + the tools it offers, and emits it as the
+/// `model` effect's payload; the host transport decodes it and maps to Bedrock `Converse` w/ `toolConfig`.
+/// ADDITIVE to the opaque `model` effect: a single-shot invoke is the degenerate `tools=[]` case, and a
+/// legacy opaque body still works (the drive loop hands the transport whatever payload the reducer emitted).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ModelRequest {
+    /// The model id — also the effect TARGET (authz gates on it), duplicated in-payload so the transport
+    /// reads one self-contained request.
+    pub model: String,
+    /// The conversation so far, oldest→newest (the reducer's fold state).
+    pub messages: Vec<ChatMessage>,
+    /// The tools offered THIS turn (empty = a plain no-tools completion).
+    pub tools: Vec<ToolDef>,
+    /// Optional cap on generated tokens (`None` = transport default). Additive room for more opts later.
+    pub max_tokens: Option<u64>,
+}
+
+/// Encode a §GAP-1 M1 tool-calling [`ModelRequest`] as canonical AST — the `model` effect's structured
+/// payload. Shape:
+///
+///   `(model-request (model <str>) (messages (message (role <str>) (content <str>)) …)
+///                   (tools (tool (name <str>) (schema <bytes>)) …) (opts (max-tokens <int>)?))`
+///
+/// The reducer builds it; the host transport decodes it ([`decode_model_request`]) and maps to the LLM
+/// transport (Bedrock Converse + toolConfig). `schema` rides as opaque bytes (kernel doesn't interpret —
+/// O4). `opts` is a headed form so it grows additively (only `max-tokens` in M1). Same shared-codec +
+/// total-decode discipline as the other event_ast codecs.
+pub fn encode_model_request(req: &ModelRequest) -> Vec<u8> {
+    let mut b = Builder::new();
+    let head = b.name("model-request");
+    let model_form = {
+        let h = b.name("model");
+        let v = str_leaf(&mut b, &req.model);
+        b.list(vec![h, v])
+    };
+    let messages_form = {
+        let h = b.name("messages");
+        let mut items = vec![h];
+        for m in &req.messages {
+            let mh = b.name("message");
+            let role = {
+                let rh = b.name("role");
+                let rv = str_leaf(&mut b, &m.role);
+                b.list(vec![rh, rv])
+            };
+            let content = {
+                let ch = b.name("content");
+                let cv = str_leaf(&mut b, &m.content);
+                b.list(vec![ch, cv])
+            };
+            items.push(b.list(vec![mh, role, content]));
+        }
+        b.list(items)
+    };
+    let tools_form = {
+        let h = b.name("tools");
+        let mut items = vec![h];
+        for t in &req.tools {
+            let th = b.name("tool");
+            let name = {
+                let nh = b.name("name");
+                let nv = str_leaf(&mut b, &t.name);
+                b.list(vec![nh, nv])
+            };
+            let schema = {
+                let sh = b.name("schema");
+                let sv = bytes_leaf(&mut b, &t.schema);
+                b.list(vec![sh, sv])
+            };
+            items.push(b.list(vec![th, name, schema]));
+        }
+        b.list(items)
+    };
+    let opts_form = {
+        let h = b.name("opts");
+        let mut items = vec![h];
+        if let Some(mt) = req.max_tokens {
+            let mth = b.name("max-tokens");
+            let mtv = u64_leaf(&mut b, mt);
+            items.push(b.list(vec![mth, mtv]));
+        }
+        b.list(items)
+    };
+    let root = b.list(vec![head, model_form, messages_form, tools_form, opts_form]);
+    codec::encode(&b.finish(root))
+}
+
+/// Decode a `model-request` frame encoded by [`encode_model_request`] → a [`ModelRequest`]. Total,
+/// distinguishing the two [`EventAstError`] classes: non-parseable codec bytes → [`EventAstError::Codec`];
+/// a well-formed frame with a bad head/arity / non-string field / bad opt → [`EventAstError::Shape`]. Never
+/// a panic (the bytes ride the durable effect log / a guest reducer). An absent `max-tokens` (empty `opts`)
+/// decodes to `None`.
+pub fn decode_model_request(bytes: &[u8]) -> Result<ModelRequest, EventAstError> {
+    let a = codec::decode_detailed(bytes).map_err(EventAstError::Codec)?;
+    let [model_f, messages_f, tools_f, opts_f] = a
+        .as_form(a.root, "model-request")
+        .ok_or(shape("model-request head"))?
+    else {
+        return Err(shape("model-request arity"));
+    };
+    let model = {
+        let [mv] = a.as_form(*model_f, "model").ok_or(shape("model form"))? else {
+            return Err(shape("model arity"));
+        };
+        read_str(&a, *mv)?
+    };
+    // messages: (messages (message (role <str>) (content <str>)) …)
+    let messages = {
+        let msg_forms = a
+            .as_form(*messages_f, "messages")
+            .ok_or(shape("messages form"))?;
+        let mut out = Vec::with_capacity(msg_forms.len());
+        for &mf in msg_forms {
+            let [role_f, content_f] = a.as_form(mf, "message").ok_or(shape("message form"))? else {
+                return Err(shape("message arity (want (role)(content))"));
+            };
+            let [rv] = a.as_form(*role_f, "role").ok_or(shape("role form"))? else {
+                return Err(shape("role arity"));
+            };
+            let [cv] = a
+                .as_form(*content_f, "content")
+                .ok_or(shape("content form"))?
+            else {
+                return Err(shape("content arity"));
+            };
+            out.push(ChatMessage {
+                role: read_str(&a, *rv)?,
+                content: read_str(&a, *cv)?,
+            });
+        }
+        out
+    };
+    // tools: (tools (tool (name <str>) (schema <bytes>)) …)
+    let tools = {
+        let tool_forms = a.as_form(*tools_f, "tools").ok_or(shape("tools form"))?;
+        let mut out = Vec::with_capacity(tool_forms.len());
+        for &tf in tool_forms {
+            let [name_f, schema_f] = a.as_form(tf, "tool").ok_or(shape("tool form"))? else {
+                return Err(shape("tool arity (want (name)(schema))"));
+            };
+            let [nv] = a.as_form(*name_f, "name").ok_or(shape("tool name form"))? else {
+                return Err(shape("tool name arity"));
+            };
+            let [sv] = a.as_form(*schema_f, "schema").ok_or(shape("schema form"))? else {
+                return Err(shape("schema arity"));
+            };
+            out.push(ToolDef {
+                name: read_str(&a, *nv)?,
+                schema: read_bytes(&a, *sv)?,
+            });
+        }
+        out
+    };
+    // opts: (opts (max-tokens <int>)?) — only max-tokens in M1; an absent child = None.
+    let max_tokens = {
+        let opt_forms = a.as_form(*opts_f, "opts").ok_or(shape("opts form"))?;
+        let mut mt = None;
+        for &of in opt_forms {
+            if let Some([v]) = a.as_form(of, "max-tokens") {
+                mt = Some(read_u64(&a, *v)?);
+            }
+            // Unknown opt heads are IGNORED (additive-forward: an older decoder tolerates a newer opt).
+        }
+        mt
+    };
+    Ok(ModelRequest {
+        model,
+        messages,
+        tools,
+        max_tokens,
+    })
+}
+
 /// A decoded §4c store-snapshot frame — either a single-value `name-set` pointer or a group `member-op`.
 /// This is the durable-snapshot restore discriminant: [`decode_store_frame`] decodes the shared codec
 /// ONCE and routes on the frame's self-describing AST head, so [`crate::name_store::NameStore::from_snapshot_bytes`]
@@ -1837,6 +2031,74 @@ mod tests {
                 Err(EventAstError::Shape(_))
             ),
             "a well-formed members frame is a Shape error (wrong head), not a child-exited frame"
+        );
+    }
+
+    #[test]
+    fn model_request_round_trips_with_messages_tools_and_opts() {
+        // §GAP-1 M1: a tool-calling model request round-trips through the codec — conversation turns, tool
+        // defs (name + opaque schema bytes), and the optional max-tokens.
+        let req = ModelRequest {
+            model: "anthropic.claude".to_string(),
+            messages: vec![
+                ChatMessage {
+                    role: "system".to_string(),
+                    content: "you are a build agent".to_string(),
+                },
+                ChatMessage {
+                    role: "user".to_string(),
+                    content: "run the tests".to_string(),
+                },
+            ],
+            tools: vec![
+                ToolDef {
+                    name: "shell".to_string(),
+                    schema: br#"{"type":"object"}"#.to_vec(),
+                },
+                ToolDef {
+                    name: "fs_read".to_string(),
+                    schema: b"\x00\x01binary-schema".to_vec(),
+                },
+            ],
+            max_tokens: Some(4096),
+        };
+        let decoded = decode_model_request(&encode_model_request(&req)).expect("round-trips");
+        assert_eq!(decoded, req);
+    }
+
+    #[test]
+    fn model_request_handles_empty_tools_and_absent_max_tokens() {
+        // The degenerate single-shot (no tools) + no opts case: additive-compatible with the opaque model
+        // effect. Empty messages/tools and max_tokens=None round-trip cleanly.
+        let req = ModelRequest {
+            model: "m".to_string(),
+            messages: vec![],
+            tools: vec![],
+            max_tokens: None,
+        };
+        let decoded = decode_model_request(&encode_model_request(&req)).expect("round-trips");
+        assert_eq!(decoded, req);
+        assert!(decoded.tools.is_empty());
+        assert_eq!(decoded.max_tokens, None);
+    }
+
+    #[test]
+    fn model_request_decode_is_total_codec_vs_shape() {
+        // Distinguishes the two EventAstError classes, never panics: non-decodable bytes → Codec; a
+        // well-formed frame with the wrong head (a members frame) → Shape.
+        assert!(
+            matches!(
+                decode_model_request(b"not a model-request frame"),
+                Err(EventAstError::Codec(_))
+            ),
+            "non-decodable bytes are a Codec error"
+        );
+        assert!(
+            matches!(
+                decode_model_request(&encode_members([&Hash::of(b"x")])),
+                Err(EventAstError::Shape(_))
+            ),
+            "a members frame is a Shape error (wrong head), not a model-request"
         );
     }
 
