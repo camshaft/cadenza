@@ -729,19 +729,19 @@ where
     /// Errors (never a panic): the recovered log has no genesis event (`log[0]` not `Genesis` — a corrupt
     /// recovery the caller alarms on), the reducer bytes are absent from the blob store (the reducer the
     /// session ran isn't available — can't rebuild it), or the component doesn't lift.
-    async fn build_recovered(
+    async fn recover_and_build(
         &mut self,
-        session: cdz_kernel::kernel::Session,
-    ) -> Result<HostedSession, String> {
+        recovered: cdz_kernel::log_store::Recovered,
+    ) -> Result<(HostedSession, cdz_kernel::kernel::RecoveryReport), String> {
         use cdz_kernel::event::EventBody;
-        // Read the reducer hash from the recovered session's OWN genesis event (seq-0). The host reads it
-        // directly (EventBody::Genesis is pub with pub fields; Session::log() is pub) — no kernel accessor
-        // needed. A recovered session always has a genesis at log[0] (recover_from requires it), but guard.
-        let reducer_hash = match session.log().first().map(|e| &e.body) {
+        // Read the reducer hash from the recovered log's OWN genesis event (events[0]). The host reads it
+        // directly (EventBody::Genesis is pub with pub fields) — no kernel accessor needed. recover_from
+        // requires a genesis at events[0]; guard so an empty / genesis-less log is a clean error, not a panic.
+        let reducer_hash = match recovered.events.first().map(|e| &e.body) {
             Some(EventBody::Genesis { reducer, .. }) => *reducer,
             _ => {
                 return Err(
-                    "build_recovered: the recovered session has no genesis event at log[0]".into(),
+                    "recover_and_build: the recovered log has no genesis event at events[0]".into(),
                 )
             }
         };
@@ -758,17 +758,25 @@ where
         let reducer = AsyncComponentReducer::from_component_bytes(&bytes).map_err(|e| {
             format!("recovered reducer component for {reducer_hash} did not lift: {e:?}")
         })?;
+        // Fold the recovered log through the kernel's backend-agnostic recovery core with the reloaded
+        // reducer: rebuilds KV + the open-obligation set + reports how the log ended (Clean/TornTail/Corrupt)
+        // and which effects are open (the daemon re-drives those). A reducer-load failure above already
+        // returned; a replay/empty-log failure here maps to a clean Err (never a panic).
+        let (session, report) = cdz_kernel::kernel::Session::recover_from(recovered, &reducer)
+            .await
+            .map_err(|e| format!("recover_and_build: recover_from failed: {e:?}"))?;
         // The recovered session's id/genesis are already fixed by its log; build the executor set against its
         // genesis hash (its spawn-provenance for any executor that needs the session identity).
         let owner_genesis = session.genesis_hash();
         let id = crate::host::SessionId::new(owner_genesis.to_hex());
         let executors = self.executors.build(&id, owner_genesis).await;
-        Ok(HostedSession::from_recovered(
+        let hosted = HostedSession::from_recovered(
             session,
             Box::new(reducer),
             Box::new(cdz_kernel::authz::Authorizer::deny_all()),
             executors,
-        ))
+        );
+        Ok((hosted, report))
     }
 }
 
@@ -845,33 +853,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn build_recovered_reads_the_reducer_hash_from_the_recovered_genesis_and_errors_cleanly_if_absent(
+    async fn recover_and_build_reads_the_reducer_hash_from_the_recovered_genesis_and_errors_cleanly_if_absent(
     ) {
-        // I4b: build_recovered must read the reducer hash from the RECOVERED session's OWN genesis event (not
-        // an InstallSpec) + reload the reducer from the blob store. Here the reducer bytes are ABSENT → a clean
-        // "no reducer component" error keyed on THAT genesis hash (proving it read the hash from the recovered
-        // log, not a spec). Build a genesis Session over a known reducer hash, recover it from its own log,
-        // then build_recovered against an empty blob store.
+        // I4b: recover_and_build reads the reducer hash from the recovered log's OWN genesis event (events[0],
+        // not an InstallSpec) + reloads the reducer from the blob store. Here the reducer bytes are ABSENT → a
+        // clean "no reducer component" error keyed on THAT genesis hash (proving it read the hash from the
+        // recovered log). Build a genesis Session over a known reducer hash to get a valid genesis log, then
+        // hand that log's Recovered to recover_and_build against an empty blob store.
         use cdz_kernel::kernel::Session;
         use cdz_kernel::log_store::{Recovered, RecoveryKind};
 
         let reducer_hash = Hash::of(b"recovered-reducer-not-in-store");
         let original = Session::genesis(reducer_hash, Hash::of(b"nonce"));
-        let log = original.log().to_vec();
         let recovered = Recovered {
-            events: log,
+            events: original.log().to_vec(),
             kind: RecoveryKind::Clean,
             good_prefix_len: 0,
         };
-        let (session, _report) = Session::recover_from(recovered, &GenesisRecordingReducer)
-            .await
-            .expect("a clean genesis log recovers");
 
         let mut factory =
             ComponentSessionFactory::new(MemBlobStore::new(), hermetic_executors, deny_all_authz);
-        let err = match factory.build_recovered(session).await {
+        let err = match factory.recover_and_build(recovered).await {
             Ok(_) => {
-                panic!("build_recovered must fail when the recovered reducer bytes are absent")
+                panic!("recover_and_build must fail when the recovered reducer bytes are absent")
             }
             Err(e) => e,
         };
@@ -1424,37 +1428,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn build_recovered_is_reachable_through_the_boxed_factory_trait() {
+    async fn recover_and_build_is_reachable_through_the_boxed_factory_trait() {
         use crate::admin::SessionFactory;
-        use cdz_kernel::kernel::Session;
         use cdz_kernel::log_store::{Recovered, RecoveryKind};
 
-        // The boot-recovery loop holds the factory as `Box<dyn SessionFactory>`, so build_recovered MUST be a
-        // trait method (not just inherent on the concrete type). Drive it through the trait object: a
-        // recovered session whose genesis references a reducer hash ABSENT from the (empty) blob store hits the
-        // "no reducer component" error — which proves dispatch reached the concrete override + read the reducer
-        // hash off the recovered genesis (all hermetic, no real wasm component needed).
+        // The boot-recovery loop holds the factory as `Box<dyn SessionFactory>`, so recover_and_build MUST be a
+        // trait method (not just inherent on the concrete type). Drive it through the trait object: a recovered
+        // log whose genesis references a reducer hash ABSENT from the (empty) blob store hits the "no reducer
+        // component" error — proving dispatch reached the concrete override + read the reducer hash off the
+        // recovered genesis (all hermetic, no real wasm component needed).
         let original = genesis_session();
-        // genesis_session() mints with this reducer hash; build_recovered reads it back off the recovered
-        // session's genesis event, so the error names it.
+        // genesis_session() mints with this reducer hash; recover_and_build reads it back off the recovered
+        // genesis event, so the error names it.
         let reducer_hash = Hash::of(b"genesis-reducer-v1");
-        let log = original.session().log().to_vec();
         let recovered = Recovered {
-            events: log,
+            events: original.session().log().to_vec(),
             kind: RecoveryKind::Clean,
             good_prefix_len: 0,
         };
-        let (session, report) = Session::recover_from(recovered, &GenesisRecordingReducer)
-            .await
-            .expect("a clean genesis log recovers");
-        assert_eq!(report.kind, RecoveryKind::Clean);
 
         let mut factory: Box<dyn SessionFactory> = Box::new(ComponentSessionFactory::new(
             MemBlobStore::new(),
             hermetic_executors,
             deny_all_authz,
         ));
-        let err = factory.build_recovered(session).await.err().expect(
+        let err = factory.recover_and_build(recovered).await.err().expect(
             "an empty blob store has no reducer component to rebuild the recovered session",
         );
         assert!(
@@ -1465,13 +1463,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn build_recovered_default_is_an_unsupported_error() {
+    async fn recover_and_build_default_is_an_unsupported_error() {
         use crate::admin::{InstallSpec, SessionFactory};
-        use cdz_kernel::kernel::Session;
         use cdz_kernel::log_store::{Recovered, RecoveryKind};
 
-        // A factory that does NOT override build_recovered (only build) declines boot-recovery cleanly via the
-        // trait default — never a panic, so a recovery loop against such a factory surfaces the decline.
+        // A factory that does NOT override recover_and_build (only build) declines boot-recovery cleanly via
+        // the trait default — never a panic, so a recovery loop against such a factory surfaces the decline.
         struct InstallOnlyFactory;
         #[async_trait::async_trait(?Send)]
         impl SessionFactory for InstallOnlyFactory {
@@ -1486,12 +1483,9 @@ mod tests {
             kind: RecoveryKind::Clean,
             good_prefix_len: 0,
         };
-        let (session, _) = Session::recover_from(recovered, &GenesisRecordingReducer)
-            .await
-            .expect("a clean genesis log recovers");
         let mut factory: Box<dyn SessionFactory> = Box::new(InstallOnlyFactory);
         let err = factory
-            .build_recovered(session)
+            .recover_and_build(recovered)
             .await
             .err()
             .expect("the trait default declines boot-recovery");
