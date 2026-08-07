@@ -15994,3 +15994,49 @@
   (call   main (: 5 Int64)) (output (: 6 Int64))
   (call   main (: 3 Int64)) (output (: -1 Int64))
   (call   main (: 0 Int64)) (output (: 4 Int64)))
+
+;; ── NEGATIVE division/remainder uniformity + the overflow boundary (breaker nm) ──────────────────
+;; Truncated-vs-floored conventions flip signs on negative operands — a classic silent-divergence
+;; hazard between backends. nm1 pins TRUNCATED remainder (dividend sign) bare AND through a
+;; handler arm (incl. the exact-multiple row); nm2 pins division truncating toward ZERO the same
+;; two ways; nm3 pins the ONLY overflowing division (Int64.min / -1) as a CDZ0304 constant-fold
+;; reject; nm4 pins Int64.min over RUNTIME divisors (sign-flip to +2^62, identity to MIN).
+
+(case "nm1 NEGATIVE remainder is TRUNCATED (sign of the dividend) uniformly — bare and through a handler arm"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (main (: n Int64))
+              (+ (* 1000 (% n 7))
+                 (handle St n
+                   ((next () s (resume (% s 7) (- s 5))))
+                   (+ (St.next) (* 10 (St.next))))))
+            (export main)))
+  (call   main (: -10 Int64)) (output (: -3013 Int64))
+  (call   main (: 10 Int64)) (output (: 3053 Int64))
+  (call   main (: -7 Int64)) (output (: -50 Int64)))
+
+(case "nm2 NEGATIVE division TRUNCATES toward zero uniformly — bare and through a handler arm"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (main (: n Int64))
+              (+ (* 1000 (/ n 3))
+                 (handle St n
+                   ((next () s (resume (/ s 3) (+ s 2))))
+                   (+ (St.next) (* 10 (St.next))))))
+            (export main)))
+  (call   main (: -7 Int64)) (output (: -2012 Int64))
+  (call   main (: 7 Int64)) (output (: 2032 Int64)))
+
+(case "nm3 the only overflowing DIVISION (Int64.min / -1) is a CONSTANT-fold reject — the runtime-divisor form runs for every other divisor"
+  (input  (do
+            (def (main) (/ -9223372036854775808 -1))
+            (export main)))
+  (error  CDZ0304))
+
+(case "nm4 Int64.min divided by RUNTIME divisors — every non-(-1) divisor has an exact Int64 quotient"
+  (input  (do
+            (def (main (: d Int64)) (/ -9223372036854775808 d))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: -4611686018427387904 Int64))
+  (call   main (: -2 Int64)) (output (: 4611686018427387904 Int64))
+  (call   main (: 1 Int64)) (output (: -9223372036854775808 Int64)))
