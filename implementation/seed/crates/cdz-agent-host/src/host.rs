@@ -219,6 +219,40 @@ impl HostedSession {
         }
     }
 
+    /// Wrap an ALREADY-RECOVERED [`Session`] (§lifecycle I4b boot-recovery) — the recovery counterpart to
+    /// [`genesis`](Self::genesis). Unlike the `genesis*` constructors (which MINT a fresh seq-0 Genesis), this
+    /// takes the `Session` that [`Session::recover_from`](cdz_kernel::kernel::Session::recover_from) rebuilt by
+    /// folding a durable log — so the recovered session keeps its own genesis-hash / SessionId / KV / open
+    /// obligations (recovery reads the nonce back from the log, NEVER re-mints — the id is stable across a
+    /// restart). The daemon's boot-recovery loop reads each durably-logged session
+    /// (e.g. [`DynamoLogSink::read_recovered`](crate::dynamo_log::DynamoLogSink::read_recovered) /
+    /// `LogStore::recover`) → `recover_from` → this → [`AgentHost::spawn`](crate::host::AgentHost::spawn) to
+    /// re-register it, then re-drives the `RecoveryReport.open_effects` by idempotency key.
+    ///
+    /// The caller re-supplies the three per-session collaborators (reducer / authz / executor) exactly as for
+    /// a fresh session — they are host-side wiring the log doesn't carry. `suspended` starts false: a
+    /// recovered session is schedulable (a supervisor re-suspends if it wants — see the [`suspended`] doc,
+    /// which is explicit that suspension does NOT survive recovery). A session recovered from a log whose tail
+    /// is [`Terminated`](cdz_kernel::event::EventBody::Terminated) is detected by
+    /// [`is_terminated`](Self::is_terminated) — the boot loop checks that and SKIPS re-registering it, so this
+    /// constructor stays a pure wrap (it does not itself filter terminated sessions).
+    ///
+    /// [`suspended`]: HostedSession::suspended
+    pub fn from_recovered(
+        session: Session,
+        reducer: Box<dyn Reducer>,
+        authz: Box<dyn Authorize>,
+        executor: CompositeExecutor,
+    ) -> Self {
+        HostedSession {
+            session,
+            reducer,
+            authz,
+            executor,
+            suspended: false,
+        }
+    }
+
     /// Attach a §4c mutable-name [`NameStore`](cdz_kernel::name_store::NameStore) so this hosted agent's
     /// `store/set` / `store/resolve` effects work — a builder over [`genesis`](Self::genesis). ADDITIVE:
     /// plain `genesis` leaves the session store-less, so a `store/*` effect there folds an observable `Err`
@@ -1391,6 +1425,54 @@ mod tests {
             Box::new(authz),
             executor,
         )
+    }
+
+    #[tokio::test]
+    async fn from_recovered_wraps_a_recovered_session_keeping_its_id() {
+        use cdz_kernel::kernel::Session;
+        use cdz_kernel::log_store::{Recovered, RecoveryKind};
+
+        // A fresh session whose id (genesis hash) we capture, then simulate a restart: take its durable log,
+        // recover_from it (the backend-agnostic recovery core), and wrap the recovered Session via
+        // from_recovered — the I4b boot-recovery path. The wrapped session must keep the SAME genesis hash /
+        // SessionId (recovery reads the nonce from the log, never re-mints) and start non-terminated +
+        // schedulable.
+        let original = now_host();
+        let original_id = original.genesis_hash();
+        let log = original.session().log().to_vec();
+        assert!(!log.is_empty(), "a genesis'd session has at least its seq-0 event");
+
+        let recovered = Recovered {
+            events: log,
+            kind: RecoveryKind::Clean,
+            good_prefix_len: 0, // informational for this backend-agnostic path; recover_from ignores it
+        };
+        let (session, report) = Session::recover_from(recovered, &ClockAgent)
+            .await
+            .expect("a clean genesis log recovers");
+        assert_eq!(report.kind, RecoveryKind::Clean);
+
+        let executor =
+            CompositeExecutor::new().with_effect(effect_ct::NOW, Box::new(ClockExecutor::new()));
+        let hosted = HostedSession::from_recovered(
+            session,
+            Box::new(ClockAgent),
+            Box::new(Authorizer::deny_all()),
+            executor,
+        );
+        assert_eq!(
+            hosted.genesis_hash(),
+            original_id,
+            "recovery keeps the same SessionId — the nonce is read from the log, never re-minted"
+        );
+        assert!(
+            !hosted.is_terminated(),
+            "a session recovered from a non-terminated log is not terminated"
+        );
+        assert!(
+            !hosted.is_suspended(),
+            "a recovered session starts schedulable (suspension does not survive recovery)"
+        );
     }
 
     /// An agent that arms a timer for `deadline_ms` on inbound "go", and records "woke" in KV when the
