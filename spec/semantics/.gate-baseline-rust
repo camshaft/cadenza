@@ -6235,3 +6235,12 @@ pass	dd1d a bare DISCARDED draw before a let-bound draw — the discard advances
 pass	dd2 a do-DEF bound to a whole nested SHADOW handle — the def holds the inner region's value, the tail draw reads outer
 pass	cn1 a THREE-deep seed RELAY — each nested shadow's seed is a draw from its parent, strides differ per depth
 pass	cn2 the inner shadow's RESULT flows up into the outer computation — a let-bound region value scaled beside an outer draw
+pass	dw1 a list literal mixing an Int32-annotated element with a wider-inferred literal unifies to (List Int32) — every element renders at the unified element width, uniform across backends (fuzzer cdz-smith differential: rust once emitted a heterogeneous vec![i32,i64])
+pass	ic2 an INLINE performing if-condition — the taken branch's draw reads the condition-advanced state
+pass	ic3 CHAINED if-else-if where each condition draws — three rows land in three different arms
+pass	ic4 a helper with a performing IF-condition called twice — each call re-evaluates the condition against the advanced state
+pass	ic5 a recursive LOOP whose exit condition draws per iteration — the iteration count is state-determined
+pass	ic6 a draw-conditioned branch selects BETWEEN two effects — the untaken effect's state is untouched by that row
+pass	tr1 a TUPLE snapshot resume value — each dispatch returns (state, state*10), two snapshots differ by the stride
+pass	print renders a HUGE Ast.Int losslessly — the full 26-digit decimal, no truncation
+pass	eval of a quoted HUGE integer literal declines CDZ0201 — BigInt storage does not widen eval

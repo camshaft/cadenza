@@ -15675,3 +15675,99 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 155 Int64))
   (call   main (: 0 Int64)) (output (: 150 Int64)))
+
+;; ── INLINE performing if-conditions + tuple snapshots (breaker ic/tr) ────────────────────────────
+;; The if-condition position is SOUND for inline performs (unlike the match/guard positions of
+;; findings #8/#9): ic2 = an inline performing condition (the taken branch reads the advanced
+;; state); ic3 = chained else-if conditions each drawing (later conditions fire only on miss);
+;; ic4 = a performing-condition HELPER called twice; ic5 = a recursive LOOP whose exit condition
+;; draws per iteration (state-determined trip count); ic6 = a draw-conditioned branch selecting
+;; BETWEEN two effects (the untaken effect's state untouched). tr1 = a TUPLE snapshot resume
+;; value (state, state*10) built from one live state per dispatch.
+
+(case "ic2 an INLINE performing if-condition — the taken branch's draw reads the condition-advanced state"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (* s 2))))
+                (if (> (St.next) 4)
+                    (+ 100 (St.next))
+                    (- 0 (St.next)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 110 Int64))
+  (call   main (: 2 Int64)) (output (: -4 Int64)))
+
+(case "ic3 CHAINED if-else-if where each condition draws — three rows land in three different arms"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (+ s 3))))
+                (if (> (St.next) 10)
+                    111
+                    (if (> (St.next) 5)
+                        (+ 200 (St.next))
+                        (- 0 (St.next))))))
+            (export main)))
+  (call   main (: 11 Int64)) (output (: 111 Int64))
+  (call   main (: 4 Int64)) (output (: 210 Int64))
+  (call   main (: 0 Int64)) (output (: -6 Int64)))
+
+(case "ic4 a helper with a performing IF-condition called twice — each call re-evaluates the condition against the advanced state"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (pick) (if (> (St.next) 6) (St.next) (- 0 (St.next))))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (+ s 2))))
+                (+ (pick) (* 100 (pick)))))
+            (export main)))
+  (call   main (: 7 Int64)) (output (: 1309 Int64))
+  (call   main (: 0 Int64)) (output (: -602 Int64))
+  (call   main (: 3 Int64)) (output (: 895 Int64)))
+
+(case "ic5 a recursive LOOP whose exit condition draws per iteration — the iteration count is state-determined"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (spin (: acc Int64))
+              (if (> (St.next) 20)
+                  acc
+                  (spin (+ acc 1))))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (+ s 5))))
+                (spin 0)))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 5 Int64))
+  (call   main (: 21 Int64)) (output (: 0 Int64))
+  (call   main (: 11 Int64)) (output (: 2 Int64)))
+
+(case "ic6 a draw-conditioned branch selects BETWEEN two effects — the untaken effect's state is untouched by that row"
+  (input  (do
+            (effect A (op a (-> Int64)))
+            (effect B (op b (-> Int64)))
+            (def (main (: n Int64))
+              (handle A n
+                ((a () s (resume s (+ s 1))))
+                (handle B 100
+                  ((b () t (resume t (* t 2))))
+                  (+ (if (> (A.a) 3) (A.a) (B.b))
+                     (* 10 (if (> (A.a) 3) (A.a) (B.b)))))))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: 75 Int64))
+  (call   main (: 0 Int64)) (output (: 2100 Int64))
+  (call   main (: 2 Int64)) (output (: 2100 Int64)))
+
+(case "tr1 a TUPLE snapshot resume value — each dispatch returns (state, state*10), two snapshots differ by the stride"
+  (input  (do
+            (effect St (op snap (-> (Tuple Int64 Int64))))
+            (def (main (: n Int64))
+              (handle St n
+                ((snap () s (resume (tuple s (* s 10)) (+ s 1))))
+                (match (St.snap)
+                  ((tuple a b) (match (St.snap)
+                                 ((tuple c d) (+ (* 1000 a) (+ (* 100 b) (+ (* 10 c) d)))))))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 4060 Int64))
+  (call   main (: 0 Int64)) (output (: 20 Int64)))
