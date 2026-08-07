@@ -11,7 +11,8 @@
 //! transport — no broker, no hardcoding.
 //!
 //! **Content-addressed + self-verifying (same discipline as `DiskBlobStore`).** The object key is the blob's
-//! content-hash hex (under an optional key prefix), so:
+//! content-hash hex, SHARDED into a fanned key `{prefix}{hh}/{hh}/{rest}` (so the keyspace isn't a single flat
+//! namespace — operator review; mirrors `DiskBlobStore`'s on-disk layout), so:
 //! - `put` is idempotent — the same bytes always map to the same key; re-putting is a harmless overwrite of
 //!   byte-identical content (content-addressing makes the key collision-free for distinct content).
 //! - `get` re-hashes the fetched object and REFUSES to serve bytes that don't hash to the requested key (a
@@ -60,9 +61,17 @@ impl S3BlobStore {
         }
     }
 
-    /// The S3 object key for a blob: `{prefix}{content-hash-hex}`.
+    /// The S3 object key for a blob: `{prefix}{hh}/{hh}/{rest}` — the content-hash hex SHARDED into a fanned
+    /// key so the keyspace isn't a single flat namespace (operator review r3735105548 on #2548). The first two
+    /// hex byte-pairs become nested key segments, the rest is the leaf (`{hex[0..2]}/{hex[2..4]}/{hex[4..]}`),
+    /// mirroring the on-disk `DiskBlobStore` layout so both backends shard identically. blake3 hex is 64 chars,
+    /// so the two 2-char shard segments + a 60-char leaf always exist. Sharding is INTERNAL to key derivation
+    /// (content-addressed) — the `BlobStore` trait + callers are unaffected; `get`/`has`/`put` all route
+    /// through `key_for`, so a blob written under the sharded key is read back under the same one.
     fn key_for(&self, hash: &Hash) -> String {
-        format!("{}{}", self.prefix, hash.to_hex())
+        let hex = hash.to_hex();
+        // blake3 hex = 64 chars (32 bytes); the byte-pair slices are always in range.
+        format!("{}{}/{}/{}", self.prefix, &hex[0..2], &hex[2..4], &hex[4..])
     }
 }
 
@@ -179,16 +188,34 @@ mod tests {
     }
 
     #[test]
-    fn key_for_is_prefix_plus_content_hash_hex() {
+    fn key_for_shards_the_content_hash_under_the_prefix() {
         // Construct without touching AWS: from_conf with a minimal config never makes a call until an op runs.
         let cfg = aws_config::SdkConfig::builder()
             .behavior_version(aws_config::BehaviorVersion::latest())
             .build();
         let store = S3BlobStore::from_conf(&cfg, "my-bucket", "reducers");
         let h = Hash::of(b"hello blob");
-        assert_eq!(store.key_for(&h), format!("reducers/{}", h.to_hex()));
+        let hex = h.to_hex();
+        // Sharded: {prefix}{hex[0..2]}/{hex[2..4]}/{hex[4..]} — a fanned key, not a flat prefix (operator
+        // review r3735105548). Mirrors DiskBlobStore's on-disk layout.
+        assert_eq!(
+            store.key_for(&h),
+            format!("reducers/{}/{}/{}", &hex[0..2], &hex[2..4], &hex[4..])
+        );
+        // The shard segments are the first two hex byte-pairs; the leaf is the remaining 60 chars.
+        assert_eq!(
+            store.key_for(&h),
+            format!("reducers/{}", shard_suffix(&hex))
+        );
 
+        // No prefix → bucket root, still sharded.
         let rooted = S3BlobStore::from_conf(&cfg, "my-bucket", "");
-        assert_eq!(rooted.key_for(&h), h.to_hex()); // no prefix → bucket root
+        assert_eq!(rooted.key_for(&h), shard_suffix(&hex));
+    }
+
+    /// The sharded suffix `{hex[0..2]}/{hex[2..4]}/{hex[4..]}` — test helper mirroring `key_for`'s fan-out.
+    #[cfg(test)]
+    fn shard_suffix(hex: &str) -> String {
+        format!("{}/{}/{}", &hex[0..2], &hex[2..4], &hex[4..])
     }
 }
