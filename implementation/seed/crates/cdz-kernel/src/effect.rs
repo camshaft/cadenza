@@ -77,6 +77,20 @@ pub mod effect_ct {
     /// `ControlHostSurfaced` disposition: returned to the driver, captured by the query fork's watch).
     pub const SUMMARY: &str = "control/summary";
 
+    /// The well-known `control/signature` family — the component SIGNATURE-QUERY (composable-component-calls
+    /// part-1, greenlit 2026-08-07): a reducer asks "given this component (by hash/name), what are its
+    /// exported funcs + their param/result types?" so a Cadenza orchestration program can DISCOVER a target's
+    /// callable surface before invoking it. CONTROL-PLANE (authz-EXEMPT, like `control/capabilities`) —
+    /// introspection is not a world-action, so it isn't gated (only the actual INVOKE keeps per-call authz).
+    /// A `ControlHostSurfaced` disposition like `control/summary`: the HOST answers it (reflecting the target's
+    /// `component_type().exports()` — wasmtime, host-side) + folds back a canonical [`component-signature`
+    /// descriptor](crate::event_ast::encode_component_signature) as the result; the kernel only carries the
+    /// family vocab + owns the descriptor CODEC (the reducer↔host wire shape). The target component (hash/name)
+    /// rides the effect target. V0 carries each param/result TYPE as OPAQUE wit-bytes (a reducer discovers
+    /// export names + arities + type-bytes = enough to route/dispatch); a follow-up increment lowers the
+    /// wit-types to a Cadenza-decodable Ast (v-metaprogramming owns that type mapping).
+    pub const SIGNATURE: &str = "control/signature";
+
     /// The `store/*` namespace PREFIX — the §4c global-store WRITE layer (mutable name→hash pointers). A
     /// family whose string starts with this is a STORE effect: unlike `control/*` (authz-EXEMPT), a store
     /// effect is AUTHZ-GATED — a `store/set` is the anti-hijack surface (repointing `system/compiler/latest`
@@ -227,6 +241,38 @@ pub mod effect_ct {
         family.starts_with(METRIC_PREFIX)
     }
 
+    /// The `blob/*` namespace PREFIX — the reducer CONTENT-ADDRESSED STORE partition (cadenza-docs I3, but a
+    /// GENERIC dep for any content reducer, not doc-specific). A reducer PUTs bytes into the CAS and gets
+    /// back their content [`crate::hash::Hash`] (the address), or GETs bytes back by hash. The `blob.rs`
+    /// [`crate::blob::BlobStore`] is the storage PRIMITIVE (`put`/`get`); this family is the reducer-facing
+    /// EFFECT that invokes it — the missing piece a reducer needs, since a reducer emits effects, it can't
+    /// call `BlobStore::put` directly. Like `fs/*`/`metric/*` it is AUTHZ-GATED + EXECUTOR-ROUTED
+    /// (register-by-string, `Emit` placeholder kind, no kernel drive-loop arm): the HOST registers a
+    /// blob executor over its `BlobStore` backend, Cedar-gated. Content-addressed → integrity is free (the
+    /// key IS the hash); immutable by construction (same bytes → same key, a put is idempotent). The canonical
+    /// doc-publish path is `blob/put` (doc-AST bytes → Hash) + `store/set doc/<pkg>` (register the hash by
+    /// name) — NOT `fs/write` (which rejects a blob-ref payload; a different, path-addressed store).
+    pub const BLOB_PREFIX: &str = "blob/";
+
+    /// `blob/put` — store bytes in the content-addressed store, returning their content [`crate::hash::Hash`]
+    /// (the address) as the effect result. Payload = the bytes to store; the result-hash is what the reducer
+    /// registers (e.g. `store/set doc/<pkg>`) or embeds. Idempotent (content-addressed: the same bytes always
+    /// map to the same key). The HOST blob executor performs the `BlobStore::put`.
+    pub const BLOB_PUT: &str = "blob/put";
+
+    /// `blob/get` — fetch bytes from the content-addressed store by hash (target = the hash; result = the
+    /// bytes, or an absent-blob outcome). A self-verifying backend re-hashes the returned bytes to the
+    /// requested key (content-addressing makes tamper-detection free). The HOST blob executor performs the
+    /// `BlobStore::get`.
+    pub const BLOB_GET: &str = "blob/get";
+
+    /// Is `family` in the `blob/*` namespace (the reducer content-addressed-store partition)? A prefix test
+    /// (like [`is_fs_family`]/[`is_metric_family`]). Executor-routed, so the drive loop needs no special arm —
+    /// here for the manifest + discoverability + one source of truth for the partition boundary.
+    pub fn is_blob_family(family: &str) -> bool {
+        family.starts_with(BLOB_PREFIX)
+    }
+
     /// Is `family` in the `control/*` namespace (authz-exempt, host/kernel-answered, never executor-routed)?
     /// The partition test the drive loop applies BEFORE authorize/route: `true` → control path, `false` →
     /// the effect path (authorize → executor). A simple prefix check on [`CONTROL_PREFIX`] — one source of
@@ -244,6 +290,7 @@ pub mod effect_ct {
         match family {
             CAPABILITIES => Some(CAPABILITIES),
             SUMMARY => Some(SUMMARY),
+            SIGNATURE => Some(SIGNATURE),
             _ => None,
         }
     }
@@ -267,6 +314,8 @@ pub mod effect_ct {
         FS_WRITE,
         FS_GLOB,
         METRIC_PUBLISH,
+        BLOB_PUT,
+        BLOB_GET,
     ];
 
     /// If `family` is a WELL-KNOWN family whose string is a FIXED, kernel-defined `&'static` — one of the
@@ -290,6 +339,7 @@ pub mod effect_ct {
         match family {
             CAPABILITIES => Some(CAPABILITIES),
             SUMMARY => Some(SUMMARY),
+            SIGNATURE => Some(SIGNATURE),
             STORE_SET => Some(STORE_SET),
             STORE_RESOLVE => Some(STORE_RESOLVE),
             STORE_ADD => Some(STORE_ADD),
@@ -303,6 +353,8 @@ pub mod effect_ct {
             FS_WRITE => Some(FS_WRITE),
             FS_GLOB => Some(FS_GLOB),
             METRIC_PUBLISH => Some(METRIC_PUBLISH),
+            BLOB_PUT => Some(BLOB_PUT),
+            BLOB_GET => Some(BLOB_GET),
             _ => None,
         }
     }
@@ -871,6 +923,8 @@ mod tests {
         assert_eq!(wellknown_static_str(FS_WRITE), Some(FS_WRITE));
         assert_eq!(wellknown_static_str(FS_GLOB), Some(FS_GLOB));
         assert_eq!(wellknown_static_str(METRIC_PUBLISH), Some(METRIC_PUBLISH));
+        assert_eq!(wellknown_static_str(BLOB_PUT), Some(BLOB_PUT));
+        assert_eq!(wellknown_static_str(BLOB_GET), Some(BLOB_GET));
         // Extension families (register-by-string, guest-controlled) → None (redacted).
         assert_eq!(wellknown_static_str("my/custom-effect"), None);
         assert_eq!(wellknown_static_str("weather"), None);
@@ -1065,6 +1119,7 @@ mod tests {
         // prefix test the drive loop applies before authorize/route.
         assert!(effect_ct::is_control_family(effect_ct::CAPABILITIES));
         assert!(effect_ct::is_control_family(effect_ct::SUMMARY));
+        assert!(effect_ct::is_control_family(effect_ct::SIGNATURE));
         assert!(effect_ct::is_control_family("control/anything"));
         // Every well-known EFFECT family stays BARE — NOT in the control namespace (durable-wire constraint:
         // they can't gain an "effect/" prefix, and must never be misclassified as control).
@@ -1078,6 +1133,20 @@ mod tests {
         assert_eq!(effect_ct::CONTROL_PREFIX, "control/");
         assert!(effect_ct::CAPABILITIES.starts_with(effect_ct::CONTROL_PREFIX));
         assert!(effect_ct::SUMMARY.starts_with(effect_ct::CONTROL_PREFIX));
+        assert!(effect_ct::SIGNATURE.starts_with(effect_ct::CONTROL_PREFIX));
+        // control/signature is a well-known control family: exact string, safe-logging, and wellknown_control
+        // canonicalizes it (zero-alloc Borrowed) — the composable-component-calls signature-query (v0).
+        assert_eq!(effect_ct::SIGNATURE, "control/signature");
+        assert_eq!(
+            effect_ct::wellknown_control(effect_ct::SIGNATURE),
+            Some(effect_ct::SIGNATURE)
+        );
+        assert_eq!(
+            effect_ct::wellknown_static_str(effect_ct::SIGNATURE),
+            Some(effect_ct::SIGNATURE)
+        );
+        // A guest control/<secret> still redacts (prefix ≠ safe), unchanged.
+        assert_eq!(effect_ct::wellknown_static_str("control/secret-x"), None);
         // A bare family that merely CONTAINS "control" but doesn't start with the prefix is NOT control.
         assert!(!effect_ct::is_control_family("my-control-thing"));
         assert!(!effect_ct::is_control_family(""));
@@ -1201,6 +1270,42 @@ mod tests {
         assert_eq!(effect_ct::wellknown_static_str("metric/secret-x"), None);
         assert!(effect_ct::is_metric_family("metric/secret-x"));
         assert!(!effect_ct::is_metric_family("mymetric"));
+    }
+
+    #[test]
+    fn blob_family_partition_consts_predicate_manifest_and_safe_logging() {
+        // cadenza-docs I3 blob CAS-write partition: blob/put + blob/get — authz-gated, executor-routed to the
+        // host blob executor over BlobStore, register-by-string (no new EffectKind). The reducer-facing effect
+        // that invokes the blob.rs put/get storage primitive (a reducer emits effects; it can't call put directly).
+        assert_eq!(effect_ct::BLOB_PREFIX, "blob/");
+        assert_eq!(effect_ct::BLOB_PUT, "blob/put");
+        assert_eq!(effect_ct::BLOB_GET, "blob/get");
+        assert!(effect_ct::is_blob_family(effect_ct::BLOB_PUT));
+        assert!(effect_ct::is_blob_family(effect_ct::BLOB_GET));
+        assert!(effect_ct::BLOB_PUT.starts_with(effect_ct::BLOB_PREFIX));
+        // SAFE-LOGGING (#2180): the exact strings are kernel-defined fixed &'static → log VERBATIM.
+        assert_eq!(
+            effect_ct::wellknown_static_str(effect_ct::BLOB_PUT),
+            Some(effect_ct::BLOB_PUT)
+        );
+        assert_eq!(
+            effect_ct::wellknown_static_str(effect_ct::BLOB_GET),
+            Some(effect_ct::BLOB_GET)
+        );
+        // In the manifest family set → the capability projection reports blob grant-states.
+        assert!(effect_ct::ALL.contains(&effect_ct::BLOB_PUT));
+        assert!(effect_ct::ALL.contains(&effect_ct::BLOB_GET));
+        // DISJOINT from the other partitions (blob/* is neither store nor fs — a distinct content-addressed store).
+        assert!(!effect_ct::is_store_family(effect_ct::BLOB_PUT));
+        assert!(!effect_ct::is_fs_family(effect_ct::BLOB_PUT));
+        assert!(!effect_ct::is_metric_family(effect_ct::BLOB_PUT));
+        assert!(!effect_ct::is_lifecycle_family(effect_ct::BLOB_PUT));
+        assert!(!effect_ct::is_blob_family(effect_ct::FS_WRITE));
+        assert!(!effect_ct::is_blob_family(effect_ct::STORE_SET));
+        // A guest fake blob-ish name that isn't the exact const logs redacted (None); prefix still classifies.
+        assert_eq!(effect_ct::wellknown_static_str("blob/secret-x"), None);
+        assert!(effect_ct::is_blob_family("blob/secret-x"));
+        assert!(!effect_ct::is_blob_family("myblob"));
     }
 
     #[test]

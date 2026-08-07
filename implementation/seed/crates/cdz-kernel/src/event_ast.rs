@@ -1446,6 +1446,125 @@ pub fn decode_shell_pipeline_outcome(bytes: &[u8]) -> Result<ShellPipelineOutcom
     }
 }
 
+/// One exported function's SIGNATURE in a component-signature descriptor (composable-component-calls
+/// part-1, greenlit 2026-08-07): the func `name` + its `params` and `results` types. V0 carries each type
+/// as OPAQUE `wit` BYTES (the wit/component-model type encoding, verbatim from the host's reflection) — a
+/// reducer discovers the export NAME + arity (params.len()/results.len()) + the opaque per-type bytes, which
+/// is enough to route/dispatch. A follow-up increment lowers those wit-type bytes to a Cadenza-decodable
+/// Ast (v-metaprogramming owns the wit↔Ast type mapping); until then the reducer treats a type as an opaque
+/// handle it can compare/pass-through, not introspect structurally.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ExportSig {
+    pub name: String,
+    pub params: Vec<Vec<u8>>,
+    pub results: Vec<Vec<u8>>,
+}
+
+/// A component's SIGNATURE — its exported functions and their param/result types (the `control/signature`
+/// query result). The HOST reflects the target's `component_type().exports()` (wasmtime, host-side) and
+/// builds this; a reducer decodes it ([`decode_component_signature`]) to discover the callable surface
+/// before invoking. Empty `exports` = a component with no exported funcs (a live-but-empty descriptor,
+/// distinct from a decode Err).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ComponentSignature {
+    pub exports: Vec<ExportSig>,
+}
+
+/// Encode a [`ComponentSignature`] as canonical AST — the `control/signature` effect's result payload.
+/// Shape:
+///
+///   `(component-signature (export (name <str>) (params (ty <bytes>) …) (results (ty <bytes>) …)) …)`
+///
+/// Each `(ty <bytes>)` carries a param/result type as OPAQUE wit-bytes (v0 — see [`ExportSig`]); the frame
+/// extends additively to a structured Ast type later without breaking a v0 reader (a reader that only wants
+/// names+arities ignores the ty-bytes). Same shared-codec + total-decode discipline as the other event_ast
+/// codecs. The host produces it; the reducer decodes it ([`decode_component_signature`]).
+pub fn encode_component_signature(sig: &ComponentSignature) -> Vec<u8> {
+    let mut b = Builder::new();
+    let head = b.name("component-signature");
+    let mut items = vec![head];
+    for ex in &sig.exports {
+        let export_head = b.name("export");
+        let name_form = {
+            let h = b.name("name");
+            let v = str_leaf(&mut b, &ex.name);
+            b.list(vec![h, v])
+        };
+        let params_form = {
+            let h = b.name("params");
+            let mut ps = vec![h];
+            for ty in &ex.params {
+                let th = b.name("ty");
+                let tv = bytes_leaf(&mut b, ty);
+                ps.push(b.list(vec![th, tv]));
+            }
+            b.list(ps)
+        };
+        let results_form = {
+            let h = b.name("results");
+            let mut rs = vec![h];
+            for ty in &ex.results {
+                let th = b.name("ty");
+                let tv = bytes_leaf(&mut b, ty);
+                rs.push(b.list(vec![th, tv]));
+            }
+            b.list(rs)
+        };
+        items.push(b.list(vec![export_head, name_form, params_form, results_form]));
+    }
+    let root = b.list(items);
+    codec::encode(&b.finish(root))
+}
+
+/// Read one `(export (name <str>) (params (ty <bytes>) …) (results (ty <bytes>) …))` form → an [`ExportSig`].
+fn read_export_sig(a: &Arenas, id: StructId) -> Result<ExportSig, EventAstError> {
+    let [name_f, params_f, results_f] = a.as_form(id, "export").ok_or(shape("export head"))? else {
+        return Err(shape("export arity (want (name)(params)(results))"));
+    };
+    let name = {
+        let [nv] = a.as_form(*name_f, "name").ok_or(shape("name form"))? else {
+            return Err(shape("name arity"));
+        };
+        read_str(a, *nv)?
+    };
+    let read_ty_list =
+        |list_f: StructId, head: &'static str| -> Result<Vec<Vec<u8>>, EventAstError> {
+            let ty_forms = a.as_form(list_f, head).ok_or(shape("ty-list form"))?;
+            let mut out = Vec::with_capacity(ty_forms.len());
+            for &tf in ty_forms {
+                let [tv] = a.as_form(tf, "ty").ok_or(shape("ty form"))? else {
+                    return Err(shape("ty arity"));
+                };
+                out.push(read_bytes(a, *tv)?);
+            }
+            Ok(out)
+        };
+    let params = read_ty_list(*params_f, "params")?;
+    let results = read_ty_list(*results_f, "results")?;
+    Ok(ExportSig {
+        name,
+        params,
+        results,
+    })
+}
+
+/// Decode a `component-signature` frame encoded by [`encode_component_signature`] → the exported funcs.
+/// Total, Codec-vs-Shape like the other decoders: non-parseable bytes → [`EventAstError::Codec`]; a
+/// well-formed frame with a bad head/arity / non-str name / non-bytes ty → [`EventAstError::Shape`]. An empty
+/// `(component-signature)` decodes to empty `exports` (a live-but-empty descriptor). Never a panic (the bytes
+/// ride the durable effect log / a guest reducer).
+pub fn decode_component_signature(bytes: &[u8]) -> Result<ComponentSignature, EventAstError> {
+    let a = codec::decode_detailed(bytes).map_err(EventAstError::Codec)?;
+    let export_forms = a
+        .as_form(a.root, "component-signature")
+        .ok_or(shape("component-signature head"))?;
+    let mut exports = Vec::with_capacity(export_forms.len());
+    for &ef in export_forms {
+        exports.push(read_export_sig(&a, ef)?);
+    }
+    Ok(ComponentSignature { exports })
+}
+
 /// A decoded §4c store-snapshot frame — either a single-value `name-set` pointer or a group `member-op`.
 /// This is the durable-snapshot restore discriminant: [`decode_store_frame`] decodes the shared codec
 /// ONCE and routes on the frame's self-describing AST head, so [`crate::name_store::NameStore::from_snapshot_bytes`]
@@ -3205,6 +3324,66 @@ mod tests {
                 Err(EventAstError::Shape(_))
             ),
             "a members frame is a Shape error (wrong head), not a shell-pipeline-outcome"
+        );
+    }
+
+    #[test]
+    fn component_signature_round_trips_multi_export_incl_opaque_types_and_arities() {
+        // composable-component-calls part-1 (v0, opaque wit-bytes): the descriptor round-trips exported funcs
+        // with their names + param/result type-bytes + arities. A reducer reads name + params.len/results.len
+        // + opaque per-type bytes — enough to route/dispatch before the Ast-lowering follow-up.
+        let sig = ComponentSignature {
+            exports: vec![
+                ExportSig {
+                    name: "parse".to_string(),
+                    params: vec![b"wit:string".to_vec()], // opaque wit-type bytes (v0)
+                    results: vec![b"wit:result<doc,err>".to_vec()],
+                },
+                ExportSig {
+                    name: "noop".to_string(),
+                    params: vec![], // 0-arg
+                    results: vec![],
+                },
+                ExportSig {
+                    name: "combine".to_string(),
+                    params: vec![vec![0xff, 0x00], b"wit:list<u8>".to_vec()], // 2 params, one non-UTF-8
+                    results: vec![b"wit:u32".to_vec()],
+                },
+            ],
+        };
+        let back =
+            decode_component_signature(&encode_component_signature(&sig)).expect("round-trips");
+        assert_eq!(back, sig);
+        // Arities + names are readable for routing.
+        assert_eq!(back.exports[0].name, "parse");
+        assert_eq!(back.exports[0].params.len(), 1);
+        assert_eq!(back.exports[1].params.len(), 0); // noop is 0-arg
+        assert_eq!(back.exports[2].params.len(), 2);
+        // Non-UTF-8 type bytes survive verbatim (opaque).
+        assert_eq!(back.exports[2].params[0], vec![0xff, 0x00]);
+    }
+
+    #[test]
+    fn component_signature_handles_empty_and_decode_is_total() {
+        // An empty (component-signature) = a component with no exported funcs (live-but-empty, not a decode Err).
+        let empty = ComponentSignature { exports: vec![] };
+        assert!(
+            decode_component_signature(&encode_component_signature(&empty))
+                .unwrap()
+                .exports
+                .is_empty()
+        );
+        // Total Codec-vs-Shape, never panics: non-decodable → Codec; wrong-head frame → Shape.
+        assert!(matches!(
+            decode_component_signature(b"not a component-signature frame"),
+            Err(EventAstError::Codec(_))
+        ));
+        assert!(
+            matches!(
+                decode_component_signature(&encode_members([&Hash::of(b"x")])),
+                Err(EventAstError::Shape(_))
+            ),
+            "a members frame is a Shape error (wrong head), not a component-signature"
         );
     }
 

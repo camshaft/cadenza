@@ -15404,3 +15404,370 @@
             (def (main) (list (: 127 Int32) 32767))
             (export main)))
   (call   main) (output (: (list 127 32767) (List Int32))))
+
+;; ── conditional aborts under HEAP-state outers + closure crossings + do-def/relay (breaker ab/cc/dd/cn) ──
+;; ab = a branch-conditional abort (Bail INNER, heap-state handler OUTER — the folding direction;
+;; abort THROUGH an inner resumptive handler stays not-yet-reducible): scalar/string/map states,
+;; the abort VALUE as an outer draw, and TWO sequential abort regions (first-only/neither/both).
+;; cc = closures crossing handler boundaries the SOUND way (pure init, outer-let captures):
+;; pre-built capture applied twice inside, escape-A-apply-under-B, sequential captures, composed
+;; g(f(draw)), bound-outside crossing a nested shadow, threaded through a RECURSIVE helper, and
+;; carried in a TUPLE. (The performing-init/factory-arg faces are finding #10, held.)
+;; dd/cn = do-def orderings (consecutive defs; a bare discarded draw before a LET; a def bound to
+;; a whole nested shadow) and seed relays (parent-draw seeds three deep; the inner result flowing UP).
+
+(case "ab1d the scalar twin — a conditional abort under a SCALAR-state outer, pre-abort advance committed"
+  (input  (do
+            (effect L (op emit (-> Int64)))
+            (effect Bail (op bail (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (+ (handle L 10
+                   ((emit () s (resume s (+ s 1))))
+                   (handle Bail 0
+                     ((bail (v) s v))
+                     (do
+                       (L.emit)
+                       (let ((g (if (> n 3) (Bail.bail 99) 0)))
+                         (+ g (+ (L.emit) 500))))))
+                 (* 1000 n)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 5099 Int64))
+  (call   main (: 0 Int64)) (output (: 511 Int64)))
+
+(case "ab1e a branch-conditional abort under a STRING-state outer handler — the taken abort skips the post-abort emit, the untaken row grows the rope"
+  (input  (do
+            (effect L (op emit (-> Int64)))
+            (effect Bail (op bail (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (+ (handle L "x"
+                   ((emit () s (resume (String.byte-len s) (String.concat s "yz"))))
+                   (handle Bail 0
+                     ((bail (v) s v))
+                     (do
+                       (L.emit)
+                       (let ((g (if (> n 3) (Bail.bail 99) 0)))
+                         (+ g (+ (L.emit) 500))))))
+                 (* 1000 n)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 5099 Int64))
+  (call   main (: 0 Int64)) (output (: 503 Int64)))
+
+(case "ab2 a conditional abort under a MAP-state outer — the pre-abort insert is committed either way"
+  (input  (do
+            (effect R (op touch (-> Int64 Int64)))
+            (effect Bail (op bail (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (+ (handle R (map (1 10))
+                   ((touch (k) s (resume (Map.len s) (Map.insert s k k))))
+                   (+ (R.touch 5)
+                      (handle Bail 0
+                        ((bail (v) s v))
+                        (let ((g (if (> n 3) (Bail.bail 77) 0)))
+                          (+ g (R.touch 6))))))
+                 (* 1000 n)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 5078 Int64))
+  (call   main (: 0 Int64)) (output (: 3 Int64)))
+
+(case "ab3 the abort VALUE is itself a draw from the outer STRING-state handler — the pre-abort dispatch commits before the unwind"
+  (input  (do
+            (effect L (op emit (-> Int64)))
+            (effect Bail (op bail (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle L "abc"
+                ((emit () s (resume (String.byte-len s) (String.concat s s))))
+                (handle Bail 0
+                  ((bail (v) s v))
+                  (let ((g (if (> n 3) (Bail.bail (L.emit)) 0)))
+                    (+ g (* 10 (L.emit)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 3 Int64))
+  (call   main (: 0 Int64)) (output (: 30 Int64)))
+
+(case "ab4 TWO sequential abort regions under one STRING-state outer — an aborted region leaves the rope where it was"
+  (input  (do
+            (effect L (op emit (-> Int64)))
+            (effect Bail (op bail (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle L "q"
+                ((emit () s (resume (String.byte-len s) (String.concat s "z"))))
+                (+ (handle Bail 0
+                     ((bail (v) s v))
+                     (let ((g (if (> n 3) (Bail.bail 50) 0)))
+                       (+ g (L.emit))))
+                   (* 100 (handle Bail 0
+                            ((bail (v) s v))
+                            (let ((h (if (> n 100) (Bail.bail 7) 0)))
+                              (+ h (L.emit))))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 150 Int64))
+  (call   main (: 0 Int64)) (output (: 201 Int64))
+  (call   main (: 200 Int64)) (output (: 750 Int64)))
+
+(case "cc1 a closure over the fn PARAM built before the handle, applied twice inside with draws — capture stable, draws advance"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (main (: n Int64))
+              (let ((f (fn ((: x Int64)) (* x n))))
+                (handle St 3
+                  ((next () s (resume s (+ s 2))))
+                  (+ (f (St.next)) (f (St.next))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 40 Int64))
+  (call   main (: 2 Int64)) (output (: 16 Int64)))
+
+(case "cc2 a closure escaping handle A is applied inside handle B — the A-capture is stable while B's draws feed the args"
+  (input  (do
+            (effect A (op a (-> Int64)))
+            (effect B (op b (-> Int64)))
+            (def (main (: n Int64))
+              (let ((f (handle A n
+                         ((a () s (resume s (+ s 1))))
+                         (let ((k (A.a))) (fn ((: x Int64)) (+ x k))))))
+                (handle B 100
+                  ((b () t (resume t (* t 2))))
+                  (+ (f (B.b)) (f (B.b))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 310 Int64))
+  (call   main (: 0 Int64)) (output (: 300 Int64)))
+
+(case "cc4 TWO closures over SEQUENTIAL draws inside one region — each captures its own read, applied after both bind"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (+ s 1))))
+                (let ((a (St.next)))
+                  (let ((f (fn ((: x Int64)) (+ x a))))
+                    (let ((b (St.next)))
+                      (let ((g (fn ((: x Int64)) (* x b))))
+                        (+ (f 100) (g 10))))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 165 Int64))
+  (call   main (: 0 Int64)) (output (: 110 Int64)))
+
+(case "cc5 composed closures over three draws — g(f(draw)) where f and g each captured an earlier read"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (+ s 1))))
+                (let ((a (St.next)))
+                  (let ((f (fn ((: x Int64)) (+ x a))))
+                    (let ((b (St.next)))
+                      (let ((g (fn ((: x Int64)) (* x b))))
+                        (g (f (St.next)))))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 72 Int64))
+  (call   main (: 0 Int64)) (output (: 2 Int64)))
+
+(case "cc6b a closure bound OUTSIDE the outer handle applied inside a nested SHADOW region and after it — capture crosses both boundaries"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (main (: n Int64))
+              (let ((f (fn ((: x Int64)) (+ x (* n 100)))))
+                (handle St n
+                  ((next () s (resume s (+ s 1))))
+                  (+ (handle St 50
+                       ((next () t (resume t (* t 2))))
+                       (f (St.next)))
+                     (f (St.next))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 1055 Int64))
+  (call   main (: 0 Int64)) (output (: 50 Int64)))
+
+(case "cc7 a draw-capturing closure threaded through a RECURSIVE helper — applied per frame, the leaf applies it to a fresh draw"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (walk (: d Int64) (: f (-> Int64 Int64)))
+              (if (<= d 0)
+                  (f (St.next))
+                  (+ (f d) (walk (- d 1) f))))
+            (def (main (: n Int64))
+              (handle St 100
+                ((next () s (resume s (+ s 1))))
+                (let ((k (St.next)))
+                  (walk n (fn ((: x Int64)) (* x k))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 10700 Int64))
+  (call   main (: 0 Int64)) (output (: 10100 Int64)))
+
+(case "cc8 a closure carried in a TUPLE beside a scalar — destructured in one match and applied around advancing draws"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (+ s 1))))
+                (match (tuple (fn ((: x Int64)) (* x n)) 7)
+                  ((tuple f c) (+ (f (St.next)) (+ c (f (St.next))))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 62 Int64))
+  (call   main (: 2 Int64)) (output (: 17 Int64)))
+
+(case "dd1b consecutive do-DEF draws — both binders hold their reads, the tail draw sees the doubled-twice state"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (* s 2))))
+                (do
+                  (def a (St.next))
+                  (def b (St.next))
+                  (+ (* 100 a) (+ (* 10 b) (St.next))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 620 Int64))
+  (call   main (: 1 Int64)) (output (: 124 Int64)))
+
+(case "dd1d a bare DISCARDED draw before a let-bound draw — the discard advances the state the binder reads"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (* s 2))))
+                (do
+                  (St.next)
+                  (let ((a (St.next)))
+                    (+ (* 100 a) (St.next))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 1020 Int64))
+  (call   main (: 1 Int64)) (output (: 204 Int64)))
+
+(case "dd2 a do-DEF bound to a whole nested SHADOW handle — the def holds the inner region's value, the tail draw reads outer"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (+ s 1))))
+                (do
+                  (def inner (handle St 40
+                               ((next () t (resume t (* t 3))))
+                               (+ (St.next) (St.next))))
+                  (+ inner (St.next)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 165 Int64))
+  (call   main (: 0 Int64)) (output (: 160 Int64)))
+
+(case "cn1 a THREE-deep seed RELAY — each nested shadow's seed is a draw from its parent, strides differ per depth"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (+ s 1))))
+                (handle St (St.next)
+                  ((next () s (resume s (+ s 10))))
+                  (handle St (St.next)
+                    ((next () s (resume s (+ s 100))))
+                    (+ (St.next) (St.next))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 110 Int64))
+  (call   main (: 0 Int64)) (output (: 100 Int64)))
+
+(case "cn2 the inner shadow's RESULT flows up into the outer computation — a let-bound region value scaled beside an outer draw"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (* s 2))))
+                (let ((up (handle St 7
+                            ((next () t (resume t (+ t 1))))
+                            (+ (St.next) (St.next)))))
+                  (+ (* up 10) (St.next)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 155 Int64))
+  (call   main (: 0 Int64)) (output (: 150 Int64)))
+
+;; ── INLINE performing if-conditions + tuple snapshots (breaker ic/tr) ────────────────────────────
+;; The if-condition position is SOUND for inline performs (unlike the match/guard positions of
+;; findings #8/#9): ic2 = an inline performing condition (the taken branch reads the advanced
+;; state); ic3 = chained else-if conditions each drawing (later conditions fire only on miss);
+;; ic4 = a performing-condition HELPER called twice; ic5 = a recursive LOOP whose exit condition
+;; draws per iteration (state-determined trip count); ic6 = a draw-conditioned branch selecting
+;; BETWEEN two effects (the untaken effect's state untouched). tr1 = a TUPLE snapshot resume
+;; value (state, state*10) built from one live state per dispatch.
+
+(case "ic2 an INLINE performing if-condition — the taken branch's draw reads the condition-advanced state"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (* s 2))))
+                (if (> (St.next) 4)
+                    (+ 100 (St.next))
+                    (- 0 (St.next)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 110 Int64))
+  (call   main (: 2 Int64)) (output (: -4 Int64)))
+
+(case "ic3 CHAINED if-else-if where each condition draws — three rows land in three different arms"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (+ s 3))))
+                (if (> (St.next) 10)
+                    111
+                    (if (> (St.next) 5)
+                        (+ 200 (St.next))
+                        (- 0 (St.next))))))
+            (export main)))
+  (call   main (: 11 Int64)) (output (: 111 Int64))
+  (call   main (: 4 Int64)) (output (: 210 Int64))
+  (call   main (: 0 Int64)) (output (: -6 Int64)))
+
+(case "ic4 a helper with a performing IF-condition called twice — each call re-evaluates the condition against the advanced state"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (pick) (if (> (St.next) 6) (St.next) (- 0 (St.next))))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (+ s 2))))
+                (+ (pick) (* 100 (pick)))))
+            (export main)))
+  (call   main (: 7 Int64)) (output (: 1309 Int64))
+  (call   main (: 0 Int64)) (output (: -602 Int64))
+  (call   main (: 3 Int64)) (output (: 895 Int64)))
+
+(case "ic5 a recursive LOOP whose exit condition draws per iteration — the iteration count is state-determined"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (spin (: acc Int64))
+              (if (> (St.next) 20)
+                  acc
+                  (spin (+ acc 1))))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (+ s 5))))
+                (spin 0)))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 5 Int64))
+  (call   main (: 21 Int64)) (output (: 0 Int64))
+  (call   main (: 11 Int64)) (output (: 2 Int64)))
+
+(case "ic6 a draw-conditioned branch selects BETWEEN two effects — the untaken effect's state is untouched by that row"
+  (input  (do
+            (effect A (op a (-> Int64)))
+            (effect B (op b (-> Int64)))
+            (def (main (: n Int64))
+              (handle A n
+                ((a () s (resume s (+ s 1))))
+                (handle B 100
+                  ((b () t (resume t (* t 2))))
+                  (+ (if (> (A.a) 3) (A.a) (B.b))
+                     (* 10 (if (> (A.a) 3) (A.a) (B.b)))))))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: 75 Int64))
+  (call   main (: 0 Int64)) (output (: 2100 Int64))
+  (call   main (: 2 Int64)) (output (: 2100 Int64)))
+
+(case "tr1 a TUPLE snapshot resume value — each dispatch returns (state, state*10), two snapshots differ by the stride"
+  (input  (do
+            (effect St (op snap (-> (Tuple Int64 Int64))))
+            (def (main (: n Int64))
+              (handle St n
+                ((snap () s (resume (tuple s (* s 10)) (+ s 1))))
+                (match (St.snap)
+                  ((tuple a b) (match (St.snap)
+                                 ((tuple c d) (+ (* 1000 a) (+ (* 100 b) (+ (* 10 c) d)))))))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 4060 Int64))
+  (call   main (: 0 Int64)) (output (: 20 Int64)))

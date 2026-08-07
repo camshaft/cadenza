@@ -251,7 +251,11 @@ fn write_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
 /// Decode bytes to `Arenas`, verifying the header and consuming the whole input. Total: returns
 /// `None` on header mismatch, malformed structure, out-of-range id, or trailing bytes.
 pub fn decode(bytes: &[u8]) -> Option<Arenas> {
-    // Header.
+    // Header. Bytes that are not the canonical encoding of any value — a wrong header here, or a
+    // malformed structure / out-of-range id below — are REFUSED (`None`) rather than misread as a value
+    // they do not encode.
+    //= spec/contracts/deterministic-value-form.md#decoding-refuses-bytes-that-are-not-a-value-of-the-expected-type
+    //# Decoding a byte sequence that is not the canonical byte encoding of any value of the expected type MUST be refused rather than yield a value, so that a decode never misinterprets bytes as a value they do not encode.
     let header = bytes.get(..8)?;
     if header != SCHEMA_HEADER {
         return None;

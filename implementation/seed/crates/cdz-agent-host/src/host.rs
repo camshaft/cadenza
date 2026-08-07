@@ -1440,7 +1440,10 @@ mod tests {
         let original = now_host();
         let original_id = original.genesis_hash();
         let log = original.session().log().to_vec();
-        assert!(!log.is_empty(), "a genesis'd session has at least its seq-0 event");
+        assert!(
+            !log.is_empty(),
+            "a genesis'd session has at least its seq-0 event"
+        );
 
         let recovered = Recovered {
             events: log,

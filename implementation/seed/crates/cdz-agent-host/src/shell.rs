@@ -63,22 +63,17 @@ impl Executor for ShellExecutor {
                 req.content_type.family
             ));
         }
-        // SECURITY (authz-bypass guard, reviewer HIGH): the kernel's shell-pipeline fan-out (#2596) authorizes
-        // a `(shell-pipeline …)` payload STAGE-BY-STAGE and does NOT gate `req.target` for such an effect. This
-        // executor does not yet EXECUTE pipelines (the piped-stdio multi-stage runner + its outcome codec are a
-        // following slice), and it runs `req.target` directly. If a pipeline-payload effect reached here we
-        // would run the UN-GATED `target` — a privilege escalation (a session with one allowed stage program
-        // could smuggle an arbitrary denied command in `target`). So REJECT any effect whose payload decodes as
-        // a `(shell-pipeline …)`, using the SAME discriminant the kernel fan-out keys on (payload decodes as a
-        // pipeline), until the pipeline executor lands and runs the authorized stages instead of `target`.
-        // PERMANENT: a pipeline payload isn't a transient fault, and re-driving must not run the un-gated target.
+        // PIPELINE PATH (shell-pipeline fan-out): if the payload decodes as a `(shell-pipeline …)`, run the
+        // authorized STAGES — NOT `req.target`. The kernel fan-out (#2596) authorized each stage's program
+        // (the SEC-F1 unit) before dispatch and does NOT gate `req.target` for a pipeline, so the executor
+        // MUST key on the SAME "decodes as a pipeline" discriminant + run the stages — running `req.target`
+        // here would exec an UN-GATED command (the authz-bypass the #2605 stopgap refused). This SUPERSEDES
+        // that refuse-stopgap: now that the outcome codec (#2602) landed, run the decoded pipeline instead of
+        // rejecting it. (The kernel #2606 gate — target AND stages — is belt-and-suspenders while we still
+        // carry a `target`; a co-landed relax with v-agent-harness makes the pipeline `target` vestigial.)
         if let Some(Payload::Inline(bytes)) = &req.payload {
-            if cdz_kernel::event_ast::decode_shell_pipeline(bytes).is_ok() {
-                return EffectOutcome::err(
-                    "ShellExecutor: a shell-pipeline payload is not yet executable by this host \
-                     (the per-stage pipeline runner is a following slice); refusing so the un-gated \
-                     target is never run",
-                );
+            if let Ok(pipeline) = cdz_kernel::event_ast::decode_shell_pipeline(bytes) {
+                return run_pipeline(&pipeline);
             }
         }
         // Split the target into program + args on whitespace and exec DIRECTLY — no shell, so metacharacters
@@ -114,6 +109,154 @@ impl Executor for ShellExecutor {
     }
 }
 
+/// Run a `(shell-pipeline …)`: spawn each stage DIRECTLY (`Command::new(program).args(...)` — no `sh -c`,
+/// CWE-78-safe like the single-command path), wiring each stage's stdout into the next stage's stdin, and
+/// fold the outcome per Option A (a ran-but-nonzero exit is DATA in an `Ok`-frame, not a kernel `Err`). Every
+/// stage's program was already authorized by the kernel's per-stage fan-out (SEC-F1) before dispatch, so this
+/// is pure spawn+wire mechanism — no policy. Returns:
+/// - all stages exit 0 → `Ok(Some(Inline(encode_shell_pipeline_outcome(Ok{final stdout}))))`,
+/// - the FIRST stage with a nonzero exit → `Ok(Some(Inline(…Failed{stage_index, program, exit_code, stderr})))`,
+///   pipefail deny-all with NO partial stdout (the reducer folds the failure + decides retry as policy),
+/// - a genuine host fault (couldn't spawn a program / a pipe-wiring OS error — nothing produced a result) →
+///   `EffectOutcome::err` (PERMANENT; a missing program / fork error won't succeed on a blind retry).
+///
+/// An EMPTY pipeline (no stages) is a host `Err` — the kernel rejects an empty `(shell-pipeline)` at
+/// authz/dispatch, but guard here too so a stage-less pipeline is a clean error, never an index panic.
+fn run_pipeline(pipeline: &cdz_kernel::event_ast::ShellPipeline) -> EffectOutcome {
+    use cdz_kernel::event_ast::{encode_shell_pipeline_outcome, ShellPipelineOutcome};
+    use std::io::{self, Read};
+    use std::process::{Command, Stdio};
+
+    if pipeline.stages.is_empty() {
+        return EffectOutcome::err("shell-pipeline has no stages");
+    }
+
+    // Spawn all stages, wiring each stage's stdout into the next stage's stdin. The first stage inherits no
+    // stdin (null); every stage's stdout + stderr are piped. `prev_stdout` carries the just-spawned stage's
+    // stdout handle to the next iteration's stdin.
+    let mut children = Vec::with_capacity(pipeline.stages.len());
+    let mut prev_stdout: Option<std::process::ChildStdout> = None;
+    let last_index = pipeline.stages.len() - 1;
+    // The FINAL stage's stdout (the pipeline output) is drained on a DEDICATED THREAD, concurrently with
+    // waiting all stages — see the deadlock note below. Held here so we can join it after the waits.
+    let mut final_stdout_reader: Option<std::thread::JoinHandle<io::Result<Vec<u8>>>> = None;
+    // Each stage's stderr is ALSO drained concurrently (threads), for the same reason: a stage that emits
+    // >~64KB stderr would block on its full stderr pipe before we `wait` it, deadlocking the pipeline. We
+    // collect all stderr readers + join them, so `Failed{stderr}` reports the failing stage's full stderr.
+    let mut stderr_readers: Vec<Option<std::thread::JoinHandle<io::Result<Vec<u8>>>>> = Vec::new();
+    for (index, stage) in pipeline.stages.iter().enumerate() {
+        let stdin = match prev_stdout.take() {
+            Some(out) => Stdio::from(out),
+            None => Stdio::null(),
+        };
+        match Command::new(&stage.program)
+            .args(&stage.args)
+            .stdin(stdin)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+        {
+            Ok(mut c) => {
+                // Drain this stage's STDERR on a thread (concurrent with the pipeline running) so a large
+                // stderr can't fill its pipe + block the stage + deadlock the pipeline.
+                let stderr_handle = c.stderr.take().map(|mut e| {
+                    std::thread::spawn(move || {
+                        let mut buf = Vec::new();
+                        e.read_to_end(&mut buf).map(|_| buf)
+                    })
+                });
+                stderr_readers.push(stderr_handle);
+                if index != last_index {
+                    // Feed a NON-final stage's stdout into the NEXT stage's stdin.
+                    prev_stdout = c.stdout.take();
+                } else {
+                    // 🔴 DEADLOCK FIX (reviewer MED-HIGH DoS): the FINAL stage's stdout must be drained
+                    // CONCURRENTLY with the waits, NOT read after them. If we waited stage 0..n in order and
+                    // only read the final stdout at its (last) wait, a final stage emitting > one pipe buffer
+                    // (~64KB) blocks on its full stdout pipe, stops reading stdin, upstream backs up on ITS
+                    // stdout pipe, and the earlier `wait` on an upstream stage blocks FOREVER. So take the
+                    // final stdout NOW + read it to EOF on a dedicated thread while the waits proceed.
+                    final_stdout_reader = c.stdout.take().map(|mut o| {
+                        std::thread::spawn(move || {
+                            let mut buf = Vec::new();
+                            o.read_to_end(&mut buf).map(|_| buf)
+                        })
+                    });
+                }
+                children.push(c);
+            }
+            // A spawn failure = a genuine host fault (program missing / fork error) → PERMANENT Err; nothing
+            // produced a pipeline result. Prior spawned stages are dropped (their pipes close, they exit).
+            Err(e) => {
+                return EffectOutcome::err(format!(
+                    "shell-pipeline: spawn of stage program {:?} failed: {e}",
+                    stage.program
+                ));
+            }
+        }
+    }
+
+    // Wait all stages for their EXIT STATUS (stdout/stderr are already being drained on threads above, so a
+    // `wait` can't deadlock on a full pipe). Record the FIRST nonzero exit (deny-all pipefail). We still wait
+    // ALL stages (even after a failure) so no child is left zombied.
+    let mut first_failure: Option<(usize, i32)> = None;
+    for (index, child) in children.iter_mut().enumerate() {
+        match child.wait() {
+            Ok(status) => {
+                if !status.success() && first_failure.is_none() {
+                    first_failure = Some((index, status.code().unwrap_or(-1)));
+                }
+            }
+            Err(e) => {
+                return EffectOutcome::err(format!(
+                    "shell-pipeline: waiting on stage {index} failed: {e}"
+                ));
+            }
+        }
+    }
+
+    // Join the stderr drain threads (indexed by stage) + the final-stdout drain thread. A thread panic or an
+    // IO error draining a pipe is a host fault → Err.
+    let join_reader =
+        |h: Option<std::thread::JoinHandle<io::Result<Vec<u8>>>>| -> io::Result<Vec<u8>> {
+            match h {
+                Some(handle) => handle.join().map_err(|_| {
+                    io::Error::other("shell-pipeline: a pipe-drain thread panicked")
+                })?,
+                None => Ok(Vec::new()),
+            }
+        };
+
+    // First nonzero exit → Failed (deny-all pipefail, no partial stdout). Report that stage's stderr.
+    if let Some((index, exit_code)) = first_failure {
+        let stderr = match join_reader(stderr_readers.into_iter().nth(index).flatten()) {
+            Ok(b) => b,
+            Err(e) => return EffectOutcome::err(format!("shell-pipeline: {e}")),
+        };
+        let outcome = ShellPipelineOutcome::Failed {
+            stage_index: index as u64,
+            program: pipeline.stages[index].program.clone(),
+            exit_code: i64::from(exit_code),
+            stderr,
+        };
+        return EffectOutcome::Ok(Some(Payload::Inline(
+            encode_shell_pipeline_outcome(&outcome).into(),
+        )));
+    }
+
+    // All stages exited 0 → Ok with the final stage's fully-drained stdout.
+    let final_stdout = match join_reader(final_stdout_reader) {
+        Ok(b) => b,
+        Err(e) => return EffectOutcome::err(format!("shell-pipeline: {e}")),
+    };
+    let outcome = ShellPipelineOutcome::Ok {
+        stdout: final_stdout,
+    };
+    EffectOutcome::Ok(Some(Payload::Inline(
+        encode_shell_pipeline_outcome(&outcome).into(),
+    )))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -130,41 +273,156 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_shell_pipeline_payload_is_refused_so_the_ungated_target_never_runs() {
-        // SECURITY regression (reviewer HIGH): the kernel fan-out (#2596) gates a shell-pipeline payload's
-        // STAGES, not `req.target`. Until this host runs the authorized stages, a pipeline-payload effect must
-        // be REFUSED — otherwise we'd exec the un-gated `target` (a priv-esc: smuggle a denied command in
-        // `target` behind an allowed one-stage pipeline). Here `target` is a would-be-dangerous command; the
-        // payload decodes as a one-stage pipeline; the executor must reject, NOT run the target.
-        use cdz_kernel::event_ast::{encode_shell_pipeline, ShellPipeline, ShellStage};
-        let pipeline = ShellPipeline {
-            stages: vec![ShellStage {
-                program: "echo".into(),
-                args: vec!["allowed-stage".into()],
-            }],
+    async fn a_two_stage_pipeline_wires_stdout_to_stdin_and_returns_the_final_stdout() {
+        // `printf 'a\nb\nc\n' | grep b` — stage 0 stdout wired into stage 1 stdin; the Ok outcome carries the
+        // FINAL stage's stdout. Proves the runner spawns the authorized STAGES + wires the pipe, NOT req.target
+        // (which is set to a would-be-dangerous command here to prove it is not run). SECURITY: this is the
+        // runner that SUPERSEDES the #2605 refuse-stopgap — it runs the Cedar-authorized stages, never target.
+        use cdz_kernel::event_ast::{
+            decode_shell_pipeline_outcome, encode_shell_pipeline, ShellPipeline,
+            ShellPipelineOutcome, ShellStage,
         };
-        // A sentinel target that WOULD write a file if it ran — proves refusal, not just a non-panic.
-        let tmp = std::env::temp_dir().join("cdz_shell_pipeline_bypass_sentinel_should_not_exist");
+        let pipeline = ShellPipeline {
+            stages: vec![
+                ShellStage {
+                    program: "printf".into(),
+                    args: vec!["a\nb\nc\n".into()],
+                },
+                ShellStage {
+                    program: "grep".into(),
+                    args: vec!["b".into()],
+                },
+            ],
+        };
+        // A sentinel target that WOULD write a file if req.target were run — proves the runner runs the STAGES.
+        let tmp = std::env::temp_dir().join("cdz_shell_pipeline_runner_sentinel_should_not_exist");
         let _ = std::fs::remove_file(&tmp);
-        let target = format!("touch {}", tmp.display());
         let req = EffectRequest::new(
             EffectKind::Shell,
-            target,
+            format!("touch {}", tmp.display()),
             Some(Payload::Inline(encode_shell_pipeline(&pipeline).into())),
             Timeliness::Interactive,
         );
         let out = ShellExecutor::new().perform(&req, Hash::of(b"k")).await;
         match out {
-            EffectOutcome::Err {
-                retryability: Retryability::Permanent,
-                ..
-            } => {}
-            other => panic!("a shell-pipeline payload must be refused PERMANENT, got {other:?}"),
+            EffectOutcome::Ok(Some(Payload::Inline(bytes))) => {
+                match decode_shell_pipeline_outcome(&bytes).expect("decodes as a pipeline outcome")
+                {
+                    ShellPipelineOutcome::Ok { stdout } => assert_eq!(
+                        String::from_utf8_lossy(&stdout).trim(),
+                        "b",
+                        "the pipeline's final stdout is grep's match, not req.target's output"
+                    ),
+                    other => panic!("expected Ok pipeline outcome, got {other:?}"),
+                }
+            }
+            other => panic!("expected an Ok pipeline-outcome frame, got {other:?}"),
         }
         assert!(
             !tmp.exists(),
-            "the un-gated target must NOT have run (the sentinel file must not exist)"
+            "req.target must NOT have run — the runner runs the authorized stages, not the bare target"
         );
+    }
+
+    #[tokio::test]
+    async fn a_large_final_stdout_does_not_deadlock_the_pipeline() {
+        // REGRESSION (reviewer MED-HIGH DoS/hang): a >=2-stage pipeline whose FINAL stage emits > one pipe
+        // buffer (~64KB) used to deadlock — the forward-order waits didn't drain the final stdout until last,
+        // so the full final-stdout pipe backed up the whole chain. Fix drains the final stdout on a thread
+        // concurrently. Here: stage0 `yes` (unbounded) | stage1 `head -c 262144` (emits 256KB then closes) —
+        // 256KB >> 64KB, so a deadlocked runner would hang; a correct one returns the 256KB promptly.
+        use cdz_kernel::event_ast::{
+            decode_shell_pipeline_outcome, encode_shell_pipeline, ShellPipeline,
+            ShellPipelineOutcome, ShellStage,
+        };
+        let pipeline = ShellPipeline {
+            stages: vec![
+                ShellStage {
+                    program: "yes".into(),
+                    args: vec!["ABCDEFGH".into()],
+                },
+                ShellStage {
+                    program: "head".into(),
+                    args: vec!["-c".into(), "262144".into()],
+                },
+            ],
+        };
+        let req = EffectRequest::new(
+            EffectKind::Shell,
+            String::new(),
+            Some(Payload::Inline(encode_shell_pipeline(&pipeline).into())),
+            Timeliness::Interactive,
+        );
+        // A generous timeout: a correct runner finishes in ms; a deadlocked one never returns (the bug).
+        let out = tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            ShellExecutor::new().perform(&req, Hash::of(b"k")),
+        )
+        .await
+        .expect("pipeline must not deadlock on a large final stdout (>64KB)");
+        match out {
+            EffectOutcome::Ok(Some(Payload::Inline(bytes))) => {
+                match decode_shell_pipeline_outcome(&bytes).expect("decodes") {
+                    ShellPipelineOutcome::Ok { stdout } => assert_eq!(
+                        stdout.len(),
+                        262144,
+                        "the full 256KB final stdout is captured, not truncated/hung"
+                    ),
+                    // `yes | head` can surface as `yes` exiting nonzero (SIGPIPE) on some platforms — that's a
+                    // Failed outcome, still NOT a hang; the point of this test is no-deadlock, which the
+                    // timeout above already proves. Accept either a clean Ok(256KB) or a Failed (no hang).
+                    ShellPipelineOutcome::Failed { .. } => {}
+                }
+            }
+            other => panic!("expected a pipeline-outcome frame (Ok or Failed), got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_pipeline_stage_that_exits_nonzero_is_a_failed_outcome_deny_all_no_partial_stdout() {
+        // `printf x | false` — stage 1 (`false`) exits nonzero → Failed{stage_index:1,...}, Option-A (a
+        // ran-but-nonzero exit is Ok-frame DATA, not a kernel Err), pipefail deny-all (no partial stdout).
+        use cdz_kernel::event_ast::{
+            decode_shell_pipeline_outcome, encode_shell_pipeline, ShellPipeline,
+            ShellPipelineOutcome, ShellStage,
+        };
+        let pipeline = ShellPipeline {
+            stages: vec![
+                ShellStage {
+                    program: "printf".into(),
+                    args: vec!["x".into()],
+                },
+                ShellStage {
+                    program: "false".into(),
+                    args: vec![],
+                },
+            ],
+        };
+        let req = EffectRequest::new(
+            EffectKind::Shell,
+            String::new(),
+            Some(Payload::Inline(encode_shell_pipeline(&pipeline).into())),
+            Timeliness::Interactive,
+        );
+        let out = ShellExecutor::new().perform(&req, Hash::of(b"k")).await;
+        match out {
+            EffectOutcome::Ok(Some(Payload::Inline(bytes))) => {
+                match decode_shell_pipeline_outcome(&bytes).expect("decodes") {
+                    ShellPipelineOutcome::Failed {
+                        stage_index,
+                        program,
+                        exit_code,
+                        ..
+                    } => {
+                        assert_eq!(stage_index, 1, "the second stage (index 1) failed");
+                        assert_eq!(program, "false");
+                        assert_ne!(exit_code, 0, "a nonzero exit");
+                    }
+                    other => panic!("expected a Failed pipeline outcome, got {other:?}"),
+                }
+            }
+            other => panic!("expected an Ok(Failed-frame), got {other:?}"),
+        }
     }
 
     #[tokio::test]

@@ -192,6 +192,168 @@ fn build_ctor(
     })
 }
 
+/// Marshal a wasmtime component [`Type`] into a cadenza tagged-AST TYPE DESCRIPTOR — the wire a
+/// component-signature query carries for each exported func's param/result types (v-agent-harness's
+/// `control/signature` effect + descriptor codec, cadenza-docs' resolved-type projection dual). Unlike
+/// [`val_to_ast`] (which reifies a VALUE), this reifies the TYPE itself: a reducer discovering a target
+/// component's callable surface gets each param/result as a structured, Cadenza-decodable type-AST it
+/// can inspect/route on — NOT an opaque byte blob. The RESULT bytes are the ONE shared canonical codec
+/// ([`cadenza_ast::codec`]), so a reducer decodes the descriptor with the same codec everything else uses.
+///
+/// The type-descriptor form vocabulary (chosen to compose with — but stay distinct from — the VALUE
+/// vocabulary of [`build_val`]; a type names a SHAPE, it selects no case):
+/// - primitives → a NAME-head marker, no children: `(bool)` `(u8)`…`(s64)` `(char)` `(string)`
+///   `(f32)`/`(f64)` (float TYPES DESCRIBE fine even though float VALUES don't yet marshal — §float);
+/// - `list<T>` → `("list" <T-descriptor>)` (string head, matching the value side's `list` head);
+/// - `record{f: T…}` → `("record" (f <T-descriptor>)…)` (string head; each field a `(name type)` 2-list);
+/// - `tuple<T…>` → `("tuple" <T-descriptor>…)` (string head);
+/// - `option<T>` → `("option" <T-descriptor>)` (string head — a TYPE, so NOT the value side's name-head
+///   `Some`/`None` ctor: there is no case selected, only the option-of-T shape);
+/// - `result<T,E>` → `("result" <T-or-unit> <E-or-unit>)` where a unit arm is the empty form `("unit")`;
+/// - `variant{Case(T)?…}` → `("variant" (Case <T-descriptor>?)…)` (string head; each case a
+///   `(CaseName type?)` — payload-less cases are the bare `(CaseName)`);
+/// - `enum{Case…}` → `("enum" Case…)` (string head, one `Name` per case);
+/// - `flags{A…}` → `("flags" A…)` (string head, one `Name` per declared flag).
+///
+/// FLOAT (§float): float VALUES are [`MarshalError::Unmarshallable`] pending the exact-decimal slice, but
+/// a float TYPE marshals fine — a signature query over a float-carrying func succeeds (the reducer learns
+/// the shape); only INVOKING such a func hits the deferred value gap, orthogonal to describing it.
+///
+/// UNSUPPORTED: a resource/future/stream/error-context type has no value-crossing form —
+/// [`MarshalError::UnsupportedType`], the type-side dual of [`val_to_ast`]'s `Unmarshallable`.
+pub fn type_to_ast(ty: &Type) -> Result<Vec<u8>, MarshalError> {
+    let mut b = Builder::new();
+    let root = build_type(&mut b, ty)?;
+    Ok(codec::encode(&b.finish(root)))
+}
+
+/// Build the type-descriptor for `ty` into arena `b`, returning the root node id. Recursive: a compound
+/// type's sub-types (via wasmtime's `Type` reflection accessors — `lt.ty()`, `rt.fields()`, `tt.types()`,
+/// `ot.ty()`, `rt.ok()`/`err()`, `vt.cases()`, `et.names()`, `ft.names()`) are built first, then wrapped.
+/// Mirrors [`build_from_ast`]'s `Type` traversal exactly (same variants, same accessors), but EMITS a
+/// descriptor node instead of READING a value — so the two can never disagree on which types exist.
+fn build_type(b: &mut Builder, ty: &Type) -> Result<StructId, MarshalError> {
+    // A primitive type = a lone name-head marker `(kind)` (a 1-element list whose head names the kind).
+    let prim = |b: &mut Builder, kind: &str| {
+        let head = b.name(kind);
+        b.list(vec![head])
+    };
+    Ok(match ty {
+        Type::Bool => prim(b, "bool"),
+        Type::U8 => prim(b, "u8"),
+        Type::U16 => prim(b, "u16"),
+        Type::U32 => prim(b, "u32"),
+        Type::U64 => prim(b, "u64"),
+        Type::S8 => prim(b, "s8"),
+        Type::S16 => prim(b, "s16"),
+        Type::S32 => prim(b, "s32"),
+        Type::S64 => prim(b, "s64"),
+        Type::Char => prim(b, "char"),
+        Type::String => prim(b, "string"),
+        // Float TYPES describe fine (a sig query learns the shape); only float VALUES are deferred.
+        Type::Float32 => prim(b, "f32"),
+        Type::Float64 => prim(b, "f64"),
+        // list<T> → ("list" <T>): string head, one child = the element TYPE descriptor.
+        Type::List(lt) => {
+            let head = b.atom_leaf(Leaf::Str("list".into()));
+            let elem = build_type(b, &lt.ty())?;
+            b.list(vec![head, elem])
+        }
+        // record → ("record" (fieldname <T>)…): string head, each field a (name type) 2-list.
+        Type::Record(rt) => {
+            let mut children = vec![b.atom_leaf(Leaf::Str("record".into()))];
+            for field in rt.fields() {
+                let name_node = b.name(field.name);
+                let ty_node = build_type(b, &field.ty)?;
+                let entry = b.list(vec![name_node, ty_node]);
+                children.push(entry);
+            }
+            b.list(children)
+        }
+        // tuple → ("tuple" <T>…): string head, one type descriptor per element, positional.
+        Type::Tuple(tt) => {
+            let mut children = vec![b.atom_leaf(Leaf::Str("tuple".into()))];
+            for t in tt.types() {
+                let node = build_type(b, &t)?;
+                children.push(node);
+            }
+            b.list(children)
+        }
+        // option<T> → ("option" <T>): string head (a TYPE, not the value side's Some/None ctor).
+        Type::Option(ot) => {
+            let head = b.atom_leaf(Leaf::Str("option".into()));
+            let inner = build_type(b, &ot.ty())?;
+            b.list(vec![head, inner])
+        }
+        // result<T,E> → ("result" <T-or-unit> <E-or-unit>): a unit (payload-less) arm is ("unit").
+        Type::Result(rt) => {
+            let head = b.atom_leaf(Leaf::Str("result".into()));
+            let ok = build_opt_type(b, rt.ok())?;
+            let err = build_opt_type(b, rt.err())?;
+            b.list(vec![head, ok, err])
+        }
+        // variant → ("variant" (Case <T>?)…): string head; each case a (CaseName type?) — payload-less
+        // cases are the bare (CaseName).
+        Type::Variant(vt) => {
+            let mut children = vec![b.atom_leaf(Leaf::Str("variant".into()))];
+            for case in vt.cases() {
+                let case_head = b.name(case.name);
+                let entry = match case.ty {
+                    Some(t) => {
+                        let ty_node = build_type(b, &t)?;
+                        b.list(vec![case_head, ty_node])
+                    }
+                    None => b.list(vec![case_head]),
+                };
+                children.push(entry);
+            }
+            b.list(children)
+        }
+        // enum → ("enum" Case…): string head, one Name per case (never a payload).
+        Type::Enum(et) => {
+            let mut children = vec![b.atom_leaf(Leaf::Str("enum".into()))];
+            for name in et.names() {
+                let node = b.name(name);
+                children.push(node);
+            }
+            b.list(children)
+        }
+        // flags → ("flags" A…): string head, one Name per declared flag.
+        Type::Flags(ft) => {
+            let mut children = vec![b.atom_leaf(Leaf::Str("flags".into()))];
+            for name in ft.names() {
+                let node = b.name(name);
+                children.push(node);
+            }
+            b.list(children)
+        }
+        // A resource/future/stream/error-context type has no value-crossing shape — the type-side dual of
+        // val_to_ast's Unmarshallable. `Type` is #[non_exhaustive], so a catch-all classifies generically.
+        Type::Own(_) | Type::Borrow(_) => {
+            return Err(MarshalError::UnsupportedType {
+                wit_type: "resource handle".into(),
+            })
+        }
+        _ => {
+            return Err(MarshalError::UnsupportedType {
+                wit_type: "unsupported type (future/stream/error-context/unknown)".into(),
+            })
+        }
+    })
+}
+
+/// Build an OPTIONAL payload TYPE for a `result` arm: `Some(t)` → `t`'s descriptor, `None` (a unit arm) →
+/// the empty form `("unit")`. Keeps the `result` descriptor total (both arms always present, unit-marked).
+fn build_opt_type(b: &mut Builder, ty: Option<Type>) -> Result<StructId, MarshalError> {
+    match ty {
+        Some(t) => build_type(b, &t),
+        None => {
+            let head = b.name("unit");
+            Ok(b.list(vec![head]))
+        }
+    }
+}
+
 /// The DUAL of [`val_to_ast`]: marshal cadenza tagged-AST wire `bytes` into a wasmtime component [`Val`]
 /// of the target WIT `ty` — the ARGS-IN half of the generic invoke seam (seq-107). A caller supplies an
 /// AST-encoded arg value + the WIT param type the component expects; this builds the `Val` to pass. The
@@ -1185,6 +1347,195 @@ mod tests {
         assert_eq!(
             round_trip(list_of_list.clone(), "(list (list string))"),
             list_of_list
+        );
+    }
+
+    // ---- type_to_ast: the wit-TYPE → type-descriptor-AST lowering (signature-query / v-ah-host P2) ----
+
+    // Reflect a real wasmtime `Type` from a WAT type declaration and lower it to a decoded descriptor arena.
+    fn type_ast(ty_decl: &str) -> Arenas {
+        let ty = param_type(&probe_component(ty_decl));
+        decode(&type_to_ast(&ty).expect("type_to_ast"))
+    }
+    // The head-name of a list node (a String-head form like ("record" …)) or a name-head marker
+    // (like (u8)); returns the head's text either way for structural assertions.
+    fn head_str(a: &Arenas, id: StructId) -> String {
+        let Struct::List(kids) = a.get(id) else {
+            panic!("expected a list node at {id:?}");
+        };
+        match a.get(kids[0]) {
+            Struct::Atom(lid) => match a.leaf(*lid) {
+                Leaf::Str(s) => s.clone(),
+                Leaf::Name(n) => n.clone(),
+                other => panic!("unexpected head leaf {other:?}"),
+            },
+            Struct::List(_) => panic!("head is not an atom"),
+        }
+    }
+    fn kids(a: &Arenas, id: StructId) -> Vec<StructId> {
+        let Struct::List(k) = a.get(id) else {
+            panic!("expected a list node");
+        };
+        k.clone()
+    }
+
+    #[test]
+    fn type_to_ast_primitives_are_name_head_markers() {
+        // Each primitive TYPE lowers to a lone name-head marker `(kind)` — a 1-element list, head = kind.
+        for (decl, kind) in [
+            ("bool", "bool"),
+            ("u8", "u8"),
+            ("u16", "u16"),
+            ("u32", "u32"),
+            ("u64", "u64"),
+            ("s8", "s8"),
+            ("s16", "s16"),
+            ("s32", "s32"),
+            ("s64", "s64"),
+            ("char", "char"),
+            ("string", "string"),
+        ] {
+            let a = type_ast(decl);
+            assert_eq!(head_str(&a, a.root), kind, "primitive {decl} head");
+            assert_eq!(
+                kids(&a, a.root).len(),
+                1,
+                "{decl} is a lone marker (head only)"
+            );
+        }
+    }
+
+    #[test]
+    fn type_to_ast_float_types_describe_even_though_float_values_do_not_marshal() {
+        // A float TYPE describes fine (a sig query learns the shape) though a float VALUE is Unmarshallable.
+        assert_eq!(head_str(&type_ast("f32"), type_ast("f32").root), "f32");
+        let a = type_ast("f64");
+        assert_eq!(head_str(&a, a.root), "f64");
+    }
+
+    #[test]
+    fn type_to_ast_list_is_string_head_with_element_type() {
+        // ("list" <elem-type>): head "list", one child = the element TYPE descriptor (here (u32)).
+        let a = type_ast("(list u32)");
+        assert_eq!(head_str(&a, a.root), "list");
+        let ks = kids(&a, a.root);
+        assert_eq!(ks.len(), 2, "list = head + one element-type");
+        assert_eq!(head_str(&a, ks[1]), "u32", "element type descriptor");
+        // Nested: ("list" ("list" (string))).
+        let n = type_ast("(list (list string))");
+        let nk = kids(&n, n.root);
+        assert_eq!(head_str(&n, n.root), "list");
+        assert_eq!(head_str(&n, nk[1]), "list");
+        assert_eq!(head_str(&n, kids(&n, nk[1])[1]), "string");
+    }
+
+    #[test]
+    fn type_to_ast_record_is_string_head_with_name_type_fields() {
+        // ("record" (fieldname <type>)…): each field a (name type) 2-list, field type recursed.
+        let a = type_ast(r#"(record (field "n" u32) (field "s" string))"#);
+        assert_eq!(head_str(&a, a.root), "record");
+        let ks = kids(&a, a.root);
+        assert_eq!(ks.len(), 3, "head + 2 fields");
+        // field entries are (name <type>) — assert the names + recursed field-type heads.
+        let f0 = kids(&a, ks[1]);
+        assert_eq!(a.as_name(f0[0]), Some("n"));
+        assert_eq!(head_str(&a, f0[1]), "u32");
+        let f1 = kids(&a, ks[2]);
+        assert_eq!(a.as_name(f1[0]), Some("s"));
+        assert_eq!(head_str(&a, f1[1]), "string");
+    }
+
+    #[test]
+    fn type_to_ast_tuple_is_string_head_positional_types() {
+        let a = type_ast("(tuple bool string)");
+        assert_eq!(head_str(&a, a.root), "tuple");
+        let ks = kids(&a, a.root);
+        assert_eq!(ks.len(), 3, "head + 2 element types");
+        assert_eq!(head_str(&a, ks[1]), "bool");
+        assert_eq!(head_str(&a, ks[2]), "string");
+    }
+
+    #[test]
+    fn type_to_ast_option_is_string_head_not_a_value_ctor() {
+        // A TYPE names the option-of-T shape — ("option" <T>), NOT the value side's name-head Some/None.
+        let a = type_ast("(option u32)");
+        assert_eq!(head_str(&a, a.root), "option");
+        let ks = kids(&a, a.root);
+        assert_eq!(ks.len(), 2);
+        assert_eq!(head_str(&a, ks[1]), "u32");
+    }
+
+    #[test]
+    fn type_to_ast_result_carries_both_arms_with_unit_marker() {
+        // ("result" <ok-or-unit> <err-or-unit>): a payload-less arm is ("unit").
+        let both = type_ast("(result u32 (error string))");
+        // wasmtime spells result<T,E> from `(result <ok> (error <err>))` in WAT.
+        assert_eq!(head_str(&both, both.root), "result");
+        let bk = kids(&both, both.root);
+        assert_eq!(bk.len(), 3, "head + ok + err");
+        assert_eq!(head_str(&both, bk[1]), "u32");
+        assert_eq!(head_str(&both, bk[2]), "string");
+        // result with a unit ok arm → ("result" ("unit") <err>).
+        let unit_ok = type_ast("(result (error string))");
+        let uk = kids(&unit_ok, unit_ok.root);
+        assert_eq!(
+            head_str(&unit_ok, uk[1]),
+            "unit",
+            "payload-less ok arm is (unit)"
+        );
+        assert_eq!(head_str(&unit_ok, uk[2]), "string");
+    }
+
+    #[test]
+    fn type_to_ast_variant_is_string_head_with_case_type_entries() {
+        // ("variant" (Case <type>?)…): a payload case is (Case type), a payload-less case is (Case).
+        let a = type_ast(r#"(variant (case "num" u32) (case "nothing"))"#);
+        assert_eq!(head_str(&a, a.root), "variant");
+        let ks = kids(&a, a.root);
+        assert_eq!(ks.len(), 3, "head + 2 cases");
+        let c0 = kids(&a, ks[1]);
+        assert_eq!(a.as_name(c0[0]), Some("num"));
+        assert_eq!(c0.len(), 2, "payload case is (Case type)");
+        assert_eq!(head_str(&a, c0[1]), "u32");
+        let c1 = kids(&a, ks[2]);
+        assert_eq!(a.as_name(c1[0]), Some("nothing"));
+        assert_eq!(c1.len(), 1, "payload-less case is the bare (Case)");
+    }
+
+    #[test]
+    fn type_to_ast_enum_is_string_head_of_case_names() {
+        let a = type_ast(r#"(enum "red" "green" "blue")"#);
+        assert_eq!(head_str(&a, a.root), "enum");
+        let ks = kids(&a, a.root);
+        assert_eq!(ks.len(), 4, "head + 3 cases");
+        assert_eq!(a.as_name(ks[1]), Some("red"));
+        assert_eq!(a.as_name(ks[2]), Some("green"));
+        assert_eq!(a.as_name(ks[3]), Some("blue"));
+    }
+
+    #[test]
+    fn type_to_ast_flags_is_string_head_of_flag_names() {
+        let a = type_ast(r#"(flags "a" "b")"#);
+        assert_eq!(head_str(&a, a.root), "flags");
+        let ks = kids(&a, a.root);
+        assert_eq!(ks.len(), 3, "head + 2 flags");
+        assert_eq!(a.as_name(ks[1]), Some("a"));
+        assert_eq!(a.as_name(ks[2]), Some("b"));
+    }
+
+    #[test]
+    fn type_to_ast_descriptor_round_trips_through_the_canonical_codec() {
+        // The descriptor IS ordinary cdzast: encode → decode is structurally identical + re-encode is
+        // byte-identical (the frozen bijection), so a reducer decodes it with the same codec as everything.
+        let ty = param_type(&probe_component(
+            r#"(record (field "n" u32) (field "s" (list string)))"#,
+        ));
+        let bytes = type_to_ast(&ty).expect("type_to_ast");
+        let decoded = codec::decode(&bytes).expect("descriptor decodes");
+        assert_eq!(
+            codec::encode(&decoded),
+            bytes,
+            "descriptor re-encodes byte-identical"
         );
     }
 }
