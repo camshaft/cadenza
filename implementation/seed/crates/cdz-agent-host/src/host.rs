@@ -1863,6 +1863,87 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn terminate_evicts_the_dead_session_from_ALL_its_groups_i5_multi_group() {
+        // §session-directory I5 edge (the all-groups loop in retract_dead_member_from_groups): a session that
+        // belongs to MULTIPLE groups is evicted from EVERY one on death, while each group's other member
+        // survives. The single-group test above doesn't exercise the loop over `to_group_ops`' distinct names
+        // nor the per-group observed-remove. Here the victim is in 3 groups (one shared with a survivor, one
+        // solo, one with a different survivor) → all 3 retracts fire, each precise.
+        use cdz_kernel::name_store::{MemberOp, NameStore};
+        const LOBBY: &str = "session/room/lobby";
+        const OPS: &str = "session/room/ops";
+        const SOLO: &str = "session/room/solo";
+
+        let victim_hash = Hash::of(b"multi-victim-genesis");
+        let survivor_a = Hash::of(b"survivor-a-genesis");
+        let survivor_b = Hash::of(b"survivor-b-genesis");
+        let origin = Hash::of(b"adder-origin");
+
+        // Victim in all three; a different co-member in lobby + ops; solo has only the victim.
+        let mut canonical = NameStore::new();
+        canonical
+            .add_op(LOBBY, MemberOp::add(victim_hash, origin, 0))
+            .unwrap();
+        canonical
+            .add_op(LOBBY, MemberOp::add(survivor_a, origin, 1))
+            .unwrap();
+        canonical
+            .add_op(OPS, MemberOp::add(victim_hash, origin, 2))
+            .unwrap();
+        canonical
+            .add_op(OPS, MemberOp::add(survivor_b, origin, 3))
+            .unwrap();
+        canonical
+            .add_op(SOLO, MemberOp::add(victim_hash, origin, 4))
+            .unwrap();
+
+        let mut host = AgentHost::with_canonical_store(canonical);
+        let victim_id = SessionId::new(victim_hash.to_hex());
+        host.spawn(victim_id.clone(), now_host());
+
+        // Present in all three before the death.
+        for g in [LOBBY, OPS, SOLO] {
+            assert!(
+                host.canonical_store()
+                    .unwrap()
+                    .resolve_all(g)
+                    .unwrap()
+                    .contains(&victim_hash),
+                "victim is in {g} before termination"
+            );
+        }
+
+        // One terminate → scan-on-death retracts the victim from EVERY group it was in.
+        host.terminate(&victim_id, Hash::of(b"ctl"), "kill".into())
+            .await
+            .expect("victim present")
+            .expect("fresh terminate");
+
+        let store = host.canonical_store().unwrap();
+        // Evicted everywhere.
+        for g in [LOBBY, OPS, SOLO] {
+            assert!(
+                !store.resolve_all(g).unwrap().contains(&victim_hash),
+                "victim auto-evicted from {g} (I5 all-groups)"
+            );
+        }
+        // Each group's OTHER member is untouched (observed-remove is precise per group).
+        assert!(
+            store.resolve_all(LOBBY).unwrap().contains(&survivor_a),
+            "lobby co-member survives"
+        );
+        assert!(
+            store.resolve_all(OPS).unwrap().contains(&survivor_b),
+            "ops co-member survives"
+        );
+        // The solo group is now empty (only the victim had been in it) — a clean empty resolve, not a panic.
+        assert!(
+            store.resolve_all(SOLO).unwrap().is_empty(),
+            "solo group is empty after the sole member is evicted"
+        );
+    }
+
     /// §lifecycle I7 test reducer: a parent supervisor that folds a `lifecycle/child-exited` Inbound. It
     /// decodes the canonical codec payload and records the exited child's hash + the failure reason into KV,
     /// so a test can observe that the host actually delivered the supervision signal. Any other inbound is a
