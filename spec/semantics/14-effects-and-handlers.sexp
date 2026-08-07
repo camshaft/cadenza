@@ -15897,3 +15897,100 @@
   (call   main (: 5 Int64)) (output (: 100 Int64))
   (call   main (: -2 Int64)) (output (: 16 Int64))
   (call   main (: 0 Int64)) (output (: 0 Int64)))
+
+;; ── deep pure arithmetic in arm slots + STRING scrutinee routing (breaker aa/sc) ─────────────────
+;; aa = heavy pure expressions in the two arm slots: aa1 the resume VALUE is (v+s)^2 - v*s over
+;; the op arg AND state; aa2 a QUADRATIC next-state (s^2+1, a negative seed squaring positive);
+;; aa3 REMAINDER cycling (n=3 and n=10 give identical answers — period alignment IS the witness);
+;; aa4 a THREE-WAY comparison encoded 1/10/100; aa5 DIVISION with a subtracting stride. sc =
+;; STRING scrutinee routing (the za dispatch idiom on the String kind): sc1 literal string arms
+;; over a let-bound draw (the hi arm re-performs); sc2 EQUALITY of two draws routing the branch
+;; (the n=3 row crosses the threshold BETWEEN draws).
+
+(case "aa1 the resume VALUE is a deep pure expression over the op arg AND state — (v+s)^2 - v*s per dispatch"
+  (input  (do
+            (effect E (op f (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((f (v) s (resume (- (* (+ v s) (+ v s)) (* v s)) (+ s v))))
+                (+ (E.f 3) (E.f 2))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 133 Int64))
+  (call   main (: 0 Int64)) (output (: 28 Int64))
+  (call   main (: -1 Int64)) (output (: 19 Int64)))
+
+(case "aa2 a QUADRATIC next-state (s^2+1) — three dispatches, the state squaring away from the seed"
+  (input  (do
+            (effect E (op g (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((g () s (resume s (+ (* s s) 1))))
+                (+ (E.g) (+ (E.g) (E.g)))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 33 Int64))
+  (call   main (: 0 Int64)) (output (: 3 Int64))
+  (call   main (: -3 Int64)) (output (: 108 Int64)))
+
+(case "aa3 REMAINDER arithmetic in the resume value — (% s 7) cycles as the +5 stride wraps the modulus"
+  (input  (do
+            (effect E (op g (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((g () s (resume (% s 7) (+ s 5))))
+                (+ (E.g) (+ (* 10 (E.g)) (* 100 (E.g))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 613 Int64))
+  (call   main (: 0 Int64)) (output (: 350 Int64))
+  (call   main (: 10 Int64)) (output (: 613 Int64)))
+
+(case "aa4 a THREE-WAY comparison arm — the resume value encodes gt/eq/lt as 1/10/100 against the advancing state"
+  (input  (do
+            (effect E (op probe (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((probe (v) s (resume (+ (if (> v s) 1 0) (+ (if (= v s) 10 0) (if (< v s) 100 0))) (+ s 1))))
+                (+ (E.probe 5) (+ (E.probe 6) (E.probe 0)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 120 Int64))
+  (call   main (: 6 Int64)) (output (: 300 Int64))
+  (call   main (: 0 Int64)) (output (: 102 Int64)))
+
+(case "aa5 DIVISION in the resume value with a subtracting stride — quotients shrink as the state walks down"
+  (input  (do
+            (effect E (op g (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((g () s (resume (/ s 3) (- s 4))))
+                (+ (E.g) (+ (* 10 (E.g)) (* 100 (E.g))))))
+            (export main)))
+  (call   main (: 30 Int64)) (output (: 790 Int64))
+  (call   main (: 9 Int64)) (output (: 13 Int64)))
+
+(case "sc1 STRING literal-arm dispatch on a draw — the hi arm re-performs and measures, the lo arm is constant"
+  (input  (do
+            (effect St (op name (-> Int64 String)))
+            (def (main (: n Int64))
+              (handle St n
+                ((name (k) s (resume (if (> s k) "hi" "lo") (+ s 1))))
+                (let ((w (St.name 3)))
+                  (match w
+                    ("hi" (+ 100 (String.byte-len (St.name 0))))
+                    ("lo" 200)
+                    (_o 300)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 102 Int64))
+  (call   main (: 1 Int64)) (output (: 200 Int64)))
+
+(case "sc2 EQUALITY of two string draws routes the branch — the n=3 row crosses the threshold between draws"
+  (input  (do
+            (effect St (op name (-> Int64 String)))
+            (def (main (: n Int64))
+              (handle St n
+                ((name (k) s (resume (if (> s k) "big" "sm") (+ s 2))))
+                (let ((w1 (St.name 4)))
+                  (let ((w2 (St.name 4)))
+                    (if (= w1 w2) (String.byte-len (String.concat w1 w2)) -1)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 6 Int64))
+  (call   main (: 3 Int64)) (output (: -1 Int64))
+  (call   main (: 0 Int64)) (output (: 4 Int64)))
