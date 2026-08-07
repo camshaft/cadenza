@@ -4383,6 +4383,64 @@
             (export main)))
   (call   main (: 4 Int64)) (output (: 12 Int64)))
 
+(case "a tuple scrutinee built from TWO performs — the guard relates both dispatch results"
+  (doc    "Cross-dispatch guard conditions (the guard pins destructure a SINGLE perform-result
+           tuple): the scrutinee assembles two draws — `(tuple (St.next) (St.next))` — and the
+           guard relates them: `(= (+ a 1) b)` holds for consecutive draws (a=5, b=6) → 506. The
+           strict tuple-operand order, the guard desugar, and the between-draws state advance
+           compose.")
+  (input  (do
+            (effect St (op next (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next (u) s (resume s (+ s 1))))
+                (match (tuple (St.next) (St.next))
+                  ((guard (tuple a b) (= (+ a 1) b)) (+ (* 100 a) b))
+                  ((tuple a b) (- 0 (+ a b))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 506 Int64)))
+
+(case "recursively STACKED same-effect handlers — the perform resolves to the DEEPEST frame"
+  (doc    "A DYNAMICALLY-built shadow stack (the shadow pins are lexical 2-deep literals): the
+           recursion installs a fresh same-effect handler per level — walk 3 stacks handlers seeded
+           3, 2, 1 — and the base perform resolves to the nearest (deepest, k=1) frame → 1.")
+  (input  (do
+            (effect St (op depth (-> Unit Int64)))
+            (def (walk (: k Int64))
+              (if (= k 0)
+                  (St.depth)
+                  (handle St k
+                    ((depth (u) s (resume s s)))
+                    (walk (- k 1)))))
+            (def (main (: n Int64))
+              (handle St 100
+                ((depth (u) s (resume s s)))
+                (walk 3)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 1 Int64)))
+
+(case "the shadow stack UNWINDS — each level's post-region perform reaches ITS enclosing frame"
+  (doc    "The unwind discipline of the dynamic shadow stack: after each recursive region closes,
+           the SAME textual `(St.depth)` resolves one frame further out — the base reads 1 (k=1
+           frame), the next level's post-region read gets 2 (k=2 frame), and the outermost reads
+           the root 100 → (1+2) + 100 = 103. One call site, three different homes across the
+           unwind.")
+  (input  (do
+            (effect St (op depth (-> Unit Int64)))
+            (def (walk (: k Int64))
+              (if (= k 0)
+                  (St.depth)
+                  (+ (handle St k
+                       ((depth (u) s (resume s s)))
+                       (walk (- k 1)))
+                     (St.depth))))
+            (def (main (: n Int64))
+              (handle St 100
+                ((depth (u) s (resume s s)))
+                (walk 2)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 103 Int64)))
+
 ; ============ Guarded match × effects (breaker FINDING, ag5 → fixed #2333). A guarded match on a
 ; perform-result scrutinee whose FALLBACK arm also performs used to leak the fold-synthesized #seed
 ; binder as a false CDZ0101: the guard desugar's arm-body copy reparented a reused (shared) body
