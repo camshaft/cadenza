@@ -6081,3 +6081,7 @@ pass	a complete handler inside a CLOSURE body — each application instantiates 
 pass	the closure's inner arm performs an OUTER effect through the closure boundary
 pass	a record STATE with a Set field rebuilt per dispatch — dedup observed through the field
 pass	a perform-seeded inner handle composed with a SECOND same-effect instantiation after it
+pass	a recursive TREE as a transformer op — crosses IN, the arm wraps it, crosses back OUT
+pass	a heap result of effect A pipes directly into effect B's argument — cross-effect heap flow
+pass	Rational.of over TWO perform results — ctor-arg order observable through the dispatches
+pass	the gcd face: a reducible num/den pair from performs canonicalizes (4/8 → 1/2)

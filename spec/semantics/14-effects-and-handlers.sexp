@@ -4317,6 +4317,72 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 2050 Int64)))
 
+(case "a recursive TREE as a transformer op — crosses IN, the arm wraps it, crosses back OUT"
+  (doc    "The transformer face of recursive-sum crossings (result-only + abort-value are pinned): a
+           body-built Tree spine crosses INTO the arm, which wraps it — embedding the crossed
+           subtree BY REFERENCE in a new Node — and the wrapped spine crosses back; the recursive
+           fold reads all three leaves: 5+7+10 → 22.")
+  (input  (do
+            (type Tree (Leaf Int64) (Node (Tuple Tree Tree)))
+            (effect St (op grow (-> Tree Tree)))
+            (def (sum-t (: t Tree))
+              (match t
+                ((Tree.Leaf v) v)
+                ((Tree.Node p) (match p ((tuple l r) (+ (sum-t l) (sum-t r)))))))
+            (def (main (: n Int64))
+              (handle St 0
+                ((grow (t) s (resume (Tree.Node (tuple t (Tree.Leaf 10))) s)))
+                (sum-t (St.grow (Tree.Node (tuple (Tree.Leaf n) (Tree.Leaf 7)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 22 Int64)))
+
+(case "a heap result of effect A pipes directly into effect B's argument — cross-effect heap flow"
+  (doc    "Two marshals back-to-back on one heap value through two DIFFERENT handlers: `(B.use
+           (A.mk n))` — the list exits A's arm and immediately enters B's, no intermediate binding.
+           B reads len 2 and element [1] → 30. (The scalar pipe is pinned; the heap payload was
+           not.)")
+  (input  (do
+            (effect A (op mk (-> Int64 (List Int64))))
+            (effect B (op use (-> (List Int64) Int64)))
+            (def (main (: n Int64))
+              (handle A 0
+                ((mk (k) s (resume (list k (* k 2)) s)))
+                (handle B 0
+                  ((use (xs) t (resume (+ (* 10 (List.len xs)) (match (List.at xs 1) ((Some v) v) ((None _u) -1))) t)))
+                  (B.use (A.mk n)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 30 Int64)))
+
+(case "Rational.of over TWO perform results — ctor-arg order observable through the dispatches"
+  (doc    "A heap-numeric CTOR consuming two perform results in one call: the numerator draws first
+           (4), the denominator second (5) — strict LTR ctor-argument order made observable by the
+           advancing state → 10·4 + 5 = 45 (consecutive draws are always coprime; the gcd face is
+           the sibling below).")
+  (input  (do
+            (effect St (op next (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next (u) s (resume s (+ s 1))))
+                (let ((q (Rational.of (St.next) (St.next))))
+                  (+ (* 10 (Int64.of (Rational.numerator q)))
+                     (Int64.of (Rational.denominator q))))))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: 45 Int64)))
+
+(case "the gcd face: a reducible num/den pair from performs canonicalizes (4/8 → 1/2)"
+  (doc    "The canonicalization sibling: a DOUBLING state makes the two draws reducible (4 then 8),
+           and the constructed rational must arrive gcd-canonical — 1/2, not 4/8 → 12.")
+  (input  (do
+            (effect St (op next (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next (u) s (resume s (* s 2))))
+                (let ((q (Rational.of (St.next) (St.next))))
+                  (+ (* 10 (Int64.of (Rational.numerator q)))
+                     (Int64.of (Rational.denominator q))))))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: 12 Int64)))
+
 ; ============ Guarded match × effects (breaker FINDING, ag5 → fixed #2333). A guarded match on a
 ; perform-result scrutinee whose FALLBACK arm also performs used to leak the fold-synthesized #seed
 ; binder as a false CDZ0101: the guard desugar's arm-body copy reparented a reused (shared) body
