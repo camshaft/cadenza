@@ -153,6 +153,11 @@ pub struct LiveExecutorSet {
     /// a [`MeteredExecutor`] sharing a CLONE of this `Arc`, so all sessions' effect outcomes aggregate into
     /// one daemon-wide set the exporter reports over.
     metrics: Arc<EffectMetrics>,
+    /// A clone of the daemon's shared metrics [`Registry`] (the SAME one `metrics` registered into + the
+    /// exporter drains) — held so `build` can construct a [`MetricExecutor`](crate::MetricExecutor) per
+    /// session for the `metric/publish` effect, letting a reducer publish metrics that reach the configured
+    /// backends. Cheap to clone (an `Arc` into the registry storage).
+    registry: crate::metrics::Registry,
     /// The loop's lifecycle channel, if the daemon wired one (§lifecycle). Set via
     /// [`with_lifecycle_channel`](Self::with_lifecycle_channel) at boot from
     /// [`AsyncAgentHost::lifecycle_channel`](crate::AsyncAgentHost::lifecycle_channel). When present, `build`
@@ -178,6 +183,7 @@ impl LiveExecutorSet {
             http,
             model,
             metrics: Arc::new(EffectMetrics::new(registry)),
+            registry: registry.clone(),
             lifecycle: None,
         })
     }
@@ -227,6 +233,21 @@ impl ExecutorSetBuilder for LiveExecutorSet {
                 effect_ct::MODEL,
                 Box::new(MeteredExecutor::new(
                     Box::new(crate::ModelExecutor::new(self.model.clone())),
+                    m.clone(),
+                )),
+            )
+            // Q3: wire the `metric/publish` executor UNCONDITIONALLY — it lets a reducer publish a metric that
+            // the host records into the shared Registry (so it drains to the configured backends alongside the
+            // host's own metrics). Same posture as shell/fs: WHICH metrics a session may publish is EVOLVABLE
+            // Cedar policy on the effect's resolved metric-name target (operator standing-order), so wiring the
+            // mechanism for all is safe — a session records only what its policy permitted. The executor holds
+            // its own per-session cardinality + guest-string-safety bound (the host's mechanism). Metered like
+            // the others. Each session gets a fresh MetricExecutor (its own cardinality set) over a clone of
+            // the shared Registry.
+            .with_effect(
+                effect_ct::METRIC_PUBLISH,
+                Box::new(MeteredExecutor::new(
+                    Box::new(crate::MetricExecutor::new(self.registry.clone())),
                     m.clone(),
                 )),
             );
