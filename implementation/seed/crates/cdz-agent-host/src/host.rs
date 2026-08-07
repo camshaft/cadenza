@@ -888,6 +888,24 @@ impl AgentHost {
         self.sessions.get(id)
     }
 
+    /// Find the registry key ([`SessionId`]) of the session whose GENESIS HASH equals `genesis` — a
+    /// content-addressed lookup that does NOT assume the id IS `hex(genesis)`. A [`SessionId`] is opaque
+    /// host-assigned metadata: a spawned child is registered under its genesis-hash hex, but a root / named
+    /// session can be registered under a VANITY id (e.g. `"concierge"`) — the same SessionId-is-opaque
+    /// distinction as the §I5 bounce arc. So any code holding a `Hash` (e.g. `Session::parent()`) that needs
+    /// the corresponding registry entry must resolve it by matching `genesis_hash()`, not by hex-ing the hash
+    /// into a `SessionId`. `None` = no registered session has that genesis hash (gone / never present).
+    ///
+    /// O(sessions) scan — fine at v0 scale (the only caller is the per-death I7 emit). A genesis-hash→id
+    /// reverse index is the O(1) path if this ever moves onto a hot loop (same revisit trigger as I5's
+    /// group-scan cost note).
+    pub fn session_id_by_genesis_hash(&self, genesis: &Hash) -> Option<SessionId> {
+        self.sessions
+            .iter()
+            .find(|(_, s)| &s.genesis_hash() == genesis)
+            .map(|(id, _)| id.clone())
+    }
+
     /// FREEZE `controller`'s transitive spawn-descendant set into a concrete [`ResourcePredicate::OneOf`]
     /// (§lifecycle I6): the authority a session has to `lifecycle/*` (spawn/suspend/resume/terminate) a
     /// target is "target ∈ my transitive Spawned-descendants" — but the kernel's declarative
@@ -993,9 +1011,15 @@ impl AgentHost {
             // A terminate is a FAILURE close, so the outcome is `CloseOutcome::Failure(reason)`. Fire only
             // when the child HAS a parent that is STILL registered — a root session (`None`) or a gone/
             // already-terminated parent = no-op, no bounce (the supervisor, if any, is gone too).
+            //
+            // ⚠ Resolve the parent by its GENESIS HASH, not by `hex(parent_hash)` as a SessionId: the id is
+            // OPAQUE host metadata (a spawned child gets genesis-hash-hex, but a top-level NAMED supervisor
+            // can be registered under a vanity id like "concierge"). Hex-ing the hash into a SessionId would
+            // miss a vanity-id parent → the signal would be SILENTLY DROPPED and the supervisor would never
+            // learn its child died. `session_id_by_genesis_hash` matches on `genesis_hash()` (PR #2481 c1,
+            // same SessionId-is-opaque root cause as the §I5 bounce arc).
             if let Some(parent_hash) = parent {
-                let parent_id = SessionId::new(parent_hash.to_hex());
-                if self.sessions.contains_key(&parent_id) {
+                if let Some(parent_id) = self.session_id_by_genesis_hash(&parent_hash) {
                     let payload = cdz_kernel::event_ast::encode_child_exited(
                         &child_hash,
                         &cdz_kernel::event::CloseOutcome::Failure(i7_reason),
@@ -1815,6 +1839,12 @@ mod tests {
             } = &event.body
             {
                 if content_type.matches_family("lifecycle/child-exited") {
+                    // Pin the v1 wire contract: a silent version bump/drop (family+payload unchanged) must
+                    // NOT pass unnoticed (PR #2481 c2 — value-assert the contract, not just the family).
+                    kv.put(
+                        b"exit-version".to_vec(),
+                        content_type.version.to_string().into_bytes(),
+                    );
                     if let Payload::Inline(bytes) = payload {
                         if let Ok((child, outcome)) =
                             cdz_kernel::event_ast::decode_child_exited(bytes)
@@ -1840,16 +1870,23 @@ mod tests {
         // input the prelude supervisor folds. End-to-end: spawn a supervisor parent, spawn a real child under
         // it, terminate the child, and observe the parent folded the signal (child hash + failure reason).
         let mut host = AgentHost::new();
-        // Register the parent under its GENESIS-HASH hex (the SessionId ruling real spawns follow) — the
-        // emit path looks the parent up by `child.parent()` = the parent's genesis hash, so a vanity id
-        // would never match and the signal would silently no-op (which is exactly the "parent gone" path).
+        // Register the parent under a VANITY id (NOT its genesis-hash hex) — a top-level named supervisor is
+        // exactly this case, and the id is OPAQUE host metadata. The emit path resolves the parent by
+        // matching genesis_hash() (PR #2481 c1), NOT by hex-ing child.parent() into a SessionId — so this
+        // test would FAIL against the old `SessionId::new(parent_hash.to_hex())` lookup (the signal would be
+        // silently dropped), which is the regression it pins.
         let supervisor = HostedSession::genesis(
             Hash::of(b"supervisor-v1"),
             Box::new(ChildExitedFoldingReducer),
             Box::new(Authorizer::deny_all()),
             CompositeExecutor::new(),
         );
-        let parent = SessionId::new(supervisor.genesis_hash().to_hex());
+        let parent = SessionId::new("concierge"); // vanity id ≠ hex(genesis_hash)
+        assert_ne!(
+            parent.as_str(),
+            supervisor.genesis_hash().to_hex(),
+            "the parent is deliberately registered under a vanity id, not its genesis-hash hex"
+        );
         host.spawn(parent.clone(), supervisor);
 
         // Spawn a real child UNDER the parent (records the parent→child edge; the child's SessionId is its
@@ -1897,6 +1934,12 @@ mod tests {
             kv.get(b"exit-reason").map(|v| v.to_vec()),
             Some(b"boom".to_vec()),
             "a terminate is a Failure close — the reason round-trips to the supervisor"
+        );
+        // Pin the v1 wire contract: the emitted ContentType.version is 1 (PR #2481 c2).
+        assert_eq!(
+            kv.get(b"exit-version").map(|v| v.to_vec()),
+            Some(b"1".to_vec()),
+            "the ChildExited Inbound carries content_type.version == 1 (v1 wire contract)"
         );
         // The child itself is gone from the registry (terminate removed it).
         assert!(
