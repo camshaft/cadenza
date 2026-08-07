@@ -409,10 +409,17 @@ impl HostedSession {
     }
 
     /// This session's GENESIS HASH — the content hash of its genesis event ([`Session::genesis_hash`], =
-    /// `log[0].hash()`). This is the host's canonical SessionId primitive: the operator ruled a session's
-    /// identity IS its genesis-hash-hex, which the naming layer resolves a name to (name → genesis-hash =
-    /// the SessionId directly, so cross-session routing needs no separate hash→id map — the resolved hash-hex
-    /// is the routable id). A caller assigns/validates a [`SessionId`] against `hex(this)`.
+    /// `log[0].hash()`). This is the host's canonical SessionId primitive: a SPAWNED child's id IS its
+    /// genesis-hash-hex (the operator ruling — provenance-derived + self-certifying), which the naming layer
+    /// resolves a name to (name → genesis-hash = the routable id, no separate hash→id map needed).
+    ///
+    /// ⚠ NOT a GLOBAL identity — a [`SessionId`] is OPAQUE host-assigned metadata: a spawned child gets
+    /// genesis-hash-hex, but a root / named session may carry a VANITY id (e.g. `"concierge"`). So code
+    /// holding a genesis `Hash` (e.g. [`Session::parent`]) must resolve it to a registry entry via
+    /// [`AgentHost::session_id_by_genesis_hash`] (matches on `genesis_hash()`), NEVER by assuming
+    /// `hex(hash) == id` globally — that assumption is exactly what silently dropped a `ChildExited` to a
+    /// vanity-id supervisor (PR #2481 c1). `hex(this)` is a valid id to ASSIGN a fresh session, not a
+    /// guarantee of how an existing one is keyed.
     ///
     /// PER-SESSION UNIQUE (§lifecycle I2a): the genesis event carries a fresh OS-random SPAWN NONCE
     /// (minted by [`mint_spawn_nonce`] at [`HostedSession::genesis`], or the parent's provenance at
@@ -688,8 +695,10 @@ impl AgentHost {
     /// SPAWN A CHILD session under `parent` (§lifecycle I3): the `lifecycle/spawn` effect's registry side.
     /// Builds a child [`HostedSession`] from `reducer_hash` + its executor/authz with parent-provenance
     /// ([`HostedSession::genesis_spawned`]), derives the child's `SessionId` from its genesis hash
-    /// (`hex(genesis_hash)` — the operator's SessionId=genesis-hash-hex ruling, so the id is provenance- +
-    /// nonce-unique), inserts it into the registry, and records the durable parent→child EDGE on the PARENT's
+    /// (`hex(genesis_hash)` — a SPAWNED child's id IS its genesis-hash-hex per the operator ruling, so the id
+    /// is provenance- + nonce-unique; note this is the SPAWNED-child rule, NOT a global one — a root/named
+    /// session may carry an opaque vanity id, see [`AgentHost::session_id_by_genesis_hash`]), inserts it into
+    /// the registry, and records the durable parent→child EDGE on the PARENT's
     /// log ([`Session::record_spawn`]) — the supervision tree the Cedar `DescendantOf` authority (I6) walks.
     ///
     /// Returns:
@@ -899,11 +908,40 @@ impl AgentHost {
     /// O(sessions) scan — fine at v0 scale (the only caller is the per-death I7 emit). A genesis-hash→id
     /// reverse index is the O(1) path if this ever moves onto a hot loop (same revisit trigger as I5's
     /// group-scan cost note).
+    ///
+    /// DETERMINISTIC on a (contract-impossible) duplicate: a genesis_hash is UNIQUE across registered
+    /// sessions BY CONTRACT — the host mints a FRESH `spawn_nonce` (OS entropy) per spawn, and
+    /// `genesis_hash = Hash::of(genesis Event over (reducer, spawn_nonce, parent))`, so two live sessions
+    /// sharing one would require a 256-bit nonce/preimage collision (cryptographically unreachable, per
+    /// v-agent-harness). The kernel does NOT enforce this (it never sees the live-session set — the nonce is
+    /// caller-supplied), so this uses `min_by` on the `SessionId` rather than `find` (HashMap iteration order
+    /// is unstable): a stable winner instead of an arbitrary one, should the contract ever be violated (or a
+    /// degenerate test reuse a nonce). The `debug_assert` makes such a break surface LOUDLY in tests instead
+    /// of silently mis-routing a `ChildExited` to an arbitrary parent (#2484 c-a). Scope: REGISTERED spawned
+    /// sessions — a `fork_for_query` view deliberately reuses its parent's provenance (same genesis_hash) but
+    /// is never registered, so it can't appear here.
     pub fn session_id_by_genesis_hash(&self, genesis: &Hash) -> Option<SessionId> {
-        self.sessions
+        let mut matches = self
+            .sessions
             .iter()
-            .find(|(_, s)| &s.genesis_hash() == genesis)
-            .map(|(id, _)| id.clone())
+            .filter(|(_, s)| &s.genesis_hash() == genesis);
+        let first = matches.next().map(|(id, _)| id.clone())?;
+        // Fold in any further matches, keeping the lexicographically-smallest SessionId as the stable winner.
+        // Under the fresh-nonce uniqueness contract there is exactly one match, so this is a no-op; the branch
+        // exists only to make a contract violation deterministic + loud rather than iteration-order-dependent.
+        let winner = matches.fold(first, |best, (id, _)| {
+            debug_assert!(
+                false,
+                "genesis_hash uniqueness invariant violated: >1 registered session shares a genesis hash \
+                 (expected unique by the fresh-spawn_nonce contract) — routing to the min SessionId"
+            );
+            if id < &best {
+                id.clone()
+            } else {
+                best
+            }
+        });
+        Some(winner)
     }
 
     /// FREEZE `controller`'s transitive spawn-descendant set into a concrete [`ResourcePredicate::OneOf`]
@@ -1946,6 +1984,70 @@ mod tests {
             !host.contains(&child_id),
             "the terminated child is unregistered"
         );
+    }
+
+    #[test]
+    fn session_id_by_genesis_hash_resolves_a_vanity_id_by_content_not_hex() {
+        // #2484 c-a happy path: the resolver finds a session under an OPAQUE (vanity) id by matching its
+        // genesis_hash, not by hex-ing the hash into a SessionId. This is the single-match (contract-normal)
+        // case — exactly one session per genesis hash under the fresh-nonce contract.
+        let mut host = AgentHost::new();
+        let s = now_host();
+        let genesis = s.genesis_hash();
+        let vanity = SessionId::new("concierge");
+        assert_ne!(
+            vanity.as_str(),
+            genesis.to_hex(),
+            "registered under a vanity id, not its genesis-hash hex"
+        );
+        host.spawn(vanity.clone(), s);
+        assert_eq!(
+            host.session_id_by_genesis_hash(&genesis),
+            Some(vanity),
+            "resolves the vanity-id session by its genesis hash (content-addressed, not hex==id)"
+        );
+        // A hash no session carries → None (not a panic, not a false match).
+        assert_eq!(
+            host.session_id_by_genesis_hash(&Hash::of(b"no-such-session")),
+            None,
+            "an unknown genesis hash resolves to None"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "genesis_hash uniqueness invariant violated")]
+    fn session_id_by_genesis_hash_debug_asserts_on_a_duplicate_genesis_hash() {
+        // #2484 c-a tripwire: the fresh-nonce contract makes a genesis-hash collision across registered
+        // sessions cryptographically unreachable — the kernel does NOT enforce it (nonce is host-supplied), so
+        // the resolver debug_asserts if the contract is ever violated (or a degenerate test reuses a nonce),
+        // surfacing the break LOUDLY instead of silently mis-routing a ChildExited to an arbitrary parent. We
+        // FORCE the degenerate case: two sessions built with the SAME (reducer_hash, spawn_nonce) → the SAME
+        // genesis_hash, registered under two different vanity ids. In a debug build the resolver panics; in a
+        // release build it would deterministically return the min SessionId (untested here — asserts compiled out).
+        let mut host = AgentHost::new();
+        let reducer = Hash::of(b"dup-reducer");
+        let nonce = Hash::of(b"REUSED-nonce-contract-violation");
+        let mk = || {
+            HostedSession::genesis_with_nonce(
+                reducer,
+                nonce,
+                Box::new(GenesisRecordingReducer),
+                Box::new(Authorizer::deny_all()),
+                CompositeExecutor::new(),
+            )
+        };
+        let a = mk();
+        let b = mk();
+        assert_eq!(
+            a.genesis_hash(),
+            b.genesis_hash(),
+            "same (reducer, nonce) ⇒ same genesis hash (the forced collision)"
+        );
+        let genesis = a.genesis_hash();
+        host.spawn(SessionId::new("aaa"), a);
+        host.spawn(SessionId::new("bbb"), b);
+        // Two registered sessions share a genesis hash → the resolver trips the uniqueness debug_assert.
+        let _ = host.session_id_by_genesis_hash(&genesis);
     }
 
     #[tokio::test]
