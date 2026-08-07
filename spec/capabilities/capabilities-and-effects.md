@@ -190,6 +190,14 @@ A handler MUST resume the continuation of an effect operation at most once by de
 
 A handler that resumes a continuation more than once MUST be admitted only where a build's declared defaults enable multi-shot resumption, so that the default keeps the affine discipline and multi-shot is a deliberate opt-in.
 
+### A Guard Is Side-Effect-Free
+
+An effect operation performed in a match-arm guard MUST be rejected at compile time, so that a guard is a pure decision the pattern engine may evaluate speculatively or repeatedly without observable effect.
+
+A guard condition is a boolean that refines a pattern: it gates the arm but does not necessarily run — a guard that fails falls through to the next arm, and the pattern engine may evaluate a guard speculatively, out of source order, or more than once. An effect performed in that position therefore has no well-defined execution count or order — it would perform zero, one, or several times depending on the match strategy — so it MUST be a compile-time error rather than a computation with an unspecified effect schedule. The rejection is unconditional: the prohibition is on the guard *position*, not on which effect is performed, so an effect that has a discharging handler in scope is rejected just as one that does not — the defect is where the effect sits, not whether it has a home.
+
+A program that must consult an effect to decide an arm MUST perform that effect once before the `match` — binding its result to a `let` — and guard on the bound pure value, so that the effect has a single well-defined execution and the guard stays a pure decision over its result.
+
 ### A Handler May Interpose On An Effect An Entrypoint Would Delegate
 
 A program MUST be able to enclose, in a handler that discharges its operations, an effect an entrypoint would otherwise delegate to the host, so that the operation resolves to that handler rather than reaching the boundary, making it possible to observe, mock, cache, or otherwise stand in for a host capability without the performing code being aware — a handler nearer the perform wins over the delegation that encloses it.
