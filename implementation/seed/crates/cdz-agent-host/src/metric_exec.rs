@@ -31,7 +31,7 @@
 
 use cdz_kernel::effect::{effect_ct, EffectRequest, Payload};
 use cdz_kernel::event::EffectOutcome;
-use cdz_kernel::event_ast::{decode_metric_publish, MetricSample};
+use cdz_kernel::event_ast::{decode_metric_publish, decode_metrics_publish, MetricSample};
 use cdz_kernel::executor::Executor;
 use cdz_kernel::hash::Hash;
 use s2n_quic_dc_metrics::{Counter, Gauge, Summary, Unit};
@@ -102,6 +102,44 @@ impl MetricExecutor {
         Some(agg)
     }
 
+    /// Guest-string safety over a whole sample (name + every label key/val) — bounded charset + length before
+    /// any off-box export. `Err(msg)` names which part failed (the host never logs the raw guest string).
+    fn safety_check(sample: &MetricSample) -> Result<(), &'static str> {
+        if !Self::is_safe_str(&sample.name) {
+            return Err(
+                "MetricExecutor: metric name is empty/too-long/has unsafe chars (rejected before off-box export)",
+            );
+        }
+        for (k, v) in &sample.labels {
+            if !Self::is_safe_str(k) || !Self::is_safe_str(v) {
+                return Err(
+                    "MetricExecutor: a metric label key/value is empty/too-long/has unsafe chars (rejected before off-box export)",
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Map the reducer's raw-string `unit` vocab onto the metrics [`Registry`]'s `Unit` enum. `None` = no
+    /// unit given (empty string) → the caller uses the kind's natural default. The Registry has no
+    /// millisecond variant, so a `milliseconds` unit maps to `Microsecond` (the finest sub-second unit — the
+    /// VALUE the reducer sent is recorded unchanged; the unit is display metadata on the handle). An unknown
+    /// unit string is treated as unspecified (`None`) rather than an error — the kernel carries the vocab, the
+    /// host maps what it knows + defaults the rest (never rejects a publish over a display unit).
+    fn unit_for(unit: &str) -> Option<Unit> {
+        match unit {
+            "" => None,
+            "count" => Some(Unit::Count),
+            "bytes" => Some(Unit::Byte),
+            // No Millisecond in the Registry — microseconds is the finest sub-second unit; the value is
+            // unchanged (display metadata only). Both sub-second time units map here.
+            "microseconds" | "milliseconds" => Some(Unit::Microsecond),
+            "seconds" => Some(Unit::Second),
+            "percent" => Some(Unit::Percent),
+            _ => None, // unknown unit → unspecified (default by kind); never an error over a display unit
+        }
+    }
+
     /// Record one already-safety-checked sample: get-or-register the handle for its (name, kind, labels) key,
     /// then record `value` on it. Returns `Err(EffectOutcome)` for an unknown kind (a clean PERMANENT). The
     /// metric registers under the reducer's OWN name (`sample.name`); the cache means a repeat publish never
@@ -126,16 +164,26 @@ impl MetricExecutor {
         let handle = self.cache.entry(key).or_insert_with(|| {
             let name = sample.name.clone();
             let agg = Self::label_aggregation(&sample.labels);
+            // The reducer-supplied UNIT (operator Q3 round-3) mapped onto the Registry Unit enum. Empty/
+            // unknown → the kind's natural default (counter=Count, summary/timing=Microsecond).
+            let unit = Self::unit_for(&sample.unit);
             match sample.kind.as_str() {
-                "counter" => MetricHandle::Counter(self.registry.register_counter(name, agg)),
-                "gauge" => {
-                    MetricHandle::Gauge(self.registry.register_gauge(name, agg, Unit::Count))
-                }
-                // summary + timing both record into a Summary (a distribution/histogram).
+                "counter" => MetricHandle::Counter(self.registry.register_counter_with_unit(
+                    name,
+                    agg,
+                    unit.unwrap_or(Unit::Count),
+                )),
+                "gauge" => MetricHandle::Gauge(self.registry.register_gauge(
+                    name,
+                    agg,
+                    unit.unwrap_or(Unit::Count),
+                )),
+                // summary + timing both record into a Summary (a distribution/histogram). A time metric
+                // defaults to Microsecond when the reducer gave no unit.
                 _ => MetricHandle::Summary(self.registry.register_summary(
                     name,
                     agg,
-                    Unit::Microsecond,
+                    unit.unwrap_or(Unit::Microsecond),
                 )),
             }
         });
@@ -193,36 +241,42 @@ impl Executor for MetricExecutor {
                 );
             }
         };
-        // Decode the kernel-side MetricSample. A malformed frame is a clean PERMANENT (the reducer built a bad
-        // sample; retrying won't fix it). The host does NOT log the raw bytes (guest-controlled).
-        let sample = match decode_metric_publish(bytes) {
-            Ok(s) => s,
-            Err(e) => {
-                return EffectOutcome::err(format!(
-                    "MetricExecutor: metric/publish payload did not decode: {e:?}"
-                ));
-            }
+        // Decode the payload. A reducer may publish a BATCH (metrics-publish, Vec<MetricSample>) or a SINGLE
+        // (metric-publish) sample — try the batch codec first, fall back to single. A frame that decodes as
+        // NEITHER is a clean PERMANENT (the reducer built a bad payload; retrying won't fix it). The host does
+        // NOT log the raw bytes (guest-controlled).
+        let samples: Vec<MetricSample> = match decode_metrics_publish(bytes) {
+            Ok(batch) => batch,
+            Err(_) => match decode_metric_publish(bytes) {
+                Ok(single) => vec![single],
+                Err(e) => {
+                    return EffectOutcome::err(format!(
+                        "MetricExecutor: metric/publish payload did not decode as a batch or single sample: {e:?}"
+                    ));
+                }
+            },
         };
 
-        // GUEST-STRING SAFETY: the name + every label key/val must be safe to carry off-box (bounded charset
-        // + length). Reject the whole publish PERMANENT otherwise — never record or log an unsafe guest string
-        // into the telemetry pipeline. (Cardinality — how MANY names — is Cedar's authorization, not here.)
-        if !Self::is_safe_str(&sample.name) {
-            return EffectOutcome::err(
-                "MetricExecutor: metric name is empty/too-long/has unsafe chars (rejected before off-box export)",
-            );
-        }
-        for (k, v) in &sample.labels {
-            if !Self::is_safe_str(k) || !Self::is_safe_str(v) {
-                return EffectOutcome::err(
-                    "MetricExecutor: a metric label key/value is empty/too-long/has unsafe chars (rejected before off-box export)",
-                );
+        // GUEST-STRING SAFETY over EVERY sample FIRST (all-or-nothing): a batch is ONE publish, so if any
+        // sample's name/label is unsafe, reject the WHOLE publish PERMANENT without recording ANY of them
+        // (no half-recorded batch — a partial record is confusing + leaks some unsafe-adjacent samples). The
+        // host never records or logs an unsafe guest string into the telemetry pipeline. (Cardinality — how
+        // MANY names — is Cedar's authorization, not here.)
+        for sample in &samples {
+            if let Err(msg) = Self::safety_check(sample) {
+                return EffectOutcome::err(msg);
             }
         }
 
-        // Record under the reducer's own name (get-or-register the cached handle). An unknown kind → PERMANENT.
-        if let Err(outcome) = self.record(&sample) {
-            return outcome;
+        // Record each under the reducer's own name (get-or-register the cached handle). An unknown kind →
+        // PERMANENT (checked per-sample in `record`; the safety pass above already validated every sample, so
+        // a mid-batch kind error still hasn't recorded anything unsafe — but note it CAN partially record
+        // valid-kind samples before a later unknown-kind one; acceptable since all passed safety + an unknown
+        // kind is a reducer bug, not a safety issue).
+        for sample in &samples {
+            if let Err(outcome) = self.record(sample) {
+                return outcome;
+            }
         }
         // Recorded — fire-and-forget: Ok(None) acks the publish (no result payload for the reducer to fold).
         EffectOutcome::Ok(None)
@@ -239,7 +293,7 @@ mod tests {
     use super::*;
     use cdz_kernel::effect::Timeliness;
     use cdz_kernel::event::Retryability;
-    use cdz_kernel::event_ast::encode_metric_publish;
+    use cdz_kernel::event_ast::{encode_metric_publish, encode_metrics_publish};
 
     fn publish_req(sample: &MetricSample) -> EffectRequest {
         EffectRequest::new_with_family(
@@ -250,11 +304,22 @@ mod tests {
         )
     }
 
+    /// A metric/publish effect carrying a BATCH payload (metrics-publish, Vec<MetricSample>).
+    fn batch_req(samples: &[MetricSample]) -> EffectRequest {
+        EffectRequest::new_with_family(
+            effect_ct::METRIC_PUBLISH,
+            "batch".to_string(),
+            Some(Payload::Inline(encode_metrics_publish(samples).into())),
+            Timeliness::Interactive,
+        )
+    }
+
     fn sample(name: &str, kind: &str, value: f64) -> MetricSample {
         MetricSample {
             name: name.into(),
             kind: kind.into(),
             value,
+            unit: String::new(),
             labels: vec![],
         }
     }
@@ -333,6 +398,7 @@ mod tests {
             name: "agent.calls".into(),
             kind: "counter".into(),
             value: 1.0,
+            unit: String::new(),
             labels: vec![
                 ("role".into(), "builder".into()),
                 ("ok".into(), "true".into()),
@@ -476,5 +542,91 @@ mod tests {
         assert!(
             matches!(exec.perform(&garbage, Hash::of(b"k")).await, EffectOutcome::Err { message, .. } if message.contains("did not decode"))
         );
+    }
+
+    #[tokio::test]
+    async fn a_reducer_supplied_unit_maps_to_the_registry_unit() {
+        // The reducer-supplied unit rides through + maps to the Registry Unit enum (display metadata on the
+        // handle; the value is unchanged). We can't read the unit back out (drain-on-report, no getter), so
+        // assert the publish RECORDS cleanly for each known unit + that unit_for maps as specified.
+        let registry = crate::metrics::Registry::new();
+        let mut exec = MetricExecutor::new(registry);
+        for (unit, kind) in [
+            ("count", "counter"),
+            ("bytes", "gauge"),
+            ("milliseconds", "timing"),
+            ("seconds", "timing"),
+            ("percent", "gauge"),
+            ("", "counter"),         // unspecified → kind default
+            ("furlongs", "counter"), // unknown → unspecified, NOT an error
+        ] {
+            let mut s = sample(&format!("m.{unit}.{kind}"), kind, 1.0);
+            s.unit = unit.into();
+            let out = exec.perform(&publish_req(&s), Hash::of(b"k")).await;
+            assert!(
+                matches!(out, EffectOutcome::Ok(None)),
+                "unit {unit:?} on a {kind} records cleanly (unknown unit is not an error), got {out:?}"
+            );
+        }
+        // unit_for mapping (no Millisecond variant → ms maps to Microsecond; unknown → None).
+        assert_eq!(MetricExecutor::unit_for(""), None);
+        assert_eq!(MetricExecutor::unit_for("bytes"), Some(Unit::Byte));
+        assert_eq!(
+            MetricExecutor::unit_for("milliseconds"),
+            Some(Unit::Microsecond)
+        );
+        assert_eq!(MetricExecutor::unit_for("seconds"), Some(Unit::Second));
+        assert_eq!(MetricExecutor::unit_for("percent"), Some(Unit::Percent));
+        assert_eq!(MetricExecutor::unit_for("furlongs"), None);
+    }
+
+    #[tokio::test]
+    async fn a_batch_publish_records_every_sample_and_a_bad_sample_rejects_the_whole() {
+        let registry = crate::metrics::Registry::new();
+        let mut exec = MetricExecutor::new(registry);
+        // A batch of 3 distinct metrics records all 3 (each its own cached series).
+        let batch = [
+            sample("agent.turns", "counter", 2.0),
+            sample("agent.queue", "gauge", 5.0),
+            sample("agent.latency", "timing", 12.0),
+        ];
+        let out = exec.perform(&batch_req(&batch), Hash::of(b"k")).await;
+        assert!(
+            matches!(out, EffectOutcome::Ok(None)),
+            "batch records, got {out:?}"
+        );
+        assert_eq!(
+            exec.cache.len(),
+            3,
+            "each batch sample is its own cached series"
+        );
+        // A batch with ONE unsafe sample rejects the WHOLE publish (all-or-nothing) — and records NONE of it
+        // (cache unchanged from the 3 above).
+        let bad_batch = [
+            sample("agent.ok", "counter", 1.0),
+            sample("bad:name", "counter", 1.0), // unsafe (':' corrupts a statsd line)
+        ];
+        let out = exec.perform(&batch_req(&bad_batch), Hash::of(b"k")).await;
+        assert!(
+            matches!(&out, EffectOutcome::Err { message, retryability } if *retryability == Retryability::Permanent && message.contains("unsafe chars")),
+            "a batch with an unsafe sample is rejected whole, got {out:?}"
+        );
+        assert_eq!(
+            exec.cache.len(),
+            3,
+            "a rejected batch records NONE of its samples (no half-recorded batch)"
+        );
+        // A SINGLE (non-batch) metric-publish payload still works (back-compat fallback).
+        let out = exec
+            .perform(
+                &publish_req(&sample("agent.single", "counter", 1.0)),
+                Hash::of(b"k"),
+            )
+            .await;
+        assert!(
+            matches!(out, EffectOutcome::Ok(None)),
+            "single-sample publish still works"
+        );
+        assert_eq!(exec.cache.len(), 4);
     }
 }
