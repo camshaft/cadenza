@@ -79,13 +79,16 @@ export default function PlatformSafety() {
         a language contains an <C>unsafe</C> operation behind a checked interface.
       </P>
 
-      <H2>One gate, checked before every effect</H2>
+      <H2>One gate, checked before every world-effect</H2>
       <P>
-        That gate is a real, concrete check, not a vague promise. Before the kernel dispatches any effect, it
-        resolves the effect's <em>target</em> (the exact resource being touched) and asks the authorizer a
-        single yes-or-no question: may this agent, with the capabilities it holds, discharge this effect on
-        that target? The answer decides whether the effect runs at all, and <em>deny wins</em>, so no grant
-        can override an explicit denial.
+        That gate is a real, concrete check, not a vague promise. Before the kernel dispatches any effect
+        that <em>acts on the world</em>, running a command, fetching a URL, calling a model, touching the
+        filesystem or store, it resolves the effect's <em>target</em> (the exact resource being touched) and
+        asks the authorizer a single yes-or-no question: may this agent, with the capabilities it holds,
+        discharge this effect on that target? The answer decides whether the effect runs at all, and{" "}
+        <em>deny wins</em>, so no grant can override an explicit denial. (A small class of read-only control
+        queries, an agent asking what capabilities it holds, say, are exempt: they don't act on anything, so
+        there's nothing to authorize.)
       </P>
       <P>
         A capability isn't a coarse on-off flag; it names <em>which</em> resources it covers by a predicate.
@@ -95,9 +98,11 @@ export default function PlatformSafety() {
         those predicates rather than trusting a name.
       </P>
       <Note>
-        every effect → resolve its target → authorizer checks (capability predicate matches? no deny-rule?) → run or refuse
+        every world-effect → resolve its target → authorizer checks (capability predicate matches? no deny-rule?) → run or refuse
         <br />
         capability predicates scope reach: exact resource · one-of a set · a host · a path prefix · an agent + its descendants
+        <br />
+        read-only control queries (e.g. "what can I do?") are exempt, since they act on nothing
       </Note>
       <H2>The rule-maker is itself swappable</H2>
       <P>
