@@ -6097,3 +6097,6 @@ pass	identical PURE reads of a perform-built list — safe to share, values agre
 pass	a region's RESULT seeds a second same-effect region with a DIFFERENT arm shape
 pass	a PARAMETERIZED handler helper chained through itself — the step size is a function param
 pass	the SAME op name on two DIFFERENT effects — each qualified perform routes to its own handler
+pass	a SYMBOL-keyed Map built from performs — interned keys look up across separate interns
+pass	a SET of arm-interned symbols dedups across dispatches — warm appears twice, stored once
+pass	a symbol round-trip between TWO ops of one effect — interned by one, judged by the other
