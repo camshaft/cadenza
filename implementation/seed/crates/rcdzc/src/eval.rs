@@ -3621,6 +3621,18 @@ pub fn encode_typeval(db: &mut Db, ty: &crate::ty::Ty) -> StructId {
     db.push_list(vec![head, payload])
 }
 
+/// Encode a `Ty` into its BARE cdzast sub-AST — the structural payload alone (`(-> p r)` / `(List
+/// elem)` / `(Record (field T)…)` / scalar), WITHOUT the `(typeval …)` wrapper `encode_typeval` adds.
+/// For a consumer that already tags the type by POSITION and wants the clean structural subtree —
+/// cadenza-docs I2 attaches `(ty <this>)` to each doc-item (the `(ty …)` head already marks it a type,
+/// so the `(typeval …)` value-encoding wrapper would be redundant noise: `(ty (-> …))`, not `(ty
+/// (typeval (-> …)))`). Same total encoding + canonical head-names as `encode_typeval`'s payload (they
+/// share `encode_ty`), so it round-trips through `resolve::decode_ty` identically. (v-syntax hand-off,
+/// cadenza-docs I2 resolved-type projection.)
+pub fn encode_ty_payload(db: &mut Db, ty: &crate::ty::Ty) -> StructId {
+    encode_ty(db, ty)
+}
+
 /// Encode a `Ty` into an arena subtree (the payload of a `(typeval …)` node). The dual `decode_ty`
 /// lives in `resolve` where a `(typeval …)` node is read.
 fn encode_ty(db: &mut Db, ty: &crate::ty::Ty) -> StructId {
