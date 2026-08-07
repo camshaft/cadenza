@@ -166,6 +166,15 @@ pub struct LiveExecutorSet {
     /// by that session's id — so a deployed session can perform lifecycle effects. `None` (the default / a
     /// pure control-plane build with no loop channel) = no lifecycle executor is wired.
     lifecycle: Option<crate::lifecycle::LifecycleChannel>,
+    /// The CONTENT-ADDRESSED blob store bucket/prefix for the `blob/put`+`blob/get` executor (cadenza-docs
+    /// I3), if the daemon configured an S3 blob backend. When set, `build` wires a per-session
+    /// [`BlobExecutor`](crate::BlobExecutor) over a fresh [`S3BlobStore`](crate::S3BlobStore) pointing at this
+    /// SAME bucket the reducer components use (one CAS — hash-keyed, so a doc-AST blob + a reducer component
+    /// can't collide; corpus-bugfix PM ruling). `None` = no blob executor wired (a build with no S3 blob
+    /// config, or without `live-aws-storage`). Behind `live-aws-storage` (the S3 store's feature); the field
+    /// exists only when BOTH `live-net` (this struct) AND `live-aws-storage` are compiled.
+    #[cfg(feature = "live-aws-storage")]
+    blob_store: Option<(String, String)>,
 }
 
 #[cfg(feature = "live-net")]
@@ -186,7 +195,23 @@ impl LiveExecutorSet {
             metrics: Arc::new(EffectMetrics::new(registry)),
             registry: registry.clone(),
             lifecycle: None,
+            #[cfg(feature = "live-aws-storage")]
+            blob_store: None,
         })
+    }
+
+    /// Wire the CONTENT-ADDRESSED blob store (bucket + key prefix) for the `blob/put`+`blob/get` executor
+    /// (cadenza-docs I3). Called ONCE at daemon boot when the `[blob]` backend is S3, with the SAME
+    /// bucket/prefix the reducer-component store uses (one CAS — corpus-bugfix PM ruling: docs + components
+    /// coexist by hash, no separate doc bucket). Each `build` then constructs a fresh per-session
+    /// [`S3BlobStore`](crate::S3BlobStore) over this bucket (a stateless client keyed to the bucket — cheap
+    /// clone, like the log sink) + wires [`BlobExecutor`](crate::BlobExecutor) under `blob/put`+`blob/get`,
+    /// Cedar-gated (the `memory/`-write grant governs which docs a session may publish). Without this, a built
+    /// session serves no blob effects.
+    #[cfg(feature = "live-aws-storage")]
+    pub fn with_blob_store(mut self, bucket: impl Into<String>, prefix: impl Into<String>) -> Self {
+        self.blob_store = Some((bucket.into(), prefix.into()));
+        self
     }
 
     /// Wire the loop's lifecycle channel so each installed session gets the `lifecycle/*` executors
@@ -293,7 +318,7 @@ impl ExecutorSetBuilder for LiveExecutorSet {
         // EXACT family, so one executor per verb (each holds a clone of the channel + the owner id). NO host
         // policy — whether a session MAY lifecycle a target is the Cedar authority (I6 DescendantOf), gated
         // before dispatch. `None` channel (control-plane/test build) = no lifecycle effect served.
-        if let Some(lifecycle) = &self.lifecycle {
+        let composite = if let Some(lifecycle) = &self.lifecycle {
             let mut c = composite;
             for fam in [
                 effect_ct::LIFECYCLE_SPAWN,
@@ -316,7 +341,30 @@ impl ExecutorSetBuilder for LiveExecutorSet {
             c
         } else {
             composite
-        }
+        };
+        // I3: wire the `blob/put`+`blob/get` executor when an S3 blob store is configured — a per-session
+        // S3BlobStore over the SAME content-addressed bucket the reducer components use (one CAS; corpus-bugfix
+        // PM ruling). Cedar gates WHICH blobs a session may put/get on the effect's resolved target (the
+        // `memory/`-write grant for docs), so wiring the mechanism for all is safe — same posture as shell/fs.
+        // The CompositeExecutor routes by EXACT family, so register the (unit-generic) BlobExecutor under each
+        // blob verb. NOT metered (the blob executor holds a store, not a leaf transport — a following slice can
+        // add metering; the store's own errors already fold as classified EffectOutcome::Err).
+        #[cfg(feature = "live-aws-storage")]
+        let composite = {
+            let mut c = composite;
+            if let Some((bucket, prefix)) = &self.blob_store {
+                for fam in [effect_ct::BLOB_PUT, effect_ct::BLOB_GET] {
+                    c = c.with_effect(
+                        fam,
+                        Box::new(crate::BlobExecutor::new(
+                            crate::S3BlobStore::new(bucket.clone(), prefix.clone()).await,
+                        )),
+                    );
+                }
+            }
+            c
+        };
+        composite
     }
 }
 
