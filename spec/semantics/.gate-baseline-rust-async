@@ -6161,3 +6161,11 @@ pass	ti5 a FOREIGN outer perform inside the inner region — A advances inside B
 pass	ss1 a STRING handler state grows per dispatch — each arm returns the pre-growth length, growth is op-arg-branchy
 pass	ss2 string state grows across a DO sequence — discarded draws still advance the rope
 pass	ss3 nested SAME-effect handlers with independent STRING states — inner self-doubles, outer appends
+pass	gl1 the let-lifted pure-guard equivalent of the gp1 dispatch shape — the pre-bound guard draw advances the state the arms read
+pass	gl2 the let-lifted pure-guard equivalent of the gp2 cascade — both guard draws pre-bound, all three arms reachable
+pass	mk1 a MAP handler state keyed by the op ARGUMENT — per-key counters, lookup-or-default then insert per dispatch
+pass	mk2 map keys DERIVED from prior draws — n=1 collides the derived key with the first insert, shrinking the map
+pass	mk3 the arm SHRINKS the map state via remove — re-removing the same key is idempotent, a missing key is a no-op
+pass	tp1 TWO ops each own a tuple-state SLOT — lo advances field 0, hi doubles field 1, interleaved
+pass	tp2 a SWAP op exchanges the tuple-state slots — interleaved readers observe the exchange
+pass	tp3 a NESTED tuple state ((a b) c) — the arm rebuilds the inner Fibonacci pair and bumps the outer counter per dispatch

@@ -14568,3 +14568,127 @@
                       (* 1000 (Log.emit))))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 3122 Int64)))
+
+;; ── let-lifted pure-guard dispatch coverage (breaker gl; restores the gp shapes post-CDZ0407) ────
+;; guards-side-effect-free made a perform in a guard cond CDZ0407 (the gp1/gp2 pins above became
+;; reject witnesses). These restore the DISPATCH-semantics coverage in the sanctioned form the
+;; CDZ0407 text teaches: bind the guard's draw(s) to lets evaluated once BEFORE the match, guard
+;; on the bound values. gl2 also makes the formerly-declined multi-guard cascade expressible.
+
+(case "gl1 the let-lifted pure-guard equivalent of the gp1 dispatch shape — the pre-bound guard draw advances the state the arms read"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (+ s 1))))
+                (let ((k (St.next)))
+                  (let ((g (St.next)))
+                    (match k
+                      ((guard _x (> g 6)) (+ 100 (St.next)))
+                      (_o (* 10 (St.next))))))))
+            (export main)))
+  (call   main (: 6 Int64)) (output (: 108 Int64))
+  (call   main (: 2 Int64)) (output (: 40 Int64)))
+
+(case "gl2 the let-lifted pure-guard equivalent of the gp2 cascade — both guard draws pre-bound, all three arms reachable"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (* s 2))))
+                (let ((k (St.next)))
+                  (let ((g1 (St.next)))
+                    (let ((g2 (St.next)))
+                      (match k
+                        ((guard _a (> g1 50)) 111)
+                        ((guard _b (> g2 10)) (+ 200 (St.next)))
+                        (_o (- 0 (St.next)))))))))
+            (export main)))
+  (call   main (: 6 Int64)) (output (: 248 Int64))
+  (call   main (: 30 Int64)) (output (: 111 Int64))
+  (call   main (: 1 Int64)) (output (: -8 Int64)))
+
+;; ── MAP handler state keyed by op ARGUMENTS (breaker mk) ─────────────────────────────────────────
+;; The map-state pins above enumerate/measure; these pin KEYED dynamics: mk1 = per-key counters
+;; (lookup-or-default then insert, key = the op arg); mk2 = keys DERIVED from prior draws with a
+;; deliberate collision path (n=1 makes the derived key hit the first insert); mk3 = the arm
+;; SHRINKS the state via remove (idempotent re-remove, missing-key no-op).
+
+(case "mk1 a MAP handler state keyed by the op ARGUMENT — per-key counters, lookup-or-default then insert per dispatch"
+  (input  (do
+            (effect Reg (op touch (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle Reg (map (1 10))
+                ((touch (k) s (resume (match (Map.lookup s k) ((Some v) v) ((None) 0))
+                                      (Map.insert s k (+ (match (Map.lookup s k) ((Some v) v) ((None) 0)) 1)))))
+                (+ (Reg.touch n) (+ (* 10 (Reg.touch n)) (* 100 (Reg.touch 1))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 1010 Int64))
+  (call   main (: 1 Int64)) (output (: 1320 Int64)))
+
+(case "mk2 map keys DERIVED from prior draws — n=1 collides the derived key with the first insert, shrinking the map"
+  (input  (do
+            (effect Reg (op touch (-> Int64 Int64)) (op size (-> Int64)))
+            (def (main (: n Int64))
+              (handle Reg (map)
+                ((touch (k) s (resume (Map.len s) (Map.insert s k k)))
+                 (size () s (resume (Map.len s) s)))
+                (let ((a (Reg.touch n)))
+                  (let ((b (Reg.touch (+ a 1))))
+                    (+ (* 100 (Reg.size)) (+ (* 10 b) (Reg.touch n)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 212 Int64))
+  (call   main (: 1 Int64)) (output (: 111 Int64)))
+
+(case "mk3 the arm SHRINKS the map state via remove — re-removing the same key is idempotent, a missing key is a no-op"
+  (input  (do
+            (effect Reg (op drop (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle Reg (map (1 11) (2 22) (3 33))
+                ((drop (k) s (resume (Map.len (Map.remove s k)) (Map.remove s k))))
+                (+ (Reg.drop n) (+ (* 10 (Reg.drop n)) (* 100 (Reg.drop 3))))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 122 Int64))
+  (call   main (: 9 Int64)) (output (: 233 Int64)))
+
+;; ── tuple-state SLOT dynamics (breaker tp) ───────────────────────────────────────────────────────
+;; The tuple-state pin above advances one slot with the other held; these pin slot DYNAMICS:
+;; tp1 = two ops each OWN a slot (lo +1s field 0, hi doubles field 1); tp2 = a SWAP op exchanges
+;; the slots and interleaved readers observe it; tp3 = a NESTED tuple ((a b) c) whose arm rebuilds
+;; the inner Fibonacci pair while bumping the outer counter.
+
+(case "tp1 TWO ops each own a tuple-state SLOT — lo advances field 0, hi doubles field 1, interleaved"
+  (input  (do
+            (effect Tw (op lo (-> Int64)) (op hi (-> Int64)))
+            (def (main (: n Int64))
+              (handle Tw (tuple n (* n 10))
+                ((lo () s (resume (. s 0) (tuple (+ (. s 0) 1) (. s 1))))
+                 (hi () s (resume (. s 1) (tuple (. s 0) (* (. s 1) 2)))))
+                (+ (Tw.lo) (+ (Tw.hi) (+ (Tw.lo) (Tw.hi))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 161 Int64))
+  (call   main (: 1 Int64)) (output (: 33 Int64)))
+
+(case "tp2 a SWAP op exchanges the tuple-state slots — interleaved readers observe the exchange"
+  (input  (do
+            (effect Tw (op rd (-> Int64)) (op swap (-> Int64)))
+            (def (main (: n Int64))
+              (handle Tw (tuple n 100)
+                ((rd () s (resume (. s 0) (tuple (+ (. s 0) 1) (. s 1))))
+                 (swap () s (resume (. s 1) (tuple (. s 1) (. s 0)))))
+                (+ (Tw.rd) (+ (* 10 (Tw.swap)) (+ (Tw.rd) (* 1000 (Tw.swap)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 7105 Int64))
+  (call   main (: 0 Int64)) (output (: 2100 Int64)))
+
+(case "tp3 a NESTED tuple state ((a b) c) — the arm rebuilds the inner Fibonacci pair and bumps the outer counter per dispatch"
+  (input  (do
+            (effect Tw (op step (-> Int64)))
+            (def (main (: n Int64))
+              (handle Tw (tuple (tuple n 1) 100)
+                ((step () s (resume (+ (. (. s 0) 0) (. s 1))
+                                    (tuple (tuple (+ (. (. s 0) 0) (. (. s 0) 1)) (. (. s 0) 0)) (+ (. s 1) 1)))))
+                (+ (Tw.step) (+ (Tw.step) (Tw.step)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 325 Int64))
+  (call   main (: 0 Int64)) (output (: 305 Int64)))
