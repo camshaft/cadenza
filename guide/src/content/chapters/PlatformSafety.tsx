@@ -79,21 +79,40 @@ export default function PlatformSafety() {
         a language contains an <C>unsafe</C> operation behind a checked interface.
       </P>
 
-      <H2>The rule-maker is itself swappable</H2>
+      <H2>One gate, checked before every effect</H2>
       <P>
-        The kernel doesn't hardcode the policy that decides what's allowed. It delegates each decision to an{" "}
-        <em>authorizer</em>, passing it the requested effect and the agent's capabilities and enforcing
-        whatever it answers. That delegation <em>seam</em> already exists: the kernel calls the authorizer
-        through a narrow interface, never the concrete engine, so the decision-maker can be replaced without
-        touching the kernel core. Today it holds a simple capability-set check; the design end-state, still
-        ahead, swaps in a standard policy engine (Cedar) as its own content-addressed component, referenced by
-        hash from the log.
+        That gate is a real, concrete check, not a vague promise. Before the kernel dispatches any effect, it
+        resolves the effect's <em>target</em> (the exact resource being touched) and asks the authorizer a
+        single yes-or-no question: may this agent, with the capabilities it holds, discharge this effect on
+        that target? The answer decides whether the effect runs at all, and <em>deny wins</em>, so no grant
+        can override an explicit denial.
       </P>
       <P>
-        The payoff is that the security policy is data, not baked-in code: swapping the authorizer or
-        changing a policy is an authorized, logged event, not a redeploy, so policy changes are auditable
-        and versioned like any other content, and the kernel stays true to its one discipline of knowing
-        nothing. Next, how the kernel runs many agents at once without losing any of this.
+        A capability isn't a coarse on-off flag; it names <em>which</em> resources it covers by a predicate.
+        A grant can match one exact resource, any of a fixed set, a host, a path prefix, or, for supervision,
+        an agent and all its descendants. So "may run <C>date</C>" and "may run any command" are different
+        capabilities with different reach, and the authorizer compares the effect's resolved target against
+        those predicates rather than trusting a name.
+      </P>
+      <Note>
+        every effect → resolve its target → authorizer checks (capability predicate matches? no deny-rule?) → run or refuse
+        <br />
+        capability predicates scope reach: exact resource · one-of a set · a host · a path prefix · an agent + its descendants
+      </Note>
+      <H2>The rule-maker is itself swappable</H2>
+      <P>
+        The kernel doesn't hardcode that policy. It calls the authorizer through a narrow interface, never a
+        concrete engine, so the decision-maker can be replaced without touching the kernel core. Today that
+        seam holds a built-in authorizer, the capability-and-deny-rule check just described. The design
+        direction, still ahead, is to drop a standard policy engine (Cedar) into the very same seam as its own
+        content-addressed component, referenced by hash from the log, so richer policies become possible
+        without the kernel learning anything new.
+      </P>
+      <P>
+        Either way the payoff holds: the security policy is data, not baked-in code, so swapping the
+        authorizer or changing a policy is an authorized, logged event rather than a redeploy, auditable and
+        versioned like any other content, and the kernel stays true to its one discipline of knowing nothing.
+        Next, how the kernel runs many agents at once without losing any of this.
       </P>
     </article>
   );
