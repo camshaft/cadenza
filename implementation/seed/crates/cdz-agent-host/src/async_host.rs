@@ -154,8 +154,14 @@ async fn apply_lifecycle_ops(
     while let Ok(op) = lifecycle_rx.try_recv() {
         match op {
             LifecycleOp::Terminate { target, by, reason } => {
-                let by_hash =
-                    Hash::from_hex(by.as_str()).unwrap_or_else(|| Hash::of(by.as_str().as_bytes()));
+                // `by` = the controller's genesis hash (recorded as who terminated). Resolve it by the
+                // controller session's genesis_hash() (content lookup — works for a vanity id), falling back
+                // to from_hex for a genesis-hex id no longer registered (§tick-#784: don't assume hex==id).
+                let by_hash = host
+                    .get(&by)
+                    .map(|s| s.genesis_hash())
+                    .or_else(|| Hash::from_hex(by.as_str()))
+                    .unwrap_or_else(|| Hash::of(by.as_str().as_bytes()));
                 match host.terminate(&target, by_hash, reason).await {
                     // Terminated, or a benign no-op (already-terminated FoldRefused / absent None) — nothing
                     // more to do; the durable marker (if fresh) + registry removal are done inside terminate.
@@ -194,11 +200,18 @@ async fn apply_lifecycle_ops(
                     );
                     continue;
                 };
-                // The parent genesis hash = the parent SessionId parsed back to a Hash (its id IS its
-                // genesis-hash-hex). A non-hex parent can't provide provenance → skip loud (the executor
-                // already rejects this, so it shouldn't reach here).
-                let Some(parent_genesis) = Hash::from_hex(parent.as_str()) else {
-                    tracing::warn!(parent = %parent.as_str(), "lifecycle/spawn: parent id not genesis-hash-hex — skipping");
+                // The parent genesis hash = the parent SESSION's genesis_hash() (content lookup via the
+                // registry — works for a VANITY-id parent, e.g. a "concierge" supervisor). This MUST match
+                // the child_id the executor pre-computed (both derive from the same parent genesis), so the
+                // loop registers the child under the id the parent's reducer already folded. Fall back to
+                // from_hex for a genesis-hex parent no longer registered; a truly-unresolvable parent skips
+                // loud (§tick-#784: resolve provenance by genesis-hash, never assume hex==id).
+                let Some(parent_genesis) = host
+                    .get(&parent)
+                    .map(|s| s.genesis_hash())
+                    .or_else(|| Hash::from_hex(parent.as_str()))
+                else {
+                    tracing::warn!(parent = %parent.as_str(), "lifecycle/spawn: parent genesis unresolvable (not registered + not genesis-hex) — skipping");
                     continue;
                 };
                 match factory
@@ -1250,6 +1263,7 @@ mod tests {
                 Box::new(crate::LifecycleExecutor::new(
                     async_host.lifecycle_channel(),
                     SessionId::new("controller"),
+                    Hash::of(b"controller"),
                 )),
             ),
         );
@@ -1332,6 +1346,7 @@ mod tests {
                 Box::new(crate::LifecycleExecutor::new(
                     async_host.lifecycle_channel(),
                     SessionId::new("controller"),
+                    Hash::of(b"controller"),
                 )),
             ),
         );
@@ -1405,6 +1420,11 @@ mod tests {
                 Box::new(crate::LifecycleExecutor::new(
                     async_host.lifecycle_channel(),
                     parent_id.clone(),
+                    cdz_kernel::kernel::Session::derive_genesis_hash(
+                        parent_reducer,
+                        parent_nonce,
+                        None,
+                    ),
                 )),
             ),
         );
@@ -1509,6 +1529,7 @@ mod tests {
                     Box::new(crate::LifecycleExecutor::new(
                         async_host.lifecycle_channel(),
                         SessionId::new("controller"),
+                        Hash::of(b"controller"),
                     )),
                 )
                 .with_effect(
@@ -1516,6 +1537,7 @@ mod tests {
                     Box::new(crate::LifecycleExecutor::new(
                         async_host.lifecycle_channel(),
                         SessionId::new("controller"),
+                        Hash::of(b"controller"),
                     )),
                 ),
         )
@@ -1757,6 +1779,7 @@ mod tests {
                 Box::new(crate::LifecycleExecutor::new(
                     async_host.lifecycle_channel(),
                     SessionId::new("controller-b"),
+                    Hash::of(b"controller-b"),
                 )),
             ),
         );
@@ -1870,6 +1893,7 @@ mod tests {
                 Box::new(crate::LifecycleExecutor::new(
                     async_host.lifecycle_channel(),
                     SessionId::new("killer"),
+                    Hash::of(b"killer"),
                 )),
             ),
         );

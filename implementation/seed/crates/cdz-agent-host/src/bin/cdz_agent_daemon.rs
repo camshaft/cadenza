@@ -389,9 +389,13 @@ async fn main() -> std::process::ExitCode {
 
         // Use the SAME lifecycle channel the session executors were wired with (not the internally-minted one)
         // so a session's lifecycle op reaches this loop.
-        let host =
-            AsyncAgentHost::with_factory_and_lifecycle(agent_host, factory, lifecycle_tx, lifecycle_rx)
-                .with_admin_authz(Box::new(AllowList::allow_all_for_local_admin()));
+        let host = AsyncAgentHost::with_factory_and_lifecycle(
+            agent_host,
+            factory,
+            lifecycle_tx,
+            lifecycle_rx,
+        )
+        .with_admin_authz(Box::new(AllowList::allow_all_for_local_admin()));
         // Drop our inbox sender so an idle inbox doesn't hold the loop open; the admin socket's AdminChannel
         // is what keeps the loop alive as a control plane.
         drop(host.inbox());
