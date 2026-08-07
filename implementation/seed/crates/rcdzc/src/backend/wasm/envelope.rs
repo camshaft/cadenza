@@ -8094,7 +8094,7 @@ fn component_instantiate_roundtrip_item(
 /// `(self:borrow<0>)->list u8` → 5; imported `make` → func 0; imported `encode` → func 1; RE-EXPORTED
 /// resource → type 6; `own<6>` → 7; make-exp-ft → 8; `borrow<6>` → 9, `list u8` → 10, encode-exp-ft → 11.
 ///
-/// ⚠ NOT yet wired in: the `borrow<t>` encode is the correct R2-dtor fix (so the host keeps ownership
+/// WARNING: NOT yet wired in: the `borrow<t>` encode is the correct R2-dtor fix (so the host keeps ownership
 /// and drops → dtor fires), but it currently regresses the composed walk under wasmtime 37 with an
 /// un-root-caused host-side trap in encode. Kept here (byte-layout worked out, byte-identity verified
 /// against the ComponentBuilder borrow oracle) as scaffolding for the follow-up; the live path still

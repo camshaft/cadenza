@@ -1030,7 +1030,7 @@ impl<T: 'static> HeapHandle<T> {
 
     /// `sum-new(disc, payload) -> u32` (idx 10): build a sum handle with discriminant `disc` and payload
     /// handle `payload` — an `option` is `sum-new(0, some_handle)` / `sum-new(1, unit_handle)`; a nullary
-    /// variant carries the UNIT value as its payload. ⚠ the runtime's unit is the INLINE-UNIT handle
+    /// variant carries the UNIT value as its payload. WARNING: the runtime's unit is the INLINE-UNIT handle
     /// (`IMM_UNIT`), NOT handle 0 (a NULL handle/token) — obtain it via [`HeapHandle::unit`] (`arr-alloc(0)`,
     /// the empty array = inline unit, per runtime.wit "a nullary variant carries the unit value (an arr of
     /// length 0)"). Passing 0 would build a sum with a NULL payload = a malformed value.
@@ -4794,7 +4794,7 @@ mod tests {
     // of two artifacts. Synthetic WAT (no wit-bindgen toolchain): the core `run` lays out the record
     // array in linear memory and returns the (ptr,len) the canon lift reads. Exercises the WHOLE invoke
     // decode: navigate the export → call → lift the artifact list → decode records/strings/byte-lists.
-    // 🪤 An exported func referencing a named record type requires that TYPE to be EXPORTED first (aliased),
+    // TRAP: An exported func referencing a named record type requires that TYPE to be EXPORTED first (aliased),
     // else `Component::new` rejects it "func not valid to be used as export".
     fn two_artifact_component() -> Vec<u8> {
         wat::parse_str(

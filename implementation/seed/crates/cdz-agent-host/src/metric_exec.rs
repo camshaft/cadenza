@@ -13,7 +13,7 @@
 //! **The host's job is MECHANISM + a SAFETY BOUND (operator standing-order: host = mechanism, policy = wasm).**
 //! - MECHANISM: decode the sample, map `kind` → the registry's metric type (counter → [`Counter::increment`],
 //!   gauge → [`Gauge::set`], timing → [`Summary::record_value`]), record it.
-//! - 🔴 SAFETY BOUND (why this executor holds state): a metric name/label is GUEST-CONTROLLED and ships
+//! - SAFETY BOUND (why this executor holds state): a metric name/label is GUEST-CONTROLLED and ships
 //!   OFF-BOX to the metric backends. Two hazards the host must bound (a bound is mechanism, not policy) —
 //!   CARDINALITY: an unbounded set of distinct guest names/labels is a cardinality bomb (registry bloat +
 //!   backend cost), so the executor caps the number of DISTINCT metric names it admits per session; and
@@ -135,7 +135,7 @@ impl Executor for MetricExecutor {
             }
         };
 
-        // 🔴 GUEST-STRING SAFETY: the name + every label key/val must be safe to carry off-box (bounded
+        // SAFETY: GUEST-STRING SAFETY: the name + every label key/val must be safe to carry off-box (bounded
         // charset + length). Reject the whole publish PERMANENT otherwise — never record or log an unsafe
         // guest string into the telemetry pipeline.
         if !Self::is_safe_str(&sample.name) {
@@ -151,7 +151,7 @@ impl Executor for MetricExecutor {
             }
         }
 
-        // 🔴 CARDINALITY BOUND: admit a new distinct name only under the cap; an already-admitted name always
+        // SAFETY: CARDINALITY BOUND: admit a new distinct name only under the cap; an already-admitted name always
         // records. This bounds the guest's contribution to registry/backend cardinality.
         if !self.admitted.contains(&sample.name) {
             if self.admitted.len() >= MAX_DISTINCT_NAMES {

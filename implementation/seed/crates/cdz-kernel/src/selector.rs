@@ -10,7 +10,7 @@
 //! log) wire in at the effect-integration slice, which pairs the CAS write with v-agent-harness-host's
 //! store. Keeping the decision pure makes it fully unit-testable and keeps the I/O seam separate.
 //!
-//! 🔑 KEYSTONE INVARIANT (operator seq 109): the host/kernel knows NOTHING about the compiler or any
+//! KEYSTONE INVARIANT (operator seq 109): the host/kernel knows NOTHING about the compiler or any
 //! program — its entire model is (1) a method got invoked, (2) a response came back, (3) outputs get
 //! routed to locations. So the selector matches ONLY on an artifact's OPAQUE `kind`/`name` strings; it
 //! never encodes "this is a .wasm from the compiler" or any program-specific knowledge. The CALLER

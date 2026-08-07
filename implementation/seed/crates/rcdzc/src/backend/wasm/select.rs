@@ -83,7 +83,7 @@ pub struct Emit {
     /// all BORROWING `Elem` reads — sound because `op_sum-payload` is TOTAL (never traps) and BORROWING (no
     /// refcount change), so computing it once when the arm is entered matches per-element re-walks exactly.
     ///
-    /// 🩸 The key carries the FULL prefix STEPS, NOT just its length: a TUPLE-OF-TWO-SUMS match
+    /// The key carries the FULL prefix STEPS, NOT just its length: a TUPLE-OF-TWO-SUMS match
     /// (`match (a, b) with (TArrow(a1,a2), TArrow(b1,b2)) => …`) produces TWO distinct prefixes of the SAME
     /// length off the SAME tuple scrutinee — `[Elem(0), Payload]` (a's payload) and `[Elem(1), Payload]`
     /// (b's payload). A length-only key `(scrutinee, 2)` COLLIDED them, so the second overwrote the first and
@@ -429,7 +429,7 @@ fn binding_escapes_dup_aware(
         // A reference to the binding: it escapes UNLESS this occurrence is a borrow (the operand of a
         // `Proj`, which `arr-get`-borrows). `tail_borrowed` is set by the `Proj` arm below for its
         // operand; every other occurrence (the result, a tuple element, a call arg) is consuming.
-        // ⚠ A CONSUMING occurrence that is a Perceus retain (`dup_sites`) does NOT escape: the `dup`
+        // WARNING: A CONSUMING occurrence that is a Perceus retain (`dup_sites`) does NOT escape: the `dup`
         // gave the consuming op its own reference, so the binding's slot reference survives + must be
         // reclaimed by the `let` drop (see the fn doc). Only applies when `dup_sites` is `Some`.
         Core::LocalRef { binder: b } => {
@@ -1095,7 +1095,7 @@ fn collect_row_op_field_dups(db: &mut Db, id: StructId, dup_sites: &mut HashSet<
                 // `get-int`/`get-bool`/…) and must NOT be dup'd (rc++ on a non-handle corrupts). The proj
                 // must root at THIS binder.
                 //
-                // ⚠ `get_op` returns `Ok(None)` for BOTH a heap handle AND `Ty::Unit` (the inline `IMM_UNIT`
+                // WARNING: `get_op` returns `Ok(None)` for BOTH a heap handle AND `Ty::Unit` (the inline `IMM_UNIT`
                 // sentinel — PR#914 Copilot): a Unit field-proj is `Drop`'d INLINE by the `Core::Proj`
                 // emitter (never reaches the dup branch), so marking it a dup site imports `dup` with no
                 // matching emit → breaks "import exactly the ops we call" (a spurious import that can perturb
@@ -1489,7 +1489,7 @@ fn cont_child_ids(cont: &crate::core::SumCont, cs: &mut Vec<StructId>) {
 /// (borrow-vs-consume) of each child mirrors [`binding_escapes`] exactly (its `tail_borrowed` = borrow).
 /// Does `binder` occur anywhere in the subtree at `id`? A CHEAP occurrence-only walk (a plain membership
 /// scan over `core_child_ids` — NO site marking, NO borrow/consume/liveness logic), used by `seq`'s
-/// pre-pass to decide whether a sibling references the binder. ⚠ It must NOT call `mark_binder_dups`: that
+/// pre-pass to decide whether a sibling references the binder. WARNING: It must NOT call `mark_binder_dups`: that
 /// full two-pass walk, invoked from every `seq` level's pre-pass, is EXPONENTIAL on a deeply-nested term
 /// (a `push(push(push(xs)))` chain re-walks its inner subtree once per enclosing level, 2^depth). This
 /// occurrence scan visits each node of the subtree ONCE per call (the enclosing `seq` levels make it
@@ -6218,7 +6218,7 @@ fn emit_tail(
             // SHELL RECLAIM (the tail twin of the non-tail `MatchSum` reclaim): deep-`drop` the owned
             // freshly-stashed boxed-sum shell after the arms (it is a dead temporary). Consuming child
             // extractions were `dup`'d upfront (`collect_shell_reclaim_child_dups`), so the deep drop nets
-            // correctly. ⚠ TAIL-SPECIFIC GUARD: skip the reclaim when ANY arm is a MEMBER TAIL-CALL
+            // correctly. WARNING: TAIL-SPECIFIC GUARD: skip the reclaim when ANY arm is a MEMBER TAIL-CALL
             // (`sum_cont_has_member_tail_call`) — that arm `br`s to the loop top and NEVER reaches the post-
             // match drop, so a drop here would (a) not run on the looping path (leak, harmless) but worse
             // (b) the shell slot is a fresh scratch above the params that the next iteration's scrutinee emit
@@ -6229,7 +6229,7 @@ fn emit_tail(
             let scrut_ty = type_of(db, scrutinee);
             let arms_tail_call =
                 matches!(tl, Some(t) if sum_cont_has_member_tail_call(db, &root, t.members));
-            // ⚠ SAFETY RESTRICTION (sread UAF fix, 2026-07-19): reclaim ONLY an ALL-SCALAR-payload shell —
+            // WARNING: SAFETY RESTRICTION (sread UAF fix, 2026-07-19): reclaim ONLY an ALL-SCALAR-payload shell —
             // same sound floor as the non-tail arm. The inc2 compound broadening was unsound for a child
             // BORROWED OUT via an aliasing op (`Map.lookup`/`List.at` return a handle aliasing into the shell
             // child; the deep drop then frees a still-read value → the sread OOB/unreachable UAF). A scalar
@@ -8574,7 +8574,7 @@ fn emit(
             scratch_ty.insert(val_slot, ValType::I32);
             scratch_ty.insert(map_slot, ValType::I32);
             // `map-lookup` BORROWS the map; if the map is an OWNED TEMPORARY (`Map.lookup (build …) k` — not
-            // a reused param/kept-local) it must be reclaimed or it LEAKS. ⚠ DELICATE ORDERING: the looked-up
+            // a reused param/kept-local) it must be reclaimed or it LEAKS. WARNING: DELICATE ORDERING: the looked-up
             // VALUE is stored borrowed in `val_slot` and `dup`'d in the Some arm — so the map's drop must come
             // AFTER that dup (THEN), and in the None arm (val is NULL, nothing to preserve). Dropping right
             // after `map-lookup` would free the value `val_slot` still borrows → a UAF. Stash the map now.
@@ -9524,7 +9524,7 @@ fn emit(
             // Unit is never a live-compound FBIP target, so it skips the child-dup/retain logic below.
             let unit_elem =
                 scalar_elem.is_none() && matches!(type_of(db, id).strip_nominal(), Ty::Unit);
-            // ⚠ A MATERIALIZED-SLOT operand is BORROWED, not owned-by-this-Proj. When `operand` is a node
+            // WARNING: A MATERIALIZED-SLOT operand is BORROWED, not owned-by-this-Proj. When `operand` is a node
             // stashed in `slots` (a `local.get` here — a sum-match scrutinee materialized ONCE into a slot,
             // re-read by every arm), the ENCLOSING construct owns that slot and reclaims it; this Proj only
             // reads it. Reclaiming (drop) here frees-early: the guarded-record UAF
@@ -9570,7 +9570,7 @@ fn emit(
                         // A NESTED-COMPOUND element: retain the returned child (rc++) so it outlives the
                         // parent, then drop the parent. `dup` POPS its handle, so re-read the child from a
                         // scratch slot for the dup and leave the original copy on the stack as the result.
-                        // ⚠ The child slot floats ABOVE `*high` — NOT `base + 1` — because the `operand`
+                        // WARNING: The child slot floats ABOVE `*high` — NOT `base + 1` — because the `operand`
                         // emit above may have spent scratch ABOVE `base + 1` and, crucially, may have bound
                         // a `let` there at a DIFFERENT width (a wasm local has ONE type function-wide). At
                         // MODULE SCALE this is a real miscompile: `(Map.size (. r 1))` where the record `r`'s
@@ -9722,7 +9722,7 @@ fn emit(
                     }
                     crate::core::PathStep::RestFrom(k) => {
                         // Tail sublist from `k`: `vec-drop(list, k)` returns the `[k, len)` tail as ONE
-                        // handle (dropping the `[0, k)` prefix internally). ⚠ `vec-drop` CONSUMES its
+                        // handle (dropping the `[0, k)` prefix internally). WARNING: `vec-drop` CONSUMES its
                         // argument (rc--). But the handle on the stack here is a BORROW of the shared match-
                         // arm scrutinee slot (from `emit(scrutinee)` = a plain `local.get`), and a SIBLING
                         // binder in the SAME arm may still read it — e.g. `((list x .. rest) (f rest (+ acc
@@ -9757,7 +9757,7 @@ fn emit(
             // (rc++ → 2) so the consumer takes the persistent copy path and the scrutinee's payload stays
             // intact; the consumer's own drop reclaims the extra reference. Only a COMPOUND leaf (`unboxed`
             // None AND not Unit — a real handle) aliases; a scalar `unboxed` COPIES out and is never a marked
-            // site. ⚠ `get_op` returns `None` for BOTH a compound handle AND a `Unit` payload (Unit has no
+            // site. WARNING: `get_op` returns `None` for BOTH a compound handle AND a `Unit` payload (Unit has no
             // machine value — the walk lands on the `IMM_UNIT` sentinel that `emit_heap_read_tail` DROPS). A
             // Unit has no heap cell to alias, so it must NOT take the dup fast path (which would `dup` +
             // return, leaving the sentinel un-dropped → an extra stack value → INVALID WASM). Route Unit
@@ -10282,7 +10282,7 @@ fn emit(
             // reclaims as before. Requires a freshly-stashed owned scrutinee (a reused param/local is borrowed,
             // left to its owner), a REAL BOXED SUM (`is_heap_type && !ty_is_enum_disc`), and a non-diverging
             // match.
-            // ⚠ SAFETY RESTRICTION (sread UAF fix, 2026-07-19): reclaim ONLY an ALL-SCALAR-payload shell.
+            // WARNING: SAFETY RESTRICTION (sread UAF fix, 2026-07-19): reclaim ONLY an ALL-SCALAR-payload shell.
             // The inc2 broadening ("any owned boxed sum + dup the consumed children") was UNSOUND: it handled
             // a child MOVED OUT (consumed → dup'd) but NOT a child BORROWED OUT via an ALIASING op — e.g.
             // `(match tree ((Arena m _) (Map.lookup m id)))` where `Map.lookup` returns a handle that ALIASES
@@ -11919,7 +11919,7 @@ fn emit_match_arms_tailable(
     // must not force a `select` on a probe that is always false). Recurses with the kept arms only when the
     // filter removed something (else infinite recursion / wasted re-run); order preserved.
     //
-    // ⚠ The probe's NUMERIC value (`to_i64()`), NOT its bit pattern (`to_i64_bits()`), is what `value_range`
+    // WARNING: The probe's NUMERIC value (`to_i64()`), NOT its bit pattern (`to_i64_bits()`), is what `value_range`
     // reasons about: a wide UNSIGNED probe (`UInt64` `2^63`) has a NEGATIVE bit pattern that would falsely
     // read as "below [0, …]" and drop a LIVE arm — a miscompile. `to_i64()` is `None` for such a value (out
     // of i64), so the arm is conservatively KEPT.
@@ -19685,7 +19685,7 @@ mod tests {
         // -key concern from the owned-temporary-map reclaim (a fresh inline map IS an owned temporary the
         // emit now correctly drops — see `an_owned_temporary_map_lookup_map_is_reclaimed`).
         //
-        // ⚠ EXACTLY ONE drop is now expected — but it is the OWNED OPTION SHELL, not the borrowed key/map.
+        // WARNING: EXACTLY ONE drop is now expected — but it is the OWNED OPTION SHELL, not the borrowed key/map.
         // `Map.lookup` returns a FRESH owned `Option` (Some boxes a scalar copy of the value; None is fresh);
         // in a TAIL match (this body's whole match is `pv`'s result) the wrapper-scrutinee shell reclaim
         // deep-drops that dead Option shell. Its payload is a SCALAR (Int64, copied out), so the deep drop
@@ -19725,7 +19725,7 @@ mod tests {
     #[test]
     fn an_owned_temporary_map_lookup_map_is_reclaimed() {
         // The COLLECTION-operand reclaim: a `Map.lookup` whose MAP is a fresh OWNED TEMPORARY (built inline,
-        // used once) must be dropped after the borrowing lookup, or it leaks. ⚠ the drop must come AFTER the
+        // used once) must be dropped after the borrowing lookup, or it leaks. WARNING: the drop must come AFTER the
         // value is dup'd out (the Some arm) — not right after `map-lookup` (that would free the value the
         // val-slot still borrows → UAF). Here the key is a constant (also owned → also dropped), so we get
         // ≥2 drops (key + map). Pins that the owned-temporary map is reclaimed.
@@ -19924,7 +19924,7 @@ mod tests {
         // Golden pinned from the current (pre-refactor) emit: 0 retain-dups, 3 drops (one per push-result
         // temporary). The traversal-share refactor MUST reproduce both exactly.
         //
-        // ⚠ WHAT drops==3 ENCODES: the 3 drops are the 3 `List.push` RESULT temporaries. The 3 `xi`
+        // WARNING: WHAT drops==3 ENCODES: the 3 drops are the 3 `List.push` RESULT temporaries. The 3 `xi`
         // let-bindings themselves are NOT dropped (push BORROWS xi; the fresh `(list n)` is never
         // reclaimed) — a bounded 3-cell LEAK, the known borrowed-through-scope let/param-drop KNOWN-GAP
         // (the general Perceus param-drop pass is not yet implemented in this backend; a known gap tracked

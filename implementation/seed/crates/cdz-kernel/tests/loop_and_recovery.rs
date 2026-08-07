@@ -1247,7 +1247,7 @@ async fn live_shell_denied_command_never_executes() {
     let _ = std::fs::remove_file(&marker);
 }
 
-/// PR#992 ⚠⚠ CWE-78: the fix — direct exec (no `sh -c`) makes shell metacharacters LITERAL, so a
+/// PR#992 WARNING:WARNING: CWE-78: the fix — direct exec (no `sh -c`) makes shell metacharacters LITERAL, so a
 /// compound like `echo ok; touch <file>` that passes the `echo ` prefix allow-list does NOT run the
 /// second command. Before the fix, `sh -c` executed the `touch`; now `;` and the rest are just literal
 /// arguments to `echo`, and the file is never created.

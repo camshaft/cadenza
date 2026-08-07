@@ -2762,7 +2762,7 @@ pub fn reduce_ctor(
         // `reduce_to_tuple_elems`/`reduce_to_record_id`, member projection, the host-escape walk,
         // `type_of`, `lower`) treats it IDENTICALLY to a value written with the string primitive.
         //
-        // ⚠ `push_list` RE-PARENTS the arg subtrees under the new head, which would orphan a field/
+        // WARNING: `push_list` RE-PARENTS the arg subtrees under the new head, which would orphan a field/
         // element value like the runtime param `a` in `(record (x a) …)` from its lexical scope (a
         // spurious unbound name — the re-parenting hazard `apply_lambda` documents). So PIN each arg's
         // resolution first (`resolve_subtree` memoizes every node against its CURRENT scope), exactly as
@@ -2899,7 +2899,7 @@ pub const NOT_A_CTOR_PRIM: &str = "not a type constructor";
 /// unknown. (The analogue of `reduce_ctor` for `TupleCtor`, but keyed on the head's metadata rather
 /// than the prim alone — one prim serves every generic sum.)
 ///
-/// ⚡ Returns the `Ty` value, NOT an encoded `(typeval …)` arena node: its one caller (`typeval_of`'s
+/// COST: Returns the `Ty` value, NOT an encoded `(typeval …)` arena node: its one caller (`typeval_of`'s
 /// `SumCtor` arm) wants the `Ty` and previously got it by `encode_typeval`-ing this result then
 /// `typeval_of`-DECODING it right back — a full encode→decode arena round-trip PER LEVEL, so a
 /// deeply-nested `(Option (Option … Int64))` annotation was O(N²) in arena node churn (measured: 400
@@ -3780,7 +3780,7 @@ fn encode_ty(db: &mut Db, ty: &crate::ty::Ty) -> StructId {
         // A quantity type-value: `(Qty <inner-ty> (unit (base <name> <exp>)…))` — the inner numeric type
         // then the unit encoded as a canonical `(unit …)` node listing each base's `(base NAME EXP)` pair
         // in sorted order (the dimensionless unit is the empty `(unit)`). Round-trips with
-        // `resolve::decode_ty`'s `"Qty"` arm. ⚠ WITHOUT this arm the catch-all below would encode a
+        // `resolve::decode_ty`'s `"Qty"` arm. WARNING: WITHOUT this arm the catch-all below would encode a
         // quantity as `Unit`, so a `(-> T (Qty T u))` scheme (Qty.of) would round-trip to `(-> T Unit)`
         // and mis-type — the same round-trip hole the `Bytes`/`String` arms fixed for those leaves.
         Ty::Qty { inner, unit } => {

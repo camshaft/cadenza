@@ -1629,7 +1629,7 @@ fn nested_width_fault_by_ty(db: &mut Db, value: StructId, want: &Ty) -> Option<R
 /// different literal) is theirs to confirm. Shared by both CDZ0302 literal-range sites (the value
 /// annotation `(: v T)` and the let-binder/param `((: name T) v)`), so both carry the fix.
 ///
-/// ⚠ `ty_expr` MUST be a written TYPE node (the annotation being retyped) — the fix replaces its spelling
+/// WARNING: `ty_expr` MUST be a written TYPE node (the annotation being retyped) — the fix replaces its spelling
 /// with a type name. NEVER pass a VALUE node here: a literal whose width came from a solved/inferred `Ty`
 /// (a nested compound payload, or a sibling literal's annotation) has no type-node to retype, and
 /// rewriting the literal into a type name corrupts the source. Those sites build the reject directly
@@ -8088,7 +8088,7 @@ pub(crate) fn check_unknown_units(db: &mut Db, out: &mut Vec<Reject>) {
         let mut fix = None;
         let hint = match crate::diag::suggest::nearest(&name, known.iter()) {
             Some(near) => {
-                // ⚠ The unit name is a LITERAL whose delimiter must be preserved so the applied edit
+                // WARNING: The unit name is a LITERAL whose delimiter must be preserved so the applied edit
                 // re-renders a valid `Unit.of` argument: a symbol `#"metre"` (`Leaf::Sym`) → `#"meter"`,
                 // a plain string `"metre"` (`Leaf::Str`) → `"meter"`. Detect which from the AST node —
                 // a bare `meter` would re-read as a NAME and break the `(Unit.of …)` form.

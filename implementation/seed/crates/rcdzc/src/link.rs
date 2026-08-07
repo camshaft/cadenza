@@ -569,7 +569,7 @@ fn resolve_import_clause(
         // file names, so no extra plumbing is needed.
         // A near-miss also carries the STRUCTURAL fix (rewrite the mistyped path to the near file), so
         // the "did you mean?" is APPLYABLE, not just prose — the import-NAME-typo treatment extended to
-        // the path. Anchored at the PATH node `path_id`. ⚠ `path_id` is a STRING LITERAL, so the
+        // the path. Anchored at the PATH node `path_id`. WARNING: `path_id` is a STRING LITERAL, so the
         // replacement must be QUOTED (`"lib"`): the consumer re-parses it as a sub-form and a bare `lib`
         // would read as a Name → the malformed `(import lib …)`. Heuristic: the near name is a guess.
         let mut fix = None;

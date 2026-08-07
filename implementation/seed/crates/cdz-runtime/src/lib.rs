@@ -3284,7 +3284,7 @@ fn op_str_from_bytes(buf: Handle) -> Handle {
 ///
 /// ⚡ COST — O(scalar_index): reaching the i-th scalar walks the UTF-8 from the START (a String is not
 /// scalar-indexable in O(1) — variable-width encoding). This is INHERENT to random access by scalar
-/// index, NOT a defect. ⚠ CONSEQUENCE for the compiler agent: a LEXER that scans a string left-to-right
+/// index, NOT a defect. WARNING: CONSEQUENCE for the compiler agent: a LEXER that scans a string left-to-right
 /// via repeated `scalar-at(s, 0)`, `scalar-at(s, 1)`, … is O(N²) (measured: ~67 ns/scalar at N=64 rising
 /// to ~3300 ns/scalar at N=4096). A sequential scan wants a CURSOR (`scalar-next(buf, byte_off) ->
 /// (codepoint, next_byte_off)`, advancing by the scalar's width) — that would be a SEPARATE coordinated
@@ -4317,7 +4317,7 @@ fn op_vec_get(v: Handle, index: u32) -> Handle {
 // heap traffic for the single-threaded push/update chains that dominate. Observationally IDENTICAL to
 // the path-copy version; the win is fewer allocations.
 //
-// 🚨 ALIASING SAFETY (a violation silently corrupts a shared persistent version). `mine` means "this
+// CRITICAL: ALIASING SAFETY (a violation silently corrupts a shared persistent version). `mine` means "this
 // node is on a fully-unique path and is safe to mutate in place". It propagates STRICTLY DOWNWARD:
 //   mine(root)  = header.rc == 1 && root.rc == 1
 //   mine(child) = mine(parent)  && child.rc == 1
@@ -7074,7 +7074,7 @@ fn champ_insert_node(
 // in place) instead of alloc-new + drop-old. Observationally IDENTICAL to the path-copy core, and
 // canonical-shape-identical (the in-place builders mirror the copy path's ordering byte-for-byte).
 //
-// 🚨 ALIASING SAFETY (a violation silently corrupts a shared persistent map/set). `mine` = "this node
+// CRITICAL: ALIASING SAFETY (a violation silently corrupts a shared persistent map/set). `mine` = "this node
 // is on a fully-unique path, rc==1, safe to reuse in place". It propagates STRICTLY monotone-false
 // downward: the map/set handle IS the root node (no separate header like the vector), so the ops gate
 // on `node_rc(m)==1`, then `child_mine = mine && node_rc(child)==1`. At the FIRST node with rc>1 we
@@ -7970,7 +7970,7 @@ fn op_map_iter(m: Handle) -> Handle {
 // cursor, then drops the consumed cursor. FBIP reuses the cursor SHELL in place when it is uniquely
 // owned — the WIT's zero-steady-state-alloc promise for a non-forked walk.
 //
-// 🚨 ALIASING SAFETY: gate on `node_rc(cur) == 1`. A forked/peeked/teed cursor (rc>1) MUST take the
+// CRITICAL: ALIASING SAFETY: gate on `node_rc(cur) == 1`. A forked/peeked/teed cursor (rc>1) MUST take the
 // copy path so the other owner's walk is undisturbed. The cursor is a leaf handle (no descent into
 // it), so the check is a single rc read — no downward propagation like the trie ops.
 //
@@ -10698,7 +10698,7 @@ mod tests {
     /// set union 431 / ∩ 356 / ∖ 362, ∖ unique-small-b 774≈build-only; they are UPPER BOUNDS so noise never trips them but a
     /// regression toward the old 6779/8397/5248/1000 does.
     ///
-    /// ⚠ MUST run alone: the counter is PROCESS-WIDE, so a concurrent test thread's allocations pollute
+    /// WARNING: MUST run alone: the counter is PROCESS-WIDE, so a concurrent test thread's allocations pollute
     /// the reading (observed ~51k when run in the default multi-threaded suite). It is therefore
     /// `#[ignore]`d in the normal run (and in `cargo test`/`cargo xtask check`) and exercised on demand:
     ///   `cargo test -p cdz-runtime hot_op_allocation_ceilings -- --ignored --test-threads=1 --nocapture`
@@ -11703,7 +11703,7 @@ mod tests {
         // AND the reused `ENCODE_BUILDER`/`ENCODE_OUT` pools (grown warm by the earlier value_encode reps in
         // this same test), a 1000-entry encode reallocates almost nothing — just the entries Vec + the
         // output byte Vec's own growth + the returned Bytes leaf. Was 2065 (per-int Vec) → 67 (IntScalar) →
-        // ~42 (pool reuse). ⚠ this row runs AFTER the value_encode/stringkeymap rows, so the thread-local
+        // ~42 (pool reuse). WARNING: this row runs AFTER the value_encode/stringkeymap rows, so the thread-local
         // pools are already at a high-water mark — the figure measures steady-state reuse, not cold growth.
         // A per-entry transient Vec or an O(N²) CHAMP re-walk would be orders of magnitude over (O(N²) ≈ 10⁶).
         assert!(
@@ -12121,7 +12121,7 @@ mod tests {
     /// LAYOUT GUARD: `Node` is paid by EVERY heap value, so its size is load-bearing for allocation +
     /// cache behavior. There is otherwise no signal if a change bloats it (a new field, a widened
     /// `Handles`/`Raw` variant). Pin the NATIVE-host sizes so a structural regression is caught in the
-    /// std test suite. ⚠ These are the 64-bit NATIVE sizes (`Handle` = `*mut Node` = 8, `Vec` = 24); the
+    /// std test suite. WARNING: These are the 64-bit NATIVE sizes (`Handle` = `*mut Node` = 8, `Vec` = 24); the
     /// SHIPPED wasm32 layout is smaller (`Handle` = 4, `Vec` = 12) — this test can't run on wasm, but the
     /// native size moves TOGETHER with wasm for STRUCTURAL changes (an added field / a wider enum variant
     /// bloats both), which is the regression worth catching. Node=64 is already minimal for its fields:
