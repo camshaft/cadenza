@@ -10614,6 +10614,53 @@
             (export main)))
   (output (: 3 Int64)))
 
+(case "a LET-BOUND perform after a cross-function recursive helper observes the helper's out-state"
+  (doc    "The LET-INIT face of the caller-observed out-state (breaker tk3d; the bare-do-item face is pinned
+           above). A cross-fn recursive helper `pump` emits 3 bytes onto the inner Sink handler's Bytes
+           state; a following do-item `(let ((out (Sink.flush))) (Bytes.len out))` binds a perform that must
+           observe the 3-byte accumulation. The bug: `mark_caller_observed_outstate`'s perform-detector
+           (`reaches_any_perform`) mis-treated the `let`'s raw bindings sublist `((out (Sink.flush)))` as an
+           APPLICATION and never descended into the init, so the let-bound flush was NOT seen as observing
+           pump's out-state → pump stayed single-return → its Sink-slot advance was dropped → flush read the
+           SEED (len 0, a 3-backend silent miscompile). Fixed by routing a `let` through its real init/body
+           positions in the perform walk. Now the flush observes 3 → 3.")
+  (input  (do
+            (effect Src (op read (-> Unit Int64)))
+            (effect Sink (op emit (-> Int64 Unit)) (op flush (-> Unit Bytes)))
+            (def (pump (: k Int64))
+              (if (= k 0) unit
+                  (do (Sink.emit (Src.read)) (pump (- k 1)))))
+            (def (main (: n Int64))
+              (handle Src n
+                ((read (u) s (resume s (+ s 1))))
+                (handle Sink (bin)
+                  ((emit (v) b (resume unit (Bytes.concat b (bin (u8 (UInt8.wrap v))))))
+                   (flush (u) b (resume b b)))
+                  (do
+                    (pump 3)
+                    (let ((out (Sink.flush)))
+                      (Bytes.len out))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 3 Int64)))
+
+(case "the let-bound-after-helper observation is state-type-general (scalar counter)"
+  (doc    "The scalar face of tk3d (breaker tk3h): the SAME [cross-fn helper advances a slot] x [let-bound
+           perform observes it] shape but the state is a plain Int64 counter, not heap Bytes. `pump` bumps
+           the Ctr slot 3x cross-function, then `(let ((v (Ctr.get))) (+ v 100))` must read 3 → 103. Before
+           the reaches_any_perform let-init fix it read the seed 0 → 100. Pins that the caller-observed
+           out-state fix is state-type-general (not Bytes-specific).")
+  (input  (do
+            (effect Src (op read (-> Unit Int64)))
+            (effect Ctr (op bump (-> Int64 Unit)) (op get (-> Unit Int64)))
+            (def (pump (: k Int64))
+              (if (= k 0) unit (do (Ctr.bump (Src.read)) (pump (- k 1)))))
+            (def (main (: n Int64))
+              (handle Src n ((read (u) s (resume s (+ s 1))))
+                (handle Ctr 0 ((bump (v) c (resume unit (+ c 1))) (get (u) c (resume c c)))
+                  (do (pump 3) (let ((v (Ctr.get))) (+ v 100))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 103 Int64)))
+
 (case "a nested inner handler that re-threads its own state folds (merged-context seed from init)"
   (doc    "Two NESTED handlers over a cross-function recursive loop that performs BOTH effects — the
            merged-context signature. The INNER handler `Tools` re-threads its OWN bound state in the arm
