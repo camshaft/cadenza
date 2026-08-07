@@ -6088,3 +6088,6 @@ pass	the gcd face: a reducible num/den pair from performs canonicalizes (4/8 →
 pass	a tuple scrutinee built from TWO performs — the guard relates both dispatch results
 pass	recursively STACKED same-effect handlers — the perform resolves to the DEEPEST frame
 pass	the shadow stack UNWINDS — each level's post-region perform reaches ITS enclosing frame
+pass	a perform-capturing closure passed to a HIGHER-ORDER helper applies twice under the handler
+pass	a perform-capture through a TUPLE-returning HOF — both results carry the capture
+pass	a TWO-argument capture closure through a fold-style HOF — the capture rides both applications
