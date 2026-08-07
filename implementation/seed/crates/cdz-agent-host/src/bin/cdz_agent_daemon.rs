@@ -234,6 +234,17 @@ async fn main() -> std::process::ExitCode {
                 return std::process::ExitCode::from(1);
             }
         };
+        // I3: when the reducer blob store is S3, wire the SAME bucket into the blob/put+blob/get executor (one
+        // content-addressed store for docs + reducer components — corpus-bugfix PM ruling). A per-session
+        // S3BlobStore over this bucket is built in LiveExecutorSet::build. Only the S3 blob backend gets a blob
+        // executor; memory/dir blob backends serve no blob/* effects (the doc-publish path is an S3 deployment
+        // concern). Gated on `live-aws-storage` (the S3 store's feature).
+        #[cfg(feature = "live-aws-storage")]
+        let executors = if let BlobConfig::S3 { bucket, prefix } = &config.blob {
+            executors.with_blob_store(bucket.clone(), prefix.clone())
+        } else {
+            executors
+        };
         // Attach the optional log-sink builder to whichever blob-backed factory we build, then box it. (The
         // two arms are distinct concrete factory types, so the with_log_sink + Box happens per-arm; the
         // executor set is moved into the one arm that runs.)
