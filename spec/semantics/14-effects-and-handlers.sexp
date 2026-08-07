@@ -14692,3 +14692,139 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 325 Int64))
   (call   main (: 0 Int64)) (output (: 305 Int64)))
+
+;; ── SUM-typed handler states (breaker su) ────────────────────────────────────────────────────────
+;; The handler state is a SUM whose VARIANT (not just payload) changes across dispatches. su1 =
+;; Idle→Run transition then payload accumulation. su2 = a THREE-variant cyclic machine, the op arg
+;; selecting the transition (both Mid exits exercised). su3 = a RECURSIVE sum (Peano tower grown
+;; by two per dispatch, measured by a recursive fn). su4 = a variant carrying a HEAP list payload.
+;; su5 = the sum STATE escapes as the handle's value via a dump op, matched OUTSIDE. su6f/su6g =
+;; MIXED state kinds across a same-effect shadow boundary (scalar/sum each way). su6d pins the
+;; decline boundary: BOTH handlers sum-state + same effect + >=2 inner dispatches routes the 2nd
+;; arm copy's variant match through the scalar-probe path (lower.rs) — honest decline, flip
+;; values 8085/3080 banked for the arm-copy fold fix.
+
+(case "su1 a SUM-typed state machine — Idle transitions to Run on first dispatch, Run accumulates thereafter"
+  (input  (do
+            (type Mode (Idle) (Run Int64))
+            (effect M (op step (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle M (Idle)
+                ((step (v) s (match s
+                               ((Idle) (resume 0 (Run v)))
+                               ((Run k) (resume k (Run (+ k v)))))))
+                (+ (M.step n) (+ (* 10 (M.step 3)) (* 100 (M.step 1))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 850 Int64))
+  (call   main (: 0 Int64)) (output (: 300 Int64)))
+
+(case "su2 a THREE-variant cyclic machine — the op arg selects the transition, both Mid exits exercised"
+  (input  (do
+            (type Gear (Lo) (Mid Int64) (HiG Int64))
+            (effect G (op shift (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle G (Lo)
+                ((shift (v) s (match s
+                                ((Lo) (resume 1 (Mid v)))
+                                ((Mid k) (if (> v k) (resume (* 10 k) (HiG (+ k v))) (resume (- 0 k) (Lo))))
+                                ((HiG k) (resume (* 100 k) (Lo))))))
+                (+ (G.shift n) (+ (G.shift 4) (+ (G.shift 2) (G.shift 9))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 17 Int64))
+  (call   main (: 1 Int64)) (output (: 512 Int64)))
+
+(case "su3 a RECURSIVE sum state — the arm grows a Peano tower by two per dispatch, a recursive fn measures it"
+  (input  (do
+            (type Nat (Z) (S Nat))
+            (def (depth (: m Nat))
+              (match m ((Z) 0) ((S p) (+ 1 (depth p)))))
+            (effect T (op grow (-> Int64)))
+            (def (main (: n Int64))
+              (handle T (Z)
+                ((grow () s (resume (depth s) (S (S s)))))
+                (+ (T.grow) (+ (* 10 (T.grow)) (* 100 (T.grow))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 420 Int64)))
+
+(case "su4 a sum variant carrying a HEAP list — Empty seeds on first put, Full grows the payload thereafter"
+  (input  (do
+            (type Buf (Empty) (Full (List Int64)))
+            (effect B (op put (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle B (Empty)
+                ((put (v) s (match s
+                              ((Empty) (resume 0 (Full (list v))))
+                              ((Full xs) (resume (List.len xs) (Full (List.push xs v)))))))
+                (+ (B.put n) (+ (* 10 (B.put 7)) (* 100 (B.put 8))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 210 Int64)))
+
+(case "su5 the sum STATE escapes as the handle's value via a dump op — matched OUTSIDE the handler"
+  (input  (do
+            (type Mode (Idle) (Run Int64))
+            (effect M (op step (-> Int64 Int64)) (op dump (-> Mode)))
+            (def (main (: n Int64))
+              (match (handle M (Idle)
+                       ((step (v) s (match s
+                                      ((Idle) (resume 0 (Run v)))
+                                      ((Run k) (resume k (Run (+ k v))))))
+                        (dump () s (resume s s)))
+                       (do (M.step n) (M.step 3) (M.dump)))
+                ((Idle) (- 0 1))
+                ((Run k) (* 2 k))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 16 Int64))
+  (call   main (: 0 Int64)) (output (: 6 Int64)))
+
+(case "su6f a SCALAR-state outer shadowed by a SUM-state inner cycler — the inner machine transitions twice"
+  (input  (do
+            (type Mode (Idle) (Run Int64))
+            (effect M (op step (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle M n
+                ((step (v) s (resume s (+ s v))))
+                (+ (M.step 1)
+                   (* 10 (handle M (Idle)
+                           ((step (v) s (match s
+                                          ((Idle) (resume 100 (Run (* v 2))))
+                                          ((Run k) (resume k (Idle))))))
+                           (+ (M.step 4) (M.step 0)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 1085 Int64))
+  (call   main (: 0 Int64)) (output (: 1080 Int64)))
+
+(case "su6g a SUM-state outer shadowed by a SCALAR-state inner — mixed state kinds across the shadow boundary"
+  (input  (do
+            (type Mode (Idle) (Run Int64))
+            (effect M (op step (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle M (Run n)
+                ((step (v) s (match s
+                               ((Idle) (resume 0 (Run v)))
+                               ((Run k) (resume k (Run (+ k v)))))))
+                (+ (M.step 1)
+                   (* 10 (handle M 0
+                           ((step (v) t (resume (+ t v) (+ t 1))))
+                           (+ (M.step 4) (M.step 0)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 55 Int64))
+  (call   main (: 0 Int64)) (output (: 50 Int64)))
+
+(case "su6d BOTH handlers sum-state, same effect, TWO inner dispatches — declines (2nd arm copy's variant match hits the scalar-probe path)"
+  (input  (do
+            (type Mode (Idle) (Run Int64))
+            (effect M (op step (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle M (Run n)
+                ((step (v) s (match s
+                               ((Idle) (resume 0 (Run v)))
+                               ((Run k) (resume k (Run (+ k v)))))))
+                (+ (M.step 1)
+                   (+ (* 10 (handle M (Idle)
+                              ((step (v) s (match s
+                                             ((Idle) (resume 100 (Run (* v 2))))
+                                             ((Run k) (resume k (Idle))))))
+                              (+ (M.step 4) (M.step 0))))
+                      (* 1000 (M.step 2))))))
+            (export main)))
+  (declines))
