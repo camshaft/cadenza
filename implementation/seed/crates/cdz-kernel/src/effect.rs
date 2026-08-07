@@ -281,6 +281,21 @@ pub mod effect_ct {
         family.starts_with(CONTROL_PREFIX)
     }
 
+    /// Is `family` a FOLD-BACK control family — a `control/*` whose answer must RESUME the emitting
+    /// reducer's continuation, so the drive loop gives it a `Dispatched` frame (entering `open`, keyed by
+    /// `EffectId` + carrying the token) and the host later settles it via
+    /// [`crate::kernel::Session::settle_control_result`]? Today just `control/signature`: the whole point of
+    /// signature-query is the emitting reducer receives the descriptor to then route a call, so the reflected
+    /// bytes fold BACK to the live session as an `EffectResult` (same shape as any routed effect). This is
+    /// distinct from the other two control dispositions: `control/capabilities` is kernel-answered INLINE (it
+    /// also dispatches, but the kernel produces the answer itself, no host round-trip); `control/summary` is
+    /// FIRE-AND-FORGET fork-scrape (surfaced to the driver with NO `Dispatched` frame — the answer never
+    /// returns to the live session, so it must NOT enter `open` or it would hang as a never-settled effect).
+    /// Keying the selective dispatch on THIS predicate is what keeps summary's fork-scrape untouched.
+    pub fn is_fold_back_control(family: &str) -> bool {
+        family == SIGNATURE
+    }
+
     /// If `family` is a WELL-KNOWN control-plane family, return its `&'static str` const (so a caller can
     /// hold it as a zero-alloc `Cow::Borrowed` instead of owning the string). `None` for an unknown/
     /// ad-hoc control family. The control-plane analogue of [`super::EffectKind::from_family`] — used by
@@ -395,10 +410,18 @@ pub mod effect_ct {
 /// is the exception — it has an in-kernel handler (→ `project_manifest`), so the kernel answers it inline
 /// and folds an EffectResult back instead of surfacing it here; this host-surfaced channel is for the
 /// driver-consumed families like `control/summary`.
+///
+/// `id` is the effect's [`EffectId`]. For a FOLD-BACK control family ([`effect_ct::is_fold_back_control`],
+/// e.g. `control/signature`) the drive loop gave the effect a `Dispatched` frame before surfacing it, so it
+/// is OPEN and awaiting a result — the host answers off-band (e.g. reflecting the target component) and
+/// settles it by `id` via [`crate::kernel::Session::settle_control_result`], which folds the answer back to
+/// the emitting reducer's continuation. For a fire-and-forget control family (`control/summary`) there is no
+/// `Dispatched` frame and the `id` is not settleable (nothing to resume) — it is a stable identifier only.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ControlEffect {
     pub request: EffectRequest,
     pub token: Option<Vec<u8>>,
+    pub id: EffectId,
 }
 
 impl EffectKind {

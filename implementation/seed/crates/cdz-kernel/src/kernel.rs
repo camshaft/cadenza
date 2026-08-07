@@ -946,9 +946,35 @@ impl Session {
                     }
                     continue;
                 }
+                // FOLD-BACK control (control/signature): the answer must RESUME the emitting reducer's
+                // continuation, so give it a Dispatched frame — exactly like a routed effect or the
+                // capabilities path above — BEFORE surfacing it. This enters `open` keyed by `id` and records
+                // the continuation token, so the host can later settle it by `id` via `settle_control_result`
+                // (→ an EffectResult keyed to this token → fold_tip). Without the frame `record_result` would
+                // panic (no token to derive) and the effect could never fold back. authz-exempt (control),
+                // and NOT answered inline — the host produces the answer (e.g. wasmtime reflection). A
+                // fire-and-forget control family (summary) skips this and surfaces with NO frame (below), so
+                // it never enters `open` (it would otherwise hang as a never-settled effect).
+                if crate::effect::effect_ct::is_fold_back_control(&req.content_type.family) {
+                    let idempotency_key = idempotency_key_for(id, &req);
+                    self.append(
+                        EventBody::Dispatched {
+                            id,
+                            kind: req.kind.clone(),
+                            family: req.content_type.family.as_ref().into(),
+                            target: req.target.clone(),
+                            idempotency_key,
+                            deadline_ms: None,
+                            token: token.clone(),
+                        },
+                        Some(cause),
+                    )
+                    .await;
+                }
                 control_out.push(crate::effect::ControlEffect {
                     request: req,
                     token,
+                    id,
                 });
                 continue;
             }
@@ -1290,6 +1316,57 @@ impl Session {
             .record_result(id, EffectOutcome::TimedOut, reducer, dispatch_hash)
             .await;
         // The reducer's timeout continuation may emit further effects — drive them to quiescence.
+        self.drive_worklist(more, reducer, authz, executor).await;
+        true
+    }
+
+    /// Settle a fold-back control effect (`control/signature`) with the HOST's answer — the missing half of
+    /// the control-plane fold-back contract. When the drive loop surfaces a fold-back control family
+    /// ([`crate::effect::effect_ct::is_fold_back_control`]) it gives the effect a `Dispatched` frame and hands
+    /// the driver a [`ControlEffect`](crate::effect::ControlEffect) carrying its [`EffectId`]; the host
+    /// produces the answer off-band (e.g. reflecting the target component's signature — wasmtime, host-side)
+    /// and calls this to fold it back into the EMITTING reducer's continuation. The result is a logged
+    /// `EffectResult` causally linked to the `Dispatched` frame and keyed by its continuation token —
+    /// identical to how any routed effect (shell/http) settles — so the guest resumes exactly where it awaited
+    /// the query, and live-kv == replayed-kv (§9d). The reducer's continuation may emit further effects; they
+    /// are driven to quiescence here.
+    ///
+    /// Idempotent + at-most-once, exactly like [`Session::time_out_effect`] (whose shape this mirrors): a
+    /// TERMINATED session settles nothing (the terminal marker must stay the log tail) → `false`; an `id` that
+    /// is not OPEN — already settled by a prior call, timed out, or never a fold-back dispatch — is a no-op
+    /// `false`, so a late or duplicate host settle can never append a second `EffectResult` for one id (a
+    /// continuation resumes at most once). Returns `true` iff this call settled it. `outcome` is the host's
+    /// answer: `Ok(Some(Inline(descriptor)))` on success, or `EffectOutcome::err(..)` on a reflect/produce
+    /// failure (the reducer folds the error and resumes cleanly, same as a failed routed effect).
+    pub async fn settle_control_result(
+        &mut self,
+        id: EffectId,
+        outcome: EffectOutcome,
+        reducer: &dyn Reducer,
+        authz: &(impl Authorize + ?Sized),
+        executor: &mut (impl Executor + ?Sized),
+    ) -> bool {
+        // A TERMINATED session settles nothing — appending an EffectResult after the terminal marker would
+        // un-tail it + flip is_terminated() back to false (same guard as time_out_effect/deliver_control).
+        if self.is_terminated() {
+            return false;
+        }
+        // Idempotent: only an OPEN id can be settled. Settled/never-dispatched → no-op, so a late or duplicate
+        // host settle and any other settler (a timeout) can't both settle one id (at-most-once, §16c-S4).
+        if !self.open.contains(&id.0) {
+            return false;
+        }
+        // A fold-back control effect was opened by a `Dispatched` frame (like a routed effect), so it HAS a
+        // dispatch hash. An `id` in `open` with no `Dispatched` (an armed TIMER) is not settleable here →
+        // no-op `false`, mirroring time_out_effect's timer guard (never a crash).
+        let Some(dispatch_hash) = self.dispatch_hash_of(id) else {
+            return false;
+        };
+        let more = self
+            .record_result(id, outcome, reducer, dispatch_hash)
+            .await;
+        // The reducer's continuation (now resumed with the query answer) may emit further effects — drive
+        // them to quiescence, same as the routed-result and timeout paths.
         self.drive_worklist(more, reducer, authz, executor).await;
         true
     }
@@ -2959,6 +3036,266 @@ mod monotonic_now_tests {
                 .any(|e| matches!(e.body, EventBody::AuthzDenied { .. })),
             "granted regular effect + exempt control → no AuthzDenied"
         );
+    }
+
+    // A reducer that models the SIGNATURE-QUERY fold-back loop: on an inbound message it emits a
+    // `control/signature` effect (targeting a component by hash/name) with a continuation token; when the
+    // HOST's answer folds back as an EffectResult, it RESUMES by writing the returned descriptor bytes into KV
+    // under `sig/descriptor`. This is the shape a real orchestration reducer uses — discover a target's
+    // callable surface, then route a call — and it lets the test observe that the continuation actually
+    // resumed with the host's answer (not just that an effect was surfaced).
+    struct SignatureQueryReducer;
+    #[async_trait::async_trait(?Send)]
+    impl Reducer for SignatureQueryReducer {
+        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+            match &event.body {
+                EventBody::Inbound { .. } => {
+                    let mut request = EffectRequest::new(
+                        EffectKind::Emit, // kind irrelevant for a control family; the family drives routing
+                        "component-hash-abc",
+                        None,
+                        Timeliness::Interactive,
+                    );
+                    request.content_type.family = crate::effect::effect_ct::SIGNATURE.into();
+                    FoldOutput::with_effects(vec![Effect {
+                        request,
+                        token: Some(b"sig-cont".to_vec()),
+                    }])
+                }
+                // The host's answer folded back → resume: record the descriptor the query returned.
+                EventBody::EffectResult {
+                    result: EffectOutcome::Ok(Some(crate::effect::Payload::Inline(bytes))),
+                    ..
+                } => {
+                    kv.put(b"sig/descriptor".to_vec(), bytes.to_vec());
+                    FoldOutput::none()
+                }
+                // A failed query → record the failure marker so the reducer resumes cleanly on the err path.
+                EventBody::EffectResult {
+                    result: EffectOutcome::Err { .. },
+                    ..
+                } => {
+                    kv.put(b"sig/error".to_vec(), b"query-failed".to_vec());
+                    FoldOutput::none()
+                }
+                _ => FoldOutput::none(),
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn control_signature_is_surfaced_dispatched_and_settle_control_result_resumes_the_guest()
+    {
+        // The fold-back control pattern (control/signature = the THIRD control disposition): unlike
+        // capabilities (kernel-answered inline) or summary (fire-and-forget fork-scrape, no Dispatched), a
+        // signature query is SURFACED to the driver AND given a Dispatched frame, so it is OPEN and awaiting a
+        // HOST answer that must resume the emitting reducer. Prove the whole loop: surface → open+dispatched →
+        // settle_control_result folds the descriptor back → the guest's continuation resumes (writes KV).
+        let mut exec = RecordingExecutor::new();
+        let mut session = Session::genesis(Hash::of(b"sig-v1"), Hash::of(b"nonce"));
+        let control = session
+            .deliver_control(
+                inbound(),
+                None,
+                &SignatureQueryReducer,
+                &Authorizer::deny_all(), // control is authz-EXEMPT — deny_all must not deny it
+                &mut exec,
+            )
+            .await
+            .expect("deliver");
+
+        // Surfaced to the driver (host-answered, needs wasmtime reflection), NEVER routed to an executor.
+        assert_eq!(
+            control.len(),
+            1,
+            "the signature query surfaces to the driver"
+        );
+        assert_eq!(
+            control[0].request.content_type.family.as_ref(),
+            crate::effect::effect_ct::SIGNATURE
+        );
+        assert_eq!(control[0].token.as_deref(), Some(&b"sig-cont"[..]));
+        assert_eq!(
+            exec.seen.len(),
+            0,
+            "control is never routed to the executor"
+        );
+        let sig_id = control[0].id;
+
+        // Unlike summary, a fold-back control got a Dispatched frame → it is OPEN + awaiting a result.
+        assert_eq!(
+            session.open_effects(),
+            1,
+            "a surfaced control/signature is an OPEN dispatched effect awaiting the host's answer"
+        );
+        let dispatched_family = session
+            .log()
+            .iter()
+            .find_map(|e| match &e.body {
+                EventBody::Dispatched { family, .. } => Some(family.clone()),
+                _ => None,
+            })
+            .expect("a Dispatched frame was recorded for the fold-back control");
+        assert_eq!(
+            dispatched_family.as_ref(),
+            crate::effect::effect_ct::SIGNATURE,
+            "the dispatch records control/signature (so recovery classifies it, not the emit placeholder)"
+        );
+        // No AuthzDenied — control is exempt even under deny_all (a routed effect would be denied).
+        assert!(!session
+            .log()
+            .iter()
+            .any(|e| matches!(e.body, EventBody::AuthzDenied { .. })));
+
+        // The HOST reflects the target + settles the query with the descriptor bytes → the guest resumes.
+        let descriptor = b"(component-signature (export (name run)))".to_vec();
+        let settled = session
+            .settle_control_result(
+                sig_id,
+                EffectOutcome::Ok(Some(crate::effect::Payload::Inline(
+                    descriptor.clone().into(),
+                ))),
+                &SignatureQueryReducer,
+                &Authorizer::deny_all(),
+                &mut exec,
+            )
+            .await;
+        assert!(settled, "settling an open fold-back control returns true");
+        // The continuation resumed: the reducer folded the EffectResult + wrote the descriptor to KV.
+        assert_eq!(
+            session.kv().get(b"sig/descriptor").map(|b| b.to_vec()),
+            Some(descriptor),
+            "settle_control_result folds the descriptor back → the emitting reducer resumes with it"
+        );
+        // The effect is now SETTLED (removed from open) — the continuation resumed exactly once.
+        assert_eq!(
+            session.open_effects(),
+            0,
+            "the settled query is no longer open"
+        );
+
+        // At-most-once: a DUPLICATE settle (a late/retried host answer) is a no-op — no second EffectResult,
+        // the continuation can't resume twice.
+        let dup = session
+            .settle_control_result(
+                sig_id,
+                EffectOutcome::Ok(Some(crate::effect::Payload::Inline(
+                    b"other".to_vec().into(),
+                ))),
+                &SignatureQueryReducer,
+                &Authorizer::deny_all(),
+                &mut exec,
+            )
+            .await;
+        assert!(
+            !dup,
+            "a duplicate settle of an already-settled id is a no-op"
+        );
+        let result_count = session
+            .log()
+            .iter()
+            .filter(|e| matches!(e.body, EventBody::EffectResult { .. }))
+            .count();
+        assert_eq!(
+            result_count, 1,
+            "exactly one EffectResult — the dup settle appended nothing"
+        );
+
+        // Settling an id that was never dispatched is likewise a no-op (nothing open to resume).
+        let never = session
+            .settle_control_result(
+                EffectId(9999),
+                EffectOutcome::Ok(None),
+                &SignatureQueryReducer,
+                &Authorizer::deny_all(),
+                &mut exec,
+            )
+            .await;
+        assert!(!never, "settling an unknown/never-dispatched id is a no-op");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn settle_control_result_err_path_resumes_the_guest_with_a_failure() {
+        // The host couldn't reflect the target (bad bytes, missing blob) → it settles with an Err. The
+        // reducer's continuation resumes on the err arm (writes sig/error), same as a failed routed effect —
+        // never stuck. Proves the fold-back seam carries a failure as cleanly as a success.
+        let mut exec = RecordingExecutor::new();
+        let mut session = Session::genesis(Hash::of(b"sig-err-v1"), Hash::of(b"nonce"));
+        let control = session
+            .deliver_control(
+                inbound(),
+                None,
+                &SignatureQueryReducer,
+                &Authorizer::deny_all(),
+                &mut exec,
+            )
+            .await
+            .expect("deliver");
+        let sig_id = control[0].id;
+        let settled = session
+            .settle_control_result(
+                sig_id,
+                EffectOutcome::err("not a valid component".to_string()),
+                &SignatureQueryReducer,
+                &Authorizer::deny_all(),
+                &mut exec,
+            )
+            .await;
+        assert!(settled);
+        assert_eq!(
+            session.kv().get(b"sig/error").map(|b| b.to_vec()),
+            Some(b"query-failed".to_vec()),
+            "an Err settle resumes the guest on the err arm — the continuation folds cleanly, not stuck"
+        );
+        assert_eq!(session.open_effects(), 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn control_summary_still_has_no_dispatched_frame_and_is_not_settleable() {
+        // Guard the SELECTIVE dispatch: only a fold-back control (signature) gets a Dispatched frame; summary
+        // stays fire-and-forget (NO frame, never OPEN). A regression that dispatched summary too would leave
+        // it hanging as a never-settled open effect. So after surfacing a summary, open_effect_count is 0 and
+        // there is no Dispatched frame — and settling its (non-open) id is a no-op.
+        let mut exec = RecordingExecutor::new();
+        let mut session = Session::genesis(Hash::of(b"sum-nodispatch-v1"), Hash::of(b"nonce"));
+        let control = session
+            .deliver_control(
+                inbound(),
+                None,
+                &SummaryEmitReducer,
+                &Authorizer::deny_all(),
+                &mut exec,
+            )
+            .await
+            .expect("deliver");
+        assert_eq!(control.len(), 1);
+        assert_eq!(
+            control[0].request.content_type.family.as_ref(),
+            crate::effect::effect_ct::SUMMARY
+        );
+        assert_eq!(
+            session.open_effects(),
+            0,
+            "control/summary is fire-and-forget — no Dispatched frame, never an open effect"
+        );
+        assert!(
+            !session
+                .log()
+                .iter()
+                .any(|e| matches!(e.body, EventBody::Dispatched { .. })),
+            "no Dispatched frame for a fire-and-forget summary (only fold-back controls dispatch)"
+        );
+        // Settling the summary's id is a no-op (it was never opened) — no phantom EffectResult.
+        let settled = session
+            .settle_control_result(
+                control[0].id,
+                EffectOutcome::Ok(None),
+                &SummaryEmitReducer,
+                &Authorizer::deny_all(),
+                &mut exec,
+            )
+            .await;
+        assert!(!settled, "a fire-and-forget summary id is not settleable");
     }
 
     // A reducer that, on an inbound message, emits a `control/capabilities` QUERY (no payload) — the guest
