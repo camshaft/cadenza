@@ -4244,6 +4244,79 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 101 Int64)))
 
+(case "a complete handler inside a CLOSURE body — each application instantiates fresh"
+  (doc    "The handler-factory idiom (the arm-instantiated pins cover a handle in an ARM): the
+           closure body IS a full handle, deferred until application and re-instantiated per apply
+           from the argument seed — f(5) = 5+6 = 11, f(20) = 20+21 = 41 → 1141. No handler state
+           survives between applications.")
+  (input  (do
+            (effect St (op next (-> Unit Int64)))
+            (def (main (: n Int64))
+              (let ((f (fn ((: k Int64))
+                         (handle St k
+                           ((next (u) s (resume s (+ s 1))))
+                           (+ (St.next) (St.next))))))
+                (+ (* 100 (f n)) (f 20))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 1141 Int64)))
+
+(case "the closure's inner arm performs an OUTER effect through the closure boundary"
+  (doc    "Cross-boundary arm-performs from a deferred handler: the closure's inner arm performs
+           `Out.base` — resolved through the closure boundary to the enclosing handler, whose state
+           threads ACROSS the two applications (f(1): base=5, Out 5→105; f(2): base=105) →
+           1000·6 + 107 = 6107.")
+  (input  (do
+            (effect Out (op base (-> Unit Int64)))
+            (effect St (op next (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle Out n
+                ((base (u) s (resume s (+ s 100))))
+                (let ((f (fn ((: k Int64))
+                           (handle St k
+                             ((next (u) s (resume (+ s (Out.base)) (+ s 1))))
+                             (St.next)))))
+                  (+ (* 1000 (f 1)) (f 2)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 6107 Int64)))
+
+(case "a record STATE with a Set field rebuilt per dispatch — dedup observed through the field"
+  (doc    "A named-field collection inside a record state (the split-state pins use positional
+           tuples): the arm projects the Set field, rebuilds it, and packages a fresh record —
+           dedup observes through the field: add 5 → len 1, duplicate 5 → still 1, add 7 → 2 →
+           112. The seen-set + total accumulator idiom.")
+  (input  (do
+            (effect Db (op add (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle Db (record (seen (Set.of (list))) (total 0))
+                ((add (v) st
+                  (let ((ns (Set.insert (. st seen) v)))
+                    (resume (Set.len ns)
+                            (record (seen ns) (total (+ (. st total) v)))))))
+                (+ (* 100 (Db.add n))
+                   (+ (* 10 (Db.add n))
+                      (Db.add 7)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 112 Int64)))
+
+(case "a perform-seeded inner handle composed with a SECOND same-effect instantiation after it"
+  (doc    "The seed-position perform pin composed with sequential same-effect handles: B's seed is
+           `(A.tick)` (evaluated in A's scope, advancing A 5→6), the region computes 5+15 = 20, and
+           a SECOND fresh A after the region reads its own seed 50, no leftover state → 2050.")
+  (input  (do
+            (effect A (op tick (-> Unit Int64)))
+            (effect B (op tock (-> Unit Int64)))
+            (def (main (: n Int64))
+              (+ (* 100 (handle A n
+                          ((tick (u) s (resume s (+ s 1))))
+                          (handle B (A.tick)
+                            ((tock (u) t (resume t (+ t 10))))
+                            (+ (B.tock) (B.tock)))))
+                 (handle A 50
+                   ((tick (u) s (resume s (+ s 1))))
+                   (A.tick))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 2050 Int64)))
+
 ; ============ Guarded match × effects (breaker FINDING, ag5 → fixed #2333). A guarded match on a
 ; perform-result scrutinee whose FALLBACK arm also performs used to leak the fold-synthesized #seed
 ; binder as a false CDZ0101: the guard desugar's arm-body copy reparented a reused (shared) body
