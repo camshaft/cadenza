@@ -62,13 +62,20 @@ jobs:
 
   clippy-shard-b:
     name: clippy-shard-b
-    runs-on: ubuntu-latest
+    # QUEUE-BALANCE: on ARM (not x86). clippy is ARCH-INDEPENDENT (both shards + roundtrip run clean on
+    # aarch64), and the x86 required pool was oversubscribed (11 x86 vs 7 arm jobs) → clippy-shard-b (the
+    # heavier ~7.5m clippy half) was consistently the STARVED tail, stalling candidates for want of an x86
+    # slot (pr-sync flagged fleet-wide starvation 2026-08-07). Moving it x86→arm removes it from the crowded
+    # x86 pool + rebalances to 10 x86 / 8 arm, and clippy runs faster on arm anyway (cf. roundtrip 7.2→5.5m).
+    # Same context name `checks / clippy-shard-b` (only the runner moves) → no ruleset change. clippy-shard-a
+    # (the light 2.6m half) stays on x86 — keeping ONE clippy shard on each arch balances both pools.
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@v22
       - uses: ./.github/actions/nix-store-cache
       - name: cargo clippy shard B (via nix — cdz (workspace) + cdz-run + xtask + cadenza-ast + cdz-corpus + cdz-rt + cdz-rust-render)
-        run: nix build .#checks.x86_64-linux.clippy-shard-b --print-build-logs
+        run: nix build .#checks.aarch64-linux.clippy-shard-b --print-build-logs
 
   test-ubuntu:
     # Full-CI-in-nix cutover (Model A): the `test (ubuntu-latest)` required context, body-swapped to the
@@ -505,3 +512,27 @@ jobs:
       - uses: ./.github/actions/nix-store-cache
       - name: guide examples (via nix — hermetic, pinned binaryen/wasm-bindgen)
         run: nix build .#checks.aarch64-linux.guide-examples --print-build-logs
+
+  emoji-lint:
+    # ADVISORY (NON-required — NOT in ruleset 10560470): durable CI enforcement of the emoji-ban (operator
+    # directive — no decorative emoji in compiler-source COMMENTS). The local `cargo xtask check` + the
+    # pr-sync re-gate already run emoji_free_lint (#2570), but checks.yml fans out per-STEP nix jobs and does
+    # NOT run the monolithic `check`, so CI alone wouldn't red on a new comment-emoji — this job closes that
+    # gap. Runs the standalone `cargo xtask lint-emoji` (#2579): comment-SCOPED (walks implementation/ only,
+    # excludes xtask/fleet + quoted string literals + codepoint-doc test data), exits 1 with file:line:char
+    # on a hit. WHY a dedicated subcommand not a raw grep (v-nix+v-ft 2026-08-07): a naive emoji-range grep
+    # over *.rs FALSE-POSITIVES on the ~13 files with legitimate emoji in STRING LITERALS (the syntax crate
+    # must lex/parse/print emoji) — only the comment-scoped parse distinguishes banned-comment-emoji from
+    # required-string-emoji. NON-required + isolated (a lint false-alarm must NOT red a required context like
+    # fmt); operator can promote it to required later via an additive-first ruleset-add lockstep (v-ft owns
+    # that half). x86 default runner (arch-independent text lint; keeps the arm pool free per the roundtrip
+    # rebalance). No nix / wasm / runtime store — just compiles xtask + walks source (fast).
+    name: emoji-lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: emoji-lint
+      - name: cargo xtask lint-emoji (comment-scoped emoji-ban)
+        run: cargo xtask lint-emoji
