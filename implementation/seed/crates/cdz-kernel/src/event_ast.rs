@@ -1447,16 +1447,22 @@ pub fn decode_shell_pipeline_outcome(bytes: &[u8]) -> Result<ShellPipelineOutcom
 }
 
 /// One exported function's SIGNATURE in a component-signature descriptor (composable-component-calls
-/// part-1, greenlit 2026-08-07): the func `name` + its `params` and `results` types. V0 carries each type
-/// as OPAQUE `wit` BYTES (the wit/component-model type encoding, verbatim from the host's reflection) — a
-/// reducer discovers the export NAME + arity (params.len()/results.len()) + the opaque per-type bytes, which
-/// is enough to route/dispatch. A follow-up increment lowers those wit-type bytes to a Cadenza-decodable
-/// Ast (v-metaprogramming owns the wit↔Ast type mapping); until then the reducer treats a type as an opaque
-/// handle it can compare/pass-through, not introspect structurally.
+/// part-1): the func `name` + its `params` and `results` types. Each type is a Cadenza-DECODABLE type-AST:
+/// `codec::encode(`[`type_to_ast(&Type)`](crate::ast_marshal::type_to_ast)`)` — the canonical, version-
+/// independent lowering of the resolved `wasmtime::component::Type` (the host reflects `component_type()`,
+/// calls `type_to_ast` per param/result, and puts the bytes here). A reducer discovers the export NAME +
+/// arity (params.len()/results.len()) AND can decode each type's structure ((u32)/("list" …)/("record"
+/// (field …)…)/etc. — the `ast_marshal` correspondence) to build a well-typed invoke.
+///
+/// (Increment-1 shipped these as opaque placeholder bytes before [`crate::ast_marshal::type_to_ast`] existed;
+/// increment-2 populated them with the real type-AST — the wire slot is unchanged, the bytes are now a
+/// decodable type-AST. A name+arity-only reducer that never decodes the type bytes is unaffected either way.)
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ExportSig {
     pub name: String,
+    /// Each param's type as `codec::encode(type_to_ast(&Type))` — a decodable canonical type-AST.
     pub params: Vec<Vec<u8>>,
+    /// Each result's type as `codec::encode(type_to_ast(&Type))` — a decodable canonical type-AST.
     pub results: Vec<Vec<u8>>,
 }
 
@@ -1475,10 +1481,13 @@ pub struct ComponentSignature {
 ///
 ///   `(component-signature (export (name <str>) (params (ty <bytes>) …) (results (ty <bytes>) …)) …)`
 ///
-/// Each `(ty <bytes>)` carries a param/result type as OPAQUE wit-bytes (v0 — see [`ExportSig`]); the frame
-/// extends additively to a structured Ast type later without breaking a v0 reader (a reader that only wants
-/// names+arities ignores the ty-bytes). Same shared-codec + total-decode discipline as the other event_ast
-/// codecs. The host produces it; the reducer decodes it ([`decode_component_signature`]).
+/// Each `(ty <bytes>)` carries a param/result type as a Cadenza-decodable type-AST —
+/// `codec::encode(`[`type_to_ast(&Type)`](crate::ast_marshal::type_to_ast)`)` (see [`ExportSig`]). The
+/// `<bytes>` slot is opaque to THIS codec (it just frames them), so a name+arity-only reader ignores them
+/// while a type-aware reducer decodes each with `codec::decode_detailed` to introspect the type structure.
+/// Same shared-codec + total-decode discipline as the other event_ast codecs. The host produces it (reflect
+/// `component_type().exports()` → `type_to_ast` per param/result → here); the reducer decodes it
+/// ([`decode_component_signature`]).
 pub fn encode_component_signature(sig: &ComponentSignature) -> Vec<u8> {
     let mut b = Builder::new();
     let head = b.name("component-signature");
@@ -3384,6 +3393,75 @@ mod tests {
                 Err(EventAstError::Shape(_))
             ),
             "a members frame is a Shape error (wrong head), not a component-signature"
+        );
+    }
+
+    // Increment-2: extract a REAL wasmtime component Type from a WAT probe (mirrors ast_marshal's harness) —
+    // a `Type` isn't directly constructible; a probe func whose result is `(list <ty>)` reflects `<ty>` via
+    // the uniform indirect return (needs memory+realloc canon options). `ty_decl` is the WIT type to reflect.
+    #[cfg(test)]
+    fn probe_type(ty_decl: &str) -> wasmtime::component::Type {
+        let component_wat = format!(
+            r#"(component
+                 (core module $m
+                   (memory (export "mem") 1)
+                   (func (export "realloc") (param i32 i32 i32 i32) (result i32) (i32.const 0))
+                   (func (export "probe") (result i32) (i32.const 0)))
+                 (core instance $i (instantiate $m))
+                 (type $t {ty_decl})
+                 (export $t-x "wanted" (type $t))
+                 (func $probe (result (list $t-x))
+                   (canon lift (core func $i "probe") (memory $i "mem") (realloc (func $i "realloc"))))
+                 (export "probe" (func $probe)))"#
+        );
+        let engine = wasmtime::Engine::default();
+        let bytes = wat::parse_str(&component_wat).expect("assemble probe component");
+        let component =
+            wasmtime::component::Component::new(&engine, &bytes).expect("valid component");
+        let mut store = wasmtime::Store::new(&engine, ());
+        let linker = wasmtime::component::Linker::<()>::new(&engine);
+        let instance = linker
+            .instantiate(&mut store, &component)
+            .expect("instantiate");
+        let idx = instance
+            .get_export_index(&mut store, None, "probe")
+            .expect("exports probe");
+        let func = instance.get_func(&mut store, idx).expect("probe is a func");
+        let results = func.results(&store);
+        let wasmtime::component::Type::List(lt) = &results[0] else {
+            panic!("probe result is a list");
+        };
+        lt.ty()
+    }
+
+    #[test]
+    fn component_signature_carries_a_real_decodable_type_ast_from_type_to_ast() {
+        // INCREMENT-2 integration: the descriptor's type-bytes are codec::encode(type_to_ast(&Type)) — a
+        // REAL decodable type-AST, not opaque placeholder. Reflect a real u32 param type from a WAT probe,
+        // lower it via type_to_ast, put it in an ExportSig, round-trip the descriptor, and DECODE the type-AST
+        // back — proving the host→codec→reducer path carries a structural, introspectable type end-to-end.
+        let u32_ty = probe_type("u32");
+        let ty_ast = crate::ast_marshal::type_to_ast(&u32_ty).expect("type_to_ast lowers u32");
+        let sig = ComponentSignature {
+            exports: vec![ExportSig {
+                name: "read".to_string(),
+                params: vec![ty_ast.clone()], // a real type-AST, not opaque bytes
+                results: vec![],
+            }],
+        };
+        // Round-trips through the descriptor codec unchanged...
+        let back =
+            decode_component_signature(&encode_component_signature(&sig)).expect("round-trips");
+        assert_eq!(back, sig);
+        // ...and the recovered type-bytes are a DECODABLE canonical type-AST (a reducer can introspect it),
+        // NOT opaque: decode it via the shared codec + confirm it's the u32 marker type_to_ast emits.
+        let recovered_ty = &back.exports[0].params[0];
+        let a = cadenza_ast::codec::decode_detailed(recovered_ty)
+            .expect("the descriptor's type-bytes decode as a canonical type-AST (not opaque)");
+        assert_eq!(
+            a.head_name(a.root),
+            Some("u32"),
+            "the decoded type-AST is the u32 type_to_ast emits — real structural type, end-to-end"
         );
     }
 
