@@ -14381,3 +14381,56 @@
                   (_ 99))))
             (export main)))
   (call   main (: 3 Int64)) (output (: 99 Int64)))
+
+;; ── an inner handle's RESULT feeds outer control flow (breaker hs) ───────────────────────────────
+;; The inner same-effect handle runs to completion and its VALUE drives the enclosing region's
+;; control: hs1 = the result is a match SCRUTINEE (a literal arm selects on it; the arm body and
+;; the trailing draw hit the OUTER state); hs2 = the inner handle is OUTER-seeded and builds a
+;; TUPLE scrutinee whose destructured arm re-performs against the outer; hs3 = the result is an
+;; IF-condition operand compared against an outer draw, both branches re-performing outer.
+
+(case "hs1 an inner SAME-effect handle's result is the match SCRUTINEE — the selected arm and the trailing draw hit the OUTER state"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (+ s 1))))
+                (+ (match (handle St 4
+                            ((next () t (resume t (* t 3))))
+                            (+ (St.next) (St.next)))
+                     (16 (+ 1000 (St.next)))
+                     (_o (- 0 _o)))
+                   (St.next))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 1011 Int64))
+  (call   main (: 0 Int64)) (output (: 1001 Int64)))
+
+(case "hs2 an OUTER-seeded inner handle builds a tuple scrutinee — the destructured arm re-performs against the outer"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (+ s 1))))
+                (match (handle St (St.next)
+                         ((next () t (resume t (* t 2))))
+                         (tuple (St.next) (St.next)))
+                  ((tuple a b) (+ (* 100 a) (+ (* 10 b) (St.next)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 606 Int64))
+  (call   main (: 2 Int64)) (output (: 243 Int64)))
+
+(case "hs3 an inner SAME-effect handle's result is the IF condition — the taken branch re-performs against the outer"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (+ s 1))))
+                (if (> (handle St 10
+                         ((next () t (resume t (+ t 5))))
+                         (+ (St.next) (St.next)))
+                       (St.next))
+                    (+ 100 (St.next))
+                    (- 0 (St.next)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 106 Int64))
+  (call   main (: 50 Int64)) (output (: -51 Int64)))
