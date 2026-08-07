@@ -68,7 +68,7 @@ def main() = EffectKind.Http()`}
         The smallest reducer that works ignores every input and asks for nothing. It's total (it can't
         brick the agent) and it's the honest starting point: a fold that advances the log and requests no
         effects. Here <C>apply</C> returns the empty list for every event, and a <C>main</C> exercises it on
-        a sample message to show it produces zero effect-requests:
+        a sample message and shows exactly what came back, the list of effect-requests itself:
       </P>
       <Runnable
         authoredIn="ml"
@@ -82,10 +82,10 @@ def apply(
   resumes: Option(Bytes),
 ) -> List(EffectRequest) = []
 
-def main() = List.len(apply({ family = "message", version = 1 }, None(), None()))`}
+def main() = apply({ family = "message", version = 1 }, None(), None())`}
       />
       <P>
-        The result is <C>0</C>: no effects, for any event. To turn this program into something the kernel
+        The result is <C>[]</C>, the empty list: no effects, for any event. To turn this program into something the kernel
         can run, you compile it as a <em>component</em> bound to the reducer interface, naming that interface
         on the command line:
       </P>
@@ -106,7 +106,8 @@ def main() = List.len(apply({ family = "message", version = 1 }, None(), None())
         A useful reducer asks for work. An effect-request names a <em>kind</em> (which capability), a{" "}
         <em>target</em>, an optional <em>payload</em>, and an optional <em>correlation</em> tag the kernel
         echoes back on the resume so you can match a completion to the request that caused it. This reducer
-        returns a single <C>Http</C> request on every event; the <C>main</C> confirms it's exactly one:
+        returns a single <C>Http</C> request on every event; the <C>main</C> reaches into the returned list
+        and shows the <em>target</em> the reducer asked the kernel to fetch:
       </P>
       <Runnable
         authoredIn="ml"
@@ -126,10 +127,13 @@ def apply(
       correlation = Some(String.to-bytes("step-1")),
     }) ]
 
-def main() = List.len(apply({ family = "message", version = 1 }, None(), None()))`}
+def main() =
+  match List.at(apply({ family = "message", version = 1 }, None(), None()), 0) with
+    | Some(Mk(r)) => r.target
+    | None() => "no effect"`}
       />
       <P>
-        A returned effect-request is <em>declarative</em>: the reducer doesn't perform the HTTP call, it
+        The result is <C>"https://ok.host/x"</C>, the exact target the reducer chose. A returned effect-request is <em>declarative</em>: the reducer doesn't perform the HTTP call, it
         hands the kernel a description of the work and returns. The kernel schedules it, and when it
         completes, calls <C>apply</C> again with the <em>resumes</em> field set to that same{" "}
         <C>correlation</C> tag, echoed back verbatim. The tag is the reducer's <em>own</em> token, not a
@@ -145,7 +149,8 @@ def main() = List.len(apply({ family = "message", version = 1 }, None(), None())
         are enough to distinguish an inbound message from an effect completing. A common shape: on a resume,
         stop (the effect you asked for is done, don't cascade); on a fresh message, act; otherwise ignore.
         This reducer emits one <C>Http</C> request for a message and nothing for a resume or any other
-        family, and the <C>main</C> checks the resume path stays silent:
+        family. Here the <C>main</C> hands it a fresh <em>message</em>, so it takes the acting branch, and
+        shows what the reducer decided to do, the target of the request it emits:
       </P>
       <Runnable
         authoredIn="ml"
@@ -166,13 +171,20 @@ def apply(
       else
         []
 
-def main() = List.len(apply({ family = "result", version = 1 }, None(), Some(String.to-bytes("tok"))))`}
+def decision(ct, payload, resumes) =
+  match List.at(apply(ct, payload, resumes), 0) with
+    | Some(Mk(r)) => r.target
+    | None() => "(no effect)"
+
+def main() = decision({ family = "message", version = 1 }, None(), None())`}
       />
       <P>
-        The <C>main</C> hands <C>apply</C> a resume (a <C>Some</C> in <C>resumes</C>), so the first arm
-        matches and the result is <C>0</C>: no cascade. Swap in a <C>message</C> family with no resume and
-        the same <C>apply</C> would return one request instead. The reducer's whole behaviour is this one
-        <C>match</C>, which is exactly what makes it easy to test.
+        On a message the reducer dispatches to the acting branch and the result is{" "}
+        <C>"https://ok.host/x"</C>, the target it emitted. Change <C>main</C> to hand <C>apply</C> a resume
+        instead, <C>decision(&#123; family = "result", version = 1 &#125;, None(), Some(String.to-bytes("tok")))</C>, and the
+        first <C>match</C> arm fires and it renders <C>"(no effect)"</C>: a completion doesn't cascade. The
+        reducer's whole behaviour is this one <C>match</C> on the event, which is exactly what makes it easy
+        to test.
       </P>
 
       <H2>Reading session state: an effect through a binding</H2>
