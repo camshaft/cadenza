@@ -227,12 +227,22 @@ pub fn type_to_ast(ty: &Type) -> Result<Vec<u8>, MarshalError> {
     Ok(codec::encode(&b.finish(root)))
 }
 
-/// Build the type-descriptor for `ty` into arena `b`, returning the root node id. Recursive: a compound
-/// type's sub-types (via wasmtime's `Type` reflection accessors — `lt.ty()`, `rt.fields()`, `tt.types()`,
-/// `ot.ty()`, `rt.ok()`/`err()`, `vt.cases()`, `et.names()`, `ft.names()`) are built first, then wrapped.
-/// Mirrors [`build_from_ast`]'s `Type` traversal exactly (same variants, same accessors), but EMITS a
-/// descriptor node instead of READING a value — so the two can never disagree on which types exist.
-fn build_type(b: &mut Builder, ty: &Type) -> Result<StructId, MarshalError> {
+/// Build the type-descriptor for `ty` INTO an existing arena `b`, returning the root node id — the
+/// node-emitting core [`type_to_ast`] wraps. Exposed `pub` so a caller assembling a LARGER AST can emit
+/// type nodes DIRECTLY into its own [`Builder`] (one shared arena, encoded ONCE) rather than nesting
+/// self-encoded per-type byte blobs: e.g. v-agent-harness's component-signature descriptor is ONE
+/// uniform AST `(component-signature (export (name)(params <type-node>…)(results <type-node>…))…)` where
+/// each param/result type is a node built by THIS fn into the descriptor's arena (operator directive:
+/// "why isn't the entire thing just an AST?"). Keeping this the SINGLE node-emitter means signature-query,
+/// value/type marshalling, and v-ah-host's P2 all speak ONE AST surface — no parallel encoding. Use
+/// [`type_to_ast`] instead when you want a lone type encoded to standalone `Vec<u8>` bytes.
+///
+/// Recursive: a compound type's sub-types (via wasmtime's `Type` reflection accessors — `lt.ty()`,
+/// `rt.fields()`, `tt.types()`, `ot.ty()`, `rt.ok()`/`err()`, `vt.cases()`, `et.names()`, `ft.names()`)
+/// are built first, then wrapped. Mirrors [`build_from_ast`]'s `Type` traversal exactly (same variants,
+/// same accessors), but EMITS a descriptor node instead of READING a value — so the two can never
+/// disagree on which types exist. The descriptor form vocabulary is documented on [`type_to_ast`].
+pub fn build_type(b: &mut Builder, ty: &Type) -> Result<StructId, MarshalError> {
     // A primitive type = a lone name-head marker `(kind)` (a 1-element list whose head names the kind).
     let prim = |b: &mut Builder, kind: &str| {
         let head = b.name(kind);
@@ -1521,6 +1531,35 @@ mod tests {
         assert_eq!(ks.len(), 3, "head + 2 flags");
         assert_eq!(a.as_name(ks[1]), Some("a"));
         assert_eq!(a.as_name(ks[2]), Some("b"));
+    }
+
+    #[test]
+    fn build_type_composes_multiple_types_into_one_caller_arena() {
+        // The pub `build_type` use case (v-agent-harness's one-uniform-AST descriptor, operator directive):
+        // emit SEVERAL type nodes DIRECTLY into a caller's own Builder, wrap them in a larger form, encode
+        // ONCE — no per-type nested-encoded byte blobs. Here: a mock ("params" <type>…) node carrying two
+        // param types (u32, (list string)) built inline into the same arena.
+        let u32_ty = param_type(&probe_component("u32"));
+        let list_ty = param_type(&probe_component("(list string)"));
+        let mut b = Builder::new();
+        let head = b.atom_leaf(Leaf::Str("params".into()));
+        let p0 = build_type(&mut b, &u32_ty).expect("build u32 into arena");
+        let p1 = build_type(&mut b, &list_ty).expect("build list into arena");
+        let root = b.list(vec![head, p0, p1]);
+        let arenas = b.finish(root);
+        // ONE arena, ONE encode — and it's ordinary cdzast (round-trips byte-identical).
+        let bytes = codec::encode(&arenas);
+        let decoded = decode(&bytes);
+        assert_eq!(head_str(&decoded, decoded.root), "params");
+        let ks = kids(&decoded, decoded.root);
+        assert_eq!(ks.len(), 3, "head + 2 param types in ONE arena");
+        assert_eq!(head_str(&decoded, ks[1]), "u32");
+        assert_eq!(head_str(&decoded, ks[2]), "list");
+        assert_eq!(
+            codec::encode(&decoded),
+            bytes,
+            "the composed descriptor re-encodes byte-identical"
+        );
     }
 
     #[test]
