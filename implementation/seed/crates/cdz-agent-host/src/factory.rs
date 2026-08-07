@@ -40,16 +40,22 @@ use std::sync::Arc;
 /// `LiveExecutorSet` (behind `live-net`), whose `build` `.await`s the live executor assembly (it loads AWS
 /// config for the Bedrock transport). A synchronous builder (a plain closure) satisfies it with no real
 /// await via the blanket impl.
+/// `build` takes the installed session's `id` (the SessionId it's registered under) so a per-session executor
+/// that needs the session's own identity — the [`LifecycleExecutor`](crate::LifecycleExecutor), whose `by`
+/// on every lifecycle op is this owner — can be built correctly. The lifecycle CHANNEL (the loop's) is held
+/// by the concrete builder (e.g. [`LiveExecutorSet`], set at construction), not passed per-build, since it's
+/// one-per-loop. A builder that serves no lifecycle effects simply ignores `id`.
 #[async_trait::async_trait(?Send)]
 pub trait ExecutorSetBuilder {
-    async fn build(&self) -> CompositeExecutor;
+    async fn build(&self, id: &crate::host::SessionId) -> CompositeExecutor;
 }
 
 /// A synchronous `Fn() -> CompositeExecutor` (a test's hermetic set, or any non-async assembly) is an
-/// `ExecutorSetBuilder` for free — its `build` just calls the closure (no real await).
+/// `ExecutorSetBuilder` for free — its `build` just calls the closure (no real await). It ignores `id` (a
+/// closure-built set serves no per-session-identity executor; a caller that needs one uses a real builder).
 #[async_trait::async_trait(?Send)]
 impl<F: Fn() -> CompositeExecutor> ExecutorSetBuilder for F {
-    async fn build(&self) -> CompositeExecutor {
+    async fn build(&self, _id: &crate::host::SessionId) -> CompositeExecutor {
         self()
     }
 }
@@ -144,6 +150,13 @@ pub struct LiveExecutorSet {
     /// a [`MeteredExecutor`] sharing a CLONE of this `Arc`, so all sessions' effect outcomes aggregate into
     /// one daemon-wide set the exporter reports over.
     metrics: Arc<EffectMetrics>,
+    /// The loop's lifecycle channel, if the daemon wired one (§lifecycle). Set via
+    /// [`with_lifecycle_channel`](Self::with_lifecycle_channel) at boot from
+    /// [`AsyncAgentHost::lifecycle_channel`](crate::AsyncAgentHost::lifecycle_channel). When present, `build`
+    /// wires the `lifecycle/*` executors (spawn/suspend/resume/terminate) for each installed session, owned
+    /// by that session's id — so a deployed session can perform lifecycle effects. `None` (the default / a
+    /// pure control-plane build with no loop channel) = no lifecycle executor is wired.
+    lifecycle: Option<crate::lifecycle::LifecycleChannel>,
 }
 
 #[cfg(feature = "live-net")]
@@ -153,7 +166,8 @@ impl LiveExecutorSet {
     /// backend) — a fatal daemon misconfiguration surfaced at boot, not per session. The per-effect
     /// [`EffectMetrics`] register into `registry` (the daemon's — the SAME one
     /// [`AgentHost`](crate::AgentHost) records host metrics into), so all metrics share one registry the
-    /// exporter reports over.
+    /// exporter reports over. No lifecycle channel by default — add one with
+    /// [`with_lifecycle_channel`](Self::with_lifecycle_channel) to serve `lifecycle/*` effects.
     pub async fn new(registry: &crate::metrics::Registry) -> Result<Self, String> {
         let http = crate::ReqwestHttpTransport::new()?;
         let model = crate::BedrockModelTransport::new().await;
@@ -161,7 +175,17 @@ impl LiveExecutorSet {
             http,
             model,
             metrics: Arc::new(EffectMetrics::new(registry)),
+            lifecycle: None,
         })
+    }
+
+    /// Wire the loop's lifecycle channel so each installed session gets the `lifecycle/*` executors
+    /// (spawn/suspend/resume/terminate). Called ONCE at daemon boot with
+    /// [`AsyncAgentHost::lifecycle_channel`](crate::AsyncAgentHost::lifecycle_channel). Without this, a built
+    /// session serves no lifecycle effects (a pure control-plane / test build).
+    pub fn with_lifecycle_channel(mut self, lifecycle: crate::lifecycle::LifecycleChannel) -> Self {
+        self.lifecycle = Some(lifecycle);
+        self
     }
 
     /// The host-wide per-effect metrics this set's executors tally into — shared, so the returned handle
@@ -174,7 +198,7 @@ impl LiveExecutorSet {
 #[cfg(feature = "live-net")]
 #[async_trait::async_trait(?Send)]
 impl ExecutorSetBuilder for LiveExecutorSet {
-    async fn build(&self) -> CompositeExecutor {
+    async fn build(&self, id: &crate::host::SessionId) -> CompositeExecutor {
         use cdz_kernel::effect::effect_ct;
         // Cheap per-install assembly: CLONE the shared transports (Arc bumps) into fresh executors, each
         // WRAPPED in a MeteredExecutor sharing the host-wide Arc<EffectMetrics> (an Arc-clone, also cheap) so
@@ -237,7 +261,33 @@ impl ExecutorSetBuilder for LiveExecutorSet {
             }
             c
         };
-        composite
+        // §lifecycle (tick-#784 gap): when the daemon wired the loop's lifecycle channel, register the four
+        // `lifecycle/*` executors so an installed session can spawn/suspend/resume/terminate. Each is owned
+        // by THIS session's id (the `by` stamped on its lifecycle ops); the LifecycleExecutor records a
+        // LifecycleOp on the channel and the loop applies it (defer-to-loop). The CompositeExecutor routes by
+        // EXACT family, so one executor per verb (each holds a clone of the channel + the owner id). NO host
+        // policy — whether a session MAY lifecycle a target is the Cedar authority (I6 DescendantOf), gated
+        // before dispatch. `None` channel (control-plane/test build) = no lifecycle effect served.
+        if let Some(lifecycle) = &self.lifecycle {
+            let mut c = composite;
+            for fam in [
+                effect_ct::LIFECYCLE_SPAWN,
+                effect_ct::LIFECYCLE_SUSPEND,
+                effect_ct::LIFECYCLE_RESUME,
+                effect_ct::LIFECYCLE_TERMINATE,
+            ] {
+                c = c.with_effect(
+                    fam,
+                    Box::new(MeteredExecutor::new(
+                        Box::new(crate::LifecycleExecutor::new(lifecycle.clone(), id.clone())),
+                        m.clone(),
+                    )),
+                );
+            }
+            c
+        } else {
+            composite
+        }
     }
 }
 
@@ -472,7 +522,8 @@ where
         })?;
         // 3. Assemble the session with a fresh executor set + the session's authorizer. genesis records the
         //    reducer hash as the session's genesis identity (so replay reconstructs it).
-        let executors = self.executors.build().await;
+        // Build the executor set for THIS session (its id owns any per-session executor, e.g. lifecycle).
+        let executors = self.executors.build(&spec.id).await;
         let mut hosted = HostedSession::genesis(
             spec.reducer_hash,
             Box::new(reducer),
@@ -512,7 +563,18 @@ where
         let reducer = AsyncComponentReducer::from_component_bytes(&bytes).map_err(|e| {
             format!("child reducer component for {reducer_hash} did not lift: {e:?}")
         })?;
-        let executors = self.executors.build().await;
+        // The child's own SessionId = hex(its genesis hash), derived from (reducer, nonce, parent) — the same
+        // id the loop registers it under. Thread it as the executor-set owner so a spawned child's own
+        // lifecycle executor (if wired) is owned by the child, not a stale/absent id.
+        let child_id = crate::host::SessionId::new(
+            cdz_kernel::kernel::Session::derive_genesis_hash(
+                reducer_hash,
+                spawn_nonce,
+                Some(parent_genesis),
+            )
+            .to_hex(),
+        );
+        let executors = self.executors.build(&child_id).await;
         // DENY-ALL child authorizer (NOT self.authz.build() — a spawned child does not inherit the install
         // policy; it starts deny-by-default and earns caps via a later explicit grant).
         let hosted = HostedSession::genesis_spawned_with_nonce(
