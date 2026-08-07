@@ -15074,3 +15074,236 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 2316 Int64))
   (call   main (: 0 Int64)) (output (: 1316 Int64)))
+
+;; ── helper-chain depth, extreme values, multi-effect helpers, list transforms (breaker hc/nx/mf/st/lt) ──
+;; hc = performing HELPER CHAINS (three-deep leaf perform, two depths performing, the same helper
+;; under two sequential handlers, self-composition, a tuple-returning helper). nx = value EXTREMES
+;; through the state thread (zero-crossing subtraction, an exact 2^62 seed, sign-branching arms,
+;; alternating-sign geometric stride, i64::MIN-adjacent op args). mf = helpers performing TWO
+;; effects (both nesting orders commute; a helper called from an arm's resume-value AND the body).
+;; st = handle expressions as OPERANDS of enclosing pure sums (one and two sibling regions).
+;; lt = list-state TRANSFORMS in the arm (end-swap and element-wise doubling via List.update).
+
+(case "hc1 a THREE-deep pure helper chain whose LEAF performs — two top-level calls thread the state through the depth"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (leaf (: k Int64)) (+ (St.next) k))
+            (def (mid (: k Int64)) (* (leaf k) 2))
+            (def (top (: k Int64)) (+ (mid k) 1))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (+ s 1))))
+                (+ (top 10) (top 100))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 244 Int64))
+  (call   main (: 0 Int64)) (output (: 224 Int64)))
+
+(case "hc2 helpers at TWO depths both perform — the call-site draw, mid's draw, and leaf's draw arrive in order"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (leaf (: k Int64)) (+ (St.next) k))
+            (def (mid (: k Int64)) (+ (* (St.next) 100) (leaf k)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (+ s 1))))
+                (mid (St.next))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 612 Int64))
+  (call   main (: 0 Int64)) (output (: 102 Int64)))
+
+(case "hc3 the SAME performing helper under two SEQUENTIAL handlers — each handle interprets its draws with its own arm and seed"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (twice) (+ (St.next) (St.next)))
+            (def (main (: n Int64))
+              (+ (handle St n
+                   ((next () s (resume s (+ s 1))))
+                   (twice))
+                 (* 100 (handle St 7
+                          ((next () s (resume s (* s 3))))
+                          (twice)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 2811 Int64))
+  (call   main (: 0 Int64)) (output (: 2801 Int64)))
+
+(case "hc4 a performing helper COMPOSED with itself — probe(probe(draw)), three dispatches through two call frames"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (probe (: k Int64)) (+ (St.next) (* k 10)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (+ s 1))))
+                (probe (probe (St.next)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 567 Int64))
+  (call   main (: 0 Int64)) (output (: 12 Int64)))
+
+(case "hc5 a helper RETURNS a tuple of two draws — the caller destructures it and re-performs"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (pair2) (tuple (St.next) (St.next)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (* s 2))))
+                (match (pair2)
+                  ((tuple a b) (+ (* 100 a) (+ (* 10 b) (St.next)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 620 Int64))
+  (call   main (: 1 Int64)) (output (: 124 Int64)))
+
+(case "nx1 a SUBTRACTING stride crosses zero — negative states thread and sum correctly"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (- s 7))))
+                (+ (St.next) (+ (St.next) (+ (St.next) (St.next))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: -2 Int64))
+  (call   main (: 0 Int64)) (output (: -42 Int64))
+  (call   main (: -5 Int64)) (output (: -62 Int64)))
+
+(case "nx2 a 2^62 seed threads exactly — the difference of consecutive draws recovers the stride"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle St 4611686018427387904
+                ((next () s (resume s (- s n))))
+                (- (St.next) (St.next))))
+            (export main)))
+  (call   main (: 1000000007 Int64)) (output (: 1000000007 Int64))
+  (call   main (: 1 Int64)) (output (: 1 Int64)))
+
+(case "nx3 the arm branches on the op arg's SIGN — negation on the negative path, n and -n both exercised"
+  (input  (do
+            (effect St (op push (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle St 0
+                ((push (v) s (if (< v 0) (resume (- 0 v) (- s 1)) (resume v (+ s 1)))))
+                (+ (St.push n) (+ (* 10 (St.push (- 0 n))) (* 100 (St.push -3))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 355 Int64))
+  (call   main (: -2 Int64)) (output (: 322 Int64))
+  (call   main (: 0 Int64)) (output (: 300 Int64)))
+
+(case "nx4 an alternating-sign GEOMETRIC stride (*-2) — the sign flips per dispatch and the sum telescopes"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (* s -2))))
+                (+ (St.next) (+ (St.next) (+ (St.next) (St.next))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: -15 Int64))
+  (call   main (: -1 Int64)) (output (: 5 Int64)))
+
+(case "nx5 i64::MIN-adjacent op arguments — the arm's subtraction stays in range and the two dispatches differ by exactly the state stride"
+  (input  (do
+            (effect St (op keep (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle St 0
+                ((keep (v) s (resume (- v s) (+ s 1))))
+                (- (St.keep -9223372036854775800) (St.keep -9223372036854775800))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 1 Int64)))
+
+(case "mf1 a helper performing TWO different effects — both handlers discharge it, both states advance per call"
+  (input  (do
+            (effect A (op a (-> Int64)))
+            (effect B (op b (-> Int64)))
+            (def (both) (+ (A.a) (* 10 (B.b))))
+            (def (main (: n Int64))
+              (handle A n
+                ((a () s (resume s (+ s 1))))
+                (handle B 100
+                  ((b () t (resume t (* t 2))))
+                  (+ (both) (both)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 3011 Int64))
+  (call   main (: 0 Int64)) (output (: 3001 Int64)))
+
+(case "mf2 the SAME two-effect helper under the OPPOSITE handler nesting order — distinct effects commute"
+  (input  (do
+            (effect A (op a (-> Int64)))
+            (effect B (op b (-> Int64)))
+            (def (both) (+ (A.a) (* 10 (B.b))))
+            (def (main (: n Int64))
+              (handle B 100
+                ((b () t (resume t (* t 2))))
+                (handle A n
+                  ((a () s (resume s (+ s 1))))
+                  (+ (both) (both)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 3011 Int64))
+  (call   main (: 0 Int64)) (output (: 3001 Int64)))
+
+(case "mf3 one performing helper called from an ARM's resume-value AND the body — three calls, one advancing thread"
+  (input  (do
+            (effect A (op a (-> Int64)))
+            (effect B (op b (-> Int64)))
+            (def (draw+) (+ (A.a) 1000))
+            (def (main (: n Int64))
+              (handle A n
+                ((a () s (resume s (+ s 1))))
+                (handle B 0
+                  ((b () t (resume (draw+) t)))
+                  (+ (B.b) (+ (draw+) (B.b))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 3018 Int64))
+  (call   main (: 0 Int64)) (output (: 3003 Int64)))
+
+(case "st1 a handle expression as ONE operand of an enclosing pure sum — the pure operand and the handled region compose"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (main (: n Int64))
+              (+ (* 1000 n)
+                 (handle St n
+                   ((next () s (resume s (+ s 1))))
+                   (+ (St.next) (St.next)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 5011 Int64))
+  (call   main (: 0 Int64)) (output (: 1 Int64)))
+
+(case "st2 TWO sibling handle expressions as operands of one sum — independent regions with different arms and seeds"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (main (: n Int64))
+              (+ (handle St n
+                   ((next () s (resume s (+ s 1))))
+                   (+ (St.next) (St.next)))
+                 (* 100 (handle St (* n 10)
+                          ((next () s (resume s (- s 2))))
+                          (+ (St.next) (St.next))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 9811 Int64))
+  (call   main (: 1 Int64)) (output (: 1803 Int64)))
+
+(case "lt1 the arm SWAPS its list state's ends per dispatch — the head alternates between the original ends"
+  (input  (do
+            (effect L (op spin (-> Int64)))
+            (def (main (: n Int64))
+              (handle L (list n 2 9)
+                ((spin () s (resume (match (List.at s 0) ((Some h) h) ((None) -1))
+                                    (match (List.at s 0)
+                                      ((Some h) (match (List.at s 2)
+                                                  ((Some t) (List.update (List.update s 0 t) 2 h))
+                                                  ((None) s)))
+                                      ((None) s)))))
+                (+ (L.spin) (+ (* 10 (L.spin)) (* 100 (L.spin))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 595 Int64))
+  (call   main (: 0 Int64)) (output (: 90 Int64)))
+
+(case "lt2 the arm DOUBLES every list element per dispatch (via a projection helper) — the sum geometrically grows"
+  (input  (do
+            (effect L (op amp (-> Int64)))
+            (def (el (: s (List Int64)) (: i Int64))
+              (match (List.at s i) ((Some v) v) ((None) 0)))
+            (def (main (: n Int64))
+              (handle L (list n 3)
+                ((amp () s (resume (+ (el s 0) (el s 1))
+                                   (List.update (List.update s 0 (* (el s 0) 2)) 1 (* (el s 1) 2)))))
+                (+ (L.amp) (+ (* 10 (L.amp)) (* 100 (L.amp))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 3368 Int64))
+  (call   main (: 0 Int64)) (output (: 1263 Int64)))
