@@ -82,6 +82,7 @@ pub mod name_snapshot;
 pub mod retry;
 #[cfg(feature = "live-aws-storage")]
 pub mod s3_blob;
+pub mod session_registry;
 #[cfg(feature = "live-exec")]
 pub mod shell;
 pub mod status;
@@ -138,6 +139,9 @@ pub use name_snapshot::{MemNameStoreSnapshot, NameStoreSnapshotStore};
 pub use retry::Retryability;
 #[cfg(feature = "live-aws-storage")]
 pub use s3_blob::S3BlobStore;
+#[cfg(feature = "live-aws-storage")]
+pub use session_registry::DynamoSessionRegistry;
+pub use session_registry::{SessionRecord, SessionStatus};
 #[cfg(feature = "live-exec")]
 pub use shell::ShellExecutor;
 pub use status::{host_session_status_json, session_status_json, DEFAULT_STALL_AFTER_MS};
