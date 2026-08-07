@@ -1291,6 +1291,161 @@ pub fn decode_shell_pipeline(bytes: &[u8]) -> Result<ShellPipeline, EventAstErro
     Ok(ShellPipeline { stages })
 }
 
+/// The RESULT of running a shell PIPELINE (operator security directive, Option A per v-ah-host): a
+/// tagged union the host produces and a reducer consumes. Rides as the effect's `EffectOutcome::Ok`
+/// PAYLOAD — a pipeline that RAN but whose stage exited nonzero DID perform, so it settles `Ok` with the
+/// exit as DATA the reducer inspects (like a model refusal or an HTTP 500 body — a result, not a kernel
+/// effect error). `EffectOutcome::Err` from the shell executor is reserved for a genuine host failure —
+/// couldn't spawn the first program / a pipe-wiring OS error (nothing ran). `stdout`/`stderr` are BYTES
+/// (a command's output isn't guaranteed UTF-8). `exit_code` is `i64` (a process exit code can be negative
+/// — e.g. `-1` for a signal death / unknown).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum ShellPipelineOutcome {
+    /// Every stage exited 0 — the pipeline's final stdout.
+    Ok { stdout: Vec<u8> },
+    /// The FIRST stage that failed (a nonzero exit) — deny-all pipefail: no partial stdout, the failing
+    /// stage's index + program + exit code + its stderr.
+    Failed {
+        stage_index: u64,
+        program: String,
+        exit_code: i64,
+        stderr: Vec<u8>,
+    },
+}
+
+/// Encode a [`ShellPipelineOutcome`] as canonical AST — the shell effect's `Ok` result payload for the
+/// structured-pipeline path. Shapes:
+///
+///   `(shell-pipeline-outcome (ok (stdout <bytes>)))`
+///   `(shell-pipeline-outcome (failed (stage-index <int>) (program <str>) (exit-code <int>) (stderr <bytes>)))`
+///
+/// The host produces it (all stages 0 → the ok arm with the final stdout; first nonzero exit → the failed
+/// arm); a reducer decodes it ([`decode_shell_pipeline_outcome`]) and folds the result — inspecting the
+/// exit/stderr and deciding retry/alternative as POLICY on the log (minimize-kernel-logic: the kernel never
+/// classifies a tool's exit code).
+pub fn encode_shell_pipeline_outcome(o: &ShellPipelineOutcome) -> Vec<u8> {
+    let mut b = Builder::new();
+    let head = b.name("shell-pipeline-outcome");
+    let arm = match o {
+        ShellPipelineOutcome::Ok { stdout } => {
+            let ah = b.name("ok");
+            let stdout_form = {
+                let h = b.name("stdout");
+                let v = bytes_leaf(&mut b, stdout);
+                b.list(vec![h, v])
+            };
+            b.list(vec![ah, stdout_form])
+        }
+        ShellPipelineOutcome::Failed {
+            stage_index,
+            program,
+            exit_code,
+            stderr,
+        } => {
+            let ah = b.name("failed");
+            let idx_form = {
+                let h = b.name("stage-index");
+                let v = u64_leaf(&mut b, *stage_index);
+                b.list(vec![h, v])
+            };
+            let program_form = {
+                let h = b.name("program");
+                let v = str_leaf(&mut b, program);
+                b.list(vec![h, v])
+            };
+            let exit_form = {
+                let h = b.name("exit-code");
+                let v = i64_leaf(&mut b, *exit_code);
+                b.list(vec![h, v])
+            };
+            let stderr_form = {
+                let h = b.name("stderr");
+                let v = bytes_leaf(&mut b, stderr);
+                b.list(vec![h, v])
+            };
+            b.list(vec![ah, idx_form, program_form, exit_form, stderr_form])
+        }
+    };
+    let root = b.list(vec![head, arm]);
+    codec::encode(&b.finish(root))
+}
+
+/// Decode a `shell-pipeline-outcome` frame encoded by [`encode_shell_pipeline_outcome`]. Total,
+/// Codec-vs-Shape like the other decoders: non-parseable bytes → [`EventAstError::Codec`]; a well-formed
+/// frame with a bad head/arm/arity / a wrong-typed field → [`EventAstError::Shape`]. Never a panic (the
+/// bytes ride the durable effect log / a guest reducer).
+pub fn decode_shell_pipeline_outcome(bytes: &[u8]) -> Result<ShellPipelineOutcome, EventAstError> {
+    let a = codec::decode_detailed(bytes).map_err(EventAstError::Codec)?;
+    let [arm] = a
+        .as_form(a.root, "shell-pipeline-outcome")
+        .ok_or(shape("shell-pipeline-outcome head"))?
+    else {
+        return Err(shape("shell-pipeline-outcome arity (want one arm)"));
+    };
+    match head_of(&a, *arm)? {
+        "ok" => {
+            let [stdout_f] = a.as_form(*arm, "ok").ok_or(shape("ok arm"))? else {
+                return Err(shape("ok arm arity"));
+            };
+            let [sv] = a.as_form(*stdout_f, "stdout").ok_or(shape("stdout form"))? else {
+                return Err(shape("stdout arity"));
+            };
+            Ok(ShellPipelineOutcome::Ok {
+                stdout: read_bytes(&a, *sv)?,
+            })
+        }
+        "failed" => {
+            let [idx_f, program_f, exit_f, stderr_f] =
+                a.as_form(*arm, "failed").ok_or(shape("failed arm"))?
+            else {
+                return Err(shape(
+                    "failed arm arity (want stage-index,program,exit-code,stderr)",
+                ));
+            };
+            let stage_index = {
+                let [iv] = a
+                    .as_form(*idx_f, "stage-index")
+                    .ok_or(shape("stage-index form"))?
+                else {
+                    return Err(shape("stage-index arity"));
+                };
+                read_u64(&a, *iv)?
+            };
+            let program = {
+                let [pv] = a
+                    .as_form(*program_f, "program")
+                    .ok_or(shape("program form"))?
+                else {
+                    return Err(shape("program arity"));
+                };
+                read_str(&a, *pv)?
+            };
+            let exit_code = {
+                let [ev] = a
+                    .as_form(*exit_f, "exit-code")
+                    .ok_or(shape("exit-code form"))?
+                else {
+                    return Err(shape("exit-code arity"));
+                };
+                read_i64(&a, *ev)?
+            };
+            let stderr = {
+                let [ev] = a.as_form(*stderr_f, "stderr").ok_or(shape("stderr form"))? else {
+                    return Err(shape("stderr arity"));
+                };
+                read_bytes(&a, *ev)?
+            };
+            Ok(ShellPipelineOutcome::Failed {
+                stage_index,
+                program,
+                exit_code,
+                stderr,
+            })
+        }
+        _ => Err(shape("unknown shell-pipeline-outcome arm (want ok|failed)")),
+    }
+}
+
 /// A decoded §4c store-snapshot frame — either a single-value `name-set` pointer or a group `member-op`.
 /// This is the durable-snapshot restore discriminant: [`decode_store_frame`] decodes the shared codec
 /// ONCE and routes on the frame's self-describing AST head, so [`crate::name_store::NameStore::from_snapshot_bytes`]
@@ -1425,6 +1580,15 @@ fn read_opt_body(a: &Arenas, id: StructId) -> Result<Option<Vec<u8>>, EventAstEr
 // ---- encode (Event → Arenas) ------------------------------------------------------------------------
 
 fn u64_leaf(b: &mut Builder, n: u64) -> StructId {
+    b.atom_leaf(Leaf::Int {
+        value: BigInt::from(n),
+        radix: Radix::Dec,
+    })
+}
+
+/// A SIGNED int leaf — for a value that can be negative (e.g. a process exit code, `-1` for signal death).
+/// `read_i64` is the total decode (an out-of-i64 `BigInt` is a clean Shape error, never a panic).
+fn i64_leaf(b: &mut Builder, n: i64) -> StructId {
     b.atom_leaf(Leaf::Int {
         value: BigInt::from(n),
         radix: Radix::Dec,
@@ -1712,6 +1876,20 @@ fn read_u64(a: &Arenas, id: StructId) -> Result<u64, EventAstError> {
         Struct::Atom(leaf) => match a.leaf(*leaf) {
             Leaf::Int { value, .. } => {
                 u64::try_from(value).map_err(|_| shape("int out of u64 range"))
+            }
+            _ => Err(shape("expected int leaf")),
+        },
+        _ => Err(shape("expected atom")),
+    }
+}
+
+/// Read a SIGNED int leaf (companion to [`read_u64`] for values that may be negative, e.g. an exit code).
+/// An out-of-i64 `BigInt` is a clean Shape error, never a panic.
+fn read_i64(a: &Arenas, id: StructId) -> Result<i64, EventAstError> {
+    match a.get(id) {
+        Struct::Atom(leaf) => match a.leaf(*leaf) {
+            Leaf::Int { value, .. } => {
+                i64::try_from(value).map_err(|_| shape("int out of i64 range"))
             }
             _ => Err(shape("expected int leaf")),
         },
@@ -2986,6 +3164,47 @@ mod tests {
                 Err(EventAstError::Shape(_))
             ),
             "a members frame is a Shape error (wrong head), not a shell-pipeline"
+        );
+    }
+
+    #[test]
+    fn shell_pipeline_outcome_round_trips_both_arms_incl_negative_exit_and_non_utf8() {
+        // Option A (v-ah-host): the pipeline result rides as an Ok-payload tagged union. Both arms round-trip.
+        // The ok arm carries the final stdout (as bytes — not guaranteed UTF-8).
+        let ok = ShellPipelineOutcome::Ok {
+            stdout: vec![0xff, 0xfe, b'h', b'i'], // deliberately non-UTF-8 bytes survive
+        };
+        assert_eq!(
+            decode_shell_pipeline_outcome(&encode_shell_pipeline_outcome(&ok)).unwrap(),
+            ok
+        );
+        // The failed arm carries the first failing stage's index + program + exit code + stderr. A NEGATIVE
+        // exit code (e.g. -1 for a signal death / unknown) round-trips (i64, not u64).
+        let failed = ShellPipelineOutcome::Failed {
+            stage_index: 2,
+            program: "head".to_string(),
+            exit_code: -1,
+            stderr: vec![b'b', b'o', b'o', b'm', 0x00],
+        };
+        assert_eq!(
+            decode_shell_pipeline_outcome(&encode_shell_pipeline_outcome(&failed)).unwrap(),
+            failed
+        );
+    }
+
+    #[test]
+    fn shell_pipeline_outcome_decode_is_total_codec_vs_shape() {
+        // Never panics: non-decodable → Codec; a well-formed frame with the WRONG head → Shape.
+        assert!(matches!(
+            decode_shell_pipeline_outcome(b"not an outcome frame"),
+            Err(EventAstError::Codec(_))
+        ));
+        assert!(
+            matches!(
+                decode_shell_pipeline_outcome(&encode_members([&Hash::of(b"x")])),
+                Err(EventAstError::Shape(_))
+            ),
+            "a members frame is a Shape error (wrong head), not a shell-pipeline-outcome"
         );
     }
 
