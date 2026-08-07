@@ -1800,14 +1800,12 @@
             # list to keep it closure-scoped would silently drop a new cdz test (the coverage regression the
             # parity guard forbids). Do NOT "fix" this back to a split.
             crate-cdz = crateCdzCheck;
-            # `checks.clippy` = the CRANE clippy aggregate (per-crate cargoClippy consuming the shared
-            # cargoArtifacts → deps compiled ONCE, only first-party src recompiles = the CI-throughput win).
-            # Context NAME unchanged (`checks / clippy`) → no ruleset edit. Per-crate granularity + isolation
-            # preserved (each crane check rebuilds only on its closure's src).
-            clippy = clippyCraneAggregate;
-            # 2-way clippy shard (see the clippyShardA/B bindings). Exposed so checks.yml can run them as 2
-            # parallel jobs (`nix build .#checks.<sys>.clippy-shard-{a,b}`). Additive-first: `clippy` stays until
-            # v-ft's ruleset flip requires these two + drops it.
+            # The REQUIRED clippy contexts = the 2-WAY SHARD (see the clippyShardA/B bindings): per-crate crane
+            # cargoClippy (shared cargoArtifacts → deps compiled ONCE), split into 2 parallel jobs to halve the
+            # ~8.8m clippy critical-path pole. The former single `clippy` attr (= clippyCraneAggregate, the whole
+            # set) was RETIRED as a checks.yml/ruleset context 2026-08-07 (STEP 2/3); clippyCraneAggregate stays
+            # as a `let` binding (union-parity reference + independently buildable via `nix flake check`), just
+            # no longer a required `checks.*` attr. Union == clippyCraneAggregate's set exactly (5+6=11).
             clippy-shard-a = clippyShardA;
             clippy-shard-b = clippyShardB;
             # `checks.test` = a whole-workspace `cargo test --workspace --locked` (NOT crane). Option-b (v-ft
