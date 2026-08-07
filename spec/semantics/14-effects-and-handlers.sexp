@@ -4487,6 +4487,54 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 38 Int64)))
 
+(case "a perform-derived list SHARED by two tuples — both readers see one allocation's content"
+  (doc    "A perform-derived allocation aliased into TWO containers (RC ≥ 2) inside the live region
+           (the aliased-heap pins are pure-side): both tuples wrap the same list; one reads element
+           0 (5), the other reads the length (2) → 502.")
+  (input  (do
+            (effect St (op next (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next (u) s (resume s (+ s 1))))
+                (let ((shared (list (St.next) 100)))
+                  (let ((t1 (tuple shared 1)))
+                    (let ((t2 (tuple shared 2)))
+                      (+ (* 100 (match t1 ((tuple xs _k) (match (List.at xs 0) ((Some v) v) ((None _u) -1)))))
+                         (match t2 ((tuple ys _k) (List.len ys)))))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 502 Int64)))
+
+(case "pushing onto a SHARED perform-built list — the original stays len 2 beside the grown copy"
+  (doc    "Persistence under sharing inside the region: the aliased list is pushed onto WHILE a
+           second reference holds it — the original must stay len 2 beside the grown len-3 copy
+           (path-copy, not in-place) → 203. The second push draw (6) also witnesses the state
+           advancing between the two performs.")
+  (input  (do
+            (effect St (op next (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next (u) s (resume s (+ s 1))))
+                (let ((shared (list (St.next) 100)))
+                  (let ((grown (List.push shared (St.next))))
+                    (+ (* 100 (List.len shared)) (List.len grown))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 203 Int64)))
+
+(case "identical PURE reads of a perform-built list — safe to share, values agree"
+  (doc    "The complement of the dispatch-CSE exclusions (identical PERFORMS must stay distinct):
+           identical PURE reads over an effect-derived value MAY share and must agree — `List.len
+           xs` twice over the same perform-built list → 100·2 + 2 = 202. A wrongly-shared read
+           holding a stale heap snapshot would diverge.")
+  (input  (do
+            (effect St (op next (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next (u) s (resume s (+ s 1))))
+                (let ((xs (list (St.next) (St.next))))
+                  (+ (* 100 (List.len xs)) (List.len xs)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 202 Int64)))
+
 ; ============ Guarded match × effects (breaker FINDING, ag5 → fixed #2333). A guarded match on a
 ; perform-result scrutinee whose FALLBACK arm also performs used to leak the fold-synthesized #seed
 ; binder as a false CDZ0101: the guard desugar's arm-body copy reparented a reused (shared) body

@@ -6091,3 +6091,6 @@ pass	the shadow stack UNWINDS — each level's post-region perform reaches ITS e
 pass	a perform-capturing closure passed to a HIGHER-ORDER helper applies twice under the handler
 pass	a perform-capture through a TUPLE-returning HOF — both results carry the capture
 pass	a TWO-argument capture closure through a fold-style HOF — the capture rides both applications
+pass	a perform-derived list SHARED by two tuples — both readers see one allocation's content
+pass	pushing onto a SHARED perform-built list — the original stays len 2 beside the grown copy
+pass	identical PURE reads of a perform-built list — safe to share, values agree
