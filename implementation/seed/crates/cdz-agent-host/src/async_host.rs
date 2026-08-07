@@ -320,6 +320,16 @@ pub struct AsyncAgentHost {
     /// Retained sender for the lifecycle channel — cloned to each session's [`LifecycleExecutor`]. The loop
     /// drops its own copy at start (like `tx`/`admin_tx`) so the channel closes when the last executor drops.
     lifecycle_tx: LifecycleChannel,
+    /// The durable SESSION REGISTRY (I4b), if the daemon configured one — the index the loop keeps current so
+    /// boot-recovery can enumerate + re-register sessions after a restart. When present, the loop calls
+    /// `register` after a successful install (below) and `mark_terminated` after a terminate (a following
+    /// slice), so the registry tracks each session's lifecycle status. `None` (the default / a build with no
+    /// durable registry) = the loop keeps no external index (today's lossy-on-restart behavior). Behind
+    /// `live-aws-storage` (the registry's feature). Registry writes are BEST-EFFORT — a write failure is
+    /// logged, never crashes the loop or fails the install (the durable log remains the source of truth;
+    /// the registry is an index over it).
+    #[cfg(feature = "live-aws-storage")]
+    session_registry: Option<crate::session_registry::DynamoSessionRegistry>,
 }
 
 impl AsyncAgentHost {
@@ -410,7 +420,22 @@ impl AsyncAgentHost {
             admin_authz,
             lifecycle_rx,
             lifecycle_tx,
+            #[cfg(feature = "live-aws-storage")]
+            session_registry: None,
         }
+    }
+
+    /// Wire a durable SESSION REGISTRY (I4b) so the loop keeps it current: `register` on a successful install,
+    /// `mark_terminated` on a terminate (following slice). Called once at daemon boot from
+    /// [`SessionRegistryConfig::Dynamo`](crate::SessionRegistryConfig). Without it, the loop keeps no external
+    /// session index (lossy-on-restart). Registry writes are best-effort (logged, never fail the install/loop).
+    #[cfg(feature = "live-aws-storage")]
+    pub fn with_session_registry(
+        mut self,
+        registry: crate::session_registry::DynamoSessionRegistry,
+    ) -> Self {
+        self.session_registry = Some(registry);
+        self
     }
 
     /// A cloneable [`LifecycleChannel`] sender to hand each session's [`LifecycleExecutor`](crate::LifecycleExecutor)
@@ -480,6 +505,8 @@ impl AsyncAgentHost {
             admin_authz,
             mut lifecycle_rx,
             lifecycle_tx,
+            #[cfg(feature = "live-aws-storage")]
+            session_registry,
         } = self;
 
         // Drop OUR retained inbox sender so the channel closes once every EXTERNAL producer drops its clone.
@@ -668,6 +695,8 @@ impl AsyncAgentHost {
                     &*admin_authz,
                     req,
                     now_ms(),
+                    #[cfg(feature = "live-aws-storage")]
+                    session_registry.as_ref(),
                 )
                 .await;
             }
@@ -776,11 +805,37 @@ async fn handle_admin(
     admin_authz: &(dyn AdminAuthorizer + '_),
     req: AdminRequest,
     now_ms: u64,
+    #[cfg(feature = "live-aws-storage")] session_registry: Option<
+        &crate::session_registry::DynamoSessionRegistry,
+    >,
 ) {
     let principal = req.principal.as_deref().unwrap_or("");
+    // I4b: capture the install's reducer hash BEFORE `apply_admin_authorized` consumes the command, so a
+    // successful install can REGISTER the session in the durable registry (the index boot-recovery reads).
+    #[cfg(feature = "live-aws-storage")]
+    let install_reducer_hex = match &req.command {
+        AdminCommand::InstallSession(spec) => Some(spec.reducer_hash.to_hex()),
+        _ => None,
+    };
     let resp = host
         .apply_admin_authorized(req.command, principal, admin_authz, factory, Some(now_ms))
         .await;
+    // On a successful install, register the session (status=active) in the durable registry — BEST-EFFORT: a
+    // write failure is logged, NEVER fails the install (the durable log is the source of truth; the registry
+    // is an index over it, rebuilt-able). The reducer hash is what boot-recovery reloads the reducer by.
+    #[cfg(feature = "live-aws-storage")]
+    if let (Some(registry), AdminResponse::Installed { id }, Some(reducer_hex)) =
+        (session_registry, &resp, &install_reducer_hex)
+    {
+        if let Err(e) = registry.register(id.as_str(), reducer_hex, now_ms).await {
+            // Non-sensitive: the session id + a registry-write error. Never a guest-controlled string.
+            tracing::warn!(
+                target: "cdz_agent_host::session_registry",
+                session_id = id.as_str(),
+                "session-registry register failed (best-effort; install still succeeded): {e}"
+            );
+        }
+    }
     // The caller may have hung up (dropped the receiver); the command still applied, so a failed
     // reply-send is fine to ignore.
     let _ = req.reply.send(resp);
