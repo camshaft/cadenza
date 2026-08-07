@@ -14248,6 +14248,13 @@ pub fn sum_form_template(db: &mut Db, ty: &crate::ty::Ty) -> Option<SumFormTempl
 
 // ─── Shape descriptor (for the runtime `value-encode` op) ────────────────────────────────────────
 //
+// This descriptor IS the type-directed code the compiler emits so a compound result crosses the
+// boundary as an ordinary string: the compiler (which holds the names + the static type) bakes a shape
+// table, and the runtime `value-encode` walker reads it to walk the value through the runtime's
+// accessors and assemble its canonical text — the runtime never names or renders the value itself.
+//= spec/contracts/component-abi.md#a-compound-result-is-rendered-by-compiler-emitted-code
+//# The observable result of a program that produces a compound value MUST be an ordinary string the program returns, produced by type-directed code the compiler emits that walks the value through the runtime's accessors and assembles its canonical text, rather than by the runtime rendering the value or by the program's own component owning a display of it, so that the names a rendering requires stay with the compiler that holds them and the host reads back a plain string (host-interface-binding.md §The Host Does Not Format A Component's Values).
+//
 // The compiler-baked descriptor the runtime `value-encode` walker reads to render a RUNTIME value —
 // including a self-referential (recursive) sum, which has no fixed hole-template. A descriptor is a
 // TABLE of shapes + a root index; a child position references another entry by index, so a recursive
