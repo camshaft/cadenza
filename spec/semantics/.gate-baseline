@@ -6218,3 +6218,20 @@ pass	by3 op-arg values WRAPPED to bytes at runtime accumulate in the state — t
 pass	by4 nested SAME-effect handlers with independent BYTES states — the outer buffer self-doubles, the inner appends
 pass	op1 the STD Option as handler state — None seeds to Some on first feed, the payload accumulates thereafter
 pass	op2 an Option RESUME value from a single-site arm — Some carries the excess, None answers the shortfall row
+pass	ab1d the scalar twin — a conditional abort under a SCALAR-state outer, pre-abort advance committed
+pass	ab1e a branch-conditional abort under a STRING-state outer handler — the taken abort skips the post-abort emit, the untaken row grows the rope
+pass	ab2 a conditional abort under a MAP-state outer — the pre-abort insert is committed either way
+pass	ab3 the abort VALUE is itself a draw from the outer STRING-state handler — the pre-abort dispatch commits before the unwind
+pass	ab4 TWO sequential abort regions under one STRING-state outer — an aborted region leaves the rope where it was
+pass	cc1 a closure over the fn PARAM built before the handle, applied twice inside with draws — capture stable, draws advance
+pass	cc2 a closure escaping handle A is applied inside handle B — the A-capture is stable while B's draws feed the args
+pass	cc4 TWO closures over SEQUENTIAL draws inside one region — each captures its own read, applied after both bind
+pass	cc5 composed closures over three draws — g(f(draw)) where f and g each captured an earlier read
+pass	cc6b a closure bound OUTSIDE the outer handle applied inside a nested SHADOW region and after it — capture crosses both boundaries
+pass	cc7 a draw-capturing closure threaded through a RECURSIVE helper — applied per frame, the leaf applies it to a fresh draw
+pass	cc8 a closure carried in a TUPLE beside a scalar — destructured in one match and applied around advancing draws
+pass	dd1b consecutive do-DEF draws — both binders hold their reads, the tail draw sees the doubled-twice state
+pass	dd1d a bare DISCARDED draw before a let-bound draw — the discard advances the state the binder reads
+pass	dd2 a do-DEF bound to a whole nested SHADOW handle — the def holds the inner region's value, the tail draw reads outer
+pass	cn1 a THREE-deep seed RELAY — each nested shadow's seed is a draw from its parent, strides differ per depth
+pass	cn2 the inner shadow's RESULT flows up into the outer computation — a let-bound region value scaled beside an outer draw
