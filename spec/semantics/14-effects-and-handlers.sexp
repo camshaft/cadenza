@@ -13817,3 +13817,45 @@
                     ((None _u) -1)))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 1006 Int64)))
+
+(case "a record-LITERAL scrutinee whose fields perform, destructured by a `(record …)` arm, DECLINES (breaker finding #8)"
+  (doc    "REJECT-DON'T-MISCOMPILE (v-effects finding #8, breaker 3-backend-agree-wrong). A record-pattern
+           field binder resolves to `Resolved::Member { operand: scrutinee }` (resolve.rs Case 6rec), whose
+           member-FOLD re-lowers the SOURCE record literal's field init at EACH projection. When the scrutinee
+           is a record LITERAL with PERFORMING fields, each field-binder read re-evaluates the literal, so
+           `(St.next)` fires once per binder: this shape silently returned 80 (want 56) on ALL 3 backends —
+           the draws fired 2× the operations (wrong binder values) AND the re-eval advances were not all
+           committed to the outer state (a DOUBLE defect). The `MatchSum` wrapper materializes the scrutinee
+           into ONE slot, but a record binder reads BY NAME through the fold, BYPASSING that slot — unlike a
+           tuple/sum binder, which reads the slot via `Elem`/`SumPayload`, so the TUPLE-literal twin below is
+           CORRECT. The correct fold-fix (fold the record binder onto the materialized slot) is a deeper
+           member-fold rewire, itself blocked behind a coupled scope bug (a let-BOUND record MATCHED under a
+           handle declines CDZ0101), so until both land this DECLINES (CDZ0201) rather than miscompile. The
+           workaround the diagnostic names — `let`-bind then read by `(. r field)` projection — folds
+           correctly (the positive control below). Flips decline→56 when the slot-fold lands.")
+  (input  (do
+            (effect St (op next (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next (u) s (resume s (+ s 1))))
+                (match (record (a (St.next)) (b (St.next)))
+                  ((record (a x) (b y)) (+ (* 10 x) y)))))
+            (export main)))
+  (error  CDZ0201))
+
+(case "the record-perform workaround — `let`-bind then read by `(. r field)` projection — folds once each (finding #8 control)"
+  (doc    "The POSITIVE control for the record-literal-perform decline above (breaker rw2). Binding the record
+           with `let` first, then reading its fields by `(. r a)` / `(. r b)` PROJECTION, evaluates each
+           performing field EXACTLY ONCE: the `let` binder materializes the record once and each projection
+           reads the materialized value — no re-eval, no re-perform. `next` returns s then advances (5→6, 6→7),
+           so a=5, b=6, giving (* 10 5) + 6 = 56. This pins that the decline is SCOPED to the record-LITERAL ×
+           record-DESTRUCTURE shape and that the recommended workaround is genuinely correct on all backends.")
+  (input  (do
+            (effect St (op next (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next (u) s (resume s (+ s 1))))
+                (let ((r (record (a (St.next)) (b (St.next)))))
+                  (+ (* 10 (. r a)) (. r b)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 56 Int64)))

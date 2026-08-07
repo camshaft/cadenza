@@ -8438,6 +8438,45 @@ fn lower_match_sum(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
             "compound match scrutinee is not a sum, tuple, or record",
         ));
     }
+    // REJECT-DON'T-MISCOMPILE (v-effects finding #8): a record-LITERAL scrutinee whose fields REACH A HOST
+    // PERFORM, destructured by a `(record (field binder) …)` arm, is a silent 3-backend miscompile — the
+    // literal's performing fields fire once PER field-binder. A record-pattern field binder resolves to
+    // `Resolved::Member { operand: scrutinee }` (resolve.rs Case 6rec), whose member-FOLD re-lowers the
+    // source record literal's field init at EACH projection: `(match (record (a (E.get)) (b (E.get))) ((record
+    // (a x) (b y)) …))` performs `E.get` once per `x`/`y` read (draws fire 2× the operations, wrong binder
+    // values, and the re-eval advances are not all committed to the outer state — a DOUBLE defect). The
+    // `MatchSum` wrapper materializes the scrutinee into ONE slot, but a record binder reads BY NAME through
+    // the fold, bypassing that slot (unlike a tuple/sum binder, which reads the slot via `Elem`/`SumPayload`
+    // — so a TUPLE-literal scrutinee with the same performing fields is CORRECT). The correct fix (fold the
+    // record binder onto the materialized slot, the record twin of the tuple/sum `MatchSum` path) is a
+    // deeper member-fold rewire — and is itself blocked behind a coupled effects-fold scope bug (a let-BOUND
+    // record MATCHED under a handle declines CDZ0101 `unbound r`, even with no performing field; the
+    // let-bound tuple/scalar equivalents compile). Until both land, DECLINE this exact shape rather than emit
+    // wrong values + phantom host calls. TIGHTLY SCOPED: fires ONLY when the scrutinee's AST is a `record`
+    // LITERAL form (a param/local/let-bound scrutinee — `Resolved` but not a literal `record` head — is
+    // untouched: the working `let`+`(. r field)` projection readout stays green) AND that literal reaches a
+    // host perform AND an arm is a record-destructure. The workaround the message names — bind the record
+    // with `let`, then read its fields by `(. r field)` projection — evaluates each performing field exactly
+    // once (verified: `rw2` = 56).
+    if db.ast.as_form(scrutinee, "record").is_some()
+        && scrutinee_reaches_host_perform(db, scrutinee)
+        && arms.iter().any(|&(pat, _)| {
+            let inner = match db.ast.as_form(pat, "guard") {
+                Some(g) if g.len() == 2 => g[0],
+                _ => pat,
+            };
+            db.ast.as_form(inner, "record").is_some()
+                || db.ast.as_ctor_form(inner, "record").is_some()
+        })
+    {
+        return Core::Poison(Reject::coded(
+            Code::Malformed,
+            "matching a record LITERAL whose fields perform an effect, destructured by a `(record …)` \
+             pattern, is not yet supported — the record's performing fields would fire once per field \
+             binder (a re-evaluation miscompile). Bind the record with `let` first, then read its fields \
+             by `(. r field)` projection: `(let ((r (record …))) (+ (. r a) (. r b)))`",
+        ));
+    }
     // Build the initial pattern MATRIX: one row per arm, each a `(constraints, body)` where a constraint
     // is `(path, disc)` — "the sub-value at `path` must have discriminant `disc`". A row's constraints
     // start from its top-level pattern (path `[]`) and may nest. A malformed/unsupported pattern declines
