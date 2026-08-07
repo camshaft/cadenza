@@ -513,6 +513,64 @@ where
             .map_err(|e| format!("genesis seed failed: {e:?}"))?;
         self.install_genesis_authorizer(session, principal).await
     }
+
+    /// Rebuild a HostedSession from an ALREADY-RECOVERED kernel [`Session`] (§lifecycle I4b boot-recovery) —
+    /// the recovery counterpart to [`build`](Self::build). Where `build` MINTS a fresh session from an
+    /// [`InstallSpec`], this wraps the `Session` that [`Session::recover_from`](cdz_kernel::kernel::Session::recover_from)
+    /// rebuilt from a durable log: it reloads the session's REDUCER (by the hash in its own genesis event —
+    /// read host-side off `session.log()[0]`, no kernel change) + a fresh executor set, then
+    /// [`HostedSession::from_recovered`](crate::host::HostedSession::from_recovered) wraps them (the recovered
+    /// session keeps its genesis-hash / SessionId / KV / open obligations — recovery never re-mints).
+    ///
+    /// The boot-recovery loop calls this per durably-logged session (enumerated via the session-registry /
+    /// `DynamoSessionRegistry::list_all`), after skipping any [`is_terminated`](crate::host::HostedSession::is_terminated).
+    /// A DENY-ALL authorizer is attached (like a spawned child): a recovered session re-earns caps via its
+    /// replayed authorizer-install or a fresh grant, not by trusting a rebuilt-from-nothing policy.
+    ///
+    /// Errors (never a panic): the recovered log has no genesis event (`log[0]` not `Genesis` — a corrupt
+    /// recovery the caller alarms on), the reducer bytes are absent from the blob store (the reducer the
+    /// session ran isn't available — can't rebuild it), or the component doesn't lift.
+    pub async fn build_recovered(
+        &mut self,
+        session: cdz_kernel::kernel::Session,
+    ) -> Result<HostedSession, String> {
+        use cdz_kernel::event::EventBody;
+        // Read the reducer hash from the recovered session's OWN genesis event (seq-0). The host reads it
+        // directly (EventBody::Genesis is pub with pub fields; Session::log() is pub) — no kernel accessor
+        // needed. A recovered session always has a genesis at log[0] (recover_from requires it), but guard.
+        let reducer_hash = match session.log().first().map(|e| &e.body) {
+            Some(EventBody::Genesis { reducer, .. }) => *reducer,
+            _ => {
+                return Err(
+                    "build_recovered: the recovered session has no genesis event at log[0]".into(),
+                )
+            }
+        };
+        let bytes = self
+            .blob
+            .get(&reducer_hash)
+            .await
+            .map_err(|e| {
+                format!("blob store error fetching recovered reducer {reducer_hash}: {e}")
+            })?
+            .ok_or_else(|| {
+                format!("no reducer component in the blob store for recovered hash {reducer_hash}")
+            })?;
+        let reducer = AsyncComponentReducer::from_component_bytes(&bytes).map_err(|e| {
+            format!("recovered reducer component for {reducer_hash} did not lift: {e:?}")
+        })?;
+        // The recovered session's id/genesis are already fixed by its log; build the executor set against its
+        // genesis hash (its spawn-provenance for any executor that needs the session identity).
+        let owner_genesis = session.genesis_hash();
+        let id = crate::host::SessionId::new(owner_genesis.to_hex());
+        let executors = self.executors.build(&id, owner_genesis).await;
+        Ok(HostedSession::from_recovered(
+            session,
+            Box::new(reducer),
+            Box::new(cdz_kernel::authz::Authorizer::deny_all()),
+            executors,
+        ))
+    }
 }
 
 #[async_trait::async_trait(?Send)]
@@ -695,6 +753,44 @@ mod tests {
             Err(e) => e,
         };
         assert!(err.contains("did not lift"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn build_recovered_reads_the_reducer_hash_from_the_recovered_genesis_and_errors_cleanly_if_absent(
+    ) {
+        // I4b: build_recovered must read the reducer hash from the RECOVERED session's OWN genesis event (not
+        // an InstallSpec) + reload the reducer from the blob store. Here the reducer bytes are ABSENT → a clean
+        // "no reducer component" error keyed on THAT genesis hash (proving it read the hash from the recovered
+        // log, not a spec). Build a genesis Session over a known reducer hash, recover it from its own log,
+        // then build_recovered against an empty blob store.
+        use cdz_kernel::kernel::Session;
+        use cdz_kernel::log_store::{Recovered, RecoveryKind};
+
+        let reducer_hash = Hash::of(b"recovered-reducer-not-in-store");
+        let original = Session::genesis(reducer_hash, Hash::of(b"nonce"));
+        let log = original.log().to_vec();
+        let recovered = Recovered {
+            events: log,
+            kind: RecoveryKind::Clean,
+            good_prefix_len: 0,
+        };
+        let (session, _report) = Session::recover_from(recovered, &GenesisRecordingReducer)
+            .await
+            .expect("a clean genesis log recovers");
+
+        let mut factory =
+            ComponentSessionFactory::new(MemBlobStore::new(), hermetic_executors, deny_all_authz);
+        let err = match factory.build_recovered(session).await {
+            Ok(_) => {
+                panic!("build_recovered must fail when the recovered reducer bytes are absent")
+            }
+            Err(e) => e,
+        };
+        assert!(
+            err.contains("no reducer component in the blob store for recovered hash")
+                && err.contains(&reducer_hash.to_hex()),
+            "the error names the reducer hash read FROM the recovered genesis: {err}"
+        );
     }
 
     #[tokio::test]
