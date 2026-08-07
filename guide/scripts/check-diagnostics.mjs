@@ -85,6 +85,23 @@ const PINS = [
     code: "CDZ0301",
     phrases: ["floating-point precisions differ"],
   },
+  {
+    name: "perform in a match-arm guard → CDZ0407 EffectInGuard",
+    // Effects.tsx "A guard must be side-effect-free" quotes the load-bearing phrases "side-effect-free" and
+    // "speculatively or repeatedly", and shows the fix the message names (lift to a `let` before the `match`).
+    // A reworded guard-purity message would silently drift that prose (same class as the CDZ0203/CDZ0210/CDZ0216
+    // pins). Verified through the cdz_wasm path: declines with exactly one CDZ0407 diagnostic.
+    chapter: "Effects.tsx — 'A guard must be side-effect-free'",
+    snippet: `(effect Ask (op ask (-> Unit Int64)))
+(def (main)
+  (handle Ask unit
+    ((ask () s (resume 5 s)))
+    (match 3
+      ((guard x (< x (Ask.ask))) 1)
+      (_ 0))))`,
+    code: "CDZ0407",
+    phrases: ["side-effect-free", "speculatively or repeatedly", "lift it to a `let`"],
+  },
 ];
 
 // Vacuous-pass floor: this gate's whole job is to pin diagnostics, so a run with ZERO pins (a botched edit

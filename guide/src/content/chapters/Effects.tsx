@@ -229,6 +229,53 @@ export default function Effects() {
         does.
       </Note>
 
+      <H2>A guard must be side-effect-free</H2>
+      <P>
+        There's one place a perform is <em>not</em> allowed: a{" "}
+        <Link to="/pattern-matching" className="text-cadenza-300 underline-offset-2 hover:underline">
+          match-arm
+        </Link>{" "}
+        <em>guard</em>. A guard is a boolean decision the pattern engine may evaluate{" "}
+        <em>speculatively or repeatedly</em>, or skip entirely when an earlier arm wins, so it has no
+        well-defined "run exactly once, in this order" the way an arm body does. Performing an effect there
+        would mean an effect with no defined schedule, so the compiler rejects it outright. Here a guard
+        performs <C>Ask.ask</C>, and the program declines:
+      </P>
+      <Runnable
+        source={`(effect Ask (op ask (-> Unit Int64)))
+(def (main)
+  (handle Ask unit
+    ((ask () s (resume 5 s)))
+    (match 3
+      ((guard x (< x (Ask.ask))) 1)
+      (_ 0))))`}
+        expect="error"
+      />
+      <P>
+        The error is <C>CDZ0407</C>, and its message names the fix:{" "}
+        <C>a guard must be side-effect-free — an effect is performed in this guard, which the pattern engine may evaluate speculatively or repeatedly; lift it to a `let` evaluated once before the `match` and guard on the bound value</C>.
+        That is exactly the repair: perform the effect <em>once</em>, before the <C>match</C>, bind the
+        result, and let the guard read the bound value, which is pure. Same logic, now with a defined
+        evaluation:
+      </P>
+      <Runnable
+        source={`(effect Ask (op ask (-> Unit Int64)))
+(def (main)
+  (handle Ask unit
+    ((ask () s (resume 5 s)))
+    (let ((limit (Ask.ask)))
+      (match 3
+        ((guard x (< x limit)) 1)
+        (_ 0)))))`}
+      />
+      <P>
+        Now the perform happens exactly once (<C>limit</C> is <C>5</C>), the guard compares against the bound
+        value, and since <C>3 &lt; 5</C> the first arm fires and the result is <C>1</C>. The rule is narrow:
+        an effect is welcome in a scrutinee, in an arm body, anywhere with a defined order, just not in the
+        guard condition itself, where "how many times, in what order" isn't a question the pattern engine can
+        answer.
+      </P>
+
       <H2>Why this matters: mock now, real later</H2>
       <P>
         Here's the payoff for real programs. Because the performer doesn't know who answers, the{" "}
