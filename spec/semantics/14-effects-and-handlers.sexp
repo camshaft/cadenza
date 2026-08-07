@@ -4441,6 +4441,52 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 103 Int64)))
 
+(case "a perform-capturing closure passed to a HIGHER-ORDER helper applies twice under the handler"
+  (doc    "A perform-capture flowing through a HOF parameter INSIDE the live region (the escaping
+           pins apply OUTSIDE; performing closures through combinators are the documented decline):
+           `apply2 = f∘f` composes the capture twice — base = 5, f(f(100)) → 110.")
+  (input  (do
+            (effect St (op next (-> Unit Int64)))
+            (def (apply2 (: f (-> Int64 Int64)) (: x Int64)) (f (f x)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next (u) s (resume s (+ s 1))))
+                (let ((base (St.next)))
+                  (apply2 (fn ((: x Int64)) (+ x base)) 100))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 110 Int64)))
+
+(case "a perform-capture through a TUPLE-returning HOF — both results carry the capture"
+  (doc    "The multi-result HOF face: `map2` applies the capture to two arguments and returns both
+           in a tuple — k = 50, (1+50, 2+50) → 5152. One capture environment, two applications, two
+           results.")
+  (input  (do
+            (effect St (op scale (-> Int64 Int64)))
+            (def (map2 (: f (-> Int64 Int64)) (: a Int64) (: b Int64)) (tuple (f a) (f b)))
+            (def (main (: n Int64))
+              (handle St 10
+                ((scale (v) s (resume (* v s) s)))
+                (let ((k (St.scale n)))
+                  (match (map2 (fn ((: x Int64)) (+ x k)) 1 2)
+                    ((tuple p q) (+ (* 100 p) q))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 5152 Int64)))
+
+(case "a TWO-argument capture closure through a fold-style HOF — the capture rides both applications"
+  (doc    "The multi-parameter closure face: a two-arg fn capturing the perform result threads
+           through a fold-style HOF (`fold3 f a b c = f (f a b) c`) — w = 5, f(1,2) = 7, f(7,3) →
+           38. The capture environment must sit beside TWO positional params per application.")
+  (input  (do
+            (effect St (op next (-> Unit Int64)))
+            (def (fold3 (: f (-> Int64 Int64 Int64)) (: a Int64) (: b Int64) (: c Int64)) (f (f a b) c))
+            (def (main (: n Int64))
+              (handle St n
+                ((next (u) s (resume s (+ s 1))))
+                (let ((w (St.next)))
+                  (fold3 (fn ((: x Int64) (: y Int64)) (+ (* x w) y)) 1 2 3))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 38 Int64)))
+
 ; ============ Guarded match × effects (breaker FINDING, ag5 → fixed #2333). A guarded match on a
 ; perform-result scrutinee whose FALLBACK arm also performs used to leak the fold-synthesized #seed
 ; binder as a false CDZ0101: the guard desugar's arm-body copy reparented a reused (shared) body
