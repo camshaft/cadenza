@@ -59,6 +59,7 @@ pub mod admin;
 pub mod admin_socket;
 pub mod admin_wire;
 pub mod async_host;
+pub mod blob_cache;
 pub mod blob_exec;
 pub mod clock;
 pub mod config;
@@ -98,6 +99,7 @@ pub use admin_wire::{
     MAX_FRAME_LEN,
 };
 pub use async_host::{AdminChannel, AdminRequest, AsyncAgentHost, Inbound, Inbox};
+pub use blob_cache::CachingBlobStore;
 pub use blob_exec::BlobExecutor;
 pub use clock::ClockExecutor;
 pub use config::{
