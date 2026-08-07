@@ -29,6 +29,19 @@
 //= spec/contracts/component-abi.md#the-runtime-does-not-name-or-render-values
 //# The value-heap runtime MUST NOT hold a value's TYPE as a per-value tag, so that — because the language has no type erasure and the compiler therefore knows a value's static type at every use site — the runtime stores only structure and data (a product's elements, a sum's variant discriminant, a leaf's payload) and never a type identity a reader would dispatch on.
 //!
+//! The runtime OWNS every value's storage — each node is its own `Box<Node>` allocation with its own
+//! `rc`, laid out and reclaimed entirely here; the program holds only opaque `u32` handles it threads
+//! between the constructors and accessors and never dereferences, so the node layout is the runtime's
+//! private concern and may change without re-deriving any program. The typed WIT functions (`arr-alloc`
+//! + `arr-set` to construct a compound, `arr-get`/`sum-payload` to read a component by position) are the
+//! only interface — a program builds and takes apart values through them, never by reaching into memory:
+//= spec/contracts/component-abi.md#the-runtime-owns-the-value-heap-and-its-representation
+//# The value-heap runtime MUST own the entire storage of a program's runtime values — their allocation, their in-memory layout, their reference-count discipline, and their reclamation — so that a program component holds no value storage of its own and the representation of every compound value is the runtime's private concern.
+//= spec/contracts/component-abi.md#the-runtime-owns-the-value-heap-and-its-representation
+//# The internal representation a value has within the runtime MUST NOT be observable across the runtime boundary, so that the runtime may change how it lays out, shares, counts, or reclaims a value without altering any program's observable behavior or requiring a program to be re-derived.
+//= spec/contracts/component-abi.md#the-runtime-owns-the-value-heap-and-its-representation
+//# The runtime MUST expose the operations that construct a compound value from its parts and that read a component out of a compound value by position, so that a program builds and takes apart its values entirely through the interface and never by reaching into the runtime's memory.
+//!
 //! Because the heap is acyclic (values immutable, recursion via code not heap back-edges) a
 //! reference-count discipline is a COMPLETE reclamation strategy — no tracing/cycle collector:
 //!
