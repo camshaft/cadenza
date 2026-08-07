@@ -67,6 +67,8 @@ pub mod emit;
 #[cfg(feature = "metrics-export")]
 pub mod export;
 pub mod factory;
+#[cfg(feature = "live-fs")]
+pub mod fs_exec;
 pub mod host;
 pub mod http;
 pub mod lifecycle;
@@ -105,6 +107,8 @@ pub use factory::{
     AuthorizerBuilder, ComponentSessionFactory, ExecutorSetBuilder, FileLogSinkBuilder,
     LogSinkBuilder, MeteredExecutor,
 };
+#[cfg(feature = "live-fs")]
+pub use fs_exec::FsExecutor;
 #[cfg(feature = "live-net")]
 pub use host::live_executor_set;
 pub use host::{genesis_ct, AgentHost, HostedSession, SessionId};
