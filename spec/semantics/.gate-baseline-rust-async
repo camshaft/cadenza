@@ -6116,3 +6116,6 @@ pass	a nested-list DAG — one perform-derived inner list aliased TWICE in the o
 pass	two perform-drawn quantities of one dimension ADD — same-unit combine over two crossings
 pass	a perform-drawn quantity MULTIPLIES across dimensions — meter·second product value
 pass	a perform-drawn quantity DIVIDES across dimensions — the meter/second quotient value
+pass	host calls in the seed AND the next-state slot — the FINAL dispatch's state call is elided
+pass	two host-seeded SIBLING handlers — each region's seed consumes its response in evaluation order
+pass	a host call SANDWICHED between two in-program dispatches — state survives the boundary crossing

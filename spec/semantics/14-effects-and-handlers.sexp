@@ -4877,6 +4877,68 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 10 Int64)))
 
+(case "host calls in the seed AND the next-state slot — the FINAL dispatch's state call is elided"
+  (doc    "The seed-position host pin composed with the state-slot host pin in ONE handler: the seed
+           consumes response 1 (100), the first dispatch's state advance consumes response 2 (7 →
+           state 107), and the SECOND dispatch's own next-state is never evaluated (nothing after
+           reads it) so its host call is correctly ELIDED — 10·100 + 107 → 1107, exactly TWO calls.")
+  (input  (do
+            (effect ask (op ask (-> Unit Int64)))
+            (effect St (op next (-> Unit Int64)))
+            (def (main (: n Int64))
+              (host (ask)
+                (handle St (ask.ask)
+                  ((next (u) s (resume s (+ s (ask.ask)))))
+                  (+ (* 10 (St.next)) (St.next)))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (host-responses (respond ask.ask (: 100 Int64)) (respond ask.ask (: 7 Int64)))
+  (host-calls (call ask.ask) (call ask.ask))
+  (output (: 1107 Int64)))
+
+(case "two host-seeded SIBLING handlers — each region's seed consumes its response in evaluation order"
+  (doc    "Two sibling regions each seeded by a host call: strict left-to-right evaluation routes
+           response 1 (7) to the left region's seed and response 2 (9) to the right's — 100·7 + 9 →
+           709, exactly two calls.")
+  (input  (do
+            (effect ask (op ask (-> Unit Int64)))
+            (effect A (op get (-> Unit Int64)))
+            (effect B (op get (-> Unit Int64)))
+            (def (main (: n Int64))
+              (host (ask)
+                (+ (* 100 (handle A (ask.ask)
+                            ((get (u) s (resume s s)))
+                            (A.get)))
+                   (handle B (ask.ask)
+                     ((get (u) t (resume t t)))
+                     (B.get)))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (host-responses (respond ask.ask (: 7 Int64)) (respond ask.ask (: 9 Int64)))
+  (host-calls (call ask.ask) (call ask.ask))
+  (output (: 709 Int64)))
+
+(case "a host call SANDWICHED between two in-program dispatches — state survives the boundary crossing"
+  (doc    "The interleaving face: dispatch (a=0, state→1), HOST call (h=7), dispatch (b=1) — the
+           in-program handler's state survives the host boundary crossing between its dispatches →
+           10·7 + 1 = 71.")
+  (input  (do
+            (effect ask (op ask (-> Unit Int64)))
+            (effect St (op next (-> Unit Int64)))
+            (def (main (: n Int64))
+              (host (ask)
+                (handle St 0
+                  ((next (u) s (resume s (+ s 1))))
+                  (let ((a (St.next)))
+                    (let ((h (ask.ask)))
+                      (let ((b (St.next)))
+                        (+ (* 100 a) (+ (* 10 h) b))))))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (host-responses (respond ask.ask (: 7 Int64)))
+  (host-calls (call ask.ask))
+  (output (: 71 Int64)))
+
 ; ============ Guarded match × effects (breaker FINDING, ag5 → fixed #2333). A guarded match on a
 ; perform-result scrutinee whose FALLBACK arm also performs used to leak the fold-synthesized #seed
 ; binder as a false CDZ0101: the guard desugar's arm-body copy reparented a reused (shared) body
