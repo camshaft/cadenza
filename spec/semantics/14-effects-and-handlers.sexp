@@ -16204,3 +16204,52 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 161 Int64))
   (call   main (: 0 Int64)) (output (: 11 Int64)))
+
+;; ── WRAPPING arithmetic through the effect thread (breaker wa) ───────────────────────────────────
+;; Int64.wrapping-add composed with handler state: wa1 wrapping as the NEXT-STATE (a near-MAX seed
+;; wraps to a concrete near-MIN value; the unwrapped row lands the mismatch arm); wa2 wrapping the
+;; op ARG with state in the resume value (wrap / exact-MAX-boundary / identity rows); wa3 the wrap
+;; WALK — three draws step exactly MAX, MIN, MIN+1 while checked '+' operates beside the wrapped
+;; values. (Comparing wrapped values by DIFFERENCE would overflow the checked '-'; these pin
+;; concrete constants instead.)
+
+(case "wa1 wrapping-add as the next-state — a near-MAX seed wraps to a concrete near-MIN value on the second draw"
+  (input  (do
+            (effect W (op bump (-> Int64)))
+            (def (main (: n Int64))
+              (handle W 9223372036854775800
+                ((bump () s (resume s (Int64.wrapping-add s n))))
+                (if (= (W.bump) 9223372036854775800)
+                    (if (= (W.bump) -9223372036854775806) 1 2)
+                    3)))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 1 Int64))
+  (call   main (: 3 Int64)) (output (: 2 Int64)))
+
+(case "wa2 wrapping-add of the op ARG and state in the resume value — wrap, exact-MAX, and identity rows"
+  (input  (do
+            (effect W (op add (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle W n
+                ((add (v) s (resume (Int64.wrapping-add v s) s)))
+                (W.add 9223372036854775800)))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: -9223372036854775806 Int64))
+  (call   main (: 7 Int64)) (output (: 9223372036854775807 Int64))
+  (call   main (: 0 Int64)) (output (: 9223372036854775800 Int64)))
+
+(case "wa3 the wrap WALK — three draws from a MAX seed step MAX, MIN, MIN+1 through wrapping-add(+1), checked '+' beside"
+  (input  (do
+            (effect W (op cyc (-> Int64)))
+            (def (main (: n Int64))
+              (handle W 9223372036854775807
+                ((cyc () s (resume s (Int64.wrapping-add s 1))))
+                (let ((a (W.cyc)))
+                  (let ((b (W.cyc)))
+                    (let ((c (W.cyc)))
+                      (+ (if (= a 9223372036854775807) 1 0)
+                         (+ (if (= b -9223372036854775808) 10 0)
+                            (+ (if (= c -9223372036854775807) 100 0) n))))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 116 Int64))
+  (call   main (: 0 Int64)) (output (: 111 Int64)))
