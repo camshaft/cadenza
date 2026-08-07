@@ -471,12 +471,13 @@ pub fn encode_members<'a>(members: impl IntoIterator<Item = &'a Hash>) -> Vec<u8
     codec::encode(&b.finish(root))
 }
 
-/// Decode a `members` frame encoded by [`encode_members`] → the member hashes in ENCODED order (which
-/// `encode_members` writes ascending, so a round-trip through a `BTreeSet` reproduces the same set). Total,
-/// distinguishing the two [`EventAstError`] classes: bytes that don't parse as a canonical codec frame →
-/// [`EventAstError::Codec`]; a well-formed frame with the wrong head / a non-`member` child / a bad hash →
-/// [`EventAstError::Shape`]. Never a panic (durable-log / untrusted-store bytes). Returns a `Vec` (not a set)
-/// so a caller can observe the exact encoded order; collecting into a `BTreeSet` recovers the canonical set.
+/// Decode a `members` frame encoded by [`encode_members`] → the member hashes in ENCODED order.
+/// [`encode_members`] preserves the CALLER's iteration order (it does NOT sort), so byte-stability is a
+/// caller contract — feed a canonical (e.g. `BTreeSet`) order and a round-trip reproduces the same bytes.
+/// Total, distinguishing the two [`EventAstError`] classes: bytes that don't parse as a canonical codec
+/// frame → [`EventAstError::Codec`]; a well-formed frame with the wrong head / a non-`member` child / a bad
+/// hash → [`EventAstError::Shape`]. Never a panic (durable-log / untrusted-store bytes). Returns a `Vec` (not
+/// a set) so a caller can observe the exact encoded order; collecting into a `BTreeSet` recovers the set.
 pub fn decode_members(bytes: &[u8]) -> Result<Vec<Hash>, EventAstError> {
     let a = codec::decode_detailed(bytes).map_err(EventAstError::Codec)?;
     let member_forms = a.as_form(a.root, "members").ok_or(shape("members head"))?;
