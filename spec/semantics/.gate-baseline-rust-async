@@ -6272,3 +6272,6 @@ pass	hr1 a HANDLE expression as a record-literal FIELD value — the region's re
 pass	hr2 a HANDLE expression as a middle LIST element — the region's result sits between pure elements
 pass	hr3 a HANDLE expression as a map-literal VALUE — the region's result is stored under a key and looked up after
 pass	hr4 a whole HANDLE region as another effect's op ARGUMENT — B's region computes the value A's dispatch consumes
+pass	wa1 wrapping-add as the next-state — a near-MAX seed wraps to a concrete near-MIN value on the second draw
+pass	wa2 wrapping-add of the op ARG and state in the resume value — wrap, exact-MAX, and identity rows
+pass	wa3 the wrap WALK — three draws from a MAX seed step MAX, MIN, MIN+1 through wrapping-add(+1), checked '+' beside
