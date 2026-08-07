@@ -17,7 +17,7 @@
 //!   (module-doc "…top-of-module prose…")?          ; 0-or-1, from leading (module-doc …) siblings
 //!   (doc-item
 //!     (name "map")
-//!     (sig  "map(f, xs) = …")                       ; printed display signature (syntactic)
+//!     (sig  (map f xs))                             ; STRUCTURED signature sub-AST (decl head, no body)
 //!     (doc  "Applies f to each element."))?          ; 0-or-1 (doc …), concatenated item prose
 //!   (doc-item …)…)
 //! ```
@@ -63,15 +63,14 @@ pub fn project(program: &Arenas, module_name: &str) -> Arenas {
 
     // Select the documentable items via the QUERY machinery, in source (StructId) order, keeping only
     // TOP-LEVEL exported items (an item found nested inside another form is not a module's public API).
-    let mut items: Vec<(u32, StructId, String)> = select_items(program)
+    let mut items: Vec<DocItemSel> = select_items(program)
         .into_iter()
-        .filter(|(id, name)| top_level.contains(&id.0) && exported.contains(name.as_str()))
-        .map(|(id, name)| (id.0, id, name))
+        .filter(|sel| top_level.contains(&sel.origin.0) && exported.contains(sel.name.as_str()))
         .collect();
-    items.sort_by_key(|(order, _, _)| *order);
+    items.sort_by_key(|sel| sel.origin.0);
 
-    for (_, form, name) in items {
-        let item = build_doc_item(&mut b, program, form, &name);
+    for sel in items {
+        let item = build_doc_item(&mut b, program, &sel);
         children.push(item);
     }
 
@@ -90,20 +89,20 @@ pub fn project(program: &Arenas, module_name: &str) -> Arenas {
 /// only when the first arg is atomic (for a function def it would bind the whole `(name params)` sig
 /// list — wrong). So we try the function pattern first and fall back to the value pattern for the
 /// nodes it didn't match.
-fn select_items(program: &Arenas) -> Vec<(StructId, String)> {
+fn select_items(program: &Arenas) -> Vec<DocItemSel> {
     let tree = Tree::of(program);
-    let mut out: Vec<(StructId, String)> = Vec::new();
+    let mut out: Vec<DocItemSel> = Vec::new();
     let mut seen: BTreeSet<u32> = BTreeSet::new();
 
-    // (pattern, whether a bare-name bind is required) — function-def FIRST so a function def binds the
-    // identifier, not its sig list; then value-def, type, effect.
+    // (pattern, kind) — function-def FIRST so a function def binds the identifier, not its sig list;
+    // then value-def, type, effect. `def` (function + value) both report kind "def".
     let patterns = [
-        "(def (,name ,@params) ,@body)",
-        "(def ,name ,@rest)",
-        "(type ,name ,@rest)",
-        "(effect ,name ,@rest)",
+        ("(def (,name ,@params) ,@body)", "def"),
+        ("(def ,name ,@rest)", "def"),
+        ("(type ,name ,@rest)", "type"),
+        ("(effect ,name ,@rest)", "effect"),
     ];
-    for src in patterns {
+    for (src, kind) in patterns {
         let pat = match Pattern::compile(src) {
             Ok(p) => p,
             Err(_) => continue, // a malformed pattern is a bug, but never panic the projection
@@ -122,10 +121,18 @@ fn select_items(program: &Arenas) -> Vec<(StructId, String)> {
                 continue;
             };
             seen.insert(origin.0);
-            out.push((origin, name));
+            out.push(DocItemSel { origin, name, kind });
         }
     }
     out
+}
+
+/// A selected documentable item: its node in the program arena, its public name, and its kind
+/// (`def`/`type`/`effect`) — the head-name the selecting query pattern matched.
+struct DocItemSel {
+    origin: StructId,
+    name: String,
+    kind: &'static str,
 }
 
 /// If a matched `,name` binding is a bare `Name` atom, its text — the identifier. A non-atom binding
@@ -137,23 +144,34 @@ fn bound_name(t: &Tree) -> Option<String> {
     }
 }
 
-/// Build one `(doc-item (name "…") (sig "…") (doc "…")?)` node into `b`. `sig` is the item's WHOLE
-/// form printed via the ML printer (the syntactic signature as written — a def's params + a value
-/// body's shape, a type/effect's decl); `doc` is the concatenated leading `(doc …)` prose, omitted
-/// when the item carries none.
-fn build_doc_item(b: &mut Builder, program: &Arenas, form: StructId, name: &str) -> StructId {
+/// Build one `(doc-item (name "…") (sig <sub-ast>) (doc "…")? (kind …) (visibility …))` node into `b`.
+///
+/// `sig` carries the item's STRUCTURED SIGNATURE — a real `cdzast` sub-AST, NOT a printed string
+/// (operator ruling PR #2559 r3735402339 / revised design §2.1: the compiler EMITS structured
+/// render-sufficient info; RENDERING is the consumer's job — it runs the ML printer over the `(sig …)`
+/// subtree, a pure function of the node, so no drift). The signature is the item's DECLARATION shape
+/// WITHOUT its body: a function def's `(name params…)` head (with any inline `(: p T)` annotations), a
+/// value-def / type / effect's declaration form. (I2 enriches with the resolved arrow type in a
+/// sibling `(ty …)`, post-typecheck.) `doc` is the concatenated leading `(doc …)` prose, omitted when
+/// the item carries none. `kind` is `def`/`type`/`effect`; `visibility` is `public` (v1 projects only
+/// the exported surface — a later pass can carry `internal` when it includes non-exported items).
+fn build_doc_item(b: &mut Builder, program: &Arenas, sel: &DocItemSel) -> StructId {
+    let form = sel.origin;
     let mut item = vec![b.name("doc-item")];
 
     // (name "…")
     let name_head = b.name("name");
-    let name_val = b.atom_leaf(Leaf::Str(name.to_string()));
+    let name_val = b.atom_leaf(Leaf::Str(sel.name.clone()));
     let name_node = b.list(vec![name_head, name_val]);
     item.push(name_node);
 
-    // (sig "…") — the item form printed to a display string (syntactic signature).
+    // (sig <sub-ast>) — the STRUCTURED signature subtree (declaration shape, NOT the body). For a
+    // function def `(def (f p…) body)` that is the head `(f p…)`; for a value-def / type / effect it is
+    // the declaration head (name + decl args, sans the initializer/body). Grafted into the doc-AST.
     let sig_head = b.name("sig");
-    let sig_val = b.atom_leaf(Leaf::Str(print_subtree(program, form)));
-    let sig_node = b.list(vec![sig_head, sig_val]);
+    let sig_src = signature_node(program, form);
+    let sig_sub = graft_subtree(b, program, sig_src);
+    let sig_node = b.list(vec![sig_head, sig_sub]);
     item.push(sig_node);
 
     // (doc "…") — the item's own leading `(doc …)` children, concatenated; omitted if none.
@@ -168,7 +186,46 @@ fn build_doc_item(b: &mut Builder, program: &Arenas, form: StructId, name: &str)
         item.push(doc_node);
     }
 
+    // (kind def|type|effect) — the item's kind (the query head-name that selected it).
+    let kind_head = b.name("kind");
+    let kind_val = b.name(sel.kind);
+    let kind_node = b.list(vec![kind_head, kind_val]);
+    item.push(kind_node);
+
+    // (visibility public) — v1 projects only the EXPORTED surface, so every item is public. (A later
+    // internal-docs pass carries `internal` for non-exported items; the field is present now for that.)
+    let vis_head = b.name("visibility");
+    let vis_val = b.name("public");
+    let vis_node = b.list(vec![vis_head, vis_val]);
+    item.push(vis_node);
+
     b.list(item)
+}
+
+/// The node whose subtree is the item's STRUCTURED SIGNATURE — the declaration shape without the body.
+/// For a function def `(def (f p…) doc… body)` that is the head list `(f p…)` (name + params, inline
+/// annotations kept). For a value def `(def x doc… val)`, a `type`, or an `effect`, the declaration
+/// head is the NAME atom itself (there is no param list) — the signature is just the name, and I2's
+/// `(ty …)` carries the resolved type. Falls back to the whole `form` if the shape is unexpected (never
+/// panics — a malformed item still yields a sig node).
+fn signature_node(program: &Arenas, form: StructId) -> StructId {
+    // A `def` whose first arg is a `List` is a function def: its head `(name params…)` IS the signature.
+    if let Some(args) = program.as_form(form, "def")
+        && let Some(&head) = args.first()
+        && matches!(program.get(head), crate::ast::Struct::List(_))
+    {
+        return head;
+    }
+    // Value def / type / effect: the signature is the declaration's NAME (first arg). If it isn't there
+    // for some reason, fall back to the whole form (a robust, if broad, sig — never a panic).
+    for kw in ["def", "type", "effect"] {
+        if let Some(args) = program.as_form(form, kw)
+            && let Some(&first) = args.first()
+        {
+            return first;
+        }
+    }
+    form
 }
 
 /// Concatenate the text of every `(<head> "text")` node among `nodes` (in order), joined by newlines.
@@ -220,17 +277,11 @@ fn exported_names<'a>(program: &'a Arenas, forms: &[StructId]) -> BTreeSet<&'a s
     out
 }
 
-/// Print the subtree rooted at `id` to a display string via the ML printer. The printer prints a whole
-/// `Arenas`, so extract `id`'s subtree into a fresh dense arena first, then print that.
-fn print_subtree(program: &Arenas, id: StructId) -> String {
-    let sub = extract_subtree(program, id);
-    crate::printer::print_display(&sub, crate::printer::DEFAULT_WIDTH)
-}
-
-/// Extract the subtree rooted at `id` of `program` into its own standalone, dense `Arenas` (a fresh
-/// root). Iterative post-order (an explicit stack) so a deep item can't overflow the native stack.
-fn extract_subtree(program: &Arenas, id: StructId) -> Arenas {
-    let mut b = Builder::new();
+/// Copy the subtree rooted at `id` of `program` INTO the in-progress builder `b`, returning its new
+/// root `StructId` — so the item's structured signature is grafted directly into the doc-AST being
+/// built (the `(sig <sub-ast>)` payload). Iterative post-order (an explicit stack) so a deep item can't
+/// overflow the native stack; leaves interned by value like any Builder push.
+fn graft_subtree(b: &mut Builder, program: &Arenas, id: StructId) -> StructId {
     enum Job {
         Visit(StructId),
         EmitList(usize),
@@ -259,6 +310,5 @@ fn extract_subtree(program: &Arenas, id: StructId) -> Arenas {
             }
         }
     }
-    let root = results.pop().expect("extract_subtree leaves a root");
-    b.finish(root)
+    results.pop().expect("graft_subtree leaves a root")
 }

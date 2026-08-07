@@ -44,9 +44,19 @@ fn item_doc(doc: &Arenas, item: StructId) -> Option<&str> {
     item_field(doc, item, "doc")
 }
 
-/// The `(sig "…")` string of a `doc-item`.
-fn item_sig(doc: &Arenas, item: StructId) -> Option<&str> {
-    item_field(doc, item, "sig")
+/// The `(sig <sub-ast>)` STRUCTURED signature node of a `doc-item` — the item form's subtree (a
+/// `List`), NOT a string. (Operator ruling: the compiler emits structured info; a consumer renders it.)
+fn item_sig_node(doc: &Arenas, item: StructId) -> Option<StructId> {
+    let children = match doc.get(item) {
+        cadenza_syntax::ast::Struct::List(kids) => kids.as_slice(),
+        cadenza_syntax::ast::Struct::Atom(_) => return None,
+    };
+    for &c in children {
+        if let Some(args) = doc.as_form(c, "sig") {
+            return args.first().copied();
+        }
+    }
+    None
 }
 
 /// All `doc-item` children of a `doc-module` root.
@@ -84,10 +94,29 @@ export { map }";
         Some("Applies f to each element."),
         "the item's /// prose"
     );
-    let sig = item_sig(&doc, items[0]).expect("a sig");
+    // (sig …) is a STRUCTURED sub-AST (a List, not a string) — the SIGNATURE (declaration head, no
+    // body). For `def map(f, xs) = f` the signature is the head `(map f xs)` (name + params), NOT the
+    // whole `(def …)` form and NOT the body. A consumer RENDERS it via the ML printer.
+    let sig = item_sig_node(&doc, items[0]).expect("a structured sig node");
     assert!(
-        sig.contains("map"),
-        "sig prints the item's syntactic form, got {sig:?}"
+        matches!(doc.get(sig), cadenza_syntax::ast::Struct::List(_)),
+        "sig is a structured sub-AST (List), not a printed string"
+    );
+    // The signature head is the function NAME, followed by its params — it is `(map f xs)`.
+    assert_eq!(
+        doc.head_name(sig),
+        Some("map"),
+        "sig subtree is the signature head `(map f xs)` (name + params), not the whole def form"
+    );
+    let rendered = cadenza_syntax::sexpr::print_from(&doc, sig);
+    assert!(
+        rendered.contains("map") && rendered.contains('f') && rendered.contains("xs"),
+        "rendering the structured sig yields the signature (name + params), got {rendered:?}"
+    );
+    // The body (`f` as the def value) is NOT part of the signature — sig is the head only.
+    assert!(
+        !rendered.starts_with("def"),
+        "sig is the signature head, not the `def` declaration form, got {rendered:?}"
     );
 }
 
@@ -135,6 +164,83 @@ export { f }";
 }
 
 #[test]
+fn the_sig_is_a_structured_sub_ast_not_a_printed_string() {
+    // Operator ruling (PR #2559 r3735402339): the compiler EMITS the structured signature; RENDERING is
+    // the consumer's job. So `(sig …)` must be a SUB-AST (a List), NOT a `Leaf::Str`. And per revised
+    // design §2.1 it is the SIGNATURE (declaration head, no body) — for `def add(a, b) = a` that's the
+    // head `(add a b)`, not the whole `(def …)` form. Pin the shape directly + that a consumer can
+    // recover the display string via the ML printer (structured-is-truth).
+    let src = "\
+/// doc.
+def add(a, b) = a
+export { add }";
+    let doc = doc_item::project(&program(src), "m");
+    let item = doc_items(&doc)[0];
+    let sig = item_sig_node(&doc, item).expect("a sig node");
+
+    // NOT a string leaf — a structured List.
+    match doc.get(sig) {
+        cadenza_syntax::ast::Struct::List(_) => {}
+        cadenza_syntax::ast::Struct::Atom(_) => {
+            panic!("(sig …) must be a structured sub-AST (List), not a printed-string Atom")
+        }
+    }
+    // The signature head is the function name `add` (followed by its params) — NOT `def` (the whole
+    // declaration) and NOT the body.
+    assert_eq!(
+        doc.head_name(sig),
+        Some("add"),
+        "the sig subtree is the signature head `(add a b)`, not the `def` form"
+    );
+    // Structured-is-truth, printed-is-derived: a consumer renders the SAME subtree via the ML printer.
+    let display = cadenza_syntax::sexpr::print_from(&doc, sig);
+    assert!(
+        display.contains("add"),
+        "rendering the structured sig recovers the signature, got {display:?}"
+    );
+}
+
+#[test]
+fn a_doc_item_carries_kind_and_visibility() {
+    // Revised design §2.1: each doc-item carries (kind def|type|effect) + (visibility public). v1
+    // projects only the exported surface, so visibility is always `public`; kind is the item's form.
+    let src = "\
+def f(x) = x
+type T = | A
+effect E = | op : Str
+export { f, T, E }";
+    let doc = doc_item::project(&program(src), "m");
+    let items = doc_items(&doc);
+    // helper: the name-head value of a doc-item's `(field <name-atom>)` child (kind/visibility are
+    // name atoms, not strings).
+    let field_name = |item: StructId, field: &str| -> Option<String> {
+        let kids = match doc.get(item) {
+            cadenza_syntax::ast::Struct::List(k) => k.clone(),
+            cadenza_syntax::ast::Struct::Atom(_) => return None,
+        };
+        for c in kids {
+            if let Some(args) = doc.as_form(c, field) {
+                return doc.as_name(*args.first()?).map(str::to_string);
+            }
+        }
+        None
+    };
+    for item in &items {
+        assert_eq!(
+            field_name(*item, "visibility").as_deref(),
+            Some("public"),
+            "every projected item is public in v1"
+        );
+    }
+    // kinds line up with the three item forms (in source order f/T/E).
+    let kinds: Vec<_> = items
+        .iter()
+        .filter_map(|&i| field_name(i, "kind"))
+        .collect();
+    assert_eq!(kinds, vec!["def", "type", "effect"], "kind per item form");
+}
+
+#[test]
 fn an_exported_def_without_docs_has_a_sig_and_name_but_no_doc() {
     // No `///` → the doc-item still carries name + sig (structural), but omits the empty (doc …).
     let src = "\
@@ -144,7 +250,10 @@ export { f }";
     let items = doc_items(&doc);
     assert_eq!(items.len(), 1);
     assert_eq!(item_name(&doc, items[0]), Some("f"));
-    assert!(item_sig(&doc, items[0]).is_some(), "sig is always present");
+    assert!(
+        item_sig_node(&doc, items[0]).is_some(),
+        "sig is always present (a structured sub-AST)"
+    );
     assert_eq!(
         item_doc(&doc, items[0]),
         None,
