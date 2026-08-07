@@ -46,6 +46,13 @@ pub struct DaemonConfig {
     /// daemon boots share-less, today's behavior). `s3` makes the canonical store DURABLE across a restart.
     #[serde(default)]
     pub name_store: NameStoreConfig,
+    /// The SESSION REGISTRY backend — the index of which sessions exist + which are ACTIVE, so daemon boot-
+    /// recovery enumerates recoverable sessions (I4b) + operators query live sessions WITHOUT scanning the
+    /// event log. Defaults to `memory` (no durable registry — the daemon boots with an empty registry,
+    /// today's lossy-on-restart behavior). `dynamo` makes the registry DURABLE (a session-per-item table +
+    /// status GSI). Boot-recovery only runs when BOTH this AND a durable `[log]` backend are configured.
+    #[serde(default)]
+    pub session_registry: SessionRegistryConfig,
     /// Structured TRACING — spans/events on the host loop + session/effect surface (operator directive:
     /// "add tracing to the harness, configured via the toml"). Defaults to disabled (no subscriber
     /// installed). The subscriber the daemon initializes from this section is wired in a following slice;
@@ -287,6 +294,31 @@ pub enum NameStoreConfig {
         #[serde(default)]
         prefix: String,
     },
+}
+
+/// The SESSION REGISTRY durability backend (I4b) — the index of which sessions exist + their lifecycle status
+/// (active / terminated), so the daemon can (a) BOOT-RECOVER durably-logged sessions after a restart
+/// (enumerate → recover → re-register) and (b) answer "current active sessions" — both WITHOUT an O(all-events)
+/// scan of the event log (operator: "build an index, do it right"). `memory` (default) = NO durable registry
+/// (the daemon boots with an empty in-memory registry, today's lossy-on-restart behavior — nothing to
+/// recover); `dynamo` = a durable DynamoDB registry ([`DynamoSessionRegistry`](crate::DynamoSessionRegistry) —
+/// a session-per-item `table` + a status GSI). Selected backend wired only when its feature is compiled: the
+/// `dynamo` RUNTIME backend needs `live-aws-storage`; parsing/validation is always-on (infra-core), so a config
+/// naming `backend = "dynamo"` validates regardless of feature, and a build WITHOUT `live-aws-storage` reports
+/// a clean "not compiled in" error at boot rather than silently degrading. Boot-recovery runs only when this is
+/// `dynamo` AND `[log]` is durable (a session's log is what recovery replays).
+#[derive(Debug, Clone, Deserialize, PartialEq, Default)]
+#[serde(tag = "backend", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum SessionRegistryConfig {
+    /// No durable registry — the daemon boots with an empty in-memory session registry (today's behavior:
+    /// nothing to boot-recover, sessions are lost on restart). The default (uniform `memory` naming with the
+    /// other backends' non-durable variant).
+    #[default]
+    Memory,
+    /// DynamoDB-backed durable session registry in `table` (region from the ambient AWS env, like the log /
+    /// Bedrock backends). One item per session (pk = session_id) + a `status`-index GSI for the active-sessions
+    /// query. Wired only when `live-aws-storage` is compiled; validation (non-empty table) is always-on.
+    Dynamo { table: String },
 }
 
 /// Effect-retry policy: a bounded exponential backoff the daemon's supervisor applies to a RETRYABLE
@@ -612,6 +644,13 @@ impl DaemonConfig {
                 ));
             }
         }
+        if let SessionRegistryConfig::Dynamo { table } = &self.session_registry {
+            if table.trim().is_empty() {
+                return Err(ConfigError(
+                    "[session_registry] backend=dynamo needs a non-empty table".into(),
+                ));
+            }
+        }
         if self.tracing.enabled {
             if self.tracing.filter.trim().is_empty() {
                 return Err(ConfigError(
@@ -647,6 +686,8 @@ mod tests {
             "default report interval"
         );
         assert_eq!(cfg.retries, RetryConfig::default());
+        // [session_registry] default = memory (no durable registry, lossy-on-restart).
+        assert_eq!(cfg.session_registry, SessionRegistryConfig::Memory);
         // [tracing] defaults: disabled, "info" filter, compact/stderr.
         assert!(!cfg.tracing.enabled);
         assert_eq!(cfg.tracing.filter, "info");
@@ -668,6 +709,10 @@ mod tests {
             kind = "statsd"
             endpoint = "127.0.0.1:9000"
 
+            [session_registry]
+            backend = "dynamo"
+            table = "cdz-session-registry"
+
             [retries]
             max_attempts = 5
             base_ms = 200
@@ -681,6 +726,12 @@ mod tests {
                 table: "cdz-agent-log".into()
             }
         );
+        assert_eq!(
+            cfg.session_registry,
+            SessionRegistryConfig::Dynamo {
+                table: "cdz-session-registry".into()
+            }
+        );
         assert!(cfg.observability.enabled);
         assert_eq!(cfg.observability.targets.len(), 1);
         assert_eq!(
@@ -692,6 +743,39 @@ mod tests {
         );
         assert_eq!(cfg.observability.targets[0].kind(), "statsd");
         assert_eq!(cfg.retries.max_attempts, 5);
+    }
+
+    #[test]
+    fn session_registry_dynamo_needs_a_nonempty_table() {
+        // The registry Dynamo variant parses + validates like the log dynamo backend; an empty table is a
+        // clean config error (surfaced at boot), not a silent misconfig.
+        // from_toml_str validates internally, so a non-empty table parses + validates clean...
+        let ok = DaemonConfig::from_toml_str(
+            r#"
+            [session_registry]
+            backend = "dynamo"
+            table = "cdz-session-registry"
+            "#,
+        )
+        .expect("a dynamo registry with a non-empty table parses + validates");
+        assert!(matches!(
+            ok.session_registry,
+            SessionRegistryConfig::Dynamo { .. }
+        ));
+
+        // ...and an empty table is rejected by the internal validate() (surfaced from from_toml_str).
+        let err = DaemonConfig::from_toml_str(
+            r#"
+            [session_registry]
+            backend = "dynamo"
+            table = ""
+            "#,
+        )
+        .expect_err("an empty registry table is rejected at parse + validate");
+        assert!(
+            format!("{err}").contains("[session_registry] backend=dynamo needs a non-empty table"),
+            "clear registry-table error: {err}"
+        );
     }
 
     #[test]
