@@ -77,6 +77,20 @@ pub mod effect_ct {
     /// `ControlHostSurfaced` disposition: returned to the driver, captured by the query fork's watch).
     pub const SUMMARY: &str = "control/summary";
 
+    /// The well-known `control/signature` family — the component SIGNATURE-QUERY (composable-component-calls
+    /// part-1, greenlit 2026-08-07): a reducer asks "given this component (by hash/name), what are its
+    /// exported funcs + their param/result types?" so a Cadenza orchestration program can DISCOVER a target's
+    /// callable surface before invoking it. CONTROL-PLANE (authz-EXEMPT, like `control/capabilities`) —
+    /// introspection is not a world-action, so it isn't gated (only the actual INVOKE keeps per-call authz).
+    /// A `ControlHostSurfaced` disposition like `control/summary`: the HOST answers it (reflecting the target's
+    /// `component_type().exports()` — wasmtime, host-side) + folds back a canonical [`component-signature`
+    /// descriptor](crate::event_ast::encode_component_signature) as the result; the kernel only carries the
+    /// family vocab + owns the descriptor CODEC (the reducer↔host wire shape). The target component (hash/name)
+    /// rides the effect target. V0 carries each param/result TYPE as OPAQUE wit-bytes (a reducer discovers
+    /// export names + arities + type-bytes = enough to route/dispatch); a follow-up increment lowers the
+    /// wit-types to a Cadenza-decodable Ast (v-metaprogramming owns that type mapping).
+    pub const SIGNATURE: &str = "control/signature";
+
     /// The `store/*` namespace PREFIX — the §4c global-store WRITE layer (mutable name→hash pointers). A
     /// family whose string starts with this is a STORE effect: unlike `control/*` (authz-EXEMPT), a store
     /// effect is AUTHZ-GATED — a `store/set` is the anti-hijack surface (repointing `system/compiler/latest`
@@ -276,6 +290,7 @@ pub mod effect_ct {
         match family {
             CAPABILITIES => Some(CAPABILITIES),
             SUMMARY => Some(SUMMARY),
+            SIGNATURE => Some(SIGNATURE),
             _ => None,
         }
     }
@@ -324,6 +339,7 @@ pub mod effect_ct {
         match family {
             CAPABILITIES => Some(CAPABILITIES),
             SUMMARY => Some(SUMMARY),
+            SIGNATURE => Some(SIGNATURE),
             STORE_SET => Some(STORE_SET),
             STORE_RESOLVE => Some(STORE_RESOLVE),
             STORE_ADD => Some(STORE_ADD),
@@ -1103,6 +1119,7 @@ mod tests {
         // prefix test the drive loop applies before authorize/route.
         assert!(effect_ct::is_control_family(effect_ct::CAPABILITIES));
         assert!(effect_ct::is_control_family(effect_ct::SUMMARY));
+        assert!(effect_ct::is_control_family(effect_ct::SIGNATURE));
         assert!(effect_ct::is_control_family("control/anything"));
         // Every well-known EFFECT family stays BARE — NOT in the control namespace (durable-wire constraint:
         // they can't gain an "effect/" prefix, and must never be misclassified as control).
@@ -1116,6 +1133,20 @@ mod tests {
         assert_eq!(effect_ct::CONTROL_PREFIX, "control/");
         assert!(effect_ct::CAPABILITIES.starts_with(effect_ct::CONTROL_PREFIX));
         assert!(effect_ct::SUMMARY.starts_with(effect_ct::CONTROL_PREFIX));
+        assert!(effect_ct::SIGNATURE.starts_with(effect_ct::CONTROL_PREFIX));
+        // control/signature is a well-known control family: exact string, safe-logging, and wellknown_control
+        // canonicalizes it (zero-alloc Borrowed) — the composable-component-calls signature-query (v0).
+        assert_eq!(effect_ct::SIGNATURE, "control/signature");
+        assert_eq!(
+            effect_ct::wellknown_control(effect_ct::SIGNATURE),
+            Some(effect_ct::SIGNATURE)
+        );
+        assert_eq!(
+            effect_ct::wellknown_static_str(effect_ct::SIGNATURE),
+            Some(effect_ct::SIGNATURE)
+        );
+        // A guest control/<secret> still redacts (prefix ≠ safe), unchanged.
+        assert_eq!(effect_ct::wellknown_static_str("control/secret-x"), None);
         // A bare family that merely CONTAINS "control" but doesn't start with the prefix is NOT control.
         assert!(!effect_ct::is_control_family("my-control-thing"));
         assert!(!effect_ct::is_control_family(""));
