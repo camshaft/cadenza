@@ -6110,3 +6110,6 @@ pass	an emit/flush byte-writer seeded EMPTY — three emits accumulate, flush re
 pass	a reader→writer PUMP then a LET-bound flush reads the FULL accumulation (breaker tk3d class)
 pass	a BigInt arithmetic tower over one perform draw — cube then divide, narrowed once
 pass	a Rational SQUARE over a perform draw — 1/5 squared stays exactly 1/25
+pass	a perform-derived rope SELF-concatenated — the shared subtree measures correctly
+pass	a perform-derived byte-rope SELF-concatenated — both halves read the same draw
+pass	a nested-list DAG — one perform-derived inner list aliased TWICE in the outer
