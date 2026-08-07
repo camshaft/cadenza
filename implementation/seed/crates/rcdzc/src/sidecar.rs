@@ -116,6 +116,18 @@ pub const KIND_CLOSURE_HASH: &str = "closure-hash";
 /// func-indices + identical content across per-file test builds) and the Option-A cache-key basis.
 pub const KIND_FUNC_LAYOUT: &str = "func-layout";
 
+/// The output artifact kind for an `ExportedTypes` query result — each exported definition's RESOLVED
+/// type as a STRUCTURED cdzast sub-AST (not the rendered string `Exports` carries). The bytes are a
+/// length-prefixed bulk blob: `u32_le count`, then `count` records of `u32_le name_len | name (UTF-8) |
+/// u32_le ty_len | ty_bytes`, where `ty_bytes` is a full `cdzast` codec artifact rooted at
+/// `eval::encode_ty_payload` of the def's `def_scheme.ty`. The cadenza-docs I2 fact: `cdz doc` decodes
+/// each `ty_bytes` (byte-identical codec) and grafts it as the doc-item's `(ty …)` — so the doc type is
+/// structured/queryable, not a printed string. An export whose type does not resolve is OMITTED (so
+/// `count` is the number of exports WITH a resolved type — the graceful-degrade the doc-item's optional
+/// `(ty …)` expects). All-in-one so `cdz doc` makes ONE sidecar round-trip. Co-owned with v-syntax
+/// (I emit the fact; the `cdz doc` CLI merges it into the I1 doc-module).
+pub const KIND_EXPORT_TYPES: &str = "export-types";
+
 /// One request in a sidecar's list. Either MATERIALIZE an output column (`Emit`) or READ a fact column
 /// (`Query`). `Rewrite` (the validated-transaction arm of `DESIGN-sidecar-api.md`) is a later rung and
 /// not modeled here yet.
@@ -255,6 +267,18 @@ pub enum Query {
     /// occurrence, so a consumer can jump to it. Node-id-keyed like the others; TOTAL — a module with no
     /// exports yields the empty result. This is the "module interface at a glance" query.
     Exports,
+    /// Each exported definition's RESOLVED type as a STRUCTURED cdzast sub-AST — the STRUCTURED companion
+    /// of `Exports` (which renders types to a STRING). The cadenza-docs I2 fact (`(C)` architecture):
+    /// `rcdzc` cannot depend on `cadenza-syntax` (copy-don't-depend), so `cdz doc` runs the I1 doc-item
+    /// projection on the `cadenza-syntax` side, asks THIS query for the resolved types, and grafts each as
+    /// the doc-item's `(ty …)` — the type reaches docs as a queryable/linkable sub-AST, not a printed
+    /// string. Bulk (no args) so `cdz doc` makes ONE round-trip. Answered as the `KIND_EXPORT_TYPES` blob:
+    /// `u32_le count` then per export `u32_le name_len | name | u32_le ty_len | ty_bytes`, where `ty_bytes`
+    /// is `codec::encode` of a standalone arena rooted at `eval::encode_ty_payload(db, &scheme.ty)` — a
+    /// full cdzast artifact the consumer's byte-identical codec decodes directly. An export whose type does
+    /// not resolve (`def_scheme` = `None`) is OMITTED (graceful-degrade: the doc-item's `(ty …)` is
+    /// optional). Deterministic (export order). Co-owned with v-syntax.
+    ExportedTypes,
     /// The DOCUMENTATION of a definition or built-in, BY NAME — the doc companion of `TypeOf`. Answered
     /// from an ordered fallback, all reads of columns the compiler already fills:
     ///   1. a user definition's `(doc "…")` text (`db.doc_of_def`, keyed by the def's signature — the
@@ -414,6 +438,9 @@ mod tag {
     /// The Option-C shared-closure CONTENT-HASH query (`Query::ClosureHash`) — the provider-cache decision
     /// key (layout-only, no provider emit).
     pub const QUERY_CLOSURE_HASH: u8 = 0x1e;
+    /// The cadenza-docs I2 structured export-types fact (`Query::ExportedTypes`) — each exported def's
+    /// resolved type as a cdzast sub-AST, bulk (no args).
+    pub const QUERY_EXPORTED_TYPES: u8 = 0x1f;
 }
 
 /// Decode a request list from its wire bytes. Total: a truncated or malformed list yields `None` (the
@@ -476,6 +503,7 @@ fn decode_one(r: &mut Reader) -> Option<Request> {
         tag::QUERY_PARAM_MANIFEST => Some(Request::Query(Query::ParamManifest)),
         tag::QUERY_FUNC_LAYOUT => Some(Request::Query(Query::FuncLayout)),
         tag::QUERY_CLOSURE_HASH => Some(Request::Query(Query::ClosureHash)),
+        tag::QUERY_EXPORTED_TYPES => Some(Request::Query(Query::ExportedTypes)),
         _ => None,
     }
 }
@@ -541,6 +569,7 @@ fn encode_one(out: &mut Vec<u8>, req: &Request) {
         Request::Query(Query::ParamManifest) => out.push(tag::QUERY_PARAM_MANIFEST),
         Request::Query(Query::FuncLayout) => out.push(tag::QUERY_FUNC_LAYOUT),
         Request::Query(Query::ClosureHash) => out.push(tag::QUERY_CLOSURE_HASH),
+        Request::Query(Query::ExportedTypes) => out.push(tag::QUERY_EXPORTED_TYPES),
     }
 }
 
@@ -780,6 +809,47 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
                 bytes: text.into_bytes(),
             }
         }
+        Query::ExportedTypes => {
+            // The STRUCTURED companion of `Exports` (cadenza-docs I2, architecture `(C)`): each exported
+            // def's resolved type as a cdzast sub-AST, so `cdz doc` grafts a queryable `(ty …)` rather than
+            // a printed string. For each export with a def whose scheme resolves, encode the GENERALIZED
+            // type (`scheme.ty` — polymorphic, `(Var N)` for quantified vars, the right DOC shape) as a
+            // standalone cdzast artifact and frame it into the bulk blob. An export whose scheme is `None`
+            // (un-inferable / declined / names no def) is OMITTED — the graceful-degrade the doc-item's
+            // optional `(ty …)` expects. Deterministic (export order). Blob framing (see `KIND_EXPORT_TYPES`):
+            // `u32_le count` then per record `u32_le name_len | name | u32_le ty_len | ty_bytes`.
+            let exports: Vec<(String, Option<usize>)> =
+                db.exports.iter().map(|e| (e.name.clone(), e.def)).collect();
+            let mut records: Vec<(String, Vec<u8>)> = Vec::new();
+            for (name, def) in exports {
+                let Some(d) = def else { continue };
+                let Some(scheme) = crate::infer::def_scheme(db, d) else {
+                    continue;
+                };
+                // Build the bare type sub-AST in `db.ast`, then EXTRACT it into a standalone arena (rcdzc
+                // cannot hand a `db.ast` subtree StructId across the tool boundary; `codec::encode` wants a
+                // whole arena rooted at the type). The extracted arena's bytes are a full cdzast artifact the
+                // consumer's byte-identical codec decodes directly into the `(ty …)` payload.
+                let ty_root = crate::eval::encode_ty_payload(db, &scheme.ty);
+                let ty_arena = extract_subtree(&db.ast, ty_root);
+                let ty_bytes = crate::codec::encode(&ty_arena);
+                records.push((name, ty_bytes));
+            }
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(&(records.len() as u32).to_le_bytes());
+            for (name, ty_bytes) in records {
+                let nb = name.as_bytes();
+                bytes.extend_from_slice(&(nb.len() as u32).to_le_bytes());
+                bytes.extend_from_slice(nb);
+                bytes.extend_from_slice(&(ty_bytes.len() as u32).to_le_bytes());
+                bytes.extend_from_slice(&ty_bytes);
+            }
+            QueryResult {
+                kind: KIND_EXPORT_TYPES,
+                name: "export-types".to_string(),
+                bytes,
+            }
+        }
         Query::Highlight => {
             // Every USER LEAF classified by the role it plays — one `node-id<TAB>kind` line, ascending
             // id order. A leaf is what an editor paints (a name atom, a literal); a list form is not
@@ -899,6 +969,31 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
             }
         }
     }
+}
+
+/// Copy the subtree of `src` rooted at `root` into a fresh standalone [`Arenas`] (rooted at the copied
+/// subtree), so it can be serialized on its own via [`codec::encode`]. `codec::encode` serializes a WHOLE
+/// arena keyed by its `root`, and a `db.ast` StructId cannot travel the tool boundary — so the
+/// `ExportedTypes` fact extracts each type sub-AST into its own arena, encodes it, and frames the bytes.
+/// Recurses the structure; leaves are re-interned in the fresh `Builder` (its dedup is harmless — a
+/// distinct occurrence is not required for a serialized type payload, unlike the value-form template).
+fn extract_subtree(src: &crate::ast::Arenas, root: StructId) -> crate::ast::Arenas {
+    fn copy(src: &crate::ast::Arenas, id: StructId, b: &mut crate::ast::Builder) -> StructId {
+        match src.get(id) {
+            Struct::Atom(lid) => {
+                let leaf = src.leaf(*lid).clone();
+                b.atom_leaf(leaf)
+            }
+            Struct::List(children) => {
+                let children = children.clone();
+                let copied: Vec<StructId> = children.iter().map(|&c| copy(src, c, b)).collect();
+                b.list(copied)
+            }
+        }
+    }
+    let mut b = crate::ast::Builder::new();
+    let new_root = copy(src, root, &mut b);
+    b.finish(new_root)
 }
 
 /// The `FuncLayout` read: force monomorphization then lay out the boundary, and report each reachable
@@ -2463,6 +2558,7 @@ mod tests {
             Request::Query(Query::ParamManifest),
             Request::Query(Query::FuncLayout),
             Request::Query(Query::ClosureHash),
+            Request::Query(Query::ExportedTypes),
             Request::EmitTestsPerFile,
             Request::EmitTestsComposed,
             Request::EmitTestsConsumerOnly,
@@ -2490,7 +2586,8 @@ mod tests {
                     | Query::Symbols
                     | Query::ParamManifest
                     | Query::FuncLayout
-                    | Query::ClosureHash,
+                    | Query::ClosureHash
+                    | Query::ExportedTypes,
                 ) => {}
             }
         }
@@ -2534,5 +2631,54 @@ mod tests {
     fn truncated_string_is_none() {
         // count=1, QUERY_TYPE_OF, string len=5, but no string bytes.
         assert_eq!(decode(&[0x01, tag::QUERY_TYPE_OF, 0x05]), None);
+    }
+
+    #[test]
+    fn extract_subtree_encodes_a_standalone_arena_that_codec_round_trips() {
+        // The `ExportedTypes` fact extracts each type sub-AST out of `db.ast` into a standalone arena and
+        // `codec::encode`s it (the consumer's byte-identical codec decodes it back). Prove `extract_subtree`
+        // + the encode/decode round-trip on a representative structured type shape `(-> (List Int64) Bool)`
+        // built directly (no compile harness needed): the decoded arena must be structurally identical.
+        use crate::ast::{Builder, Leaf, Struct};
+        // Build a bigger source arena with the target type as a SUBTREE (not the root), so extraction from
+        // an interior root is exercised. Source: `(wrapper <the-type>)`.
+        let mut src = Builder::new();
+        let arrow = src.name("->");
+        let list = src.name("List");
+        let int_name = src.name("Int");
+        let width = src.atom_leaf(Leaf::Int {
+            value: crate::ast::IntValue::from_i64(64),
+            radix: crate::ast::Radix::Dec,
+        });
+        let int_ty = src.list(vec![int_name, width]);
+        let list_int = src.list(vec![list, int_ty]);
+        let bool_ty = src.name("Bool");
+        let ty_root = src.list(vec![arrow, list_int, bool_ty]);
+        let wrapper_head = src.name("wrapper");
+        let src_root = src.list(vec![wrapper_head, ty_root]);
+        let src_arena = src.finish(src_root);
+
+        // Extract the TYPE subtree (ty_root, an interior node), encode, decode.
+        let extracted = extract_subtree(&src_arena, ty_root);
+        let bytes = crate::codec::encode(&extracted);
+        let decoded = crate::codec::decode(&bytes).expect("decode the extracted type artifact");
+
+        // The decoded root is `(-> (List (Int 64)) Bool)` — check the head + arity structurally.
+        match decoded.get(decoded.root) {
+            Struct::List(kids) => {
+                assert_eq!(kids.len(), 3, "arrow has head + 2 operands");
+                assert_eq!(decoded.as_name(kids[0]), Some("->"));
+                // operand 0 is `(List (Int 64))`
+                match decoded.get(kids[1]) {
+                    Struct::List(inner) => {
+                        assert_eq!(decoded.as_name(inner[0]), Some("List"));
+                    }
+                    _ => panic!("operand 0 should be a `(List …)` list"),
+                }
+                // operand 1 is `Bool`
+                assert_eq!(decoded.as_name(kids[2]), Some("Bool"));
+            }
+            _ => panic!("decoded root should be the `(-> …)` list"),
+        }
     }
 }
