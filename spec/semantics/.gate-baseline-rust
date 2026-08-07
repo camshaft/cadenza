@@ -6085,3 +6085,6 @@ pass	a recursive TREE as a transformer op — crosses IN, the arm wraps it, cros
 pass	a heap result of effect A pipes directly into effect B's argument — cross-effect heap flow
 pass	Rational.of over TWO perform results — ctor-arg order observable through the dispatches
 pass	the gcd face: a reducible num/den pair from performs canonicalizes (4/8 → 1/2)
+pass	a tuple scrutinee built from TWO performs — the guard relates both dispatch results
+pass	recursively STACKED same-effect handlers — the perform resolves to the DEEPEST frame
+pass	the shadow stack UNWINDS — each level's post-region perform reaches ITS enclosing frame
