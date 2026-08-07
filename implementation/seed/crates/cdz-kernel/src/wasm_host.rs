@@ -450,6 +450,96 @@ fn read_iface_func_names(
         })
 }
 
+/// Reflect a component's exported functions into a canonical `component-signature` descriptor AST — the
+/// `control/signature` query answer (composable-component-calls part-1, operator "one AST" reshape). A
+/// reducer signature-queries a component (by hash → its bytes) to discover its callable surface before
+/// invoking. This is the SOLE encoder: it lives HERE (not event_ast) because it needs wasmtime component
+/// reflection — `component_type().exports()` + each func's param/result `Type`s — which only this crate
+/// touches (the host + cdz-agent-host stay wasmtime-free, per the host-reflection seam). The whole
+/// descriptor is ONE AST (operator directive r3737971653): each type is grafted INLINE as a sub-AST via
+/// [`crate::ast_marshal::build_type`] (the shared node-emitter), NOT a nested `codec::encode`'d bytes leaf —
+/// so a reducer walks ONE coherent tree. Shape (decoded by [`crate::event_ast::decode_component_signature`]):
+///
+///   `(component-signature (export (name <str>) (params (ty <type-ast>) …) (results (ty <type-ast>) …)) …)`
+///
+/// Reflects top-level `ComponentFunc` exports AND funcs within an exported `ComponentInstance` (a WIT
+/// world's interface) — flattened by func name. A type `build_type` can't lower (resource/future/stream —
+/// [`crate::ast_marshal::MarshalError::UnsupportedType`]) fails the whole reflect with `InvalidComponent`
+/// (an honest "this component's surface isn't fully describable yet" — describing a float is fine, only
+/// resource/future/stream are unsupported). Bytes that aren't a valid component → `InvalidComponent`.
+pub fn component_signature_from_bytes(
+    engine: &wasmtime::Engine,
+    bytes: &[u8],
+) -> Result<Vec<u8>, ComponentError> {
+    use cadenza_ast::ast::Builder;
+    use cadenza_ast::codec;
+    use wasmtime::component::types::ComponentItem;
+    use wasmtime::component::Component;
+
+    let component = Component::new(engine, bytes)
+        .map_err(|e| ComponentError::InvalidComponent(format!("not a valid component: {e}")))?;
+
+    // Collect (func_name, ComponentFunc) for every exported func — top-level + one level into exported
+    // instances (a WIT world's interface). Names are the export's own name (instance funcs by their func
+    // name); a real reducer routes by name + arity + the walked type nodes.
+    let mut funcs: Vec<(String, wasmtime::component::types::ComponentFunc)> = Vec::new();
+    for (name, item) in component.component_type().exports(engine) {
+        match item {
+            ComponentItem::ComponentFunc(cf) => funcs.push((name.to_string(), cf)),
+            ComponentItem::ComponentInstance(inst) => {
+                for (fname, fitem) in inst.exports(engine) {
+                    if let ComponentItem::ComponentFunc(cf) = fitem {
+                        funcs.push((fname.to_string(), cf));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut b = Builder::new();
+    // Map a build_type MarshalError → a clean ComponentError (never panic).
+    let ty_node = |b: &mut Builder, ty: &wasmtime::component::Type| -> Result<_, ComponentError> {
+        let node = crate::ast_marshal::build_type(b, ty).map_err(|e| {
+            ComponentError::InvalidComponent(format!(
+                "component-signature: a param/result type isn't describable: {e:?}"
+            ))
+        })?;
+        let h = b.name("ty");
+        Ok(b.list(vec![h, node]))
+    };
+
+    let head = b.name("component-signature");
+    let mut items = vec![head];
+    for (fname, cf) in &funcs {
+        let export_head = b.name("export");
+        let name_form = {
+            let h = b.name("name");
+            let v = b.atom_leaf(cadenza_ast::ast::Leaf::Str(fname.clone()));
+            b.list(vec![h, v])
+        };
+        let params_form = {
+            let h = b.name("params");
+            let mut ps = vec![h];
+            for (_pname, ty) in cf.params() {
+                ps.push(ty_node(&mut b, &ty)?);
+            }
+            b.list(ps)
+        };
+        let results_form = {
+            let h = b.name("results");
+            let mut rs = vec![h];
+            for ty in cf.results() {
+                rs.push(ty_node(&mut b, &ty)?);
+            }
+            b.list(rs)
+        };
+        items.push(b.list(vec![export_head, name_form, params_form, results_form]));
+    }
+    let root = b.list(items);
+    Ok(codec::encode(&b.finish(root)))
+}
+
 /// Compose a resolved dependency COMPONENT into `linker` so a consumer that imports `import_name` can
 /// instantiate against it (§23 — the runtime-agnostic dep-compose the kernel does uniformly for EVERY
 /// declared dep, the value-heap runtime being just one). Mirrors the sibling `cdz-run::run_with_peers`
@@ -5107,6 +5197,56 @@ mod tests {
                 panic!("expected a bounded InvokeExport for a wrong-shape result, got {other:?}")
             }
         }
+    }
+
+    // composable-component-calls part-1: component_signature_from_bytes reflects a component's exported funcs
+    // into the ONE-AST descriptor (operator "one AST" reshape), decoded by event_ast::decode_component_signature
+    // into a walkable tree. End-to-end: real component reflection → inline build_type type nodes → decode → walk.
+    #[test]
+    fn component_signature_reflects_a_real_component_into_one_walkable_ast_descriptor() {
+        // A component exporting run: func(list<u8>) -> u32 — the host reflects its param/result Types, lowers
+        // each via build_type INLINE into one descriptor AST, and the reducer-side decode walks it in place.
+        let bytes = wat::parse_str(
+            r#"(component
+                 (core module $m
+                   (memory (export "mem") 1)
+                   (func (export "realloc") (param i32 i32 i32 i32) (result i32) (i32.const 0))
+                   (func (export "run") (param i32 i32) (result i32) (i32.const 0)))
+                 (core instance $i (instantiate $m))
+                 (func $run (param "input" (list u8)) (result u32)
+                   (canon lift (core func $i "run") (memory $i "mem") (realloc (func $i "realloc"))))
+                 (export "run" (func $run)))"#,
+        )
+        .expect("assemble a component with an exported run func");
+        let engine = wasmtime::Engine::default();
+        let descriptor =
+            component_signature_from_bytes(&engine, &bytes).expect("reflect the signature");
+        // Decode the descriptor (reducer side) + walk the ONE tree — no per-type re-decode.
+        let sig = crate::event_ast::decode_component_signature(&descriptor)
+            .expect("the reflected descriptor decodes as one tree");
+        assert_eq!(sig.exports.len(), 1);
+        let run = &sig.exports[0];
+        assert_eq!(run.name, "run");
+        assert_eq!(run.params.len(), 1); // one param: list<u8>
+        assert_eq!(run.results.len(), 1); // one result: u32
+                                          // The param type is an INLINE node in sig.arenas — walk it: build_type emits list<u8> as a COMPOUND
+                                          // ("list" (u8)) with a STR-leaf ctor head → head_ctor (compounds use a str head).
+        assert_eq!(sig.arenas.head_ctor(run.params[0]), Some("list"));
+        // The result type is the (u32) PRIMITIVE marker (a NAME-atom head) → head_name.
+        assert_eq!(sig.arenas.head_name(run.results[0]), Some("u32"));
+    }
+
+    #[test]
+    fn component_signature_of_a_component_with_no_exported_funcs_is_empty() {
+        let engine = wasmtime::Engine::default();
+        let bytes = wat::parse_str("(component)").expect("empty component");
+        let descriptor =
+            component_signature_from_bytes(&engine, &bytes).expect("reflect empty signature");
+        let sig = crate::event_ast::decode_component_signature(&descriptor).expect("decodes");
+        assert!(
+            sig.exports.is_empty(),
+            "a component with no exported funcs yields an empty descriptor"
+        );
     }
 
     // §23: `with_resolved_deps` attaches resolved dep bytes (import_name + bytes) that `apply` composes
