@@ -247,6 +247,8 @@ pub enum Lir {
     /// range-checks so a runtime integer overflow surfaces its kind to a debugger / the trap-reason
     /// gate, per `numeric-model.md #Overflow Is Defined`. The divide result is dropped — it never runs
     /// (the guard traps first); it exists only to name the trap.
+    //= spec/capabilities/core-semantics.md#a-trap-halts-execution-at-a-defined-point
+    //# The kind of trap a given operation raises MUST be a deterministic function of the operation and its inputs.
     IfIntegerOverflowEnd,
     /// `i64.add` / `i64.sub` / `i64.mul` — 64-bit integer arithmetic (operands already on the stack).
     I64Add,
