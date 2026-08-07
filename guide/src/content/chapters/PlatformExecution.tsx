@@ -1,4 +1,4 @@
-import { H1, Lede, H2, P, Note } from "../../components/Prose.tsx";
+import { H1, Lede, H2, P, C, Note } from "../../components/Prose.tsx";
 import { Link } from "react-router-dom";
 
 /// "Cadenza the Platform" pillar, section D (last planned concept chapter) — the execution model.
@@ -8,6 +8,12 @@ import { Link } from "react-router-dom";
 /// multiplexed), §22c (async must NOT break replay-determinism — determinism lives in the LOG not the
 /// scheduler). DELIBERATELY DEFERS the in-flight impl: §22b async-blob-API, §22d/§22e gas/fuel mechanics
 /// (v-agent-harness flagged these as still churning — do not pin their surface). Follows PlatformSafety.
+/// The supervision/self-heal section (§6/§6a) is fact-confirmed by v-agent-harness (2026-08-07): spawn +
+/// parent-link + child-exited auto-delivery are BUILT + E2E on trunk (present-tense); the currently
+/// auto-delivered outcome on terminate is the Failure case (Success-close delivery is forward-tense, so
+/// the outcome variants are stated as what the platform MODELS, not both auto-delivered today); retryability
+/// is the typed EffectOutcome::Err{retryability} enum (#2554). OPEN + NOT stated: the orphan rule. The
+/// supervisor LIBRARY + a worked multi-level subtree stay forward-tense.
 export default function PlatformExecution() {
   return (
     <article>
@@ -118,6 +124,53 @@ export default function PlatformExecution() {
         next generation of itself.
       </P>
 
+      <H2>When an agent fails, the failure is just another event</H2>
+      <P>
+        The hard part of running agents was never the happy path; it's what happens when one breaks: a
+        tool errors, a fold traps, a whole sub-agent dies. On most platforms that's an exception unwinding
+        a stack, or a process that vanishes and takes its state with it. Here a failure has nowhere to
+        unwind <em>to</em>, because the agent is a fold: there's no stack in flight, only a log. So a
+        failure becomes what everything else already is, an ordered event appended to the log. A fold that
+        traps is recorded as a <C>FoldFailed</C> event, not a crash that loses the session, and it's
+        recorded rather than fed straight back to the same reducer that just failed on it. The session is
+        still a well-defined value; it simply has a failure in its history.
+      </P>
+      <P>
+        Because a failure is an event, another agent can watch for it. An agent can <em>spawn</em> a child,
+        and the child's identity is fixed the moment it's born: its id is a content hash of its starting
+        state, so it can never be confused with another. The parent-child link is recorded on both sides.
+        When a child is terminated, the platform delivers a <C>child-exited</C> message to the parent, which
+        its reducer folds like any other event, so it lands on the parent's log carrying the child's
+        outcome. That outcome is a structured value the platform models as either a success with a payload
+        or a failure with a reason; the signal delivered on termination today is the failure case, and the
+        parent's reducer folds it and decides what to do next: re-spawn, retry, escalate, or give up. That
+        is a supervision tree, and unlike the in-memory restart tables of older systems it's durable and
+        replayable: the whole parent-and-children engagement is one causally-linked history you can migrate,
+        sandbox, or audit as a unit.
+      </P>
+      <Note>
+        a fold that traps → recorded as a FoldFailed event (not a lost session), readable by a supervisor
+        <br />
+        a child that dies → a child-exited message delivered to its parent, folded onto the parent's log as its outcome
+        <br />
+        the parent's reducer folds the failure and chooses: re-spawn · retry · escalate · give up
+      </Note>
+      <P>
+        Notice the line between what the platform provides and what it doesn't. The platform makes every
+        failure an ordered, foldable event a supervisor can see, an in-session trap becomes a{" "}
+        <C>FoldFailed</C> event, a dead child becomes a <C>child-exited</C> event on its parent, so nothing
+        fails silently into the void and nothing needs a human to jump-start it. But <em>what to do</em>{" "}
+        about a failure, back off and retry a transient error, escalate a permanent one, restart from a clean
+        checkpoint, is ordinary reducer logic the supervisor's author writes; the kernel hardcodes no
+        strategy. So the platform is the self-heal <em>substrate</em>, a system where a supervisor{" "}
+        <em>can</em> recover from failure without a manual restart, and the healing policy is just more
+        Cadenza in the supervising reducer. Effect failures come typed for exactly this: an effect error
+        carries whether it's retryable or permanent, so a supervisor can back off a transient model error and
+        fail fast on one that will never succeed. Where this leads, still ahead, is a reusable library of
+        supervisor strategies and worked multi-level trees (a planner agent spawning workers that spawn their
+        own); the primitives underneath are all here now.
+      </P>
+
       <H2>Where this leaves you</H2>
       <P>
         Four ideas carry the platform: a kernel that knows nothing and runs a{" "}
@@ -134,7 +187,8 @@ export default function PlatformExecution() {
         where capability and safety live; and an execution model that runs many agents concurrently while
         keeping every one of them perfectly replayable. And the payoff of all four: an agent itself is just a
         reducer folding model calls and tool calls as effects, so nothing about running an AI agent needs
-        machinery beyond the fold. The kernel is early, and this section will grow with it, eventually into
+        machinery beyond the fold, right down to its failures, which are just more events a supervisor folds
+        and recovers from. The kernel is early, and this section will grow with it, eventually into
         something you can run and inspect in the browser the way you can the language. For now, you've seen
         the shape of the thing: the same idea that made a value out of a program's history, scaled into a
         runtime for agents built in Cadenza.
