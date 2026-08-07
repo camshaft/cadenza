@@ -540,6 +540,22 @@ pub fn component_signature_from_bytes(
     Ok(codec::encode(&b.finish(root)))
 }
 
+/// Bytes-only entry to [`component_signature_from_bytes`] for a caller that has no `wasmtime::Engine`
+/// (and cannot even NAME the type) — `cdz-agent-host`, whose thin `control/signature` host half is
+/// wasmtime-free by design. It creates the `Engine` INTERNALLY, exactly the way
+/// [`AsyncComponentReducer::from_component_bytes`] does — that existing seam already hides wasmtime from
+/// the host by taking only bytes and `new`ing the engine itself — then delegates. A fresh engine per
+/// signature-query is fine: this is a control-plane discovery call (not the hot invoke path), and
+/// `from_component_bytes` already pays `Engine::new` per reducer-load. `Engine::new` failing is a
+/// host/platform-setup condition (the bytes aren't read yet) → `Instantiate`, matching the sibling seam;
+/// everything about the bytes is classified by the delegate.
+pub fn component_signature_from_bytes_owned(bytes: &[u8]) -> Result<Vec<u8>, ComponentError> {
+    let config = wasmtime::Config::new();
+    let engine =
+        wasmtime::Engine::new(&config).map_err(|e| ComponentError::Instantiate(e.to_string()))?;
+    component_signature_from_bytes(&engine, bytes)
+}
+
 /// Compose a resolved dependency COMPONENT into `linker` so a consumer that imports `import_name` can
 /// instantiate against it (§23 — the runtime-agnostic dep-compose the kernel does uniformly for EVERY
 /// declared dep, the value-heap runtime being just one). Mirrors the sibling `cdz-run::run_with_peers`
@@ -5247,6 +5263,48 @@ mod tests {
             sig.exports.is_empty(),
             "a component with no exported funcs yields an empty descriptor"
         );
+    }
+
+    // The bytes-only wrapper (`cdz-agent-host` entry — no wasmtime dep, can't name Engine) produces the
+    // BYTE-IDENTICAL descriptor to the engine-taking fn: it just news the Engine internally like
+    // from_component_bytes does, then delegates. Pins that the wasmtime-free host seam sees the same AST.
+    #[test]
+    fn component_signature_from_bytes_owned_matches_the_engine_taking_form() {
+        let bytes = wat::parse_str(
+            r#"(component
+                 (core module $m
+                   (memory (export "mem") 1)
+                   (func (export "realloc") (param i32 i32 i32 i32) (result i32) (i32.const 0))
+                   (func (export "run") (param i32 i32) (result i32) (i32.const 0)))
+                 (core instance $i (instantiate $m))
+                 (func $run (param "input" (list u8)) (result u32)
+                   (canon lift (core func $i "run") (memory $i "mem") (realloc (func $i "realloc"))))
+                 (export "run" (func $run)))"#,
+        )
+        .expect("assemble a component with an exported run func");
+        let engine = wasmtime::Engine::default();
+        let via_engine =
+            component_signature_from_bytes(&engine, &bytes).expect("engine-taking reflect");
+        let via_bytes =
+            component_signature_from_bytes_owned(&bytes).expect("bytes-only reflect (host seam)");
+        assert_eq!(
+            via_engine, via_bytes,
+            "the bytes-only wrapper must produce the identical descriptor — it only hides the Engine"
+        );
+        // And it decodes into the same walkable surface the host will fold.
+        let sig = crate::event_ast::decode_component_signature(&via_bytes).expect("decodes");
+        assert_eq!(sig.exports.len(), 1);
+        assert_eq!(sig.exports[0].name, "run");
+    }
+
+    // A bytes-only reflect of invalid component bytes fails as `InvalidComponent` (not a panic, not an
+    // Engine-setup error) — the host gets an honest "not a describable component" through the thin seam.
+    #[test]
+    fn component_signature_from_bytes_owned_rejects_non_component_bytes() {
+        match component_signature_from_bytes_owned(b"not a component") {
+            Err(ComponentError::InvalidComponent(_)) => {}
+            other => panic!("expected InvalidComponent for junk bytes, got {other:?}"),
+        }
     }
 
     // §23: `with_resolved_deps` attaches resolved dep bytes (import_name + bytes) that `apply` composes
