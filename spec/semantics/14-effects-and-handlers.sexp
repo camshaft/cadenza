@@ -13995,3 +13995,60 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 111 Int64))
   (call   main (: 3 Int64)) (output (: 30 Int64)))
+
+;; ── same-effect shadowing + the let-crossing-nested-handle scope gap (breaker sh) ────────────────
+;; sh1 pins nested SAME-effect handler shadowing: inner draws hit the inner state/arm, the first
+;; draw after the inner region hits the outer — two independent state threads, innermost-wins
+;; dispatch. sh2d/sh2n pin the DECLINE face v-effects confirmed live (locus
+;; reparent_under_handle_site, effects.rs): a let bound INSIDE a handle body, referenced anywhere
+;; under a NESTED handle node (seed/body/arm, same or different effect), re-resolves against an
+;; orphan → false CDZ0101. Params cross fine; lets bound OUTSIDE the outer handle cross fine;
+;; inline perform seeds (the un-lifted corpus config-fetch pin) are fine — ONLY handle-body lets
+;; orphan. sh2n is the sharpest face: the config-fetch idiom with its perform LET-LIFTED, i.e. the
+;; standard let-lift workaround itself. Both flip decline→pass when the let-reparenting
+;; (bind-once/let-threading) arc lands: sh2d main(10)=32 (seed=11 pure, inner seed 22, one inner
+;; draw 22, trailing outer draw 10), sh2n main(5)=11 (same values as the inline pin above).
+
+(case "sh1 a NESTED handler for the SAME effect shadows the outer — inner draws hit the inner state, the draw after hits the outer"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (+ s 1))))
+                (+ (handle St 5
+                     ((next () s (resume s (* s 10))))
+                     (let ((a (St.next)))
+                       (let ((b (St.next)))
+                         (+ a b))))
+                   (St.next))))
+            (export main)))
+  (call   main (: 100 Int64)) (output (: 155 Int64))
+  (call   main (: 7 Int64)) (output (: 62 Int64)))
+
+(case "sh2d a let bound in a handle body, read by a NESTED handle's seed — declines (let-crossing scope gap)"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (+ s 1))))
+                (let ((seed (+ n 1)))
+                  (+ (handle St (* seed 2)
+                       ((next () s (resume s (+ s 100))))
+                       (St.next))
+                     (St.next)))))
+            (export main)))
+  (error  CDZ0101))
+
+(case "sh2n the config-fetch idiom with its perform LET-LIFTED — declines (let-crossing scope gap)"
+  (input  (do
+            (effect A (op base (-> Int64)))
+            (effect B (op step (-> Int64)))
+            (def (main (: n Int64))
+              (handle A n
+                ((base () s (resume s s)))
+                (let ((seed (A.base)))
+                  (handle B seed
+                    ((step () t (resume t (+ t 1))))
+                    (+ (B.step) (B.step))))))
+            (export main)))
+  (error  CDZ0101))
