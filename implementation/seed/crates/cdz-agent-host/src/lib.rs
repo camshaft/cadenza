@@ -66,6 +66,7 @@ pub mod config;
 pub mod converse;
 #[cfg(feature = "live-net")]
 pub mod converse_json;
+pub mod disk_cache;
 #[cfg(feature = "live-aws-storage")]
 pub mod dynamo_log;
 pub mod emit;
@@ -107,6 +108,7 @@ pub use config::{
     NameStoreConfig, ObservabilityConfig, RetryConfig, SessionRegistryConfig, TracingConfig,
     TracingFormat, TracingOutput,
 };
+pub use disk_cache::DiskCacheTier;
 #[cfg(feature = "live-aws-storage")]
 pub use dynamo_log::{DynamoLogSink, DynamoLogSinkBuilder};
 pub use emit::EmitExecutor;
