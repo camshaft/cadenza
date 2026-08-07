@@ -1918,7 +1918,7 @@ fn package_hover_at(
 /// entry's dir) is handled best-effort by prefixing a slash (`file:///<encoded>`). `None` only if the
 /// assembled string still does not parse as a `Uri` (it does for any real path).
 ///
-/// 🪤 Encoding a literal `%` is LOAD-BEARING for the `uri_to_path`/`percent_decode` round-trip: the
+/// TRAP: Encoding a literal `%` is LOAD-BEARING for the `uri_to_path`/`percent_decode` round-trip: the
 /// decoder turns any `%XX` back into a byte, so a real path segment like `a%2Fb` MUST be emitted as
 /// `a%252Fb` — else it would decode to `a/b` (a different path). Encoding only a space (the old behavior)
 /// broke that and also produced invalid URIs for `#`/`?`.
@@ -2425,7 +2425,7 @@ fn package_references_at(
     // which is NEVER a `Symbols` node — so it fails the guard and returns empty (the single-buffer path,
     // with its own guard, handles the local). This is the package twin of `references_at`'s guard.
     //
-    // 🪤 The earlier `resolves_to.is_some()` test was too permissive: `ResolveOf` succeeds for a LOCAL
+    // TRAP: The earlier `resolves_to.is_some()` test was too permissive: `ResolveOf` succeeds for a LOCAL
     // binder too (it resolves to itself), so a cursor on a shadowing local passed the guard and leaked
     // the top-level's uses. Requiring the resolve TARGET to be a `Symbols` node is what distinguishes a
     // genuine top-level from a shadowing local. `symbols_lines` is parsed once and reused for the

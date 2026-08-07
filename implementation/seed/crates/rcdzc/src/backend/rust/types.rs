@@ -549,7 +549,7 @@ pub(super) fn ty_is_ord_key(db: &mut Db, ty: &Ty) -> bool {
         // A bare float keys/elements via the `__CdzF{N}` wrapper — representable and totally ordered.
         Ty::Float(_) => true,
         // A bare BUILT-IN `Option` key/element keys via the `__CdzOpt` declared-order wrapper (#42 witness 2)
-        // — admitted. 🔑 A USER `(type Option …)` shadow (name `Option`, 1 arg, but a source-node decl) must
+        // — admitted. KEYSTONE: A USER `(type Option …)` shadow (name `Option`, 1 arg, but a source-node decl) must
         // NOT reach the wrapper: `ord_key_type`/`wrap_ord_key` are Db-free and key on the NAME-only
         // `is_flip_order_option_key_shallow`, so they'd wrap it as `__CdzOpt<..>` while its VALUE is the user
         // enum → rustc mismatch (PR#894). Since the Db-free wrap path can't tell them apart, DECLINE a
@@ -754,7 +754,7 @@ fn int_type(it: IntTy) -> Option<&'static str> {
         // An UNUSUAL in-range width (`UInt48`, `UInt12`, `Int24` — 1..=64 but not an aliased boundary) has
         // no exact Rust primitive, so it is STORED in the next-larger machine width (`UInt48`→`u64`,
         // `UInt12`→`u16`, `Int24`→`i32`). A value of the unusual width always fits its storage width, so a
-        // const/wrap value + a boundary render are exact. ⚠ RUNTIME ARITHMETIC on an unusual width would
+        // const/wrap value + a boundary render are exact. WARNING: RUNTIME ARITHMETIC on an unusual width would
         // need the overflow check at `2^N` (not the storage width's `2^machine`), so `emit_arith`/shift/
         // convert on an unusual width must DECLINE (defense-in-depth — no corpus case runs arith on an
         // unusual width today: the only `(+ (UInt48) (UInt48))` case is a compile-time CDZ0304 reject). The

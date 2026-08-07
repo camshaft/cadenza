@@ -980,7 +980,7 @@ fn closure_hash_text(db: &mut Db) -> String {
 /// (even at different global `StructId`s, since link splices files at an offset) hash the SAME. Independent
 /// of the def's global id and of surrounding files — only its own subtree content.
 ///
-/// ⚠ RUN-STABILITY: every `Name` leaf in the hashed subtrees is desuffixed to its
+/// WARNING: RUN-STABILITY: every `Name` leaf in the hashed subtrees is desuffixed to its
 /// [`crate::layout::source_boundary_name`] (the name before any `$acc`/`#mono{N}` transform suffix) by
 /// `hash_subtree` — both the def's OWN `#mono{N}` head name AND every body reference to a sibling
 /// specialization. A monomorphized specialization mints its name as `{base}#mono{db.defs.len()}`

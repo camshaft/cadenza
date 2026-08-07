@@ -152,7 +152,7 @@ impl BlobStore for DiskBlobStore {
         // PR#903/#929). Recover ONLY from the specific "destination already exists" error by removing the
         // target + retrying once.
         //
-        // ⚠ It must be THAT error kind only (Copilot PR#1018 DATA-LOSS regression): the earlier fallback
+        // WARNING: It must be THAT error kind only (Copilot PR#1018 DATA-LOSS regression): the earlier fallback
         // removed `path` on ANY rename error as long as the target existed — but rename also fails for
         // permission/IO/cross-filesystem reasons, so it would DELETE A VALID BLOB and then fail. On any
         // error that isn't AlreadyExists, leave `path` untouched, clean up tmp, and surface the error.

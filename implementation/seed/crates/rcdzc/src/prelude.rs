@@ -154,7 +154,7 @@ pub fn install(ast: &mut Arenas) -> BTreeMap<String, StructId> {
     // ---- Units of measure (the optional, compile-time-only dimensional-analysis layer) ----
     // `Unit` — the ground type `Ty::Unit` (registered above with `(meta t) = Unit`) EXTENDED with the
     // unit-BUILDER fields `one` (the dimensionless group identity) and `base` (a base dimension named by
-    // a symbol), reached by member access `(. Unit one)` / `(. Unit base)`. ⚠ `Unit` is BOTH a type (the
+    // a symbol), reached by member access `(. Unit one)` / `(. Unit base)`. WARNING: `Unit` is BOTH a type (the
     // `unit` value's type) AND the units module — a record carries both a `(meta t)` and member fields
     // (exactly as `Bytes`/`String` do), so the two roles coexist and using `Unit` as a type (`(-> Unit
     // Int64)`) still reduces to `Ty::Unit`. This REPLACES the plain ground-type record inserted above
@@ -1330,7 +1330,7 @@ fn symbol_to_string_type(ast: &mut Arenas) -> StructId {
 
 /// The `Unit` module record — the ground type `Ty::Unit` (via `(meta t) = (intrinsic Unit)`, so bare
 /// `Unit` in TYPE position IS `Ty::Unit`, e.g. `(-> Unit Int64)`) EXTENDED with the unit-BUILDER fields
-/// `one` and `base`, reached by member access `(. Unit one)` / `(. Unit base)`. ⚠ `Unit` plays TWO roles
+/// `one` and `base`, reached by member access `(. Unit one)` / `(. Unit base)`. WARNING: `Unit` plays TWO roles
 /// — the `unit` value's TYPE and the units module — which coexist because a record carries both a `(meta
 /// t)` and member fields (exactly as `Bytes`/`String` do; the `Bytes` module proved a `(meta t)` and
 /// member access coexist). `Unit.one` is the dimensionless unit (the group identity); `(Unit.base

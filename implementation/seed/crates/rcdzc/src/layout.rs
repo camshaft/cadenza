@@ -707,7 +707,7 @@ pub fn compute_tests_consumer(
     // ALL of them so nothing from the shared closure is re-emitted here).
     let boundary: std::collections::HashSet<usize> = provider_edges.iter().copied().collect();
     let (layout, boundary_hits) = finish_layout_bounded(db, exports, &boundary)?;
-    // 🔑 INDEX-AGREEMENT: the consumer's import position for a cross-edge is its position in the PROVIDER's
+    // KEYSTONE: INDEX-AGREEMENT: the consumer's import position for a cross-edge is its position in the PROVIDER's
     // EXPORT order (`provider_edges`, the SAME sequence `compute_shared_closure_provider` exports — both from
     // `cross_component_edges`'s `layout.order` order). So `extern_order` lists ALL provider edges (not just
     // this file's hits) in provider order, and each cross-edge def maps to its provider export index. A file

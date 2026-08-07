@@ -547,7 +547,7 @@ fn reify_active(ast: &mut Arenas, node: StructId, depth: u32) -> Option<StructId
             // runtime type needed. A literal the `Ast` sum has no value variant for (a Char/Sym/Bytes)
             // BAILS (declines honestly).
             //
-            // 🔑 A RUNTIME operand — a `Leaf::Name` (a let-bound var `,n` / a param) or a non-leaf computed
+            // KEYSTONE: A RUNTIME operand — a `Leaf::Name` (a let-bound var `,n` / a param) or a non-leaf computed
             // expression (`,(f x)`) — has an unknown type at reify time (this runs pre-typecheck). Wrap it
             // in the compiler-internal `(ast-lift e)` intrinsic, which `lower` resolves by the operand's
             // INFERRED type: IDENTITY when `e` is already an `Ast` (splice a sub-tree), else wrap in the

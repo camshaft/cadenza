@@ -1789,7 +1789,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         }
         // `List.update` → replace the element at `index`, returning the NEW list; an out-of-bounds index
         // TRAPS (Cadenza `List.update` traps OOB, `value-heap-runtime.md`). The index is an Int64 occurrence
-        // cast to `usize` (a negative index or `>= len` → the trap). 🔑 TRAP KIND: the wasm runtime's
+        // cast to `usize` (a negative index or `>= len` → the trap). KEYSTONE: TRAP KIND: the wasm runtime's
         // `List.update` OOB is a GENERIC `unreachable` abort (the runtime op traps message-lessly under
         // `panic = abort`), which the corpus grades `(trap "unreachable")` — NOT a bounds-specific string.
         // So panic `"unreachable"` (whose `trap_kind` is `unreachable`) to AGREE with wasm; `"index out of
@@ -2884,7 +2884,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             // `from_i128`/`from_u64`, but `i128_to_sign_magnitude_bytes_into` writes `[sign][LE magnitude]`
             // (≤17 bytes) and `from_sign_magnitude_bytes` rebuilds the `Big`. Correct for BOTH a signed
             // negative and a large unsigned — one uniform path.
-            // 🔑 the operand MUST be widened `as <its own rust int type> as i128` — NOT a bare `(v) as i128`.
+            // KEYSTONE: the operand MUST be widened `as <its own rust int type> as i128` — NOT a bare `(v) as i128`.
             // A genuine `UInt64` operand whose emit carries an i64 REP (e.g. a `(bin (u64 n))` binder, whose
             // BinIntRead assembles bits into an i64) would SIGN-EXTEND under `(i64-expr) as i128` — the top
             // half of u64 flips negative (`2^63+9` → -9223372036854775799, `% 1000` = -799 not 817). Casting

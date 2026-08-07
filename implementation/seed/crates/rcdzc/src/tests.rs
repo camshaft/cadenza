@@ -2239,7 +2239,7 @@ fn a_runtime_string_from_bytes_of_ill_formed_bytes_takes_the_none_arm() {
 /// outlives the borrow — nothing freed early), so the value/drop-import tests miss it; only the live-objects
 /// counter sees it (~2 cells/iter). When the escape-analysis increment lands, flip the guard to `== 0`.
 ///
-/// ⚠ HISTORY: this was `..._leaks_no_more_than_the_twin_option_builder`, a DIFFERENTIAL against a `Bytes.at`
+/// WARNING: HISTORY: this was `..._leaks_no_more_than_the_twin_option_builder`, a DIFFERENTIAL against a `Bytes.at`
 /// twin — but that twin's `Some` payload is a SCALAR byte value (Int64) that scalar-shell + owned-temporary
 /// reclaim later drove to 0, while this COMPOUND `Some(String)` still leaks the gap → the `==` went stale
 /// (decode=10 vs scalar-twin=0 at k=5). A COMPOUND twin (`Bytes.slice → Some(Bytes)`) doesn't rescue it
@@ -5018,7 +5018,7 @@ fn perceus_balance_leaves_no_live_objects() {
         );
         return;
     };
-    // ⚠ The tuple must hold a RUNTIME HEAP value (a recursively-built list), else the whole tuple
+    // WARNING: The tuple must hold a RUNTIME HEAP value (a recursively-built list), else the whole tuple
     // scalarizes/const-folds away with NO heap alloc and the program no longer imports the runtime — the
     // probe then can't run (this staleness broke the earlier bare-scalar-tuple form). `pair-sum(3, 22)`
     // builds `[0,1,2]`, wraps it in `(tuple list 22)`, projects `List.len list` (3) + `22` = 25, then drops
@@ -5539,7 +5539,7 @@ fn non_final_dependent_size_bin_match_reads_leave_no_live_objects() {
 /// `option_expect_over_an_owned_some_shell_leaves_no_live_objects`, which nets to 0) — the differentiator is
 /// purely the compound payload. This witness pins the String face; the Map-value/List-of-lists faces share it.
 ///
-/// ⚠ This asserts the VALUE is right + documents the leak as a KNOWN residual (NOT `== 0`): the sound fix
+/// WARNING: This asserts the VALUE is right + documents the leak as a KNOWN residual (NOT `== 0`): the sound fix
 /// needs a NODE-KEYED "does this SumExpect's extracted payload ESCAPE its consumer" analysis (the existing
 /// `binding_escapes` is BINDER-keyed and does not answer this), so the shell can be dropped after the last
 /// borrow ONLY when the payload does not flow out. MEASURED to need THREE pieces (see the vertical log):
@@ -5767,7 +5767,7 @@ fn a_recursive_fn_holding_a_borrowed_string_payload_sum_param_leaks_one_cell_kno
 /// (`List.at`/`Map.lookup` → `Option Int64`, all-scalar payloads) builds a fresh `sum-new` Some/None shell;
 /// consuming it with a `match` used to LEAK that shell (arms only borrow the scrutinee; nothing dropped an
 /// owned one) — one heap cell PER CALL, value-correct so value/drop-import tests missed it. Driven through a
-/// LOOP so a per-call leak SCALES past the benign entrypoint-return temporary. ⚠ The MUST-NOT-REGRESS
+/// LOOP so a per-call leak SCALES past the benign entrypoint-return temporary. WARNING: The MUST-NOT-REGRESS
 /// counterexample is the HOL-kernel `term-eq (Comb x y)`: a scalar-Bool-result match whose arms bind
 /// COMPOUND payload handles (`x`/`y`) borrowed from the shell and thread them into a recursive walk that
 /// reads them AFTER the match — a scalar-RESULT gate would free the shell there → OOB/UAF. The all-scalar-
@@ -7211,7 +7211,7 @@ fn set_to_list_of_an_empty_set_folds_to_the_empty_list() {
     }
 }
 
-/// ⚠ SOUNDNESS regression (breaker #43, routed 2026-07-29): ordering an ALL-NULLARY sum (every variant
+/// WARNING: SOUNDNESS regression (breaker #43, routed 2026-07-29): ordering an ALL-NULLARY sum (every variant
 /// payload-free — a user `(type Tri (Lo)(Mid)(Hi))`, `Sign`, `Ordering` itself) mis-lowered on wasm. An
 /// all-nullary sum is an ENUM-DISC: a BARE i32 discriminant with NO heap box. But `<`/`>`/`compare` routed
 /// it to `Core::ValueCmp` (the runtime `value-cmp` heap walk, since an all-nullary `Ty::Sum` passes
@@ -8588,7 +8588,7 @@ fn map_or_set_to_list_result_over_a_borrowed_source_reclaims_the_fresh_list() {
 /// which a `(List Int64)` payload fails, so `reclaim_shell` is false and the owned `Box.Wrap` shell is left
 /// un-dropped. Even though this shape is SOUND to reclaim (the child is borrowed + non-escaping, contrast
 /// `((Mk a _) (Mk a a))` whose child flows into the returned ctor), the conservative all-scalar floor blocks it.
-/// ⚠ CRITICAL — the scrutinee `(mk n)` takes a RUNTIME param `n`: with a CONSTANT `(mk 3)` the whole
+/// WARNING: CRITICAL — the scrutinee `(mk n)` takes a RUNTIME param `n`: with a CONSTANT `(mk 3)` the whole
 /// `(if (< 3 0) …)` + 2-arm match CONST-FOLD to the `Wrap` arm, the `MatchSum` is eliminated, no shell is built,
 /// and the probe spuriously reads 0 (masking the leak — the exact `build 0 …` const-fold flaw PR#719/Copilot
 /// caught in the set-algebra probe). A runtime `n` forces the real `MatchSum` emit + reclaim gate (traced:
@@ -8638,7 +8638,7 @@ fn a_borrow_only_compound_payload_match_shell_known_gap() {
     );
 }
 
-/// ⚠ UAF GUARD (the `implementation/cad` snowflake miscompile a rejected shell-reclaim shipped, minimized to a
+/// WARNING: UAF GUARD (the `implementation/cad` snowflake miscompile a rejected shell-reclaim shipped, minimized to a
 /// lib probe): an owned COMPOUND-payload sum whose child is a COMPOUND (`hi : V`) BORROWED OUT of the shell
 /// via a nested match — `(match (mk n) ((Box.Bx lo hi) (match hi ((V.V3 a b c) …))))` — with a SCALAR final
 /// result. The extracted `hi` ALIASES INTO the `Box.Bx` shell (it is not copied — a `sum-payload`/`arr-get`
@@ -8898,7 +8898,7 @@ fn an_exported_float_op_runs_over_runtime_args() {
     }
 }
 
-/// ⚠ INVALID WASM regression: a Float32 arithmetic op with a bare float LITERAL operand mis-emitted
+/// WARNING: INVALID WASM regression: a Float32 arithmetic op with a bare float LITERAL operand mis-emitted
 /// the literal at its Float64 default (an `f64.const` beside an `f32.add`) — `wasm-tools` rejected the
 /// module ("expected f32, found f64"). This hit TRIVIAL, idiomatic code (`(+ x 1.0)` over a Float32
 /// `x` — the ONE arithmetic operator dispatched to float by operand type), the float analogue of the
@@ -15552,7 +15552,7 @@ mod runtime_ops {
         // `value_range` of a `Core::If`/`Core::Match` is the UNION of its branch ranges, so a
         // bool-materialized `(if c 1 0)` is [0,1] and `(if c 10 20)` is [10,20]. That lets a downstream
         // checked op shed a dead overflow guard: `(* bool C)` ∈ [0,C] and `(+ (if c 10 20) 5)` ∈ [15,25]
-        // cannot overflow their (wide) type. ⚠ Soundness rests on using the OP's authoritative width for
+        // cannot overflow their (wide) type. WARNING: Soundness rests on using the OP's authoritative width for
         // the fit-check, NOT a deferred operand's default: a genuinely-narrow op whose branches overflow
         // (`(: (+ (if (< n 5) 100 0) 100) Int8)` → up to 200) MUST keep its guard.
         use crate::backend::wasm::lir::Lir;
@@ -17731,7 +17731,7 @@ mod runtime_ops {
         // VARIABLE to a checked-arith node that (a) reads a refined var and (b) is PROVABLY-NO-OVERFLOW in
         // this flow context. Under `(and (>= x 0) (< x 10))` (x ∈ [0,9]), `(+ x 1) ∈ [1,10]` cannot overflow,
         // so `(< (+ x 1) 11)` is provably TRUE and folds away — dropping the checked `(+ x 1)` is trap-SAFE
-        // because it can't overflow here. 🪤 SOUNDNESS: the fold DISCARDS `(+ x 1)`; a checked `+` is not
+        // because it can't overflow here. TRAP: SOUNDNESS: the fold DISCARDS `(+ x 1)`; a checked `+` is not
         // is_trap_free, so it may fold ONLY when provably_no_overflow holds under the refinement — else the
         // discard would drop a reachable overflow trap. The soundness twin below pins that an
         // overflow-CAPABLE arith operand does NOT fold (the trap must survive).
@@ -17845,7 +17845,7 @@ mod runtime_ops {
 
     #[test]
     fn a_narrow_binary_op_with_a_constant_left_operand_emits_valid_wasm() {
-        // ⚠ INVALID WASM regression: a narrow binary op whose LEFT operand is a bare integer literal and
+        // WARNING: INVALID WASM regression: a narrow binary op whose LEFT operand is a bare integer literal and
         // whose right is a narrow-typed variable mis-emitted the literal at its i64 default beside the i32
         // variable ("expected i64, found i32"). ROOT: `unify_width`/`unify_sign` BOUND the operator's
         // shared width/sign VARIABLE to the deferred LEFT literal first, freezing it, so the RIGHT
@@ -18104,7 +18104,7 @@ mod runtime_ops {
 
     #[test]
     fn a_control_flow_operand_of_a_narrow_op_is_width_normalized_to_the_op() {
-        // ⚠ INVALID WASM regression: when an `if`/`match`/`let` is an OPERAND of a NARROW arith/bitwise op
+        // WARNING: INVALID WASM regression: when an `if`/`match`/`let` is an OPERAND of a NARROW arith/bitwise op
         // and its branches are bare deferred-width literals, the control-flow node types as its own join
         // (Int64 = an i64 slot) while the enclosing op emits at the narrow width (an i32 slot). The i64
         // operand fed the i32 op and wasm REJECTED the module ("expected i32, found i64"). Unlike a DIRECT
@@ -18226,7 +18226,7 @@ mod runtime_ops {
 
     #[test]
     fn a_nested_narrow_arith_with_control_flow_operands_takes_the_consuming_width() {
-        // ⚠ INVALID WASM regression: a NESTED narrow `+`/`-`/`*` whose operands are all deferred-width
+        // WARNING: INVALID WASM regression: a NESTED narrow `+`/`-`/`*` whose operands are all deferred-width
         // (`(+ (+ (if c 1 2) (if d 3 4)) 5) : Int8`) types as `Int(Deferred)` and was emitted at the i64
         // DEFAULT — storing an i64 result into the i32 slot the enclosing narrow op declared → wasm
         // rejected the module. The c78 leaf-operand wrap did NOT cover this (the inner op goes through
@@ -20872,7 +20872,7 @@ mod runtime_ops {
 
     #[test]
     fn a_63_bit_wide_range_does_not_overflow_the_range_lattice() {
-        // ⚠ REGRESSION (compiler panic in a CHECKED build): the range lattice computed `(1i64 << bits) - 1`
+        // WARNING: REGRESSION (compiler panic in a CHECKED build): the range lattice computed `(1i64 << bits) - 1`
         // at several sites, but at `bits == 63` the shift `1i64 << 63` is `i64::MIN`, so `− 1` OVERFLOWS
         // (a debug/`release-debug` panic; release silently wrapped to the correct i64::MAX). A `UInt64 >> 1`
         // has range `[0, 2^63-1]` (bits = 64 − 1 = 63) — the `Shr` arm's type-width bound — so ANY program
@@ -21130,7 +21130,7 @@ mod recursion {
 
     #[test]
     fn a_row_op_over_a_map_borne_record_dups_its_borrowed_heap_field_before_the_operand_drop() {
-        // ⚠ USE-AFTER-FREE regression (breaker #45, routed 2026-07-29): `Record.extend` chained onto
+        // WARNING: USE-AFTER-FREE regression (breaker #45, routed 2026-07-29): `Record.extend` chained onto
         // `Record.without` of a record READ OUT OF A MAP (a CHAMP value) trapped "out of bounds memory
         // access" (or silently returned a wrong value one wrap deeper). Root: the runtime row-op builds its
         // result by copying each kept field via a BORROWING `arr-get` (no rc++) off the operand `r`, then
@@ -21187,7 +21187,7 @@ mod recursion {
 
     #[test]
     fn a_row_op_over_a_borrowed_sum_payload_record_does_not_drop_the_borrowed_operand() {
-        // ⚠ USE-AFTER-FREE regression (breaker #45 WITNESS-2, the sum-payload-rewrap face — DISTINCT from
+        // WARNING: USE-AFTER-FREE regression (breaker #45 WITNESS-2, the sum-payload-rewrap face — DISTINCT from
         // witness 1's owned-map-lookup operand): a row op over a record `r` bound by a `(Slot.Filled r)`
         // MATCH ARM — where `r` is a `Core::SumPayload` BORROW of the scrutinee — had its materialize-`Let`
         // spuriously DROP `r` (an unconditional `kept_bindings` mark → escape-gated Let-drop, which assumed
@@ -21790,7 +21790,7 @@ mod recursion {
 
     #[test]
     fn an_i64_br_table_switch_reserves_its_index_slot_above_arm_body_scratch() {
-        // ⚠ INVALID WASM regression (routed corpus-bugfix/breaker 2026-07-27): a dense integer `if`-chain
+        // WARNING: INVALID WASM regression (routed corpus-bugfix/breaker 2026-07-27): a dense integer `if`-chain
         // over an i64 scrutinee lowers to a `br_table` (fires at ≥4 arms), which materializes the shifted
         // dispatch index `scrutinee - min` into a scratch slot for the wrap-aliasing bounds guard. That
         // i64 idx slot was claimed at `base` — the SAME slot the arm bodies' scratch reuses. A
@@ -21838,7 +21838,7 @@ mod recursion {
 
     #[test]
     fn set_to_list_over_a_float_containing_compound_declines_not_silently_empties() {
-        // ⚠ SILENT-DATA-LOSS regression (routed corpus-bugfix/breaker 2026-07-28): `Set.to-list` over a
+        // WARNING: SILENT-DATA-LOSS regression (routed corpus-bugfix/breaker 2026-07-28): `Set.to-list` over a
         // FLOAT-LEAF TUPLE element ran to an EMPTY list on wasm (Set.len correct but to-list []), silently
         // dropping every element — worse than a decline (a fold over the enumeration processes NOTHING).
         // Root: `orderable_leaf_or_compound` propagated its `float_ok` (the bare-float-root to-list mode)
@@ -21881,7 +21881,7 @@ mod recursion {
 
     #[test]
     fn a_str_slice_floats_each_bound_operand_above_the_prior_high_water() {
-        // ⚠ INVALID WASM regression (routed corpus-bugfix/breaker 2026-07-28, sibling of the br_table fix
+        // WARNING: INVALID WASM regression (routed corpus-bugfix/breaker 2026-07-28, sibling of the br_table fix
         // `4f9658803` — same "expected i32, found i64" validator signature, DIFFERENT seam): the
         // `String.slice` emit reserved scratch `base..base+6` then emitted its `start`/`end` bound operands
         // at a FIXED `base + 7`. When `start` is a checked-arith (`(+ i 1)`, whose i64 `$r` transient claims a
@@ -21926,7 +21926,7 @@ mod recursion {
 
     #[test]
     fn a_heap_match_composed_with_checked_arith_uses_disjoint_scratch_slots() {
-        // ⚠ INVALID WASM regression: a recursive body composing a heap-`match` result (an inlined
+        // WARNING: INVALID WASM regression: a recursive body composing a heap-`match` result (an inlined
         // `byte-at` → `Bytes.at` MatchSum materializing an i32 Option handle in a scratch slot) with
         // checked ARITHMETIC over another helper's result (`(* (byte-at b i) (place …))`, whose overflow
         // guards use i64 scratch slots) emitted an invalid module ("expected i64, found i32"): the i32
@@ -31628,7 +31628,7 @@ mod match_engine {
             None,
             "a well-typed nullary member is not falsely rejected"
         );
-        // 🔑 REGRESSION GUARD: a nullary member body that references a SIBLING (an effect `log`, a sibling
+        // KEYSTONE: REGRESSION GUARD: a nullary member body that references a SIBLING (an effect `log`, a sibling
         // def) resolves through the module's in-scope context — the standalone type-check must NOT report
         // that sibling as `Unbound` (CDZ0101). Such a member (performing a sibling effect via `host`)
         // compiles clean; the member-body check drops a standalone `Unbound` for exactly this reason.
@@ -31708,7 +31708,7 @@ mod match_engine {
                 "a cross-module member call returns the callee's value"
             );
         }
-        // 🔑 DEFINITION-SITE preserved: `lib`'s own literal `42` keeps `lib`'s scope (Int64), NOT `app`'s
+        // KEYSTONE: DEFINITION-SITE preserved: `lib`'s own literal `42` keeps `lib`'s scope (Int64), NOT `app`'s
         // `default-integer BigInt` — the record chains to where `lib` was WRITTEN, not to the caller. So
         // the result is Int64 (a BigInt would render/type differently); this compiles clean as Int64.
         assert_eq!(
@@ -36012,7 +36012,7 @@ mod match_engine {
 
     #[test]
     fn a_self_tail_call_with_a_heap_match_argument_emits_valid_wasm() {
-        // ⚠⚠ REGRESSION: a self-tail-recursive accumulator whose self-call passes a `match` over a HEAP
+        // WARNING:WARNING: REGRESSION: a self-tail-recursive accumulator whose self-call passes a `match` over a HEAP
         // value (Option) as an ARGUMENT emitted a STRUCTURALLY INVALID wasm module ("expected i32, found
         // i64"). The self-tail-loop lowering pushes all args onto the operand stack simultaneously (the
         // parallel move into the param slots), yet each arg was emitted at the same scratch `base`: arg 0
@@ -36064,7 +36064,7 @@ mod match_engine {
 
     #[test]
     fn a_collection_carrying_recursion_with_a_fallible_base_read_emits_valid_wasm() {
-        // ⚠ REGRESSION (the `if`-BRANCH face of the i32/i64 scratch-slot family): a self-recursive function
+        // WARNING: REGRESSION (the `if`-BRANCH face of the i32/i64 scratch-slot family): a self-recursive function
         // CARRYING a heap collection whose BASE arm materializes a fallible-read Option HANDLE emitted a
         // STRUCTURALLY INVALID module ("expected i32, found i64"). The `if`'s two branches are mutually
         // exclusive, so the emit reused one scratch slot index across them — but the base arm wants it as an
@@ -36421,7 +36421,7 @@ mod match_engine {
 
     #[test]
     fn bytes_at_of_a_runtime_element_widens_the_byte_to_the_option_payload() {
-        // ⚠ INVALID WASM regression: `(Bytes.at (Bytes.of (list n)) 0)` with `n : UInt8` a RUNTIME element,
+        // WARNING: INVALID WASM regression: `(Bytes.at (Bytes.of (list n)) 0)` with `n : UInt8` a RUNTIME element,
         // read at a CONSTANT index, mis-emitted. The `Bytes.at` fold saw a `Core::BytesOf` + constant
         // index and used the raw element occurrence as the `Some` payload — correct for a CONSTANT byte
         // (its core folds through the width), but a runtime `UInt8` element is an i32 value placed into the
@@ -38675,7 +38675,7 @@ mod match_engine {
         // returns a NEW owned list (persistence), exactly like `List.concat`/`List.update` — so a borrowing
         // op over an owned-temporary push RESULT (`List.len (List.push (build …) x)`) must reclaim it or it
         // leaks one vector per call. It was NOT in the Owned classifier, so it leaked (0 drops). Fix
-        // classifies `Core::ListPush` Owned. ⚠ THE DELICATE PART: `List.push` is the FBIP ACCUMULATOR path —
+        // classifies `Core::ListPush` Owned. WARNING: THE DELICATE PART: `List.push` is the FBIP ACCUMULATOR path —
         // classifying it Owned must NOT perturb `(build i n (List.push acc i))`, where the push is the
         // RECURSION TAIL (never a borrowing-op operand, so its ownership is never consulted → the
         // single-consume fast path + alloc bench are untouched), and must NOT double-free a BORROWED/shared
@@ -38850,7 +38850,7 @@ mod match_engine {
     #[test]
     fn set_contains_and_map_lookup_over_an_owned_temporary_reclaim_the_collection() {
         // The last READ-op faces: `Set.contains`/`Map.lookup` over an owned-temporary collection must
-        // reclaim it. ⚠ Map.lookup is DELICATE — the looked-up value is borrowed from the map and dup'd in
+        // reclaim it. WARNING: Map.lookup is DELICATE — the looked-up value is borrowed from the map and dup'd in
         // the Some arm, so the owned-map drop must come AFTER that dup (not right after map-lookup, which
         // would free the value → UAF). Both drive a stress loop building a fresh collection each iteration:
         // if the collection leaked or was double-freed, the value would drift or the run would trap.
@@ -40060,7 +40060,7 @@ mod match_engine {
 
     #[test]
     fn a_list_arm_head_survives_a_sibling_rest_binders_consuming_slice() {
-        // ⚠ MISCOMPILE REGRESSION: a `(list x .. rest)` arm binds the head `x` via `vec-get` (BORROWS the
+        // WARNING: MISCOMPILE REGRESSION: a `(list x .. rest)` arm binds the head `x` via `vec-get` (BORROWS the
         // shared arm handle) AND the tail `rest` via `vec-drop` (CONSUMES it). If the `vec-drop` runs while
         // the handle still has a live head read pending — as in a TAIL fold `(f rest (+ acc x))`, where the
         // recursive call's arg 0 (`rest`, the consuming slice) is emitted before arg 1 reads `x` — the
@@ -42091,7 +42091,7 @@ mod match_engine {
 
     #[test]
     fn a_guarded_map_arm_over_a_partial_const_map_resolves_its_value_binder_in_guard_and_body() {
-        // ⚠ INVALID-ARTIFACT regression (v-patterns self-probe, both backends): a GUARDED map arm whose
+        // WARNING: INVALID-ARTIFACT regression (v-patterns self-probe, both backends): a GUARDED map arm whose
         // LOOKED-UP key's value is a compile-time CONSTANT while the map as a whole is RUNTIME (another key
         // holds a dynamic value) — `(Map.insert (Map.insert Map.empty 1 5) 2 n)` — with the guard cond AND
         // the body BOTH reading the value binder `v` emitted `CDZ0101 unbound v` + an invalid module.
@@ -45646,7 +45646,7 @@ mod match_engine {
 
     #[test]
     fn two_equalities_to_different_constants_do_not_subsume() {
-        // ⚠ MISCOMPILE REGRESSION: the same-direction subsumption fold keyed on "same operator", which
+        // WARNING: MISCOMPILE REGRESSION: the same-direction subsumption fold keyed on "same operator", which
         // wrongly included `Eq` — so `(and (= x 5) (= x 6))` was "subsumed" to `(= x 6)` (returns 1 at x=6),
         // but the correct value is ALWAYS FALSE (x cannot equal both 5 and 6). `Eq` does NOT subsume: two
         // equalities to DIFFERENT constants are a contradiction under `and` and a 2-point set under `or` —
@@ -52290,7 +52290,7 @@ mod diagnostics {
     fn a_wrong_arity_type_annotation_names_the_operand_count_at_every_arity() {
         // A type annotation is `(: <expression> <type>)` — exactly two operands. A malformed arity (`(: 5)`,
         // `(: 5 Int64 foo)`, `(:)`) now names the actual count instead of the flat "takes an expression and
-        // a type". 🪤 REGRESSION GUARD: the message must NOT contain the substring "takes exactly" — that is
+        // a type". TRAP: REGRESSION GUARD: the message must NOT contain the substring "takes exactly" — that is
         // `diag::EMIT_OPERAND_ARITY_MARKER`, and `dedup_faults` DROPS a `Code::Malformed` fault matching it
         // (+ "operand") as a redundant emit-path operator-arity decline. An earlier wording ("takes exactly 2
         // operands") collided with that filter and was SILENTLY DROPPED for the 0- and 3-operand cases (the
@@ -64472,7 +64472,7 @@ mod stage1 {
     /// yet reducible by the tail-resumptive fold" feature-decline (too many) — neither said the parameter
     /// count is wrong. `arm_param_arity_mismatch` names the operation and the expected/actual counts, and
     /// its `HANDLER_ARM_ARITY_MARKER` makes `dedup_faults` drop the consequent fold-decline so it is ONE
-    /// primary error. ⚠ The ELIDED-UNIT convention is honored: a `(-> Unit R)` op accepts BOTH a 0-binder
+    /// primary error. WARNING: The ELIDED-UNIT convention is honored: a `(-> Unit R)` op accepts BOTH a 0-binder
     /// (`(op () s …)`) and a 1-binder (`(op (u) s …)`) arm — the corpus uses both — so only an arm outside
     /// `{0, 1}` for a unit op is a mismatch; a genuine N-parameter op requires exactly N.
     #[test]
@@ -70758,7 +70758,7 @@ mod stage1 {
 
     #[test]
     fn a_const_collection_recursively_folded_rejects_rather_than_hanging() {
-        // 🔴 MISCOMPILE GUARD: a `const` COLLECTION param consumed by a SELF-RECURSIVE fold used to compile
+        // SAFETY: MISCOMPILE GUARD: a `const` COLLECTION param consumed by a SELF-RECURSIVE fold used to compile
         // to an INFINITE LOOP — the const erasure and the tail-loop transform composed to emit a
         // `loop { … br 0 }` with no exit test (the `(list)`-nil / length check was const-folded away). A
         // valid program HUNG. `type_specialize` now DECLINES the composition (decline-don't-miscompile),
@@ -73591,7 +73591,7 @@ mod stage1 {
 
     #[test]
     fn an_all_nullary_enum_nested_in_a_boxed_sum_round_trips() {
-        // ⚠ INVALID WASM regression: an all-nullary enum (a bare i32 disc) NESTED inside a boxed sum
+        // WARNING: INVALID WASM regression: an all-nullary enum (a bare i32 disc) NESTED inside a boxed sum
         // (`(Option Color)`) mis-emitted both ends: (1) construction `box-int`ed the i32 disc WITHOUT the
         // i64 extend (i32 → the i64 box-int → wasm rejects); (2) the match's disc read used `sum-disc` on
         // the boxed-int handle instead of `get-int` + wrap, because `sum_single_payload_ty` returned the
@@ -73635,7 +73635,7 @@ mod stage1 {
 
     #[test]
     fn an_all_nullary_enum_reached_through_a_tuple_element_in_a_boxed_sum_round_trips() {
-        // ⚠ INVALID WASM regression (residual of the direct-in-sum fix above): an all-nullary enum (a bare
+        // WARNING: INVALID WASM regression (residual of the direct-in-sum fix above): an all-nullary enum (a bare
         // i32 disc) as a TUPLE ELEMENT inside a boxed sum — `(Some (tuple (Blue) 5))` — mis-emitted the
         // READ end: projecting the enum element `get-int`s the i64 cell but SKIPPED the i64→i32 narrow
         // (the wrap fired only for `is_narrow_int`, which excludes an enum-disc `Ty::Sum`), leaving an i64
@@ -74361,7 +74361,7 @@ mod stage1 {
 
     #[test]
     fn a_capturing_closure_stored_and_also_directly_called_is_force_kept() {
-        // ⚠ INVALID-ARTIFACT regression (breaker adv-50, both backends): a CAPTURING `let`-bound lambda
+        // WARNING: INVALID-ARTIFACT regression (breaker adv-50, both backends): a CAPTURING `let`-bound lambda
         // whose HANDLE ESCAPES WHOLE (stored into a heap collection / sum payload) AND is ALSO DIRECTLY
         // CALLED emitted a broken artifact — wasm `invalid component … wasm[0]::function[N]`, rust
         // `error[E0425]: cannot find value __cap0`. Mechanism: the store lowers `f1` as a value
@@ -95027,7 +95027,7 @@ mod cross_component_oracle {
     // was untested e2e (U5d built a list peer but did not run a source consumer reading it). A List
     // crosses as its u32 handle; `List.len` reads it over the shared runtime. main(7) = len([7,7,7]) = 3.
     //
-    // ⚠ KNOWN GAP (filed: queue/peerbug-list-at-of-peer-returned-list-declines…): reading an ELEMENT of
+    // WARNING: KNOWN GAP (filed: queue/peerbug-list-at-of-peer-returned-list-declines…): reading an ELEMENT of
     // a peer-returned list with `List.at` currently DECLINES ("peer-bound effect op is not in the
     // extern-import set") — a safe compile error, not a miscompile, on the emit/reclamation seam. This
     // test pins the WORKING half (length read) so the collection-result path has coverage while the
@@ -95391,7 +95391,7 @@ mod cross_component_oracle {
     // resulting `Option` down to a scalar the entrypoint returns. main(7) = match (List.at [8,9] 0) →
     // Some 8 → 8. This WORKS and is worth pinning.
     //
-    // ⚠ THE BOUNDARY (root-caused this tick, filed queue/peerbug-list-at-of-peer-returned-list-declines…):
+    // WARNING: THE BOUNDARY (root-caused this tick, filed queue/peerbug-list-at-of-peer-returned-list-declines…):
     // if the entrypoint RETURNS the raw `Option` (i.e. `List.at` IS the whole body), the export escapes a
     // compound RESULT via `emit_runtime_resource`, which does NOT thread the peer extern-import set (never
     // calls `with_extern_order`) → the peer op declines "not in the extern-import set". So the gap is NOT

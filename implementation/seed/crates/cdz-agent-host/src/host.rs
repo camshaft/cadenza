@@ -413,7 +413,7 @@ impl HostedSession {
     /// genesis-hash-hex (the operator ruling — provenance-derived + self-certifying), which the naming layer
     /// resolves a name to (name → genesis-hash = the routable id, no separate hash→id map needed).
     ///
-    /// ⚠ NOT a GLOBAL identity — a [`SessionId`] is OPAQUE host-assigned metadata: a spawned child gets
+    /// WARNING: NOT a GLOBAL identity — a [`SessionId`] is OPAQUE host-assigned metadata: a spawned child gets
     /// genesis-hash-hex, but a root / named session may carry a VANITY id (e.g. `"concierge"`). So code
     /// holding a genesis `Hash` (e.g. [`Session::parent`]) must resolve it to a registry entry via
     /// [`AgentHost::session_id_by_genesis_hash`] (matches on `genesis_hash()`), NEVER by assuming
@@ -1050,7 +1050,7 @@ impl AgentHost {
             // when the child HAS a parent that is STILL registered — a root session (`None`) or a gone/
             // already-terminated parent = no-op, no bounce (the supervisor, if any, is gone too).
             //
-            // ⚠ Resolve the parent by its GENESIS HASH, not by `hex(parent_hash)` as a SessionId: the id is
+            // WARNING: Resolve the parent by its GENESIS HASH, not by `hex(parent_hash)` as a SessionId: the id is
             // OPAQUE host metadata (a spawned child gets genesis-hash-hex, but a top-level NAMED supervisor
             // can be registered under a vanity id like "concierge"). Hex-ing the hash into a SessionId would
             // miss a vanity-id parent → the signal would be SILENTLY DROPPED and the supervisor would never
@@ -1088,7 +1088,7 @@ impl AgentHost {
     /// there would need a kernel mut-seam / owner-driven path; v0 ships the canonical-store path the shared
     /// directory uses). `suspend` is transparent (only terminate evicts).
     ///
-    /// ⚠ COST (concierge-flagged, documented): O(groups × ops) per death — it scans every group's OR-set log
+    /// WARNING: COST (concierge-flagged, documented): O(groups × ops) per death — it scans every group's OR-set log
     /// in the canonical store. Fine at v0 scale (deaths rare, few groups); the REVISIT TRIGGER is a central
     /// group-store OR a measured perf issue (whichever first), at which point a session→groups reverse index
     /// (or the central store's own index) becomes the O(1) path. See the directory-i5 index note.

@@ -695,7 +695,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         // An `if`. FOLD when the condition reduces to a compile-time-constant boolean: the branch the
         // condition selects IS the result, so lower it directly and drop the `if`. This is dead-branch
         // elimination on a proven-constant condition — the untaken branch NEVER executes at run time.
-        // ⚠ WHAT MAY BE DROPPED from the untaken branch mirrors the reachability model
+        // WARNING: WHAT MAY BE DROPPED from the untaken branch mirrors the reachability model
         // (`compile::collect_reached_poisons`, which does NOT descend an `if`'s branches): a RUNTIME TRAP
         // shielded by an untaken branch is not a build failure, so a `ConstTrap` (CDZ0304) untaken branch
         // folds away (`(if (< 1 2) 7 (% 5 0))` → 7 — the div-by-zero is unreachable). But a NON-TRAP
@@ -6581,7 +6581,7 @@ fn desugar_refutable_nested_list_elements(
         let guard_cond = match existing_guard {
             None => len_test,
             Some(g) => {
-                // 🩸 The user guard cond `g` may read the INNER list's binders (`(guard (list (list a .. r1)
+                // The user guard cond `g` may read the INNER list's binders (`(guard (list (list a .. r1)
                 // .. r2) (> a 3))` reads `a`). Those bind only in the BODY re-match (below), NOT at the outer
                 // guard level — so ANDing `g` here left `a` unbound (a false CDZ0101). FIX (mirrors Inc-34's
                 // ctor-element guard): evaluate `g` INSIDE a match on the fresh binder `__ne` that binds the
@@ -6659,7 +6659,7 @@ fn clone_refutable_payload(db: &mut Db, e: StructId) -> StructId {
 /// guard's discriminant test, with every BARE-BINDER payload argument replaced by a wildcard `_` but every
 /// REFUTABLE payload sub-pattern (a literal, a nested constructor) KEPT.
 ///
-/// 🩸 Why keep refutable payloads: the guard's job is to decide whether this arm's element pattern matches
+/// Why keep refutable payloads: the guard's job is to decide whether this arm's element pattern matches
 /// so the arm fires or FALLS THROUGH. The body re-match `(match __lc (<ctor-pat> body) (_ (trap)))` traps in
 /// its `_` arm, so the guard MUST have already proven the FULL element pattern matches — not just the
 /// discriminant. If a payload sub-pattern is a LITERAL (`(Op.Add 0)`), wildcarding it made the guard pass on
@@ -13030,7 +13030,7 @@ fn type_specialize(db: &mut Db, callee: usize, args: &[StructId]) -> Option<(usi
                 // prior spec's each depth) is caught by the fingerprint-extension backstop below.
                 return None; // the const arg depends on runtime data — not compile-time-known
             }
-            // ⚠ MISCOMPILE GUARD: a `const` COLLECTION param (List/Map/Set) consumed by a SELF-RECURSIVE
+            // WARNING: MISCOMPILE GUARD: a `const` COLLECTION param (List/Map/Set) consumed by a SELF-RECURSIVE
             // fold cannot be specialized correctly here yet. The recursion passes a DERIVED shorter
             // collection (`(s t …)` where `t` is the rest of the const list) at each depth, but its arg
             // node is the SAME rest-binder occurrence every time, so the syntactic fingerprint collapses
@@ -21364,7 +21364,7 @@ pub(crate) fn arith_provably_in_range(
 ) -> bool {
     // The RESULT type's inclusive bounds come from `result` — the op's AUTHORITATIVE machine width/sign
     // (the caller's `Machine`, derived from the ARITH NODE's solved type), NOT from an operand's node
-    // type. ⚠ An operand's node type can be misleading: a bare-literal-branch `if` (`(if c 1 0)`) or a
+    // type. WARNING: An operand's node type can be misleading: a bare-literal-branch `if` (`(if c 1 0)`) or a
     // bare literal is still DEFERRED, and its default (Int64) is WIDER than the op when the true width
     // comes from CONTEXT — `(: (+ (if (< n 5) 100 0) 100) Int8)` is an Int8 op even though both operands'
     // nodes are deferred, and `(- 0 n)` at Int8 is Int8 though the `0` is deferred. Using the op's real
@@ -26051,7 +26051,7 @@ fn is_orderable_compound(db: &mut Db, ty: &crate::ty::Ty) -> bool {
 ///    (collections-and-text.md #Set Iteration Is Deterministic). Bytes/Char/Set/Map stay non-orderable in
 ///    BOTH modes.
 ///
-/// 🔑 `float_ok` applies to a BARE-ROOT float ONLY — it does NOT propagate into a COMPOUND's components. A
+/// KEYSTONE: `float_ok` applies to a BARE-ROOT float ONLY — it does NOT propagate into a COMPOUND's components. A
 /// float leaf INSIDE a tuple/list/record/sum makes the compound un-orderable per 03:626 / §319 (a compound
 /// is ordered EXACTLY WHEN every component offers a TOTAL order, and a float offers only the IEEE partial
 /// order — the canonical-byte order is the enumeration convenience for a bare float, not a blessed total

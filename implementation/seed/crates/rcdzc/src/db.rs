@@ -1011,7 +1011,7 @@ pub struct Db {
     /// this name?", it never decides meaning (`prelude-and-resolution.md`; the operator's rule "a
     /// program-written binding is keyed by OCCURRENCE, never its own name map").
     ///
-    /// ⚠ FLAT-NAMESPACE ASSUMPTION — revisit when nested modules / imports land. `scan_top_level` is
+    /// WARNING: FLAT-NAMESPACE ASSUMPTION — revisit when nested modules / imports land. `scan_top_level` is
     /// flat today (`top_items` does NOT recurse into a nested `(module …)`), so ALL defs share one
     /// namespace and a bare `String` key is correct. Under nesting, two same-named defs in sibling
     /// submodules are still DISTINCT (different occurrences) but would COLLIDE in this map. The fix is
@@ -1742,7 +1742,7 @@ pub struct Db {
     /// caches per node. Without it a wide structural-record type ANNOTATION (`{tree, resolved: Map(Int64,
     /// Resolved), …}`) re-reduces from scratch at every one of its ~1M referencing uses through the
     /// resolve→infer→lower chain, exhausting the per-query reduction budget → a spurious CDZ0999 "does not
-    /// reduce within limits" on a whole-project check (the DB-records self-host case). 🪤 STALENESS: filled
+    /// reduce within limits" on a whole-project check (the DB-records self-host case). TRAP: STALENESS: filled
     /// ONLY when [`Self::typeval_memo_live`] is set — the newtype precompute reduces payloads BEFORE
     /// `newtype_inner` is complete (a pre-normalization `Ty::Sum`), so the memo must not capture those; the
     /// flag flips true right after the post-population evict at load's end. Invalidated per node by
@@ -5560,7 +5560,7 @@ pub(crate) fn scan_type_decl(ast: &Arenas, item: StructId) -> Option<TypeDecl> {
 /// `(Option a)` / `(Tuple a b)` into its arguments. A duplicate is not re-added (a `HashSet`-like
 /// linear check keeps the small param list ordered by first appearance).
 ///
-/// ⚠ A `(Record (field Type)…)` payload's field NAME is a LABEL, not a type expression — a lowercase
+/// WARNING: A `(Record (field Type)…)` payload's field NAME is a LABEL, not a type expression — a lowercase
 /// field name (`(Record (v Int64))`) must NOT be mistaken for a type parameter, or the sum spuriously
 /// becomes generic over `v` and its ctor arrow breaks (the payload reads as an unresolvable variable, so
 /// the variant looks nullary). So a `(Record …)` form descends only into each field pair's TYPE (the

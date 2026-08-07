@@ -938,7 +938,7 @@ fn op_arm_arity(db: &Db, ty: StructId) -> usize {
 /// the tail-resumptive fold" decline — neither said the arm's parameter count is wrong. This is the
 /// handler-arm analogue of a function applied at the wrong arity.
 ///
-/// ⚠ The ELIDED-UNIT convention: a `(-> Unit R)` operation accepts BOTH a 0-binder arm (`(op () s …)`,
+/// WARNING: The ELIDED-UNIT convention: a `(-> Unit R)` operation accepts BOTH a 0-binder arm (`(op () s …)`,
 /// unit elided) AND a 1-binder arm (`(op (u) s …)`, unit bound explicitly) — the corpus uses both — so a
 /// unit op's accepted set is `{0, 1}`, and only an arm outside it (2+ binders) is a mismatch. A genuine
 /// N-parameter op (`N ≥ 1`, no elided unit) requires EXACTLY N. `op_arm_arity` gives the elided count
@@ -1493,7 +1493,7 @@ fn check_no_home_walk(
             // A DELEGATED NAME THAT RESOLVES TO A VALUE DEFINITION. `(host (foo) …)` where `foo` is a
             // top-level `(def foo …)` names a VALUE, not an effect — a malformed grant (a `host` delegates
             // EFFECTS, `capabilities-and-effects.md` §Host Delegation Is An Entrypoint's Prerogative), not a
-            // silently-ignored no-op. Reject it CDZ0201, anchored at the name. ⚠ CONSERVATIVE — flags ONLY a
+            // silently-ignored no-op. Reject it CDZ0201, anchored at the name. WARNING: CONSERVATIVE — flags ONLY a
             // name that is UNAMBIGUOUSLY a value def (`def_by_name`): a nested-module effect
             // (`(module m (effect log …) (def (main) (host (log) …)))`) is NOT in the TOP-LEVEL
             // `effect_decls`/`def_by_name` registries (it lives in the module's own scope), so testing "is a

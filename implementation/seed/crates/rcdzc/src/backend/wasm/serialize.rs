@@ -1818,7 +1818,7 @@ pub enum SumArmPayload {
 /// body to branch on the flattened boundary disc and build each arm's cell via `sum-new` (the exact
 /// `Core::SumNew` shape), pushing the resulting handle in place of the raw params. Proven runnable by the
 /// `an_option_scalar_closure_arg_crosses_by_native_flattening` + `a_result_scalar_closure_arg_crosses_by_
-/// native_flattening` oracles. 🪤 the disc has TWO conventions: the guest BRANCHES on the boundary disc
+/// native_flattening` oracles. TRAP: the disc has TWO conventions: the guest BRANCHES on the boundary disc
 /// (`option`/`result` send case-1 for the 2nd case), but BUILDS with each arm's DECL disc.
 #[derive(Clone)]
 pub struct SumArgRebuild {

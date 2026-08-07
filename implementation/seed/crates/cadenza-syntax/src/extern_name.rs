@@ -33,7 +33,7 @@
 /// is caught upstream by `invalid_kebab_export_name` (rcdzc backend/wasm/mod.rs), the same guard that
 /// catches a non-ASCII char — see the precondition.
 ///
-/// ⚠ PRECONDITION — the "always a valid kebab word" guarantee holds ONLY for names over ASCII letters,
+/// WARNING: PRECONDITION — the "always a valid kebab word" guarantee holds ONLY for names over ASCII letters,
 /// digits, `_` and `-`. A Cadenza identifier may contain NON-ASCII letters (the ML lexer's
 /// `is_ident_start` admits `c.is_alphabetic()` and any `!c.is_ascii() && !c.is_whitespace()` char — so
 /// `π`, `café`, `ναμε` are valid identifiers). Such a char is NOT `[a-z0-9-]`, so this function passes it

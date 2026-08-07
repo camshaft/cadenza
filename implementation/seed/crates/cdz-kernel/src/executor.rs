@@ -155,7 +155,7 @@ impl Executor for RecordingExecutor {
 /// - non-zero exit → `Err("exit <code>: <stderr>")`
 /// - spawn failure / empty command → `Err`.
 ///
-/// **No shell = no injection (PR#992 ⚠⚠ command injection):** the previous `sh -c <target>` let shell
+/// **No shell = no injection (PR#992 WARNING:WARNING: command injection):** the previous `sh -c <target>` let shell
 /// metacharacters in the target (`;`, `|`, `&&`, `$()`, backtick) execute arbitrary commands, DEFEATING
 /// the SEC-F1 `Prefix` allow-list — `echo ok; rm -rf /` passes `starts_with("echo ")` but `sh` ran the
 /// `rm`. Direct exec makes every token a LITERAL argument: a `;` is an argument to the program, not a
