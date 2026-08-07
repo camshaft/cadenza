@@ -8620,6 +8620,41 @@ fn is_unit_param(db: &mut Db, param: StructId) -> bool {
     matches!(resolved_of(db, param), Resolved::Unit)
 }
 
+/// The first EFFECT-OP PERFORM reached inside a match-arm GUARD condition, if any — the detection side of
+/// the "guards must be side-effect-free" rule (operator directive, PR #2543; CDZ0407 EffectInGuard, emitted
+/// by `infer`'s guarded-arm check). Returns the offending PERFORM node (an `(E.op …)` application whose head
+/// resolves to an effect op) so the caller can anchor the diagnostic THERE, not at the whole guard. `None`
+/// when the guard cond is pure.
+///
+/// CONTEXT-FREE, unlike [`subtree_performs`]: a guard must be pure regardless of which handler encloses it
+/// (a performing guard is a re-evaluation hazard — the pattern engine may evaluate a guard speculatively or
+/// repeatedly, breaker finding #9 — so ANY effect op is forbidden, not only ops a specific handler
+/// discharges). So this keys on `eval::effect_op_of` (the op-IDENTITY channel) directly rather than a
+/// `HandlerCtx` discharged-op set. A `resume` is not reachable in a guard (guards are not handler arms), so
+/// only an effect-op application is detected. Does NOT descend into a LAMBDA body — a closure VALUE built in
+/// a guard performs nothing when constructed (its body's effects fire only when applied, an `Apply` node the
+/// walk sees on its own); this mirrors `subtree_performs`'s lambda-value treatment so a guard that merely
+/// builds a performing closure it never applies is not flagged. Structural walk over the resolved form; the
+/// FIRST perform found (pre-order) is returned.
+pub(crate) fn effect_op_in_guard_cond(db: &mut Db, cond: StructId) -> Option<StructId> {
+    if let Resolved::Apply { head, .. } = resolved_of(db, cond)
+        && crate::eval::effect_op_of(db, head).is_some()
+    {
+        return Some(cond);
+    }
+    // A lambda VALUE performs nothing when constructed — do not descend its body (same rule as
+    // `subtree_performs`); the application that fires its effects is a separate `Apply` node.
+    if matches!(resolved_of(db, cond), Resolved::Lambda { .. }) {
+        return None;
+    }
+    match db.ast.get(cond).clone() {
+        Struct::List(children) => children
+            .iter()
+            .find_map(|&c| effect_op_in_guard_cond(db, c)),
+        Struct::Atom(_) => None,
+    }
+}
+
 /// Whether the subtree at `node` performs an operation `ctx` discharges — a fast pre-check so a
 /// perform-free subtree is copied wholesale rather than threaded position-by-position. Structural walk.
 fn subtree_performs(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> bool {

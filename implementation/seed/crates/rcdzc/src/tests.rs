@@ -64201,18 +64201,18 @@ mod stage1 {
     }
 
     #[test]
-    fn a_perform_in_a_match_guard_declines_honestly_not_no_enclosing_handler() {
-        // A perform inside a match-arm GUARD condition, under a `handle` that discharges it, is a position
-        // the effect-routing/distribution walks do NOT descend (they route the scrutinee + arm bodies, not
-        // the guard conds). It used to reach lowering as a bare perform → the FACTUALLY-WRONG
-        // `NO_HOME_STANDALONE_DECLINE` ("performed with no enclosing handler here") — even though the handle
-        // ENCLOSES it (the same guard-perform runs host-delegated → 100; scrutinee/arm-body/if-cond performs
-        // under the same handle all work). `reduce_handle` now DECLINES cleanly (an honest "not yet
-        // reducible" todo) when a guard cond performs a discharged op, rather than misleading. (Routing a
-        // guard perform through the handler — the ideal →100 fix — is a later increment: a guard runs before
-        // its arm, advancing handler state per arm-test, which the per-branch-sees-the-seed distribution
-        // does not model. The finding sanctions the honest decline as the minimum bar.)
-        let msg = |src: &str| {
+    fn a_perform_in_a_match_guard_is_cdz0407_guards_must_be_side_effect_free() {
+        // GUARDS MUST BE SIDE-EFFECT-FREE (operator directive, PR #2543): a perform in a match-arm GUARD
+        // condition is a COMPILE ERROR (CDZ0407 EffectInGuard). A guard is a boolean predicate the pattern
+        // engine may evaluate speculatively or repeatedly, so a performing guard has no well-defined
+        // evaluation count/order — the re-evaluation miscompile class (breaker finding #9: an inline
+        // performing scrutinee + performing guard re-drew the scrutinee on a miss). Forbidding ALL effects in
+        // guards (operator's consistency call, no non-mutating carve-out) eliminates that arm of the class at
+        // the source. `effects::effect_op_in_guard_cond` detects the perform; `infer`'s guarded-arm check
+        // emits CDZ0407 at the offending `(E.op …)` node. (History: this shape once honest-declined, then
+        // briefly folded via a guard-desugar; the operator directive supersedes both — a performing guard now
+        // cannot exist, so the fold + the finding-#9 interim reject are both moot.)
+        let codes = |src: &str| {
             let out = crate::compile::compile(
                 &[crate::abi::Artifact::new(
                     crate::abi::Artifact::KIND_AST,
@@ -64224,56 +64224,48 @@ mod stage1 {
             out.diagnostics
                 .iter()
                 .filter(|d| d.severity == crate::abi::Severity::Error)
-                .map(|d| d.message.clone())
+                .map(|d| d.code.clone().unwrap_or_default())
                 .collect::<Vec<_>>()
         };
-        // The IRREFUTABLE-guarded shape (a bare-name inner pattern guarded by a performing cond, plus an
-        // irrefutable catch-all) is now ROUTED: `reduce_handle` desugars it to an `if` on the guard, so it
-        // FOLDS (→100) rather than declines. (Updated from the interim honest-decline behavior: the corpus
-        // case "a perform in a match-arm guard is discharged by the enclosing handle" now grades pass →100,
-        // the target the interim decline anticipated.)
+        let is_empty = |src: &str| codes(src).is_empty();
+        // The IRREFUTABLE-guarded shape (a bare-name inner pattern guarded by a performing cond) → CDZ0407.
         let guard_src = "(do (effect Ask (op get (-> Int64))) \
                          (def (main) (handle Ask 5 ((get () s (resume s (- s 1)))) \
                            (match 9 ((guard n (> (Ask.get) 3)) 100) (n 200)))) (export main))";
         assert!(
-            msg(guard_src).is_empty(),
-            "an irrefutable-guarded performing arm under a handle now folds (desugars to an if): {:?}",
-            msg(guard_src)
+            codes(guard_src).iter().any(|c| c == "CDZ0407"),
+            "a performing guard (irrefutable pattern) is CDZ0407: {:?}",
+            codes(guard_src)
         );
-        // A REFUTABLE guarded inner pattern (the literal `9`, not a bare name) is now ALSO ROUTED: the
-        // desugar keeps the pattern match and hoists the performing guard into an `if` INSIDE the matched
-        // arm — `(match 9 ((guard 9 g) 100) (n 200))` ≡ `(match 9 (9 (if g 100 200)) (n 200))` — so it FOLDS
-        // (→100: scrutinee 9 matches, guard `(Ask.get)=5 > 3` holds). A scrutinee that FAILS the pattern
-        // yields the catch-all WITHOUT running the guard perform (verified separately: `(match 7 …)` → 200).
-        // (Updated from the interim refutable-decline behavior once the refutable-pattern face landed —
-        // breaker bg-family.)
+        // A REFUTABLE guarded inner pattern (the literal `9`) with a performing guard → CDZ0407 too (the
+        // reject is pattern-shape-agnostic; the perform in the cond is illegal regardless).
         let refutable_guard = "(do (effect Ask (op get (-> Int64))) \
                          (def (main) (handle Ask 5 ((get () s (resume s (- s 1)))) \
                            (match 9 ((guard 9 (> (Ask.get) 3)) 100) (n 200)))) (export main))";
         assert!(
-            msg(refutable_guard).is_empty(),
-            "a refutable-guarded performing arm under a handle now folds (desugars to a match with a \
-             guard-hoisted if): {:?}",
-            msg(refutable_guard)
+            codes(refutable_guard).iter().any(|c| c == "CDZ0407"),
+            "a performing guard (refutable pattern) is CDZ0407: {:?}",
+            codes(refutable_guard)
         );
-        // NO REGRESSION: a NON-performing guard under the same handle still COMPILES (my detection fires
-        // ONLY on a guard cond that performs a discharged op — a `(guard n (> n 3))` performs nothing).
+        // NO OVER-FIRE: a NON-performing guard under the same handle still COMPILES (detection fires ONLY on
+        // a guard cond that performs — `(guard n (> n 3))` performs nothing).
         let pure_guard = "(do (effect Ask (op get (-> Int64))) \
                           (def (main) (handle Ask 5 ((get () s (resume s (- s 1)))) \
                             (match 9 ((guard n (> n 3)) 100) (n 200)))) (export main))";
         assert!(
-            msg(pure_guard).is_empty(),
+            is_empty(pure_guard),
             "a non-performing guard under a handle must still compile clean: {:?}",
-            msg(pure_guard)
+            codes(pure_guard)
         );
-        // NO REGRESSION: a perform in the ARM BODY (not the guard) under the same handle still folds.
+        // NO OVER-FIRE: a perform in the ARM BODY (not the guard) under the same handle still folds — only the
+        // GUARD position is forbidden, not the arm body or scrutinee.
         let arm_body = "(do (effect Ask (op get (-> Int64))) \
                         (def (main) (handle Ask 5 ((get () s (resume s (- s 1)))) \
                           (match 9 (n (Ask.get))))) (export main))";
         assert!(
-            msg(arm_body).is_empty(),
+            is_empty(arm_body),
             "an arm-body perform under a handle must still fold: {:?}",
-            msg(arm_body)
+            codes(arm_body)
         );
     }
 

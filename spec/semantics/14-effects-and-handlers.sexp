@@ -3777,7 +3777,9 @@
            guard-matches-then-false): a None scrutinee against `(guard (Some v) (> v (St.quota)))`
            must reach the catch-all with the guard's perform NEVER evaluated — witnessed by a
            post-match `St.quota` reading the UNADVANCED state: 100·99 + 5 = 9905. (The keep-the-match
-           hoist guarantees this; an if-only rewrite would have run the guard on the miss.)")
+           hoist guarantees this; an if-only rewrite would have run the guard on the miss.)
+           UPDATE (guards-side-effect-free, CDZ0407): `(St.quota)` in the guard cond is NOW a COMPILE ERROR —
+           the pattern-miss soundness this pinned is moot once a performing guard cannot exist.")
   (input  (do
             (effect St (op quota (-> Unit Int64)))
             (def (main (: n Int64))
@@ -3788,7 +3790,7 @@
                             (_other 99)))
                    (St.quota))))
             (export main)))
-  (call   main (: 5 Int64)) (output (: 9905 Int64)))
+  (error  CDZ0407))
 
 (case "a MULTI-argument op mixing a heap list and two scalars — the arm consumes all three"
   (doc    "Multi-argument op signatures are pinned scalar-only; here a `(List Int64)` crosses beside
@@ -5065,7 +5067,8 @@
   (doc    "The third position a perform can occupy in a guarded match: the GUARD CONDITION `(> (St.roll)
            4)` — scrutinee (`n`, pure) and arm bodies effect-free. roll → 5 (once; the guard evaluates
            only after its pattern matches), 5 > 4 holds → 5·100 = 500. Completes the position triple
-           with the scrutinee-perform and fallback-perform pins above.")
+           with the scrutinee-perform and fallback-perform pins above.
+           UPDATE (guards-side-effect-free, CDZ0407): `(St.roll)` in the guard cond is NOW a COMPILE ERROR.")
   (input  (do
             (effect St (op roll (-> Unit Int64)))
             (def (main (: n Int64))
@@ -5075,7 +5078,7 @@
                   ((guard v (> (St.roll) 4)) (* v 100))
                   (v v))))
             (export main)))
-  (call   main (: 5 Int64)) (output (: 500 Int64)))
+  (error  CDZ0407))
 
 (case "a MULTI-guard chain on a perform-result scrutinee with a performing fallback folds"
   (doc    "The chain face of the fixed class: TWO guarded arms cascade over the perform-result
@@ -10627,7 +10630,11 @@
            `5 > 3` holds, so the first arm fires → 100. (A REFUTABLE guarded pattern now ALSO folds — via a
            match that keeps the pattern and hoists the guard into an inner `if`, see the cases below. MULTIPLE
            guarded arms — which sequence handler state per arm-test — remain not-this-shape and decline
-           cleanly, an honest 'not yet reducible' todo, never the misleading 'no enclosing handler'.)")
+           cleanly, an honest 'not yet reducible' todo, never the misleading 'no enclosing handler'.)
+           UPDATE (guards-side-effect-free, operator directive PR #2543, CDZ0407): a perform in a guard is NOW
+           a COMPILE ERROR — the fold this once pinned is removed. `(Ask.get)` in the guard cond → CDZ0407.
+           The historical fold rationale above is retained for context; the workaround is to lift the perform
+           to a `let` before the match and guard on the bound value.")
   (input  (do
             (effect Ask (op get (-> Int64)))
             (def (main)
@@ -10636,14 +10643,15 @@
                   ((guard n (> (Ask.get) 3)) 100)
                   (n 200))))
             (export main)))
-  (output (: 100 Int64)))
+  (error  CDZ0407))
 
 (case "a performing match-arm guard folds with WILDCARD patterns (no binder to let-bind)"
   (doc    "The wildcard spelling of the guard-desugar above: both the guarded arm's inner pattern and the
            catch-all are `_` (bind nothing), so the desugar to `(if <guard> <arm-body> <catch-all-body>)`
            needs NO enclosing `let` — the bare `if` suffices (the `binders.is_empty()` path). `Ask` seeded 5,
            `(> (Ask.get) 3)` reads 5 → true, so the first arm fires → 100. Pins that the guard-routing
-           desugar handles a wildcard-patterned guarded arm (no scrutinee binder) as well as a named one.")
+           desugar handles a wildcard-patterned guarded arm (no scrutinee binder) as well as a named one.
+           UPDATE (guards-side-effect-free, CDZ0407): `(Ask.get)` in the guard cond is NOW a COMPILE ERROR.")
   (input  (do
             (effect Ask (op get (-> Int64)))
             (def (main)
@@ -10652,7 +10660,7 @@
                   ((guard _ (> (Ask.get) 3)) 100)
                   (_ 200))))
             (export main)))
-  (output (: 100 Int64)))
+  (error  CDZ0407))
 
 (case "a performing match-arm guard on a REFUTABLE pattern folds (keeps the match, hoists the guard)"
   (doc    "The refutable-pattern face of the performing guard-desugar (breaker bg-family). When the guarded
@@ -10664,7 +10672,8 @@
            two-byte scrutinee (tag=7, val=42), the guard `(> val (St.quota))` reads the seed (n) and holds
            for n<42, so the arm yields `(+ (* 100 tag) val)` = 742; for n≥42 the guard fails and the arm's
            inner `if` falls to the catch-all -1. A scrutinee that FAILS the pattern reaches the catch-all
-           WITHOUT running the guard perform (the match, not the guard, gates it). Seeded n=5 → 742.")
+           WITHOUT running the guard perform (the match, not the guard, gates it). Seeded n=5 → 742.
+           UPDATE (guards-side-effect-free, CDZ0407): `(St.quota)` in the guard cond is NOW a COMPILE ERROR.")
   (input  (do
             (effect St (op quota (-> Unit Int64)))
             (def (main (: n Int64))
@@ -10675,14 +10684,15 @@
                     (+ (* 100 tag) val))
                   (_other -1))))
             (export main)))
-  (call   main (: 5 Int64)) (output (: 742 Int64)))
+  (error  CDZ0407))
 
 (case "a performing guard on a refutable pattern whose guard FAILS falls to the catch-all"
   (doc    "The guard-fails path of the refutable performing-guard fold: same shape as above but seeded so the
            guard is false — `(> val (St.quota))` with `val`=42 and the seed n=50, so `42 > 50` is FALSE. The
            pattern still matches (tag=7, val=42), the hoisted inner `if` evaluates the guard (which reads the
            seed 50) and takes the else branch → the catch-all -1. Pins that a matched pattern with a failing
-           performing guard folds to the fall-through, not the guarded body.")
+           performing guard folds to the fall-through, not the guarded body.
+           UPDATE (guards-side-effect-free, CDZ0407): `(St.quota)` in the guard cond is NOW a COMPILE ERROR.")
   (input  (do
             (effect St (op quota (-> Unit Int64)))
             (def (main (: n Int64))
@@ -10693,14 +10703,15 @@
                     (+ (* 100 tag) val))
                   (_other -1))))
             (export main)))
-  (call   main (: 50 Int64)) (output (: -1 Int64)))
+  (error  CDZ0407))
 
 (case "a performing guard on a TUPLE-destructuring pattern folds"
   (doc    "The tuple-pattern spelling of the refutable performing-guard fold: `(guard (tuple tag val) (> val
            (St.quota)))` destructures a tuple scrutinee, and the performing guard hoists into the matched
            arm's inner `if` exactly as for the bit-pattern. `(tuple 7 42)` matches (tag=7, val=42), guard
            `42 > 5` holds → `(+ 700 42)` = 742. Confirms the refutable-pattern guard-desugar is
-           pattern-shape-agnostic (bit patterns, tuples, and by extension ctor patterns all route).")
+           pattern-shape-agnostic (bit patterns, tuples, and by extension ctor patterns all route).
+           UPDATE (guards-side-effect-free, CDZ0407): `(St.quota)` in the guard cond is NOW a COMPILE ERROR.")
   (input  (do
             (effect St (op quota (-> Unit Int64)))
             (def (main (: n Int64))
@@ -10711,7 +10722,7 @@
                     (+ (* 100 tag) val))
                   (_other -1))))
             (export main)))
-  (call   main (: 5 Int64)) (output (: 742 Int64)))
+  (error  CDZ0407))
 
 (case "an effectful condition of a same-constructor if is performed exactly once"
   (doc    "The evaluate-ONCE pin for the common-constructor if-arm hoist, observable through handler
@@ -14291,7 +14302,11 @@
 ;; is an honest not-yet-reducible decline (the multi-guard arm-copy cascade lands the performing
 ;; condition non-tail); flip values banked (main 6=248, 30=111, 1=-8) for when that fold lands.
 
-(case "gp1 a PERFORMING guard on a wildcard pattern — hit and miss arms both read the guard-advanced state"
+(case "gp1 a PERFORMING guard on a wildcard pattern is a COMPILE ERROR (guards-side-effect-free, CDZ0407)"
+  (doc    "Was a fold pin (breaker gp1); guards-side-effect-free (operator directive PR #2543) makes a perform
+           in a guard cond a COMPILE ERROR. `(St.next)` in `(> (St.next) 6)` → CDZ0407. breaker re-adds the
+           dispatch-semantics coverage as a let-lifted pure-guard equivalent in a follow-up batch (bind the
+           guard's draw to a `let` before the match, guard on the bound value).")
   (input  (do
             (effect St (op next (-> Int64)))
             (def (main (: n Int64))
@@ -14302,8 +14317,7 @@
                     ((guard _x (> (St.next) 6)) (+ 100 (St.next)))
                     (_o (* 10 (St.next)))))))
             (export main)))
-  (call   main (: 6 Int64)) (output (: 108 Int64))
-  (call   main (: 2 Int64)) (output (: 40 Int64)))
+  (error  CDZ0407))
 
 (case "gp2e TWO pure guards cascade over a draw, the fallback re-performs — guard misses leave dispatch serviceable"
   (input  (do
@@ -14335,23 +14349,15 @@
             (export main)))
   (declines))
 
-(case "a performing scrutinee matched by a performing guard with a NAMED fallback binder DECLINES (breaker finding #9)"
-  (doc    "REJECT-DON'T-MISCOMPILE (v-effects finding #9, breaker f1, 3-backend-agree-wrong). The performing-
-           guard-match desugar (`desugar_performing_guard_match`) rewrites `(match S ((guard x cond) b) (_o
-           b2))` into `(let ((x S') (_o S'')) (if cond b b2))`, binding the scrutinee to EACH named arm binder
-           via a fresh `copy_pure(S)`. When the scrutinee S itself PERFORMS and there are >=2 named binders
-           (arm-0's guard binder `x` AND a NAMED fallback binder `_o`), each copy RE-EVALUATES the performing
-           scrutinee: on a guard MISS the fallback `_o` reads a RE-DRAWN value — this shape silently returned 6
-           not 3 (f1), with a third hidden draw (f2 dispatch-witness). Correctness is INPUT-DEPENDENT (the SAME
-           program is correct when the guard HITS, wrong when it MISSES), so the whole shape declines rather
-           than miscompile. The correct fix (bind the performing scrutinee ONCE to a temp, alias both binders
-           to it) is the fresh-context bind-once/let-threading arc (shared root with findings #8/lb/sh). The
-           workaround — `let`-bind the scrutinee first, then match the bound value — folds correctly (breaker
-           c3). A SINGLE named binder is sound (one copy = one eval — the control below). The desugar now
-           DECLINES this shape (returns None → the honest 'not yet reducible' todo) rather than emit the
-           copy-per-binder re-eval, so this is a TODO decline-witness pinned with its post-fix value: n=3 draws
-           scrutinee 3 (s->6), guard performs 6 (s->12), 3 > 6 false → the `_o` fallback yields the correctly-
-           bound 3. Flips todo->3 when the bind-once arc binds the scrutinee once and aliases both binders.")
+(case "a performing scrutinee matched by a PERFORMING GUARD is a COMPILE ERROR (breaker finding #9, now CDZ0407)"
+  (doc    "HISTORY: v-effects finding #9 was a silent 3-backend re-eval MISCOMPILE — `(match (St.next) ((guard x
+           (> x (St.next))) …) (_o _o))` where the performing guard's desugar copied the performing scrutinee
+           per named binder, so a guard MISS re-drew (f1: 6 not 3). Interim fix reject-don't-miscompiled it (a
+           todo decline). SUPERSEDED by guards-side-effect-free (operator directive PR #2543): a perform in a
+           guard cond is now a COMPILE ERROR (CDZ0407) — `(> x (St.next))` has a perform, so the whole
+           finding-#9 shape errors at the guard BEFORE the fold ever sees it. The re-eval class is eliminated
+           at the source for the guard arm. Workaround: lift the guard's draw to a `let` before the match and
+           guard on the bound value (breaker re-adds pure-guard dispatch coverage in a follow-up).")
   (input  (do
             (effect St (op next (-> Int64)))
             (def (main (: n Int64))
@@ -14361,16 +14367,14 @@
                   ((guard x (> x (St.next))) (* 100 x))
                   (_o _o))))
             (export main)))
-  (call   main (: 3 Int64)) (output (: 3 Int64)))
+  (error  CDZ0407))
 
-(case "a performing scrutinee + performing guard with a WILDCARD (unnamed) fallback folds — the finding #9 single-binder control"
-  (doc    "The scoping control for finding #9's decline above: the SAME performing-scrutinee + performing-guard
-           shape but with a WILDCARD `_` fallback (NOT a named binder), so only ONE named binder (`x`) exists.
-           The desugar then does a SINGLE `copy_pure(scrutinee)` (one eval, not two), so it folds soundly — the
-           `>=2 named binders over a performing scrutinee` gate does NOT fire. `next` returns s then doubles it
-           (n=3: draw 3 s->6, guard draws 6 s->12; 3 > 6 is false → the `_` fallback = 99). Pins that the
-           finding-#9 reject is SCOPED to the >=2-named-binder re-copy shape and does not over-decline the
-           sound single-binder performing guard.")
+(case "a performing guard with a WILDCARD fallback is ALSO a COMPILE ERROR (finding #9 sibling, CDZ0407)"
+  (doc    "The wildcard-fallback sibling of the finding-#9 shape above: same performing scrutinee + performing
+           guard `(> x (St.next))` but a `_` fallback. Under the interim fold-decline this folded (single named
+           binder = one copy); under guards-side-effect-free it is a COMPILE ERROR like every performing guard —
+           the perform in the guard cond is CDZ0407 regardless of the fallback shape. Pins that the guard-reject
+           is fallback-shape-agnostic (named or wildcard): a performing guard is illegal, period.")
   (input  (do
             (effect St (op next (-> Int64)))
             (def (main (: n Int64))
@@ -14380,7 +14384,7 @@
                   ((guard x (> x (St.next))) (* 100 x))
                   (_ 99))))
             (export main)))
-  (call   main (: 3 Int64)) (output (: 99 Int64)))
+  (error  CDZ0407))
 
 ;; ── an inner handle's RESULT feeds outer control flow (breaker hs) ───────────────────────────────
 ;; The inner same-effect handle runs to completion and its VALUE drives the enclosing region's
