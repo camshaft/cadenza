@@ -505,3 +505,27 @@ jobs:
       - uses: ./.github/actions/nix-store-cache
       - name: guide examples (via nix — hermetic, pinned binaryen/wasm-bindgen)
         run: nix build .#checks.aarch64-linux.guide-examples --print-build-logs
+
+  emoji-lint:
+    # ADVISORY (NON-required — NOT in ruleset 10560470): durable CI enforcement of the emoji-ban (operator
+    # directive — no decorative emoji in compiler-source COMMENTS). The local `cargo xtask check` + the
+    # pr-sync re-gate already run emoji_free_lint (#2570), but checks.yml fans out per-STEP nix jobs and does
+    # NOT run the monolithic `check`, so CI alone wouldn't red on a new comment-emoji — this job closes that
+    # gap. Runs the standalone `cargo xtask lint-emoji` (#2579): comment-SCOPED (walks implementation/ only,
+    # excludes xtask/fleet + quoted string literals + codepoint-doc test data), exits 1 with file:line:char
+    # on a hit. WHY a dedicated subcommand not a raw grep (v-nix+v-ft 2026-08-07): a naive emoji-range grep
+    # over *.rs FALSE-POSITIVES on the ~13 files with legitimate emoji in STRING LITERALS (the syntax crate
+    # must lex/parse/print emoji) — only the comment-scoped parse distinguishes banned-comment-emoji from
+    # required-string-emoji. NON-required + isolated (a lint false-alarm must NOT red a required context like
+    # fmt); operator can promote it to required later via an additive-first ruleset-add lockstep (v-ft owns
+    # that half). x86 default runner (arch-independent text lint; keeps the arm pool free per the roundtrip
+    # rebalance). No nix / wasm / runtime store — just compiles xtask + walks source (fast).
+    name: emoji-lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: emoji-lint
+      - name: cargo xtask lint-emoji (comment-scoped emoji-ban)
+        run: cargo xtask lint-emoji
