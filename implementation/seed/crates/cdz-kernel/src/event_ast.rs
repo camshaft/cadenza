@@ -967,6 +967,131 @@ pub fn decode_model_response(bytes: &[u8]) -> Result<ModelResponse, EventAstErro
     })
 }
 
+/// One metric sample a reducer publishes (§operator-Q3 metrics-publish). `kind` is a RAW STRING
+/// (counter/gauge/timing/… — the reducer + host metric backend own the vocab; the kernel carries it, never
+/// validates). `value` is an f64. `labels` are ordered `(key, val)` string pairs; the HOST applies its
+/// cardinality bound + guest-string safety (a host concern, not the kernel's — the kernel carries opaque
+/// key/val bytes). This is the reducer-facing wire shape; metric SEMANTICS live in the reducer (policy on
+/// the log, minimize-kernel-logic).
+#[derive(Clone, PartialEq, Debug)]
+pub struct MetricSample {
+    pub name: String,
+    pub kind: String,
+    pub value: f64,
+    pub labels: Vec<(String, String)>,
+}
+
+/// Encode a §operator-Q3 [`MetricSample`] as canonical AST — the `metric/publish` effect's payload. Shape:
+///
+///   `(metric-publish (name <str>) (kind <str>) (value <bytes:f64-le>) (labels (label (key <str>) (val <str>)) …))`
+///
+/// `value` rides as the 8 IEEE-754 little-endian bytes of the f64 (EXACT + portable — the codec has no float
+/// leaf, and bytes avoid any parse/round-trip rounding). `kind` is a raw string (host/reducer own the vocab).
+/// The reducer builds it; the host `MetricExecutor` decodes it ([`decode_metric_publish`]) and records into
+/// the metrics Registry (applying its own cardinality/safety bound on the labels). Same shared-codec +
+/// total-decode discipline as the other event_ast codecs.
+pub fn encode_metric_publish(m: &MetricSample) -> Vec<u8> {
+    let mut b = Builder::new();
+    let head = b.name("metric-publish");
+    let name_form = {
+        let h = b.name("name");
+        let v = str_leaf(&mut b, &m.name);
+        b.list(vec![h, v])
+    };
+    let kind_form = {
+        let h = b.name("kind");
+        let v = str_leaf(&mut b, &m.kind);
+        b.list(vec![h, v])
+    };
+    let value_form = {
+        let h = b.name("value");
+        // f64 as its 8 IEEE-754 LE bytes — exact, portable (no float leaf in the codec).
+        let v = bytes_leaf(&mut b, &m.value.to_le_bytes());
+        b.list(vec![h, v])
+    };
+    let labels_form = {
+        let h = b.name("labels");
+        let mut items = vec![h];
+        for (k, val) in &m.labels {
+            let lh = b.name("label");
+            let key_f = {
+                let kh = b.name("key");
+                let kv = str_leaf(&mut b, k);
+                b.list(vec![kh, kv])
+            };
+            let val_f = {
+                let vh = b.name("val");
+                let vv = str_leaf(&mut b, val);
+                b.list(vec![vh, vv])
+            };
+            items.push(b.list(vec![lh, key_f, val_f]));
+        }
+        b.list(items)
+    };
+    let root = b.list(vec![head, name_form, kind_form, value_form, labels_form]);
+    codec::encode(&b.finish(root))
+}
+
+/// Decode a `metric-publish` frame encoded by [`encode_metric_publish`] → a [`MetricSample`]. Total,
+/// distinguishing the two [`EventAstError`] classes: non-parseable codec bytes → [`EventAstError::Codec`];
+/// a well-formed frame with a bad head/arity / non-string field / a `value` that isn't exactly 8 bytes →
+/// [`EventAstError::Shape`]. Never a panic (the bytes ride the durable effect log / a guest reducer).
+pub fn decode_metric_publish(bytes: &[u8]) -> Result<MetricSample, EventAstError> {
+    let a = codec::decode_detailed(bytes).map_err(EventAstError::Codec)?;
+    let [name_f, kind_f, value_f, labels_f] = a
+        .as_form(a.root, "metric-publish")
+        .ok_or(shape("metric-publish head"))?
+    else {
+        return Err(shape("metric-publish arity"));
+    };
+    let name = {
+        let [nv] = a.as_form(*name_f, "name").ok_or(shape("name form"))? else {
+            return Err(shape("name arity"));
+        };
+        read_str(&a, *nv)?
+    };
+    let kind = {
+        let [kv] = a.as_form(*kind_f, "kind").ok_or(shape("kind form"))? else {
+            return Err(shape("kind arity"));
+        };
+        read_str(&a, *kv)?
+    };
+    let value = {
+        let [vv] = a.as_form(*value_f, "value").ok_or(shape("value form"))? else {
+            return Err(shape("value arity"));
+        };
+        let raw = read_bytes(&a, *vv)?;
+        let arr: [u8; 8] = raw
+            .as_slice()
+            .try_into()
+            .map_err(|_| shape("value not 8 f64-le bytes"))?;
+        f64::from_le_bytes(arr)
+    };
+    let labels = {
+        let label_forms = a.as_form(*labels_f, "labels").ok_or(shape("labels form"))?;
+        let mut out = Vec::with_capacity(label_forms.len());
+        for &lf in label_forms {
+            let [key_f, val_f] = a.as_form(lf, "label").ok_or(shape("label form"))? else {
+                return Err(shape("label arity (want (key)(val))"));
+            };
+            let [kv] = a.as_form(*key_f, "key").ok_or(shape("key form"))? else {
+                return Err(shape("key arity"));
+            };
+            let [vv] = a.as_form(*val_f, "val").ok_or(shape("val form"))? else {
+                return Err(shape("val arity"));
+            };
+            out.push((read_str(&a, *kv)?, read_str(&a, *vv)?));
+        }
+        out
+    };
+    Ok(MetricSample {
+        name,
+        kind,
+        value,
+        labels,
+    })
+}
+
 /// A decoded §4c store-snapshot frame — either a single-value `name-set` pointer or a group `member-op`.
 /// This is the durable-snapshot restore discriminant: [`decode_store_frame`] decodes the shared codec
 /// ONCE and routes on the frame's self-describing AST head, so [`crate::name_store::NameStore::from_snapshot_bytes`]
@@ -2405,6 +2530,54 @@ mod tests {
                 Err(EventAstError::Shape(_))
             ),
             "a members frame is a Shape error (wrong head), not a model-response"
+        );
+    }
+
+    #[test]
+    fn metric_publish_round_trips_value_kind_and_labels() {
+        // §operator-Q3: a metric sample round-trips — name, raw kind string, f64 value (exact via IEEE-754
+        // LE bytes), and ordered (key,val) labels.
+        let m = MetricSample {
+            name: "agent.tool_calls".to_string(),
+            kind: "counter".to_string(),
+            value: 3.0,
+            labels: vec![
+                ("tool".to_string(), "shell".to_string()),
+                ("session".to_string(), "abc".to_string()),
+            ],
+        };
+        assert_eq!(
+            decode_metric_publish(&encode_metric_publish(&m)).expect("round-trips"),
+            m
+        );
+        // A fractional value round-trips EXACTLY (the point of the IEEE-754-bytes encoding, no parse rounding).
+        let gauge = MetricSample {
+            name: "latency.p99".to_string(),
+            kind: "gauge".to_string(),
+            value: 12.3456789,
+            labels: vec![],
+        };
+        let back = decode_metric_publish(&encode_metric_publish(&gauge)).expect("round-trips");
+        assert_eq!(back.value, 12.3456789);
+        assert!(back.labels.is_empty());
+    }
+
+    #[test]
+    fn metric_publish_decode_is_total_codec_vs_shape() {
+        // Two EventAstError classes, never panics: non-decodable → Codec; wrong-head frame → Shape.
+        assert!(
+            matches!(
+                decode_metric_publish(b"not a metric-publish frame"),
+                Err(EventAstError::Codec(_))
+            ),
+            "non-decodable bytes are a Codec error"
+        );
+        assert!(
+            matches!(
+                decode_metric_publish(&encode_members([&Hash::of(b"x")])),
+                Err(EventAstError::Shape(_))
+            ),
+            "a members frame is a Shape error (wrong head), not a metric-publish"
         );
     }
 
