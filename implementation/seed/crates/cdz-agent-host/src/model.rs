@@ -185,6 +185,14 @@ impl ModelTransport for BedrockModelTransport {
     ) -> Result<Bytes, String> {
         use aws_sdk_bedrockruntime::primitives::Blob;
 
+        // GAP-1 tool-calling (ADDITIVE): if `body` decodes as an M1 `model-request` (the kernel's
+        // tool-calling codec), route to the Converse API (tools + multi-turn); otherwise it's a legacy
+        // opaque `InvokeModel` body — fold it back verbatim as before. A single-shot no-tools invoke can
+        // use either path; the decode disambiguates without a mode flag.
+        if let Ok(req) = cdz_kernel::event_ast::decode_model_request(body) {
+            return self.converse_tool_calling(&req).await;
+        }
+
         let resp = self
             .client
             .invoke_model()
@@ -197,6 +205,153 @@ impl ModelTransport for BedrockModelTransport {
 
         // The response body is the model's native completion JSON — folded back verbatim as Bytes.
         Ok(Bytes::from(resp.body.into_inner()))
+    }
+}
+
+#[cfg(feature = "live-net")]
+impl BedrockModelTransport {
+    /// GAP-1 tool-calling path: an M1 [`ModelRequest`](cdz_kernel::event_ast::ModelRequest) → a Bedrock
+    /// `Converse` call (messages + toolConfig) → an M2
+    /// [`ModelResponse`](cdz_kernel::event_ast::ModelResponse), returned as its encoded wire bytes (what the
+    /// reducer folds off the effect result). The request/response INTERPRETATION is [`crate::converse`]'s
+    /// (hermetically tested); this is the thin aws-sdk translation + the network call. Per the operator
+    /// standing-order this is pure MECHANISM (translate + the O4 JSON⟷Document boundary via
+    /// [`crate::converse_json`]); the agent-loop policy lives in the reducer.
+    async fn converse_tool_calling(
+        &self,
+        req: &cdz_kernel::event_ast::ModelRequest,
+    ) -> Result<Bytes, String> {
+        use crate::converse::{
+            from_model_request, to_model_response, ConverseResponse, ConverseRole,
+        };
+        use crate::converse_json::json_bytes_to_document;
+        use aws_sdk_bedrockruntime::types::{
+            ContentBlock as BdContentBlock, ConversationRole, ConverseOutput,
+            InferenceConfiguration, Message, SystemContentBlock, Tool, ToolConfiguration,
+            ToolInputSchema, ToolResultBlock, ToolResultContentBlock, ToolSpecification,
+            ToolUseBlock,
+        };
+        use cdz_kernel::event_ast::{encode_model_response, ContentBlock as KContentBlock};
+
+        // Decode + interpret M1 → transport-agnostic ConverseRequest (system-hoist, role-normalize). A
+        // malformed request (unknown role) is a PERMANENT structural error the reducer built.
+        let cr = from_model_request(req).map_err(|e| retry::permanent(e.to_string()))?;
+
+        // ── Build the Converse call ──────────────────────────────────────────────────────────────────
+        let mut call = self.client.converse().model_id(&cr.model_id);
+
+        // system prompts (Bedrock's separate top-level field).
+        for s in &cr.system {
+            call = call.system(SystemContentBlock::Text(s.clone()));
+        }
+
+        // messages: each ConverseMessage → a Bedrock Message, each kernel ContentBlock → a Bedrock one.
+        for m in &cr.messages {
+            let role = match m.role {
+                ConverseRole::User => ConversationRole::User,
+                ConverseRole::Assistant => ConversationRole::Assistant,
+            };
+            let mut msg = Message::builder().role(role);
+            for block in &m.content {
+                let bd = match block {
+                    KContentBlock::Text(t) => BdContentBlock::Text(t.clone()),
+                    KContentBlock::ToolCall { id, name, input } => {
+                        let input_doc = json_bytes_to_document(input).map_err(retry::permanent)?;
+                        BdContentBlock::ToolUse(
+                            ToolUseBlock::builder()
+                                .tool_use_id(id)
+                                .name(name)
+                                .input(input_doc)
+                                .build()
+                                .map_err(|e| retry::permanent(format!("tool-use block: {e}")))?,
+                        )
+                    }
+                    KContentBlock::ToolResult { id, result } => {
+                        let result_doc =
+                            json_bytes_to_document(result).map_err(retry::permanent)?;
+                        BdContentBlock::ToolResult(
+                            ToolResultBlock::builder()
+                                .tool_use_id(id)
+                                .content(ToolResultContentBlock::Json(result_doc))
+                                .build()
+                                .map_err(|e| retry::permanent(format!("tool-result block: {e}")))?,
+                        )
+                    }
+                };
+                msg = msg.content(bd);
+            }
+            let msg = msg
+                .build()
+                .map_err(|e| retry::permanent(format!("message: {e}")))?;
+            call = call.messages(msg);
+        }
+
+        // tools → toolConfig (each schema's JSON bytes → the tool's inputSchema Document).
+        if !cr.tools.is_empty() {
+            let mut tc = ToolConfiguration::builder();
+            for t in &cr.tools {
+                let schema_doc = json_bytes_to_document(&t.schema).map_err(retry::permanent)?;
+                let spec = ToolSpecification::builder()
+                    .name(&t.name)
+                    .input_schema(ToolInputSchema::Json(schema_doc))
+                    .build()
+                    .map_err(|e| retry::permanent(format!("tool spec: {e}")))?;
+                tc = tc.tools(Tool::ToolSpec(spec));
+            }
+            let tc = tc
+                .build()
+                .map_err(|e| retry::permanent(format!("tool config: {e}")))?;
+            call = call.tool_config(tc);
+        }
+
+        // max_tokens → inferenceConfig (Bedrock wants i32; clamp a huge value rather than overflow).
+        if let Some(mt) = cr.max_tokens {
+            let mt = i32::try_from(mt).unwrap_or(i32::MAX);
+            call = call.inference_config(InferenceConfiguration::builder().max_tokens(mt).build());
+        }
+
+        // ── Call + map the output back to M2 ─────────────────────────────────────────────────────────
+        let out = call.send().await.map_err(classify_converse_error)?;
+        let stop_reason = out.stop_reason().as_str().to_string();
+        // The assistant's output message → kernel content blocks (Text + ToolCall; a response never carries
+        // a ToolResult). A missing/non-message output is an empty content list (stop_reason still drives the
+        // reducer — e.g. end_turn with no text is a valid, if terse, done).
+        let content = match out.output() {
+            Some(ConverseOutput::Message(m)) => m
+                .content()
+                .iter()
+                .filter_map(bedrock_block_to_kernel)
+                .collect(),
+            _ => Vec::new(),
+        };
+        let resp = ConverseResponse {
+            stop_reason,
+            content,
+        };
+        let mr = to_model_response(&resp);
+        Ok(Bytes::from(encode_model_response(&mr)))
+    }
+}
+
+/// Map a Bedrock output [`ContentBlock`](aws_sdk_bedrockruntime::types::ContentBlock) to a kernel
+/// [`ContentBlock`](cdz_kernel::event_ast::ContentBlock) for the M2 response: `Text` → `Text`, `ToolUse` →
+/// `ToolCall` (its input `Document` → JSON bytes, O4). Any other Bedrock block kind (image/document/… — a
+/// model won't emit these unprompted for a text+tools request) is dropped (`None`), so the response carries
+/// only what the reducer's fold understands.
+#[cfg(feature = "live-net")]
+fn bedrock_block_to_kernel(
+    block: &aws_sdk_bedrockruntime::types::ContentBlock,
+) -> Option<cdz_kernel::event_ast::ContentBlock> {
+    use aws_sdk_bedrockruntime::types::ContentBlock as BdContentBlock;
+    use cdz_kernel::event_ast::ContentBlock as KContentBlock;
+    match block {
+        BdContentBlock::Text(t) => Some(KContentBlock::Text(t.clone())),
+        BdContentBlock::ToolUse(tu) => Some(KContentBlock::ToolCall {
+            id: tu.tool_use_id().to_string(),
+            name: tu.name().to_string(),
+            input: crate::converse_json::document_to_json_bytes(tu.input()),
+        }),
+        _ => None,
     }
 }
 
@@ -233,6 +388,36 @@ fn classify_bedrock_error(
         }
     }
     retry::permanent(format!("Bedrock invoke failed: {e}"))
+}
+
+/// Classify a Bedrock `Converse` error (§17), same policy as [`classify_bedrock_error`] but over the Converse
+/// operation's error type: transport failures (timeout/dispatch/response) + throttling/model-timeout/5xx are
+/// RETRYABLE; every other service error (validation, access-denied, model-not-found) is PERMANENT
+/// (fail-closed). Kept separate because the SDK's error enum is per-operation.
+#[cfg(feature = "live-net")]
+fn classify_converse_error(
+    e: aws_sdk_bedrockruntime::error::SdkError<
+        aws_sdk_bedrockruntime::operation::converse::ConverseError,
+    >,
+) -> String {
+    use aws_sdk_bedrockruntime::error::SdkError;
+    let transient_transport = matches!(
+        e,
+        SdkError::TimeoutError(_) | SdkError::DispatchFailure(_) | SdkError::ResponseError(_)
+    );
+    if transient_transport {
+        return retry::retryable(format!("Bedrock Converse transport failure: {e}"));
+    }
+    if let SdkError::ServiceError(ref svc) = e {
+        let err = svc.err();
+        if err.is_throttling_exception() || err.is_model_timeout_exception() {
+            return retry::retryable(format!("Bedrock Converse throttled/timed out: {e}"));
+        }
+        if err.is_internal_server_exception() || err.is_service_unavailable_exception() {
+            return retry::retryable(format!("Bedrock Converse server error: {e}"));
+        }
+    }
+    retry::permanent(format!("Bedrock Converse failed: {e}"))
 }
 
 #[cfg(test)]
