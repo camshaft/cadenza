@@ -37811,7 +37811,7 @@ mod match_engine {
 
     #[test]
     fn a_runtime_bin_match_binds_a_dependent_size_bytes_segment_under_wasmtime() {
-        // THE SPEC CROWN JEWEL (16-binary-matching): a `(bin …)` PATTERN with a DEPENDENT-SIZE
+        // THE 16-BINARY-MATCHING CASE: a `(bin …)` PATTERN with a DEPENDENT-SIZE
         // `(bytes payload n)` — `n` names an EARLIER integer segment binder — over a RUNTIME scrutinee.
         // Length-prefixed-frame parsing: read a header size, then bind exactly that many payload bytes. The
         // arm's length probe is `bytes-len == fixed_prefix + n` (n = the runtime `BinIntRead` of the header),
