@@ -6077,3 +6077,7 @@ pass	a MAP valued with perform results ESCAPES the handle — looked up outside 
 pass	Record.with over a perform result — the ORIGINAL record survives beside the update
 pass	a FRAMED-Bytes handler state decoded and re-encoded by the arm per dispatch
 pass	arm-interned symbols keep content identity ACROSS dispatches — same content = same symbol
+pass	a complete handler inside a CLOSURE body — each application instantiates fresh
+pass	the closure's inner arm performs an OUTER effect through the closure boundary
+pass	a record STATE with a Set field rebuilt per dispatch — dedup observed through the field
+pass	a perform-seeded inner handle composed with a SECOND same-effect instantiation after it
