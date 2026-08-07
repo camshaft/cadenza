@@ -6074,3 +6074,6 @@ pass	an inner arm performs TWO DISTINCT outer effects in one resume value — bo
 pass	the state-SWAP idiom — the op argument becomes the state and the OLD state returns
 pass	a LIST built from three performs ESCAPES the handle — read intact outside the region
 pass	a MAP valued with perform results ESCAPES the handle — looked up outside the region
+pass	Record.with over a perform result — the ORIGINAL record survives beside the update
+pass	a FRAMED-Bytes handler state decoded and re-encoded by the arm per dispatch
+pass	arm-interned symbols keep content identity ACROSS dispatches — same content = same symbol

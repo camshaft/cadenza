@@ -4189,6 +4189,61 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 65 Int64)))
 
+(case "Record.with over a perform result — the ORIGINAL record survives beside the update"
+  (doc    "Record persistence under a handler (the pure-side Record.with pins live in 15-rows): both
+           the original field and the update value are perform results, and the ORIGINAL record
+           observably survives the update — r.b stays 100 while r2.b is the second dispatch's 6 →
+           100·5 + 6 + 100 = 606. Persistent update, not in-place.")
+  (input  (do
+            (effect St (op next (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next (u) s (resume s (+ s 1))))
+                (let ((r (record (a (St.next)) (b 100))))
+                  (let ((r2 (Record.with r #"b" (St.next))))
+                    (+ (* 100 (. r2 a)) (+ (. r2 b) (. r b)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 606 Int64)))
+
+(case "a FRAMED-Bytes handler state decoded and re-encoded by the arm per dispatch"
+  (doc    "The protocol-state-machine idiom (the Bytes-state pin is append-only): the state is a
+           binary frame the arm bin-DECODES, transforms, and RE-ENCODES each dispatch — [3,500] →
+           resume 3500, install [4,510]; second dispatch parses its predecessor's encoding → 4510 →
+           35004510. Each dispatch must parse the previous dispatch's own encoding.")
+  (input  (do
+            (effect Wire (op recv (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle Wire (bin (u8 (UInt8.wrap 3)) (u16 (UInt16.wrap 500)))
+                ((recv (u) s
+                  (match s
+                    ((bin (u8 tag) (u16 val))
+                      (resume (+ (* 1000 tag) val)
+                              (bin (u8 (UInt8.wrap (+ tag 1))) (u16 (UInt16.wrap (+ val 10))))))
+                    (_other (resume -1 s)))))
+                (+ (* 10000 (Wire.recv)) (Wire.recv))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 35004510 Int64)))
+
+(case "arm-interned symbols keep content identity ACROSS dispatches — same content = same symbol"
+  (doc    "Interner coherence across dispatch round-trips: three dispatches each intern a
+           branch-selected rope — the first and third produce the SAME content (\\\"id-hi\\\") and
+           must compare equal across the two crossings (100); the middle differs (0); and the
+           distinct symbols order content-lexicographically (\\\"id-hi\\\" < \\\"id-lo\\\", 1) →
+           101.")
+  (input  (do
+            (effect St (op tag (-> Int64 Symbol)))
+            (def (main (: n Int64))
+              (handle St 0
+                ((tag (k) s (resume (Symbol.of (String.concat "id-" (if (> k 0) "hi" "lo"))) (+ s 1))))
+                (let ((a (St.tag n)))
+                  (let ((b (St.tag 0)))
+                    (let ((c (St.tag 7)))
+                      (+ (* 100 (if (= a c) 1 0))
+                         (+ (* 10 (if (= a b) 1 0))
+                            (if (< a b) 1 0))))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 101 Int64)))
+
 ; ============ Guarded match × effects (breaker FINDING, ag5 → fixed #2333). A guarded match on a
 ; perform-result scrutinee whose FALLBACK arm also performs used to leak the fold-synthesized #seed
 ; binder as a false CDZ0101: the guard desugar's arm-body copy reparented a reused (shared) body
