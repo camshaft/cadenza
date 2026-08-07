@@ -51,7 +51,7 @@ function blockedBy(ex) {
 
 // ---- the compiler (browser wasm) + runner (jco), loaded once ----
 const pkgDir = join(guideRoot, "src/wasm/pkg");
-const { default: init, compile, compile_tests, param_test_signatures, render_value, render_syntax, export_types, repl_eval } = await import(join(pkgDir, "cdz_wasm.js"));
+const { default: init, compile, compile_with_preloaded, compile_tests, param_test_signatures, render_value, render_syntax, export_types, repl_eval } = await import(join(pkgDir, "cdz_wasm.js"));
 await init({ module_or_path: readFileSync(join(pkgDir, "cdz_wasm_bg.wasm")) });
 const { transpileBytes } = await import("@bytecodealliance/jco-transpile");
 // Mirror the app run path's scalar formatting (a whole-number Float gets its `.0` back from the static
@@ -60,6 +60,10 @@ const { formatScalarByType, resultTypeOf } = await import(join(guideRoot, "src/r
 // The shared assert prelude (assert/assert-eq/assert-ne via trap) prepended to a mode="test" example — the
 // SAME prepend <Runnable mode="test"> does, so the harness gates exactly what ships. Type-only imports erase.
 const { assertPreludeFor } = await import(join(guideRoot, "src/components/assertPrelude.ts"));
+// The multi-file <Runnable files={…}> lowering — imported from the guide source (like wrapModule/scalarFormat
+// above) so the harness lowers a multi-file example to compile_with_preloaded args EXACTLY as the app does,
+// by construction (a fix to lowerToCompile can never drift the gate). See the multi-file extractor below.
+const { lowerToCompile } = await import(join(guideRoot, "src/explorer/fileModel.ts"));
 
 // ---- wrapModule / stripModule: the ONE real implementation, imported from the guide source ----
 // Previously this harness carried a hand-copy of these — which silently DRIFTED from the app (a bug-(C)
@@ -392,6 +396,34 @@ async function checkTestProgram(ex) {
 // Each example is a `<Runnable …/>` or `<Exercise …/>` element; we pull the template-literal blocks
 // and the string attributes. A tolerant scan (not a full JSX parse) — the guide's examples all use the
 // `attr={`…`}` / `attr="…"` shapes, so a per-attribute regex is enough and stays simple.
+// Extract the `files={[{name, source: `…`, surface, entry}]}` entries of a multi-file <Runnable>. The
+// authored shape (locked with v-guide-editor; the I4/I5 codegen emits the same order) is one object per
+// file with fields in the order name → source → surface → entry, `source` a template literal (the only
+// multiline field). We match per-entry on that shape. A `files={[` marker that yields <2 entries, or an
+// entry missing name/source, is an authoring/extraction bug — THROW (the caller turns it into a hard fail),
+// mirroring the vacuous-floor discipline: a multi-file runnable must never silently extract nothing.
+function extractFilesProp(attrs, file) {
+  const entryRe =
+    /\{\s*name:\s*"([^"]+)"\s*,\s*source:\s*`([\s\S]*?)`\s*(?:,\s*surface:\s*"(ml|sexpr)")?\s*(?:,\s*entry:\s*(true|false))?\s*,?\s*\}/g;
+  const files = [];
+  let m;
+  while ((m = entryRe.exec(attrs))) {
+    files.push({ name: m[1], source: m[2], surface: m[3] ?? "sexpr", entry: m[4] === "true" });
+  }
+  if (files.length < 2) {
+    throw new Error(
+      `${file}: a <Runnable files={[…]}> extracted ${files.length} file(s) — a multi-file example needs ≥2 ` +
+        `(entry + ≥1 preloaded). Check the files= entries follow the {name, source: \`…\`, surface, entry} shape ` +
+        `in that field order (the extractor + codegen pin that order).`,
+    );
+  }
+  const entries = files.filter((f) => f.entry);
+  if (entries.length !== 1) {
+    throw new Error(`${file}: a <Runnable files={[…]}> must mark exactly one file \`entry: true\` (found ${entries.length}).`);
+  }
+  return files;
+}
+
 function extractExamples(tsx, file) {
   const out = [];
   // Chunk the file by element-open positions. `<Runnable>`/`<Exercise>` are ALWAYS self-closing
@@ -419,6 +451,15 @@ function extractExamples(tsx, file) {
     // Skip a `wrap={false}` example (a full module the author wrote) — still compiled, just not wrapped.
     const noWrap = /wrap=\{false\}/.test(attrs);
     if (kind === "Runnable") {
+      // MULTI-FILE Runnable (operator-mandated): `files={[{name, source: `…`, surface, entry}]}` — a file
+      // SET compiled together via compile_with_preloaded (the explorer seam). Extracted distinctly from the
+      // single-`source` path; a Runnable is one or the other. If a `files={[` marker is present it MUST
+      // yield ≥2 well-formed entries (a 0-extract on a marked runnable is a silent miss — thrown below).
+      if (/files=\{\[/.test(attrs)) {
+        const mfFiles = extractFilesProp(attrs, file);
+        out.push({ file, kind, files: mfFiles, expect, expected, snippet: mfFiles.map((f) => f.source).join("\n") });
+        continue;
+      }
       const source = grab("source");
       // A `mode="test"` Runnable runs its @test defs as tests (like `cdz test`). We compile-tests + run
       // each @test export and assert the expected pass/fail: default every @test PASSES; `expect="error"`
@@ -625,8 +666,52 @@ async function checkProgram(program, surface, ex, where) {
   return null;
 }
 
+// ---- check a MULTI-FILE Runnable: lower the file set + compile it together via compile_with_preloaded ----
+// Reuses lowerToCompile (the SAME lowering the app's MultiFileRunnable uses) so the gate compiles exactly
+// what ships. Compiled in the entry file's surface; run to a value (or asserted to decline for expect=error),
+// and if the Runnable carries `expected`, the rendered value must equal it. A single compile+run (not a
+// both-surface toggle) — a multi-file example's files carry their own complete modules, no wrap/strip round-trip.
+async function checkMultiFile(ex) {
+  const brief = `${ex.files.map((f) => f.name).join(" + ")}`;
+  const low = lowerToCompile(ex.files);
+  if (!low.ok) return `${ex.file} [Runnable multi-file] (${brief}): file set won't lower — ${low.reason}`;
+  const { text, from, names, sources, formats } = low.lowered;
+  let r;
+  try {
+    r = compile_with_preloaded(text, from, names, sources, formats);
+  } catch (e) {
+    if (ex.expect === "error") return null;
+    return `${ex.file} [Runnable multi-file] (${brief}): parse error — ${String(e.message || e).slice(0, 80)}`;
+  }
+  const declined = !r.component;
+  if (ex.expect === "error") {
+    if (declined) return null;
+    try { await runComponent(r.component, text, from); } catch { return null; }
+    return `${ex.file} [Runnable multi-file] (${brief}): expect="error" but the file set compiled AND ran to a value`;
+  }
+  if (declined) {
+    const d = r.diagnostics.find((x) => x.error) ?? r.diagnostics[0];
+    return `${ex.file} [Runnable multi-file] (${brief}): expected to compile but DECLINED — ${d ? `${d.code} ${d.message}` : "no component"}`;
+  }
+  let got;
+  try {
+    got = await runComponent(r.component, text, from);
+  } catch (e) {
+    return `${ex.file} [Runnable multi-file] (${brief}): compiled but FAILED TO RUN — ${String(e.message || e).slice(0, 100)}`;
+  }
+  if (ex.expected != null) {
+    const normLayout = (s) => String(s).replace(/\s*\n\s*/g, " ").trim();
+    if (normLayout(got) !== normLayout(ex.expected))
+      return `${ex.file} [Runnable multi-file] (${brief}): ran to ${JSON.stringify(String(got))}, expected ${JSON.stringify(ex.expected)}`;
+  }
+  return null;
+}
+
 // ---- check one example in BOTH surfaces (the reader can toggle); null on success, else a reason ----
 async function checkExample(ex) {
+  // A MULTI-FILE Runnable (`files={[…]}`) compiles the file SET together via compile_with_preloaded (the
+  // explorer seam), NOT the single-snippet wrap path — a distinct path checked here.
+  if (ex.files) return checkMultiFile(ex);
   // A `mode="test"` Runnable is a program of @test defs run as tests (like `cdz test`) — a distinct path
   // (compile_tests + invoke each @test export), not the eval-main path. Checked in BOTH surfaces (the
   // reader toggles): the authored surface + the render_syntax'd other surface, so the ML render+run path
@@ -880,11 +965,45 @@ for (const [src, ann] of [["@test\ndef attr_above_probe() = 1", "@test"], ['@tag
   }
 }
 
+// MULTI-FILE extractor self-check: exercise extractFilesProp + lowerToCompile on a known `files={[…]}` TSX
+// fixture on EVERY run, so the multi-file path is gated even before a chapter authors one (else the whole
+// path is dead code that could regress silently — the vacuous-pass class this suite guards). Asserts the
+// authored shape extracts to the right file set AND lowers to the compile_with_preloaded args (entry as
+// `text`, the rest as equal-length preload arrays). Compile itself is exercised by real chapters once
+// authored; here we pin the deterministic extraction + lowering (no wasm, so no stale-store false negative).
+{
+  const fixture = `<Runnable
+    files={[
+      { name: "events",  source: \`(do (def turn (list)) (export turn))\`, surface: "sexpr" },
+      { name: "reducer", source: \`(do (import "events" (turn)) (def (main) turn) (export main))\`, surface: "sexpr", entry: true },
+    ]}
+    expect="value"
+  />`;
+  try {
+    const got = extractExamples(fixture, "<multi-file self-check>");
+    const mf = got.find((e) => e.files);
+    if (!mf) throw new Error("extractExamples did not yield a multi-file example from the fixture");
+    if (mf.files.length !== 2) throw new Error(`expected 2 files, got ${mf.files.length}`);
+    if (mf.files.filter((f) => f.entry).length !== 1) throw new Error("expected exactly one entry file");
+    const low = lowerToCompile(mf.files);
+    if (!low.ok) throw new Error(`fixture won't lower: ${low.reason}`);
+    if (low.lowered.names.length !== 1 || low.lowered.names[0] !== "events")
+      throw new Error(`expected preloaded names ["events"], got ${JSON.stringify(low.lowered.names)}`);
+    if (!/\(def \(main\) turn\)/.test(low.lowered.text))
+      throw new Error("entry (reducer) is not the lowered `text`");
+    if (low.lowered.names.length !== low.lowered.sources.length || low.lowered.names.length !== low.lowered.formats.length)
+      throw new Error("preload arrays are not equal length");
+  } catch (e) {
+    failures.push(`[multi-file extractor self-check] ${String(e.message || e)}`);
+  }
+}
+
 if (failures.length) {
   console.error("\nFAILURES:\n" + failures.map((f) => "  ✗ " + f).join("\n"));
   process.exit(1);
 }
 console.log(
   "✓ every guide example compiles + runs in both surfaces (graded exercises to their expected value); " +
-    "known-blocked examples are tracked + routed; @annotations render attr-above (OPERATOR #16).",
+    "known-blocked examples are tracked + routed; @annotations render attr-above (OPERATOR #16); " +
+    "the multi-file <Runnable files={…}> extractor + lowering are exercised.",
 );
