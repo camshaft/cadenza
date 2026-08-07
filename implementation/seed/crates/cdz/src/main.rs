@@ -301,6 +301,13 @@ enum Cmd {
     /// hover. Resolves the offset to a node, then to the definition it is or references, and prints that
     /// definition's `(doc "…")` text. The doc companion of `cdz type-at`/`cdz def`.
     DocAt(DocAtOffsetArgs),
+    /// Extract FILE's public doc surface into a TYPE-ENRICHED `doc-module` doc-AST (cadenza-docs I2):
+    /// per exported `def`/`type`/`effect`, a `doc-item` with its name, structured `(sig …)`, `///`
+    /// prose, `(kind …)`, `(visibility …)`, and the RESOLVED `(ty …)` type sub-AST (from the compiler's
+    /// sidecar). Reads FILE, writes the doc-AST to stdout (canonical binary by default, or a surface via
+    /// `--to` for inspection). The output IS `cdzast` — a queryable structured doc index. (Distinct from
+    /// `cdz doc NAME` — that looks up ONE definition's doc text; this projects the WHOLE program.)
+    DocModule(DocModuleArgs),
     /// Every CONCRETE INSTANTIATION of a generic / ad-hoc-polymorphic definition NAME in FILE — the
     /// monomorphized functions one source definition becomes. Reports each specialization's concrete
     /// arguments (a recursive generic at each element type, a type-valued-parameter def at each type, and
@@ -494,6 +501,7 @@ fn main() -> ExitCode {
         Cmd::Highlight(a) => run_highlight(&a),
         Cmd::Doc(a) => run_doc(&a),
         Cmd::DocAt(a) => run_doc_at(&a),
+        Cmd::DocModule(a) => run_doc_module(&a),
         Cmd::Instantiations(a) => run_instantiations(&a),
         Cmd::FuncLayout(a) => run_func_layout(&a),
         Cmd::ParamManifest(a) => run_param_manifest(&a),
@@ -7120,6 +7128,22 @@ struct DocAtOffsetArgs {
     offset: usize,
 }
 
+#[derive(clap::Args)]
+struct DocModuleArgs {
+    /// The program file (`.cdz`/`.ml` → ml, `.sexp`/`.sexpr` → sexpr).
+    file: String,
+    /// Output format for the doc-AST. Defaults to `binary` (canonical `cdzast\x00\x01` — the doc index
+    /// is a binary AST); use `sexpr`/`ml` to inspect it.
+    #[arg(short, long, value_enum)]
+    to: Option<syntax_cli::Fmt>,
+    /// The module name recorded in the emitted `(doc-module "…")`. Defaults to the file's stem.
+    #[arg(short, long)]
+    module: Option<String>,
+    /// Target line width for a text output surface.
+    #[arg(short, long, default_value_t = 100)]
+    width: usize,
+}
+
 /// Does a total by-NAME query's rendered result (`type`/`doc`/`instantiations`) mean "the name resolves
 /// to NOTHING" (a typo) rather than a real answer? The `TypeOf`/`DocOf`/… sidecar queries are TOTAL — they
 /// return a defined line even for an unknown name: `no such definition `<name>`` optionally followed by a
@@ -7284,6 +7308,70 @@ fn run_doc(args: &DocArgs) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// `cdz doc-module FILE` — extract FILE's public doc surface into a TYPE-ENRICHED `doc-module` doc-AST
+/// (cadenza-docs I2). The (option-C) ASSEMBLY point: the structural projection is single-sourced in
+/// `cadenza_syntax::doc_item::project` (I1), the resolved types come from the compiler's sidecar
+/// (`Query::ExportedTypes`), and this bin — the one place both crates meet — merges them via
+/// `crate::doc_module`. Emits the doc-AST to stdout (canonical binary by default; a surface via `--to`).
+fn run_doc_module(args: &DocModuleArgs) -> ExitCode {
+    use cadenza_syntax::convert::{self, Format, Options};
+
+    let (_source, arenas) = match load_program(&args.file) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("{PROG}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // The module name: `--module`, else the file's stem, else "module".
+    let module_name = args.module.clone().unwrap_or_else(|| {
+        std::path::Path::new(&args.file)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| "module".to_string())
+    });
+
+    // 1. Resolved types from the compiler sidecar (Query::ExportedTypes → the KIND_EXPORT_TYPES blob).
+    let sidecar_out = run_sidecar(
+        &arenas,
+        rcdzc::Request::Query(rcdzc::sidecar::Query::ExportedTypes),
+    );
+    let types = match sidecar_out.artifact(rcdzc::sidecar::KIND_EXPORT_TYPES) {
+        Some(blob) => doc_module::parse_export_types(blob),
+        // No blob (a program with no exports / a compile fault): proceed with no types — the structural
+        // doc-module still emits, items just carry no (ty …). A doc build never hard-fails here.
+        None => std::collections::BTreeMap::new(),
+    };
+
+    // 2. Structural projection (I1) + 3. merge the resolved (ty …) into each doc-item.
+    let structural = cadenza_syntax::doc_item::project(&arenas, &module_name);
+    let doc_ast = doc_module::merge_types(&structural, &types);
+
+    // 4. Emit the doc-AST — canonical binary by default, or a text surface via --to.
+    let to = args.to.map(Format::from).unwrap_or(Format::Binary);
+    let opts = Options {
+        width: args.width,
+        ..Options::default()
+    };
+    let output = match convert::write_with(&doc_ast, to, opts) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            eprintln!("{PROG}: emitting doc-module: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    use std::io::Write;
+    if std::io::stdout().write_all(&output).is_err() {
+        return ExitCode::FAILURE;
+    }
+    if to != Format::Binary {
+        let _ = std::io::stdout().write_all(b"\n");
+    }
+    ExitCode::SUCCESS
 }
 
 /// `cdz doc-at FILE OFFSET` — the "documentation at cursor" query. Resolves the source byte offset to the
