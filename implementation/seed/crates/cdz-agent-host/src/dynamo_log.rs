@@ -221,7 +221,9 @@ impl DynamoLogSink {
                 _ => break,
             }
         }
-        Ok(recovered_from_event_blobs(blobs.iter().map(|b| b.as_slice())))
+        Ok(recovered_from_event_blobs(
+            blobs.iter().map(|b| b.as_slice()),
+        ))
     }
 }
 
@@ -364,8 +366,7 @@ mod tests {
         let e0 = event_ast::encode(&genesis_event(0));
         let e1 = event_ast::encode(&genesis_event(1));
         let expected_len = (e0.len() + e1.len()) as u64;
-        let rec =
-            recovered_from_event_blobs([e0.as_slice(), e1.as_slice()]);
+        let rec = recovered_from_event_blobs([e0.as_slice(), e1.as_slice()]);
         assert_eq!(rec.kind, RecoveryKind::Clean);
         assert_eq!(rec.events.len(), 2);
         assert_eq!(rec.events[0].seq, 0);
@@ -385,7 +386,11 @@ mod tests {
         let rec = recovered_from_event_blobs([good.as_slice(), garbage, after.as_slice()]);
         assert_eq!(rec.kind, RecoveryKind::Corrupt);
         assert!(rec.is_corrupt());
-        assert_eq!(rec.events.len(), 1, "only the pre-corruption good prefix is kept");
+        assert_eq!(
+            rec.events.len(),
+            1,
+            "only the pre-corruption good prefix is kept"
+        );
         assert_eq!(rec.events[0].seq, 0);
         assert_eq!(rec.good_prefix_len, good_len);
     }
