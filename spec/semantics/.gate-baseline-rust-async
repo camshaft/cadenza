@@ -6275,3 +6275,10 @@ pass	hr4 a whole HANDLE region as another effect's op ARGUMENT — B's region co
 pass	wa1 wrapping-add as the next-state — a near-MAX seed wraps to a concrete near-MIN value on the second draw
 pass	wa2 wrapping-add of the op ARG and state in the resume value — wrap, exact-MAX, and identity rows
 pass	wa3 the wrap WALK — three draws from a MAX seed step MAX, MIN, MIN+1 through wrapping-add(+1), checked '+' beside
+pass	ed1 TWO defs each install their OWN handler for one effect — main calls both, seeds and arms fully independent
+pass	ed2 a handled def CALLED from inside another def's handle — the callee's region shadows the caller's mid-body
+pass	ed3 a RECURSIVE def that handles per frame, called from a handled main — the base case draws from the deepest frame's handler
+pass	ed4 one shared performing helper called under TWO different live handlers — each call homes to its caller's region
+pass	sb1 an op ARG drawn at a shadow boundary — both the arg draw and the consuming dispatch home to the INNER handler
+pass	sb3 the op ARG draws from effect B while the dispatch homes to effect A — two paired dispatches, both states advance
+pass	sb4 the innermost seed is a COMPOSITE of two effects' dispatches — B's draw feeds A's add, the result seeds a fresh B shadow
