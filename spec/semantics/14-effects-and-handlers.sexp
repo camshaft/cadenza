@@ -4629,6 +4629,64 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 999 Int64)))
 
+(case "an indexed list walk performing per element — element × advancing draw, summed"
+  (doc    "The zip-with-effects idiom (the walk pins are draw-only or element-only): each element
+           multiplies an ADVANCING draw — element order and dispatch order must stay locked:
+           1·5 + 2·6 + 3·7 → 38.")
+  (input  (do
+            (effect St (op next (-> Unit Int64)))
+            (def (go (: xs (List Int64)) (: i Int64) (: acc Int64))
+              (match (List.at xs i)
+                ((Some v) (go xs (+ i 1) (+ acc (* v (St.next)))))
+                ((None _u) acc)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next (u) s (resume s (+ s 1))))
+                (go (list 1 2 3) 0 0)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 38 Int64)))
+
+(case "a map-via-effects walk — each element transformed by a dispatch, output order preserved"
+  (doc    "The MAP direction of the element×dispatch pairing (il-fold pins the accumulate
+           direction): each element crosses as an op argument and its transform is pushed to an
+           output list — ORDER preserved: [3,1,2]·10 → [30,10,20] → 3120. A dispatch-reordering
+           bug scrambles the list, not just a sum.")
+  (input  (do
+            (effect Pick (op at (-> Int64 Int64)))
+            (def (build (: xs (List Int64)) (: i Int64) (: out (List Int64)))
+              (match (List.at xs i)
+                ((Some v) (build xs (+ i 1) (List.push out (Pick.at v))))
+                ((None _u) out)))
+            (def (main (: n Int64))
+              (handle Pick 0
+                ((at (v) s (resume (* v 10) (+ s 1))))
+                (let ((out (build (list 3 1 2) 0 (list))))
+                  (+ (* 100 (match (List.at out 0) ((Some a) a) ((None _u) -1)))
+                     (+ (* 10 (match (List.at out 1) ((Some b) b) ((None _u) -1)))
+                        (match (List.at out 2) ((Some c) c) ((None _u) -1)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 3120 Int64)))
+
+(case "filter-via-effects — a STATEFUL predicate dispatch decides each element's survival"
+  (doc    "The FILTER direction: each element crosses to a predicate arm whose threshold ADVANCES
+           per dispatch (0, 2, 4, 6) — 1>0 keep, 4>2 keep, 2>4 drop, 9>6 keep → [1,4,9], len 3,
+           element [1] = 4 → 304. Survival depends on the dispatch-ordered state, so a reorder
+           changes WHICH elements survive.")
+  (input  (do
+            (effect Keep (op test (-> Int64 Int64)))
+            (def (sift (: xs (List Int64)) (: i Int64) (: out (List Int64)))
+              (match (List.at xs i)
+                ((Some v) (sift xs (+ i 1) (if (> (Keep.test v) 0) (List.push out v) out)))
+                ((None _u) out)))
+            (def (main (: n Int64))
+              (handle Keep 0
+                ((test (v) s (resume (if (> v s) 1 0) (+ s 2))))
+                (let ((out (sift (list 1 4 2 9) 0 (list))))
+                  (+ (* 100 (List.len out))
+                     (match (List.at out 1) ((Some b) b) ((None _u) -1))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 304 Int64)))
+
 ; ============ Guarded match × effects (breaker FINDING, ag5 → fixed #2333). A guarded match on a
 ; perform-result scrutinee whose FALLBACK arm also performs used to leak the fold-synthesized #seed
 ; binder as a false CDZ0101: the guard desugar's arm-body copy reparented a reused (shared) body
