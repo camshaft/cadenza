@@ -4781,6 +4781,59 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 35 Int64)))
 
+(case "a perform-derived rope SELF-concatenated — the shared subtree measures correctly"
+  (doc    "The DAG-sharing face of ropes under effects (the sharing pins are pure-side): a rope whose
+           content was BRANCH-SELECTED by a perform is concatenated with ITSELF — one subtree
+           referenced twice — and both the doubled rope and the original measure right:
+           \\\"xbigxbig\\\" len 8 beside \\\"xbig\\\" len 4 → 84.")
+  (input  (do
+            (effect St (op next (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next (u) s (resume s (+ s 1))))
+                (let ((w (String.concat "x" (if (> (St.next) 4) "big" "sm"))))
+                  (let ((again (String.concat w w)))
+                    (+ (* 10 (String.byte-len again)) (String.byte-len w))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 84 Int64)))
+
+(case "a perform-derived byte-rope SELF-concatenated — both halves read the same draw"
+  (doc    "The byte-rope sibling: a bin frame built from a let-lifted draw (the inline-perform bin
+           segment is the pinned strict-segment decline) concatenated with itself — [5,5], len 2,
+           both bytes the same draw → 255.")
+  (input  (do
+            (effect St (op next (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next (u) s (resume s (+ s 1))))
+                (let ((v (St.next)))
+                  (let ((b (bin (u8 (UInt8.wrap v)))))
+                    (let ((dbl (Bytes.concat b b)))
+                      (+ (* 100 (Bytes.len dbl))
+                         (+ (* 10 (match (Bytes.at dbl 0) ((Some x) x) ((None _u) -1)))
+                            (match (Bytes.at dbl 1) ((Some y) y) ((None _u) -1)))))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 255 Int64)))
+
+(case "a nested-list DAG — one perform-derived inner list aliased TWICE in the outer"
+  (doc    "The container-DAG face: an inner list built from a draw sits at BOTH positions of an
+           outer list — the alias reads through either path: nested[1][0] = 5, outer len 2 →
+           205.")
+  (input  (do
+            (effect St (op next (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next (u) s (resume s (+ s 1))))
+                (let ((v (St.next)))
+                  (let ((xs (list v v)))
+                    (let ((nested (list xs xs)))
+                      (+ (* 100 (List.len nested))
+                         (match (List.at nested 1)
+                           ((Some inner) (match (List.at inner 0) ((Some x) x) ((None _u) -1)))
+                           ((None _u) -1))))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 205 Int64)))
+
 ; ============ Guarded match × effects (breaker FINDING, ag5 → fixed #2333). A guarded match on a
 ; perform-result scrutinee whose FALLBACK arm also performs used to leak the fold-synthesized #seed
 ; binder as a false CDZ0101: the guard desugar's arm-body copy reparented a reused (shared) body
