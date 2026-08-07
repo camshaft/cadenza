@@ -6132,3 +6132,7 @@ pass	za3 NESTED literal-arm dispatch — each level matches a let-bound draw, th
 pass	sh1 a NESTED handler for the SAME effect shadows the outer — inner draws hit the inner state, the draw after hits the outer
 pass	sh2d a let bound in a handle body, read by a NESTED handle's seed — declines (let-crossing scope gap)
 pass	sh2n the config-fetch idiom with its perform LET-LIFTED — declines (let-crossing scope gap)
+pass	mo1 a TWO-op effect fully shadowed — the inner handler re-interprets BOTH ops with different arms
+pass	mo2 THREE-deep same-effect shadowing — each depth's draws thread its own state, interleaved before/inside/after
+pass	mo4 a SAME-effect draw in the inner handle's SEED homes to the OUTER handler — the shadow starts at the body, not the seed
+pass	mo5 LIST-state shadowing — inner and outer thread independent heap lists, growth interleaved
