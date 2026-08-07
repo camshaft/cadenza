@@ -170,7 +170,7 @@ fn run_pipeline(pipeline: &cdz_kernel::event_ast::ShellPipeline) -> EffectOutcom
                     // Feed a NON-final stage's stdout into the NEXT stage's stdin.
                     prev_stdout = c.stdout.take();
                 } else {
-                    // 🔴 DEADLOCK FIX (reviewer MED-HIGH DoS): the FINAL stage's stdout must be drained
+                    // DEADLOCK FIX (reviewer MED-HIGH DoS): the FINAL stage's stdout must be drained
                     // CONCURRENTLY with the waits, NOT read after them. If we waited stage 0..n in order and
                     // only read the final stdout at its (last) wait, a final stage emitting > one pipe buffer
                     // (~64KB) blocks on its full stdout pipe, stops reading stdin, upstream backs up on ITS
