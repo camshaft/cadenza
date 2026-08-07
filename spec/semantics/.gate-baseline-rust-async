@@ -6150,3 +6150,6 @@ pass	pa3 THREE-deep nested same-effect arg-feed — scale(scale(next)) with a st
 pass	gp1 a PERFORMING guard on a wildcard pattern — hit and miss arms both read the guard-advanced state
 pass	gp2e TWO pure guards cascade over a draw, the fallback re-performs — guard misses leave dispatch serviceable
 pass	gp2 TWO guard arms where a guard PERFORMS — declines (multi-guard performing-condition fold gap)
+pass	hs1 an inner SAME-effect handle's result is the match SCRUTINEE — the selected arm and the trailing draw hit the OUTER state
+pass	hs2 an OUTER-seeded inner handle builds a tuple scrutinee — the destructured arm re-performs against the outer
+pass	hs3 an inner SAME-effect handle's result is the IF condition — the taken branch re-performs against the outer
