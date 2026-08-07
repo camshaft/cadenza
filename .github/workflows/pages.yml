@@ -12,17 +12,18 @@
 name: Deploy guide to Pages
 
 on:
-  push:
-    branches: [main]
-    # Only rebuild when something that affects the guide changed.
-    paths:
-      - "guide/**"
-      - "implementation/seed/crates/cdz-wasm/**"
-      - "implementation/seed/crates/rcdzc/**"
-      - "implementation/seed/crates/cadenza-syntax/**"
-      - "implementation/seed/crates/cdz-runtime/**"
-      - "xtask/**"
-      - ".github/workflows/pages.yml"
+  # SCHEDULED deploy, NOT per-push. A push trigger was cancelling every deploy: the guide build runs on the
+  # scarce ARM pool (runtime-hash reproducibility), so each push-triggered run sat PENDING waiting for a
+  # runner, and the next guide-affecting push queued behind it — GitHub's `pages` concurrency group cancels
+  # the older PENDING run when a newer one queues (even with cancel-in-progress:false, which only protects a
+  # RUNNING job). On a busy main, deploys were superseded before ever starting, so the published site went
+  # stale (7 consecutive cancelled runs). A scheduled run has no superseding push, so it reaches a runner and
+  # COMPLETES; each cron rebuild uses current trunk + fresh wasm, so there's no staged-wasm lag. The site
+  # lags trunk by at most the interval (30 min) — fine for a guide. `workflow_dispatch` stays so a human can
+  # force an immediate deploy when something urgent lands (rather than waiting for the next tick).
+  schedule:
+    # Every 30 min on an off-round minute (7,37) so it doesn't collide with other crons landing on :00/:30.
+    - cron: "7,37 * * * *"
   workflow_dispatch: {}
 
 # Least-privilege token scoped to publishing Pages.
