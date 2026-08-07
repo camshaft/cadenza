@@ -6251,3 +6251,10 @@ pass	dn4 SKIP-LEVEL performs from the innermost region — A's draws cross the B
 pass	dn5 a tuple built INSIDE the inner region from BOTH effects' draws, destructured OUTSIDE — data crosses the region boundary
 pass	rr1 one draw consumed THREE times (squared, scaled, summed) — a single dispatch, the binder multiply-read
 pass	rr2 the SQUARE of a difference of two draws — composite arithmetic over one advancing thread, zero row included
+pass	aa1 the resume VALUE is a deep pure expression over the op arg AND state — (v+s)^2 - v*s per dispatch
+pass	aa2 a QUADRATIC next-state (s^2+1) — three dispatches, the state squaring away from the seed
+pass	aa3 REMAINDER arithmetic in the resume value — (% s 7) cycles as the +5 stride wraps the modulus
+pass	aa4 a THREE-WAY comparison arm — the resume value encodes gt/eq/lt as 1/10/100 against the advancing state
+pass	aa5 DIVISION in the resume value with a subtracting stride — quotients shrink as the state walks down
+pass	sc1 STRING literal-arm dispatch on a draw — the hi arm re-performs and measures, the lo arm is constant
+pass	sc2 EQUALITY of two string draws routes the branch — the n=3 row crosses the threshold between draws
