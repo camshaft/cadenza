@@ -16140,3 +16140,67 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 1111 Int64))
   (call   main (: 0 Int64)) (output (: 1 Int64)))
+
+;; ── HANDLE expressions in literal-element and argument positions (breaker hr) ────────────────────
+;; A whole handle region as a VALUE in construction positions: hr1 a record-literal FIELD beside a
+;; pure field; hr2 a MIDDLE list element between pure elements; hr3 a map-literal VALUE stored
+;; under a key and looked up after; hr4 another effect's op ARGUMENT (B's region computes what A's
+;; dispatch consumes, A's state carrying to a second dispatch).
+
+(case "hr1 a HANDLE expression as a record-literal FIELD value — the region's result sits beside a pure field"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (main (: n Int64))
+              (let ((r (record (a (handle St n
+                                    ((next () s (resume s (+ s 1))))
+                                    (+ (St.next) (St.next))))
+                               (b 7))))
+                (+ (* 100 (. r a)) (. r b))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 1107 Int64))
+  (call   main (: 0 Int64)) (output (: 107 Int64)))
+
+(case "hr2 a HANDLE expression as a middle LIST element — the region's result sits between pure elements"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (el (: xs (List Int64)) (: i Int64))
+              (match (List.at xs i) ((Some v) v) ((None) 0)))
+            (def (main (: n Int64))
+              (let ((xs (list 3
+                              (handle St n
+                                ((next () s (resume s (* s 2))))
+                                (+ (St.next) (St.next)))
+                              9)))
+                (+ (el xs 0) (+ (* 10 (el xs 1)) (* 100 (el xs 2))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 1053 Int64))
+  (call   main (: 1 Int64)) (output (: 933 Int64)))
+
+(case "hr3 a HANDLE expression as a map-literal VALUE — the region's result is stored under a key and looked up after"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (main (: n Int64))
+              (let ((m (map (1 (handle St n
+                                 ((next () s (resume s (+ s 3))))
+                                 (+ (St.next) (St.next))))
+                            (2 50))))
+                (+ (match (Map.lookup m 1) ((Some v) v) ((None) -1))
+                   (* 100 (match (Map.lookup m 2) ((Some v) v) ((None) -1))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 5013 Int64))
+  (call   main (: 0 Int64)) (output (: 5003 Int64)))
+
+(case "hr4 a whole HANDLE region as another effect's op ARGUMENT — B's region computes the value A's dispatch consumes"
+  (input  (do
+            (effect A (op scale (-> Int64 Int64)))
+            (effect B (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle A 10
+                ((scale (v) s (resume (* v s) (+ s 1))))
+                (+ (A.scale (handle B n
+                              ((next () t (resume t (* t 2))))
+                              (+ (B.next) (B.next))))
+                   (A.scale 1))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 161 Int64))
+  (call   main (: 0 Int64)) (output (: 11 Int64)))
