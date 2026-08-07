@@ -210,6 +210,7 @@ pub fn read(input: &[u8], from: Format) -> Result<Arenas, ConvertError> {
                 ))
             })
         }
+        #[cfg(feature = "cedar")]
         Format::Cedar => {
             // Cedar can fail; its error is a multi-line `ParseErrors` with a source excerpt (not an
             // `at byte N`), so the reader already reduced it to a headline — surface it as-is.
@@ -217,6 +218,11 @@ pub fn read(input: &[u8], from: Format) -> Result<Arenas, ConvertError> {
             crate::cedar::read(text)
                 .map_err(|e| ConvertError(format!("Cedar parse error: {}", e.0)))
         }
+        // Lean build (no `cedar` feature): the Cedar surface isn't compiled — a clean error, not a panic.
+        #[cfg(not(feature = "cedar"))]
+        Format::Cedar => Err(ConvertError(
+            "the `cedar` surface is not compiled in this build (enable the `cedar` feature)".into(),
+        )),
         // `debug` is an output-only view — there is no reader from it back to arenas.
         // `debug`/`flat` are output-only views — there is no reader from them back to arenas.
         Format::Debug => Err(ConvertError(
@@ -281,7 +287,13 @@ pub fn write_with(arenas: &Arenas, to: Format, opts: Options) -> Result<Vec<u8>,
         // A `(cedar-policyset …)` arena prints back to Cedar policy text (rebuilding a pst); a NON-Cedar
         // root becomes a `//`-comment block over its ML rendering (see `cedar::print`), so `--to cedar`
         // stays total.
+        #[cfg(feature = "cedar")]
         Format::Cedar => Ok(crate::cedar::print(arenas, opts.width).into_bytes()),
+        // Lean build (no `cedar` feature): the Cedar surface isn't compiled — a clean error, not a panic.
+        #[cfg(not(feature = "cedar"))]
+        Format::Cedar => Err(ConvertError(
+            "the `cedar` surface is not compiled in this build (enable the `cedar` feature)".into(),
+        )),
         Format::Debug => Ok(crate::debug::print(arenas).into_bytes()),
         Format::Flat => Ok(crate::debug::print_flat(arenas).into_bytes()),
     }
@@ -576,6 +588,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "cedar")]
     #[test]
     fn cedar_to_binary_to_cedar_round_trips() {
         // A Cedar policy reads to a `(cedar-policyset …)` arena, encodes to canonical binary, and
@@ -587,6 +600,7 @@ mod tests {
         assert_eq!(bin, again);
     }
 
+    #[cfg(feature = "cedar")]
     #[test]
     fn cedar_parse_error_is_surfaced() {
         let err = convert(
@@ -846,15 +860,22 @@ mod tests {
         // every OUTPUT-ONLY target (`Debug`/`Flat`, which `write` handles) — the combinations `cdz convert
         // --from X --to Y` exposes but no single test enumerates. For each READABLE source we take a valid
         // sample; `Debug`/`Flat` are output-only (rejected as a SOURCE), so they are only used as targets.
-        let readable: &[(Format, &[u8])] = &[
+        // `mut` only used when the `cedar` feature pushes the Cedar row below; a lean build leaves it unpushed.
+        #[cfg_attr(not(feature = "cedar"), allow(unused_mut))]
+        let mut readable: Vec<(Format, &[u8])> = vec![
             (Format::Binary, b""), // filled below with a real binary sample
             (Format::Sexpr, b"(def (main) (+ 1 2))"),
             (Format::Ml, b"def main() = 1 + 2"),
             (Format::Markdown, b"# Title\n\ntext with `code`\n"),
             (Format::Json, b"{\"a\": [1, 2, null], \"b\": \"x\"}"),
             (Format::Toml, b"a = 1\nb = \"x\"\n"),
-            (Format::Cedar, b"permit(principal, action, resource);"),
         ];
+        // Cedar as a readable SOURCE only when the `cedar` surface is compiled — a lean build's `Format::Cedar`
+        // read is a clean "not compiled" error (not a valid source), so the read-ok sanity assert below would
+        // (correctly) fail; Cedar stays in `all_targets` regardless since the totality contract there accepts
+        // the clean-error arm.
+        #[cfg(feature = "cedar")]
+        readable.push((Format::Cedar, b"permit(principal, action, resource);"));
         // A real binary sample (the codec form of a small program) for the Binary source row.
         let bin_sample = convert(b"(def (main) 42)", Format::Sexpr, Format::Binary).unwrap();
         let all_targets = [
@@ -868,7 +889,7 @@ mod tests {
             Format::Debug,
             Format::Flat,
         ];
-        for &(from, sample) in readable {
+        for &(from, sample) in &readable {
             let input: &[u8] = if from == Format::Binary {
                 &bin_sample
             } else {

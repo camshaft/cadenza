@@ -18,9 +18,11 @@ pub use cadenza_ast::{ast, canon, codec, dict, fxhash};
 /// mirroring Cedar's `pst`) is a projection of the same arena the code surfaces use — so an agent can
 /// structurally construct/modify a policy with Cadenza's tools. Data, not a program; no authorization
 /// engine. Arena-idempotent (comments/formatting not preserved).
+#[cfg(feature = "cedar")]
 pub mod cedar;
 /// The `cdz-syntax` command surface, factored into the library so both the standalone `cdz-syntax`
 /// bin and the unified `cdz` bin drive one implementation.
+#[cfg(feature = "cli")]
 pub mod cli;
 pub mod convert;
 pub mod debug;
