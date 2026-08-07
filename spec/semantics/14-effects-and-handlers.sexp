@@ -14281,3 +14281,56 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 567 Int64))
   (call   main (: 2 Int64)) (output (: 234 Int64)))
+
+;; ── PERFORMING match guards (breaker gp) ─────────────────────────────────────────────────────────
+;; Guards whose CONDITION performs. gp1: one performing guard over a LET-BOUND draw — the guard's
+;; own dispatch advances state, and BOTH the hit and miss arm bodies read the guard-advanced state.
+;; (The let-bound scrutinee is load-bearing: an INLINE performing scrutinee with a performing guard
+;; is breaker finding #9's guard-miss re-eval, filed to v-effects.) gp2e: TWO pure guards cascade
+;; over a draw with a re-performing fallback. gp2-decline: >=2 guard ARMS where ANY guard performs
+;; is an honest not-yet-reducible decline (the multi-guard arm-copy cascade lands the performing
+;; condition non-tail); flip values banked (main 6=248, 30=111, 1=-8) for when that fold lands.
+
+(case "gp1 a PERFORMING guard on a wildcard pattern — hit and miss arms both read the guard-advanced state"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (+ s 1))))
+                (let ((k (St.next)))
+                  (match k
+                    ((guard _x (> (St.next) 6)) (+ 100 (St.next)))
+                    (_o (* 10 (St.next)))))))
+            (export main)))
+  (call   main (: 6 Int64)) (output (: 108 Int64))
+  (call   main (: 2 Int64)) (output (: 40 Int64)))
+
+(case "gp2e TWO pure guards cascade over a draw, the fallback re-performs — guard misses leave dispatch serviceable"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (* s 2))))
+                (let ((k (St.next)))
+                  (match k
+                    ((guard _a (> _a 50)) 111)
+                    ((guard _b (> _b 10)) 222)
+                    (_o (- 0 (St.next)))))))
+            (export main)))
+  (call   main (: 60 Int64)) (output (: 111 Int64))
+  (call   main (: 20 Int64)) (output (: 222 Int64))
+  (call   main (: 3 Int64)) (output (: -6 Int64)))
+
+(case "gp2 TWO guard arms where a guard PERFORMS — declines (multi-guard performing-condition fold gap)"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (* s 2))))
+                (let ((k (St.next)))
+                  (match k
+                    ((guard _a (> (St.next) 50)) 111)
+                    ((guard _b (> (St.next) 10)) (+ 200 (St.next)))
+                    (_o (- 0 (St.next)))))))
+            (export main)))
+  (declines))

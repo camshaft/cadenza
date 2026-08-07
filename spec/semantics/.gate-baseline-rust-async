@@ -6145,3 +6145,6 @@ pass	hp3 the recursive call sits in the SEED — each frame's handler is seeded 
 pass	pa1 a SAME-effect perform as another op's ARGUMENT — the arg dispatch advances the state the outer dispatch reads
 pass	pa2 TWO same-effect draws as the TWO arguments of one op — left-to-right arg order, the arm reads the post-args state
 pass	pa3 THREE-deep nested same-effect arg-feed — scale(scale(next)) with a state-advancing scale arm
+pass	gp1 a PERFORMING guard on a wildcard pattern — hit and miss arms both read the guard-advanced state
+pass	gp2e TWO pure guards cascade over a draw, the fallback re-performs — guard misses leave dispatch serviceable
+pass	gp2 TWO guard arms where a guard PERFORMS — declines (multi-guard performing-condition fold gap)
