@@ -1643,6 +1643,31 @@
               (perCrateClippyCrane // { inherit crateCdzCheck; }) ''
               echo "ok: clippy aggregate — all per-crate crane cargoClippy checks + cdz (crane MR2)" > $out
             '';
+            # 2-WAY CLIPPY SHARD (v-nix+v-fleet-tooling 2026-08-07, data-driven CI-speed): clippy is the sole
+            # critical-path pole (~8.8m) and RUN-TIME-bound (queue ~0.1m / run ~8.9m — v-ft calm-window n=119),
+            # so splitting it into 2 PARALLEL GHA jobs directly halves the pole (~8.8→~5m) for only +1 x86
+            # slot/candidate. These two sub-aggregates each force ~half the per-crate clippy checks, BALANCED BY
+            # BUILD WEIGHT (not count): the 3 heaviest — rcdzc (spec+compiler-ml+bigint), cdz-run (compiler-ml),
+            # xtask (spec+compiler-ml) — are split across shards, and crateCdzCheck's whole-workspace clippy goes
+            # on A to balance rcdzc+cdz-run+xtask≈A+B weight. Both cache-HIT the shared cargoArtifacts (no dep
+            # recompile). Exposed as checks.<sys>.clippy-shard-{a,b}; checks.yml runs them as 2 parallel jobs.
+            # The union {A} ∪ {B} == clippyCraneAggregate's set exactly (coverage parity — no clippy unit dropped).
+            # clippyCraneAggregate (the old `clippy` context) is KEPT during the additive-first cutover (STEP 1);
+            # v-ft flips the ruleset to require the shards (STEP 2), then the old `clippy` job is dropped (STEP 3).
+            clippyShardA = pkgs.runCommand "cargo-clippy-shard-a"
+              {
+                inherit crateCdzCheck;
+                inherit (perCrateClippyCrane) clippy-rcdzc clippy-cdz-num clippy-cdz-calc clippy-cadenza-syntax;
+              } ''
+              echo "ok: clippy shard A — rcdzc + cdz (workspace) + cdz-num + cdz-calc + cadenza-syntax" > $out
+            '';
+            clippyShardB = pkgs.runCommand "cargo-clippy-shard-b"
+              {
+                inherit (perCrateClippyCrane)
+                  clippy-cdz-run clippy-xtask clippy-cadenza-ast clippy-cdz-corpus clippy-cdz-rt clippy-cdz-rust-render;
+              } ''
+              echo "ok: clippy shard B — cdz-run + xtask + cadenza-ast + cdz-corpus + cdz-rt + cdz-rust-render" > $out
+            '';
             # flakeReproBackstop: the REPRODUCIBILITY-BACKSTOP subset — the checks the `nix-flake (advisory)`
             # CI job should run INSTEAD of a whole `nix flake check`. Data-driven CI-speed (operator standing
             # mandate + v-ft queue-wait ranking, 2026-08-05): `nix flake check` was the biggest runner-cost
@@ -1707,7 +1732,9 @@
             # EXACTLY the 9 merge-required contexts (ruleset-10 MINUS test-macos, which is native x86/macos
             # and out of scope per operator: nothing is arch-specific, aarch64 coverage is the accepted
             # fallback). The required 9, mapped to their nix checks:
-            #   rustfmt→fmtCheck · clippy→clippyCraneAggregate · test(ubuntu)→testCheck ·
+            #   rustfmt→fmtCheck · clippy→clippyShardA + clippyShardB (the 2-way shard; union == the old
+            #     clippyCraneAggregate set exactly, so coverage is identical + it tracks the post-flip required
+            #     contexts checks/clippy-shard-a + checks/clippy-shard-b) · test(ubuntu)→testCheck ·
             #   codegen→codegenCheck · gate→gateCheck · wasm-runtime-build→runtimeHashParity (builds the
             #   runtime component + verifies REQUIRED_RUNTIME_HASH — a superset of the raw CI build) ·
             #   syntax-roundtrip→roundtripCheck · allocation-bench→benchCheck · guide-examples→guideExamplesCheck.
@@ -1718,7 +1745,7 @@
             # all 9 required, so `nix build` of it is red if ANY required check fails — no silent gap. aarch64.
             localGate = pkgs.runCommand "local-gate"
               {
-                inherit clippyCraneAggregate codegenCheck gateCheck guideExamplesCheck
+                inherit clippyShardA clippyShardB codegenCheck gateCheck guideExamplesCheck
                   benchCheck runtimeHashParity fmtCheck testCheck roundtripCheck;
               } ''
               echo "ok: local-gate — 9 merge-required contexts (ruleset-10 minus test-macos) green on aarch64-nix" > $out
@@ -1778,6 +1805,11 @@
             # Context NAME unchanged (`checks / clippy`) → no ruleset edit. Per-crate granularity + isolation
             # preserved (each crane check rebuilds only on its closure's src).
             clippy = clippyCraneAggregate;
+            # 2-way clippy shard (see the clippyShardA/B bindings). Exposed so checks.yml can run them as 2
+            # parallel jobs (`nix build .#checks.<sys>.clippy-shard-{a,b}`). Additive-first: `clippy` stays until
+            # v-ft's ruleset flip requires these two + drops it.
+            clippy-shard-a = clippyShardA;
+            clippy-shard-b = clippyShardB;
             # `checks.test` = a whole-workspace `cargo test --workspace --locked` (NOT crane). Option-b (v-ft
             # crane re-measure, 2026-08-05): crane cargoTest NARROWED but did not erase a test-ubuntu regression
             # — it settled ~18-19m warm vs the ~16m cargo baseline, because per-crate cargoTest recompiles

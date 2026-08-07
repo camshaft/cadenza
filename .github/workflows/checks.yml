@@ -57,6 +57,33 @@ jobs:
       - name: cargo clippy (via nix)
         run: nix build .#checks.x86_64-linux.clippy --print-build-logs
 
+  # 2-WAY CLIPPY SHARD (v-nix+v-fleet-tooling 2026-08-07, data-driven CI-speed): clippy is the sole ~8.8m
+  # critical-path pole and RUN-TIME-bound, so these two run the flake's balanced-by-build-weight sub-aggregates
+  # in PARALLEL, halving the pole (~8.8→~5m) for +1 x86 slot/candidate. Both cache-hit the shared cargoArtifacts.
+  # ADDITIVE-FIRST cutover (zero gate-gap): the old `clippy` job above STAYS required + reporting while these
+  # two report as NON-required; once they're green on a real candidate, v-fleet-tooling flips ruleset 10560470
+  # (ADD `checks / clippy-shard-a` + `checks / clippy-shard-b`, REMOVE `checks / clippy`) atomically, THEN the
+  # old `clippy` job is dropped (STEP 3). Job names match the ruleset contexts EXACTLY. x86 (arch-independent).
+  clippy-shard-a:
+    name: clippy-shard-a
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: DeterminateSystems/nix-installer-action@v22
+      - uses: ./.github/actions/nix-store-cache
+      - name: cargo clippy shard A (via nix — rcdzc + cdz + cdz-num + cdz-calc + cadenza-syntax)
+        run: nix build .#checks.x86_64-linux.clippy-shard-a --print-build-logs
+
+  clippy-shard-b:
+    name: clippy-shard-b
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: DeterminateSystems/nix-installer-action@v22
+      - uses: ./.github/actions/nix-store-cache
+      - name: cargo clippy shard B (via nix — cdz-run + xtask + cadenza-ast + cdz-corpus + cdz-rt + cdz-rust-render)
+        run: nix build .#checks.x86_64-linux.clippy-shard-b --print-build-logs
+
   test-ubuntu:
     # Full-CI-in-nix cutover (Model A): the `test (ubuntu-latest)` required context, body-swapped to the
     # hermetic nix aggregate check (`checks.test` = all per-crate clippy+test derivations + crate-cdz —
