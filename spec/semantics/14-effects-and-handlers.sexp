@@ -18152,3 +18152,63 @@
   (call   main (: 5 Int64)) (output (: -5 Int64))
   (call   main (: -9223372036854775807 Int64)) (output (: 9223372036854775807 Int64))
   (call   main (: -9223372036854775808 Int64)) (output (: 777 Int64)))
+
+;; ── st: SAME-EFFECT shadow towers ────────────────────────────────────────────
+;; Extends the two-deep tl4 pin. st1 handles one effect at THREE depths — each
+;; draw resolves to the innermost open frame, outers resume as inners close;
+;; st2 places draws BETWEEN the installs (each thread advances only while it
+;; is the innermost, the sum pins the interleave); st3's SHADOWING frame has
+;; an arm that draws the same effect — the dispatch escapes its own extent and
+;; lands on the frame it shadows (the 999 state is never read).
+
+(case "st1 the SAME effect handled at THREE depths — each draw resolves to the innermost open frame, outer frames resume as inner ones close"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1))))
+                (+ (handle E 50
+                     ((next () s (resume s (+ s 5))))
+                     (+ (handle E 700
+                          ((next () s (resume s (+ s 7))))
+                          (E.next))
+                        (* 10 (E.next))))
+                   (* 100 (E.next)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 1700 Int64))
+  (call   main (: 0 Int64)) (output (: 1200 Int64))
+  (call   main (: -3 Int64)) (output (: 900 Int64)))
+
+(case "st2 draws BETWEEN the installs of a three-deep tower — each thread advances only while it is the innermost, sum pins the interleave"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1))))
+                (+ (E.next)
+                   (+ (handle E 50
+                        ((next () s (resume s (+ s 5))))
+                        (+ (E.next)
+                           (+ (handle E 700
+                                ((next () s (resume s (+ s 7))))
+                                (E.next))
+                              (E.next))))
+                      (E.next)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 816 Int64))
+  (call   main (: 0 Int64)) (output (: 806 Int64))
+  (call   main (: -3 Int64)) (output (: 800 Int64)))
+
+(case "st3 the SHADOWING frame's arm draws the SAME effect — its dispatch escapes its own extent and lands on the frame it shadows"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1))))
+                (handle E 999
+                  ((next () m (resume (E.next) m)))
+                  (+ (* 10 (E.next)) (E.next)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 56 Int64))
+  (call   main (: 0 Int64)) (output (: 1 Int64))
+  (call   main (: -4 Int64)) (output (: -43 Int64)))

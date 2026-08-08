@@ -6382,3 +6382,6 @@ pass	wx6 wrapping increments CHAINED hop-to-hop — MAX-1 crosses the seam insid
 pass	dv1 truncated division and dividend-sign modulo over DRAWS — negative dividends exercise the toward-zero rule through dispatch
 pass	dv2 the DIVISOR comes from the arm with a state-dependent sign — quotient and remainder track the alternating divisor exactly
 pass	dv3 division by -1 of a RUNTIME draw — negation across the full non-MIN range, the MIN draw guarded to its own branch
+pass	st1 the SAME effect handled at THREE depths — each draw resolves to the innermost open frame, outer frames resume as inner ones close
+pass	st2 draws BETWEEN the installs of a three-deep tower — each thread advances only while it is the innermost, sum pins the interleave
+pass	st3 the SHADOWING frame's arm draws the SAME effect — its dispatch escapes its own extent and lands on the frame it shadows
