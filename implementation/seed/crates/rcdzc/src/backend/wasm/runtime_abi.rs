@@ -88,18 +88,18 @@ pub struct RtOp {
 /// versioned `<iface>@…+<hash>` import name (`component-abi.md` §The Value-Heap Runtime
 /// Crosses By A Well-Known Import). The content-address suffix is `REQUIRED_RUNTIME_HASH`.
 pub const RUNTIME_IFACE: &str = "cadenza:runtime/heap";
-/// The SHA-256 content address of the value-heap runtime component this ABI was generated
+/// The BLAKE3 content address of the value-heap runtime component this ABI was generated
 /// against — the runtime a program built with this compiler requires. Regenerated from the
 /// built runtime bytes, so it tracks a runtime-code change automatically.
 pub const REQUIRED_RUNTIME_HASH: &str =
-    "39358be448eac4e8afe25add5977767f814c0f9a6cad714cb778d223839ad739";
-/// The SHA-256 content address of the DEBUG-COUNTERS runtime build — the same runtime code
+    "0652838621bb88fcdc0a348bd81a5c8cc84eefa960af78c5cf7885b2811b2614";
+/// The BLAKE3 content address of the DEBUG-COUNTERS runtime build — the same runtime code
 /// with the `live-objects` leak counter compiled in (`--features debug-counters`). A shipped
 /// program pins `REQUIRED_RUNTIME_HASH` (the release build); a Perceus leak-check harness
 /// composes THIS build to assert `live-objects == 0` after a run. Recorded here so the harness
 /// locates the debug runtime by content address (from the store), never by rebuilding it.
 pub const DEBUG_RUNTIME_HASH: &str =
-    "d95a309394fadc2674cef990fbaeee850c27eb9c93771a368b2e76a6686bf889";
+    "df8189350efbd654464fcdd6405ceaabb9d8d0d7955fcad38980c53096cfd3a2";
 /// The NFC-normalization interface — the plain WIT name the value-heap RUNTIME imports for
 /// Unicode Normalization Form C. FINDING#23 (operator ruling d): NFC lives in a SEPARATE
 /// component (the heavy `unicode-normalization` tables); the runtime's WIT `world` declares
@@ -108,14 +108,14 @@ pub const DEBUG_RUNTIME_HASH: &str =
 /// the runtime by content hash. The compiler emits NO program-side NFC import; this const is
 /// the interface name the host matches when composing (see cdz-run compose_nfc_into_runtime_linker).
 pub const NFC_IFACE: &str = "cadenza:nfc/normalize";
-/// The SHA-256 content address of the NFC component (`cdz-nfc`) the RUNTIME imports. Regenerated
+/// The BLAKE3 content address of the NFC component (`cdz-nfc`) the RUNTIME imports. Regenerated
 /// from the built NFC-component bytes like `REQUIRED_RUNTIME_HASH`, so it tracks an NFC-code
 /// change automatically. The host resolves + composes the NFC component from the CAS by this hash
 /// (the store records `nfc = "<hash>"`; cdz-run/main.rs verify the loaded bytes against it). The
 /// NFC dep lives on the RUNTIME's world, so the NFC-code hash feeds `REQUIRED_RUNTIME_HASH`
 /// (the runtime that imports NFC hashes differently); it is not a separate program-import hash.
 pub const REQUIRED_NFC_HASH: &str =
-    "3fcf8aba6abb3279e6da8a2604f1e13f8ff664d3b88b9957c6c9d5b93dd5d83c";
+    "b2a4957895809e29d3e5d15adbca4408a952c8de6c47eadc80e26fe38427d7ed";
 /// The runtime's INLINE-UNIT handle — the value `arr-alloc(0)` returns (a compile-time-known
 /// handle carrying the empty tuple/unit, no heap node). DERIVED from the runtime's `cdz-abi`
 /// custom section (read at codegen, then stripped), so the compiler can push it as a constant
