@@ -1362,8 +1362,7 @@ def id-param-bind-type-declared-narrow-drives-body() =
   (match add-node(empty-tree(), Node.NVar(1)) with | (paramId, t1) =>
     (let t2 = record-param-type(t1, paramId, encode-param-type(true, 8)) in
      (match param-bind-type(t2, paramId, mk-int(true, 64)) with     // arg is Int64, but the DECLARED type wins
-       | _tp => (if is-int-ty(_tp) then (match int-parts-of(_tp) with | (s, w) => (if s and (w == 8) then unit else trap("declared Int8 drives the param type, not the arg's Int64"))) else trap("param type is an int"))
-       | _ => trap("a narrow-declared param binds to TIntW"))))
+       | _tp => (if is-int-ty(_tp) then (match int-parts-of(_tp) with | (s, w) => (if s and (w == 8) then unit else trap("declared Int8 drives the param type, not the arg's Int64"))) else trap("param type is an int")))))
 
 @test
 def id-param-bind-type-untyped-takes-arg-type() =
@@ -1371,8 +1370,7 @@ def id-param-bind-type-untyped-takes-arg-type() =
   // param-bind-type returns the arg type verbatim when param-type-of is None.
   (match add-node(empty-tree(), Node.NVar(1)) with | (paramId, t1) =>
     (match param-bind-type(t1, paramId, mk-int(false, 16)) with     // no declared type → arg's UInt16 flows
-      | _tp => (if is-int-ty(_tp) then (match int-parts-of(_tp) with | (s, w) => (if (if s then false else true) and (w == 16) then unit else trap("untyped param takes the arg's type"))) else trap("param type is an int"))
-      | _ => trap("untyped param binds to the arg type")))
+      | _tp => (if is-int-ty(_tp) then (match int-parts-of(_tp) with | (s, w) => (if (if s then false else true) and (w == 16) then unit else trap("untyped param takes the arg's type"))) else trap("param type is an int"))))
 
 @test
 def id-recursive-nullary-call-types-int-slice-b2() =
@@ -1384,8 +1382,7 @@ def id-recursive-nullary-call-types-int-slice-b2() =
     (let tree = record-def(t1, 900, callId) in
      (match Map.lookup(infer-node(tree, callId, resolve-tree(tree, callId), (Map.empty : Map(Int64, Ty))), callId) with
        | Option.Some(_ti) => (if is-int-ty(_ti) then (match int-parts-of(_ti) with | (_, w) => (if w == 64 then unit else trap("recursive nullary call → Int64 (width 64)"))) else trap("recursive nullary call is an int"))
-       | Option.Some(Ty.TyErr) => trap("recursive call still TErr — B2 infer arm not reached")
-       | _ => trap("recursive nullary call should type Int64"))))
+       | _ => trap("recursive nullary call should type Int64 (was TErr / node not typed)"))))
 
 @test
 def id-recursive-call-with-arith-arg-types-int-slice-b2() =
@@ -1576,8 +1573,7 @@ def id-payload-binder-type-int-width-decodes-tintw() =
   // binder is Int32, so its arith overflow-checks at width 32) — the int half of the ground-payload story.
   (let tree = record-ctor-tag-typed(empty-tree(), 842, 800, 2, encode-param-type(true, 32)) in
     (match ctor-payload-binder-type(tree, 842) with
-      | _td => (if is-int-ty(_td) then (match int-parts-of(_td) with | (s, w) => (if ((if s then true else false) and (w == 32)) then unit else trap("Int32 argType decodes to a signed-32 int"))) else trap("argType decodes to an int"))
-      | _ => trap("an int ct-argType decodes to a TIntW")))
+      | _td => (if is-int-ty(_td) then (match int-parts-of(_td) with | (s, w) => (if ((if s then true else false) and (w == 32)) then unit else trap("Int32 argType decodes to a signed-32 int"))) else trap("argType decodes to an int"))))
 
 @test
 def id-payload-binder-type-nullary-shorthand-decodes-int64() =
@@ -1586,15 +1582,13 @@ def id-payload-binder-type-nullary-shorthand-decodes-int64() =
   // change can't turn the placeholder into a spurious TErr/decline.
   (let tree = record-ctor-tag-typed(empty-tree(), 843, 800, 3, 0) in
     (match ctor-payload-binder-type(tree, 843) with
-      | _td => (if is-int-ty(_td) then (match int-parts-of(_td) with | (s, w) => (if ((if s then true else false) and (w == 64)) then unit else trap("argType 0 decodes to Int64 default"))) else trap("argType decodes to an int"))
-      | _ => trap("the argType=0 shorthand decodes to the Int64 placeholder")))
+      | _td => (if is-int-ty(_td) then (match int-parts-of(_td) with | (s, w) => (if ((if s then true else false) and (w == 64)) then unit else trap("argType 0 decodes to Int64 default"))) else trap("argType decodes to an int"))))
 
 @test
 def id-payload-binder-type-unrecorded-ctor-decodes-int64() =
   // a ctor with NO ct entry (ctor-argtype-of None) also falls to the Int64 default — the total-on-missing branch.
   (match ctor-payload-binder-type(empty-tree(), 999) with
-    | _td => (if is-int-ty(_td) then (match int-parts-of(_td) with | (s, w) => (if ((if s then true else false) and (w == 64)) then unit else trap("an unrecorded ctor decodes to Int64 default"))) else trap("ctor argType decodes to an int"))
-    | _ => trap("an unrecorded ctor's payload-binder-type is the Int64 placeholder (total)"))
+    | _td => (if is-int-ty(_td) then (match int-parts-of(_td) with | (s, w) => (if ((if s then true else false) and (w == 64)) then unit else trap("an unrecorded ctor decodes to Int64 default"))) else trap("ctor argType decodes to an int")))
 
 @test
 def id-ctor-pattern-cross-type-different-decl-rejects() =
