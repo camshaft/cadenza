@@ -53,7 +53,7 @@ struct PublishThenResolve {
 }
 #[async_trait::async_trait(?Send)]
 impl Reducer for PublishThenResolve {
-    async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+    async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
         match &event.body {
             EventBody::Inbound { .. } => {
                 let payload = encode_name_set(POINTER, &self.artifact_hash);

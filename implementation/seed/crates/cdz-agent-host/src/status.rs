@@ -182,7 +182,7 @@ mod tests {
     struct PublishAndTime;
     #[async_trait::async_trait(?Send)]
     impl Reducer for PublishAndTime {
-        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => {
                     kv.put(b"public/phase".to_vec(), b"working".to_vec());
@@ -258,7 +258,7 @@ mod tests {
         struct Faulter;
         #[async_trait::async_trait(?Send)]
         impl Reducer for Faulter {
-            async fn fold(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+            async fn fold(&mut self, event: &Event, _kv: &mut Kv) -> FoldOutput {
                 if matches!(event.body, EventBody::Inbound { .. }) {
                     FoldOutput::failed("guest trap: divide by zero")
                 } else {
@@ -318,7 +318,7 @@ mod tests {
         struct ClockOnce;
         #[async_trait::async_trait(?Send)]
         impl Reducer for ClockOnce {
-            async fn fold(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+            async fn fold(&mut self, event: &Event, _kv: &mut Kv) -> FoldOutput {
                 if matches!(event.body, EventBody::Inbound { .. }) {
                     FoldOutput::with(vec![EffectRequest::new_with_family(
                         effect_ct::NOW,
