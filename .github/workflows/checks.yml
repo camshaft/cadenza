@@ -403,8 +403,13 @@ jobs:
     # in cdz-kernel: build the guest, lift it with `wasm-tools component new`, and `wasm-tools validate`
     # the component — catches "source no longer builds a valid cadenza:syntax component" (NOT a byte-diff:
     # the lifted bytes are host-arch-dependent, same reason reducer-guest dropped its cmp).
+    #
+    # runs-on ubuntu-24.04-arm (v-fleet-tooling CI-balance guidance): this is an ARCH-INDEPENDENT wasm32
+    # guest build (no per-arch runtime hash, no native-arch dep — unlike gate/codegen which stay arm for
+    # the runtime-hash reason), so it runs equally on either arch. The x86 required-pool ran ~3x arm's
+    # load, so arch-independent jobs go on arm (which has headroom) to keep the pool balanced.
     name: syntax-guest wasm-component
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-rust
