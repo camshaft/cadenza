@@ -16631,3 +16631,85 @@
                 (+ (St.grow) (+ (* 10 (St.grow)) (* 100 (St.grow))))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 321 Int64)))
+
+;; ── NESTED and mixed tuples through the effect boundary (breaker tt) ─────────────────────────────
+;; tt1 a nested-tuple op ARG destructured two levels inside the arm; tt2 nested-tuple RESUME
+;; values — the fully-nested body match declines (the nested-match x multi-dispatch boundary), the
+;; outer-match + inner-PROJECTION form folds; tt3 a tuple ROTATED through two chained dispatches
+;; (each rotation folding the live state into the moved slot); tt4 a MIXED String+Int tuple state
+;; (rope grows in one slot, the counter folds the op arg in the other); tt5 an inner pair SWAPPED
+;; on counter parity — nested match works fine IN THE ARM (the body x multi-dispatch conjunction
+;; is the boundary, not nesting per se).
+
+(case "tt1 a NESTED-tuple op ARG destructured two levels inside the arm — both dispatches read the live state"
+  (input  (do
+            (effect E (op deep (-> (Tuple (Tuple Int64 Int64) Int64) Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((deep (p) s (match p
+                               ((tuple inner c) (match inner
+                                                  ((tuple a b) (resume (+ (* 100 a) (+ (* 10 b) (+ c s)))
+                                                                       (+ s 1))))))))
+                (+ (E.deep (tuple (tuple 1 2) 3)) (E.deep (tuple (tuple 4 5) 6)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 590 Int64))
+  (call   main (: 0 Int64)) (output (: 580 Int64)))
+
+(case "tt2 NESTED-tuple resume values across two dispatches — outer destructured by match, inner read by PROJECTION"
+  (input  (do
+            (effect E (op snap (-> (Tuple Int64 (Tuple Int64 Int64)))))
+            (def (main (: n Int64))
+              (handle E n
+                ((snap () s (resume (tuple s (tuple (* s 10) (+ s 1))) (+ s 2))))
+                (match (E.snap)
+                  ((tuple a inner)
+                   (let ((b (. inner 0)))
+                     (let ((c (. inner 1)))
+                       (match (E.snap)
+                         ((tuple d inner2)
+                          (+ a (+ b (+ c (+ d (+ (. inner2 0) (. inner2 1))))))))))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 146 Int64))
+  (call   main (: 0 Int64)) (output (: 26 Int64)))
+
+(case "tt3 a tuple ROTATED through two chained dispatches — each rotation folds the state into the moved slot"
+  (input  (do
+            (effect E (op rot (-> (Tuple Int64 Int64 Int64) (Tuple Int64 Int64 Int64))))
+            (def (main (: n Int64))
+              (handle E n
+                ((rot (p) s (match p
+                              ((tuple a b c) (resume (tuple b c (+ a s)) (+ s 1))))))
+                (match (E.rot (E.rot (tuple n 2 3)))
+                  ((tuple x y z) (+ (* 100 x) (+ (* 10 y) z))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 408 Int64))
+  (call   main (: 0 Int64)) (output (: 303 Int64)))
+
+(case "tt4 a MIXED String+Int tuple state — the arm grows the rope and folds the op arg into the counter per dispatch"
+  (input  (do
+            (effect E (op log (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle E (tuple "go" n)
+                ((log (v) s (match s
+                              ((tuple w k) (resume (+ (String.byte-len w) k)
+                                                   (tuple (String.concat w "!") (+ k v)))))))
+                (+ (E.log 100) (+ (* 10 (E.log 0)) (* 100 (E.log 5))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 11987 Int64))
+  (call   main (: 0 Int64)) (output (: 11432 Int64)))
+
+(case "tt5 an inner PAIR swapped on counter parity — a nested-tuple state machine, both slots and the counter observed"
+  (input  (do
+            (effect E (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (tuple (tuple n 100) 0)
+                ((tick () s (match s
+                              ((tuple pr c) (match pr
+                                              ((tuple x y) (resume (+ x c)
+                                                                   (if (= (% c 2) 0)
+                                                                       (tuple (tuple y x) (+ c 1))
+                                                                       (tuple (tuple x y) (+ c 1))))))))))
+                (+ (E.tick) (+ (* 10 (E.tick)) (+ (* 100 (E.tick)) (* 1000 (E.tick)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 19215 Int64))
+  (call   main (: 0 Int64)) (output (: 14210 Int64)))

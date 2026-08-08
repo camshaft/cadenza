@@ -6297,3 +6297,8 @@ pass	sg4 TWO-SIDED rope growth — the op arg's sign picks append-right vs prepe
 pass	sg5 the GROWING string state is a MAP KEY per dispatch — each draw looks up the current rope in a literal map
 pass	sg6 the rope's LENGTH PARITY routes its own growth — odd appends two, even appends one; four draws read 1,3,4,5
 pass	sg7 byte-len vs scalar-len DIVERGE on a growing multi-byte rope — each dispatch reads the difference (one per accent)
+pass	tt1 a NESTED-tuple op ARG destructured two levels inside the arm — both dispatches read the live state
+pass	tt2 NESTED-tuple resume values across two dispatches — outer destructured by match, inner read by PROJECTION
+pass	tt3 a tuple ROTATED through two chained dispatches — each rotation folds the state into the moved slot
+pass	tt4 a MIXED String+Int tuple state — the arm grows the rope and folds the op arg into the counter per dispatch
+pass	tt5 an inner PAIR swapped on counter parity — a nested-tuple state machine, both slots and the counter observed
