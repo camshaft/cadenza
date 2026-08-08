@@ -5123,7 +5123,20 @@ fn thread_bounded(
                     rargs.push(db.push_atom(Leaf::Name(name)));
                 }
             }
-            rargs.extend(cur.iter().copied()); // one trailing state arg per slot, in slot order
+            // One trailing state arg per slot, in slot order — each a FRESH copy of the incoming state node.
+            // The state node `cur[slot]` is ALSO returned as this call's out-state (single-return: `cur`
+            // unchanged), so a LATER position that threads against that out-state — a mutual-partner call's
+            // let-body performing the discharged op, whose perform arm β-reduces the state node into its
+            // next-state — RE-PARENTS the shared node in the single-parent arena, orphaning THIS call's
+            // trailing-arg occurrence and leaking the internal `f#eff{n}$s{k}` name in a CDZ0101 (the
+            // mutual-cycle `compute#eff5$s0` leak). A fresh copy per call arg keeps the call's embedded state
+            // distinct from the out-state that flows forward. `deep_fresh_copy` (not `copy_pure`) for the
+            // same reason as the `if`/`match`/perform arms: a resolve-pinned `$s{k}` ref must be re-pushed
+            // unpinned so it re-resolves against the specialized def's sig, not shared as a pinned node.
+            for &s in cur.iter() {
+                let fresh = deep_fresh_copy(db, s);
+                rargs.push(fresh);
+            }
             // Build the call `(<spec-name> args… state…)`. The specialized def is named, so a name atom
             // resolves to it (via `def_by_name`), and the ordinary recursive `Core::Call` + reachability
             // path emits it.
@@ -6502,6 +6515,124 @@ fn contains_any_perform(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> bool {
 /// reach here — accumulator-introduction rewrites them to tail form before the effect fold. See
 /// `rcdzc-specialize-recursive-operand-nested-selfcall-state-ref-gap`: a perform BEFORE the self-call
 /// (reads pre-recursion state = the incoming state) folds fine; only self-call-THEN-perform is the gap.
+/// Whether a MUTUAL-PARTNER call (a re-entrant call to a DIFFERENT recursive def, not `callee_def` itself)
+/// PRECEDES an out-state observation (a perform or another re-entrant call) on the strict spine — the
+/// mutual analogue of `selfcall_precedes_perform_in_operands`. Single-return specialization threads the
+/// mutual partner's call with the INCOMING state as its trailing arg and returns that incoming state
+/// UNCHANGED as the out-state (the recursive-call thread arm's single-return path), so the partner's own
+/// state ADVANCE is dropped: a later perform / call reading the out-state sees the pre-recursion state — a
+/// SILENT wrong value (`(let ((child (typeof (- n 1)))) (+ child (St.get)))` where `typeof` is a mutual
+/// partner that performs `put`s: the `(St.get)` reads the un-advanced state). The multi-value machinery
+/// (`thread_returning_tuple` + out-state projection) solves this for a SELF-call but does NOT extend across
+/// a mutual SCC — a partner's out-state is not projected. So this shape must DECLINE cleanly until the
+/// group-aware multi-value fold lands, NOT specialize to a dropped-advance miscompile. Mirrors
+/// `selfcall_precedes_perform_in_operands`'s spine positions (operands, `let` inits then body, `do` items,
+/// `match` scrutinee then arms, `if` cond then branches) but keys the "seen re-entry" trigger on a MUTUAL
+/// partner (`callee_calls_other_recursive_def`-style: a recursive def OTHER than `callee_def`), so a pure
+/// SELF-recursive body — already handled by `selfcall_precedes_perform_in_operands` + the multi-value path —
+/// is NOT re-declined here. A mutual partner that is the TAIL (nothing observes its out-state — the scalar
+/// ping/pong `(match (St.put n) (_ (pong …)))`) does NOT fire: the partner call is last on its spine.
+fn mutual_partner_precedes_observation(
+    db: &mut Db,
+    node: StructId,
+    callee_def: usize,
+    ctx: &HandlerCtx,
+) -> bool {
+    // A re-entrant position that OBSERVES the recursion's out-state: a perform (reads the current state) OR
+    // another re-entrant call (threads against it). Mirrors the two disjuncts the self-call `let`-arm uses.
+    fn observes_outstate(db: &mut Db, node: StructId, callee_def: usize, ctx: &HandlerCtx) -> bool {
+        contains_any_perform(db, node, ctx) || contains_recursive_call(db, node, callee_def)
+    }
+    // A mutual-partner call: a call to a DIFFERENT def whose own body is recursive (so it cycles back). NOT
+    // a self-call to `callee_def` (that path is `selfcall_precedes_perform_in_operands`).
+    fn contains_mutual_partner_call(db: &mut Db, node: StructId, callee_def: usize) -> bool {
+        if let Resolved::Apply { head, .. } = resolved_of(db, node)
+            && let Some(other) = callee_def_index_of(db, head)
+            && other != callee_def
+            && let Some(other_body) = db.defs[other].body
+            && crate::eval::is_recursive(db, other_body)
+        {
+            return true;
+        }
+        match db.ast.get(node).clone() {
+            Struct::List(children) => children
+                .iter()
+                .any(|&c| contains_mutual_partner_call(db, c, callee_def)),
+            Struct::Atom(_) => false,
+        }
+    }
+    // Strict application operands, left-to-right.
+    if let Resolved::Apply { args, .. } = resolved_of(db, node) {
+        let mut seen_partner = false;
+        for &a in args.iter() {
+            if seen_partner && observes_outstate(db, a, callee_def, ctx) {
+                return true;
+            }
+            if contains_mutual_partner_call(db, a, callee_def) {
+                seen_partner = true;
+            }
+        }
+    }
+    // `let` inits then body.
+    if let Some(form) = db.ast.as_form(node, "let").map(|t| t.to_vec())
+        && form.len() == 2
+        && let Struct::List(pairs) = db.ast.get(form[0]).clone()
+    {
+        let mut seen_partner = false;
+        for pair in pairs {
+            if let Struct::List(kv) = db.ast.get(pair).clone()
+                && kv.len() == 2
+            {
+                if seen_partner && observes_outstate(db, kv[1], callee_def, ctx) {
+                    return true;
+                }
+                if contains_mutual_partner_call(db, kv[1], callee_def) {
+                    seen_partner = true;
+                }
+            }
+        }
+        if seen_partner && observes_outstate(db, form[1], callee_def, ctx) {
+            return true;
+        }
+    }
+    // `do` items, left-to-right.
+    if let Some(items) = db.ast.as_form(node, "do").map(|t| t.to_vec()) {
+        let mut seen_partner = false;
+        for &it in items.iter() {
+            if seen_partner && observes_outstate(db, it, callee_def, ctx) {
+                return true;
+            }
+            if contains_mutual_partner_call(db, it, callee_def) {
+                seen_partner = true;
+            }
+        }
+    }
+    // `match` scrutinee then arm bodies.
+    if let Resolved::Match { scrutinee, arms } = resolved_of(db, node)
+        && contains_mutual_partner_call(db, scrutinee, callee_def)
+        && arms
+            .iter()
+            .any(|&(_, body)| observes_outstate(db, body, callee_def, ctx))
+    {
+        return true;
+    }
+    // `if` cond then branches.
+    if let Resolved::If { cond, then_, else_ } = resolved_of(db, node)
+        && contains_mutual_partner_call(db, cond, callee_def)
+        && (observes_outstate(db, then_, callee_def, ctx)
+            || observes_outstate(db, else_, callee_def, ctx))
+    {
+        return true;
+    }
+    // Recurse structurally.
+    match db.ast.get(node).clone() {
+        Struct::List(children) => children
+            .iter()
+            .any(|&c| mutual_partner_precedes_observation(db, c, callee_def, ctx)),
+        Struct::Atom(_) => false,
+    }
+}
+
 fn selfcall_precedes_perform_in_operands(
     db: &mut Db,
     node: StructId,
@@ -7053,6 +7184,20 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
     if selfcall_precedes_perform_in_operands(db, orig_body, callee_def, ctx) && !multivalue {
         return None; // an out-state-observing shape the multi-value path does not cover yet (abortive, or
         // a self-call gated behind a conditional inside a leaf) — decline BEFORE reserving the def.
+    }
+    // MUTUAL-PARTNER OUT-STATE OBSERVED (the group-fold soundness floor). A mutual-partner call PRECEDES an
+    // out-state observation on the strict spine — `(let ((child (typeof (- n 1)))) (+ child (St.get)))` in a
+    // mutual cycle where `typeof` performs. Single-return threads the partner call with the incoming state
+    // and returns it UNCHANGED, so the partner's own state advance is DROPPED and the later `(St.get)` reads
+    // the pre-recursion state — a SILENT wrong value (verified: `main(2)` → 3, should be 4). The multi-value
+    // machinery projects a SELF-call's out-state but NOT a mutual partner's, so this needs the group-aware
+    // multi-value fold (a later increment). DECLINE cleanly until then — a "not yet reducible" todo, never a
+    // dropped-advance miscompile. Placed after the self-call multivalue decision so a self-recursive shape
+    // that path linearizes is not pre-empted; keyed on a MUTUAL partner so pure self-recursion is unaffected.
+    // (A TAIL mutual partner — nothing observes its out-state, the scalar ping/pong — does NOT fire and still
+    // specializes single-return correctly, the partner's advance passed forward as its trailing state arg.)
+    if mutual_partner_precedes_observation(db, orig_body, callee_def, ctx) {
+        return None;
     }
     // BRANCH-PERFORMING CONDITIONAL alongside a re-entrant call (v-effects self-probe 2026-08-04,
     // breaker-confirmed rw1-rw5, concierge-greenlit safe-decline). A discharged perform inside a conditional
@@ -7656,6 +7801,26 @@ fn peel_resume_from_arm_body(db: &mut Db, arm_body: StructId) -> Option<(StructI
             state_children.push(db.push_list(vec![pat, s]));
         }
         return Some((db.push_list(value_children), db.push_list(state_children)));
+    }
+    // `(if cond (resume v0 s0) (resume v1 s1))` — the arm RESUMES PER BRANCH, selecting the value/next-state
+    // by a condition over the op arg / handler state (`get-ty(nid) s => (if (= nid 0) (resume (Some t) s)
+    // (resume (None) s))`). This is the `if` analogue of the `match` peel above: peel each branch to its
+    // `(value, next_state)`, then rebuild TWO `if`s over the SAME condition — the VALUE `(if cond v0 v1)`
+    // (the perform's result) and the NEXT-STATE `(if cond s0 s1)` (threaded forward). Keeping both `if`-
+    // wrapped is load-bearing for the same reason as the `match` peel: a branch's next-state may differ per
+    // branch, so it must stay under its own condition. The condition is re-used in both, sound on the same
+    // invariant the `match` scrutinee reuse relies on (it is over the pure op arg / state, so evaluating it
+    // in both `if`s duplicates no effect); each branch must itself peel to a resume.
+    if let Resolved::If { cond, then_, else_ } = resolved_of(db, arm_body) {
+        let (vt, st) = peel_resume_from_arm_body(db, then_)?;
+        let (ve, se) = peel_resume_from_arm_body(db, else_)?;
+        let vhead = db.push_name("if");
+        let shead = db.push_name("if");
+        let cond_v = copy_pure(db, cond);
+        let cond_s = copy_pure(db, cond);
+        let value = db.push_list(vec![vhead, cond_v, vt, ve]);
+        let state = db.push_list(vec![shead, cond_s, st, se]);
+        return Some((value, state));
     }
     None
 }

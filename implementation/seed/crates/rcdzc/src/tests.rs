@@ -11240,6 +11240,121 @@ fn two_helper_state_advances_both_thread_to_the_caller() {
     }
 }
 
+/// A TAIL mutually-recursive group where BOTH partners perform the discharged state op now FOLDS. `ping`/
+/// `pong` alternate, each performing `St.put n` (advancing the state) then TAIL-calling its partner; the
+/// base case reads the accumulated state via `St.get`. Every partner call is on the TAIL — nothing observes
+/// its out-state — so single-return specialization is sound: the partner's state advance is passed forward
+/// as its trailing state argument (the specialized `pong#eff` gets `(+ ping#eff$s0 n)`), and the base case's
+/// `get` reads the fully-accumulated state. Two fixes make this work: (1) the recursive-call thread arm now
+/// `deep_fresh_copy`s each trailing state arg, so the state node embedded in a mutual-partner call is not the
+/// SAME arena node returned as the out-state (a shared node was re-parented by a later perform, orphaning the
+/// call's occurrence and leaking the internal `partner#eff$s0` in a CDZ0101); (2) the `if`-peel in
+/// `peel_resume_from_arm_body`. Driven on a runtime arg so the reducer cannot unfold it before the fold.
+#[test]
+fn a_tail_mutual_recursive_group_where_both_partners_perform_folds() {
+    use crate::testkit::parse;
+    let src = "(do \
+        (effect St (op get (-> Unit Int64)) (op put (-> Int64 Unit))) \
+        (def (ping (: n Int64)) \
+          (if (= n 0) (St.get) (match (St.put n) (_ (pong (- n 1)))))) \
+        (def (pong (: n Int64)) \
+          (match (St.put n) (_ (ping (- n 1))))) \
+        (def (main (: k Int64)) \
+          (handle St 0 \
+            ((get (u) s (resume s s)) \
+             (put (v) s (resume unit (+ s v)))) \
+            (ping k))) \
+        (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src)))
+        .expect("a tail mutual-recursive both-perform group must compile (no `$s0` leak)");
+    // `main(4)`: ping puts 4, pong puts 3, ping puts 2, pong puts 1, base reads get → 4+3+2+1 = 10. A
+    // dropped mutual-partner advance (the pre-fix leak, or a single-return miscompile) would not reach 10.
+    assert_eq!(
+        run_returns_with::<i64>(&bytes, "main", &[wasmtime::component::Val::S64(4)]),
+        10,
+        "the tail mutual cycle threads each partner's put-advance forward → 4+3+2+1 = 10"
+    );
+}
+
+/// SAFE-DECLINE (soundness floor): a NON-TAIL mutual-recursive group where a partner call PRECEDES an
+/// out-state observation must DECLINE cleanly, NOT specialize to a dropped-advance miscompile. `compute`
+/// recurses via a `let`-init `(typeof (- n 1))` (a mutual partner that performs `put`) then reads state
+/// AFTER the call returns `(+ child (St.get))`. Single-return threads the partner call with the INCOMING
+/// state and returns it unchanged, so the partner's put-advance is DROPPED and the post-call `get` reads the
+/// stale pre-recursion state — a SILENT wrong value (`main(2)` folded to 3, the sound answer is 4). The
+/// multi-value machinery projects a SELF-call's out-state but not a mutual partner's, so
+/// `mutual_partner_precedes_observation` declines this until the group-aware multi-value fold lands. Pins
+/// the CLEAN decline (no `$s0` leak, no miscompile) so a regression to either is caught.
+#[test]
+fn a_non_tail_mutual_group_observing_a_partners_out_state_declines_cleanly() {
+    use crate::testkit::parse;
+    let src = "(do \
+        (effect St (op get (-> Unit Int64)) (op put (-> Int64 Unit))) \
+        (def (typeof (: n Int64)) \
+          (if (= n 0) (St.get) (compute n))) \
+        (def (compute (: n Int64)) \
+          (let ((child (typeof (- n 1)))) \
+            (match (St.put n) (_ (+ child (St.get)))))) \
+        (def (main (: k Int64)) \
+          (handle St 0 \
+            ((get (u) s (resume s s)) \
+             (put (v) s (resume unit (+ s v)))) \
+            (typeof k))) \
+        (export main))";
+    let out = crate::compile::compile(
+        &[crate::abi::Artifact::new(
+            crate::abi::Artifact::KIND_AST,
+            "main",
+            crate::codec::encode(&parse(src)),
+        )],
+        &[crate::backend::Target::Wasm],
+    );
+    // No component (a clean decline), and the decline must NOT be the internal-name leak — an honest
+    // "not yet reducible" todo naming the base function, never a `CDZ0101 unbound name …$s0`.
+    assert!(
+        out.artifact(crate::backend::Target::Wasm.artifact_kind())
+            .is_none(),
+        "a non-tail mutual group observing a partner's out-state must decline, not miscompile"
+    );
+    assert!(
+        !out.diagnostics
+            .iter()
+            .any(|d| d.message.contains("$s0") || d.message.contains("$s1")),
+        "the decline must be clean — no leaked internal specialization state-param name"
+    );
+}
+
+/// A handler ARM that RESUMES PER `if`-BRANCH now folds. `get-ty(nid) s => (if (= nid 0) (resume (Some t) s)
+/// (resume (None) s))` selects the resume value by a condition over the op arg. `peel_resume_from_arm_body`
+/// handled `do`/`let`/`match` resume-wrappers but NOT `if`, so the whole handler declined before reaching
+/// the fold. The `if`-peel rebuilds two `if`s over the same condition — the value `(if cond v0 v1)` and the
+/// next-state `(if cond s0 s1)` — the `if` analogue of the existing `match` peel. Pins that the arm folds.
+#[test]
+fn a_handler_arm_resuming_per_if_branch_folds() {
+    use crate::testkit::parse;
+    let src = "(do \
+        (effect St (op get (-> Int64 Int64))) \
+        (def (main (: k Int64)) \
+          (handle St 0 \
+            ((get (nid) s (if (= nid 0) (resume 100 s) (resume 200 s)))) \
+            (St.get k))) \
+        (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src)))
+        .expect("a handler arm resuming per `if` branch must fold (the `if`-peel)");
+    // `main(0)` → the get arm's `nid == 0` branch → resume 100.
+    assert_eq!(
+        run_returns_with::<i64>(&bytes, "main", &[wasmtime::component::Val::S64(0)]),
+        100,
+        "the nid==0 branch resumes 100"
+    );
+    // `main(7)` → the else branch → resume 200.
+    assert_eq!(
+        run_returns_with::<i64>(&bytes, "main", &[wasmtime::component::Val::S64(7)]),
+        200,
+        "the nid!=0 branch resumes 200"
+    );
+}
+
 /// The former residual of the effectful-helper-in-a-self-call-arg family, NOW FOLDING: an inlined helper
 /// whose perform sits UNDER A CONDITIONAL (`if`/`match`) — in a branch (`if c then acc + B.b x else acc`), in
 /// the condition (`if B.b x == 1 then …`), or nested. Threading the self-call arg inlines the helper's `if`;

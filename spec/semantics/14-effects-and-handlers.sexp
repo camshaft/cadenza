@@ -2360,19 +2360,16 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 2050 Int64)))
 
-(case "a two-site arm with a second op that REPLACES the state mid-chain declines cleanly"
-  (doc    "The decline BOUNDARY of the served family (breaker sy1). The rule is arm-shape UNIFORMITY at the
-           handler's frame: multi-site arms mix freely (any dispatch order), and a single-site arm among
-           multi-site performs declines except trailing. Here `emit` is a two-site (multi-site) arm but the
-           second op `flip` — `(flip (u) s (resume 0 (Symbol.of \"quiet\")))` — is SINGLE-site (it resumes
-           once, replacing the state with a different value), dispatched BETWEEN the two `emit` performs, so
-           the refold must mix a one-hole and a two-hole rebuild mid-chain and declines. (Making `flip`
-           itself multi-site would serve the same order — confirmed by re-derivation.) The two-hole refold
-           cannot yet thread a non-uniform (single-site) op through the middle of a multi-site continuation
-           chain. This is an HONEST decline (a fold-capability gap, never a wrong value), NOT the ts1/ag5
-           false-CDZ0101 orphan (those were bugs, fixed). The eventual fold: emit(5) sees `loud` → 5·100 =
-           500, flip sets state `quiet` and resumes 0, emit(3) sees `quiet` → 3 → 500 + 0 + 3 = 503. Pins
-           the boundary as a clean todo, not a leak.")
+(case "a two-site arm with a second op that replaces the state mid-chain folds"
+  (doc    "A two-site arm mixed with a single-site op that replaces the state mid-chain (breaker sy1). `emit`
+           is a two-site (multi-site) arm; the second op `flip` — `(flip (u) s (resume 0 (Symbol.of
+           \"quiet\")))` — is SINGLE-site (resumes once, replacing the state), dispatched BETWEEN the two
+           `emit` performs. This now FOLDS: `emit`'s arm resumes PER `if`-BRANCH — `(if (= s (Symbol.of
+           \"loud\")) (resume (* v 100) s) (resume v s))` — which `peel_resume_from_arm_body` handles via the
+           `if`-peel (the `if` analogue of the existing `match` peel: rebuild the value `(if cond v0 v1)` and
+           the next-state `(if cond s0 s1)` over the same condition). Before that peel the whole handler
+           declined because the arm's `if`-of-resumes was unpeelable. The fold: emit(5) sees `loud` → 5·100 =
+           500, flip sets state `quiet` and resumes 0, emit(3) sees `quiet` → 3 → 500 + 0 + 3 = 503.")
   (input  (do
             (effect St (op emit (-> Int64 Int64)) (op flip (-> Unit Int64)))
             (def (main (: n Int64))
