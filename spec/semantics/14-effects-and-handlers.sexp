@@ -18622,3 +18622,54 @@
   (call   main (: 4 Int64)) (output (: 105 Int64))
   (call   main (: 7 Int64)) (output (: 208 Int64))
   (call   main (: -2 Int64)) (output (: 99 Int64)))
+
+;; ── dc: DEF relay chains under one handler ───────────────────────────────────
+;; Multi-hop call relays where every hop performs against the SAME enclosing
+;; frame (distinct from ed's per-def handlers and cn's nested shadow seeds).
+;; dc1 relays three hops deep, each def drawing then calling the next (weights
+;; pin depth order); dc2's relay ARGUMENT is a draw (argument-before-body
+;; order across the def boundary); dc3's MIDDLE hop is chosen by a draw —
+;; a two-draw or one-draw callee, the tail draw pinning the total advance.
+
+(case "dc1 a THREE-hop def relay under ONE handler — each def draws then calls the next, weights pin the depth order"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (def (h3) (E.next))
+            (def (g2) (+ (* 10 (E.next)) (h3)))
+            (def (f1) (+ (* 100 (E.next)) (g2)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1))))
+                (f1)))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 345 Int64))
+  (call   main (: 0 Int64)) (output (: 12 Int64))
+  (call   main (: -2 Int64)) (output (: -210 Int64)))
+
+(case "dc2 the relay call's ARGUMENT is a draw — the callee draws again and combines, argument-before-body order pinned"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (def (f (: x Int64)) (+ (* 10 x) (E.next)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1))))
+                (f (E.next))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 56 Int64))
+  (call   main (: 0 Int64)) (output (: 1 Int64))
+  (call   main (: -4 Int64)) (output (: -43 Int64)))
+
+(case "dc3 the MIDDLE relay hop is chosen by a draw — the branch decides between a two-draw and a one-draw callee, a tail draw pins the total"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (def (g2) (+ (* 10 (E.next)) (E.next)))
+            (def (h1) (E.next))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1))))
+                (+ (* 100 (if (> (E.next) 0) (g2) (h1)))
+                   (- (E.next) n))))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: 5603 Int64))
+  (call   main (: 0 Int64)) (output (: 102 Int64))
+  (call   main (: -3 Int64)) (output (: -198 Int64)))
