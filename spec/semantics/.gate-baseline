@@ -6359,3 +6359,6 @@ pass	ms1 an op returns a THREE-variant sum built from state parity — two seque
 pass	ms2 match ARMS themselves draw after the performing scrutinee advanced the state — arm-selected continuation of the same thread
 pass	ms3 parity-sum dispatch inside a RECURSIVE walk — each level draws a Mode and accumulates by variant as the thread advances
 pass	ms4 the C arm RE-MATCHES its own payload's parity — a nested pure match inside an arm of the performing-scrutinee match
+pass	fa1 a FOLD-style accumulator threads through a performing recursion — acc doubles then absorbs each level's draw
+pass	fa2 TWO accumulators through one performing recursion — running sum and prefix-sum-of-prefix-sums stay in step with the draws
+pass	fa3 each fold level draws TWICE and mixes them asymmetrically — 10*first + second pins the intra-level draw order
