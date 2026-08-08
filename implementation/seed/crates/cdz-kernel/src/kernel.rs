@@ -491,7 +491,7 @@ impl Session {
         &mut self,
         body: EventBody,
         cause: Option<Hash>,
-        reducer: &dyn Reducer,
+        reducer: &mut dyn Reducer,
         authz: &(impl Authorize + ?Sized),
         executor: &mut (impl Executor + ?Sized),
     ) -> Result<(), KernelError> {
@@ -551,7 +551,7 @@ impl Session {
         &mut self,
         body: EventBody,
         cause: Option<Hash>,
-        reducer: &dyn Reducer,
+        reducer: &mut dyn Reducer,
         authz: &(impl Authorize + ?Sized),
         executor: &mut (impl Executor + ?Sized),
     ) -> Result<Vec<crate::effect::ControlEffect>, KernelError> {
@@ -647,7 +647,7 @@ impl Session {
     /// a control/* effect); an ordinary genesis reducer emits none, so callers can usually ignore it.
     pub async fn seed_capabilities(
         &mut self,
-        reducer: &dyn Reducer,
+        reducer: &mut dyn Reducer,
         authz: &(impl Authorize + ?Sized),
         executor: &mut (impl Executor + ?Sized),
     ) -> Vec<crate::effect::ControlEffect> {
@@ -734,7 +734,7 @@ impl Session {
     /// second call with an unchanged surface is the empty-delta no-op.
     pub async fn push_capabilities_changed(
         &mut self,
-        reducer: &dyn Reducer,
+        reducer: &mut dyn Reducer,
         authz: &(impl Authorize + ?Sized),
         executor: &mut (impl Executor + ?Sized),
     ) -> Vec<crate::effect::ControlEffect> {
@@ -787,7 +787,7 @@ impl Session {
     pub async fn fire_due_timers(
         &mut self,
         now_ms: u64,
-        reducer: &dyn Reducer,
+        reducer: &mut dyn Reducer,
         authz: &(impl Authorize + ?Sized),
         executor: &mut (impl Executor + ?Sized),
     ) -> usize {
@@ -884,7 +884,7 @@ impl Session {
     /// quiescence. Reducer folds + the executor call `.await` (so a long wasm fold cooperatively yields).
     async fn drive(
         &mut self,
-        reducer: &dyn Reducer,
+        reducer: &mut dyn Reducer,
         authz: &(impl Authorize + ?Sized),
         executor: &mut (impl Executor + ?Sized),
     ) -> Vec<crate::effect::ControlEffect> {
@@ -899,7 +899,7 @@ impl Session {
     async fn drive_worklist(
         &mut self,
         mut to_process: Vec<(Effect, Hash)>,
-        reducer: &dyn Reducer,
+        reducer: &mut dyn Reducer,
         authz: &(impl Authorize + ?Sized),
         executor: &mut (impl Executor + ?Sized),
     ) -> Vec<crate::effect::ControlEffect> {
@@ -1251,7 +1251,7 @@ impl Session {
 
     /// Fold the tip through a [`Reducer`] (`.await`), with FoldFailed capture + effect-reversal. This is
     /// the ONE place the reducer actually awaits.
-    async fn fold_tip(&mut self, reducer: &dyn Reducer, cause: Hash) -> Vec<(Effect, Hash)> {
+    async fn fold_tip(&mut self, reducer: &mut dyn Reducer, cause: Hash) -> Vec<(Effect, Hash)> {
         let tip = self.log.last().expect("log always has genesis").clone();
         let out = reducer.fold(&tip, &mut self.kv).await;
         // Error-resilience (§17): a failed fold is captured as a FoldFailed log event, not folded further.
@@ -1281,7 +1281,7 @@ impl Session {
         &mut self,
         id: EffectId,
         outcome: EffectOutcome,
-        reducer: &dyn Reducer,
+        reducer: &mut dyn Reducer,
         dispatch_hash: Hash,
     ) -> Vec<(Effect, Hash)> {
         if self.settled.contains(&id.0) {
@@ -1324,7 +1324,7 @@ impl Session {
     pub async fn time_out_effect(
         &mut self,
         id: EffectId,
-        reducer: &dyn Reducer,
+        reducer: &mut dyn Reducer,
         authz: &(impl Authorize + ?Sized),
         executor: &mut (impl Executor + ?Sized),
     ) -> bool {
@@ -1383,7 +1383,7 @@ impl Session {
         &mut self,
         id: EffectId,
         outcome: EffectOutcome,
-        reducer: &dyn Reducer,
+        reducer: &mut dyn Reducer,
         authz: &(impl Authorize + ?Sized),
         executor: &mut (impl Executor + ?Sized),
     ) -> bool {
@@ -1426,7 +1426,7 @@ impl Session {
         &mut self,
         id: EffectId,
         outcome: EffectOutcome,
-        reducer: &dyn Reducer,
+        reducer: &mut dyn Reducer,
         authz: &(impl Authorize + ?Sized),
         executor: &mut (impl Executor + ?Sized),
     ) -> bool {
@@ -1662,7 +1662,10 @@ impl Session {
     ///
     /// Effects emitted during replay are IGNORED (§17 "replay re-folds with no live effect" — the results
     /// are already in the log); so replayed-kv == live-kv (PR#990 finding #1).
-    pub async fn replay(log: Vec<Event>, reducer: &dyn Reducer) -> Result<Session, KernelError> {
+    pub async fn replay(
+        log: Vec<Event>,
+        reducer: &mut dyn Reducer,
+    ) -> Result<Session, KernelError> {
         match log.first().map(|e| &e.body) {
             Some(EventBody::Genesis { .. }) => {}
             _ => return Err(KernelError::MissingGenesis),
@@ -1761,7 +1764,7 @@ impl Session {
     /// — the caller must `genesis()` a new one — reported as [`RecoverError::EmptyLog`].
     pub async fn recover_from(
         recovered: crate::log_store::Recovered,
-        reducer: &dyn Reducer,
+        reducer: &mut dyn Reducer,
     ) -> Result<(Session, RecoveryReport), RecoverError> {
         if recovered.events.is_empty() {
             return Err(RecoverError::EmptyLog);
@@ -1786,7 +1789,7 @@ impl Session {
     /// session instead); see [`Session::recover_from`] for the `kind`/`open_effects` report contract.
     pub async fn recover(
         path: impl AsRef<std::path::Path>,
-        reducer: &dyn Reducer,
+        reducer: &mut dyn Reducer,
     ) -> Result<(Session, RecoveryReport), RecoverError> {
         let recovered = crate::log_store::LogStore::recover(path).map_err(RecoverError::Io)?;
         Session::recover_from(recovered, reducer).await
@@ -2099,7 +2102,7 @@ mod status_snapshot_tests {
     struct StatusReducer;
     #[async_trait::async_trait(?Send)]
     impl Reducer for StatusReducer {
-        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => {
                     kv.put(b"public/status".to_vec(), b"investigating auth".to_vec());
@@ -2124,7 +2127,7 @@ mod status_snapshot_tests {
     struct FailingReducer;
     #[async_trait::async_trait(?Send)]
     impl Reducer for FailingReducer {
-        async fn fold(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => {
                     FoldOutput::failed("wasm reducer trapped: unreachable")
@@ -2145,7 +2148,7 @@ mod status_snapshot_tests {
         s.deliver(
             inbound(),
             None,
-            &FailingReducer,
+            &mut FailingReducer,
             &Authorizer::deny_all(),
             &mut exec,
         )
@@ -2199,7 +2202,7 @@ mod status_snapshot_tests {
 
         // Self-heal precondition: ONE failed fold doesn't wedge the session — a SUBSEQUENT deliver still folds.
         // (StatusReducer here just to prove the session accepts + processes a new event after the failure.)
-        s.deliver(inbound(), None, &StatusReducer, &timer_cap(), &mut exec)
+        s.deliver(inbound(), None, &mut StatusReducer, &timer_cap(), &mut exec)
             .await
             .unwrap();
         assert!(
@@ -2215,7 +2218,7 @@ mod status_snapshot_tests {
     struct ReportingReducer;
     #[async_trait::async_trait(?Send)]
     impl Reducer for ReportingReducer {
-        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { content_type, .. } if content_type.is_report() => {
                     // Summarize from local KV alone — read the goal it recorded, describe progress.
@@ -2257,7 +2260,7 @@ mod status_snapshot_tests {
     }
     #[async_trait::async_trait(?Send)]
     impl Reducer for PeerEmitterReducer {
-        async fn fold(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => FoldOutput::with(vec![EffectRequest::new(
                     EffectKind::Emit,
@@ -2289,7 +2292,7 @@ mod status_snapshot_tests {
         s.deliver(
             inbound(),
             None,
-            &PeerEmitterReducer { peer },
+            &mut PeerEmitterReducer { peer },
             &authz,
             &mut exec,
         )
@@ -2345,7 +2348,7 @@ mod status_snapshot_tests {
         s.deliver(
             inbound(),
             None,
-            &PeerEmitterReducer { peer: "session-C" }, // NOT the granted target
+            &mut PeerEmitterReducer { peer: "session-C" }, // NOT the granted target
             &authz,
             &mut exec,
         )
@@ -2397,7 +2400,7 @@ mod status_snapshot_tests {
     async fn active_session_reports_armed_timer_and_only_the_public_kv() {
         let mut exec = RecordingExecutor::new();
         let mut s = Session::genesis(Hash::of(b"status-v1"), Hash::of(b"test-spawn-nonce"));
-        s.deliver(inbound(), None, &StatusReducer, &timer_cap(), &mut exec)
+        s.deliver(inbound(), None, &mut StatusReducer, &timer_cap(), &mut exec)
             .await
             .unwrap();
 
@@ -2419,7 +2422,7 @@ mod status_snapshot_tests {
     async fn fork_for_query_clones_state_without_touching_the_original() {
         let mut exec = RecordingExecutor::new();
         let mut s = Session::genesis(Hash::of(b"status-v1"), Hash::of(b"test-spawn-nonce"));
-        s.deliver(inbound(), None, &StatusReducer, &timer_cap(), &mut exec)
+        s.deliver(inbound(), None, &mut StatusReducer, &timer_cap(), &mut exec)
             .await
             .unwrap();
 
@@ -2473,7 +2476,7 @@ mod status_snapshot_tests {
             .deliver(
                 inbound(),
                 None,
-                &StatusReducer,
+                &mut StatusReducer,
                 &timer_cap(),
                 &mut sync_exec,
             )
@@ -2486,7 +2489,7 @@ mod status_snapshot_tests {
             .deliver(
                 inbound(),
                 None,
-                &StatusReducer,
+                &mut StatusReducer,
                 &timer_cap(),
                 &mut async_exec,
             )
@@ -2525,7 +2528,7 @@ mod status_snapshot_tests {
     struct TimerThenPublishReducer;
     #[async_trait::async_trait(?Send)]
     impl Reducer for TimerThenPublishReducer {
-        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => {
                     FoldOutput::with_effects(vec![crate::reducer::Effect {
@@ -2553,10 +2556,10 @@ mod status_snapshot_tests {
         // assert (a) it returns 1 (one timer fired), (b) the reducer WOKE (its TimerFired fold ran, writing
         // the marker), (c) the armed-timer + open-obligation sets drained (the timer settled). Determinism:
         // the recorded fired_ms is the timer's deadline, so replay is stable.
-        let reducer = TimerThenPublishReducer;
+        let mut reducer = TimerThenPublishReducer;
         let mut exec = RecordingExecutor::new();
         let mut s = Session::genesis(Hash::of(b"timer-v1"), Hash::of(b"test-spawn-nonce"));
-        s.deliver(inbound(), None, &reducer, &timer_cap(), &mut exec)
+        s.deliver(inbound(), None, &mut reducer, &timer_cap(), &mut exec)
             .await
             .unwrap();
         // Armed, not yet fired.
@@ -2565,7 +2568,7 @@ mod status_snapshot_tests {
 
         // Fire everything due at now=1500 (past the 1000ms deadline).
         let fired = s
-            .fire_due_timers(1500, &reducer, &timer_cap(), &mut exec)
+            .fire_due_timers(1500, &mut reducer, &timer_cap(), &mut exec)
             .await;
         assert_eq!(fired, 1, "exactly one timer was due and fired");
         // The reducer woke on the TimerFired and published its marker.
@@ -2581,7 +2584,7 @@ mod status_snapshot_tests {
         // OWN timer here — a stand-in for the reducer's summarize work), and the parent is still untouched.
         let mut exec = RecordingExecutor::new();
         let mut s = Session::genesis(Hash::of(b"status-v1"), Hash::of(b"test-spawn-nonce"));
-        s.deliver(inbound(), None, &StatusReducer, &timer_cap(), &mut exec)
+        s.deliver(inbound(), None, &mut StatusReducer, &timer_cap(), &mut exec)
             .await
             .unwrap();
         let parent_events = s.log().len();
@@ -2591,7 +2594,7 @@ mod status_snapshot_tests {
         fork.deliver(
             inbound(),
             None,
-            &StatusReducer,
+            &mut StatusReducer,
             &timer_cap(),
             &mut fork_exec,
         )
@@ -2614,9 +2617,15 @@ mod status_snapshot_tests {
         let mut exec = RecordingExecutor::new();
         let mut live = Session::genesis(Hash::of(b"reporting-v1"), Hash::of(b"test-spawn-nonce"));
         // The live session does ordinary work: records a private goal + public status.
-        live.deliver(inbound(), None, &ReportingReducer, &timer_cap(), &mut exec)
-            .await
-            .unwrap();
+        live.deliver(
+            inbound(),
+            None,
+            &mut ReportingReducer,
+            &timer_cap(),
+            &mut exec,
+        )
+        .await
+        .unwrap();
         let live_events_before = live.log().len();
         assert_eq!(
             live.kv().get(b"private/goal"),
@@ -2629,7 +2638,7 @@ mod status_snapshot_tests {
         fork.deliver(
             report_inbound(),
             None,
-            &ReportingReducer,
+            &mut ReportingReducer,
             &timer_cap(),
             &mut fork_exec,
         )
@@ -2791,7 +2800,7 @@ mod monotonic_now_tests {
     struct NowReducer;
     #[async_trait::async_trait(?Send)]
     impl Reducer for NowReducer {
-        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } | EventBody::EffectResult { .. } => {
                     // On a Now result, stash it; then (up to 3 total) ask again to build a sequence.
@@ -2861,7 +2870,7 @@ mod monotonic_now_tests {
     async fn now_sequence_is_strictly_increasing_even_from_a_stuck_clock() {
         let mut exec = StuckClock(1000); // same raw reading every time
         let mut s = Session::genesis(Hash::of(b"now-v1"), Hash::of(b"test-spawn-nonce"));
-        s.deliver(inbound(), None, &NowReducer, &now_cap(), &mut exec)
+        s.deliver(inbound(), None, &mut NowReducer, &now_cap(), &mut exec)
             .await
             .unwrap();
         let seq = recorded_now_sequence(&s);
@@ -2878,7 +2887,7 @@ mod monotonic_now_tests {
     async fn replay_reconstructs_the_same_last_now_and_sequence() {
         let mut exec = StuckClock(1000);
         let mut s = Session::genesis(Hash::of(b"now-v1"), Hash::of(b"test-spawn-nonce"));
-        s.deliver(inbound(), None, &NowReducer, &now_cap(), &mut exec)
+        s.deliver(inbound(), None, &mut NowReducer, &now_cap(), &mut exec)
             .await
             .unwrap();
         let live_seq = recorded_now_sequence(&s);
@@ -2887,7 +2896,7 @@ mod monotonic_now_tests {
         // Replay the log: the recorded (already-clamped) Now results must rebuild the SAME last_now +
         // the SAME sequence — replay never re-clamps, it re-derives (determinism).
         let log = s.log().to_vec();
-        let replayed = Session::replay(log, &NowReducer).await.expect("replay");
+        let replayed = Session::replay(log, &mut NowReducer).await.expect("replay");
         assert_eq!(recorded_now_sequence(&replayed), live_seq);
         assert_eq!(replayed.last_now, live_last_now);
         assert_eq!(replayed.last_now, 1002);
@@ -2902,12 +2911,12 @@ mod monotonic_now_tests {
         // dropped the sync twin — so this pins single-replay determinism instead.)
         let mut exec = StuckClock(1000);
         let mut s = Session::genesis(Hash::of(b"now-v1"), Hash::of(b"test-spawn-nonce"));
-        s.deliver(inbound(), None, &NowReducer, &now_cap(), &mut exec)
+        s.deliver(inbound(), None, &mut NowReducer, &now_cap(), &mut exec)
             .await
             .unwrap();
         let log = s.log().to_vec();
 
-        let replayed = Session::replay(log.clone(), &NowReducer)
+        let replayed = Session::replay(log.clone(), &mut NowReducer)
             .await
             .expect("replay");
         // Reconstructs the live session's derived state exactly.
@@ -2918,7 +2927,9 @@ mod monotonic_now_tests {
         assert_eq!(recorded_now_sequence(&replayed), recorded_now_sequence(&s));
 
         // Two replays of the same log agree — the re-fold has no hidden nondeterminism.
-        let replayed2 = Session::replay(log, &NowReducer).await.expect("replay 2");
+        let replayed2 = Session::replay(log, &mut NowReducer)
+            .await
+            .expect("replay 2");
         assert_eq!(replayed2.snapshot().kv_root, replayed.snapshot().kv_root);
     }
 
@@ -2928,7 +2939,7 @@ mod monotonic_now_tests {
     struct SummaryEmitReducer;
     #[async_trait::async_trait(?Send)]
     impl Reducer for SummaryEmitReducer {
-        async fn fold(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => {
                     let mut request = EffectRequest::new(
@@ -2964,7 +2975,7 @@ mod monotonic_now_tests {
             .deliver_control(
                 inbound(),
                 None,
-                &SummaryEmitReducer,
+                &mut SummaryEmitReducer,
                 &Authorizer::deny_all(),
                 &mut exec,
             )
@@ -2999,7 +3010,7 @@ mod monotonic_now_tests {
         s2.deliver(
             inbound(),
             None,
-            &SummaryEmitReducer,
+            &mut SummaryEmitReducer,
             &Authorizer::deny_all(),
             &mut exec2,
         )
@@ -3013,7 +3024,7 @@ mod monotonic_now_tests {
     struct MixedEmitReducer;
     #[async_trait::async_trait(?Send)]
     impl Reducer for MixedEmitReducer {
-        async fn fold(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => {
                     // (1) a control/summary effect — must surface, authz-exempt, unrouted.
@@ -3061,7 +3072,7 @@ mod monotonic_now_tests {
             predicate: crate::effect::ResourcePredicate::Any,
         }]);
         let control = session
-            .deliver_control(inbound(), None, &MixedEmitReducer, &authz, &mut exec)
+            .deliver_control(inbound(), None, &mut MixedEmitReducer, &authz, &mut exec)
             .await
             .expect("deliver");
 
@@ -3110,7 +3121,7 @@ mod monotonic_now_tests {
     struct SignatureQueryReducer;
     #[async_trait::async_trait(?Send)]
     impl Reducer for SignatureQueryReducer {
-        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => {
                     let mut request = EffectRequest::new(
@@ -3159,7 +3170,7 @@ mod monotonic_now_tests {
             .deliver_control(
                 inbound(),
                 None,
-                &SignatureQueryReducer,
+                &mut SignatureQueryReducer,
                 &Authorizer::deny_all(), // control is authz-EXEMPT — deny_all must not deny it
                 &mut exec,
             )
@@ -3217,7 +3228,7 @@ mod monotonic_now_tests {
                 EffectOutcome::Ok(Some(crate::effect::Payload::Inline(
                     descriptor.clone().into(),
                 ))),
-                &SignatureQueryReducer,
+                &mut SignatureQueryReducer,
                 &Authorizer::deny_all(),
                 &mut exec,
             )
@@ -3244,7 +3255,7 @@ mod monotonic_now_tests {
                 EffectOutcome::Ok(Some(crate::effect::Payload::Inline(
                     b"other".to_vec().into(),
                 ))),
-                &SignatureQueryReducer,
+                &mut SignatureQueryReducer,
                 &Authorizer::deny_all(),
                 &mut exec,
             )
@@ -3268,7 +3279,7 @@ mod monotonic_now_tests {
             .settle_effect_result(
                 EffectId(9999),
                 EffectOutcome::Ok(None),
-                &SignatureQueryReducer,
+                &mut SignatureQueryReducer,
                 &Authorizer::deny_all(),
                 &mut exec,
             )
@@ -3287,7 +3298,7 @@ mod monotonic_now_tests {
             .deliver_control(
                 inbound(),
                 None,
-                &SignatureQueryReducer,
+                &mut SignatureQueryReducer,
                 &Authorizer::deny_all(),
                 &mut exec,
             )
@@ -3298,7 +3309,7 @@ mod monotonic_now_tests {
             .settle_effect_result(
                 sig_id,
                 EffectOutcome::err("not a valid component".to_string()),
-                &SignatureQueryReducer,
+                &mut SignatureQueryReducer,
                 &Authorizer::deny_all(),
                 &mut exec,
             )
@@ -3327,7 +3338,7 @@ mod monotonic_now_tests {
             .deliver(
                 inbound(),
                 None,
-                &SignatureQueryReducer,
+                &mut SignatureQueryReducer,
                 &Authorizer::deny_all(),
                 &mut exec,
             )
@@ -3367,7 +3378,7 @@ mod monotonic_now_tests {
             .deliver(
                 inbound(),
                 None,
-                &SummaryEmitReducer,
+                &mut SummaryEmitReducer,
                 &Authorizer::deny_all(),
                 &mut exec,
             )
@@ -3399,7 +3410,7 @@ mod monotonic_now_tests {
             .deliver_control(
                 inbound(),
                 None,
-                &SummaryEmitReducer,
+                &mut SummaryEmitReducer,
                 &Authorizer::deny_all(),
                 &mut exec,
             )
@@ -3427,7 +3438,7 @@ mod monotonic_now_tests {
             .settle_effect_result(
                 control[0].id,
                 EffectOutcome::Ok(None),
-                &SummaryEmitReducer,
+                &mut SummaryEmitReducer,
                 &Authorizer::deny_all(),
                 &mut exec,
             )
@@ -3441,7 +3452,7 @@ mod monotonic_now_tests {
     struct CapabilitiesQueryReducer;
     #[async_trait::async_trait(?Send)]
     impl Reducer for CapabilitiesQueryReducer {
-        async fn fold(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => {
                     let mut request =
@@ -3477,7 +3488,7 @@ mod monotonic_now_tests {
             .deliver_control(
                 inbound(),
                 None,
-                &CapabilitiesQueryReducer,
+                &mut CapabilitiesQueryReducer,
                 &authz,
                 &mut exec,
             )
@@ -3557,7 +3568,7 @@ mod monotonic_now_tests {
     struct InertReducer;
     #[async_trait::async_trait(?Send)]
     impl Reducer for InertReducer {
-        async fn fold(&self, _event: &Event, _kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, _event: &Event, _kv: &mut Kv) -> FoldOutput {
             FoldOutput::none()
         }
     }
@@ -3581,7 +3592,7 @@ mod monotonic_now_tests {
         assert_eq!(session.log().len(), 1);
 
         let surfaced = session
-            .seed_capabilities(&InertReducer, &authz, &mut exec)
+            .seed_capabilities(&mut InertReducer, &authz, &mut exec)
             .await;
         // The seed answers inline — nothing surfaces to the driver, nothing routed to the executor.
         assert!(
@@ -3658,7 +3669,7 @@ mod monotonic_now_tests {
             Box::new(RecordingExecutor::new()),
         );
         session
-            .seed_capabilities(&InertReducer, &authz, &mut narrow)
+            .seed_capabilities(&mut InertReducer, &authz, &mut narrow)
             .await;
         let cap_results = |s: &Session| {
             s.log()
@@ -3688,7 +3699,7 @@ mod monotonic_now_tests {
                 Box::new(RecordingExecutor::new()),
             );
         let surfaced = session
-            .push_capabilities_changed(&InertReducer, &authz, &mut wide)
+            .push_capabilities_changed(&mut InertReducer, &authz, &mut wide)
             .await;
         assert!(
             surfaced.is_empty(),
@@ -3727,7 +3738,7 @@ mod monotonic_now_tests {
         // No change: a second push with the SAME (wide) surface is the empty-delta no-op — nothing folded.
         let log_len = session.log().len();
         let noop = session
-            .push_capabilities_changed(&InertReducer, &authz, &mut wide)
+            .push_capabilities_changed(&mut InertReducer, &authz, &mut wide)
             .await;
         assert!(noop.is_empty());
         assert_eq!(
@@ -3755,7 +3766,7 @@ mod monotonic_now_tests {
             Session::genesis(Hash::of(b"seed-idem-v1"), Hash::of(b"test-spawn-nonce"));
 
         let first = session
-            .seed_capabilities(&InertReducer, &authz, &mut exec)
+            .seed_capabilities(&mut InertReducer, &authz, &mut exec)
             .await;
         assert!(first.is_empty(), "seed answered inline");
         let after_first = session.log().len();
@@ -3777,7 +3788,7 @@ mod monotonic_now_tests {
 
         // Second call: no-op — empty return, log UNCHANGED, still exactly one seed dispatch.
         let second = session
-            .seed_capabilities(&InertReducer, &authz, &mut exec)
+            .seed_capabilities(&mut InertReducer, &authz, &mut exec)
             .await;
         assert!(second.is_empty(), "a repeat seed is a no-op");
         assert_eq!(
@@ -3817,7 +3828,7 @@ mod monotonic_now_tests {
             .deliver(
                 inbound(),
                 None,
-                &CapabilitiesQueryReducer,
+                &mut CapabilitiesQueryReducer,
                 &authz,
                 &mut exec,
             )
@@ -3840,7 +3851,7 @@ mod monotonic_now_tests {
 
         // Now seed — the guard must NOT be fooled by the guest's frame; the seed must still fire.
         session
-            .seed_capabilities(&InertReducer, &authz, &mut exec)
+            .seed_capabilities(&mut InertReducer, &authz, &mut exec)
             .await;
         assert_eq!(
             cap_dispatches(&session),
@@ -3881,7 +3892,7 @@ mod monotonic_now_tests {
         let mut session =
             Session::genesis(Hash::of(b"seed-replay-v1"), Hash::of(b"test-spawn-nonce"));
         session
-            .seed_capabilities(&InertReducer, &authz, &mut exec)
+            .seed_capabilities(&mut InertReducer, &authz, &mut exec)
             .await;
 
         // Precondition: after seeding, the seed dispatch is already settled (result folded), nothing open.
@@ -3895,7 +3906,7 @@ mod monotonic_now_tests {
 
         // Replay the durable log — recovery reconstructs the same session.
         let log = session.log().to_vec();
-        let replayed = Session::replay(log, &InertReducer)
+        let replayed = Session::replay(log, &mut InertReducer)
             .await
             .expect("a seeded log replays");
 
@@ -3922,7 +3933,7 @@ mod monotonic_now_tests {
     struct TimerByFamilyReducer;
     #[async_trait::async_trait(?Send)]
     impl Reducer for TimerByFamilyReducer {
-        async fn fold(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => {
                     let mut request =
@@ -3952,7 +3963,13 @@ mod monotonic_now_tests {
             predicate: crate::effect::ResourcePredicate::Any,
         }]);
         session
-            .deliver(inbound(), None, &TimerByFamilyReducer, &authz, &mut exec)
+            .deliver(
+                inbound(),
+                None,
+                &mut TimerByFamilyReducer,
+                &authz,
+                &mut exec,
+            )
             .await
             .expect("deliver");
 
@@ -3980,7 +3997,7 @@ mod monotonic_now_tests {
         s.deliver(
             inbound(),
             None,
-            &NowReducer,
+            &mut NowReducer,
             &now_cap(),
             &mut StuckClock(1000),
         )
@@ -4008,7 +4025,7 @@ mod monotonic_now_tests {
         // (3) STABLE across a REAL replay: reconstruct the session from its OWN persisted log via
         // Session::replay (folding each event back through the reducer) and assert the identity survives.
         // This is the genuine round-trip — `replayed` is built from s.log(), not a fresh genesis.
-        let replayed = Session::replay(s.log().to_vec(), &NowReducer)
+        let replayed = Session::replay(s.log().to_vec(), &mut NowReducer)
             .await
             .expect("replay of a well-formed log succeeds");
         assert_eq!(
@@ -4107,7 +4124,7 @@ mod monotonic_now_tests {
     struct HttpThenRecordReducer;
     #[async_trait::async_trait(?Send)]
     impl Reducer for HttpThenRecordReducer {
-        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => FoldOutput::with_effects(vec![Effect {
                     request: EffectRequest::new(
@@ -4153,7 +4170,7 @@ mod monotonic_now_tests {
                 payload: Payload::Inline(b"go".to_vec().into()),
             },
             None,
-            &HttpThenRecordReducer,
+            &mut HttpThenRecordReducer,
             &authz,
             &mut exec,
         )
@@ -4204,7 +4221,7 @@ mod monotonic_now_tests {
     struct HttpThenRecordOkReducer;
     #[async_trait::async_trait(?Send)]
     impl Reducer for HttpThenRecordOkReducer {
-        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => FoldOutput::with_effects(vec![Effect {
                     request: EffectRequest::new(
@@ -4245,9 +4262,15 @@ mod monotonic_now_tests {
             },
             payload: Payload::Inline(b"go".to_vec().into()),
         };
-        s.deliver(inbound(), None, &HttpThenRecordOkReducer, &authz, &mut exec)
-            .await
-            .unwrap();
+        s.deliver(
+            inbound(),
+            None,
+            &mut HttpThenRecordOkReducer,
+            &authz,
+            &mut exec,
+        )
+        .await
+        .unwrap();
 
         // The executor deferred → the effect is OPEN (Dispatched frame written, NO EffectResult folded yet),
         // and the reducer's continuation has NOT resumed.
@@ -4281,7 +4304,7 @@ mod monotonic_now_tests {
             .settle_effect_result(
                 id,
                 EffectOutcome::Ok(Some(Payload::Inline(b"the-answer".to_vec().into()))),
-                &HttpThenRecordOkReducer,
+                &mut HttpThenRecordOkReducer,
                 &authz,
                 &mut exec,
             )
@@ -4300,7 +4323,7 @@ mod monotonic_now_tests {
             .settle_effect_result(
                 id,
                 EffectOutcome::Ok(Some(Payload::Inline(b"other".to_vec().into()))),
-                &HttpThenRecordOkReducer,
+                &mut HttpThenRecordOkReducer,
                 &authz,
                 &mut exec,
             )
@@ -4338,7 +4361,7 @@ mod monotonic_now_tests {
                 payload: Payload::Inline(b"go".to_vec().into()),
             },
             None,
-            &HttpThenRecordOkReducer,
+            &mut HttpThenRecordOkReducer,
             &authz,
             &mut exec,
         )
@@ -4357,7 +4380,7 @@ mod monotonic_now_tests {
             !s.settle_effect_result(
                 id,
                 EffectOutcome::Deferred,
-                &HttpThenRecordOkReducer,
+                &mut HttpThenRecordOkReducer,
                 &authz,
                 &mut exec
             )
@@ -4374,7 +4397,7 @@ mod monotonic_now_tests {
             !s.settle_effect_result(
                 EffectId(9999),
                 EffectOutcome::Ok(None),
-                &HttpThenRecordOkReducer,
+                &mut HttpThenRecordOkReducer,
                 &authz,
                 &mut exec
             )
@@ -4400,7 +4423,7 @@ mod monotonic_now_tests {
     struct CompactingReducer;
     #[async_trait::async_trait(?Send)]
     impl Reducer for CompactingReducer {
-        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
             if let EventBody::Inbound { payload, .. } = &event.body {
                 let crate::effect::Payload::Inline(bytes) = payload else {
                     return FoldOutput::none();
@@ -4466,7 +4489,7 @@ mod monotonic_now_tests {
 
         // Three detail turns → three detail/* entries in the working set.
         for msg in [b"detail:alpha".as_slice(), b"detail:beta", b"detail:gamma"] {
-            s.deliver(feed(msg), None, &CompactingReducer, &authz, &mut exec)
+            s.deliver(feed(msg), None, &mut CompactingReducer, &authz, &mut exec)
                 .await
                 .expect("deliver detail");
         }
@@ -4482,7 +4505,7 @@ mod monotonic_now_tests {
         s.deliver(
             feed(b"compact"),
             None,
-            &CompactingReducer,
+            &mut CompactingReducer,
             &authz,
             &mut exec,
         )
@@ -4510,7 +4533,7 @@ mod monotonic_now_tests {
 
         // The pattern is REPLAY-DETERMINISTIC (no kernel change): a fresh replay of the same log reconstructs
         // the identical post-compaction kv (the compaction is an ordinary fold, already on the log).
-        let replayed = Session::replay(s.log().to_vec(), &CompactingReducer)
+        let replayed = Session::replay(s.log().to_vec(), &mut CompactingReducer)
             .await
             .expect("replay a compacted session");
         assert_eq!(
@@ -4545,14 +4568,14 @@ mod monotonic_now_tests {
 
         // Cycle 1: two details → compact.
         for msg in [b"detail:a1".as_slice(), b"detail:a2"] {
-            s.deliver(feed(msg), None, &CompactingReducer, &authz, &mut exec)
+            s.deliver(feed(msg), None, &mut CompactingReducer, &authz, &mut exec)
                 .await
                 .expect("c1 detail");
         }
         s.deliver(
             feed(b"compact"),
             None,
-            &CompactingReducer,
+            &mut CompactingReducer,
             &authz,
             &mut exec,
         )
@@ -4563,14 +4586,14 @@ mod monotonic_now_tests {
 
         // Cycle 2: two more details → compact. The prior summary (a1|a2) must be CARRIED, not overwritten.
         for msg in [b"detail:b1".as_slice(), b"detail:b2"] {
-            s.deliver(feed(msg), None, &CompactingReducer, &authz, &mut exec)
+            s.deliver(feed(msg), None, &mut CompactingReducer, &authz, &mut exec)
                 .await
                 .expect("c2 detail");
         }
         s.deliver(
             feed(b"compact"),
             None,
-            &CompactingReducer,
+            &mut CompactingReducer,
             &authz,
             &mut exec,
         )
@@ -4588,7 +4611,7 @@ mod monotonic_now_tests {
         );
 
         // Still replay-deterministic across multiple compaction cycles.
-        let replayed = Session::replay(s.log().to_vec(), &CompactingReducer)
+        let replayed = Session::replay(s.log().to_vec(), &mut CompactingReducer)
             .await
             .expect("replay a multi-cycle-compacted session");
         assert_eq!(
@@ -4677,7 +4700,7 @@ mod lifecycle_tests {
     struct TimerArmingReducer;
     #[async_trait::async_trait(?Send)]
     impl Reducer for TimerArmingReducer {
-        async fn fold(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => {
                     let mut request =
@@ -4719,7 +4742,7 @@ mod lifecycle_tests {
         s.deliver(
             inbound(),
             None,
-            &TimerArmingReducer,
+            &mut TimerArmingReducer,
             &timer_cap(),
             &mut RecordingExecutor::new(),
         )
@@ -4740,7 +4763,7 @@ mod lifecycle_tests {
             .deliver(
                 inbound(),
                 None,
-                &TimerArmingReducer,
+                &mut TimerArmingReducer,
                 &timer_cap(),
                 &mut RecordingExecutor::new(),
             )
@@ -4767,7 +4790,7 @@ mod lifecycle_tests {
         s.deliver(
             inbound(),
             None,
-            &TimerArmingReducer,
+            &mut TimerArmingReducer,
             &timer_cap(),
             &mut RecordingExecutor::new(),
         )
@@ -4775,7 +4798,7 @@ mod lifecycle_tests {
         .unwrap();
         s.append(terminated_marker(), None).await;
 
-        let recovered = Session::replay(s.log().to_vec(), &TimerArmingReducer)
+        let recovered = Session::replay(s.log().to_vec(), &mut TimerArmingReducer)
             .await
             .expect("replay of a terminated log succeeds");
         assert!(
@@ -4788,7 +4811,7 @@ mod lifecycle_tests {
             .deliver(
                 inbound(),
                 None,
-                &TimerArmingReducer,
+                &mut TimerArmingReducer,
                 &timer_cap(),
                 &mut RecordingExecutor::new(),
             )
@@ -4811,7 +4834,7 @@ mod lifecycle_tests {
         s.deliver(
             inbound(),
             None,
-            &TimerArmingReducer,
+            &mut TimerArmingReducer,
             &timer_cap(),
             &mut RecordingExecutor::new(),
         )
@@ -4826,7 +4849,7 @@ mod lifecycle_tests {
         let fired = s
             .fire_due_timers(
                 1500,
-                &TimerArmingReducer,
+                &mut TimerArmingReducer,
                 &timer_cap(),
                 &mut RecordingExecutor::new(),
             )
@@ -4857,7 +4880,7 @@ mod lifecycle_tests {
         s.deliver(
             inbound(),
             None,
-            &TimerArmingReducer,
+            &mut TimerArmingReducer,
             &timer_cap(),
             &mut RecordingExecutor::new(),
         )
@@ -4876,7 +4899,7 @@ mod lifecycle_tests {
         let timed_out = s
             .time_out_effect(
                 open_id,
-                &TimerArmingReducer,
+                &mut TimerArmingReducer,
                 &timer_cap(),
                 &mut RecordingExecutor::new(),
             )
@@ -4903,7 +4926,7 @@ mod lifecycle_tests {
         s.deliver(
             inbound(),
             None,
-            &TimerArmingReducer,
+            &mut TimerArmingReducer,
             &timer_cap(),
             &mut RecordingExecutor::new(),
         )
@@ -4950,7 +4973,7 @@ mod lifecycle_tests {
             .deliver(
                 inbound(),
                 None,
-                &TimerArmingReducer,
+                &mut TimerArmingReducer,
                 &timer_cap(),
                 &mut RecordingExecutor::new(),
             )
@@ -4980,7 +5003,7 @@ mod lifecycle_tests {
             .deliver(
                 inbound(),
                 None,
-                &TimerArmingReducer,
+                &mut TimerArmingReducer,
                 &timer_cap(),
                 &mut RecordingExecutor::new(),
             )
@@ -5024,7 +5047,7 @@ mod lifecycle_tests {
         );
 
         // Replay-stable: a session recovered from the log has the same spawn edges.
-        let replayed = Session::replay(parent.log().to_vec(), &TimerArmingReducer)
+        let replayed = Session::replay(parent.log().to_vec(), &mut TimerArmingReducer)
             .await
             .expect("replay of a log with Spawned edges succeeds");
         assert_eq!(
@@ -5087,7 +5110,7 @@ mod store_effect_tests {
     struct SetThenResolve;
     #[async_trait::async_trait(?Send)]
     impl Reducer for SetThenResolve {
-        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => {
                     let payload = crate::event_ast::encode_name_set(
@@ -5138,7 +5161,7 @@ mod store_effect_tests {
         let mut s = Session::genesis(Hash::of(b"store-v1"), Hash::of(b"test-spawn-nonce"));
         s.attach_name_store(NameStore::new());
 
-        s.deliver(inbound(), None, &SetThenResolve, &AllowStore, &mut exec)
+        s.deliver(inbound(), None, &mut SetThenResolve, &AllowStore, &mut exec)
             .await
             .unwrap();
         // (AllowStore isolates the ARM here; production grantability via Capability::for_family is proven
@@ -5168,7 +5191,7 @@ mod store_effect_tests {
     }
     #[async_trait::async_trait(?Send)]
     impl Reducer for JoinThenResolveAll {
-        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => {
                     // Add m1 and m2 (each tagged (origin, seq)) in one turn — two store/add effects.
@@ -5224,14 +5247,14 @@ mod store_effect_tests {
         let mut exec = crate::executor::RecordingExecutor::new();
         let mut s = Session::genesis(Hash::of(b"dir-v1"), Hash::of(b"test-spawn-nonce"));
         s.attach_name_store(NameStore::new());
-        let reducer = JoinThenResolveAll {
+        let mut reducer = JoinThenResolveAll {
             group: "session/room/lobby",
             m1: Hash::of(b"member-A"),
             m2: Hash::of(b"member-B"),
             origin: Hash::of(b"origin-session"),
         };
 
-        s.deliver(inbound(), None, &reducer, &AllowStore, &mut exec)
+        s.deliver(inbound(), None, &mut reducer, &AllowStore, &mut exec)
             .await
             .unwrap();
 
@@ -5341,7 +5364,7 @@ mod store_effect_tests {
     }
     #[async_trait::async_trait(?Send)]
     impl Reducer for AgentLoopReducer {
-        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => {
                     // Kick the loop: a model request with the task + the shell tool offered.
@@ -5437,11 +5460,11 @@ mod store_effect_tests {
         // model+shell transport. Proves M1+M2 codecs compose into the loop the self-hosting harness needs.
         let mut exec = ScriptedAgentExecutor { model_calls: 0 };
         let mut s = Session::genesis(Hash::of(b"agent-reducer"), Hash::of(b"nonce"));
-        let reducer = AgentLoopReducer {
+        let mut reducer = AgentLoopReducer {
             model: "anthropic.claude",
         };
 
-        s.deliver(inbound(), None, &reducer, &AllowAllAuthz, &mut exec)
+        s.deliver(inbound(), None, &mut reducer, &AllowAllAuthz, &mut exec)
             .await
             .unwrap();
 
@@ -5478,7 +5501,7 @@ mod store_effect_tests {
         let mut exec = crate::executor::RecordingExecutor::new();
         let mut s = Session::genesis(Hash::of(b"store-v1"), Hash::of(b"test-spawn-nonce"));
         s.attach_name_store(NameStore::new());
-        s.deliver(inbound(), None, &SetThenResolve, &authz, &mut exec)
+        s.deliver(inbound(), None, &mut SetThenResolve, &authz, &mut exec)
             .await
             .unwrap();
         assert_eq!(
@@ -5500,7 +5523,13 @@ mod store_effect_tests {
         publisher.attach_name_store(NameStore::new());
         // A publishes: store/set system/compiler/latest → compiler-wasm-v1 (then resolves it, immaterial here).
         publisher
-            .deliver(inbound(), None, &SetThenResolve, &AllowStore, &mut exec_a)
+            .deliver(
+                inbound(),
+                None,
+                &mut SetThenResolve,
+                &AllowStore,
+                &mut exec_a,
+            )
             .await
             .unwrap();
 
@@ -5527,7 +5556,7 @@ mod store_effect_tests {
         let mut consumer = Session::genesis(Hash::of(b"store-v1"), Hash::of(b"test-spawn-nonce"));
         consumer.attach_name_store(consumer_store);
         consumer
-            .deliver(inbound(), None, &ResolveOnly, &AllowStore, &mut exec_b)
+            .deliver(inbound(), None, &mut ResolveOnly, &AllowStore, &mut exec_b)
             .await
             .unwrap();
         assert_eq!(
@@ -5549,7 +5578,13 @@ mod store_effect_tests {
         let mut publisher = Session::genesis(Hash::of(b"store-v1"), Hash::of(b"test-spawn-nonce"));
         publisher.attach_name_store(NameStore::new());
         publisher
-            .deliver(inbound(), None, &SetThenResolve, &AllowStore, &mut exec_a)
+            .deliver(
+                inbound(),
+                None,
+                &mut SetThenResolve,
+                &AllowStore,
+                &mut exec_a,
+            )
             .await
             .unwrap();
 
@@ -5569,7 +5604,7 @@ mod store_effect_tests {
         let mut consumer = Session::genesis(Hash::of(b"store-v1"), Hash::of(b"test-spawn-nonce"));
         consumer.attach_name_store(restored);
         consumer
-            .deliver(inbound(), None, &ResolveOnly, &AllowStore, &mut exec_b)
+            .deliver(inbound(), None, &mut ResolveOnly, &AllowStore, &mut exec_b)
             .await
             .unwrap();
         assert_eq!(
@@ -5586,7 +5621,7 @@ mod store_effect_tests {
         // "resolving", so `resolved` is never written and nothing is left open.
         let mut exec = crate::executor::RecordingExecutor::new();
         let mut s = Session::genesis(Hash::of(b"store-v1"), Hash::of(b"test-spawn-nonce")); // NO attach_name_store
-        s.deliver(inbound(), None, &SetThenResolve, &AllowStore, &mut exec)
+        s.deliver(inbound(), None, &mut SetThenResolve, &AllowStore, &mut exec)
             .await
             .unwrap();
         assert_eq!(s.kv().get(b"resolved"), None);
@@ -5607,7 +5642,7 @@ mod store_effect_tests {
         s.deliver(
             inbound(),
             None,
-            &SetThenResolve,
+            &mut SetThenResolve,
             &Authorizer::deny_all(),
             &mut exec,
         )
@@ -5622,7 +5657,7 @@ mod store_effect_tests {
     struct MismatchedSetReducer;
     #[async_trait::async_trait(?Send)]
     impl Reducer for MismatchedSetReducer {
-        async fn fold(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             if matches!(event.body, EventBody::Inbound { .. }) {
                 // Target = system/authorized, but the payload names system/EVIL.
                 let payload =
@@ -5644,7 +5679,7 @@ mod store_effect_tests {
     struct ResolveOnly;
     #[async_trait::async_trait(?Send)]
     impl Reducer for ResolveOnly {
-        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => {
                     FoldOutput::with(vec![EffectRequest::new_with_family(
@@ -5679,7 +5714,7 @@ mod store_effect_tests {
         s.deliver(
             inbound(),
             None,
-            &MismatchedSetReducer,
+            &mut MismatchedSetReducer,
             &AllowStore,
             &mut exec,
         )
@@ -5722,7 +5757,13 @@ mod store_effect_tests {
         let mut reader = Session::genesis(Hash::of(b"store-v1"), Hash::of(b"test-spawn-nonce"));
         reader.attach_name_store(store);
         reader
-            .deliver(inbound(), None, &ResolveOnly, &resolve_only(), &mut exec)
+            .deliver(
+                inbound(),
+                None,
+                &mut ResolveOnly,
+                &resolve_only(),
+                &mut exec,
+            )
             .await
             .unwrap();
         assert_eq!(
@@ -5740,7 +5781,7 @@ mod store_effect_tests {
             .deliver(
                 inbound(),
                 None,
-                &SetThenResolve,
+                &mut SetThenResolve,
                 &resolve_only(),
                 &mut exec2,
             )
@@ -5770,7 +5811,7 @@ mod store_effect_tests {
     }
     #[async_trait::async_trait(?Send)]
     impl Reducer for PublishName {
-        async fn fold(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => {
                     let payload = crate::event_ast::encode_name_set(&self.name, &self.hash);
@@ -5793,7 +5834,7 @@ mod store_effect_tests {
     }
     #[async_trait::async_trait(?Send)]
     impl Reducer for ResolveName {
-        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => {
                     FoldOutput::with(vec![EffectRequest::new_with_family(
@@ -5841,12 +5882,18 @@ mod store_effect_tests {
         let mut publisher = Session::genesis(Hash::of(b"alice-reducer"), Hash::of(b"alice-nonce"));
         publisher.attach_name_store(NameStore::new());
         let alice_id = publisher.genesis_hash(); // = B's SessionId
-        let publish = PublishName {
+        let mut publish = PublishName {
             name: "session/alice".to_string(),
             hash: alice_id,
         };
         publisher
-            .deliver(inbound(), None, &publish, &session_store_cap(), &mut exec_b)
+            .deliver(
+                inbound(),
+                None,
+                &mut publish,
+                &session_store_cap(),
+                &mut exec_b,
+            )
             .await
             .unwrap();
 
@@ -5877,7 +5924,7 @@ mod store_effect_tests {
             .deliver(
                 inbound(),
                 None,
-                &ResolveName {
+                &mut ResolveName {
                     name: "session/alice".to_string(),
                 },
                 &session_store_cap(),
@@ -5899,7 +5946,7 @@ mod store_effect_tests {
         let mut exec = crate::executor::RecordingExecutor::new();
         let mut s = Session::genesis(Hash::of(b"nobody"), Hash::of(b"nobody-nonce"));
         s.attach_name_store(NameStore::new());
-        let publish = PublishName {
+        let mut publish = PublishName {
             name: "session/victim".to_string(),
             hash: Hash::of(b"attacker-hash"),
         };
@@ -5911,7 +5958,7 @@ mod store_effect_tests {
                 ResourcePredicate::Prefix("system/".into()),
             )])
         };
-        s.deliver(inbound(), None, &publish, &wrong_cap, &mut exec)
+        s.deliver(inbound(), None, &mut publish, &wrong_cap, &mut exec)
             .await
             .unwrap();
         // The set was denied at the gate → the name was never published.
@@ -6083,7 +6130,7 @@ mod store_effect_tests {
     }
     #[async_trait::async_trait(?Send)]
     impl Reducer for ShellPipelineEmitReducer {
-        async fn fold(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => FoldOutput::with(vec![EffectRequest::new(
                     EffectKind::Shell,
@@ -6120,7 +6167,7 @@ mod store_effect_tests {
         s.deliver(
             inbound(),
             None,
-            &ShellPipelineEmitReducer {
+            &mut ShellPipelineEmitReducer {
                 target: "rm", // vestigial on the pipeline path — the host runs the stages, not this
                 stages: vec![stage("echo", &["hi"])], // the ALLOWED stage program IS the gated unit
             },
@@ -6155,7 +6202,7 @@ mod store_effect_tests {
         s.deliver(
             inbound(),
             None,
-            &ShellPipelineEmitReducer {
+            &mut ShellPipelineEmitReducer {
                 target: "echo",                      // allowed, but vestigial
                 stages: vec![stage("rm", &["-rf"])], // DENIED stage program → whole pipeline denied
             },
@@ -6255,7 +6302,7 @@ mod store_effect_tests {
     }
     #[async_trait::async_trait(?Send)]
     impl Reducer for DocPublishReducer {
-        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound {
                     content_type,
@@ -6341,7 +6388,7 @@ mod store_effect_tests {
         let mut exec = StubBlobExecutor {
             blobs: std::collections::HashMap::new(),
         };
-        let reducer = DocPublishReducer { name };
+        let mut reducer = DocPublishReducer { name };
         let mut s = Session::genesis(Hash::of(b"doc-publish-v1"), Hash::of(b"nonce"));
         s.attach_name_store(NameStore::new());
 
@@ -6353,7 +6400,7 @@ mod store_effect_tests {
             },
             payload: Payload::Inline(doc_ast.clone().into()),
         };
-        s.deliver(publish, None, &reducer, &AllowStoreAndBlob, &mut exec)
+        s.deliver(publish, None, &mut reducer, &AllowStoreAndBlob, &mut exec)
             .await
             .expect("publish delivers");
 
@@ -6377,7 +6424,7 @@ mod store_effect_tests {
             },
             payload: Payload::Inline(b"".to_vec().into()),
         };
-        s.deliver(query, None, &reducer, &AllowStoreAndBlob, &mut exec)
+        s.deliver(query, None, &mut reducer, &AllowStoreAndBlob, &mut exec)
             .await
             .expect("query delivers");
 

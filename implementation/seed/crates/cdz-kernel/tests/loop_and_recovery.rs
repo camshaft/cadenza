@@ -25,7 +25,7 @@ struct TwoStepReducer;
 
 #[async_trait::async_trait(?Send)]
 impl Reducer for TwoStepReducer {
-    async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+    async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
         match &event.body {
             EventBody::Inbound { .. } => {
                 kv.put(b"phase".to_vec(), b"fetching".to_vec());
@@ -82,13 +82,13 @@ fn inbound_go() -> EventBody {
 
 #[tokio::test(flavor = "current_thread")]
 async fn reactive_two_step_loop_runs_to_completion() {
-    let reducer = TwoStepReducer;
+    let mut reducer = TwoStepReducer;
     let authz = http_cap();
     let mut exec = RecordingExecutor::new();
     let mut session = Session::genesis(Hash::of(b"two-step-v1"), Hash::of(b"test-spawn-nonce"));
 
     session
-        .deliver(inbound_go(), None, &reducer, &authz, &mut exec)
+        .deliver(inbound_go(), None, &mut reducer, &authz, &mut exec)
         .await
         .unwrap();
 
@@ -112,11 +112,11 @@ async fn effect_chain_populates_the_causal_dag() {
     use cdz_kernel::hash::Hash as H;
     use std::collections::HashMap;
 
-    let reducer = TwoStepReducer;
+    let mut reducer = TwoStepReducer;
     let mut exec = RecordingExecutor::new();
     let mut session = Session::genesis(H::of(b"two-step-v1"), H::of(b"test-spawn-nonce"));
     session
-        .deliver(inbound_go(), None, &reducer, &http_cap(), &mut exec)
+        .deliver(inbound_go(), None, &mut reducer, &http_cap(), &mut exec)
         .await
         .unwrap();
 
@@ -170,7 +170,7 @@ async fn denied_effect_is_logged_and_never_executed() {
     struct Exfil;
     #[async_trait::async_trait(?Send)]
     impl Reducer for Exfil {
-        async fn fold(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             if matches!(event.body, EventBody::Inbound { .. }) {
                 FoldOutput::with(vec![EffectRequest::new(
                     EffectKind::Http,
@@ -186,7 +186,7 @@ async fn denied_effect_is_logged_and_never_executed() {
     let mut exec = RecordingExecutor::new();
     let mut session = Session::genesis(Hash::of(b"exfil"), Hash::of(b"test-spawn-nonce"));
     session
-        .deliver(inbound_go(), None, &Exfil, &http_cap(), &mut exec)
+        .deliver(inbound_go(), None, &mut Exfil, &http_cap(), &mut exec)
         .await
         .unwrap();
 
@@ -205,7 +205,7 @@ async fn crash_after_dispatch_before_result_does_not_double_fire() {
     // already happened, but the process died before the `EffectResult` was recorded. On recovery we
     // must NOT re-run the effect blindly — the dispatch is a known open obligation, re-driven ONLY via
     // its idempotency key so the executor can dedup.
-    let reducer = TwoStepReducer;
+    let mut reducer = TwoStepReducer;
 
     // Build a log ending in a Dispatched-with-no-result (the crash point).
     let mut session = Session::genesis(Hash::of(b"two-step-v1"), Hash::of(b"test-spawn-nonce"));
@@ -214,7 +214,7 @@ async fn crash_after_dispatch_before_result_does_not_double_fire() {
     let authz = http_cap();
     let mut exec = RecordingExecutor::new();
     session
-        .deliver(inbound_go(), None, &reducer, &authz, &mut exec)
+        .deliver(inbound_go(), None, &mut reducer, &authz, &mut exec)
         .await
         .unwrap();
 
@@ -228,7 +228,7 @@ async fn crash_after_dispatch_before_result_does_not_double_fire() {
     let crashed_log: Vec<Event> = full_log[..=first_dispatch_idx].to_vec();
 
     // Recover from the truncated log.
-    let recovered = Session::replay(crashed_log, &reducer).await.unwrap();
+    let recovered = Session::replay(crashed_log, &mut reducer).await.unwrap();
 
     // The recovery correctly identifies exactly one OPEN (dispatched-but-unsettled) effect (S1)...
     assert_eq!(recovered.open_effects(), 1);
@@ -266,7 +266,7 @@ async fn timeout_cancels_so_a_late_result_is_dropped() {
     struct CountResumes;
     #[async_trait::async_trait(?Send)]
     impl Reducer for CountResumes {
-        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
             if matches!(event.body, EventBody::Inbound { .. }) {
                 return FoldOutput::with(vec![EffectRequest::new(
                     EffectKind::Http,
@@ -296,11 +296,11 @@ async fn timeout_cancels_so_a_late_result_is_dropped() {
         }
     }
 
-    let reducer = CountResumes;
+    let mut reducer = CountResumes;
     let mut exec = TimeoutExecutor;
     let mut session = Session::genesis(Hash::of(b"count"), Hash::of(b"test-spawn-nonce"));
     session
-        .deliver(inbound_go(), None, &reducer, &http_cap(), &mut exec)
+        .deliver(inbound_go(), None, &mut reducer, &http_cap(), &mut exec)
         .await
         .unwrap();
 
@@ -322,7 +322,7 @@ async fn time_out_effect_settles_an_open_dispatch_and_resumes_the_reducer() {
     struct GiveUpOnTimeout;
     #[async_trait::async_trait(?Send)]
     impl Reducer for GiveUpOnTimeout {
-        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => FoldOutput::with(vec![EffectRequest::new(
                     EffectKind::Http,
@@ -344,11 +344,11 @@ async fn time_out_effect_settles_an_open_dispatch_and_resumes_the_reducer() {
 
     // Drive to a mid-flight dispatch, then recover into a fresh session with that effect still OPEN
     // (models a crash after Dispatched, before any result — the state a driver must resolve).
-    let reducer = GiveUpOnTimeout;
+    let mut reducer = GiveUpOnTimeout;
     let mut exec = RecordingExecutor::new();
     let mut session = Session::genesis(Hash::of(b"giveup-v1"), Hash::of(b"test-spawn-nonce"));
     session
-        .deliver(inbound_go(), None, &reducer, &http_cap(), &mut exec)
+        .deliver(inbound_go(), None, &mut reducer, &http_cap(), &mut exec)
         .await
         .unwrap();
     let full_log = session.log().to_vec();
@@ -361,7 +361,7 @@ async fn time_out_effect_settles_an_open_dispatch_and_resumes_the_reducer() {
         _ => unreachable!(),
     };
     // Replay only up to the dispatch → a recovered session with one open, un-resulted effect.
-    let mut restored = Session::replay(full_log[..=dispatch_idx].to_vec(), &reducer)
+    let mut restored = Session::replay(full_log[..=dispatch_idx].to_vec(), &mut reducer)
         .await
         .expect("replay");
     assert_eq!(restored.open_effect_ids(), vec![open_id]);
@@ -372,7 +372,7 @@ async fn time_out_effect_settles_an_open_dispatch_and_resumes_the_reducer() {
     let mut exec2 = RecordingExecutor::new();
     assert!(
         restored
-            .time_out_effect(open_id, &reducer, &http_cap(), &mut exec2)
+            .time_out_effect(open_id, &mut reducer, &http_cap(), &mut exec2)
             .await
     );
     assert_eq!(restored.kv().get(b"status"), Some(&b"gave-up"[..]));
@@ -382,14 +382,14 @@ async fn time_out_effect_settles_an_open_dispatch_and_resumes_the_reducer() {
     // dispatched id is likewise false — so a timeout + a late real result can't both settle one id.
     assert!(
         !restored
-            .time_out_effect(open_id, &reducer, &http_cap(), &mut exec2)
+            .time_out_effect(open_id, &mut reducer, &http_cap(), &mut exec2)
             .await
     );
     assert!(
         !restored
             .time_out_effect(
                 cdz_kernel::effect::EffectId(9999),
-                &reducer,
+                &mut reducer,
                 &http_cap(),
                 &mut exec2
             )
@@ -398,7 +398,7 @@ async fn time_out_effect_settles_an_open_dispatch_and_resumes_the_reducer() {
 
     // The timeout outcome folded observably, so a replay of the WHOLE resulting log reconstructs the
     // same KV (the §16c-S3 determinism the observable() predicate guarantees).
-    let replayed = Session::replay(restored.log().to_vec(), &reducer)
+    let replayed = Session::replay(restored.log().to_vec(), &mut reducer)
         .await
         .expect("replay after timeout");
     assert_eq!(replayed.kv().get(b"status"), Some(&b"gave-up"[..]));
@@ -411,11 +411,11 @@ async fn time_out_effect_on_an_armed_timer_id_is_a_noop_not_a_panic() {
     // must not treat a timer id as a dispatched effect — a timer has no Dispatched event, so the old
     // dispatch_hash_of().expect() PANICKED, contradicting the "never dispatched → false" contract. A
     // timer fires via fire_due_timers, not a manual timeout; timing one out is a no-op returning false.
-    let reducer = TimerReducer { deadline_ms: 5000 };
+    let mut reducer = TimerReducer { deadline_ms: 5000 };
     let mut exec = RecordingExecutor::new();
     let mut session = Session::genesis(Hash::of(b"timer-v1"), Hash::of(b"test-spawn-nonce"));
     session
-        .deliver(inbound_go(), None, &reducer, &timer_cap(), &mut exec)
+        .deliver(inbound_go(), None, &mut reducer, &timer_cap(), &mut exec)
         .await
         .unwrap();
 
@@ -434,7 +434,7 @@ async fn time_out_effect_on_an_armed_timer_id_is_a_noop_not_a_panic() {
     let mut exec2 = RecordingExecutor::new();
     assert!(
         !session
-            .time_out_effect(armed_id, &reducer, &timer_cap(), &mut exec2)
+            .time_out_effect(armed_id, &mut reducer, &timer_cap(), &mut exec2)
             .await,
         "timing out an armed-timer id is a no-op (timers fire via fire_due_timers), not a panic"
     );
@@ -442,7 +442,7 @@ async fn time_out_effect_on_an_armed_timer_id_is_a_noop_not_a_panic() {
     assert_eq!(session.open_effect_ids(), vec![armed_id]);
     assert_eq!(session.next_timer_deadline(), Some(5000));
     let fired = session
-        .fire_due_timers(5000, &reducer, &timer_cap(), &mut exec2)
+        .fire_due_timers(5000, &mut reducer, &timer_cap(), &mut exec2)
         .await;
     assert_eq!(fired, 1);
     assert_eq!(session.kv().get(b"woke"), Some(&b"1"[..]));
@@ -464,7 +464,7 @@ async fn attached_log_persists_through_on_append_no_manual_mirroring() {
     ));
     let _ = std::fs::remove_file(&path);
 
-    let reducer = TwoStepReducer;
+    let mut reducer = TwoStepReducer;
     let mut exec = RecordingExecutor::new();
     let mut session = Session::genesis(Hash::of(b"two-step-v1"), Hash::of(b"test-spawn-nonce"));
     // The store holds the log up to the current tip before attaching (here: just genesis). Then
@@ -479,7 +479,7 @@ async fn attached_log_persists_through_on_append_no_manual_mirroring() {
 
     // Drive the whole two-step loop. NO manual persistence after this point — the session writes through.
     session
-        .deliver(inbound_go(), None, &reducer, &http_cap(), &mut exec)
+        .deliver(inbound_go(), None, &mut reducer, &http_cap(), &mut exec)
         .await
         .unwrap();
     assert_eq!(session.kv().get(b"phase"), Some(&b"done"[..]));
@@ -488,7 +488,7 @@ async fn attached_log_persists_through_on_append_no_manual_mirroring() {
 
     // Recover from the FILE ONLY — `recover` opens the path independently (it does not attach a live
     // store to the reconstructed session). The reconstructed session matches the live one.
-    let (restored, report) = Session::recover(&path, &reducer)
+    let (restored, report) = Session::recover(&path, &mut reducer)
         .await
         .expect("recover from written-through log");
     assert_eq!(report.kind, cdz_kernel::log_store::RecoveryKind::Clean);
@@ -514,7 +514,7 @@ async fn a_reducers_continuation_token_is_recorded_in_the_dispatched_frame() {
     struct TokenReducer;
     #[async_trait::async_trait(?Send)]
     impl Reducer for TokenReducer {
-        async fn fold(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             if matches!(event.body, EventBody::Inbound { .. }) {
                 FoldOutput::with_effects(vec![Effect {
                     request: EffectRequest::new(
@@ -534,7 +534,13 @@ async fn a_reducers_continuation_token_is_recorded_in_the_dispatched_frame() {
     let mut exec = RecordingExecutor::new();
     let mut session = Session::genesis(Hash::of(b"token-v1"), Hash::of(b"test-spawn-nonce"));
     session
-        .deliver(inbound_go(), None, &TokenReducer, &http_cap(), &mut exec)
+        .deliver(
+            inbound_go(),
+            None,
+            &mut TokenReducer,
+            &http_cap(),
+            &mut exec,
+        )
         .await
         .unwrap();
 
@@ -566,9 +572,15 @@ async fn a_reducers_continuation_token_is_recorded_in_the_dispatched_frame() {
     // Control: a token-free reducer (the common Rust path via FoldOutput::with) records token None.
     let mut exec2 = RecordingExecutor::new();
     let mut s2 = Session::genesis(Hash::of(b"notoken-v1"), Hash::of(b"test-spawn-nonce"));
-    s2.deliver(inbound_go(), None, &TwoStepReducer, &http_cap(), &mut exec2)
-        .await
-        .unwrap();
+    s2.deliver(
+        inbound_go(),
+        None,
+        &mut TwoStepReducer,
+        &http_cap(),
+        &mut exec2,
+    )
+    .await
+    .unwrap();
     let first_token = s2.log().iter().find_map(|e| match &e.body {
         EventBody::Dispatched { token, .. } => Some(token.clone()),
         _ => None,
@@ -590,7 +602,7 @@ async fn a_continuation_token_rides_timer_fired_and_authz_denied_events() {
     struct TokenTimerAndDenyReducer;
     #[async_trait::async_trait(?Send)]
     impl Reducer for TokenTimerAndDenyReducer {
-        async fn fold(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 // Inbound: arm a timer WITH a continuation token.
                 EventBody::Inbound { .. } => FoldOutput::with_effects(vec![Effect {
@@ -613,7 +625,7 @@ async fn a_continuation_token_rides_timer_fired_and_authz_denied_events() {
         .deliver(
             inbound_go(),
             None,
-            &TokenTimerAndDenyReducer,
+            &mut TokenTimerAndDenyReducer,
             &timer_cap(),
             &mut exec,
         )
@@ -634,7 +646,7 @@ async fn a_continuation_token_rides_timer_fired_and_authz_denied_events() {
     // Fire the timer: the kernel copies the token from TimerArmed onto TimerFired (rides the fire).
     assert_eq!(
         session
-            .fire_due_timers(1000, &TokenTimerAndDenyReducer, &timer_cap(), &mut exec)
+            .fire_due_timers(1000, &mut TokenTimerAndDenyReducer, &timer_cap(), &mut exec)
             .await,
         1
     );
@@ -653,7 +665,7 @@ async fn a_continuation_token_rides_timer_fired_and_authz_denied_events() {
     struct DenyTokenReducer;
     #[async_trait::async_trait(?Send)]
     impl Reducer for DenyTokenReducer {
-        async fn fold(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             if matches!(event.body, EventBody::Inbound { .. }) {
                 FoldOutput::with_effects(vec![Effect {
                     request: EffectRequest::new(
@@ -675,7 +687,7 @@ async fn a_continuation_token_rides_timer_fired_and_authz_denied_events() {
     s2.deliver(
         inbound_go(),
         None,
-        &DenyTokenReducer,
+        &mut DenyTokenReducer,
         &timer_cap(),
         &mut exec2,
     )
@@ -716,7 +728,7 @@ async fn s1_route_guard_does_not_perform_an_effect_whose_dispatch_failed_to_pers
     struct OneShot;
     #[async_trait::async_trait(?Send)]
     impl Reducer for OneShot {
-        async fn fold(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             if matches!(event.body, EventBody::Inbound { .. }) {
                 FoldOutput::with(vec![EffectRequest::new(
                     EffectKind::Http,
@@ -735,7 +747,7 @@ async fn s1_route_guard_does_not_perform_an_effect_whose_dispatch_failed_to_pers
     session.attach_sink(Box::new(FailingSink));
 
     session
-        .deliver(inbound_go(), None, &OneShot, &http_cap(), &mut exec)
+        .deliver(inbound_go(), None, &mut OneShot, &http_cap(), &mut exec)
         .await
         .unwrap();
 
@@ -774,11 +786,11 @@ async fn persist_crash_recover_reconstructs_kv_and_open_obligations() {
     // Phase 1: run the two-step reducer, persisting the log as we go, but crash after the FIRST
     // dispatch. We drive the session, then persist only the prefix up to that dispatch — modelling a
     // process that flushed the Dispatched frame and died before writing the result frame.
-    let reducer = TwoStepReducer;
+    let mut reducer = TwoStepReducer;
     let mut exec = RecordingExecutor::new();
     let mut session = Session::genesis(Hash::of(b"two-step-v1"), Hash::of(b"test-spawn-nonce"));
     session
-        .deliver(inbound_go(), None, &reducer, &http_cap(), &mut exec)
+        .deliver(inbound_go(), None, &mut reducer, &http_cap(), &mut exec)
         .await
         .unwrap();
 
@@ -799,7 +811,9 @@ async fn persist_crash_recover_reconstructs_kv_and_open_obligations() {
     // Phase 2: recover from disk ONLY, then replay into a fresh Session.
     let recovered = LogStore::recover(&path).unwrap();
     assert_eq!(recovered.kind, cdz_kernel::log_store::RecoveryKind::Clean);
-    let restored = Session::replay(recovered.events, &reducer).await.unwrap();
+    let restored = Session::replay(recovered.events, &mut reducer)
+        .await
+        .unwrap();
 
     // KV reconstructed to the crash point (reducer had set phase=fetching before dispatching)...
     assert_eq!(restored.kv().get(b"phase"), Some(&b"fetching"[..]));
@@ -824,9 +838,9 @@ async fn session_recover_is_the_one_call_recovery_entry_point() {
 
     // No file yet → EmptyLog, so the caller knows to genesis() rather than getting a silent empty
     // session.
-    let reducer = TwoStepReducer;
+    let mut reducer = TwoStepReducer;
     assert!(matches!(
-        Session::recover(&path, &reducer).await,
+        Session::recover(&path, &mut reducer).await,
         Err(RecoverError::EmptyLog)
     ));
 
@@ -834,7 +848,7 @@ async fn session_recover_is_the_one_call_recovery_entry_point() {
     let mut exec = RecordingExecutor::new();
     let mut session = Session::genesis(Hash::of(b"two-step-v1"), Hash::of(b"test-spawn-nonce"));
     session
-        .deliver(inbound_go(), None, &reducer, &http_cap(), &mut exec)
+        .deliver(inbound_go(), None, &mut reducer, &http_cap(), &mut exec)
         .await
         .unwrap();
     let full_log = session.log().to_vec();
@@ -849,8 +863,9 @@ async fn session_recover_is_the_one_call_recovery_entry_point() {
         }
     }
 
-    let (restored, report): (Session, RecoveryReport) =
-        Session::recover(&path, &reducer).await.expect("recover");
+    let (restored, report): (Session, RecoveryReport) = Session::recover(&path, &mut reducer)
+        .await
+        .expect("recover");
     assert_eq!(restored.kv().get(b"phase"), Some(&b"fetching"[..]));
     // The report tells the driver exactly what's in flight to re-drive, and how the log ended.
     assert_eq!(report.kind, RecoveryKind::Clean);
@@ -870,7 +885,7 @@ async fn session_recover_from_is_backend_agnostic_no_file_needed() {
     use cdz_kernel::kernel::{RecoverError, RecoveryReport};
     use cdz_kernel::log_store::{Recovered, RecoveryKind};
 
-    let reducer = TwoStepReducer;
+    let mut reducer = TwoStepReducer;
 
     // An empty recovery (no events) is EmptyLog regardless of backend — same contract as the file path.
     let empty = Recovered {
@@ -879,7 +894,7 @@ async fn session_recover_from_is_backend_agnostic_no_file_needed() {
         good_prefix_len: 0,
     };
     assert!(matches!(
-        Session::recover_from(empty, &reducer).await,
+        Session::recover_from(empty, &mut reducer).await,
         Err(RecoverError::EmptyLog)
     ));
 
@@ -888,7 +903,7 @@ async fn session_recover_from_is_backend_agnostic_no_file_needed() {
     let mut exec = RecordingExecutor::new();
     let mut session = Session::genesis(Hash::of(b"two-step-v1"), Hash::of(b"test-spawn-nonce"));
     session
-        .deliver(inbound_go(), None, &reducer, &http_cap(), &mut exec)
+        .deliver(inbound_go(), None, &mut reducer, &http_cap(), &mut exec)
         .await
         .unwrap();
     let full_log = session.log().to_vec();
@@ -902,9 +917,10 @@ async fn session_recover_from_is_backend_agnostic_no_file_needed() {
         good_prefix_len: 0, // the fold-and-report core doesn't consult this; it's a heal hint for the backend
     };
 
-    let (restored, report): (Session, RecoveryReport) = Session::recover_from(recovered, &reducer)
-        .await
-        .expect("recover_from a hand-built (non-file) Recovered");
+    let (restored, report): (Session, RecoveryReport) =
+        Session::recover_from(recovered, &mut reducer)
+            .await
+            .expect("recover_from a hand-built (non-file) Recovered");
     // Identical reconstruction to the file path (session_recover_is_the_one_call_recovery_entry_point).
     assert_eq!(restored.kv().get(b"phase"), Some(&b"fetching"[..]));
     assert_eq!(report.kind, RecoveryKind::Clean);
@@ -928,7 +944,7 @@ async fn session_recover_surfaces_corruption_to_the_caller() {
     ));
     let _ = std::fs::remove_file(&path);
 
-    let reducer = TwoStepReducer;
+    let mut reducer = TwoStepReducer;
     // A valid genesis, then a full-but-garbage frame (length matches body, body doesn't decode).
     {
         let mut store = LogStore::open(&path).unwrap();
@@ -954,7 +970,7 @@ async fn session_recover_surfaces_corruption_to_the_caller() {
         f.write_all(&garbage).unwrap();
     }
 
-    let (_session, report): (Session, RecoveryReport) = Session::recover(&path, &reducer)
+    let (_session, report): (Session, RecoveryReport) = Session::recover(&path, &mut reducer)
         .await
         .expect("recovers the good genesis prefix");
     // The corruption reaches the caller (not dropped) — the fix's whole point.
@@ -974,7 +990,7 @@ struct TimerReducer {
 }
 #[async_trait::async_trait(?Send)]
 impl Reducer for TimerReducer {
-    async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+    async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
         match &event.body {
             EventBody::Inbound { .. } => FoldOutput::with(vec![EffectRequest::new(
                 EffectKind::Timer,
@@ -1000,12 +1016,12 @@ fn timer_cap() -> Authorizer {
 
 #[tokio::test(flavor = "current_thread")]
 async fn timer_arms_without_executor_then_kernel_fires_on_deadline() {
-    let reducer = TimerReducer { deadline_ms: 1000 };
+    let mut reducer = TimerReducer { deadline_ms: 1000 };
     let mut exec = RecordingExecutor::new();
     let mut session = Session::genesis(Hash::of(b"timer"), Hash::of(b"test-spawn-nonce"));
 
     session
-        .deliver(inbound_go(), None, &reducer, &timer_cap(), &mut exec)
+        .deliver(inbound_go(), None, &mut reducer, &timer_cap(), &mut exec)
         .await
         .unwrap();
 
@@ -1020,7 +1036,7 @@ async fn timer_arms_without_executor_then_kernel_fires_on_deadline() {
     // Clock hasn't reached the deadline → nothing fires.
     assert_eq!(
         session
-            .fire_due_timers(999, &reducer, &timer_cap(), &mut exec)
+            .fire_due_timers(999, &mut reducer, &timer_cap(), &mut exec)
             .await,
         0
     );
@@ -1029,7 +1045,7 @@ async fn timer_arms_without_executor_then_kernel_fires_on_deadline() {
     // Clock reaches the deadline → the kernel fires it, waking the reducer.
     assert_eq!(
         session
-            .fire_due_timers(1000, &reducer, &timer_cap(), &mut exec)
+            .fire_due_timers(1000, &mut reducer, &timer_cap(), &mut exec)
             .await,
         1
     );
@@ -1043,17 +1059,17 @@ async fn timer_arms_without_executor_then_kernel_fires_on_deadline() {
 async fn fired_timestamp_is_the_deadline_not_the_wall_clock_that_fired_it() {
     // Determinism (§9c): a timer that fires LATE still records its own deadline as fired_ms, so replay
     // is independent of when fire_due_timers happened to run.
-    let reducer = TimerReducer { deadline_ms: 500 };
+    let mut reducer = TimerReducer { deadline_ms: 500 };
     let mut exec = RecordingExecutor::new();
     let mut session = Session::genesis(Hash::of(b"timer"), Hash::of(b"test-spawn-nonce"));
     session
-        .deliver(inbound_go(), None, &reducer, &timer_cap(), &mut exec)
+        .deliver(inbound_go(), None, &mut reducer, &timer_cap(), &mut exec)
         .await
         .unwrap();
 
     // Fire it "late" at now=9999 — the recorded fired_ms must still be the deadline 500.
     session
-        .fire_due_timers(9999, &reducer, &timer_cap(), &mut exec)
+        .fire_due_timers(9999, &mut reducer, &timer_cap(), &mut exec)
         .await;
     let fired = session
         .log()
@@ -1073,16 +1089,16 @@ async fn fired_timestamp_is_the_deadline_not_the_wall_clock_that_fired_it() {
 async fn armed_timer_survives_replay() {
     // §16c-S5: an armed-but-unfired timer must be reconstructed on replay (with its absolute deadline)
     // so a recovered/migrated session still fires it.
-    let reducer = TimerReducer { deadline_ms: 2000 };
+    let mut reducer = TimerReducer { deadline_ms: 2000 };
     let mut exec = RecordingExecutor::new();
     let mut session = Session::genesis(Hash::of(b"timer"), Hash::of(b"test-spawn-nonce"));
     session
-        .deliver(inbound_go(), None, &reducer, &timer_cap(), &mut exec)
+        .deliver(inbound_go(), None, &mut reducer, &timer_cap(), &mut exec)
         .await
         .unwrap();
 
     // Replay the log into a fresh session — the armed timer must come back.
-    let restored = Session::replay(session.log().to_vec(), &reducer)
+    let restored = Session::replay(session.log().to_vec(), &mut reducer)
         .await
         .unwrap();
     assert_eq!(restored.next_timer_deadline(), Some(2000));
@@ -1092,7 +1108,7 @@ async fn armed_timer_survives_replay() {
     let mut restored = restored;
     assert_eq!(
         restored
-            .fire_due_timers(2000, &reducer, &timer_cap(), &mut exec)
+            .fire_due_timers(2000, &mut reducer, &timer_cap(), &mut exec)
             .await,
         1
     );
@@ -1105,7 +1121,7 @@ async fn malformed_timer_deadline_is_rejected_not_panicked() {
     struct BadTimer;
     #[async_trait::async_trait(?Send)]
     impl Reducer for BadTimer {
-        async fn fold(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             if matches!(event.body, EventBody::Inbound { .. }) {
                 FoldOutput::with(vec![EffectRequest::new(
                     EffectKind::Timer,
@@ -1121,7 +1137,7 @@ async fn malformed_timer_deadline_is_rejected_not_panicked() {
     let mut exec = RecordingExecutor::new();
     let mut session = Session::genesis(Hash::of(b"badtimer"), Hash::of(b"test-spawn-nonce"));
     session
-        .deliver(inbound_go(), None, &BadTimer, &timer_cap(), &mut exec)
+        .deliver(inbound_go(), None, &mut BadTimer, &timer_cap(), &mut exec)
         .await
         .unwrap();
     // No timer armed, nothing left open, and a denial recorded for audit.
@@ -1145,7 +1161,7 @@ async fn live_shell_executor_runs_a_real_command_end_to_end() {
     struct ShellReducer;
     #[async_trait::async_trait(?Send)]
     impl Reducer for ShellReducer {
-        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => FoldOutput::with(vec![EffectRequest::new(
                     EffectKind::Shell,
@@ -1177,7 +1193,7 @@ async fn live_shell_executor_runs_a_real_command_end_to_end() {
     let mut exec = ShellExecutor;
     let mut session = Session::genesis(Hash::of(b"shell"), Hash::of(b"test-spawn-nonce"));
     session
-        .deliver(inbound_go(), None, &ShellReducer, &authz, &mut exec)
+        .deliver(inbound_go(), None, &mut ShellReducer, &authz, &mut exec)
         .await
         .unwrap();
 
@@ -1203,7 +1219,7 @@ async fn live_shell_denied_command_never_executes() {
     struct DeniedShell(String);
     #[async_trait::async_trait(?Send)]
     impl Reducer for DeniedShell {
-        async fn fold(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             if matches!(event.body, EventBody::Inbound { .. }) {
                 // Harmless command (PR#992 #3: no `rm -rf` in tests). Outside the `echo ` grant →
                 // denied at the gate anyway; the marker would only appear if the gate FAILED.
@@ -1229,7 +1245,7 @@ async fn live_shell_denied_command_never_executes() {
         .deliver(
             inbound_go(),
             None,
-            &DeniedShell(marker.clone()),
+            &mut DeniedShell(marker.clone()),
             &authz,
             &mut exec,
         )
@@ -1264,7 +1280,7 @@ async fn live_shell_no_injection_via_metacharacters() {
     struct Injector(String);
     #[async_trait::async_trait(?Send)]
     impl Reducer for Injector {
-        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 // Passes `starts_with("echo ")` but embeds an injection attempt.
                 EventBody::Inbound { .. } => FoldOutput::with(vec![EffectRequest::new(
@@ -1292,7 +1308,7 @@ async fn live_shell_no_injection_via_metacharacters() {
     let mut session = Session::genesis(Hash::of(b"inject"), Hash::of(b"test-spawn-nonce"));
     let payload = format!("echo ok ; touch {marker}");
     session
-        .deliver(inbound_go(), None, &Injector(payload), &authz, &mut exec)
+        .deliver(inbound_go(), None, &mut Injector(payload), &authz, &mut exec)
         .await
         .unwrap();
 
@@ -1318,7 +1334,7 @@ async fn authz_denied_is_folded_live_so_replay_matches() {
     struct DenialCounter;
     #[async_trait::async_trait(?Send)]
     impl Reducer for DenialCounter {
-        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 // Target outside the capability → denied.
                 EventBody::Inbound { .. } => FoldOutput::with(vec![EffectRequest::new(
@@ -1344,7 +1360,7 @@ async fn authz_denied_is_folded_live_so_replay_matches() {
     let mut exec = RecordingExecutor::new();
     let mut session = Session::genesis(Hash::of(b"denial"), Hash::of(b"test-spawn-nonce"));
     session
-        .deliver(inbound_go(), None, &DenialCounter, &authz, &mut exec)
+        .deliver(inbound_go(), None, &mut DenialCounter, &authz, &mut exec)
         .await
         .unwrap();
 
@@ -1354,7 +1370,7 @@ async fn authz_denied_is_folded_live_so_replay_matches() {
     let live_root = session.snapshot().kv_root;
 
     // Replay: must reconstruct the SAME kv (the denial is folded in replay too, matching live).
-    let replayed = Session::replay(session.log().to_vec(), &DenialCounter)
+    let replayed = Session::replay(session.log().to_vec(), &mut DenialCounter)
         .await
         .unwrap();
     assert_eq!(replayed.kv().get(b"denials"), Some(&[1u8][..]));
@@ -1373,7 +1389,7 @@ async fn replay_rejects_a_genesis_less_log_loudly() {
     struct Inert;
     #[async_trait::async_trait(?Send)]
     impl Reducer for Inert {
-        async fn fold(&self, _e: &Event, _kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, _e: &Event, _kv: &mut Kv) -> FoldOutput {
             FoldOutput::none()
         }
     }
@@ -1389,7 +1405,7 @@ async fn replay_rejects_a_genesis_less_log_loudly() {
         },
     }];
     assert!(
-        Session::replay(genesis_less, &Inert).await.is_err(),
+        Session::replay(genesis_less, &mut Inert).await.is_err(),
         "replay must reject a log whose first event is not Genesis (finding #2 fail-loud)"
     );
 }
