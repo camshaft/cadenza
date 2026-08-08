@@ -6376,3 +6376,6 @@ pass	bc3 an op RETURNS Bool consumed by a two-flag if ladder — a mod-3-depende
 pass	wx1 the state thread WRAPS at Int64.max — three draws straddle the wraparound and the comparisons see the seam
 pass	wx2 Int64.min and Int64.max cross the dispatch as OP ARGUMENTS and come back exact — a count arm tallies the trips
 pass	wx3 Int64.min and Int64.max ride as SUM payloads through dispatch — variant chosen by state parity, payloads verified exact
+pass	wx4 the ARM doubles its argument with wrapping-mul — MAX wraps to -2, MIN to 0, a small value stays exact, count rides along
+pass	wx5 the state STEPS by wrapping-sub of MAX each draw — two hops cross the seam in opposite directions
+pass	wx6 wrapping increments CHAINED hop-to-hop — MAX-1 crosses the seam inside a nested three-op chain, count pins the trips
