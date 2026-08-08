@@ -7912,13 +7912,19 @@ fn parse_df_inode_pct(df_stdout: &str) -> Option<u64> {
 /// flake" so gc never ran).
 fn maybe_run_gc(fleet: &Fleet) {
     // INODE-PRESSURE SWEEP (concierge 2026-08-08, infra-critical): a tmpfs `/tmp` can hit 100% INODES
-    // with low BYTES (many tiny files — agent scratch + per-agent task `.output` logs accumulating across
-    // every worktree), which the bytes-based `apps.gc --max` below NEVER triggers, so inode exhaustion
-    // (fleet-wide ENOSPC/wedge risk) slips past it — worse now that the local-nix cutover shifts all builds
-    // to /tmp. So EVERY tick (not timer-gated — inode exhaustion can't wait 3h), check `df -i /tmp`, and if
-    // inodes are high, prune the STALE task logs (mine to own; the small-file accumulation concierge named).
-    // Cheap `find -delete`, synchronous, best-effort. The dominant nix build-temp inode hog is v-nix's lane
-    // (coordinated separately). Runs independently of the bytes-GC timer below.
+    // with low BYTES (many tiny files), which the bytes-based `apps.gc --max` below NEVER triggers, so
+    // inode exhaustion (fleet-wide ENOSPC/wedge risk) slips past it — worse now the local-nix cutover
+    // shifts all builds/tests local. So EVERY tick (not timer-gated — inode exhaustion can't wait 3h),
+    // check `df -i /tmp`, and if inodes are high, sweep the FLEET-OWNED /tmp scratch (best-effort, cheap
+    // synchronous `find -delete`, run independently of the bytes-GC timer below). Two swept classes:
+    //   (1) task `.output` logs > TMP_STALE_LOG_SECS across /tmp/claude-* (per-agent loop-task logs);
+    //   (2) cdz test/check scratch dirs (`cdz-test-manifest*` / `cdz-check*` / `cdz-check-imports*` that
+    //       cdz-run writes when cad-tests/gate run locally) OLDER THAN 60 MIN and NOT under a nix-warm-roots
+    //       path — v-nix's tested-safe pattern: the 60-min floor guarantees no ACTIVE gate run is touched,
+    //       the warm-roots exclusion protects the load-bearing warm-store GC roots.
+    // NOTE: nix does NOT build under /tmp (its daemon sandbox is /nix/var/nix/builds — v-nix confirmed), so
+    // there is no nix-build-temp hog here; the cdz-scratch sweep IS the nix/cdz-lane /tmp GC. The dominant
+    // observed hog (toolbox-telemetry-em, ~166K) is NOT fleet-owned — routed to the toolbox owner, not here.
     let tmp_inode_pct = Command::new("df")
         .args(["-i", "/tmp"])
         .output()
@@ -7926,20 +7932,22 @@ fn maybe_run_gc(fleet: &Fleet) {
         .filter(|o| o.status.success())
         .and_then(|o| parse_df_inode_pct(&String::from_utf8_lossy(&o.stdout)));
     if should_sweep_inodes(tmp_inode_pct) {
-        // Prune task `.output` logs older than TMP_STALE_LOG_SECS across all /tmp/claude-* session dirs.
         let cutoff_min = (TMP_STALE_LOG_SECS / 60).to_string();
-        let pruned = Command::new("sh")
+        let swept = Command::new("sh")
             .arg("-c")
             .arg(format!(
+                // (1) stale task logs; (2) v-nix's safe cdz-scratch pattern (>60min, warm-roots-excluded).
                 "find /tmp/claude-* -name '*.output' -type f -mmin +{cutoff_min} -delete 2>/dev/null; \
-                 find /tmp/claude-* -name '*.output' 2>/dev/null | wc -l"
+                 find /tmp -maxdepth 1 -type d \\( -name 'cdz-test-manifest*' -o -name 'cdz-check*' -o -name 'cdz-check-imports*' \\) \
+                   -mmin +60 -not -path '*nix-warm-roots*' -exec rm -rf {{}} + 2>/dev/null; \
+                 df -i /tmp 2>/dev/null | tail -1 | awk '{{print $5}}'"
             ))
             .output();
         eprintln!(
-            "gc-hook: /tmp inodes at {}% (>= {TMP_INODE_SWEEP_PCT}% threshold) → swept stale task logs (>{}h). Remaining task logs: {}. (nix build-temp inode GC is v-nix's lane.)",
+            "gc-hook: /tmp inodes at {}% (>= {TMP_INODE_SWEEP_PCT}%) → swept fleet-owned scratch (task logs >{}h + cdz-test/check dirs >60min, warm-roots-excluded). /tmp inodes now: {}. (toolbox-telemetry hog is not fleet-owned.)",
             tmp_inode_pct.unwrap_or(0),
             TMP_STALE_LOG_SECS / 3600,
-            pruned
+            swept
                 .ok()
                 .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
                 .unwrap_or_else(|| "?".into())
