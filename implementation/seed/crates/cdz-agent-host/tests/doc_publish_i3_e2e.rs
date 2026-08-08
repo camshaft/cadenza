@@ -67,7 +67,7 @@ struct DocPublishReducer {
 
 #[async_trait::async_trait(?Send)]
 impl Reducer for DocPublishReducer {
-    async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+    async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
         match &event.body {
             EventBody::Inbound {
                 content_type,

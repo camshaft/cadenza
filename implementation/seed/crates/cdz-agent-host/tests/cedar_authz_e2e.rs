@@ -56,7 +56,7 @@ fn inbound(kind_marker: &str) -> EventBody {
 struct PolicyProbe;
 #[async_trait::async_trait(?Send)]
 impl Reducer for PolicyProbe {
-    async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+    async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
         match &event.body {
             EventBody::Inbound { payload, .. } => {
                 let Payload::Inline(m) = payload else {
@@ -107,7 +107,7 @@ async fn a_real_agent_is_gated_by_a_real_cedar_decision() {
     // PERMIT case: a Model call to the allow-listed id → the policy permits → the executor runs → the
     // result folds back → the agent records "permitted".
     {
-        let reducer = PolicyProbe;
+        let mut reducer = PolicyProbe;
         let mut exec = CompositeExecutor::new()
             .with_effect(effect_ct::MODEL, Box::new(ModelExecutor::new(StubModel)));
         let mut session = Session::genesis(
@@ -115,7 +115,7 @@ async fn a_real_agent_is_gated_by_a_real_cedar_decision() {
             Hash::of(b"cedar-permit-v1-nonce"),
         );
         session
-            .deliver(inbound("model-ok"), None, &reducer, &authz, &mut exec)
+            .deliver(inbound("model-ok"), None, &mut reducer, &authz, &mut exec)
             .await
             .unwrap();
         assert_eq!(
@@ -134,7 +134,7 @@ async fn a_real_agent_is_gated_by_a_real_cedar_decision() {
     // DENY case: an Http call to the IMDS host the policy FORBIDs → the Cedar decision denies at the gate
     // → the executor is never consulted → an AuthzDenied is on the log + the agent is not "permitted".
     {
-        let reducer = PolicyProbe;
+        let mut reducer = PolicyProbe;
         // A Model executor is registered, but the Http effect is denied before any executor runs; an
         // Http executor isn't even needed to prove the deny (the gate stops it first).
         let mut exec = CompositeExecutor::new()
@@ -142,7 +142,7 @@ async fn a_real_agent_is_gated_by_a_real_cedar_decision() {
         let mut session =
             Session::genesis(Hash::of(b"cedar-deny-v1"), Hash::of(b"cedar-deny-v1-nonce"));
         session
-            .deliver(inbound("http-imds"), None, &reducer, &authz, &mut exec)
+            .deliver(inbound("http-imds"), None, &mut reducer, &authz, &mut exec)
             .await
             .unwrap();
         assert_ne!(

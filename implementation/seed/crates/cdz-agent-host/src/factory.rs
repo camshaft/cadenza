@@ -763,14 +763,14 @@ where
             .ok_or_else(|| {
                 format!("no reducer component in the blob store for recovered hash {reducer_hash}")
             })?;
-        let reducer = AsyncComponentReducer::from_component_bytes(&bytes).map_err(|e| {
+        let mut reducer = AsyncComponentReducer::from_component_bytes(&bytes).map_err(|e| {
             format!("recovered reducer component for {reducer_hash} did not lift: {e:?}")
         })?;
         // Fold the recovered log through the kernel's backend-agnostic recovery core with the reloaded
         // reducer: rebuilds KV + the open-obligation set + reports how the log ended (Clean/TornTail/Corrupt)
         // and which effects are open (the daemon re-drives those). A reducer-load failure above already
         // returned; a replay/empty-log failure here maps to a clean Err (never a panic).
-        let (session, report) = cdz_kernel::kernel::Session::recover_from(recovered, &reducer)
+        let (session, report) = cdz_kernel::kernel::Session::recover_from(recovered, &mut reducer)
             .await
             .map_err(|e| format!("recover_and_build: recover_from failed: {e:?}"))?;
         // The recovered session's id/genesis are already fixed by its log; build the executor set against its
@@ -1249,7 +1249,7 @@ mod tests {
     struct GenesisRecordingReducer;
     #[async_trait::async_trait(?Send)]
     impl Reducer for GenesisRecordingReducer {
-        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
             if let EventBody::Inbound {
                 content_type,
                 payload: cdz_kernel::effect::Payload::Inline(bytes),

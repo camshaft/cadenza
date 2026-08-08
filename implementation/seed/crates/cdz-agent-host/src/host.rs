@@ -332,7 +332,7 @@ impl HostedSession {
     /// re-learns its surface). Re-seed after recover if you want to suppress that until a real change.
     pub async fn push_capabilities_changed(&mut self) -> Vec<cdz_kernel::effect::ControlEffect> {
         self.session
-            .push_capabilities_changed(&*self.reducer, &*self.authz, &mut self.executor)
+            .push_capabilities_changed(&mut *self.reducer, &*self.authz, &mut self.executor)
             .await
     }
 
@@ -374,7 +374,7 @@ impl HostedSession {
     /// emits none, so most callers ignore the return.
     pub async fn seed_capabilities(&mut self) -> Vec<cdz_kernel::effect::ControlEffect> {
         self.session
-            .seed_capabilities(&*self.reducer, &*self.authz, &mut self.executor)
+            .seed_capabilities(&mut *self.reducer, &*self.authz, &mut self.executor)
             .await
     }
 
@@ -390,7 +390,7 @@ impl HostedSession {
             .deliver(
                 body,
                 cause,
-                &*self.reducer,
+                &mut *self.reducer,
                 &*self.authz,
                 &mut self.executor,
             )
@@ -417,7 +417,7 @@ impl HostedSession {
             .deliver_control(
                 body,
                 cause,
-                &*self.reducer,
+                &mut *self.reducer,
                 &*self.authz,
                 &mut self.executor,
             )
@@ -463,7 +463,7 @@ impl HostedSession {
             .settle_effect_result(
                 ce.id,
                 outcome,
-                &*self.reducer,
+                &mut *self.reducer,
                 &*self.authz,
                 &mut self.executor,
             )
@@ -506,7 +506,7 @@ impl HostedSession {
     /// scheduler calls this on a tick; returns how many fired.
     pub async fn fire_due_timers(&mut self, now_ms: u64) -> usize {
         self.session
-            .fire_due_timers(now_ms, &*self.reducer, &*self.authz, &mut self.executor)
+            .fire_due_timers(now_ms, &mut *self.reducer, &*self.authz, &mut self.executor)
             .await
     }
 
@@ -627,14 +627,14 @@ impl HostedSession {
     /// read its inline payload. This replaces the earlier `public/summary` KV convention.
     ///
     /// The caller supplies the fork's `reducer` (the same logic the session runs — a `Box<dyn Reducer>`
-    /// can't be cloned out of this `HostedSession`, so the caller re-provides it as a `&dyn Reducer`),
+    /// can't be cloned out of this `HostedSession`, so the caller re-provides it as a `&mut dyn Reducer`),
     /// a MODEL-ONLY `authz` (a scoped capability so a summarize-fold can call the model but CANNOT take
     /// world-actions — SEC-F1), and an `executor` to serve that model call. Returns `Some(summary_bytes)`
     /// if the reducer emitted a `control/summary` effect with an inline payload, else `None` (it
     /// summarized elsewhere / didn't, emitted a blob payload, or the fork erred).
     pub async fn fork_for_query(
         &self,
-        reducer: &dyn Reducer,
+        reducer: &mut dyn Reducer,
         authz: &dyn Authorize,
         executor: &mut CompositeExecutor,
     ) -> Option<Vec<u8>> {
@@ -1527,7 +1527,7 @@ mod tests {
     struct ClockAgent;
     #[async_trait::async_trait(?Send)]
     impl Reducer for ClockAgent {
-        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => {
                     FoldOutput::with(vec![EffectRequest::new_with_family(
@@ -1597,7 +1597,7 @@ mod tests {
             kind: RecoveryKind::Clean,
             good_prefix_len: 0, // informational for this backend-agnostic path; recover_from ignores it
         };
-        let (session, report) = Session::recover_from(recovered, &ClockAgent)
+        let (session, report) = Session::recover_from(recovered, &mut ClockAgent)
             .await
             .expect("a clean genesis log recovers");
         assert_eq!(report.kind, RecoveryKind::Clean);
@@ -1632,7 +1632,7 @@ mod tests {
     }
     #[async_trait::async_trait(?Send)]
     impl Reducer for TimerAgent {
-        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => {
                     FoldOutput::with(vec![EffectRequest::new_with_family(
@@ -1690,7 +1690,7 @@ mod tests {
     struct GenesisRecordingReducer;
     #[async_trait::async_trait(?Send)]
     impl Reducer for GenesisRecordingReducer {
-        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
             if let EventBody::Inbound {
                 content_type,
                 payload: Payload::Inline(bytes),
@@ -2273,7 +2273,7 @@ mod tests {
     struct ChildExitedFoldingReducer;
     #[async_trait::async_trait(?Send)]
     impl Reducer for ChildExitedFoldingReducer {
-        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
             if let EventBody::Inbound {
                 content_type,
                 payload,
@@ -3012,7 +3012,7 @@ mod tests {
     struct ReportingAgent;
     #[async_trait::async_trait(?Send)]
     impl Reducer for ReportingAgent {
-        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { content_type, .. } if content_type.is_report() => {
                     // Summarize from local KV — here, echo the recorded phase into the emitted summary.
@@ -3062,7 +3062,7 @@ mod tests {
         // authz-exempt) + an executor. Returns the summary carried on the control-plane channel.
         let mut exec = CompositeExecutor::new();
         let summary = hosted
-            .fork_for_query(&ReportingAgent, &Authorizer::deny_all(), &mut exec)
+            .fork_for_query(&mut ReportingAgent, &Authorizer::deny_all(), &mut exec)
             .await;
         assert_eq!(
             summary.as_deref(),
@@ -3084,7 +3084,7 @@ mod tests {
     struct MultiControlAgent;
     #[async_trait::async_trait(?Send)]
     impl Reducer for MultiControlAgent {
-        async fn fold(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { content_type, .. } if content_type.is_report() => {
                     let caps = EffectRequest::new_with_family(
@@ -3127,7 +3127,7 @@ mod tests {
         let summary = host
             .get(&id)
             .unwrap()
-            .fork_for_query(&MultiControlAgent, &Authorizer::deny_all(), &mut exec)
+            .fork_for_query(&mut MultiControlAgent, &Authorizer::deny_all(), &mut exec)
             .await;
         assert_eq!(
             summary.as_deref(),
@@ -3141,7 +3141,7 @@ mod tests {
     struct NoSummaryAgent;
     #[async_trait::async_trait(?Send)]
     impl Reducer for NoSummaryAgent {
-        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
             if let EventBody::Inbound { content_type, .. } = &event.body {
                 if content_type.is_report() {
                     // Does local work on the report, but emits NO control/summary effect.
@@ -3171,7 +3171,7 @@ mod tests {
         let summary = host
             .get(&id)
             .unwrap()
-            .fork_for_query(&NoSummaryAgent, &Authorizer::deny_all(), &mut exec)
+            .fork_for_query(&mut NoSummaryAgent, &Authorizer::deny_all(), &mut exec)
             .await;
         assert_eq!(summary, None, "no control/summary emitted → None");
     }
@@ -3183,7 +3183,7 @@ mod tests {
     struct BlobThenInlineSummaryAgent;
     #[async_trait::async_trait(?Send)]
     impl Reducer for BlobThenInlineSummaryAgent {
-        async fn fold(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { content_type, .. } if content_type.is_report() => {
                     // First control/summary: a BLOB payload (no inline bytes to read).
@@ -3228,7 +3228,7 @@ mod tests {
             .get(&id)
             .unwrap()
             .fork_for_query(
-                &BlobThenInlineSummaryAgent,
+                &mut BlobThenInlineSummaryAgent,
                 &Authorizer::deny_all(),
                 &mut exec,
             )
@@ -3246,7 +3246,7 @@ mod tests {
     struct CapabilityAwareAgent;
     #[async_trait::async_trait(?Send)]
     impl Reducer for CapabilityAwareAgent {
-        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
             if let EventBody::EffectResult {
                 result: EffectOutcome::Ok(Some(Payload::Inline(bytes))),
                 ..
@@ -3525,7 +3525,7 @@ mod tests {
     }
     #[async_trait::async_trait(?Send)]
     impl Reducer for StoreSetAgent {
-        async fn fold(&self, event: &cdz_kernel::event::Event, _kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &cdz_kernel::event::Event, _kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => {
                     let payload = cdz_kernel::event_ast::encode_name_set(
@@ -3682,7 +3682,7 @@ mod tests {
     }
     #[async_trait::async_trait(?Send)]
     impl Reducer for SignatureQueryAgent {
-        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => {
                     FoldOutput::with(vec![EffectRequest::new_with_family(

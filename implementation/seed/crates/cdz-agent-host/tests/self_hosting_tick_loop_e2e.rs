@@ -55,7 +55,7 @@ impl TickLoopRole {
 
 #[async_trait::async_trait(?Send)]
 impl Reducer for TickLoopRole {
-    async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+    async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
         match &event.body {
             // The kick: start the loop by arming the first tick.
             EventBody::Inbound { .. } => FoldOutput::with(vec![Self::arm_tick()]),
