@@ -930,6 +930,38 @@ fn a_projection_only_runtime_tuple_folds_without_the_heap() {
     assert_eq!(got, 42, "folds to (+ a b)");
 }
 
+#[test]
+fn a_multiuse_param_bound_to_a_pure_recursive_helper_call_inlines_and_runs() {
+    // Guards the `arg_reaches_perform_evalonce` fix (cross-module HM-unify "parameter reference has no
+    // local slot" miscompile, v-wasm-opt/v-compiler-ml 2026-08-08). A helper `bc` that uses a param in ≥2
+    // sum-match arms is inlined into a caller that binds that param to `resolve(·)` — a PURE but fuel-
+    // RECURSIVE resolver. The evaluate-once trigger USED to over-report ANY recursive callee as "may
+    // perform" (blanket `is_recursive → true`), let-wrapping the pure arg instead of substituting it; in the
+    // real multi-level cross-module inline (unify-int-su → unify-sign-su → bind-or-check-sign over `Sign`)
+    // the leftover residual param refs were then pinned as false captures and emitted slot-less. The walk
+    // now follows a recursive callee ONCE (visited set) and correctly sees it performs nothing, so the arg
+    // is substituted. (The full RED witness is the compiler-ml unify-subst 6th-heavy-@test, gated at
+    // cdz-test scale by v-wasm-opt; this pins the fix's core behavior — a pure recursive arg substitutes —
+    // as a fast rcdzc-lib compile+run check.)
+    let src = "(module m \
+        (type S (SVar Int64) (SFix Int64)) \
+        (def (go (: acc Int64) (: n Int64)) (if (= n 0) acc (go (+ acc n) (- n 1)))) \
+        (def (resolve (: v Int64)) (S.SFix (go 0 v))) \
+        (def (bc (: ra S) (: rb S)) \
+          (match ra \
+            ((S.SVar ia) (match rb ((S.SVar ib) (+ ia ib)) ((S.SFix fb) (+ ia fb)))) \
+            ((S.SFix fa) (match rb ((S.SVar ib) (+ fa ib)) ((S.SFix fb) (+ fa fb)))))) \
+        (def (mid (: a Int64) (: b Int64)) (bc (resolve a) (resolve b))) \
+        (def (main (: k Int64)) (mid k k)) \
+        (export main))";
+    let bytes = compile_component(&crate::codec::encode(&crate::testkit::parse(src))).expect(
+        "a multi-use param bound to a pure-recursive-helper call must compile (no slotless param)",
+    );
+    // resolve(3)=SFix(go(0,3))=SFix(6); bc(SFix6,SFix6)= fa+fb = 12. A behavior spot-check.
+    let got: i64 = run_returns_with(&bytes, "main", &[wasmtime::component::Val::S64(3)]);
+    assert_eq!(got, 12, "resolve(3)=SFix(6); bc(SFix6,SFix6)= fa+fb =12");
+}
+
 /// A SINGLE projection of a tuple built through an `if` FOLDS the tuple away by pushing the projection
 /// INTO the branches: `(. (if c (tuple a b) (tuple b a)) 0)` → `(if c a b)`. The `if`-selected tuple was
 /// previously OPAQUE to the projection fold (`reduce_to_tuple_elems` stops at an `if`), forcing a
