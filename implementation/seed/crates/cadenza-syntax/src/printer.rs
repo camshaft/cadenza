@@ -1438,6 +1438,56 @@ impl<'a> Printer<'a> {
         )
     }
 
+    /// Whether a NON-LAST match-arm body, printed bare, would let the following `| pat` be ABSORBED —
+    /// i.e. its TRAILING rendered sub-expression is an open `|`-arm list (`match`/`handle`). Only then
+    /// must the arm body be parenthesized (see [`Self::print_match`]); otherwise the arm-terminating
+    /// `|` delimits it cleanly and parens are the redundant-paren defect (the pervasive `(if …)`/`(let
+    /// …)` match-arm parens the operator flagged in hm-collect.cdz).
+    ///
+    /// It follows the TAIL through the forms whose last rendered token IS their trailing sub-expression:
+    /// `if`→its last branch (`else`, or `then` when no `else`), `let`/`fn`/`host`/`do`→their body/last
+    /// statement, `@`-annotation→the annotated inner, and `comment`/`comment-after` wrappers→the inner.
+    /// `match`/`handle` are TERMINAL-true (their own arm list is open). Anything else (an infix/call/
+    /// literal/record/tuple/ascription — which ends in a closing token, not a greedy arm list) is false.
+    /// This is the `|`-analog of [`Self::has_greedy_tail`]'s `;`-analysis, but tail-RECURSIVE (a greedy
+    /// arm form can lurk under `if a then 1 else (match …)` / `@tag (match …)` / `let p=x in (match …)`)
+    /// and only `match`/`handle` are terminal (an `fn`/`let`/`if` whose OWN tail isn't an arm form is
+    /// `|`-safe). Depth-guarded by the same `MAX_PRINT_DEPTH` budget as `expr` (a decoded-only deep
+    /// arena can't overflow — a straight-line follow, but guard anyway).
+    fn arm_body_tail_is_open_arm_form(&self, id: StructId, depth: u32) -> bool {
+        if depth > MAX_PRINT_DEPTH {
+            return false;
+        }
+        let items = match self.a.get(id) {
+            Struct::List(items) if !items.is_empty() => items,
+            _ => return false,
+        };
+        // A `(comment "text" inner)` / `(comment-after inner "text")` wrapper is transparent.
+        if let Some(a) = self.a.as_form(id, "comment")
+            && a.len() == 2
+            && self.is_string(a[0])
+        {
+            return self.arm_body_tail_is_open_arm_form(a[1], depth + 1);
+        }
+        if let Some(a) = self.a.as_form(id, "comment-after")
+            && a.len() == 2
+            && self.is_string(a[1])
+        {
+            return self.arm_body_tail_is_open_arm_form(a[0], depth + 1);
+        }
+        match self.head_name(items[0]).as_deref() {
+            // Open `|`-arm lists — a following `| pat` extends them. Terminal-true.
+            Some("match" | "handle") => true,
+            // Tail-transparent forms: their LAST rendered arg is the trailing sub-expression. Follow it.
+            // (`if cond then [else]` → last branch; `let binds body` / `fn params body` / `host … body`
+            // / `do … last` → last; `@ ann inner` → inner.) A 1-arg (headless-tail) form can't run on.
+            Some("if" | "let" | "fn" | "host" | "do" | "@") if items.len() >= 2 => {
+                self.arm_body_tail_is_open_arm_form(items[items.len() - 1], depth + 1)
+            }
+            _ => false,
+        }
+    }
+
     /// Print an expression in a VALUE position (a let-binding value). A construct that "eats forward"
     /// to the end of the enclosing sequence — a `let` (its body scopes to end) or a `(do …)` sequence
     /// — must PARENTHESIZE here, or it would swallow the statements that follow the binding:
@@ -2651,12 +2701,16 @@ impl<'a> Printer<'a> {
                 let (pat, body) = (pair[0], pair[1]);
                 self.pattern(pat);
                 self.doc.word(" => ");
-                // A body that is itself a block form (`match`/`let`/`if`/`do`) in a NON-LAST arm must
-                // parenthesize, else its own arms/layout would run into the next `| pat`. The last
-                // arm needs no guard (nothing follows at this level). PREC_KEYWORD forces the
-                // block-form parens without parenthesizing an infix body.
+                // A NON-LAST arm body whose TRAILING sub-expression is an open `|`-arm list
+                // (`match`/`handle`, possibly under `if`-else / `let`-body / `@` / comment wrappers) must
+                // parenthesize, else the following `| pat` is absorbed into that inner arm list. Every
+                // other body — `if`/`let`/`fn`/infix/call/literal, whose tail ends in a closing token —
+                // is delimited by the arm's own `|` and prints BARE (parenthesizing it was the redundant-
+                // paren defect: hm-collect.cdz's `(if …)`/`(let …)` match-arm bodies). The last arm needs
+                // no guard (nothing follows). PREC_KEYWORD forces the block-form parens; 0 prints bare.
                 let last = i + 1 == arms.len();
-                self.expr(body, if last { 0 } else { PREC_KEYWORD });
+                let needs_paren = !last && self.arm_body_tail_is_open_arm_form(body, 0);
+                self.expr(body, if needs_paren { PREC_KEYWORD } else { 0 });
             }
             // Trailing comments after the body, same line (innermost closest to the body).
             for &text in trail_texts.iter().rev() {
@@ -7647,6 +7701,57 @@ mod tests {
     fn call_breaks_all_args_when_wide() {
         let out = assert_roundtrip("some-function(alpha, beta, gamma, delta, epsilon)", 20);
         assert!(out.starts_with("some-function(\n"), "got:\n{out}");
+    }
+
+    #[test]
+    fn non_last_match_arm_if_let_body_prints_bare_not_parenthesized() {
+        // A NON-LAST match-arm body that is an `if`/`let`/`fn` (whose trailing sub-expression ends in a
+        // closing token, not an open `|`-arm list) is delimited by the arm's own `|` and must NOT be
+        // parenthesized — the pervasive `(if …)`/`(let …)` match-arm parens the operator flagged
+        // (hm-collect.cdz). `assert_roundtrip` proves the bare form re-parses identically + is idempotent.
+        let out = assert_roundtrip(
+            "match x with | A => if x > 0 then 1 else 2 | B => let y = x in y + 1 | C => 9",
+            200,
+        );
+        assert!(
+            out.contains("| A => if x > 0 then 1 else 2"),
+            "a non-last `if` arm body prints bare (no wrapping parens), got:\n{out}"
+        );
+        assert!(
+            out.contains("| B => let y = x in"),
+            "a non-last `let` arm body prints bare (no wrapping parens), got:\n{out}"
+        );
+        assert!(
+            !out.contains("=> (if") && !out.contains("=> (let"),
+            "no redundant `( … )` wrapping an if/let arm body, got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn non_last_match_arm_nested_match_body_keeps_parens_so_it_round_trips() {
+        // The CORRECTNESS boundary of the above: a non-last arm body whose TRAILING sub-expression IS an
+        // open `|`-arm list (a nested `match`/`handle`, possibly under `if`-else / `let`-body / `@`) MUST
+        // parenthesize — else the following `| pat` is absorbed into that inner arm list on re-parse. Two
+        // cases: a bare nested match, and an `if` whose `else` is a match (tail-reachable arm form).
+        // The INPUT must parenthesize the nested match (else `| B` binds to the INNER match — that
+        // ambiguity is exactly why the printer must re-emit the parens); the printer keeps them.
+        let nested = assert_roundtrip(
+            "match x with | A => (match x with | C => 1 | _ => 2) | B => 3",
+            200,
+        );
+        assert!(
+            nested.contains("=> (match x with"),
+            "a non-last nested-match arm body keeps its parens, got:\n{nested}"
+        );
+        // `if` whose else-tail is a match — must wrap (the else-match would swallow the next `|`).
+        let if_else_match = assert_roundtrip(
+            "match x with | A => if p then 1 else (match x with | C => 2 | _ => 3) | B => 9",
+            200,
+        );
+        assert!(
+            if_else_match.contains("=> (if p then"),
+            "a non-last `if` whose else-tail is a match keeps parens, got:\n{if_else_match}"
+        );
     }
 
     #[test]
