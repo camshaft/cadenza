@@ -881,6 +881,12 @@
             # syntaxGuest derivation so the CDZ_SYNTAX_COMPONENT-gated reflect E2E RUNS instead of skipping
             # (unset → the test skips cleanly). Same shape as the cedar/reducer siblings above.
             export CDZ_SYNTAX_COMPONENT="${syntaxGuest}"
+            # signature-query part-2 compose E2E (v-ah-host): the host blob.put's BOTH the dep
+            # (CDZ_SYNTAX_COMPONENT above) AND the consumer, then drives the ComponentReducer compose path
+            # so the consumer's +hash cadenza:syntax dep resolves + links, asserting the composed parse
+            # ran. Feed the lifted consumer component so that CDZ_SYNTAX_CONSUMER_COMPONENT-gated E2E RUNS
+            # (skip-when-either-unset). Parallel to CDZ_SYNTAX_COMPONENT, second var → consumerGuest.
+            export CDZ_SYNTAX_CONSUMER_COMPONENT="${consumerGuest}"
             # seq-144 genesis tail: feed the compiled GENESIS Cadenza reducer component + the value-heap store
             # so v-ah-host's genesis round-trip E2E (host.rs real_genesis_reducer_folds_setup_events…,
             # skip-on-unset) RUNS instead of skipping. It drives the real reducer_genesis through the full async
@@ -1210,6 +1216,64 @@
             runHook preInstall
             wasm-tools component new \
               target/wasm32-unknown-unknown/release/cdz_syntax_guest.wasm \
+              -o "$out"
+            runHook postInstall
+          '';
+        };
+
+        # N2 part-2 (v-syntax #2673-consumer, v-ah compose E2E): the CONSUMER guest that IMPORTS
+        # cadenza:syntax as a content-addressed +hash dep and calls parse.read-sexpr in its fold (the
+        # flavor-2 direct-linked-cross-component demo). v-ah ruled option-i: THIS derivation templates
+        # syntaxGuest's resolved content-hash into the consumer's WIT import name at BUILD time (the
+        # committed source stays a `+SYNTAXGUESTHASH` placeholder). Mirrors rcdzc injecting the runtime
+        # hash into an emitted program's import (mod.rs:7801) + our syntaxGuest content-addressing.
+        # compose_dep_into_linker strips @ver+hash and matches only the bare `cadenza:syntax/parse`
+        # (v-ah wasm_host.rs:366), so the +hash is provenance hygiene, NOT a compose-match requirement —
+        # but templating the REAL hash is the right convention. No first-party path-deps (pure wit-bindgen
+        # guest), so the fileset is just the crate dir (simpler than syntaxGuest's sibling closure).
+        consumerGuestVendor = pkgs.rustPlatform.importCargoLock {
+          lockFile = ./implementation/seed/crates/cdz-syntax-consumer-guest/Cargo.lock;
+        };
+        consumerGuestSrc = pkgs.lib.fileset.toSource {
+          root = ./.;
+          fileset = pkgs.lib.fileset.unions [
+            ./implementation/seed/crates/cdz-syntax-consumer-guest
+            ./rust-toolchain.toml
+          ];
+        };
+        consumerGuest = pkgs.stdenvNoCC.mkDerivation {
+          pname = "cdz-syntax-consumer-guest-component";
+          version = "0.0.0";
+          src = consumerGuestSrc;
+          nativeBuildInputs = [ rustToolchain pkgs.wasm-tools pkgs.coreutils pkgs.b3sum ];
+          buildPhase = ''
+            runHook preBuild
+            ${mkCargoVendorEnv { vendor = consumerGuestVendor; }}
+            cd implementation/seed/crates/cdz-syntax-consumer-guest
+            # Template the RESOLVED syntaxGuest content-hash into the consumer's cadenza:syntax import
+            # name (option-i). The placeholder `+SYNTAXGUESTHASH` appears in BOTH the import
+            # (wit/consumer.wit) AND the vendored dep package decl (wit/deps/syntax/syntax.wit); both MUST
+            # get the SAME hash or wit resolution rejects the import-vs-package mismatch. --replace-fail
+            # aborts the build if the token is absent (never silently ship an un-templated placeholder).
+            #
+            # BLAKE3, NOT sha256 (v-ah ruling 2026-08-08): the composed WIT dep +hash is the kernel BLOB-STORE
+            # KEY. resolve_deps (wasm_host.rs) reads this hex off the import name and does blobs.get(hash), and
+            # the store keys by cdz_kernel::hash::Hash::of = blake3 (hash.rs:27). So the import MUST carry the
+            # blake3 Hash::of of the dep bytes, or resolve_deps hits DepMissing (a sha256 hex can never match a
+            # blake3-keyed store). This is a DIFFERENT address space from the on-disk sha256 CDZ_STORE
+            # (REQUIRED_RUNTIME_HASH / packages.syntax-guest-hash) — the documented dual-hash boundary
+            # (hash.rs:9-14): CDZ_STORE = sha256, kernel blob store (composed deps) = blake3. They never cross.
+            # b3sum --no-names → the same lowercase 64-char hex Hash::to_hex produces.
+            h=$(b3sum --no-names ${syntaxGuest})
+            substituteInPlace wit/consumer.wit wit/deps/syntax/syntax.wit \
+              --replace-fail "+SYNTAXGUESTHASH" "+$h"
+            cargo build --release --target wasm32-unknown-unknown --locked --offline
+            runHook postBuild
+          '';
+          installPhase = ''
+            runHook preInstall
+            wasm-tools component new \
+              target/wasm32-unknown-unknown/release/cdz_syntax_consumer_guest.wasm \
               -o "$out"
             runHook postInstall
           '';
@@ -1579,6 +1643,10 @@
         # address (v-agent-harness-host's compose-test imports it by this hash). N2, v-syntax P2.
         packages.syntax-guest = syntaxGuest;
         packages.syntax-guest-hash = hashOf syntaxGuest "syntax-guest-hash";
+        # `.#syntax-consumer-guest` = the lifted part-2 consumer component (imports cadenza:syntax by
+        # +hash, calls parse.read-sexpr); `.#syntax-consumer-guest-hash` its content address. N2 part-2.
+        packages.syntax-consumer-guest = consumerGuest;
+        packages.syntax-consumer-guest-hash = hashOf consumerGuest "syntax-consumer-guest-hash";
 
         # R2: the content-addressed component store — every nix-built component as `<derived-hash>.wasm`
         # in one dir (mirrors target/cadenza-store, but built + addressed by nix). `nix build .#store`.
@@ -1765,6 +1833,7 @@
             reducerGuestValid = validComponent { name = "reducer-guest"; drv = reducerGuest; };
             cedarGuestValid = validComponent { name = "cedar-guest"; drv = cedarGuest; };
             syntaxGuestValid = validComponent { name = "syntax-guest"; drv = syntaxGuest; };
+            syntaxConsumerGuestValid = validComponent { name = "syntax-consumer-guest"; drv = consumerGuest; };
             reducerCadenzaB1Valid = validComponent { name = "reducer-cadenza-b1"; drv = reducerCadenzaB1; };
             reducerCadenzaB2Valid = validComponent { name = "reducer-cadenza-b2"; drv = reducerCadenzaB2; };
             reducerCadenzaB3Valid = validComponent { name = "reducer-cadenza-b3"; drv = reducerCadenzaB3; };
@@ -1834,6 +1903,7 @@
             reducer-guest-valid = reducerGuestValid;
             cedar-guest-valid = cedarGuestValid;
             syntax-guest-valid = syntaxGuestValid;
+            syntax-consumer-guest-valid = syntaxConsumerGuestValid;
             # S3: the example project's @tests run through nix — a cache HIT when its sources are
             # unchanged (the "skip tests that haven't changed" win), a re-run + fail on a red test.
             example-project-tests = exampleProjectTests;
