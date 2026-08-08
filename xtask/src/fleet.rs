@@ -787,6 +787,17 @@ pub enum FleetCmd {
         /// advances the LOCAL trunk ref (the prior behaviour, which forked local trunk from origin/main).
         #[arg(long)]
         publish_origin: bool,
+        /// BATCH-PR dispatch (operator 2026-08-08: branch protection blocks direct FF-push, so amortize
+        /// the GHA gate by combining MRs into ONE candidate PR instead). In the top-up phase, combine a
+        /// file-DISJOINT subset of the queue (up to ~6, `BATCH_PR_CAP`) into one candidate: re-parent each
+        /// member onto origin/main in a scratch worktree, run the local-nix `local-gate` PRE-FILTER on the
+        /// combined tree (reject culprits cheaply before spending a GHA cycle), then push ONE PR whose reap
+        /// acks every member on the single merge. A pre-filter RED bisects + rejects the culprit(s) and
+        /// falls the survivors back to single-MR dispatch; a setup failure falls the whole selection back.
+        /// Only meaningful with `--execute` (the CI-gated candidate-PR path, not `--local-gate`). Without
+        /// it, dispatch is one-candidate-per-MR (the proven default).
+        #[arg(long)]
+        batch: bool,
     },
     /// Report where a merge-request stands in the CI-gated pipeline — in-flight as a candidate PR (with
     /// lane + how to poll its CI), queued at a position in its lane, or resolved (merged/rejected). A
@@ -1036,11 +1047,12 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
             local_gate,
             json,
             publish_origin,
+            batch,
         } => {
             if local_gate {
                 schedule_pass_local_gate(&fleet, execute, json, publish_origin)
             } else if execute {
-                schedule_pass_execute(&fleet, cap)
+                schedule_pass_execute(&fleet, cap, batch)
             } else {
                 schedule_plan(&fleet, cap) // DRY preview == the read-only plan
             }
@@ -7798,12 +7810,23 @@ fn local_gate_verdict(spawned_ok: bool, build_ok: bool) -> CiVerdict {
 /// nonzero→Red (never Pending — the build blocks to completion). PATH-robust `nix` resolution (the fleet
 /// host has nix off a non-login shell's PATH). Inherits stdio so the build log is visible to the caller.
 fn run_gate_local(arch: &str) -> CiVerdict {
+    run_gate_local_in(arch, None)
+}
+
+/// Like [`run_gate_local`] but runs `nix build` from `dir` (when `Some`) so the gate evaluates THAT
+/// worktree's committed HEAD tree — the batch pre-filter gates the combined re-parented tree in the
+/// candidate scratch worktree, not pr-sync's process CWD. `None` runs from the process CWD (the
+/// `gate-local` CLI printer + the `--local-gate` drain, which gate the invoking worktree's trunk tip).
+fn run_gate_local_in(arch: &str, dir: Option<&Path>) -> CiVerdict {
     let target = format!(".#checks.{arch}-linux.local-gate");
     let nix_bin = nix_binary();
     eprintln!("gate-local: running `{nix_bin} build {target}` (local required-set gate; aarch64)…");
-    let out = Command::new(&nix_bin)
-        .args(["build", &target, "--no-link", "--print-out-paths"])
-        .status();
+    let mut cmd = Command::new(&nix_bin);
+    cmd.args(["build", &target, "--no-link", "--print-out-paths"]);
+    if let Some(d) = dir {
+        cmd.current_dir(d);
+    }
+    let out = cmd.status();
     let (spawned_ok, build_ok) = match out {
         Ok(s) => (true, s.success()),
         Err(e) => {
@@ -8495,6 +8518,24 @@ struct CiDispatch {
     /// `in-flight` for a record written without it. Matches pr-sync's live schema.
     #[serde(default = "dispatch_status_in_flight")]
     status: String,
+    /// For a BATCH candidate (one PR carrying several re-parented MRs — the batch-PR integration model):
+    /// the inbox filenames of EVERY merge-request this one PR covers, so the reap acks each of them on the
+    /// single merge (one GHA cycle amortized over N MRs). EMPTY for an ordinary single-MR candidate (then
+    /// the one covered file is `mr_file`). `#[serde(default)]` so every pre-existing single-MR record —
+    /// and pr-sync's live schema — still parses unchanged.
+    #[serde(default)]
+    batch_mr_files: Vec<String>,
+}
+
+/// The inbox filenames a dispatch record covers: its `batch_mr_files` for a batch candidate, else the
+/// single `[mr_file]`. The reap acks EACH of these on a merge (a batch PR merges once but resolves every
+/// MR it carried). Pure so the batch-vs-single fan-out is unit-tested. Empty `batch_mr_files` ⟹ single.
+fn covered_mr_files(d: &CiDispatch) -> Vec<String> {
+    if d.batch_mr_files.is_empty() {
+        vec![d.mr_file.clone()]
+    } else {
+        d.batch_mr_files.clone()
+    }
 }
 
 /// Default `CiDispatch::status` — a record without an explicit status is assumed still in flight.
@@ -8613,6 +8654,50 @@ fn schedule_dispatch(
         blocked_files.extend(c.files.iter().cloned());
     }
     picked
+}
+
+/// The BATCH-PR default cap (operator-approved 2026-08-08, "~5-8 MRs/batch"): the maximum number of
+/// merge-requests one batch candidate PR carries. Bounds the amortization window — a batch of N MRs pays
+/// ONE GHA cycle for N lands — while keeping a batch small enough that a GHA-red fallback re-dispatches
+/// only a handful individually. Midpoint of the approved 5-8 range.
+const BATCH_PR_CAP: usize = 6;
+
+/// PURE core of the batch-PR selector: choose the largest MUTUALLY-FILE-DISJOINT subset of the queued
+/// merge-requests (oldest-first) to combine into ONE batch candidate, up to `cap`. A batch PR carries
+/// several re-parented MRs in one squash commit; every MR in it lands together on the single merge, so the
+/// members must not touch overlapping files (else the combined tree self-conflicts on merge — the same
+/// file-level collision rule [`schedule_dispatch`] uses, now applied WITHIN the batch).
+///
+/// Selection (deterministic, oldest-first so a re-run picks the same batch):
+///   - Skip any MR whose files collide with an ALREADY-in-flight candidate (`in_flight_files`) — that
+///     commit will land and shift origin/main under the batch, so including it risks a re-parent conflict.
+///   - Take an MR only if its files are disjoint from every MR ALREADY chosen for this batch; otherwise
+///     skip it (it stays queued for a later batch once its neighbour lands). Reserving-in-order is NOT
+///     used here (unlike `schedule_dispatch`): a batch is a single unit, so a blocked MR simply waits —
+///     there is no younger-starves-older hazard across separate in-flight candidates to guard against.
+///   - Stop at `cap` members.
+///
+/// Returns the chosen `mr_file`s in queue order. An empty return (nothing disjoint / queue empty) means
+/// the caller should fall back to single-MR dispatch. Pure over its inputs (no git/gh/fs) so unit-tested.
+fn select_batch(
+    queued: &[SchedCandidate],
+    in_flight_files: &std::collections::HashSet<String>,
+    cap: usize,
+) -> Vec<String> {
+    let mut chosen = Vec::new();
+    // Files already claimed: everything in flight, plus every member picked so far for THIS batch.
+    let mut claimed: std::collections::HashSet<String> = in_flight_files.clone();
+    for c in queued {
+        if chosen.len() >= cap {
+            break;
+        }
+        if c.files.iter().any(|f| claimed.contains(f)) {
+            continue; // collides with in-flight or an already-chosen member → wait for a later batch
+        }
+        chosen.push(c.mr_file.clone());
+        claimed.extend(c.files.iter().cloned());
+    }
+    chosen
 }
 
 /// What the scheduler should DO with one in-flight candidate PR, given whether GitHub has already
@@ -9078,6 +9163,7 @@ fn publish_candidate(
                 pr_number,
                 lane: lane.clone(),
                 status: dispatch_status_in_flight(),
+                batch_mr_files: Vec::new(), // single-MR candidate — covered file is `mr_file`
             };
             if let Err(e) = write_ci_dispatch(fleet, &d) {
                 eprintln!(
@@ -9093,6 +9179,284 @@ fn publish_candidate(
     // Reached here ⟹ every dispatch step (push / pr create / auto-merge arm) succeeded and the
     // ci-dispatch record was written: a real new dispatch.
     true
+}
+
+/// The outcome of a batch dispatch attempt, so the caller (`schedule_pass_execute --batch`) can react:
+/// a green batch dispatched (its members are now in flight under ONE PR), a pre-filter RED that named a
+/// culprit subset to reject + a survivor subset to fall back on, or a setup failure that means fall back
+/// to single-MR dispatch for the whole selection this pass.
+enum BatchDispatch {
+    /// One batch PR opened carrying `members` (their mr_files) — recorded in flight.
+    Dispatched { pr: u64, members: Vec<BatchMr> },
+    /// The local-nix pre-filter FAILED the combined tree. `broken` are the members bisected as the
+    /// culprits (reject them); `survivors` passed and should be re-attempted (as a smaller batch or
+    /// individually) by the caller. Cheap-reject BEFORE spending a GHA cycle (operator: pre-filter first).
+    PrefilterRed {
+        broken: Vec<BatchMr>,
+        survivors: Vec<BatchMr>,
+    },
+    /// Could not set up / re-parent / push the batch (git or gh failure, or the pre-filter couldn't run
+    /// so we won't false-green). The caller falls back to single-MR dispatch for these members.
+    Failed,
+}
+
+/// Dispatch a set of merge-requests as ONE batch candidate PR (the batch-PR integration model, operator
+/// 2026-08-08). In one scratch worktree off `origin/main`, re-parent each member's merge-base range
+/// sequentially (the same recipe [`publish_candidate`] uses per-MR — cherry-pick `merge-base..ref`, not
+/// just the tip, so a multi-commit ref keeps its ancestors), then run the local-nix `local-gate`
+/// PRE-FILTER on the combined tree. GREEN → push the combined branch + open ONE PR (auto-merge armed) +
+/// record a batch `CiDispatch` whose `batch_mr_files` names every member, so the reap acks them all on
+/// the single merge. RED → bisect the culprit(s) via [`partition_batch`] over cherry-pick-replays and
+/// return them for rejection with the survivors for a fallback. This pays ONE GHA cycle for N lands.
+///
+/// `execute=false` is a DRY preview (prints the plan, no side-effects). Members are assumed already
+/// mutually file-disjoint (the caller uses [`select_batch`]); a re-parent conflict mid-build is still
+/// handled defensively (that member is dropped to the broken set).
+fn publish_batch_candidate(fleet: &Fleet, members: &[BatchMr], execute: bool) -> BatchDispatch {
+    if members.is_empty() {
+        return BatchDispatch::Failed;
+    }
+    if !execute {
+        println!(
+            "publish-batch DRY: would combine {} MR(s) into ONE candidate PR (local-nix pre-filter, then push):",
+            members.len()
+        );
+        for m in members {
+            println!("  member  {} (from {}, ref {})", m.file, m.from, m.r#ref);
+        }
+        println!(
+            "  → re-parent each range onto origin/main in a scratch worktree, gate-local the combined tree, push one cand branch + `gh pr create --base main` + arm --squash --auto."
+        );
+        return BatchDispatch::Failed; // DRY: nothing dispatched (caller treats as no-op, not fallback)
+    }
+
+    // Scratch worktree at a deterministic path keyed by the FIRST member's ref (no clock).
+    let key = members[0].r#ref.chars().take(12).collect::<String>();
+    let branch = format!("cand/batch-{key}");
+    let scratch = fleet
+        .repo
+        .join("target")
+        .join(format!("batch-scratch-{key}"));
+    let scratch_s = scratch.to_string_lossy().to_string();
+    let cleanup = |repo: &Path, s: &str| {
+        let _ = Command::new("git")
+            .current_dir(repo)
+            .args(["worktree", "remove", "--force", s])
+            .output();
+    };
+    // Clean any stale scratch, fetch origin, add a fresh detached worktree at origin/main.
+    cleanup(&fleet.repo, &scratch_s);
+    let _ = Command::new("git")
+        .current_dir(&fleet.repo)
+        .args(["fetch", "origin", "main", "--quiet"])
+        .output();
+    let add = Command::new("git")
+        .current_dir(&fleet.repo)
+        .args(["worktree", "add", "--detach", &scratch_s, "origin/main"])
+        .output();
+    if !matches!(add, Ok(ref o) if o.status.success()) {
+        eprintln!(
+            "publish-batch: `git worktree add --detach {scratch_s} origin/main` FAILED — falling back to single-MR dispatch."
+        );
+        cleanup(&fleet.repo, &scratch_s);
+        return BatchDispatch::Failed;
+    }
+
+    // Re-parent each member's range onto origin/main, sequentially, in the scratch worktree. A member
+    // that conflicts mid-build is a culprit (dropped to `broken`); the rest continue on the last clean
+    // tip so a single bad member can't sink the whole batch's setup.
+    let git_sc = |args: &[&str]| {
+        Command::new("git")
+            .current_dir(&scratch)
+            .args(args)
+            .output()
+    };
+    let mut applied: Vec<BatchMr> = Vec::new();
+    let mut broken: Vec<BatchMr> = Vec::new();
+    for m in members {
+        let merge_base = git_sc(&["merge-base", "origin/main", &m.r#ref])
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|s| !s.is_empty());
+        let range = merge_base_range(merge_base.as_deref(), &m.r#ref);
+        let pick = git_sc(&["cherry-pick", "--allow-empty", &range]);
+        if matches!(pick, Ok(ref o) if o.status.success()) {
+            applied.push(m.clone());
+        } else {
+            let _ = git_sc(&["cherry-pick", "--abort"]);
+            broken.push(m.clone());
+        }
+    }
+    if applied.is_empty() {
+        // Every member conflicted re-parenting — nothing to gate; reject them all as stale-base.
+        cleanup(&fleet.repo, &scratch_s);
+        return BatchDispatch::PrefilterRed {
+            broken,
+            survivors: Vec::new(),
+        };
+    }
+
+    // LOCAL-NIX PRE-FILTER over the combined tree (operator: pre-filter cheaply before a GHA cycle).
+    match run_gate_local_in("aarch64", Some(&scratch)) {
+        CiVerdict::Green => {} // combined tree passes → push it as one PR below.
+        CiVerdict::Red => {
+            // Bisect the culprit(s): re-form each subset onto origin/main in the scratch worktree and
+            // gate-local it, isolating the minimal broken set (partition_batch's binary search). The
+            // survivors are re-attempted by the caller (smaller batch / individually).
+            let (land_idx, broken_idx) = partition_batch(applied.len(), |subset| {
+                gate_subset_reparent(&scratch, &applied, subset)
+            });
+            let mut culprits = broken;
+            for &i in &broken_idx {
+                culprits.push(applied[i].clone());
+            }
+            let survivors: Vec<BatchMr> = land_idx.iter().map(|&i| applied[i].clone()).collect();
+            cleanup(&fleet.repo, &scratch_s);
+            return BatchDispatch::PrefilterRed {
+                broken: culprits,
+                survivors,
+            };
+        }
+        CiVerdict::Pending | CiVerdict::NoChecks => {
+            // Could not run the gate — never false-green a batch; fall back to single-MR dispatch.
+            eprintln!(
+                "publish-batch: local-nix pre-filter could not run (NO-CHECKS) — falling back to single-MR dispatch."
+            );
+            cleanup(&fleet.repo, &scratch_s);
+            return BatchDispatch::Failed;
+        }
+    }
+
+    // Re-form the FULL applied tree (the bisect path above may have left the worktree on a subset).
+    if !reform_reparent(&scratch, &applied) {
+        eprintln!(
+            "publish-batch: could not re-form the combined tree after pre-filter — falling back to single-MR dispatch."
+        );
+        cleanup(&fleet.repo, &scratch_s);
+        return BatchDispatch::Failed;
+    }
+
+    // PUSH the combined branch + open ONE PR + arm auto-merge (same argv shapes as a single candidate).
+    let title = format!("batch: {} MRs ({})", applied.len(), applied[0].subject);
+    let body = format!(
+        "Batch candidate PR combining {} file-disjoint merge-requests (local-nix pre-filter GREEN). Members: {}. Auto-merge armed; pr-sync's schedule-pass reaps on green and acks each member.",
+        applied.len(),
+        applied
+            .iter()
+            .map(|m| m.from.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    let argv = candidate_dispatch_argv(&branch, &title, &body);
+    let mut pr_number = 0u64;
+    for (i, cmd) in argv.iter().enumerate() {
+        let out = Command::new(&cmd[0])
+            .current_dir(&scratch)
+            .args(&cmd[1..])
+            .output();
+        if !matches!(out, Ok(ref o) if o.status.success()) {
+            eprintln!(
+                "publish-batch: step {} FAILED: `{}` — aborting batch, falling back to single-MR dispatch. stderr:\n{}",
+                i + 1,
+                cmd.join(" "),
+                out.as_ref()
+                    .map(|o| String::from_utf8_lossy(&o.stderr).into_owned())
+                    .unwrap_or_default()
+            );
+            cleanup(&fleet.repo, &scratch_s);
+            return BatchDispatch::Failed;
+        }
+        if i == 1
+            && let Ok(o) = out
+        {
+            pr_number = String::from_utf8_lossy(&o.stdout)
+                .trim()
+                .rsplit('/')
+                .next()
+                .and_then(|s| s.trim().parse::<u64>().ok())
+                .unwrap_or(0);
+        }
+    }
+    // Record ONE batch dispatch keyed by the batch branch; batch_mr_files names every member so the reap
+    // acks them all on the single merge.
+    let cand_sha = git_sc(&["rev-parse", "HEAD"])
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    let d = CiDispatch {
+        mr_file: format!("batch-{key}.json"),
+        agent: "batch".to_string(),
+        r#ref: applied[0].r#ref.clone(),
+        cand_branch: branch.clone(),
+        cand_sha,
+        pr_number,
+        lane: "batch".to_string(),
+        status: dispatch_status_in_flight(),
+        batch_mr_files: applied.iter().map(|m| m.file.clone()).collect(),
+    };
+    if let Err(e) = write_ci_dispatch(fleet, &d) {
+        eprintln!(
+            "publish-batch: PR #{pr_number} opened but FAILED to write the batch ci-dispatch record ({e}) — record by hand: batch-{key}.json"
+        );
+    }
+    cleanup(&fleet.repo, &scratch_s);
+    println!(
+        "publish-batch: dispatched {} MRs → PR #{pr_number} (branch {branch}); auto-merge armed, batch ci-dispatch recorded.",
+        applied.len()
+    );
+    BatchDispatch::Dispatched {
+        pr: pr_number,
+        members: applied,
+    }
+}
+
+/// Re-form the combined tree in the scratch worktree = origin/main + each member's range cherry-picked,
+/// in order. Resets to origin/main first (discarding a prior subset), then replays. Returns false if the
+/// reset or any pick fails (the caller then bails to single-MR dispatch — never gates/pushes a partial
+/// tree). Used to rebuild the FULL applied set after the bisect oracle left the worktree on a subset.
+fn reform_reparent(scratch: &Path, members: &[BatchMr]) -> bool {
+    let git_sc = |args: &[&str]| Command::new("git").current_dir(scratch).args(args).output();
+    let _ = git_sc(&["cherry-pick", "--abort"]); // clear any half-done pick from a prior subset
+    if !git_sc(&["reset", "--hard", "origin/main"])
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    for m in members {
+        let merge_base = git_sc(&["merge-base", "origin/main", &m.r#ref])
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|s| !s.is_empty());
+        let range = merge_base_range(merge_base.as_deref(), &m.r#ref);
+        if !git_sc(&["cherry-pick", "--allow-empty", &range])
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+        {
+            let _ = git_sc(&["cherry-pick", "--abort"]);
+            return false;
+        }
+    }
+    true
+}
+
+/// The bisect ORACLE for the batch pre-filter: re-form the `subset` of `members` (indices) onto
+/// origin/main in the scratch worktree and gate-local the result. Returns true iff every member of the
+/// subset re-parents cleanly AND the combined tree passes the local-nix gate. Mirrors [`gate_subset`]
+/// (the gate-batch oracle) but re-parents via cherry-pick onto origin/main (the batch-PR base) rather
+/// than merging onto local trunk. A subset that fails to re-form reads as RED (never false-green).
+fn gate_subset_reparent(scratch: &Path, members: &[BatchMr], subset: &[usize]) -> bool {
+    let chosen: Vec<BatchMr> = subset.iter().map(|&i| members[i].clone()).collect();
+    if !reform_reparent(scratch, &chosen) {
+        return false;
+    }
+    matches!(
+        run_gate_local_in("aarch64", Some(scratch)),
+        CiVerdict::Green
+    )
 }
 
 /// The lane label for a queued merge-request, computed from its `--ref`'s changed paths (same source
@@ -9525,7 +9889,7 @@ fn advance_trunk_for_merged_pr(fleet: &Fleet, pr: u64) -> Result<String, String>
 /// in-flight candidate PR then tops up dispatch under the cap. This is pr-sync's integration loop as one
 /// command; it WRITES `trunk`, so only pr-sync should run it. Each step is idempotent + fail-safe so a
 /// re-run (or a crash mid-pass) never double-lands or double-acks.
-fn schedule_pass_execute(fleet: &Fleet, cap: usize) {
+fn schedule_pass_execute(fleet: &Fleet, cap: usize, batch: bool) {
     let dispatched: Vec<CiDispatch> = read_ci_dispatches(fleet)
         .into_iter()
         .filter(dispatch_is_in_flight)
@@ -9546,19 +9910,33 @@ fn schedule_pass_execute(fleet: &Fleet, cap: usize) {
                 // then ack the sender.
                 match advance_trunk_for_merged_pr(fleet, d.pr_number) {
                     Ok(sha) => {
-                        ack(
-                            fleet,
-                            &d.mr_file,
-                            "merged",
-                            &sha,
-                            &format!(
-                                "landed via candidate PR #{} (auto-merged on green); trunk @ {sha}",
-                                d.pr_number
-                            ),
-                        );
+                        // Ack EVERY merge-request this PR covered. For a single-MR candidate that is just
+                        // `[d.mr_file]`; for a BATCH candidate it fans the one merge out to every member
+                        // (all landed together in the batch's single squash commit).
+                        let covered = covered_mr_files(d);
+                        let batch_note = if covered.len() > 1 {
+                            format!(" (batch of {} MRs)", covered.len())
+                        } else {
+                            String::new()
+                        };
+                        for mr_file in &covered {
+                            ack(
+                                fleet,
+                                mr_file,
+                                "merged",
+                                &sha,
+                                &format!(
+                                    "landed via candidate PR #{}{batch_note} (auto-merged on green); trunk @ {sha}",
+                                    d.pr_number
+                                ),
+                            );
+                        }
                         mark_dispatch_resolved(fleet, d, "merged");
                         reaped_merged += 1;
-                        println!("  ✓ reaped PR #{} → MERGED, trunk @ {sha}", d.pr_number);
+                        println!(
+                            "  ✓ reaped PR #{} → MERGED{batch_note}, trunk @ {sha}",
+                            d.pr_number
+                        );
                     }
                     Err(e) => {
                         // Don't ack/resolve if we couldn't advance trunk — leave in flight, retry next pass.
@@ -9570,22 +9948,36 @@ fn schedule_pass_execute(fleet: &Fleet, cap: usize) {
                 }
             }
             ReapAction::Reject => {
+                // A BATCH PR that reds fans the reject out to EVERY member (the batch failed as a unit;
+                // each member resends individually — pr-sync then dispatches them singly, the per-MR
+                // fallback). `covered_mr_files` is `[d.mr_file]` for a single candidate.
+                let covered = covered_mr_files(d);
+                let batch_note = if covered.len() > 1 {
+                    format!(
+                        " (batch of {} MRs — the combined PR failed CI; resend individually)",
+                        covered.len()
+                    )
+                } else {
+                    String::new()
+                };
                 let why = if state == PrState::Closed {
                     format!(
-                        "candidate PR #{} was CLOSED without merging — resend a fresh --ref if still wanted",
+                        "candidate PR #{} was CLOSED without merging{batch_note} — resend a fresh --ref if still wanted",
                         d.pr_number
                     )
                 } else {
                     format!(
-                        "candidate PR #{} — a merge-REQUIRED check went RED (fmt/clippy/gate/test) — fix + resend (see the PR's failing required checks; a non-required job red would NOT reject)",
+                        "candidate PR #{} — a merge-REQUIRED check went RED (fmt/clippy/gate/test){batch_note} — fix + resend (see the PR's failing required checks; a non-required job red would NOT reject)",
                         d.pr_number
                     )
                 };
-                ack(fleet, &d.mr_file, "reject", "", &why);
+                for mr_file in &covered {
+                    ack(fleet, mr_file, "reject", "", &why);
+                }
                 mark_dispatch_resolved(fleet, d, "rejected");
                 reaped_rejected += 1;
                 println!(
-                    "  ✗ reaped PR #{} → REJECT ({})",
+                    "  ✗ reaped PR #{} → REJECT{batch_note} ({})",
                     d.pr_number,
                     if state == PrState::Closed {
                         "closed-unmerged"
@@ -9660,27 +10052,97 @@ fn schedule_pass_execute(fleet: &Fleet, cap: usize) {
             }
         })
         .collect();
-    let picks = if in_flight_unknown {
-        Vec::new()
-    } else {
-        schedule_dispatch(&queued, &in_flight_files, cap, still_in_flight.len())
+    // A small helper to recover the full BatchMr (sender + ref + subject) for an mr_file, so both the
+    // single-MR and batch dispatch paths can act on the queued request.
+    let mr_of = |mr_file: &str| -> Option<BatchMr> {
+        queued_merge_requests(fleet)
+            .into_iter()
+            .find(|m| m.file == mr_file)
+    };
+    // A single-MR dispatch that counts a real new PR. Shared by both strategies (the batch path uses it
+    // as the per-MR FALLBACK when a batch pre-filter reds or setup fails).
+    let dispatch_single = |mr_file: &str| -> bool {
+        mr_of(mr_file)
+            .map(|mr| {
+                publish_candidate(fleet, &mr.r#ref, &mr.from, &mr.file, /*execute=*/ true)
+            })
+            .unwrap_or(false)
     };
     let mut dispatched_now = 0usize;
-    for mr_file in &picks {
-        // Recover the sender + ref from the queued MR to dispatch it live.
-        if let Some(mr) = queued_merge_requests(fleet)
-            .into_iter()
-            .find(|m| &m.file == mr_file)
-        {
+    if in_flight_unknown {
+        // An unresolvable in-flight ref → unknown territory; dispatch nothing new this pass (conservative).
+    } else if batch {
+        // ── BATCH-PR strategy (operator 2026-08-08): combine a file-disjoint subset of the queue into
+        // ONE candidate PR (local-nix pre-filter → push), amortizing one GHA cycle over N lands. On a
+        // pre-filter RED the culprits are rejected + the survivors fall back to single-MR dispatch; on a
+        // setup failure the whole selection falls back to single-MR (never a lost MR).
+        let batch_cap = BATCH_PR_CAP.min(cap.saturating_sub(still_in_flight.len()).max(1));
+        let selected = select_batch(&queued, &in_flight_files, batch_cap);
+        let members: Vec<BatchMr> = selected.iter().filter_map(|f| mr_of(f)).collect();
+        match members.len() {
+            0 => {} // nothing disjoint to batch this pass
+            1 => {
+                // A one-member "batch" is just a single candidate — skip the batch machinery.
+                if dispatch_single(&members[0].file) {
+                    dispatched_now += 1;
+                }
+            }
+            _ => match publish_batch_candidate(fleet, &members, /*execute=*/ true) {
+                BatchDispatch::Dispatched { pr, members } => {
+                    dispatched_now += 1;
+                    println!(
+                        "  ⊞ dispatched batch PR #{pr} carrying {} MRs.",
+                        members.len()
+                    );
+                }
+                BatchDispatch::PrefilterRed { broken, survivors } => {
+                    // Reject the bisected culprit(s) — they failed the local gate BEFORE any GHA spend.
+                    for m in &broken {
+                        ack(
+                            fleet,
+                            &m.file,
+                            "reject",
+                            "",
+                            "batch local-nix pre-filter: your MR failed the required-set gate in the combined tree (isolated by bisect) — fix + resend.",
+                        );
+                        reaped_rejected += 1;
+                    }
+                    println!(
+                        "  ⊟ batch pre-filter RED: rejected {} culprit(s), {} survivor(s) fall back to single-MR dispatch.",
+                        broken.len(),
+                        survivors.len()
+                    );
+                    // Survivors: dispatch individually so a green MR isn't held hostage by a batch neighbour.
+                    for m in &survivors {
+                        if dispatch_single(&m.file) {
+                            dispatched_now += 1;
+                        }
+                    }
+                }
+                BatchDispatch::Failed => {
+                    // Setup/push failure — never lose the MRs; dispatch each individually this pass.
+                    for m in &members {
+                        if dispatch_single(&m.file) {
+                            dispatched_now += 1;
+                        }
+                    }
+                }
+            },
+        }
+    } else {
+        // ── SINGLE-MR strategy (the proven default): one candidate PR per MR, file-collision-scheduled.
+        let picks = schedule_dispatch(&queued, &in_flight_files, cap, still_in_flight.len());
+        for mr_file in &picks {
             // Count as "new" ONLY if a PR was actually opened — a guard-blocked/failed pick returns
             // false and must not inflate the tally (pr-sync executor nit: the mis-count).
-            if publish_candidate(fleet, &mr.r#ref, &mr.from, mr_file, /*execute=*/ true) {
+            if dispatch_single(mr_file) {
                 dispatched_now += 1;
             }
         }
     }
     println!(
-        "schedule-pass: reaped {reaped_merged} merged + {reaped_rejected} rejected; dispatched {dispatched_now} new (cap {cap}, in-flight now {}).",
+        "schedule-pass: reaped {reaped_merged} merged + {reaped_rejected} rejected; dispatched {dispatched_now} new (cap {cap}{}, in-flight now {}).",
+        if batch { ", batch mode" } else { "" },
         still_in_flight.len() + dispatched_now
     );
     // Periodic nix-store GC (operator item 2, v-nix-agreed placement): timestamp-gated to ~every 3h, so
@@ -15028,6 +15490,7 @@ mod tests {
             pr_number: 1042,
             lane: "fleet-tooling".into(),
             status: "in-flight".into(),
+            batch_mr_files: Vec::new(),
         };
         let json = serde_json::to_string(&d).unwrap();
         let back: CiDispatch = serde_json::from_str(&json).unwrap();
@@ -15054,6 +15517,7 @@ mod tests {
             pr_number: 1,
             lane: "code".into(),
             status: "in-flight".into(),
+            batch_mr_files: Vec::new(),
         };
         let (_files, any_unresolved) =
             in_flight_file_set(&[disp("HEAD^{definitely-not-an-object-type}")]);
@@ -15243,6 +15707,89 @@ mod tests {
     }
 
     #[test]
+    fn select_batch_takes_a_file_disjoint_subset_up_to_cap() {
+        let cand = |file: &str, files: &[&str]| SchedCandidate {
+            mr_file: file.into(),
+            lane: "code".into(),
+            files: files.iter().map(|s| s.to_string()).collect(),
+        };
+        let none: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let set = |fs: &[&str]| -> std::collections::HashSet<String> {
+            fs.iter().map(|s| s.to_string()).collect()
+        };
+
+        // All file-disjoint, cap generous → the whole queue batches together (oldest-first).
+        let q = vec![
+            cand("a", &["src/a.rs"]),
+            cand("b", &["src/b.rs"]),
+            cand("c", &["src/c.rs"]),
+        ];
+        assert_eq!(select_batch(&q, &none, 6), vec!["a", "b", "c"]);
+
+        // A COLLIDING member is skipped (it self-conflicts in the combined tree) but a later disjoint
+        // one is still taken — the batch is the disjoint SUBSET, not a stop-at-first-conflict prefix.
+        let q2 = vec![
+            cand("x", &["spec/.gate-baseline"]),
+            cand("y", &["spec/.gate-baseline", "spec/1.sexp"]), // shares baseline w/ x → skip
+            cand("z", &["guide/z.md"]),                         // disjoint → taken
+        ];
+        assert_eq!(select_batch(&q2, &none, 6), vec!["x", "z"]);
+
+        // CAP bounds the batch size even when more are disjoint.
+        let q3 = vec![
+            cand("a", &["src/a.rs"]),
+            cand("b", &["src/b.rs"]),
+            cand("c", &["src/c.rs"]),
+        ];
+        assert_eq!(select_batch(&q3, &none, 2), vec!["a", "b"]);
+
+        // An IN-FLIGHT file blocks a queued member that shares it (that commit lands + shifts origin/main
+        // under the batch), while a disjoint member still joins.
+        let q4 = vec![
+            cand("m", &["spec/.gate-baseline", "spec/2.sexp"]), // shares in-flight baseline → skip
+            cand("n", &["guide/n.md"]),                         // disjoint → taken
+        ];
+        assert_eq!(
+            select_batch(&q4, &set(&["spec/.gate-baseline"]), 6),
+            vec!["n"]
+        );
+
+        // Empty queue → empty batch (caller falls back to single-MR dispatch).
+        assert!(select_batch(&[], &none, 6).is_empty());
+    }
+
+    #[test]
+    fn covered_mr_files_is_the_batch_members_else_the_single_mr() {
+        let base = CiDispatch {
+            mr_file: "solo.json".into(),
+            agent: "v-x".into(),
+            r#ref: "abc123".into(),
+            cand_branch: "cand/v-x-abc123".into(),
+            cand_sha: "def456".into(),
+            pr_number: 42,
+            lane: "code".into(),
+            status: "in-flight".into(),
+            batch_mr_files: Vec::new(),
+        };
+        // Single-MR record (empty batch list) → covers exactly its own mr_file.
+        assert_eq!(covered_mr_files(&base), vec!["solo.json".to_string()]);
+        // Batch record → covers every member (NOT the synthetic batch key in mr_file).
+        let batch = CiDispatch {
+            mr_file: "batch-abc123.json".into(),
+            batch_mr_files: vec!["m1.json".into(), "m2.json".into(), "m3.json".into()],
+            ..base
+        };
+        assert_eq!(
+            covered_mr_files(&batch),
+            vec![
+                "m1.json".to_string(),
+                "m2.json".to_string(),
+                "m3.json".to_string()
+            ]
+        );
+    }
+
+    #[test]
     fn reap_action_lands_merged_rejects_red_or_closed_else_waits() {
         use CiVerdict::*;
         use PrState::*;
@@ -15366,6 +15913,7 @@ branch refs/heads/fleet/trunk-tools
             pr_number: pr,
             lane: lane.into(),
             status: status.into(),
+            batch_mr_files: Vec::new(),
         };
         let dispatches = vec![
             disp("m1.json", "v-a", "aaaa1111", 1201, "code", "in-flight"),
