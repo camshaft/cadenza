@@ -4,6 +4,14 @@
 //! verify AT RUN TIME now; proof-guided ELISION (compiling the check away when a proof discharges it) waits
 //! for the bounded compile-time kernel interpreter (A). A dormant-correct stub, not a fake — the check runs.
 //!
+//! So a stated obligation is never silently dropped: an annotation the compiler does not statically
+//! discharge is DISCHARGED DYNAMICALLY here — rewritten into a runtime check that traps on violation
+//! rather than letting the def silently produce a value that breaks its contract.
+//= spec/capabilities/verification-layers.md#a-stated-obligation-is-discharged-or-rejected
+//# An obligation a program states MUST be either discharged or cause the program's rejection.
+//= spec/capabilities/verification-layers.md#a-stated-obligation-is-discharged-or-rejected
+//# The compiler MUST NOT silently ignore an obligation it cannot discharge.
+//!
 //! ## What this pass does
 //!
 //! A PLAIN `@requires` on a def — `(@ (requires PRE) (def SIG BODY))`, NOT stacked under `@test` — is
