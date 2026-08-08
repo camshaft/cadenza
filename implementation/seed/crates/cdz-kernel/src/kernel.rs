@@ -4180,8 +4180,16 @@ mod monotonic_now_tests {
                     kv.put(format!("detail/{n}").into_bytes(), detail.to_vec());
                 } else if msg == b"compact" {
                     // Fold ALL detail/* into one summary + prune the detail keys (bound the working set).
+                    // CARRY THE PRIOR SUMMARY FORWARD: a self-hosting agent compacts REPEATEDLY as context
+                    // re-saturates, so the fold must SEED from the existing summary/latest (if any) and append
+                    // the new detail — otherwise each cycle would overwrite + LOSE every earlier cycle's
+                    // summarized content. (A real summary is a model fold; here concatenation stands in — the
+                    // load-bearing property is that no earlier content is dropped across cycles.)
+                    let mut summary: Vec<u8> = kv
+                        .get(b"summary/latest")
+                        .map(|s| s.to_vec())
+                        .unwrap_or_default();
                     let mut keys: Vec<Vec<u8>> = Vec::new();
-                    let mut summary: Vec<u8> = Vec::new();
                     for i in 0u64.. {
                         let k = format!("detail/{i}").into_bytes();
                         match kv.get(&k) {
@@ -4281,6 +4289,79 @@ mod monotonic_now_tests {
             1,
             "replay reconstructs the identical bounded working set — compaction is just a fold on the log"
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn gap4_option_a_compaction_carries_the_prior_summary_across_repeated_cycles() {
+        // A self-hosting agent compacts REPEATEDLY as context re-saturates — so the fold must CARRY the prior
+        // summary forward, not overwrite it. This pins that no earlier cycle's summarized content is lost:
+        // detail turns → compact → more detail → compact again → the summary holds BOTH cycles' content, and
+        // the working set stays bounded (one summary) across cycles. (Without seeding from summary/latest,
+        // the second compact would drop cycle 1 — the fidelity gap this guards.)
+        let mut exec = RecordingExecutor::new();
+        let mut s = Session::genesis(Hash::of(b"gap4-multicycle-v1"), Hash::of(b"nonce"));
+        let authz = Authorizer::deny_all();
+        let feed = |body: &[u8]| EventBody::Inbound {
+            content_type: ContentType {
+                family: "message".into(),
+                version: 1,
+            },
+            payload: crate::effect::Payload::Inline(body.to_vec().into()),
+        };
+
+        // Cycle 1: two details → compact.
+        for msg in [b"detail:a1".as_slice(), b"detail:a2"] {
+            s.deliver(feed(msg), None, &CompactingReducer, &authz, &mut exec)
+                .await
+                .expect("c1 detail");
+        }
+        s.deliver(
+            feed(b"compact"),
+            None,
+            &CompactingReducer,
+            &authz,
+            &mut exec,
+        )
+        .await
+        .expect("c1 compact");
+        assert_eq!(s.kv().get(b"summary/latest"), Some(&b"a1|a2"[..]));
+        assert_eq!(s.kv().len(), 1, "bounded after cycle 1");
+
+        // Cycle 2: two more details → compact. The prior summary (a1|a2) must be CARRIED, not overwritten.
+        for msg in [b"detail:b1".as_slice(), b"detail:b2"] {
+            s.deliver(feed(msg), None, &CompactingReducer, &authz, &mut exec)
+                .await
+                .expect("c2 detail");
+        }
+        s.deliver(
+            feed(b"compact"),
+            None,
+            &CompactingReducer,
+            &authz,
+            &mut exec,
+        )
+        .await
+        .expect("c2 compact");
+        assert_eq!(
+            s.kv().get(b"summary/latest"),
+            Some(&b"a1|a2|b1|b2"[..]),
+            "the second compaction carries cycle 1's summary forward — no earlier content is lost"
+        );
+        assert_eq!(
+            s.kv().len(),
+            1,
+            "the working set stays bounded (one summary) across repeated compaction cycles"
+        );
+
+        // Still replay-deterministic across multiple compaction cycles.
+        let replayed = Session::replay(s.log().to_vec(), &CompactingReducer)
+            .await
+            .expect("replay a multi-cycle-compacted session");
+        assert_eq!(
+            replayed.kv().get(b"summary/latest"),
+            Some(&b"a1|a2|b1|b2"[..])
+        );
+        assert_eq!(replayed.kv().len(), 1);
     }
 }
 
