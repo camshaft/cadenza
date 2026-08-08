@@ -3351,6 +3351,47 @@ pub mod lint {
             }
             None
         }
+
+        /// The lint levels declared by a program's `@`-ATTRIBUTE lint directives (operator directive:
+        /// lint directives ride the existing `@`-attribute mechanism, not a bare list head). An item
+        /// attribute `@allow("NAME") item` parses to `(@ (allow "NAME") item)` — the `@`-head wraps a
+        /// two-element `(LEVEL "NAME")` attribute over the item; `LEVEL` ∈ `allow`/`warn`/`deny`, `NAME`
+        /// is a STRING literal (a namespaced lint name like `"idiomatic/if-bool"` — a string so the `/`
+        /// is not parsed as division). This collects every such attribute reachable in the tree into a
+        /// program-wide level map (a later increment scopes an item attribute to only the subnode set it
+        /// wraps — the operator's "attaches to a set of subnodes" — rather than program-wide; the
+        /// program-root case is identical either way). A later directive of the same key wins.
+        ///
+        /// The module-level `@!allow NAME` form (Rust's `#![allow]`, desugars via the `@!`→`pragma`
+        /// path) is a follow-on: it routes through the pragma registry, which needs to recognize the
+        /// lint keys — a separate change. This reads the ITEM `@`-attribute form.
+        pub fn from_attributes(program: &Tree) -> LintLevels {
+            let mut levels = LintLevels::new();
+            fn walk(t: &Tree, levels: &mut LintLevels) {
+                if let Tree::List(items, _) = t {
+                    // An `@`-attribute node is `(@ ATTR form)` — head `@`, a `(LEVEL "NAME")` attr, a form.
+                    if items.first().and_then(|h| h.as_name()) == Some("@")
+                        && let Some(attr) = items.get(1)
+                        && let Tree::List(parts, _) = attr
+                        && parts.len() == 2
+                        && let Some(level) = parts
+                            .first()
+                            .and_then(|h| h.as_name())
+                            .and_then(LintLevel::parse)
+                        && let Some(name) = parts.get(1).and_then(as_str_leaf)
+                    {
+                        levels.set(name.to_string(), level);
+                    }
+                    // Descend into every child — attributes can nest (`@a def (… @b …)`) and appear at
+                    // any depth (an item attribute inside a module body).
+                    for child in items {
+                        walk(child, levels);
+                    }
+                }
+            }
+            walk(program, &mut levels);
+            levels
+        }
     }
 
     /// One reported diagnostic: the rule's message + severity, and the matched node's span (if the
@@ -6009,6 +6050,94 @@ mod tests {
                 diags[0].severity,
                 Severity::Info,
                 "default severity preserved"
+            );
+        }
+
+        // --- cadenza-lint I1 (@-attribute directives): operator ruled lint levels ride @-attributes. ---
+
+        #[test]
+        fn at_attributes_read_allow_warn_deny_from_the_parsed_tree() {
+            // The `@allow("NAME")` item attribute parses to `(@ (allow "NAME") item)`; `from_attributes`
+            // collects each such level directive. NAME is a STRING so a namespaced `idiomatic/if-bool`
+            // is not misparsed as division.
+            let program = subj(
+                "(do (@ (allow \"idiomatic/if-bool\") (def (main) 0)) \
+                 (@ (deny \"naming/camel-case\") (def (g) 1)) \
+                 (@ (warn \"idiomatic/redundant-let\") (def (h) 2)))",
+            );
+            let levels = LintLevels::from_attributes(&program);
+            assert_eq!(
+                levels.effective("idiomatic/if-bool"),
+                Some(LintLevel::Allow)
+            );
+            assert_eq!(levels.effective("naming/camel-case"), Some(LintLevel::Deny));
+            assert_eq!(
+                levels.effective("idiomatic/redundant-let"),
+                Some(LintLevel::Warn)
+            );
+            assert_eq!(levels.effective("idiomatic/other"), None);
+        }
+
+        #[test]
+        fn an_at_attribute_group_prefix_applies_to_the_group() {
+            let program = subj("(do (@ (allow \"idiomatic\") (def (main) 0)))");
+            let levels = LintLevels::from_attributes(&program);
+            assert_eq!(
+                levels.effective("idiomatic/if-bool"),
+                Some(LintLevel::Allow)
+            );
+            assert_eq!(levels.effective("naming/camel-case"), None);
+        }
+
+        #[test]
+        fn at_attributes_nest_and_are_found_at_any_depth() {
+            // An attribute inside a nested form (a module body, a nested annotated def) is still found.
+            let program = subj(
+                "(module m (@ (deny \"idiomatic/if-bool\") (def (main) 0)) \
+                 (@ (allow \"idiomatic/redundant-let\") (def (g) 1)))",
+            );
+            let levels = LintLevels::from_attributes(&program);
+            assert_eq!(levels.effective("idiomatic/if-bool"), Some(LintLevel::Deny));
+            assert_eq!(
+                levels.effective("idiomatic/redundant-let"),
+                Some(LintLevel::Allow)
+            );
+        }
+
+        #[test]
+        fn a_non_lint_at_attribute_is_ignored() {
+            // A `@`-attribute whose head is not a lint level (`@requires`, `@tag`) is not a lint
+            // directive — `from_attributes` skips it (no spurious level).
+            let program = subj(
+                "(do (@ (requires (> x 0)) (def (f (: x Int64)) x)) \
+                 (@ (tag \"slow\") (def (g) 1)))",
+            );
+            let levels = LintLevels::from_attributes(&program);
+            assert_eq!(levels.effective("requires"), None);
+            assert_eq!(levels.effective("tag"), None);
+        }
+
+        #[test]
+        fn a_non_string_at_attribute_name_is_ignored() {
+            // The lint NAME must be a STRING literal. A bare-name arg (`(allow idiomatic)` — not a
+            // string) is not the directive shape and is skipped, so a stray non-string never sets a
+            // bogus level. (The surface always writes the string form `@allow("idiomatic/if-bool")`.)
+            let program = subj("(do (@ (allow idiomatic) (def (main) 0)))");
+            let levels = LintLevels::from_attributes(&program);
+            assert_eq!(levels.effective("idiomatic"), None);
+        }
+
+        #[test]
+        fn cli_overlay_wins_over_an_at_attribute() {
+            // In-source `@deny`, CLI `--allow` on top → CLI wins (CLI > in-source attribute).
+            let program = subj("(do (@ (deny \"idiomatic/if-bool\") (def (main) 0)))");
+            let mut levels = LintLevels::from_attributes(&program);
+            let mut cli = LintLevels::new();
+            cli.set("idiomatic/if-bool", LintLevel::Allow);
+            levels.overlay(&cli);
+            assert_eq!(
+                levels.effective("idiomatic/if-bool"),
+                Some(LintLevel::Allow)
             );
         }
     }
