@@ -6310,3 +6310,7 @@ pass	al5 an arm-LOCAL named the same as a body-side binder — hygiene keeps the
 pass	fs1 the SAME handle expression re-entered per recursion round — a FRESH region each iteration, seeds keyed by depth
 pass	fs2 two SEQUENTIAL handles where the second's SEED is computed from the first's RESULT — regions chained by value
 pass	fs3 THREE value-chained regions — each seed is the previous region's result, arms +1 / x2 / -5
+pass	sy2 a SYMBOL toggle state — equality routes the resume value while the arm flips fast/slow per dispatch
+pass	sy3 the SYMBOL state is a MAP KEY per dispatch — the a→b→c walk ends at a missing key
+pass	sy4 sequential draws written into record FIELDS via Record.with symbol selectors — chained functional updates
+pass	sy5 SYMBOL op args as COMMANDS — inc/dbl/nop route both the answer and the state transition
