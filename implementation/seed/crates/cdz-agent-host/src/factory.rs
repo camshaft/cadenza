@@ -124,6 +124,14 @@ impl Executor for MeteredExecutor {
                 self.metrics.record_timed_out();
                 tracing::warn!(target: "cdz_agent_host::effect", family, "effect timed out");
             }
+            EffectOutcome::Deferred => {
+                // The inner executor DEFERRED (a delegating/userspace-effect executor forwarded the request
+                // to a handler session and will settle it later via settle_effect_result). This is NOT a
+                // terminal outcome, so tally NOTHING here — the real Ok/Err is recorded when the deferred
+                // effect settles + folds back (that settle is a separate path, not this per-perform tap).
+                // Trace at debug so the deferral is observable without inflating the ok/err/timed-out counts.
+                tracing::debug!(target: "cdz_agent_host::effect", family, "effect deferred (awaiting settle)");
+            }
         }
         outcome
     }
