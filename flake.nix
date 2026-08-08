@@ -876,6 +876,11 @@
             # authz + ComponentSessionFactory e2es RUN instead of skipping.
             export CEDAR_POLICY_COMPONENT="${cedarGuest}"
             export CDZ_REDUCER_COMPONENT="${reducerGuest}"
+            # signature-query part-1 E2E (#2711, signature_query_e2e.rs): the host reflects the lifted
+            # cadenza:syntax component's exported funcs into a ComponentSignature. Feed my pre-validated
+            # syntaxGuest derivation so the CDZ_SYNTAX_COMPONENT-gated reflect E2E RUNS instead of skipping
+            # (unset → the test skips cleanly). Same shape as the cedar/reducer siblings above.
+            export CDZ_SYNTAX_COMPONENT="${syntaxGuest}"
             # seq-144 genesis tail: feed the compiled GENESIS Cadenza reducer component + the value-heap store
             # so v-ah-host's genesis round-trip E2E (host.rs real_genesis_reducer_folds_setup_events…,
             # skip-on-unset) RUNS instead of skipping. It drives the real reducer_genesis through the full async
