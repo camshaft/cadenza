@@ -22,7 +22,7 @@ type EffectKind =
   | Emit()
 
 type EffectRequest =
-  | Mk(Record(kind(EffectKind), target(String), payload(Option(Bytes)), correlation(Option(Bytes))))
+  | Mk(Record(kind: EffectKind, target: String, payload: Option(Bytes), correlation: Option(Bytes)))
 
 // kv host import — BOUND peer interface over the shared value-heap runtime (handle ABI): get + put.
 effect Kv =
@@ -53,7 +53,7 @@ def bump-count(prev: Option(Bytes)) -> Bytes =
   Bytes.of([UInt8.wrap(prev-byte + 1)])
 
 def apply(
-  ct: Record(family(String), version(UInt(32))),
+  ct: Record(family: String, version: UInt(32)),
   payload: Option(Bytes),
   resumes: Option(Bytes),
 ) -> List(EffectRequest) = match resumes with
