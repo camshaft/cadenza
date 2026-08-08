@@ -122,10 +122,6 @@ Performing an operation MUST check its arguments against the operation's declare
 
 Performing an operation MUST add its declaring effect to the effect row of the function that performs it, so that a function's inferred row is the set of effects its operations reach and the manifest of delegated effects is a projection of that row.
 
-### A Guard Is Side-Effect-Free
-
-An effect operation performed in a match-arm guard MUST be rejected at compile time, so that a guard is a pure decision the pattern engine may evaluate speculatively or repeatedly without observable effect.
-
 ### A Handler Arm Names An Operation Its Effect Declares
 
 A handler arm that names an operation the arm's effect does not declare MUST be rejected at compile time, so that a handler discharges only operations that exist and the declaration remains the closed set of an effect's operations.
