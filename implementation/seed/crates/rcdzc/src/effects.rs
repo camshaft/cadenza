@@ -4574,6 +4574,59 @@ fn multivalue_leaves_threadable(db: &mut Db, body: StructId, callee_def: usize) 
     }
 }
 
+/// Whether a RE-ENTRANT call (a self-call to `callee_def` OR a mutual-recursive PARTNER call) in `node`
+/// sits UNDER a conditional — the group-aware analogue of `selfcall_under_conditional` for the mutual-SCC
+/// multi-value fold. A partner call gated behind a branch has the same unhoistable-temp problem as a
+/// gated self-call (the group's multi-value machinery binds a re-entrant call on the unconditional strict
+/// spine; a branch-gated one is not covered by v1). Uses `contains_recursive_call` (self + mutual partner)
+/// where `selfcall_under_conditional` uses `contains_self_call`.
+fn reentrant_call_under_conditional(db: &mut Db, node: StructId, callee_def: usize) -> bool {
+    match resolved_of(db, node) {
+        Resolved::If { cond, then_, else_ } => {
+            reentrant_call_under_conditional(db, cond, callee_def)
+                || contains_recursive_call(db, then_, callee_def)
+                || contains_recursive_call(db, else_, callee_def)
+        }
+        Resolved::Match { scrutinee, arms } => {
+            reentrant_call_under_conditional(db, scrutinee, callee_def)
+                || arms
+                    .iter()
+                    .any(|&(_, body)| contains_recursive_call(db, body, callee_def))
+        }
+        Resolved::And { lhs, rhs, .. } => {
+            reentrant_call_under_conditional(db, lhs, callee_def)
+                || contains_recursive_call(db, rhs, callee_def)
+        }
+        _ => match db.ast.get(node).clone() {
+            Struct::List(children) => children
+                .iter()
+                .any(|&c| reentrant_call_under_conditional(db, c, callee_def)),
+            Struct::Atom(_) => false,
+        },
+    }
+}
+
+/// The group-aware pre-check mirroring `multivalue_leaves_threadable` but for a mutual-recursive SCC member:
+/// a leaf is threadable unless a RE-ENTRANT call (self OR mutual partner) is gated behind a conditional
+/// (`reentrant_call_under_conditional`). Used by the group-entry mode decision to decline UP FRONT a group
+/// whose leaves the multi-value tuple machinery cannot bind, so no partial group is reserved.
+fn group_multivalue_leaves_threadable(db: &mut Db, body: StructId, callee_def: usize) -> bool {
+    match resolved_of(db, body) {
+        Resolved::If { cond, then_, else_ } => {
+            !reentrant_call_under_conditional(db, cond, callee_def)
+                && group_multivalue_leaves_threadable(db, then_, callee_def)
+                && group_multivalue_leaves_threadable(db, else_, callee_def)
+        }
+        Resolved::Match { scrutinee, arms } => {
+            !reentrant_call_under_conditional(db, scrutinee, callee_def)
+                && arms.iter().all(|&(_, arm_body)| {
+                    group_multivalue_leaves_threadable(db, arm_body, callee_def)
+                })
+        }
+        _ => !reentrant_call_under_conditional(db, body, callee_def),
+    }
+}
+
 /// Thread `body` in MULTI-VALUE mode (repro-1): the synthesized `f#ctx` returns `(value, out-state-per-slot)`
 /// at every tail, so a caller's self-call can thread the recursion's advanced state to a LATER sibling. The
 /// walk descends through `if`/`match` (each branch/arm body is its own tail, producing its own tuple under
@@ -6454,6 +6507,98 @@ fn callee_calls_other_recursive_def(db: &mut Db, body: StructId, callee_def: usi
     }
 }
 
+/// Collect the def indices of every DIRECT callee in `body` that resolves to a known def — one edge per
+/// application head. Used by `mutual_scc_of` to walk the recursive group. Deduped, order-insensitive.
+fn direct_callee_defs(db: &mut Db, body: StructId, out: &mut Vec<usize>) {
+    if let Resolved::Apply { head, .. } = resolved_of(db, body)
+        && let Some(d) = callee_def_index_of(db, head)
+        && !out.contains(&d)
+    {
+        out.push(d);
+    }
+    if let Struct::List(children) = db.ast.get(body).clone() {
+        for c in children {
+            direct_callee_defs(db, c, out);
+        }
+    }
+}
+
+/// The mutually-recursive SCC containing `callee_def`: the set of def indices reachable from `callee_def`
+/// that ALSO reach back to it (a two-way path = same cycle), restricted to defs whose body reaches a
+/// discharged op under `ctx`. This is the group the multi-value fold must reserve + thread together, so
+/// each member's out-state threads across the cross-def calls. `callee_def` is always included. A pure
+/// self-recursive def (no mutual partner) returns just `[callee_def]`. Bounded by the finite def table.
+///
+/// Membership test: def `d` is in the SCC iff `callee_def` reaches `d` (forward, via the call graph) AND
+/// `d` reaches `callee_def` (so it cycles back — a genuine mutual partner, not a one-way callee). Both
+/// directions use a bounded reachability walk over `direct_callee_defs`. Only defs that reach a discharged
+/// op are kept (a pure helper in the cycle needs no state threading — it is inlined, not specialized).
+fn mutual_scc_of(db: &mut Db, callee_def: usize, ctx: &HandlerCtx) -> Vec<usize> {
+    // Forward reachability from `start` over direct-callee edges (def-index graph), bounded by the def table.
+    fn reaches(db: &mut Db, start: usize, target: usize) -> bool {
+        let mut seen: Vec<usize> = Vec::new();
+        let mut work: Vec<usize> = vec![start];
+        while let Some(d) = work.pop() {
+            if d == target {
+                return true;
+            }
+            if seen.contains(&d) {
+                continue;
+            }
+            seen.push(d);
+            if let Some(body) = db.defs[d].body {
+                let mut callees = Vec::new();
+                direct_callee_defs(db, body, &mut callees);
+                for c in callees {
+                    if c == target {
+                        return true;
+                    }
+                    if !seen.contains(&c) {
+                        work.push(c);
+                    }
+                }
+            }
+        }
+        false
+    }
+    // The forward-reachable set from `callee_def` (candidate SCC members before the back-edge filter).
+    let mut forward: Vec<usize> = Vec::new();
+    let mut work: Vec<usize> = vec![callee_def];
+    while let Some(d) = work.pop() {
+        if forward.contains(&d) {
+            continue;
+        }
+        forward.push(d);
+        if let Some(body) = db.defs[d].body {
+            let mut callees = Vec::new();
+            direct_callee_defs(db, body, &mut callees);
+            for c in callees {
+                if !forward.contains(&c) {
+                    work.push(c);
+                }
+            }
+        }
+    }
+    // Keep the members that reach BACK to `callee_def` (same cycle) AND reach a discharged op under `ctx`.
+    let mut scc: Vec<usize> = Vec::new();
+    for &d in &forward {
+        let in_cycle = d == callee_def || reaches(db, d, callee_def);
+        if !in_cycle {
+            continue;
+        }
+        let Some(body) = db.defs[d].body else {
+            continue;
+        };
+        if body_reaches_discharged(db, body, ctx, 0) {
+            scc.push(d);
+        }
+    }
+    if !scc.contains(&callee_def) {
+        scc.push(callee_def);
+    }
+    scc
+}
+
 /// Whether `node` contains a call resolving to `callee_def` (a recursive self-call), anywhere.
 fn contains_self_call(db: &mut Db, node: StructId, callee_def: usize) -> bool {
     if let Resolved::Apply { head, .. } = resolved_of(db, node)
@@ -7177,26 +7322,70 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
     if caller_observes_outstate && callee_calls_other_recursive_def(db, orig_body, callee_def) {
         return None;
     }
-    let multivalue = (selfcall_precedes_perform_in_operands(db, orig_body, callee_def, ctx)
+    // GROUP-AWARE MULTI-VALUE (the mutual-performer SCC fold). This body is a member of a mutually-recursive
+    // SCC being group-specialized in multi-value mode together — recorded in `group_multivalue_bodies` (either
+    // because THIS is the entry call whose SCC we detect just below, or because an OUTER entry already
+    // registered the whole group). A group member ALWAYS threads multi-value: each member returns `(value,
+    // out-states…)`, and a cross-def call to a partner is let-bound + out-state-projected by the head-agnostic
+    // recursive-call arm (which keys on `multivalue_specs`). This is what threads a mutual partner's state
+    // advance to a later observer, replacing the single-return dropped-advance miscompile.
+    let group_member = db
+        .group_multivalue_bodies
+        .contains(&(orig_body, ctx.key.clone()));
+    // Detect the ENTRY of a mutual-performer SCC whose out-state a later spine item observes: the shape the
+    // single-return floor declines (`mutual_partner_precedes_observation`). Collect the whole SCC and register
+    // every member for group multi-value, so each member's specialization (reached via the recursive-call arm)
+    // threads multi-value and the partners tie together. Only when the leaves are threadable across the group.
+    // Detect a mutual-performer SCC that needs the group fold — fired at the FIRST-REACHED member (which may
+    // NOT be the observing one: the handle body calls `typeof`, whose partner call to `compute` is a TAIL call
+    // observing nothing, so `typeof` alone does not trip `mutual_partner_precedes_observation` — but its
+    // partner `compute` DOES, `(let ((c (typeof …))) (+ c (St.get)))`). So scan the WHOLE SCC for ANY member
+    // that observes a partner's out-state; if one exists (and every member's leaves are group-threadable),
+    // register the entire group up front. Whichever member is specialized first becomes the registrar.
+    let group_entry = !group_member && ctx.abortive.is_empty() && {
+        let scc = mutual_scc_of(db, callee_def, ctx);
+        // A genuine mutual SCC (more than just this def) with at least one out-state-observing member, all of
+        // whose leaves the group multi-value machinery can bind.
+        scc.len() > 1
+            && scc.iter().any(|&m| {
+                db.defs[m]
+                    .body
+                    .is_some_and(|mb| mutual_partner_precedes_observation(db, mb, m, ctx))
+            })
+            && scc.iter().all(|&m| {
+                db.defs[m]
+                    .body
+                    .is_some_and(|mb| group_multivalue_leaves_threadable(db, mb, m))
+            })
+    };
+    if group_entry {
+        let scc = mutual_scc_of(db, callee_def, ctx);
+        for &m in &scc {
+            if let Some(mb) = db.defs[m].body {
+                db.group_multivalue_bodies.insert((mb, ctx.key.clone()));
+            }
+        }
+    }
+    let multivalue = ((selfcall_precedes_perform_in_operands(db, orig_body, callee_def, ctx)
         || caller_observes_outstate)
         && ctx.abortive.is_empty()
-        && multivalue_leaves_threadable(db, orig_body, callee_def);
+        && multivalue_leaves_threadable(db, orig_body, callee_def))
+        || group_member
+        || group_entry;
     if selfcall_precedes_perform_in_operands(db, orig_body, callee_def, ctx) && !multivalue {
         return None; // an out-state-observing shape the multi-value path does not cover yet (abortive, or
         // a self-call gated behind a conditional inside a leaf) — decline BEFORE reserving the def.
     }
     // MUTUAL-PARTNER OUT-STATE OBSERVED (the group-fold soundness floor). A mutual-partner call PRECEDES an
-    // out-state observation on the strict spine — `(let ((child (typeof (- n 1)))) (+ child (St.get)))` in a
-    // mutual cycle where `typeof` performs. Single-return threads the partner call with the incoming state
-    // and returns it UNCHANGED, so the partner's own state advance is DROPPED and the later `(St.get)` reads
-    // the pre-recursion state — a SILENT wrong value (verified: `main(2)` → 3, should be 4). The multi-value
-    // machinery projects a SELF-call's out-state but NOT a mutual partner's, so this needs the group-aware
-    // multi-value fold (a later increment). DECLINE cleanly until then — a "not yet reducible" todo, never a
-    // dropped-advance miscompile. Placed after the self-call multivalue decision so a self-recursive shape
-    // that path linearizes is not pre-empted; keyed on a MUTUAL partner so pure self-recursion is unaffected.
-    // (A TAIL mutual partner — nothing observes its out-state, the scalar ping/pong — does NOT fire and still
-    // specializes single-return correctly, the partner's advance passed forward as its trailing state arg.)
-    if mutual_partner_precedes_observation(db, orig_body, callee_def, ctx) {
+    // out-state observation on the strict spine. If this is NOT a group multi-value member/entry (the group
+    // path handles it above), fall back to the clean SINGLE-return decline: single-return would thread the
+    // partner call with the incoming state and return it unchanged, dropping the partner's advance — a SILENT
+    // wrong value. DECLINE cleanly (an honest "not yet reducible" todo) rather than miscompile. (A group
+    // member/entry does NOT decline here — its whole SCC threads multi-value.)
+    if !group_member
+        && !group_entry
+        && mutual_partner_precedes_observation(db, orig_body, callee_def, ctx)
+    {
         return None;
     }
     // BRANCH-PERFORMING CONDITIONAL alongside a re-entrant call (v-effects self-probe 2026-08-04,
@@ -7374,9 +7563,20 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
     // MULTI-VALUE mode: the body's every tail leaf yields `("tuple" value out-states…)`, and each self-call
     // is let-bound (out-state projected + threaded). SINGLE-return mode: the ordinary `thread` (unchanged).
     let spec_body = if multivalue {
+        // SAVE/RESTORE the multi-value scratch (`temp_ctr` + `pending`) around threading THIS body. In the
+        // GROUP fold, threading one member's body recurses (via the recursive-call arm → `specialize_recursive`)
+        // into a PARTNER member's OWN multi-value thread, which resets `temp_ctr`/`pending` — corrupting this
+        // member's in-progress pending self/partner-call temps (the `$t0` leak: the partner's `clear()` wiped
+        // the entry's pending temp before `thread_returning_tuple` drained it). Snapshot before, restore after,
+        // so each member's multi-value scratch is independent. (For a non-group single self-recursive spec the
+        // partner recursion is absent, so save/restore is inert — byte-identical to the prior reset.)
+        let saved_ctr = ctx.temp_ctr.get();
+        let saved_pending = std::mem::take(&mut *ctx.pending.borrow_mut());
         ctx.temp_ctr.set(0);
-        ctx.pending.borrow_mut().clear();
-        thread_returning_tuple(db, orig_body, state_refs, ctx, callee_def)?
+        let threaded = thread_returning_tuple(db, orig_body, state_refs, ctx, callee_def);
+        ctx.temp_ctr.set(saved_ctr);
+        *ctx.pending.borrow_mut() = saved_pending;
+        threaded?
     } else {
         let (b, _out) = thread(db, orig_body, state_refs, ctx)?;
         b

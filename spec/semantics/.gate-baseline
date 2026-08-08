@@ -2596,6 +2596,7 @@ pass	a non-power-of-two float width is rejected
 pass	a non-recursive generic producer composes at two element types via inlining
 pass	a non-tail accumulable recursion runs to a large runtime N in constant stack
 pass	a non-tail call passing a heap-match argument compiles to valid wasm
+pass	a non-tail mutual-recursive group observing a partner's out-state folds via the group multi-value fold
 pass	a non-tail recursion with a fallible read in its base arm composes
 pass	a non-tail-resumptive outer handler reduces a reducible inner handle before its own fold
 pass	a non-unit base in a Unit.^ power is rejected
@@ -5063,6 +5064,11 @@ pass	fs2 two SEQUENTIAL handles where the second's SEED is computed from the fir
 pass	fs3 THREE value-chained regions — each seed is the previous region's result, arms +1 / x2 / -5
 pass	function arguments are evaluated left to right
 pass	functions are single-arity and curried
+pass	gd1 PURE guards over a draw-bound scrutinee — three guard tiers select on the drawn value, the trailing probe pins one advance
+pass	gd2 pure guards on SUM-PAYLOAD binders — guarded and unguarded twins of each variant arm, five paths input-reachable
+pass	gd3 the guard COMPARES the scrutinee draw to an earlier let-bound draw — two thread values meet in one pure predicate
+pass	gd4 pure guards INSIDE the handler arm grade the live state — three dispatches cross the tier boundaries as the state climbs
+pass	gd5 guards over TUPLE pattern binders — the predicate compares the tuple's own components, all three orderings reachable
 pass	generated FLOAT values are totally ordered (a trichotomy property over two generated floats)
 pass	generated small-alphabet strings dedup in a Set by content across per-draw construction
 pass	generated string keys OVERWRITE by content and the first word's final value is observable

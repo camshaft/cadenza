@@ -2380,6 +2380,31 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 503 Int64)))
 
+(case "a non-tail mutual-recursive group observing a partner's out-state folds via the group multi-value fold"
+  (doc    "The GROUP-AWARE multi-value fold over a mutually-recursive SCC. `typeof` and `compute` mutually
+           recurse, and `compute` performs `put` then reads the accumulated state via `get` AFTER recursing
+           into `typeof` `(let ((child (typeof (- n 1)))) (+ child (St.get)))`. SINGLE-return specialization
+           would thread the mutual-partner call with the incoming state and drop its advance — the post-call
+           `get` would read a stale pre-recursion state (a dropped-advance miscompile). The group fold
+           reserves the WHOLE SCC as multi-value: each member returns `(value, out-state)`, and a cross-def
+           partner call is let-bound + out-state-projected (`(. t 1)`) like a self-call, so `compute`'s
+           post-recursion `get` reads `typeof`'s ADVANCED out-state. `main(2)`: typeof(0)=get=0; compute(1)
+           puts 1 (state 0->1), reads get=1, returns 0+1=1; compute(2) puts 2 (state 1->3), reads get=3,
+           returns 1+3 = 4. Verifies the mutual partner's state advance threads to a later observer.")
+  (input  (do
+            (effect St (op get (-> Unit Int64)) (op put (-> Int64 Unit)))
+            (def (typeof (: n Int64)) (if (= n 0) (St.get) (compute n)))
+            (def (compute (: n Int64))
+              (let ((child (typeof (- n 1))))
+                (match (St.put n) (_ (+ child (St.get))))))
+            (def (main (: k Int64))
+              (handle St 0
+                ((get (u) s (resume s s))
+                 (put (v) s (resume unit (+ s v))))
+                (typeof k)))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 4 Int64)))
+
 ; A do-local value def in a handle body must stay in scope for a perform's ARGUMENT (breaker FINDING;
 ; v-effects e49c698a1). The handle-body folds dropped non-final do-items and re-spliced only a survivor,
 ; orphaning a `(def v e)` that a later perform arg referenced → a false CDZ0101 'unbound name'; the
