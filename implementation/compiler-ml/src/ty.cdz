@@ -16,12 +16,23 @@
   | Signed
   | Unsigned
   | SignDef
+  | SVar(Int64)                    // ARC-A1: a UNIFICATION VARIABLE sign (rcdzc `Sign::Var(u32)`), identified by
+                                   // a fresh var-id. Distinct from `SignDef` (a bare literal's deferred sign that
+                                   // grounds to Signed): a `SVar` is an UNKNOWN to be SOLVED by unification —
+                                   // it BINDS to whatever the other side is (see unify-ty's `unify-sign`, extended
+                                   // in ARC-B3). Until B wires the Subst, an un-bound SVar is INERT: it grounds to
+                                   // the default like SignDef (so A1 changes no observable behavior), and `sign-eq`
+                                   // treats two SVars as equal iff SAME id. This is the substrate HM vars live in.
 
-/// WIDTH — the same 3-state shape: `WFixed(n)` a concrete bit width (8/16/32/64), `WidthDef` a bare
-  /// literal's deferred width (grounds to the default 64). (A `Var` width is the later intrinsic-generic slice.)
+/// WIDTH — the same 3-state shape as Sign, mirroring rcdzc `Width { Fixed(u32) | Deferred | Var(u32) }`:
+  /// `WFixed(n)` a concrete bit width (8/16/32/64), `WidthDef` a bare literal's deferred width (grounds to the
+  /// default 64), `WVar(id)` a UNIFICATION VARIABLE width solved by unification (ARC-A1 substrate for HM).
   type Width =
   | WFixed(Int64)
   | WidthDef
+  | WVar(Int64)                    // ARC-A1: a UNIFICATION VARIABLE width (rcdzc `Width::Var(u32)`). Like `SVar`:
+                                   // an unknown that BINDS on unify; inert (grounds to default 64) until B wires
+                                   // the Subst; `width-eq` treats two WVars as equal iff SAME id.
 
 /// An integer type: a `(Sign, Width)` pair (rcdzc `IntType { sign, width }`). Both axes unify INDEPENDENTLY
   /// (see unify.cdz's orthogonal sign-agrees/width-agrees) and both can be deferred (a bare literal) — so a
@@ -76,10 +87,12 @@ def is-int-ty(t: Ty) = match t with
 /// path has no solved type", so bind-then-match per level instead of deep-nesting the pattern).
 def sign-deferred(s: Sign) = match s with
   | Sign.SignDef => true
+  | Sign.SVar(_) => true
   | _ => false
 
 def width-deferred(w: Width) = match w with
   | Width.WidthDef => true
+  | Width.WVar(_) => true
   | _ => false
 
 /// Is this integer type fully GROUND (both axes Fixed — no deferred)? A ground type is what emit needs; a
@@ -115,19 +128,30 @@ def sign-eq(a: Sign, b: Sign) = match a with
     | Sign.Unsigned => true
     | _ => false
   )
-  | Sign.SignDef => match b with
+  | Sign.SignDef => (match b with
     | Sign.SignDef => true
+    | _ => false
+  )
+  // ARC-A1: two unification-var signs are structurally equal iff SAME var-id (an SVar is NOT equal to a
+  // concrete/deferred sign — it's an unknown). Structural state-equality, distinct from unify (which BINDS).
+  | Sign.SVar(ia) => match b with
+    | Sign.SVar(ib) => ia == ib
     | _ => false
 
 /// WIDTH equality — WFixed(n)=WFixed(n) iff same n; WidthDef=WidthDef; else unequal.
 def width-eq(a: Width, b: Width) = match a with
   | Width.WFixed(n) => (match b with
     | Width.WFixed(m) => n == m
-    | Width.WidthDef => false
+    | _ => false
   )
-  | Width.WidthDef => match b with
+  | Width.WidthDef => (match b with
     | Width.WidthDef => true
-    | Width.WFixed(_) => false
+    | _ => false
+  )
+  // ARC-A1: two unification-var widths equal iff SAME var-id (a WVar is an unknown, not equal to Fixed/Deferred).
+  | Width.WVar(ia) => match b with
+    | Width.WVar(ib) => ia == ib
+    | _ => false
 
 /// STRUCTURAL type EQUALITY over `Ty` (rcdzc ty.rs PartialEq, int/bool subset): two `TyInt` are equal iff
 /// SAME sign AND width (both axes — an int type's identity is its (sign, width)); TyBool=TyBool; TyErr is
@@ -206,7 +230,8 @@ def int-parts(t: Ty) = match t with
   | Ty.TyInt(it) => (match it with
     | IntType.IntType(s, w) => (match w with
       | Width.WFixed(n) => Option.Some((s, n))
-      | Width.WidthDef => Option.None(unit)))
+      | Width.WidthDef => Option.None(unit)
+      | Width.WVar(_) => Option.None(unit)))   // ARC-A1: an un-bound var width is NOT a fixed width → None (same as WidthDef)
   | _ => Option.None(unit)
 
 @test
@@ -285,6 +310,50 @@ def ty-eq-fn-structural() =
       (if ty-eq(f, g) then trap("fn result differs → not equal")
        else (if ty-eq(f, ty-int64()) then trap("fn != int") else unit))
      else trap("fn == itself"))))
+
+// ---- ARC-A1 tests: the 3rd axis state — unification VARIABLE signs/widths (substrate for HM in ARC-B) ----
+@test
+def ty-a1-var-int-is-not-ground() =
+  // an int whose SIGN is an un-bound var (SVar 0) is NOT ground (a var is unsolved, like deferred) — emit must
+  // default it at the root first. Mirrors is-ground-int treating Deferred as not-ground; a Var is the same.
+  if is-ground-int(Ty.TyInt(IntType.IntType(Sign.SVar(0), Width.WFixed(64)))) then
+    trap("an SVar sign is unresolved → NOT ground")
+  else
+    unit
+
+@test
+def ty-a1-var-width-is-not-ground() =
+  // an int whose WIDTH is an un-bound var (WVar 0) is NOT ground either.
+  if is-ground-int(Ty.TyInt(IntType.IntType(Sign.Signed, Width.WVar(0)))) then
+    trap("a WVar width is unresolved → NOT ground")
+  else
+    unit
+
+@test
+def ty-a1-var-grounds-to-default() =
+  // ARC-A1 INERT invariant: an un-bound var grounds to the DEFAULT exactly like deferred (SVar→Signed,
+  // WVar→64) — so A1 changes NO observable grounded behavior (nothing binds a var until ARC-B's Subst).
+  match ground-default(Ty.TyInt(IntType.IntType(Sign.SVar(7), Width.WVar(9)))) with
+    | Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w))) => (if w == 64 then unit else trap("var width grounds to 64"))
+    | _ => trap("un-bound (SVar,WVar) grounds to (Signed, WFixed 64) — the inert default")
+
+@test
+def ty-a1-var-eq-by-id() =
+  // structural equality: two SVars equal iff SAME id; different ids unequal; an SVar is not equal to a concrete
+  // sign. (unify BINDS vars — separate op, ARC-B3; ty-eq is pure structural state-equality.)
+  if sign-eq(Sign.SVar(3), Sign.SVar(3)) then
+    (if sign-eq(Sign.SVar(3), Sign.SVar(4)) then trap("distinct var-ids are NOT equal")
+     else (if sign-eq(Sign.SVar(3), Sign.Signed) then trap("a var is not equal to a concrete sign") else unit))
+  else
+    trap("same var-id signs are structurally equal")
+
+@test
+def ty-a1-width-var-eq-by-id() =
+  // same for widths: WVar equal iff same id; not equal to WFixed.
+  if width-eq(Width.WVar(1), Width.WVar(1)) then
+    (if width-eq(Width.WVar(1), Width.WFixed(64)) then trap("a WVar is not equal to WFixed") else unit)
+  else
+    trap("same var-id widths are structurally equal")
 
 export {
   Sign.*,
