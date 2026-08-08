@@ -16,9 +16,10 @@
 
 import { Tok, Node, Tree, node-at, parse-tokens, empty-tree, add-node, record-def, record-param, def-body-of, call-is-recursive, call-is-self-recursive, param-of, param2-of, param3-of, param4-of, arg2-of, arg3-of, arg4-of, ctor-tag-of, ctor-decl-of, decl-is-enum-disc, record-ctor-tag, record-ctor-tag-typed } from "parse-db"
 import { Resolved, resolve-tree, resolve-node, param-scope } from "resolve-db"
-import { infer-tree, infer-node } from "infer-db"
-import { ty-col-to-typed, typed-col-to-ty } from "ty-bridge"
-import { Typed } from "typed"
+import { infer-tree, infer-node, mk-int, int-parts-of } from "infer-db"
+import { Ty, is-int-ty } from "ty"
+// ARC-A2 final consumer: lower-db reads a Ty type column directly now (was Typed via ty-bridge). The 3 upstream
+// columns (resolve/infer/lower) are Ty-native end-to-end, so the ty-bridge + typed.cdz imports are gone.
 
 /// The integer Core IR. `CVar` carries the BINDER node-id (canonical unique name); `CLet` is keyed by its
 /// own let-node-id. Op codes match the parser/token codes (43 +, 45 -, 42 *).
@@ -80,42 +81,43 @@ type Core =
 /// don't repeat the `(true, 64)`.
 def cnum64(v: Int64) = Core.CNum(v, true, 64)
 
-/// Build a CBin, stamping its RESULT width from the node's type fact `t`: a `TIntW(s, w)` result → that
-/// (s, w) (so a narrow-typed arith node carries its width for eval-wrap/emit-mask); anything else (TBool
-/// comparison result, or absent) → the canonical (true, 64). Today arith is gated to Int64 in infer
-/// (2b-ii-c), so this stamps (true,64) until the infer-relax slice types same-width narrow arith TIntW.
-def cbin-of(op: Int64, t: Typed, l: Core, r: Core) = match t with
-  // item-3 HM: a still-DEFERRED result type (the sentinel TIntW(_,0) — an all-literal arith that never met a
-  // narrow constraint) GROUNDS to Int64 here, so no width-0 reaches Core (emit picks i32/i64 by width; a 0
-  // would be invalid). A concrete narrow/64 width passes through. This is the deferred→ground boundary for a
-  // top-level all-literal arith; a deferred operand that MET a narrow sibling already grounded in infer.
-  | Typed.TIntW(s, w) => (if w == 0 then Core.CBin(op, true, 64, l, r) else Core.CBin(op, s, w, l, r))
-  | _ => Core.CBin(op, true, 64, l, r)
+/// Build a CBin, stamping its RESULT width from the node's type fact `t`: an int result → its (signed, width)
+/// (so a narrow-typed arith node carries its width for eval-wrap/emit-mask); anything else (TyBool comparison
+/// result, or absent) → the canonical (true, 64). Today arith is gated to Int64 in infer (2b-ii-c), so this
+/// stamps (true,64) until the infer-relax slice types same-width narrow arith.
+def cbin-of(op: Int64, t: Ty, l: Core, r: Core) = (if is-int-ty(t)
+  // item-3 HM: `int-parts-of` GROUNDS a still-DEFERRED result type (TyInt(SignDef/WidthDef) — an all-literal
+  // arith that never met a narrow constraint) to Int64, so no deferred axis reaches Core (emit picks i32/i64 by
+  // width; a deferred width would be invalid). A concrete narrow/64 width passes through. This is the
+  // deferred→ground boundary for a top-level all-literal arith; a deferred operand that MET a narrow sibling
+  // already grounded in infer.
+  then (match int-parts-of(t) with | (s, w) => Core.CBin(op, s, w, l, r))
+  else Core.CBin(op, true, 64, l, r))
 
 /// Lower the subtree at `id`, reading the pre-built resolve column `rcol` (for var canonicalization) and
 /// type column `tcol` (the well-typed gate). Returns `Option(Core)` — `None` if this node or any descendant
 /// is ill-typed / unbound. Reading the two upstream columns (not recomputing) is the producer-reads-producer
 /// contract.
-def lower-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64, Typed)) =
-  // a node with any GROUND type (TInt or TBool) lowers; TErr (or a missing fact) has no core form. Bool is
+def lower-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64, Ty)) =
+  // a node with any GROUND type (TyInt or TyBool) lowers; TyErr (or a missing fact) has no core form. Bool is
   // represented in Core as an Int (0/1) — comparison `CBin`s evaluate to 0/1 — so the Core stays minimal and
   // uniform; the type column already proved the shape well-typed.
   (match Map.lookup(tcol, id) with
-    | Option.Some(Typed.TIntW(_, _)) => lower-ok(tree, id, rcol, tcol)
-    | Option.Some(Typed.TBool) => lower-ok(tree, id, rcol, tcol)
-    // HIGHER-ORDER (HO-3): a node typed as a FUNCTION (TFn) also lowers — a def-name-as-value (→ CFnRef) or a
+    | Option.Some(Ty.TyInt(_)) => lower-ok(tree, id, rcol, tcol)
+    | Option.Some(Ty.TyBool) => lower-ok(tree, id, rcol, tcol)
+    // HIGHER-ORDER (HO-3): a node typed as a FUNCTION (TyFn) also lowers — a def-name-as-value (→ CFnRef) or a
     // fn-param call `(f x)` (→ CFnRefVar). Without this the gate rejected fn-typed nodes → the CFnRef/CFnRefVar
     // wiring never fired (the `inc` arg / `(f x)` body declined). eval runs them via the def-env name dispatch.
-    | Option.Some(Typed.TFn(_, _)) => lower-ok(tree, id, rcol, tcol)
-    // M2-b-2b-ii-c2b: a node typed as a user SUM (TSum) also lowers — a payload ctor use `(Some 5)` (→ CCtor)
-    // or a value of sum type. Without this the gate rejected TSum-typed nodes → the CCtor wiring declined once
-    // infer started typing ctor-apps as TySum (was Int64 placeholder, which the TIntW arm admitted). eval runs
+    | Option.Some(Ty.TyFn(_, _)) => lower-ok(tree, id, rcol, tcol)
+    // M2-b-2b-ii-c2b: a node typed as a user SUM (TySum) also lowers — a payload ctor use `(Some 5)` (→ CCtor)
+    // or a value of sum type. Without this the gate rejected TySum-typed nodes → the CCtor wiring declined once
+    // infer started typing ctor-apps as TySum (was Int64 placeholder, which the TyInt arm admitted). eval runs
     // it via the SumStore (CCtor store-alloc / CMatchSum store-read).
-    | Option.Some(Typed.TSum(_)) => lower-ok(tree, id, rcol, tcol)
+    | Option.Some(Ty.TySum(_)) => lower-ok(tree, id, rcol, tcol)
     | _ => Option.None(unit))
 
 /// The typed-node case: build the Core node, canonicalizing a var to its binder id via `rcol`.
-def lower-ok(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64, Typed)) =
+def lower-ok(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64, Ty)) =
   match node-at(tree, id) with
     | Option.Some(Node.NLit(v)) => Option.Some(cnum64(v))
     | Option.Some(Node.NBoolLit(b)) => Option.Some(cnum64(b))   // Bool is Int 0/1 in Core (i64)
@@ -139,7 +141,7 @@ def lower-ok(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64,
             (match lower-node(tree, r, rcol, tcol) with
               // stamp the CBin's result width from THIS node's type fact (narrow arith carries its width;
               // arithmetic-over-Int64 and comparisons stamp (true,64)).
-              | Option.Some(cr) => Option.Some(cbin-of(op, (match Map.lookup(tcol, id) with | Option.Some(t) => t | Option.None(_) => Typed.TIntW(true, 64)), cl, cr))
+              | Option.Some(cr) => Option.Some(cbin-of(op, (match Map.lookup(tcol, id) with | Option.Some(t) => t | Option.None(_) => mk-int(true, 64)), cl, cr))
               | Option.None(_) => Option.None(unit))
           | Option.None(_) => Option.None(unit))
     | Option.Some(Node.NLet(_, valId, bodyId)) =>
@@ -298,7 +300,7 @@ def lower-ok(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64,
 /// unchanged. An arg3 with NO param3 (over-applied) → `None` (declines). slice-3f: the body wrapped BEFORE
 /// param3 is `inner-body-with-param4` (a 4th CLet innermost) so the full chain is
 /// `CLet(p3,a3, CLet(p4,a4, body))`. Keeps the lower-node NApp arm flat.
-def inner-body-with-param3(tree: Tree, id: Int64, calleeId: Int64, bodyCore: Core, rcol: Map(Int64, Resolved), tcol: Map(Int64, Typed)) =
+def inner-body-with-param3(tree: Tree, id: Int64, calleeId: Int64, bodyCore: Core, rcol: Map(Int64, Resolved), tcol: Map(Int64, Ty)) =
   (match arg3-of(tree, id) with
     | Option.None(_) => Option.Some(bodyCore)                        // 2-arg call — no 3rd CLet
     | Option.Some(arg3Id) =>
@@ -316,7 +318,7 @@ def inner-body-with-param3(tree: Tree, id: Int64, calleeId: Int64, bodyCore: Cor
 /// body)`. If this NApp node `id` has a 4th arg (arg4-of) AND the callee a 4th param (param4-of), lower arg4
 /// and wrap → `CLet(param4, arg4Core, bodyCore)`; a ≤3-arg call (arg4-of None) returns `bodyCore` unchanged.
 /// An arg4 with NO param4 (over-applied) → `None` (declines). The mirror of inner-body-with-param3.
-def inner-body-with-param4(tree: Tree, id: Int64, calleeId: Int64, bodyCore: Core, rcol: Map(Int64, Resolved), tcol: Map(Int64, Typed)) =
+def inner-body-with-param4(tree: Tree, id: Int64, calleeId: Int64, bodyCore: Core, rcol: Map(Int64, Resolved), tcol: Map(Int64, Ty)) =
   (match arg4-of(tree, id) with
     | Option.None(_) => Option.Some(bodyCore)                        // ≤3-arg call — no 4th CLet
     | Option.Some(arg4Id) =>
@@ -330,7 +332,7 @@ def inner-body-with-param4(tree: Tree, id: Int64, calleeId: Int64, bodyCore: Cor
 /// slice-B1a: lower a RECURSIVE call `(f a1 a2 ..)` to a NON-inlining `CCall(calleeName, args)`. Extracted
 /// from lower-ok's NApp arm to keep that arm small. Lowers the arg slots into a List(Core); any ill-typed arg
 /// declines the whole call (None). A LEAF w.r.t. lowering — does NOT descend the callee body.
-def lower-recursive-call(tree: Tree, id: Int64, calleeId: Int64, argId: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64, Typed)) =
+def lower-recursive-call(tree: Tree, id: Int64, calleeId: Int64, argId: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64, Ty)) =
   (match lower-rec-args(tree, id, argId, rcol, tcol) with
     | Option.Some(args) => Option.Some(Core.CCall(calleeId, args))
     | Option.None(_) => Option.None(unit))
@@ -355,7 +357,7 @@ def lower-ctor-decl-enum-disc(tree: Tree, ctorName: Int64) =
 // seam where binder lowering could specialize (e.g. drop a `-1` placeholder field) without touching the arm above.
 def lower-binder-list(binderIds: List(Int64)) = binderIds
 
-def lower-rec-args(tree: Tree, id: Int64, argId: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64, Typed)) =
+def lower-rec-args(tree: Tree, id: Int64, argId: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64, Ty)) =
   (if (argId == -1) then Option.Some(([] : List(Core)))            // nullary recursive call → no args
    else (match lower-node(tree, argId, rcol, tcol) with
      | Option.None(_) => Option.None(unit)
@@ -375,7 +377,7 @@ def lower-rec-args(tree: Tree, id: Int64, argId: Int64, rcol: Map(Int64, Resolve
 /// Helper: lower an OPTIONAL arg-slot node (from arg2/3/4-of). `None` slot → `Some []` (absent arg, no
 /// contribution); a present slot that lowers → `Some [core]`; a present slot that fails to lower → `None`
 /// (the call declines). Returns `Option(List(Core))` — the singleton-or-empty list is spliced by the caller.
-def lower-rec-arg-opt(tree: Tree, slot: Option(Int64), rcol: Map(Int64, Resolved), tcol: Map(Int64, Typed)) =
+def lower-rec-arg-opt(tree: Tree, slot: Option(Int64), rcol: Map(Int64, Resolved), tcol: Map(Int64, Ty)) =
   (match slot with
     | Option.None(_) => Option.Some(([] : List(Core)))
     | Option.Some(argN) =>
@@ -386,9 +388,9 @@ def lower-rec-arg-opt(tree: Tree, slot: Option(Int64), rcol: Map(Int64, Resolved
 /// The lower COLUMN builder: build resolve + infer columns (demanding parse under them), then lower over
 /// them. The whole demand chain in one call — lower reaches infer reaches resolve reaches parse.
 def lower-tree(tree: Tree, root: Int64) =
-  // ARC-A2: infer-tree now yields a Map(Int64, Ty); lower-node still reads a Typed column this slice, so bridge
-  // the Ty column back to Typed at the call boundary (ty-col-to-typed). TEMPORARY — removed when lower-db migrates.
-  lower-node(tree, root, resolve-tree(tree, root), ty-col-to-typed(infer-tree(tree, root)))
+  // ARC-A2 complete: infer-tree yields a Map(Int64, Ty) and lower-node reads a Ty column, so the columns flow
+  // Ty-native end-to-end — no bridge at the boundary.
+  lower-node(tree, root, resolve-tree(tree, root), infer-tree(tree, root))
 
 /// slice-B1b: the param BINDER node-ids a def-name declares, in order (`[]` for a nullary def). The def-env
 /// keys the body's CVar binders by these ids; eval binds args positionally to them in a fresh env.
@@ -414,10 +416,10 @@ def def-param-scope(tree: Tree, nameId: Int64) =
 
 /// slice-B1b: seed a type column with each param binder-id → Int64, so `infer-node` types a def body
 /// standalone (var-type reads a param's type from tcol by binder-id). Monomorphic-i64: every param is Int64.
-def seed-param-types(params: List(Int64), tcol: Map(Int64, Typed)) =
+def seed-param-types(params: List(Int64), tcol: Map(Int64, Ty)) =
   (match params with
     | [] => tcol
-    | [p, .. rest] => seed-param-types(rest, Map.insert(tcol, p, Typed.TIntW(true, 64))))
+    | [p, .. rest] => seed-param-types(rest, Map.insert(tcol, p, mk-int(true, 64))))
 
 /// slice-B1b: lower ONE def body STANDALONE — resolve it in its param scope, infer it under params→Int64,
 /// then lower. `Option((paramBinderIds, bodyCore))` — `None` if the body is ill-typed / doesn't lower (that
@@ -427,13 +429,12 @@ def lower-one-def(tree: Tree, nameId: Int64, bodyId: Int64) =
   (let params = def-param-ids(tree, nameId) in
    (let scope = def-param-scope(tree, nameId) in
     (let rcol = resolve-node(tree, bodyId, scope, (Map.empty : Map(Int64, Resolved))) in
-     // ARC-A2 bridge: infer-node takes/returns a Ty column now; seed-param-types still builds a Typed seed
-     // (lower-db not yet migrated), so convert the seed Typed→Ty in, and the result Ty→Typed out for lower-node.
-     (let tyCol = infer-node(tree, bodyId, rcol, typed-col-to-ty(seed-param-types(params, (Map.empty : Map(Int64, Typed))))) in
-      (let tcol = ty-col-to-typed(tyCol) in
+     // ARC-A2 complete: seed-param-types builds a Ty seed, infer-node takes/returns Ty, and lower-node reads Ty
+     // — no bridge in or out.
+     (let tcol = infer-node(tree, bodyId, rcol, seed-param-types(params, (Map.empty : Map(Int64, Ty)))) in
       (match lower-node(tree, bodyId, rcol, tcol) with
         | Option.Some(bodyCore) => Option.Some((params, bodyCore))
-        | Option.None(_) => Option.None(unit)))))))
+        | Option.None(_) => Option.None(unit))))))
 
 /// slice-B1b: fold the def-table entries into the def-env `Map(name, (paramBinderIds, bodyCore))`. Only a
 /// RECURSIVE def (call-is-recursive) is added — a CCall is emitted ONLY for a recursive callee, so the def-env
@@ -654,7 +655,7 @@ def lw-recursive-nullary-call-lowers-to-ccall-slice-b1a() =
   // — the only way to reach (and thus pin) the new CCall lowering path in B1a.
   (match add-node(empty-tree(), Node.NApp(900, -1)) with | (callId, t1) =>
     (let tree = record-def(t1, 900, callId) in
-     (let tcol = Map.insert((Map.empty : Map(Int64, Typed)), callId, Typed.TIntW(true, 64)) in
+     (let tcol = Map.insert((Map.empty : Map(Int64, Ty)), callId, mk-int(true, 64)) in
       (match lower-node(tree, callId, (Map.empty : Map(Int64, Resolved)), tcol) with
         | Option.Some(Core.CCall(name, args)) =>
             (if (name == 900) and (List.len(args) == 0) then unit else trap("nullary self-call → CCall(900, [])"))
@@ -670,7 +671,7 @@ def lw-recursive-call-splices-arg-into-ccall-slice-b1a() =
   (match add-node(empty-tree(), Node.NLit(42)) with | (litId, t1) =>
     (match add-node(t1, Node.NApp(900, litId)) with | (callId, t2) =>
       (let tree = record-def(t2, 900, callId) in
-       (let tcol = Map.insert(Map.insert((Map.empty : Map(Int64, Typed)), callId, Typed.TIntW(true, 64)), litId, Typed.TIntW(true, 64)) in
+       (let tcol = Map.insert(Map.insert((Map.empty : Map(Int64, Ty)), callId, mk-int(true, 64)), litId, mk-int(true, 64)) in
         (match lower-node(tree, callId, (Map.empty : Map(Int64, Resolved)), tcol) with
           | Option.Some(Core.CCall(name, args)) =>
               (if (name == 900) and (List.len(args) == 1)
@@ -741,7 +742,7 @@ def lw-enum-disc-nullary-pattern-lowers-to-cmatchenum() =
     (match add-node(t1, Node.NLit(7)) with | (bodyId, t2) =>
      (match add-node(t2, Node.NLit(9)) with | (restId, t3) =>
       (match add-node(t3, Node.NMatchCtor(scrutId, 810, ([] : List(Int64)), bodyId, restId)) with | (root, tree) =>
-       (let tcol = Map.insert(Map.insert(Map.insert(Map.insert((Map.empty : Map(Int64, Typed)), scrutId, Typed.TSum(800)), bodyId, Typed.TIntW(true, 64)), restId, Typed.TIntW(true, 64)), root, Typed.TIntW(true, 64)) in
+       (let tcol = Map.insert(Map.insert(Map.insert(Map.insert((Map.empty : Map(Int64, Ty)), scrutId, Ty.TySum(800)), bodyId, mk-int(true, 64)), restId, mk-int(true, 64)), root, mk-int(true, 64)) in
         (match lower-node(tree, root, (Map.empty : Map(Int64, Resolved)), tcol) with
           | Option.Some(c) => (if is-cmatchenum-tag(c, 0) then unit else trap("Red pattern over enum-disc Color lowers to CMatchEnum tag 0"))
           | Option.None(_) => trap("an enum-disc nullary pattern lowers to CMatchEnum"))))))))
@@ -757,7 +758,7 @@ def lw-mixed-decl-nullary-pattern-lowers-to-cmatchsum() =
     (match add-node(t1, Node.NLit(7)) with | (bodyId, t2) =>
      (match add-node(t2, Node.NLit(9)) with | (restId, t3) =>
       (match add-node(t3, Node.NMatchCtor(scrutId, 830, ([] : List(Int64)), bodyId, restId)) with | (root, tree) =>
-       (let tcol = Map.insert(Map.insert(Map.insert(Map.insert((Map.empty : Map(Int64, Typed)), scrutId, Typed.TSum(820)), bodyId, Typed.TIntW(true, 64)), restId, Typed.TIntW(true, 64)), root, Typed.TIntW(true, 64)) in
+       (let tcol = Map.insert(Map.insert(Map.insert(Map.insert((Map.empty : Map(Int64, Ty)), scrutId, Ty.TySum(820)), bodyId, mk-int(true, 64)), restId, mk-int(true, 64)), root, mk-int(true, 64)) in
         (match lower-node(tree, root, (Map.empty : Map(Int64, Resolved)), tcol) with
           | Option.Some(c) => (if is-cmatchsum-tag-nbinders(c, 0, 0) then unit else trap("None pattern over mixed Opt lowers to CMatchSum tag 0, 0 binders"))
           | Option.None(_) => trap("a mixed-decl nullary pattern lowers to CMatchSum"))))))))
@@ -772,7 +773,7 @@ def lw-enum-disc-nullary-use-lowers-to-bare-cnum() =
      | Option.None(_) => trap("Red records a nullary def-body")
      | Option.Some(redBody) =>
     (match add-node(tree, Node.NApp(810, -1)) with | (root, t1) =>
-     (let tcol = Map.insert(Map.insert((Map.empty : Map(Int64, Typed)), root, Typed.TSum(800)), redBody, Typed.TIntW(true, 64)) in
+     (let tcol = Map.insert(Map.insert((Map.empty : Map(Int64, Ty)), root, Ty.TySum(800)), redBody, mk-int(true, 64)) in
       (match lower-node(t1, root, (Map.empty : Map(Int64, Resolved)), tcol) with
         | Option.Some(c) => (if is-cnum(c, 0) then unit else trap("(Red) over enum-disc Color lowers to the bare tag CNum 0"))
         | Option.None(_) => trap("an enum-disc nullary ctor use lowers to its bare tag"))))))
@@ -784,7 +785,7 @@ def lw-mixed-decl-nullary-use-lowers-to-boxed-cctor() =
   // the CMatchSum pattern side (both read/build a store handle). Pins the mixed branch of the nullary-use rep.
   (let tree = opt-mixed-tree() in
    (match add-node(tree, Node.NApp(830, -1)) with | (root, t1) =>
-    (let tcol = Map.insert((Map.empty : Map(Int64, Typed)), root, Typed.TSum(820)) in
+    (let tcol = Map.insert((Map.empty : Map(Int64, Ty)), root, Ty.TySum(820)) in
      (match lower-node(t1, root, (Map.empty : Map(Int64, Resolved)), tcol) with
        | Option.Some(c) => (if is-cctor-tag-nargs(c, 0, 0) then unit else trap("(None) over mixed Opt lowers to boxed CCtor tag 0, no args"))
        | Option.None(_) => trap("a mixed-decl nullary ctor use lowers to a boxed empty CCtor")))))
