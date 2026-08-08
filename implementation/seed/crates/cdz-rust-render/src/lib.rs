@@ -641,29 +641,35 @@ pub fn cdz_render_at(
             .collect();
         return format!("format!(\"(tuple {placeholders})\", {})", args.join(", "));
     }
-    // A record TYPE `(Record (a T0) (b T1) …)` → the VALUE form `(record (a …) (b …) …)`. Each element is
-    // a `(name Type)` pair; the fields are in sorted order (matching the emitted tuple), so field `i` reads
-    // `.i`. The head is matched CAPITALIZED — `Ty::render_name` writes a record type `(Record …)` (a1c9bc09,
-    // matching its annotation spelling, distinct from the lowercase value constructor `(record …)`); the
-    // EMITTED value form stays lowercase `(record …)`, cdz-run's canonical value spelling. (Was matched
-    // lowercase `record`, which stopped matching after a1c9bc09 → a record return type fell through to the
-    // scalar `Display` path and the emitted `(i64, i64)` tuple failed rustc E0277 "doesn't implement
-    // Display", failing every record-escape case on the rust gate.)
+    // A record TYPE `(Record (: a T0) (: b T1) …)` → the VALUE form `(record (a …) (b …) …)`. Each element
+    // is a `(: name Type)` ASCRIPTION node (RT3, DESIGN-record-type-syntax — the canonical record-TYPE
+    // field is the shared `(: name T)` binder node, matching a param binder / `e: T`), in sorted order
+    // (matching the emitted tuple), so field `i` reads `.i`. The head is matched CAPITALIZED —
+    // `Ty::render_name` writes a record type `(Record …)`, distinct from the lowercase value constructor
+    // `(record …)`; the EMITTED value form stays lowercase `(record …)`, cdz-run's canonical value
+    // spelling. (Was matched lowercase `record`, which stopped matching after a1c9bc09 → a record return
+    // type fell through to the scalar `Display` path and the emitted `(i64, i64)` tuple failed rustc E0277
+    // "doesn't implement Display", failing every record-escape case on the rust gate.)
     if let Some(fields) = parse_head_type(ty, "Record") {
         // Each field renders as `(<name> <value>)` — the name is a literal, the value is `.i` rendered
         // as its own type. The `format!` gets one `({} {})` group per field, args = name, value, ….
         let mut args = Vec::with_capacity(fields.len() * 2);
         for (i, field) in fields.iter().enumerate() {
-            // `field` is `(name Type)` — strip its OUTER parens (exactly one each; `trim_end_matches(')')`
-            // would wrongly eat a nested type's close paren, e.g. `(y (Tuple Int64 Int64))`), then split
-            // the leading name from the rest.
+            // `field` is the ascription `(: name Type)` — strip its OUTER parens (exactly one each;
+            // `trim_end_matches(')')` would wrongly eat a nested type's close paren, e.g.
+            // `(: y (Tuple Int64 Int64))`), then read the `:` head, the name, and the rest (the type).
             let f = field.trim();
             let inner = f
                 .strip_prefix('(')
                 .and_then(|s| s.strip_suffix(')'))
                 .unwrap_or(f)
                 .trim();
-            let (fname, fty) = inner.split_once(char::is_whitespace).unwrap_or((inner, ""));
+            // Ascription `: name Type`: drop the `:` head, then split name from type. Tolerate the legacy
+            // bare `name Type` pair (no leading `:`) too, so a stray head-app form still reads its name.
+            let after_colon = inner.strip_prefix(':').map(str::trim).unwrap_or(inner);
+            let (fname, fty) = after_colon
+                .split_once(char::is_whitespace)
+                .unwrap_or((after_colon, ""));
             args.push(format!("\"{}\"", fname.trim()));
             // Extend the logical path by the sorted-field index `i` (== the emitted tuple `.i`), so a Qty
             // field looks up its per-element scale in `qty_at`.
