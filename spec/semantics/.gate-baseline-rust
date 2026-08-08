@@ -6287,3 +6287,6 @@ pass	lf2 a PERFORMING recursive walk — each element visit draws, pairing eleme
 pass	lf3 the arm pushes TWO elements per dispatch (both lengths read from the PRE-push list) — the third draw reads length 5
 pass	lf4 a per-element dispatch comparing each element against the RISING state — amplify-or-pass per visit
 pass	lf5 TWO lists walked in LOCKSTEP with a per-pair 2-arg dispatch — length-guarded via projection helpers
+pass	mi1 enumeration DELTA across dispatches — dumps before and after keyed inserts, collision rows shrink the delta
+pass	mi2 SORTED Set enumeration survives a draw-keyed insert — positional reads, the collision row exposes the missing third slot
+pass	mi3 the arm AGGREGATES map values via a to-list walk — the n=1 row OVERWRITES the seed value, shrinking the total
