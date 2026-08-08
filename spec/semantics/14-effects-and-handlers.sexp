@@ -17045,3 +17045,64 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: -99995 Int64))
   (call   main (: 15 Int64)) (output (: -100001 Int64)))
+
+;; ── Result-STYLE sums (Ok/Err) through the effect thread (breaker rt) ────────────────────────────
+;; rt1 Ok/Err resume values with a DEPENDENT second dispatch (the falling state's sign flips Ok to
+;; Err; Ok-Ok / Ok-Err / Err rows); rt2 an Err SHORT-CIRCUITING a recursive Result walk (Ok
+;; accumulates tail-recursively, the first Err multiplies out and stops — a single-level match on
+;; a performing call inside a recursive callee folds; only the NESTED form declines); rt3 the Err
+;; VALUE seeding a RECOVERY region (a fallback same-effect handle inside the Err arm).
+
+(case "rt1 Ok/Err resume values with a DEPENDENT second dispatch — the sign of the falling state flips Ok to Err"
+  (input  (do
+            (type Res (Ok Int64) (Err Int64))
+            (effect E (op run (-> Int64 Res)))
+            (def (main (: n Int64))
+              (handle E n
+                ((run (k) s (resume (if (> s 0) (Ok (* k s)) (Err s)) (- s 2))))
+                (match (E.run 3)
+                  ((Ok a) (match (E.run 5)
+                            ((Ok b) (+ a b))
+                            ((Err e2) (+ a (* 1000 e2)))))
+                  ((Err e) (* 100 e)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 30 Int64))
+  (call   main (: 1 Int64)) (output (: -997 Int64))
+  (call   main (: -3 Int64)) (output (: -300 Int64)))
+
+(case "rt2 an Err SHORT-CIRCUITS a recursive Result walk — Ok accumulates, the first Err multiplies out and stops"
+  (input  (do
+            (type Res (Ok Int64) (Err Int64))
+            (effect E (op try (-> Int64 Res)))
+            (def (chain (: i Int64) (: acc Int64))
+              (if (> i 3)
+                  acc
+                  (match (E.try i)
+                    ((Ok v) (chain (+ i 1) (+ acc v)))
+                    ((Err e) (* acc e)))))
+            (def (main (: n Int64))
+              (handle E n
+                ((try (k) s (resume (if (> s 0) (Ok (* k 10)) (Err k)) (- s 1))))
+                (chain 1 0)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 60 Int64))
+  (call   main (: 2 Int64)) (output (: 90 Int64))
+  (call   main (: 0 Int64)) (output (: 0 Int64)))
+
+(case "rt3 the Err VALUE seeds a RECOVERY region — a fallback same-effect handle runs inside the Err arm"
+  (input  (do
+            (type Res (Ok Int64) (Err Int64))
+            (effect E (op go (-> Res)))
+            (def (main (: n Int64))
+              (handle E n
+                ((go () s (resume (if (> s 3) (Ok (* s 10)) (Err (+ s 100))) s)))
+                (match (E.go)
+                  ((Ok v) v)
+                  ((Err e) (handle E e
+                             ((go () s (resume (Ok (+ s 1)) s)))
+                             (match (E.go)
+                               ((Ok v2) (* v2 2))
+                               ((Err _e2) -1)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 50 Int64))
+  (call   main (: 2 Int64)) (output (: 206 Int64)))
