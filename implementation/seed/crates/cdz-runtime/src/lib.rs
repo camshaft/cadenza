@@ -3137,6 +3137,13 @@ fn op_bytes_concat(a: Handle, b: Handle) -> Handle {
 /// node, no copy. Total-or-trap: `start + len > bytes-len(buf)` traps (checked in `u64`); `len == 0`
 /// is the empty Bytes (never a trap, even at `start == len`). CONSUMES `buf`. A slice OF a slice is
 /// collapsed into the grandparent (`slice(p, off1+start, len)`) to bound rope depth.
+///
+/// The slice SHARES the parent's storage — its representation holds the parent handle live (`op_dup`),
+/// so the parent buffer is genuinely RETAINED (its rc reflects the slice), not hidden: the storage the
+/// slice value retains is exactly the storage it holds live, and `op_drop` of the slice releases the
+/// parent reference.
+//= spec/capabilities/memory-and-resource-model.md#retained-storage-is-what-a-value-s-representation-holds-live
+//# The storage a value retains MUST be the storage its representation actually holds live, so that a value that shares another value's storage keeps the shared storage retained rather than hidden.
 fn op_bytes_slice(buf: Handle, start: u32, len: u32) -> Handle {
     let blen = op_bytes_len(buf);
     if (start as u64) + (len as u64) > (blen as u64) {
