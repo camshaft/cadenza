@@ -175,26 +175,40 @@
             ++ nonClosureManifests seedCompilerClosure
             ++ [ ./xtask/Cargo.toml ./Cargo.toml ./Cargo.lock ./.cargo ./rust-toolchain.toml ]);
         };
-        seedCompiler = seedRustPlatform.buildRustPackage {
+        # CRANE-INCREMENTAL (v-nix+v-ft 2026-08-08, cold-warm/saturation arc): built via craneLib consuming the
+        # SHARED cargoArtifacts deps-layer instead of a monolithic buildRustPackage. WHY: the old buildRustPackage
+        # recompiled the ENTIRE dep closure + first-party crates on EVERY rcdzc/cdz/cdz-run edit (rcdzc changes
+        # ~every commit — heavy active dev), so the seed-compiler drv rebuilt cold 15-19m per candidate, and
+        # cad-tests/cdz-agent-host (which bear it) held a runner slot that long, saturating the pool during bursts
+        # (trigger (c) confirmed from 3 seats). Consuming cargoArtifacts (the warm-keep-pinned deps layer, rotates
+        # only on Cargo.lock ~= never) means deps RESTORE warm + only the changed first-party crates recompile →
+        # <2m incremental → each slot frees ~8x faster → more candidates/hr through the fixed pool. Same scoping as
+        # craneCrateCommon (seedCompilerSrc fileset + stubNonClosure + seedCargoVendor), just multi-crate
+        # (cdz+cdz-run) via cargoExtraArgs. Output contract UNCHANGED: $out/bin/{cdz,cdz-run}.
+        seedCompiler = craneLib.buildPackage {
           pname = "cdz-seed-compiler";
           version = "0.0.0";
           src = seedCompilerSrc;
-          cargoLock.lockFile = ./Cargo.lock;
+          inherit cargoArtifacts;
+          cargoVendorDir = seedCargoVendor;
           # Materialize synthetic empty target stubs for the non-closure members (+ xtask) whose real src the
           # scoped fileset omits, so cargo can parse the workspace `members` glob for `-p cdz -p cdz-run`
           # without their src. Content-fixed → invariant to those crates' real edits (the whole point). chmod
           # first: fileset.toSource copies are read-only. Same stub machinery as the per-crate crane checks.
-          postPatch = ''
+          # preBuild (crane's hook — runs after crane restores cargoArtifacts' target/, before the build).
+          preBuild = ''
             chmod -R u+w .
             ${stubNonClosure seedCompilerClosure}
             [ -f xtask/src/main.rs ] || { mkdir -p xtask/src; echo "fn main(){}" > xtask/src/main.rs; }
             [ -f xtask/src/lib.rs ] || echo "" > xtask/src/lib.rs
           '';
-          # Build only the seed-compiler binaries, not the whole workspace (xtask etc.).
-          cargoBuildFlags = [ "-p" "cdz" "-p" "cdz-run" ];
-          # Tests run in the existing gate/CI, not here — this derivation just BUILDS the toolchain
-          # reproducibly (S1). (S3 will add fine-grained per-test derivations.)
+          # Build only the seed-compiler binaries, not the whole workspace (xtask etc.). crane injects --locked
+          # + --release; cargoExtraArgs adds the -p scoping (crane's equivalent of buildRustPackage cargoBuildFlags).
+          cargoExtraArgs = "-p cdz -p cdz-run";
+          # Build only — tests run in the existing gate/CI (S1: reproducible toolchain build). Do NOT re-export
+          # the deps layer (we consume the shared cargoArtifacts, not produce a new one).
           doCheck = false;
+          doInstallCargoArtifacts = false;
         };
 
         # ── Full-CI-in-nix (operator GO 2026-08-04): re-express each GHA `checks.yml` job as a nix
