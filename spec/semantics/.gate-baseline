@@ -6314,3 +6314,6 @@ pass	sy2 a SYMBOL toggle state — equality routes the resume value while the ar
 pass	sy3 the SYMBOL state is a MAP KEY per dispatch — the a→b→c walk ends at a missing key
 pass	sy4 sequential draws written into record FIELDS via Record.with symbol selectors — chained functional updates
 pass	sy5 SYMBOL op args as COMMANDS — inc/dbl/nop route both the answer and the state transition
+pass	uv2 a @requires-guarded fn fed by DRAWS — the contract checks effectful argument values at each call
+pass	uv3 the handler ARM calls a @requires-guarded helper — the contract checks the live state per dispatch
+pass	uv4 a RELATIONAL @ensures (ret > x) over a TWO-draw body — the postcondition compares the effectful result to the arg, twice
