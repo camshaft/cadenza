@@ -704,7 +704,6 @@ def lt() = Tok.TOp(60)      // `<`
 def eqop() = Tok.TOp(61)    // `==` (comparison, distinct from the let-binding TEq)
 def gt() = Tok.TOp(62)      // `>`
 def le() = Tok.TOp(63)      // `<=`
-def ge() = Tok.TOp(64)      // `>=`
 def ne() = Tok.TOp(65)      // `!=`
 def ifkw() = Tok.TIf
 def thenkw() = Tok.TThen
