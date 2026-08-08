@@ -17382,3 +17382,83 @@
   (call   main (: 5 Int64)) (output (: 195 Int64))
   (call   main (: 1 Int64)) (output (: 39 Int64))
   (call   main (: -3 Int64)) (output (: -117 Int64)))
+
+;; ── tl: THREE-LEVEL handler chains ───────────────────────────────────────────
+;; Three live frames at once. tl1 draws from all three in one expression (each
+;; draw dispatches past the inner frames to its own handler); tl2 pipelines a
+;; value innermost -> middle -> outermost; tl3 puts the rv face at depth (the
+;; MIDDLE frame's arm resumes with an OUTERMOST draw, dispatched from under a
+;; third live frame); tl4 handles the SAME effect at two depths — the inner
+;; handle shadows for its extent and the outer thread is untouched after it
+;; closes.
+
+(case "tl1 THREE live handlers, each drawn in one expression — every draw dispatches past the two inner frames to its own"
+  (input  (do
+            (effect O (op next (-> Int64)))
+            (effect M (op step (-> Int64)))
+            (effect I (op pick (-> Int64)))
+            (def (mix3 (: a Int64) (: b Int64) (: c Int64)) (+ (* 100 a) (+ (* 10 b) c)))
+            (def (main (: n Int64))
+              (handle O n
+                ((next () s (resume s (+ s 1))))
+                (handle M 4
+                  ((step () m (resume m (+ m 2))))
+                  (handle I 7
+                    ((pick () t (resume t t)))
+                    (+ (* 1000 (O.next)) (mix3 (M.step) (I.pick) (O.next)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 5476 Int64))
+  (call   main (: 0 Int64)) (output (: 471 Int64))
+  (call   main (: -1 Int64)) (output (: -530 Int64)))
+
+(case "tl2 a THREE-frame value pipeline — innermost pick feeds middle dbl feeds outermost send, then an outer draw stamps the hundreds"
+  (input  (do
+            (effect O (op next (-> Int64)) (op send (-> Int64 Int64)))
+            (effect M (op dbl (-> Int64 Int64)))
+            (effect I (op pick (-> Int64)))
+            (def (main (: n Int64))
+              (handle O n
+                ((next () s (resume s (+ s 1)))
+                 (send (v) s (resume (+ v s) s)))
+                (handle M 0
+                  ((dbl (x) m (resume (* 2 x) m)))
+                  (handle I 7
+                    ((pick () t (resume t t)))
+                    (+ (O.send (M.dbl (I.pick))) (* 100 (O.next)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 519 Int64))
+  (call   main (: 0 Int64)) (output (: 14 Int64))
+  (call   main (: -20 Int64)) (output (: -2006 Int64)))
+
+(case "tl3 the MIDDLE frame's arm resumes with an OUTERMOST draw — rv-face at depth, dispatched from under a third live frame"
+  (input  (do
+            (effect O (op next (-> Int64)))
+            (effect M (op grab (-> Int64)))
+            (effect I (op pick (-> Int64)))
+            (def (main (: n Int64))
+              (handle O n
+                ((next () s (resume s (+ s 1))))
+                (handle M 0
+                  ((grab () m (resume (O.next) m)))
+                  (handle I 7
+                    ((pick () t (resume t t)))
+                    (+ (* 100 (M.grab)) (+ (* 10 (M.grab)) (I.pick)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 567 Int64))
+  (call   main (: 0 Int64)) (output (: 17 Int64))
+  (call   main (: -2 Int64)) (output (: -203 Int64)))
+
+(case "tl4 SAME effect handled at two depths — the inner handle shadows for its extent, the outer thread resumes after it closes"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1))))
+                (+ (handle E 50
+                     ((next () s (resume s (+ s 5))))
+                     (E.next))
+                   (* 10 (E.next)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 100 Int64))
+  (call   main (: 0 Int64)) (output (: 50 Int64))
+  (call   main (: -4 Int64)) (output (: 10 Int64)))

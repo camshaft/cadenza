@@ -6344,3 +6344,7 @@ pass	ha3 INTERLEAVED outer-inner-outer draws in ONE argument list — each draw 
 pass	ha4 an inner op's arguments dispatch to the SAME inner handler — same-effect draws inside the op's own arg list, then an outer draw
 pass	rv1 the inner handler ARM resumes with an OUTER draw — the resume VALUE expression performs against the enclosing handler
 pass	rv2 the inner arm's resume value SUBTRACTS two outer draws — cross-handler order inside the arm, with a doubling outer state
+pass	tl1 THREE live handlers, each drawn in one expression — every draw dispatches past the two inner frames to its own
+pass	tl2 a THREE-frame value pipeline — innermost pick feeds middle dbl feeds outermost send, then an outer draw stamps the hundreds
+pass	tl3 the MIDDLE frame's arm resumes with an OUTERMOST draw — rv-face at depth, dispatched from under a third live frame
+pass	tl4 SAME effect handled at two depths — the inner handle shadows for its extent, the outer thread resumes after it closes
