@@ -1,0 +1,114 @@
+/// hm-solve.cdz — ARC-B5 foundation of the rcdzc HM port: the CONSTRAINT SOLVER driver. The HM machinery so
+/// far delivers the pieces — B1 Subst (subst.cdz), B2 fresh+occurs (hm-vars.cdz), B3 the binding unifier that
+/// threads a Subst (unify-subst.cdz `unify-ty-su`), B4 Scheme+instantiate+generalize (hm-scheme.cdz). This
+/// module is the DRIVER that connects them into a real solve: given a LIST of type-equality CONSTRAINTS
+/// (pairs `(a, b)` meaning "a must unify with b"), fold `unify-ty-su` over them threading ONE growing Subst,
+/// short-circuiting to `None` on the first conflict. The result Subst is the SOLUTION — apply it to a type to
+/// get its principal form.
+///
+/// WHY A SEPARATE MODULE (the B1–B4 pattern): built standalone over already-landed deps (ty/subst/hm-vars/
+/// unify-subst/hm-scheme), it touches NO live pipeline code — zero blast radius, exactly like B1–B4 landed as
+/// pure modules before infer threaded them. The infer→solver LIVE-WIRE (infer-db generating constraints from
+/// the tree + calling `solve`, replacing the stateless `unify-ty` value-combiner) is the FOLLOW slice; this
+/// delivers the solver it will call. Mirrors rcdzc's `solve(constraints) -> Subst` (unify.rs drives `unify`
+/// over the collected constraint set), pure-functional here (returns the Subst or None instead of mutating).
+///
+/// A CONSTRAINT is a `(Ty, Ty)` tuple — "these two types must unify". rcdzc collects them during inference
+/// (e.g. an arith node emits `operand-ty ~ result-ty`, a call emits `arg-ty ~ param-ty`), then solves the set.
+/// Here the caller builds the list; `solve` threads the Subst left-to-right so a var bound by an early
+/// constraint stays bound for the later ones (the whole point of a connected solve vs B3's single unify).
+import { Ty } from "ty"
+import { Subst, subst-empty, apply } from "subst"
+import { unify-ty-su } from "unify-subst"
+import { Scheme, instantiate } from "hm-scheme"
+
+/// SOLVE a list of type-equality constraints, threading one Subst left-to-right from `su0`. Each `(a, b)` is
+/// unified via `unify-ty-su` on the CURRENT Subst (so it sees every prior binding); the extended Subst feeds
+/// the next constraint. `Some(finalSubst)` if every constraint unifies, `None` on the FIRST conflict (a real
+/// solve aborts the whole set on an inconsistency — there is no partial solution). This is the connected
+/// solve: `SVar0 ~ Signed` then `(TyInt SVar0 _) ~ (TyInt Unsigned _)` CONFLICTS because 0 is already Signed.
+def solve-from(su0: Subst, cs: List(Tuple(Ty, Ty))) = match cs with
+  | [] => Option.Some(su0)
+  | [c, .. rest] => (match c with
+      | (a, b) => (match unify-ty-su(su0, a, b) with
+          | Option.Some(su1) => solve-from(su1, rest)
+          | Option.None(_) => Option.None(unit)))
+
+/// SOLVE from the EMPTY Subst — the top-level entry (rcdzc `solve`): unify the whole constraint set starting
+/// with no bindings. `Some(solution)` or `None` (unsatisfiable).
+def solve(cs: List(Tuple(Ty, Ty))) = solve-from(subst-empty(), cs)
+
+/// Solve `cs`, then APPLY the solution to `t` — its PRINCIPAL type under the constraints. `Some(applied)` when
+/// the set is satisfiable, `None` when it conflicts. The common caller shape: "collect constraints for a node,
+/// solve, read off the node's now-refined type". Applying the Subst substitutes every solved var in `t`.
+def solve-apply(cs: List(Tuple(Ty, Ty)), t: Ty) = match solve(cs) with
+  | Option.Some(su) => Option.Some(apply(su, t))
+  | Option.None(_) => Option.None(unit)
+
+/// Does the constraint set `cs` have a solution? (a satisfiability probe — `solve` reduced to a Bool). Useful
+/// for a well-typed gate that doesn't need the Subst itself, only whether the constraints are consistent.
+def solvable(cs: List(Tuple(Ty, Ty))) = match solve(cs) with
+  | Option.Some(_) => true
+  | Option.None(_) => false
+
+// ---- TESTS: the connected solve — a var bound early stays bound; conflicts abort the set ------------
+import { IntType, Sign, Width, ty-int64, ty-fixed-int } from "ty"
+
+/// A fresh int type carrying sign-var `s` and width-var `w` (for building constraint operands in tests).
+def var-int(s: Int64, w: Int64) = Ty.TyInt(IntType.IntType(Sign.SVar(s), Width.WVar(w)))
+
+@test
+def hs-empty-solves-to-empty-subst() =
+  // no constraints → the empty Subst is a (trivial) solution; applying it to a type is the identity.
+  match solve-apply(([] : List(Tuple(Ty, Ty))), ty-int64()) with
+    | Option.Some(Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w)))) => (if w == 64 then unit else trap("identity on Int64"))
+    | _ => trap("empty constraint set solves; apply is identity")
+
+@test
+def hs-single-constraint-binds-var() =
+  // one constraint (TyInt SVar0 WVar1) ~ (Unsigned, W16) binds 0:=Unsigned, 1:=16; applying the solution to the
+  // var-int yields UInt16. The solver threads the bind through.
+  match solve-apply(List.push([], (var-int(0, 1), ty-fixed-int(false, 16))), var-int(0, 1)) with
+    | Option.Some(Ty.TyInt(IntType.IntType(Sign.Unsigned, Width.WFixed(w)))) => (if w == 16 then unit else trap("var-int solves to UInt16"))
+    | _ => trap("a single constraint binds both axis vars")
+
+@test
+def hs-connected-solve-shared-var-propagates() =
+  // THE connected-solve pin: two constraints sharing SVar0 — [ (SVar0-int) ~ Int64 , (SVar0-int) ~ (Signed, W?) ].
+  // The first binds 0:=Signed + its width; the SECOND is seen on that Subst, so SVar0 already resolves to Signed
+  // and stays consistent. Solving both then applying to the shared var yields the propagated Int64. This is what
+  // B3's single unify could NOT do (each unify was independent); the threaded fold makes the binding persist.
+  (let c1 = (var-int(0, 1), ty-int64()) in
+   (let c2 = (var-int(0, 1), ty-int64()) in
+    (match solve-apply(List.push(List.push([], c1), c2), var-int(0, 1)) with
+      | Option.Some(Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w)))) => (if w == 64 then unit else trap("shared var propagates to Int64"))
+      | _ => trap("two constraints sharing SVar0 solve consistently"))))
+
+@test
+def hs-conflicting-constraints-abort() =
+  // a var bound one way then constrained incompatibly → the whole set is unsatisfiable (None). [ SVar0-int ~ Int64
+  // (signed), then SVar0-int ~ UInt64 (unsigned) ]: 0:=Signed from c1, then c2 wants Unsigned → CONFLICT → None.
+  // The connected solve aborts the set (no partial/last-wins), the essence of a real solver.
+  (let c1 = (var-int(0, 1), ty-int64()) in
+   (let c2 = (var-int(0, 1), ty-fixed-int(false, 64)) in
+    (if solvable(List.push(List.push([], c1), c2)) then trap("Signed-then-Unsigned on SVar0 must conflict") else unit)))
+
+@test
+def hs-instantiate-then-solve-is-let-polymorphism() =
+  // B4↔B5 seam: a Scheme instantiated TWICE gives DISJOINT fresh vars; constraining one instantiation does NOT
+  // taint the other (let-polymorphism). Scheme ∀s0. (TyInt s0 W?) ; instantiate at counter 0 → freshened var A,
+  // at that counter's result → freshened var B. Constrain A~Int64 (signed); B stays free → solving [A~Int64]
+  // then applying to B leaves B's var UNBOUND (a distinct var), proving the two uses don't share a binding.
+  (match instantiate(Scheme.Scheme(List.push([], 0), ([] : List(Int64)), var-int(0, 5)), 10) with
+    | (tyA, n1) => (match instantiate(Scheme.Scheme(List.push([], 0), ([] : List(Int64)), var-int(0, 6)), n1) with
+        | (tyB, _n2) =>
+            // constrain the FIRST instantiation to Int64, solve, then apply to the SECOND — B must remain a var
+            // (unbound), i.e. NOT forced to Signed. Distinct fresh vars = independent.
+            (match solve(List.push([], (tyA, ty-int64()))) with
+              | Option.Some(su) => (match apply(su, tyB) with
+                  | Ty.TyInt(IntType.IntType(Sign.SVar(_), _)) => unit            // B's sign still a free var → independent
+                  | Ty.TyInt(IntType.IntType(Sign.Signed, _)) => trap("B was tainted by A's binding — not polymorphic")
+                  | _ => trap("B stays an int with a free sign var"))
+              | Option.None(_) => trap("constraining only A is satisfiable"))))
+
+export { solve, solve-from, solve-apply, solvable }
