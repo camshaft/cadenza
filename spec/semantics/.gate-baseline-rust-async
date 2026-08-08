@@ -6891,3 +6891,8 @@ pass	gd2 pure guards on SUM-PAYLOAD binders — guarded and unguarded twins of e
 pass	gd3 the guard COMPARES the scrutinee draw to an earlier let-bound draw — two thread values meet in one pure predicate
 pass	gd4 pure guards INSIDE the handler arm grade the live state — three dispatches cross the tier boundaries as the state climbs
 pass	gd5 guards over TUPLE pattern binders — the predicate compares the tuple's own components, all three orderings reachable
+pass	ns1 a RECORD rides inside a sum payload through dispatch — the arm builds it from two draws, the body matches then projects
+pass	ns2 the sum-wrapped record round-trips FLATTENED — matched, field-updated with a draw, re-wrapped, echoed, re-matched at top level
+pass	ns3 TWO record-payload variants selected by state parity — each arm projects its own record shape
+pass	ns4 a record payload whose FIELD is itself a sum-wrapped record — helper unboxers traverse two wrap layers built from one dispatch
+pass	ns5 the nested two-layer match FOLDS when the scrutinee is a pure literal — only op-built scrutinees push it off the fold

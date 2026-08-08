@@ -18986,3 +18986,112 @@
   (call   main (: 4 Int64)) (output (: 1083 Int64))
   (call   main (: 0 Int64)) (output (: 2003 Int64))
   (call   main (: -5 Int64)) (output (: 2903 Int64)))
+
+;; ── ns: RECORDS inside SUM payloads through dispatch ─────────────────────────
+;; (Record-type fields in canonical `(: name T)` ascription per RT4.) ns1
+;; builds Wrap{x,y} from two draws in the arm, matched then projected; ns2
+;; ROUND-TRIPS it — matched via an unbox helper, field-updated with a draw,
+;; re-wrapped, echoed through a second op, re-matched (the nested-match form
+;; is the known op-built-scrutinee fold decline); ns3 selects between TWO
+;; record-payload variants by state parity; ns4 nests a sum-wrapped record as
+;; a FIELD of another record payload (helper unboxers traverse both layers);
+;; ns5 pins that the nested two-layer match FOLDS when the outer scrutinee is
+;; a pure literal — only op-built outer scrutinees decline.
+
+(case "ns1 a RECORD rides inside a sum payload through dispatch — the arm builds it from two draws, the body matches then projects"
+  (input  (do
+            (type Box (Wrap (Record (: x Int64) (: y Int64))))
+            (effect E (op make (-> Box)) (op probe (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((make () s (resume (Box.Wrap (record (x s) (y (+ s 2)))) (+ s 4)))
+                 (probe () s (resume s s)))
+                (match (E.make)
+                  ((Box.Wrap r) (+ (* 100 (. r x)) (+ (* 10 (. r y)) (- (E.probe) n)))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 354 Int64))
+  (call   main (: 0 Int64)) (output (: 24 Int64))
+  (call   main (: -4 Int64)) (output (: -416 Int64)))
+
+(case "ns2 the sum-wrapped record round-trips FLATTENED — matched, field-updated with a draw, re-wrapped, echoed, re-matched at top level"
+  (input  (do
+            (type Box (Wrap (Record (: x Int64) (: y Int64))))
+            (effect E (op make (-> Box)) (op keep (-> Box Box)) (op next (-> Int64)) (op probe (-> Int64)))
+            (def (unbox (: b Box))
+              (match b ((Box.Wrap r) r)))
+            (def (main (: n Int64))
+              (handle E n
+                ((make () s (resume (Box.Wrap (record (x s) (y (+ s 2)))) (+ s 4)))
+                 (keep (b) s (resume b s))
+                 (next () s (resume s (+ s 4)))
+                 (probe () s (resume s s)))
+                (let ((r (unbox (E.make))))
+                  (let ((r2 (unbox (E.keep (Box.Wrap (Record.with r #"y" (+ (. r y) (E.next))))))))
+                    (+ (* 100 (. r2 x)) (+ (* 10 (. r2 y)) (- (E.probe) n)))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 428 Int64))
+  (call   main (: 0 Int64)) (output (: 68 Int64))
+  (call   main (: -6 Int64)) (output (: -652 Int64)))
+
+(case "ns3 TWO record-payload variants selected by state parity — each arm projects its own record shape"
+  (input  (do
+            (type Shape
+              (Pt (Record (: x Int64) (: y Int64)))
+              (Ln (Record (: a Int64) (: b Int64) (: len Int64))))
+            (effect E (op make (-> Shape)) (op probe (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((make () s (resume (if (= (% s 2) 0)
+                                        (Shape.Pt (record (x s) (y (+ s 1))))
+                                        (Shape.Ln (record (a s) (b (* 2 s)) (len (* 3 s)))))
+                                    (+ s 5)))
+                 (probe () s (resume s s)))
+                (+ (* 10 (match (E.make)
+                           ((Shape.Pt r) (+ (* 100 (. r x)) (* 10 (. r y))))
+                           ((Shape.Ln r) (+ (. r a) (+ (. r b) (. r len))))))
+                   (- (E.probe) n))))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: 4505 Int64))
+  (call   main (: 3 Int64)) (output (: 185 Int64))
+  (call   main (: 0 Int64)) (output (: 105 Int64))
+  (call   main (: -5 Int64)) (output (: -295 Int64)))
+
+(case "ns4 a record payload whose FIELD is itself a sum-wrapped record — helper unboxers traverse two wrap layers built from one dispatch"
+  (input  (do
+            (type Box (Wrap (Record (: x Int64) (: y Int64))))
+            (type Big (Node (Record (: tag Int64) (: inner Box))))
+            (effect E (op make (-> Big)) (op probe (-> Int64)))
+            (def (unnode (: g Big)) (match g ((Big.Node o) o)))
+            (def (unwrap (: b Box)) (match b ((Box.Wrap r) r)))
+            (def (main (: n Int64))
+              (handle E n
+                ((make () s (resume (Big.Node (record (tag (+ s 4))
+                                               (inner (Box.Wrap (record (x s) (y (+ s 2)))))))
+                                    (+ s 6)))
+                 (probe () s (resume s s)))
+                (let ((outer (unnode (E.make))))
+                  (let ((r (unwrap (. outer inner))))
+                    (+ (* 100 (. outer tag))
+                       (+ (* 10 (. r x))
+                          (+ (. r y) (* 1000 (- (E.probe) n)))))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 6735 Int64))
+  (call   main (: 0 Int64)) (output (: 6402 Int64))
+  (call   main (: -4 Int64)) (output (: 5958 Int64)))
+
+(case "ns5 the nested two-layer match FOLDS when the scrutinee is a pure literal — only op-built scrutinees push it off the fold"
+  (input  (do
+            (type Box (Wrap (Record (: x Int64) (: y Int64))))
+            (type Big (Node (Record (: tag Int64) (: inner Box))))
+            (effect E (op probe (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((probe () s (resume s s)))
+                (match (Big.Node (record (tag n) (inner (Box.Wrap (record (x 1) (y 2))))))
+                  ((Big.Node outer)
+                    (match (. outer inner)
+                      ((Box.Wrap r) (+ (* 100 (. outer tag)) (+ (* 10 (. r x)) (. r y)))))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 312 Int64))
+  (call   main (: 0 Int64)) (output (: 12 Int64))
+  (call   main (: -4 Int64)) (output (: -388 Int64)))
