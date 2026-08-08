@@ -378,7 +378,7 @@ mod tests {
     struct StubAgent;
     #[async_trait::async_trait(?Send)]
     impl Reducer for StubAgent {
-        async fn fold(&self, _event: &Event, _kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, _event: &Event, _kv: &mut Kv) -> FoldOutput {
             FoldOutput::none()
         }
     }

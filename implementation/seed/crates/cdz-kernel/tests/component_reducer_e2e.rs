@@ -188,7 +188,8 @@ async fn the_wasm_guest_drives_the_kernel_loop_and_its_token_reaches_the_dispatc
         eprintln!("SKIP the_wasm_guest_drives_the_kernel_loop_and_its_token_reaches_the_dispatched_frame: REDUCER_GUEST_COMPONENT unset");
         return;
     };
-    let reducer = ComponentReducer::from_component_bytes(&guest).expect("valid reducer component");
+    let mut reducer =
+        ComponentReducer::from_component_bytes(&guest).expect("valid reducer component");
     // Grant the guest's Http target (SEC-F1) so the effect isn't denied.
     let authz = Authorizer::new(vec![Capability {
         kind: KKind::Http,
@@ -208,7 +209,7 @@ async fn the_wasm_guest_drives_the_kernel_loop_and_its_token_reaches_the_dispatc
                 payload: Payload::Inline(b"hello".to_vec().into()),
             },
             None,
-            &reducer,
+            &mut reducer,
             &authz,
             &mut exec,
         )
@@ -251,7 +252,10 @@ async fn fold_commits_on_success_and_leaves_the_kv_intact_on_failure() {
 
     // An inner async fn (not a closure — a closure returning a future that borrows its `&reducer` arg
     // trips the borrow checker; an `async fn` scopes the borrow to its own await cleanly).
-    async fn inbound(kv: &mut Kv, reducer: &ComponentReducer) -> cdz_kernel::reducer::FoldOutput {
+    async fn inbound(
+        kv: &mut Kv,
+        reducer: &mut ComponentReducer,
+    ) -> cdz_kernel::reducer::FoldOutput {
         reducer
             .fold(
                 &cdz_kernel::event::Event {
@@ -275,11 +279,11 @@ async fn fold_commits_on_success_and_leaves_the_kv_intact_on_failure() {
         return;
     };
     // SUCCESS path: default budget. Pre-populate an unrelated key; the fold bumps "count".
-    let ok_reducer =
+    let mut ok_reducer =
         ComponentReducer::from_component_bytes(&guest).expect("valid reducer component");
     let mut kv = Kv::new();
     kv.put(b"unrelated".to_vec(), b"keep".to_vec());
-    let out = inbound(&mut kv, &ok_reducer).await;
+    let out = inbound(&mut kv, &mut ok_reducer).await;
     assert_eq!(out.effects.len(), 1, "the successful fold emits its effect");
     // Commit MERGED: the guest's new "count" AND the pre-existing "unrelated" both present.
     assert_eq!(kv.get(b"count"), Some(&[1u8][..]), "guest write committed");
@@ -291,13 +295,13 @@ async fn fold_commits_on_success_and_leaves_the_kv_intact_on_failure() {
 
     // FAILURE path: 1-fuel budget → the fold fails. A pre-populated KV must be restored intact, not
     // left empty by the `mem::take`.
-    let fail_reducer = ComponentReducer::from_component_bytes(&guest)
+    let mut fail_reducer = ComponentReducer::from_component_bytes(&guest)
         .expect("valid reducer component")
         .with_fuel_budget(1);
     let mut kv2 = Kv::new();
     kv2.put(b"a".to_vec(), b"1".to_vec());
     kv2.put(b"b".to_vec(), b"2".to_vec());
-    let out2 = inbound(&mut kv2, &fail_reducer).await;
+    let out2 = inbound(&mut kv2, &mut fail_reducer).await;
     assert!(out2.effects.is_empty(), "a failed fold emits no effects");
     // The failure is CAPTURED (not a silent empty fold) — error-resilience direction.
     assert!(
@@ -327,7 +331,7 @@ async fn a_failed_wasm_fold_records_a_foldfailed_event_on_the_log() {
         return;
     };
     // A 1-fuel budget guarantees the guest fold traps (OutOfFuel) mid-apply.
-    let reducer = ComponentReducer::from_component_bytes(&guest)
+    let mut reducer = ComponentReducer::from_component_bytes(&guest)
         .expect("valid reducer component")
         .with_fuel_budget(1);
     let authz = Authorizer::new(vec![Capability {
@@ -348,7 +352,7 @@ async fn a_failed_wasm_fold_records_a_foldfailed_event_on_the_log() {
                 payload: Payload::Inline(b"hello".to_vec().into()),
             },
             None,
-            &reducer,
+            &mut reducer,
             &authz,
             &mut exec,
         )

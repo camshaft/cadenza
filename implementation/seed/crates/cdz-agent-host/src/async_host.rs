@@ -901,7 +901,7 @@ mod tests {
     struct MarkAgent;
     #[async_trait::async_trait(?Send)]
     impl Reducer for MarkAgent {
-        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => {
                     FoldOutput::with(vec![EffectRequest::new_with_family(
@@ -1023,7 +1023,7 @@ mod tests {
     }
     #[async_trait::async_trait(?Send)]
     impl Reducer for TerminatorAgent {
-        async fn fold(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => {
                     FoldOutput::with(vec![EffectRequest::new_with_family(
@@ -1045,7 +1045,7 @@ mod tests {
     }
     #[async_trait::async_trait(?Send)]
     impl Reducer for SpawnerAgent {
-        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => {
                     FoldOutput::with(vec![EffectRequest::new_with_family(
@@ -1076,7 +1076,7 @@ mod tests {
     }
     #[async_trait::async_trait(?Send)]
     impl Reducer for EmitterAgent {
-        async fn fold(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => {
                     FoldOutput::with(vec![EffectRequest::new_with_family(
@@ -1096,7 +1096,7 @@ mod tests {
     struct ReceiverAgent;
     #[async_trait::async_trait(?Send)]
     impl Reducer for ReceiverAgent {
-        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
             if let EventBody::Inbound {
                 content_type,
                 payload: Payload::Inline(bytes),
@@ -1210,7 +1210,7 @@ mod tests {
     struct BounceRecorder;
     #[async_trait::async_trait(?Send)]
     impl Reducer for BounceRecorder {
-        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
             if let EventBody::Inbound {
                 content_type,
                 payload: Payload::Inline(bytes),
@@ -1229,7 +1229,7 @@ mod tests {
     struct BounceCounter;
     #[async_trait::async_trait(?Send)]
     impl Reducer for BounceCounter {
-        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
             if let EventBody::Inbound { content_type, .. } = &event.body {
                 if content_type.matches_family("delivery-failure") {
                     let mut acc = kv.get(b"bounces").map(|v| v.to_vec()).unwrap_or_default();
@@ -1577,7 +1577,7 @@ mod tests {
     }
     #[async_trait::async_trait(?Send)]
     impl Reducer for SuspendResumeController {
-        async fn fold(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             if let EventBody::Inbound {
                 payload: Payload::Inline(bytes),
                 ..
@@ -2056,7 +2056,7 @@ mod tests {
     }
     #[async_trait::async_trait(?Send)]
     impl Reducer for TimerAgent {
-        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => {
                     FoldOutput::with(vec![EffectRequest::new_with_family(

@@ -37,7 +37,7 @@ struct MulticastAgent {
 }
 #[async_trait::async_trait(?Send)]
 impl Reducer for MulticastAgent {
-    async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+    async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
         match &event.body {
             // Kick-off: add every member to the group (each op tagged (origin, seq) — the OR-set CRDT tag).
             EventBody::Inbound {
@@ -105,7 +105,7 @@ impl Reducer for MulticastAgent {
 struct MemberAgent;
 #[async_trait::async_trait(?Send)]
 impl Reducer for MemberAgent {
-    async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+    async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
         if let EventBody::Inbound {
             content_type,
             payload: Payload::Inline(bytes),
