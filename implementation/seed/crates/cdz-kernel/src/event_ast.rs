@@ -3404,6 +3404,47 @@ mod tests {
     }
 
     #[test]
+    fn component_signature_descriptor_round_trips_byte_identically_through_the_codec() {
+        // GATE (v-syntax AST-codec review, offer 1): the (component-signature …) descriptor is a FROZEN
+        // wire the host emits + reducers decode, so it must survive the codec BIJECTION —
+        // encode→decode→re-encode BYTE-IDENTICAL — or a future codec/AST change could silently reshape it
+        // under a consumer. Pins the frozen-bijection invariant (same discipline as the doc-module/dict
+        // round-trip gates). Covers a multi-export descriptor with the full head-kind split: a STR-head
+        // compound-shaped marker is exercised elsewhere; here primitives (name-head) across arities incl. a
+        // 0-arg export, which is the shape build_type emits for the common cases.
+        let bytes = build_test_descriptor(&[
+            ("parse", &["string"], &["u32"]),
+            ("noop", &[], &[]),
+            ("combine", &["u8", "u32"], &["bool"]),
+        ]);
+        // Decode the descriptor to its AST arena, then RE-ENCODE that arena: the bytes must be identical
+        // (the codec is a bijection over a well-formed tree — no drift, no reordering, no leaf reshape).
+        let a = codec::decode_detailed(&bytes).expect("descriptor decodes to an arena");
+        let reencoded = codec::encode(&a);
+        assert_eq!(
+            reencoded, bytes,
+            "the component-signature descriptor must re-encode byte-identically (frozen codec bijection)"
+        );
+        // And a structural re-decode through the descriptor surface yields the same exports/arities/type
+        // heads — the sexpr-level read survives the round-trip, not just the raw bytes.
+        let sig1 = decode_component_signature(&bytes).expect("first decode");
+        let sig2 = decode_component_signature(&reencoded).expect("decode of the re-encoded bytes");
+        assert_eq!(sig1.exports.len(), sig2.exports.len());
+        for (e1, e2) in sig1.exports.iter().zip(sig2.exports.iter()) {
+            assert_eq!(e1.name, e2.name);
+            assert_eq!(e1.params.len(), e2.params.len());
+            assert_eq!(e1.results.len(), e2.results.len());
+            // The inline type-node HEADS match position-for-position (the walkable surface is stable).
+            for (p1, p2) in e1.params.iter().zip(e2.params.iter()) {
+                assert_eq!(sig1.arenas.head_name(*p1), sig2.arenas.head_name(*p2));
+            }
+            for (r1, r2) in e1.results.iter().zip(e2.results.iter()) {
+                assert_eq!(sig1.arenas.head_name(*r1), sig2.arenas.head_name(*r2));
+            }
+        }
+    }
+
+    #[test]
     fn decode_store_frame_routes_both_kinds_in_one_pass_and_rejects_unknown() {
         // The single-pass snapshot-restore discriminant (#2424 c2): one decode routes on the AST head,
         // no try-one-then-fall-back double-decode.
