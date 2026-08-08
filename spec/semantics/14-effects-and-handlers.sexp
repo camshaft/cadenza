@@ -18560,3 +18560,65 @@
   (call   main (: 0 Int64)) (output (: 303 Int64))
   (call   main (: 1 Int64)) (output (: 111 Int64))
   (call   main (: 5 Int64)) (output (: 212 Int64)))
+
+;; ── ta/by/syd: interior aborts in towers, and bytes/symbols via draws ────────
+;; ta2 aborts INSIDE the inner frame of a same-effect tower (Bail innermost;
+;; both E threads keep their positions; the inner frame lives in a def taking
+;; the outer draw as a parameter — the let-crossing form hits the known
+;; bind-once CDZ0101). The cross-frame abort (Bail BETWEEN the E frames) is a
+;; known fold decline; witness banked. by1 builds bytes from three wrapped
+;; draws and reads at a draw-picked index. syd1's op returns a SYMBOL picked
+;; by state parity — symbol equality gates a branch that draws again.
+
+(case "ta2 an abort INSIDE the inner frame of a same-effect tower — Bail innermost, both E threads keep their positions"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (effect Bail (op out (-> Int64 Int64)))
+            (def (inner-run (: k Int64))
+              (handle E (* 10 k)
+                ((next () s (resume s (+ s 5))))
+                (+ (handle Bail 0
+                     ((out (v) t (+ 1000 v)))
+                     (let ((d (E.next)))
+                       (if (> d 52) (Bail.out d) d)))
+                   (E.next))))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1))))
+                (+ (* 10 (inner-run (E.next))) (- (E.next) n))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 451 Int64))
+  (call   main (: 6 Int64)) (output (: 11251 Int64))
+  (call   main (: 0 Int64)) (output (: 51 Int64))
+  (call   main (: -3 Int64)) (output (: -549 Int64)))
+
+(case "by1 bytes built from THREE draws then read at a draw-picked index — Bytes.at follows the thread into the buffer"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 7))))
+                (let ((b (Bytes.of (list (UInt8.wrap (+ (% (E.next) 200) 56)) (UInt8.wrap (+ (% (E.next) 200) 56)) (UInt8.wrap (+ (% (E.next) 200) 56))))))
+                  (let ((i (% (E.next) 3)))
+                    (match (Bytes.at b i)
+                      ((Some v) (+ (* 100 v) (+ (* 10 (Bytes.len b)) i)))
+                      (None -1))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 5630 Int64))
+  (call   main (: 1 Int64)) (output (: 6431 Int64))
+  (call   main (: 2 Int64)) (output (: 7232 Int64)))
+
+(case "syd1 an op returns a SYMBOL picked by state parity — symbol equality gates a branch that draws again"
+  (input  (do
+            (effect E (op tag (-> Symbol)) (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((tag () s (resume (if (= (% s 2) 0) #"alpha" #"beta") (+ s 1)))
+                 (next () s (resume s (+ s 1))))
+                (if (= (E.tag) #"alpha")
+                    (+ 100 (E.next))
+                    (+ 200 (E.next)))))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: 105 Int64))
+  (call   main (: 7 Int64)) (output (: 208 Int64))
+  (call   main (: -2 Int64)) (output (: 99 Int64)))

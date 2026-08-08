@@ -6404,3 +6404,6 @@ pass	rw3 each Record.with value PROJECTS from the record it updates plus a draw 
 pass	sd1 a draw COUNT drives string repetition through a recursion — String.byte-len pins how many times the thread said to concat
 pass	sd2 draw parity picks WHICH string each op returns — the concat order of two draws is visible in content equality
 pass	sd3 a draw-bounded String.slice window — start and end both come from the thread, byte-len pins the window width
+pass	ta2 an abort INSIDE the inner frame of a same-effect tower — Bail innermost, both E threads keep their positions
+pass	by1 bytes built from THREE draws then read at a draw-picked index — Bytes.at follows the thread into the buffer
+pass	syd1 an op returns a SYMBOL picked by state parity — symbol equality gates a branch that draws again
