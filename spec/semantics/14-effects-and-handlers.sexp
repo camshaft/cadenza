@@ -18673,3 +18673,68 @@
   (call   main (: 4 Int64)) (output (: 5603 Int64))
   (call   main (: 0 Int64)) (output (: 102 Int64))
   (call   main (: -3 Int64)) (output (: -198 Int64)))
+
+;; ── tq: TWO-effect regions with same-effect shadows inside ───────────────────
+;; tq1 rebinds Q locally while P draws thread THROUGH the shadow untouched;
+;; tq2's shadow SEED mixes P and Q draws (both outer threads advance before
+;; the shadow opens and resume after it closes); tq3 wraps ONLY the middle
+;; argument of a pure call in a Q-shadow — its neighbors dispatch to the
+;; outer P and Q frames.
+
+(case "tq1 a Q-shadow inside a TWO-effect region — P draws thread THROUGH the shadow while Q is locally rebound"
+  (input  (do
+            (effect P (op next (-> Int64)))
+            (effect Q (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle P n
+                ((next () s (resume s (+ s 1))))
+                (handle Q 100
+                  ((next () t (resume t (+ t 10))))
+                  (+ (P.next)
+                     (+ (Q.next)
+                        (+ (handle Q 7000
+                             ((next () t (resume t (+ t 100))))
+                             (+ (Q.next) (P.next)))
+                           (Q.next)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 7221 Int64))
+  (call   main (: 0 Int64)) (output (: 7211 Int64))
+  (call   main (: -8 Int64)) (output (: 7195 Int64)))
+
+(case "tq2 the Q-shadow's SEED mixes P and Q draws — both outer threads advance before the shadow opens, and resume after"
+  (input  (do
+            (effect P (op next (-> Int64)))
+            (effect Q (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle P n
+                ((next () s (resume s (+ s 1))))
+                (handle Q 100
+                  ((next () t (resume t (+ t 10))))
+                  (+ (handle Q (+ (* 100 (P.next)) (Q.next))
+                       ((next () t (resume t t)))
+                       (Q.next))
+                     (+ (Q.next) (P.next))))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 413 Int64))
+  (call   main (: 0 Int64)) (output (: 211 Int64))
+  (call   main (: -5 Int64)) (output (: -294 Int64)))
+
+(case "tq3 a Q-shadow wraps only the MIDDLE argument of a pure call — its neighbors dispatch to the outer P and Q frames"
+  (input  (do
+            (effect P (op next (-> Int64)))
+            (effect Q (op next (-> Int64)))
+            (def (sum3 (: a Int64) (: b Int64) (: c Int64)) (+ a (+ b c)))
+            (def (main (: n Int64))
+              (handle P n
+                ((next () s (resume s (+ s 1))))
+                (handle Q 100
+                  ((next () t (resume t (+ t 10))))
+                  (sum3 (P.next)
+                        (handle Q 9000
+                          ((next () t (resume t (+ t 9))))
+                          (Q.next))
+                        (Q.next)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 9105 Int64))
+  (call   main (: 0 Int64)) (output (: 9100 Int64))
+  (call   main (: -3 Int64)) (output (: 9097 Int64)))
