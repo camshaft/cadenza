@@ -6385,3 +6385,6 @@ pass	dv3 division by -1 of a RUNTIME draw — negation across the full non-MIN r
 pass	st1 the SAME effect handled at THREE depths — each draw resolves to the innermost open frame, outer frames resume as inner ones close
 pass	st2 draws BETWEEN the installs of a three-deep tower — each thread advances only while it is the innermost, sum pins the interleave
 pass	st3 the SHADOWING frame's arm draws the SAME effect — its dispatch escapes its own extent and lands on the frame it shadows
+pass	li1 draws choose BOTH the List.update target and the List.at read index — the collection edit follows the thread
+pass	li2 a list BUILT from pushed draws then read at a draw-picked index — construction and consumption share one thread
+pass	li3 draw PARITY picks prepend vs push while building — the final shape encodes the whole draw sequence
