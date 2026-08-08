@@ -16713,3 +16713,76 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 19215 Int64))
   (call   main (: 0 Int64)) (output (: 14210 Int64)))
+
+;; ── arm-INTERNAL computation shapes (breaker al) ─────────────────────────────────────────────────
+;; What an arm may compute before resuming: al1 chained LET locals feeding both slots; al2 a PURE
+;; helper called from the arm for both slots; al3 a two-site resume where EACH branch binds its own
+;; local (per-branch strides); al4 ONE shared local feeding BOTH slots (single-eval — the
+;; copy-vs-alias hazard shape); al5 an arm-local named the SAME as a body-side binder (hygiene for
+;; arm-internal lets, extending the op-param/state-binder hygiene pin).
+
+(case "al1 chained LET locals inside the arm — intermediate names feed both the resume value and the next-state"
+  (input  (do
+            (effect E (op f (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((f (v) s (let ((doubled (* v 2)))
+                            (let ((shifted (+ doubled s)))
+                              (resume shifted (+ s doubled))))))
+                (+ (E.f 3) (E.f 5))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 32 Int64))
+  (call   main (: 0 Int64)) (output (: 22 Int64)))
+
+(case "al2 a PURE helper called from the arm for BOTH slots — the arm delegates its computation to a def"
+  (input  (do
+            (effect E (op f (-> Int64 Int64)))
+            (def (mix (: a Int64) (: b Int64)) (+ (* a a) b))
+            (def (main (: n Int64))
+              (handle E n
+                ((f (v) s (resume (mix v s) (mix s 1))))
+                (+ (E.f 2) (E.f 3))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 44 Int64))
+  (call   main (: 0 Int64)) (output (: 14 Int64)))
+
+(case "al3 a two-site resume where EACH branch has its own LET local — gap/overshoot named per path, different strides"
+  (input  (do
+            (effect E (op f (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((f (v) s (if (> v s)
+                              (let ((gap (- v s))) (resume (* gap 10) (+ s 1)))
+                              (let ((over (- s v))) (resume over (+ s 2))))))
+                (+ (E.f 8) (+ (E.f 3) (E.f 9)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 43 Int64))
+  (call   main (: 0 Int64)) (output (: 170 Int64))
+  (call   main (: 10 Int64)) (output (: 16 Int64)))
+
+(case "al4 ONE arm-local feeds BOTH slots — the score accumulates into the base while the count rides beside"
+  (input  (do
+            (effect E (op f (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle E (tuple n 0)
+                ((f (v) s (match s
+                            ((tuple base count)
+                             (let ((score (+ (* v v) base)))
+                               (resume (+ score count) (tuple score (+ count 1))))))))
+                (+ (E.f 2) (+ (E.f 3) (E.f 1)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 49 Int64))
+  (call   main (: 0 Int64)) (output (: 34 Int64)))
+
+(case "al5 an arm-LOCAL named the same as a body-side binder — hygiene keeps the two w's separate across dispatches"
+  (input  (do
+            (effect E (op f (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((f (v) s (let ((w (* v 10)))
+                            (resume (+ w s) (+ s 1)))))
+                (let ((w 7000))
+                  (+ (E.f 2) (+ w (E.f 3))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 7061 Int64))
+  (call   main (: 0 Int64)) (output (: 7051 Int64)))
