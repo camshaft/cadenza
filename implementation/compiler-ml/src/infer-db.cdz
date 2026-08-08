@@ -18,8 +18,6 @@ import { fits-width } from "int-width"
 import { Resolved, resolve-tree, resolve-node, param-scope } from "resolve-db"
 import { Ty, IntType, Sign, Width, ty-eq, ty-fixed-int, ty-deferred-int, ground-default, is-int-ty } from "ty"
 import { unify-ty } from "unify-ty"
-import { Typed } from "typed"
-import { typed-to-ty } from "ty-bridge"
 
 /// The type fact. `TInt`/`TBool` = the two ground types; `TErr` = type-level poison (unbound name / ill-typed
 /// child / operator-operand mismatch). The language stopped being purely monomorphic once comparison landed:
