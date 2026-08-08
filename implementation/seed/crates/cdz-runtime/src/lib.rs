@@ -2991,6 +2991,12 @@ fn op_bytes_len(buf: Handle) -> u32 {
 /// memory model's #Sharing Is Not Observable deferral clause). A leaf is left untouched (idempotent).
 /// The fill is ITERATIVE (an explicit `(node, dst_off, src_start, count)` worklist) so a deep rope
 /// cannot overflow the wasm call stack — same discipline as the free cascade.
+///
+/// A slice/concat rope IS a value combined or narrowed from existing Bytes whose materialization is
+/// DEFERRED to this flatten: the deferral is unobservable (every reader sees identical logical bytes) and
+/// a deterministic function of the source rope, so combining/narrowing need not eagerly copy.
+//= spec/capabilities/memory-and-resource-model.md#sharing-is-not-observable
+//# A value the compiler derives by combining or narrowing existing values MAY defer the work of materializing its contents until an operation observes them, provided the deferral is not observable and is a deterministic function of the source, so that combining and narrowing values need not eagerly copy their contents.
 fn bytes_flatten(h: Handle) {
     let arity = with_node(h, 0usize, |n| n.handles.len());
     if arity == 0 {
