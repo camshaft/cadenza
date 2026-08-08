@@ -963,6 +963,15 @@ impl<'a> Printer<'a> {
             self.doc.word("(");
         }
         self.doc.word("let ");
+        // The bindings arg may be wrapped in a TRAILING `(comment-after "text" binds)` — a `//` that
+        // followed `in` on its source line (`let x = a in // note`). Peel it: the binds print normally,
+        // and the captured text re-emits after ` in` below (so it round-trips; the body's own hardbreak
+        // already drops the body to the next line, so the `//` can't swallow it).
+        let in_trailing = self
+            .a
+            .as_form(args[0], "comment-after")
+            .and_then(|a| (a.len() == 2 && self.is_string(a[0])).then_some(a[0]));
+        let binds_arg = self.strip_comment_after(args[0]);
         // The bindings box is CONSISTENT: a multi-binding `let` that does not fit on one line drops
         // EVERY binding to its own line, indented under `let` — not a greedy fill that packs two
         // bindings on the first line and wraps the overflow (which reads as an accidental line break
@@ -970,7 +979,7 @@ impl<'a> Printer<'a> {
         // common case); only a multi-binding `let` that overflows changes, and it changes for the
         // better. The value of each binding still breaks within its own nested boxes independently.
         self.doc.cbox(INDENT);
-        if let Struct::List(binds) = self.a.get(args[0]) {
+        if let Struct::List(binds) = self.a.get(binds_arg) {
             let binds = binds.clone();
             for (i, &raw) in binds.iter().enumerate() {
                 if i > 0 {
@@ -1016,6 +1025,11 @@ impl<'a> Printer<'a> {
         }
         self.doc.end();
         self.doc.word(" in");
+        // A captured trailing `//` after `in` re-emits here, same-line (`… in // note`). The body's
+        // hardbreak below then drops the body to the next line, so the comment can't swallow it.
+        if let Some(text) = in_trailing {
+            self.doc.word(format!(" //{}", self.doc_line_text(text)));
+        }
         // The body starts a new line at the `let`'s own column (offset 0), so a `let … in` chain
         // reads as a flat sequence — the ML idiom for a pervasive `let … in`.
         self.doc.hardbreak();
@@ -1071,15 +1085,47 @@ impl<'a> Printer<'a> {
         // keeps `then t` on the line when it fits, else drops `t` to an indented line; `else` dedents
         // back to the `if` column.
         self.doc.space();
-        self.expr(args[1], 0);
-        self.doc.break_with(1, -INDENT);
+        let then_had_trailing = self.expr_with_trailing_comment(args[1], 0);
+        // A same-line `//` trailing the then-branch runs to end-of-line, so `else` MUST drop to the next
+        // line — a breakable space would collapse to ` else` INSIDE the comment (`then 1 // note else 2`
+        // swallows the `else`, breaking re-parse). Force a hardbreak (dedented to the `if` column) when
+        // the then-branch carried a trailing comment; otherwise the ordinary breakable space.
+        if then_had_trailing {
+            self.doc.hardbreak_with(-INDENT);
+        } else {
+            self.doc.break_with(1, -INDENT);
+        }
         self.doc.word("else");
         self.doc.space();
-        self.expr(args[2], 0);
+        self.expr_with_trailing_comment(args[2], 0);
         if paren {
             self.doc.word(")");
         }
         self.doc.end();
+    }
+
+    /// Print an expression at `parent_prec`, re-emitting a same-line TRAILING `(comment-after "text"
+    /// inner)` wrapper as `inner // text` (the wrapper is peeled, `inner` printed, then the comment
+    /// appended same-line). Used where a sub-expression can carry a captured trailing comment that is NOT
+    /// the last token of the whole form — an `if`'s then/else branch (`if a then 1 // note` before
+    /// `else`), so the comment doesn't fall through to the generic `comment-after(...)` call render (which
+    /// would break round-trip / trip the comment-drop guard). A node with no `comment-after` wrapper
+    /// prints exactly as `expr` (no-op peel). Returns `true` if a trailing comment WAS emitted — the
+    /// caller must then force a hardbreak before the next token (a `//` runs to end-of-line, so anything
+    /// after it on the same line would be swallowed into the comment).
+    fn expr_with_trailing_comment(&mut self, id: StructId, parent_prec: u8) -> bool {
+        let trailing = self
+            .a
+            .as_form(id, "comment-after")
+            .and_then(|a| (a.len() == 2 && self.is_string(a[0])).then_some(a[0]));
+        let inner = self.strip_comment_after(id);
+        self.expr(inner, parent_prec);
+        if let Some(text) = trailing {
+            self.doc.word(format!(" //{}", self.doc_line_text(text)));
+            true
+        } else {
+            false
+        }
     }
 
     /// A function BODY that is a top-level type ascription `(: inner R)` denotes a RETURN TYPE: it is
@@ -3447,7 +3493,11 @@ impl<'a> Printer<'a> {
         if args.len() != 2 {
             return false;
         }
-        match self.a.get(args[0]) {
+        // The binds arg may carry a TRAILING `(comment-after … binds)` (a `//` after `in`) — peel it to
+        // the real bindings list before shape-checking, else the wrapped `let` falls to the backtick
+        // call form (and `print_let` peels the same wrapper to re-emit the comment after `in`).
+        let binds_arg = self.strip_comment_after(args[0]);
+        match self.a.get(binds_arg) {
             Struct::List(binds) => binds.iter().all(|&raw| {
                 // A binding may be wrapped in a LEADING `(comment …)` (own-line `//` above it) and/or a
                 // TRAILING `(comment-after …)` — peel both to the real `(binder value)` pair before
@@ -7581,6 +7631,49 @@ mod tests {
                 .count(),
             2,
             "the `(comment-after …)` arm-comments survive the round-trip"
+        );
+    }
+
+    #[test]
+    fn a_trailing_comment_on_an_if_then_branch_round_trips_not_dropped() {
+        // A same-line `//` after an `if`'s THEN branch (`if a then 1 // note` before `else`) was DROPPED
+        // — the reader didn't capture a trailing comment in that mid-expression slot, so `cdz fmt`
+        // refused (the comment-attachment gap that blocked hm-collect.cdz). Now captured as
+        // `(comment-after "note" 1)` on the then-branch + re-printed same-line, with `else` forced to the
+        // next line (a `//` runs to EOL, so `else` can't share the line). assert_roundtrip pins re-parse
+        // + idempotence.
+        let out = assert_roundtrip("def f(a) = if a then 1 // note\nelse 2", 100);
+        assert!(
+            out.lines().any(|l| l.contains("1 // note")),
+            "the then-branch trailing comment re-prints same-line: {out}"
+        );
+        assert!(
+            out.lines().any(|l| l.trim_start().starts_with("else")),
+            "`else` drops to its own line after the // (not swallowed into the comment): {out}"
+        );
+    }
+
+    #[test]
+    fn a_trailing_comment_after_let_in_round_trips_not_dropped() {
+        // A same-line `//` after `in` (`let x = a in // note` before the body) was DROPPED. Now captured
+        // as a `(comment-after "note" binds)` wrapper + re-printed after `in`; the body's own hardbreak
+        // drops it to the next line so the `//` can't swallow it.
+        let out = assert_roundtrip("def f(a) = let x = a in // note\nx + 1", 100);
+        assert!(
+            out.lines().any(|l| l.contains("in // note")),
+            "the `in` trailing comment re-prints same-line after `in`: {out}"
+        );
+    }
+
+    #[test]
+    fn an_own_line_comment_before_else_round_trips_not_dropped() {
+        // An OWN-LINE `//` sitting BEFORE the `else` keyword (`if a then 1` ⏎ `// note` ⏎ `else 2`) was
+        // in the `else` token's leading slot and dropped when `expect_keyword` consumed past it. Now
+        // captured + folded into the else-branch's leading comments (prints own-line above the else).
+        let out = assert_roundtrip("def f(a) = if a then 1\n// note\nelse 2", 100);
+        assert!(
+            out.contains("// note"),
+            "the own-line comment before `else` is preserved: {out}"
         );
     }
 
