@@ -496,13 +496,39 @@ impl Session {
         executor: &mut (impl Executor + ?Sized),
     ) -> Result<(), KernelError> {
         // The common delivery path DROPS the surfaced control/* effects (a live session turn doesn't
-        // consume them by default). A driver that needs them — `fork_for_query`'s summary watch — calls
-        // [`Session::deliver_control`] instead. Keeping this `-> Result<(), _>` is the never-red
-        // bridge: the downstream `cdz-agent-host` HostedSession::deliver returns this verbatim, so widening
-        // it would break its build; the control-returning variant is ADDITIVE alongside it.
-        self.deliver_control(body, cause, reducer, authz, executor)
-            .await
-            .map(|_control| ())
+        // consume them by default). A driver that needs them — `fork_for_query`'s summary watch, or a
+        // signature-querier — calls [`Session::deliver_control`] instead. Keeping this `-> Result<(), _>` is
+        // the never-red bridge: the downstream `cdz-agent-host` HostedSession::deliver returns this verbatim,
+        // so widening it would break its build; the control-returning variant is ADDITIVE alongside it.
+        let control = self
+            .deliver_control(body, cause, reducer, authz, executor)
+            .await?;
+        // FAIL-SAFE (reviewer LOW, latent): a FOLD-BACK control (`control/signature`) was given a Dispatched
+        // frame before surfacing, so it is OPEN awaiting a host settle — but the common `deliver` DROPS the
+        // ControlEffect, so nothing would ever call `settle_control_result` and the effect would orphan
+        // (open forever, the reducer's continuation never resumes, quiescence/deadline logic sees a perpetual
+        // open). A signature-querier is SUPPOSED to use `deliver_control`; the common `deliver` silently
+        // dropping it is a supported-looking misuse. Rather than orphan, settle each dropped fold-back control
+        // with an Err so the reducer RESUMES on its err arm (the same clean not-stuck outcome a failed routed
+        // effect gets) — better than a perpetual open. `control/summary` (fire-and-forget, no Dispatched
+        // frame, not open) is unaffected: it's simply dropped, nothing to settle.
+        for ce in &control {
+            if crate::effect::effect_ct::is_fold_back_control(&ce.request.content_type.family) {
+                self.settle_control_result(
+                    ce.id,
+                    EffectOutcome::err(
+                        "fold-back control surfaced on the drop-control deliver path — use \
+                         deliver_control to consume + settle it; settling Err to avoid orphaning"
+                            .to_string(),
+                    ),
+                    reducer,
+                    authz,
+                    executor,
+                )
+                .await;
+            }
+        }
+        Ok(())
     }
 
     /// Like [`Session::deliver`], but RETURNS the `control/*` effects the reducer emitted this turn
@@ -3248,6 +3274,81 @@ mod monotonic_now_tests {
             "an Err settle resumes the guest on the err arm — the continuation folds cleanly, not stuck"
         );
         assert_eq!(session.open_effects(), 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn common_deliver_fail_safes_a_dropped_fold_back_control_instead_of_orphaning_it() {
+        // FAIL-SAFE (reviewer LOW, latent): a fold-back control (control/signature) gets a Dispatched frame
+        // so it's OPEN awaiting a host settle — but the common `deliver` (the default live path) DROPS the
+        // ControlEffect, so a signature-querier run on `deliver` (instead of `deliver_control`) would ORPHAN:
+        // open forever, continuation never resumes. Fix: `deliver` settles each dropped fold-back control with
+        // an Err so the reducer resumes on its err arm rather than orphaning. Prove it: emit control/signature
+        // through the COMMON deliver → the effect is NOT left open + the reducer resumed (wrote sig/error).
+        let mut exec = RecordingExecutor::new();
+        let mut session =
+            Session::genesis(Hash::of(b"sig-deliver-failsafe-v1"), Hash::of(b"nonce"));
+        session
+            .deliver(
+                inbound(),
+                None,
+                &SignatureQueryReducer,
+                &Authorizer::deny_all(),
+                &mut exec,
+            )
+            .await
+            .expect("deliver");
+        // NOT orphaned: the dropped fold-back control was settled, so nothing stays open.
+        assert_eq!(
+            session.open_effects(),
+            0,
+            "a fold-back control dropped by the common deliver must be settled, not left open forever"
+        );
+        // The reducer RESUMED on the err arm (the fail-safe settles Err) — never stuck.
+        assert_eq!(
+            session.kv().get(b"sig/error").map(|b| b.to_vec()),
+            Some(b"query-failed".to_vec()),
+            "the fail-safe Err settle resumes the guest's continuation on the drop-control path"
+        );
+        // Exactly one EffectResult (the fail-safe settle) — the effect is durably settled, not phantom-open.
+        assert_eq!(
+            session
+                .log()
+                .iter()
+                .filter(|e| matches!(e.body, EventBody::EffectResult { .. }))
+                .count(),
+            1,
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn common_deliver_does_not_disturb_a_fire_and_forget_summary() {
+        // The fail-safe is SCOPED to fold-back controls — control/summary (fire-and-forget, no Dispatched
+        // frame, never open) is simply dropped by the common deliver with nothing to settle. Guard that the
+        // fail-safe loop doesn't append a spurious EffectResult for a summary (which has no open effect).
+        let mut exec = RecordingExecutor::new();
+        let mut session = Session::genesis(Hash::of(b"sum-deliver-v1"), Hash::of(b"nonce"));
+        session
+            .deliver(
+                inbound(),
+                None,
+                &SummaryEmitReducer,
+                &Authorizer::deny_all(),
+                &mut exec,
+            )
+            .await
+            .expect("deliver");
+        assert_eq!(
+            session.open_effects(),
+            0,
+            "a fire-and-forget summary never opens an effect"
+        );
+        assert!(
+            !session
+                .log()
+                .iter()
+                .any(|e| matches!(e.body, EventBody::EffectResult { .. })),
+            "no EffectResult for a summary — the fail-safe is scoped to fold-back controls only"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
