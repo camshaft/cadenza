@@ -18449,3 +18449,59 @@
   (call   main (: 0 Int64)) (output (: 1522 Int64))
   (call   main (: 1 Int64)) (output (: 1523 Int64))
   (call   main (: 6 Int64)) (output (: 1530 Int64)))
+
+;; ── rw: Record.with driven by DRAWS ──────────────────────────────────────────
+;; Functional record updates fed by the thread. rw1 chains two withs whose new
+;; values are draws (the second write sees the advanced state); rw2's draw
+;; PARITY picks WHICH field is updated (exactly one write lands); rw3's new
+;; values PROJECT from the record being updated plus a draw — self-referential
+;; updates chained through the thread.
+
+(case "rw1 two sequential Record.with updates each take a DRAW — the second write sees the advanced state, projections read both back"
+  (input  (do
+            (effect E (op next (-> Int64)) (op span (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 3)))
+                 (span () s (resume (- s 0) s)))
+                (let ((r0 (record (x 1) (y 2))))
+                  (let ((r1 (Record.with r0 #"x" (E.next))))
+                    (let ((r2 (Record.with r1 #"y" (E.next))))
+                      (+ (* 100 (. r2 x)) (+ (* 10 (. r2 y)) (- (E.span) n))))))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 256 Int64))
+  (call   main (: 0 Int64)) (output (: 36 Int64))
+  (call   main (: -4 Int64)) (output (: -404 Int64)))
+
+(case "rw2 draw PARITY picks WHICH field Record.with updates — projections of both fields show exactly one write landed"
+  (input  (do
+            (effect E (op next (-> Int64)) (op span (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 3)))
+                 (span () s (resume s s)))
+                (let ((d (E.next)))
+                  (let ((r0 (record (x 1) (y 2))))
+                    (let ((r (if (= (% d 2) 0)
+                                 (Record.with r0 #"x" d)
+                                 (Record.with r0 #"y" d))))
+                      (+ (* 100 (. r x)) (+ (* 10 (. r y)) (- (E.span) n))))))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 223 Int64))
+  (call   main (: 5 Int64)) (output (: 153 Int64))
+  (call   main (: -4 Int64)) (output (: -377 Int64)))
+
+(case "rw3 each Record.with value PROJECTS from the record it updates plus a draw — self-referential functional updates chain through the thread"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 4))))
+                (let ((r0 (record (x 1) (y 2))))
+                  (let ((r1 (Record.with r0 #"x" (+ (* 10 (. r0 x)) (E.next)))))
+                    (let ((r2 (Record.with r1 #"y" (+ (. r1 x) (+ (. r1 y) (E.next))))))
+                      (+ (* 100 (. r2 x)) (. r2 y)))))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 1220 Int64))
+  (call   main (: 0 Int64)) (output (: 1016 Int64))
+  (call   main (: -3 Int64)) (output (: 710 Int64)))
