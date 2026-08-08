@@ -4361,20 +4361,12 @@ mod tests {
         .expect("assemble runtime-like dep that imports nfc");
 
         // A real temp store: `<hash>.wasm` for the nfc bytes + a `runtime.toml` with `nfc = "<hash>"`.
-        // The hash is the SHA-256 content address (the store's algorithm — component_store verifies it).
+        // The hash is the content address `Hash::of` produces — the ONE unified algorithm the store's
+        // producers and component_store's verify now share (operator directive 2026-08-08: one hash).
         let store_dir =
             std::env::temp_dir().join(format!("cdzstore-nfc-compose-{}", std::process::id()));
         std::fs::create_dir_all(&store_dir).unwrap();
-        let nfc_hex = {
-            use sha2::{Digest, Sha256};
-            let d = Sha256::digest(&nfc_bytes);
-            let mut s = String::with_capacity(64);
-            for b in d {
-                use std::fmt::Write as _;
-                let _ = write!(s, "{b:02x}");
-            }
-            s
-        };
+        let nfc_hex = crate::hash::Hash::of(&nfc_bytes).to_hex();
         std::fs::write(store_dir.join(format!("{nfc_hex}.wasm")), &nfc_bytes).unwrap();
         std::fs::write(
             store_dir.join("runtime.toml"),
