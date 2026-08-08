@@ -532,8 +532,10 @@ def bin-type(tree: Tree, op: Int64, tcol: Map(Int64, Typed), a: Int64, b: Int64)
 /// A ground `Ty` int → `Typed.TIntW` (local — infer-db can't import ty-bridge, cyclic; see type-eq's bridge).
 def ty-to-typed-int(t: Ty) = match ground-default(t) with
   | Ty.TyInt(it) => (match it with | IntType.IntType(s, w) =>
-      (let signed = (match s with | Sign.Signed => true | Sign.Unsigned => false | Sign.SignDef => true) in
-       (let width = (match w with | Width.WFixed(n) => n | Width.WidthDef => 64) in Typed.TIntW(signed, width))))
+      // ARC-A1: `s`/`w` are post-`ground-default`, which maps any un-bound SVar→Signed and WVar→WFixed(64), so
+      // the var arms below are unreachable here — kept for match totality (adding SVar/WVar to the axes).
+      (let signed = (match s with | Sign.Signed => true | Sign.Unsigned => false | Sign.SignDef => true | Sign.SVar(_) => true) in
+       (let width = (match w with | Width.WFixed(n) => n | Width.WidthDef => 64 | Width.WVar(_) => 64) in Typed.TIntW(signed, width))))
   | Ty.TyBool => Typed.TBool
   | Ty.TyErr => Typed.TErr
   // HIGHER-ORDER (HO-1): a function type is out of the int-combining path — a fn value never appears as an
@@ -552,7 +554,9 @@ def ty-to-typed-int(t: Ty) = match ground-default(t) with
 /// deferred value never carries width 0 into Core — see t-int-deferred).
 def ty-to-typed-defer(t: Ty) = match t with
   | Ty.TyInt(it) => (match it with | IntType.IntType(_, w) =>
-      (match w with | Width.WidthDef => t-int-deferred() | Width.WFixed(_) => ty-to-typed-int(t)))
+      // ARC-A1: an un-bound WVar width is NOT-yet-fixed, exactly like WidthDef — keep it as the deferred sentinel
+      // so an enclosing op can still ground the whole component (a var resolves via unify like deferred until B3).
+      (match w with | Width.WidthDef => t-int-deferred() | Width.WVar(_) => t-int-deferred() | Width.WFixed(_) => ty-to-typed-int(t)))
   | _ => ty-to-typed-int(t)
 
 /// The ARITHMETIC result type of operands `a`,`b` (corrected-2b): both must be the SAME integer type — UNIFY
