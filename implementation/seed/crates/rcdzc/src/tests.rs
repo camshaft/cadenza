@@ -26013,6 +26013,34 @@ mod match_engine {
         }
     }
 
+    #[test]
+    fn a_lint_level_directive_is_inert_accepted_not_declined() {
+        // DESIGN-cadenza-lint §3 (concierge ruling: rcdzc INERT-ACCEPTS, does not validate). A program
+        // carrying a `(allow/warn/deny NAME)` lint-level directive at top level COMPILES — the directive
+        // is lint-only metadata the compiler ignores (like `module-doc`): it declares nothing, is skipped
+        // in the link merge (never lands as an unbound call), and is NOT flagged by `unknown_top_forms`.
+        // Before the fix it declined "unbound name `allow` at the top level".
+        for src in [
+            "(do (allow idiomatic/if-bool) (def (main) 0) (export main))",
+            "(do (deny naming/camel-case) (def (main) 0) (export main))",
+            "(do (warn idiomatic/redundant-let) (def (main) 0) (export main))",
+            // Multiple directives + a group prefix, interleaved with real declarations.
+            "(do (allow idiomatic) (deny naming/camel-case) (def (main) 0) (export main))",
+        ] {
+            let diags = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+            assert!(
+                diags.is_empty(),
+                "a lint-level directive must be inert-accepted, not flagged: {src}\n  -> {:?}",
+                diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+            );
+            // And it COMPILES end-to-end (the directive is skipped in the link merge — no unbound call).
+            assert!(
+                compile_component(&crate::codec::encode(&parse(src))).is_ok(),
+                "a program with a lint-level directive must compile: {src}"
+            );
+        }
+    }
+
     /// A MALFORMED top-level `@`-annotation — one that wraps no well-formed definition — must name the
     /// annotation SHAPE, not resolve as the misleading "unbound name `@` at the top level". `@` is the
     /// general-purpose annotation head `(@ <name> (def …))`; `strip_annotations` rewrites every well-formed
