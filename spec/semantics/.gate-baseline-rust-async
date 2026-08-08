@@ -6338,3 +6338,7 @@ pass	ae9 RECORD literal of two draws read back by PROJECTION — field-init orde
 pass	ae10 TUPLE literal of three draws matched immediately as scrutinee — positions survive the construct-then-destructure round trip
 pass	ae11 a DO-block as an argument — its DISCARDED interior draw still advances the state before the block's value draw
 pass	ae12 an IF-expression as an argument whose CONDITION draws — the taken branch decides whether a second draw fires before the next arg
+pass	ha1 an INNER op's arguments draw from the OUTER handler — two outer draws cross the inner dispatch boundary in order
+pass	ha2 outer-draw feeds the INNER op, whose result feeds an OUTER op again — a three-hop cross-handler value chain
+pass	ha3 INTERLEAVED outer-inner-outer draws in ONE argument list — each draw dispatches to its own handler in sequence
+pass	ha4 an inner op's arguments dispatch to the SAME inner handler — same-effect draws inside the op's own arg list, then an outer draw

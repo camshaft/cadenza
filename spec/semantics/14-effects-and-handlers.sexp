@@ -17276,3 +17276,72 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 67 Int64))
   (call   main (: -2 Int64)) (output (: 999 Int64)))
+
+;; ── ha: CROSS-HANDLER argument evaluation order ──────────────────────────────
+;; Draws in one argument list that dispatch to DIFFERENT live handlers. ha1
+;; sends two outer draws through an inner op's dispatch boundary; ha2 chains
+;; outer -> inner -> outer through two frames; ha3 interleaves outer-inner-outer
+;; in a single pure call's argument list; ha4 makes an inner op's own arguments
+;; dispatch to the SAME inner handler (state doubles between them) before an
+;; outer draw stamps the hundreds digit.
+
+(case "ha1 an INNER op's arguments draw from the OUTER handler — two outer draws cross the inner dispatch boundary in order"
+  (input  (do
+            (effect O (op next (-> Int64)))
+            (effect I (op tens (-> Int64 Int64 Int64)))
+            (def (main (: n Int64))
+              (handle O n
+                ((next () s (resume s (+ s 1))))
+                (handle I 0
+                  ((tens (a b) s (resume (+ (* 10 a) b) s)))
+                  (I.tens (O.next) (O.next)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 56 Int64))
+  (call   main (: 0 Int64)) (output (: 1 Int64)))
+
+(case "ha2 outer-draw feeds the INNER op, whose result feeds an OUTER op again — a three-hop cross-handler value chain"
+  (input  (do
+            (effect O (op next (-> Int64)) (op send (-> Int64 Int64)))
+            (effect I (op dbl (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle O n
+                ((next () s (resume s (+ s 1)))
+                 (send (v) s (resume (+ v s) s)))
+                (handle I 0
+                  ((dbl (x) s (resume (* 2 x) s)))
+                  (O.send (I.dbl (O.next))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 16 Int64))
+  (call   main (: 0 Int64)) (output (: 1 Int64))
+  (call   main (: -3 Int64)) (output (: -8 Int64)))
+
+(case "ha3 INTERLEAVED outer-inner-outer draws in ONE argument list — each draw dispatches to its own handler in sequence"
+  (input  (do
+            (effect O (op next (-> Int64)))
+            (effect I (op pick (-> Int64)))
+            (def (mix3 (: a Int64) (: b Int64) (: c Int64)) (+ (* 100 a) (+ (* 10 b) c)))
+            (def (main (: n Int64))
+              (handle O n
+                ((next () s (resume s (+ s 1))))
+                (handle I 7
+                  ((pick () s (resume s s)))
+                  (mix3 (O.next) (I.pick) (O.next)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 576 Int64))
+  (call   main (: 0 Int64)) (output (: 71 Int64)))
+
+(case "ha4 an inner op's arguments dispatch to the SAME inner handler — same-effect draws inside the op's own arg list, then an outer draw"
+  (input  (do
+            (effect O (op next (-> Int64)))
+            (effect I (op get (-> Int64)) (op tens (-> Int64 Int64 Int64)))
+            (def (main (: n Int64))
+              (handle O n
+                ((next () s (resume s (+ s 1))))
+                (+ (handle I 3
+                     ((get () m (resume m (* 2 m)))
+                      (tens (a b) m (resume (+ (* 10 a) b) m)))
+                     (I.tens (I.get) (I.get)))
+                   (* 100 (O.next)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 536 Int64))
+  (call   main (: 0 Int64)) (output (: 36 Int64)))
