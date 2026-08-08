@@ -14254,6 +14254,11 @@ pub fn sum_form_template(db: &mut Db, ty: &crate::ty::Ty) -> Option<SumFormTempl
 // accessors and assemble its canonical text — the runtime never names or renders the value itself.
 //= spec/contracts/component-abi.md#a-compound-result-is-rendered-by-compiler-emitted-code
 //# The observable result of a program that produces a compound value MUST be an ordinary string the program returns, produced by type-directed code the compiler emits that walks the value through the runtime's accessors and assembles its canonical text, rather than by the runtime rendering the value or by the program's own component owning a display of it, so that the names a rendering requires stay with the compiler that holds them and the host reads back a plain string (host-interface-binding.md §The Host Does Not Format A Component's Values).
+// The text this descriptor drives is the value's CANONICAL text form (the runtime's byte-exact
+// `value_encode_form_matches_the_codec` cross-check + the corpus keep the encoder in lock-step), so a
+// compound result crossing the boundary is byte-identical to the same value's recorded corpus form:
+//= spec/contracts/component-abi.md#a-compound-result-is-rendered-by-compiler-emitted-code
+//# The text the compiler-emitted rendering produces MUST be the value's canonical text form under deterministic-value-form.md, so that a compound result crossing the boundary is byte-identical to the same value's recorded corpus form.
 // Because THE COMPILER exposes this render (and the codec exposes read-text→canonical-binary), the host
 // never formats a value itself — it reads back a plain string the compiler-emitted code produced:
 //= spec/contracts/host-interface-binding.md#the-host-does-not-format-a-component-s-values
