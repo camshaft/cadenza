@@ -2759,16 +2759,32 @@ pub fn reduce_ctor(
             let mut fields: std::collections::BTreeMap<crate::resolved::Symbol, crate::ty::Ty> =
                 std::collections::BTreeMap::new();
             for (i, &a) in args.iter().enumerate() {
-                let pair = match db.ast.get(a).clone() {
-                    crate::ast::Struct::List(children) if children.len() == 2 => children,
-                    _ => return Err(format!("Record field {i} is not a (name type) pair")),
+                // The record-TYPE field is EITHER the canonical `(: name T)` ascription (the shared
+                // binder node — DESIGN-record-type-syntax Phase A) OR the legacy `(name T)` head-app
+                // pair. Read both to `(name, type)`; accepting the ascription here is the additive half
+                // of RT3, needed BEFORE the encoder flips to emit ascription. Strictly widening — an
+                // ascription in this position previously failed the `len == 2` pair check and errored,
+                // so no currently-accepted input changes. The pair arm is pruned once head-app is
+                // extinct (OQ-C).
+                let (name_occ, ty_occ) = if let Some(asc) = db.ast.as_form(a, ":") {
+                    if asc.len() != 2 {
+                        return Err(format!("Record field {i} ascription is not (: name type)"));
+                    }
+                    (asc[0], asc[1])
+                } else {
+                    match db.ast.get(a) {
+                        crate::ast::Struct::List(children) if children.len() == 2 => {
+                            (children[0], children[1])
+                        }
+                        _ => return Err(format!("Record field {i} is not a (name type) pair")),
+                    }
                 };
                 let name = db
                     .ast
-                    .as_name(pair[0])
+                    .as_name(name_occ)
                     .ok_or_else(|| format!("Record field {i} has no name"))?
                     .to_string();
-                let t = typeval_of(db, pair[1])
+                let t = typeval_of(db, ty_occ)
                     .ok_or_else(|| format!("Record field `{name}` is not a type"))?;
                 fields.insert(crate::resolved::Symbol::plain(name), t);
             }

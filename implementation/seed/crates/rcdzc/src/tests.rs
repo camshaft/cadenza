@@ -96282,6 +96282,70 @@ mod cross_component_oracle {
     fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
         haystack.windows(needle.len()).any(|w| w == needle)
     }
+
+    #[test]
+    fn record_type_field_ascription_is_read_by_reduce_ctor_and_decode_ty() {
+        // DESIGN-record-type-syntax Phase A, RT3 (additive half): the two pair-only record-TYPE field
+        // readers — `reduce_ctor`'s `RecordCtor` arm (`eval.rs`) and `decode_ty`'s `"Record"` arm
+        // (`resolve.rs`) — now ALSO accept the canonical `(: name T)` ascription field (the shared
+        // binder node), not only the legacy `(name T)` head-app pair. This is the widening that must
+        // land BEFORE the `encode_ty`/`render_name` flip starts EMITTING ascription; strictly additive
+        // (an ascription previously failed the `len == 2` pair match and errored/returned None), so no
+        // currently-accepted program changes. Pins BOTH readers read the field TYPES (not just the
+        // shape): a wrong field type is rejected, and the built `Ty::Record` carries the declared types.
+        use crate::db::Db;
+        use crate::eval::typeval_of;
+        use crate::testkit::parse;
+        use crate::ty::Ty;
+
+        // reduce_ctor path: `typeval_of` on the ascription-form `(Record (: a Int64) (: b Bool))` node
+        // reduces to a `Ty::Record` with exactly {a: Int64, b: Bool}.
+        let ast =
+            parse("(module m (def (main (: r (Record (: a Int64) (: b Bool)))) 0) (export main))");
+        let mut db = Db::load(ast);
+        let rec_node = (0..db.ast.structure.len() as u32)
+            .map(crate::ast::StructId)
+            .find(|&id| {
+                db.ast
+                    .as_form(id, "Record")
+                    .is_some_and(|tail| tail.len() == 2)
+            })
+            .expect("the parsed program contains a two-field (Record …) type node");
+        match typeval_of(&mut db, rec_node) {
+            Some(Ty::Record(fields)) => {
+                assert_eq!(fields.len(), 2, "two fields: {fields:?}");
+                assert_eq!(
+                    fields.get(&crate::resolved::Symbol::plain("a".to_string())),
+                    Some(&Ty::int64()),
+                    "field a is Int64 (the ascription's type position was read): {fields:?}"
+                );
+                assert_eq!(
+                    fields.get(&crate::resolved::Symbol::plain("b".to_string())),
+                    Some(&Ty::Bool),
+                    "field b is Bool: {fields:?}"
+                );
+            }
+            other => panic!("ascription-field Record must reduce to Ty::Record, got {other:?}"),
+        }
+
+        // decode_ty / end-to-end path: a value annotated with an ascription-form record type COMPILES,
+        // and a field whose value type MISMATCHES the ascription is REJECTED — proving the field TYPE
+        // (not just the name) is read through the full annotate/check pipeline.
+        let ok = "(module m \
+            (def (main) (: (record (a 1) (b true)) (Record (: a Int64) (: b Bool)))) \
+            (export main))";
+        assert!(
+            crate::compile::compile_component(&crate::codec::encode(&parse(ok))).is_ok(),
+            "a record value annotated with an ascription-form record type must compile"
+        );
+        let bad = "(module m \
+            (def (main) (: (record (a true) (b true)) (Record (: a Int64) (: b Bool)))) \
+            (export main))";
+        assert!(
+            crate::compile::compile_component(&crate::codec::encode(&parse(bad))).is_err(),
+            "a field value whose type mismatches the ascription must be rejected (the type position is checked)"
+        );
+    }
 }
 
 /// A variant whose PAYLOAD TYPE is written with the LOWERCASE compound-type alias `(tuple …)` is read as a
