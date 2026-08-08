@@ -1,5 +1,5 @@
 {
   "_note": "Citation-coverage floor for `cargo xtask duvet-check` (wired into `xtask check`). `cited` = number of //= / //# duvet citation annotations; the gate FAILS if live cited drops below it (a deleted/stranded citation). v-duvet-coverage bumps this with `xtask duvet-check --save` when it adds citations. NOT the churny .duvet/snapshot.txt — this is a machine-stable count.",
-  "cited": 715,
+  "cited": 716,
   "total": 1094
 }
