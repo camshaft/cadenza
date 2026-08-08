@@ -378,6 +378,14 @@ impl Template {
         })
     }
 
+    /// A template from an already-parsed sub-`Tree` — the inline template of a paired form (a
+    /// `(rule PATTERN TEMPLATE)` or the named lint's `=> TEMPLATE`), where the template is not a
+    /// separate source string but a child of the enclosing form. Mirrors what `Rule::compile_form`
+    /// does inline; exposed so the `lint` submodule can build the fix template the same way.
+    pub(crate) fn from_tree(t: Tree) -> Template {
+        Template { tree: t }
+    }
+
     /// Every metavariable name this template REFERENCES — a single `,x` or a splice `,@xs`. Each must be
     /// BOUND by the paired pattern, or the template can never be instantiated. The wildcard `,_` IS
     /// included: a pattern never binds `_`, so a template `,_` is likewise unfillable (it would silently
@@ -3023,7 +3031,9 @@ pub mod textedit {
 /// a Semgrep-lite structural checker / CI gate: it exits non-zero when any `error`-severity rule
 /// fires. Purely syntactic (no scope/type), like the rest of this layer.
 pub mod lint {
-    use super::{Pattern, PatternError, Query, Span, SpanTable, Tree, compile_pat, search_with};
+    use super::{
+        Pattern, PatternError, Query, Span, SpanTable, Template, Tree, compile_pat, search_with,
+    };
 
     /// A diagnostic's severity. `error` is the only one that fails a run (non-zero exit); `warning`
     /// and `info` are reported but do not fail. `warning` is the default when a rule omits it.
@@ -3054,23 +3064,79 @@ pub mod lint {
         }
     }
 
-    /// One lint rule: match `pattern`, and every match reports `message` at `severity`.
+    /// Whether an autofix is always meaning-preserving (`Verified`, safe to auto-apply under `--fix`)
+    /// or a suggestion that may change behavior/readability (`Heuristic`, offered but never applied
+    /// without an explicit opt-in). `Verified` is licensed only by a round-trip apply-and-recheck
+    /// witness test (DESIGN-cadenza-lint §6); a fix without that witness is `Heuristic`.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Applicability {
+        Verified,
+        Heuristic,
+    }
+
+    impl Applicability {
+        /// Parse an applicability name; `None` for an unknown one.
+        pub fn parse(s: &str) -> Option<Applicability> {
+            match s {
+                "verified" => Some(Applicability::Verified),
+                "heuristic" => Some(Applicability::Heuristic),
+                _ => None,
+            }
+        }
+
+        pub fn as_str(self) -> &'static str {
+            match self {
+                Applicability::Verified => "verified",
+                Applicability::Heuristic => "heuristic",
+            }
+        }
+    }
+
+    /// One lint rule: match `pattern`, and every match reports `message` at `severity`. A NAMED,
+    /// fixable idiomatic lint additionally carries a namespaced `name` (e.g. `idiomatic/if-bool`,
+    /// which level control keys off) and, where a canonical rewrite exists, a `fix` = an inline
+    /// replacement `Template` over the pattern's metavars plus its `Applicability`. A bare report-only
+    /// rule has `name: None` and `fix: None` — the existing surface, unchanged.
     #[derive(Clone, Debug)]
     pub struct LintRule {
+        pub name: Option<String>,
         pub pattern: Pattern,
         pub message: String,
         pub severity: Severity,
+        pub fix: Option<(Template, Applicability)>,
     }
 
     impl LintRule {
-        /// Compile a rule from a `(lint PATTERN "message" [severity])` s-expression form. Severity
-        /// defaults to `warning` when omitted; an unknown severity name is rejected.
+        /// Compile a rule from either lint form (the named one is a SUPERSET of the bare one):
+        ///
+        /// * `(lint PATTERN "message" [severity])` — the existing report-only rule, unchanged.
+        /// * `(lint NAME PATTERN "message" [level] [=> TEMPLATE app])` — a NAMED idiomatic lint: a
+        ///   leading bare-name atom is the namespaced lint name, and an optional trailing
+        ///   `=> TEMPLATE app` clause carries a fix (a `Template` over the pattern's metavars + an
+        ///   `Applicability` name `verified`/`heuristic`).
+        ///
+        /// The two are distinguished by the element after `lint`: a bare NAME atom (not a list, not a
+        /// string) means the named form; anything else (a `(…)` pattern list) is the existing bare
+        /// form. Severity/level defaults to `warning`; unknown severity or applicability names are
+        /// rejected; a fix template that references a metavar the pattern never binds is rejected.
         pub fn compile_form(t: &Tree) -> Result<LintRule, PatternError> {
             let items = match t {
                 Tree::List(items, _) if head_is(items, "lint") => items,
                 _ => return Err(PatternError("expected a `(lint …)` form".into())),
             };
-            let (pat_tree, message, sev_tree) = match items.as_slice() {
+            // The named form is marked by a bare-NAME atom right after `lint` (a pattern is always a
+            // `(…)` list or a metavar, never a plain namespaced name like `idiomatic/if-bool`).
+            let named = matches!(items.get(1), Some(t) if is_lint_name_atom(t));
+            if named {
+                Self::compile_named(items)
+            } else {
+                Self::compile_bare(items)
+            }
+        }
+
+        /// The existing `(lint PATTERN "message" [severity])` report-only form.
+        fn compile_bare(items: &[Tree]) -> Result<LintRule, PatternError> {
+            let (pat_tree, message, sev_tree) = match items {
                 [_, p, msg] => (p, msg, None),
                 [_, p, msg, sev] => (p, msg, Some(sev)),
                 _ => {
@@ -3081,22 +3147,74 @@ pub mod lint {
             };
             let message = as_str_leaf(message)
                 .ok_or_else(|| PatternError("a lint rule's message must be a \"string\"".into()))?;
-            let severity = match sev_tree {
-                None => Severity::Warning,
-                Some(s) => {
-                    let name = s
-                        .as_name()
-                        .ok_or_else(|| PatternError("severity must be a bare name".into()))?;
-                    Severity::parse(name)
-                        .ok_or_else(|| PatternError(format!("unknown severity `{name}`")))?
-                }
-            };
+            let severity = parse_severity(sev_tree)?;
             Ok(LintRule {
+                name: None,
                 pattern: Pattern {
                     pat: compile_pat(pat_tree)?,
                 },
                 message: message.to_string(),
                 severity,
+                fix: None,
+            })
+        }
+
+        /// The named `(lint NAME PATTERN "message" [level] [=> TEMPLATE app])` form.
+        fn compile_named(items: &[Tree]) -> Result<LintRule, PatternError> {
+            // Split off an optional trailing `=> TEMPLATE app` fix clause (3 tokens: the `=>` marker,
+            // the template, the applicability name), so the head parses as the report part.
+            let (head, fix_clause) = split_fix_clause(items)?;
+            let (name_tree, pat_tree, message, sev_tree) = match head {
+                [_, name, p, msg] => (name, p, msg, None),
+                [_, name, p, msg, sev] => (name, p, msg, Some(sev)),
+                _ => {
+                    return Err(PatternError(
+                        "a named lint rule is `(lint NAME PATTERN \"message\" [level] [=> TEMPLATE app])`"
+                            .into(),
+                    ));
+                }
+            };
+            let name = name_tree
+                .as_name()
+                .ok_or_else(|| PatternError("a lint NAME must be a bare name".into()))?
+                .to_string();
+            let message = as_str_leaf(message)
+                .ok_or_else(|| PatternError("a lint rule's message must be a \"string\"".into()))?;
+            let severity = parse_severity(sev_tree)?;
+            let pattern = Pattern {
+                pat: compile_pat(pat_tree)?,
+            };
+            let fix = match fix_clause {
+                None => None,
+                Some((tmpl_tree, app_tree)) => {
+                    let app_name = app_tree.as_name().ok_or_else(|| {
+                        PatternError("a fix applicability must be a bare name".into())
+                    })?;
+                    let app = Applicability::parse(app_name).ok_or_else(|| {
+                        PatternError(format!(
+                            "unknown fix applicability `{app_name}` (want `verified` or `heuristic`)"
+                        ))
+                    })?;
+                    let template = Template::from_tree(tmpl_tree.clone());
+                    // A fix that references a metavar the pattern never binds can never instantiate —
+                    // reject at compile so a broken rule is caught at load, not silently at 0 sites.
+                    let bound = pattern.bound_metavars();
+                    for referenced in template.referenced_metavars() {
+                        if !bound.contains(&referenced) {
+                            return Err(PatternError(format!(
+                                "lint `{name}` fix references `,{referenced}`, which its pattern never binds"
+                            )));
+                        }
+                    }
+                    Some((template, app))
+                }
+            };
+            Ok(LintRule {
+                name: Some(name),
+                pattern,
+                message: message.to_string(),
+                severity,
+                fix,
             })
         }
     }
@@ -3172,6 +3290,57 @@ pub mod lint {
         match t {
             Tree::Atom(super::Leaf::Str(s), _) => Some(s),
             _ => None,
+        }
+    }
+
+    /// Severity/level from the optional trailing name (shared by both lint forms): `warning` when
+    /// omitted, an unknown name rejected.
+    fn parse_severity(sev_tree: Option<&Tree>) -> Result<Severity, PatternError> {
+        match sev_tree {
+            None => Ok(Severity::Warning),
+            Some(s) => {
+                let name = s
+                    .as_name()
+                    .ok_or_else(|| PatternError("severity must be a bare name".into()))?;
+                Severity::parse(name)
+                    .ok_or_else(|| PatternError(format!("unknown severity `{name}`")))
+            }
+        }
+    }
+
+    /// Whether the element after `lint` marks the NAMED form — a bare name atom (e.g.
+    /// `idiomatic/if-bool`). A bare `(lint …)` rule's second element is always the PATTERN, which is a
+    /// `(…)` list or a `,meta` unquote (`(unquote …)` list), never a plain name atom — so a name atom
+    /// there is unambiguous. (A string message is likewise not a name, so a zero-pattern malformed rule
+    /// still falls through to the bare parser and its clearer error.)
+    fn is_lint_name_atom(t: &Tree) -> bool {
+        t.as_name().is_some()
+    }
+
+    /// Split an optional trailing `=> TEMPLATE app` fix clause off a named-lint form's items, returning
+    /// the report-part head (without the clause) and the `(template, applicability)` trees if present.
+    /// The clause is exactly the last three elements when the third-from-last is the `=>` marker name;
+    /// otherwise there is no fix. A partial/misplaced `=>` (present but not in the 3-token tail shape)
+    /// is a rejected malformation, not a silent no-fix.
+    #[allow(clippy::type_complexity)]
+    fn split_fix_clause(items: &[Tree]) -> Result<(&[Tree], Option<(&Tree, &Tree)>), PatternError> {
+        // Find any `=>` marker among the elements after `lint`.
+        let arrow_at = items
+            .iter()
+            .position(|t| t.as_name() == Some("=>"))
+            .filter(|&i| i >= 1);
+        match arrow_at {
+            None => Ok((items, None)),
+            Some(i) => {
+                // A well-formed clause is `=> TEMPLATE app` at the very end: marker, then exactly two
+                // trailing elements (template, applicability).
+                if i + 2 != items.len() - 1 {
+                    return Err(PatternError(
+                        "a lint fix clause must be a trailing `=> TEMPLATE app`".into(),
+                    ));
+                }
+                Ok((&items[..i], Some((&items[i + 1], &items[i + 2]))))
+            }
         }
     }
 }
@@ -5369,7 +5538,7 @@ mod tests {
 
     mod lint_tests {
         use super::subj;
-        use crate::query::lint::{self, LintSet, Severity};
+        use crate::query::lint::{self, Applicability, LintSet, Severity};
 
         #[test]
         fn severity_parses_and_defaults_to_warning() {
@@ -5475,6 +5644,109 @@ mod tests {
                 LintSet::compile("(lint (+ ,x ,(z is-literal)) \"maybe redundant\")").unwrap();
             let diags = lint::run(&set, &subj("(do (+ a 0) (+ b c))"), None);
             assert_eq!(diags.len(), 1, "{diags:?}");
+        }
+
+        // --- cadenza-lint I1: the named `(lint NAME …)` superset form + optional fix clause. ---
+
+        #[test]
+        fn a_bare_lint_rule_still_has_no_name_and_no_fix() {
+            // The existing report-only form is unchanged: no name, no fix, warning default.
+            let set = LintSet::compile("(lint (todo ,@_) \"has a todo\")").unwrap();
+            let r = &set.rules[0];
+            assert_eq!(r.name, None);
+            assert!(r.fix.is_none());
+            assert_eq!(r.severity, Severity::Warning);
+        }
+
+        #[test]
+        fn a_named_lint_carries_its_name_and_default_level() {
+            // A leading bare name marks the named form; level still defaults to warning.
+            let set = LintSet::compile(
+                "(lint idiomatic/if-bool (if ,c true false) \"prefer the condition\")",
+            )
+            .unwrap();
+            let r = &set.rules[0];
+            assert_eq!(r.name.as_deref(), Some("idiomatic/if-bool"));
+            assert_eq!(r.message, "prefer the condition");
+            assert_eq!(r.severity, Severity::Warning);
+            assert!(r.fix.is_none(), "no `=>` clause means warn-only");
+            // and it still fires on a match, reporting the message.
+            let diags = lint::run(&set, &subj("(do (if a true false) (g b))"), None);
+            assert_eq!(diags.len(), 1, "{diags:?}");
+            assert_eq!(diags[0].message, "prefer the condition");
+        }
+
+        #[test]
+        fn a_named_lint_with_a_level_and_a_verified_fix_parses() {
+            // The full form: NAME PATTERN message level => TEMPLATE app.
+            let set = LintSet::compile(
+                "(lint idiomatic/if-bool (if ,c true false) \"prefer the condition\" warning => ,c verified)",
+            )
+            .unwrap();
+            let r = &set.rules[0];
+            assert_eq!(r.name.as_deref(), Some("idiomatic/if-bool"));
+            assert_eq!(r.severity, Severity::Warning);
+            let (_tmpl, app) = r.fix.as_ref().expect("a `=>` clause yields a fix");
+            assert_eq!(*app, Applicability::Verified);
+        }
+
+        #[test]
+        fn a_named_lint_fix_without_a_level_parses() {
+            // The level is optional even with a fix: NAME PATTERN message => TEMPLATE app.
+            let set = LintSet::compile(
+                "(lint idiomatic/redundant-let (let ,x ,e ,x) \"binds then returns it\" => ,e heuristic)",
+            )
+            .unwrap();
+            let r = &set.rules[0];
+            assert_eq!(r.severity, Severity::Warning);
+            let (_tmpl, app) = r.fix.as_ref().expect("fix present");
+            assert_eq!(*app, Applicability::Heuristic);
+        }
+
+        #[test]
+        fn a_fix_template_referencing_an_unbound_metavar_is_rejected() {
+            // `,z` is not bound by the pattern, so the fix could never instantiate — rejected at compile.
+            let e =
+                LintSet::compile("(lint idiomatic/bad (if ,c true false) \"m\" => ,z verified)")
+                    .unwrap_err();
+            assert!(e.0.contains("never binds"), "got {e}");
+        }
+
+        #[test]
+        fn an_unknown_fix_applicability_is_rejected() {
+            let e =
+                LintSet::compile("(lint idiomatic/if-bool (if ,c true false) \"m\" => ,c maybe)")
+                    .unwrap_err();
+            assert!(e.0.contains("unknown fix applicability"), "got {e}");
+        }
+
+        #[test]
+        fn a_malformed_trailing_fix_clause_is_rejected() {
+            // A `=>` that is not the trailing `=> TEMPLATE app` 3-token shape is a malformation.
+            let e = LintSet::compile("(lint idiomatic/if-bool (if ,c true false) \"m\" => ,c)")
+                .unwrap_err();
+            assert!(e.0.contains("trailing `=> TEMPLATE app`"), "got {e}");
+        }
+
+        #[test]
+        fn applicability_parses_known_and_rejects_unknown() {
+            assert_eq!(
+                Applicability::parse("verified"),
+                Some(Applicability::Verified)
+            );
+            assert_eq!(
+                Applicability::parse("heuristic"),
+                Some(Applicability::Heuristic)
+            );
+            assert_eq!(Applicability::parse("bogus"), None);
+        }
+
+        #[test]
+        fn a_named_lint_still_accepts_an_explicit_error_level() {
+            let set = LintSet::compile("(lint idiomatic/if-bool (if ,c true false) \"m\" error)")
+                .unwrap();
+            assert_eq!(set.rules[0].severity, Severity::Error);
+            assert_eq!(set.rules[0].name.as_deref(), Some("idiomatic/if-bool"));
         }
     }
 
