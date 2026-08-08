@@ -1,0 +1,59 @@
+/// ty-bridge-more-tests.cdz — ARC-A1 test SPILLOVER. Split from ty-bridge.cdz: ARC-A1's 3-state Sign/Width
+/// arms pushed ty-bridge.cdz's emit unit over a codegen threshold, regressing 3 tb-* tests to a wasm-unreachable
+/// trap (queue/mlrepro-emit-slot-*). Moving these 4 tests to a companion shrinks each emit unit below the trap.
+/// Imports the bridge from ty-bridge; adds no production code. Same file-split idiom as the sread-eval suites.
+import { Ty, IntType, Sign, Width, ty-int64, ty-fixed-int, ty-eq } from "ty"
+import { typed-to-ty, ty-to-typed } from "ty-bridge"
+import { Typed } from "typed"
+
+@test
+def tb-round-trip-concrete() =
+  // Typed → Ty → Typed is identity for concrete ints/bool/err (the pipeline's types survive the bridge).
+  (match ty-to-typed(typed-to-ty(Typed.TIntW(false, 16))) with
+    | Typed.TIntW(s, w) => (if (if s then false else true) and (w == 16) then unit else trap("UInt16 round-trips"))
+    | _ => trap("round-trip is TIntW"))
+
+@test
+def tb-partial-deferred-ty-grounds-per-axis() =
+  // a PARTLY-deferred Ty int — the shape unify-ty leaves when only ONE axis grounds (e.g. a fixed-sign
+  // deferred-width, or a fixed-width deferred-sign) — grounds PER-AXIS through the bridge: the fixed axis is
+  // kept, the deferred one takes its default (sign→Signed, width→64). This is the exact `Ty` corrected-2b's
+  // arith round-trip can hand `ty-to-typed`; the FULLY-deferred and FULLY-concrete cases were pinned, this
+  // mixed case (the realistic post-unify residue) was not.
+  (match ty-to-typed(Ty.TyInt(IntType.IntType(Sign.Unsigned, Width.WidthDef))) with   // UInt with deferred width
+    | Typed.TIntW(s, w) => (if (if s then false else true) and (w == 64) then     // sign KEPT unsigned, width→64
+        (match ty-to-typed(Ty.TyInt(IntType.IntType(Sign.SignDef, Width.WFixed(8)))) with  // deferred sign, width 8
+          | Typed.TIntW(s2, w2) => (if s2 and (w2 == 8) then unit else trap("deferred-sign→Signed, width 8 kept"))
+          | _ => trap("deferred-sign fixed-width is TIntW"))
+      else trap("fixed-sign→Unsigned kept, deferred-width→64"))
+    | _ => trap("partly-deferred grounds to TIntW"))
+
+@test
+def tb-fn-round-trips() =
+  // HIGHER-ORDER (HO-2b): a function Typed survives Typed → Ty → Typed. Build (Int64) -> Bool as a TFn, cross
+  // to Ty.TyFn, cross back, confirm the shape (1 param Int64, result Bool). Proves the real TyFn↔TFn bridge
+  // (not HO-1's TErr stopgap).
+  (let f = Typed.TFn(List.push([], Typed.TIntW(true, 64)), Typed.TBool) in
+   (match ty-to-typed(typed-to-ty(f)) with
+     | Typed.TFn(ps, r) => (match r with
+         | Typed.TBool => (match List.at(ps, 0) with
+             | Option.Some(Typed.TIntW(s, w)) => (if s and (w == 64) and (List.len(ps) == 1) then unit else trap("param Int64, arity 1"))
+             | _ => trap("param 0 is TIntW"))
+         | _ => trap("result Bool survives"))
+     | _ => trap("fn round-trips to TFn (not TErr — real bridge)")))
+
+@test
+def tb-fn-to-ty-is-tyfn() =
+  // typed-to-ty on a TFn produces a Ty.TyFn (not TErr) — the HO-1 stopgap is gone.
+  (match typed-to-ty(Typed.TFn(List.push([], Typed.TIntW(true, 64)), Typed.TIntW(true, 64))) with
+    | Ty.TyFn(_, _) => unit
+    | _ => trap("TFn → Ty.TyFn (real bridge, not TErr stopgap)"))
+
+@test
+def tb-ty-to-typed-int() =
+  // Ty Int64 → TIntW(true,64); UInt8 → TIntW(false,8).
+  (match ty-to-typed(ty-int64()) with
+    | Typed.TIntW(s, w) => (if s then (if w == 64 then
+        (match ty-to-typed(ty-fixed-int(false, 8)) with | Typed.TIntW(s2, w2) => (if (if s2 then false else true) and (w2 == 8) then unit else trap("UInt8 back")) | _ => trap("UInt8 is TIntW"))
+      else trap("width 64")) else trap("signed"))
+    | _ => trap("Int64 back to TIntW"))
