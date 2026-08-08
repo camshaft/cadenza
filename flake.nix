@@ -1982,8 +1982,12 @@
               name = "cdz-warm-keep";
               runtimeInputs = [ pkgs.nix pkgs.coreutils ];
               text = ''
-                # GC-root dir: keep the roots with the repo (survives across MRs, one place to see/clear).
-                root_dir="''${CDZ_WARM_ROOT:-.nix-warm-roots}"
+                # GC-root dir: default to an ABSOLUTE per-user path OUTSIDE any git worktree. A --out-link
+                # indirect GC-root is registered at the link's path; if that path is repo-relative and the
+                # worktree is later cleaned/moved/removed, the link dangles and nix DROPS the root, silently
+                # unrooting the warm layer right before a GC (an observed near-miss). An absolute per-user
+                # dir survives worktree churn. Override with CDZ_WARM_ROOT (the host GC runner sets it).
+                root_dir="''${CDZ_WARM_ROOT:-$HOME/.cdz-warm-roots}"
                 mkdir -p "$root_dir"
                 echo "cdz warm-keep: pinning the local warm layer as GC-roots under $root_dir/ (system ${system})"
                 # The heavy layers gate-local depends on: the crane dep-closure (~341M, the big one),
