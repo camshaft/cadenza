@@ -1,0 +1,122 @@
+/// hm-vars.cdz — ARC-B2 of the rcdzc HM port: the FRESH-VARIABLE SUPPLY + the OCCURS-CHECK (rcdzc unify.rs
+/// `Fresh` and `occurs`). Two small, pure pieces the solver (B3 unify) and generalization (B4 instantiate) need:
+///
+/// FRESH SUPPLY (rcdzc `Fresh`): a source of never-before-used unification-var ids. rcdzc uses an ambient
+/// mutable counter; Cadenza has NO ambient mutable state, so — the design fork flagged to the operator — a
+/// fresh var THREADS an explicit `Int64` next-id counter: `fresh-sign(n) = (SVar(n), n+1)`. This is the
+/// Cadenza-native form of rcdzc's Fresh (state threaded as a value, not a hidden cell), not a divergence. Once
+/// ARC-C carries the Db in a state effect, the counter can ride that effect; until then it threads explicitly
+/// (exactly as the Db does in db-demand). `fresh-int-ty` allocates a FULLY-fresh integer type (both axes fresh)
+/// — what B4's `instantiate` hands a generalized int scheme per use (principal-type polymorphism).
+///
+/// OCCURS-CHECK (rcdzc `occurs`, "follows the subst chain"): before the solver binds `var := t`, it must check
+/// `var` does not OCCUR in `t` (resolved through the current Subst) — else the binding makes an INFINITE type
+/// (`a := SVar(a)` or a cycle `a→b→a`). On compiler-ml's SCALAR axes (a Sign/Width is not nested — no sub-terms),
+/// "occurs" reduces to: after fully resolving the candidate through the Subst (`apply-sign`/`apply-width`), is the
+/// result the SAME var-id? If so, binding would self-cycle → reject (the solver keeps the type finite). This is
+/// what guarantees the chain `apply` follows in B1 is ACYCLIC (B1's fuel bound is the belt; this is the braces).
+import { Sign, Width, IntType, Ty } from "ty"
+import { Subst, apply-sign, apply-width } from "subst"
+
+// ---- FRESH VARIABLE SUPPLY (explicit-counter form of rcdzc `Fresh`) ---------------------------------
+/// A fresh SIGN var from counter `n`: `(SVar(n), n+1)`. The caller threads the returned next-id.
+def fresh-sign(n: Int64) = (Sign.SVar(n), n + 1)
+
+/// A fresh WIDTH var from counter `n`: `(WVar(n), n+1)`.
+def fresh-width(n: Int64) = (Width.WVar(n), n + 1)
+
+/// A FULLY-fresh integer type from counter `n`: both axes get their own fresh var → `(TyInt(SVar(n), WVar(n+1)),
+/// n+2)`. What `instantiate` (B4) hands a generalized int scheme at each use site so distinct uses get distinct
+/// (independently-solvable) vars — the essence of let-polymorphism over the int subset.
+def fresh-int-ty(n: Int64) =
+  (Ty.TyInt(IntType.IntType(Sign.SVar(n), Width.WVar(n + 1))), n + 2)
+
+// ---- OCCURS-CHECK (scalar-axis form of rcdzc `occurs`) ----------------------------------------------
+/// Does sign var-id `a` OCCUR in sign `s`, resolved through Subst `su`? Fully resolve `s` (follow its chain via
+/// apply-sign), then — since a Sign is scalar (no sub-terms) — it occurs iff the resolved form IS `SVar(a)`.
+/// `true` = binding `SVar(a) := s` would self-cycle (reject); `false` = safe to bind.
+def sign-occurs(su: Subst, a: Int64, s: Sign) = match apply-sign(su, s) with
+  | Sign.SVar(b) => a == b
+  | _ => false
+
+/// Does width var-id `b` occur in width `w` under `su`? Resolve, then it occurs iff the result is `WVar(b)`.
+def width-occurs(su: Subst, b: Int64, w: Width) = match apply-width(su, w) with
+  | Width.WVar(c) => b == c
+  | _ => false
+
+// ---- TESTS: fresh supply threads a counter; occurs-check catches self-cycles --------------------------
+import { subst-empty, subst-bind-sign, subst-bind-width } from "subst"
+
+@test
+def hv-fresh-sign-advances-counter() =
+  // fresh-sign(0) = (SVar 0, 1); the next call from 1 gives SVar 1 — distinct ids, counter threaded.
+  match fresh-sign(0) with
+    | (Sign.SVar(id0), n1) => (if (id0 == 0) and (n1 == 1) then
+        (match fresh-sign(n1) with
+          | (Sign.SVar(id1), n2) => (if (id1 == 1) and (n2 == 2) then unit else trap("second fresh sign is SVar 1, counter 2"))
+          | _ => trap("fresh-sign yields an SVar"))
+      else trap("first fresh sign is SVar 0, counter 1"))
+    | _ => trap("fresh-sign yields an SVar")
+
+@test
+def hv-fresh-width-advances-counter() =
+  match fresh-width(5) with
+    | (Width.WVar(id), n) => (if (id == 5) and (n == 6) then unit else trap("fresh-width(5) = (WVar 5, 6)"))
+    | _ => trap("fresh-width yields a WVar")
+
+@test
+def hv-fresh-int-ty-both-axes-fresh() =
+  // a fully-fresh int uses TWO ids (sign n, width n+1) and advances the counter by 2 — distinct axes get
+  // distinct vars so they solve independently (the point of freshening for polymorphism).
+  match fresh-int-ty(10) with
+    | (Ty.TyInt(IntType.IntType(Sign.SVar(sa), Width.WVar(wa))), n) =>
+        (if (sa == 10) and (wa == 11) and (n == 12) then unit else trap("fresh int = (SVar 10, WVar 11), counter 12"))
+    | _ => trap("fresh-int-ty yields an int with both axes fresh")
+
+@test
+def hv-fresh-two-ints-are-distinct() =
+  // two consecutive fresh ints share NO var-ids (threading the counter): first (10,11), second (12,13).
+  match fresh-int-ty(10) with
+    | (_t1, n1) => (match fresh-int-ty(n1) with
+        | (Ty.TyInt(IntType.IntType(Sign.SVar(sa), Width.WVar(wa))), n2) =>
+            (if (sa == 12) and (wa == 13) and (n2 == 14) then unit else trap("second fresh int is (SVar 12, WVar 13)"))
+        | _ => trap("second fresh int"))
+
+@test
+def hv-occurs-direct-self-cycle() =
+  // sign var 0 occurs in the sign SVar(0) directly (under empty subst) → binding 0 := SVar(0) would self-cycle.
+  if sign-occurs(subst-empty(), 0, Sign.SVar(0)) then unit else trap("var 0 occurs in SVar(0) — self-cycle")
+
+@test
+def hv-occurs-through-chain() =
+  // CHAIN: subst has SVar 1 := SVar 0. Does var 0 occur in SVar(1)? Resolve SVar(1) → SVar(0) → yes. So binding
+  // 0 := SVar(1) would create the cycle 0→1→0 → the occurs-check catches it through the chain (rcdzc's "follows
+  // the subst chain"). Pins the transitive case, not just the direct one.
+  let su = subst-bind-sign(subst-empty(), 1, Sign.SVar(0)) in
+  if sign-occurs(su, 0, Sign.SVar(1)) then unit else trap("var 0 occurs in SVar(1) through the chain 1→0")
+
+@test
+def hv-no-occurs-distinct-var() =
+  // var 0 does NOT occur in a DIFFERENT unbound var SVar(9) → safe to bind 0 := SVar(9) (points elsewhere, no cycle).
+  if sign-occurs(subst-empty(), 0, Sign.SVar(9)) then trap("var 0 does not occur in a distinct var SVar(9)") else unit
+
+@test
+def hv-no-occurs-in-concrete() =
+  // var 0 does NOT occur in a concrete sign (Signed) → binding 0 := Signed is safe (the normal solve step).
+  if sign-occurs(subst-empty(), 0, Sign.Signed) then trap("a var never occurs in a concrete sign") else unit
+
+@test
+def hv-width-occurs-self-and-chain() =
+  // width occurs: direct (WVar 0 in WVar 0) and NOT in a distinct/concrete width.
+  if width-occurs(subst-empty(), 0, Width.WVar(0)) then
+    (if width-occurs(subst-empty(), 0, Width.WFixed(64)) then trap("var never occurs in WFixed") else unit)
+  else
+    trap("width var 0 occurs in WVar(0)")
+
+export {
+  fresh-sign,
+  fresh-width,
+  fresh-int-ty,
+  sign-occurs,
+  width-occurs
+}
