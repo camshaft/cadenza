@@ -170,6 +170,19 @@ pub struct LintArgs {
     /// Emit diagnostics as JSON (`[{file?, line, col, severity, message, matched}]`).
     #[arg(long)]
     json: bool,
+
+    /// Suppress a named lint (or a whole group, e.g. `idiomatic`). Repeatable. Overrides the rule's
+    /// default level; a CLI level wins over any module `(allow/warn/deny …)` directive.
+    #[arg(long = "allow", value_name = "NAME")]
+    allow: Vec<String>,
+
+    /// Report a named lint (or group) as a warning. Repeatable. See `--allow` for precedence.
+    #[arg(long = "warn", value_name = "NAME")]
+    warn: Vec<String>,
+
+    /// Promote a named lint (or group) to an error (fails the run). Repeatable. See `--allow`.
+    #[arg(long = "deny", value_name = "NAME")]
+    deny: Vec<String>,
 }
 
 #[derive(Args)]
@@ -1229,6 +1242,21 @@ fn run_lint(args: &LintArgs) -> Result<bool, String> {
         return Err("no lint rules — pass --rules FILE and/or --rule '(lint …)'".into());
     }
 
+    // Build the CLI level overrides (allow/warn/deny NAME). Later flags win on the same key; a CLI
+    // level overrides a rule's default. Applied in a stable order (allow, warn, deny) so that if the
+    // SAME name is passed to two of them the last-listed flag group wins — deterministic, not arg-order
+    // dependent. (The module-directive layer, when it lands, is overlaid UNDER this via `overlay`.)
+    let mut levels = crate::query::lint::LintLevels::new();
+    for n in &args.allow {
+        levels.set(n.clone(), crate::query::lint::LintLevel::Allow);
+    }
+    for n in &args.warn {
+        levels.set(n.clone(), crate::query::lint::LintLevel::Warn);
+    }
+    for n in &args.deny {
+        levels.set(n.clone(), crate::query::lint::LintLevel::Deny);
+    }
+
     let targets = collect_targets(&args.files, args.from)?;
     let multi = targets.len() > 1;
     let mut any_error = false;
@@ -1241,8 +1269,13 @@ fn run_lint(args: &LintArgs) -> Result<bool, String> {
         let lbl = label(&spec.path);
 
         if args.json {
-            let (j, had_error) =
-                query::driver::lint_json(&set, &target, &src, spec.path.as_deref());
+            let (j, had_error) = query::driver::lint_json_with_levels(
+                &set,
+                &target,
+                &src,
+                spec.path.as_deref(),
+                &levels,
+            );
             // `j` is a per-file array; collect its elements for one flat array at the end.
             let inner = j.trim_start_matches('[').trim_end_matches(']');
             if !inner.is_empty() {
@@ -1250,7 +1283,8 @@ fn run_lint(args: &LintArgs) -> Result<bool, String> {
             }
             any_error |= had_error;
         } else {
-            let (report, had_error) = query::driver::lint_report(&set, &target, &src, &lbl);
+            let (report, had_error) =
+                query::driver::lint_report_with_levels(&set, &target, &src, &lbl, &levels);
             print!("{report}");
             any_error |= had_error;
         }
