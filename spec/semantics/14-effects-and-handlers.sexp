@@ -17523,3 +17523,82 @@
   (call   main (: 5 Int64)) (output (: 465 Int64))
   (call   main (: 0 Int64)) (output (: 460 Int64))
   (call   main (: -7 Int64)) (output (: 453 Int64)))
+
+;; ── hi: a HANDLE installed INSIDE a handler arm ──────────────────────────────
+;; A whole handler lifecycle (install -> dispatch -> close) nested within one
+;; dispatch of an enclosing handler. hi1 resumes with the fresh handle's result;
+;; hi2's installed body ALSO draws from the arm's enclosing frame; hi3 nests the
+;; rv face (the installed handle's own arm resumes with an outer draw); hi4
+;; nests the av face (the installed handle aborts with an outer draw, its
+;; body's +999 dead).
+
+(case "hi1 an arm INSTALLS a fresh handle and resumes with its result — a whole handler lifecycle inside one dispatch"
+  (input  (do
+            (effect O (op boost (-> Int64)) (op next (-> Int64)))
+            (effect J (op get (-> Int64)))
+            (def (main (: n Int64))
+              (handle O n
+                ((boost () s (resume (+ (handle J 3 ((get () t (resume t t))) (J.get)) s) s))
+                 (next () s (resume s (+ s 1))))
+                (+ (* 10 (O.boost)) (O.next))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 85 Int64))
+  (call   main (: 0 Int64)) (output (: 30 Int64))
+  (call   main (: -2 Int64)) (output (: 8 Int64)))
+
+(case "hi2 the arm-installed handle's body draws from the arm's ENCLOSING frame — fresh inner frame and outer dispatch in one arm"
+  (input  (do
+            (effect O (op next (-> Int64)))
+            (effect M (op grab (-> Int64)))
+            (effect J (op get (-> Int64)))
+            (def (main (: n Int64))
+              (handle O n
+                ((next () s (resume s (+ s 1))))
+                (handle M 0
+                  ((grab () m (resume (handle J 9
+                                         ((get () t (resume t t)))
+                                         (+ (J.get) (O.next)))
+                                       m)))
+                  (+ (* 10 (M.grab)) (O.next)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 146 Int64))
+  (call   main (: 0 Int64)) (output (: 91 Int64))
+  (call   main (: -3 Int64)) (output (: 58 Int64)))
+
+(case "hi3 the arm-installed handle's OWN arm resumes with an OUTER draw — the rv face nested inside another handler's dispatch"
+  (input  (do
+            (effect O (op next (-> Int64)))
+            (effect M (op grab (-> Int64)))
+            (effect J (op ask (-> Int64)))
+            (def (main (: n Int64))
+              (handle O n
+                ((next () s (resume s (+ s 1))))
+                (handle M 0
+                  ((grab () m (resume (handle J 0
+                                        ((ask () t (resume (O.next) t)))
+                                        (+ (J.ask) (* 10 (J.ask))))
+                                      m)))
+                  (+ (M.grab) (* 100 (O.next))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 765 Int64))
+  (call   main (: 0 Int64)) (output (: 210 Int64))
+  (call   main (: -1 Int64)) (output (: 99 Int64)))
+
+(case "hi4 the arm-installed handle ABORTS with an outer draw — the av face nested inside another handler's dispatch"
+  (input  (do
+            (effect O (op next (-> Int64)))
+            (effect M (op grab (-> Int64)))
+            (effect Bail (op out (-> Int64)))
+            (def (main (: n Int64))
+              (handle O n
+                ((next () s (resume s (+ s 1))))
+                (handle M 0
+                  ((grab () m (resume (handle Bail 0
+                                        ((out () t (O.next)))
+                                        (+ (Bail.out) 999))
+                                      m)))
+                  (+ (* 10 (M.grab)) (O.next)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 56 Int64))
+  (call   main (: 0 Int64)) (output (: 1 Int64))
+  (call   main (: -4 Int64)) (output (: -43 Int64)))

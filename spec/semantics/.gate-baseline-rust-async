@@ -6351,3 +6351,7 @@ pass	tl4 SAME effect handled at two depths — the inner handle shadows for its 
 pass	av1 the inner arm ABORTS with an OUTER draw as the abort value — the escaping value performs on the way out
 pass	av2 the abort value SUBTRACTS two outer draws under a DOUBLING outer state — antisymmetry pins order inside the aborting arm
 pass	av3 in a THREE-stack the innermost arm aborts with a MIDDLE draw — the escaping value advances the middle thread, later draws see it
+pass	hi1 an arm INSTALLS a fresh handle and resumes with its result — a whole handler lifecycle inside one dispatch
+pass	hi2 the arm-installed handle's body draws from the arm's ENCLOSING frame — fresh inner frame and outer dispatch in one arm
+pass	hi3 the arm-installed handle's OWN arm resumes with an OUTER draw — the rv face nested inside another handler's dispatch
+pass	hi4 the arm-installed handle ABORTS with an outer draw — the av face nested inside another handler's dispatch
