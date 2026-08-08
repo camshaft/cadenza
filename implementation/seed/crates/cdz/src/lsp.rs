@@ -6109,6 +6109,31 @@ mod tests {
     }
 
     #[test]
+    fn format_document_now_formats_an_ml_buffer_with_a_trailing_comment_at_an_if_branch() {
+        // Mirror pin for the `cdz fmt` comment-capture fix (syntax #2797): a same-line `//` AFTER the
+        // then-branch of an `if` (`if a then 1 // note`) used to make `cdz fmt` REFUSE the whole file (the
+        // reader did not attach that mid-expression comment, so the reprint-drops-a-comment guard fired and
+        // `format_document` returned None → the LSP formatting handler yielded NO edit). The formatter now
+        // captures it, so this buffer FORMATS and the comment SURVIVES. Because the LSP formatting provider
+        // delegates to this exact `format_document`/`cdz fmt` path, that newly-unblocked behavior flows
+        // through `textDocument/formatting` unchanged — pin it so a `cdz fmt` regression that re-refuses (or
+        // drops the comment) is caught on the LSP surface too.
+        let text = "def f(a: Bool) -> Int64 = if a then 1 // note\n  else 2\n";
+        let formatted =
+            format_document(text, true).expect("the trailing-comment if-branch buffer now formats");
+        assert!(
+            formatted.contains("// note"),
+            "the trailing comment must survive the reprint, got {formatted:?}"
+        );
+        // Re-parse safety: `//` runs to end-of-line, so `else` must sit on its OWN line or it would be
+        // swallowed by the comment (the exact bug #2797 fixed). Assert the reprint keeps them apart.
+        assert!(
+            formatted.contains("// note\n"),
+            "a hardbreak must follow the comment so `else` is not swallowed, got {formatted:?}"
+        );
+    }
+
+    #[test]
     fn format_document_is_none_on_a_buffer_that_does_not_parse_cleanly() {
         // A broken buffer is NOT rewritten to a patched-up shape (matching `cdz fmt`'s fail-safe) — the
         // formatter returns None, so the LSP handler yields no edit rather than corrupting the source.
