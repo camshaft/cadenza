@@ -42,3 +42,20 @@ pub fn reducer_component_bytes() -> Option<Vec<u8>> {
         panic!("CDZ_LIVE_REDUCER_COMPONENT is set to {path:?} but the component can't be read: {e}")
     }))
 }
+
+/// Load the lifted `cadenza:syntax` guest component the CI job built (v-nix `packages.syntax-guest`, wired as
+/// `CDZ_SYNTAX_COMPONENT` in flake.nix) — the TARGET component for the signature-query part-1 E2E: the host
+/// reflects ITS exported funcs (parse/query/doc) into a `ComponentSignature` and folds it back.
+///
+/// Same skip/read contract as the siblings: `None` ONLY when `CDZ_SYNTAX_COMPONENT` is UNSET (caller SKIPS
+/// cleanly on a plain `cargo test` with no wasm toolchain); when SET the file MUST read (a missing/corrupt
+/// component is a misconfig — PANIC, never a silent skip that could pass a broken lift green).
+///
+/// `#[allow(dead_code)]` for the same shared-across-binaries reason as the siblings.
+#[allow(dead_code)]
+pub fn syntax_component_bytes() -> Option<Vec<u8>> {
+    let path = std::env::var("CDZ_SYNTAX_COMPONENT").ok()?; // unset → skip (None)
+    Some(std::fs::read(&path).unwrap_or_else(|e| {
+        panic!("CDZ_SYNTAX_COMPONENT is set to {path:?} but the component can't be read: {e}")
+    }))
+}
