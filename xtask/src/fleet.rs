@@ -757,6 +757,14 @@ pub enum FleetCmd {
         /// Actually reap + dispatch (write trunk, send acks, open PRs). Without it, DRY preview only.
         #[arg(long)]
         execute: bool,
+        /// LOCAL-GATE mode (operator 2026-08-08: GHA credits exhausted, no more CI-dispatch): instead of
+        /// opening candidate PRs + polling GitHub, gate each queued MR LOCALLY with `gate-local` and
+        /// merge-or-reject inline (the drain model). Cherry-pick the MR's ref onto the trunk tip, run the
+        /// nix required-set gate → GREEN advances trunk + acks merged, RED rejects to the author,
+        /// NO-CHECKS leaves it queued to retry. Requires `--execute` to write; without it, DRY previews
+        /// which MRs would gate. Oldest-first, one at a time (no candidate-PR parallelism to manage).
+        #[arg(long)]
+        local_gate: bool,
     },
     /// Report where a merge-request stands in the CI-gated pipeline — in-flight as a candidate PR (with
     /// lane + how to poll its CI), queued at a position in its lane, or resolved (merged/rejected). A
@@ -1000,8 +1008,14 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
             let _ = publish_candidate(&fleet, &r#ref, &agent, &mr_file, execute);
         }
         FleetCmd::SchedulePlan { cap } => schedule_plan(&fleet, cap),
-        FleetCmd::SchedulePass { cap, execute } => {
-            if execute {
+        FleetCmd::SchedulePass {
+            cap,
+            execute,
+            local_gate,
+        } => {
+            if local_gate {
+                schedule_pass_local_gate(&fleet, execute)
+            } else if execute {
                 schedule_pass_execute(&fleet, cap)
             } else {
                 schedule_plan(&fleet, cap) // DRY preview == the read-only plan
@@ -7706,17 +7720,16 @@ fn local_gate_verdict(spawned_ok: bool, build_ok: bool) -> CiVerdict {
 /// fallback), so one build = a single green/red over the required set, no GH runner needed. Runs on the
 /// aarch64 fleet host; the warm c2 cache makes it fast. `arch` defaults to aarch64 (the only supported
 /// local-gate arch — x86/macos legs are explicitly skipped per the operator scope).
-fn gate_local(arch: &str) {
+/// Run the local nix gate for `arch` and return its verdict — the reusable core of `gate_local` (the CLI
+/// printer) AND the `--local-gate` drain (which gates each queued MR programmatically). Builds
+/// `.#checks.<arch>-linux.local-gate` (v-nix's `localGate` aggregate over the 10 aarch64 required
+/// contexts) and maps the outcome via `local_gate_verdict`: spawn-fail→NoChecks, exit0→Green,
+/// nonzero→Red (never Pending — the build blocks to completion). PATH-robust `nix` resolution (the fleet
+/// host has nix off a non-login shell's PATH). Inherits stdio so the build log is visible to the caller.
+fn run_gate_local(arch: &str) -> CiVerdict {
     let target = format!(".#checks.{arch}-linux.local-gate");
-    // Resolve the `nix` binary PATH-robustly: the fleet host HAS nix (Determinate multi-user install at
-    // /nix/var/nix/profiles/default/bin) but a non-login shell (e.g. pr-sync's invocation env) may not have
-    // it on PATH — verified live 2026-08-06. Without this, gate_local would spawn-fail → NO-CHECKS and be
-    // useless as the fallback exactly when needed. So try bare `nix` (honors PATH if present), else fall
-    // back to the standard profile path.
     let nix_bin = nix_binary();
-    eprintln!(
-        "gate-local: running `{nix_bin} build {target}` (local GHA-outage fallback; aarch64 required-set)…"
-    );
+    eprintln!("gate-local: running `{nix_bin} build {target}` (local required-set gate; aarch64)…");
     let out = Command::new(&nix_bin)
         .args(["build", &target, "--no-link", "--print-out-paths"])
         .status();
@@ -7729,7 +7742,11 @@ fn gate_local(arch: &str) {
             (false, false)
         }
     };
-    let verdict = local_gate_verdict(spawned_ok, build_ok);
+    local_gate_verdict(spawned_ok, build_ok)
+}
+
+fn gate_local(arch: &str) {
+    let verdict = run_gate_local(arch);
     println!(
         "decision: {}",
         if verdict.is_landable() {
@@ -9410,6 +9427,125 @@ fn schedule_pass_execute(fleet: &Fleet, cap: usize) {
     println!(
         "schedule-pass: reaped {reaped_merged} merged + {reaped_rejected} rejected; dispatched {dispatched_now} new (cap {cap}, in-flight now {}).",
         still_in_flight.len() + dispatched_now
+    );
+}
+
+/// LOCAL-GATE drain (operator 2026-08-08: GHA credits exhausted — no more candidate PRs / GitHub polling).
+/// This is the outage-drain logic made pr-sync's PERMANENT integration model: for each queued merge-request
+/// (oldest-first, ONE at a time — no candidate-PR parallelism to manage), cherry-pick its `--ref` onto the
+/// trunk tip in the trunk worktree, run `gate-local` (the nix required-set aggregate) on the result, and
+/// merge-or-reject INLINE by the verdict:
+///   GREEN     → keep the cherry-pick (trunk advanced) + ack the sender `merged` + move on.
+///   RED       → abort the cherry-pick (trunk untouched) + ack the sender `reject` (fix + resend).
+///   NO-CHECKS → abort + LEAVE the MR queued (couldn't gate — never a false-green; retry next pass).
+///   cherry-pick CONFLICT → abort + ack `reject` (stale base — the sender syncs onto trunk + resends).
+/// DRY unless `execute` (then it only PREVIEWS which MRs it would gate). Only pr-sync runs `--execute` (it
+/// WRITES trunk). Because there are no candidate PRs, this drops the whole ci-dispatch-record / in-flight
+/// machinery and gates straight from the queue. Forward-only preserved (only cherry-pick advances trunk;
+/// a failed gate aborts). The trunk worktree index is hard-synced after each land (the reap self-cleaning
+/// fix, so the next op sees a clean index).
+fn schedule_pass_local_gate(fleet: &Fleet, execute: bool) {
+    let queued = queued_merge_requests(fleet);
+    if queued.is_empty() {
+        println!("schedule-pass --local-gate: no queued merge-requests — nothing to gate.");
+        return;
+    }
+    if !execute {
+        println!(
+            "schedule-pass --local-gate (DRY): would gate {} queued MR(s) oldest-first via gate-local:",
+            queued.len()
+        );
+        for mr in &queued {
+            println!("  {} (from {}, ref {})", mr.file, mr.from, mr.r#ref);
+        }
+        println!("  Pass --execute to gate + merge-or-reject inline.");
+        return;
+    }
+    let wt = match trunk_worktree_dir(fleet) {
+        Some(w) => w,
+        None => {
+            eprintln!(
+                "schedule-pass --local-gate: could not find the worktree with `trunk` checked out — cannot gate (run from pr-sync's worktree)."
+            );
+            return;
+        }
+    };
+    let git_wt = |args: &[&str]| Command::new("git").current_dir(&wt).args(args).output();
+    let git_wt_ok = |args: &[&str]| git_wt(args).map(|o| o.status.success()).unwrap_or(false);
+    // Start from a clean trunk tip (never gate atop residue from a prior op).
+    let _ = git_wt(&["reset", "--hard", TRUNK]);
+    let (mut merged, mut rejected, mut left) = (0usize, 0usize, 0usize);
+    for mr in &queued {
+        // Fetch the ref (the sender's branch tip) so the cherry-pick has the object + its ancestry.
+        let _ = git_wt(&["fetch", "origin", &mr.r#ref, "--quiet"]);
+        if !git_wt_ok(&["cherry-pick", "--allow-empty", &mr.r#ref]) {
+            let _ = git_wt(&["cherry-pick", "--abort"]);
+            let _ = git_wt(&["reset", "--hard", TRUNK]);
+            ack(
+                fleet,
+                &mr.file,
+                "reject",
+                "",
+                &format!(
+                    "local-gate: `{}` does not cherry-pick cleanly onto trunk (stale base) — sync onto trunk + resend.",
+                    mr.r#ref
+                ),
+            );
+            rejected += 1;
+            println!(
+                "  ✗ {} ({}) → REJECT (stale-base conflict)",
+                mr.file, mr.r#ref
+            );
+            continue;
+        }
+        // The cherry-pick is now the trunk tip; gate THAT tree.
+        match run_gate_local("aarch64") {
+            CiVerdict::Green => {
+                // Keep the advance; re-sync index to the new tip (reap self-cleaning). ack merged.
+                let sha = git_wt(&["rev-parse", "HEAD"])
+                    .ok()
+                    .filter(|o| o.status.success())
+                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                    .unwrap_or_default();
+                let _ = git_wt(&["reset", "--hard", "HEAD"]);
+                ack(
+                    fleet,
+                    &mr.file,
+                    "merged",
+                    &sha,
+                    &format!("landed via local gate (gate-local GREEN); trunk @ {sha}"),
+                );
+                merged += 1;
+                println!("  ✓ {} ({}) → MERGED, trunk @ {sha}", mr.file, mr.r#ref);
+            }
+            CiVerdict::Red => {
+                let _ = git_wt(&["reset", "--hard", TRUNK]); // undo the cherry-pick; trunk untouched
+                ack(
+                    fleet,
+                    &mr.file,
+                    "reject",
+                    "",
+                    &format!(
+                        "local-gate: `{}` FAILED the required-set gate (gate-local RED) — fix + resend.",
+                        mr.r#ref
+                    ),
+                );
+                rejected += 1;
+                println!("  ✗ {} ({}) → REJECT (gate-local RED)", mr.file, mr.r#ref);
+            }
+            CiVerdict::Pending | CiVerdict::NoChecks => {
+                let _ = git_wt(&["reset", "--hard", TRUNK]); // never false-green; leave queued
+                left += 1;
+                println!(
+                    "  · {} ({}) → NO-CHECKS (couldn't run gate-local) — left queued, retry next pass.",
+                    mr.file, mr.r#ref
+                );
+            }
+        }
+    }
+    println!(
+        "schedule-pass --local-gate: {merged} merged + {rejected} rejected + {left} left-queued (of {} queued).",
+        queued.len()
     );
 }
 
