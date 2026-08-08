@@ -349,6 +349,13 @@ impl Fleet {
         self.root.join("reject-log")
     }
 
+    /// Machine-local stamp of the last successful nix-store GC pass (unix secs). The pr-sync-loop GC
+    /// hook (`maybe_run_gc`) reads it to fire at most every `GC_MIN_INTERVAL_SECS`, so most ticks are a
+    /// zero-cost no-op. Runtime state (gitignored), like the reject log.
+    fn gc_timestamp_path(&self) -> PathBuf {
+        self.root.join("last-gc")
+    }
+
     fn load(&self) -> Registry {
         let p = self.registry_path();
         match std::fs::read_to_string(&p) {
@@ -7833,6 +7840,95 @@ fn gate_local(arch: &str) {
     }
 }
 
+/// Minimum wall-clock gap between nix-store GC passes fired by the pr-sync-loop hook (~3h). At the fleet's
+/// ~10m tick cadence that is roughly every 18 ticks; the exact tick count doesn't matter — the timestamp
+/// gate keys off elapsed seconds, so a slower/faster loop self-adjusts. v-nix-agreed default (2026-08-08).
+const GC_MIN_INTERVAL_SECS: u64 = 3 * 60 * 60;
+
+/// The stable ABSOLUTE warm-root dir passed to `warm-keep`/`gc` as `CDZ_WARM_ROOT`. It MUST live OUTSIDE
+/// any worktree (a repo-relative root silently dangles its indirect GC-roots when the worktree moves —
+/// the silent-unroot failure v-nix hit), so the warm layer stays rooted across worktree churn.
+const GC_WARM_ROOT: &str = "/local/home/bythewc/.cdz-warm-roots";
+
+/// Cap a single GC reclaim so a large backlog can't stall a pr-sync tick (`CDZ_GC_MAX_FREED`, bytes).
+const GC_MAX_FREED_BYTES: &str = "5000000000"; // ~5 GiB per pass
+
+/// Whether the GC hook should fire this tick: only if at least [`GC_MIN_INTERVAL_SECS`] has elapsed since
+/// the last successful pass. `last_run` is `None` when the stamp is absent (never run → fire now) or
+/// unreadable. Saturating so a clock that went backwards (stamp in the future) does NOT fire early. Pure
+/// so the cadence decision is unit-tested without a clock or the filesystem.
+fn should_run_gc(last_run: Option<u64>, now: u64, interval_secs: u64) -> bool {
+    match last_run {
+        None => true, // never run (or unreadable) → fire
+        Some(last) => now.saturating_sub(last) >= interval_secs,
+    }
+}
+
+/// The pr-sync-loop nix-store GC hook (operator item 2; placement + contract agreed with v-nix 2026-08-08,
+/// option A). Called at the end of each `schedule-pass --execute` tick. Fires at most every
+/// [`GC_MIN_INTERVAL_SECS`] (timestamp-gated via `Fleet::gc_timestamp_path`), so it is a fast no-op on most
+/// ticks. When it fires: run `nix run .#warm-keep` FIRST (re-pin the warm layer as GC-roots) and run
+/// `nix run .#gc` ONLY if warm-keep exited 0 — a failed warm-keep must never leave the warm layer unrooted
+/// right before a reclaim (v-nix's silent-dangle failure mode). Both apps are v-nix's (flake lane) and are
+/// quick cache-hits when already warm. Stamps the timestamp only after a successful gc, so a failed pass
+/// retries next eligible tick. Best-effort: any spawn/exit failure is logged and swallowed — GC is
+/// maintenance, never a reason to fail the integration pass. Skips silently in a non-nix environment.
+fn maybe_run_gc(fleet: &Fleet) {
+    let stamp = fleet.gc_timestamp_path();
+    let last_run = std::fs::read_to_string(&stamp)
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok());
+    if !should_run_gc(last_run, now_unix(), GC_MIN_INTERVAL_SECS) {
+        return; // within the interval — nothing to do this tick.
+    }
+    let nix_bin = nix_binary();
+    eprintln!(
+        "gc-hook: {GC_MIN_INTERVAL_SECS}s elapsed → warm-keep then gc (CDZ_WARM_ROOT={GC_WARM_ROOT})"
+    );
+    // 1. warm-keep FIRST — re-pin the current warm layer as GC-roots before reclaiming.
+    let warm = Command::new(&nix_bin)
+        .args(["run", ".#warm-keep"])
+        .env("CDZ_WARM_ROOT", GC_WARM_ROOT)
+        .current_dir(&fleet.repo)
+        .status();
+    match warm {
+        Ok(s) if s.success() => {}
+        Ok(s) => {
+            eprintln!(
+                "gc-hook: `nix run .#warm-keep` exited {s} — SKIPPING gc this cycle (never reclaim with the warm layer unrooted). Retry next eligible tick."
+            );
+            return;
+        }
+        Err(e) => {
+            eprintln!(
+                "gc-hook: could not invoke `nix run .#warm-keep` ({e}) — skipping gc (likely a non-nix env)."
+            );
+            return;
+        }
+    }
+    // 2. gc — reclaim dead paths, bounded, preserving the roots warm-keep just pinned.
+    let gc = Command::new(&nix_bin)
+        .args(["run", ".#gc"])
+        .env("CDZ_WARM_ROOT", GC_WARM_ROOT)
+        .env("CDZ_GC_MAX_FREED", GC_MAX_FREED_BYTES)
+        .current_dir(&fleet.repo)
+        .status();
+    match gc {
+        Ok(s) if s.success() => {
+            // Stamp ONLY on success, so a failed gc retries next eligible tick rather than waiting a full interval.
+            let _ = std::fs::write(&stamp, now_unix().to_string());
+            eprintln!(
+                "gc-hook: reclaim complete; next pass in ~{}h.",
+                GC_MIN_INTERVAL_SECS / 3600
+            );
+        }
+        Ok(s) => eprintln!(
+            "gc-hook: `nix run .#gc` exited {s} — not stamping; will retry next eligible tick."
+        ),
+        Err(e) => eprintln!("gc-hook: could not invoke `nix run .#gc` ({e}) — skipping."),
+    }
+}
+
 /// `fleet ci-status <pr-or-branch>`: query GitHub Actions for the candidate's check verdict and print it
 /// (one word: GREEN | RED | PENDING | NO-CHECKS) + a per-check breakdown, exiting non-zero on RED so a
 /// shell caller can branch. This is the polling PRIMITIVE the CI-gated land path (operator ruling
@@ -9521,6 +9617,10 @@ fn schedule_pass_execute(fleet: &Fleet, cap: usize) {
         "schedule-pass: reaped {reaped_merged} merged + {reaped_rejected} rejected; dispatched {dispatched_now} new (cap {cap}, in-flight now {}).",
         still_in_flight.len() + dispatched_now
     );
+    // Periodic nix-store GC (operator item 2, v-nix-agreed placement): timestamp-gated to ~every 3h, so
+    // it is a fast no-op on most ticks and reclaims the local /nix/store churn (gate-local builds + dev
+    // builds) while preserving the warm layer. Runs AFTER integration so a slow GC can't delay a land.
+    maybe_run_gc(fleet);
 }
 
 /// LOCAL-GATE drain (operator 2026-08-08: GHA credits exhausted — no more candidate PRs / GitHub polling).
@@ -9745,6 +9845,9 @@ fn schedule_pass_local_gate(fleet: &Fleet, execute: bool, json: bool, publish_or
             local_gate_summary_json(merged, rejected, left, queued.len(), records)
         );
     }
+    // Periodic nix-store GC (same hook as schedule_pass_execute): under the local-gate model this drain
+    // IS pr-sync's per-tick loop, so the GC belongs here too. Timestamp-gated → no-op most ticks.
+    maybe_run_gc(fleet);
 }
 
 /// Whether a lane LABEL is a parallel lane (docs/corpus/leaf subsystems) vs. serialized. Consults the
@@ -14504,6 +14607,22 @@ mod tests {
         // spawn-fail dominates even if build_ok were somehow true (defensive — a not-run gate is unknown).
         assert_eq!(local_gate_verdict(false, true), NoChecks);
         // local_gate_verdict NEVER returns Pending (nix build blocks to completion) — only the 3 above.
+    }
+
+    #[test]
+    fn should_run_gc_fires_on_first_run_and_after_the_interval() {
+        let iv = GC_MIN_INTERVAL_SECS;
+        // Never run (no stamp / unreadable) → fire now.
+        assert!(should_run_gc(None, 1_000_000, iv));
+        // Exactly at the interval → fire (>=).
+        assert!(should_run_gc(Some(1_000_000), 1_000_000 + iv, iv));
+        // Past the interval → fire.
+        assert!(should_run_gc(Some(1_000_000), 1_000_000 + iv + 1, iv));
+        // Within the interval → do NOT fire (no-op tick).
+        assert!(!should_run_gc(Some(1_000_000), 1_000_000 + iv - 1, iv));
+        assert!(!should_run_gc(Some(1_000_000), 1_000_000, iv));
+        // Clock went backwards (stamp in the future) → saturating_sub = 0 → do NOT fire early.
+        assert!(!should_run_gc(Some(2_000_000), 1_000_000, iv));
     }
 
     #[test]
