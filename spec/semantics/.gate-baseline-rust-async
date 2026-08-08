@@ -6307,3 +6307,6 @@ pass	al2 a PURE helper called from the arm for BOTH slots — the arm delegates 
 pass	al3 a two-site resume where EACH branch has its own LET local — gap/overshoot named per path, different strides
 pass	al4 ONE arm-local feeds BOTH slots — the score accumulates into the base while the count rides beside
 pass	al5 an arm-LOCAL named the same as a body-side binder — hygiene keeps the two w's separate across dispatches
+pass	fs1 the SAME handle expression re-entered per recursion round — a FRESH region each iteration, seeds keyed by depth
+pass	fs2 two SEQUENTIAL handles where the second's SEED is computed from the first's RESULT — regions chained by value
+pass	fs3 THREE value-chained regions — each seed is the previous region's result, arms +1 / x2 / -5
