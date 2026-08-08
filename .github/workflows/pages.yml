@@ -32,10 +32,16 @@ permissions:
   pages: write
   id-token: write
 
-# One in-flight deploy at a time; don't cancel a running publish.
-concurrency:
-  group: pages
-  cancel-in-progress: false
+# NO workflow-level `concurrency: group` on purpose. A `group: pages` (even with cancel-in-progress:false)
+# CANCELS an older PENDING run whenever a newer run queues — and cancel-in-progress:false only protects a
+# RUNNING job, not a queued one. The build runs on the scarce ARM pool, so a run can sit PENDING for a runner
+# longer than the 30-min cron interval; with a group, each new cron then cancelled the prior pending cron →
+# deploys perpetually cancelled-before-starting, site went stale (observed: dispatch cancelled at the exact
+# second the next cron queued). Serialization of the actual PUBLISH is already handled by the `github-pages`
+# ENVIRONMENT (the deploy job below) — GitHub queues concurrent deployments to that environment. So the group
+# was redundant AND harmful: dropping it lets a pending run wait for its runner instead of being cancelled,
+# and the environment still guarantees one publish at a time. Concurrent BUILD jobs are harmless (idempotent
+# — each builds the same trunk). Latest-to-finish wins the publish, which is the intent.
 
 jobs:
   build:
