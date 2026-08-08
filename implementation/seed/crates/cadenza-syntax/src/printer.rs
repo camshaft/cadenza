@@ -7693,6 +7693,19 @@ mod tests {
     }
 
     #[test]
+    fn an_own_line_comment_before_then_round_trips_not_dropped() {
+        // An OWN-LINE `//` sitting BEFORE the `then` keyword (`if c` ⏎ `// note` ⏎ `then t`) was in the
+        // `then` token's leading slot and dropped when `expect_keyword` consumed past it (the last
+        // comment-attachment position blocking `cdz fmt` on the operator's hm-collect.cdz). Now captured +
+        // folded into the then-branch's leading comments — symmetric with the before-`else` capture.
+        let out = assert_roundtrip("def f(c) = if c\n// note\nthen 1 else 2", 100);
+        assert!(
+            out.contains("// note"),
+            "the own-line comment before `then` is preserved: {out}"
+        );
+    }
+
+    #[test]
     fn an_own_line_comment_before_else_round_trips_not_dropped() {
         // An OWN-LINE `//` sitting BEFORE the `else` keyword (`if a then 1` ⏎ `// note` ⏎ `else 2`) was
         // in the `else` token's leading slot and dropped when `expect_keyword` consumed past it. Now

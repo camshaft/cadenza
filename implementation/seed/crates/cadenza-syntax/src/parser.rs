@@ -2006,8 +2006,14 @@ impl<'a> Parser<'a> {
         let c_lead = self.take_comments_here();
         let c = self.expr(crate::token::PREC_SEQ + 1);
         let c = self.wrap_comments(c_lead, c);
+        // Own-line `//` comment(s) BEFORE the `then` keyword (`if c<newline> // note<newline> then t`)
+        // sit in the `then` token's leading slot; `expect_keyword` would consume past them, dropping
+        // them. Capture before the bump + fold into the then-branch's leading comments so they print
+        // own-line above the then-branch (round-trips; else stranded → `cdz fmt` refuses). Symmetric with
+        // the own-line-before-`else` capture below.
+        let mut t_lead = self.take_comments_here();
         self.expect_keyword(Keyword::Then, "`then`");
-        let t_lead = self.take_comments_here();
+        t_lead.extend(self.take_comments_here());
         let t = self.expr(crate::token::PREC_SEQ + 1);
         let t = self.wrap_comments(t_lead, t);
         // A same-line TRAILING `//` after the then-branch (`if a then 1 // note<newline> else …`) sits at
