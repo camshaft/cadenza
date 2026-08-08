@@ -1719,16 +1719,18 @@ impl Ty {
             // width ({32, 64}) has an alias, so an observed float type is always a concrete `FloatN`
             // (an unresolved width grounds to `Float64`), mirroring the integer `IntN`/`UIntN` render.
             Ty::Float(ft) => format!("Float{}", ft.ground_width()),
-            // A record TYPE renders as `(Record (name Type) …)` in canonical (sorted) field order — the
-            // CAPITALIZED type-constructor head the author writes in an annotation (`(: r (Record (a
+            // A record TYPE renders as `(Record (: name Type) …)` in canonical (sorted) field order — the
+            // CAPITALIZED type-constructor head the author writes in an annotation (`(: r (Record (: a
             // Int64)))`), matching `Tuple`/`List`/`Map`/`Set` below (a lowercase `(record …)` in type
-            // position is rejected as "not a type" — it is the VALUE constructor). This is a TYPE renderer,
-            // so it must spell the type the way the surface accepts it: a mismatch message naming
-            // `(record (a Bool))` reads as a different thing than the `(Record (a Bool))` the author wrote.
+            // position is rejected as "not a type" — it is the VALUE constructor). Each field is the
+            // canonical `(: name T)` ASCRIPTION node (RT3, DESIGN-record-type-syntax) — the same node a
+            // param binder / `e: T` uses, not a bespoke pair. This is a TYPE renderer, so it must spell the
+            // type the way the surface accepts it: a mismatch message naming `(record (: a Bool))` reads as
+            // a different thing than the `(Record (: a Bool))` the author wrote.
             Ty::Record(fields) => {
                 let mut s = String::from("(Record");
                 for (k, t) in fields.iter() {
-                    s.push_str(&format!(" ({} {})", k.name, t.render_name()));
+                    s.push_str(&format!(" (: {} {})", k.name, t.render_name()));
                 }
                 s.push(')');
                 s
@@ -1818,7 +1820,8 @@ impl Ty {
             Ty::Record(fields) => {
                 let mut s = String::from("(Record");
                 for (k, t) in fields.iter() {
-                    s.push_str(&format!(" ({} {})", k.name, t.render_named_vars(names)));
+                    // Canonical `(: name T)` ascription field (RT3), matching `render_name`.
+                    s.push_str(&format!(" (: {} {})", k.name, t.render_named_vars(names)));
                 }
                 s.push(')');
                 s

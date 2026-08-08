@@ -594,29 +594,29 @@
   (error  CDZ0203))
 
 ; The parameter check applies to a RECORD's field type too, not only a sum's payload or a list's
-; element. `(record (a 1))` has type `(Record (a Int64))`; annotated `(Record (a Bool))`, the head
+; element. `(record (a 1))` has type `(Record (: a Int64))`; annotated `(Record (: a Bool))`, the head
 ; `Record` and the field name `a` agree but the field's type `Int64` cannot unify with `Bool` — a
 ; contradiction (CDZ0203), the record analogue of the list-element and option-payload cases above. A
 ; record's fields are the third structural type (type-system.md #The Structural Types Are Record, Tuple,
 ; And Sum) beside the tuple's positions and the sum's payload; the annotation-parameter check the cases
 ; above pin for a tuple position, a sum payload, and a list element MUST also cover a record field, or a
 ; checker that verifies only the head `Record` and the field NAMES silently accepts the ill-typed
-; program and runs it, returning `(record (a 1))` under a declared `(Record (a Bool))` — the same
+; program and runs it, returning `(record (a 1))` under a declared `(Record (: a Bool))` — the same
 ; annotation-replaces-inference the section forbids. A generation that does not yet check a record
 ; field's type parameter declines rather than accepting (reject-don't-miscompile).
 
 (case "a record annotated with the wrong field type is rejected"
-  (doc    "`(: (record (a 1)) (Record (a Bool)))` annotates a `(Record (a Int64))` as `(Record (a Bool))`:
+  (doc    "`(: (record (a 1)) (Record (: a Bool)))` annotates a `(Record (: a Int64))` as `(Record (: a Bool))`:
            the head `Record` and the field name `a` match but the field's type `Int64` cannot unify with
            `Bool`, a contradiction (CDZ0203), the record companion of the list-element and option-payload
            cases above. Pins that the annotation's parameter check covers a record's field type — the
            third structural type beside a tuple's positions and a sum's payload — not only a sum's payload
            or a list's element. A checker that stops at the head `Record` and the field names silently
            accepts the ill-typed program and runs it, returning `(record (a 1))` under a declared
-           `(Record (a Bool))` (type-system.md #Annotations Constrain, Never Contradict). A generation
+           `(Record (: a Bool))` (type-system.md #Annotations Constrain, Never Contradict). A generation
            that does not yet check a record field's type declines rather than accepting
            (reject-don't-miscompile).")
-  (input  (: (record (a 1)) (Record (a Bool))))
+  (input  (: (record (a 1)) (Record (: a Bool))))
   (error  CDZ0203))
 
 ; --- A record's field SET must match the annotation, not only each field's type ------------
@@ -624,37 +624,36 @@
 ; mismatch: the value's set of field names differs from the annotation's — a MISSING field (the value
 ; lacks one the annotation names) or an EXTRA field (the value carries one the annotation does not). A
 ; record's shape is its fixed set of named fields (type-system.md #A Record Has A Fixed Set Of Named
-; Fields), so `(Record (a Int64))` and `(Record (a Int64) (b Int64))` are DIFFERENT types — the check is
+; Fields), so `(Record (: a Int64))` and `(Record (: a Int64) (: b Int64))` are DIFFERENT types — the check is
 ; over the whole field set, not a subset/superset relaxation (that widening is row polymorphism, a
 ; separate opt-in — 15-rows-and-open-sums). Each mismatch is CDZ0203 and the diagnostic names the
 ; offending field (missing `b` / no such field `c`), the actionable add-missing / delete-extra repair.
 
 (case "a record missing a field the annotation names is rejected"
-  (doc    "`(: (record (a 1)) (Record (a Int64) (b Int64)))` annotates a one-field record as a two-field
-           type — the value is MISSING field `b`. The field sets differ, so the value's type `(Record (a
-           Int64))` does not match the annotation `(Record (a Int64) (b Int64))` (CDZ0203, naming the
+  (doc    "`(: (record (a 1)) (Record (: a Int64) (: b Int64)))` annotates a one-field record as a two-field
+           type — the value is MISSING field `b`. The field sets differ, so the value's type `(Record (: a Int64))` does not match the annotation `(Record (: a Int64) (: b Int64))` (CDZ0203, naming the
            missing `b`). A record type is not satisfied by a value carrying a subset of its fields — field
            presence is static (the row-poly widening that would accept this is a separate opt-in). The
            field-SET companion of the wrong-field-TYPE case above.")
-  (input  (: (record (a 1)) (Record (a Int64) (b Int64))))
+  (input  (: (record (a 1)) (Record (: a Int64) (: b Int64))))
   (error  CDZ0203))
 
 (case "a record carrying a field the annotation does not name is rejected"
-  (doc    "The dual: `(: (record (a 1) (b 2) (c 3)) (Record (a Int64) (b Int64)))` carries an EXTRA field
+  (doc    "The dual: `(: (record (a 1) (b 2) (c 3)) (Record (: a Int64) (: b Int64)))` carries an EXTRA field
            `c` the annotation does not name. The field sets differ, so it is rejected (CDZ0203, 'no such
            field `c` on the expected record'). A record value is not accepted against a type with FEWER
            fields — the extra field is not silently dropped. Pins the superset direction of the field-set
            check (the value has more fields than the type).")
-  (input  (: (record (a 1) (b 2) (c 3)) (Record (a Int64) (b Int64))))
+  (input  (: (record (a 1) (b 2) (c 3)) (Record (: a Int64) (: b Int64))))
   (error  CDZ0203))
 
 (case "a record whose field is misnamed is both missing and extra"
-  (doc    "`(: (record (a 1) (x 2)) (Record (a Int64) (b Int64)))` names its second field `x` where the
+  (doc    "`(: (record (a 1) (x 2)) (Record (: a Int64) (: b Int64)))` names its second field `x` where the
            annotation expects `b` — so relative to the annotation the value is simultaneously MISSING `b`
            and carrying an EXTRA `x`. Rejected (CDZ0203) with both faults named ('missing field `b`; no
            such field `x`'). Pins that a single misnamed field surfaces as the combined field-set
            mismatch, the shape a field-name typo takes.")
-  (input  (: (record (a 1) (x 2)) (Record (a Int64) (b Int64))))
+  (input  (: (record (a 1) (x 2)) (Record (: a Int64) (: b Int64))))
   (error  CDZ0203))
 
 ; The variant-payload TYPE check must fire wherever the constructor appears — including as the direct
@@ -778,12 +777,12 @@
 
 (case "addition of two records is rejected — a record is not a number"
   (doc    "`(+ r q)` on two same-typed Records is rejected (CDZ0201, 'arithmetic is not defined on
-           (Record (a Int64))'). A Record has no concatenation, so — unlike String/List — no fix is
+           (Record (: a Int64))'). A Record has no concatenation, so — unlike String/List — no fix is
            offered, only the honest message. Pins that the numeric-operand requirement rejects a compound
            record, the companion of the list case with no concat rewrite. Runtime operands (parameters),
            so the fault is the operator's, not a fold.")
   (input  (do
-            (def (f (: r (Record (a Int64))) (: q (Record (a Int64)))) (+ r q))
+            (def (f (: r (Record (: a Int64))) (: q (Record (: a Int64)))) (+ r q))
             (def (main) (f (record (a 1)) (record (a 2)))) (export main)))
   (error  CDZ0201))
 
@@ -926,7 +925,7 @@
 ; typing, the companion of the cross-kind cases above.
 
 (case "equality of two records with different field sets is a type error"
-  (doc    "`(= (record (x 1)) (record (y 2)))` compares a `(Record (x Int64))` with a `(Record (y Int64))`
+  (doc    "`(= (record (x 1)) (record (y 2)))` compares a `(Record (: x Int64))` with a `(Record (: y Int64))`
            — same KIND (both records) but different field SETS, so different types (a record's shape is its
            field set). Rejected CDZ0203, the diagnostic naming the delta (missing `x`; no such field `y`).
            Pins that `=` requires matching field sets, not merely that both operands are records — the
@@ -1662,7 +1661,7 @@
 
 (case "Type.eq compares a RECORD type-value structurally, by field types"
   (doc    "`Type.of` on a record value reflects its structural `Ty::Record` type, compared by field name +
-           type. `(Type.of (record (x 1) (y \"a\")))` is `(Record (x Int64) (y String))`: equal to another
+           type. `(Type.of (record (x 1) (y \"a\")))` is `(Record (: x Int64) (: y String))`: equal to another
            record of the same field-name-and-type set regardless of values (→ true), but distinct when a
            field's TYPE differs — `(y String)` vs `(y Int64)` → false. `1 + 0 = 1`. Pins that a record
            type-value's equality carries each field's type (the record analogue of the tuple case above).")
@@ -1856,8 +1855,8 @@
   (doc    "The record-field position of the function-domain reflection family (coverage companion to the
            reflected_ty domain-grounding fixes). A function in a record field `(record (fld f))` is grounded
            from its body like a tuple/list element: `f x = x + 1` is `(-> Int64 Int64)` and `g b = if b 0 1`
-           is `(-> Bool Int64)`, so `(record (fld f))` reflects `(Record (fld (-> Int64 Int64)))` and
-           `(record (fld g))` reflects `(Record (fld (-> Bool Int64)))` — distinct → `Type.eq` false; but
+           is `(-> Bool Int64)`, so `(record (fld f))` reflects `(Record (: fld (-> Int64 Int64)))` and
+           `(record (fld g))` reflects `(Record (: fld (-> Bool Int64)))` — distinct → `Type.eq` false; but
            `(record (fld f))` vs `(record (fld f2))` (both `(-> Int64 Int64)`) is true. `0 + 100 = 100`.")
   (input  (do
             (def (f x) (+ x 1))

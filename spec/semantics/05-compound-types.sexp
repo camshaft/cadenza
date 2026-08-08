@@ -110,29 +110,28 @@
   (input      (record (a 1) (b 2) (a 3)))
   (error      CDZ0201))
 
-; The same fixed-field-set rule governs a record TYPE, not only a record VALUE. `(Record (x Int64) (x
-; Bool))` — the capital-`R` TYPE form (distinct from the lowercase `record` value alias) — names field
+; The same fixed-field-set rule governs a record TYPE, not only a record VALUE. `(Record (: x Int64) (: x ; Bool))` — the capital-`R` TYPE form (distinct from the lowercase `record` value alias) — names field
 ; `x` twice, so it is ill-formed (CDZ0201, #A Record Has A Fixed Set Of Named Fields), the type-form twin
 ; of the `(record (a 1) (a 2))` value reject above. The duplicate is not silently deduplicated to a
-; last-wins single field (which would compile `(Record (x Int64) (x Bool))` as `(Record (x Bool))`) — a
+; last-wins single field (which would compile `(Record (: x Int64) (: x Bool))` as `(Record (: x Bool))`) — a
 ; repeated field name is almost always an author error, so it is rejected wherever a record type is
 ; written: an annotation's type position and a variant payload's type both catch it.
 
 (case "a record TYPE with a duplicate field name is a type error"
-  (doc    "`(Record (x Int64) (x Bool))` names field `x` twice in a record TYPE (the capital-`R` type
+  (doc    "`(Record (: x Int64) (: x Bool))` names field `x` twice in a record TYPE (the capital-`R` type
            form) — a record's field names are a fixed SET whether written as a value or a type, so this is
            ill-formed and rejected (CDZ0201), the type-form twin of the value-form `(record (a 1) (a 2))`
-           reject. Not silently deduplicated to `(Record (x Bool))` by a last-wins insert. Here the type is
+           reject. Not silently deduplicated to `(Record (: x Bool))` by a last-wins insert. Here the type is
            written in an annotation's type position.")
-  (input      (: (record (x 1)) (Record (x Int64) (x Bool))))
+  (input      (: (record (x 1)) (Record (: x Int64) (: x Bool))))
   (error      CDZ0201))
 
 (case "a duplicate field in a variant's record-type payload is a type error"
   (doc    "The duplicate-field record TYPE is caught wherever a record type is written, not only in an
-           annotation: a sum variant whose payload type is `(Record (x Int64) (x Bool))` names `x` twice
+           annotation: a sum variant whose payload type is `(Record (: x Int64) (: x Bool))` names `x` twice
            and is rejected (CDZ0201). Pins that the fixed-field-set check reaches a record type nested in a
            type declaration, the variant-payload companion of the annotation case above.")
-  (input      (do (type T (V (Record (x Int64) (x Bool)))) (def (main) 1) (export main)))
+  (input      (do (type T (V (Record (: x Int64) (: x Bool)))) (def (main) 1) (export main)))
   (error      CDZ0201))
 
 ; A SUM's variant names are a set too, exactly as a record's field names are — type-system.md #The
@@ -1489,7 +1488,7 @@
   (input  (do
             (def (f n) (if (= n 0) (record (a n) (b 7)) (f (- n 1))))
             (def (main) (f 3)) (export main)))
-  (output (: (record (a 0) (b 7)) (Record (a Int64) (b Int64)))))
+  (output (: (record (a 0) (b 7)) (Record (: a Int64) (: b Int64)))))
 
 (case "a nested runtime tuple built behind a recursive call escapes to the host"
   (doc    "`(tuple n (tuple n n))` with n=0 (reached via recursion so it does NOT constant-fold) →
@@ -1511,7 +1510,7 @@
   (input  (do
             (def (f n) (if (= n 0) (record (x n) (y (tuple n 1))) (f (- n 1))))
             (def (main) (f 2)) (export main)))
-  (output (: (record (x 0) (y (tuple 0 1))) (Record (x Int64) (y (Tuple Int64 Int64))))))
+  (output (: (record (x 0) (y (tuple 0 1))) (Record (: x Int64) (: y (Tuple Int64 Int64))))))
 
 (case "a recursive sum constructor with a CHECKED-ARITH payload and a recursive-call sibling payload"
   (doc    "A recursive `map` over a linked list `(type ILst (INil) (ICons Int64 ILst))` whose `ICons`
@@ -1649,7 +1648,7 @@
   (input  (do
             (def (f n) (record (a n) (b 1)))
             (def (main) (f 3)) (export main)))
-  (output (: (record (a 3) (b 1)) (Record (a Int64) (b Int64)))))
+  (output (: (record (a 3) (b 1)) (Record (: a Int64) (: b Int64)))))
 
 (case "record fields render in canonical (key-sorted) order regardless of source order"
   (doc    "`(record (b n) (a 1))` with n=2 renders `(record (a 1) (b 2))` — fields in sorted key
@@ -1659,7 +1658,7 @@
   (input  (do
             (def (f n) (record (b n) (a 1)))
             (def (main) (f 2)) (export main)))
-  (output (: (record (a 1) (b 2)) (Record (a Int64) (b Int64)))))
+  (output (: (record (a 1) (b 2)) (Record (: a Int64) (: b Int64)))))
 
 (case "a list with a runtime element is returned as a program result"
   (doc    "`(list n 2 3)` with n=1 produces `(list 1 2 3)` — a list one of whose elements is a runtime
@@ -3995,7 +3994,7 @@
   (input  (do
             (def (f n) (record (x n) (y (tuple n 1))))
             (def (main) (f 5)) (export main)))
-  (output (: (record (x 5) (y (tuple 5 1))) (Record (x Int64) (y (Tuple Int64 Int64))))))
+  (output (: (record (x 5) (y (tuple 5 1))) (Record (: x Int64) (: y (Tuple Int64 Int64))))))
 
 ; --- A constructor whose payload is itself a constructor keeps its own variant tag -------
 ; A Sum value is (variant-tag, payload); its canonical form is `(Variant payload)`
@@ -9815,8 +9814,7 @@
   (error     CDZ0201))
 
 (case "a variant carrying a RECORD payload constructs and matches"
-  (doc    "The Record-payload companion of the Tuple-payload cases: `(type P (Pt (Record (x Int64) (y
-           Int64))) O)` declares `P.Pt` carrying a two-field record. `(P.Pt (record (x 3) (y 4)))`
+  (doc    "The Record-payload companion of the Tuple-payload cases: `(type P (Pt (Record (: x Int64) (: y Int64))) O)` declares `P.Pt` carrying a two-field record. `(P.Pt (record (x 3) (y 4)))`
            constructs it, and a `((P.Pt r) …)` arm binds the whole record payload as `r`, projected
            `(+ (. r x) (. r y))` → 7. Pins that a RECORD payload type is a real single payload (the
            record companion of the Tuple payload). A record field name is a LABEL, not a type parameter:
@@ -9825,7 +9823,7 @@
            `P.Pt` would look NULLARY and reject the construction (CDZ0201 'a nullary variant takes the
            unit value'). Must construct and fold to 7.")
   (input  (do
-            (type P (Pt (Record (x Int64) (y Int64))) O)
+            (type P (Pt (Record (: x Int64) (: y Int64))) O)
             (def (sum r) (+ (. r x) (. r y)))
             (def (main) (match (P.Pt (record (x 3) (y 4))) ((P.Pt r) (sum r)) (P.O 0)))
             (export main)))
@@ -9878,7 +9876,7 @@
            resource path, its lowercase field names carried through as labels (not misread as type
            parameters).")
   (input  (do
-            (type P (Pt (Record (x Int64) (y Int64))) O)
+            (type P (Pt (Record (: x Int64) (: y Int64))) O)
             (def (main) (P.Pt (record (x 1) (y 2)))) (export main)))
   (output (: (Pt (record (x 1) (y 2))) P)))
 
@@ -10101,13 +10099,13 @@
   (output (: 15 Int64)))
 
 (case "a generic sum with a type parameter inside a record payload constructs and projects"
-  (doc    "The record companion: `(type Box (B (Record (val a))) N)` — a generic sum whose variant carries
+  (doc    "The record companion: `(type Box (B (Record (: val a))) N)` — a generic sum whose variant carries
            a RECORD payload whose field type is the parameter. `(Box.B (record (val 7)))` instantiates `a =
            Int64`; the `(Box.B r)` arm binds the record payload and `(. r val)` projects 7. Pins that a
            type parameter inside a RECORD field type is threaded through the constructor scheme (the field
            NAME `val` stays a label), the record sibling of the tuple-payload case above.")
   (input  (do
-            (type Box (B (Record (val a))) N)
+            (type Box (B (Record (: val a))) N)
             (def (main) (match (Box.B (record (val 7))) ((Box.B r) (. r val)) (Box.N 0)))
             (export main)))
   (output (: 7 Int64)))
@@ -12244,14 +12242,14 @@
 
 (case "a recursive sum recurses THROUGH a record-typed payload"
   (doc    "The recursion runs through a RECORD field rather than a tuple element: `(type Tree (Leaf Int64)
-           (Br (Record (l Tree) (r Tree) (w Int64))))` — the `Br` variant's payload is a record whose `l`
+           (Br (Record (: l Tree) (: r Tree) (: w Int64))))` — the `Br` variant's payload is a record whose `l`
            and `r` fields are the recursive `Tree` (indirection sits inside the record). A fold reads the
            record fields (`(. rec l)`, `(. rec w)`) and recurses. `(sum (Br {l=Leaf 7, r=Leaf 2, w=1}))`
            = 1 + 7 + 2 = 10. Pins that the Box/heap indirection decision reaches THROUGH a record-typed
            payload the same way it reaches through a tuple payload — the record companion of the existing
            `(Cons (Tuple … Tree))` recursive-list shape.")
   (input  (do
-            (type Tree (Leaf Int64) (Br (Record (l Tree) (r Tree) (w Int64))))
+            (type Tree (Leaf Int64) (Br (Record (: l Tree) (: r Tree) (: w Int64))))
             (def (sum (: t Tree))
               (match t
                 ((Tree.Leaf n)  n)
@@ -13262,15 +13260,15 @@
 
 (case "comparing same-shape nominal types is a type error"
   (doc    "Witnesses type-system.md #User Types Are Declarable As Nominal Or Structural. `Point` and
-           `Vector` are nominal types over the SAME underlying record shape `(Record (x Int64) (y Int64))`
+           `Vector` are nominal types over the SAME underlying record shape `(Record (: x Int64) (: y Int64))`
            — but a nominal type's identity is its declaration, not its shape, so they are distinct. The
            compiler tracks nominal identity and rejects comparing `(Point.Mk …)` with `(Vector.Mk …)`
            across the nominal boundary (CDZ0202). The record sibling of the nominal-SUM case below; a
            nominal type is a name tagging any structural type (§Nominal Is An Orthogonal Modifier Over Any
            Structural Type — record, tuple, or sum).")
   (input    (do
-              (type Point  (Mk (Record (x Int64) (y Int64))))
-              (type Vector (Mk (Record (x Int64) (y Int64))))
+              (type Point  (Mk (Record (: x Int64) (: y Int64))))
+              (type Vector (Mk (Record (: x Int64) (: y Int64))))
               (= (Point.Mk (record (x 0) (y 0))) (Vector.Mk (record (x 0) (y 0))))))
   (error    CDZ0202))
 
@@ -13290,7 +13288,7 @@
            to the untagged shape it was declared distinct from (unwrap the nominal to compare the
            underlying value).")
   (input    (do
-              (type Point (Mk (Record (x Int64) (y Int64))))
+              (type Point (Mk (Record (: x Int64) (: y Int64))))
               (= (Point.Mk (record (x 0) (y 0))) (record (x 0) (y 0)))))
   (error    CDZ0202))
 
@@ -13299,7 +13297,7 @@
            violation regardless of which operand carries the tag — CDZ0202. Pins that the nominal tag
            is checked on either side of the comparison, not only the left.")
   (input    (do
-              (type Point (Mk (Record (x Int64) (y Int64))))
+              (type Point (Mk (Record (: x Int64) (: y Int64))))
               (= (record (x 0) (y 0)) (Point.Mk (record (x 0) (y 0))))))
   (error    CDZ0202))
 
@@ -14373,7 +14371,7 @@
            hash walks fields in the descriptor's canonical order at every slot; a first-field-only hash
            would collide the 6-7 keys sharing each x residue and misroute the descent.")
   (input  (do
-            (def (fill (: i Int64) (: m (Map (Record (x Int64) (y Int64)) Int64)))
+            (def (fill (: i Int64) (: m (Map (Record (: x Int64) (: y Int64)) Int64)))
               (if (= i 0) m (fill (- i 1) (Map.insert m (record (x (% i 6)) (y (/ i 6))) i))))
             (def (main (: n Int64))
               (do
@@ -14390,9 +14388,9 @@
            exactly as the scalar churn pins require — the two-field key layout leaves no residue in the
            canonical form.")
   (input  (do
-            (def (grow (: i Int64) (: n Int64) (: m (Map (Record (x Int64) (y Int64)) Int64)))
+            (def (grow (: i Int64) (: n Int64) (: m (Map (Record (: x Int64) (: y Int64)) Int64)))
               (if (= i n) m (grow (+ i 1) n (Map.insert m (record (x (+ i 100)) (y i)) i))))
-            (def (shrink (: i Int64) (: n Int64) (: m (Map (Record (x Int64) (y Int64)) Int64)))
+            (def (shrink (: i Int64) (: n Int64) (: m (Map (Record (: x Int64) (: y Int64)) Int64)))
               (if (= i n) m (shrink (+ i 1) n (Map.remove m (record (x (+ i 100)) (y i))))))
             (def (main (: n Int64))
               (do
@@ -15082,8 +15080,8 @@
            (sorted) field order `(record (hi 15) (lo 5))`. Two calls pin that both fields track the
            argument, not a constant.")
   (input  (do (def (main (: a Int64)) (record (lo a) (hi (+ a 10)))) (export main)))
-  (call   main (: 5 Int64)) (output (: (record (hi 15) (lo 5)) (Record (hi Int64) (lo Int64))))
-  (call   main (: 0 Int64)) (output (: (record (hi 10) (lo 0)) (Record (hi Int64) (lo Int64)))))
+  (call   main (: 5 Int64)) (output (: (record (hi 15) (lo 5)) (Record (: hi Int64) (: lo Int64))))
+  (call   main (: 0 Int64)) (output (: (record (hi 10) (lo 0)) (Record (: hi Int64) (: lo Int64)))))
 
 (case "a parameterized export returns a built-in Option computed from its argument"
   (doc    "The built-in `Option` companion (the sum case above used a user `(type Option …)`): `main(a)`
@@ -15199,8 +15197,8 @@
 (case "a record-parameter export returns a tuple computed from its fields"
   (doc    "A RECORD parameter crosses as a `tuple<…>` in canonical sorted-key order; `main((record (x 3)
            (y 8))) = (tuple 8 3)` swaps the fields. Proves the record-param + tuple-result compound path.")
-  (input  (do (def (main (: p (Record (x Int64) (y Int64)))) (tuple (. p y) (. p x))) (export main)))
-  (call   main (: (record (x 3) (y 8)) (Record (x Int64) (y Int64))))
+  (input  (do (def (main (: p (Record (: x Int64) (: y Int64)))) (tuple (. p y) (. p x))) (export main)))
+  (call   main (: (record (x 3) (y 8)) (Record (: x Int64) (: y Int64))))
   (output (: (tuple 8 3) (Tuple Int64 Int64))))
 
 (case "an export mixing a scalar and a tuple parameter returns a list from both"
@@ -15246,8 +15244,8 @@
 (case "an export with a record-with-a-tuple-field parameter returns a list from its leaves"
   (doc    "A record whose field is a tuple is likewise a nested fixed-shape compound; its fields cross in
            canonical sorted-key order. `main((record (pt (tuple 10 20)) (n 30))) = (list 10 20 30)`.")
-  (input  (do (def (main (: p (Record (pt (Tuple Int64 Int64)) (n Int64)))) (list (. (. p pt) 0) (. (. p pt) 1) (. p n))) (export main)))
-  (call   main (: (record (pt (tuple 10 20)) (n 30)) (Record (pt (Tuple Int64 Int64)) (n Int64))))
+  (input  (do (def (main (: p (Record (: pt (Tuple Int64 Int64)) (: n Int64)))) (list (. (. p pt) 0) (. (. p pt) 1) (. p n))) (export main)))
+  (call   main (: (record (pt (tuple 10 20)) (n 30)) (Record (: pt (Tuple Int64 Int64)) (: n Int64))))
   (output (: (list 10 20 30) (List Int64))))
 
 (case "an export mixing a scalar and a nested-tuple parameter returns a list from both"
@@ -15258,7 +15256,7 @@
   (output (: (list 9 5 7) (List Int64))))
 
 (case "a composed call over a record-transforming function with an arithmetic field compiles"
-  (doc    "`(f (f (record (a 0) (b 5))))` where `f : (Record (a Int64) (b Int64)) -> (Record …)`
+  (doc    "`(f (f (record (a 0) (b 5))))` where `f : (Record (: a Int64) (: b Int64)) -> (Record …)`
            increments field `a` via `(+ (. r a) 1)` and copies `b`. `f` applied twice gives {a:2, b:5},
            so `.a` = 2. The record is BOTH the inner call's result and the outer call's argument. Each
            field of a `Core::Record` is materialized into the value-heap array; a checked-arith field
@@ -15270,7 +15268,7 @@
            call. The fix advances each field's scratch base past the running high-water (the disjoint-slot
            discipline tuples/lists already use). Expected: 2.")
   (input  (do
-            (def (f (: r (Record (a Int64) (b Int64))))
+            (def (f (: r (Record (: a Int64) (: b Int64))))
               (record (a (+ (. r a) 1)) (b (. r b))))
             (def (main) (. (f (f (record (a 0) (b 5)))) a))
             (export main)))
@@ -16795,7 +16793,7 @@
            parameter `r` — `(f (record (x 3) (y 4)))` binds `a`=3, `b`=4 → 7 (a real heap read, not a const
            fold). Earlier the record-match arm was a not-yet-implemented decline (CDZ0201) and a field
            reference leaked a misleading 'unbound name' — this case now pins the working destructure.")
-  (input  (do (def (f (: r (Record (x Int64) (y Int64))))
+  (input  (do (def (f (: r (Record (: x Int64) (: y Int64))))
                 (match r ((record (x a) (y b)) (+ a b))))
               (def (main) (f (record (x 3) (y 4))))
               (export main)))
@@ -16804,10 +16802,10 @@
 (case "a record match pattern binds fields by name — partial and out of order"
   (doc    "A record match projects each field by NAME, not position: a PARTIAL pattern names a subset of
            the fields, and the pattern MAY name them in a different order than the record's type. Here
-           `(record (z b) (a c))` over a `(Record (a Int64) (z Int64))` binds `c` to field `a` and `b` to
+           `(record (z b) (a c))` over a `(Record (: a Int64) (: z Int64))` binds `c` to field `a` and `b` to
            field `z` regardless of written order → `100*c + b` = 100*10 + 20 = 1020. The match twin of the
            record BINDING pattern's field-order independence — a flexibility a positional tuple pattern lacks.")
-  (input  (do (def (f (: r (Record (a Int64) (z Int64))))
+  (input  (do (def (f (: r (Record (: a Int64) (: z Int64))))
                 (match r ((record (z b) (a c)) (+ (* 100 c) b))))
               (def (main) (f (record (a 10) (z 20))))
               (export main)))
@@ -16842,7 +16840,7 @@
            (_ 99))` — the record arm binds field `x` and the `_` covers the rest. Over `(record (x 3))` the
            record arm is taken → 3. (An UNGUARDED record arm; a GUARDED record arm is a later increment —
            it currently declines cleanly rather than lowering, pending the guard×record leaf gating.)")
-  (input  (do (def (f (: r (Record (x Int64))))
+  (input  (do (def (f (: r (Record (: x Int64))))
                 (match r ((record (x a)) a) (_ 99)))
               (def (main) (f (record (x 3))))
               (export main)))
@@ -16855,7 +16853,7 @@
            `(record (x 9) (y 4))` it does not → falls through to the catch-all → -1. Pins that a record
            match arm supports a refutable field probe (not only bare-binder fields), the record analogue of
            `(tuple 3 b)` / `(Some 0)`. Two `(call …)` values drive the runtime scrutinee through `f`.")
-  (input  (do (def (f (: r (Record (x Int64) (y Int64))))
+  (input  (do (def (f (: r (Record (: x Int64) (: y Int64))))
                 (match r ((record (x 3) (y b)) b) (_ -1)))
               (def (main (: k Int64)) (f (record (x k) (y 4))))
               (export main)))
@@ -16877,7 +16875,7 @@
            scrutinee a genuinely-runtime materialized value (a constant record would fold the fields away and
            never exercise the projection). x=5 → guard holds → 5+6 = 11; x=-5 → guard fails → -1; x=0 →
            guard `(> 0 0)` fails → -1.")
-  (input  (do (def (f (: r (Record (x Int64) (y Int64))))
+  (input  (do (def (f (: r (Record (: x Int64) (: y Int64))))
                 (match r ((guard (record (x a) (y b)) (> a 0)) (+ a b)) (_ -1)))
               (def (main (: k Int64)) (f (record (x k) (y (+ k 1)))))
               (export main)))
@@ -16944,7 +16942,7 @@
            compiles — so the fault is reference-specific; the coded decline surfaces it in `cdz check` on a
            parameterized body, not only the emit walk. The nested-in-compound twin of the top-level
            record-match + the record-BINDING nested-compound declines.")
-  (input  (do (def (f (: t (Tuple (Record (x Int64)) Int64)))
+  (input  (do (def (f (: t (Tuple (Record (: x Int64)) Int64)))
                 (match t ((tuple (record (x a)) c) (+ a c))))
               (export f)))
   (error  CDZ0201))
@@ -17023,7 +17021,7 @@
            4 × 3 = 12. A hoist guard or child retain keyed to positional projections misses the
            field-keyed extraction.")
   (input  (do
-            (def (go (: r (Record (f (List Int64)))) (: n Int64) (: acc Int64))
+            (def (go (: r (Record (: f (List Int64)))) (: n Int64) (: acc Int64))
               (if (= n 0) acc
                   (go r (- n 1) (+ acc (List.len (List.push (. r f) 9))))))
             (def (main (: d Int64))
@@ -17363,7 +17361,7 @@
 ; type)` annotation triple, `(type DbBox (DbBox (Record (: a Int64) (: b Int64))))` — must register the
 ; payload so the variant is NON-nullary and its record field is readable. The ML record-type surface `{a:
 ; Int64, b: Int64}` lowers each field to a 3-element `(: a Int64)` node (vs the 2-element `(a Int64)` pair
-; the s-expr `(Record (a Int64) …)` spelling uses). `typeval_of`'s RecordCtor decode originally accepted only
+; the s-expr `(Record (: a Int64) …)` spelling uses). `typeval_of`'s RecordCtor decode originally accepted only
 ; the 2-element pair, so the ML-surfaced structural-record payload decoded to `None` → the variant read
 ; NULLARY (CDZ0201 "the variant DbBox is nullary … carries no payload" at construction, "not a variant of the
 ; matched type" at the pattern). Building `(DbBox (record (a 1) (b 2)))`, matching it, and reading field `a`

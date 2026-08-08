@@ -3247,6 +3247,88 @@ pub mod lint {
         }
     }
 
+    /// The per-lint control level (DESIGN-cadenza-lint §3, the one net-new mechanism). Distinct from
+    /// [`Severity`] — `Severity` is the rule's default REPORTING kind (error/warning/info); a `LintLevel`
+    /// is the user's OVERRIDE of whether and how a NAMED lint fires: `Allow` suppresses it entirely,
+    /// `Warn` reports it as a warning, `Deny` promotes it to an error (fails the run). Set by a module
+    /// `(allow/warn/deny NAME)` directive or a `--allow/--warn/--deny NAME` CLI flag; only a NAMED lint
+    /// (`name: Some(_)`) can be controlled (a bare report-only rule has no name to key off).
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum LintLevel {
+        Allow,
+        Warn,
+        Deny,
+    }
+
+    impl LintLevel {
+        /// Parse a level name; `None` for an unknown one.
+        pub fn parse(s: &str) -> Option<LintLevel> {
+            match s {
+                "allow" => Some(LintLevel::Allow),
+                "warn" | "warning" => Some(LintLevel::Warn),
+                "deny" => Some(LintLevel::Deny),
+                _ => None,
+            }
+        }
+
+        pub fn as_str(self) -> &'static str {
+            match self {
+                LintLevel::Allow => "allow",
+                LintLevel::Warn => "warn",
+                LintLevel::Deny => "deny",
+            }
+        }
+    }
+
+    /// A resolved set of per-lint level overrides, keyed by the namespaced lint name. A lookup honors
+    /// GROUP prefixes: a level set for a bare group (`idiomatic`) applies to every lint under it
+    /// (`idiomatic/if-bool`), with the MOST SPECIFIC key winning (an exact-name override beats a group
+    /// override). Two layers compose by [`Self::overlay`] — the module directive layer first, then the
+    /// CLI layer on top (CLI wins), matching the §3 resolution order CLI > module > rule-default.
+    #[derive(Clone, Debug, Default)]
+    pub struct LintLevels {
+        /// name-or-group → level. Insertion order irrelevant; lookup picks the longest matching key.
+        map: std::collections::BTreeMap<String, LintLevel>,
+    }
+
+    impl LintLevels {
+        pub fn new() -> LintLevels {
+            LintLevels::default()
+        }
+
+        /// Set `name` (an exact lint name or a group prefix) to `level`. A later set of the same key
+        /// wins (last-write), so a CLI overlay naturally overrides a module one for the same key.
+        pub fn set(&mut self, name: impl Into<String>, level: LintLevel) {
+            self.map.insert(name.into(), level);
+        }
+
+        /// Overlay `other` ON TOP of `self` (other's keys win) — the CLI layer over the module layer.
+        pub fn overlay(&mut self, other: &LintLevels) {
+            for (k, v) in &other.map {
+                self.map.insert(k.clone(), *v);
+            }
+        }
+
+        /// The effective level for a lint `name`, or `None` if neither the name nor any of its group
+        /// prefixes was overridden (the caller then uses the rule's default). A namespaced name
+        /// `a/b/c` is probed most-specific first: `a/b/c`, then `a/b`, then `a` — the longest match
+        /// wins, so an exact override beats a broader group one.
+        pub fn effective(&self, name: &str) -> Option<LintLevel> {
+            if let Some(&l) = self.map.get(name) {
+                return Some(l);
+            }
+            // Walk group prefixes from most to least specific by trimming trailing `/segment`s.
+            let mut probe = name;
+            while let Some(cut) = probe.rfind('/') {
+                probe = &probe[..cut];
+                if let Some(&l) = self.map.get(probe) {
+                    return Some(l);
+                }
+            }
+            None
+        }
+    }
+
     /// One reported diagnostic: the rule's message + severity, and the matched node's span (if the
     /// subject carried one). Rules are applied in order; within a rule, matches are pre-order.
     #[derive(Clone, Debug)]
@@ -3260,14 +3342,37 @@ pub mod lint {
 
     /// Run every lint rule over `subject`, collecting diagnostics. Rules run in order; each rule's
     /// matches are reported in pre-order. `spans` (if any) attaches a source span to each diagnostic.
+    /// This is the level-free path (every rule reports at its default severity).
     pub fn run(set: &LintSet, subject: &Tree, spans: Option<&SpanTable>) -> Vec<Diagnostic> {
+        run_with_levels(set, subject, spans, &LintLevels::default())
+    }
+
+    /// Run every lint rule, applying the per-lint level overrides. For a NAMED rule, its effective
+    /// level (from `levels`, else its default severity) decides the outcome: `Allow` DROPS every match
+    /// (no diagnostic), `Deny` reports at `error` severity, `Warn` at `warning`. A rule with no name,
+    /// or a named rule with no override, reports at its own `severity` unchanged. Match order is
+    /// preserved (rules in order, matches pre-order).
+    pub fn run_with_levels(
+        set: &LintSet,
+        subject: &Tree,
+        spans: Option<&SpanTable>,
+        levels: &LintLevels,
+    ) -> Vec<Diagnostic> {
         let empty = Query::default();
         let mut out = Vec::new();
         for rule in &set.rules {
+            // Resolve the effective severity for this rule. Only a NAMED rule can be level-controlled.
+            let level = rule.name.as_deref().and_then(|n| levels.effective(n));
+            let severity = match level {
+                Some(LintLevel::Allow) => continue, // suppressed — emit nothing for this rule
+                Some(LintLevel::Deny) => Severity::Error,
+                Some(LintLevel::Warn) => Severity::Warning,
+                None => rule.severity,
+            };
             for m in search_with(&rule.pattern, &empty, subject, spans) {
                 out.push(Diagnostic {
                     message: rule.message.clone(),
-                    severity: rule.severity,
+                    severity,
                     span: m.span,
                     matched: m.node.to_sexpr(),
                 });
@@ -5538,7 +5643,7 @@ mod tests {
 
     mod lint_tests {
         use super::subj;
-        use crate::query::lint::{self, Applicability, LintSet, Severity};
+        use crate::query::lint::{self, Applicability, LintLevel, LintLevels, LintSet, Severity};
 
         #[test]
         fn severity_parses_and_defaults_to_warning() {
@@ -5747,6 +5852,113 @@ mod tests {
                 .unwrap();
             assert_eq!(set.rules[0].severity, Severity::Error);
             assert_eq!(set.rules[0].name.as_deref(), Some("idiomatic/if-bool"));
+        }
+
+        // --- cadenza-lint I1 (level layer): allow/warn/deny per named lint. ---
+
+        #[test]
+        fn lint_level_parses_known_and_rejects_unknown() {
+            assert_eq!(LintLevel::parse("allow"), Some(LintLevel::Allow));
+            assert_eq!(LintLevel::parse("warn"), Some(LintLevel::Warn));
+            assert_eq!(LintLevel::parse("deny"), Some(LintLevel::Deny));
+            assert_eq!(LintLevel::parse("bogus"), None);
+        }
+
+        #[test]
+        fn allow_suppresses_a_named_lint_entirely() {
+            let set = LintSet::compile(
+                "(lint idiomatic/if-bool (if ,c true false) \"prefer the condition\")",
+            )
+            .unwrap();
+            let s = subj("(do (if a true false) (g b))");
+            // Without a level: fires.
+            assert_eq!(lint::run(&set, &s, None).len(), 1);
+            // Allowed: suppressed.
+            let mut levels = LintLevels::new();
+            levels.set("idiomatic/if-bool", LintLevel::Allow);
+            assert!(lint::run_with_levels(&set, &s, None, &levels).is_empty());
+        }
+
+        #[test]
+        fn deny_promotes_a_named_lint_to_error() {
+            let set = LintSet::compile(
+                "(lint idiomatic/if-bool (if ,c true false) \"prefer the condition\")",
+            )
+            .unwrap();
+            let s = subj("(do (if a true false))");
+            let mut levels = LintLevels::new();
+            levels.set("idiomatic/if-bool", LintLevel::Deny);
+            let diags = lint::run_with_levels(&set, &s, None, &levels);
+            assert_eq!(diags.len(), 1);
+            assert_eq!(diags[0].severity, Severity::Error);
+            assert!(lint::has_error(&diags), "deny fails the run");
+        }
+
+        #[test]
+        fn a_group_prefix_level_applies_to_every_lint_under_it() {
+            let set = LintSet::compile(
+                "(lint idiomatic/if-bool (if ,c true false) \"a\")\n\
+                 (lint naming/camel-case (camelCase ,@_) \"b\")",
+            )
+            .unwrap();
+            let s = subj("(do (if a true false) (camelCase x))");
+            // Allowing the whole `idiomatic` group suppresses if-bool but NOT naming/camel-case.
+            let mut levels = LintLevels::new();
+            levels.set("idiomatic", LintLevel::Allow);
+            let diags = lint::run_with_levels(&set, &s, None, &levels);
+            assert_eq!(diags.len(), 1, "{diags:?}");
+            assert_eq!(diags[0].message, "b");
+        }
+
+        #[test]
+        fn an_exact_name_override_beats_a_group_override() {
+            let set =
+                LintSet::compile("(lint idiomatic/if-bool (if ,c true false) \"a\")").unwrap();
+            let s = subj("(do (if a true false))");
+            // Group allows, but the exact name denies — the most-specific key wins → error.
+            let mut levels = LintLevels::new();
+            levels.set("idiomatic", LintLevel::Allow);
+            levels.set("idiomatic/if-bool", LintLevel::Deny);
+            let diags = lint::run_with_levels(&set, &s, None, &levels);
+            assert_eq!(diags.len(), 1);
+            assert_eq!(diags[0].severity, Severity::Error);
+        }
+
+        #[test]
+        fn a_cli_overlay_wins_over_a_module_level() {
+            // module layer denies; CLI layer allows on top → allowed (CLI > module).
+            let mut module = LintLevels::new();
+            module.set("idiomatic/if-bool", LintLevel::Deny);
+            let mut cli = LintLevels::new();
+            cli.set("idiomatic/if-bool", LintLevel::Allow);
+            module.overlay(&cli);
+            assert_eq!(
+                module.effective("idiomatic/if-bool"),
+                Some(LintLevel::Allow)
+            );
+        }
+
+        #[test]
+        fn a_bare_unnamed_rule_is_not_level_controlled() {
+            // A report-only rule has no name to key off, so a level override cannot touch it.
+            let set = LintSet::compile("(lint (todo ,@_) \"has a todo\")").unwrap();
+            let s = subj("(do (todo x))");
+            let mut levels = LintLevels::new();
+            levels.set("todo", LintLevel::Allow); // no effect — the rule is unnamed
+            assert_eq!(lint::run_with_levels(&set, &s, None, &levels).len(), 1);
+        }
+
+        #[test]
+        fn an_unoverridden_named_lint_keeps_its_default_severity() {
+            let set = LintSet::compile("(lint idiomatic/x (bad ,@_) \"m\" info)").unwrap();
+            let s = subj("(do (bad y))");
+            let levels = LintLevels::new(); // empty
+            let diags = lint::run_with_levels(&set, &s, None, &levels);
+            assert_eq!(
+                diags[0].severity,
+                Severity::Info,
+                "default severity preserved"
+            );
         }
     }
 
