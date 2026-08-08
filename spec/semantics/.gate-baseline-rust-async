@@ -6367,3 +6367,6 @@ pass	fa5 a TWO-effect fold — each level's step multiplies a draw from each thr
 pass	ch1 a FOUR-op result chain in one nested expression — each op transforms the last result while bumping the shared state differently
 pass	ch2 the same FOUR-op chain flattened through LETs — one binding per hop must equal the nested form exactly
 pass	ch3 the chain hops CROSS two effects — F.b of G.p of F.a, each thread advancing only on its own hops
+pass	cv1 an inner arm resumes with a CHAIN of two outer ops — O.b of O.a evaluated inside the arm, probe pins the double advance
+pass	cv2 TWO asks each running the in-arm chain — the second chain starts where the first left the outer thread
+pass	cv3 the in-arm chain routes through a PURE fn mid-hop — O.b of dbl of O.a, the pure call must not detach the thread
