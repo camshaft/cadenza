@@ -32,3 +32,28 @@ def ho-apply-dbl-twentyone() =
   (match run-src("(do (def (apply f x) (f x)) (def (dbl n) (+ n n)) (def (main) (apply dbl 21)) (export main))") with
     | Option.Some(v) => (if v == 42 then unit else trap("apply dbl 21 = 42"))
     | Option.None(_) => trap("apply dbl 21 runs"))
+
+@test
+def ho-two-different-fns-through-one-apply() =
+  // the SAME apply used with TWO different fn-values in one program: (+ (apply inc 10) (apply dbl 10)) =
+  // 11 + 20 = 31. Pins that a single fn-param callee resolves per-call-site to the passed fn (not fixed to
+  // the first), and that two distinct RDef fn-values flow through one arrow-typed param.
+  (match run-src("(do (def (apply f x) (f x)) (def (inc n) (+ n 1)) (def (dbl n) (+ n n)) (def (main) (+ (apply inc 10) (apply dbl 10))) (export main))") with
+    | Option.Some(v) => (if v == 31 then unit else trap("(apply inc 10) + (apply dbl 10) = 31"))
+    | Option.None(_) => trap("two different fns through one apply runs"))
+
+@test
+def ho-fn-through-two-param-hops() =
+  // a fn-value threaded through TWO fn-param hops: outer passes its f to app2, which applies it. outer inc 5 =
+  // 6. Pins the fn-param callee-fact propagates across a nested HO call (f → g), not just one hop.
+  (match run-src("(do (def (app2 g y) (g y)) (def (outer f x) (app2 f x)) (def (inc n) (+ n 1)) (def (main) (outer inc 5)) (export main))") with
+    | Option.Some(v) => (if v == 6 then unit else trap("outer inc 5 through two hops = 6"))
+    | Option.None(_) => trap("fn threaded through two param hops runs"))
+
+@test
+def ho-apply-result-in-if-cond() =
+  // an HO call result feeding an if-condition: (if (< (apply inc 0) 5) 100 200) → 1 < 5 → 100. Pins the
+  // arrow-result type grounds to Int so the comparison + branch type-check (HO result is an ordinary value).
+  (match run-src("(do (def (apply f x) (f x)) (def (inc n) (+ n 1)) (def (main) (if (< (apply inc 0) 5) 100 200)) (export main))") with
+    | Option.Some(v) => (if v == 100 then unit else trap("(if (< (apply inc 0) 5) 100 200) = 100"))
+    | Option.None(_) => trap("HO result in if-cond runs"))
