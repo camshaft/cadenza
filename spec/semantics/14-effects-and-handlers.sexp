@@ -18095,3 +18095,60 @@
                      (+ (if (< v 0) 10 90) (E.count))))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 113 Int64)))
+
+;; ── dv: DIVISION and MODULO edges via the thread ─────────────────────────────
+;; dv1 exercises truncated / (toward zero) and dividend-sign % over negative
+;; draws; dv2 takes the DIVISOR from the arm with a state-dependent SIGN
+;; (alternating +-3, including the sign-crossing quotient); dv3 divides a
+;; RUNTIME draw by -1 across the full non-MIN range (negation exact at
+;; MIN+1), the MIN draw guarded to its own branch. Note: MIN / -1 with BOTH
+;; operands as tail-resumptive op results still const-folds to the CDZ0304
+;; compile reject — the folder sees through the arms; witness banked.
+
+(case "dv1 truncated division and dividend-sign modulo over DRAWS — negative dividends exercise the toward-zero rule through dispatch"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 3))))
+                (let ((a (E.next)))
+                  (let ((b (E.next)))
+                    (+ (* 1000 (/ a 4))
+                       (+ (* 100 (% a 4))
+                          (+ (* 10 (/ b 4)) (% b 4))))))))
+            (export main)))
+  (call   main (: -7 Int64)) (output (: -1310 Int64))
+  (call   main (: 5 Int64)) (output (: 1120 Int64))
+  (call   main (: -9 Int64)) (output (: -2112 Int64)))
+
+(case "dv2 the DIVISOR comes from the arm with a state-dependent sign — quotient and remainder track the alternating divisor exactly"
+  (input  (do
+            (effect E (op next (-> Int64)) (op getdiv (-> Int64)) (op probe (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1)))
+                 (getdiv () s (resume (if (= (% s 2) 0) 3 -3) (+ s 1)))
+                 (probe () s (resume s s)))
+                (let ((a (E.next)))
+                  (let ((d (E.getdiv)))
+                    (+ (* 100 (/ a d))
+                       (+ (* 10 (% a d)) (- (E.probe) n)))))))
+            (export main)))
+  (call   main (: 7 Int64)) (output (: 212 Int64))
+  (call   main (: -8 Int64)) (output (: 182 Int64))
+  (call   main (: 4 Int64)) (output (: -88 Int64)))
+
+(case "dv3 division by -1 of a RUNTIME draw — negation across the full non-MIN range, the MIN draw guarded to its own branch"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s s)))
+                (let ((x (E.next)))
+                  (if (= x -9223372036854775808)
+                      777
+                      (/ x -1)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: -5 Int64))
+  (call   main (: -9223372036854775807 Int64)) (output (: 9223372036854775807 Int64))
+  (call   main (: -9223372036854775808 Int64)) (output (: 777 Int64)))
