@@ -3831,6 +3831,7 @@ pass	a two-site arm over a HEAP STATE with a body free-var and a second state-re
 pass	a two-site arm over a STRING state (concat on pass, hold on fail) with a trailing length reader
 pass	a two-site arm whose condition reads the ARG AND the STATE together folds
 pass	a two-site arm with HEAP resume values (empty vs two-element list) folds
+pass	a two-site arm with a second op that replaces the state mid-chain folds
 pass	a two-site resume arm reading the enclosing SEED param in its resume value folds
 pass	a two-site resume arm whose resume VALUE reads an enclosing-fn param folds
 pass	a two-site resume arm whose resume value is a heap LIST reading an enclosing param folds
@@ -5282,6 +5283,11 @@ pass	modulo of two floats rejects — the operator is integer-only, not merely p
 pass	mp1 draws pick the Map INSERT key and the LOOKUP key — hit-old, hit-updated, and miss all reachable by input
 pass	mp2 map VALUES are draws inserted in key order — weighted lookups replay the draw sequence through the map
 pass	mp3 a draw picks the Map.remove key — lookups of all three keys show exactly one hole where the thread pointed
+pass	mr1 mutual recursion drawing at EVERY level — even levels weight their draw x10, odd levels x1
+pass	mr2 the mutual pair draws from DIFFERENT effects — ev advances P, od advances Q, both threads interleave down the descent
+pass	mr3 the NEXT callee in the mutual group is picked by draw parity — the descent path itself follows the thread
+pass	mr4 an ACCUMULATOR threads the mutual pair — ev doubles it plus a draw, od triples it plus a draw, alternating scales
+pass	mr5 TWENTY alternating mutual levels with the scaling accumulator — depth stress on the cross-function fold
 pass	ms1 an op returns a THREE-variant sum built from state parity — two sequential performing scrutinees, the second sees the advanced state
 pass	ms2 match ARMS themselves draw after the performing scrutinee advanced the state — arm-selected continuation of the same thread
 pass	ms3 parity-sum dispatch inside a RECURSIVE walk — each level draws a Mode and accumulates by variant as the thread advances
@@ -6149,6 +6155,8 @@ pass	tp3 a NESTED tuple state ((a b) c) — the arm rebuilds the inner Fibonacci
 pass	tq1 a Q-shadow inside a TWO-effect region — P draws thread THROUGH the shadow while Q is locally rebound
 pass	tq2 the Q-shadow's SEED mixes P and Q draws — both outer threads advance before the shadow opens, and resume after
 pass	tq3 a Q-shadow wraps only the MIDDLE argument of a pure call — its neighbors dispatch to the outer P and Q frames
+pass	tq4 BOTH effects shadowed in one inner region — two fresh threads run their course, both outer threads untouched
+pass	tq5 a DEF installs the Q-shadow and draws P from inside it — the P dispatch crosses the def AND the shadow to the caller's frame
 pass	tr1 a TUPLE snapshot resume value — each dispatch returns (state, state*10), two snapshots differ by the stride
 pass	tree HEIGHT and BALANCE derive from insertion order over the same BST shape
 pass	triple negation of a runtime boolean is a single negation
@@ -6416,7 +6424,6 @@ todo	a recursive scalar-walk classifies characters across a multibyte String ent
 todo	a runtime bin match decodes a FINAL constant-size utf8 segment
 todo	a runtime-DISC `?` inside a stored closure applies per-call once BRICK 3b lands
 todo	a runtime-operand try as a list element declines pending brick 3b
-todo	a two-site arm with a second op that REPLACES the state mid-chain declines cleanly
 todo	an Option (sum) entry argument is marshalled as a native Option
 todo	an abortive perform in a recursive callee with a PENDING continuation in the handle body abandons it
 todo	an exported entry with a String parameter is called with a string argument
