@@ -1945,7 +1945,19 @@ pub mod driver {
         src: &str,
         label: &str,
     ) -> (String, bool) {
-        let diags = lint::run(lints, &target.tree, target.spans.as_ref());
+        lint_report_with_levels(lints, target, src, label, &lint::LintLevels::default())
+    }
+
+    /// [`lint_report`] with per-lint level overrides applied (allow suppresses, deny → error, warn →
+    /// warning). The level-free [`lint_report`] delegates here with an empty [`lint::LintLevels`].
+    pub fn lint_report_with_levels(
+        lints: &lint::LintSet,
+        target: &Target,
+        src: &str,
+        label: &str,
+        levels: &lint::LintLevels,
+    ) -> (String, bool) {
+        let diags = lint::run_with_levels(lints, &target.tree, target.spans.as_ref(), levels);
         let mut out = String::new();
         for d in &diags {
             let loc = match d.span {
@@ -1968,7 +1980,19 @@ pub mod driver {
         src: &str,
         file: Option<&str>,
     ) -> (String, bool) {
-        let diags = lint::run(lints, &target.tree, target.spans.as_ref());
+        lint_json_with_levels(lints, target, src, file, &lint::LintLevels::default())
+    }
+
+    /// [`lint_json`] with per-lint level overrides applied. The level-free [`lint_json`] delegates
+    /// here with an empty [`lint::LintLevels`].
+    pub fn lint_json_with_levels(
+        lints: &lint::LintSet,
+        target: &Target,
+        src: &str,
+        file: Option<&str>,
+        levels: &lint::LintLevels,
+    ) -> (String, bool) {
+        let diags = lint::run_with_levels(lints, &target.tree, target.spans.as_ref(), levels);
         let mut arr = json::Array::new();
         for d in &diags {
             let mut obj = json::Object::new();
@@ -5440,6 +5464,33 @@ mod tests {
             assert!(j.contains("\"severity\":\"warning\""), "{j}");
             assert!(j.contains("\"message\":\"avoid\""), "{j}");
             assert!(j.contains("\"file\":\"a.sexp\""), "{j}");
+        }
+
+        #[test]
+        fn lint_report_with_levels_applies_allow_and_deny() {
+            use crate::query::lint::{LintLevel, LintLevels};
+            let (target, _) = driver::load(b"(if a true false)", Format::Sexpr).unwrap();
+            let set = crate::query::lint::LintSet::compile(
+                "(lint idiomatic/if-bool (if ,c true false) \"prefer the condition\")",
+            )
+            .unwrap();
+            let src = "(if a true false)";
+            // Deny → the warning-default rule reports as an error and flags the run.
+            let mut deny = LintLevels::new();
+            deny.set("idiomatic/if-bool", LintLevel::Deny);
+            let (report, had_error) =
+                driver::lint_report_with_levels(&set, &target, src, "in.sexp", &deny);
+            assert!(had_error, "deny promotes to error: {report}");
+            assert!(report.contains("error: prefer the condition"), "{report}");
+            // Allow → suppressed entirely (empty report, no error).
+            let mut allow = LintLevels::new();
+            allow.set("idiomatic", LintLevel::Allow); // group prefix covers idiomatic/if-bool
+            let (report, had_error) =
+                driver::lint_report_with_levels(&set, &target, src, "in.sexp", &allow);
+            assert!(
+                !had_error && report.is_empty(),
+                "allow suppresses: {report:?}"
+            );
         }
     }
 
