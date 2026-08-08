@@ -1,0 +1,31 @@
+// VENDORED from cadenza-syntax/wit/syntax.wit (the producer #2673) — only the `types` + `parse` slices
+// the consumer imports. Kept in sync by hand (a small, stable surface); the consumer only calls
+// parse.read-sexpr for the flavor-2 demo. Versioned @0.0.0 to match the consumer world's import.
+package cadenza:syntax@0.0.0+SYNTAXGUESTHASH;
+
+interface types {
+  // A canonical binary AST artifact: a `cdzast\x00\x01` byte string. Opaque at this boundary.
+  type ast-bytes = list<u8>;
+
+  // One recovered diagnostic from an error-recovering parse (message + source span).
+  record diagnostic {
+    message: string,
+    byte-offset: u32,
+    len: u32,
+  }
+
+  // The result of an error-recovering parse: the (always-present) AST bytes + any diagnostics.
+  record parsed {
+    ast: ast-bytes,
+    diagnostics: list<diagnostic>,
+  }
+}
+
+interface parse {
+  use types.{parsed};
+
+  // Parse the ML surface (`parser::read_ml`).
+  read-ml: func(source: string) -> parsed;
+  // Parse the s-expression surface (`sexpr::read`, single top-level form).
+  read-sexpr: func(source: string) -> parsed;
+}

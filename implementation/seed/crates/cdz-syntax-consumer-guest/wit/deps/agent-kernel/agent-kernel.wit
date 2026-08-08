@@ -1,0 +1,131 @@
+// The cdz-kernel REDUCER world — the guest boundary of the v2 agent-harness kernel, as a wasm
+// component-model interface (design/agent-harness-kernel.md §19b). The operator's steer: model the
+// kernel's core boundary as the component model FROM THE START, not a Rust trait later mapped — so
+// this .wit IS the contract, and the wasmtime component host binds to it. (The Rust `Reducer` trait
+// in src/reducer.rs is the INTERIM until this world + the wasmtime host land; it mirrors this shape.)
+//
+// ── The fold, as a component ─────────────────────────────────────────────────────────────────────
+// A reducer is a pure fold: given the event being applied, it returns the effects it wants performed
+// (§3, §16c-S4). It holds NO state across calls — everything it needs to continue lives in the KV
+// store, which it reads/writes via the `kv` HOST IMPORT (a DIRECT read, NOT an effect — §4/§4b: a
+// reducer querying its own KV is not a world-touching effect). Effects are REQUESTS (§5): the guest
+// returns them; the HOST authorizes (SEC-F1), durably dispatches (§16c-S1), executes, and folds the
+// result back as a later event the guest will be called with again.
+//
+// ── Payloads are OPAQUE bytes at this boundary ───────────────────────────────────────────────────
+// Event/effect payloads are `list<u8>` here — the kernel treats them as opaque (design principle:
+// "kernel sees hashes + opaque bytes; what's behind them is Cadenza's business"). The CONTENTS are
+// Cadenza binary-sexpr (§19a — the shared cadenza-syntax::codec bottom crate), but that's a
+// guest/host userspace agreement ABOVE this wire, NOT something the component boundary decodes.
+// Large payloads are content-addressed blobs (a hash in the bytes); small ones inline — the guest
+// decides, the boundary just carries bytes. Keeping payloads opaque here is what keeps this world
+// codec-independent (so it can land BEFORE the §19a extraction).
+//
+// ── Determinism (§3, §16c-S3) ────────────────────────────────────────────────────────────────────
+// The guest MUST be a pure function of (event, kv). It may not read the clock, network, or entropy
+// directly — those enter only as effects whose results arrive as later `apply` calls. The wasm
+// sandbox enforces the absence of ambient I/O; this contract documents the intent. KV reads during a
+// fold are point-in-time (the host serves KV as-of the folds before this event).
+//
+// ⚠ CONTRACT STABILITY: like cadenza:runtime, the SHAPE below is the host↔guest contract. Additive
+// evolution only (new effect kinds appended, new optional fields) — never reorder/remove. This is a
+// DRAFT for review (v-syntax/rcdzc are not consumers; the wasmtime host is the next slice) — the
+// world is not yet wired to a host, so it can still be reshaped before the first component binds it.
+package cadenza:agent-kernel;
+
+// ── Shared value types ────────────────────────────────────────────────────────────────────────────
+interface types {
+  // NOTE (operator design review, 2026-08-01): there is NO guest-facing effect id. The kernel keeps a
+  // monotonic effect id INTERNALLY (event.rs/kernel.rs) purely for its own uniqueness-guaranteed
+  // bookkeeping — matching a Dispatched log event to its result, the open-obligation set, the
+  // kernel-fired-timer table — but the guest never sees it. The guest resumes SOLELY via its OWN
+  // opaque continuation token (see `effect-request.correlation`), which the kernel echoes back
+  // verbatim on the result event. One guest-supplied token, echoed back; the guest owns interpreting
+  // it. (An earlier draft surfaced both a kernel id AND the token to the guest — redundant at the
+  // boundary; collapsed to the single guest token per the operator's simpler model.)
+
+  // The structured content-type tag (§9b): a HINT the kernel carries opaquely for routing/filtering,
+  // NEVER a trusted type assertion. `family` + `version` so tolerant readers match on family and
+  // range-check version.
+  record content-type {
+    family: string,
+    version: u32,
+  }
+
+  // The effect KIND — the coarse verb; the resolved target + payload carry the specifics. Additive:
+  // append new kinds, never reorder. Mirrors src/effect.rs EffectKind.
+  enum effect-kind {
+    shell,   // run a command (structured {program,args} model — §18b lock-down; NOT a shell string)
+    http,    // an HTTP request; `target` is the URL (host is what the capability predicate gates)
+    model,   // invoke a model; `target` is the model id
+    now,     // read the wall clock → a recorded time-result (§9c); the guest never reads it directly
+    timer,   // arm a timer; the kernel injects timer-fired at the (absolute) deadline (§9c/§16c-S5)
+    emit,    // signal a peer session's inbox (§5); `target` is the session id
+  }
+
+  // An effect the guest wants performed. `target` is the SEC-F1 security-relevant string the host's
+  // capability predicate gates (a URL, a command, a session id) — the host authorizes it against the
+  // session's resource-scoped capability BEFORE dispatch; this boundary does not self-authorize.
+  record effect-request {
+    kind: effect-kind,
+    target: string,
+    // Opaque request body (Cadenza binary-sexpr above the wire). `none` = NO payload, distinct from
+    // `some([])` = an intentionally-empty payload (PR#1003 #3 — matches Rust `Option<Payload>`; a bare
+    // `list<u8>` couldn't tell absent from empty).
+    payload: option<list<u8>>,
+    // The guest's opaque continuation token — the SINGLE resume mechanism (operator design review). The
+    // guest sets it here (e.g. a key into its KV continuation table, or serialized continuation state);
+    // the kernel echoes it back VERBATIM on this effect's result/timer event, and the guest deserializes
+    // / makes sense of it. The kernel treats it as opaque bytes. `none` = fire-and-forget (the guest
+    // won't await this effect). This is what the guest resumes on — it never sees the kernel's internal
+    // effect id.
+    correlation: option<list<u8>>,
+  }
+}
+
+// ── The KV store, as a HOST IMPORT the guest calls directly ─────────────────────────────────────────
+// Per §4/§4b, a reducer reading its OWN KV is a direct query, NOT a world-touching effect — so KV is a
+// host-provided IMPORT interface the guest calls inline during a fold, not something it `apply`s an
+// effect for. (Log + KV stay HOST concerns — §19b: traits on the host side; this is their guest-facing
+// import surface.) Keys/values are opaque bytes (the guest defines their schema — §4).
+interface kv {
+  get: func(key: list<u8>) -> option<list<u8>>;
+  put: func(key: list<u8>, value: list<u8>);
+  delete: func(key: list<u8>) -> bool;
+  // Keys with `prefix`, in canonical (byte-ascending) order — deterministic (§16c-S8) so a fold over
+  // a scan emits effects in a replay-stable order.
+  prefix-scan: func(prefix: list<u8>) -> list<tuple<list<u8>, list<u8>>>;
+}
+
+// ── The fold export — the guest's one entrypoint ────────────────────────────────────────────────────
+interface fold {
+  use types.{effect-request, content-type};
+
+  // Fold ONE event into the KV, returning the effects requested (§3). Called once per event, in log
+  // order. The event is delivered as its opaque payload bytes + the envelope the guest needs: which
+  // content-type it is, and — for a result/timer event — the guest's OWN continuation token (`resumes`),
+  // echoed back verbatim from the originating effect-request's `correlation`, so the guest looks up /
+  // deserializes its continuation. Genesis/setup context arrive as ordinary early `apply` calls (§3
+  // genesis + context-as-events), so there is no separate init export.
+  //
+  // TOTALITY (§17 "can't-brick"): the guest must not trap for any input — an event it doesn't
+  // understand should yield an empty effect list, not a crash. (The host treats a guest trap as a fold
+  // failure; the trap→event policy is a host concern, §16c gap A.)
+  apply: func(
+    content-type: content-type,
+    payload: option<list<u8>>,
+    // For a result/timer event: the guest's OWN continuation token, echoed verbatim from the
+    // originating effect-request's `correlation` (the single resume mechanism — operator design review;
+    // the guest never sees the kernel's internal effect id). Absent for inbound messages / genesis /
+    // denials, and for a completed effect whose request set no `correlation` (fire-and-forget).
+    resumes: option<list<u8>>,
+  ) -> list<effect-request>;
+}
+
+// ── The reducer world: what a reducer component EXPORTS + IMPORTS ────────────────────────────────────
+world reducer {
+  // The guest reads/writes its session KV directly (a non-effect host import — §4b).
+  import kv;
+  // The guest exports the fold entrypoint the host drives per event.
+  export fold;
+}
