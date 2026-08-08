@@ -778,6 +778,17 @@ where
         );
         Ok((hosted, report))
     }
+
+    /// Fetch a blob by hash from this factory's own blob store — the loop's resolver for a
+    /// `control/signature` effect's target component bytes. Delegates straight to
+    /// [`BlobStore::get`](cdz_kernel::blob::BlobStore::get): `Ok(Some)` present, `Ok(None)` absent (a clean
+    /// miss), `Err` a backend failure (mapped to a String, never a panic).
+    async fn fetch_blob(&self, hash: &Hash) -> Result<Option<Vec<u8>>, String> {
+        self.blob
+            .get(hash)
+            .await
+            .map_err(|e| format!("blob store error fetching {hash}: {e}"))
+    }
 }
 
 #[cfg(test)]
@@ -1459,6 +1470,49 @@ mod tests {
             err.contains("no reducer component in the blob store for recovered hash")
                 && err.contains(&reducer_hash.to_string()),
             "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_blob_returns_a_put_blob_and_none_for_absent() {
+        use crate::admin::SessionFactory;
+        // The loop's signature-query target resolver: a blob put into the factory's store is fetched back by
+        // hash; an absent hash is a clean Ok(None) (a miss the loop settles as the Err arm), not an error.
+        let mut blob = MemBlobStore::new();
+        let bytes = b"a target component's bytes".to_vec();
+        let hash = blob.put(&bytes).await.unwrap();
+        let factory = ComponentSessionFactory::new(blob, hermetic_executors, deny_all_authz);
+        assert_eq!(
+            factory.fetch_blob(&hash).await.unwrap().as_deref(),
+            Some(&bytes[..]),
+            "a put blob is fetched back by hash"
+        );
+        assert_eq!(
+            factory
+                .fetch_blob(&Hash::of(b"never-stored"))
+                .await
+                .unwrap(),
+            None,
+            "an absent hash is a clean miss (Ok(None)), not an error"
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_blob_default_is_none() {
+        use crate::admin::{InstallSpec, SessionFactory};
+        // A factory with no blob store (a stub) resolves every hash as absent via the trait default, so the
+        // loop settles the signature query's Err arm cleanly rather than the trait forcing a blob store.
+        struct NoBlobFactory;
+        #[async_trait::async_trait(?Send)]
+        impl SessionFactory for NoBlobFactory {
+            async fn build(&mut self, _spec: &InstallSpec) -> Result<HostedSession, String> {
+                Err("stub".into())
+            }
+        }
+        assert_eq!(
+            NoBlobFactory.fetch_blob(&Hash::of(b"x")).await.unwrap(),
+            None,
+            "the trait default resolves every hash as absent"
         );
     }
 
