@@ -273,6 +273,34 @@ pub mod effect_ct {
         family.starts_with(BLOB_PREFIX)
     }
 
+    /// The `ws/*` namespace PREFIX — the reducer OUTBOUND WEBSOCKET-send partition (THE OUTPOST O1: a
+    /// gateway host where peer agents connect over a websocket + a GUEST reducer routes/federates them). A ws
+    /// INBOUND frame arrives as a plain `Inbound` event (no new family needed — the direction asymmetry:
+    /// inbound = an event, only the SEND half needs an effect). A reducer's OUTBOUND send is this family: like
+    /// `fs/*`/`metric/*`/`blob/*` it is AUTHZ-GATED + EXECUTOR-ROUTED (register-by-string, `Emit` placeholder
+    /// kind, no kernel drive-loop arm): the HOST registers a ws executor over its live-connection table,
+    /// Cedar-gated per send. The connection is opened by the PEER (the host mints an opaque conn-id on accept +
+    /// surfaces it to the reducer in the `Inbound` framing), NOT by the reducer — so there is no `ws/open`; a
+    /// reducer-initiated `ws/close` is a later additive op the prefix reserves room for. Routing/federation/
+    /// tool-visibility POLICY lives entirely in the guest reducer (minimize-host-logic: the host is plumbing).
+    pub const WS_PREFIX: &str = "ws/";
+
+    /// `ws/send` — write an outbound frame to a connected peer. `target` = the opaque connection-id the host
+    /// minted on accept and handed the reducer in the `Inbound` framing (the reducer ECHOES it back — the
+    /// kernel never interprets it, exactly like a `shell` program-target or an `Emit` peer-id rides
+    /// `req.target` as an opaque `Arc<str>`); `payload` = the outbound frame bytes. The HOST ws executor maps
+    /// the conn-id → its live connection and writes the frame, folding an Ok(delivered)/Err(gone) outcome
+    /// back. Per-send Cedar authz gates `resource.target = <conn-id>` (a policy can scope which peers/
+    /// peer-classes a reducer may send to). NO new kernel type — conn-id is a string target, frame is bytes.
+    pub const WS_SEND: &str = "ws/send";
+
+    /// Is `family` in the `ws/*` namespace (the reducer outbound-websocket partition, THE OUTPOST)? A prefix
+    /// test (like [`is_fs_family`]/[`is_blob_family`]). Executor-routed, so the drive loop needs no special arm —
+    /// here for the manifest + discoverability + one source of truth for the partition boundary.
+    pub fn is_ws_family(family: &str) -> bool {
+        family.starts_with(WS_PREFIX)
+    }
+
     /// Is `family` in the `control/*` namespace (authz-exempt, host/kernel-answered, never executor-routed)?
     /// The partition test the drive loop applies BEFORE authorize/route: `true` → control path, `false` →
     /// the effect path (authorize → executor). A simple prefix check on [`CONTROL_PREFIX`] — one source of
@@ -331,13 +359,15 @@ pub mod effect_ct {
         METRIC_PUBLISH,
         BLOB_PUT,
         BLOB_GET,
+        WS_SEND,
     ];
 
     /// If `family` is a WELL-KNOWN family whose string is a FIXED, kernel-defined `&'static` — one of the
     /// built-in effect verbs ([`ALL`], via [`super::EffectKind::from_family`]) or the exact control/store/fs/
     /// metric families (`control/capabilities`, `control/summary`, `store/set`, `store/resolve`, `store/add`,
-    /// `store/remove`, `store/resolve-all`, `fs/read`, `fs/write`, `fs/glob`, `metric/publish`) — return that
-    /// canonical `&'static str`. `None` for an EXTENSION family (register-by-string).
+    /// `store/remove`, `store/resolve-all`, `fs/read`, `fs/write`, `fs/glob`, `metric/publish`, `blob/put`,
+    /// `blob/get`, `ws/send`) — return that canonical `&'static str`. `None` for an EXTENSION family
+    /// (register-by-string).
     ///
     /// The distinction matters for LOGGING (github-liaison #2180 residual): `ContentType.family` is a
     /// `Cow<'static, str>` and for an extension family it carries the CALLER's `Cow::Owned` verbatim — i.e.
@@ -370,6 +400,7 @@ pub mod effect_ct {
             METRIC_PUBLISH => Some(METRIC_PUBLISH),
             BLOB_PUT => Some(BLOB_PUT),
             BLOB_GET => Some(BLOB_GET),
+            WS_SEND => Some(WS_SEND),
             _ => None,
         }
     }
@@ -948,6 +979,7 @@ mod tests {
         assert_eq!(wellknown_static_str(METRIC_PUBLISH), Some(METRIC_PUBLISH));
         assert_eq!(wellknown_static_str(BLOB_PUT), Some(BLOB_PUT));
         assert_eq!(wellknown_static_str(BLOB_GET), Some(BLOB_GET));
+        assert_eq!(wellknown_static_str(WS_SEND), Some(WS_SEND));
         // Extension families (register-by-string, guest-controlled) → None (redacted).
         assert_eq!(wellknown_static_str("my/custom-effect"), None);
         assert_eq!(wellknown_static_str("weather"), None);
@@ -1329,6 +1361,36 @@ mod tests {
         assert_eq!(effect_ct::wellknown_static_str("blob/secret-x"), None);
         assert!(effect_ct::is_blob_family("blob/secret-x"));
         assert!(!effect_ct::is_blob_family("myblob"));
+    }
+
+    #[test]
+    fn ws_family_is_a_routed_partition_disjoint_from_the_others() {
+        // THE OUTPOST O1: ws/* is the reducer OUTBOUND-websocket partition. Executor-routed + authz-gated
+        // (register-by-string, no new EffectKind), like fs/*/blob/*/metric/*. O1 ships ws/send; the WS_PREFIX
+        // reserves the namespace so a later ws/close slots in additively.
+        assert_eq!(effect_ct::WS_PREFIX, "ws/");
+        assert_eq!(effect_ct::WS_SEND, "ws/send");
+        assert!(effect_ct::is_ws_family(effect_ct::WS_SEND));
+        assert!(effect_ct::WS_SEND.starts_with(effect_ct::WS_PREFIX));
+        // SAFE-LOGGING (#2180): the exact string is a kernel-defined fixed &'static → log VERBATIM.
+        assert_eq!(
+            effect_ct::wellknown_static_str(effect_ct::WS_SEND),
+            Some(effect_ct::WS_SEND)
+        );
+        // In the manifest family set → the capability projection reports the ws grant-state.
+        assert!(effect_ct::ALL.contains(&effect_ct::WS_SEND));
+        // DISJOINT from every other partition (a distinct outbound-transport family).
+        assert!(!effect_ct::is_store_family(effect_ct::WS_SEND));
+        assert!(!effect_ct::is_fs_family(effect_ct::WS_SEND));
+        assert!(!effect_ct::is_metric_family(effect_ct::WS_SEND));
+        assert!(!effect_ct::is_blob_family(effect_ct::WS_SEND));
+        assert!(!effect_ct::is_lifecycle_family(effect_ct::WS_SEND));
+        assert!(!effect_ct::is_control_family(effect_ct::WS_SEND));
+        assert!(!effect_ct::is_ws_family(effect_ct::FS_WRITE));
+        // A guest fake ws-ish name that isn't the exact const logs redacted (None); prefix still classifies.
+        assert_eq!(effect_ct::wellknown_static_str("ws/secret-x"), None);
+        assert!(effect_ct::is_ws_family("ws/secret-x"));
+        assert!(!effect_ct::is_ws_family("myws"));
     }
 
     #[test]
