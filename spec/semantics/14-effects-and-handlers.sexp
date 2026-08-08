@@ -18047,3 +18047,51 @@
                       (E.count)))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 122 Int64)))
+
+;; ── wx (cont.): wrapping ARITHMETIC at the dispatch boundary ─────────────────
+;; wx4 doubles the op argument with wrapping-mul inside the ARM (MAX -> -2,
+;; MIN -> 0, small exact); wx5 steps the STATE by wrapping-sub of MAX per draw
+;; (draws 0, MIN+1, 2 — the seam crossed in both directions); wx6 chains
+;; wrapping increments hop-to-hop (MAX-1 crosses the seam inside a nested
+;; three-op chain).
+
+(case "wx4 the ARM doubles its argument with wrapping-mul — MAX wraps to -2, MIN to 0, a small value stays exact, count rides along"
+  (input  (do
+            (effect E (op dbl (-> Int64 Int64)) (op count (-> Int64)))
+            (def (main (: u Int64))
+              (handle E 0
+                ((dbl (x) s (resume (Int64.wrapping-mul x 2) (+ s 1)))
+                 (count () s (resume s s)))
+                (+ (E.dbl 9223372036854775807)
+                   (+ (E.dbl -9223372036854775808)
+                      (+ (E.dbl 3) (* 10 (E.count)))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 34 Int64)))
+
+(case "wx5 the state STEPS by wrapping-sub of MAX each draw — two hops cross the seam in opposite directions"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (def (main (: u Int64))
+              (handle E 0
+                ((next () s (resume s (Int64.wrapping-sub s 9223372036854775807))))
+                (let ((d1 (E.next)))
+                  (let ((d2 (E.next)))
+                    (let ((d3 (E.next)))
+                      (+ (if (< d2 0) 1 5)
+                         (+ (if (> d3 0) 10 50)
+                            (if (= d3 2) 100 900))))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 111 Int64)))
+
+(case "wx6 wrapping increments CHAINED hop-to-hop — MAX-1 crosses the seam inside a nested three-op chain, count pins the trips"
+  (input  (do
+            (effect E (op step (-> Int64 Int64)) (op count (-> Int64)))
+            (def (main (: u Int64))
+              (handle E 0
+                ((step (x) s (resume (Int64.wrapping-add x 1) (+ s 1)))
+                 (count () s (resume s s)))
+                (let ((v (E.step (E.step (E.step 9223372036854775806)))))
+                  (+ (if (= v -9223372036854775807) 100 900)
+                     (+ (if (< v 0) 10 90) (E.count))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 113 Int64)))
