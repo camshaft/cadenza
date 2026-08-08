@@ -877,47 +877,68 @@ fn is_param_list(db: &Db, list: StructId, child: StructId) -> bool {
 }
 
 /// Whether the argument subtree at `node` reaches a PERFORM — an effect operation (a discharged handler
-/// op, an outer handler's op, or a HOST-delegated op), or a bare `resume` — following NON-RECURSIVE callee
-/// bodies (bounded depth). The evaluate-ONCE trigger's "does this argument carry an observable effect that
-/// must not be duplicated by a multi-use param substitution" test. CTX-FREE (an `effect_op_of` head is a
-/// perform regardless of which handler owns it), so it lives here in eval rather than needing a
-/// `HandlerCtx` — the sibling `effects::arg_reaches_any_perform` gates the FOLD's arm-side dup; this gates
-/// the GENERAL β-reduce inline (a pure multi-use helper whose param is bound to an effectful arg, which the
-/// fold never sees because the helper does not itself perform). CONSERVATIVE: a recursive/too-deep callee
-/// over-reports `true` (a spurious let-wrap of a pure arg is still semantics-preserving — it only binds a
-/// value once — so over-reporting costs at most a redundant let, never a miscompile).
+/// op, an outer handler's op, or a HOST-delegated op), or a bare `resume` — following callee bodies once
+/// each (a `visited` set terminates recursion; bounded depth as a native-stack backstop). The
+/// evaluate-ONCE trigger's "does this argument carry an observable effect that must not be duplicated by a
+/// multi-use param substitution" test. CTX-FREE (an `effect_op_of` head is a perform regardless of which
+/// handler owns it), so it lives here in eval rather than needing a `HandlerCtx` — the sibling
+/// `effects::arg_reaches_any_perform` gates the FOLD's arm-side dup; this gates the GENERAL β-reduce inline
+/// (a pure multi-use helper whose param is bound to an effectful arg, which the fold never sees because the
+/// helper does not itself perform).
+///
+/// A RECURSIVE callee is followed via the `visited` set (walked once), NOT blanket-reported as performing:
+/// an over-report is NOT harmless here. It let-wraps a PURE arg instead of substituting it, and in a
+/// multi-level inline the leftover param-ref residuals get pinned as false captures and emitted with no
+/// local slot ("parameter reference has no local slot" — the cross-module HM-unify miscompile a recursive
+/// but effect-free resolver like `apply-sign-go` tripped). Only a genuinely-effectful callee (an
+/// `effect_op_of`/`resume` reached on the one walk) or a past-cap depth returns `true`.
 fn arg_reaches_perform_evalonce(db: &mut Db, node: StructId) -> bool {
-    fn walk(db: &mut Db, node: StructId, depth: u32) -> bool {
-        if depth > 32 {
+    // `visited` records callee BODIES already entered on the current walk, so a RECURSIVE callee is
+    // followed EXACTLY ONCE (its body walked; a self-call re-entry is skipped by the visited check)
+    // rather than blanket over-reporting `true`. This is the fix for the "pure recursive helper wrongly
+    // flagged as performing" miscompile: a fuel-recursed but effect-FREE helper like `apply-sign-go`
+    // (chain-following resolution, no perform anywhere) reaches NO perform, so its multi-use caller param
+    // must be SUBSTITUTED, not left-out + let-wrapped. The old `is_recursive → true` over-report let-wrapped
+    // a pure arg, leaving the param's refs as residuals that a NESTED inline then pinned as false captures
+    // and shared slot-less → "parameter reference has no local slot" at emit (cross-module HM-unify miscompile,
+    // v-wasm-opt/v-compiler-ml 2026-08-08). A genuinely-effectful recursive callee still returns `true` (its
+    // body's `effect_op_of`/`resume` is seen on the one walk). Depth-capped independently as a native-stack
+    // backstop; the visited set is what makes recursion terminate rather than the cap.
+    fn walk(
+        db: &mut Db,
+        node: StructId,
+        depth: u32,
+        visited: &mut crate::fxhash::FxHashSet<StructId>,
+    ) -> bool {
+        if depth > 64 {
             return true; // too deep — assume it may perform (safe over-report)
         }
         if let Resolved::Apply { head, args } = resolved_of(db, node) {
             if effect_op_of(db, head).is_some() {
                 return true;
             }
-            // Follow a NON-RECURSIVE callee body (a helper that itself performs); a recursive one
-            // over-reports. A non-function head (a constructor, a record field-pair label) hides no
-            // perform in the head — only its args, covered by the descent below.
+            // Follow the callee body ONCE (recursive or not). A non-function head (a constructor, a record
+            // field-pair label) hides no perform in the head — only its args, covered by the descent below.
             if let Some(callee) = lambda_body(db, head).or_else(|| lambda_body_of_nullary(db, head))
+                && visited.insert(callee)
+                && walk(db, callee, depth + 1, visited)
             {
-                if is_recursive(db, callee) {
-                    return true;
-                }
-                if walk(db, callee, depth + 1) {
-                    return true;
-                }
+                return true;
             }
-            return args.iter().any(|&a| walk(db, a, depth + 1));
+            return args.iter().any(|&a| walk(db, a, depth + 1, visited));
         }
         if matches!(resolved_of(db, node), Resolved::Resume { .. }) {
             return true;
         }
         match db.ast.get(node).clone() {
-            crate::ast::Struct::List(children) => children.iter().any(|&c| walk(db, c, depth + 1)),
+            crate::ast::Struct::List(children) => {
+                children.iter().any(|&c| walk(db, c, depth + 1, visited))
+            }
             crate::ast::Struct::Atom(_) => false,
         }
     }
-    walk(db, node, 0)
+    let mut visited = crate::fxhash::FxHashSet::default();
+    walk(db, node, 0, &mut visited)
 }
 
 /// How many times a body reference resolves to the parameter NAME occurrence `binder` — the way
