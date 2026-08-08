@@ -81,6 +81,12 @@ pub enum Leaf {
 /// magnitude carries no leading zero bytes and is empty iff the value is zero, so equal values share
 /// one representation (and one leaf-pool entry). A magnitude read off the wire is stored verbatim so
 /// that `decode` is a faithful inverse of `encode`.
+///
+/// Because a compile-time-computed exact integer (`fold_arith` of `+`/`-`/`*`/…) canonicalizes to the
+/// SAME `IntValue` as the literal of that value — one canonical magnitude, hence one leaf-pool entry and
+/// one encoding — its serialized byte form depends only on the value, never on how it was computed.
+//= spec/contracts/deterministic-value-form.md#numeric-values-serialize-deterministically
+//# An exact numeric value MUST serialize to a byte form that is independent of how the value was computed.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct IntValue {
     pub negative: bool,
