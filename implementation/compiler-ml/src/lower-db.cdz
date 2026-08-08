@@ -17,6 +17,7 @@
 import { Tok, Node, Tree, node-at, parse-tokens, empty-tree, add-node, record-def, record-param, def-body-of, call-is-recursive, call-is-self-recursive, param-of, param2-of, param3-of, param4-of, arg2-of, arg3-of, arg4-of, ctor-tag-of, ctor-decl-of, decl-is-enum-disc, record-ctor-tag, record-ctor-tag-typed } from "parse-db"
 import { Resolved, resolve-tree, resolve-node, param-scope } from "resolve-db"
 import { infer-tree, infer-node } from "infer-db"
+import { ty-col-to-typed, typed-col-to-ty } from "ty-bridge"
 import { Typed } from "typed"
 
 /// The integer Core IR. `CVar` carries the BINDER node-id (canonical unique name); `CLet` is keyed by its
@@ -385,7 +386,9 @@ def lower-rec-arg-opt(tree: Tree, slot: Option(Int64), rcol: Map(Int64, Resolved
 /// The lower COLUMN builder: build resolve + infer columns (demanding parse under them), then lower over
 /// them. The whole demand chain in one call — lower reaches infer reaches resolve reaches parse.
 def lower-tree(tree: Tree, root: Int64) =
-  lower-node(tree, root, resolve-tree(tree, root), infer-tree(tree, root))
+  // ARC-A2: infer-tree now yields a Map(Int64, Ty); lower-node still reads a Typed column this slice, so bridge
+  // the Ty column back to Typed at the call boundary (ty-col-to-typed). TEMPORARY — removed when lower-db migrates.
+  lower-node(tree, root, resolve-tree(tree, root), ty-col-to-typed(infer-tree(tree, root)))
 
 /// slice-B1b: the param BINDER node-ids a def-name declares, in order (`[]` for a nullary def). The def-env
 /// keys the body's CVar binders by these ids; eval binds args positionally to them in a fresh env.
@@ -424,10 +427,13 @@ def lower-one-def(tree: Tree, nameId: Int64, bodyId: Int64) =
   (let params = def-param-ids(tree, nameId) in
    (let scope = def-param-scope(tree, nameId) in
     (let rcol = resolve-node(tree, bodyId, scope, (Map.empty : Map(Int64, Resolved))) in
-     (let tcol = infer-node(tree, bodyId, rcol, seed-param-types(params, (Map.empty : Map(Int64, Typed)))) in
+     // ARC-A2 bridge: infer-node takes/returns a Ty column now; seed-param-types still builds a Typed seed
+     // (lower-db not yet migrated), so convert the seed Typed→Ty in, and the result Ty→Typed out for lower-node.
+     (let tyCol = infer-node(tree, bodyId, rcol, typed-col-to-ty(seed-param-types(params, (Map.empty : Map(Int64, Typed))))) in
+      (let tcol = ty-col-to-typed(tyCol) in
       (match lower-node(tree, bodyId, rcol, tcol) with
         | Option.Some(bodyCore) => Option.Some((params, bodyCore))
-        | Option.None(_) => Option.None(unit))))))
+        | Option.None(_) => Option.None(unit)))))))
 
 /// slice-B1b: fold the def-table entries into the def-env `Map(name, (paramBinderIds, bodyCore))`. Only a
 /// RECURSIVE def (call-is-recursive) is added — a CCall is emitted ONLY for a recursive callee, so the def-env
