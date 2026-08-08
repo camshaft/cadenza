@@ -7845,15 +7845,6 @@ fn gate_local(arch: &str) {
 /// gate keys off elapsed seconds, so a slower/faster loop self-adjusts. v-nix-agreed default (2026-08-08).
 const GC_MIN_INTERVAL_SECS: u64 = 3 * 60 * 60;
 
-/// The stable ABSOLUTE warm-root dir the runner passes to `warm-keep` as `CDZ_WARM_ROOT`. It MUST live
-/// OUTSIDE any worktree (a repo-relative root silently dangles its indirect GC-roots when the worktree
-/// moves — the silent-unroot failure v-nix hit), so the warm layer stays rooted across worktree churn.
-/// warm-keep self-defaults to `$HOME/.cdz-warm-roots` (also safe); the runner sets it EXPLICITLY (the
-/// flake's documented "host GC runner sets it") so the rooted path is fixed regardless of the loop's
-/// `$HOME`. Only `warm-keep` reads it — `gc` ignores it (a plain `nix store gc` preserves ALL registered
-/// GC-roots wherever they live), so the runner does NOT pass it to the gc call.
-const GC_WARM_ROOT: &str = "/local/home/bythewc/.cdz-warm-roots";
-
 /// Cap a single GC reclaim so a large backlog can't stall a pr-sync tick (`CDZ_GC_MAX_FREED`, bytes).
 const GC_MAX_FREED_BYTES: &str = "5000000000"; // ~5 GiB per pass
 
@@ -7871,12 +7862,23 @@ fn should_run_gc(last_run: Option<u64>, now: u64, interval_secs: u64) -> bool {
 /// The pr-sync-loop nix-store GC hook (operator item 2; placement + contract agreed with v-nix 2026-08-08,
 /// option A). Called at the end of each `schedule-pass --execute` tick. Fires at most every
 /// [`GC_MIN_INTERVAL_SECS`] (timestamp-gated via `Fleet::gc_timestamp_path`), so it is a fast no-op on most
-/// ticks. When it fires: run `nix run .#warm-keep` FIRST (re-pin the warm layer as GC-roots) and run
-/// `nix run .#gc` ONLY if warm-keep exited 0 — a failed warm-keep must never leave the warm layer unrooted
-/// right before a reclaim (v-nix's silent-dangle failure mode). Both apps are v-nix's (flake lane) and are
-/// quick cache-hits when already warm. Stamps the timestamp only after a successful gc, so a failed pass
-/// retries next eligible tick. Best-effort: any spawn/exit failure is logged and swallowed — GC is
-/// maintenance, never a reason to fail the integration pass. Skips silently in a non-nix environment.
+/// ticks.
+///
+/// It DETACHES the work: warm-keep + gc are a multi-MINUTE nix build (cdz-agent-host-native / cdz-kernel-native
+/// / icu deps), but pr-sync's `schedule-pass` runs under a ~2min foreground timeout. Running them inline blocked
+/// the pass and got INTERRUPTED before completion — and because the old code stamped only AFTER a successful gc,
+/// the interrupted run never stamped, so `should_run_gc` re-fired EVERY tick (a timeout feedback loop pr-sync
+/// hit). Fix: (1) STAMP `last-gc` BEFORE launching, so a slow/interrupted run still advances the 3h interval
+/// (worst case: gc is skipped one cycle — disk stays safe, no re-fire); (2) SPAWN the work DETACHED (a
+/// backgrounded `warm-keep && gc` shell) and DON'T wait — the pass returns immediately, the reclaim finishes
+/// out-of-band. The `&&` keeps v-nix's fail-safe (gc runs ONLY if warm-keep exits 0, so a failed warm-keep never
+/// reclaims with the layer unrooted). Best-effort: a spawn failure is logged + swallowed (GC is maintenance,
+/// never a reason to fail integration); skips silently in a non-nix env. warm-keep needs no `CDZ_WARM_ROOT`
+/// (self-defaults to `$HOME/.cdz-warm-roots`, safe — a hardcoded `/local/home/...` literal only pins a DUPLICATE
+/// alias-root since `$HOME` symlinks there) and gc ignores it (`nix store gc` preserves ALL registered roots),
+/// so only `CDZ_GC_MAX_FREED` is passed. Runs from the caller's cwd (pr-sync's flake-bearing worktree) — NOT
+/// `fleet.repo`, the bare flakeless hub root (the earlier cwd bug: warm-keep there errored "not part of a
+/// flake" so gc never ran).
 fn maybe_run_gc(fleet: &Fleet) {
     let stamp = fleet.gc_timestamp_path();
     let last_run = std::fs::read_to_string(&stamp)
@@ -7886,53 +7888,32 @@ fn maybe_run_gc(fleet: &Fleet) {
         return; // within the interval — nothing to do this tick.
     }
     let nix_bin = nix_binary();
-    eprintln!(
-        "gc-hook: {GC_MIN_INTERVAL_SECS}s elapsed → warm-keep then gc (CDZ_WARM_ROOT={GC_WARM_ROOT})"
+    // STAMP FIRST — advance the 3h clock BEFORE launching, so an interrupted/slow run can't re-fire the hook
+    // every tick (the feedback loop pr-sync hit under the ~2min schedule-pass timeout). If the detached run
+    // fails, worst case is one skipped cycle.
+    let _ = std::fs::write(&stamp, now_unix().to_string());
+    // Detached `warm-keep && gc`: warm-keep re-pins the warm layer as GC-roots, and ONLY on its success (`&&`)
+    // does gc reclaim — never reclaim with the layer unrooted (v-nix's silent-dangle fail-safe). Spawned and
+    // NOT waited on, so the multi-minute build never blocks/times-out schedule-pass.
+    let shell_cmd = format!(
+        "{nix} run .#warm-keep && CDZ_GC_MAX_FREED={cap} {nix} run .#gc",
+        nix = nix_bin,
+        cap = GC_MAX_FREED_BYTES
     );
-    // 1. warm-keep FIRST — re-pin the current warm layer as GC-roots before reclaiming. Run from the
-    //    CALLER's cwd (pr-sync's worktree, which has the flake) — NOT `fleet.repo`, the bare hub root that
-    //    has NO flake.nix (`nix run .#warm-keep` there errors "not part of a flake", so gc would skip
-    //    forever and the store never gets reclaimed — pr-sync caught this). Mirrors `run_gate_local`,
-    //    which sets no current_dir and works for exactly this reason.
-    let warm = Command::new(&nix_bin)
-        .args(["run", ".#warm-keep"])
-        .env("CDZ_WARM_ROOT", GC_WARM_ROOT)
-        .status();
-    match warm {
-        Ok(s) if s.success() => {}
-        Ok(s) => {
+    match Command::new("sh").arg("-c").arg(&shell_cmd).spawn() {
+        Ok(child) => {
             eprintln!(
-                "gc-hook: `nix run .#warm-keep` exited {s} — SKIPPING gc this cycle (never reclaim with the warm layer unrooted). Retry next eligible tick."
-            );
-            return;
-        }
-        Err(e) => {
-            eprintln!(
-                "gc-hook: could not invoke `nix run .#warm-keep` ({e}) — skipping gc (likely a non-nix env)."
-            );
-            return;
-        }
-    }
-    // 2. gc — reclaim dead paths, bounded. Same caller-cwd (flake-bearing worktree) fix as warm-keep.
-    //    `nix store gc` preserves ALL registered GC-roots (the ones warm-keep just pinned included), so
-    //    gc needs NO CDZ_WARM_ROOT — only the reclaim bound.
-    let gc = Command::new(&nix_bin)
-        .args(["run", ".#gc"])
-        .env("CDZ_GC_MAX_FREED", GC_MAX_FREED_BYTES)
-        .status();
-    match gc {
-        Ok(s) if s.success() => {
-            // Stamp ONLY on success, so a failed gc retries next eligible tick rather than waiting a full interval.
-            let _ = std::fs::write(&stamp, now_unix().to_string());
-            eprintln!(
-                "gc-hook: reclaim complete; next pass in ~{}h.",
+                "gc-hook: {GC_MIN_INTERVAL_SECS}s elapsed → spawned detached `warm-keep && gc` (pid {}); next pass in ~{}h.",
+                child.id(),
                 GC_MIN_INTERVAL_SECS / 3600
             );
+            // Don't wait — the reclaim finishes out-of-band. We intentionally drop the handle (the OS reaps
+            // the detached child); blocking on it is exactly the timeout we're avoiding.
+            std::mem::drop(child);
         }
-        Ok(s) => eprintln!(
-            "gc-hook: `nix run .#gc` exited {s} — not stamping; will retry next eligible tick."
+        Err(e) => eprintln!(
+            "gc-hook: could not spawn `warm-keep && gc` ({e}) — skipping (likely a non-nix env). Interval already advanced; retries next eligible window."
         ),
-        Err(e) => eprintln!("gc-hook: could not invoke `nix run .#gc` ({e}) — skipping."),
     }
 }
 
