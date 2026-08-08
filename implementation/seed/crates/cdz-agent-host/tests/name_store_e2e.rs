@@ -30,7 +30,7 @@ const NAME: &str = "system/compiler/latest";
 struct SetThenResolve;
 #[async_trait::async_trait(?Send)]
 impl Reducer for SetThenResolve {
-    async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+    async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
         match &event.body {
             EventBody::Inbound { .. } => {
                 let payload = encode_name_set(NAME, &Hash::of(b"compiler-wasm-v1"));
@@ -73,7 +73,7 @@ impl Reducer for SetThenResolve {
 struct SetOnly;
 #[async_trait::async_trait(?Send)]
 impl Reducer for SetOnly {
-    async fn fold(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+    async fn fold(&mut self, event: &Event, _kv: &mut Kv) -> FoldOutput {
         if matches!(event.body, EventBody::Inbound { .. }) {
             let payload = encode_name_set(NAME, &Hash::of(b"compiler-wasm-v1"));
             FoldOutput::with(vec![EffectRequest::new_with_family(

@@ -33,7 +33,7 @@ struct Publisher {
 }
 #[async_trait::async_trait(?Send)]
 impl Reducer for Publisher {
-    async fn fold(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+    async fn fold(&mut self, event: &Event, _kv: &mut Kv) -> FoldOutput {
         if matches!(event.body, EventBody::Inbound { .. }) {
             FoldOutput::with(vec![EffectRequest::new_with_family(
                 effect_ct::STORE_SET,
@@ -51,7 +51,7 @@ impl Reducer for Publisher {
 struct Consumer;
 #[async_trait::async_trait(?Send)]
 impl Reducer for Consumer {
-    async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+    async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
         match &event.body {
             EventBody::Inbound { .. } => FoldOutput::with(vec![EffectRequest::new_with_family(
                 effect_ct::STORE_RESOLVE,

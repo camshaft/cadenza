@@ -28,7 +28,7 @@ use common::policy_component_bytes;
 struct CapabilityAwareAgent;
 #[async_trait::async_trait(?Send)]
 impl Reducer for CapabilityAwareAgent {
-    async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+    async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
         if let EventBody::EffectResult {
             result: EffectOutcome::Ok(Some(Payload::Inline(bytes))),
             ..
