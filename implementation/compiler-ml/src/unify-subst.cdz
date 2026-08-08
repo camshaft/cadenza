@@ -1,0 +1,176 @@
+/// unify-subst.cdz — ARC-B3 of the rcdzc HM port: UNIFICATION THAT BINDS VARS (rcdzc unify.rs `unify` threading
+/// a `Subst`). This is the PAYOFF slice — the first place a unification variable actually DOES something: instead
+/// of A1's inert "a var takes the other side and is forgotten," B3 RECORDS the binding in the Subst, so a var
+/// solved on one constraint stays solved for the next (`SVar 0 ~ Signed` then `SVar 0 ~ Unsigned` now CONFLICTS,
+/// because 0 is bound to Signed — the essence of a real solve).
+///
+/// SHAPE vs the existing `unify-ty` (unify-ty.cdz): that one is the STATELESS value-combiner infer's arith/if-join
+/// use today (`Ty × Ty → Option(Ty)`, a var inertly takes the other side). THIS is the Subst-THREADING solver
+/// (`Subst × Ty × Ty → Option(Subst)`): it returns the EXTENDED substitution (or None on conflict), binding vars
+/// with an occurs-check. Kept as a SEPARATE module (not an edit to unify-ty.cdz) so (a) it doesn't touch a file
+/// with a pending merge-request, and (b) the stateless combiner stays available until the infer pipeline migrates
+/// onto the Subst form (a later slice wires infer to thread a Subst; B3 delivers the solver it will call). Mirrors
+/// rcdzc's `unify(subst, a, b) -> Result<(), Reject>` (there: mutates subst in place + returns ok/reject; here:
+/// returns the new Subst or None — same information, pure-functional).
+///
+/// ALGORITHM (rcdzc unify.rs, orthogonal-int case): to unify two ints, unify SIGN and WIDTH independently,
+/// THREADING the Subst through both (the width unify sees the sign unify's bindings). Each axis:
+///   - resolve BOTH sides through the current Subst first (apply-sign/apply-width — a var already bound is its
+///     binding);
+///   - var ~ var (same id): already equal, no new binding;
+///   - var ~ anything (after resolve, one side is still an unbound var): OCCURS-CHECK, then BIND var := other;
+///   - concrete ~ concrete: must be EQUAL (sign-eq/width-eq) else conflict (the CDZ0301 no-silent-promotion rule);
+///   - deferred behaves as before (a SignDef/WidthDef takes the other — deferred is not a solvable var, it's a
+///     literal's not-yet-constrained axis that grounds by defaulting; only SVar/WVar record bindings).
+import { Sign, Width, IntType, Ty, sign-eq, width-eq } from "ty"
+import { Subst, apply-sign, apply-width, subst-bind-sign, subst-bind-width } from "subst"
+import { sign-occurs, width-occurs } from "hm-vars"
+
+/// Unify two SIGNS under a Subst, returning the extended Subst (or None on conflict). Resolves both sides first,
+/// then: same-var → unchanged; either side an unbound var → occurs-check + bind; two concretes → must be equal;
+/// a deferred takes the other (deferred is not a var — no binding, just picks the more-defined side).
+def unify-sign-su(su: Subst, a: Sign, b: Sign) = bind-or-check-sign(su, apply-sign(su, a), apply-sign(su, b))
+
+/// Core sign step over ALREADY-RESOLVED signs `ra`,`rb` (each = its Subst binding if bound).
+def bind-or-check-sign(su: Subst, ra: Sign, rb: Sign) = match ra with
+  | Sign.SVar(ia) => (match rb with
+      | Sign.SVar(ib) => (if ia == ib then Option.Some(su)                       // same var → already equal
+                          else Option.Some(subst-bind-sign(su, ia, Sign.SVar(ib))))  // var~var → bind one to the other (ids differ so no self-cycle)
+      | _ => (if sign-occurs(su, ia, rb) then Option.None(unit)                  // occurs → infinite type → reject
+              else Option.Some(subst-bind-sign(su, ia, rb))))                    // bind var := the concrete/deferred other
+  | Sign.SignDef => Option.Some(su)                                              // deferred ~ anything (incl a var) → other; no binding
+  | Sign.Signed => (match rb with
+      | Sign.SVar(ib) => (if sign-occurs(su, ib, ra) then Option.None(unit) else Option.Some(subst-bind-sign(su, ib, ra)))  // bind the var to Signed
+      | Sign.SignDef => Option.Some(su)
+      | Sign.Signed => Option.Some(su)
+      | Sign.Unsigned => Option.None(unit))                                      // Signed ~ Unsigned → conflict
+  | Sign.Unsigned => match rb with
+      | Sign.SVar(ib) => (if sign-occurs(su, ib, ra) then Option.None(unit) else Option.Some(subst-bind-sign(su, ib, ra)))
+      | Sign.SignDef => Option.Some(su)
+      | Sign.Unsigned => Option.Some(su)
+      | Sign.Signed => Option.None(unit)
+
+/// Unify two WIDTHS under a Subst (the orthogonal twin of unify-sign-su).
+def unify-width-su(su: Subst, a: Width, b: Width) = bind-or-check-width(su, apply-width(su, a), apply-width(su, b))
+
+def bind-or-check-width(su: Subst, ra: Width, rb: Width) = match ra with
+  | Width.WVar(ia) => (match rb with
+      | Width.WVar(ib) => (if ia == ib then Option.Some(su) else Option.Some(subst-bind-width(su, ia, Width.WVar(ib))))
+      | _ => (if width-occurs(su, ia, rb) then Option.None(unit) else Option.Some(subst-bind-width(su, ia, rb))))
+  | Width.WidthDef => Option.Some(su)
+  | Width.WFixed(n) => match rb with
+      | Width.WVar(ib) => (if width-occurs(su, ib, ra) then Option.None(unit) else Option.Some(subst-bind-width(su, ib, ra)))
+      | Width.WidthDef => Option.Some(su)
+      | Width.WFixed(m) => if n == m then Option.Some(su) else Option.None(unit)
+
+/// Unify two INTEGER types under a Subst: thread the Subst through the sign axis, THEN the width axis on the
+/// resulting Subst (so width unify sees sign's bindings — orthogonal but sequenced through one growing Subst).
+def unify-int-su(su: Subst, a: IntType, b: IntType) = match a with
+  | IntType.IntType(sa, wa) => match b with
+    | IntType.IntType(sb, wb) => (match unify-sign-su(su, sa, sb) with
+        | Option.Some(su1) => unify-width-su(su1, wa, wb)
+        | Option.None(_) => Option.None(unit))
+
+/// Unify two `Ty` under a Subst → `Some(extended Subst)` or `None` (conflict). Ints thread through unify-int-su;
+/// Bool~Bool no-ops (var-free); TyErr always conflicts (poison); TyFn unifies pairwise-params + result threading
+/// the Subst; TySum by decl-identity. The Subst-threading counterpart of unify-ty.cdz's stateless `unify-ty`.
+def unify-ty-su(su: Subst, a: Ty, b: Ty) = match a with
+  | Ty.TyInt(ita) => (match b with
+    | Ty.TyInt(itb) => unify-int-su(su, ita, itb)
+    | _ => Option.None(unit))
+  | Ty.TyBool => (match b with
+    | Ty.TyBool => Option.Some(su)
+    | _ => Option.None(unit))
+  | Ty.TyErr => Option.None(unit)
+  | Ty.TyFn(psa, ra) => (match b with
+    | Ty.TyFn(psb, rb) => (if List.len(psa) == List.len(psb)
+        then (match unify-ty-list-su(su, psa, psb, 0) with
+          | Option.Some(su1) => unify-ty-su(su1, ra, rb)
+          | Option.None(_) => Option.None(unit))
+        else Option.None(unit))
+    | _ => Option.None(unit))
+  | Ty.TySum(na) => (match b with
+    | Ty.TySum(nb) => (if na == nb then Option.Some(su) else Option.None(unit))
+    | _ => Option.None(unit))
+
+/// Unify two same-length param lists PAIRWISE, threading the Subst left-to-right (each pair sees prior bindings).
+def unify-ty-list-su(su: Subst, a: List(Ty), b: List(Ty), i: Int64) =
+  (if i == List.len(a) then Option.Some(su)
+   else (match List.at(a, i) with
+     | Option.None(_) => Option.None(unit)
+     | Option.Some(ta) => (match List.at(b, i) with
+       | Option.None(_) => Option.None(unit)
+       | Option.Some(tb) => (match unify-ty-su(su, ta, tb) with
+         | Option.None(_) => Option.None(unit)
+         | Option.Some(su1) => unify-ty-list-su(su1, a, b, i + 1)))))
+
+// NOTE: only 5 @tests live here. A 6th HEAVY test closure in this emit unit trips a codegen limit
+// ("parameter reference has no local slot") — an emit slot-allocation bug that's order-sensitive, not a clean
+// count (a trivial 6th test is fine; a companion file of the spilled tests ALSO tripped it). So the remaining
+// B3 pins (concrete-conflict, occurs-no-false-reject, bool, fn-param-bind) are DEFERRED here — they're largely
+// redundant (concrete-conflict ⊂ unify-ty.cdz; occurs ⊂ hm-vars.cdz occurs tests; bool trivial), and will be
+// added once the emit bug lands. Filed: queue/mlrepro-emit-slot-nth-heavy-test-closure-parameter-reference-
+// has-no-local-slot.md. These 5 cover the B3 ESSENTIAL: var→concrete bind, bound-var-STAYS-solved (the payoff
+// vs A1's inert unify), var→var chain propagation, width binding, both-axes-independent.
+// ---- TESTS: unify BINDS vars into the Subst; a bound var stays solved (real solve, not inert) --------
+import { ty-int64, ty-fixed-int } from "ty"
+import { subst-empty, apply } from "subst"
+
+@test
+def us-binds-sign-var-to-concrete() =
+  // unify SVar(0) ~ Signed → the Subst binds 0 := Signed; applying it to SVar(0) now yields Signed.
+  match unify-sign-su(subst-empty(), Sign.SVar(0), Sign.Signed) with
+    | Option.Some(su) => (match apply-sign(su, Sign.SVar(0)) with
+        | Sign.Signed => unit
+        | _ => trap("after unify, SVar(0) resolves to Signed"))
+    | Option.None(_) => trap("SVar(0) ~ Signed must unify (bind)")
+
+@test
+def us-bound-var-stays-solved-conflict() =
+  // THE real-solve pin: bind SVar(0):=Signed via one unify, then unify SVar(0) ~ Unsigned on that Subst → CONFLICT
+  // (0 is already Signed). Under A1's inert unify this WRONGLY succeeded (var just took the other); B3 makes it a
+  // genuine conflict — a var solved once stays solved.
+  match unify-sign-su(subst-empty(), Sign.SVar(0), Sign.Signed) with
+    | Option.Some(su) => (match unify-sign-su(su, Sign.SVar(0), Sign.Unsigned) with
+        | Option.None(_) => unit
+        | Option.Some(_) => trap("a var already bound to Signed must CONFLICT with Unsigned"))
+    | Option.None(_) => trap("first unify binds")
+
+@test
+def us-var-to-var-then-concrete-propagates() =
+  // SVar(0) ~ SVar(1) binds 0:=1; then SVar(1) ~ Signed binds 1:=Signed; now SVar(0) resolves THROUGH the chain
+  // to Signed. Pins that binding var~var then solving the target propagates to the first (transitivity).
+  match unify-sign-su(subst-empty(), Sign.SVar(0), Sign.SVar(1)) with
+    | Option.Some(su1) => (match unify-sign-su(su1, Sign.SVar(1), Sign.Signed) with
+        | Option.Some(su2) => (match apply-sign(su2, Sign.SVar(0)) with
+            | Sign.Signed => unit
+            | _ => trap("SVar(0) resolves through 0→1→Signed"))
+        | Option.None(_) => trap("bind 1 := Signed"))
+    | Option.None(_) => trap("bind 0 := 1")
+
+@test
+def us-width-var-binds() =
+  // width axis: WVar(3) ~ WFixed(8) binds 3:=8.
+  match unify-width-su(subst-empty(), Width.WVar(3), Width.WFixed(8)) with
+    | Option.Some(su) => (match apply-width(su, Width.WVar(3)) with
+        | Width.WFixed(w) => (if w == 8 then unit else trap("WVar(3) := 8"))
+        | _ => trap("WVar(3) resolves to WFixed(8)"))
+    | Option.None(_) => trap("WVar(3) ~ WFixed(8) must bind")
+
+@test
+def us-int-both-axes-bind-independently() =
+  // unify (SVar0, WVar1) ~ (Unsigned, WFixed 16): sign binds 0:=Unsigned, width binds 1:=16; applying to the
+  // fresh int yields UInt16. Orthogonal axes both solved through one threaded Subst.
+  match unify-int-su(subst-empty(), IntType.IntType(Sign.SVar(0), Width.WVar(1)), IntType.IntType(Sign.Unsigned, Width.WFixed(16))) with
+    | Option.Some(su) => (match apply(su, Ty.TyInt(IntType.IntType(Sign.SVar(0), Width.WVar(1)))) with
+        | Ty.TyInt(IntType.IntType(Sign.Unsigned, Width.WFixed(w))) => (if w == 16 then unit else trap("width bound to 16"))
+        | _ => trap("both axes bind → UInt16"))
+    | Option.None(_) => trap("(SVar0,WVar1) ~ (Unsigned,W16) unifies")
+
+export {
+  unify-sign-su,
+  unify-width-su,
+  unify-int-su,
+  unify-ty-su,
+  unify-ty-list-su
+}
