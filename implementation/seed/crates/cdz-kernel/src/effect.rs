@@ -318,6 +318,36 @@ pub mod effect_ct {
         family.starts_with(WS_PREFIX)
     }
 
+    /// The `mcp/*` namespace PREFIX — THE OUTPOST O2: FEDERATE outpost-local MCP servers. A guest reducer
+    /// routes a connected agent's tool-call to a configured MCP server and folds the JSON-RPC response back;
+    /// the HOST is a thin transport (connects/forwards JSON-RPC bytes OPAQUELY, never interprets MCP
+    /// semantics — O4 opaque-bytes, like `converse.rs` at the Bedrock boundary). All POLICY (which servers
+    /// federate, which tools each agent may see/call) is the reducer's fold (minimize-host-logic). Unlike the
+    /// `ws/*` INBOUND connect/disconnect events, an MCP server is CONFIGURED INFRASTRUCTURE the host already
+    /// knows — the reducer addresses it by id, so there is NO `mcp/connect` inbound event (a down server
+    /// surfaces as an `mcp/call` err_retryable RESULT, not a lifecycle event); the prefix reserves room for a
+    /// later additive `mcp/notify` (fire-and-forget) or `mcp/status` if a use-case needs it.
+    pub const MCP_PREFIX: &str = "mcp/";
+
+    /// `mcp/call` — an OUTBOUND routed effect: call a federated MCP server, request→response. `target` = an
+    /// opaque MCP-server-id (the reducer names a CONFIGURED server; the host maps id → its transport —
+    /// stdio-child or local socket; the kernel never interprets it, exactly like `ws/send`'s conn-id /
+    /// `shell`'s program / `http`'s url). `payload` = the opaque JSON-RPC request bytes (host forwards
+    /// verbatim, never parses MCP). This is the DISPATCHED-WITH-RESULT pattern like `http`/`model` (NOT
+    /// `ws/send`'s fire-and-forget `Ok(None)`): the host executor round-trips + folds the response back —
+    /// `Ok(Some(Inline(jsonrpc-response-bytes)))` on a completed round-trip, `err_retryable` on a transient
+    /// transport hiccup, permanent `Err` on unknown-server-id / malformed. Per-call Cedar authz gates
+    /// `resource.target = <mcp-server-id>` (a policy scopes which servers a reducer may call). Executor-routed
+    /// (register-by-string, `Emit` placeholder kind, no drive-loop arm), like the other routed families.
+    pub const MCP_CALL: &str = "mcp/call";
+
+    /// Is `family` in the `mcp/*` namespace (the reducer MCP-federation partition, THE OUTPOST O2)? A prefix
+    /// test (like [`is_ws_family`]/[`is_fs_family`]). Executor-routed, so the drive loop needs no special arm —
+    /// here for the manifest + discoverability + one source of truth for the partition boundary.
+    pub fn is_mcp_family(family: &str) -> bool {
+        family.starts_with(MCP_PREFIX)
+    }
+
     /// Is `family` in the `control/*` namespace (authz-exempt, host/kernel-answered, never executor-routed)?
     /// The partition test the drive loop applies BEFORE authorize/route: `true` → control path, `false` →
     /// the effect path (authorize → executor). A simple prefix check on [`CONTROL_PREFIX`] — one source of
@@ -377,15 +407,16 @@ pub mod effect_ct {
         BLOB_PUT,
         BLOB_GET,
         WS_SEND,
+        MCP_CALL,
     ];
 
     /// If `family` is a WELL-KNOWN family whose string is a FIXED, kernel-defined `&'static` — one of the
     /// built-in effect verbs ([`ALL`], via [`super::EffectKind::from_family`]) or the exact control/store/fs/
     /// metric families (`control/capabilities`, `control/summary`, `store/set`, `store/resolve`, `store/add`,
     /// `store/remove`, `store/resolve-all`, `fs/read`, `fs/write`, `fs/glob`, `metric/publish`, `blob/put`,
-    /// `blob/get`, `ws/send`, `ws/connect`, `ws/disconnect`) — return that canonical `&'static str`. `None`
-    /// for an EXTENSION family (register-by-string). (`ws/connect`/`ws/disconnect` are inbound EVENT families,
-    /// not effects, so they're here for safe-logging but NOT in [`ALL`].)
+    /// `blob/get`, `ws/send`, `ws/connect`, `ws/disconnect`, `mcp/call`) — return that canonical `&'static
+    /// str`. `None` for an EXTENSION family (register-by-string). (`ws/connect`/`ws/disconnect` are inbound
+    /// EVENT families, not effects, so they're here for safe-logging but NOT in [`ALL`].)
     ///
     /// The distinction matters for LOGGING (github-liaison #2180 residual): `ContentType.family` is a
     /// `Cow<'static, str>` and for an extension family it carries the CALLER's `Cow::Owned` verbatim — i.e.
@@ -423,6 +454,7 @@ pub mod effect_ct {
             // ALL) — but they're fixed kernel-defined strings, so classify them safe-to-log-verbatim too.
             WS_CONNECT => Some(WS_CONNECT),
             WS_DISCONNECT => Some(WS_DISCONNECT),
+            MCP_CALL => Some(MCP_CALL),
             _ => None,
         }
     }
@@ -1433,6 +1465,37 @@ mod tests {
         // The inbound event families are NOT grantable effects → absent from ALL (only ws/send is).
         assert!(!effect_ct::ALL.contains(&effect_ct::WS_CONNECT));
         assert!(!effect_ct::ALL.contains(&effect_ct::WS_DISCONNECT));
+    }
+
+    #[test]
+    fn mcp_family_is_a_routed_partition_disjoint_from_the_others() {
+        // THE OUTPOST O2: mcp/* is the reducer MCP-federation partition — mcp/call is an OUTBOUND routed
+        // effect (dispatched-with-result like http/model), executor-routed + authz-gated (register-by-string,
+        // no new EffectKind). O2 ships mcp/call; the MCP_PREFIX reserves room for a later mcp/notify.
+        assert_eq!(effect_ct::MCP_PREFIX, "mcp/");
+        assert_eq!(effect_ct::MCP_CALL, "mcp/call");
+        assert!(effect_ct::is_mcp_family(effect_ct::MCP_CALL));
+        assert!(effect_ct::MCP_CALL.starts_with(effect_ct::MCP_PREFIX));
+        // SAFE-LOGGING (#2180): the exact string is a kernel-defined fixed &'static → log VERBATIM.
+        assert_eq!(
+            effect_ct::wellknown_static_str(effect_ct::MCP_CALL),
+            Some(effect_ct::MCP_CALL)
+        );
+        // mcp/call IS a grantable effect (unlike the ws/* inbound events) → in the manifest family set.
+        assert!(effect_ct::ALL.contains(&effect_ct::MCP_CALL));
+        // DISJOINT from every other partition.
+        assert!(!effect_ct::is_store_family(effect_ct::MCP_CALL));
+        assert!(!effect_ct::is_fs_family(effect_ct::MCP_CALL));
+        assert!(!effect_ct::is_metric_family(effect_ct::MCP_CALL));
+        assert!(!effect_ct::is_blob_family(effect_ct::MCP_CALL));
+        assert!(!effect_ct::is_lifecycle_family(effect_ct::MCP_CALL));
+        assert!(!effect_ct::is_control_family(effect_ct::MCP_CALL));
+        assert!(!effect_ct::is_ws_family(effect_ct::MCP_CALL));
+        assert!(!effect_ct::is_mcp_family(effect_ct::WS_SEND));
+        // A guest fake mcp-ish name that isn't the exact const logs redacted (None); prefix still classifies.
+        assert_eq!(effect_ct::wellknown_static_str("mcp/secret-x"), None);
+        assert!(effect_ct::is_mcp_family("mcp/secret-x"));
+        assert!(!effect_ct::is_mcp_family("mymcp"));
     }
 
     #[test]
