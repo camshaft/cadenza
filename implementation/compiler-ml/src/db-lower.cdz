@@ -14,7 +14,7 @@ import { Core, lower-node } from "lower-db"
 
 import { Db } from "db"
 
-import { infer-into-db, db-resolved-col, db-typed-col } from "db-infer"
+import { infer-into-db, db-resolved-col, db-ty-col } from "db-infer"
 
 /// LOWER over the Db (rcdzc core_of): demand resolve+types into the Db ONCE (via P1e infer-into-db, which
 /// chains P1d resolve — both fill-once), then run `lower-node` over the Db's MEMOIZED resolved + types
@@ -22,7 +22,7 @@ import { infer-into-db, db-resolved-col, db-typed-col } from "db-infer"
 /// the Db carrying resolve+types memoized + the lowered Core. No re-resolve, no re-infer.
 def lower-of-db(db: Db, root: Int64) =
   let db1 = infer-into-db(db, root) in
-  (db1, lower-node(db-tree-of(db1), root, db-resolved-col(db1), db-typed-col(db1)))
+  (db1, lower-node(db-tree-of(db1), root, db-resolved-col(db1), db-ty-col(db1)))
 
 /// The Db's source tree (re-exported destructure; db-infer imports db-tree but doesn't re-export it).
 def db-tree-of(db: Db) = match db with
