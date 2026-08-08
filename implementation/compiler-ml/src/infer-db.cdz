@@ -223,7 +223,7 @@ def infer-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int6
                             // CONSTANT arg out of its range — `(def (f (: a Int8)) a) (f 200)` → TErr → decline.
                             | Option.Some(_) => (if (if param-fit-ok(tree, paramId, argId) then false else true)
                                  then Map.insert(ta, id, Ty.TyErr)
-                                 else infer-app-with-arg-ty(tree, id, calleeId, calleeBody, paramId, argId, rcol, ta, Map.lookup(ta, argId)))
+                                 else infer-app-with-arg-ty(tree, id, calleeId, calleeBody, paramId, rcol, ta, Map.lookup(ta, argId)))
                             | Option.None(_) => Map.insert(ta, id, Ty.TyErr)))
                      | Option.None(_) => Map.insert(tcol, id, Ty.TyErr))))))
     | Option.None(_) => tcol
@@ -331,7 +331,7 @@ def param-bind-type(tree: Tree, paramId: Int64, argTy: Ty) =
 /// def with no body → TErr. Mirrors how a call would type, but produces the ARROW instead of the result — so
 /// `inc` as a value is `(Int64) -> Int64`, and the enclosing `(apply inc 41)` can check inc against apply's
 /// fn-param type (HO-2b-ii-B / lower).
-def def-arrow-type(tree: Tree, defName: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64, Ty)) =
+def def-arrow-type(tree: Tree, defName: Int64, _rcol: Map(Int64, Resolved), tcol: Map(Int64, Ty)) =
   (match def-body-of(tree, defName) with
     | Option.None(_) => Ty.TyErr
     | Option.Some(bodyId) =>
@@ -389,7 +389,7 @@ def bind-param-types(params: List(Int64), ptys: List(Ty), i: Int64, tcol: Map(In
          | Option.None(_) => tcol
          | Option.Some(pty) => bind-param-types(params, ptys, i + 1, Map.insert(tcol, pid, pty)))))
 
-def infer-app-with-arg-ty(tree: Tree, id: Int64, calleeId: Int64, calleeBody: Int64, paramId: Int64, argId: Int64, rcol: Map(Int64, Resolved), ta: Map(Int64, Ty), argTyOpt: Option(Ty)) =
+def infer-app-with-arg-ty(tree: Tree, id: Int64, calleeId: Int64, calleeBody: Int64, paramId: Int64, rcol: Map(Int64, Resolved), ta: Map(Int64, Ty), argTyOpt: Option(Ty)) =
   (match argTyOpt with
     | Option.Some(argTy) =>
         (let tp = Map.insert(ta, paramId, param-bind-type(tree, paramId, argTy)) in   // param1 : declared narrow type, else arg's type
