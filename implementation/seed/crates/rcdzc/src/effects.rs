@@ -1630,6 +1630,11 @@ fn check_no_home_walk(
 /// effects is a projection of this row (`host.rs::collect_host_imports`).
 //= spec/capabilities/capabilities-and-effects.md#performing-an-operation-is-typed-and-contributes-to-the-row
 //# Performing an operation MUST add its declaring effect to the effect row of the function that performs it, so that a function's inferred row is the set of effects its operations reach and the manifest of delegated effects is a projection of that row.
+///
+/// The row is computed PURELY FROM THE OPERATIONS THE BODY REACHES — no written annotation is consulted
+/// or required; a program compiles with none, the inferred escaping row being the mandatory floor.
+//= spec/capabilities/capabilities-and-effects.md#effect-row-annotation-is-opt-in
+//# A program MUST compile without any effect-row annotation, the compiler inferring each function's effect row from the operations it reaches, so that the mandatory floor is the escaping row itself, not a written annotation.
 fn body_reached_effects(db: &mut Db, node: StructId) -> std::collections::HashSet<u32> {
     let mut reached = std::collections::HashSet::new();
     let mut visited = std::collections::HashSet::new();
