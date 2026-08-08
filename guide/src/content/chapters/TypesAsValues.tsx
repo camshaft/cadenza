@@ -67,7 +67,7 @@ export default function TypesAsValues() {
       <Runnable source={`(if (Type.eq (Type.of 5) Int64) 100 200)`} />
       <P>
         A written type (<C>Int64</C>) and a reflected one (<C>(Type.of 5)</C>) are the same kind of value,
-        so they compare freely. This is the seam where inference and first-class types meet: the compiler
+        so they compare freely. This is the point where inference and first-class types meet: the compiler
         computes a type, you compare it, and the answer picks the code, all before the program runs.
       </P>
 

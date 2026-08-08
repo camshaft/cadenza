@@ -109,8 +109,8 @@ export default function PlatformSafety() {
       <P>
         The kernel doesn't hardcode that policy. It calls the authorizer through a narrow interface, never a
         concrete engine, so the decision-maker can be replaced without touching the kernel core. Today that
-        seam holds a built-in authorizer, the capability-and-deny-rule check just described. The design
-        direction, still ahead, is to drop a standard policy engine (Cedar) into the very same seam as its own
+        interface holds a built-in authorizer, the capability-and-deny-rule check just described. The design
+        direction, still ahead, is to drop a standard policy engine (Cedar) behind that very same interface as its own
         content-addressed component, referenced by hash from the log, so richer policies become possible
         without the kernel learning anything new.
       </P>
