@@ -92,6 +92,11 @@ def unify-ty-su(su: Subst, a: Ty, b: Ty) = match a with
   | Ty.TySum(na) => (match b with
     | Ty.TySum(nb) => (if na == nb then Option.Some(su) else Option.None(unit))
     | _ => Option.None(unit))
+  // ARC-B5 B1 placeholder: a TyVar does NOT bind yet — B3 adds the real bind-with-occurs (mirroring rcdzc
+  // unify@unify.rs:244 `(Ty::Var(v), t) => occurs-check then subst.tys.insert(v,t)`), which needs the B2
+  // whole-type `tys` map. B1 adds the arm for exhaustiveness only; conservatively declines (a var unifies with
+  // nothing until B3). NOTE: this arm is only reachable once the descent seeds TyVars — no live caller yet.
+  | Ty.TyVar(_) => Option.None(unit)
 
 /// Unify two same-length param lists PAIRWISE, threading the Subst left-to-right (each pair sees prior bindings).
 def unify-ty-list-su(su: Subst, a: List(Ty), b: List(Ty), i: Int64) =

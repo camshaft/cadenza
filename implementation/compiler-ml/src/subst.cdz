@@ -77,6 +77,10 @@ def apply(su: Subst, t: Ty) = match t with
   | Ty.TyErr => Ty.TyErr
   | Ty.TySum(n) => Ty.TySum(n)
   | Ty.TyFn(ps, r) => Ty.TyFn(apply-list(su, ps, 0, ([] : List(Ty))), apply(su, r))
+  // ARC-B5 B1 placeholder: a TyVar is IDENTITY under apply until B2 adds the whole-type `tys` binding map to
+  // Subst (then this follows the chain, mirroring rcdzc apply@unify.rs:118 `Ty::Var(v) => tys.get(v)`). B1 adds
+  // the arm so every Ty match is exhaustive; the Subst has no tys map yet, so an unbound TyVar stays itself.
+  | Ty.TyVar(v) => Ty.TyVar(v)
 
 /// Apply the Subst to each element of a param-type list (index recursion, order-preserving).
 def apply-list(su: Subst, ps: List(Ty), i: Int64, acc: List(Ty)) =
