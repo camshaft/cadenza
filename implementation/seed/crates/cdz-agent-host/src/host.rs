@@ -1034,10 +1034,95 @@ impl AgentHost {
         let outcome = s.deliver(body, cause).await;
         self.metrics
             .record_turn_latency_us(crate::metrics::micros_u64(started.elapsed()));
+        self.record_turn_and_merge_back(id, &outcome).await;
+        Some(outcome)
+    }
+
+    /// Like [`deliver`](Self::deliver) but ANSWERS host-surfaced `control/signature` effects the turn emitted
+    /// (signature-query part-1): the reducer emits `control/signature` naming a target component, the host
+    /// reflects the target's exported signature + folds the descriptor back so the reducer resumes with it.
+    /// Delivers via [`HostedSession::deliver_surfacing_controls`], then for each surfaced `control/signature`
+    /// resolves the target component's bytes through `factory` (by the effect's target hash —
+    /// [`SessionFactory::fetch_blob`]) and calls [`HostedSession::settle_signature_query`] to reflect + settle
+    /// (an absent/undescribable target settles a clean Err arm, so the reducer never hangs). `control/summary`
+    /// / `control/capabilities` in the surfaced set are handled by their own paths, not here.
+    ///
+    /// The loop uses THIS for ordinary inbound (where the session may signature-query) and passes its
+    /// `factory`; a caller with no factory (or a session that never signature-queries) can still use plain
+    /// [`deliver`](Self::deliver). Same return shape + the same post-turn merge-back as `deliver`.
+    pub async fn deliver_answering_signatures(
+        &mut self,
+        id: &SessionId,
+        body: EventBody,
+        cause: Option<Hash>,
+        factory: Option<&mut (dyn crate::admin::SessionFactory + '_)>,
+    ) -> Option<Result<(), KernelError>> {
+        use cdz_kernel::effect::effect_ct;
+        let Some(s) = self.sessions.get_mut(id) else {
+            self.metrics.record_delivery_to_unknown_session();
+            tracing::warn!(
+                target: "cdz_agent_host::session",
+                session_id = id.as_str(),
+                "delivery to unknown session (routed nowhere)"
+            );
+            return None;
+        };
+        let started = std::time::Instant::now();
+        // Surface the control effects this turn emitted (the plain `deliver` drops them).
+        let deliver_result = s.deliver_surfacing_controls(body, cause).await;
+        self.metrics
+            .record_turn_latency_us(crate::metrics::micros_u64(started.elapsed()));
+        let controls = match deliver_result {
+            Ok(controls) => controls,
+            Err(e) => {
+                // A kernel error IS the turn outcome — record + merge-back (no writes on Err) + report it.
+                let outcome = Err(e);
+                self.record_turn_and_merge_back(id, &outcome).await;
+                return Some(outcome);
+            }
+        };
+        // Answer each surfaced control/signature: resolve the target component bytes via the factory's blob
+        // store (the effect target is a content-hash hex), reflect + settle. A None factory / an absent target
+        // settles the Err arm (the reducer resumes cleanly). Re-borrow the session per effect (settle needs
+        // &mut) — the session is still registered (a signature query doesn't terminate it).
+        let mut factory = factory;
+        for ce in &controls {
+            if !ce.request.content_type.matches_family(effect_ct::SIGNATURE) {
+                continue;
+            }
+            // The target rides the effect as a content-hash hex; resolve it to bytes through the factory.
+            let target_bytes = match (
+                factory.as_deref_mut(),
+                Hash::from_hex(ce.request.target.as_ref()),
+            ) {
+                (Some(f), Some(hash)) => f.fetch_blob(&hash).await.ok().flatten(),
+                // No factory, or a non-hex target — no bytes to reflect (settle_signature_query settles
+                // the Err arm, so the reducer resumes).
+                _ => None,
+            };
+            if let Some(s) = self.sessions.get_mut(id) {
+                s.settle_signature_query(ce, target_bytes.as_deref()).await;
+            }
+        }
+        // Record the successful turn + run the merge-back (also folds any settle writes). ONE metric/trace tap.
+        let outcome = Ok(());
+        self.record_turn_and_merge_back(id, &outcome).await;
+        Some(outcome)
+    }
+
+    /// The shared post-turn work both delivery paths run: record the turn metric + trace, then (on a
+    /// SUCCESSFUL turn only) fold this session's new name-store writes into the canonical shared store +
+    /// durably snapshot it. Factored out of [`deliver`] so [`deliver_answering_signatures`] runs the identical
+    /// metric/merge-back/snapshot contract — ONE tap, one merge-back, no divergence.
+    async fn record_turn_and_merge_back(
+        &mut self,
+        id: &SessionId,
+        outcome: &Result<(), KernelError>,
+    ) {
         self.metrics.record_turn(outcome.is_ok());
-        // Trace the turn outcome at the same boundary the metric records. An errored turn logs the kernel
-        // reason at warn (a supervisor signal); a successful turn at debug (routine, filtered out at info).
-        match &outcome {
+        // Trace the turn outcome at the same boundary the metric records (errored at warn — a supervisor
+        // signal; ok at debug — routine).
+        match outcome {
             Ok(()) => tracing::debug!(
                 target: "cdz_agent_host::session",
                 session_id = id.as_str(),
@@ -1050,26 +1135,16 @@ impl AgentHost {
                 "turn errored"
             ),
         }
-        // §4c v0.3 merge-back: after a SUCCESSFUL turn, fold this session's new name-store writes into the
-        // canonical shared store so the next-spawned (or next-reconciled) session sees them. Idempotent — a
-        // turn that wrote nothing re-merges as a no-op (the session's log is already a prefix of what it was
-        // handed). Gated on `outcome.is_ok()`: a turn that ERRED (KernelError — session/log corruption or an
-        // invalid transition) may have left partial/invalid store state, and folding that into the SHARED
-        // store would leak it to every future session — so an errored turn's writes are NOT published.
-        // Only when the host is canonical-backed AND the session has a store attached.
+        // §4c v0.3 merge-back: fold the session's new name-store writes into the canonical shared store (only
+        // on a successful turn — an errored turn may have left partial state that must NOT publish). Only when
+        // the host is canonical-backed AND the session has a store. BEST-EFFORT snapshot: a save failure is
+        // logged, never fails the turn.
         if outcome.is_ok() {
             if let Some(canonical) = &mut self.canonical {
-                if let Some(session_store) = s.session().name_store() {
+                if let Some(session_store) =
+                    self.sessions.get(id).and_then(|s| s.session().name_store())
+                {
                     canonical.merge_appends_from(session_store);
-                    // §4c AWS-backends I4a: DURABLY snapshot the canonical store after folding a session's
-                    // writes back, so the shared name directory survives a restart. `merge_appends_from` does
-                    // NOT signal whether it changed anything, so we snapshot after any merge that folded a
-                    // session's store — simple + correct (a no-write turn re-saves a byte-identical snapshot,
-                    // which is harmless; `snapshot_bytes` is byte-stable). BEST-EFFORT: a failed save is
-                    // LOGGED but does NOT fail the turn — durability at the snapshot layer must never crash the
-                    // agent (the in-memory canonical is still authoritative for this run). Only fires when a
-                    // snapshot store is configured (`Some`) AND the host is canonical-backed — a share-less or
-                    // snapshot-less host does nothing (zero overhead, unchanged behavior).
                     if let Some(snapshot_store) = &mut self.name_snapshot {
                         let bytes = canonical.snapshot_bytes();
                         if let Err(e) = snapshot_store.save(&bytes).await {
@@ -1085,7 +1160,6 @@ impl AgentHost {
                 }
             }
         }
-        Some(outcome)
     }
 
     /// Read-only access to a hosted session (for a status query / inspection). `None` = unknown id.
@@ -3716,6 +3790,28 @@ mod tests {
             host.session().kv().get(b"sig-err"),
             Some(&b"1"[..]),
             "un-reflectable target bytes settle an Err the reducer folds, not a panic"
+        );
+    }
+
+    #[tokio::test]
+    async fn deliver_answering_signatures_surfaces_and_settles_through_the_agent_host() {
+        // The slice-2b loop path end-to-end at the AgentHost level: deliver_answering_signatures surfaces the
+        // session's control/signature effect, resolves the target via the factory (None here → absent), and
+        // settles the Err arm so the reducer RESUMES (records sig-err) — proving the surface+resolve+settle
+        // wiring the async loop uses, hermetically (the absent path needs no wasm component).
+        let target = Hash::of(b"target-not-in-any-store");
+        let mut host = AgentHost::new();
+        let id = host.spawn(SessionId::new("sq"), signature_query_host(&target.to_hex()));
+        // No factory → the target resolves to None → settle the Err arm.
+        let outcome = host
+            .deliver_answering_signatures(&id, inbound_go(), None, None)
+            .await;
+        assert!(matches!(outcome, Some(Ok(()))), "the turn ran");
+        assert_eq!(
+            host.sessions.get(&id).unwrap().session().kv().get(b"sig-err"),
+            Some(&b"1"[..]),
+            "the loop surfaced the signature query + settled the Err arm (no factory → absent target), \
+             and the reducer resumed"
         );
     }
 }
