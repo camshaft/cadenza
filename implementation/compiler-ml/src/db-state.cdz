@@ -15,9 +15,12 @@
 /// the new Db). This mirrors rcdzc's compile driving queries over one Db — here the Db lives in the effect.
 import { Tree } from "parse-db"
 
-import { Db, db-of, fill-typed, require-typed, typed-filled } from "db"
+import { Db, db-of, fill-ty, require-ty, typed-filled } from "db"
 
-import { Typed } from "typed"
+// ARC-A2 consumer-migration: db-state now speaks the canonical `Ty` via the Ty-native fill-ty/require-ty
+// (off the temporary Typed edge-bridge). First consumer moved onto Ty; the bridge is deleted once ALL
+// consumers (infer-db/lower-db/db-demand) migrate.
+import { Ty } from "ty"
 
 /// The Db STATE effect: `get` reads the current Db, `put` replaces it. One state (the whole column record).
   effect DbState =
@@ -28,20 +31,24 @@ import { Typed } from "typed"
 /// `deflt` on a MISS and caching it via `put` so a second demand HITS the memo. This is the shape the real
 /// producers take once on the effect — get → require (memo check) → compute-on-miss + put → return; NO db
 /// threaded by hand. (Demo fills a supplied default; a real producer computes from upstream get()s.)
-def demand-typed-eff(id: Int64, deflt: Typed) = match require-typed(DbState.get(), id) with
+def demand-typed-eff(id: Int64, deflt: Ty) = match require-ty(DbState.get(), id) with
   | Option.Some(t) => t // memo HIT — no put
   | Option.None(_) => cache-typed-eff(id, deflt)
 
 // MISS — compute + cache
 /// MISS path (separate def — the nested `let x = fill(get(),..) in (put(x); ..)` shape v-effects fixed):
 /// fill the column, put the new Db (caches it in the effect state), return the fact.
-def cache-typed-eff(id: Int64, deflt: Typed) =
-  let filled = fill-typed(DbState.get(), id, deflt) in
+def cache-typed-eff(id: Int64, deflt: Ty) =
+  let filled = fill-ty(DbState.get(), id, deflt) in
   match DbState.put(filled) with
     | _ => deflt
 
 // ---- TESTS: the state-effect carrier memoizes without manual threading (unblocked by the eff-let fix) ----
 import { Tok, parse-tokens } from "parse-db"
+import { IntType, Sign, Width } from "ty"
+
+/// A canonical Int64 `Ty` for the demos (was Typed.TIntW(true,64) pre-A2-migration).
+def ty-i64() = Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(64)))
 
 def sample-tree() = match parse-tokens([Tok.TNum(5)]) with
   | (_, tree) => tree
@@ -66,7 +73,7 @@ def ds-demand-caches-via-put() =
         | get(state) => resume(state, state)
         | put(nd, state) => resume(unit, nd)
       in
-      let _t = demand-typed-eff(0, Typed.TIntW(true, 64)) in
+      let _t = demand-typed-eff(0, ty-i64()) in
       typed-filled(DbState.get())) == 1 then
     unit
   else
@@ -80,8 +87,8 @@ def ds-demand-memoizes-second-hit() =
         | get(state) => resume(state, state)
         | put(nd, state) => resume(unit, nd)
       in
-      let _a = demand-typed-eff(0, Typed.TIntW(true, 64)) in
-      let _b = demand-typed-eff(0, Typed.TIntW(true, 64)) in
+      let _a = demand-typed-eff(0, ty-i64()) in
+      let _b = demand-typed-eff(0, ty-i64()) in
       typed-filled(DbState.get())) == 1 then
     unit
   else
@@ -94,8 +101,8 @@ def ds-demand-returns-fact() =
       | get(state) => resume(state, state)
       | put(nd, state) => resume(unit, nd)
     in
-    demand-typed-eff(0, Typed.TBool) with
-    | Typed.TBool => unit
+    demand-typed-eff(0, Ty.TyBool) with
+    | Ty.TyBool => unit
     | _ => trap("demand returns the fact")
 
 @test
@@ -105,12 +112,12 @@ def ds-demand-hit-does-not-recompute-poison() =
   // then demand@0 with a DIFFERENT default (Int64) under the handler → the HIT returns the memoized TErr.
   // Mirrors db-demand's dd-hit-does-not-recompute-poison, but through get/put instead of explicit threading —
   // pins that the state-effect memo respects a filled poison the same way (the poison-as-filled invariant).
-  match handle DbState(fill-typed(db-of(sample-tree()), 0, Typed.TErr)) with
+  match handle DbState(fill-ty(db-of(sample-tree()), 0, Ty.TyErr)) with
       | get(state) => resume(state, state)
       | put(nd, state) => resume(unit, nd)
     in
-    demand-typed-eff(0, Typed.TIntW(true, 64)) with
-    | Typed.TErr => unit
+    demand-typed-eff(0, ty-i64()) with
+    | Ty.TyErr => unit
     | _ => trap("effect memo HIT returns the filled TErr, not the new Int64 default")
 
 /// A HANDLER-PROVIDING driver (the export): demand a type fact for `id` under the DbState handler seeded over
@@ -118,7 +125,7 @@ def ds-demand-hit-does-not-recompute-poison() =
 /// handler, never exported as a bare boundary (that's why demand-typed-eff/cache-typed-eff stay internal and
 /// this driver is the export). The real pipeline driver (run-src) provides this handler around the whole
 /// resolve→infer→lower→eval demand once the pipeline moves onto the effect carrier.
-def demand-typed-under-state(tree: Tree, id: Int64, deflt: Typed) =
+def demand-typed-under-state(tree: Tree, id: Int64, deflt: Ty) =
   handle DbState(db-of(tree)) with
     | get(state) => resume(state, state)
     | put(nd, state) => resume(unit, nd)
