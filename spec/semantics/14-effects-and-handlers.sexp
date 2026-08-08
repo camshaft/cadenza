@@ -16524,3 +16524,110 @@
   (call   main (: 5 Int64)) (output (: 108 Int64))
   (call   main (: 1 Int64)) (output (: 4 Int64))
   (call   main (: 3 Int64)) (output (: 103 Int64)))
+
+;; ── string CONTENT built, sliced, gated, and measured through the effect thread (breaker sg) ─────
+;; sg1 a string BUILT by a walk of draws (EXACT content compared — dropped/doubled/reordered
+;; dispatches visible in the string); sg2 a stable PREFIX slice of a growing rope (String.slice
+;; start,END; returns Option); sg3 a ONE-SHOT string lock (the arm string-compares and consumes
+;; the key); sg4 TWO-SIDED rope growth (the op arg's sign picks append vs prepend); sg5 the
+;; growing rope as a MAP KEY per dispatch; sg6 the rope's LENGTH PARITY routing its own growth
+;; (self-referential feedback); sg7 byte-len vs scalar-len DIVERGING on a multi-byte rope (the
+;; first UTF-8-width pin through the effect thread).
+
+(case "sg1 a string BUILT by a recursive walk of draws — one H/L character per dispatch, exact content compared"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (build (: d Int64) (: acc String))
+              (if (<= d 0)
+                  acc
+                  (build (- d 1) (String.concat acc (if (> (St.next) 4) "H" "L")))))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (+ s 2))))
+                (let ((w (build 3 "")))
+                  (if (= w "LHH") 1 (if (= w "HHH") 2 (if (= w "LLH") 3 0))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 1 Int64))
+  (call   main (: 5 Int64)) (output (: 2 Int64))
+  (call   main (: 1 Int64)) (output (: 3 Int64)))
+
+(case "sg2 a stable PREFIX slice of a growing rope — String.slice (start,END) of the state per dispatch, prefix identical across growth"
+  (input  (do
+            (effect St (op grow (-> String)))
+            (def (main (: n Int64))
+              (handle St "ab"
+                ((grow () s (resume (match (String.slice s 0 2) ((Some p) p) ((None) "?"))
+                                    (String.concat s "cd"))))
+                (let ((p1 (St.grow)))
+                  (let ((p2 (St.grow)))
+                    (if (= p1 p2) (String.byte-len (String.concat p1 p2)) -1)))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 4 Int64)))
+
+(case "sg3 a ONE-SHOT string lock — the arm string-compares op arg vs state, consuming the key on the first match"
+  (input  (do
+            (effect Lock (op try (-> String Int64)))
+            (def (main (: n Int64))
+              (handle Lock "key"
+                ((try (w) s (if (= w s) (resume 1 "used") (resume 0 s))))
+                (+ (Lock.try (if (> n 3) "key" "nope"))
+                   (+ (* 10 (Lock.try "key")) (* 100 (Lock.try "used"))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 101 Int64))
+  (call   main (: 0 Int64)) (output (: 110 Int64)))
+
+(case "sg4 TWO-SIDED rope growth — the op arg's sign picks append-right vs prepend-left, exact content across three sign patterns"
+  (input  (do
+            (effect St (op tag (-> Int64 String)))
+            (def (main (: n Int64))
+              (handle St "M"
+                ((tag (side) s (resume s (if (> side 0)
+                                             (String.concat s "R")
+                                             (String.concat "L" s)))))
+                (do
+                  (St.tag n)
+                  (St.tag (- 0 n))
+                  (St.tag n)
+                  (let ((w (St.tag 0)))
+                    (if (= w "LMRR") 1 (if (= w "LLMR") 2 (if (= w "LLLM") 3 0)))))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 1 Int64))
+  (call   main (: -1 Int64)) (output (: 2 Int64))
+  (call   main (: 0 Int64)) (output (: 3 Int64)))
+
+(case "sg5 the GROWING string state is a MAP KEY per dispatch — each draw looks up the current rope in a literal map"
+  (input  (do
+            (effect St (op adv (-> Int64)))
+            (def (main (: n Int64))
+              (handle St "a"
+                ((adv () s (resume (match (Map.lookup (map ("a" 10) ("ab" 20) ("abb" 30)) s)
+                                     ((Some v) v)
+                                     ((None) -1))
+                                   (String.concat s "b"))))
+                (+ (St.adv) (+ (* 10 (St.adv)) (* 100 (St.adv))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 3210 Int64)))
+
+(case "sg6 the rope's LENGTH PARITY routes its own growth — odd appends two, even appends one; four draws read 1,3,4,5"
+  (input  (do
+            (effect St (op step (-> Int64)))
+            (def (main (: n Int64))
+              (handle St "x"
+                ((step () s (resume (String.byte-len s)
+                                    (if (= (% (String.byte-len s) 2) 0)
+                                        (String.concat s "a")
+                                        (String.concat s "bb")))))
+                (+ (St.step) (+ (* 10 (St.step)) (+ (* 100 (St.step)) (* 1000 (St.step)))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 7531 Int64)))
+
+(case "sg7 byte-len vs scalar-len DIVERGE on a growing multi-byte rope — each dispatch reads the difference (one per accent)"
+  (input  (do
+            (effect St (op grow (-> Int64)))
+            (def (main (: n Int64))
+              (handle St "é"
+                ((grow () s (resume (- (String.byte-len s) (String.scalar-len s))
+                                    (String.concat s "é"))))
+                (+ (St.grow) (+ (* 10 (St.grow)) (* 100 (St.grow))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 321 Int64)))
