@@ -1165,6 +1165,51 @@
           '';
         };
 
+        # N2 (v-syntax P2, 2026-08-07): the cadenza:syntax REDUCER-FACING WIT component — a wit-bindgen
+        # guest over cadenza-syntax exporting parse/query/doc, so a reducer can import it by content-hash
+        # and compose_dep_into_linker links it leaves-first (v-agent-harness-host's compose-consumption
+        # E2E consumes it via CDZ_SYNTAX_COMPONENT=${syntaxGuest}, mirroring reducer/cedar). Same shape as
+        # reducer-guest/cedar-guest: own [workspace] + committed Cargo.lock → reproducible content-hash, no
+        # committed .wasm pin. Build+lift+validate mirrors v-syntax's `syntax-guest` CI job (checks.yml):
+        # `cargo build --locked --target wasm32-unknown-unknown --release` → `wasm-tools component new`.
+        syntaxGuestVendor = pkgs.rustPlatform.importCargoLock {
+          lockFile = ./implementation/seed/crates/cdz-syntax-guest/Cargo.lock;
+        };
+        syntaxGuestSrc = pkgs.lib.fileset.toSource {
+          root = ./.;
+          # cdz-syntax-guest has PATH-deps on sibling crates (unlike cedar-guest which is self-contained):
+          # cdz-syntax-guest → cadenza-syntax → cadenza-ast (both first-party path deps). The fileset MUST
+          # include that closure or the offline build fails "failed to load manifest for cadenza-syntax"
+          # (v-syntax's CI job works because a full-repo checkout has them; a scoped nix fileset must list
+          # them). cadenza-ast is a leaf (no further path deps).
+          fileset = pkgs.lib.fileset.unions [
+            ./implementation/seed/crates/cdz-syntax-guest
+            ./implementation/seed/crates/cadenza-syntax
+            ./implementation/seed/crates/cadenza-ast
+            ./rust-toolchain.toml
+          ];
+        };
+        syntaxGuest = pkgs.stdenvNoCC.mkDerivation {
+          pname = "cdz-syntax-guest-component";
+          version = "0.0.0";
+          src = syntaxGuestSrc;
+          nativeBuildInputs = [ rustToolchain pkgs.wasm-tools ];
+          buildPhase = ''
+            runHook preBuild
+            ${mkCargoVendorEnv { vendor = syntaxGuestVendor; }}
+            cd implementation/seed/crates/cdz-syntax-guest
+            cargo build --release --target wasm32-unknown-unknown --locked --offline
+            runHook postBuild
+          '';
+          installPhase = ''
+            runHook preInstall
+            wasm-tools component new \
+              target/wasm32-unknown-unknown/release/cdz_syntax_guest.wasm \
+              -o "$out"
+            runHook postInstall
+          '';
+        };
+
         # The content address of a built component = sha256 of its (stripped) bytes. DERIVED from the
         # artifact nix built — this is the Cadenza content-address a program pins, falling out of the
         # build rather than being asserted. Exposed as a `packages.*-hash` (a plain-text store file).
@@ -1186,7 +1231,7 @@
         componentStore = pkgs.runCommand "cdz-component-store" { } ''
           set -euo pipefail
           mkdir -p "$out"
-          for c in ${runtime} ${runtimeDebug} ${nfc} ${reducerGuest} ${cedarGuest}; do
+          for c in ${runtime} ${runtimeDebug} ${nfc} ${reducerGuest} ${cedarGuest} ${syntaxGuest}; do
             h=$(${pkgs.coreutils}/bin/sha256sum "$c" | ${pkgs.coreutils}/bin/cut -d' ' -f1)
             ${pkgs.coreutils}/bin/cp "$c" "$out/$h.wasm"
           done
@@ -1525,6 +1570,10 @@
         # increment points cdz-agent-host's CEDAR_POLICY_COMPONENT at this store path.
         packages.cedar-guest = cedarGuest;
         packages.cedar-guest-hash = hashOf cedarGuest "cedar-guest-hash";
+        # `.#syntax-guest` = the lifted cadenza:syntax component; `.#syntax-guest-hash` its derived content
+        # address (v-agent-harness-host's compose-test imports it by this hash). N2, v-syntax P2.
+        packages.syntax-guest = syntaxGuest;
+        packages.syntax-guest-hash = hashOf syntaxGuest "syntax-guest-hash";
 
         # R2: the content-addressed component store — every nix-built component as `<derived-hash>.wasm`
         # in one dir (mirrors target/cadenza-store, but built + addressed by nix). `nix build .#store`.
@@ -1710,6 +1759,7 @@
             nfcHashParity = parity { name = "nfc"; drv = nfc; constName = "REQUIRED_NFC_HASH"; };
             reducerGuestValid = validComponent { name = "reducer-guest"; drv = reducerGuest; };
             cedarGuestValid = validComponent { name = "cedar-guest"; drv = cedarGuest; };
+            syntaxGuestValid = validComponent { name = "syntax-guest"; drv = syntaxGuest; };
             reducerCadenzaB1Valid = validComponent { name = "reducer-cadenza-b1"; drv = reducerCadenzaB1; };
             reducerCadenzaB2Valid = validComponent { name = "reducer-cadenza-b2"; drv = reducerCadenzaB2; };
             reducerCadenzaB3Valid = validComponent { name = "reducer-cadenza-b3"; drv = reducerCadenzaB3; };
@@ -1769,6 +1819,7 @@
             nfc-hash-parity = nfcHashParity;
             reducer-guest-valid = reducerGuestValid;
             cedar-guest-valid = cedarGuestValid;
+            syntax-guest-valid = syntaxGuestValid;
             # S3: the example project's @tests run through nix — a cache HIT when its sources are
             # unchanged (the "skip tests that haven't changed" win), a re-run + fail on a red test.
             example-project-tests = exampleProjectTests;
