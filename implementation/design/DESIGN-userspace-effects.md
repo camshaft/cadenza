@@ -106,6 +106,28 @@ contract over time (`v-agent-harness-host` is scoping the `Executor` → host-na
 Part A ships against today's `Executor` trait unchanged, and the collapse is a later refactor the model
 now sanctions rather than a prerequisite.
 
+**Why the collapse is contract-safe (v-agent-harness, the `Reducer`-contract owner, verdict
+2026-08-08).** The unification needs NO kernel contract change, because the true `Reducer` invariant is
+NOT "all state lives in `kv`" — it is a DETERMINISM rule: `fold(&self, event, kv) -> FoldOutput` must be
+a pure function of `(event, kv)` (the same input always yields the same kv-mutation + emitted effects).
+`kv` is the durable, REPLAYED state; `&self` is immutable per the trait and holds no cross-call state
+that fold's OUTPUT depends on. So a host-native reducer's `&self` MAY hold live, non-replayable Rust
+capabilities (open sockets, a ws-sink map, SDK clients, blob handles) — provided they never make fold's
+output depend on non-replayable live state. This is safe under replay for a concrete reason verified in
+the kernel: **replay never re-performs effects.** `replay()` re-runs `fold` but IGNORES the effects it
+emits (the results are already on the log), and an effect's outcome is READ from the logged
+`EffectResult`, never recomputed from live state (kernel.rs replay + drive-loop). So a host-native
+reducer's live capability is TOUCHED ONLY on the live forward path (when the effect first performs, its
+result logged right then) and is INVISIBLE to replay (replay needs only the fold logic + the logged
+results). The single rule for the host adapter: the wrapped capability's live `&self` state must be
+RE-ACQUIRABLE on host restart (re-open the socket, re-create the SDK client) — exactly as an `Executor`
+is reconstructed at daemon boot, NOT replayed — and must affect only the logged OUTCOME, never a hidden
+fold-determinism input. (`Executor::perform` is `&mut self` while `Reducer::fold` is `&self`; the
+adapter bridges this with interior mutability — `RefCell`/`Mutex` over the capability — or keeps the
+host-native variant `&mut self` internally, a host impl detail invisible to the kernel-visible
+determinism contract.) The proposed gate for the collapse: a host-native reducer holding a live handle,
+replayed, yields the same `kv` — pinned once v-ah-host's adapter shape is concrete.
+
 ## What it is
 
 A **handler session** is an ordinary session (§3 reducer + log + KV — no new session type) whose job
