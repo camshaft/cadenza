@@ -26,9 +26,9 @@ wasmtime = { version = "37", default-features = false, features = ["runtime", "c
 # Typed CLI with generated --help — the same parser the rest of the workspace uses.
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
-# Verify a store artifact's content address (SHA-256) equals the hash the component requires — the
-# same hashing choice the store keys on (options/hashing-and-encoding/sha256-deterministic-cbor).
-sha2 = "0.10"
+# Verify a store artifact's content address (BLAKE3) equals the hash the component requires — the
+# unified content-address digest (operator ruling 2026-08-08), same as cdz-kernel::hash::Hash::of.
+blake3 = "1"
 # Canonical value rendering (string escape, decimal form) — reused so a runner-printed value is
 # byte-identical to what the front-end prints and reads back.
 cadenza-syntax = { path = "../cadenza-syntax" }
