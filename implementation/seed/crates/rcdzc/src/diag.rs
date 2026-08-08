@@ -285,6 +285,10 @@ pub enum Code {
     /// an operator decision the detection predicate encodes; this code names the rejection either way.)
     //= spec/capabilities/capabilities-and-effects.md#a-guard-is-side-effect-free
     //# An effect operation performed in a match-arm guard MUST be rejected at compile time, so that a guard is a pure decision the pattern engine may evaluate speculatively or repeatedly without observable effect.
+    //= spec/capabilities/capabilities-and-effects.md#a-guard-is-side-effect-free
+    //# An effect performed in that position therefore has no well-defined execution count or order — it would perform zero, one, or several times depending on the match strategy — so it MUST be a compile-time error rather than a computation with an unspecified effect schedule.
+    //= spec/capabilities/capabilities-and-effects.md#a-guard-is-side-effect-free
+    //# A program that must consult an effect to decide an arm MUST perform that effect once before the `match` — binding its result to a `let` — and guard on the bound pure value, so that the effect has a single well-defined execution and the guard stays a pure decision over its result.
     EffectInGuard,
     /// An ILL-FORMED binary form `(bin …)` — a compile-time well-formedness defect decidable from the
     /// segment list alone (`options/binary-syntax/`): bit-fields whose widths do not close a whole byte
