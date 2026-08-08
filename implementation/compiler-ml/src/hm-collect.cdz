@@ -21,6 +21,9 @@
 import { Ty, is-int-ty } from "ty"
 import { Node, Tree, node-at } from "parse-db"
 
+/// The Bool type, named for the cond/scrutinee constraints (an `if`/`match` cond must be Bool).
+def ty-bool() = Ty.TyBool
+
 /// The type assigned to node `id` in env `env` — a direct lookup (the caller seeds every relevant node's type,
 /// params to fresh vars). An unseeded id reads TyErr (typed absence: the caller left a gap), never a default.
 def node-ty(env: Map(Int64, Ty), id: Int64) = match Map.lookup(env, id) with
@@ -33,13 +36,16 @@ def node-ty(env: Map(Int64, Ty), id: Int64) = match Map.lookup(env, id) with
 ///     `nodeTy ~ leftTy` and `nodeTy ~ rightTy` (transitively left ~ right), then recurse into both operands.
 ///   NBin RELATIONAL (60..65): the two compared operands must share a type — emit `leftTy ~ rightTy`; the node
 ///     itself is Bool (no constraint on nodeTy from the operands). Recurse into both.
-///   NIf: the two branches must join — emit `thenTy ~ elseTy` and `nodeTy ~ thenTy`; the cond is Bool (a
-///     cond-is-Bool constraint is a caller concern — kept out here to stay focused on the int-var propagation).
-///     Recurse into cond/then/else.
+///   NIf: the two branches must join — emit `condTy ~ Bool` (the cond is a boolean), `thenTy ~ elseTy`, and
+///     `nodeTy ~ thenTy`. Recurse into cond/then/else.
+///   NMatch (S1a integer match `(match scrut (lit then) (_ else))`): the scrutinee and literal-pattern are
+///     COMPARED so must share a type — emit `scrutTy ~ litTy`; the arms join and are the match's type — emit
+///     `thenTy ~ elseTy`, `nodeTy ~ thenTy`. Recurse into all four. (Mirrors the ad-hoc match-type, now as
+///     constraints: scrut~lit sameness + arm join.)
 ///   NLet: the body's type is the let's — emit `nodeTy ~ bodyTy`; recurse value + body.
 ///   leaf (NLit/NBoolLit/NAnnLit/NVar): no sub-constraint (its type is its seed) — nothing to emit, no recursion.
-///   other composites (NApp/NMatch/NMatchCtor): NOT generated here (the narrow slice covers arith/if/let over
-///     params; a call/match constraint is a later extension) — no emit, no recursion (the caller handles them).
+///   other composites (NApp/NMatchCtor): NOT generated here yet (need the resolve column / ct-decl identity —
+///     S1b/S1c) — no emit, no recursion (the caller handles them until then).
 def collect(tree: Tree, env: Map(Int64, Ty), id: Int64, acc: List(Tuple(Ty, Ty))) =
   match node-at(tree, id) with
     | Option.Some(Node.NBin(op, l, r)) =>
@@ -54,10 +60,16 @@ def collect(tree: Tree, env: Map(Int64, Ty), id: Int64, acc: List(Tuple(Ty, Ty))
                (let a1 = List.push(List.push(acc, (nt, node-ty(env, l))), (nt, node-ty(env, r))) in
                 collect(tree, env, r, collect(tree, env, l, a1)))))
     | Option.Some(Node.NIf(c, t, e)) =>
-        // branches join (then ~ else) and the if IS that type (node ~ then); recurse all three
+        // cond is Bool (cond ~ Bool); branches join (then ~ else); the if IS that type (node ~ then); recurse all three
         (let nt = node-ty(env, id) in
-         (let a1 = List.push(List.push(acc, (node-ty(env, t), node-ty(env, e))), (nt, node-ty(env, t))) in
+         (let a1 = List.push(List.push(List.push(acc, (node-ty(env, c), ty-bool())), (node-ty(env, t), node-ty(env, e))), (nt, node-ty(env, t))) in
           collect(tree, env, e, collect(tree, env, t, collect(tree, env, c, a1)))))
+    | Option.Some(Node.NMatch(scrutId, litId, thenId, elseId)) =>
+        // S1a integer match: scrutinee ~ literal-pattern (they are compared), arms join (then ~ else), the match
+        // IS that type (node ~ then). Recurse into all four children.
+        (let nt = node-ty(env, id) in
+         (let a1 = List.push(List.push(List.push(acc, (node-ty(env, scrutId), node-ty(env, litId))), (node-ty(env, thenId), node-ty(env, elseId))), (nt, node-ty(env, thenId))) in
+          collect(tree, env, elseId, collect(tree, env, thenId, collect(tree, env, litId, collect(tree, env, scrutId, a1))))))
     | Option.Some(Node.NLet(_, valId, bodyId)) =>
         // the let's type is the body's; recurse value + body
         (let a1 = List.push(acc, (node-ty(env, id), node-ty(env, bodyId))) in
@@ -158,5 +170,74 @@ def hc-nested-arith-propagates-through-chain() =
   (match solve-apply(collect-all(tree, env, outerId), va) with
     | Option.Some(Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w)))) => (if w == 8 then unit else trap("a infers Int8 through the nested chain"))
     | _ => trap("nested arith propagates Int8 to the deep fresh var a"))
+
+// ---- S1a: NIf cond-is-Bool + NMatch coverage ------------------------------------------------------
+
+@test
+def hc-if-branches-join-and-node-is-branch-type() =
+  // `(if c t e)` with c=Bool, t=fresh var, e=Int8, node=fresh var → the branch-join (t~e) forces t to Int8,
+  // and node~then forces the if's type to Int8 too. Apply the solution to the node var → Int8. (Also the cond
+  // ~Bool constraint holds since c is seeded Bool.)
+  let (cId, t1) = add-node(empty-tree(), Node.NBoolLit(1)) in
+  let (tId, t2) = add-node(t1, Node.NLit(1)) in
+  let (eId, t3) = add-node(t2, Node.NAnnLit(5, 1, 8)) in
+  let (ifId, tree) = add-node(t3, Node.NIf(cId, tId, eId)) in
+  let (vt, n1) = fv(0) in
+  let (vn, _n2) = fv(n1) in
+  let env = Map.insert(Map.insert(Map.insert(Map.insert((Map.empty : Map(Int64, Ty)), cId, Ty.TyBool), tId, vt), eId, ty-fixed-int(true, 8)), ifId, vn) in
+  (match solve-apply(collect-all(tree, env, ifId), vn) with
+    | Option.Some(Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w)))) => (if w == 8 then unit else trap("if type joins to Int8"))
+    | _ => trap("if branches join + node is the branch type"))
+
+@test
+def hc-if-non-bool-cond-conflicts() =
+  // a NON-Bool cond → the cond~Bool constraint conflicts. c seeded Int8 (not Bool) → solve None. Pins that the
+  // constraint stack enforces cond-is-Bool (was an ad-hoc `Option.Some(Ty.TyBool)` gate in if-type).
+  let (cId, t1) = add-node(empty-tree(), Node.NAnnLit(1, 1, 8)) in
+  let (tId, t2) = add-node(t1, Node.NLit(1)) in
+  let (eId, t3) = add-node(t2, Node.NLit(2)) in
+  let (ifId, tree) = add-node(t3, Node.NIf(cId, tId, eId)) in
+  let (vt, n1) = fv(0) in
+  let (ve, n2) = fv(n1) in
+  let (vn, _n3) = fv(n2) in
+  let env = Map.insert(Map.insert(Map.insert(Map.insert((Map.empty : Map(Int64, Ty)), cId, ty-fixed-int(true, 8)), tId, vt), eId, ve), ifId, vn) in
+  (match solve(collect-all(tree, env, ifId)) with
+    | Option.None(_) => unit
+    | Option.Some(_) => trap("a non-Bool if-cond must conflict (cond ~ Bool)"))
+
+@test
+def hc-match-scrut-shares-lit-and-arms-join() =
+  // `(match scrut (lit then) (_ else))`: scrut~lit (compared) + arms join. scrut=fresh, lit=Int8, then=fresh,
+  // else=Int16... would conflict on the arm-join; use else=Int8 so it's consistent → scrut and node both Int8.
+  let (sId, t1) = add-node(empty-tree(), Node.NLit(0)) in
+  let (litId, t2) = add-node(t1, Node.NAnnLit(1, 1, 8)) in
+  let (thenId, t3) = add-node(t2, Node.NLit(7)) in
+  let (elseId, t4) = add-node(t3, Node.NAnnLit(9, 1, 8)) in
+  let (mId, tree) = add-node(t4, Node.NMatch(sId, litId, thenId, elseId)) in
+  let (vs, n1) = fv(0) in
+  let (vt, n2) = fv(n1) in
+  let (vn, _n3) = fv(n2) in
+  let env = Map.insert(Map.insert(Map.insert(Map.insert(Map.insert((Map.empty : Map(Int64, Ty)), sId, vs), litId, ty-fixed-int(true, 8)), thenId, vt), elseId, ty-fixed-int(true, 8)), mId, vn) in
+  (match solve(collect-all(tree, env, mId)) with
+    | Option.Some(su) => (match apply(su, vs) with
+        | Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w))) => (if w == 8 then unit else trap("scrut infers Int8 from lit"))
+        | _ => trap("match scrut shares the literal-pattern's Int8 type"))
+    | Option.None(_) => trap("consistent match is solvable"))
+
+@test
+def hc-match-mismatched-arms-conflict() =
+  // arm-join failure: then=Int8, else=Int16 → then~else conflicts → solve None. Pins arm-join enforcement.
+  let (sId, t1) = add-node(empty-tree(), Node.NLit(0)) in
+  let (litId, t2) = add-node(t1, Node.NLit(1)) in
+  let (thenId, t3) = add-node(t2, Node.NAnnLit(7, 1, 8)) in
+  let (elseId, t4) = add-node(t3, Node.NAnnLit(9, 1, 16)) in
+  let (mId, tree) = add-node(t4, Node.NMatch(sId, litId, thenId, elseId)) in
+  let (vs, n1) = fv(0) in
+  let (vl, n2) = fv(n1) in
+  let (vn, _n3) = fv(n2) in
+  let env = Map.insert(Map.insert(Map.insert(Map.insert(Map.insert((Map.empty : Map(Int64, Ty)), sId, vs), litId, vl), thenId, ty-fixed-int(true, 8)), elseId, ty-fixed-int(true, 16)), mId, vn) in
+  (match solve(collect-all(tree, env, mId)) with
+    | Option.None(_) => unit
+    | Option.Some(_) => trap("Int8-then vs Int16-else must conflict (arm join)"))
 
 export { collect, collect-all, node-ty }
