@@ -6332,3 +6332,9 @@ pass	ae3 THREE same-op draws as a 3-ary OP's own args — order pinned inside th
 pass	ae4 draw / performing-HELPER / draw argument positions — the middle arg performs through a def boundary
 pass	ae5 short-circuit AND with DRAWS on both sides — the skipped right draw leaves the state thread untouched
 pass	ae6 short-circuit OR with DRAWS on both sides — the right draw fires only when the left is false
+pass	ae7 draw NESTED under a pure unary call in the first arg slot, second slot a bare draw — nesting must not reorder
+pass	ae8 LIST literal of three draws — element positions carry the draw order into the structure
+pass	ae9 RECORD literal of two draws read back by PROJECTION — field-init order in the literal drives the state thread
+pass	ae10 TUPLE literal of three draws matched immediately as scrutinee — positions survive the construct-then-destructure round trip
+pass	ae11 a DO-block as an argument — its DISCARDED interior draw still advances the state before the block's value draw
+pass	ae12 an IF-expression as an argument whose CONDITION draws — the taken branch decides whether a second draw fires before the next arg
