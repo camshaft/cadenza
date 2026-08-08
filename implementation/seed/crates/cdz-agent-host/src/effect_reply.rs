@@ -39,12 +39,16 @@ pub struct ReplyTarget {
     pub effect_id: EffectId,
 }
 
-/// The host-side reply-token table: minted-token (as hex) -> the `(caller, effect-id)` it settles. Lives on the
+/// The host-side reply-token table: the token [`Hash`] -> the `(caller, effect-id)` it settles. Lives on the
 /// single-threaded host loop (`RefCell`, not a `Mutex` — mint on I3 forward + consume on I4 reply are both on
-/// the one loop thread). One-shot: a token is REMOVED on the first valid consume.
+/// the one loop thread). One-shot: a token is REMOVED on the first valid consume. Keyed by the BINARY `Hash`
+/// (a `Copy` [u8;32], cheaply clonable — the operator's binary-everywhere/cheaply-clonable rule: NO hex string
+/// on the identity/routing/storage path; hex is for LOGGING only). The hex form appears solely at the kernel
+/// effect-target boundary (`effect/reply`'s `req.target` is `Arc<str>` — the guest echoes the token there),
+/// where `validate_and_consume` parses it back to the `Hash`.
 #[derive(Default)]
 pub struct ReplyTokenRegistry {
-    tokens: RefCell<HashMap<String, ReplyTarget>>,
+    tokens: RefCell<HashMap<Hash, ReplyTarget>>,
 }
 
 impl ReplyTokenRegistry {
@@ -67,17 +71,20 @@ impl ReplyTokenRegistry {
         let token = Hash::of(&bytes);
         self.tokens
             .borrow_mut()
-            .insert(token.to_hex(), ReplyTarget { caller, effect_id });
+            .insert(token, ReplyTarget { caller, effect_id });
         token
     }
 
-    /// Validate a reply-token (as the hex a handler echoed on its `effect/reply`) and CONSUME it one-shot:
-    /// returns the bound [`ReplyTarget`] and removes the token so a second reply with the same token finds
-    /// nothing. `None` = the token is unknown (never minted / forged) OR already consumed (a duplicate/replayed
+    /// Validate a reply-token (the token hex a handler echoed on its `effect/reply` `req.target`, which is
+    /// `Arc<str>`) and CONSUME it one-shot: parse the hex back to the token [`Hash`], return the bound
+    /// [`ReplyTarget`] and remove the token so a second reply with the same token finds nothing. `None` = the
+    /// token is malformed/non-hex, unknown (never minted / forged), OR already consumed (a duplicate/replayed
     /// reply) — either way the reply is refused (the host does NOT settle anything). This is the reply-forgery
-    /// + double-settle defense, enforced BEFORE the kernel `settle_effect_result`.
+    /// and double-settle defense, enforced BEFORE the kernel `settle_effect_result`. The hex is parsed here
+    /// ONLY because it arrives on the kernel effect-target boundary; the table stores the binary `Hash`.
     pub fn validate_and_consume(&self, token_hex: &str) -> Option<ReplyTarget> {
-        self.tokens.borrow_mut().remove(token_hex)
+        let token = Hash::from_hex(token_hex)?;
+        self.tokens.borrow_mut().remove(&token)
     }
 
     /// Drop all tokens bound to `caller` (their pending effects can no longer be replied to) — the I6
@@ -141,6 +148,10 @@ mod tests {
             "a forged/never-minted token cannot settle any effect (reply-forgery defense)"
         );
         // The real token is untouched by the forged attempt.
+        assert_eq!(reg.len(), 1);
+        // A non-hex / malformed token (a handler echoed garbage on effect/reply's target) is refused too —
+        // it parses to no Hash, so no settle (never panics on a bad boundary string).
+        assert!(reg.validate_and_consume("not-a-hash").is_none());
         assert_eq!(reg.len(), 1);
     }
 
