@@ -6401,3 +6401,6 @@ pass	se3 a set BUILT from cycling draws probed by a LATER state read — the in-
 pass	rw1 two sequential Record.with updates each take a DRAW — the second write sees the advanced state, projections read both back
 pass	rw2 draw PARITY picks WHICH field Record.with updates — projections of both fields show exactly one write landed
 pass	rw3 each Record.with value PROJECTS from the record it updates plus a draw — self-referential functional updates chain through the thread
+pass	sd1 a draw COUNT drives string repetition through a recursion — String.byte-len pins how many times the thread said to concat
+pass	sd2 draw parity picks WHICH string each op returns — the concat order of two draws is visible in content equality
+pass	sd3 a draw-bounded String.slice window — start and end both come from the thread, byte-len pins the window width
