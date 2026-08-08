@@ -1,0 +1,162 @@
+/// hm-collect.cdz — ARC-B5 constraint GENERATION (the half between the solver and infer). hm-solve.cdz gave
+/// the solver — `solve(constraints) -> Option(Subst)`. This module GENERATES the constraints from a source
+/// subtree over a type ENVIRONMENT: it walks an expression and, at each node that imposes a type equality
+/// (arithmetic: both operands share the result type; comparison/if: the compared/joined sides share a type),
+/// emits a `(Ty, Ty)` constraint. Feeding the collected list to `solve` then binds the fresh variables — this
+/// is what turns a param typed as a fresh int-var into its PRINCIPLE type inferred FROM USE (rcdzc's
+/// constraint-based inference: generate over the AST, then solve the set).
+///
+/// SCOPE (NARROW build-order B5, kept STANDALONE): this is a pure new module over landed deps
+/// (ty/parse-db/hm-vars/hm-solve) — it does NOT touch infer-db (the green, heavily-tested walker). It delivers
+/// + proves the collect->solve mechanism on hand-built trees; the thin wiring that has infer type a def's params
+/// as fresh vars, call `collect` over the body, `solve`, and read off each param's principal type is the FOLLOW
+/// slice (once the mechanism is proven here + the concierge confirms the narrow scope). Zero blast radius.
+///
+/// TYPE ENVIRONMENT: a `Map(Int64, Ty)` node-id -> its assigned type. The caller seeds it — params get FRESH
+/// int-vars (hm-vars.fresh-int-ty), annotated literals their fixed type, bare literals a fresh var. `node-ty`
+/// reads a node's type: a leaf/var reads the env (its seeded type); a composite's type is its result var,
+/// which the caller also seeds (or, for arith, IS one of the operand types once unified). To stay simple +
+/// total, `node-ty` looks the node's OWN id up in the env — the caller seeds every node's id it cares about;
+/// an unseeded node reads as TyErr (a gap the caller must fill), never a silent default.
+import { Ty, is-int-ty } from "ty"
+import { Node, Tree, node-at } from "parse-db"
+
+/// The type assigned to node `id` in env `env` — a direct lookup (the caller seeds every relevant node's type,
+/// params to fresh vars). An unseeded id reads TyErr (typed absence: the caller left a gap), never a default.
+def node-ty(env: Map(Int64, Ty), id: Int64) = match Map.lookup(env, id) with
+  | Option.Some(t) => t
+  | Option.None(_) => Ty.TyErr
+
+/// COLLECT the type-equality constraints imposed by the subtree at `id`, over env `env`, appending to `acc`.
+/// The generation rules (the equalities HM inference imposes on the covered node subset):
+///   NBin ARITH (op < 60): both operands must be the SAME type AND equal the node's own result type — emit
+///     `nodeTy ~ leftTy` and `nodeTy ~ rightTy` (transitively left ~ right), then recurse into both operands.
+///   NBin RELATIONAL (60..65): the two compared operands must share a type — emit `leftTy ~ rightTy`; the node
+///     itself is Bool (no constraint on nodeTy from the operands). Recurse into both.
+///   NIf: the two branches must join — emit `thenTy ~ elseTy` and `nodeTy ~ thenTy`; the cond is Bool (a
+///     cond-is-Bool constraint is a caller concern — kept out here to stay focused on the int-var propagation).
+///     Recurse into cond/then/else.
+///   NLet: the body's type is the let's — emit `nodeTy ~ bodyTy`; recurse value + body.
+///   leaf (NLit/NBoolLit/NAnnLit/NVar): no sub-constraint (its type is its seed) — nothing to emit, no recursion.
+///   other composites (NApp/NMatch/NMatchCtor): NOT generated here (the narrow slice covers arith/if/let over
+///     params; a call/match constraint is a later extension) — no emit, no recursion (the caller handles them).
+def collect(tree: Tree, env: Map(Int64, Ty), id: Int64, acc: List(Tuple(Ty, Ty))) =
+  match node-at(tree, id) with
+    | Option.Some(Node.NBin(op, l, r)) =>
+        (if (op >= 60)
+         then (if (op <= 65)
+               // relational: operands share a type (left ~ right); node is Bool (no nodeTy constraint here)
+               then (let a1 = List.push(acc, (node-ty(env, l), node-ty(env, r))) in
+                     collect(tree, env, r, collect(tree, env, l, a1)))
+               else acc)                                              // unknown op ≥ 66 → no constraint
+         // arithmetic: node ~ left, node ~ right (so left ~ right transitively), then recurse operands
+         else (let nt = node-ty(env, id) in
+               (let a1 = List.push(List.push(acc, (nt, node-ty(env, l))), (nt, node-ty(env, r))) in
+                collect(tree, env, r, collect(tree, env, l, a1)))))
+    | Option.Some(Node.NIf(c, t, e)) =>
+        // branches join (then ~ else) and the if IS that type (node ~ then); recurse all three
+        (let nt = node-ty(env, id) in
+         (let a1 = List.push(List.push(acc, (node-ty(env, t), node-ty(env, e))), (nt, node-ty(env, t))) in
+          collect(tree, env, e, collect(tree, env, t, collect(tree, env, c, a1)))))
+    | Option.Some(Node.NLet(_, valId, bodyId)) =>
+        // the let's type is the body's; recurse value + body
+        (let a1 = List.push(acc, (node-ty(env, id), node-ty(env, bodyId))) in
+         collect(tree, env, bodyId, collect(tree, env, valId, a1)))
+    | Option.Some(_) => acc                                          // leaf or not-covered composite → no constraint
+    | Option.None(_) => acc
+
+/// COLLECT from an empty accumulator — the entry point. `collect-all(tree, env, root)` = the full constraint
+/// set of the subtree at `root`, ready to hand to `hm-solve.solve`.
+def collect-all(tree: Tree, env: Map(Int64, Ty), root: Int64) = collect(tree, env, root, ([] : List(Tuple(Ty, Ty))))
+
+// ---- TESTS: constraint generation over hand-built trees; solve propagates the fresh vars -------------
+import { add-node, empty-tree } from "parse-db"
+import { IntType, Sign, Width, ty-fixed-int, ty-int64 } from "ty"
+import { fresh-int-ty } from "hm-vars"
+import { solve, solve-apply } from "hm-solve"
+import { apply } from "subst"
+
+/// A fresh int-var Ty at counter `n` (sign-var n, width-var n+1); returns (ty, next-counter).
+def fv(n: Int64) = fresh-int-ty(n)
+
+@test
+def hc-arith-emits-two-constraints() =
+  // `(+ a b)` with a,b,node each a distinct type in env: collect emits exactly 2 constraints (node~a, node~b).
+  // Build a 3-node tree: a=NLit@0, b=NLit@1, bin=NBin(43,0,1)@2. Seed env: 0->varA, 1->varB, 2->varN.
+  let (aId, t1) = add-node(empty-tree(), Node.NLit(1)) in
+  let (bId, t2) = add-node(t1, Node.NLit(2)) in
+  let (binId, tree) = add-node(t2, Node.NBin(43, aId, bId)) in
+  let (va, n1) = fv(0) in
+  let (vb, n2) = fv(n1) in
+  let (vn, _n3) = fv(n2) in
+  let env = Map.insert(Map.insert(Map.insert((Map.empty : Map(Int64, Ty)), aId, va), bId, vb), binId, vn) in
+  (if List.len(collect-all(tree, env, binId)) == 2 then unit else trap("arith (+ a b) emits 2 constraints (node~a, node~b)"))
+
+@test
+def hc-arith-propagates-fixed-width-to-both-operands() =
+  // THE use-directed-inference pin: `(+ a b)` where a is a FRESH var but b is annotated Int8. Collecting +
+  // solving binds node~a and node~b → a unifies with b=Int8, so a's fresh var RESOLVES to Int8. This is a
+  // param `a` getting its type FROM USE (added to an Int8) instead of defaulting. Apply the solution to varA → Int8.
+  let (aId, t1) = add-node(empty-tree(), Node.NLit(1)) in
+  let (bId, t2) = add-node(t1, Node.NAnnLit(5, 1, 8)) in                     // b : Int8 (signed, width 8)
+  let (binId, tree) = add-node(t2, Node.NBin(43, aId, bId)) in
+  let (va, n1) = fv(0) in
+  let (vn, _n2) = fv(n1) in
+  // env: a -> fresh var (the "param"), b -> fixed Int8, node -> fresh result var
+  let env = Map.insert(Map.insert(Map.insert((Map.empty : Map(Int64, Ty)), aId, va), bId, ty-fixed-int(true, 8)), binId, vn) in
+  (match solve(collect-all(tree, env, binId)) with
+    | Option.Some(su) => (match apply(su, va) with
+        | Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w))) => (if w == 8 then unit else trap("param a inferred Int8 from use"))
+        | _ => trap("param a's fresh var resolves to Int8 via the shared arith constraint"))
+    | Option.None(_) => trap("(+ a b) with b:Int8 is solvable"))
+
+@test
+def hc-mixed-width-arith-conflicts() =
+  // `(+ a b)` with a FIXED Int8 and b FIXED Int16 → the shared-type constraint (node~a, node~b → a~b) makes
+  // Int8 ~ Int16 → CONFLICT → solve None. Pins that collect+solve REJECTS mixed-width arith (CDZ0301), the
+  // no-silent-promotion rule, via the generated constraints (not an ad-hoc check).
+  let (aId, t1) = add-node(empty-tree(), Node.NAnnLit(5, 1, 8)) in
+  let (bId, t2) = add-node(t1, Node.NAnnLit(5, 1, 16)) in
+  let (binId, tree) = add-node(t2, Node.NBin(43, aId, bId)) in
+  let (vn, _n1) = fv(0) in
+  let env = Map.insert(Map.insert(Map.insert((Map.empty : Map(Int64, Ty)), aId, ty-fixed-int(true, 8)), bId, ty-fixed-int(true, 16)), binId, vn) in
+  (match solve(collect-all(tree, env, binId)) with
+    | Option.None(_) => unit
+    | Option.Some(_) => trap("Int8 + Int16 must CONFLICT via the shared-type constraint"))
+
+@test
+def hc-relational-shares-operand-type-node-is-bool() =
+  // `(< a b)` (op 60): emits ONE constraint (a ~ b) — the operands share a type — and does NOT constrain the
+  // node (it's Bool). a fresh, b Int8 → a infers Int8; the node var stays free (Bool is the caller's concern).
+  let (aId, t1) = add-node(empty-tree(), Node.NLit(1)) in
+  let (bId, t2) = add-node(t1, Node.NAnnLit(5, 1, 8)) in
+  let (cmpId, tree) = add-node(t2, Node.NBin(60, aId, bId)) in
+  let (va, _n1) = fv(0) in
+  let env = Map.insert(Map.insert(Map.insert((Map.empty : Map(Int64, Ty)), aId, va), bId, ty-fixed-int(true, 8)), cmpId, Ty.TyBool) in
+  let cs = collect-all(tree, env, cmpId) in
+  (if List.len(cs) == 1
+   then (match solve-apply(cs, va) with
+          | Option.Some(Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w)))) => (if w == 8 then unit else trap("compared operand a infers Int8"))
+          | _ => trap("relational operand a shares b's Int8 type"))
+   else trap("relational emits exactly ONE operand-share constraint"))
+
+@test
+def hc-nested-arith-propagates-through-chain() =
+  // `(+ a (+ b c))` all fresh vars, with c annotated Int8 → the shared-type constraints chain: inner node ~ b,
+  // inner node ~ c(Int8), outer node ~ a, outer node ~ inner → ALL of a,b,inner,outer collapse to Int8. Pins
+  // that a fresh param deep in a chain infers the width flowing from ANY fixed sibling. Apply to varA → Int8.
+  let (aId, t1) = add-node(empty-tree(), Node.NLit(1)) in
+  let (bId, t2) = add-node(t1, Node.NLit(2)) in
+  let (cId, t3) = add-node(t2, Node.NAnnLit(3, 1, 8)) in
+  let (innerId, t4) = add-node(t3, Node.NBin(43, bId, cId)) in
+  let (outerId, tree) = add-node(t4, Node.NBin(43, aId, innerId)) in
+  let (va, n1) = fv(0) in
+  let (vb, n2) = fv(n1) in
+  let (vinner, n3) = fv(n2) in
+  let (vouter, _n4) = fv(n3) in
+  let env = Map.insert(Map.insert(Map.insert(Map.insert(Map.insert((Map.empty : Map(Int64, Ty)), aId, va), bId, vb), cId, ty-fixed-int(true, 8)), innerId, vinner), outerId, vouter) in
+  (match solve-apply(collect-all(tree, env, outerId), va) with
+    | Option.Some(Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w)))) => (if w == 8 then unit else trap("a infers Int8 through the nested chain"))
+    | _ => trap("nested arith propagates Int8 to the deep fresh var a"))
+
+export { collect, collect-all, node-ty }
