@@ -318,6 +318,35 @@ pub mod effect_ct {
         family.starts_with(WS_PREFIX)
     }
 
+    /// The `effect/` name-server registration PREFIX (userspace-effects I1) — NOT an effect family itself, but
+    /// the GNS namespace where a userspace effect family is registered: `effect/<family>` is a pointer name
+    /// whose value is the handler session's `SessionId` (genesis hash). A session Cedar-granted `store/set`
+    /// over `effect/<family>` CLAIMS/repoints that family to itself (the anti-hijack write authority, see
+    /// [`crate::name_store::NameAuthority::Effect`]); the delegating executor resolves it via
+    /// [`crate::name_store::NameStore::resolve_effect_handler`]. This is the store-NAME prefix, distinct from
+    /// the effect FAMILY string a reducer emits (the family `weather` registers AT `effect/weather`).
+    pub const EFFECT_REGISTRY_PREFIX: &str = "effect/";
+
+    /// Is `family` a candidate USERSPACE-EFFECT family — i.e. NOT one of the built-in well-known partitions
+    /// (so it would route to a registered handler, if one is registered)? A SYNTACTIC check: an emitted
+    /// effect whose family is not a kernel built-in (EffectKind / control/store/fs/metric/blob/ws) is a
+    /// candidate for `effect/<family>` handler resolution. Whether a handler is ACTUALLY registered is the
+    /// runtime lookup [`crate::name_store::NameStore::resolve_effect_handler`] (mechanism = "resolves in the
+    /// registry"); this predicate is the partition boundary the drive loop / delegating executor uses to
+    /// decide "try the userspace-effect path" vs "a known built-in family". Fail-safe: a family that IS a
+    /// built-in returns false (built-ins are never shadowed by a userspace handler).
+    pub fn is_registered_effect_family(family: &str) -> bool {
+        // A built-in well-known family is NOT a userspace effect (built-ins win — no shadowing).
+        let is_builtin = super::EffectKind::from_family(family).is_some()
+            || is_control_family(family)
+            || is_store_family(family)
+            || is_fs_family(family)
+            || is_metric_family(family)
+            || is_blob_family(family)
+            || is_ws_family(family);
+        !is_builtin && !family.is_empty()
+    }
+
     /// Is `family` in the `control/*` namespace (authz-exempt, host/kernel-answered, never executor-routed)?
     /// The partition test the drive loop applies BEFORE authorize/route: `true` → control path, `false` →
     /// the effect path (authorize → executor). A simple prefix check on [`CONTROL_PREFIX`] — one source of
