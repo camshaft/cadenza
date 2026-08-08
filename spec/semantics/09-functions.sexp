@@ -1358,14 +1358,14 @@
 ; both also member projections — keep their own paths.
 
 (case "a function stored in a record field of a sum payload is called after a match"
-  (doc    "`(type H (M (Record (f (-> Int64 Int64)) (n Int64))))` carries a record with a FUNCTION field
+  (doc    "`(type H (M (Record (: f (-> Int64 Int64)) (: n Int64))))` carries a record with a FUNCTION field
            `f` and a data field `n`. Matching binds the whole record to `rec`; `((. rec f) rec.n)` projects
            the fn field off the runtime payload record and applies it to the data field — `(fn (x) (+ x 1))`
            applied to 41 → 42. Pins that a fn projected from a record that is a sum payload dispatches via
            call_indirect (it cannot fold — the record is a runtime heap value behind the match), while the
            sibling `rec.n` data read folds as usual.")
   (input  (do
-            (type H (M (Record (f (-> Int64 Int64)) (n Int64))))
+            (type H (M (Record (: f (-> Int64 Int64)) (: n Int64))))
             (def (run (: h H)) (match h ((H.M rec) ((. rec f) rec.n))))
             (def (main) (run (H.M (record (f (fn ((: x Int64)) (+ x 1))) (n 41)))))
             (export main)))
@@ -5455,14 +5455,14 @@
            a `(: g (-> t …))` arrow annotation previously collapsed `t` to `Unit` (the `encode_ty`/`decode_ty`
            round-trip for a built arrow type-value had no `Ty::Var` arm, so the def scheme read `(-> (-> Unit
            Int64) …)` and a real closure argument mismatched). Now the scheme is `(-> Type (-> (Record
-           (describe (-> a Int64))) (-> a Int64)))`, and `show-with` dispatches over BOTH an Int64 instance
+           (: describe (-> a Int64))) (-> a Int64)))`, and `show-with` dispatches over BOTH an Int64 instance
            (`describe-int`) AND a Bool instance (`describe-bool`) through the dict in one program:
            `describe-int(5)=5` + `describe-bool(true)=1` = 6. Pins the type-valued-parameter-under-an-arrow
            substitution the ad-hoc-polymorphism chapter (traits = records of functions) depends on.")
   (input  (do
             (def (describe-int (: n Int64)) n)
             (def (describe-bool (: b Bool)) (if b 1 0))
-            (def (show-with (: t Type) (: dict (Record (describe (-> t Int64)))) (: x t))
+            (def (show-with (: t Type) (: dict (Record (: describe (-> t Int64)))) (: x t))
               ((. dict describe) x))
             (def (main)
               (+ (show-with Int64 (record (describe describe-int)) 5)
@@ -5807,13 +5807,13 @@
 ; same "inline a compile-time-known argument, drop the param" rule that erases a type-valued parameter.
 
 (case "a recursive consumer of a dictionary record inlines and erases the dictionary"
-  (doc    "`fold-n` takes a dictionary `(Record (op (-> Int64 Int64)))` and applies its `op` `n` times.
+  (doc    "`fold-n` takes a dictionary `(Record (: op (-> Int64 Int64)))` and applies its `op` `n` times.
            Called with `(record (op (fn (x) (+ x 10))))`, the dictionary is compile-time-known, so
            `fold-n` is monomorphized with the `op` inlined directly (`(. d op)` folds to `(+ acc 10)` —
            no call_indirect, no runtime record) and the dictionary argument erased. Folding `+10` from 0
            three times = 30.")
   (input  (do
-            (def (fold-n (const (: d (Record (op (-> Int64 Int64))))) (: n Int64) (: acc Int64))
+            (def (fold-n (const (: d (Record (: op (-> Int64 Int64))))) (: n Int64) (: acc Int64))
               (if (= n 0) acc (fold-n d (- n 1) ((. d op) acc))))
             (def (main) (fold-n (record (op (fn (x) (+ x 10)))) 3 0))
             (export main)))
@@ -5825,7 +5825,7 @@
            specialization, the ad-hoc-polymorphism analogue of per-type monomorphization). `(+10)` folded
            from 0 thrice = 30; `(*2)` folded from 1 thrice = 8; 30 + 8 = 38.")
   (input  (do
-            (def (fold-n (const (: d (Record (op (-> Int64 Int64))))) (: n Int64) (: acc Int64))
+            (def (fold-n (const (: d (Record (: op (-> Int64 Int64))))) (: n Int64) (: acc Int64))
               (if (= n 0) acc (fold-n d (- n 1) ((. d op) acc))))
             (def (main) (+ (fold-n (record (op (fn (x) (+ x 10)))) 3 0)
                            (fold-n (record (op (fn (x) (* x 2)))) 3 1)))
@@ -5844,7 +5844,7 @@
            rejects it (CDZ0201, 'must be compile-time-known'), rather than silently passing it at runtime.
            The rejection is the program's outcome; there is no value.")
   (input  (do
-            (def (fold-n (const (: d (Record (op (-> Int64 Int64))))) (: n Int64) (: acc Int64))
+            (def (fold-n (const (: d (Record (: op (-> Int64 Int64))))) (: n Int64) (: acc Int64))
               (if (= n 0) acc (fold-n d (- n 1) ((. d op) acc))))
             (def (main (: k Int64)) (fold-n (record (op (fn (x) (+ x k)))) 3 0))
             (export main)))
@@ -5959,7 +5959,7 @@
            `apply2` applies `d.op` twice; with `op = (+ n 10)`: `5 → 25`, `100 → 120`; 25 + 120 = 145.")
   (input  (do
             (@ inline-never
-              (def (apply2 (const (: d (Record (op (-> Int64 Int64))))) (: x Int64))
+              (def (apply2 (const (: d (Record (: op (-> Int64 Int64))))) (: x Int64))
                 ((. d op) ((. d op) x))))
             (def (main) (+ (apply2 (record (op (fn (n) (+ n 10)))) 5)
                            (apply2 (record (op (fn (n) (+ n 10)))) 100)))

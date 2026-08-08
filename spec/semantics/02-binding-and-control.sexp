@@ -4114,7 +4114,7 @@
 (case "a record binding pattern naming an absent field is rejected"
   (doc    "The contrast: a record binding pattern that names a field the bound value's record type does NOT
            have is a type mismatch (CDZ0203), not a silent miss. `(let (((record (nope a)) (record (x 3) (y
-           4)))) a)` names `nope`, absent from `(Record (x Int64) (y Int64))`. Pins that a record binding
+           4)))) a)` names `nope`, absent from `(Record (: x Int64) (: y Int64))`. Pins that a record binding
            pattern's fields must exist on the value — the record analogue of a tuple pattern's arity check.")
   (input  (let (((record (nope a)) (record (x 3) (y 4)))) a))
   (error  CDZ0203))

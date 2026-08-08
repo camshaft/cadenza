@@ -1744,12 +1744,11 @@
   (output (: (tuple 5 6) (Tuple Int64 Int64))))
 
 (case "a closure returning a record crosses as the typed value form"
-  (doc    "A record result — `(record (x n) (y n+10))` → `(: (record (x 3) (y 13)) (Record (x Int64) (y
-           Int64)))`. Field names + the record type node are baked in the template; only the leaf values are
+  (doc    "A record result — `(record (x n) (y n+10))` → `(: (record (x 3) (y 13)) (Record (: x Int64) (: y Int64)))`. Field names + the record type node are baked in the template; only the leaf values are
            walked at run time.")
   (input  (do (def (mk) (fn ((: n Int64)) (record (x n) (y (+ n 10))))) (export mk)))
   (call   mk (: 3 Int64))
-  (output (: (record (x 3) (y 13)) (Record (x Int64) (y Int64)))))
+  (output (: (record (x 3) (y 13)) (Record (: x Int64) (: y Int64)))))
 
 (case "a closure returning a tuple with a Bool leaf"
   (doc    "A mixed-leaf compound — `(tuple n (< n 5))` → `(: (tuple 2 true) (Tuple Int64 Bool))`. The Bool
@@ -1791,7 +1790,7 @@
               (export mk)))
   (call   mk (: 100 Int64))
   (output (: (record (a 100) (b (record (c 101) (d 102))))
-             (Record (a Int64) (b (Record (c Int64) (d Int64)))))))
+             (Record (: a Int64) (: b (Record (: c Int64) (: d Int64)))))))
 
 (case "a Tuple ARG composes with a NESTED-tuple RESULT"
   (doc    "`mk : (-> (Tuple Int64 Int64) (Tuple Int64 (Tuple Int64 Int64)))` — a fixed-shape tuple ARG (rebuilt
@@ -1884,13 +1883,13 @@
   (output (: (tuple 5 6) (Tuple Int64 Int64))))
 
 (case "multi-export record result — canonical field order"
-  (doc    "Two closures returning a `(Record (lo Int64) (hi Int64))`. `call(mka-handle, 3)` → `(record (lo 3)
+  (doc    "Two closures returning a `(Record (: lo Int64) (: hi Int64))`. `call(mka-handle, 3)` → `(record (lo 3)
            (hi 103))`, rendered in CANONICAL sorted-name order `(record (hi 103) (lo 3))`.")
   (input  (do (def (mka) (fn ((: n Int64)) (record (lo n) (hi (+ n 100)))))
               (def (mkb) (fn ((: n Int64)) (record (lo (- 0 n)) (hi n))))
               (export mka) (export mkb)))
   (call   mka (: 3 Int64))
-  (output (: (record (hi 103) (lo 3)) (Record (hi Int64) (lo Int64)))))
+  (output (: (record (hi 103) (lo 3)) (Record (: hi Int64) (: lo Int64)))))
 
 (case "multi-export record result — the second closure, with a negative leaf"
   (doc    "The SAME program's other export: `call(mkb-handle, 3)` → `(record (lo -3) (hi 3))` → canonical
@@ -1899,7 +1898,7 @@
               (def (mkb) (fn ((: n Int64)) (record (lo (- 0 n)) (hi n))))
               (export mka) (export mkb)))
   (call   mkb (: 3 Int64))
-  (output (: (record (hi 3) (lo -3)) (Record (hi Int64) (lo Int64)))))
+  (output (: (record (hi 3) (lo -3)) (Record (: hi Int64) (: lo Int64)))))
 
 (case "multi-export compound result — three capturing closures share one call"
   (doc    "THREE same-signature closures (two capturing `k`, one not) each returning `(Tuple Int64 Int64)`.
@@ -1939,14 +1938,14 @@
   (output (: 2 Int64)))
 
 (case "a record-returning closure alongside a parameterized plain export — the closure"
-  (doc    "`mk : () -> (-> Int64 (Record (a Int64) (b Int64)))` returns `(record (a n) (b 2n))`, beside a
+  (doc    "`mk : () -> (-> Int64 (Record (: a Int64) (: b Int64)))` returns `(record (a n) (b 2n))`, beside a
            parameterized plain `inc : (Int64) -> Int64`. `call(mk-handle, 4)` → `(: (record (a 4) (b 8))
-           (Record (a Int64) (b Int64)))`.")
+           (Record (: a Int64) (: b Int64)))`.")
   (input  (do (def (mk) (fn ((: n Int64)) (record (a n) (b (* n 2)))))
               (def (inc (: x Int64)) (+ x 1))
               (export mk) (export inc)))
   (call   mk (: 4 Int64))
-  (output (: (record (a 4) (b 8)) (Record (a Int64) (b Int64)))))
+  (output (: (record (a 4) (b 8)) (Record (: a Int64) (: b Int64)))))
 
 (case "a record-returning closure alongside a parameterized plain export — the plain"
   (doc    "The SAME program, calling `inc(41)` = 42. Pins the parameterized plain export reachable beside a
@@ -2035,13 +2034,13 @@
   (output (: (tuple 5 6) (Tuple Int64 Int64))))
 
 (case "round-trip: a consumer returns a record built from the closure result"
-  (doc    "`mk` doubles; `app : (own<t>, Int64) -> (Record (inp Int64) (out Int64))` = `(record (inp x) (out
+  (doc    "`mk` doubles; `app : (own<t>, Int64) -> (Record (: inp Int64) (: out Int64))` = `(record (inp x) (out
            (g x)))`. `app(handle, 10)` → `(: (record (inp 10) (out 20)) …)`.")
   (input  (do (def (mk) (fn ((: n Int64)) (* n 2)))
               (def (app (: g (-> Int64 Int64)) (: x Int64)) (record (inp x) (out (g x))))
               (export mk) (export app)))
   (call   app (: 10 Int64))
-  (output (: (record (inp 10) (out 20)) (Record (inp Int64) (out Int64)))))
+  (output (: (record (inp 10) (out 20)) (Record (: inp Int64) (: out Int64)))))
 
 (case "round-trip: a scalar consumer + a compound consumer of the same closure — the compound"
   (doc    "One closure signature, TWO consumers: `asnum` returns the value, `aspair` returns `(tuple x (g
@@ -2142,14 +2141,14 @@
 
 (case "distinct-sig round-trip: TWO compound consumers of different sigs — the record one"
   (doc    "The SAME program's OTHER consumer: `appb(mkb-handle, true)` → `(: (record (flag true) (val 7))
-           (Record (flag Bool) (val Int64)))`. Confirms each distinct-sig consumer decodes its own template.")
+           (Record (: flag Bool) (: val Int64)))`. Confirms each distinct-sig consumer decodes its own template.")
   (input  (do (def (mka) (fn ((: n Int64)) (+ n 1)))
               (def (mkb) (fn ((: b Bool)) (: (if b 7 8) Int64)))
               (def (appa (: g (-> Int64 Int64)) (: x Int64)) (tuple x (g x)))
               (def (appb (: h (-> Bool Int64)) (: y Bool)) (record (flag y) (val (h y))))
               (export mka) (export mkb) (export appa) (export appb)))
   (call   appb (: true Bool))
-  (output (: (record (flag true) (val 7)) (Record (flag Bool) (val Int64)))))
+  (output (: (record (flag true) (val 7)) (Record (: flag Bool) (: val Int64)))))
 
 (case "distinct-sig round-trip: a compound consumer + a byte-rope consumer of different sigs — the byte-rope"
   (doc    "A COMPOUND consumer (`appa` → tuple value form) AND a BYTE-ROPE consumer (`appb` → raw list<u8>)
@@ -2644,12 +2643,12 @@
   (output (: 10 Int64)))
 
 (case "round-trip: a consumer applies a closure taking a Record arg built in-guest"
-  (doc    "`mk : () -> (-> (Record (a Int64) (b Int64)) Int64)` multiplies the two fields; `app` applies it to
+  (doc    "`mk : () -> (-> (Record (: a Int64) (: b Int64)) Int64)` multiplies the two fields; `app` applies it to
            a guest-built `(record (a x) (b x+1))`. `app(handle, 6)` → `g((record (a 6) (b 7)))` = 42. A RECORD
            closure argument crosses the round trip (field names are compile-time-only; the value is an i32
            heap handle in-guest).")
-  (input  (do (def (mk) (fn ((: r (Record (a Int64) (b Int64)))) (* (. r a) (. r b))))
-              (def (app (: g (-> (Record (a Int64) (b Int64)) Int64)) (: x Int64))
+  (input  (do (def (mk) (fn ((: r (Record (: a Int64) (: b Int64)))) (* (. r a) (. r b))))
+              (def (app (: g (-> (Record (: a Int64) (: b Int64)) Int64)) (: x Int64))
                 (g (record (a x) (b (+ x 1)))))
               (export mk) (export app)))
   (call   app (: 6 Int64))
@@ -2712,9 +2711,9 @@
            `appa : (own<t0>, Int64) -> Int64` applies `g` to `(tuple x+1 x)`. `appa(handle, 7)` →
            `g((tuple 8 7))` = 8-7 = 1. Each group's closure takes its own compound argument built in-guest.")
   (input  (do (def (mka) (fn ((: p (Tuple Int64 Int64))) (- (. p 0) (. p 1))))
-              (def (mkb) (fn ((: r (Record (a Int64) (b Int64)))) (* (. r a) (. r b))))
+              (def (mkb) (fn ((: r (Record (: a Int64) (: b Int64)))) (* (. r a) (. r b))))
               (def (appa (: g (-> (Tuple Int64 Int64) Int64)) (: x Int64)) (g (tuple (+ x 1) x)))
-              (def (appb (: h (-> (Record (a Int64) (b Int64)) Int64)) (: y Int64))
+              (def (appb (: h (-> (Record (: a Int64) (: b Int64)) Int64)) (: y Int64))
                 (h (record (a y) (b y))))
               (export mka) (export mkb) (export appa) (export appb)))
   (call   appa (: 7 Int64))
@@ -2725,9 +2724,9 @@
            `(record (a y) (b y))`. `appb(handle, 6)` → `h((record (a 6) (b 6)))` = 36. Confirms each distinct
            signature threads its own compound argument through its own resource type.")
   (input  (do (def (mka) (fn ((: p (Tuple Int64 Int64))) (- (. p 0) (. p 1))))
-              (def (mkb) (fn ((: r (Record (a Int64) (b Int64)))) (* (. r a) (. r b))))
+              (def (mkb) (fn ((: r (Record (: a Int64) (: b Int64)))) (* (. r a) (. r b))))
               (def (appa (: g (-> (Tuple Int64 Int64) Int64)) (: x Int64)) (g (tuple (+ x 1) x)))
-              (def (appb (: h (-> (Record (a Int64) (b Int64)) Int64)) (: y Int64))
+              (def (appb (: h (-> (Record (: a Int64) (: b Int64)) Int64)) (: y Int64))
                 (h (record (a y) (b y))))
               (export mka) (export mkb) (export appa) (export appb)))
   (call   appb (: 6 Int64))
@@ -2835,14 +2834,14 @@
   (output (: 7 Int64)))
 
 (case "a fixed-shape scalar RECORD closure ARG crosses the DIRECT-CALL boundary"
-  (doc    "Like the tuple-arg case but the closure argument is a RECORD `(Record (a Int64) (b Int64))`. A
+  (doc    "Like the tuple-arg case but the closure argument is a RECORD `(Record (: a Int64) (: b Int64))`. A
            record of aliased-width scalars flattens the same way (its fields in canonical SORTED-key order —
            the value-heap cell's field order), so the guest `call` rebuilds the record cell from the flat
            fields. `call(handle, (record 3 4))` → `(. p a) + (. p b)` = 7. (The corpus arg is the value form
            in field order; the `record` head token is dropped by the runner's tuple-literal parser.)")
-  (input  (do (def (mk) (fn ((: p (Record (a Int64) (b Int64)))) (+ (. p a) (. p b))))
+  (input  (do (def (mk) (fn ((: p (Record (: a Int64) (: b Int64)))) (+ (. p a) (. p b))))
               (export mk)))
-  (call   mk (: (record 3 4) (Record (a Int64) (b Int64))))
+  (call   mk (: (record 3 4) (Record (: a Int64) (: b Int64))))
   (output (: 7 Int64)))
 
 (case "a NARROW-int-field Tuple closure ARG flattens + rebuilds (exercises the i32->i64 extend)"
@@ -3052,7 +3051,7 @@
   (output (: (tuple 13 7) (Tuple Int64 Int64))))
 
 (case "a fixed-shape Tuple ARG with a RECORD RESULT crosses the direct-call boundary"
-  (doc    "Like the tuple-result case but the closure returns a RECORD `(Record (sum Int64) (diff Int64))` —
+  (doc    "Like the tuple-result case but the closure returns a RECORD `(Record (: sum Int64) (: diff Int64))` —
            a fixed-shape compound rendered via the value-form template (fields in canonical sorted-key order).
            `call(handle, (10, 3))` → `(record (diff 7) (sum 13))`. Confirms a record result rides the same
            value-form tuple-arg path.")
@@ -3060,7 +3059,7 @@
                          (record (sum (+ (. p 0) (. p 1))) (diff (- (. p 0) (. p 1))))))
               (export mk)))
   (call   mk (: (tuple 10 3) (Tuple Int64 Int64)))
-  (output (: (record (diff 7) (sum 13)) (Record (diff Int64) (sum Int64)))))
+  (output (: (record (diff 7) (sum 13)) (Record (: diff Int64) (: sum Int64)))))
 
 ; A fixed-shape compound ARGUMENT now composes with a VARIABLE-LENGTH COLLECTION result (List/Map/Set) too —
 ; the value-encode result core + the shared list<u8> envelope thread the `TupleArgRebuild`. So a single-export
@@ -3320,57 +3319,57 @@
 ; it as `(record (name value)…)`; cdz-run sorts the named fields to match the boundary tuple's positions.
 
 (case "a RECORD closure ARG among scalars crosses the direct-call boundary (scalar result)"
-  (doc    "`mk : (-> Int64 (Record (x Int64) (y Int64)) Int64)` — a scalar `n` then a RECORD `r`. The record
+  (doc    "`mk : (-> Int64 (Record (: x Int64) (: y Int64)) Int64)` — a scalar `n` then a RECORD `r`. The record
            erases to a `tuple<s64,s64>` (fields sorted: x, y), flattened into core params the `call` rebuilds
            into the cell. `call(handle, 100, (record (x 10) (y 3)))` → `n + r.x + r.y` = 113.")
-  (input  (do (def (mk) (fn ((: n Int64) (: r (Record (x Int64) (y Int64)))) (+ n (+ (. r x) (. r y)))))
+  (input  (do (def (mk) (fn ((: n Int64) (: r (Record (: x Int64) (: y Int64)))) (+ n (+ (. r x) (. r y)))))
               (export mk)))
-  (call   mk (: 100 Int64) (: (record (x 10) (y 3)) (Record (x Int64) (y Int64))))
+  (call   mk (: 100 Int64) (: (record (x 10) (y 3)) (Record (: x Int64) (: y Int64))))
   (output (: 113 Int64)))
 
 (case "a SOLE RECORD closure ARG crosses the direct-call boundary"
-  (doc    "`mk : (-> (Record (a Int64) (b Int64)) Int64)` — the record is the SOLE arg (base_param=1). Erases
+  (doc    "`mk : (-> (Record (: a Int64) (: b Int64)) Int64)` — the record is the SOLE arg (base_param=1). Erases
            to `tuple<s64,s64>`, rebuilt in the `call`. `call(handle, (record (a 10) (b 3)))` → `r.a + r.b` = 13.")
-  (input  (do (def (mk) (fn ((: r (Record (a Int64) (b Int64)))) (+ (. r a) (. r b))))
+  (input  (do (def (mk) (fn ((: r (Record (: a Int64) (: b Int64)))) (+ (. r a) (. r b))))
               (export mk)))
-  (call   mk (: (record (a 10) (b 3)) (Record (a Int64) (b Int64))))
+  (call   mk (: (record (a 10) (b 3)) (Record (: a Int64) (: b Int64))))
   (output (: 13 Int64)))
 
 (case "a RECORD closure ARG whose fields are NOT in sorted source order"
-  (doc    "`mk : (-> (Record (z Int64) (a Int64)) Int64)` — fields declared `z` THEN `a`, but the boundary
+  (doc    "`mk : (-> (Record (: z Int64) (: a Int64)) Int64)` — fields declared `z` THEN `a`, but the boundary
            tuple sorts them to `(a, z)`. The guest reads `. r z`/`. r a` by name (correct regardless of layout);
            cdz-run sorts the corpus's `(z 100)(a 3)` fields to match. `call(handle, (record (z 100) (a 3)))` →
            `r.z - r.a` = 97 (proving the sorted-field round-trip is sound, not a coincidental positional match).")
-  (input  (do (def (mk) (fn ((: r (Record (z Int64) (a Int64)))) (- (. r z) (. r a))))
+  (input  (do (def (mk) (fn ((: r (Record (: z Int64) (: a Int64)))) (- (. r z) (. r a))))
               (export mk)))
-  (call   mk (: (record (z 100) (a 3)) (Record (z Int64) (a Int64))))
+  (call   mk (: (record (z 100) (a 3)) (Record (: z Int64) (: a Int64))))
   (output (: 97 Int64)))
 
 (case "a RECORD closure ARG with a narrow Bool field, among scalars"
-  (doc    "`mk : (-> Int64 (Record (v Int64) (flag Bool)) Int64)` — the record has a NARROW Bool field (sorted
+  (doc    "`mk : (-> Int64 (Record (: v Int64) (: flag Bool)) Int64)` — the record has a NARROW Bool field (sorted
            BEFORE `v`: flag, v). The rebuild boxes the Bool via `box-bool`. `call(handle, 100, (record (v 10)
            (flag true)))` → `if r.flag then n + r.v else n` = 110.")
-  (input  (do (def (mk) (fn ((: n Int64) (: r (Record (v Int64) (flag Bool)))) (if (. r flag) (+ n (. r v)) n)))
+  (input  (do (def (mk) (fn ((: n Int64) (: r (Record (: v Int64) (: flag Bool)))) (if (. r flag) (+ n (. r v)) n)))
               (export mk)))
-  (call   mk (: 100 Int64) (: (record (v 10) (flag true)) (Record (v Int64) (flag Bool))))
+  (call   mk (: 100 Int64) (: (record (v 10) (flag true)) (Record (: v Int64) (: flag Bool))))
   (output (: 110 Int64)))
 
 (case "a RECORD closure ARG with a LIST result"
-  (doc    "`mk : (-> Int64 (Record (x Int64) (y Int64)) (List Int64))` — a record arg composes with a
+  (doc    "`mk : (-> Int64 (Record (: x Int64) (: y Int64)) (List Int64))` — a record arg composes with a
            collection result: the list-`call` rebuilds the record cell, dispatches, value-encodes the List.
            `call(handle, 100, (record (x 10) (y 3)))` → `(list 100 10 3)`.")
-  (input  (do (def (mk) (fn ((: n Int64) (: r (Record (x Int64) (y Int64)))) (list n (. r x) (. r y))))
+  (input  (do (def (mk) (fn ((: n Int64) (: r (Record (: x Int64) (: y Int64)))) (list n (. r x) (. r y))))
               (export mk)))
-  (call   mk (: 100 Int64) (: (record (x 10) (y 3)) (Record (x Int64) (y Int64))))
+  (call   mk (: 100 Int64) (: (record (x 10) (y 3)) (Record (: x Int64) (: y Int64))))
   (output (: (list 100 10 3) (List Int64))))
 
 (case "a RECORD closure ARG on the MULTI-EXPORT path"
-  (doc    "Two same-sig record-arg closures `(-> (Record (x Int64) (y Int64)) Int64)` share ONE `call` that
+  (doc    "Two same-sig record-arg closures `(-> (Record (: x Int64) (: y Int64)) Int64)` share ONE `call` that
            rebuilds the record cell. Driving `mk-b` (subtract): `call(handle, (record (x 10) (y 3)))` → 7.")
-  (input  (do (def (mk-a) (fn ((: r (Record (x Int64) (y Int64)))) (+ (. r x) (. r y))))
-              (def (mk-b) (fn ((: r (Record (x Int64) (y Int64)))) (- (. r x) (. r y))))
+  (input  (do (def (mk-a) (fn ((: r (Record (: x Int64) (: y Int64)))) (+ (. r x) (. r y))))
+              (def (mk-b) (fn ((: r (Record (: x Int64) (: y Int64)))) (- (. r x) (. r y))))
               (export mk-a) (export mk-b)))
-  (call   mk-b (: (record (x 10) (y 3)) (Record (x Int64) (y Int64))))
+  (call   mk-b (: (record (x 10) (y 3)) (Record (: x Int64) (: y Int64))))
   (output (: 7 Int64)))
 
 ; A NESTED fixed-shape compound ARG — a tuple/record whose FIELD is itself a tuple/record — crosses the
@@ -3392,24 +3391,24 @@
   (output (: 113 Int64)))
 
 (case "a NESTED Record ARG (a record containing a record) crosses the direct-call boundary"
-  (doc    "`mk : (-> (Record (n Int64) (inner (Record (x Int64) (y Int64)))) Int64)` — a record with a record
+  (doc    "`mk : (-> (Record (: n Int64) (: inner (Record (: x Int64) (: y Int64)))) Int64)` — a record with a record
            field. Each level flattens to its sorted-key leaves + rebuilds recursively. `call(handle, (record
            (n 100) (inner (record (x 10) (y 3)))))` → `r.n + r.inner.x + r.inner.y` = 113.")
-  (input  (do (def (mk) (fn ((: r (Record (n Int64) (inner (Record (x Int64) (y Int64))))))
+  (input  (do (def (mk) (fn ((: r (Record (: n Int64) (: inner (Record (: x Int64) (: y Int64))))))
                          (+ (. r n) (+ (. (. r inner) x) (. (. r inner) y)))))
               (export mk)))
   (call   mk (: (record (n 100) (inner (record (x 10) (y 3))))
-                (Record (n Int64) (inner (Record (x Int64) (y Int64))))))
+                (Record (: n Int64) (: inner (Record (: x Int64) (: y Int64))))))
   (output (: 113 Int64)))
 
 (case "a NESTED mixed ARG (a tuple containing a record) crosses the direct-call boundary"
-  (doc    "`mk : (-> (Tuple Int64 (Record (x Int64) (y Int64))) Int64)` — a tuple whose second field is a
+  (doc    "`mk : (-> (Tuple Int64 (Record (: x Int64) (: y Int64))) Int64)` — a tuple whose second field is a
            RECORD. The nested-compound rebuild is kind-agnostic (tuple or record at any level). `call(handle,
            (100, (record (x 10) (y 3))))` → `p.0 + p.1.x + p.1.y` = 113.")
-  (input  (do (def (mk) (fn ((: p (Tuple Int64 (Record (x Int64) (y Int64)))))
+  (input  (do (def (mk) (fn ((: p (Tuple Int64 (Record (: x Int64) (: y Int64)))))
                          (+ (. p 0) (+ (. (. p 1) x) (. (. p 1) y)))))
               (export mk)))
-  (call   mk (: (tuple 100 (record (x 10) (y 3))) (Tuple Int64 (Record (x Int64) (y Int64)))))
+  (call   mk (: (tuple 100 (record (x 10) (y 3))) (Tuple Int64 (Record (: x Int64) (: y Int64)))))
   (output (: 113 Int64)))
 
 (case "a DOUBLY-nested Tuple ARG (three levels deep) crosses the direct-call boundary"
@@ -3434,25 +3433,25 @@
   (output (: 110 Int64)))
 
 (case "a RECORD with a nested TUPLE field crosses the direct-call boundary"
-  (doc    "`mk : (-> (Record (n Int64) (pair (Tuple Int64 Int64))) Int64)` — a record whose `pair` field is a
+  (doc    "`mk : (-> (Record (: n Int64) (: pair (Tuple Int64 Int64))) Int64)` — a record whose `pair` field is a
            TUPLE (mixed nesting kinds). The recursive rebuild + type mint are kind-agnostic. `call(handle,
            (record (n 100) (pair (tuple 10 3))))` → `r.n + r.pair.0 + r.pair.1` = 113.")
-  (input  (do (def (mk) (fn ((: r (Record (n Int64) (pair (Tuple Int64 Int64)))))
+  (input  (do (def (mk) (fn ((: r (Record (: n Int64) (: pair (Tuple Int64 Int64)))))
                          (+ (. r n) (+ (. (. r pair) 0) (. (. r pair) 1)))))
               (export mk)))
   (call   mk (: (record (n 100) (pair (tuple 10 3)))
-                (Record (n Int64) (pair (Tuple Int64 Int64)))))
+                (Record (: n Int64) (: pair (Tuple Int64 Int64)))))
   (output (: 113 Int64)))
 
 (case "a TRIPLY-nested Record ARG crosses the direct-call boundary"
-  (doc    "`mk : (-> (Record (a Int64) (b (Record (c Int64) (d (Record (e Int64) (f Int64)))))) Int64)` — three
+  (doc    "`mk : (-> (Record (: a Int64) (: b (Record (: c Int64) (: d (Record (: e Int64) (: f Int64)))))) Int64)` — three
            record levels. The recursive rebuild + mint descend arbitrarily deep. `call(handle, (record (a 1000)
            (b (record (c 100) (d (record (e 10) (f 3)))))))` → 1000+100+10+3 = 1113.")
-  (input  (do (def (mk) (fn ((: r (Record (a Int64) (b (Record (c Int64) (d (Record (e Int64) (f Int64))))))))
+  (input  (do (def (mk) (fn ((: r (Record (: a Int64) (: b (Record (: c Int64) (: d (Record (: e Int64) (: f Int64))))))))
                          (+ (. r a) (+ (. (. r b) c) (+ (. (. (. r b) d) e) (. (. (. r b) d) f))))))
               (export mk)))
   (call   mk (: (record (a 1000) (b (record (c 100) (d (record (e 10) (f 3))))))
-                (Record (a Int64) (b (Record (c Int64) (d (Record (e Int64) (f Int64))))))))
+                (Record (: a Int64) (: b (Record (: c Int64) (: d (Record (: e Int64) (: f Int64))))))))
   (output (: 1113 Int64)))
 
 ; A NESTED compound ARG can also sit AMONG scalar args (single-export): the recursive rebuild interleaves the
@@ -3526,14 +3525,14 @@
   (output (: (tuple 100 10 3) (Tuple Int64 Int64 Int64))))
 
 (case "a NESTED Record ARG with a LIST result crosses the direct-call boundary"
-  (doc    "`mk : (-> (Record (n Int64) (inner (Record (x Int64) (y Int64)))) (List Int64))` — a nested RECORD
+  (doc    "`mk : (-> (Record (: n Int64) (: inner (Record (: x Int64) (: y Int64)))) (List Int64))` — a nested RECORD
            arg + a collection result (both the nested-record rebuild + the value-encode result compose).
            `call(handle, (record (n 100) (inner (record (x 10) (y 3)))))` → `(list 100 10 3)`.")
-  (input  (do (def (mk) (fn ((: r (Record (n Int64) (inner (Record (x Int64) (y Int64))))))
+  (input  (do (def (mk) (fn ((: r (Record (: n Int64) (: inner (Record (: x Int64) (: y Int64))))))
                          (list (. r n) (. (. r inner) x) (. (. r inner) y))))
               (export mk)))
   (call   mk (: (record (n 100) (inner (record (x 10) (y 3))))
-                (Record (n Int64) (inner (Record (x Int64) (y Int64))))))
+                (Record (: n Int64) (: inner (Record (: x Int64) (: y Int64))))))
   (output (: (list 100 10 3) (List Int64))))
 
 ; The NESTED compound ARG extends to the MULTI-EXPORT path: N same-sig nested-tuple-arg closures share ONE
@@ -3937,11 +3936,11 @@
            cross exactly as two tuples do. `mk : (-> {a:Int64 b:Int64} {a:Int64 b:Int64} Int64)` reads `p.a +
            q.b`; each record flattens to its sorted-key field scalars, rebuilt in-guest. `call(handle,
            {a:5 b:5}, {a:5 b:10})` → `5 + 10` = 15.")
-  (input  (do (def (mk) (fn ((: p (Record (a Int64) (b Int64))) (: q (Record (a Int64) (b Int64))))
+  (input  (do (def (mk) (fn ((: p (Record (: a Int64) (: b Int64))) (: q (Record (: a Int64) (: b Int64))))
                 (+ (. p a) (. q b))))
               (export mk)))
-  (call   mk (: (record (a 5) (b 5)) (Record (a Int64) (b Int64)))
-             (: (record (a 5) (b 10)) (Record (a Int64) (b Int64))))
+  (call   mk (: (record (a 5) (b 5)) (Record (: a Int64) (: b Int64)))
+             (: (record (a 5) (b 10)) (Record (: a Int64) (: b Int64))))
   (output (: 15 Int64)))
 
 ; N-COMPOUND-ARGS × LIST-RESULT: the N-compound-args path composes with EVERY closure RESULT shape that crosses
@@ -4608,13 +4607,13 @@
   (call   mk (: None (Option (Tuple Int64 Int64))))
   (output (: 0 Int64)))
 
-(case "COMPOUND SUM PAYLOAD: (Option (Record (x Int64) (y Int64))) — a RECORD payload"
+(case "COMPOUND SUM PAYLOAD: (Option (Record (: x Int64) (: y Int64))) — a RECORD payload"
   (doc    "The payload is a RECORD (fields in canonical sorted-key order) rather than a positional tuple —
            crosses as `option<tuple<s64,s64>>` all the same (a record IS a positional cell; field names are
            compile-time). Driving `Some({x:10, y:20})`: `r.x + r.y` → 30.")
-  (input  (do (def (mk) (fn ((: o (Option (Record (x Int64) (y Int64))))) (match o ((Some r) (+ (. r x) (. r y))) (None -1))))
+  (input  (do (def (mk) (fn ((: o (Option (Record (: x Int64) (: y Int64))))) (match o ((Some r) (+ (. r x) (. r y))) (None -1))))
               (export mk)))
-  (call   mk (: (Some (record (x 10) (y 20))) (Option (Record (x Int64) (y Int64)))))
+  (call   mk (: (Some (record (x 10) (y 20))) (Option (Record (: x Int64) (: y Int64)))))
   (output (: 30 Int64)))
 
 (case "COMPOUND SUM PAYLOAD: (Option (Tuple Int64 (Tuple Int64 Int64))) — a NESTED tuple payload"

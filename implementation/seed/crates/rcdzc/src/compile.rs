@@ -2185,10 +2185,16 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
         let field_entries = children[1..].to_vec();
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         for entry in field_entries {
-            // Each field entry is `(name Type)`; read the field name (the entry's first child).
-            let Some(name) = (match db.ast.get(entry) {
-                crate::ast::Struct::List(kv) if kv.len() == 2 => db.ast.as_name(kv[0]),
-                _ => None,
+            // Each field entry is the canonical `(: name Type)` ascription (RT3) or the legacy
+            // `(name Type)` head-app pair; read the field name from whichever form. (Without the
+            // ascription arm the duplicate-field check silently passed once the encoder/corpus moved to
+            // ascription — the field name went unread, so a repeated `x` slipped through.)
+            let Some(name) = (match db.ast.as_form(entry, ":") {
+                Some([name_occ, _ty]) => db.ast.as_name(*name_occ),
+                _ => match db.ast.get(entry) {
+                    crate::ast::Struct::List(kv) if kv.len() == 2 => db.ast.as_name(kv[0]),
+                    _ => None,
+                },
             })
             .map(str::to_string) else {
                 continue;

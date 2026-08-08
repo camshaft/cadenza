@@ -166,7 +166,7 @@
            `(Record.project (record (a 1) (b 2) (c 3)) (a c))` keeps `a` and `c`, dropping `b`, yielding
            the closed record `(record (a 1) (c 3))`. The result renders in canonical key-sorted order.")
   (input  (Record.project (record (a 1) (b 2) (c 3)) (a c)))
-  (output (: (record (a 1) (c 3)) (Record (a Int64) (c Int64)))))
+  (output (: (record (a 1) (c 3)) (Record (: a Int64) (: c Int64)))))
 
 (case "a row op over a constant record folds through a single-use let binding"
   (doc    "Witnesses type-system.md #A Record Is Restricted To A Named Set Of Its Fields (the compile-time
@@ -252,7 +252,7 @@
            (record (a 1) (b 2) (c 3)) (b))` drops `b`, yielding `(record (a 1) (c 3))` — the complement of
            projecting the fields kept.")
   (input  (Record.without (record (a 1) (b 2) (c 3)) (b)))
-  (output (: (record (a 1) (c 3)) (Record (a Int64) (c Int64)))))
+  (output (: (record (a 1) (c 3)) (Record (: a Int64) (: c Int64)))))
 
 (case "dropping an absent field from a record is rejected"
   (doc    "Witnesses type-system.md #A Record Is Reduced By Dropping A Named Set Of Its Fields (2nd
@@ -267,7 +267,7 @@
            its source's value. `(Record.merge (record (a 1)) (record (b 2)))` yields `(record (a 1) (b 2))`
            — the row analogue of forming a record from two groups of fields.")
   (input  (Record.merge (record (a 1)) (record (b 2))))
-  (output (: (record (a 1) (b 2)) (Record (a Int64) (b Int64)))))
+  (output (: (record (a 1) (b 2)) (Record (: a Int64) (: b Int64)))))
 
 ; The merge above builds both operand records from CONSTANT literals, so the union folds to a constant
 ; record. A record carrying a RUNTIME field value cannot fold — the merge runs on the value heap. These
@@ -523,7 +523,7 @@
            shared payload in place and the alias would read the NEW x — this pins the alias reads the OLD
            one. done.x = k+1 = 4; alias.x = k = 3 → 4 + 100·3 = 304.")
   (input  (do
-            (def (bump-x (: r (Record (x Int64) (y Int64))))
+            (def (bump-x (: r (Record (: x Int64) (: y Int64))))
               (Record.with r #"x" (+ (. r x) 1)))
             (def (main (: k Int64))
               (let ((seed (record (x k) (y 100))))
@@ -543,9 +543,9 @@
            dead, and the per-step `with` must not reuse the shared seed's cell). done.x = k+5 = 8;
            seed.x = k = 3 → 8 + 1000·3 = 3008.")
   (input  (do
-            (def (bump-x (: r (Record (x Int64) (y Int64))))
+            (def (bump-x (: r (Record (: x Int64) (: y Int64))))
               (Record.with r #"x" (+ (. r x) 1)))
-            (def (go-n (: r (Record (x Int64) (y Int64))) (: n Int64))
+            (def (go-n (: r (Record (: x Int64) (: y Int64))) (: n Int64))
               (if (> n 0) (go-n (bump-x r) (- n 1)) r))
             (def (main (: k Int64))
               (let ((seed (record (x k) (y 100))))
@@ -581,7 +581,7 @@
            (not a trap) made this soundness-priority. This closes #45's second face; the first (witness 1, the
            owned-operand field-dup trap) is the sibling pin above.")
   (input  (do
-            (type Slot (Filled (Record (name String) (qty Int64))) (Empty))
+            (type Slot (Filled (Record (: name String) (: qty Int64))) (Empty))
             (def (bump-qty (: s Slot) (: d Int64))
               (match s
                 ((Slot.Filled r) (Slot.Filled (Record.extend (Record.without r (qty)) #"qty" (+ (. r qty) d))))
@@ -634,7 +634,7 @@
            `(Record.extend (record (a 1)) #"b" 2)` yields `(record (a 1) (b 2))`. The added field may hold
            any type. The field name is a `#field` label operand (a static label, not a runtime value).")
   (input  (Record.extend (record (a 1)) #"b" 2))
-  (output (: (record (a 1) (b 2)) (Record (a Int64) (b Int64)))))
+  (output (: (record (a 1) (b 2)) (Record (: a Int64) (: b Int64)))))
 
 (case "extending a record with an already-present field is rejected"
   (doc    "Witnesses type-system.md #A Field Is Added To Or Replaced In A Record By A Derived Operation
@@ -651,16 +651,15 @@
            (Record.without r (z)) (record (z v)))`. `(Record.with (record (a 1) (b 2)) #"b" 9)` yields
            `(record (a 1) (b 9))` — an explicit update distinct from `extend`.")
   (input  (Record.with (record (a 1) (b 2)) #"b" 9))
-  (output (: (record (a 1) (b 9)) (Record (a Int64) (b Int64)))))
+  (output (: (record (a 1) (b 9)) (Record (: a Int64) (: b Int64)))))
 
 (case "updating a record field changes its type to the new value's"
   (doc    "Witnesses type-system.md #A Field Is Added To Or Replaced In A Record By A Derived Operation
            (2nd sentence: 'a new value of a possibly different type'): the result is a new closed record
            whose field `b` has whatever type the new value holds. `(Record.with (record (a 1) (b 2)) #"b"
-           true)` retypes `b` from Int64 to Bool, yielding `(record (a 1) (b true))` of type `(Record (a
-           Int64) (b Bool))`. Pins that `with` is not constrained to the field's prior type.")
+           true)` retypes `b` from Int64 to Bool, yielding `(record (a 1) (b true))` of type `(Record (: a Int64) (: b Bool))`. Pins that `with` is not constrained to the field's prior type.")
   (input  (Record.with (record (a 1) (b 2)) #"b" true))
-  (output (: (record (a 1) (b true)) (Record (a Int64) (b Bool)))))
+  (output (: (record (a 1) (b true)) (Record (: a Int64) (: b Bool)))))
 
 (case "Record.with over a RUNTIME field leaves the original record readable (persistence)"
   (doc    "The runtime + persistence face of `Record.with` (the pins above are const-folded whole-value
@@ -841,7 +840,7 @@
            (b 2)))`. No Option: field presence is static, so a missing field is CDZ0212, not a runtime None
            (contrast `List.at` on a runtime index).")
   (input  (Record.pop (record (a 1) (b 2)) a))
-  (output (: (tuple 1 (record (b 2))) (Tuple Int64 (Record (b Int64))))))
+  (output (: (tuple 1 (record (b 2))) (Tuple Int64 (Record (: b Int64))))))
 
 (case "popping an absent field is rejected"
   (doc    "Witnesses type-system.md #A Record Is Reduced By Dropping A Named Set Of Its Fields (2nd
@@ -1512,10 +1511,10 @@
 ; --- Open-row projection over COLLECTION-borne records. ---
 
 (case "an open-row projection reads list-element records in a fold AND a wider record at another site"
-  (doc    "The open-row instantiation pins use DIRECT literal args; this projects records pulled OUT OF A COLLECTION — get-x applied to (List (Record (x Int64) (t Int64))) elements inside a recursive fold (match-bound heap elements, not literals) plus a third 3-field width at a direct site keeping the def polymorphic. A per-def single-layout specialization or literal-only projection misreads.")
+  (doc    "The open-row instantiation pins use DIRECT literal args; this projects records pulled OUT OF A COLLECTION — get-x applied to (List (Record (: x Int64) (: t Int64))) elements inside a recursive fold (match-bound heap elements, not literals) plus a third 3-field width at a direct site keeping the def polymorphic. A per-def single-layout specialization or literal-only projection misreads.")
   (input  (do
             (def (get-x r) (. r x))
-            (def (sum-xs (: rs (List (Record (x Int64) (t Int64)))) (: i Int64) (: acc Int64))
+            (def (sum-xs (: rs (List (Record (: x Int64) (: t Int64)))) (: i Int64) (: acc Int64))
               (match (List.at rs i)
                 ((Option.Some r) (sum-xs rs (+ i 1) (+ acc (get-x r))))
                 ((Option.None _u) acc)))

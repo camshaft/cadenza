@@ -999,7 +999,7 @@
            An insort that copied the record payload shallowly against the tuple spine (or swapped
            payloads between entries during the prepend recursion) crosses the id/pri pairs.")
   (input  (do
-        (def (insort (: q (List (Tuple Int64 (Record (id Int64) (pri Int64))))) (: e (Tuple Int64 (Record (id Int64) (pri Int64)))))
+        (def (insort (: q (List (Tuple Int64 (Record (: id Int64) (: pri Int64))))) (: e (Tuple Int64 (Record (: id Int64) (: pri Int64)))))
           (match q
             ((list) (list e))
             ((list h .. t)
