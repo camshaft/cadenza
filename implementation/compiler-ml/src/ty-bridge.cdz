@@ -38,8 +38,8 @@ def typed-list-to-ty(ps: List(Typed), i: Int64) =
 /// means a `Ty` left partly-deferred by unification comes back as a concrete pipeline `Typed`.
 def ty-to-typed(t: Ty) = match ground-default(t) with
   | Ty.TyInt(it) => (match it with | IntType.IntType(s, w) =>
-      (let signed = (match s with | Sign.Signed => true | Sign.Unsigned => false | Sign.SignDef => true) in
-       (let width = (match w with | Width.WFixed(n) => n | Width.WidthDef => 64) in
+      (let signed = (match s with | Sign.Signed => true | Sign.Unsigned => false | Sign.SignDef => true | Sign.SVar(_) => true) in  // ARC-A1: ground-default already maps a var→Signed, so this arm is post-grounding-unreachable; kept for totality
+       (let width = (match w with | Width.WFixed(n) => n | Width.WidthDef => 64 | Width.WVar(_) => 64) in  // ARC-A1: ditto — ground-default maps var→WFixed(64)
         Typed.TIntW(signed, width))))
   | Ty.TyBool => Typed.TBool
   | Ty.TyErr => Typed.TErr
