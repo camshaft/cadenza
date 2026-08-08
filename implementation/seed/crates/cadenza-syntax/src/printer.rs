@@ -7666,6 +7666,33 @@ mod tests {
     }
 
     #[test]
+    fn own_line_comments_leading_match_arm_body_and_let_value_and_let_body_round_trip() {
+        // Own-line `//` comments in three more mid-expression leading slots the reader previously dropped
+        // (so `cdz fmt` refused): leading a MATCH-ARM BODY (`=> <newline> // note <newline> body`),
+        // leading a LET-BINDING VALUE (`let y = <newline> // note <newline> value`), and leading the LET
+        // BODY (`in <newline> // note <newline> body`). Each is now captured `(comment "text" …)` +
+        // printed own-line above its expr. assert_roundtrip pins re-parse + idempotence for each.
+        let arm = assert_roundtrip(
+            "def f(x) = match x with\n  | A() =>\n// note\n1\n  | _ => 2",
+            100,
+        );
+        assert!(
+            arm.contains("// note"),
+            "match-arm-body leading comment preserved: {arm}"
+        );
+        let val = assert_roundtrip("def f(x) = let y =\n// vnote\nx + 1 in\ny", 100);
+        assert!(
+            val.contains("// vnote"),
+            "let-value leading comment preserved: {val}"
+        );
+        let body = assert_roundtrip("def f(x) = let y = x in\n// bnote\ny + 1", 100);
+        assert!(
+            body.contains("// bnote"),
+            "let-body leading comment preserved: {body}"
+        );
+    }
+
+    #[test]
     fn an_own_line_comment_before_else_round_trips_not_dropped() {
         // An OWN-LINE `//` sitting BEFORE the `else` keyword (`if a then 1` ⏎ `// note` ⏎ `else 2`) was
         // in the `else` token's leading slot and dropped when `expect_keyword` consumed past it. Now

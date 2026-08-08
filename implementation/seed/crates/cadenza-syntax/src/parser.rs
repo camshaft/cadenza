@@ -1949,10 +1949,16 @@ impl<'a> Parser<'a> {
                 self.binder()
             };
             self.expect(Kind::Eq, "`=`");
+            // An own-line `//` comment BETWEEN `=` and the value (`let y =<newline> // note<newline>
+            // x + 1`) sits at the value's first-token leading slot, which `expr` does not drain — capture
+            // + wrap `(comment "text" value)` so it round-trips (else `cdz fmt` refuses). Same own-line
+            // leading-comment capture as if_expr's branches / the binding's own leading comment.
+            let e_lead = self.take_comments_here();
             // The bound value is a single expression (`PREC_SEQ + 1`), delimited by `in` (or the next
             // `,` binding). A `;` after it belongs to the enclosing sequence — `let x = a in b; c` is
             // `(do (let x=a in b) c)` — so a sequence VALUE parenthesizes: `let x = (a; b) in …`.
             let e = self.expr(crate::token::PREC_SEQ + 1);
+            let e = self.wrap_comments(e_lead, e);
             let b_span = b_start.merge(self.prev_span());
             let binding = self.list(vec![n, e], b_span);
             bindings.push(self.wrap_comments(leading, binding));
@@ -1973,7 +1979,13 @@ impl<'a> Parser<'a> {
         // body's own `expr` leading-slot would carry).
         let in_trail = self.take_trailing_comment_here();
         let binds = self.wrap_comment_after(in_trail, binds);
+        // An OWN-LINE `//` comment leading the body (`let x = a in<newline> // note<newline> body`) — a
+        // NON-trailing lead remaining after the same-line trailing capture above — sits at the body's
+        // leading slot. Capture + wrap `(comment "text" body)` so it prints own-line above the body
+        // (round-trips; else stranded → `cdz fmt` refuses).
+        let body_lead = self.take_comments_here();
         let body = self.expr(0);
+        let body = self.wrap_comments(body_lead, body);
         let span = start.merge(self.prev_span());
         self.list(vec![let_head, binds, body], span)
     }
@@ -2788,10 +2800,16 @@ impl<'a> Parser<'a> {
             pat = self.list(vec![guard_head, pat, g], g_span);
         }
         self.expect(Kind::FatArrow, "`=>`");
+        // An own-line `//` comment leading the arm BODY (`| A() =><newline> // note<newline> body`) sits
+        // at the body's first-token leading slot, which `expr` does not drain — capture + wrap
+        // `(comment "text" body)` so it prints own-line above the body (round-trips; else stranded →
+        // `cdz fmt` refuses). Same own-line leading-comment capture as the arm's own leading comment.
+        let body_lead = self.take_comments_here();
         let saved = self.arm_bar_terminates;
         self.arm_bar_terminates = true;
         let body = self.expr(0);
         self.arm_bar_terminates = saved;
+        let body = self.wrap_comments(body_lead, body);
         let span = start.merge(self.prev_span());
         self.list(vec![pat, body], span)
     }
