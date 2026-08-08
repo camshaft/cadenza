@@ -18738,3 +18738,52 @@
   (call   main (: 5 Int64)) (output (: 9105 Int64))
   (call   main (: 0 Int64)) (output (: 9100 Int64))
   (call   main (: -3 Int64)) (output (: 9097 Int64)))
+
+;; ── tq (cont.): double shadows and def-installed shadows ────────────────────
+;; tq4 shadows BOTH effects in one inner region (two fresh threads run their
+;; course; both outer threads untouched and resume exactly); tq5 installs the
+;; Q-shadow inside a DEF that also draws P — the P dispatch crosses the def
+;; boundary AND the shadow to the caller's frame.
+
+(case "tq4 BOTH effects shadowed in one inner region — two fresh threads run their course, both outer threads untouched"
+  (input  (do
+            (effect P (op next (-> Int64)))
+            (effect Q (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle P n
+                ((next () s (resume s (+ s 1))))
+                (handle Q 100
+                  ((next () t (resume t (+ t 10))))
+                  (+ (P.next)
+                     (+ (Q.next)
+                        (+ (handle P 40
+                             ((next () s (resume s (+ s 4))))
+                             (handle Q 7000
+                               ((next () t (resume t (+ t 700))))
+                               (+ (P.next) (+ (Q.next) (P.next)))))
+                           (+ (P.next) (Q.next))))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 7305 Int64))
+  (call   main (: 0 Int64)) (output (: 7295 Int64))
+  (call   main (: -9 Int64)) (output (: 7277 Int64)))
+
+(case "tq5 a DEF installs the Q-shadow and draws P from inside it — the P dispatch crosses the def AND the shadow to the caller's frame"
+  (input  (do
+            (effect P (op next (-> Int64)))
+            (effect Q (op next (-> Int64)))
+            (def (qshadow)
+              (handle Q 9000
+                ((next () t (resume t (+ t 9))))
+                (+ (Q.next) (P.next))))
+            (def (main (: n Int64))
+              (handle P n
+                ((next () s (resume s (+ s 1))))
+                (handle Q 100
+                  ((next () t (resume t (+ t 10))))
+                  (+ (P.next)
+                     (+ (qshadow)
+                        (+ (Q.next) (P.next)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 9118 Int64))
+  (call   main (: 0 Int64)) (output (: 9103 Int64))
+  (call   main (: -6 Int64)) (output (: 9085 Int64)))
