@@ -82,6 +82,23 @@ full window lacks) and integration stalls fleet-wide. Keep it small:
    dispatch plan WITHOUT side-effects — eyeball it, then run `--execute`. `dispatch-plan <ref>` /
    `mr-status <ref>` inspect a single MR; `lane-of <ref>` shows its lane.
 
+   **⟳ DRAIN-UNTIL-QUIESCENT within the tick (bounded).** ONE `schedule-pass --execute` is a SINGLE
+   reap+dispatch pass — it dispatches only up to the in-flight cap (8) and reaps only what's mergeable
+   right now, then returns. Under load (MRs arriving faster than one pass, or a reap that frees slots a
+   fresh dispatch could immediately fill) a single pass per scheduled tick leaves the queue oscillating
+   at 6-10 and integration lagging — the concierge had to hand-nudge you to resume (2026-08-08). So do
+   NOT stop at one pass while there is more to do: **re-run `schedule-pass --execute` again, in the same
+   tick, whenever the previous pass MADE PROGRESS (reaped ≥1 or dispatched ≥1) AND actionable
+   merge-requests remain queued** (its printed tally + a quick `fleet inbox pr-sync` tell you both).
+   Repeat until a pass makes NO progress (nothing newly reapable + cap full or queue empty) — that's
+   quiescence — OR you've done ~4 passes this tick (the bound). STOP at the bound even if MRs remain:
+   the next scheduled tick continues, and stopping keeps you COMPACTABLE (a pass is light, but ~4 +
+   their build/gh calls is a full turn — do not sprint to 100%; end cleanly at the bound and let the
+   next tick carry on). This keeps the integrator pacing the load itself instead of waiting a full
+   interval per pass. (Cap full with MRs still queued = not your bottleneck — it's the GHA
+   runner-concurrency ceiling draining the 8 in-flight; another pass won't help until a reap frees a
+   slot, so quiescence is the right stop.)
+
    **Notify `reviewer` of landed diffs** (fire-and-forget, non-blocking): after a pass reaps merges,
    `cargo xtask fleet send --to reviewer --kind note` naming the landed shas so it can review. Skip
    silently if `reviewer` isn't in the registry.
@@ -110,7 +127,9 @@ full window lacks) and integration stalls fleet-wide. Keep it small:
    <file> --outcome reject --body "already landed by patch-id; superseded"` — no gate needed (the
    content is provably already integrated). This keeps your inbox honest so its depth reflects real
    pending work, not landed leftovers. (`--strict` exits non-zero if any are found, handy for a guard.)
-6. If nothing is pending, idle this tick.
+6. If nothing is pending, idle this tick. (But if merge-requests ARE pending, you should already have
+   drained-until-quiescent in step 2 — don't idle with actionable MRs queued and free in-flight
+   capacity; that's the oscillation the drain-until-quiescent rule fixes.)
 
 ## Coordination
 - You never send `merge-request`s (you ARE the target). You send `merged`/`reject`.
