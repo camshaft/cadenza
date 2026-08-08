@@ -114,15 +114,27 @@ impl FoldOutput {
 /// holds a non-`Send` wasmtime store — requiring `Send` futures would exclude exactly that reducer.
 #[async_trait::async_trait(?Send)]
 pub trait Reducer {
-    /// Fold one event into the KV, returning requested effects. Called once per event, in log order, on a
-    /// fresh conceptual instance (no cross-call state outside `kv`). The un-suffixed name (the trait is
-    /// `async`, so an `_async` suffix would be redundant); a reducer that does no I/O simply writes it with
-    /// no `.await`.
+    /// Fold one event into the KV, returning requested effects. Called once per event, in log order.
+    ///
+    /// `&mut self` is the NORM (operator ruling 2026-08-08): a host-native reducer — the shape an
+    /// [`crate::executor::Executor`] collapses into — holds LIVE, non-replayable Rust capabilities (open
+    /// sockets, SDK clients, a ws frame-sink map) directly in its struct fields and mutates them here. The
+    /// mutable trait is the default so those impls don't have to wrap every capability in interior mutability.
+    ///
+    /// The IMMUTABLE, log-based determinism contract is the EXCEPTION, enforced specifically on the
+    /// REPLAYABLE reducer path (the wasm-component reducers, [`crate::wasm_host::ComponentReducer`] /
+    /// `AsyncComponentReducer`), NOT structurally on the whole trait: a replayable reducer's fold MUST be a
+    /// PURE FUNCTION of `(event, kv)` — its ONLY durable state is `kv`, it stashes NO cross-call state in
+    /// `self` — so replay (which re-runs `fold` and reads logged `EffectResult`s, never re-performing) yields
+    /// live-kv == replayed-kv (§17 / §9d). The wasm reducers satisfy this by simply NOT mutating `self` (a
+    /// guest's state IS the kv-backed store); a host-native reducer's live `self` state is fine BECAUSE it
+    /// only influences the LOGGED OUTCOME (which replay reads back) and is re-acquired at host restart, never
+    /// derived from kv, never expected to survive replay.
     ///
     /// Totality (§17 "can't-brick"): this must not panic for any input — a reducer that sees an event it
     /// doesn't understand returns [`FoldOutput::none`], not a crash. A long-running implementation (a wasm
     /// fold) may `.await` internally so the host loop can interleave other sessions while it yields on fuel.
-    async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput;
+    async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput;
 }
 
 /// A trivial reducer used by kernel-loop tests: it ignores everything and emits nothing. Real reducers
@@ -132,7 +144,7 @@ pub struct InertReducer;
 
 #[async_trait::async_trait(?Send)]
 impl Reducer for InertReducer {
-    async fn fold(&self, _event: &Event, _kv: &mut Kv) -> FoldOutput {
+    async fn fold(&mut self, _event: &Event, _kv: &mut Kv) -> FoldOutput {
         FoldOutput::none()
     }
 }
@@ -170,7 +182,7 @@ mod tests {
     // object-safety holds (the whole reason for async-trait), which the kernel + host rely on.
     #[test]
     fn inert_reducer_is_object_safe_as_dyn_reducer() {
-        let reducer = InertReducer;
+        let mut reducer = InertReducer;
         let event = Event {
             seq: 0,
             cause: None,
@@ -181,7 +193,7 @@ mod tests {
             },
         };
         let mut kv = Kv::new();
-        let dyn_reducer: &dyn Reducer = &reducer;
+        let dyn_reducer: &mut dyn Reducer = &mut reducer;
         let out = poll_ready(dyn_reducer.fold(&event, &mut kv));
         assert_eq!(out, FoldOutput::none());
     }
