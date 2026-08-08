@@ -648,7 +648,10 @@ impl AsyncAgentHost {
                                 .clone()
                                 .map(|sender| (sender, bounce_echo_payload(&msg.body)));
                             let target = msg.session.clone();
-                            match host.deliver(&msg.session, msg.body, msg.cause).await {
+                            match host
+                                .deliver_answering_signatures(&msg.session, msg.body, msg.cause, factory.as_deref_mut())
+                                .await
+                            {
                                 // Delivered + the session ran a turn.
                                 Some(Ok(())) => {}
                                 // Target ABSENT from the registry. For an ORDINARY external inbound
@@ -760,7 +763,15 @@ impl AsyncAgentHost {
                         .clone()
                         .map(|sender| (sender, bounce_echo_payload(&msg.body)));
                     let target = msg.session.clone();
-                    match host.deliver(&msg.session, msg.body, msg.cause).await {
+                    match host
+                        .deliver_answering_signatures(
+                            &msg.session,
+                            msg.body,
+                            msg.cause,
+                            factory.as_deref_mut(),
+                        )
+                        .await
+                    {
                         Some(Ok(())) => {}
                         // Target gone (removed) or terminated-in-place while it was suspended → bounce a
                         // delivery-failure to the held Emit's originator (Failure-to-sender), same as the
