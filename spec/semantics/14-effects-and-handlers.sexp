@@ -17106,3 +17106,85 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 50 Int64))
   (call   main (: 2 Int64)) (output (: 206 Int64)))
+
+;; ── ae: STRICT ARGUMENT-EVALUATION ORDER under the effect thread ─────────────
+;; Every face pins left-to-right, exactly-once argument evaluation with an
+;; advancing state as the witness. ae1 uses SUBTRACTION antisymmetry (a swap
+;; flips the sign, not just the value); ae2/ae3 use positional 100/10/1 digit
+;; encodings across a pure call and an op's own argument list; ae4 routes the
+;; middle argument through a performing def; ae5/ae6 pin the short-circuit
+;; halves of `and`/`or` — the skipped draw must leave the state untouched,
+;; proved by a trailing draw's x10 digit.
+
+(case "ae1 SUBTRACTION of two same-op draws as a 2-ary op's args — the antisymmetry pins left-to-right order exactly"
+  (input  (do
+            (effect E (op next (-> Int64)) (op pair (-> Int64 Int64 Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (* s 2)))
+                 (pair (a b) s (resume (- a b) s)))
+                (E.pair (E.next) (E.next))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: -5 Int64))
+  (call   main (: -3 Int64)) (output (: 3 Int64)))
+
+(case "ae2 draw-PURE-draw argument positions to a pure 3-ary fn — the middle constant sits between two advancing draws"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (def (mix3 (: a Int64) (: b Int64) (: c Int64)) (+ (* 100 a) (+ (* 10 b) c)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1))))
+                (mix3 (E.next) 7 (E.next))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 576 Int64))
+  (call   main (: 0 Int64)) (output (: 71 Int64)))
+
+(case "ae3 THREE same-op draws as a 3-ary OP's own args — order pinned inside the op's argument list itself"
+  (input  (do
+            (effect E (op next (-> Int64)) (op mix (-> Int64 Int64 Int64 Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1)))
+                 (mix (a b c) s (resume (+ (* 100 a) (+ (* 10 b) c)) s)))
+                (E.mix (E.next) (E.next) (E.next))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 567 Int64))
+  (call   main (: 0 Int64)) (output (: 12 Int64)))
+
+(case "ae4 draw / performing-HELPER / draw argument positions — the middle arg performs through a def boundary"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (def (mix3 (: a Int64) (: b Int64) (: c Int64)) (+ (* 100 a) (+ (* 10 b) c)))
+            (def (bump) (E.next))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1))))
+                (mix3 (E.next) (bump) (E.next))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 345 Int64))
+  (call   main (: -1 Int64)) (output (: -99 Int64)))
+
+(case "ae5 short-circuit AND with DRAWS on both sides — the skipped right draw leaves the state thread untouched"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1))))
+                (let ((c (if (and (> (E.next) 0) (> (E.next) 0)) 100 200)))
+                  (+ c (* 10 (E.next))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 170 Int64))
+  (call   main (: -3 Int64)) (output (: 180 Int64)))
+
+(case "ae6 short-circuit OR with DRAWS on both sides — the right draw fires only when the left is false"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1))))
+                (let ((c (if (or (> (E.next) 0) (> (E.next) 0)) 100 200)))
+                  (+ c (* 10 (E.next))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 160 Int64))
+  (call   main (: -3 Int64)) (output (: 190 Int64)))

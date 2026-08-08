@@ -6326,3 +6326,9 @@ pass	oc3 a DOUBLE-wrapped Option resume value — None vs Some(None) vs Some(Som
 pass	rt1 Ok/Err resume values with a DEPENDENT second dispatch — the sign of the falling state flips Ok to Err
 pass	rt2 an Err SHORT-CIRCUITS a recursive Result walk — Ok accumulates, the first Err multiplies out and stops
 pass	rt3 the Err VALUE seeds a RECOVERY region — a fallback same-effect handle runs inside the Err arm
+pass	ae1 SUBTRACTION of two same-op draws as a 2-ary op's args — the antisymmetry pins left-to-right order exactly
+pass	ae2 draw-PURE-draw argument positions to a pure 3-ary fn — the middle constant sits between two advancing draws
+pass	ae3 THREE same-op draws as a 3-ary OP's own args — order pinned inside the op's argument list itself
+pass	ae4 draw / performing-HELPER / draw argument positions — the middle arg performs through a def boundary
+pass	ae5 short-circuit AND with DRAWS on both sides — the skipped right draw leaves the state thread untouched
+pass	ae6 short-circuit OR with DRAWS on both sides — the right draw fires only when the left is false
