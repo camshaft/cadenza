@@ -1883,7 +1883,18 @@
             # pr-sync wiring). One `nix build .#checks.aarch64-linux.local-gate` = a single green/red over
             # EXACTLY the 9 merge-required contexts (ruleset-10 MINUS test-macos, which is native x86/macos
             # and out of scope per operator: nothing is arch-specific, aarch64 coverage is the accepted
-            # fallback). The required 9, mapped to their nix checks:
+            # fallback).
+            # MACOS RESIDUAL (GHA→local-nix cutover, operator ruling 2026-08-08): with GHA dropped and this
+            # local nix gate made the PRIMARY merge gate (push direct/in-batches), the test(macos-latest) leg
+            # has NO nix equivalent — nix builds Linux derivations, so the macOS platform leg cannot run in the
+            # aarch64-linux sandbox. The operator ACCEPTED this gap explicitly ("I do not care about macOS right
+            # now, prioritize dev speed and throughput"): the test LOGIC is covered by testCheck (the same
+            # cargo test, on linux), only macOS-platform-specific behavior is uncovered, and macOS has never
+            # been the sole catcher of a real bug in this fleet (regressions surface on linux/wasm, the primary
+            # backends). ESCAPE HATCH if a macOS-specific bug ever surfaces or dev pace slows: re-add a nightly
+            # nix-on-macOS build or a minimal macos-only CI job just for that leg. Documented as the known
+            # residual so the cutover's coverage story is explicit.
+            # The required 9, mapped to their nix checks:
             #   rustfmt→fmtCheck · clippy→clippyShardA + clippyShardB (the 2-way shard; union == the old
             #     clippyCraneAggregate set exactly, so coverage is identical + it tracks the post-flip required
             #     contexts checks/clippy-shard-a + checks/clippy-shard-b) · test(ubuntu)→testCheck ·
