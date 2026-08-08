@@ -14254,6 +14254,10 @@ pub fn sum_form_template(db: &mut Db, ty: &crate::ty::Ty) -> Option<SumFormTempl
 // accessors and assemble its canonical text — the runtime never names or renders the value itself.
 //= spec/contracts/component-abi.md#a-compound-result-is-rendered-by-compiler-emitted-code
 //# The observable result of a program that produces a compound value MUST be an ordinary string the program returns, produced by type-directed code the compiler emits that walks the value through the runtime's accessors and assembles its canonical text, rather than by the runtime rendering the value or by the program's own component owning a display of it, so that the names a rendering requires stay with the compiler that holds them and the host reads back a plain string (host-interface-binding.md §The Host Does Not Format A Component's Values).
+// Because THE COMPILER exposes this render (and the codec exposes read-text→canonical-binary), the host
+// never formats a value itself — it reads back a plain string the compiler-emitted code produced:
+//= spec/contracts/host-interface-binding.md#the-host-does-not-format-a-component-s-values
+//# The rendering of a value to its canonical text form and the reading of text to a value's canonical binary form MUST be operations the compiler exposes, not operations the host performs, so that "what a Cadenza value looks like" lives in the compiler rather than the host.
 //
 // The compiler-baked descriptor the runtime `value-encode` walker reads to render a RUNTIME value —
 // including a self-referential (recursive) sum, which has no fixed hole-template. A descriptor is a
