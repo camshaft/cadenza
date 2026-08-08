@@ -104,14 +104,14 @@ def unify-ty-list-su(su: Subst, a: List(Ty), b: List(Ty), i: Int64) =
          | Option.None(_) => Option.None(unit)
          | Option.Some(su1) => unify-ty-list-su(su1, a, b, i + 1)))))
 
-// NOTE: only 5 @tests live here. A 6th HEAVY test closure in this emit unit trips a codegen limit
-// ("parameter reference has no local slot") — an emit slot-allocation bug that's order-sensitive, not a clean
-// count (a trivial 6th test is fine; a companion file of the spilled tests ALSO tripped it). So the remaining
-// B3 pins (concrete-conflict, occurs-no-false-reject, bool, fn-param-bind) are DEFERRED here — they're largely
-// redundant (concrete-conflict ⊂ unify-ty.cdz; occurs ⊂ hm-vars.cdz occurs tests; bool trivial), and will be
-// added once the emit bug lands. Filed: queue/mlrepro-emit-slot-nth-heavy-test-closure-parameter-reference-
-// has-no-local-slot.md. These 5 cover the B3 ESSENTIAL: var→concrete bind, bound-var-STAYS-solved (the payoff
-// vs A1's inert unify), var→var chain propagation, width binding, both-axes-independent.
+// NOTE: the remaining B3 pins (concrete-conflict, occurs-no-false-reject, bool, fn-param-bind) were DEFERRED
+// while the cross-module "parameter reference has no local slot" emit bug capped this unit at ~5 heavy test
+// closures. That bug is FIXED + landed (v-compiler-perf #2753, trunk f2064c31 — eval-once no longer treats a
+// PURE recursive callee as performing), and v-wasm-opt verified a 6th heavy @test here now compiles+runs green.
+// The deferred pins are added below (unblocked 2026-08-08). The first 5 cover the B3 ESSENTIAL (var→concrete
+// bind, bound-var-STAYS-solved = the payoff vs A1's inert unify, var→var chain, width binding, both-axes); the
+// added pins nail the conflict/occurs/bool/fn-threading edges (some overlap unify-ty.cdz / hm-vars.cdz, but as
+// SUBST-THREADING witnesses they pin exactly this solver's paths + serve as permanent emit-slot regression pins).
 // ---- TESTS: unify BINDS vars into the Subst; a bound var stays solved (real solve, not inert) --------
 import { ty-int64, ty-fixed-int } from "ty"
 import { subst-empty, apply } from "subst"
@@ -166,6 +166,53 @@ def us-int-both-axes-bind-independently() =
         | Ty.TyInt(IntType.IntType(Sign.Unsigned, Width.WFixed(w))) => (if w == 16 then unit else trap("width bound to 16"))
         | _ => trap("both axes bind → UInt16"))
     | Option.None(_) => trap("(SVar0,WVar1) ~ (Unsigned,W16) unifies")
+
+@test
+def us-concrete-conflict-no-bind() =
+  // two CONCRETE ints that disagree on width → conflict (None), no binding invented. Int64 ~ Int32 (both signed,
+  // widths 64 vs 32) → None. The no-silent-promotion rule (CDZ0301) threaded through the Subst solver: unify
+  // never coerces one fixed width to another. (Overlaps unify-ty.cdz's stateless combiner, but pins it for the
+  // SUBST path — a conflict must abort the whole int unify, not just one axis.)
+  match unify-ty-su(subst-empty(), ty-int64(), ty-fixed-int(true, 32)) with
+    | Option.None(_) => unit
+    | Option.Some(_) => trap("Int64 ~ Int32 must CONFLICT (no width promotion)")
+
+@test
+def us-occurs-no-false-reject-on-distinct-vars() =
+  // occurs-check must NOT false-reject when the var does NOT occur in the other side: SVar(0) ~ SVar(1) (distinct
+  // ids, neither occurs in the other) binds cleanly. Guards that the occurs guard is precise (same-id only), not
+  // an over-eager reject that would break var~var chaining. (The occurs REJECT case lives in hm-vars.cdz; this
+  // pins the complementary no-false-positive through the solver.)
+  match unify-sign-su(subst-empty(), Sign.SVar(0), Sign.SVar(1)) with
+    | Option.Some(su) => (match apply-sign(su, Sign.SVar(0)) with
+        | Sign.SVar(w) => (if w == 1 then unit else trap("0 binds to var 1 (chain), not itself"))
+        | Sign.Signed => trap("no concrete bound yet — 0 resolves to var 1")
+        | _ => trap("SVar(0) resolves to SVar(1) after the var~var bind"))
+    | Option.None(_) => trap("distinct vars must NOT trip occurs — SVar(0) ~ SVar(1) binds")
+
+@test
+def us-bool-unifies-var-free() =
+  // TyBool ~ TyBool: a var-free unify — succeeds with the Subst UNCHANGED (no bindings). Pins the non-int scalar
+  // path (a Bool carries no sign/width axis to solve). A trivial-but-permanent pin the emit cap previously blocked.
+  match unify-ty-su(subst-empty(), Ty.TyBool, Ty.TyBool) with
+    | Option.Some(_) => unit
+    | Option.None(_) => trap("TyBool ~ TyBool must unify (var-free, no binding)")
+
+@test
+def us-fn-params-thread-and-bind() =
+  // the DEEPEST path in the module (self-recursive unify-ty-su over TyFn — this is v-wasm-opt's no-local-slot
+  // probe shape, now emit-clean): unify (fn (SVarInt) -> SVarInt) ~ (fn Int64 -> Int64). The param list threads
+  // through unify-ty-list-su (list recursion) binding the sign/width vars, then the result unifies on the grown
+  // Subst (ty-su → ty-list-su → ty-su → int-su → sign-su/width-su). The shared var(0)/(1) in BOTH param + result
+  // stays solved across the recursion → applying it yields Int64.
+  match unify-ty-su(subst-empty(),
+        Ty.TyFn(List.push(([] : List(Ty)), Ty.TyInt(IntType.IntType(Sign.SVar(0), Width.WVar(1)))),
+                Ty.TyInt(IntType.IntType(Sign.SVar(0), Width.WVar(1)))),
+        Ty.TyFn(List.push(([] : List(Ty)), ty-int64()), ty-int64())) with
+    | Option.Some(su) => (match apply(su, Ty.TyInt(IntType.IntType(Sign.SVar(0), Width.WVar(1)))) with
+        | Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w))) => (if w == 64 then unit else trap("param bound to Int64"))
+        | _ => trap("fn param sign/width bind through the list"))
+    | Option.None(_) => trap("(fn SVarInt -> SVarInt) ~ (fn Int64 -> Int64) unifies")
 
 export {
   unify-sign-su,
