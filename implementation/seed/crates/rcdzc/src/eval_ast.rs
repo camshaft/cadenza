@@ -71,6 +71,11 @@ fn reachable(ast: &Arenas, root: StructId) -> std::collections::HashSet<u32> {
 //# The compiler MUST NOT require `eval` to compile programs — the compiler constructs and analyzes AST but does not execute dynamically-constructed AST.
 //= spec/capabilities/metaprogramming.md#compile-time-evaluation-is-one-tier
 //# Macro expansion, generic reduction, monomorphization, and constant folding MUST be the same compile-time evaluation mechanism rather than separate subsystems, so that there is one place the meaning of compile-time computation lives and the four cannot drift apart.
+// So a macro is not a distinct construct: `(eval AST)` desugars to the source the AST denotes and runs
+// through the ONE ordinary compile-time path, i.e. an ordinary compile-time function applied to a
+// program's AST data — not a separate macro interpreter.
+//= spec/capabilities/metaprogramming.md#compile-time-evaluation-is-one-tier
+//# A macro MUST be an ordinary compile-time function over the abstract syntax tree, so that a macro is not a distinct construct but an application of the one compile-time tier to a program's data.
 pub fn desugar_eval(ast: &mut Arenas) {
     // Only ORIGINAL nodes can be a source `(eval …)`; reconstruction APPENDS, so bound the scan.
     let original_len = ast.structure.len() as u32;
