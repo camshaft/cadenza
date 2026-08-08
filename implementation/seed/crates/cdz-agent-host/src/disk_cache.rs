@@ -62,6 +62,21 @@ impl<B> DiskCacheTier<B> {
     /// host; a re-fetch repopulates).
     pub fn new(inner: B, dir: impl Into<PathBuf>, max_bytes: u64) -> Self {
         let dir = dir.into();
+        // A DISABLED tier (budget 0) touches NO filesystem — don't create/scan the dir (so the daemon can
+        // wrap unconditionally with an empty/unused dir when the disk tier is off, exactly like the mem
+        // CachingBlobStore's budget-0 pass-through). Only a real budget creates + boot-scans the cache dir.
+        if max_bytes == 0 {
+            return DiskCacheTier {
+                inner,
+                dir,
+                budget: 0,
+                index: RefCell::new(Index {
+                    sizes: HashMap::new(),
+                    order: VecDeque::new(),
+                    total_bytes: 0,
+                }),
+            };
+        }
         let _ = std::fs::create_dir_all(&dir);
         let index = Self::scan_dir(&dir);
         DiskCacheTier {
