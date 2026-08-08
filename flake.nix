@@ -2094,7 +2094,7 @@
         # apps.gc is needed either way — local gate-local runs + dev builds churn the store regardless of
         # model. Always run warm-keep FIRST (via the runner) so the current warm layer is freshly rooted
         # before GC.
-        # CDZ_GC_MAX_FREED (bytes, optional): cap the reclaim per run via --max-freed so a single GC pass
+        # CDZ_GC_MAX_FREED (bytes, optional): cap the reclaim per run via `nix store gc --max` so a single GC pass
         # is bounded (avoids a long stall on a huge backlog); unset = reclaim all dead paths.
         apps.gc =
           let
@@ -2108,7 +2108,12 @@
                 nix-store --gc --print-roots 2>/dev/null | grep -iE "warm|local-gate|component-store|seed-deps" || true
                 if [ -n "''${CDZ_GC_MAX_FREED:-}" ]; then
                   echo "cdz gc: bounded pass — reclaiming up to $CDZ_GC_MAX_FREED bytes"
-                  nix store gc --max-freed "$CDZ_GC_MAX_FREED"
+                  # `nix store gc` bounds the reclaim with `--max <bytes>` (Stop after freeing n bytes).
+                  # NOT `--max-freed` — that was the OLD `nix-collect-garbage` flag; the `nix store gc`
+                  # subcommand renamed it to `--max`, and `--max-freed` errors "unrecognised flag" on this
+                  # nix (Determinate 3.21.9 / 2.34.8), so the bounded pass reclaimed NOTHING (v-ft, first
+                  # live gc-hook fire 2026-08-08). CDZ_GC_MAX_FREED keeps its name (the runner's env contract).
+                  nix store gc --max "$CDZ_GC_MAX_FREED"
                 else
                   nix store gc
                 fi
