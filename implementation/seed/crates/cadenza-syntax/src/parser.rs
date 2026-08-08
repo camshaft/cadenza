@@ -2718,6 +2718,25 @@ impl<'a> Parser<'a> {
     /// binder node, the forall type-variable NAMES (owned, since we re-synthesize the atoms), and the
     /// inner type body node. `None` for any other parameter shape (a plain binder, a non-forall
     /// annotation, or a `forall` with a malformed/empty binder list).
+    /// Whether `arg` is the obsolete head-application record-TYPE field spelling `field(T)` — a bare
+    /// two-element application `(name Type)` whose head is a NAME (not the `:` ascription head). The
+    /// canonical field is `(: name T)` (a three-element `:`-headed list), which this rejects; a positional
+    /// type argument that is itself an application `(F X)` where `F` is a type constructor is NOT a record
+    /// field (a record type takes no positional args), so this is only ever called on `Record(…)` args.
+    /// Guards on exactly two children with a name head — a nested `(: …)`, a 3+-element app, or a
+    /// bare-type arg is not flagged.
+    fn is_head_app_record_field(&self, arg: StructId) -> bool {
+        match self.builder.get(arg) {
+            crate::ast::Struct::List(children) if children.len() == 2 => {
+                // `(name Type)` — a name head that is NOT the `:` ascription marker. `(: name T)` has three
+                // children, so it never matches the len-2 guard; a `(List a)` positional arg would only
+                // reach here if it were a `Record` arg, which is itself the malformed case.
+                self.builder.as_name(children[0]).is_some_and(|h| h != ":")
+            }
+            _ => false,
+        }
+    }
+
     fn param_forall_binders(&self, p: StructId) -> Option<(StructId, Vec<String>, StructId)> {
         // p == (: binder ANNOT)
         let ann = self.builder.as_form(p, ":")?;
@@ -3678,7 +3697,25 @@ impl<'a> Parser<'a> {
                     node = self.member_access(node, start);
                 }
                 Kind::LParen => {
+                    // A `Record(…)` type-constructor takes ONLY named fields — each canonical `(: name T)`
+                    // ascription (from the `name: T` label surface). RT1 (DESIGN-record-type-syntax OQ-A):
+                    // reject the obsolete head-application field spelling `Record(field(T))` — where
+                    // `field(T)` parsed as a positional application arg `(field T)` — and steer to the
+                    // colon form `field: T`. A record type never takes a POSITIONAL type argument (unlike
+                    // `List(a)`/`Tuple(A, B)`), so a non-ascription arg here is unambiguously a malformed
+                    // field, not a legitimate application — no false-reject on generic type-apps.
+                    let head_is_record = self.builder.as_name(node) == Some("Record");
                     let args = self.type_arg_exprs();
+                    if head_is_record {
+                        for &arg in &args {
+                            if self.is_head_app_record_field(arg) {
+                                self.error(
+                                    "a record-type field is written `field: T`, not `field(T)` — \
+                                     use the colon form, e.g. `Record(x: Int64)`",
+                                );
+                            }
+                        }
+                    }
                     let span = start.merge(self.prev_span());
                     let mut items = Vec::with_capacity(args.len() + 1);
                     items.push(node);
@@ -6159,5 +6196,39 @@ mod tests {
             back.arenas.structurally_eq(&a),
             "record-type annotation round-trips: {printed:?}"
         );
+    }
+
+    #[test]
+    fn a_head_app_record_type_field_is_rejected_steering_to_the_colon_form() {
+        // RT1 (DESIGN-record-type-syntax OQ-A): the obsolete head-application record-TYPE field spelling
+        // `Record(field(T))` is REJECTED — a record-type field is written `field: T`. The message steers
+        // to the colon form. (The canonical `(: field T)` ascription is what the colon surface produces.)
+        for src in [
+            "def f(r: Record(a(Int64))) = r",
+            "def f(r: Record(x(Int64), y(Bool))) = r",
+            // Nested field type in head-app form is still the rejected spelling.
+            "def f(r: Record(inner(Option(Bytes)))) = r",
+        ] {
+            let p = read_ml(src);
+            assert!(!p.ok(), "head-app record field must reject: {src}");
+            assert!(
+                p.errors.iter().any(|e| e
+                    .message
+                    .contains("record-type field is written `field: T`")),
+                "the reject steers to the colon form: {src} -> {:?}",
+                p.errors
+            );
+        }
+        // The canonical colon form parses clean and builds the `(: name T)` ascription — NOT rejected.
+        let a = parse_ok("def f(r: Record(a: Int64, b: Bool)) = r");
+        assert_eq!(
+            crate::sexpr::print(&a),
+            "(def (f (: r (Record (: a Int64) (: b Bool)))) r)"
+        );
+        // NO false-reject on a legitimate GENERIC type application — `List(a)` / `Tuple(A, B)` take
+        // POSITIONAL type args (a bare type, not a `name(T)` field), so they still parse.
+        assert!(read_ml("def f(xs: List(a)) = xs").ok());
+        assert!(read_ml("def f(p: Tuple(Int64, Bool)) = p").ok());
+        assert!(read_ml("def f(o: Option(Int64)) = o").ok());
     }
 }

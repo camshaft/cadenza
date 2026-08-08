@@ -31,11 +31,11 @@ type EffectKind =
 
 // A bare structural record matching reducer.wit's effect-request. B1 constructs none (empty list).
 type EffectRequest =
-  | Mk(Record(kind(EffectKind), target(String), payload(Option(Bytes)), correlation(Option(Bytes))))
+  | Mk(Record(kind: EffectKind, target: String, payload: Option(Bytes), correlation: Option(Bytes)))
 
 // The fold — total, ignores its inputs, requests no effects.
 def apply(
-  ct: Record(family(String), version(UInt(32))),
+  ct: Record(family: String, version: UInt(32)),
   payload: Option(Bytes),
   resumes: Option(Bytes),
 ) -> List(EffectRequest) = []

@@ -19,10 +19,10 @@ type EffectKind =
   | Emit()
 
 type EffectRequest =
-  | Mk(Record(kind(EffectKind), target(String), payload(Option(Bytes)), correlation(Option(Bytes))))
+  | Mk(Record(kind: EffectKind, target: String, payload: Option(Bytes), correlation: Option(Bytes)))
 
 def apply(
-  ct: Record(family(String), version(UInt(32))),
+  ct: Record(family: String, version: UInt(32)),
   payload: Option(Bytes),
   resumes: Option(Bytes),
 ) -> List(EffectRequest) = [
