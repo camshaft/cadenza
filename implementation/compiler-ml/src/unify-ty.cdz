@@ -16,13 +16,19 @@ import { Sign, Width, IntType, Ty, ty-eq } from "ty"
 /// (Signed/Signed or Unsigned/Unsigned) else conflict. `Some(sign)` = the combined sign, `None` = mismatch.
 def unify-sign(a: Sign, b: Sign) = match a with
   | Sign.SignDef => Option.Some(b) // deferred ~ anything → the other
+  // ARC-A1: an un-bound var unifies like deferred — takes the other side (INERT; no binding recorded until
+  // ARC-B3 threads a Subst and records `var := b`). Keeps unify TOTAL over the 3-state axis with no behavior
+  // change (nothing produces an SVar yet). B3 replaces this arm with a Subst-binding form.
+  | Sign.SVar(_) => Option.Some(b)
   | Sign.Signed => (match b with
     | Sign.SignDef => Option.Some(Sign.Signed)
+    | Sign.SVar(_) => Option.Some(Sign.Signed)   // ARC-A1: b is an un-bound var → takes `a` (Signed)
     | Sign.Signed => Option.Some(Sign.Signed)
     | Sign.Unsigned => Option.None(unit)
   )
   | Sign.Unsigned => match b with
     | Sign.SignDef => Option.Some(Sign.Unsigned)
+    | Sign.SVar(_) => Option.Some(Sign.Unsigned) // ARC-A1: b is an un-bound var → takes `a` (Unsigned)
     | Sign.Unsigned => Option.Some(Sign.Unsigned)
     | Sign.Signed => Option.None(unit)
 
@@ -30,8 +36,10 @@ def unify-sign(a: Sign, b: Sign) = match a with
 /// else conflict. INDEPENDENT of sign (the orthogonal-axis rule).
 def unify-width(a: Width, b: Width) = match a with
   | Width.WidthDef => Option.Some(b) // deferred ~ anything → the other
+  | Width.WVar(_) => Option.Some(b)  // ARC-A1: un-bound var ~ anything → the other (INERT until B3's Subst)
   | Width.WFixed(n) => match b with
     | Width.WidthDef => Option.Some(Width.WFixed(n))
+    | Width.WVar(_) => Option.Some(Width.WFixed(n))  // ARC-A1: b un-bound var → takes `a`
     | Width.WFixed(m) => if n == m then Option.Some(Width.WFixed(n)) else Option.None(unit)
 
 /// Unify two integer types: unify SIGN and WIDTH independently; both must combine (a Fixed mismatch on
