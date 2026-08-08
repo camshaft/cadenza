@@ -6373,3 +6373,6 @@ pass	cv3 the in-arm chain routes through a PURE fn mid-hop — O.b of dbl of O.a
 pass	bc1 a comparison of a draw feeds a BOOL-taking op whose arm NEGATES the state — the bool crosses the dispatch boundary
 pass	bc2 monotonicity of THREE draws under a parity-dependent step — the and of two comparisons decides, the final state rides along
 pass	bc3 an op RETURNS Bool consumed by a two-flag if ladder — a mod-3-dependent step makes all four paths reachable
+pass	wx1 the state thread WRAPS at Int64.max — three draws straddle the wraparound and the comparisons see the seam
+pass	wx2 Int64.min and Int64.max cross the dispatch as OP ARGUMENTS and come back exact — a count arm tallies the trips
+pass	wx3 Int64.min and Int64.max ride as SUM payloads through dispatch — variant chosen by state parity, payloads verified exact
