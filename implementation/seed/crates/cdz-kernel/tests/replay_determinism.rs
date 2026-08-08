@@ -30,7 +30,7 @@ struct BusyReducer;
 
 #[async_trait::async_trait(?Send)]
 impl Reducer for BusyReducer {
-    async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+    async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
         match &event.body {
             EventBody::Inbound { payload, .. } => {
                 let byte = match payload {
@@ -106,7 +106,7 @@ fn cap() -> Authorizer {
 
 /// Run one generated sequence to quiescence and return the resulting session.
 async fn run_sequence(seed: u64, len: usize) -> Session {
-    let reducer = BusyReducer;
+    let mut reducer = BusyReducer;
     let authz = cap();
     let mut exec = RecordingExecutor::new();
     let mut session = Session::genesis(Hash::of(b"busy-v1"), Hash::of(b"test-spawn-nonce"));
@@ -121,7 +121,7 @@ async fn run_sequence(seed: u64, len: usize) -> Session {
             payload: Payload::Inline(vec![byte].into()),
         };
         session
-            .deliver(body, None, &reducer, &authz, &mut exec)
+            .deliver(body, None, &mut reducer, &authz, &mut exec)
             .await
             .unwrap();
     }
@@ -130,7 +130,7 @@ async fn run_sequence(seed: u64, len: usize) -> Session {
 
 #[tokio::test(flavor = "current_thread")]
 async fn replay_reconstructs_identical_kv_root_over_many_sequences() {
-    let reducer = BusyReducer;
+    let mut reducer = BusyReducer;
     // Many seeds × varied lengths — a broad sweep of event sequences.
     for seed in 0..200u64 {
         let len = (seed as usize % 40) + 1;
@@ -140,7 +140,7 @@ async fn replay_reconstructs_identical_kv_root_over_many_sequences() {
         let log = session.log().to_vec();
 
         // Replay the session's OWN log into a fresh Session and compare KV roots.
-        let replayed = Session::replay(log.clone(), &reducer).await.unwrap();
+        let replayed = Session::replay(log.clone(), &mut reducer).await.unwrap();
         assert_eq!(
             replayed.snapshot().kv_root,
             original_root,
@@ -148,7 +148,7 @@ async fn replay_reconstructs_identical_kv_root_over_many_sequences() {
         );
 
         // Replay must also be idempotent: replaying the replayed session's log again matches.
-        let twice = Session::replay(replayed.log().to_vec(), &reducer)
+        let twice = Session::replay(replayed.log().to_vec(), &mut reducer)
             .await
             .unwrap();
         assert_eq!(
@@ -201,7 +201,7 @@ async fn different_sequences_generally_produce_different_roots() {
 struct ScanOrderReducer;
 #[async_trait::async_trait(?Send)]
 impl Reducer for ScanOrderReducer {
-    async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+    async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
         if let EventBody::Inbound { payload, .. } = &event.body {
             let byte = match payload {
                 Payload::Inline(b) if !b.is_empty() => b[0],
@@ -222,7 +222,7 @@ impl Reducer for ScanOrderReducer {
 
 #[tokio::test(flavor = "current_thread")]
 async fn scan_order_dependent_reducer_still_replays_identically() {
-    let reducer = ScanOrderReducer;
+    let mut reducer = ScanOrderReducer;
     let authz = Authorizer::deny_all(); // this reducer emits no effects
     for seed in 0..100u64 {
         let mut exec = RecordingExecutor::new();
@@ -237,12 +237,12 @@ async fn scan_order_dependent_reducer_still_replays_identically() {
                 payload: Payload::Inline(vec![rng.byte()].into()),
             };
             session
-                .deliver(body, None, &reducer, &authz, &mut exec)
+                .deliver(body, None, &mut reducer, &authz, &mut exec)
                 .await
                 .unwrap();
         }
         let original = session.snapshot().kv_root;
-        let replayed = Session::replay(session.log().to_vec(), &reducer)
+        let replayed = Session::replay(session.log().to_vec(), &mut reducer)
             .await
             .unwrap();
         assert_eq!(

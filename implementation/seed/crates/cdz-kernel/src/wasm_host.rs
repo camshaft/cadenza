@@ -2787,7 +2787,13 @@ impl crate::reducer::Reducer for ComponentReducer {
     /// async wasm path is [`AsyncComponentReducer`], which now ALSO composes §23 deps per-fold (same as
     /// this sync path). `ComponentReducer` remains for callers on the sync engine; a future consolidation
     /// can collapse it into `AsyncComponentReducer` now that both are dep-capable.
-    async fn fold(&self, event: &Event, kv: &mut Kv) -> crate::reducer::FoldOutput {
+    async fn fold(&mut self, event: &Event, kv: &mut Kv) -> crate::reducer::FoldOutput {
+        // REPLAY-DETERMINISM EXCEPTION (userspace-effects A, operator ruling 2026-08-08): the Reducer trait's
+        // `fold` is now `&mut self` (the NORM, so host-native reducers hold live capabilities). A WASM
+        // reducer is the EXCEPTION where the immutable/log-based contract is enforced: this fold does NOT
+        // mutate `self` — a guest's ONLY durable state is `kv` (the wasm sandbox structurally can't stash
+        // cross-call state outside it), so fold stays a PURE FUNCTION of (event, kv) and replay reconstructs
+        // identical kv. The `&mut self` here is unused by the guest path; it exists only to satisfy the norm.
         // Map the kernel event → the guest's (content_type, payload, resumes) inputs.
         let (content_type, payload, resumes) = event_to_guest_inputs(&event.body);
 
@@ -3433,7 +3439,11 @@ impl AsyncComponentReducer {
 
 #[async_trait::async_trait(?Send)]
 impl crate::reducer::Reducer for AsyncComponentReducer {
-    async fn fold(&self, event: &Event, kv: &mut Kv) -> crate::reducer::FoldOutput {
+    /// REPLAY-DETERMINISM EXCEPTION (userspace-effects A): `&mut self` is the trait NORM, but a WASM reducer
+    /// enforces the immutable/log-based contract — this fold does NOT mutate `self`; the guest's only durable
+    /// state is `kv`, so fold is a pure function of (event, kv) and replay reconstructs identical kv. See
+    /// [`ComponentReducer::fold`] for the full rationale; the `&mut self` is unused by the guest path.
+    async fn fold(&mut self, event: &Event, kv: &mut Kv) -> crate::reducer::FoldOutput {
         let (content_type, payload, resumes) = event_to_guest_inputs(&event.body);
         let taken = std::mem::take(kv);
         match self.apply(taken, content_type, payload, resumes).await {
@@ -4863,7 +4873,7 @@ mod tests {
             import_name: "cadenza:runtime/heap".to_string(),
             hash: Hash::of(b"heap-stub-runtime"),
         };
-        let reducer = reducer.with_resolved_deps(vec![(runtime_dep, runtime_bytes)]);
+        let mut reducer = reducer.with_resolved_deps(vec![(runtime_dep, runtime_bytes)]);
         // An inbound event through the REAL fold entry point (what HostedSession::deliver drives).
         let event = Event {
             seq: 1,

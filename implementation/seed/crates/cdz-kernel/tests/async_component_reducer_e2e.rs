@@ -68,9 +68,9 @@ async fn async_reducer_drives_via_the_async_reducer_trait() {
         );
         return;
     };
-    let reducer =
+    let mut reducer =
         AsyncComponentReducer::from_component_bytes(&guest).expect("valid async reducer component");
-    let dyn_reducer: &dyn Reducer = &reducer;
+    let dyn_reducer: &mut dyn Reducer = &mut reducer;
 
     let event = cdz_kernel::event::Event {
         seq: 0,
