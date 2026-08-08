@@ -5810,13 +5810,25 @@ fn decode_ty(db: &Db, node: StructId) -> Option<crate::ty::Ty> {
         "Record" => {
             let tail = db.ast.as_form(node, "Record")?;
             let mut fields = std::collections::BTreeMap::new();
-            for &pair in tail {
-                let items = match db.ast.get(pair) {
-                    Struct::List(items) if items.len() == 2 => items,
-                    _ => return None,
+            for &field in tail {
+                // A field is EITHER the canonical `(: name T)` ascription (the shared binder node —
+                // DESIGN-record-type-syntax Phase A) OR the legacy `(name T)` head-app pair. Read both;
+                // accepting the ascription is the additive half of RT3, the dual of the `encode_ty`
+                // flip and needed before it. Strictly widening — an ascription previously failed the
+                // `len == 2` pair check and returned `None`. Pair arm pruned once head-app is extinct.
+                let (name_occ, ty_occ) = if let Some(asc) = db.ast.as_form(field, ":") {
+                    match asc {
+                        [name, t] => (*name, *t),
+                        _ => return None,
+                    }
+                } else {
+                    match db.ast.get(field) {
+                        Struct::List(items) if items.len() == 2 => (items[0], items[1]),
+                        _ => return None,
+                    }
                 };
-                let name = db.ast.as_name(items[0])?.to_string();
-                let t = decode_ty(db, items[1])?;
+                let name = db.ast.as_name(name_occ)?.to_string();
+                let t = decode_ty(db, ty_occ)?;
                 fields.insert(crate::resolved::Symbol::plain(name), t);
             }
             Some(Ty::Record(std::rc::Rc::new(fields)))
