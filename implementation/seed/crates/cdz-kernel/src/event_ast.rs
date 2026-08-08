@@ -1785,6 +1785,11 @@ fn outcome_form(b: &mut Builder, o: &EffectOutcome) -> StructId {
             let head = b.name("timed-out");
             b.list(vec![head])
         }
+        // Deferred never reaches the DURABLE codec: it's a transient executor→kernel "no result yet" signal,
+        // intercepted on the routed path before `record_result`, so it never becomes a logged `EffectResult`.
+        EffectOutcome::Deferred => {
+            unreachable!("EffectOutcome::Deferred is never logged — intercepted pre-record (userspace-effects I2)")
+        }
     }
 }
 

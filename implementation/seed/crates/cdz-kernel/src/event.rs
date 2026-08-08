@@ -308,6 +308,19 @@ pub enum EffectOutcome {
     /// The effect's deadline elapsed with no result. Per the v0 decision (§16c-S4), a timeout CANCELS
     /// the dispatch — the kernel guarantees no late `Ok`/`Err` for this id will ever be folded.
     TimedOut,
+    /// The executor accepted the effect but will NOT answer synchronously — a later
+    /// [`crate::kernel::Session::settle_effect_result`] (by [`EffectId`]) folds the real outcome back
+    /// (userspace-effects I2). An executor returns this from `perform` when it FORWARDED the effect for
+    /// asynchronous fulfillment — e.g. a `UserspaceEffectExecutor` that delegated to a registered handler
+    /// session, or the host reflecting a `control/signature` off-band. The kernel leaves the effect's
+    /// `Dispatched` frame OPEN (does NOT `record_result`) so the continuation resumes later on the settle.
+    ///
+    /// This is a TRANSIENT executor→kernel signal, NEVER a folded result: it is intercepted on the routed
+    /// path before `record_result`, so it never becomes an `EffectResult` on the log and the codec never
+    /// encodes it (the eventual `settle_effect_result` folds a real `Ok`/`Err`). The defer decision is
+    /// RUNTIME state only the executor's `perform` can see (is a handler registered for this family?), which
+    /// is why it is an executor RETURN value, not a static dispatch-site predicate.
+    Deferred,
 }
 
 impl EffectOutcome {
@@ -853,6 +866,13 @@ fn encode_outcome(o: &EffectOutcome, out: &mut Vec<u8>) {
             });
         }
         EffectOutcome::TimedOut => out.push(2),
+        // Deferred is a transient executor→kernel signal, never a settled result: the routed path intercepts
+        // it before `record_result`, so it never becomes an `EffectResult` and thus never reaches this codec.
+        EffectOutcome::Deferred => {
+            unreachable!(
+                "EffectOutcome::Deferred is never recorded/encoded — it is intercepted pre-record"
+            )
+        }
     }
 }
 

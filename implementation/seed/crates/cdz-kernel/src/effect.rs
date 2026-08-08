@@ -329,7 +329,7 @@ pub mod effect_ct {
     /// Is `family` a FOLD-BACK control family — a `control/*` whose answer must RESUME the emitting
     /// reducer's continuation, so the drive loop gives it a `Dispatched` frame (entering `open`, keyed by
     /// `EffectId` + carrying the token) and the host later settles it via
-    /// [`crate::kernel::Session::settle_control_result`]? Today just `control/signature`: the whole point of
+    /// [`crate::kernel::Session::settle_effect_result`]? Today just `control/signature`: the whole point of
     /// signature-query is the emitting reducer receives the descriptor to then route a call, so the reflected
     /// bytes fold BACK to the live session as an `EffectResult` (same shape as any routed effect). This is
     /// distinct from the other two control dispositions: `control/capabilities` is kernel-answered INLINE (it
@@ -467,7 +467,7 @@ pub mod effect_ct {
 /// `id` is the effect's [`EffectId`]. For a FOLD-BACK control family ([`effect_ct::is_fold_back_control`],
 /// e.g. `control/signature`) the drive loop gave the effect a `Dispatched` frame before surfacing it, so it
 /// is OPEN and awaiting a result — the host answers off-band (e.g. reflecting the target component) and
-/// settles it by `id` via [`crate::kernel::Session::settle_control_result`], which folds the answer back to
+/// settles it by `id` via [`crate::kernel::Session::settle_effect_result`], which folds the answer back to
 /// the emitting reducer's continuation. For a fire-and-forget control family (`control/summary`) there is no
 /// `Dispatched` frame and the `id` is not settleable (nothing to resume) — it is a stable identifier only.
 #[derive(Clone, PartialEq, Eq, Debug)]
