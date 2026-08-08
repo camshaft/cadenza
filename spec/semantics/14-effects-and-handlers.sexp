@@ -17602,3 +17602,109 @@
   (call   main (: 5 Int64)) (output (: 56 Int64))
   (call   main (: 0 Int64)) (output (: 1 Int64))
   (call   main (: -4 Int64)) (output (: -43 Int64)))
+
+;; ── ms: parity-built SUM scrutinees ──────────────────────────────────────────
+;; An op returns a THREE-variant Mode sum constructed in the arm from state
+;; parity (% s 3) — which variant comes back depends on where the thread is.
+;; ms1 scores two sequential performing scrutinees (the second sees the
+;; advanced state and can change variant); ms2's match arms THEMSELVES draw
+;; after the scrutinee advanced the thread; ms3 walks a recursion drawing a
+;; Mode per level (single-level match in a performing recursive callee — the
+;; folding side of the rt2 boundary); ms4 nests a pure payload-parity match
+;; inside the C arm. The recursion-x-abort face (a walk that Bails mid-descent)
+;; is a cross-function fold decline; witness banked, not a case.
+
+(case "ms1 an op returns a THREE-variant sum built from state parity — two sequential performing scrutinees, the second sees the advanced state"
+  (input  (do
+            (type Mode (A) (B Int64) (C Int64 Int64))
+            (effect E (op mode (-> Mode)))
+            (def (score (: m Mode))
+              (match m
+                ((A) 7)
+                ((B x) (* 10 x))
+                ((C x y) (+ (* 100 x) y))))
+            (def (main (: n Int64))
+              (handle E n
+                ((mode () s (resume (match (% s 3)
+                                      (0 (A))
+                                      (1 (B s))
+                                      (_ (C s s)))
+                                    (+ s 1))))
+                (+ (* 1000 (score (E.mode))) (score (E.mode)))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 7010 Int64))
+  (call   main (: 1 Int64)) (output (: 10202 Int64))
+  (call   main (: 2 Int64)) (output (: 202007 Int64))
+  (call   main (: 4 Int64)) (output (: 40505 Int64)))
+
+(case "ms2 match ARMS themselves draw after the performing scrutinee advanced the state — arm-selected continuation of the same thread"
+  (input  (do
+            (type Mode (A) (B Int64) (C Int64 Int64))
+            (effect E (op mode (-> Mode)) (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((mode () s (resume (match (% s 3)
+                                      (0 (A))
+                                      (1 (B s))
+                                      (_ (C s s)))
+                                    (+ s 1)))
+                 (next () s (resume s (+ s 1))))
+                (+ (* 100 (match (E.mode)
+                            ((A) (E.next))
+                            ((B x) (+ x (E.next)))
+                            ((C x y) (+ x y))))
+                   (E.next))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 102 Int64))
+  (call   main (: 1 Int64)) (output (: 303 Int64))
+  (call   main (: 2 Int64)) (output (: 403 Int64))
+  (call   main (: 6 Int64)) (output (: 708 Int64)))
+
+(case "ms3 parity-sum dispatch inside a RECURSIVE walk — each level draws a Mode and accumulates by variant as the thread advances"
+  (input  (do
+            (type Mode (A) (B Int64) (C Int64 Int64))
+            (effect E (op mode (-> Mode)))
+            (def (walk (: k Int64))
+              (if (<= k 0)
+                  0
+                  (+ (match (E.mode)
+                       ((A) 7)
+                       ((B x) x)
+                       ((C x y) (* x y)))
+                     (walk (- k 1)))))
+            (def (main (: n Int64))
+              (handle E n
+                ((mode () s (resume (match (% s 3)
+                                      (0 (A))
+                                      (1 (B s))
+                                      (_ (C s s)))
+                                    (+ s 1))))
+                (walk 4)))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 19 Int64))
+  (call   main (: 1 Int64)) (output (: 16 Int64)))
+
+(case "ms4 the C arm RE-MATCHES its own payload's parity — a nested pure match inside an arm of the performing-scrutinee match"
+  (input  (do
+            (type Mode (A) (B Int64) (C Int64 Int64))
+            (effect E (op mode (-> Mode)) (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((mode () s (resume (match (% s 3)
+                                      (0 (A))
+                                      (1 (B s))
+                                      (_ (C s s)))
+                                    (+ s 1)))
+                 (next () s (resume s (+ s 1))))
+                (+ (* 10 (match (E.mode)
+                           ((A) 7)
+                           ((B x) x)
+                           ((C x y) (match (% x 2)
+                                      (0 (+ 1000 y))
+                                      (_ (+ 2000 y))))))
+                   (E.next))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 10023 Int64))
+  (call   main (: 5 Int64)) (output (: 20056 Int64))
+  (call   main (: 0 Int64)) (output (: 71 Int64))
+  (call   main (: 1 Int64)) (output (: 12 Int64)))
