@@ -6364,3 +6364,6 @@ pass	fa2 TWO accumulators through one performing recursion — running sum and p
 pass	fa3 each fold level draws TWICE and mixes them asymmetrically — 10*first + second pins the intra-level draw order
 pass	fa4 the accumulator IS a sum — each level's draw moves it around an A->B->C->A cycle capturing payloads on the way
 pass	fa5 a TWO-effect fold — each level's step multiplies a draw from each thread, both threads advancing independently
+pass	ch1 a FOUR-op result chain in one nested expression — each op transforms the last result while bumping the shared state differently
+pass	ch2 the same FOUR-op chain flattened through LETs — one binding per hop must equal the nested form exactly
+pass	ch3 the chain hops CROSS two effects — F.b of G.p of F.a, each thread advancing only on its own hops

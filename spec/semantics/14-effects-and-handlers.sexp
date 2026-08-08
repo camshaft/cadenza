@@ -17814,3 +17814,66 @@
   (call   main (: 2 Int64)) (output (: 1010 Int64))
   (call   main (: 0 Int64)) (output (: 350 Int64))
   (call   main (: -1 Int64)) (output (: 20 Int64)))
+
+;; ── ch: op-result CHAINS feeding op arguments ────────────────────────────────
+;; Results flow hop-to-hop through performing argument positions. ch1 chains
+;; FOUR ops of one effect in a single nested expression, each hop bumping the
+;; shared state by a different increment (+2/+3/+5/+1), a probe pinning the
+;; final state; ch2 flattens the SAME chain through one let per hop — the two
+;; forms must agree exactly (nested-argument desugaring == explicit
+;; sequencing); ch3 sends the hops across TWO effects (F.b of G.p of F.a),
+;; each thread advancing only on its own hops.
+
+(case "ch1 a FOUR-op result chain in one nested expression — each op transforms the last result while bumping the shared state differently"
+  (input  (do
+            (effect E (op a (-> Int64)) (op b (-> Int64 Int64)) (op c (-> Int64 Int64)) (op d (-> Int64 Int64)) (op probe (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((a () s (resume s (+ s 2)))
+                 (b (x) s (resume (+ x s) (+ s 3)))
+                 (c (x) s (resume (* 2 x) (+ s 5)))
+                 (d (x) s (resume (+ x s) (+ s 1)))
+                 (probe () s (resume s s)))
+                (+ (* 100 (E.d (E.c (E.b (E.a))))) (E.probe))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 2413 Int64))
+  (call   main (: 0 Int64)) (output (: 1411 Int64))
+  (call   main (: -4 Int64)) (output (: -593 Int64)))
+
+(case "ch2 the same FOUR-op chain flattened through LETs — one binding per hop must equal the nested form exactly"
+  (input  (do
+            (effect E (op a (-> Int64)) (op b (-> Int64 Int64)) (op c (-> Int64 Int64)) (op d (-> Int64 Int64)) (op probe (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((a () s (resume s (+ s 2)))
+                 (b (x) s (resume (+ x s) (+ s 3)))
+                 (c (x) s (resume (* 2 x) (+ s 5)))
+                 (d (x) s (resume (+ x s) (+ s 1)))
+                 (probe () s (resume s s)))
+                (let ((va (E.a)))
+                  (let ((vb (E.b va)))
+                    (let ((vc (E.c vb)))
+                      (let ((vd (E.d vc)))
+                        (+ (* 100 vd) (E.probe))))))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 2413 Int64))
+  (call   main (: 0 Int64)) (output (: 1411 Int64))
+  (call   main (: -4 Int64)) (output (: -593 Int64)))
+
+(case "ch3 the chain hops CROSS two effects — F.b of G.p of F.a, each thread advancing only on its own hops"
+  (input  (do
+            (effect F (op a (-> Int64)) (op b (-> Int64 Int64)) (op fp (-> Int64)))
+            (effect G (op p (-> Int64 Int64)) (op gp (-> Int64)))
+            (def (main (: n Int64))
+              (handle F n
+                ((a () s (resume s (+ s 2)))
+                 (b (x) s (resume (+ x s) (+ s 3)))
+                 (fp () s (resume s s)))
+                (handle G 100
+                  ((p (x) t (resume (+ x t) (+ t 10)))
+                   (gp () t (resume t t)))
+                  (+ (* 10 (F.b (G.p (F.a)))) (+ (F.fp) (G.gp))))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 1177 Int64))
+  (call   main (: 0 Int64)) (output (: 1135 Int64))
+  (call   main (: -6 Int64)) (output (: 1009 Int64)))
