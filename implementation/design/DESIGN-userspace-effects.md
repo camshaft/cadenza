@@ -446,48 +446,132 @@ each with doc + signature; the round-trip decodes. **Anchors:** `control/` query
 > to expand effect contracts over time since it does not invalidate any old messages."*
 
 This holds up and fits the platform's everything-hash-identified through-line (sessions = genesis hash,
-blobs = content hash, ws-conns = minted id). An effect's SCHEMA — the operation signatures + type
-contract that I11 already makes an introspectable, binary-AST artifact — gets a content **hash**, and
-that hash is the effect CONTRACT VERSION's stable identity. The benefit the operator cites falls out:
-because a message references the schema-hash it was built against, EXPANDING a contract (adding an op, a
-field) mints a NEW schema-hash while old messages keep resolving to the old schema — content-addressed,
+blobs = content hash, ws-conns = a hash). An effect's SCHEMA — the operation signatures + type contract
+that I11 already makes an introspectable, binary-AST artifact — gets a content **hash**, and that hash
+is the effect CONTRACT VERSION's stable identity. The benefit the operator cites falls out: because a
+message references the schema-hash it was built against, EXPANDING a contract (adding an op, a field)
+mints a NEW schema-hash while old messages keep resolving to the old schema — content-addressed,
 naturally immutable, self-versioning. No message is ever invalidated by a contract growing.
+
+**The schema IS a binary-encoded cdzast AST (operator, everyone agrees).** An effect's schema is
+represented AS a binary-encoded `cdzast` AST artifact — the SAME one `cdzast` binary-AST model
+`design-cadenza-docs` owns and I11 introspection reports — and the **schema-hash is the content hash of
+those canonical binary-AST bytes.** Confirmed with `v-syntax` (owns `cadenza-ast`, the cdzast codec),
+no gap:
+- A schema encodes via `cadenza_ast::codec::encode` as a name-headed tree, e.g.
+  `(effect Weather (op today (-> Unit Forecast)) (op set (-> Forecast Unit)))`; the codec round-trips
+  ANY such tree byte-identically (structure-only, TOTAL decode, `cdzast\x00\x01` header).
+- **schema-hash = content hash of the canonical `encode()` bytes** — hash the canonical `\x00\x01`
+  bytes (call `encode()` then hash), NOT a re-derived form. Per the `Event::hash` precedent, treat the
+  schema-hash as an identity STABLE across cdzast container-format evolution (the `\x00\x01` canonical
+  bytes are format-pinned, so equal schemas always hash equal and an identity does not shatter on a
+  format bump). The primitive shape is settled with v-syntax (concierge floor (B) keep-cadenza-ast
+  algo-free): `cadenza-ast` exposes `schema_canonical_bytes(arenas) -> Vec<u8>` (single-sources the
+  canonical cdzast `\x00\x01` encoding — the one thing that could drift), and the harness/kernel computes
+  the effect-schema content hash as `Hash::of(schema_canonical_bytes(&schema_ast))` — `Hash::of` being
+  the ONE unified content-address (blake3, operator 2026-08-08), so there is no per-caller
+  re-implementation and cadenza-ast stays dependency-light (no blake3 in the bottom crate). `cadenza-ast`
+  `schema_canonical_bytes` is queued (ref `c2d2c269d`).
+- **The meta-schema is evolvable (operator).** The schema-for-the-schema — the AST node vocabulary used
+  to REPRESENT a schema — must itself grow without a hard break. It does, by construction: a new
+  contract-description construct is a new HEAD NAME + list shape = NO codec change (tolerant-reader — an
+  older reader sees an uninterpreted list, never breaks). Only a genuinely new LEAF value kind (beyond
+  Int/Float/Str/Char/Bytes/Bool/Name/Sym/Decimal) needs a container bump, a drop-in `\x00\x02` the
+  header + `BadTag` totality already support. So the node vocab is additively extensible — the same
+  tolerant/additive discipline the effect contracts get from schema-hashing.
 
 How it composes with what's already designed:
 
-- **`ContentType` already carries `{family, version}`** (`event.rs`) with a tolerant-reader model
-  (`matches_family` ignores version; `version_in` range-checks). Schema-hash identity REFINES the
-  `version: u32` axis into a content hash: a `{family, schema_hash}` (or `{family, version, schema_hash}`)
-  content-type, where the family is the human/routing name and the schema-hash is the exact contract
-  version. The tolerant-reader rule generalizes cleanly: match `family`, then check whether you
-  understand the `schema_hash` (you hold that schema, or a compatible ancestor) instead of a numeric
-  range. This is additive to the existing wire type, not a replacement — a well-known family keeps its
-  `version` for the built-in effects; extension families gain schema-hash identity.
+- **`ContentType` — schema-hash REPLACES `version: u32` (operator ruling on D13; clean break, NO
+  backward compat).** Today `ContentType` is `{family, version: u32}` with a tolerant-reader model
+  (`matches_family` ignores version; `version_in` range-checks). The operator ruled (verbatim: *"I do
+  not want to preserve any kind of backward compatibility. Rip out the old versioning crap."*): the
+  `version: u32` axis is REMOVED entirely and schema-hash becomes the contract-version identity for ALL
+  families — built-in and extension alike. `ContentType` becomes `{family, schema_hash}` (family = the
+  human/routing/Cedar-action key; schema_hash = the exact contract version). This is a BREAKING
+  `ContentType` change, which is fine + preferred: there is no deployed durable state to protect (v0), so
+  a compat shim is exactly the "old thing that never gets cleaned up" the no-migration-cruft directive
+  rejects. The tolerant-reader rule re-expresses cleanly: match `family`, then check whether you
+  understand the `schema_hash` (you hold that schema) instead of a numeric `version_in` range — a known
+  family at an unknown schema-hash is the "known family, unknown contract" case the reader defers/rejects
+  honestly, never misdecodes. `v-agent-harness` owns `ContentType`; coordinate the removal with them.
 - **Registration (I1):** `effect/<family>` resolves to the handler `SessionId`, AND the handler
-  publishes its current schema as a binary-AST artifact whose hash is the contract-version id. So the
-  name is the primary human key and the schema-hash is the exact-contract key — a caller can address
-  "the `weather` handler" (latest) or pin "`weather` at schema-hash H" (a specific contract). ⟨D13
-  default:⟩ **name + schema-hash together** — the name resolves to the CURRENT schema-hash, and old
-  schema-hashes stay valid (the handler keeps serving prior contract versions it still understands, or
-  fails a pinned request `Err(unsupported-schema)`). The name is not the identity; the schema-hash is.
+  publishes its current schema (a binary cdzast AST artifact) whose hash is the contract-version id. The
+  family name resolves to the CURRENT schema-hash; a caller can address "the `weather` handler" (latest)
+  or pin "`weather` at schema-hash H" (a specific contract), and old schema-hashes stay valid (the
+  handler keeps serving prior contract versions it still understands, else fails a pinned request
+  `Err(unsupported-schema)`). The family stays the register-by-string routing/human/Cedar-action key;
+  schema-hash is the exact-contract key ALONGSIDE it (this is orthogonal to removing `version` — the
+  family string is untouched; it is the `version` NUMBER that schema-hash replaces).
 - **Introspection (I11):** the schema IS the introspectable contract, so hashing it is natural — the
-  I11 catalog reports, per effect, its `family` + its current `schema_hash` + the binary-AST schema
-  itself. A caller discovers the schema, hashes it (or reads the reported hash), and builds messages
-  pinned to it. Version negotiation is: caller reads the handler's advertised schema-hash(es) via
-  introspection, picks one it understands, and stamps its requests with it; the handler dispatches on
-  the stamped schema-hash.
+  I11 catalog reports, per effect, its `family` + its current `schema_hash` + the binary cdzast AST
+  schema itself. Version negotiation: a caller reads the handler's advertised schema-hash(es) via
+  introspection, picks one it understands, and stamps its requests' `ContentType.schema_hash` with it;
+  the handler dispatches on the stamped schema-hash.
 
-⟨D13 — schema-hash as identity⟩ *default:* schema-hash is an ADDITIVE contract-version identity layered
-on the existing `family` name (name = routing/human key, schema-hash = exact-contract key; the name
-resolves to the current hash, old hashes stay valid). NOT a replacement for the family string
-(register-by-string + human-readable routing + Cedar action-name all still key on the family). Whether
-the schema-hash rides `ContentType` as a third field or replaces the `version: u32` for extension
-families is an implementation fork for the harness owners — flag for the operator; the DEFAULT keeps
-`version` for built-in families and adds schema-hash for extension families, so nothing on the durable
-wire breaks. *Gate (when built):* expand a handler's contract → old messages (stamped with the old
-schema-hash) still resolve + fold correctly; a message pinned to an unknown schema-hash fails honestly
-(`Err(unsupported-schema)`), never misdecodes. **Anchors:** `event.rs` (`ContentType`), the I11
-binary-AST schema artifact + its `hash.rs` content hash, I1 registration (name → current schema-hash).
+⟨D13 — RESOLVED by the operator⟩ schema-hash **REPLACES** `version: u32` in `ContentType` (NOT a third
+field, no `version` kept for built-ins, no backward compat — rip the u32 version axis out entirely).
+`ContentType` becomes `{family, schema_hash}`; the schema is a binary cdzast AST; schema-hash = the
+content hash of its canonical `\x00\x01` bytes. The family string is untouched (still the routing/Cedar
+key). *Gate (when built):* the `version: u32` field is gone from `ContentType`; a message stamped with
+schema-hash H resolves + folds against schema H; expanding a contract to H' leaves H-stamped messages
+resolving to H; a message at an unknown schema-hash fails honestly (`Err(unsupported-schema)`), never
+misdecodes; equal schemas hash equal across a cdzast container-format bump. **Anchors:** `event.rs`
+(`ContentType` — remove `version`, add `schema_hash: Hash`; update `matches_family`/drop `version_in`),
+`cadenza-ast` (`schema_canonical_bytes` + `Hash::of`, v-syntax `c2d2c269d`), `hash.rs`, I1 registration
+(name → current schema-hash), design-cadenza-docs (the shared cdzast schema representation).
+
+### D14 — does `ContentType` collapse to JUST the schema-hash? (operator, going past D13)
+
+> Operator: *"Wouldn't the content type just be the hash of the schema? I don't even know why we would
+> continue to have the content type at all when the schema is self-describing of the content inside."*
+
+The operator is right that the ENVELOPE collapses — but the analysis shows a **stable name is still
+load-bearing, and it relocates INTO the self-describing schema rather than disappearing.** Working
+through everything the `family` string did that a bare schema-hash cannot:
+
+- **Routing (which handler serves this) — the decisive case.** A schema-hash is by construction NOT
+  stable across contract evolution (that is its whole point: expand the contract → new hash). But
+  routing needs a key STABLE across versions: an OLD message carries `H_old`, the handler has since
+  evolved to `H_new`, and "deliver this to the weather handler" must still resolve. Routing by hash
+  ALONE cannot do this — `H_old` names a past contract, not "the current weather handler." So either
+  the registry maps every historical schema-hash → the current handler (unbounded, and still needs a
+  notion of "same effect across versions" = a stable identity by another name), OR the stable name
+  lives somewhere. **This is the genuine reason a name survives** — exactly the flag the operator asked
+  for.
+- **Cedar authz action key — also decisive.** Policies are authored by humans against STABLE action
+  names (`permit(action=="weather")`). If the action key were the schema-hash, every contract expansion
+  would silently invalidate every policy (the hash moved). So the authz action must be a stable name,
+  not a hash.
+- **Human readability** — derivable from introspecting the schema; NOT load-bearing on its own.
+
+So both decisive jobs need a name that survives schema evolution. The operator's insight still holds,
+though: because the schema is SELF-DESCRIBING, that name does not need to be a SEPARATE envelope field
+— **the schema declares its own family/name as a field** (`(effect Weather (op today …) …)` — the
+`Weather` head IS the stable name, right there in the schema). Then:
+
+- The **content identity on the wire is JUST the schema-hash** (a single `Hash`) — the operator's
+  collapse is achieved; there is no separate `{family, schema_hash}` struct riding every message.
+- The stable **family/name is RECOVERED by introspecting the schema** the hash addresses (resolve
+  `schema_hash → schema AST → its declared name`). Routing and Cedar key on that declared name; it is
+  stable across versions because successive schema versions of the same effect declare the SAME name
+  (only their ops/types grow, minting a new hash while the declared name is unchanged).
+- Registration inverts accordingly: `effect/<name>` (the stable declared name) → the current
+  `schema_hash` → the handler. An old `H_old` message routes by resolving `H_old`'s schema, reading its
+  declared name, and looking up the current handler for that name.
+
+⟨D14 — RECOMMENDATION, surfaced to the operator⟩ **Collapse the wire envelope to a single schema-hash
+`Hash` (eliminate the `ContentType` STRUCT), and move the stable family/name INTO the self-describing
+schema as a declared field.** This achieves the operator's "content type just IS the schema-hash" for
+the ENVELOPE while preserving the one thing a bare hash cannot do — a routing/Cedar key stable across
+contract evolution — by relocating it into the schema (where "self-describing" makes it belong) rather
+than keeping a parallel `ContentType.family`. Net: the wire carries one `Hash`; the name is a schema
+field, recovered by introspection. This is the maximal-clean version of the rip-out-the-envelope
+directive. *The alternative* (keep a thin `{family, schema_hash}` so routing needn't dereference the
+schema on every message) trades one extra wire field for avoiding a schema-lookup at routing time — a
+performance/latency consideration, not a semantic one. **Flagged to the operator** (foundational
+envelope-shape call); coordinate the chosen shape with `v-agent-harness` (owns `ContentType`). Default
+pending the ruling: the collapse (identity = schema-hash; name is a schema field).
 
 ## Part C — stateful-resource transport primitives: process / ws-client / ws-server (I12–I14)
 
