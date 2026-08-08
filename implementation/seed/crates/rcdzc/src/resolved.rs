@@ -187,6 +187,13 @@ pub enum Prim {
     //# Every floating-point not-a-number value MUST serialize to one canonical byte form, consistent with structural equality treating all not-a-number values as equal.
     //= spec/contracts/deterministic-value-form.md#numeric-values-serialize-deterministically
     //# A floating-point negative zero MUST serialize distinctly from a positive zero, consistent with structural equality treating them as distinct.
+    // The NaN and negative-zero rules above are the two edge cases of the general canonical-byte-form
+    // equality this fold enforces via `to_f64_bits`: same bits ⇒ same serialization, different bits ⇒
+    // different serialization.
+    //= spec/contracts/deterministic-value-form.md#numeric-values-serialize-deterministically
+    //# Two floating-point values equal under structural equality MUST have identical canonical byte encodings.
+    //= spec/contracts/deterministic-value-form.md#numeric-values-serialize-deterministically
+    //# Two floating-point values that are not equal under structural equality MUST have distinct canonical byte encodings.
     //= spec/capabilities/numeric-model.md#floating-point-follows-the-determinism-contract
     //# A floating-point value MUST serialize under the canonical form fixed by the deterministic-value-form contract.
     //= spec/contracts/determinism-and-fuel.md#floating-point-emission-is-determinism-constrained
