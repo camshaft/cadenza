@@ -674,16 +674,30 @@ fn classify_ty_at(ast: &Arenas, ty: StructId, items: &[StructId], depth: usize) 
         }
         let mut fields = Vec::with_capacity(rec_tail.len());
         for &field in rec_tail {
-            // `field` = `(NAME TYPE)` — a two-element list. Bind its children as `field_pair` (NOT `items`,
-            // which would SHADOW the top-level `items` param this arm's recursion must keep passing — the
-            // shadow is scoped to the arm so behavior was already correct, but the reused name reads as a
-            // bug, PR #419; renamed for clarity).
-            let field_pair = match ast.get(field) {
-                crate::ast::Struct::List(field_pair) if field_pair.len() == 2 => field_pair,
-                _ => return None,
+            // A record-TYPE field is EITHER the canonical `(: name T)` ascription (the shared binder node,
+            // DESIGN-record-type-syntax Phase A / RT3) OR the legacy `(name T)` head-app pair. Read both to
+            // `(name_occ, ty_occ)`, mirroring the widening `reduce_ctor`/`decode_ty` (eval.rs/resolve.rs) took
+            // on trunk 797e06857: this recognizer is a CONSUMER of record-type syntax, so it must accept the
+            // ascription BEFORE the encoder flips to emit it (OQ-C) — else a `(: f T)` field fails the pair
+            // check → this arm returns `None` → a record we should generate is silently DECLINED (a coverage
+            // regression). Strictly widening: an ascription previously failed the `len == 2` check and returned
+            // `None`, so no currently-classified input changes. (`field_pair` name kept so it does not SHADOW
+            // the top-level `items` param this arm's recursion threads — PR #419.)
+            let (name_occ, ty_occ) = if let Some(asc) = ast.as_form(field, ":") {
+                match asc {
+                    [name, t] => (*name, *t),
+                    _ => return None,
+                }
+            } else {
+                match ast.get(field) {
+                    crate::ast::Struct::List(field_pair) if field_pair.len() == 2 => {
+                        (field_pair[0], field_pair[1])
+                    }
+                    _ => return None,
+                }
             };
-            let fname = ast.as_name(field_pair[0])?.to_string();
-            let fty = classify_ty_at(ast, field_pair[1], items, depth + 1)?;
+            let fname = ast.as_name(name_occ)?.to_string();
+            let fty = classify_ty_at(ast, ty_occ, items, depth + 1)?;
             fields.push((fname, fty));
         }
         return Some(GenTy::Record(fields));
@@ -2153,6 +2167,49 @@ mod tests {
             assert!(
                 names.iter().any(|n| n == wrapper) && !names.iter().any(|n| n == def),
                 "{def}: expected wrapper {wrapper}, got {names:?}"
+            );
+        }
+    }
+
+    /// A record-TYPE whose fields use the CANONICAL `(: name T)` ascription spelling (DESIGN-record-type-
+    /// syntax Phase A / RT3) — NOT the legacy `(name T)` head-app pair — must still classify as a `Record`
+    /// and gain its `-gen` wrapper. `classify_ty_at`'s Record arm reads BOTH spellings (mirroring the widening
+    /// `reduce_ctor`/`decode_ty` took), so this recognizer accepts the ascription BEFORE the encoder flips to
+    /// emit it (OQ-C) — without this arm the `(: n T)` field fails the `len == 2` pair check → the record is
+    /// silently DECLINED (a coverage regression). DISCRIMINATING: the fields are ascription-spelled (`(: x
+    /// Int64)`), so a recognizer that only read the legacy pair would produce NO wrapper here. Nested +
+    /// user-sum-field faces too, so the both-spellings read holds through the field-classify recursion.
+    #[test]
+    fn a_record_type_with_ascription_spelled_fields_still_generates() {
+        for (src, def, wrapper) in [
+            (
+                "(do (@ test (def (r (: v (Record (: x Int64) (: y Bool)))) 0)) (def (o) 1))",
+                "r",
+                "r-gen",
+            ),
+            (
+                "(do (@ test (def (lr (: xs (List (Record (: a Int64) (: b Bool)))))  (List.len xs))) (def (o) 1))",
+                "lr",
+                "lr-gen",
+            ),
+            // A user-sum field under the ascription spelling — the field-classify recursion must keep passing
+            // the TOP-LEVEL `items` so `Ty` resolves the `(type …)` decl, exactly as the legacy-pair face does.
+            (
+                "(do (type Ty (A Int64) (B Bool)) \
+                   (@ test (def (rs (: v (Record (: t Ty) (: n Int64)))) 0)) (def (o) 1))",
+                "rs",
+                "rs-gen",
+            ),
+        ] {
+            let db = Db::load(crate::testkit::parse(src));
+            let names: Vec<String> = db
+                .test_defs()
+                .into_iter()
+                .map(|i| db.defs[i].name.clone())
+                .collect();
+            assert!(
+                names.iter().any(|n| n == wrapper) && !names.iter().any(|n| n == def),
+                "{def} (ascription-spelled record fields): expected wrapper {wrapper}, got {names:?}"
             );
         }
     }
