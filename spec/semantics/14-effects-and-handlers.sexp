@@ -17936,3 +17936,58 @@
   (call   main (: 2 Int64)) (output (: 87 Int64))
   (call   main (: 0 Int64)) (output (: 25 Int64))
   (call   main (: -4 Int64)) (output (: -99 Int64)))
+
+;; ── bc: BOOLs and comparisons across the dispatch boundary ───────────────────
+;; bc1 sends a comparison-of-a-draw INTO a Bool-taking op whose arm negates
+;; the state (history made visible); bc2 checks monotonicity of three draws
+;; under a parity-dependent step (+2 even / -3 odd) with and-chained
+;; comparisons; bc3 receives Bool FROM an op (state parity) into a two-flag if
+;; ladder — a mod-3-dependent step decorrelates consecutive parities so all
+;; four paths are reachable, one per pinned input.
+
+(case "bc1 a comparison of a draw feeds a BOOL-taking op whose arm NEGATES the state — the bool crosses the dispatch boundary"
+  (input  (do
+            (effect E (op next (-> Int64)) (op judge (-> Bool Int64)) (op probe (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1)))
+                 (judge (b) s (resume (if b 100 200) (- 0 s)))
+                 (probe () s (resume s s)))
+                (+ (E.judge (< (E.next) 3)) (E.probe))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 97 Int64))
+  (call   main (: 5 Int64)) (output (: 194 Int64))
+  (call   main (: -1 Int64)) (output (: 100 Int64)))
+
+(case "bc2 monotonicity of THREE draws under a parity-dependent step — the and of two comparisons decides, the final state rides along"
+  (input  (do
+            (effect E (op next (-> Int64)) (op probe (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (if (= (% s 2) 0) (+ s 2) (- s 3))))
+                 (probe () s (resume s s)))
+                (let ((a (E.next)))
+                  (let ((b (E.next)))
+                    (let ((c (E.next)))
+                      (+ (if (and (< a b) (< b c)) 1000 2000) (E.probe)))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 1006 Int64))
+  (call   main (: 1 Int64)) (output (: 2002 Int64))
+  (call   main (: 4 Int64)) (output (: 1010 Int64))
+  (call   main (: -5 Int64)) (output (: 1996 Int64)))
+
+(case "bc3 an op RETURNS Bool consumed by a two-flag if ladder — a mod-3-dependent step makes all four paths reachable"
+  (input  (do
+            (effect E (op flag (-> Bool)) (op probe (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((flag () s (resume (= (% s 2) 0) (if (= (% s 3) 0) (+ s 1) (+ s 2))))
+                 (probe () s (resume s s)))
+                (let ((f1 (E.flag)))
+                  (let ((f2 (E.flag)))
+                    (+ (* 10 (if f1 (if f2 10 20) (if f2 30 40))) (E.probe))))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 106 Int64))
+  (call   main (: 0 Int64)) (output (: 203 Int64))
+  (call   main (: 3 Int64)) (output (: 306 Int64))
+  (call   main (: 1 Int64)) (output (: 404 Int64)))
