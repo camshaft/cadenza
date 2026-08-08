@@ -63,6 +63,16 @@
                                    // a cross-type ctor pattern (Color.Red vs a Bit scrutinee) is REJECTED. Carrying
                                    // only the declName (not the ctor list) suffices for unify (decl-identity) —
                                    // the ctors/arg-types live in the parse-db ct + a decl table, read where needed.
+  | TyVar(Int64)                   // ARC-B5 (port of rcdzc ty.rs:943 `Ty::Var(u32)`): a WHOLE-TYPE unification
+                                   // variable — an as-yet-unsolved type the inferencer introduces (a fresh var per
+                                   // node before it is constrained). Resolved to a concrete Ty by the HM solve
+                                   // (unify binds it via the Subst `tys` map); a var that survives to the boundary
+                                   // is an UNDETERMINED type (a rejection, not a default), exactly as rcdzc. Distinct
+                                   // from the int-axis Sign.SVar / Width.WVar (those vary only an int's sign/width);
+                                   // TyVar ranges over ANY Ty (int/bool/fn/sum), so a node whose type isn't known to
+                                   // be an int (a param used only as a match scrutinee, a fn-typed param) gets a
+                                   // TyVar and unifies toward whatever concrete type its uses force. Enables the
+                                   // recursive-descent type_of to seed every node a fresh TyVar and unify inline.
 
 /// A bare integer literal's type: BOTH axes deferred (rcdzc `IntType::deferred`) — grounds to the default via
 /// unification/root-defaulting. This is the type a literal STARTS as; an annotation or operator fixes it.
@@ -182,6 +192,12 @@ def ty-eq(a: Ty, b: Ty) = match a with
   // inner). This closes recursive sums + enforces ctor-app/pattern sharing a sum's identity (cross-type reject).
   | Ty.TySum(na) => (match b with
     | Ty.TySum(nb) => na == nb
+    | _ => false
+  )
+  // ARC-B5 (rcdzc ty.rs:1025 `(Ty::Var(a), Ty::Var(b)) => a == b`): two type variables are equal iff the SAME
+  // id. A TyVar is never equal to a concrete type (it's unsolved) — that's unify's job, not equality's.
+  | Ty.TyVar(va) => (match b with
+    | Ty.TyVar(vb) => va == vb
     | _ => false
   )
 

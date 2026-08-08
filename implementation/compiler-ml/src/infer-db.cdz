@@ -658,6 +658,9 @@ def typed-to-ty-defer(t: Ty) = match t with
   // unify-ty(TyBool,TyBool)=TyBool flow through the arith arm, mis-accepting `(+ true false)` as Bool.)
   | Ty.TyBool => Option.None(unit)
   | Ty.TyErr => Option.None(unit)
+  // ARC-B5 B1: a TyVar is not a concrete arith operand → None (like TyFn/TySum/TyBool). A TyVar never reaches
+  // this live-infer path today (the descent driver that produces TyVars isn't wired in); arm is for exhaustiveness.
+  | Ty.TyVar(_) => Option.None(unit)
 
 /// Literal-width adaptation for a mixed-width arith pair that didn't unify. If ONE operand is a plain `NLit(v)`
 /// (which infer typed as the default Int64) and the OTHER is a FIXED NARROW width (< 64) that `v` FITS, the
