@@ -1530,6 +1530,18 @@ fn read_export_sig(a: &Arenas, id: StructId) -> Result<ExportSig, EventAstError>
 /// bytes → [`EventAstError::Codec`]; a well-formed frame with a bad head/arity / non-str name →
 /// [`EventAstError::Shape`]. An empty `(component-signature)` decodes to empty `exports`. Never a panic (the
 /// bytes ride the durable effect log / a guest reducer).
+///
+/// CROSS-VOCAB HEAD INVARIANT (v-syntax audit, 2026-08-08): this decode dispatches CONTAINER-AWARE — it
+/// walks from the TYPED ROOT (`as_form(root, "component-signature")`) and only then reads `export`/`name`/
+/// `params`/`results` as CHILDREN of that known root. It must stay container-aware, because two of the
+/// descriptor's NAME heads are SHARED with other vocabularies and disambiguated by container ALONE, not by a
+/// distinct atom: `export` collides with the ML value-form's `export` head, and `name` collides with the
+/// doc-form's `(name <str>)`. A head-only dispatch (classifying a naked `(export …)`/`(name …)` subtree out
+/// of context) could conflate them; walking from the typed root cannot. (The type-CTOR vocabulary has no such
+/// hazard — the descriptor's lowercase `Leaf::Str` ctor heads `"list"`/`"record"`/… are double-distinct from
+/// the `(ty …)` payload's capitalized `Leaf::Name` heads `List`/`Record`/…, by both case and leaf-kind; the
+/// lowercase name-head primitives `u32`/`string`/… don't overlap either.) Same containment contract the
+/// doc-module/doc-item forms rely on, so no head rename was warranted.
 pub fn decode_component_signature(bytes: &[u8]) -> Result<ComponentSignature, EventAstError> {
     let a = codec::decode_detailed(bytes).map_err(EventAstError::Codec)?;
     let export_forms = a
@@ -3442,6 +3454,43 @@ mod tests {
                 assert_eq!(sig1.arenas.head_name(*r1), sig2.arenas.head_name(*r2));
             }
         }
+    }
+
+    #[test]
+    fn component_signature_decode_is_container_aware_rejecting_shared_heads_at_the_root() {
+        // CROSS-VOCAB HEAD INVARIANT (v-syntax audit): the descriptor reuses the NAME heads `export` and
+        // `name`, which are SHARED with the ML value-form (`export`) and doc-form (`name`) vocabularies and
+        // disambiguated by CONTAINER only. decode_component_signature must therefore dispatch from the TYPED
+        // ROOT (`component-signature`), never head-only — so a naked `(export …)` or `(name …)` frame
+        // presented AS the root is a Shape reject, NOT mis-decoded as a signature. This test ENFORCES the
+        // container-aware contract the doc comment documents: a future refactor that made decode head-only
+        // (or accepted a bare export/name root) would flip these to a wrong-decode and fail here.
+        let mut b = Builder::new();
+        let h = b.name("export");
+        let inner = str_leaf(&mut b, "inc");
+        let root = b.list(vec![h, inner]);
+        let bare_export = codec::encode(&b.finish(root));
+        assert!(
+            matches!(
+                decode_component_signature(&bare_export),
+                Err(EventAstError::Shape(_))
+            ),
+            "a bare (export …) at the root must be a Shape reject — decode keys on the component-signature \
+             root, not the shared `export` head"
+        );
+
+        let mut b2 = Builder::new();
+        let h2 = b2.name("name");
+        let v2 = str_leaf(&mut b2, "inc");
+        let root2 = b2.list(vec![h2, v2]);
+        let bare_name = codec::encode(&b2.finish(root2));
+        assert!(
+            matches!(
+                decode_component_signature(&bare_name),
+                Err(EventAstError::Shape(_))
+            ),
+            "a bare (name <str>) at the root (shared with doc-form) must be a Shape reject, not conflated"
+        );
     }
 
     #[test]
