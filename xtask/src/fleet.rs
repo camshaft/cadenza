@@ -7845,9 +7845,13 @@ fn gate_local(arch: &str) {
 /// gate keys off elapsed seconds, so a slower/faster loop self-adjusts. v-nix-agreed default (2026-08-08).
 const GC_MIN_INTERVAL_SECS: u64 = 3 * 60 * 60;
 
-/// The stable ABSOLUTE warm-root dir passed to `warm-keep`/`gc` as `CDZ_WARM_ROOT`. It MUST live OUTSIDE
-/// any worktree (a repo-relative root silently dangles its indirect GC-roots when the worktree moves —
-/// the silent-unroot failure v-nix hit), so the warm layer stays rooted across worktree churn.
+/// The stable ABSOLUTE warm-root dir the runner passes to `warm-keep` as `CDZ_WARM_ROOT`. It MUST live
+/// OUTSIDE any worktree (a repo-relative root silently dangles its indirect GC-roots when the worktree
+/// moves — the silent-unroot failure v-nix hit), so the warm layer stays rooted across worktree churn.
+/// warm-keep self-defaults to `$HOME/.cdz-warm-roots` (also safe); the runner sets it EXPLICITLY (the
+/// flake's documented "host GC runner sets it") so the rooted path is fixed regardless of the loop's
+/// `$HOME`. Only `warm-keep` reads it — `gc` ignores it (a plain `nix store gc` preserves ALL registered
+/// GC-roots wherever they live), so the runner does NOT pass it to the gc call.
 const GC_WARM_ROOT: &str = "/local/home/bythewc/.cdz-warm-roots";
 
 /// Cap a single GC reclaim so a large backlog can't stall a pr-sync tick (`CDZ_GC_MAX_FREED`, bytes).
@@ -7885,11 +7889,14 @@ fn maybe_run_gc(fleet: &Fleet) {
     eprintln!(
         "gc-hook: {GC_MIN_INTERVAL_SECS}s elapsed → warm-keep then gc (CDZ_WARM_ROOT={GC_WARM_ROOT})"
     );
-    // 1. warm-keep FIRST — re-pin the current warm layer as GC-roots before reclaiming.
+    // 1. warm-keep FIRST — re-pin the current warm layer as GC-roots before reclaiming. Run from the
+    //    CALLER's cwd (pr-sync's worktree, which has the flake) — NOT `fleet.repo`, the bare hub root that
+    //    has NO flake.nix (`nix run .#warm-keep` there errors "not part of a flake", so gc would skip
+    //    forever and the store never gets reclaimed — pr-sync caught this). Mirrors `run_gate_local`,
+    //    which sets no current_dir and works for exactly this reason.
     let warm = Command::new(&nix_bin)
         .args(["run", ".#warm-keep"])
         .env("CDZ_WARM_ROOT", GC_WARM_ROOT)
-        .current_dir(&fleet.repo)
         .status();
     match warm {
         Ok(s) if s.success() => {}
@@ -7906,12 +7913,12 @@ fn maybe_run_gc(fleet: &Fleet) {
             return;
         }
     }
-    // 2. gc — reclaim dead paths, bounded, preserving the roots warm-keep just pinned.
+    // 2. gc — reclaim dead paths, bounded. Same caller-cwd (flake-bearing worktree) fix as warm-keep.
+    //    `nix store gc` preserves ALL registered GC-roots (the ones warm-keep just pinned included), so
+    //    gc needs NO CDZ_WARM_ROOT — only the reclaim bound.
     let gc = Command::new(&nix_bin)
         .args(["run", ".#gc"])
-        .env("CDZ_WARM_ROOT", GC_WARM_ROOT)
         .env("CDZ_GC_MAX_FREED", GC_MAX_FREED_BYTES)
-        .current_dir(&fleet.repo)
         .status();
     match gc {
         Ok(s) if s.success() => {
