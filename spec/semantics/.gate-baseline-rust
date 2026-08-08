@@ -6362,3 +6362,5 @@ pass	ms4 the C arm RE-MATCHES its own payload's parity — a nested pure match i
 pass	fa1 a FOLD-style accumulator threads through a performing recursion — acc doubles then absorbs each level's draw
 pass	fa2 TWO accumulators through one performing recursion — running sum and prefix-sum-of-prefix-sums stay in step with the draws
 pass	fa3 each fold level draws TWICE and mixes them asymmetrically — 10*first + second pins the intra-level draw order
+pass	fa4 the accumulator IS a sum — each level's draw moves it around an A->B->C->A cycle capturing payloads on the way
+pass	fa5 a TWO-effect fold — each level's step multiplies a draw from each thread, both threads advancing independently
