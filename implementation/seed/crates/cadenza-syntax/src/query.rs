@@ -3351,6 +3351,41 @@ pub mod lint {
             }
             None
         }
+
+        /// The lint levels declared by a program's MODULE DIRECTIVES — the top-level `(allow NAME)` /
+        /// `(warn NAME)` / `(deny NAME)` forms (DESIGN-cadenza-lint §3). Scans the direct children of the
+        /// program root (a `(do …)` / `(module …)` wrapper, or a single top-level form) for those three
+        /// heads, each with one bare-name argument (a lint name or a group prefix). A later directive of
+        /// the same key wins (last-write). Unknown heads / malformed directives are IGNORED here — a lint
+        /// driver never rejects (it only reports); a program that is also COMPILED validates the directive
+        /// registry separately (rcdzc, CDZ0601). This is the MODULE layer; the CLI layer overlays ON TOP
+        /// via [`Self::overlay`] (CLI wins), matching the §3 order CLI > module > rule-default.
+        pub fn from_module_directives(program: &Tree) -> LintLevels {
+            let mut levels = LintLevels::new();
+            // The forms to scan: the root's direct children (unwrapping a `(do …)`/`(module …)` head), or
+            // the root itself when it is a single top-level form.
+            let forms: &[Tree] = match program {
+                Tree::List(items, _) => items,
+                Tree::Atom(_, _) => std::slice::from_ref(program),
+            };
+            for form in forms {
+                let Tree::List(parts, _) = form else { continue };
+                let (Some(head), Some(arg)) = (
+                    parts.first().and_then(|h| h.as_name()),
+                    parts.get(1).and_then(|a| a.as_name()),
+                ) else {
+                    continue;
+                };
+                // Exactly `(HEAD NAME)` — a directive with more/fewer args is not one of ours; skip it.
+                if parts.len() != 2 {
+                    continue;
+                }
+                if let Some(level) = LintLevel::parse(head) {
+                    levels.set(arg.to_string(), level);
+                }
+            }
+            levels
+        }
     }
 
     /// One reported diagnostic: the rule's message + severity, and the matched node's span (if the
@@ -6009,6 +6044,78 @@ mod tests {
                 diags[0].severity,
                 Severity::Info,
                 "default severity preserved"
+            );
+        }
+
+        // --- cadenza-lint I1 (module directives): (allow/warn/deny NAME) read from the program. ---
+
+        #[test]
+        fn module_directives_read_allow_warn_deny() {
+            let program = subj(
+                "(do (allow idiomatic/if-bool) (deny naming/camel-case) (warn idiomatic/redundant-let) \
+                 (def (main) 0) (export main))",
+            );
+            let levels = LintLevels::from_module_directives(&program);
+            assert_eq!(
+                levels.effective("idiomatic/if-bool"),
+                Some(LintLevel::Allow)
+            );
+            assert_eq!(levels.effective("naming/camel-case"), Some(LintLevel::Deny));
+            assert_eq!(
+                levels.effective("idiomatic/redundant-let"),
+                Some(LintLevel::Warn)
+            );
+            // An un-mentioned lint has no override.
+            assert_eq!(levels.effective("idiomatic/other"), None);
+        }
+
+        #[test]
+        fn a_module_group_directive_applies_to_the_group() {
+            let program = subj("(do (allow idiomatic) (def (main) 0) (export main))");
+            let levels = LintLevels::from_module_directives(&program);
+            assert_eq!(
+                levels.effective("idiomatic/if-bool"),
+                Some(LintLevel::Allow)
+            );
+            assert_eq!(levels.effective("naming/camel-case"), None);
+        }
+
+        #[test]
+        fn module_directives_ignore_unknown_heads_and_malformed_forms() {
+            // A lint driver never rejects — an unknown head (`pragma`, `def`), a bad level name, or a
+            // directive with the wrong arity is simply not a lint-level directive and is skipped.
+            let program = subj(
+                "(do (pragma default-int Int64) (allow) (allow a b) (bogus idiomatic/x) \
+                 (def (main) 0) (export main))",
+            );
+            let levels = LintLevels::from_module_directives(&program);
+            assert_eq!(levels.effective("idiomatic/x"), None, "bogus head ignored");
+            assert_eq!(
+                levels.effective("a"),
+                None,
+                "wrong-arity (allow a b) ignored"
+            );
+        }
+
+        #[test]
+        fn a_module_only_wrapped_program_is_scanned() {
+            // A `(module NAME …)` wrapper's directives are read the same as a `(do …)` program's.
+            let program = subj("(module m (deny idiomatic/if-bool) (def (main) 0))");
+            let levels = LintLevels::from_module_directives(&program);
+            assert_eq!(levels.effective("idiomatic/if-bool"), Some(LintLevel::Deny));
+        }
+
+        #[test]
+        fn cli_overlay_wins_over_a_module_directive() {
+            // module denies; CLI allows on top → the CLI level wins (CLI > module).
+            let program = subj("(do (deny idiomatic/if-bool) (def (main) 0) (export main))");
+            let mut levels = LintLevels::from_module_directives(&program);
+            let mut cli = LintLevels::new();
+            cli.set("idiomatic/if-bool", LintLevel::Allow);
+            levels.overlay(&cli);
+            assert_eq!(
+                levels.effective("idiomatic/if-bool"),
+                Some(LintLevel::Allow)
             );
         }
     }
