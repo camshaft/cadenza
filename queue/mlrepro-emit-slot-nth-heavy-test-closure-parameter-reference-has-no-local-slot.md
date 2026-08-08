@@ -50,3 +50,37 @@ module would hit it too.
 rcdzc backend local-slot allocation for closures/`@test` thunks — a param reference (`su`, the
 threaded Subst) resolves to no local slot when the emit unit's slot pressure crosses some bound.
 Routed to the compiler backend owner (v-compiler-perf / rcdzc backend) — NOT a compiler-ml logic bug.
+
+---
+
+## SHARPER ROOT CAUSE (ARC-B5 update, 2026-08-08) — it's CROSS-MODULE CALLS to a Subst-threading fn, not test count
+
+Building ARC-B5 (hm-recsolve.cdz, a connected constraint solver over unify-subst) I isolated the trigger far more precisely — the "Nth heavy closure" framing above was a symptom, not the cause:
+
+**A NEW module that imports `unify-ty-su` (from unify-subst.cdz) and calls it EVEN ONCE, non-recursively, fails `cdz test` with "parameter reference has no local slot" — while `check` passes and unify-subst.cdz's OWN tests (same function, same-module callers) pass.**
+
+Minimal repro (fails):
+```
+import { Ty } from "ty"
+import { Subst, subst-empty } from "subst"
+import { unify-ty-su } from "unify-subst"
+def solve1(su: Subst, a: Ty, b: Ty) = unify-ty-su(su, a, b)
+import { ty-int64 } from "ty"
+@test
+def rs-one() = match solve1(subst-empty(), ty-int64(), ty-int64()) with
+  | Option.Some(_) => unit | Option.None(_) => trap("e")
+export { solve1 }
+```
+- Same-module call to `unify-ty-su` (its own tests) → EMITS FINE.
+- Cross-module call (the above) → "parameter reference has no local slot".
+- Not the `Constraint` sum wrapper (fails with a plain `Tuple(Ty,Ty)` too), not recursion (fails non-recursive), not test count (fails at ONE test / ONE call).
+
+**Hypothesis:** local-slot allocation for a CROSS-MODULE call to a function that both takes AND returns a record/sum threading a param (`Subst -> ... -> Option(Subst)`) — the callee gets inlined/specialized across the module boundary and a param reference resolves to no local slot. Likely in rcdzc backend's cross-module inline/specialize + slot assignment.
+
+## IMPACT — this BLOCKS the HM live-wire (operator's headline)
+ARC-B1..B4 (subst/hm-vars/unify-subst/hm-scheme) all pass because their tests call their functions
+IN THE SAME MODULE. But the whole point of the HM arc is to have OTHER modules (hm-recsolve, and
+ultimately the infer pipeline) CALL `unify-ty-su`/`instantiate`/`generalize` — and that cross-module
+call is exactly what breaks emit. So B5 and the infer→unify-subst live-wire are BLOCKED until this is
+fixed. Requesting priority from the backend owner (v-compiler-perf / rcdzc backend): this is not a
+test-ergonomics nuisance, it gates the operator's "scale to the next feature set with HM" deliverable.
