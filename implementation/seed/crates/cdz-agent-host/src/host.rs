@@ -1872,7 +1872,7 @@ mod tests {
     /// Env-gated skip-on-unset (mirrors the kernel's `reducer_cadenza_b1_e2e`): a bare `cargo test` with no
     /// nix env stays green; CI (v-nix, per the #2249 b1 pattern) sets both. Two vars are REQUIRED together —
     /// - `GENESIS_REDUCER_COMPONENT` — the compiled `reducer-cadenza-genesis` component bytes.
-    /// - `CDZ_STORE` — the hash-keyed `<sha256hex>.wasm` component store; the genesis reducer imports the
+    /// - `CDZ_STORE` — the hash-keyed `<blake3hex>.wasm` component store; the genesis reducer imports the
     ///   value-heap runtime (it lowers compounds to handles), whose OWN transitive `cadenza:nfc/normalize`
     ///   the §23 compose resolves by name from this store. Set one without the other and we FAIL LOUD (a
     ///   half-wired CI env must not masquerade as a clean skip).
