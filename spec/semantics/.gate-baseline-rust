@@ -6415,3 +6415,8 @@ pass	tq2 the Q-shadow's SEED mixes P and Q draws — both outer threads advance 
 pass	tq3 a Q-shadow wraps only the MIDDLE argument of a pure call — its neighbors dispatch to the outer P and Q frames
 pass	tq4 BOTH effects shadowed in one inner region — two fresh threads run their course, both outer threads untouched
 pass	tq5 a DEF installs the Q-shadow and draws P from inside it — the P dispatch crosses the def AND the shadow to the caller's frame
+pass	mr1 mutual recursion drawing at EVERY level — even levels weight their draw x10, odd levels x1
+pass	mr2 the mutual pair draws from DIFFERENT effects — ev advances P, od advances Q, both threads interleave down the descent
+pass	mr3 the NEXT callee in the mutual group is picked by draw parity — the descent path itself follows the thread
+pass	mr4 an ACCUMULATOR threads the mutual pair — ev doubles it plus a draw, od triples it plus a draw, alternating scales
+pass	mr5 TWENTY alternating mutual levels with the scaling accumulator — depth stress on the cross-function fold

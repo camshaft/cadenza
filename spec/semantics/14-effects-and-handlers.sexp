@@ -18787,3 +18787,101 @@
   (call   main (: 5 Int64)) (output (: 9118 Int64))
   (call   main (: 0 Int64)) (output (: 9103 Int64))
   (call   main (: -6 Int64)) (output (: 9085 Int64)))
+
+;; ── mr: MUTUAL recursion drawing at every level ──────────────────────────────
+;; The landed mutual pin performs only at the BASE; these draw per level. mr1
+;; alternates ev/od with x10/x1 weights; mr2 splits the pair across TWO
+;; effects (ev advances P, od advances Q); mr3 picks the NEXT callee by draw
+;; parity (the descent path follows the thread, three-way group); mr4 threads
+;; an ACCUMULATOR (ev doubles + draw, od triples + draw); mr5 stresses depth
+;; at TWENTY alternating levels. A SECOND entry into the pair under one
+;; handler remains the documented decline (fold serves one mutual chain);
+;; witness banked.
+
+(case "mr1 mutual recursion drawing at EVERY level — even levels weight their draw x10, odd levels x1"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (def (ev (: k Int64))
+              (if (<= k 0) 0 (+ (* 10 (E.next)) (od (- k 1)))))
+            (def (od (: k Int64))
+              (if (<= k 0) 0 (+ (E.next) (ev (- k 1)))))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1))))
+                (ev 4)))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 68 Int64))
+  (call   main (: 0 Int64)) (output (: 24 Int64))
+  (call   main (: -3 Int64)) (output (: -42 Int64)))
+
+(case "mr2 the mutual pair draws from DIFFERENT effects — ev advances P, od advances Q, both threads interleave down the descent"
+  (input  (do
+            (effect P (op next (-> Int64)))
+            (effect Q (op next (-> Int64)))
+            (def (ev (: k Int64))
+              (if (<= k 0) 0 (+ (* 10 (P.next)) (od (- k 1)))))
+            (def (od (: k Int64))
+              (if (<= k 0) 0 (+ (Q.next) (ev (- k 1)))))
+            (def (main (: n Int64))
+              (handle P n
+                ((next () s (resume s (+ s 1))))
+                (handle Q 100
+                  ((next () t (resume t (+ t 10))))
+                  (ev 4))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 260 Int64))
+  (call   main (: 0 Int64)) (output (: 220 Int64))
+  (call   main (: -5 Int64)) (output (: 120 Int64)))
+
+(case "mr3 the NEXT callee in the mutual group is picked by draw parity — the descent path itself follows the thread"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (def (walk (: k Int64))
+              (if (<= k 0)
+                  0
+                  (let ((d (E.next)))
+                    (if (= (% d 2) 0)
+                        (+ (* 10 d) (a (- k 1)))
+                        (+ d (b (- k 1)))))))
+            (def (a (: k Int64)) (+ 1000 (walk k)))
+            (def (b (: k Int64)) (+ 2000 (walk k)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1))))
+                (walk 3)))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 4063 Int64))
+  (call   main (: 1 Int64)) (output (: 5024 Int64))
+  (call   main (: -4 Int64)) (output (: 3937 Int64)))
+
+(case "mr4 an ACCUMULATOR threads the mutual pair — ev doubles it plus a draw, od triples it plus a draw, alternating scales"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (def (ev (: k Int64) (: acc Int64))
+              (if (<= k 0) acc (od (- k 1) (+ (* 2 acc) (E.next)))))
+            (def (od (: k Int64) (: acc Int64))
+              (if (<= k 0) acc (ev (- k 1) (+ (* 3 acc) (E.next)))))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1))))
+                (ev 4 0)))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 71 Int64))
+  (call   main (: 0 Int64)) (output (: 15 Int64))
+  (call   main (: -3 Int64)) (output (: -69 Int64)))
+
+(case "mr5 TWENTY alternating mutual levels with the scaling accumulator — depth stress on the cross-function fold"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (def (ev (: k Int64) (: acc Int64))
+              (if (<= k 0) acc (od (- k 1) (+ (* 2 acc) (E.next)))))
+            (def (od (: k Int64) (: acc Int64))
+              (if (<= k 0) acc (ev (- k 1) (+ (* 3 acc) (E.next)))))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1))))
+                (ev 20 0)))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 79815335 Int64))
+  (call   main (: 0 Int64)) (output (: 31442395 Int64))
+  (call   main (: -10 Int64)) (output (: -452287005 Int64)))
