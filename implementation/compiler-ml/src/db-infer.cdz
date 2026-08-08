@@ -11,13 +11,11 @@
 /// semantics either way).
 import { Tree } from "parse-db"
 
-import { infer-node, ground-deferred } from "infer-db"
-import { Typed } from "typed"
-import { Ty } from "ty"
-// ARC-A2: the Db types column now stores `Map(Int64, Ty)`; db-infer's raw-column ops bridge at the column
-// boundary (ty-col-to-typed / typed-col-to-ty) so infer-node + downstream consumers stay on `Typed` this
-// slice. TEMPORARY — removed once infer-db/lower-db migrate to Ty.
-import { ty-col-to-typed, ty-to-typed } from "ty-bridge"
+import { infer-node, ground-deferred, int-parts-of } from "infer-db"
+import { Ty, is-int-ty } from "ty"
+// ARC-A2 complete: the Db types column stores `Map(Int64, Ty)` and every consumer (infer/lower/demand) is
+// Ty-native, so db-infer's queries return `Ty` directly — the Typed edge-bridges (db-typed-col / typed-of-db)
+// and the ty-bridge import are gone.
 
 import { Db, db-tree, typed-filled } from "db"
 
@@ -32,14 +30,8 @@ def db-resolved-col(db: Db) = match db with
 def db-ty-col(db: Db) = match db with
   | Db.Db(_, _, tc, _) => tc
 
-/// The types column of a Db, AS `Map(Int64, Typed)` — ARC-A2 edge-bridge: the column stores `Ty`, this
-/// converts it back to `Typed` for un-migrated consumers (db-demand/lower-node/bin-type read a Typed column).
-def db-typed-col(db: Db) = match db with
-  | Db.Db(_, _, tc, _) => ty-col-to-typed(tc)
-
-/// Merge a `Ty` type column into the Db's types column — ARC-A2: infer-node now produces a `Map(Int64, Ty)`
-/// directly (its typing core migrated to Ty), so this stores it with no conversion. (db-typed-col still bridges
-/// BACK to Typed for the not-yet-migrated consumers db-demand/db-lower — removed in their follow slice.)
+/// Merge a `Ty` type column into the Db's types column — infer-node produces a `Map(Int64, Ty)` directly, so
+/// this stores it with no conversion.
 def merge-typed(db: Db, tcol: Map(Int64, Ty)) = match db with
   | Db.Db(t, rc, _, cc) => Db.Db(t, rc, tcol, cc)
 
@@ -52,21 +44,10 @@ def infer-into-db(db: Db, root: Int64) =
   merge-typed(db1, tcol)
 
 /// The INFER producer read (rcdzc `type_of(db, id)`): demand the type fact at `id`, filling resolve+types
-/// first. `(db', Option(Typed))` — updated Db + the fact (`None` = no fact; filled `TErr` = ill-typed decline).
-def typed-of-db(db: Db, root: Int64, id: Int64) =
-  let db1 = infer-into-db(db, root) in
-  // item-3 HM: GROUND the deferred-int sentinel (TIntW(_,0)) to Int64 at the query boundary — an unconstrained
-  // literal's default (matches type-at). The raw column may hold a deferred fact for a literal/var that never
-  // met a narrow sibling; the reported type never leaks width 0.
-  (db1, (match Map.lookup(db-ty-col(db1), id) with
-          | Option.Some(t) => Option.Some(ty-to-typed(ground-deferred(t)))   // ground (Ty) then bridge to Typed for callers
-          | Option.None(_) => Option.None(unit)))
-
-/// The Ty-NATIVE infer query (ARC-A2: the sibling of `typed-of-db` for consumers that have migrated off Typed).
-/// Same demand — infer into the Db, read the types column at `id`, GROUND the deferred-int axis at the query
-/// boundary — but returns the raw grounded `Ty` (no ty-to-typed bridge). db-demand (now Ty-native) uses this for
-/// its demand-vs-walk differential so both sides compare `Ty` via `ty-eq`. (`typed-of-db` stays for db-lower, the
-/// last Typed consumer — its follow slice.)
+/// first. `(db', Option(Ty))` — updated Db + the fact (`None` = no fact; filled `TyErr` = ill-typed decline).
+/// GROUNDs the deferred-int axis (TyInt(SignDef/WidthDef)) to Int64 at the query boundary — an unconstrained
+/// literal's default (matches type-at); the raw column may hold a deferred fact for a literal/var that never
+/// met a narrow sibling, so the reported type never leaks a deferred axis.
 def ty-of-db(db: Db, root: Int64, id: Int64) =
   let db1 = infer-into-db(db, root) in
   (db1, (match Map.lookup(db-ty-col(db1), id) with
@@ -96,22 +77,21 @@ def di-infer-fills-both-columns() =
 
 @test
 def di-root-is-int64() =
-  // the root of `let x = 2 in x` types to Int64 (TIntW(true,64)).
+  // the root of `let x = 2 in x` types to Int64 (TyInt signed width 64).
   match let-db() with
-    | (root, d0) => match typed-of-db(d0, root, root) with
-      | (_, Option.Some(Typed.TIntW(s, w))) => (if s then
-        if w == 64 then unit else trap("width 64")
-      else
-        trap("signed"))
+    | (root, d0) => match ty-of-db(d0, root, root) with
+      | (_, Option.Some(t)) => (if is-int-ty(t) then (match int-parts-of(t) with
+          | (s, w) => (if s then (if w == 64 then unit else trap("width 64")) else trap("signed")))
+        else trap("root has an int type fact"))
       | _ => trap("root has an Int64 type fact")
 
 @test
 def di-unbound-is-terr() =
-  // a bare unbound var `y` types to a FILLED TErr (poison-as-filled — a determined ill-typed decline).
+  // a bare unbound var `y` types to a FILLED TyErr (poison-as-filled — a determined ill-typed decline).
   match parse-tokens([Tok.TName(9)]) with
-    | (root, tree) => match typed-of-db(db-of(tree), root, root) with
-      | (_, Option.Some(Typed.TErr)) => unit
-      | _ => trap("unbound var types to a filled TErr")
+    | (root, tree) => match ty-of-db(db-of(tree), root, root) with
+      | (_, Option.Some(Ty.TyErr)) => unit
+      | _ => trap("unbound var types to a filled TyErr")
 
 @test
 def di-infer-reuses-resolved-not-reresolve() =
@@ -125,10 +105,10 @@ def di-infer-reuses-resolved-not-reresolve() =
 
 @test
 def di-comparison-is-bool() =
-  // `(1 < 2)` types to TBool at the root.
+  // `(1 < 2)` types to TyBool at the root.
   match parse-tokens([Tok.TNum(1), Tok.TOp(60), Tok.TNum(2)]) with
-    | (root, tree) => match typed-of-db(db-of(tree), root, root) with
-      | (_, Option.Some(Typed.TBool)) => unit
-      | _ => trap("1 < 2 types to TBool")
+    | (root, tree) => match ty-of-db(db-of(tree), root, root) with
+      | (_, Option.Some(Ty.TyBool)) => unit
+      | _ => trap("1 < 2 types to TyBool")
 
-export { infer-into-db, typed-of-db, ty-of-db, db-resolved-col, db-typed-col, db-ty-col }
+export { infer-into-db, ty-of-db, db-resolved-col, db-ty-col }

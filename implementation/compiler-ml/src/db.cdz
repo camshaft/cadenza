@@ -23,17 +23,11 @@ import { Tree } from "parse-db"
 
 import { Resolved } from "resolve-db"
 
-import { Typed } from "typed"
-
 import { Ty } from "ty"
 
-// ARC-A2 MIGRATION BRIDGE (TEMPORARY — deleted in the final A2 slice): the types column now stores the
-// canonical `Ty` (the single-live-type-universe target), but the pipeline consumers (infer-db/db-demand/
-// lower-db/db-state) still speak `Typed`. `fill-typed`/`require-typed` keep their `Typed` signatures by
-// bridging Typed<->Ty at the column edge, so THIS slice swaps the column's storage type WITHOUT touching any
-// consumer — they migrate to the `Ty`-native `fill-ty`/`require-ty` file-by-file in later A2 slices, and this
-// bridge (+ typed.cdz + ty-bridge.cdz) is removed once the last consumer is off `Typed`.
-import { typed-to-ty, ty-to-typed } from "ty-bridge"
+// ARC-A2 complete: the types column stores the canonical `Ty` (the single live type universe) and every
+// consumer (infer-db/db-demand/lower-db/db-state) is Ty-native, so the Typed<->Ty edge-bridge
+// (fill-typed/require-typed) + typed.cdz + ty-bridge.cdz are gone.
 
 import { Core } from "lower-db"
 
@@ -84,24 +78,10 @@ def fill-ty(db: Db, id: Int64, ty: Ty) =
   Db.Db(t, rc, Map.insert(tc, id, ty), cc)
 
 /// REQUIRE the `Ty` fact at `id` (`Some` filled — incl. a filled `TyErr` decline — else `None`). The
-/// `Ty`-native reader; consumers migrate to this off the `Typed` bridge below.
+/// `Ty`-native reader — every consumer is Ty-native now.
 def require-ty(db: Db, id: Int64) =
   let Db.Db(_, _, tc, _) = db in
   Map.lookup(tc, id)
-
-/// FILL the type fact for `id` — ARC-A2 EDGE-BRIDGE (TEMPORARY): keeps the `Typed` signature for un-migrated
-/// consumers by converting `Typed`→`Ty` at the column edge. Delegates to the `Ty`-native `fill-ty`. Removed
-/// once every consumer calls `fill-ty` directly (final A2 slice).
-def fill-typed(db: Db, id: Int64, ty: Typed) =
-  fill-ty(db, id, typed-to-ty(ty))
-
-/// REQUIRE the type fact at `id` as `Typed` — ARC-A2 EDGE-BRIDGE (TEMPORARY): reads the stored `Ty` and
-/// converts back to `Typed` for un-migrated consumers (`ty-to-typed` grounds any deferred axis, matching the
-/// pre-A2 behavior where the column already held grounded pipeline types). `Some(Typed)` filled else `None`.
-def require-typed(db: Db, id: Int64) =
-  match require-ty(db, id) with
-    | Option.Some(ty) => Option.Some(ty-to-typed(ty))
-    | Option.None(_) => Option.None(unit)
 
 // ---- the CORE column (filled by lower) --------------------------------------------------------------
 /// FILL the core fact for `id`.
@@ -139,7 +119,7 @@ def db-empty-columns-absent() =
   // a fresh Db has every derived column Absent: require → None (absent ≠ a value).
   let db = sample-db() in
   match require-resolved(db, 0) with
-    | Option.None(_) => (match require-typed(db, 0) with
+    | Option.None(_) => (match require-ty(db, 0) with
       | Option.None(_) => (match require-core(db, 0) with
         | Option.None(_) => unit
         | Option.Some(_) => trap("core absent")
@@ -150,29 +130,29 @@ def db-empty-columns-absent() =
 
 @test
 def db-fill-then-require-typed() =
-  // fill the types column at id 0 with Int64, require it back → Some(TIntW(true,64)).
-  let db = fill-typed(sample-db(), 0, Typed.TIntW(true, 64)) in
-  match require-typed(db, 0) with
-    | Option.Some(Typed.TIntW(s, w)) => (if s and w == 64 then unit else trap("Int64 fact"))
-    | _ => trap("filled type fact requires Some(TIntW)")
+  // fill the types column at id 0 with Int64, require it back → Some(TyInt signed width 64).
+  let db = fill-ty(sample-db(), 0, ty-int64()) in
+  match require-ty(db, 0) with
+    | Option.Some(Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w)))) => (if w == 64 then unit else trap("Int64 fact"))
+    | _ => trap("filled type fact requires Some(TyInt)")
 
 @test
 def db-require-absent-id-is-none() =
   // filling id 0 leaves id 99 Absent — require declines on the unfilled slot (never a default).
-  let db = fill-typed(sample-db(), 0, Typed.TBool) in
-  match require-typed(db, 99) with
+  let db = fill-ty(sample-db(), 0, Ty.TyBool) in
+  match require-ty(db, 99) with
     | Option.None(_) => unit
     | Option.Some(_) => trap("unfilled id 99 is Absent → None")
 
 @test
 def db-poison-is-a-filled-value() =
-  // a DECLINE is carried as a FILLED fact (TErr), DISTINCT from Absent: require → Some(TErr), not None.
+  // a DECLINE is carried as a FILLED fact (TyErr), DISTINCT from Absent: require → Some(TyErr), not None.
   // This is the poison-as-filled-value discipline — a decline is a determined answer, not "unanswered".
-  let db = fill-typed(sample-db(), 0, Typed.TErr) in
-  match require-typed(db, 0) with
-    | Option.Some(Typed.TErr) => unit
+  let db = fill-ty(sample-db(), 0, Ty.TyErr) in
+  match require-ty(db, 0) with
+    | Option.Some(Ty.TyErr) => unit
     | Option.None(_) => trap("a filled poison is NOT Absent — it's a determined decline")
-    | Option.Some(_) => trap("poison fact is TErr")
+    | Option.Some(_) => trap("poison fact is TyErr")
 
 @test
 def db-fill-once-monotone-columns-independent() =
@@ -182,7 +162,7 @@ def db-fill-once-monotone-columns-independent() =
   let db2 = fill-core(db1, 0, Core.CNum(5, true, 64)) in
   match require-resolved(db2, 0) with
     | Option.Some(_) => (match require-core(db2, 0) with
-      | Option.Some(_) => (match require-typed(db2, 0) with
+      | Option.Some(_) => (match require-ty(db2, 0) with
         | Option.None(_) => unit
         | Option.Some(_) => trap("types still Absent")
       )
@@ -193,7 +173,7 @@ def db-fill-once-monotone-columns-independent() =
 @test
 def db-fill-count-tracks-memo() =
   // the filled-count grows as facts memoize: 0 → fill two type facts → 2.
-  let db = fill-typed(fill-typed(sample-db(), 0, Typed.TBool), 1, Typed.TBool) in
+  let db = fill-ty(fill-ty(sample-db(), 0, Ty.TyBool), 1, Ty.TyBool) in
   if typed-filled(db) == 2 then
     if resolved-filled(db) == 0 then unit else trap("resolved still 0")
   else
@@ -201,49 +181,39 @@ def db-fill-count-tracks-memo() =
 
 @test
 def db-fill-is-a-raw-overwrite-not-fill-once() =
-  // TRUTHFUL-BEHAVIOR pin (the doc claimed "fill-once, monotone" — corrected): the low-level `fill-typed` is
-  // a plain Map.insert that OVERWRITES a filled slot (fill @0 = TBool, then fill @0 = Int64 → the slot is now
+  // TRUTHFUL-BEHAVIOR pin (the doc claimed "fill-once, monotone" — corrected): the low-level `fill-ty` is
+  // a plain Map.insert that OVERWRITES a filled slot (fill @0 = TyBool, then fill @0 = Int64 → the slot is now
   // Int64, count stays 1). The FILL-ONCE discipline is NOT here — it lives in the demand producer, which
   // guards on require-* (see db-demand's dd-hit-does-not-recompute-poison). Pins the real contract: callers
   // MUST route through a demand-* producer, never call fill-* on a slot they haven't required Absent.
-  let db1 = fill-typed(sample-db(), 0, Typed.TBool) in
-  let db2 = fill-typed(db1, 0, Typed.TIntW(true, 64)) in
-  match require-typed(db2, 0) with
-    | Option.Some(Typed.TIntW(s, w)) => (if s and w == 64 then
+  let db1 = fill-ty(sample-db(), 0, Ty.TyBool) in
+  let db2 = fill-ty(db1, 0, ty-int64()) in
+  match require-ty(db2, 0) with
+    | Option.Some(Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w)))) => (if w == 64 then
       if typed-filled(db2) == 1 then unit else trap("overwrite keeps count 1, not 2")
     else
       trap("overwritten to Int64"))
-    | _ => trap("fill-typed OVERWROTE @0 to Int64 (raw insert, not fill-once)")
+    | _ => trap("fill-ty OVERWROTE @0 to Int64 (raw insert, not fill-once)")
 
-// ---- ARC-A2 tests: the column now stores `Ty`; the Ty-native accessors + the Typed edge-bridge ------
-import { IntType, Sign, Width } from "ty"
+// ---- ARC-A2 tests: the column stores the canonical `Ty`; the Ty-native accessors --------------------
+import { IntType, Sign, Width, ty-int64 } from "ty"
 
 @test
 def db-a2-ty-native-fill-require() =
-  // the column is now Ty-native: fill-ty a canonical Ty (UInt8 = TyInt(Unsigned, WFixed 8)), require-ty it back.
+  // the column is Ty-native: fill-ty a canonical Ty (UInt8 = TyInt(Unsigned, WFixed 8)), require-ty it back.
   let db = fill-ty(sample-db(), 0, Ty.TyInt(IntType.IntType(Sign.Unsigned, Width.WFixed(8)))) in
   match require-ty(db, 0) with
     | Option.Some(Ty.TyInt(IntType.IntType(Sign.Unsigned, Width.WFixed(w)))) => (if w == 8 then unit else trap("UInt8 stored/read as Ty"))
     | _ => trap("fill-ty/require-ty round-trips a canonical Ty")
 
 @test
-def db-a2-typed-bridge-over-ty-column() =
-  // the edge-bridge: fill via the Typed writer, read via the Ty-native reader — the stored value is the
-  // BRIDGED Ty (Typed.TBool → Ty.TyBool). Proves fill-typed converts at the edge, not stores Typed.
-  let db = fill-typed(sample-db(), 0, Typed.TBool) in
-  match require-ty(db, 0) with
-    | Option.Some(Ty.TyBool) => unit
-    | _ => trap("fill-typed bridged Typed.TBool → Ty.TyBool in the column")
-
-@test
-def db-a2-poison-survives-bridge-round-trip() =
-  // poison-as-filled-value holds across the bridge: fill-typed TErr → stored Ty.TyErr → require-typed back to
-  // Typed.TErr (a determined decline, NOT Absent). Guards the invariant under the A2 column-type swap.
+def db-a2-poison-is-a-determined-decline() =
+  // poison-as-filled-value: fill-ty TyErr → require-ty back to Ty.TyErr (a determined decline, NOT Absent).
   let db = fill-ty(sample-db(), 0, Ty.TyErr) in
-  match require-typed(db, 0) with
-    | Option.Some(Typed.TErr) => unit
+  match require-ty(db, 0) with
+    | Option.Some(Ty.TyErr) => unit
     | Option.None(_) => trap("filled Ty.TyErr is a determined decline, not Absent")
-    | Option.Some(_) => trap("Ty.TyErr bridges back to Typed.TErr")
+    | Option.Some(_) => trap("Ty.TyErr stored/read as-is")
 
 export {
   Db.*,
@@ -253,8 +223,6 @@ export {
   require-resolved,
   fill-ty,
   require-ty,
-  fill-typed,
-  require-typed,
   fill-core,
   require-core,
   resolved-filled,
