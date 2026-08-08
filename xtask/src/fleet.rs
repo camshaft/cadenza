@@ -5705,6 +5705,27 @@ fn tree_equal_reset_is_lossless(head_tree: &str, trunk_tree: &str) -> bool {
     !head_tree.is_empty() && !trunk_tree.is_empty() && head_tree == trunk_tree
 }
 
+/// In the content-identical fast-path, pick which ref to reset onto: prefer `origin/main` when its tree
+/// is byte-identical to HEAD's (the canonical PUBLISHED base — resetting there is provably lossless AND
+/// hands the agent the published sha instead of a possibly-stale local `trunk` ref that lagged/diverged
+/// from origin/main after a re-parent, corpus-bugfix's every-tick friction). Otherwise fall back to the
+/// local `trunk` ref (the prior behaviour): if origin/main's tree does NOT match HEAD (e.g. trunk is
+/// legitimately ahead of an un-pushed origin/main, or origin couldn't be read → empty), trunk is the
+/// right lossless target. Pure over the three trees so the target choice is unit-tested without git.
+fn content_identical_reset_target<'a>(
+    head_tree: &str,
+    trunk_tree: &str,
+    origin_main_tree: &str,
+) -> &'a str {
+    // Only reached when head_tree == trunk_tree already (the caller's lossless gate). Prefer origin/main
+    // strictly when it is ALSO tree-equal to HEAD — then it is the same content under the canonical sha.
+    if tree_equal_reset_is_lossless(head_tree, origin_main_tree) && origin_main_tree == trunk_tree {
+        "origin/main"
+    } else {
+        TRUNK
+    }
+}
+
 fn sync(fleet: &Fleet, force: bool) {
     let cwd = std::env::current_dir().expect("cwd");
     let git = |args: &[&str]| -> std::process::Output {
@@ -5816,16 +5837,26 @@ fn sync(fleet: &Fleet, force: bool) {
     let head_tree = git_stdout(&["rev-parse", &format!("{old_head}^{{tree}}")]);
     let trunk_tree = git_stdout(&["rev-parse", &format!("{TRUNK}^{{tree}}")]);
     if tree_equal_reset_is_lossless(&head_tree, &trunk_tree) {
-        if !git_ok(&["reset", "--hard", TRUNK]) {
-            eprintln!("fleet sync: `git reset --hard {TRUNK}` failed.");
+        // Prefer resetting onto origin/main when it is the SAME content under the canonical published sha
+        // (not the possibly-stale local `trunk` ref that lagged/diverged after a re-parent — corpus-bugfix's
+        // every-tick "reset onto a diverged base" friction). Lossless either way (trees are equal here).
+        let origin_main_tree = git_stdout(&["rev-parse", "origin/main^{tree}"]);
+        let target = content_identical_reset_target(&head_tree, &trunk_tree, &origin_main_tree);
+        if !git_ok(&["reset", "--hard", target]) {
+            eprintln!("fleet sync: `git reset --hard {target}` failed.");
             std::process::exit(1);
         }
-        let trunk_sha = git_stdout(&["rev-parse", "--short", "HEAD"]);
+        let new_sha = git_stdout(&["rev-parse", "--short", "HEAD"]);
+        let via = if target == "origin/main" {
+            "origin/main (canonical published base)"
+        } else {
+            "trunk"
+        };
         println!(
             "fleet sync: your branch is CONTENT-IDENTICAL to trunk (same tree) but trunk was re-parented \
-             under fresh shas → reset to trunk ({trunk_sha}) WITHOUT patch-id replay. Any 'unlanded' \
+             under fresh shas → reset to {via} ({new_sha}) WITHOUT patch-id replay. Any 'unlanded' \
              commit `git cherry` would flag is FOREIGN re-baked history your base carried, not yours — \
-             its content is already on trunk, so nothing is lost. Branch is now clean at trunk."
+             its content is already published, so nothing is lost. Branch is now clean at {via}."
         );
         return;
     }
@@ -12617,6 +12648,21 @@ mod tests {
         assert!(!tree_equal_reset_is_lossless("", ""));
         assert!(!tree_equal_reset_is_lossless("", t));
         assert!(!tree_equal_reset_is_lossless(t, ""));
+    }
+
+    #[test]
+    fn content_identical_reset_prefers_origin_main_when_it_is_the_same_content() {
+        let t = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"; // HEAD == trunk tree (the caller's gate)
+        // origin/main is the SAME content (tree-equal) → reset onto the canonical published sha, not the
+        // possibly-stale local trunk ref (corpus-bugfix's diverged-base friction).
+        assert_eq!(content_identical_reset_target(t, t, t), "origin/main");
+        // origin/main tree DIFFERS from HEAD/trunk (trunk is legitimately ahead of an un-pushed
+        // origin/main) → trunk is the right lossless target; do NOT reset onto behind-origin/main.
+        let other = "0000000000000000000000000000000000000000";
+        assert_eq!(content_identical_reset_target(t, t, other), TRUNK);
+        // origin unreadable (empty tree, e.g. git spawn failure / no origin/main) → fall back to trunk,
+        // never treat empty==empty as a match (fail closed, same discipline as the lossless gate).
+        assert_eq!(content_identical_reset_target(t, t, ""), TRUNK);
     }
 
     #[test]
