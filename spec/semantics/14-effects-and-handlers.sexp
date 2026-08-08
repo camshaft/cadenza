@@ -18275,3 +18275,59 @@
   (call   main (: 0 Int64)) (output (: 234 Int64))
   (call   main (: 1 Int64)) (output (: 434 Int64))
   (call   main (: -4 Int64)) (output (: -206 Int64)))
+
+;; ── mp: DRAW-KEYED Map operations ────────────────────────────────────────────
+;; Map keys and values decided by the thread. mp1's draws pick BOTH the insert
+;; key and the lookup key (hit-old, hit-updated, and miss each reachable by
+;; input); mp2's map VALUES are draws inserted in key order, weighted lookups
+;; replaying the sequence; mp3's draw picks the Map.remove key — lookups of
+;; all three keys show exactly one hole where the thread pointed.
+
+(case "mp1 draws pick the Map INSERT key and the LOOKUP key — hit-old, hit-updated, and miss all reachable by input"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1))))
+                (let ((k1 (+ (% (E.next) 3) 1)))
+                  (let ((k2 (+ (% (E.next) 4) 1)))
+                    (let ((m (Map.insert (Map.insert (Map.insert (Map.insert (map) 1 10) 2 20) 3 30) k1 77)))
+                      (+ (* 100 (match (Map.lookup m k2)
+                                  ((Some v) v)
+                                  ((None) -5)))
+                         (+ (* 10 k1) k2)))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 2012 Int64))
+  (call   main (: 3 Int64)) (output (: 7711 Int64))
+  (call   main (: 2 Int64)) (output (: -466 Int64)))
+
+(case "mp2 map VALUES are draws inserted in key order — weighted lookups replay the draw sequence through the map"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (def (get (: m (Map Int64 Int64)) (: k Int64))
+              (match (Map.lookup m k) ((Some v) v) ((None) -999)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 5))))
+                (let ((m (Map.insert (Map.insert (Map.insert (map) 1 (E.next)) 2 (E.next)) 3 (E.next))))
+                  (+ (* 100 (get m 1)) (+ (* 10 (get m 2)) (get m 3))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 60 Int64))
+  (call   main (: 1 Int64)) (output (: 171 Int64))
+  (call   main (: -2 Int64)) (output (: -162 Int64)))
+
+(case "mp3 a draw picks the Map.remove key — lookups of all three keys show exactly one hole where the thread pointed"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (def (get (: m (Map Int64 Int64)) (: k Int64))
+              (match (Map.lookup m k) ((Some v) v) ((None) -1)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1))))
+                (let ((k (+ (% (E.next) 3) 1)))
+                  (let ((m (Map.remove (Map.insert (Map.insert (Map.insert (map) 1 10) 2 20) 3 30) k)))
+                    (+ (* 100 (get m 1)) (+ (* 10 (get m 2)) (get m 3)))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 130 Int64))
+  (call   main (: 1 Int64)) (output (: 1020 Int64))
+  (call   main (: 2 Int64)) (output (: 1199 Int64)))
