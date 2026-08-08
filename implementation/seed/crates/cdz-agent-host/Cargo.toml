@@ -62,6 +62,17 @@ live-fs = []
 # egress, so this is not the same concern as `live-net`; gating it keeps the default build listener-free.
 admin = ["tokio/net", "tokio/io-util", "tokio/signal"]
 
+# `live-ws` gates THE OUTPOST's websocket LISTENER (O1b-2) — binds a TCP port, accepts peer websocket
+# connections, and moves opaque message frames in/out (surfacing them as `Inbound` events + the
+# `ws/connect`/`ws/disconnect` lifecycle the always-on `ws_socket` loop-core builds, routing via the
+# `WsControlOp` channel). OFF by default so the hermetic gate BINDS NO SOCKET + pulls no tokio `net` /
+# tungstenite tree (like `admin` gates its Unix-socket listener). The `ws/send` executor + the
+# `LiveWsConnRegistry` + the event builders stay always-on (hermetically tested); only this live LISTENER is
+# opt-in. PURE BYTE TRANSPORT (operator: transport-level only) — opaque frames, NO JSON-RPC/MCP framing
+# (userspace). Enables tokio `net`/`io-util`/`rt` + `tokio-tungstenite` (async websocket) + `futures-util`
+# (the `SinkExt`/`StreamExt` the split read/write halves use).
+live-ws = ["tokio/net", "tokio/io-util", "tokio/rt", "dep:tokio-tungstenite", "dep:futures-util"]
+
 # `metrics-export` gates the observability EXPORT emitter — the daemon periodically reports the metrics
 # registry to a backend (statsd first) over the network. OFF by default so the hermetic gate never sends UDP
 # / opens a socket: the metric RECORDING (registry Counters, always-on since seq-116) stays hermetic; only
@@ -192,6 +203,12 @@ s2n-quic-dc-metrics = { git = "https://github.com/camshaft/s2n-quic", rev = "7ec
 # single-threaded host awaits reqwest's async client directly (no `Send` bound needed — `#[cfg]`-gated
 # `ReqwestHttpTransport` is constructed on the host task).
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"], optional = true }
+# tokio-tungstenite + futures-util — THE OUTPOST's async websocket listener behind `live-ws` (O1b-2). OPTIONAL
+# (default build compiles no websocket/net tree). `default-features = false` + `handshake` only: a plain-ws
+# listener over local/loopback needs no TLS (a wss terminator is a later opt-in), keeping the rustls-everywhere
+# posture with no extra tree. futures-util supplies SinkExt/StreamExt for the split read/write halves.
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["handshake"], optional = true }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"], optional = true }
 # aws-sdk-bedrockruntime + aws-config — the real Bedrock model transport behind `live-net`. OPTIONAL
 # (default build compiles no AWS tree). Credentials come from the ENVIRONMENT via the SDK's default
 # credential provider chain (operator directive: pull creds from the environment; NO Membrain, NO broker,

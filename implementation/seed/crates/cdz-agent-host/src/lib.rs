@@ -91,6 +91,8 @@ pub mod session_registry;
 pub mod shell;
 pub mod status;
 pub mod ws_exec;
+#[cfg(feature = "live-ws")]
+pub mod ws_listen;
 pub mod ws_socket;
 
 pub use admin::{
@@ -157,6 +159,8 @@ pub use session_registry::{SessionRecord, SessionStatus};
 pub use shell::ShellExecutor;
 pub use status::{host_session_status_json, session_status_json, DEFAULT_STALL_AFTER_MS};
 pub use ws_exec::{WsConnRegistry, WsSendExecutor, WsSendResult};
+#[cfg(feature = "live-ws")]
+pub use ws_listen::WsListener;
 pub use ws_socket::{
     emit_ws_event, mint_conn_id, ws_connect_inbound, ws_control_channel, ws_disconnect_inbound,
     ws_frame_inbound, LiveWsConnRegistry, OutboundFrameSink, WsControlOp, WsControlReceiver,
