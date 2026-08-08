@@ -1803,10 +1803,19 @@
             # all 9 required, so `nix build` of it is red if ANY required check fails — no silent gap. aarch64.
             localGate = pkgs.runCommand "local-gate"
               {
+                # The 9 merge-required-minus-macos contexts PLUS the two workspace-ISOLATED native checks
+                # (cdz-agent-host-native, cdz-kernel-native). Those crates are excluded from the cargo
+                # workspace (so the macOS workspace test never reds on them) and were therefore NOT in this
+                # aggregate — gate-local skipped them, forcing pr-sync's --local-gate recipe to bolt on a
+                # manual `cargo test --manifest-path …` per crate. Folding them in makes the aggregate cover
+                # them (one green/red, hermetic + cached) and drops that manual step (v-nix+v-ft 2026-08-08).
+                # Both resolve the per-arch value-heap runtime hash from CDZ_STORE, so they MUST be the
+                # aarch64 derivations (#2348) — localGate IS the aarch64 aggregate, so that holds by construction.
                 inherit clippyShardA clippyShardB codegenCheck gateCheck guideExamplesCheck
-                  benchCheck runtimeHashParity fmtCheck testCheck roundtripCheck;
+                  benchCheck runtimeHashParity fmtCheck testCheck roundtripCheck
+                  cdzAgentHostNativeCheck cdzKernelNativeCheck;
               } ''
-              echo "ok: local-gate — 9 merge-required contexts (ruleset-10 minus test-macos) green on aarch64-nix" > $out
+              echo "ok: local-gate — 9 merge-required contexts (ruleset-10 minus test-macos) + cdz-agent-host/kernel-native, green on aarch64-nix" > $out
             '';
           in
           {
@@ -1987,6 +1996,50 @@
           {
             type = "app";
             program = "${warmKeep}/bin/cdz-warm-keep";
+          };
+
+        # ── LOCAL STORE GC (v-nix+v-fleet-tooling 2026-08-08) ──────────────────────────────────────
+        #
+        # `nix run .#gc` — reclaim the local /nix/store churn while PRESERVING the warm layer. The pair
+        # to apps.warm-keep: warm-keep PINS the heavy layer (crane deps + component store + local-gate)
+        # as GC-roots; this reclaims everything ELSE. Gating locally (whether via schedule-pass
+        # --local-gate or a candidate-PR gate-local) rebuilds a fresh closure per MR, so the store grows
+        # unboundedly (measured: 6198-6883 dead paths / ~31G within a day). nix store gc respects the
+        # GC-roots warm-keep registered (indirect roots under CDZ_WARM_ROOT), so the warm layer is NEVER
+        # reclaimed — this GCs only unrooted dead paths. Trigger-AGNOSTIC: the host runner (v-ft's lane)
+        # decides WHEN; this app is just the WHAT. Two valid cadences the runner picks between depending on
+        # the active integration model (which whipsawed a few times around 2026-08-08 as GHA credit status
+        # was reconfirmed): (a) if pr-sync runs `schedule-pass --local-gate --execute` as its loop, hook GC
+        # as the LAST step of each drain (post-drain hook) so it tracks actual churn; (b) if pr-sync is on
+        # the CI-gated candidate-PR path (no local-gate drain to hook), run GC on a ~3h wall-clock timer.
+        # apps.gc is needed either way — local gate-local runs + dev builds churn the store regardless of
+        # model. Always run warm-keep FIRST (via the runner) so the current warm layer is freshly rooted
+        # before GC.
+        # CDZ_GC_MAX_FREED (bytes, optional): cap the reclaim per run via --max-freed so a single GC pass
+        # is bounded (avoids a long stall on a huge backlog); unset = reclaim all dead paths.
+        apps.gc =
+          let
+            gc = pkgs.writeShellApplication {
+              name = "cdz-gc";
+              runtimeInputs = [ pkgs.nix pkgs.coreutils ];
+              text = ''
+                echo "cdz gc: reclaiming dead /nix/store paths (warm-keep GC-roots are preserved)"
+                # Show what is rooted so an operator can confirm the warm layer is protected before GC.
+                echo "cdz gc: live GC-roots referencing the warm layer:"
+                nix-store --gc --print-roots 2>/dev/null | grep -iE "warm|local-gate|component-store|seed-deps" || true
+                if [ -n "''${CDZ_GC_MAX_FREED:-}" ]; then
+                  echo "cdz gc: bounded pass — reclaiming up to $CDZ_GC_MAX_FREED bytes"
+                  nix store gc --max-freed "$CDZ_GC_MAX_FREED"
+                else
+                  nix store gc
+                fi
+                echo "cdz gc: done — dead paths reclaimed, warm layer intact."
+              '';
+            };
+          in
+          {
+            type = "app";
+            program = "${gc}/bin/cdz-gc";
           };
       });
 }
