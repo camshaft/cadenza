@@ -19092,3 +19092,109 @@
   (call   main (: 3 Int64)) (output (: 312 Int64))
   (call   main (: 0 Int64)) (output (: 12 Int64))
   (call   main (: -4 Int64)) (output (: -388 Int64)))
+
+;; ── rc/bt/ng/sw: rich handler-STATE shapes ───────────────────────────────────
+;; rc1 a RECORD state (fields advance differently per rebuild); rc2 the arm
+;; updates ONE field chosen by the fields' own parity; rc3 a record whose
+;; FIELD is a tuple (counter ticks while the pair walks a Fibonacci step);
+;; bt1 a BOOL state toggles per dispatch (not in state position); ng1 a
+;; MIXED-type (Tuple Int64 Bool) state — the flip signs alternate draws;
+;; sw1 a three-slot state SWAPS its pair while a counter ticks.
+
+(case "rc1 a RECORD handler state — the arm projects both fields and rebuilds with different advances, sums pin two dispatches"
+  (input  (do
+            (effect E (op snap (-> (Record (: a Int64) (: b Int64)))))
+            (def (main (: n Int64))
+              (handle E (record (a n) (b 100))
+                ((snap () s (resume s (record (a (+ (. s a) 1)) (b (* (. s b) 2))))))
+                (let ((r1 (E.snap)))
+                  (let ((r2 (E.snap)))
+                    (+ (+ (. r1 a) (. r1 b))
+                       (* 10 (+ (. r2 a) (. r2 b))))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 2165 Int64))
+  (call   main (: 0 Int64)) (output (: 2110 Int64))
+  (call   main (: -3 Int64)) (output (: 2077 Int64)))
+
+(case "rc2 the arm updates ONE record-state field chosen by the fields' own parity — three snapshots pin the alternating writes"
+  (input  (do
+            (effect E (op snap (-> (Record (: a Int64) (: b Int64)))))
+            (def (main (: n Int64))
+              (handle E (record (a n) (b 100))
+                ((snap () s (resume s (if (= (% (+ (. s a) (. s b)) 2) 0)
+                                          (record (a (+ (. s a) 7)) (b (. s b)))
+                                          (record (a (. s a)) (b (+ (. s b) 7)))))))
+                (let ((r1 (E.snap)))
+                  (let ((r2 (E.snap)))
+                    (let ((r3 (E.snap)))
+                      (+ (+ (. r1 a) (. r1 b))
+                         (+ (* 10 (+ (. r2 a) (. r2 b)))
+                            (* 100 (+ (. r3 a) (. r3 b))))))))))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: 13014 Int64))
+  (call   main (: 1 Int64)) (output (: 12681 Int64))
+  (call   main (: -2 Int64)) (output (: 12348 Int64)))
+
+(case "rc3 a record state whose FIELD is a tuple — the counter ticks while the pair walks a Fibonacci step per dispatch"
+  (input  (do
+            (effect E (op snap (-> (Record (: ctr Int64) (: pair (Tuple Int64 Int64))))))
+            (def (main (: n Int64))
+              (handle E (record (ctr n) (pair (tuple 1 2)))
+                ((snap () s (resume s (match (. s pair)
+                                        ((tuple lo hi) (record (ctr (+ (. s ctr) 1))
+                                                               (pair (tuple hi (+ lo hi)))))))))
+                (let ((r1 (E.snap)))
+                  (let ((r2 (E.snap)))
+                    (let ((r3 (E.snap)))
+                      (match (. r1 pair)
+                        ((tuple a1 b1) (match (. r2 pair)
+                          ((tuple a2 b2) (match (. r3 pair)
+                            ((tuple a3 b3)
+                              (+ (* 100 (+ (. r1 ctr) (+ a1 b1)))
+                                 (+ (* 10 (+ (. r2 ctr) (+ a2 b2)))
+                                    (+ (. r3 ctr) (+ a3 b3)))))))))))))))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: 814 Int64))
+  (call   main (: 0 Int64)) (output (: 370 Int64))
+  (call   main (: -3 Int64)) (output (: 37 Int64)))
+
+(case "bt1 a BOOL handler state TOGGLES per dispatch — three draws read the alternating flag, seeded by input parity"
+  (input  (do
+            (effect E (op flag (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (= (% n 2) 0)
+                ((flag () b (resume (if b 1 0) (not b))))
+                (+ (* 100 (E.flag)) (+ (* 10 (E.flag)) (E.flag)))))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: 101 Int64))
+  (call   main (: 3 Int64)) (output (: 10 Int64)))
+
+(case "ng1 the arm NEGATES alternate draws — a Bool flip in a tuple state signs the rising thread (+,-,+)"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (tuple n false)
+                ((next () s (match s
+                              ((tuple v flip)
+                                (resume (if flip (- 0 v) v)
+                                        (tuple (+ v 2) (not flip)))))))
+                (+ (* 100 (E.next)) (+ (* 10 (E.next)) (E.next)))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 257 Int64))
+  (call   main (: 0 Int64)) (output (: -16 Int64))
+  (call   main (: -2 Int64)) (output (: -198 Int64)))
+
+(case "sw1 a three-slot state SWAPS its pair while a counter ticks — the encoding exposes position, order, and dispatch count at once"
+  (input  (do
+            (effect E (op swap (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (tuple n (+ n 1) 0)
+                ((swap () s (match s
+                              ((tuple a b k)
+                                (resume (+ (* 100 a) (+ (* 10 b) k))
+                                        (tuple b a (+ k 1)))))))
+                (+ (E.swap) (+ (E.swap) (E.swap)))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 783 Int64))
+  (call   main (: 0 Int64)) (output (: 123 Int64))
+  (call   main (: -3 Int64)) (output (: -867 Int64)))
