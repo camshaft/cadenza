@@ -273,6 +273,51 @@ pub mod effect_ct {
         family.starts_with(BLOB_PREFIX)
     }
 
+    /// The `ws/*` namespace PREFIX — THE OUTPOST O1: a gateway host where peer agents connect over a
+    /// websocket + a GUEST reducer routes/federates them. The namespace spans BOTH directions. (1) The
+    /// OUTBOUND EFFECT [`WS_SEND`] — a reducer sends a frame to a peer — authz-gated + executor-routed
+    /// (register-by-string, `Emit` placeholder kind, no drive-loop arm), like `fs/*`/`blob/*`. (2) INBOUND
+    /// EVENTS the host emits onto the log so the reducer folds connection lifecycle + traffic into its
+    /// federation state: a ws data frame arrives as a plain `Inbound` event, and — per operator directive on
+    /// #2804 — the transport also emits [`WS_CONNECT`]/[`WS_DISCONNECT`] `Inbound` events when a peer
+    /// connection is ESTABLISHED / CLOSED, so the lifecycle is DURABLE (auditable — a retrospective agent
+    /// sees when peers joined/left) and the reducer POLICY can react (learn a peer exists, address `ws/send`
+    /// to it, prune on disconnect). The reducer opens NO connection (the PEER opens it; the host mints an
+    /// opaque conn-id on accept) — so there is no `ws/open`; a reducer-initiated `ws/close` EFFECT is a later
+    /// additive op the prefix reserves room for. Routing/federation/tool-visibility POLICY lives entirely in
+    /// the guest reducer (minimize-host-logic: the host is plumbing).
+    pub const WS_PREFIX: &str = "ws/";
+
+    /// `ws/send` — (OUTBOUND EFFECT) write a frame to a connected peer. `target` = the opaque connection-id
+    /// the host minted on accept and handed the reducer in the `Inbound` framing (the reducer ECHOES it back —
+    /// the kernel never interprets it, exactly like a `shell` program-target or an `Emit` peer-id rides
+    /// `req.target` as an opaque `Arc<str>`); `payload` = the outbound frame bytes. The HOST ws executor maps
+    /// the conn-id → its live connection and writes the frame, folding an Ok(delivered)/Err(gone) outcome
+    /// back. Per-send Cedar authz gates `resource.target = <conn-id>` (a policy can scope which peers/
+    /// peer-classes a reducer may send to). NO new kernel type — conn-id is a string target, frame is bytes.
+    pub const WS_SEND: &str = "ws/send";
+
+    /// `ws/connect` — (INBOUND EVENT `content_type.family`, operator directive #2804) the host emits this
+    /// `Inbound` when a peer websocket connection is ESTABLISHED; `payload` = the opaque conn-id bytes the
+    /// host minted on accept (v0 — a peer-descriptor blob may ride later). The reducer folds it to learn the
+    /// peer exists + may now address `ws/send` to that conn-id. Host-minted + reducer-matched (an inbound
+    /// family, NOT a reducer-emitted effect — so it is NOT in [`ALL`], the grantable-effect set); named as a
+    /// const for ONE source of truth (host + reducer share the exact string, safe-logging classified).
+    pub const WS_CONNECT: &str = "ws/connect";
+
+    /// `ws/disconnect` — (INBOUND EVENT `content_type.family`, operator directive #2804) the host emits this
+    /// `Inbound` when a peer connection CLOSES; `payload` = the conn-id bytes (a close-reason may ride later).
+    /// The reducer folds it to prune that peer from its federation state (a subsequent `ws/send` to it folds
+    /// Err(gone)). Inbound family, host-minted + reducer-matched (NOT in [`ALL`]); const for one source of truth.
+    pub const WS_DISCONNECT: &str = "ws/disconnect";
+
+    /// Is `family` in the `ws/*` namespace (the reducer outbound-websocket partition, THE OUTPOST)? A prefix
+    /// test (like [`is_fs_family`]/[`is_blob_family`]). Executor-routed, so the drive loop needs no special arm —
+    /// here for the manifest + discoverability + one source of truth for the partition boundary.
+    pub fn is_ws_family(family: &str) -> bool {
+        family.starts_with(WS_PREFIX)
+    }
+
     /// Is `family` in the `control/*` namespace (authz-exempt, host/kernel-answered, never executor-routed)?
     /// The partition test the drive loop applies BEFORE authorize/route: `true` → control path, `false` →
     /// the effect path (authorize → executor). A simple prefix check on [`CONTROL_PREFIX`] — one source of
@@ -331,13 +376,16 @@ pub mod effect_ct {
         METRIC_PUBLISH,
         BLOB_PUT,
         BLOB_GET,
+        WS_SEND,
     ];
 
     /// If `family` is a WELL-KNOWN family whose string is a FIXED, kernel-defined `&'static` — one of the
     /// built-in effect verbs ([`ALL`], via [`super::EffectKind::from_family`]) or the exact control/store/fs/
     /// metric families (`control/capabilities`, `control/summary`, `store/set`, `store/resolve`, `store/add`,
-    /// `store/remove`, `store/resolve-all`, `fs/read`, `fs/write`, `fs/glob`, `metric/publish`) — return that
-    /// canonical `&'static str`. `None` for an EXTENSION family (register-by-string).
+    /// `store/remove`, `store/resolve-all`, `fs/read`, `fs/write`, `fs/glob`, `metric/publish`, `blob/put`,
+    /// `blob/get`, `ws/send`, `ws/connect`, `ws/disconnect`) — return that canonical `&'static str`. `None`
+    /// for an EXTENSION family (register-by-string). (`ws/connect`/`ws/disconnect` are inbound EVENT families,
+    /// not effects, so they're here for safe-logging but NOT in [`ALL`].)
     ///
     /// The distinction matters for LOGGING (github-liaison #2180 residual): `ContentType.family` is a
     /// `Cow<'static, str>` and for an extension family it carries the CALLER's `Cow::Owned` verbatim — i.e.
@@ -370,6 +418,11 @@ pub mod effect_ct {
             METRIC_PUBLISH => Some(METRIC_PUBLISH),
             BLOB_PUT => Some(BLOB_PUT),
             BLOB_GET => Some(BLOB_GET),
+            WS_SEND => Some(WS_SEND),
+            // ws/connect + ws/disconnect are INBOUND event content-type families (not effects, so not in
+            // ALL) — but they're fixed kernel-defined strings, so classify them safe-to-log-verbatim too.
+            WS_CONNECT => Some(WS_CONNECT),
+            WS_DISCONNECT => Some(WS_DISCONNECT),
             _ => None,
         }
     }
@@ -948,6 +1001,7 @@ mod tests {
         assert_eq!(wellknown_static_str(METRIC_PUBLISH), Some(METRIC_PUBLISH));
         assert_eq!(wellknown_static_str(BLOB_PUT), Some(BLOB_PUT));
         assert_eq!(wellknown_static_str(BLOB_GET), Some(BLOB_GET));
+        assert_eq!(wellknown_static_str(WS_SEND), Some(WS_SEND));
         // Extension families (register-by-string, guest-controlled) → None (redacted).
         assert_eq!(wellknown_static_str("my/custom-effect"), None);
         assert_eq!(wellknown_static_str("weather"), None);
@@ -1329,6 +1383,56 @@ mod tests {
         assert_eq!(effect_ct::wellknown_static_str("blob/secret-x"), None);
         assert!(effect_ct::is_blob_family("blob/secret-x"));
         assert!(!effect_ct::is_blob_family("myblob"));
+    }
+
+    #[test]
+    fn ws_family_is_a_routed_partition_disjoint_from_the_others() {
+        // THE OUTPOST O1: ws/* is the reducer OUTBOUND-websocket partition. Executor-routed + authz-gated
+        // (register-by-string, no new EffectKind), like fs/*/blob/*/metric/*. O1 ships ws/send; the WS_PREFIX
+        // reserves the namespace so a later ws/close slots in additively.
+        assert_eq!(effect_ct::WS_PREFIX, "ws/");
+        assert_eq!(effect_ct::WS_SEND, "ws/send");
+        assert!(effect_ct::is_ws_family(effect_ct::WS_SEND));
+        assert!(effect_ct::WS_SEND.starts_with(effect_ct::WS_PREFIX));
+        // SAFE-LOGGING (#2180): the exact string is a kernel-defined fixed &'static → log VERBATIM.
+        assert_eq!(
+            effect_ct::wellknown_static_str(effect_ct::WS_SEND),
+            Some(effect_ct::WS_SEND)
+        );
+        // In the manifest family set → the capability projection reports the ws grant-state. Only the
+        // OUTBOUND EFFECT (ws/send) is a grantable capability; the inbound EVENT families are NOT in ALL.
+        assert!(effect_ct::ALL.contains(&effect_ct::WS_SEND));
+        // DISJOINT from every other partition (a distinct outbound-transport family).
+        assert!(!effect_ct::is_store_family(effect_ct::WS_SEND));
+        assert!(!effect_ct::is_fs_family(effect_ct::WS_SEND));
+        assert!(!effect_ct::is_metric_family(effect_ct::WS_SEND));
+        assert!(!effect_ct::is_blob_family(effect_ct::WS_SEND));
+        assert!(!effect_ct::is_lifecycle_family(effect_ct::WS_SEND));
+        assert!(!effect_ct::is_control_family(effect_ct::WS_SEND));
+        assert!(!effect_ct::is_ws_family(effect_ct::FS_WRITE));
+        // A guest fake ws-ish name that isn't the exact const logs redacted (None); prefix still classifies.
+        assert_eq!(effect_ct::wellknown_static_str("ws/secret-x"), None);
+        assert!(effect_ct::is_ws_family("ws/secret-x"));
+        assert!(!effect_ct::is_ws_family("myws"));
+
+        // ws/connect + ws/disconnect (operator #2804): INBOUND EVENT content-type families the host emits on
+        // peer connect/close. In the ws/* namespace + safe-logging classified (fixed kernel strings), but
+        // NOT effects → NOT in ALL (they're not grantable capabilities, they're events the reducer folds).
+        assert_eq!(effect_ct::WS_CONNECT, "ws/connect");
+        assert_eq!(effect_ct::WS_DISCONNECT, "ws/disconnect");
+        assert!(effect_ct::is_ws_family(effect_ct::WS_CONNECT));
+        assert!(effect_ct::is_ws_family(effect_ct::WS_DISCONNECT));
+        assert_eq!(
+            effect_ct::wellknown_static_str(effect_ct::WS_CONNECT),
+            Some(effect_ct::WS_CONNECT)
+        );
+        assert_eq!(
+            effect_ct::wellknown_static_str(effect_ct::WS_DISCONNECT),
+            Some(effect_ct::WS_DISCONNECT)
+        );
+        // The inbound event families are NOT grantable effects → absent from ALL (only ws/send is).
+        assert!(!effect_ct::ALL.contains(&effect_ct::WS_CONNECT));
+        assert!(!effect_ct::ALL.contains(&effect_ct::WS_DISCONNECT));
     }
 
     #[test]
