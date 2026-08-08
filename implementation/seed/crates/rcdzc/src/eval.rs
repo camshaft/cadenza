@@ -3704,15 +3704,18 @@ fn encode_ty(db: &mut Db, ty: &crate::ty::Ty) -> StructId {
             }
             db.push_list(items)
         }
-        // A record type-value: `(Record (name T)…)` in canonical (sorted) field order — the capitalized
-        // `Record` head (the TYPE; the VALUE head is lowercase `record`), each field a `(name T)` pair.
-        // Round-trips with `decode_ty`'s `"Record"` arm; the `BTreeMap` iteration IS the canonical order.
+        // A record type-value: `(Record (: name T)…)` in canonical (sorted) field order — the capitalized
+        // `Record` head (the TYPE; the VALUE head is lowercase `record`), each field the canonical
+        // `(: name T)` ASCRIPTION node (RT3, DESIGN-record-type-syntax) — the shared binder node, not a
+        // bespoke pair. Round-trips with `decode_ty`'s `"Record"` arm (which reads the ascription); the
+        // `BTreeMap` iteration IS the canonical order.
         Ty::Record(fields) => {
             let mut items = vec![db.push_name("Record")];
             for (name, t) in fields.iter() {
+                let colon = db.push_name(":");
                 let fname = db.push_name(&name.name);
                 let fty = encode_ty(db, t);
-                items.push(db.push_list(vec![fname, fty]));
+                items.push(db.push_list(vec![colon, fname, fty]));
             }
             db.push_list(items)
         }

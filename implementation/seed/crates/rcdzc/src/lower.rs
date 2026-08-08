@@ -15675,13 +15675,16 @@ fn type_ast(b: &mut crate::ast::Builder, ty: &crate::ty::Ty) -> Option<StructId>
         }
         Ty::Record(fields) => {
             // The TYPE head is capitalized `Record` (like `Tuple`); the VALUE head is lowercase `record`
-            // (see `const_value_ast`). The corpus writes `(Record (a Int64) …)` for the type.
+            // (see `const_value_ast`). Each field is the canonical `(: name T)` ASCRIPTION node (RT3,
+            // DESIGN-record-type-syntax) — the corpus writes `(Record (: a Int64) …)` for the type,
+            // matching `render_name`/`encode_ty`.
             let head = b.name("Record");
             let mut children = vec![head];
             for (name, t) in fields.iter() {
+                let colon = b.name(":");
                 let fname = b.name(name.name.clone());
                 let fty = type_ast(b, t)?;
-                children.push(b.list(vec![fname, fty]));
+                children.push(b.list(vec![colon, fname, fty]));
             }
             Some(b.list(children))
         }
@@ -26656,7 +26659,7 @@ mod tests {
         // Fields in canonical (sorted) order a, b → positional [a, b].
         assert_eq!(
             render(&ty, &V::Record(vec![V::Int(3), V::Int(1)])),
-            "(: (record (a 3) (b 1)) (Record (a Int64) (b Int64)))"
+            "(: (record (a 3) (b 1)) (Record (: a Int64) (: b Int64)))"
         );
     }
 

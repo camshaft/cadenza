@@ -3039,7 +3039,7 @@ fn a_recursive_runtime_record_escapes_to_the_host() {
     };
     match cdz_run::run(&bytes, &opts).expect("run") {
         cdz_run::Outcome::Value(s) => assert_eq!(
-            s, "(: (record (a 0) (b 7)) (Record (a Int64) (b Int64)))",
+            s, "(: (record (a 0) (b 7)) (Record (: a Int64) (: b Int64)))",
             "R2 record escape value form"
         ),
         cdz_run::Outcome::Trap(t) => panic!("R2 record escape run trapped: {t}"),
@@ -3143,7 +3143,7 @@ fn a_record_with_a_runtime_tuple_field_escapes_to_the_host() {
     };
     match cdz_run::run(&bytes, &opts).expect("run") {
         cdz_run::Outcome::Value(s) => assert_eq!(
-            s, "(: (record (x 0) (y (tuple 0 1))) (Record (x Int64) (y (Tuple Int64 Int64))))",
+            s, "(: (record (x 0) (y (tuple 0 1))) (Record (: x Int64) (: y (Tuple Int64 Int64))))",
             "R2 nested record escape value form"
         ),
         cdz_run::Outcome::Trap(t) => panic!("R2 nested record escape run trapped: {t}"),
@@ -34477,13 +34477,13 @@ mod match_engine {
         // ("a list pattern does not match the payload type T"), which misleads for a top-level `match`/`let`
         // on a plain value that is not a variant payload.
         let rec = reject_full(
-            "(module m (def (g (: r (Record (x Int64)))) (match r ((list a) a))) (export g))",
+            "(module m (def (g (: r (Record (: x Int64)))) (match r ((list a) a))) (export g))",
         )
         .expect("a list pattern on a record rejects");
         assert_eq!(rec.code.as_deref(), Some("CDZ0201"), "got: {}", rec.message);
         assert!(
             rec.message.contains(
-                "this list pattern cannot destructure a value of type (Record (x Int64))"
+                "this list pattern cannot destructure a value of type (Record (: x Int64))"
             ) && !rec.message.contains("payload"),
             "names the type, no internal 'payload' term: {}",
             rec.message
@@ -53223,16 +53223,17 @@ mod diagnostics {
 
     #[test]
     fn a_record_type_renders_capitalized_matching_its_annotation_spelling() {
-        // `Ty::render_name` spells a RECORD type `(Record (a Int64))` — CAPITALIZED, the type-constructor
-        // head the author writes in an annotation (`(: r (Record (a Int64)))`), consistent with
-        // `Tuple`/`List`/`Map`/`Set`. It used to render lowercase `(record …)` — the VALUE constructor
+        // `Ty::render_name` spells a RECORD type `(Record (: a Int64))` — CAPITALIZED, the type-constructor
+        // head the author writes in an annotation (`(: r (Record (: a Int64)))`), consistent with
+        // `Tuple`/`List`/`Map`/`Set`; each field is the canonical `(: name T)` ASCRIPTION node (RT3,
+        // DESIGN-record-type-syntax). It used to render lowercase `(record …)` — the VALUE constructor
         // spelling, which a type annotation REJECTS ("not a type"), so a mismatch message named a type the
         // reader could not have written. The rendered type must round-trip as a valid annotation.
-        let d = first_error("(module m (def y (: (record (a 1)) (Record (a Bool)))) (export y))");
+        let d = first_error("(module m (def y (: (record (a 1)) (Record (: a Bool)))) (export y))");
         assert_eq!(d.code.as_deref(), Some("CDZ0203"), "got: {}", d.message);
         assert!(
-            d.message.contains("(Record (a Bool))") && d.message.contains("(Record (a Int64))"),
-            "record TYPE renders capitalized, matching the annotation spelling: {}",
+            d.message.contains("(Record (: a Bool))") && d.message.contains("(Record (: a Int64))"),
+            "record TYPE renders capitalized with ascription fields, matching the annotation spelling: {}",
             d.message
         );
         assert!(
@@ -53240,10 +53241,10 @@ mod diagnostics {
             "no lowercase value-constructor spelling in a TYPE message: {}",
             d.message
         );
-        // The rendered type is a VALID annotation (round-trips) — a reader can copy `(Record (a Bool))`
+        // The rendered type is a VALID annotation (round-trips) — a reader can copy `(Record (: a Bool))`
         // straight into an annotation; a compile of exactly that spelling never says "not a type".
         let round_trip = all_errors(
-            "(module m (def (f (: r (Record (a Bool)))) r) (def (main) 0) (export main))",
+            "(module m (def (f (: r (Record (: a Bool)))) r) (def (main) 0) (export main))",
         );
         assert!(
             !round_trip.iter().any(|e| e.message.contains("not a type")),
@@ -77889,7 +77890,7 @@ mod constant_resource_escape {
         let src = "(module m (def (main) (record (a 3) (b 1))) (export main))";
         assert_eq!(
             run_and_decode(src),
-            "(: (record (a 3) (b 1)) (Record (a Int64) (b Int64)))"
+            "(: (record (a 3) (b 1)) (Record (: a Int64) (: b Int64)))"
         );
     }
 }

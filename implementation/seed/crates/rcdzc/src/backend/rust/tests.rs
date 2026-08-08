@@ -6733,8 +6733,8 @@ fn a_record_arg_closure_consumer_emits_a_param_shapes_note() {
     // correctly. Assert the consumer emits + carries the Record-shaped note.
     let m = compile_rust(
         "(module m \
-           (def (mkb (: k Int64)) (fn ((: r (Record (a Int64) (b Int64)))) (+ (* (. r a) (. r b)) k))) \
-           (def (appb (: h (-> (Record (a Int64) (b Int64)) Int64)) (: y Int64)) (h (record (a y) (b y)))) \
+           (def (mkb (: k Int64)) (fn ((: r (Record (: a Int64) (: b Int64)))) (+ (* (. r a) (. r b)) k))) \
+           (def (appb (: h (-> (Record (: a Int64) (: b Int64)) Int64)) (: y Int64)) (h (record (a y) (b y)))) \
            (export mkb) (export appb))",
     );
     assert!(
@@ -6742,7 +6742,7 @@ fn a_record_arg_closure_consumer_emits_a_param_shapes_note() {
         "the record-arg consumer emits (record erases to the (i64,i64) tuple):\n{m}"
     );
     assert!(
-        m.contains("// cdz-param-shapes[appb]: (-> (Record (a Int64) (b Int64)) Int64)"),
+        m.contains("// cdz-param-shapes[appb]: (-> (Record (: a Int64) (: b Int64)) Int64)"),
         "the consumer carries a cdz-param-shapes note with the pre-erasure Record arrow:\n{m}"
     );
 }

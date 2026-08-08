@@ -2836,7 +2836,7 @@
            either direction. The arm resumes `(record (total 50) (items (list 5 6 7)))`; the body
            projects the scalar and folds the list field — 50 + 3 + 7 → 60.")
   (input  (do
-            (effect St (op page (-> Int64 (Record (total Int64) (items (List Int64))))))
+            (effect St (op page (-> Int64 (Record (: total Int64) (: items (List Int64))))))
             (def (main (: n Int64))
               (handle St 0
                 ((page (k) s (resume (record (total (* k 10)) (items (list k (+ k 1) (+ k 2)))) s)))
@@ -2852,7 +2852,7 @@
            op and the ARM uses one field to query the other — contains(seen, want) → 100, plus len 3
            → 103. The collection field must arrive beside the scalar with both intact.")
   (input  (do
-            (effect St (op audit (-> (Record (want Int64) (seen (Set Int64))) Int64)))
+            (effect St (op audit (-> (Record (: want Int64) (: seen (Set Int64))) Int64)))
             (def (main (: n Int64))
               (handle St 0
                 ((audit (r) s (resume (+ (* 100 (if (Set.contains (. r seen) (. r want)) 1 0))
@@ -3617,11 +3617,11 @@
 
 (case "an overflowing literal in a RECORD op argument's narrow field is rejected"
   (doc    "The compound-descent face: the width check must recurse into a Record op argument's
-           fields — `(record (small 999) …)` against `(Record (small UInt8) …)` is CDZ0302. (Tuple
+           fields — `(record (small 999) …)` against `(Record (: small UInt8) …)` is CDZ0302. (Tuple
            and List elements were covered by the same descent from the start; the Record row arm
            was a fold-in.)")
   (input  (do
-            (effect Send (op put (-> (Record (small UInt8) (big Int64)) Int64)))
+            (effect Send (op put (-> (Record (: small UInt8) (: big Int64)) Int64)))
             (def (main (: n Int64))
               (handle Send 0
                 ((put (r) s (resume (+ (Int64.of (. r small)) (. r big)) s)))
@@ -10055,8 +10055,8 @@
 
 (case "an operation with a RECORD parameter binds the compound and the arm reads its fields"
   (doc    "The record companion of the tuple-parameter case: an operation whose declared PARAMETER is a
-           `(Record (a Int64) (b Int64))` binds the whole record to the arm's parameter, whose fields the arm
-           reads by member access. `Add.sum : (-> (Record (a Int64) (b Int64)) Int64)`; performed as
+           `(Record (: a Int64) (: b Int64))` binds the whole record to the arm's parameter, whose fields the arm
+           reads by member access. `Add.sum : (-> (Record (: a Int64) (: b Int64)) Int64)`; performed as
            `(Add.sum (record (a 3) (b 4)))`, the arm binds `p` and resumes with `(+ (. p a) (. p b))` = 7.
            The arm references `p` TWICE (once per field), but the argument is a PURE record — it reaches no
            perform — so substituting it into both uses duplicates no effect and the fold serves it (the
@@ -10064,7 +10064,7 @@
            compound; the precise perform-detector does not misread a record's field pairs as a call). Pins
            that a record OP parameter threads and is field-readable, matching the tuple parameter.")
   (input  (do
-            (effect Add (op sum (-> (Record (a Int64) (b Int64)) Int64)))
+            (effect Add (op sum (-> (Record (: a Int64) (: b Int64)) Int64)))
             (def (main)
               (handle Add 0 ((sum (p) s (resume (+ (. p a) (. p b)) s)))
                 (Add.sum (record (a 3) (b 4))))) (export main)))
@@ -11259,7 +11259,7 @@
 ; `RecordCtor` decode originally accepted only the 2-element `(name type)` pair; the ML `{a: Int64, …}`
 ; return lowers each field to a 3-element `(: a Int64)` triple, so the record decoded to `None` → the op had
 ; NO `(-> Unit result)` scheme → the nullary-perform site fell back to the op's META-record and `St.get()`
-; typed as `(Record (apply …) (effect-op …) (t …))` instead of `{a, b}` (CDZ0203 "record has no field a" at
+; typed as `(Record (: apply …) (effect-op …) (t …))` instead of `{a, b}` (CDZ0203 "record has no field a" at
 ; a consumer). Handling `St` with a `get` arm that resumes `(record (a 1) (b 2))` and reading field `a` = 1
 ; pins that a structural-record effect-op return threads its declared type to the perform site (the
 ; `type_in_env` companion of the same `(: name type)` decode fix `typeval_of` carries for variant payloads).
@@ -12155,7 +12155,7 @@
            resumes `(record (x (* id 2)) (y (+ id 1)))` and the body projects both fields — 10 + 6 =
            16. The field layout must survive the resume marshal.")
   (input  (do
-            (effect St (op fetch (-> Int64 (Record (x Int64) (y Int64)))))
+            (effect St (op fetch (-> Int64 (Record (: x Int64) (: y Int64)))))
             (def (main (: n Int64))
               (handle St 0
                 ((fetch (id) s (resume (record (x (* id 2)) (y (+ id 1))) s)))
@@ -12169,7 +12169,7 @@
            to the op and the ARM projects both fields — 10·5 − 3 = 47. With the result-direction pin
            above and the record-STATE pins, structural records cover all three effect positions.")
   (input  (do
-            (effect St (op score (-> (Record (hits Int64) (misses Int64)) Int64)))
+            (effect St (op score (-> (Record (: hits Int64) (: misses Int64)) Int64)))
             (def (main (: n Int64))
               (handle St 0
                 ((score (r) s (resume (- (* (. r hits) 10) (. r misses)) s)))
@@ -13119,7 +13119,7 @@
 (case "a record op argument with a HEAP field crosses the perform and its scalar field accumulates state"
   (doc    "The :4626 record-op-arg pin is all-scalar + stateless; this record carries a ROPE field beside the scalar through the perform AND the arm accumulates the scalar into STATE across two performs — the op-arg boxing keeps the heap handle beside the scalar while the state cell threads independently.")
   (input  (do
-            (effect Db (op put (-> (Record (name String) (qty Int64)) Int64)))
+            (effect Db (op put (-> (Record (: name String) (: qty Int64)) Int64)))
             (def (main (: k Int64))
               (handle Db 0
                 ((put (r) s (resume (+ s (. r qty)) (+ s (. r qty)))))
