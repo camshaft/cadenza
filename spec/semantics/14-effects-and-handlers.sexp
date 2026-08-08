@@ -16989,3 +16989,59 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 136 Int64))
   (call   main (: 0 Int64)) (output (: 96 Int64)))
+
+;; ── Option COMPOSITIONS through the effect thread (breaker oc) ───────────────────────────────────
+;; oc1 an Option-of-TUPLE accumulator state (None seeds, Some carries (total,count) advancing
+;; both); oc2 an Option FLOWING between two ops of one effect (find produces, use consumes it as
+;; an op ARG); oc3 a DOUBLE-wrapped Option resume value — None vs Some(None) vs Some(Some v) all
+;; distinguished by nested body matches. (oc3's nested body matches x two dispatches FOLD — the
+;; lf5/tt2 decline specifically needs the performing RECURSIVE callee, sharpening that boundary
+;; once more.)
+
+(case "oc1 an Option-of-TUPLE accumulator — None seeds on first step, Some carries (total,count) advancing both"
+  (input  (do
+            (effect O (op step (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle O (None)
+                ((step (v) s (match s
+                               ((None) (resume 0 (Some (tuple v 1))))
+                               ((Some p) (match p
+                                           ((tuple tot cnt) (resume (+ tot cnt)
+                                                                    (Some (tuple (+ tot v) (+ cnt 1))))))))))
+                (+ (O.step n) (+ (* 10 (O.step 3)) (* 100 (O.step 7))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 1060 Int64))
+  (call   main (: 0 Int64)) (output (: 510 Int64)))
+
+(case "oc2 an Option FLOWS between two ops of one effect — find produces Some/None, use consumes it as an op ARG"
+  (input  (do
+            (effect O (op find (-> Int64 (Option Int64))) (op use (-> (Option Int64) Int64)))
+            (def (main (: n Int64))
+              (handle O n
+                ((find (k) s (resume (if (> k s) (Some (- k s)) (None)) (+ s 1)))
+                 (use (m) s (match m
+                              ((Some v) (resume (* v 10) s))
+                              ((None) (resume (- 0 s) s)))))
+                (+ (O.use (O.find 10)) (O.use (O.find 0)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 43 Int64))
+  (call   main (: 20 Int64)) (output (: -43 Int64)))
+
+(case "oc3 a DOUBLE-wrapped Option resume value — None vs Some(None) vs Some(Some v) all distinguished by the body"
+  (input  (do
+            (effect O (op probe (-> Int64 (Option (Option Int64)))))
+            (def (main (: n Int64))
+              (handle O n
+                ((probe (k) s (resume (if (< k 0)
+                                          (None)
+                                          (if (> k s) (Some (Some (- k s))) (Some (None))))
+                                      (+ s 1))))
+                (+ (match (O.probe 10)
+                     ((Some inner) (match inner ((Some v) v) ((None) -1)))
+                     ((None) -100))
+                   (* 1000 (match (O.probe -5)
+                             ((Some inner) (match inner ((Some v) v) ((None) -1)))
+                             ((None) -100))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: -99995 Int64))
+  (call   main (: 15 Int64)) (output (: -100001 Int64)))
