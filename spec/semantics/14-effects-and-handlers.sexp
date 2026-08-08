@@ -17991,3 +17991,59 @@
   (call   main (: 0 Int64)) (output (: 203 Int64))
   (call   main (: 3 Int64)) (output (: 306 Int64))
   (call   main (: 1 Int64)) (output (: 404 Int64)))
+
+;; ── wx: EXTREME Int64 values through the thread ──────────────────────────────
+;; wx1 wraps the STATE at Int64.max via wrapping-add — three draws straddle the
+;; seam (MAX-1, MAX, MIN) and comparisons observe the discontinuity; wx2 sends
+;; the MIN/MAX literals through dispatch as op ARGUMENTS (echoed back exact,
+;; count arm tallies trips); wx3 rides them as SUM payloads (variant chosen by
+;; state parity, both payload slots verified exact).
+
+(case "wx1 the state thread WRAPS at Int64.max — three draws straddle the wraparound and the comparisons see the seam"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (def (main (: u Int64))
+              (handle E 9223372036854775806
+                ((next () s (resume s (Int64.wrapping-add s 1))))
+                (let ((d1 (E.next)))
+                  (let ((d2 (E.next)))
+                    (let ((d3 (E.next)))
+                      (+ (if (> d2 d1) 100 200)
+                         (+ (if (< d3 d2) 10 20)
+                            (if (< d3 0) 1 2))))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 111 Int64)))
+
+(case "wx2 Int64.min and Int64.max cross the dispatch as OP ARGUMENTS and come back exact — a count arm tallies the trips"
+  (input  (do
+            (effect E (op keep (-> Int64 Int64)) (op count (-> Int64)))
+            (def (main (: u Int64))
+              (handle E 0
+                ((keep (x) s (resume x (+ s 1)))
+                 (count () s (resume s s)))
+                (+ (if (= (E.keep -9223372036854775808) -9223372036854775808) 100 900)
+                   (+ (if (= (E.keep 9223372036854775807) 9223372036854775807) 10 90)
+                      (E.count)))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 112 Int64)))
+
+(case "wx3 Int64.min and Int64.max ride as SUM payloads through dispatch — variant chosen by state parity, payloads verified exact"
+  (input  (do
+            (type Ext (B Int64) (C Int64 Int64))
+            (effect E (op wrap (-> Ext)) (op count (-> Int64)))
+            (def (main (: u Int64))
+              (handle E 0
+                ((wrap () s (resume (if (= (% s 2) 0)
+                                        (B -9223372036854775808)
+                                        (C 9223372036854775807 -9223372036854775808))
+                                    (+ s 1)))
+                 (count () s (resume s s)))
+                (+ (* 100 (match (E.wrap)
+                            ((B x) (if (= x -9223372036854775808) 1 9))
+                            ((C x y) 7)))
+                   (+ (* 10 (match (E.wrap)
+                              ((B x) 8)
+                              ((C x y) (if (and (= x 9223372036854775807) (= y -9223372036854775808)) 2 6))))
+                      (E.count)))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 122 Int64)))
