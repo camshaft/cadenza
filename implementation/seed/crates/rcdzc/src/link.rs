@@ -354,6 +354,15 @@ pub fn link(files: &[(String, Arenas)], entry: &str) -> Result<LinkedProgram, Re
             if ast.as_form(item, "module-doc").is_some() {
                 continue;
             }
+            // The lint-level directives `(allow/warn/deny NAME)` are lint-only metadata (the compiler
+            // ignores them; `cdz lint` honors them — concierge ruling, DESIGN-cadenza-lint §3). Inert,
+            // declare nothing — skip so they never land in the merged `(do …)` as an unbound call.
+            if ast.as_form(item, "allow").is_some()
+                || ast.as_form(item, "warn").is_some()
+                || ast.as_form(item, "deny").is_some()
+            {
+                continue;
+            }
             if ast.as_form(item, "export").is_some() && !is_entry {
                 continue;
             }

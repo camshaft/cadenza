@@ -6189,7 +6189,25 @@ fn top_items(ast: &Arenas) -> Vec<StructId> {
 /// comment. It DECLARES nothing (`scan_top_level` has no branch for it — it is simply skipped), so it
 /// produces no index entry; it is listed here ONLY so `unknown_top_forms` recognizes it as legitimate
 /// and does not reject it as an unmodeled declaration. It is inert at every later stage (a no-op form).
-const TOP_LEVEL_FORMS: &[&str] = &["def", "export", "type", "effect", "bind", "module-doc"];
+///
+/// `allow`/`warn`/`deny` are the LINT-LEVEL directives (`(allow NAME)`/`(warn NAME)`/`(deny NAME)`,
+/// DESIGN-cadenza-lint §3) — lint-only metadata the COMPILER has no stake in (concierge ruling: rcdzc
+/// stays decoupled; the lint NAME is validated by `cdz lint`, which owns the lint catalog, NOT here). Like
+/// `module-doc` they DECLARE nothing (no `scan_top_level` branch — skipped) and are inert at every later
+/// stage; listed here ONLY so a program carrying a lint directive at top level does not DECLINE when it is
+/// compiled (the directive is ignored by the compile path, honored by `cdz lint`). A compile-time
+/// lint-name check, if ever wanted, belongs in `cdz lint` / a shared catalog crate, never in rcdzc.
+const TOP_LEVEL_FORMS: &[&str] = &[
+    "def",
+    "export",
+    "type",
+    "effect",
+    "bind",
+    "module-doc",
+    "allow",
+    "warn",
+    "deny",
+];
 
 /// The declaration/directive keywords a top-level `(head …)` form may legitimately lead with — the
 /// closed candidate pool for a "did you mean?" when an unknown top-level head is a plausible TYPO of one
