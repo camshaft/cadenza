@@ -7893,26 +7893,31 @@ fn maybe_run_gc(fleet: &Fleet) {
     // fails, worst case is one skipped cycle.
     let _ = std::fs::write(&stamp, now_unix().to_string());
     // Detached `warm-keep && gc`: warm-keep re-pins the warm layer as GC-roots, and ONLY on its success (`&&`)
-    // does gc reclaim — never reclaim with the layer unrooted (v-nix's silent-dangle fail-safe). Spawned and
-    // NOT waited on, so the multi-minute build never blocks/times-out schedule-pass.
-    let shell_cmd = format!(
-        "{nix} run .#warm-keep && CDZ_GC_MAX_FREED={cap} {nix} run .#gc",
+    // does gc reclaim — never reclaim with the layer unrooted (v-nix's silent-dangle fail-safe). It runs
+    // FIRE-AND-FORGET so the multi-minute build never blocks/times-out schedule-pass: `setsid` puts it in a
+    // NEW session (so a SIGTERM to pr-sync's process group at the ~2min tool timeout can't kill it — the
+    // session leader reparents to init), stdio is fully redirected to a log file + </dev/null (a plain
+    // `spawn()` that INHERITS pr-sync's stdio kept the parent's pipe open, so it still blocked until the
+    // child exited — pr-sync's finding), and the trailing `&` backgrounds it so the OUTER `sh` returns
+    // immediately. This is the same detach pattern gate-batch uses for its long combined-tree check.
+    let log = fleet.root.join("gc-hook.log");
+    let launcher = format!(
+        "setsid sh -c '{nix} run .#warm-keep && CDZ_GC_MAX_FREED={cap} {nix} run .#gc' </dev/null >>'{log}' 2>&1 &",
         nix = nix_bin,
-        cap = GC_MAX_FREED_BYTES
+        cap = GC_MAX_FREED_BYTES,
+        log = log.display()
     );
-    match Command::new("sh").arg("-c").arg(&shell_cmd).spawn() {
-        Ok(child) => {
-            eprintln!(
-                "gc-hook: {GC_MIN_INTERVAL_SECS}s elapsed → spawned detached `warm-keep && gc` (pid {}); next pass in ~{}h.",
-                child.id(),
-                GC_MIN_INTERVAL_SECS / 3600
-            );
-            // Don't wait — the reclaim finishes out-of-band. We intentionally drop the handle (the OS reaps
-            // the detached child); blocking on it is exactly the timeout we're avoiding.
-            std::mem::drop(child);
-        }
+    match Command::new("sh").arg("-c").arg(&launcher).status() {
+        Ok(s) if s.success() => eprintln!(
+            "gc-hook: {GC_MIN_INTERVAL_SECS}s elapsed → launched detached `warm-keep && gc` (fire-and-forget, log {}); next pass in ~{}h.",
+            log.display(),
+            GC_MIN_INTERVAL_SECS / 3600
+        ),
+        Ok(s) => eprintln!(
+            "gc-hook: detached launcher exited {s} (did not background cleanly) — skipping this cycle; interval already advanced, retries next eligible window."
+        ),
         Err(e) => eprintln!(
-            "gc-hook: could not spawn `warm-keep && gc` ({e}) — skipping (likely a non-nix env). Interval already advanced; retries next eligible window."
+            "gc-hook: could not launch `warm-keep && gc` ({e}) — skipping (likely a non-nix env). Interval already advanced; retries next eligible window."
         ),
     }
 }
