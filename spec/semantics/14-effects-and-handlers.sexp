@@ -18394,3 +18394,58 @@
   (call   main (: 5 Int64)) (output (: 8 Int64))
   (call   main (: 0 Int64)) (output (: 2 Int64))
   (call   main (: -3 Int64)) (output (: -1 Int64)))
+
+;; ── se: DRAW-DRIVEN Set operations ───────────────────────────────────────────
+;; se1 collects five draws under a CYCLING state (duplicates collapse; len and
+;; membership pin the distinct draws); se2 gates a branch on MEMBERSHIP of a
+;; draw (the taken branch draws again); se3 builds a set from parity-locked
+;; cycling draws (+2 mod 4) and probes it with a LATER state read — the
+;; in-cycle probe hits, the off-cycle probe misses, and len separates
+;; in-cycle starts from an out-of-cycle entry.
+
+(case "se1 five draws collected into a Set under a cycling state — duplicates collapse, len and membership pin the distinct draws"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (% (+ s 1) 3))))
+                (let ((st (Set.of (list (E.next) (E.next) (E.next) (E.next) (E.next)))))
+                  (+ (* 100 (Set.len st))
+                     (+ (if (Set.contains st n) 10 0)
+                        (if (Set.contains st 5) 1 0))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 310 Int64))
+  (call   main (: 5 Int64)) (output (: 411 Int64))
+  (call   main (: 7 Int64)) (output (: 410 Int64)))
+
+(case "se2 MEMBERSHIP of a draw decides a branch that draws again — the set gates the thread's continuation"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 10))))
+                (let ((st (Set.of (list 10 20 30))))
+                  (if (Set.contains st (E.next))
+                      (+ 1000 (E.next))
+                      (+ 2000 (E.next))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 1020 Int64))
+  (call   main (: 5 Int64)) (output (: 2015 Int64))
+  (call   main (: 30 Int64)) (output (: 1040 Int64)))
+
+(case "se3 a set BUILT from cycling draws probed by a LATER state read — the in-cycle probe hits, the off-cycle probe misses"
+  (input  (do
+            (effect E (op next (-> Int64)) (op probe (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (% (+ s 2) 4)))
+                 (probe () s (resume s s)))
+                (let ((st (Set.of (list (E.next) (E.next) (E.next)))))
+                  (let ((p (E.probe)))
+                    (+ (* 1000 (if (Set.contains st p) 1 5))
+                       (+ (* 100 (if (Set.contains st (+ p 1)) 1 5))
+                          (+ (* 10 (Set.len st)) p)))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 1522 Int64))
+  (call   main (: 1 Int64)) (output (: 1523 Int64))
+  (call   main (: 6 Int64)) (output (: 1530 Int64)))
