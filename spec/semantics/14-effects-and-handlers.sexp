@@ -18212,3 +18212,66 @@
   (call   main (: 5 Int64)) (output (: 56 Int64))
   (call   main (: 0 Int64)) (output (: 1 Int64))
   (call   main (: -4 Int64)) (output (: -43 Int64)))
+
+;; ── li: DRAW-DRIVEN list operations ──────────────────────────────────────────
+;; Collection indices and shapes decided by the thread. li1's draws choose
+;; BOTH the List.update target and the List.at read index; li2 builds a list
+;; from pushed draws then reads at a draw-picked index (construction and
+;; consumption share one thread); li3's draw PARITY picks prepend vs push
+;; while building — the final shape encodes the whole draw sequence.
+
+(case "li1 draws choose BOTH the List.update target and the List.at read index — the collection edit follows the thread"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 2))))
+                (let ((xs (list 10 20 30 40 50)))
+                  (let ((i1 (% (E.next) 5)))
+                    (let ((i2 (% (E.next) 5)))
+                      (let ((ys (List.update xs i1 7)))
+                        (match (List.at ys i2)
+                          ((Some v) (+ (* 100 v) (+ (* 10 i1) i2)))
+                          ((None) -1))))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 3002 Int64))
+  (call   main (: 3 Int64)) (output (: 1030 Int64))
+  (call   main (: 4 Int64)) (output (: 2041 Int64)))
+
+(case "li2 a list BUILT from pushed draws then read at a draw-picked index — construction and consumption share one thread"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 3))))
+                (let ((xs (List.push (List.push (List.push (list) (E.next)) (E.next)) (E.next))))
+                  (let ((i (% (E.next) 3)))
+                    (match (List.at xs i)
+                      ((Some v) (+ 100 (+ (* 10 v) i)))
+                      ((None) -1))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 100 Int64))
+  (call   main (: 1 Int64)) (output (: 141 Int64))
+  (call   main (: 2 Int64)) (output (: 182 Int64)))
+
+(case "li3 draw PARITY picks prepend vs push while building — the final shape encodes the whole draw sequence"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (def (build (: k Int64) (: xs (List Int64)))
+              (if (<= k 0)
+                  xs
+                  (let ((d (E.next)))
+                    (build (- k 1) (if (= (% d 2) 0) (List.prepend xs d) (List.push xs d))))))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1))))
+                (let ((xs (build 4 (list))))
+                  (match (List.at xs 0)
+                    ((Some h) (match (List.at xs 3)
+                      ((Some t) (+ (* 100 h) (+ (* 10 t) (List.len xs))))
+                      ((None) -1)))
+                    ((None) -1)))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 234 Int64))
+  (call   main (: 1 Int64)) (output (: 434 Int64))
+  (call   main (: -4 Int64)) (output (: -206 Int64)))
