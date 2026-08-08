@@ -16941,3 +16941,51 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 115 Int64))
   (call   main (: 0 Int64)) (output (: 110 Int64)))
+
+;; ── SCALE stress: dispatch width, shadow depth, table width (breaker lo) ─────────────────────────
+;; lo1 THIRTY dispatches in one region (an order of magnitude past the corpus's usual handful —
+;; the arithmetic-series sum is exact); lo2 a NINE-level same-effect shadow tower (strides 1-8,
+;; per-level seeds k*100, the deepest doubling); lo3 EIGHT ops in one effect called in SHUFFLED
+;; order (dispatch-table width, exactly one op advancing mid-sequence so the pre/post split is
+;; visible).
+
+(case "lo1 THIRTY dispatches in one region — the fold scales past the corpus's usual handful, arithmetic sum exact"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (+ s 1))))
+                (+ (St.next) (+ (St.next) (+ (St.next) (+ (St.next) (+ (St.next) (+ (St.next) (+ (St.next) (+ (St.next) (+ (St.next) (+ (St.next) (+ (St.next) (+ (St.next) (+ (St.next) (+ (St.next) (+ (St.next) (+ (St.next) (+ (St.next) (+ (St.next) (+ (St.next) (+ (St.next) (+ (St.next) (+ (St.next) (+ (St.next) (+ (St.next) (+ (St.next) (+ (St.next) (+ (St.next) (+ (St.next) (+ (St.next) (St.next))))))))))))))))))))))))))))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 585 Int64))
+  (call   main (: 0 Int64)) (output (: 435 Int64)))
+
+(case "lo2 a NINE-level shadow tower (outer + eight) — one draw per level, the deepest doubling, strides 1-8"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (+ s 1))))
+                (+ (St.next) (handle St 100 ((next () s (resume s (+ s 1)))) (+ (St.next) (handle St 200 ((next () s (resume s (+ s 2)))) (+ (St.next) (handle St 300 ((next () s (resume s (+ s 3)))) (+ (St.next) (handle St 400 ((next () s (resume s (+ s 4)))) (+ (St.next) (handle St 500 ((next () s (resume s (+ s 5)))) (+ (St.next) (handle St 600 ((next () s (resume s (+ s 6)))) (+ (St.next) (handle St 700 ((next () s (resume s (+ s 7)))) (+ (St.next) (handle St 800 ((next () s (resume s (+ s 8)))) (+ (St.next) (St.next))))))))))))))))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 4413 Int64))
+  (call   main (: 0 Int64)) (output (: 4408 Int64)))
+
+(case "lo3 EIGHT ops in one effect, called in shuffled order — dispatch-table width, one op advancing mid-sequence"
+  (input  (do
+            (effect W (op a (-> Int64)) (op b (-> Int64)) (op c (-> Int64)) (op d (-> Int64))
+                      (op e (-> Int64)) (op f (-> Int64)) (op g (-> Int64)) (op h (-> Int64)))
+            (def (main (: n Int64))
+              (handle W n
+                ((a () s (resume (+ s 1) s))
+                 (b () s (resume (+ s 2) s))
+                 (c () s (resume (+ s 3) s))
+                 (d () s (resume (+ s 4) s))
+                 (e () s (resume (+ s 5) s))
+                 (f () s (resume (+ s 6) s))
+                 (g () s (resume (+ s 7) s))
+                 (h () s (resume (+ s 8) (+ s 10))))
+                (+ (W.a) (+ (W.h) (+ (W.b) (+ (W.g) (+ (W.c) (+ (W.f) (+ (W.d) (W.e))))))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 136 Int64))
+  (call   main (: 0 Int64)) (output (: 96 Int64)))

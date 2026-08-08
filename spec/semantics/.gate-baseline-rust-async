@@ -6317,3 +6317,6 @@ pass	sy5 SYMBOL op args as COMMANDS — inc/dbl/nop route both the answer and th
 pass	uv2 a @requires-guarded fn fed by DRAWS — the contract checks effectful argument values at each call
 pass	uv3 the handler ARM calls a @requires-guarded helper — the contract checks the live state per dispatch
 pass	uv4 a RELATIONAL @ensures (ret > x) over a TWO-draw body — the postcondition compares the effectful result to the arg, twice
+pass	lo1 THIRTY dispatches in one region — the fold scales past the corpus's usual handful, arithmetic sum exact
+pass	lo2 a NINE-level shadow tower (outer + eight) — one draw per level, the deepest doubling, strides 1-8
+pass	lo3 EIGHT ops in one effect, called in shuffled order — dispatch-table width, one op advancing mid-sequence
