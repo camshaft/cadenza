@@ -5002,6 +5002,12 @@ fn op_vec_split(v: Handle, index: u32) -> (Handle, Handle) {
 #[cfg(target_arch = "wasm32")]
 impl Handle {
     /// Narrow to the opaque public handle. Lossless on wasm32 (a `Node` address is 32-bit).
+    ///
+    /// The u32 IS a raw `Node` address into THIS runtime instance's heap, so it is meaningful only within
+    /// the single run/instance that produced it — it never escapes as durable state the ABI transports;
+    /// a host resuming a run reconstructs values through the runtime, not by carrying a handle across.
+    //= spec/contracts/component-abi.md#a-runtime-value-crosses-as-an-opaque-handle
+    //# A runtime handle MUST be meaningful only within the single run and runtime instance that produced it, so that a handle never escapes the run that produced it and a host that resumes a run by replaying it reconstructs the run's values through the runtime rather than by carrying a handle across the boundary (the handle is not durable state the ABI transports; whether and how a host replays is host policy — capabilities-and-effects.md §A Run Is A Deterministic Function Of Its Input And Responses).
     fn to_u32(self) -> u32 {
         self.0 as usize as u32
     }
