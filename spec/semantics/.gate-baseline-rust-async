@@ -6420,3 +6420,8 @@ pass	mr2 the mutual pair draws from DIFFERENT effects — ev advances P, od adva
 pass	mr3 the NEXT callee in the mutual group is picked by draw parity — the descent path itself follows the thread
 pass	mr4 an ACCUMULATOR threads the mutual pair — ev doubles it plus a draw, od triples it plus a draw, alternating scales
 pass	mr5 TWENTY alternating mutual levels with the scaling accumulator — depth stress on the cross-function fold
+pass	gd1 PURE guards over a draw-bound scrutinee — three guard tiers select on the drawn value, the trailing probe pins one advance
+pass	gd2 pure guards on SUM-PAYLOAD binders — guarded and unguarded twins of each variant arm, five paths input-reachable
+pass	gd3 the guard COMPARES the scrutinee draw to an earlier let-bound draw — two thread values meet in one pure predicate
+pass	gd4 pure guards INSIDE the handler arm grade the live state — three dispatches cross the tier boundaries as the state climbs
+pass	gd5 guards over TUPLE pattern binders — the predicate compares the tuple's own components, all three orderings reachable
