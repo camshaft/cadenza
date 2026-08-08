@@ -89,6 +89,7 @@ pub mod session_registry;
 #[cfg(feature = "live-exec")]
 pub mod shell;
 pub mod status;
+pub mod ws_exec;
 
 pub use admin::{
     AdminAuthorizer, AdminCommand, AdminResponse, AllowList, InstallSpec, SessionFactory,
@@ -152,6 +153,7 @@ pub use session_registry::{SessionRecord, SessionStatus};
 #[cfg(feature = "live-exec")]
 pub use shell::ShellExecutor;
 pub use status::{host_session_status_json, session_status_json, DEFAULT_STALL_AFTER_MS};
+pub use ws_exec::{WsConnRegistry, WsSendExecutor, WsSendResult};
 
 /// Shared test-only helpers (compiled only under `#[cfg(test)]`; placed LAST so no non-test item follows a
 /// test module — clippy `items_after_test_module`). The one PROVEN-FRESH temp-dir helper the crate's
