@@ -18885,3 +18885,104 @@
   (call   main (: 1 Int64)) (output (: 79815335 Int64))
   (call   main (: 0 Int64)) (output (: 31442395 Int64))
   (call   main (: -10 Int64)) (output (: -452287005 Int64)))
+
+;; ── gd: PURE guards around the effect thread ─────────────────────────────────
+;; Post-CDZ0407 (guards must be side-effect-free) these pin the ALLOWED side.
+;; gd1 tiers three pure guards over a draw-bound scrutinee; gd2 guards
+;; SUM-PAYLOAD binders (guarded/unguarded twins per variant); gd3's guard
+;; COMPARES the scrutinee draw to an earlier let-bound draw (two thread values
+;; in one predicate, non-monotone stepper makes both verdicts reachable);
+;; gd4 puts pure guards INSIDE the handler arm to grade the live state (three
+;; dispatches cross the tiers as the state climbs); gd5 guards TUPLE pattern
+;; binders (all three orderings input-reachable).
+
+(case "gd1 PURE guards over a draw-bound scrutinee — three guard tiers select on the drawn value, the trailing probe pins one advance"
+  (input  (do
+            (effect E (op next (-> Int64)) (op probe (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1)))
+                 (probe () s (resume s s)))
+                (+ (* 10 (match (E.next)
+                           ((guard x (> x 5)) (+ 100 x))
+                           ((guard x (> x 0)) (+ 200 x))
+                           (x (+ 300 x))))
+                   (- (E.probe) n))))
+            (export main)))
+  (call   main (: 7 Int64)) (output (: 1071 Int64))
+  (call   main (: 3 Int64)) (output (: 2031 Int64))
+  (call   main (: -2 Int64)) (output (: 2981 Int64)))
+
+(case "gd2 pure guards on SUM-PAYLOAD binders — guarded and unguarded twins of each variant arm, five paths input-reachable"
+  (input  (do
+            (type Mode (A) (B Int64) (C Int64 Int64))
+            (effect E (op mode (-> Mode)) (op probe (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((mode () s (resume (match (% s 3)
+                                      (0 (A))
+                                      (1 (B s))
+                                      (_ (C s s)))
+                                    (+ s 1)))
+                 (probe () s (resume s s)))
+                (+ (* 10 (match (E.mode)
+                           ((guard (B x) (> x 3)) (+ 100 x))
+                           ((B x) (+ 200 x))
+                           ((guard (C x y) (> (+ x y) 10)) (+ 300 (+ x y)))
+                           ((C x y) (+ 400 (+ x y)))
+                           ((A) 7)))
+                   (- (E.probe) n))))
+            (export main)))
+  (call   main (: 7 Int64)) (output (: 1071 Int64))
+  (call   main (: 1 Int64)) (output (: 2011 Int64))
+  (call   main (: 8 Int64)) (output (: 3161 Int64))
+  (call   main (: 2 Int64)) (output (: 4041 Int64))
+  (call   main (: 0 Int64)) (output (: 71 Int64)))
+
+(case "gd3 the guard COMPARES the scrutinee draw to an earlier let-bound draw — two thread values meet in one pure predicate"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (if (= (% s 2) 0) (+ s 1) (- s 2)))))
+                (let ((a (E.next)))
+                  (match (E.next)
+                    ((guard b (> b a)) (+ (* 10 (+ 100 b)) (- b a)))
+                    (b (+ (* 10 (+ 300 b)) (- a b)))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 1011 Int64))
+  (call   main (: 1 Int64)) (output (: 2992 Int64))
+  (call   main (: 3 Int64)) (output (: 3012 Int64)))
+
+(case "gd4 pure guards INSIDE the handler arm grade the live state — three dispatches cross the tier boundaries as the state climbs"
+  (input  (do
+            (effect E (op grade (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((grade () s (resume (match s
+                                       ((guard v (> v 10)) 3)
+                                       ((guard v (> v 0)) 2)
+                                       (_v 1))
+                                     (+ s 4))))
+                (+ (* 100 (E.grade)) (+ (* 10 (E.grade)) (E.grade)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 223 Int64))
+  (call   main (: -2 Int64)) (output (: 122 Int64))
+  (call   main (: 11 Int64)) (output (: 333 Int64)))
+
+(case "gd5 guards over TUPLE pattern binders — the predicate compares the tuple's own components, all three orderings reachable"
+  (input  (do
+            (effect E (op pair (-> (Tuple Int64 Int64))) (op probe (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((pair () s (resume (tuple s (* 2 s)) (+ s 3)))
+                 (probe () s (resume s s)))
+                (+ (* 10 (match (E.pair)
+                           ((guard (tuple a b) (< a b)) (+ 100 b))
+                           ((guard (tuple a b) (= a b)) 200)
+                           ((tuple a b) (+ 300 b))))
+                   (- (E.probe) n))))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: 1083 Int64))
+  (call   main (: 0 Int64)) (output (: 2003 Int64))
+  (call   main (: -5 Int64)) (output (: 2903 Int64)))

@@ -6432,3 +6432,459 @@ todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
 todo	read of malformed text is a coded reject, not a wrong value
 todo	two adapter records with different state types drive a take-while fold in one program
+pass	a closure looked up from a map by a perform result, applied to a perform result, threads through call_indirect
+pass	Bytes.slice of a map-looked-up Bytes with perform-threaded start and len threads without a scratch collision
+pass	constant conditions simplify around performs — kept branches dispatch, dropped ones do not
+pass	a String op RESULT selected by the op argument, composed via concat
+pass	a heterogeneous TUPLE as op ARGUMENT — the arm destructures both components
+pass	one perform result flows through let, record, projection, tuple, destructure, and match
+pass	a pure HELPER's arguments evaluate left-to-right when each performs
+pass	a SET op RESULT crosses resume — membership-probed and measured per dispatch
+pass	a SET as op ARGUMENT — the arm measures and probes the set it is handed
+pass	a LIST OF SETS op result — the body indexes, measures, and probes the nested elements
+pass	a LIST OF SETS as op ARGUMENT — the arm indexes into the nested payload it is handed
+pass	a MAP OF LISTS op result — the body looks up a key and folds the inner list
+pass	a record with a LIST field crosses resume — the body projects and folds the collection field
+pass	a record with a SET field as op ARGUMENT — the arm probes the collection beside the scalar
+pass	a 40-element list op RESULT crosses resume — a multi-leaf RRB payload survives the marshal
+pass	a 40-element list as op ARGUMENT — the arm folds a multi-leaf RRB payload
+pass	a 40-element SET op result — a multi-node CHAMP payload crosses resume
+pass	a LIST OF STRINGS op result — the body indexes and measures rope elements after the marshal
+pass	a LIST OF BIGINTS as op ARGUMENT — the arm folds heap-numeric elements it is handed
+pass	a list of RATIONALS op result — exact fractions cross resume and fold to a canonical sum
+pass	a list-to-list TRANSFORMER op — heap payloads cross BOTH slots of one dispatch
+pass	a map-to-map transformer op CHAINED — the second dispatch receives the first's result
+pass	a TUPLE-keyed Map op result — the body looks up by a reconstructed compound key
+pass	a SET of tuples as op ARGUMENT — the arm probes compound membership including order sensitivity
+pass	a two-op composition where the second op's String argument is BUILT from the first's result
+pass	a SYMBOL as op ARGUMENT — the arm compares interned identity against its own intern
+pass	a SYMBOL handler STATE threads dispatches — each resume reads the prior symbol's identity
+pass	a fallible helper with a `?` called from INSIDE a handler ARM (success path)
+pass	a CONSTANT-failure `?` inside the arm's helper — the cut stays in the helper, dispatch unharmed
+pass	a FLOAT64 as op ARGUMENT — the arm accumulates fractional values into Float64 state
+pass	a TUPLE mixing Float64 and Int64 crosses as op ARGUMENT — the arm scales by the int
+pass	the ARM decodes a Bytes op argument with a bin pattern and resumes a parsed field
+pass	the ARM ENCODES its scalar op argument into framed Bytes and resumes them — body decodes
+pass	a Bytes-to-Bytes transformer op — the arm frames the payload it received and the body re-reads
+pass	a String-to-String transformer op — a rope argument crosses in, a wrapped rope crosses back
+pass	an abortive arm READS the heap LIST op argument it was handed — the payload survives the abort
+pass	an abortive arm returns a MAP built FROM its heap op argument as the handle's value
+pass	200 recursive dispatches each crossing a heap LIST argument — the marshal at depth
+pass	a handler state GROWS a list across 100 dispatches — the accumulated spine reads back intact
+pass	a Bytes.slice VIEW crosses as op ARGUMENT — the arm reads through the window it was handed
+pass	a String.slice VIEW built in the ARM crosses back through resume — the body measures it
+pass	a multi-shot ctl arm whose continuation reads an ENCLOSING-fn param folds
+pass	a ONE-shot ctl arm whose continuation reads an enclosing-fn param folds (mv single-splice control)
+pass	a multi-shot ctl arm reading an enclosing param with NO let frame folds (mv no-let control)
+pass	an IN-PROGRAM arm resumes a Qty built in the arm — the erased-scalar crossing without a host
+pass	a Qty STATE threads via a def-bound arm computation — the workaround shape runs end to end
+pass	a Qty state's next-state slot computes (+ s s) INLINE — the formerly-rejected shape runs
+pass	a guard destructures a perform-result TUPLE and its condition reads both binders
+pass	the guard-MISS path re-performs in the fallback arm — dispatch continues past a failed guard
+pass	an arm re-performs its OWN effect to a SAME-EFFECT outer handler — the true self-shadow forward
+pass	both same-effect handlers STATEFUL — the outer's advance survives the inner's forwards
+pass	a CLOSURE handler state captures the enclosing function's parameter and applies per dispatch
+pass	the closure state is REPLACED per dispatch by one capturing the arm's OWN binder
+pass	the natural invariant construction over a VIOLATING perform result traps through the handler
+pass	a two-site resume arm whose resume VALUE reads an enclosing-fn param folds
+pass	a two-site resume arm reading the enclosing SEED param in its resume value folds
+pass	a two-site resume arm whose resume value is a heap LIST reading an enclosing param folds
+pass	the arm DECODES a Bytes op argument to a String — multibyte UTF-8 survives the crossing
+pass	INVALID UTF-8 crosses as a Bytes op argument — the arm's decode declines with None
+pass	TWO sequential handles of the same effect — the second starts fresh, no state bleed
+pass	an ABORT in the first handle leaves the SECOND handle's dispatch untouched
+pass	a bare BIGINT as op ARGUMENT — the arm does exact wide arithmetic on the crossed box
+pass	a bare RATIONAL as op ARGUMENT — the arm reads exact numerator/denominator off the crossed value
+pass	an in-range literal to a narrow effect-op parameter crosses and the arm observes it
+pass	an OVERFLOWING literal to a narrow effect-op parameter is rejected
+pass	an arm resuming an OVERFLOWING literal into a narrow op RESULT is rejected
+pass	an overflowing literal in a RECORD op argument's narrow field is rejected
+pass	a RUNTIME Int64 argument to a narrow effect-op parameter is rejected as a type mismatch
+pass	a FULL handle expression in the resume-value slot — the arm runs a nested handler per dispatch
+pass	the arm's nested handler is instantiated FRESH per dispatch — independent inner state
+pass	a multi-shot arm's resume VALUE reads the enclosing param — the let-bound body folds correctly
+pass	a multi-shot handle SEEDED by the enclosing param folds with a let-bound body
+pass	a multi-shot arm with an enclosing-param resume value and a MATCH-binder consumer folds
+pass	a performing match-arm guard on a REFUTABLE pattern folds (keeps the match, hoists the guard)
+pass	a performing guard on a refutable pattern whose guard FAILS falls to the catch-all
+pass	a performing guard on a TUPLE-destructuring pattern folds
+pass	an @ensures on a PERFORMING def called TWICE under one handler — both effectful results checked
+pass	an OPTION as op ARGUMENT — the arm matches Some/None it was handed, per dispatch
+pass	a RESULT as op ARGUMENT — the arm branches on Ok/Err payloads it was handed
+pass	a scrutinee FAILING the pattern reaches the catch-all WITHOUT running the guard's perform
+pass	a MULTI-argument op mixing a heap list and two scalars — the arm consumes all three
+pass	a multi-argument op with TWO heap arguments — a String key and a Map to search
+pass	an empty (list) match-fallback beside an unsolved-Var arm grounds to the join's list type
+pass	an empty SET literal in a match-Option fallback grounds through the join
+pass	an IF-join with an unsolved-Var arm and an empty-list sibling grounds like a match join
+pass	a MAP-OF-LISTS handler state accumulates per dispatch — the upsert idiom end to end
+pass	an empty MAP fallback beside an unsolved-Var arm grounds — the Map-of-Maps face
+pass	a handler state SHRINKS per dispatch — Map.remove down to empty across resume cycles
+pass	a SET state churns — inserts and removes interleave across dispatches, canonical at each read
+pass	the arm ENUMERATES its Map state to a list of tuples and resumes the enumeration
+pass	Set.to-list of the state crosses resume ORDERED — the body reads elements positionally
+pass	a crossed rope String compares EQUAL to an arm-local flat literal — content equality over the marshal
+pass	two crossed LISTS compare structurally in the arm — same content from different builders
+pass	an inner abort preserves an outer advance committed in a NESTED strict operand (deeper-operand-lift)
+pass	a nested-operand abort preserves a HEAP-state advance across a mid-mutation frame drop
+pass	an inner abort in a LET-INIT preserves the outer advance committed before it (let-init collapse)
+pass	a do-spine item abort ABANDONS its enclosing operator, not splicing the value (do-item abort-abandon)
+pass	the arm slices a crossed multibyte String at a scalar boundary — the slice window respects UTF-8
+pass	a mid-scalar byte window crosses to the arm and String.from-bytes declines it
+pass	a pre-abort HOST call inside a NESTED strict operand is ISSUED before the abort abandons
+pass	a later let-binding abort preserves an EARLIER binding's committed advance (multi-binding prefix)
+pass	an inner ABORT handle inside a MULTI-SHOT region — each forked branch runs its own abort
+pass	a single MUTUAL-recursion chain performs at its base — the cross-function fold serves it
+pass	a host response captured BEFORE a multi-shot region is shared by both branches — one host call
+pass	an inner arm performs TWO DISTINCT outer effects in one resume value — both thread per dispatch
+pass	the state-SWAP idiom — the op argument becomes the state and the OLD state returns
+pass	a LIST built from three performs ESCAPES the handle — read intact outside the region
+pass	a MAP valued with perform results ESCAPES the handle — looked up outside the region
+pass	Record.with over a perform result — the ORIGINAL record survives beside the update
+pass	a FRAMED-Bytes handler state decoded and re-encoded by the arm per dispatch
+pass	arm-interned symbols keep content identity ACROSS dispatches — same content = same symbol
+pass	a complete handler inside a CLOSURE body — each application instantiates fresh
+pass	the closure's inner arm performs an OUTER effect through the closure boundary
+pass	a record STATE with a Set field rebuilt per dispatch — dedup observed through the field
+pass	a perform-seeded inner handle composed with a SECOND same-effect instantiation after it
+pass	a recursive TREE as a transformer op — crosses IN, the arm wraps it, crosses back OUT
+pass	a heap result of effect A pipes directly into effect B's argument — cross-effect heap flow
+pass	Rational.of over TWO perform results — ctor-arg order observable through the dispatches
+pass	the gcd face: a reducible num/den pair from performs canonicalizes (4/8 → 1/2)
+pass	a tuple scrutinee built from TWO performs — the guard relates both dispatch results
+pass	recursively STACKED same-effect handlers — the perform resolves to the DEEPEST frame
+pass	the shadow stack UNWINDS — each level's post-region perform reaches ITS enclosing frame
+pass	a perform-capturing closure passed to a HIGHER-ORDER helper applies twice under the handler
+pass	a perform-capture through a TUPLE-returning HOF — both results carry the capture
+pass	a TWO-argument capture closure through a fold-style HOF — the capture rides both applications
+pass	a perform-derived list SHARED by two tuples — both readers see one allocation's content
+pass	pushing onto a SHARED perform-built list — the original stays len 2 beside the grown copy
+pass	identical PURE reads of a perform-built list — safe to share, values agree
+pass	a region's RESULT seeds a second same-effect region with a DIFFERENT arm shape
+pass	a PARAMETERIZED handler helper chained through itself — the step size is a function param
+pass	the SAME op name on two DIFFERENT effects — each qualified perform routes to its own handler
+pass	a SYMBOL-keyed Map built from performs — interned keys look up across separate interns
+pass	a SET of arm-interned symbols dedups across dispatches — warm appears twice, stored once
+pass	a symbol round-trip between TWO ops of one effect — interned by one, judged by the other
+pass	an indexed list walk performing per element — element × advancing draw, summed
+pass	a map-via-effects walk — each element transformed by a dispatch, output order preserved
+pass	filter-via-effects — a STATEFUL predicate dispatch decides each element's survival
+pass	a LET-BOUND perform after a cross-function recursive helper observes the helper's out-state
+pass	the let-bound-after-helper observation is state-type-general (scalar counter)
+pass	a byte-walk lexer performing per byte — Bytes.at pairs with an advancing draw per position
+pass	an emit/flush byte-writer seeded EMPTY — three emits accumulate, flush reads the frame back
+pass	a reader→writer PUMP then a LET-bound flush reads the FULL accumulation (breaker tk3d class)
+pass	a BigInt arithmetic tower over one perform draw — cube then divide, narrowed once
+pass	a Rational SQUARE over a perform draw — 1/5 squared stays exactly 1/25
+pass	a perform-derived rope SELF-concatenated — the shared subtree measures correctly
+pass	a perform-derived byte-rope SELF-concatenated — both halves read the same draw
+pass	a nested-list DAG — one perform-derived inner list aliased TWICE in the outer
+pass	two perform-drawn quantities of one dimension ADD — same-unit combine over two crossings
+pass	a perform-drawn quantity MULTIPLIES across dimensions — meter·second product value
+pass	a perform-drawn quantity DIVIDES across dimensions — the meter/second quotient value
+pass	host calls in the seed AND the next-state slot — the FINAL dispatch's state call is elided
+pass	two host-seeded SIBLING handlers — each region's seed consumes its response in evaluation order
+pass	a host call SANDWICHED between two in-program dispatches — state survives the boundary crossing
+pass	a TUPLE-literal scrutinee with performing fields — draws fire once, bind by position
+pass	a USER-SUM-literal scrutinee with a performing payload — the ctor pattern binds once
+pass	a STD-SUM (Option) literal scrutinee — single eval, payload binds by position
+pass	a LIST-literal scrutinee with performing elements — draws fire once, bind by position
+pass	a performing record nested in a TUPLE scrutinee — bound by position, record-matched after
+pass	a performing guard with a WILDCARD fallback is ALSO a COMPILE ERROR (finding #9 sibling, CDZ0407)
+pass	za1 literal-arm dispatch on a draw — the MATCHED arm performs again, both calls exercised
+pass	za2 a COMPUTED scrutinee (difference of two draws) selects the performing arm at one input only
+pass	za3 NESTED literal-arm dispatch — each level matches a let-bound draw, the innermost arm reads a third
+pass	sh1 a NESTED handler for the SAME effect shadows the outer — inner draws hit the inner state, the draw after hits the outer
+pass	sh2d a let bound in a handle body, read by a NESTED handle's seed — declines (let-crossing scope gap)
+pass	sh2n the config-fetch idiom with its perform LET-LIFTED — declines (let-crossing scope gap)
+pass	mo1 a TWO-op effect fully shadowed — the inner handler re-interprets BOTH ops with different arms
+pass	mo2 THREE-deep same-effect shadowing — each depth's draws thread its own state, interleaved before/inside/after
+pass	mo4 a SAME-effect draw in the inner handle's SEED homes to the OUTER handler — the shadow starts at the body, not the seed
+pass	mo5 LIST-state shadowing — inner and outer thread independent heap lists, growth interleaved
+pass	is1 a draw-SELECTED match arm installs a nested same-effect shadow — outer state resumes after the branch-local region
+pass	is2 the ARM's resume-value is a nested SAME-effect handle — a fresh shadow instantiated per dispatch from the live state
+pass	is3 the ARM's NEXT-STATE is computed by a nested SAME-effect handle — the shadow feeds the outer state thread
+pass	hp1 a RECURSIVE fn installs a fresh same-effect handler per frame — the base case draws from the deepest, each frame from its own
+pass	hp2 per-frame handlers with a POST-ORDER draw — each frame draws its own state AFTER the recursive call returns
+pass	hp3 the recursive call sits in the SEED — each frame's handler is seeded by the whole subtree below it
+pass	pa1 a SAME-effect perform as another op's ARGUMENT — the arg dispatch advances the state the outer dispatch reads
+pass	pa2 TWO same-effect draws as the TWO arguments of one op — left-to-right arg order, the arm reads the post-args state
+pass	pa3 THREE-deep nested same-effect arg-feed — scale(scale(next)) with a state-advancing scale arm
+pass	gp1 a PERFORMING guard on a wildcard pattern is a COMPILE ERROR (guards-side-effect-free, CDZ0407)
+pass	gp2e TWO pure guards cascade over a draw, the fallback re-performs — guard misses leave dispatch serviceable
+pass	gp2 TWO guard arms where a guard PERFORMS — declines (multi-guard performing-condition fold gap)
+pass	hs1 an inner SAME-effect handle's result is the match SCRUTINEE — the selected arm and the trailing draw hit the OUTER state
+pass	hs2 an OUTER-seeded inner handle builds a tuple scrutinee — the destructured arm re-performs against the outer
+pass	hs3 an inner SAME-effect handle's result is the IF condition — the taken branch re-performs against the outer
+pass	ti1 A-B-A-B interleaved draws in ONE expression — each effect threads its own state independently
+pass	ti2b the inner arm's resume-VALUE performs the outer effect on EVERY dispatch — three dispatches, both states advancing
+pass	ti3 cross-effect resume-value feed PLUS direct body interleave — B's arm and the body both advance A
+pass	ti4 THREE-effect chained cross-feed — C's arm performs B, B's arm performs A, two C dispatches walk the whole chain twice
+pass	ti5 a FOREIGN outer perform inside the inner region — A advances inside B's body, the post-region draw sees it
+pass	ss1 a STRING handler state grows per dispatch — each arm returns the pre-growth length, growth is op-arg-branchy
+pass	ss2 string state grows across a DO sequence — discarded draws still advance the rope
+pass	ss3 nested SAME-effect handlers with independent STRING states — inner self-doubles, outer appends
+pass	gl1 the let-lifted pure-guard equivalent of the gp1 dispatch shape — the pre-bound guard draw advances the state the arms read
+pass	gl2 the let-lifted pure-guard equivalent of the gp2 cascade — both guard draws pre-bound, all three arms reachable
+pass	mk1 a MAP handler state keyed by the op ARGUMENT — per-key counters, lookup-or-default then insert per dispatch
+pass	mk2 map keys DERIVED from prior draws — n=1 collides the derived key with the first insert, shrinking the map
+pass	mk3 the arm SHRINKS the map state via remove — re-removing the same key is idempotent, a missing key is a no-op
+pass	tp1 TWO ops each own a tuple-state SLOT — lo advances field 0, hi doubles field 1, interleaved
+pass	tp2 a SWAP op exchanges the tuple-state slots — interleaved readers observe the exchange
+pass	tp3 a NESTED tuple state ((a b) c) — the arm rebuilds the inner Fibonacci pair and bumps the outer counter per dispatch
+pass	su1 a SUM-typed state machine — Idle transitions to Run on first dispatch, Run accumulates thereafter
+pass	su2 a THREE-variant cyclic machine — the op arg selects the transition, both Mid exits exercised
+pass	su3 a RECURSIVE sum state — the arm grows a Peano tower by two per dispatch, a recursive fn measures it
+pass	su4 a sum variant carrying a HEAP list — Empty seeds on first put, Full grows the payload thereafter
+pass	su5 the sum STATE escapes as the handle's value via a dump op — matched OUTSIDE the handler
+pass	su6f a SCALAR-state outer shadowed by a SUM-state inner cycler — the inner machine transitions twice
+pass	su6g a SUM-state outer shadowed by a SCALAR-state inner — mixed state kinds across the shadow boundary
+pass	su6d BOTH handlers sum-state, same effect, TWO inner dispatches — declines (2nd arm copy's variant match hits the scalar-probe path)
+pass	se1 a SET handler state with dedup dynamics — re-adding an existing element leaves the size fixed
+pass	se2 a membership-GATED arm — first visit admits and records, a revisit answers negated without growing
+pass	se3 a DRAIN-style arm removes on hit — the second take of the same key routes to the miss path
+pass	bc1 short-circuit AND over two draws — the false-first row skips the second draw, observed by the branch draw
+pass	bc2 short-circuit OR over two draws — the true-first row skips the second draw
+pass	bc3 a nested and-of-or short-circuit tree over draws — each row exercises a distinct skip pattern
+pass	da1 THREE draws inside one list literal passed to a helper — left-to-right element order, the post-call draw sees all three
+pass	da2 draws as MAP-literal keys and values — two entries built from three sequential draws
+pass	da3 draws as SET-literal elements — n=7 collides the first draw with the fixed element, n=6 collides the second
+pass	sa1 STRING op arguments measured into a scalar state — the empty string is a real zero-length argument
+pass	sa2 a string BUILT from a prior draw's branch becomes the next op's argument — the tag arm reads the post-pick state
+pass	sa3 STRING resume values — the arm builds a rope per dispatch branching op-arg vs live state, body concatenates two
+pass	rs1 a RECORD state where each op owns a FIELD — bump advances a, scale multiplies b, interleaved
+pass	rs2 the arm updates the record state via Record.with — field b is held by the functional update across dispatches
+pass	rs3 a NESTED record state — the arm functionally updates the inner record's x by y and bumps the outer counter
+pass	mx1 a THREE-arg op mixing Int64/String/Bool — one arm consumes all three kinds beside the live state
+pass	mx2 mixed-arg op with BOTH args draw-derived — the int arg is a draw, the string arg branches on a second draw
+pass	mx3 a TUPLE-arg op chained through a tuple RESULT — the second dispatch consumes the first's destructured output
+pass	hc1 a THREE-deep pure helper chain whose LEAF performs — two top-level calls thread the state through the depth
+pass	hc2 helpers at TWO depths both perform — the call-site draw, mid's draw, and leaf's draw arrive in order
+pass	hc3 the SAME performing helper under two SEQUENTIAL handlers — each handle interprets its draws with its own arm and seed
+pass	hc4 a performing helper COMPOSED with itself — probe(probe(draw)), three dispatches through two call frames
+pass	hc5 a helper RETURNS a tuple of two draws — the caller destructures it and re-performs
+pass	nx1 a SUBTRACTING stride crosses zero — negative states thread and sum correctly
+pass	nx2 a 2^62 seed threads exactly — the difference of consecutive draws recovers the stride
+pass	nx3 the arm branches on the op arg's SIGN — negation on the negative path, n and -n both exercised
+pass	nx4 an alternating-sign GEOMETRIC stride (*-2) — the sign flips per dispatch and the sum telescopes
+pass	nx5 i64::MIN-adjacent op arguments — the arm's subtraction stays in range and the two dispatches differ by exactly the state stride
+pass	mf1 a helper performing TWO different effects — both handlers discharge it, both states advance per call
+pass	mf2 the SAME two-effect helper under the OPPOSITE handler nesting order — distinct effects commute
+pass	mf3 one performing helper called from an ARM's resume-value AND the body — three calls, one advancing thread
+pass	st1 a handle expression as ONE operand of an enclosing pure sum — the pure operand and the handled region compose
+pass	st2 TWO sibling handle expressions as operands of one sum — independent regions with different arms and seeds
+pass	lt1 the arm SWAPS its list state's ends per dispatch — the head alternates between the original ends
+pass	lt2 the arm DOUBLES every list element per dispatch (via a projection helper) — the sum geometrically grows
+pass	by1 a BYTES handler state grows two bytes per dispatch — each arm returns the pre-growth length
+pass	by2 a SLICE view (start,LEN) of the Bytes state read per dispatch — in-range bytes returned, out-of-range answers -1
+pass	by3 op-arg values WRAPPED to bytes at runtime accumulate in the state — the fourth emit sees three prior
+pass	by4 nested SAME-effect handlers with independent BYTES states — the outer buffer self-doubles, the inner appends
+pass	op1 the STD Option as handler state — None seeds to Some on first feed, the payload accumulates thereafter
+pass	op2 an Option RESUME value from a single-site arm — Some carries the excess, None answers the shortfall row
+pass	ab1d the scalar twin — a conditional abort under a SCALAR-state outer, pre-abort advance committed
+pass	ab1e a branch-conditional abort under a STRING-state outer handler — the taken abort skips the post-abort emit, the untaken row grows the rope
+pass	ab2 a conditional abort under a MAP-state outer — the pre-abort insert is committed either way
+pass	ab3 the abort VALUE is itself a draw from the outer STRING-state handler — the pre-abort dispatch commits before the unwind
+pass	ab4 TWO sequential abort regions under one STRING-state outer — an aborted region leaves the rope where it was
+pass	cc1 a closure over the fn PARAM built before the handle, applied twice inside with draws — capture stable, draws advance
+pass	cc2 a closure escaping handle A is applied inside handle B — the A-capture is stable while B's draws feed the args
+pass	cc4 TWO closures over SEQUENTIAL draws inside one region — each captures its own read, applied after both bind
+pass	cc5 composed closures over three draws — g(f(draw)) where f and g each captured an earlier read
+pass	cc6b a closure bound OUTSIDE the outer handle applied inside a nested SHADOW region and after it — capture crosses both boundaries
+pass	cc7 a draw-capturing closure threaded through a RECURSIVE helper — applied per frame, the leaf applies it to a fresh draw
+pass	cc8 a closure carried in a TUPLE beside a scalar — destructured in one match and applied around advancing draws
+pass	dd1b consecutive do-DEF draws — both binders hold their reads, the tail draw sees the doubled-twice state
+pass	dd1d a bare DISCARDED draw before a let-bound draw — the discard advances the state the binder reads
+pass	dd2 a do-DEF bound to a whole nested SHADOW handle — the def holds the inner region's value, the tail draw reads outer
+pass	cn1 a THREE-deep seed RELAY — each nested shadow's seed is a draw from its parent, strides differ per depth
+pass	cn2 the inner shadow's RESULT flows up into the outer computation — a let-bound region value scaled beside an outer draw
+pass	dw1 a list literal mixing an Int32-annotated element with a wider-inferred literal unifies to (List Int32) — every element renders at the unified element width, uniform across backends (fuzzer cdz-smith differential: rust once emitted a heterogeneous vec![i32,i64])
+pass	ic2 an INLINE performing if-condition — the taken branch's draw reads the condition-advanced state
+pass	ic3 CHAINED if-else-if where each condition draws — three rows land in three different arms
+pass	ic4 a helper with a performing IF-condition called twice — each call re-evaluates the condition against the advanced state
+pass	ic5 a recursive LOOP whose exit condition draws per iteration — the iteration count is state-determined
+pass	ic6 a draw-conditioned branch selects BETWEEN two effects — the untaken effect's state is untouched by that row
+pass	tr1 a TUPLE snapshot resume value — each dispatch returns (state, state*10), two snapshots differ by the stride
+pass	print renders a HUGE Ast.Int losslessly — the full 26-digit decimal, no truncation
+pass	eval of a quoted HUGE integer literal declines CDZ0201 — BigInt storage does not widen eval
+pass	dn1 a FIVE-deep same-effect shadow tower — one draw per level plus a doubled draw at the innermost
+pass	dn2b an abort under FOUR resumptive frames — the unwind abandons all four pending sums (extends the three-frame pin)
+pass	dn3 an ALTERNATING A/B/A/B tower where both effects share the op NAME next — each perform homes to its effect's innermost handler
+pass	dn4 SKIP-LEVEL performs from the innermost region — A's draws cross the B and C frames to the outermost handler twice
+pass	dn5 a tuple built INSIDE the inner region from BOTH effects' draws, destructured OUTSIDE — data crosses the region boundary
+pass	rr1 one draw consumed THREE times (squared, scaled, summed) — a single dispatch, the binder multiply-read
+pass	rr2 the SQUARE of a difference of two draws — composite arithmetic over one advancing thread, zero row included
+pass	aa1 the resume VALUE is a deep pure expression over the op arg AND state — (v+s)^2 - v*s per dispatch
+pass	aa2 a QUADRATIC next-state (s^2+1) — three dispatches, the state squaring away from the seed
+pass	aa3 REMAINDER arithmetic in the resume value — (% s 7) cycles as the +5 stride wraps the modulus
+pass	aa4 a THREE-WAY comparison arm — the resume value encodes gt/eq/lt as 1/10/100 against the advancing state
+pass	aa5 DIVISION in the resume value with a subtracting stride — quotients shrink as the state walks down
+pass	sc1 STRING literal-arm dispatch on a draw — the hi arm re-performs and measures, the lo arm is constant
+pass	sc2 EQUALITY of two string draws routes the branch — the n=3 row crosses the threshold between draws
+pass	nm1 NEGATIVE remainder is TRUNCATED (sign of the dividend) uniformly — bare and through a handler arm
+pass	nm2 NEGATIVE division TRUNCATES toward zero uniformly — bare and through a handler arm
+pass	nm3 the only overflowing DIVISION (Int64.min / -1) is a CONSTANT-fold reject — the runtime-divisor form runs for every other divisor
+pass	nm4 Int64.min divided by RUNTIME divisors — every non-(-1) divisor has an exact Int64 quotient
+pass	fe1 a Float64 handler state HALVING per dispatch — three draws sum to exactly 1.75x the seed (exact binary fractions)
+pass	fe2 a CLAMP-style Float64 arm (single-site resume) — below-state args are lifted to the rising floor
+pass	fe3 an Int64 handler and a Float64 handler INTERLEAVED — integer ticks and exact float halving thread independently
+pass	fe4 float comparisons route an integer match — the sign of the second draw picks the arm, exact identities verify inside
+pass	bs1 a BOOL toggle state — four draws alternate true/false from an input-dependent seed
+pass	bs2 a LATCH — once an op arg is false, the state stays false and every later check answers false
+pass	hr1 a HANDLE expression as a record-literal FIELD value — the region's result sits beside a pure field
+pass	hr2 a HANDLE expression as a middle LIST element — the region's result sits between pure elements
+pass	hr3 a HANDLE expression as a map-literal VALUE — the region's result is stored under a key and looked up after
+pass	hr4 a whole HANDLE region as another effect's op ARGUMENT — B's region computes the value A's dispatch consumes
+pass	wa1 wrapping-add as the next-state — a near-MAX seed wraps to a concrete near-MIN value on the second draw
+pass	wa2 wrapping-add of the op ARG and state in the resume value — wrap, exact-MAX, and identity rows
+pass	wa3 the wrap WALK — three draws from a MAX seed step MAX, MIN, MIN+1 through wrapping-add(+1), checked '+' beside
+pass	ed1 TWO defs each install their OWN handler for one effect — main calls both, seeds and arms fully independent
+pass	ed2 a handled def CALLED from inside another def's handle — the callee's region shadows the caller's mid-body
+pass	ed3 a RECURSIVE def that handles per frame, called from a handled main — the base case draws from the deepest frame's handler
+pass	ed4 one shared performing helper called under TWO different live handlers — each call homes to its caller's region
+pass	sb1 an op ARG drawn at a shadow boundary — both the arg draw and the consuming dispatch home to the INNER handler
+pass	sb3 the op ARG draws from effect B while the dispatch homes to effect A — two paired dispatches, both states advance
+pass	sb4 the innermost seed is a COMPOSITE of two effects' dispatches — B's draw feeds A's add, the result seeds a fresh B shadow
+pass	lf1 a recursive index-walk over a DRAW-BUILT list, scaled by an earlier draw — the walk itself is pure
+pass	lf2 a PERFORMING recursive walk — each element visit draws, pairing element order with state order
+pass	lf3 the arm pushes TWO elements per dispatch (both lengths read from the PRE-push list) — the third draw reads length 5
+pass	lf4 a per-element dispatch comparing each element against the RISING state — amplify-or-pass per visit
+pass	lf5 TWO lists walked in LOCKSTEP with a per-pair 2-arg dispatch — length-guarded via projection helpers
+pass	mi1 enumeration DELTA across dispatches — dumps before and after keyed inserts, collision rows shrink the delta
+pass	mi2 SORTED Set enumeration survives a draw-keyed insert — positional reads, the collision row exposes the missing third slot
+pass	mi3 the arm AGGREGATES map values via a to-list walk — the n=1 row OVERWRITES the seed value, shrinking the total
+pass	sg1 a string BUILT by a recursive walk of draws — one H/L character per dispatch, exact content compared
+pass	sg2 a stable PREFIX slice of a growing rope — String.slice (start,END) of the state per dispatch, prefix identical across growth
+pass	sg3 a ONE-SHOT string lock — the arm string-compares op arg vs state, consuming the key on the first match
+pass	sg4 TWO-SIDED rope growth — the op arg's sign picks append-right vs prepend-left, exact content across three sign patterns
+pass	sg5 the GROWING string state is a MAP KEY per dispatch — each draw looks up the current rope in a literal map
+pass	sg6 the rope's LENGTH PARITY routes its own growth — odd appends two, even appends one; four draws read 1,3,4,5
+pass	sg7 byte-len vs scalar-len DIVERGE on a growing multi-byte rope — each dispatch reads the difference (one per accent)
+pass	tt1 a NESTED-tuple op ARG destructured two levels inside the arm — both dispatches read the live state
+pass	tt2 NESTED-tuple resume values across two dispatches — outer destructured by match, inner read by PROJECTION
+pass	tt3 a tuple ROTATED through two chained dispatches — each rotation folds the state into the moved slot
+pass	tt4 a MIXED String+Int tuple state — the arm grows the rope and folds the op arg into the counter per dispatch
+pass	tt5 an inner PAIR swapped on counter parity — a nested-tuple state machine, both slots and the counter observed
+pass	al1 chained LET locals inside the arm — intermediate names feed both the resume value and the next-state
+pass	al2 a PURE helper called from the arm for BOTH slots — the arm delegates its computation to a def
+pass	al3 a two-site resume where EACH branch has its own LET local — gap/overshoot named per path, different strides
+pass	al4 ONE arm-local feeds BOTH slots — the score accumulates into the base while the count rides beside
+pass	al5 an arm-LOCAL named the same as a body-side binder — hygiene keeps the two w's separate across dispatches
+pass	fs1 the SAME handle expression re-entered per recursion round — a FRESH region each iteration, seeds keyed by depth
+pass	fs2 two SEQUENTIAL handles where the second's SEED is computed from the first's RESULT — regions chained by value
+pass	fs3 THREE value-chained regions — each seed is the previous region's result, arms +1 / x2 / -5
+pass	sy2 a SYMBOL toggle state — equality routes the resume value while the arm flips fast/slow per dispatch
+pass	sy3 the SYMBOL state is a MAP KEY per dispatch — the a→b→c walk ends at a missing key
+pass	sy4 sequential draws written into record FIELDS via Record.with symbol selectors — chained functional updates
+pass	sy5 SYMBOL op args as COMMANDS — inc/dbl/nop route both the answer and the state transition
+pass	uv2 a @requires-guarded fn fed by DRAWS — the contract checks effectful argument values at each call
+pass	uv3 the handler ARM calls a @requires-guarded helper — the contract checks the live state per dispatch
+pass	uv4 a RELATIONAL @ensures (ret > x) over a TWO-draw body — the postcondition compares the effectful result to the arg, twice
+pass	lo1 THIRTY dispatches in one region — the fold scales past the corpus's usual handful, arithmetic sum exact
+pass	lo2 a NINE-level shadow tower (outer + eight) — one draw per level, the deepest doubling, strides 1-8
+pass	lo3 EIGHT ops in one effect, called in shuffled order — dispatch-table width, one op advancing mid-sequence
+pass	oc1 an Option-of-TUPLE accumulator — None seeds on first step, Some carries (total,count) advancing both
+pass	oc2 an Option FLOWS between two ops of one effect — find produces Some/None, use consumes it as an op ARG
+pass	oc3 a DOUBLE-wrapped Option resume value — None vs Some(None) vs Some(Some v) all distinguished by the body
+pass	rt1 Ok/Err resume values with a DEPENDENT second dispatch — the sign of the falling state flips Ok to Err
+pass	rt2 an Err SHORT-CIRCUITS a recursive Result walk — Ok accumulates, the first Err multiplies out and stops
+pass	rt3 the Err VALUE seeds a RECOVERY region — a fallback same-effect handle runs inside the Err arm
+pass	ae1 SUBTRACTION of two same-op draws as a 2-ary op's args — the antisymmetry pins left-to-right order exactly
+pass	ae2 draw-PURE-draw argument positions to a pure 3-ary fn — the middle constant sits between two advancing draws
+pass	ae3 THREE same-op draws as a 3-ary OP's own args — order pinned inside the op's argument list itself
+pass	ae4 draw / performing-HELPER / draw argument positions — the middle arg performs through a def boundary
+pass	ae5 short-circuit AND with DRAWS on both sides — the skipped right draw leaves the state thread untouched
+pass	ae6 short-circuit OR with DRAWS on both sides — the right draw fires only when the left is false
+pass	ae7 draw NESTED under a pure unary call in the first arg slot, second slot a bare draw — nesting must not reorder
+pass	ae8 LIST literal of three draws — element positions carry the draw order into the structure
+pass	ae9 RECORD literal of two draws read back by PROJECTION — field-init order in the literal drives the state thread
+pass	ae10 TUPLE literal of three draws matched immediately as scrutinee — positions survive the construct-then-destructure round trip
+pass	ae11 a DO-block as an argument — its DISCARDED interior draw still advances the state before the block's value draw
+pass	ae12 an IF-expression as an argument whose CONDITION draws — the taken branch decides whether a second draw fires before the next arg
+pass	ha1 an INNER op's arguments draw from the OUTER handler — two outer draws cross the inner dispatch boundary in order
+pass	ha2 outer-draw feeds the INNER op, whose result feeds an OUTER op again — a three-hop cross-handler value chain
+pass	ha3 INTERLEAVED outer-inner-outer draws in ONE argument list — each draw dispatches to its own handler in sequence
+pass	ha4 an inner op's arguments dispatch to the SAME inner handler — same-effect draws inside the op's own arg list, then an outer draw
+pass	rv1 the inner handler ARM resumes with an OUTER draw — the resume VALUE expression performs against the enclosing handler
+pass	rv2 the inner arm's resume value SUBTRACTS two outer draws — cross-handler order inside the arm, with a doubling outer state
+pass	tl1 THREE live handlers, each drawn in one expression — every draw dispatches past the two inner frames to its own
+pass	tl2 a THREE-frame value pipeline — innermost pick feeds middle dbl feeds outermost send, then an outer draw stamps the hundreds
+pass	tl3 the MIDDLE frame's arm resumes with an OUTERMOST draw — rv-face at depth, dispatched from under a third live frame
+pass	tl4 SAME effect handled at two depths — the inner handle shadows for its extent, the outer thread resumes after it closes
+pass	av1 the inner arm ABORTS with an OUTER draw as the abort value — the escaping value performs on the way out
+pass	av2 the abort value SUBTRACTS two outer draws under a DOUBLING outer state — antisymmetry pins order inside the aborting arm
+pass	av3 in a THREE-stack the innermost arm aborts with a MIDDLE draw — the escaping value advances the middle thread, later draws see it
+pass	hi1 an arm INSTALLS a fresh handle and resumes with its result — a whole handler lifecycle inside one dispatch
+pass	hi2 the arm-installed handle's body draws from the arm's ENCLOSING frame — fresh inner frame and outer dispatch in one arm
+pass	hi3 the arm-installed handle's OWN arm resumes with an OUTER draw — the rv face nested inside another handler's dispatch
+pass	hi4 the arm-installed handle ABORTS with an outer draw — the av face nested inside another handler's dispatch
+pass	ms1 an op returns a THREE-variant sum built from state parity — two sequential performing scrutinees, the second sees the advanced state
+pass	ms2 match ARMS themselves draw after the performing scrutinee advanced the state — arm-selected continuation of the same thread
+pass	ms3 parity-sum dispatch inside a RECURSIVE walk — each level draws a Mode and accumulates by variant as the thread advances
+pass	ms4 the C arm RE-MATCHES its own payload's parity — a nested pure match inside an arm of the performing-scrutinee match
+pass	fa1 a FOLD-style accumulator threads through a performing recursion — acc doubles then absorbs each level's draw
+pass	fa2 TWO accumulators through one performing recursion — running sum and prefix-sum-of-prefix-sums stay in step with the draws
+pass	fa3 each fold level draws TWICE and mixes them asymmetrically — 10*first + second pins the intra-level draw order
+pass	fa4 the accumulator IS a sum — each level's draw moves it around an A->B->C->A cycle capturing payloads on the way
+pass	fa5 a TWO-effect fold — each level's step multiplies a draw from each thread, both threads advancing independently
+pass	ch1 a FOUR-op result chain in one nested expression — each op transforms the last result while bumping the shared state differently
+pass	ch2 the same FOUR-op chain flattened through LETs — one binding per hop must equal the nested form exactly
+pass	ch3 the chain hops CROSS two effects — F.b of G.p of F.a, each thread advancing only on its own hops
+pass	cv1 an inner arm resumes with a CHAIN of two outer ops — O.b of O.a evaluated inside the arm, probe pins the double advance
+pass	cv2 TWO asks each running the in-arm chain — the second chain starts where the first left the outer thread
+pass	cv3 the in-arm chain routes through a PURE fn mid-hop — O.b of dbl of O.a, the pure call must not detach the thread
+pass	bc1 a comparison of a draw feeds a BOOL-taking op whose arm NEGATES the state — the bool crosses the dispatch boundary
+pass	bc2 monotonicity of THREE draws under a parity-dependent step — the and of two comparisons decides, the final state rides along
+pass	bc3 an op RETURNS Bool consumed by a two-flag if ladder — a mod-3-dependent step makes all four paths reachable
+pass	wx1 the state thread WRAPS at Int64.max — three draws straddle the wraparound and the comparisons see the seam
+pass	wx2 Int64.min and Int64.max cross the dispatch as OP ARGUMENTS and come back exact — a count arm tallies the trips
+pass	wx3 Int64.min and Int64.max ride as SUM payloads through dispatch — variant chosen by state parity, payloads verified exact
+pass	wx4 the ARM doubles its argument with wrapping-mul — MAX wraps to -2, MIN to 0, a small value stays exact, count rides along
+pass	wx5 the state STEPS by wrapping-sub of MAX each draw — two hops cross the seam in opposite directions
+pass	wx6 wrapping increments CHAINED hop-to-hop — MAX-1 crosses the seam inside a nested three-op chain, count pins the trips
+pass	dv1 truncated division and dividend-sign modulo over DRAWS — negative dividends exercise the toward-zero rule through dispatch
+pass	dv2 the DIVISOR comes from the arm with a state-dependent sign — quotient and remainder track the alternating divisor exactly
+pass	dv3 division by -1 of a RUNTIME draw — negation across the full non-MIN range, the MIN draw guarded to its own branch
+pass	st1 the SAME effect handled at THREE depths — each draw resolves to the innermost open frame, outer frames resume as inner ones close
+pass	st2 draws BETWEEN the installs of a three-deep tower — each thread advances only while it is the innermost, sum pins the interleave
+pass	st3 the SHADOWING frame's arm draws the SAME effect — its dispatch escapes its own extent and lands on the frame it shadows
+pass	li1 draws choose BOTH the List.update target and the List.at read index — the collection edit follows the thread
+pass	li2 a list BUILT from pushed draws then read at a draw-picked index — construction and consumption share one thread
+pass	li3 draw PARITY picks prepend vs push while building — the final shape encodes the whole draw sequence
+pass	mp1 draws pick the Map INSERT key and the LOOKUP key — hit-old, hit-updated, and miss all reachable by input
+pass	mp2 map VALUES are draws inserted in key order — weighted lookups replay the draw sequence through the map
+pass	mp3 a draw picks the Map.remove key — lookups of all three keys show exactly one hole where the thread pointed
+pass	ds1 FOUR discarded draws in a do-chain before the kept one — every discarded dispatch still advances the thread
+pass	ds2 the DISCARDED statement is itself an op-result chain — both hops advance the thread even though the value dies
+pass	ds3 a DISCARDED handle expression whose interior draws from the outer thread — the frame opens, draws, closes, and the value dies
+pass	ds4 a DISCARDED if whose arms draw DIFFERENT counts — the taken branch's advances survive the discard
+pass	se1 five draws collected into a Set under a cycling state — duplicates collapse, len and membership pin the distinct draws
+pass	se2 MEMBERSHIP of a draw decides a branch that draws again — the set gates the thread's continuation
+pass	se3 a set BUILT from cycling draws probed by a LATER state read — the in-cycle probe hits, the off-cycle probe misses
+pass	rw1 two sequential Record.with updates each take a DRAW — the second write sees the advanced state, projections read both back
+pass	rw2 draw PARITY picks WHICH field Record.with updates — projections of both fields show exactly one write landed
+pass	rw3 each Record.with value PROJECTS from the record it updates plus a draw — self-referential functional updates chain through the thread
+pass	sd1 a draw COUNT drives string repetition through a recursion — String.byte-len pins how many times the thread said to concat
+pass	sd2 draw parity picks WHICH string each op returns — the concat order of two draws is visible in content equality
+pass	sd3 a draw-bounded String.slice window — start and end both come from the thread, byte-len pins the window width
+pass	ta2 an abort INSIDE the inner frame of a same-effect tower — Bail innermost, both E threads keep their positions
+pass	by1 bytes built from THREE draws then read at a draw-picked index — Bytes.at follows the thread into the buffer
+pass	syd1 an op returns a SYMBOL picked by state parity — symbol equality gates a branch that draws again
+pass	dc1 a THREE-hop def relay under ONE handler — each def draws then calls the next, weights pin the depth order
+pass	dc2 the relay call's ARGUMENT is a draw — the callee draws again and combines, argument-before-body order pinned
+pass	dc3 the MIDDLE relay hop is chosen by a draw — the branch decides between a two-draw and a one-draw callee, a tail draw pins the total
+pass	tq1 a Q-shadow inside a TWO-effect region — P draws thread THROUGH the shadow while Q is locally rebound
+pass	tq2 the Q-shadow's SEED mixes P and Q draws — both outer threads advance before the shadow opens, and resume after
+pass	tq3 a Q-shadow wraps only the MIDDLE argument of a pure call — its neighbors dispatch to the outer P and Q frames
+pass	tq4 BOTH effects shadowed in one inner region — two fresh threads run their course, both outer threads untouched
+pass	tq5 a DEF installs the Q-shadow and draws P from inside it — the P dispatch crosses the def AND the shadow to the caller's frame
+pass	mr1 mutual recursion drawing at EVERY level — even levels weight their draw x10, odd levels x1
+pass	mr2 the mutual pair draws from DIFFERENT effects — ev advances P, od advances Q, both threads interleave down the descent
+pass	mr3 the NEXT callee in the mutual group is picked by draw parity — the descent path itself follows the thread
+pass	mr4 an ACCUMULATOR threads the mutual pair — ev doubles it plus a draw, od triples it plus a draw, alternating scales
+pass	mr5 TWENTY alternating mutual levels with the scaling accumulator — depth stress on the cross-function fold
+pass	gd1 PURE guards over a draw-bound scrutinee — three guard tiers select on the drawn value, the trailing probe pins one advance
+pass	gd2 pure guards on SUM-PAYLOAD binders — guarded and unguarded twins of each variant arm, five paths input-reachable
+pass	gd3 the guard COMPARES the scrutinee draw to an earlier let-bound draw — two thread values meet in one pure predicate
+pass	gd4 pure guards INSIDE the handler arm grade the live state — three dispatches cross the tier boundaries as the state climbs
+pass	gd5 guards over TUPLE pattern binders — the predicate compares the tuple's own components, all three orderings reachable
