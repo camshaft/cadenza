@@ -94,7 +94,7 @@ impl ToolCallingAgent {
 }
 #[async_trait::async_trait(?Send)]
 impl Reducer for ToolCallingAgent {
-    async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+    async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
         match &event.body {
             EventBody::Inbound { .. } => {
                 // Kick the loop: a model request offering the shell tool.
@@ -203,7 +203,7 @@ fn agent_caps() -> Authorizer {
 
 #[tokio::test]
 async fn agent_runs_a_shell_tool_call_end_to_end_model_tool_model_end_turn() {
-    let reducer = ToolCallingAgent;
+    let mut reducer = ToolCallingAgent;
     let mut exec = CompositeExecutor::new()
         .with_effect(
             effect_ct::MODEL,
@@ -215,7 +215,7 @@ async fn agent_runs_a_shell_tool_call_end_to_end_model_tool_model_end_turn() {
     let mut session = Session::genesis(Hash::of(b"tool-agent-v1"), Hash::of(b"tool-agent-nonce"));
 
     session
-        .deliver(inbound_task(), None, &reducer, &agent_caps(), &mut exec)
+        .deliver(inbound_task(), None, &mut reducer, &agent_caps(), &mut exec)
         .await
         .unwrap();
 
@@ -240,7 +240,7 @@ async fn agent_runs_a_shell_tool_call_end_to_end_model_tool_model_end_turn() {
 
     // Replay-equivalence: the model + shell outcomes are in the log, so replay reconstructs the identical KV
     // without re-invoking the transport or re-running the command (a side-effecting tool runs once).
-    let replayed = Session::replay(session.log().to_vec(), &reducer)
+    let replayed = Session::replay(session.log().to_vec(), &mut reducer)
         .await
         .unwrap();
     assert_eq!(

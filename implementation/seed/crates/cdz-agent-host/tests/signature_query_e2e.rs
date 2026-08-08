@@ -34,7 +34,7 @@ struct SignatureQueryAgent {
 
 #[async_trait::async_trait(?Send)]
 impl Reducer for SignatureQueryAgent {
-    async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+    async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
         match &event.body {
             EventBody::Inbound { .. } => FoldOutput::with(vec![EffectRequest::new_with_family(
                 effect_ct::SIGNATURE,

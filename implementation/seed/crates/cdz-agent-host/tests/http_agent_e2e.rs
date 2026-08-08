@@ -46,7 +46,7 @@ impl HttpTransport for StubHttp {
 struct FetchAgent;
 #[async_trait::async_trait(?Send)]
 impl Reducer for FetchAgent {
-    async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+    async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
         match &event.body {
             EventBody::Inbound { .. } => {
                 kv.put(b"phase".to_vec(), b"fetching".to_vec());
@@ -95,7 +95,7 @@ fn host_cap() -> Authorizer {
 
 #[tokio::test]
 async fn agent_loop_runs_end_to_end_through_the_http_executor() {
-    let reducer = FetchAgent;
+    let mut reducer = FetchAgent;
     let mut exec = CompositeExecutor::new()
         .with_effect(effect_ct::HTTP, Box::new(HttpExecutor::new(StubHttp)));
     let mut session = Session::genesis(
@@ -104,7 +104,7 @@ async fn agent_loop_runs_end_to_end_through_the_http_executor() {
     );
 
     session
-        .deliver(inbound_go(), None, &FetchAgent, &host_cap(), &mut exec)
+        .deliver(inbound_go(), None, &mut FetchAgent, &host_cap(), &mut exec)
         .await
         .unwrap();
 
@@ -119,7 +119,7 @@ async fn agent_loop_runs_end_to_end_through_the_http_executor() {
 
     // Replay-equivalence: the response is recorded, so replay reconstructs the identical KV without
     // re-fetching.
-    let replayed = Session::replay(session.log().to_vec(), &reducer)
+    let replayed = Session::replay(session.log().to_vec(), &mut reducer)
         .await
         .unwrap();
     assert_eq!(replayed.snapshot().kv_root, session.snapshot().kv_root);
@@ -147,7 +147,7 @@ async fn a_fetch_to_an_unpermitted_host_is_denied_before_the_client() {
     struct ExfilAgent;
     #[async_trait::async_trait(?Send)]
     impl Reducer for ExfilAgent {
-        async fn fold(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             if matches!(event.body, EventBody::Inbound { .. }) {
                 FoldOutput::with(vec![EffectRequest::new_with_family(
                     effect_ct::HTTP,
@@ -167,7 +167,7 @@ async fn a_fetch_to_an_unpermitted_host_is_denied_before_the_client() {
         Hash::of(b"exfil-agent-v1-nonce"),
     );
     session
-        .deliver(inbound_go(), None, &ExfilAgent, &host_cap(), &mut exec)
+        .deliver(inbound_go(), None, &mut ExfilAgent, &host_cap(), &mut exec)
         .await
         .unwrap();
 

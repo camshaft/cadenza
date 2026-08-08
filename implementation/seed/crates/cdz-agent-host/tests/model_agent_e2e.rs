@@ -49,7 +49,7 @@ impl ModelTransport for StubModel {
 struct ModelAgent;
 #[async_trait::async_trait(?Send)]
 impl Reducer for ModelAgent {
-    async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+    async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
         match &event.body {
             EventBody::Inbound { .. } => {
                 kv.put(b"phase".to_vec(), b"prompting".to_vec());
@@ -93,7 +93,7 @@ fn model_cap() -> Authorizer {
 
 #[tokio::test]
 async fn agent_loop_runs_end_to_end_through_the_model_executor() {
-    let reducer = ModelAgent;
+    let mut reducer = ModelAgent;
     let mut exec = CompositeExecutor::new()
         .with_effect(effect_ct::MODEL, Box::new(ModelExecutor::new(StubModel)));
     let mut session = Session::genesis(
@@ -102,7 +102,7 @@ async fn agent_loop_runs_end_to_end_through_the_model_executor() {
     );
 
     session
-        .deliver(inbound_go(), None, &ModelAgent, &model_cap(), &mut exec)
+        .deliver(inbound_go(), None, &mut ModelAgent, &model_cap(), &mut exec)
         .await
         .unwrap();
 
@@ -122,7 +122,7 @@ async fn agent_loop_runs_end_to_end_through_the_model_executor() {
 
     // Replay-equivalence: the completion is recorded, so replay reconstructs the identical KV without
     // ever calling the transport again (a paid model call happens once; replay is free).
-    let replayed = Session::replay(session.log().to_vec(), &reducer)
+    let replayed = Session::replay(session.log().to_vec(), &mut reducer)
         .await
         .unwrap();
     assert_eq!(replayed.kv().get(b"phase"), Some(&b"answered"[..]));
@@ -136,7 +136,7 @@ async fn one_composite_routes_both_now_and_model_for_one_agent() {
     struct ClockThenModel;
     #[async_trait::async_trait(?Send)]
     impl Reducer for ClockThenModel {
-        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 // Step 1: ask for the time.
                 EventBody::Inbound { .. } => {
@@ -195,7 +195,7 @@ async fn one_composite_routes_both_now_and_model_for_one_agent() {
     );
 
     session
-        .deliver(inbound_go(), None, &ClockThenModel, &authz, &mut exec)
+        .deliver(inbound_go(), None, &mut ClockThenModel, &authz, &mut exec)
         .await
         .unwrap();
 
@@ -230,7 +230,7 @@ async fn a_model_call_to_an_unpermitted_id_is_denied_before_the_transport() {
     struct WrongModelAgent;
     #[async_trait::async_trait(?Send)]
     impl Reducer for WrongModelAgent {
-        async fn fold(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+        async fn fold(&mut self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             if matches!(event.body, EventBody::Inbound { .. }) {
                 FoldOutput::with(vec![EffectRequest::new_with_family(
                     effect_ct::MODEL,
@@ -253,7 +253,7 @@ async fn a_model_call_to_an_unpermitted_id_is_denied_before_the_transport() {
         .deliver(
             inbound_go(),
             None,
-            &WrongModelAgent,
+            &mut WrongModelAgent,
             &model_cap(),
             &mut exec,
         )
