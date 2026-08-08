@@ -50,7 +50,7 @@ export default function ConstParameters() {
         operation inlined:
       </P>
       <Runnable
-        source={`(def (fold-n (const (: d (Record (op (-> Int64 Int64))))) (: n Int64) (: acc Int64))
+        source={`(def (fold-n (const (: d (Record (: op (-> Int64 Int64))))) (: n Int64) (: acc Int64))
   (if (= n 0) acc (fold-n d (- n 1) ((. d op) acc))))
 (def (main)
   (+ (fold-n (record (op (fn (x) (+ x 10)))) 3 0)
@@ -136,10 +136,10 @@ export default function ConstParameters() {
             times from <C>0</C>, adding the same amount each step, reaches <C>15</C>.
           </>
         }
-        starter={`(def (fold-n (const (: d (Record (op (-> Int64 Int64))))) (: n Int64) (: acc Int64))
+        starter={`(def (fold-n (const (: d (Record (: op (-> Int64 Int64))))) (: n Int64) (: acc Int64))
   (if (= n 0) acc (fold-n d (- n 1) ((. d op) acc))))
 (def (main) (fold-n (record (op (fn (x) (+ x ?)))) 3 0))`}
-        solution={`(def (fold-n (const (: d (Record (op (-> Int64 Int64))))) (: n Int64) (: acc Int64))
+        solution={`(def (fold-n (const (: d (Record (: op (-> Int64 Int64))))) (: n Int64) (: acc Int64))
   (if (= n 0) acc (fold-n d (- n 1) ((. d op) acc))))
 (def (main) (fold-n (record (op (fn (x) (+ x 5)))) 3 0))`}
         expected="15"

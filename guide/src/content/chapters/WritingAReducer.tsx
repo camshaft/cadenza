@@ -58,7 +58,7 @@ export default function WritingAReducer() {
   | Emit()
 
 type EffectRequest =
-  | Mk(Record(kind(EffectKind), target(String), payload(Option(Bytes)), correlation(Option(Bytes))))
+  | Mk(Record(kind: EffectKind, target: String, payload: Option(Bytes), correlation: Option(Bytes)))
 
 def main() = EffectKind.Http()`}
       />
@@ -74,10 +74,10 @@ def main() = EffectKind.Http()`}
         authoredIn="ml"
         source={`type EffectKind = | Shell() | Http() | Model() | Now() | Timer() | Emit()
 type EffectRequest =
-  | Mk(Record(kind(EffectKind), target(String), payload(Option(Bytes)), correlation(Option(Bytes))))
+  | Mk(Record(kind: EffectKind, target: String, payload: Option(Bytes), correlation: Option(Bytes)))
 
 def apply(
-  ct: Record(family(String), version(UInt(32))),
+  ct: Record(family: String, version: UInt(32)),
   payload: Option(Bytes),
   resumes: Option(Bytes),
 ) -> List(EffectRequest) = []
@@ -113,10 +113,10 @@ def main() = apply({ family = "message", version = 1 }, None(), None())`}
         authoredIn="ml"
         source={`type EffectKind = | Shell() | Http() | Model() | Now() | Timer() | Emit()
 type EffectRequest =
-  | Mk(Record(kind(EffectKind), target(String), payload(Option(Bytes)), correlation(Option(Bytes))))
+  | Mk(Record(kind: EffectKind, target: String, payload: Option(Bytes), correlation: Option(Bytes)))
 
 def apply(
-  ct: Record(family(String), version(UInt(32))),
+  ct: Record(family: String, version: UInt(32)),
   payload: Option(Bytes),
   resumes: Option(Bytes),
 ) -> List(EffectRequest) =
@@ -156,10 +156,10 @@ def main() =
         authoredIn="ml"
         source={`type EffectKind = | Shell() | Http() | Model() | Now() | Timer() | Emit()
 type EffectRequest =
-  | Mk(Record(kind(EffectKind), target(String), payload(Option(Bytes)), correlation(Option(Bytes))))
+  | Mk(Record(kind: EffectKind, target: String, payload: Option(Bytes), correlation: Option(Bytes)))
 
 def apply(
-  ct: Record(family(String), version(UInt(32))),
+  ct: Record(family: String, version: UInt(32)),
   payload: Option(Bytes),
   resumes: Option(Bytes),
 ) -> List(EffectRequest) =

@@ -81,7 +81,7 @@ export default function AdHocPolymorphism() {
       <Note>
         Left the dictionary <em>unannotated</em> on purpose: that's what keeps <C>show-with</C> generic over
         the element type. Cadenza has no <C>∀</C>-binder inside an annotation, so you can't write a generic
-        type like <C>{`(Record (describe (-> a Int64)))`}</C> with a free <C>a</C>, so an unannotated
+        type like <C>{`(Record (: describe (-> a Int64)))`}</C> with a free <C>a</C>, so an unannotated
         parameter <em>is</em> the generic form. When you <em>want</em> the signature written out, there's a
         second way, below.
       </Note>
@@ -98,7 +98,7 @@ export default function AdHocPolymorphism() {
       <Runnable
         source={`(def (describe-int n) (+ n 100))
 (def (describe-bool b) (if b 999 0))
-(def (show-with (: t Type) (: dict (Record (describe (-> t Int64)))) (: x t))
+(def (show-with (: t Type) (: dict (Record (: describe (-> t Int64)))) (: x t))
   ((. dict describe) x))
 (def (main)
   (+ (show-with Int64 (record (describe describe-int)) 5)
