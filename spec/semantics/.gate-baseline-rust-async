@@ -6391,3 +6391,7 @@ pass	li3 draw PARITY picks prepend vs push while building — the final shape en
 pass	mp1 draws pick the Map INSERT key and the LOOKUP key — hit-old, hit-updated, and miss all reachable by input
 pass	mp2 map VALUES are draws inserted in key order — weighted lookups replay the draw sequence through the map
 pass	mp3 a draw picks the Map.remove key — lookups of all three keys show exactly one hole where the thread pointed
+pass	ds1 FOUR discarded draws in a do-chain before the kept one — every discarded dispatch still advances the thread
+pass	ds2 the DISCARDED statement is itself an op-result chain — both hops advance the thread even though the value dies
+pass	ds3 a DISCARDED handle expression whose interior draws from the outer thread — the frame opens, draws, closes, and the value dies
+pass	ds4 a DISCARDED if whose arms draw DIFFERENT counts — the taken branch's advances survive the discard

@@ -18331,3 +18331,66 @@
   (call   main (: 0 Int64)) (output (: 130 Int64))
   (call   main (: 1 Int64)) (output (: 1020 Int64))
   (call   main (: 2 Int64)) (output (: 1199 Int64)))
+
+;; ── ds: DISCARDED-statement dispatches ───────────────────────────────────────
+;; Dead-value elimination must not eliminate the dispatch. ds1 discards four
+;; draws in a do-chain (each still advances); ds2 discards a whole op-result
+;; chain (both hops advance); ds3 discards a handle EXPRESSION whose interior
+;; draws from the outer thread (frame opens, draws, closes, value dies); ds4
+;; discards an if whose arms draw DIFFERENT counts (exactly the taken branch's
+;; advances survive).
+
+(case "ds1 FOUR discarded draws in a do-chain before the kept one — every discarded dispatch still advances the thread"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1))))
+                (do (E.next) (E.next) (E.next) (E.next) (E.next))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 9 Int64))
+  (call   main (: 0 Int64)) (output (: 4 Int64))
+  (call   main (: -9 Int64)) (output (: -5 Int64)))
+
+(case "ds2 the DISCARDED statement is itself an op-result chain — both hops advance the thread even though the value dies"
+  (input  (do
+            (effect E (op a (-> Int64)) (op b (-> Int64 Int64)) (op probe (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((a () s (resume s (+ s 2)))
+                 (b (x) s (resume (+ x s) (+ s 3)))
+                 (probe () s (resume s s)))
+                (do (E.b (E.a)) (E.probe))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 10 Int64))
+  (call   main (: 0 Int64)) (output (: 5 Int64))
+  (call   main (: -9 Int64)) (output (: -4 Int64)))
+
+(case "ds3 a DISCARDED handle expression whose interior draws from the outer thread — the frame opens, draws, closes, and the value dies"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (effect I (op pick (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1))))
+                (do (handle I 0
+                      ((pick () t (resume t t)))
+                      (do (E.next) (I.pick)))
+                    (E.next))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 6 Int64))
+  (call   main (: 0 Int64)) (output (: 1 Int64))
+  (call   main (: -7 Int64)) (output (: -6 Int64)))
+
+(case "ds4 a DISCARDED if whose arms draw DIFFERENT counts — the taken branch's advances survive the discard"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1))))
+                (do (if (> (E.next) 0) (do (E.next) (E.next)) (E.next))
+                    (E.next))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 8 Int64))
+  (call   main (: 0 Int64)) (output (: 2 Int64))
+  (call   main (: -3 Int64)) (output (: -1 Int64)))
