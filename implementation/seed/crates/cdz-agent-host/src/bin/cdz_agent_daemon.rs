@@ -286,22 +286,44 @@ async fn main() -> std::process::ExitCode {
         } else {
             executors
         };
-        // Wrap the configured backing store in the S3-FIFO in-memory CACHE ([blob_cache], operator directive)
-        // so repeated reducer/blob fetches (content-addressed → immutable, always-correct hits) serve from
-        // memory instead of re-hitting the backing store. `mem_bytes = 0` disables the cache (the
-        // CachingBlobStore becomes a pass-through), so wrapping unconditionally is safe. The disk tier
-        // ([blob_cache].disk_bytes) is a following slice. Applied per-arm since each blob backend is a distinct
-        // concrete store type (the factory is generic over it).
-        use cdz_agent_host::CachingBlobStore;
+        // Wrap the configured backing store in the multi-tier CACHE ([blob_cache], operator directive):
+        // in-memory S3-FIFO ([`CachingBlobStore`]) OVER an on-disk tier ([`DiskCacheTier`]) OVER the backing
+        // store — mem over disk over S3. Content-addressed blobs are immutable, so hits are always correct.
+        // Both tiers are budget-0-disable pass-throughs, so wrapping unconditionally is safe; the disk tier is
+        // ACTIVE only when [blob_cache].disk_bytes > 0 AND disk_dir is set (a disk cache needs an explicit
+        // path). Applied per-arm since each blob backend is a distinct concrete store type (the factory is
+        // generic over it). `wrap_cache` composes both tiers onto any backing store uniformly.
+        use cdz_agent_host::{CachingBlobStore, DiskCacheTier};
         let cache_mem_bytes = config.blob_cache.mem_bytes;
+        // Resolve the disk tier: active (dir, bytes) only when BOTH a dir and a positive budget are set; else
+        // a disabled (empty-dir, 0-budget) pass-through that touches no filesystem.
+        let (disk_dir, disk_bytes): (std::path::PathBuf, u64) =
+            match (&config.blob_cache.disk_dir, config.blob_cache.disk_bytes) {
+                (Some(dir), bytes) if bytes > 0 => (dir.into(), bytes as u64),
+                _ => (std::path::PathBuf::new(), 0),
+            };
+        // Compose both cache tiers onto ANY backing store: mem S3-FIFO over disk over the store. A closure
+        // would monomorphize to one store type; a generic fn wraps each distinct blob-backend type uniformly.
+        fn wrap_cache<B: cdz_kernel::blob::BlobStore>(
+            store: B,
+            disk_dir: std::path::PathBuf,
+            disk_bytes: u64,
+            mem_bytes: usize,
+        ) -> CachingBlobStore<DiskCacheTier<B>> {
+            CachingBlobStore::new(DiskCacheTier::new(store, disk_dir, disk_bytes), mem_bytes)
+        }
         // Attach the optional log-sink builder to whichever blob-backed factory we build, then box it. (The
         // two arms are distinct concrete factory types, so the with_log_sink + Box happens per-arm; the
         // executor set is moved into the one arm that runs.)
         #[cfg_attr(not(feature = "live-aws-storage"), allow(unused_mut))]
         let mut factory: Box<dyn SessionFactory> = match &config.blob {
             BlobConfig::Memory => {
-                let store =
-                    CachingBlobStore::new(cdz_kernel::blob::MemBlobStore::new(), cache_mem_bytes);
+                let store = wrap_cache(
+                    cdz_kernel::blob::MemBlobStore::new(),
+                    disk_dir.clone(),
+                    disk_bytes,
+                    cache_mem_bytes,
+                );
                 let mut f = ComponentSessionFactory::new(store, executors, session_authz);
                 if let Some(b) = log_sink {
                     f = f.with_log_sink(b);
@@ -310,7 +332,7 @@ async fn main() -> std::process::ExitCode {
             }
             BlobConfig::Dir { dir } => match cdz_kernel::blob::DiskBlobStore::open(dir) {
                 Ok(store) => {
-                    let store = CachingBlobStore::new(store, cache_mem_bytes);
+                    let store = wrap_cache(store, disk_dir.clone(), disk_bytes, cache_mem_bytes);
                     let mut f = ComponentSessionFactory::new(store, executors, session_authz);
                     if let Some(b) = log_sink {
                         f = f.with_log_sink(b);
@@ -329,7 +351,7 @@ async fn main() -> std::process::ExitCode {
             #[cfg(feature = "live-aws-storage")]
             BlobConfig::S3 { bucket, prefix } => {
                 let store = cdz_agent_host::S3BlobStore::new(bucket.clone(), prefix.clone()).await;
-                let store = CachingBlobStore::new(store, cache_mem_bytes);
+                let store = wrap_cache(store, disk_dir.clone(), disk_bytes, cache_mem_bytes);
                 let mut f = ComponentSessionFactory::new(store, executors, session_authz);
                 if let Some(b) = log_sink {
                     f = f.with_log_sink(b);
@@ -347,10 +369,16 @@ async fn main() -> std::process::ExitCode {
         };
         eprintln!(
             "cdz-agent-daemon: reducer blob store = {:?}, session log = {:?}, blob cache = {} MiB in-memory \
-             (S3-FIFO; 0 = disabled)",
+             S3-FIFO over {} on-disk (disk tier {}; 0 = tier disabled)",
             config.blob,
             config.log,
-            cache_mem_bytes / (1024 * 1024)
+            cache_mem_bytes / (1024 * 1024),
+            if disk_bytes > 0 {
+                format!("{} MiB at {}", disk_bytes / (1024 * 1024), disk_dir.display())
+            } else {
+                "0 MiB".to_string()
+            },
+            if disk_bytes > 0 { "active" } else { "off" }
         );
 
         // §lifecycle I4b BOOT-RECOVERY (the culmination): after the canonical name store is restored (above)

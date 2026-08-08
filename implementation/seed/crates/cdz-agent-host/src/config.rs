@@ -407,10 +407,11 @@ impl Default for RetryConfig {
 /// one-hit-wonder pollution a plain LRU suffers. ON by default (a bounded cache is strictly beneficial); a
 /// `0` byte budget disables that tier.
 ///
-/// **Current daemon behavior:** the in-MEMORY tier ([`mem_bytes`](Self::mem_bytes)) wraps the configured
-/// backing store in a [`CachingBlobStore`](crate::CachingBlobStore). The `disk_bytes` on-DISK tier (mem over
-/// disk over the backing store) is defined here ahead of its wiring (a following slice adds the disk cache
-/// layer) — the config is set now so the deployment knob is stable.
+/// **Daemon behavior:** the in-MEMORY tier ([`mem_bytes`](Self::mem_bytes)) wraps the configured backing store
+/// in a [`CachingBlobStore`](crate::CachingBlobStore). The on-DISK tier ([`disk_bytes`](Self::disk_bytes) +
+/// [`disk_dir`](Self::disk_dir)) sits BETWEEN memory and the backing store — mem over disk over S3 — via a
+/// [`DiskCacheTier`](crate::DiskCacheTier), enabled only when `disk_bytes > 0` AND a `disk_dir` is set (a disk
+/// cache needs an explicit directory; there's no sensible default location).
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct BlobCacheConfig {
@@ -419,9 +420,14 @@ pub struct BlobCacheConfig {
     #[serde(default = "BlobCacheConfig::default_mem_bytes")]
     pub mem_bytes: usize,
     /// On-disk cache byte budget (the tier between memory and the backing store). `0` disables the disk tier.
-    /// Default 2 GiB. Defined ahead of the disk-tier wiring slice (the config knob is stable now).
+    /// Default 2 GiB. The disk tier is wired only when this is `> 0` AND `disk_dir` is set.
     #[serde(default = "BlobCacheConfig::default_disk_bytes")]
     pub disk_bytes: usize,
+    /// On-disk cache DIRECTORY (content-hash-named files live here). `None` (the default) disables the disk
+    /// tier regardless of `disk_bytes` — a disk cache needs an explicit path, so there's no default location.
+    /// A deployment that wants the disk tier sets both this and `disk_bytes`.
+    #[serde(default)]
+    pub disk_dir: Option<String>,
 }
 
 impl BlobCacheConfig {
@@ -438,6 +444,7 @@ impl Default for BlobCacheConfig {
         BlobCacheConfig {
             mem_bytes: Self::default_mem_bytes(),
             disk_bytes: Self::default_disk_bytes(),
+            disk_dir: None,
         }
     }
 }
@@ -1294,17 +1301,26 @@ mod tests {
         assert_eq!(cfg.blob_cache.mem_bytes, 128 * 1024 * 1024);
         assert_eq!(cfg.blob_cache.disk_bytes, 2 * 1024 * 1024 * 1024);
 
-        // Overridable per tier; 0 disables a tier.
+        // Default: no disk_dir → disk tier off regardless of disk_bytes.
+        assert_eq!(cfg.blob_cache.disk_dir, None, "no disk_dir by default");
+
+        // Overridable per tier; 0 disables a tier; disk_dir opts the disk tier in.
         let cfg = DaemonConfig::from_toml_str(
             r#"
             [blob_cache]
             mem_bytes = 0
             disk_bytes = 1048576
+            disk_dir = "/var/cache/cdz/blobs"
             "#,
         )
         .expect("blob_cache config parses");
         assert_eq!(cfg.blob_cache.mem_bytes, 0, "0 disables the in-memory tier");
         assert_eq!(cfg.blob_cache.disk_bytes, 1048576);
+        assert_eq!(
+            cfg.blob_cache.disk_dir.as_deref(),
+            Some("/var/cache/cdz/blobs"),
+            "disk_dir opts the on-disk tier in"
+        );
     }
 
     #[test]
