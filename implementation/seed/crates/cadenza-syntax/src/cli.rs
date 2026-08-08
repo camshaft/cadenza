@@ -1245,16 +1245,17 @@ fn run_lint(args: &LintArgs) -> Result<bool, String> {
     // Build the CLI level overrides (allow/warn/deny NAME). Later flags win on the same key; a CLI
     // level overrides a rule's default. Applied in a stable order (allow, warn, deny) so that if the
     // SAME name is passed to two of them the last-listed flag group wins — deterministic, not arg-order
-    // dependent. (The module-directive layer, when it lands, is overlaid UNDER this via `overlay`.)
-    let mut levels = crate::query::lint::LintLevels::new();
+    // dependent. This is the CLI layer; it is overlaid ON TOP of each target's module-directive layer
+    // (CLI wins), matching the §3 order CLI > module > rule-default.
+    let mut cli_levels = crate::query::lint::LintLevels::new();
     for n in &args.allow {
-        levels.set(n.clone(), crate::query::lint::LintLevel::Allow);
+        cli_levels.set(n.clone(), crate::query::lint::LintLevel::Allow);
     }
     for n in &args.warn {
-        levels.set(n.clone(), crate::query::lint::LintLevel::Warn);
+        cli_levels.set(n.clone(), crate::query::lint::LintLevel::Warn);
     }
     for n in &args.deny {
-        levels.set(n.clone(), crate::query::lint::LintLevel::Deny);
+        cli_levels.set(n.clone(), crate::query::lint::LintLevel::Deny);
     }
 
     let targets = collect_targets(&args.files, args.from)?;
@@ -1267,6 +1268,12 @@ fn run_lint(args: &LintArgs) -> Result<bool, String> {
             continue;
         };
         let lbl = label(&spec.path);
+
+        // Resolve this target's effective levels: its own `(allow/warn/deny NAME)` module directives
+        // FIRST, then the CLI flags overlaid on top (CLI wins). Recomputed per target so each file
+        // honors its OWN in-source directives.
+        let mut levels = crate::query::lint::LintLevels::from_module_directives(&target.tree);
+        levels.overlay(&cli_levels);
 
         if args.json {
             let (j, had_error) = query::driver::lint_json_with_levels(
