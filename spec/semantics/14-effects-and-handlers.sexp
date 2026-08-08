@@ -18505,3 +18505,58 @@
   (call   main (: 2 Int64)) (output (: 1220 Int64))
   (call   main (: 0 Int64)) (output (: 1016 Int64))
   (call   main (: -3 Int64)) (output (: 710 Int64)))
+
+;; ── sd: STRING content via draws ─────────────────────────────────────────────
+;; sd1's draw COUNT drives string repetition through a recursion (byte-len
+;; pins how many concats the thread ordered); sd2's draw PARITY picks WHICH
+;; string each op returns (concat ORDER visible in content equality at equal
+;; length); sd3 bounds a String.slice window with draws — start and end both
+;; come from the thread, byte-len pins the window width.
+
+(case "sd1 a draw COUNT drives string repetition through a recursion — String.byte-len pins how many times the thread said to concat"
+  (input  (do
+            (effect E (op next (-> Int64)) (op probe (-> Int64)))
+            (def (rep (: k Int64) (: acc String))
+              (if (<= k 0) acc (rep (- k 1) (String.concat acc "ab"))))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1)))
+                 (probe () s (resume s s)))
+                (let ((k (+ (% (E.next) 3) 1)))
+                  (+ (* 100 (String.byte-len (rep k "")))
+                     (- (E.probe) n)))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 201 Int64))
+  (call   main (: 1 Int64)) (output (: 401 Int64))
+  (call   main (: 2 Int64)) (output (: 601 Int64)))
+
+(case "sd2 draw parity picks WHICH string each op returns — the concat order of two draws is visible in content equality"
+  (input  (do
+            (effect E (op pick (-> String)))
+            (def (main (: n Int64))
+              (handle E n
+                ((pick () s (resume (if (= (% s 2) 0) "xy" "pqr") (+ s 1))))
+                (let ((a (E.pick)))
+                  (let ((b (E.pick)))
+                    (let ((st (String.concat a b)))
+                      (+ (* 100 (String.byte-len st))
+                         (if (= st "xypqr") 10 (if (= st "pqrxy") 20 30))))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 510 Int64))
+  (call   main (: 1 Int64)) (output (: 520 Int64)))
+
+(case "sd3 a draw-bounded String.slice window — start and end both come from the thread, byte-len pins the window width"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 2))))
+                (let ((st (% (E.next) 4)))
+                  (let ((en (+ st (+ (% (E.next) 3) 1))))
+                    (match (String.slice "abcdefgh" st en)
+                      ((Some w) (+ (* 100 (String.byte-len w)) (+ (* 10 st) (- en st))))
+                      ((None _u) -1))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 303 Int64))
+  (call   main (: 1 Int64)) (output (: 111 Int64))
+  (call   main (: 5 Int64)) (output (: 212 Int64)))
