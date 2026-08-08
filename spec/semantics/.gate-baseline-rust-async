@@ -6302,3 +6302,8 @@ pass	tt2 NESTED-tuple resume values across two dispatches — outer destructured
 pass	tt3 a tuple ROTATED through two chained dispatches — each rotation folds the state into the moved slot
 pass	tt4 a MIXED String+Int tuple state — the arm grows the rope and folds the op arg into the counter per dispatch
 pass	tt5 an inner PAIR swapped on counter parity — a nested-tuple state machine, both slots and the counter observed
+pass	al1 chained LET locals inside the arm — intermediate names feed both the resume value and the next-state
+pass	al2 a PURE helper called from the arm for BOTH slots — the arm delegates its computation to a def
+pass	al3 a two-site resume where EACH branch has its own LET local — gap/overshoot named per path, different strides
+pass	al4 ONE arm-local feeds BOTH slots — the score accumulates into the base while the count rides beside
+pass	al5 an arm-LOCAL named the same as a body-side binder — hygiene keeps the two w's separate across dispatches
