@@ -17462,3 +17462,64 @@
   (call   main (: 5 Int64)) (output (: 100 Int64))
   (call   main (: 0 Int64)) (output (: 50 Int64))
   (call   main (: -4 Int64)) (output (: 10 Int64)))
+
+;; ── av: ABORT values that perform ────────────────────────────────────────────
+;; The arm aborts (no resume) but its escaping value dispatches to an enclosing
+;; handler on the way out. av1 aborts with a single outer draw (the aborted
+;; body's +999 is dead); av2 aborts with a SUBTRACTION of two outer draws under
+;; a doubling outer state (antisymmetry pins order inside the aborting arm);
+;; av3 stacks three frames and aborts with a MIDDLE draw — the middle thread
+;; advances and later draws observe it. The re-entrant face — the abort value
+;; dispatching to the SAME handler's own sibling op — is CDZ0401 by design (a
+;; handler's arms sit outside its own extent); witness banked, not a case.
+
+(case "av1 the inner arm ABORTS with an OUTER draw as the abort value — the escaping value performs on the way out"
+  (input  (do
+            (effect O (op next (-> Int64)))
+            (effect Bail (op out (-> Int64)))
+            (def (main (: n Int64))
+              (handle O n
+                ((next () s (resume s (+ s 1))))
+                (+ (* 100 (handle Bail 0
+                            ((out () t (O.next)))
+                            (+ (Bail.out) 999)))
+                   (* 10 (O.next)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 560 Int64))
+  (call   main (: 0 Int64)) (output (: 10 Int64))
+  (call   main (: -2 Int64)) (output (: -210 Int64)))
+
+(case "av2 the abort value SUBTRACTS two outer draws under a DOUBLING outer state — antisymmetry pins order inside the aborting arm"
+  (input  (do
+            (effect O (op next (-> Int64)))
+            (effect Bail (op out (-> Int64)))
+            (def (main (: n Int64))
+              (handle O n
+                ((next () s (resume s (* 2 s))))
+                (+ (* 100 (handle Bail 0
+                            ((out () t (- (O.next) (O.next))))
+                            (+ (Bail.out) 999)))
+                   (O.next))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: -480 Int64))
+  (call   main (: 1 Int64)) (output (: -96 Int64))
+  (call   main (: -3 Int64)) (output (: 288 Int64)))
+
+(case "av3 in a THREE-stack the innermost arm aborts with a MIDDLE draw — the escaping value advances the middle thread, later draws see it"
+  (input  (do
+            (effect O (op next (-> Int64)))
+            (effect M (op step (-> Int64)))
+            (effect Bail (op out (-> Int64)))
+            (def (main (: n Int64))
+              (handle O n
+                ((next () s (resume s (+ s 1))))
+                (handle M 4
+                  ((step () m (resume m (+ m 2))))
+                  (+ (* 100 (handle Bail 0
+                              ((out () t (M.step)))
+                              (+ (Bail.out) 999)))
+                     (+ (* 10 (M.step)) (O.next))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 465 Int64))
+  (call   main (: 0 Int64)) (output (: 460 Int64))
+  (call   main (: -7 Int64)) (output (: 453 Int64)))
