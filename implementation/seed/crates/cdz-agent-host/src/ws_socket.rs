@@ -37,6 +37,49 @@ use std::collections::HashMap;
 /// framing is a single byte version so a later envelope change is an additive version bump the reducer matches.
 pub const WS_EVENT_VERSION: u32 = 1;
 
+/// One registry mutation the ws LISTENER asks the host loop to apply. The [`LiveWsConnRegistry`] lives on the
+/// single-threaded `!Send` host loop, but a peer connection is accepted + served on its own `Send` tokio task
+/// (so a slow/stalled peer can't block `accept`, mirroring [`crate::admin_socket`]'s per-connection tasks). A
+/// `Send` task therefore CANNOT touch the `!Send` registry directly — it sends a [`WsControlOp`] over the
+/// [`WsControlSender`] and the loop applies it against the registry, exactly as admin commands route through an
+/// `AdminChannel` + lifecycle ops through a `LifecycleChannel`. This is the loop-vs-listener seam; keeping it a
+/// plain enum + mpsc (not tangled into the accept code) is what lets the routing be unit-tested with no socket.
+#[derive(Debug)]
+pub enum WsControlOp {
+    /// A peer connected: register its conn-id -> outbound sink so a `ws/send` to that conn-id reaches it. The
+    /// listener pairs this with emitting a `ws/connect` `Inbound` (via the [`Inbox`]) so the reducer learns of
+    /// the peer; the register lands the routing so a subsequent `ws/send` finds the connection.
+    Register {
+        /// The opaque conn-id ([`mint_conn_id`] hex) the listener minted for this connection.
+        conn_id: String,
+        /// The sink the connection's writer task drains onto the wire.
+        sink: OutboundFrameSink,
+    },
+    /// A peer's connection closed: deregister its conn-id so a later `ws/send` resolves `Unknown` (peer gone).
+    /// Paired with emitting a `ws/disconnect` `Inbound` so the reducer prunes the peer from federation state.
+    Deregister {
+        /// The conn-id whose connection went away.
+        conn_id: String,
+    },
+}
+
+/// The sending half the ws listener holds to submit [`WsControlOp`]s into the host loop, which applies each
+/// against the `!Send` [`LiveWsConnRegistry`] on the loop task. Cloneable (each accepted connection's task
+/// clones it). Unbounded so the accept/close path never blocks the loop (a register/deregister is a cheap map
+/// op; there is no backpressure need on control mutations).
+pub type WsControlSender = tokio::sync::mpsc::UnboundedSender<WsControlOp>;
+
+/// The receiving half the host loop drains, applying each [`WsControlOp`] against the registry via
+/// [`LiveWsConnRegistry::apply_control`]. Paired with [`WsControlSender`] by [`ws_control_channel`].
+pub type WsControlReceiver = tokio::sync::mpsc::UnboundedReceiver<WsControlOp>;
+
+/// Create the loop <-> listener control channel: the listener holds the [`WsControlSender`], the host loop
+/// drains the [`WsControlReceiver`] + applies each op against its registry. Mirrors how the admin + lifecycle
+/// channels are constructed for the same Send/!Send split.
+pub fn ws_control_channel() -> (WsControlSender, WsControlReceiver) {
+    tokio::sync::mpsc::unbounded_channel()
+}
+
 /// Mint a fresh CONNECTION IDENTITY for a newly-accepted peer — 32 OS-random bytes hashed into a [`Hash`],
 /// exactly as [`crate::host::mint_spawn_nonce`] mints a session's genesis nonce. A ws connection is a
 /// stateful host-managed RESOURCE, and the operator's unification (review on #2820) is that such resources
@@ -89,6 +132,17 @@ impl LiveWsConnRegistry {
     /// disconnect event. Idempotent: deregistering an absent conn-id is a no-op.
     pub fn deregister(&self, conn_id: &str) {
         self.conns.borrow_mut().remove(conn_id);
+    }
+
+    /// Apply one [`WsControlOp`] the listener sent — the loop-side entry point that lets a `Send` accept task
+    /// mutate the `!Send` registry indirectly (the loop drains the [`WsControlReceiver`] + calls this). Register
+    /// inserts the conn-id -> sink; Deregister removes it. This is the ONLY place the listener's Send tasks
+    /// affect the registry (they never hold a `&LiveWsConnRegistry`), keeping the Send/!Send split clean.
+    pub fn apply_control(&self, op: WsControlOp) {
+        match op {
+            WsControlOp::Register { conn_id, sink } => self.register(conn_id, sink),
+            WsControlOp::Deregister { conn_id } => self.deregister(&conn_id),
+        }
     }
 
     /// The count of live connections (for status/metrics + tests). Not a policy input — just an observable.
@@ -295,6 +349,37 @@ mod tests {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
         reg.register(hex.clone(), tx);
         assert_eq!(reg.send_frame(&hex, b"f"), WsSendResult::Delivered);
+    }
+
+    #[test]
+    fn control_ops_from_the_listener_apply_against_the_loop_registry() {
+        // Simulate the loop <-> listener seam: the listener sends Register/Deregister over the control channel;
+        // the loop drains + applies each against the !Send registry. (Here we drive it synchronously — the
+        // channel is the Send/!Send bridge, apply_control is the loop-side entry point.)
+        let (tx, mut rx) = ws_control_channel();
+        let reg = LiveWsConnRegistry::new();
+        let (sink, _peer_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+
+        // Listener (Send task): a peer connected -> send Register with the minted conn-id + its sink.
+        let conn = mint_conn_id().to_hex();
+        tx.send(WsControlOp::Register {
+            conn_id: conn.clone(),
+            sink,
+        })
+        .unwrap();
+        // Loop: drain + apply -> the conn is now routable.
+        reg.apply_control(rx.try_recv().unwrap());
+        assert_eq!(reg.len(), 1);
+        assert_eq!(reg.send_frame(&conn, b"hi"), WsSendResult::Delivered);
+
+        // Listener: peer closed -> Deregister; loop applies -> a later send is Unknown.
+        tx.send(WsControlOp::Deregister {
+            conn_id: conn.clone(),
+        })
+        .unwrap();
+        reg.apply_control(rx.try_recv().unwrap());
+        assert!(reg.is_empty());
+        assert_eq!(reg.send_frame(&conn, b"x"), WsSendResult::Unknown);
     }
 
     #[test]
