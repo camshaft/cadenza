@@ -207,7 +207,9 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 # (default build compiles no websocket/net tree). `default-features = false` + `handshake` only: a plain-ws
 # listener over local/loopback needs no TLS (a wss terminator is a later opt-in), keeping the rustls-everywhere
 # posture with no extra tree. futures-util supplies SinkExt/StreamExt for the split read/write halves.
-tokio-tungstenite = { version = "0.24", default-features = false, features = ["handshake"], optional = true }
+# `handshake` = the server accept (the listener); `connect` = the client dial the live-ws E2E uses to drive a
+# real loopback round-trip (in-process client -> listener -> back). Both are plain-ws (no TLS feature).
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["handshake", "connect"], optional = true }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"], optional = true }
 # aws-sdk-bedrockruntime + aws-config — the real Bedrock model transport behind `live-net`. OPTIONAL
 # (default build compiles no AWS tree). Credentials come from the ENVIRONMENT via the SDK's default
