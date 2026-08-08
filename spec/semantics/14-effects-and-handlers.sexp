@@ -17188,3 +17188,91 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 160 Int64))
   (call   main (: -3 Int64)) (output (: 190 Int64)))
+
+;; ── ae (cont.): argument order through STRUCTURE and COMPOUND expressions ────
+;; ae7 nests a draw under a pure unary call (nesting must not reorder); ae8/ae10
+;; carry draw order into LIST and TUPLE element positions and read them back;
+;; ae9 pins record field-INIT order via the CDZ0201-advised projection form
+;; (its match forms hit the two known bind-once declines — witnesses banked);
+;; ae11/ae12 put whole compound expressions in argument position: a do-block's
+;; DISCARDED interior draw still advances the state, and an if-condition draw
+;; decides whether a second draw fires before the next argument.
+
+(case "ae7 draw NESTED under a pure unary call in the first arg slot, second slot a bare draw — nesting must not reorder"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (def (dbl (: x Int64)) (* 2 x))
+            (def (tens (: a Int64) (: b Int64)) (+ (* 10 a) b))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1))))
+                (tens (dbl (E.next)) (E.next))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 106 Int64))
+  (call   main (: 0 Int64)) (output (: 1 Int64)))
+
+(case "ae8 LIST literal of three draws — element positions carry the draw order into the structure"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1))))
+                (let ((xs (list (E.next) (E.next) (E.next))))
+                  (match (List.at xs 0)
+                    ((Some a) (match (List.at xs 1)
+                      ((Some b) (match (List.at xs 2)
+                        ((Some c) (+ (* 100 a) (+ (* 10 b) c)))
+                        ((None) 0)))
+                      ((None) 0)))
+                    ((None) 0)))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 345 Int64))
+  (call   main (: -2 Int64)) (output (: -210 Int64)))
+
+(case "ae9 RECORD literal of two draws read back by PROJECTION — field-init order in the literal drives the state thread"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1))))
+                (let ((r (record (a (E.next)) (b (E.next)))))
+                  (+ (* 10 (. r a)) (. r b)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 56 Int64))
+  (call   main (: -4 Int64)) (output (: -43 Int64)))
+
+(case "ae10 TUPLE literal of three draws matched immediately as scrutinee — positions survive the construct-then-destructure round trip"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1))))
+                (match (tuple (E.next) (E.next) (E.next))
+                  ((tuple a b c) (+ (* 100 a) (+ (* 10 b) c))))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 234 Int64))
+  (call   main (: 0 Int64)) (output (: 12 Int64)))
+
+(case "ae11 a DO-block as an argument — its DISCARDED interior draw still advances the state before the block's value draw"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (def (tens (: a Int64) (: b Int64)) (+ (* 10 a) b))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1))))
+                (tens (E.next) (do (E.next) (E.next)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 57 Int64))
+  (call   main (: 0 Int64)) (output (: 2 Int64)))
+
+(case "ae12 an IF-expression as an argument whose CONDITION draws — the taken branch decides whether a second draw fires before the next arg"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (def (tens (: a Int64) (: b Int64)) (+ (* 10 a) b))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1))))
+                (tens (if (> (E.next) 0) (E.next) 100) (E.next))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 67 Int64))
+  (call   main (: -2 Int64)) (output (: 999 Int64)))
