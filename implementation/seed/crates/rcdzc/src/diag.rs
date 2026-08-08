@@ -152,6 +152,13 @@ pub enum Code {
     /// (CDZ0101): the constructor is not merely absent, it is HIDDEN ON PURPOSE — so the diagnostic names
     /// the type, notes its handle is exported but its constructors are not, and (when the module exports a
     /// function returning the type) points at that function as the way in.
+    ///
+    /// This is the reject that keeps an abstract type's representation unobservable across its boundary:
+    /// constructing or matching a variant would strip the name tag to the underlying structural value, so
+    /// outside the declaring module that escape hatch is refused and a handle-only export never leaks the
+    /// representation it withheld.
+    //= spec/capabilities/type-system.md#an-abstract-type-s-representation-is-not-observable-across-its-boundary
+    //# Stripping an abstract type's name tag to its underlying structural value MUST be rejected outside the declaring module, so that the escape hatch to a nominal type's structure is available only where that type's constructors are, and a handle-only export does not leak the representation it withheld.
     AbstractCtor,
     /// A `Record.extend`/`Record.with` whose FIELD-NAME-INTRODUCTION operand (the `#z` slot) is NOT a
     /// static `#field` label — a BARE identifier `z` (which the reader would otherwise PUN to a static
