@@ -1,272 +1,221 @@
-# Design — record TYPE field encoding: unify the dual arena, one canonical field surface
+# Design — explicit field nodes: record TYPE fields as `(: name T)`, record VALUE fields as `(= name v)`
 
 **Author:** design pass (fleet `design-record-type-syntax`).
-**Audience:** the `vertical` agent(s) that build it — `cadenza-syntax` (parser + printer, both
-surfaces + round-trip harness), `rcdzc` (the type-eval / decode readers), and a corpus migration
+**Audience:** the `vertical` agent(s) that build it — `cadenza-syntax` (parser + printer + round-trip),
+`rcdzc` (type-eval / decode / encode readers + value-record field read), and a corpus migration
 (`corpus-bugfix`).
-**Status:** DESIGN. One operator decision is OPEN (the field-separator token, §7 D2) and is being
-surfaced as an `ask`; everything else has a chosen default. The doc lands now with the default so a
-vertical can start; a flip of D2 is a one-token change to the surface + printer (§2 flags where).
-**Subsystem:** spans `cadenza-syntax` (parser normalization + printer + round-trip), `rcdzc`
-(type-eval / decode-ty readers), corpus migration, and a touch of guide.
+**Status:** DESIGN — REVISED per operator review on PR #2794 (2026-08-08). All forks are now DECIDED
+by the operator; no open decisions remain (§6). The earlier revision recommended the OPPOSITE canonical
+form and is superseded (§0.1).
+**Subsystem:** spans `cadenza-syntax` (parser normalization + printer + round-trip), `rcdzc` (type-eval /
+encode / decode + value-record field read), corpus migration, and a touch of guide.
 
-## 0. The problem, and the shape of the fix — READ FIRST
+## 0. The principle — READ FIRST
 
-**The problem the operator hit.** A record TYPE declaration renders as
-`Record(field(UInt8), fieldb(Int64))`. Each field `field(UInt8)` reads as a **function call**, not
-as "field `field` has type `UInt8`". It looks broken — the same class of complaint that drove the
-`Record.with` `price(9)`-looks-like-a-call fix ([[DESIGN-record-update-syntax]]). The operator wants
-it to read cleanly, e.g. `Record(field = UInt8, fieldb = Int64)` (their stated preference), and
-floated going further — using record/tuple **literal** syntax as the type surface, plus tuple
-literals.
+**Operator principle (PR #2794 review + follow-up, verbatim):**
+> "I would prefer to have fewer exceptions in the syntax. Rewriting and inserting nodes is the wrong
+> direction." … "We also have that problem on the record literals … we are going to have to change
+> those as well to explicitly include a `=` node … It is just much more explicit and less magical."
 
-**Why this is NEEDS-DESIGN, not a printer tweak (v-syntax's findings, built on — not re-derived):**
+The unifying rule: **the field-separator token survives into the AST as an explicit node; the parser
+does NOT silently rewrite it into a bare pair.** Two symmetric consequences:
 
-1. The current output is the faithful print of the arena `(Record (field UInt8) …)` — each field a
-   NAME-headed 2-list `(field UInt8)` (head-application), printed by the generic call form as
-   `field(UInt8)` (`cadenza-syntax/src/printer.rs:707`). Fixing the *rendering* alone is not enough;
-   the field separator the operator wants (`=`) does not parse in type position at all.
-2. `field = UInt8` does **not** parse today — there is no `=` handling in any type production
-   (`Kind::Eq` is the binding separator only, `token.rs:39`); `Record(field = UInt8)` errors with a
-   generic `expected \`,\`` (`parser.rs:571`), and `{field = UInt8}` errors `expected \`:\``
-   (`parser.rs:3812`). Delivering `=` REQUIRES a parser grammar change.
-3. A second surface already parses and round-trips: `Record(field: UInt8)` and brace `{field: UInt8}`
-   both produce a **different** arena — the NAME(`:`)-headed 3-list `(: field UInt8)` ascription
-   (`parser.rs:2249`, `parser.rs:3791`) — NOT `(field UInt8)`.
-4. **The crux: the encoding is already DUAL and both shapes coexist in the corpus.** Head-application
-   `(Record (field T))` ≈ 141 non-comment occurrences (dominant); ascription `(Record (: field T))`
-   = 29 occurrences. Inference reads BOTH on the type-eval path (`rcdzc/src/eval.rs:299`,
-   `eval.rs:3204`), but two readers are **pair-only** — `reduce_ctor` (`eval.rs:2758`) and the
-   encode/decode round-trip `decode_ty` (`resolve.rs:5810`) — and the encoder `encode_ty` /
-   `render_name` (`ty.rs:1729`, `ty.rs:1819`) emit **only** the `(field T)` pair. So `(field T)` is
-   already the *encoder-canonical* arena; `(: field T)` is a secondary ML-lowering surface that
-   inference tolerates.
-5. The VALUE-side record literal already uses `=`: `{a = 1}` → `(record (a 1))`, a STRING-headed
-   2-list `(name value)` pair (`parser.rs:3163`). So `field = T` for types would be consistent with
-   the value-record `=` literal — which is the operator's instinct.
+| | Surface | Canonical arena (explicit node) | Today (the magical form being removed) |
+|---|---|---|---|
+| **record TYPE field** | `field: T` / `{x: Int64}` | `(: field T)` ascription (`:`-headed 3-list) | dual — also `(field T)` pair from `Record(field(T))` |
+| **record VALUE field** | `{a = 1}` | `(= a 1)` (`=`-headed 3-list) | `(a 1)` bare pair (the `=` is dropped) |
 
-**The shape of the fix.** Two things, cleanly separable:
+Both make the same move: keep the surface token (`:` on types, `=` on values) as the head of the
+field node, so the arena is explicit rather than an implicit `(name payload)` pair. On the type side
+this ALSO means the record-type field becomes the SAME `(: name T)` ascription node already used by
+parameter binders (`name: T`) and expression ascription (`e: T`) — one node instead of a bespoke pair,
+i.e. fewer syntax exceptions.
 
-- **(Core, D1 — recommended, low-risk) Collapse the dual arena to ONE canonical field encoding:**
-  the `(field T)` 2-list pair, mirroring the value-record `(name value)` pair. The `(: field T)`
-  ascription arena is eliminated from record-type context — normalized away on parse and migrated
-  out of the corpus. This is the real defect (two encodings for one concept, with asymmetric
-  reader coverage); it is worth doing regardless of the surface token.
-- **(Surface, D2 — OPEN operator decision) Pick ONE field-separator surface and print it as a clean
-  infix** — `field = T` (operator's stated preference; matches value-record `=`) OR `field: T`
-  (matches every other type annotation in Cadenza + the OCaml record model; already parses). Either
-  fixes the `field(UInt8)`-looks-like-a-call rendering. This is the one fork worth the operator's
-  eye (§7 D2) — surfaced as an `ask` with a recommendation; the doc defaults to the operator's
-  stated `=` so a build can start.
+### 0.1 What changed from the first revision (superseded)
+The first cut of this doc recommended the OPPOSITE for the type side: adopt the `(field T)` head-app
+pair as canonical and eliminate the ascription. The operator **rejected** that ("rewriting and
+inserting nodes is the wrong direction") and DECIDED:
+- **Field-separator surface = COLON** (`field: T`), for consistency with every other type annotation
+  in Cadenza (param binders, `e: T`) and the OCaml record model. (This was open decision D2; now closed.)
+- **Canonical type-field arena = `(: field T)` ASCRIPTION**, migrate the `(field T)` pair cases TO it.
+  Because the colon surface ALREADY parses straight to `(: field T)` (`parser.rs:2249`, `parser.rs:3791`),
+  this needs **no parse-time node rewriting** — the parser output is already canonical. (This was
+  decision D1; flipped and now closed.)
+- **Value-record literal gets the symmetric explicit `=` node** — `{a = 1}` → `(= a 1)`, not `(a 1)`.
+  (New scope from the operator; §5 below.)
 
-Per the canonical-form discipline ([[garbage-render-means-not-canonical-fix-the-source]],
-[[DESIGN-record-update-syntax]]): whichever surface is chosen, the *other* field spellings are
-migrated + normalized/rejected — never kept as a second accepted spelling.
+The tradeoff this flip accepts, stated honestly: choosing ascription-canonical shifts work INTO `rcdzc`
+(the pair-only readers `decode_ty`/`reduce_ctor` and the `encode_ty`/`render_name` renderer move from
+the pair to the ascription form — §3), whereas the pair choice would have left them untouched. The
+operator weighed this and chose the ascription anyway, prioritizing (a) no parser node surgery and
+(b) one shared ascription node over minimizing the rcdzc delta. Not re-litigated.
 
-## 1. D1 — the canonical arena encoding: `(field T)` pair (recommended, design-internal)
+## 1. The canonical encodings (DECIDED)
 
-Adopt the **NAME-headed 2-list `(field T)`** as the sole canonical record-type field encoding.
-Eliminate the ascription triple `(: field T)` from record-type context.
-
-Rationale (why `(field T)`, not `(: field T)`):
-
-- It is the **dominant** corpus shape (~141 vs 29).
-- It is what the encoder **already emits** — `encode_ty` / `render_name` (`ty.rs:1729`, `ty.rs:1819`)
-  produce only the pair; `decode_ty` (`resolve.rs:5810`) and `reduce_ctor` (`eval.rs:2758`) read only
-  the pair. Choosing the pair means the encode/decode round-trip and the ground reducer need **no**
-  new colon arm; choosing the triple would force a colon arm into both (larger, riskier).
-- It **mirrors the value record**: `(record (a 1))` (value) and `(Record (a Int64))` (type) then
-  share the identical `(name payload)` field structure, differing only in head (`record` STRING vs
-  `Record` NAME) and in what the payload denotes (a value vs a type). This structural parallel is
-  exactly the "records as the type surface" instinct, realized in the arena.
-
-What changes for the ascription surface: the parser stops producing `(: field T)` for record-type
-fields and instead **normalizes to `(field T)`** at parse time (see RS1). The tolerant colon arms in
-`rcdzc` (`eval.rs:299`, `eval.rs:3204`, `compile.rs:974`, `db.rs:5615`) become dead for
-record-context fields once no producer emits the triple; leave them in place initially (harmless,
-still exercised by any non-record ascription) and let a follow-up prune them once the corpus is
-migrated and the round-trip proves the triple is gone (flagged OQ-3).
+- **Record TYPE field: `(: name T)`** — the `:`-headed 3-list ascription. Identical node to param
+  binders and `e: T`. This is what the colon surface (`field: T`, `{x: T}`) already produces.
+- **Record VALUE field: `(= name value)`** — the `=`-headed 3-list. Symmetric to the type side; the
+  `=` the author writes survives into the arena.
+- The old **implicit** forms are migrated + rejected (canonical-form discipline,
+  [[garbage-render-means-not-canonical-fix-the-source]], [[DESIGN-record-update-syntax]]): the type
+  `(field T)` head-application pair and the value `(name value)` bare pair are no longer produced or
+  accepted once migration completes.
 
 ## 2. The increments (top-to-bottom, the way a vertical lands them)
 
-> **D2 parameterization.** Below, `SEP` is the chosen field separator token (default `=` per the
-> operator's stated preference; `:` if D2 flips). Every SEP-specific site is called out so a flip is
-> a localized change, not a re-plan.
+The two sides (TYPE `(: name T)`, VALUE `(= name v)`) are INDEPENDENT landables — different parsers,
+different arenas, different corpus pins, wildly different blast radius (type ~170 occ, value ~838
+occ / 17 files). They ship as SEPARATE units. Type side first (smaller; surface already parses).
 
-### RS1 — cadenza-syntax: parse the chosen field surface → canonical `(field T)`
+### Phase A — record TYPE fields canonical `(: name T)` (smaller; colon already parses)
 
-The parser accepts the `SEP` surface for a record-type field and produces the canonical `(field T)`
-pair (NOT the ascription triple).
+**RT1 — cadenza-syntax: normalize the `(field T)` head-application to `(: field T)`.**
+The colon surface already parses to `(: field T)` (`type_arg` `parser.rs:2249`; `type_brace_record`
+`parser.rs:3791`) — no change needed there. The only surface that produces the pair `(field T)` is the
+application spelling `Record(field(UInt8))` (the `field(UInt8)` arg parsed as an application via
+`type_postfix`). Decide (OQ-A): (a) **reject** `Record(field(T))` — a record-type field must be written
+`field: T`, so the call-like arg is a parse/resolve error steering to the colon surface; or (b) keep
+accepting it but **normalize** its arena to `(: field T)`. Default: **(a) reject** — it is the cleanest
+"fewer exceptions" outcome and the head-app spelling has no reason to survive once colon is canonical.
+(Normalizing (b) is itself a node rewrite, which the operator's principle disfavors — another reason to
+reject.) NOTE: this is NOT parser node surgery on the ascription output — the ascription path is
+untouched; this is only about what to do with the now-obsolete call-like spelling.
 
-- **Application form** `Record(field SEP T, …)`: today `type_arg` (`parser.rs:2249`) detects
-  `Ident` + `Colon` and builds `(: label ty)`. Change it so a record-type field `label SEP ty`
-  builds the 2-list `(label ty)` head-application instead.
-  - If `SEP = =` (default): add an `Ident` + `Eq` arm to `type_arg` that consumes `=` and builds
-    `(label ty)`. (`=` currently errors here, `parser.rs:571`.)
-  - If `SEP = :`: keep the existing `Ident` + `Colon` detection but build `(label ty)` instead of
-    `(: label ty)` — i.e. normalize the colon field to the pair.
-- **Brace form** `{field SEP T, …}`: `type_brace_record` (`parser.rs:3791`) currently `expect`s
-  `Colon` and builds `(: label ty)` under a `Record` NAME head. Change it to expect `SEP` and build
-  `(label ty)`. (This is the "record literal as type surface" entry point — see RS4 / OQ-1 for
-  whether it also PRINTS as a brace.)
-- **Bare ascription unaffected:** the general Pratt `:` ascription operator on *expressions*
-  (`e : T`, `PREC_ASCRIPTION`) and parameter binders `name: Type` (`param`, `parser.rs:3475`) are a
-  DIFFERENT construct (value ascription / binder typing) and are OUT of scope — they keep `:`. Only
-  record-type *field* positions are normalized. (If D2 = `:`, take care the field `:` and the
-  ascription `:` stay distinguishable by position — field `:` is inside a `Record(...)` / `{...}`
-  type head; this is why normalizing to the pair arena at parse time matters.)
-- **Gate:** parser unit tests — `Record(field SEP UInt8)` and `{field SEP UInt8}` both read to
-  `(Record (field UInt8))`; the OLD unchosen field spelling is rejected (or, for `:` under a `=`
-  default, decide per OQ-2).
+**RT2 — cadenza-syntax: printer emits `field: T` for record-type fields.**
+Today a `Record(...)` type node prints via the generic call form (`printer.rs:707`), rendering
+`(field UInt8)` as `field(UInt8)`. After migration the field nodes are `(: field T)`, which already
+print through the infix `:` path (`printer.rs:490`, `infix` `printer.rs:852`) as `field: UInt8`.
+Confirm the `Record(...)` head prints its `(: f T)` children as `field: T` (infix), and that NO field
+prints as `field(T)`. Round-trip gate (`corpus_roundtrip.rs`) pins this.
 
-### RS2 — cadenza-syntax: print the canonical `(field T)` as `field SEP T`
+**RT3 — rcdzc: make the ascription `(: name T)` the primary type-field reader on ALL paths.**
+- Type-eval already accepts ascription: `type_in_env` (`eval.rs:299`), `typeval_of_uncached`
+  (`eval.rs:3204`), `push_payload_type_positions` (`compile.rs:974`), `collect_type_params`
+  (`db.rs:5615`). These stay; the ascription arm becomes the sole live path (their `(name T)` pair arm
+  becomes dead once the corpus is migrated — prune later, OQ-C).
+- The pair-only readers gain the ascription form: `reduce_ctor` (`eval.rs:2758`) and `decode_ty`
+  (`resolve.rs:5810`) currently match `List(children) if len == 2`; they must read the `(: name T)`
+  triple. `decode_ty` is the dual of `encode_ty`, so:
+- **Encoder flips to render ascription:** `Ty::Record` in `render_name` (`ty.rs:1728`) and the
+  `encode_ty` path (`ty.rs:1819`) currently emit `(Record (name T))`; change to `(Record (: name T))`
+  so the type renderer spells the type the way the (colon) surface accepts it (the renderer's own
+  comment `ty.rs:1722`–`1727` mandates surface-matching). This is the load-bearing rcdzc change — every
+  encode/decode/diagnostic render moves in lockstep, so encode↔decode round-trips on the ascription
+  form.
+- **Gate:** `cargo test -p rcdzc --lib` — a `(Record (: a Int64))` type-evaluates; a value of that type
+  executes under wasmtime; encode→decode round-trips on the ascription form; a diagnostic renders
+  `(Record (: a Int64))`.
 
-The printer must render a record-type field as the clean infix `field SEP T`, never `field(T)`.
+**RT4 — corpus migration: ~141 head-app cases `(Record (a T))` → `(Record (: a T))`.**
+`corpus-bugfix` zone (`spec/semantics/*.sexp` + `.gate-baseline*`). Mechanical codemod within `Record`
+type heads: `(Record … (F T) …)` → `(Record … (: F T) …)`. The ~29 already-ascription cases are already
+canonical (no change). MUST run the ML round-trip, not just the gate
+([[corpus-edit-must-run-ml-round-trip-not-just-gate]]). Because encode now emits ascription, gate
+baselines that carry a rendered `(Record (a T))` in a diagnostic/description regenerate to `(: a T)` —
+regenerate baselines with `cargo xtask gate --save` and diff the VERDICT set (additive only, no
+`Todo→Fail`). Land RT1+RT2+RT3+RT4 as one coordinated unit (a split reds the round-trip the moment the
+head-app spelling is rejected). Corpus-bugfix has claimed RT4 and executes it after RT1–RT3 land.
 
-- Today a NAME-headed `Record(...)` type node prints via the generic call form
-  (`printer.rs:707`–`709` → `plain_call`, `printer.rs:766`), so `(field UInt8)` recurses to
-  `field(UInt8)`. Add recognition: when printing the args of a `Record` type head, a 2-list
-  `(name ty)` field prints as `name SEP ty` (infix), not as an application.
-  - Anchor the recognition where the record/map/list/tuple *value* literal re-sugar already keys off
-    a known head (`printer.rs:342`–`356`, `print_record` at `printer.rs:2428`) — the model for
-    "recognize a prim head and re-sugar its children".
-  - `SEP = =` renders `field = UInt8`; `SEP = :` renders `field: UInt8`.
-- **Round-trip gate (the milestone that pins this):** `corpus_roundtrip.rs` asserts
-  `read_ml(print_ml(x)) structurally_eq x` for every corpus `(input …)`. After RS1+RS2, a record
-  type round-trips through the new surface and lands back on the canonical `(field T)` arena; the
-  printer NEVER emits `field(UInt8)` for a record-type field. Add a focused
-  `assert_canonical_fixed_point` unit for `(Record (a Int64) (b Bool))`.
+### Phase B — record VALUE fields canonical `(= name value)` (LARGE; ~838 occ / 17 files)
 
-### RS3 — rcdzc: confirm the type-eval / decode path on the sole `(field T)` arena
+**RV1 — cadenza-syntax: value-record field arena becomes `(= name value)`.**
+`record_literal` (`parser.rs:3163`) reads `name = value` and today builds the bare pair
+`(name value)` (`parser.rs:3197`), dropping the `=`. Change it to build the `=`-headed triple
+`(= name value)`. Shorthand pun `{x}` (`parser.rs:3181`) → decide the punned node (default `(= x x)`
+for uniformity — every field is `=`-headed). The `record` STRING head is unchanged.
 
-Because `(field T)` is already the encoder-canonical form, this is mostly a *confirmation +
-narrowing*, not a rewrite:
+**RV2 — cadenza-syntax: printer emits `{ name = value }` from `(= name value)`.**
+`print_record` (`printer.rs:2428`) currently renders `(name value)` pairs as `name = value`; point it
+at the `(= name value)` triple instead (read the value from the third child). Pun re-sugar
+(`is_field_pun` `printer.rs:2522`) updated for the new node. The printed SURFACE `{a = 1}` is
+UNCHANGED — only the arena gains the explicit `=`. Round-trip pins it.
 
-- `typeval_of_uncached` (`eval.rs:3204`) and `type_in_env` (`eval.rs:299`) already accept the pair;
-  they keep working unchanged.
-- The pair-only readers `reduce_ctor` (`eval.rs:2758`) and `decode_ty` (`resolve.rs:5810`) already
-  match the canonical form — no colon arm needed (this is the payoff of choosing the pair).
-- The tolerant colon arms (`eval.rs:299`/`3204`/`compile.rs:974`/`db.rs:5615`) become dead for
-  record-context fields once RS1 stops producing the triple. **Do not remove them in this unit**
-  (they may still see a triple from a not-yet-migrated corpus case mid-migration, and some may guard
-  non-record ascription in payload positions — `db.rs:5615`'s comment cites a type-param collection
-  case). Removal is OQ-3, a clean follow-up after the corpus is fully migrated and the round-trip
-  proves the triple is extinct.
-- **Gate:** `cargo test -p rcdzc --lib` — existing record type-eval units stay green; add one that a
-  `(Record (a Int64))` type-evaluates and a value of that shape executes under wasmtime.
+**RV3 — rcdzc: read value-record fields from `(= name value)`.**
+`read_record_fields` (`resolve.rs:5989`) and its consumers (`infer.rs:1261`, `infer.rs:1563`) read the
+`(name value)` pair today; move them to read `(= name value)`. Any value-record construction/lowering
+that emits the pair emits the triple. **Gate:** fold + wasmtime unit for `{a = 1}` evaluating to a
+record value; existing value-record inference units green.
 
-### RS4 — corpus + guide migration (the 29 ascription cases move; head-app cases are arena-stable)
-
-- **Head-application cases (~141):** arena is UNCHANGED (`(field T)` stays `(field T)`), so their
-  gate VERDICTS in `.gate-baseline{,-rust,-rust-async}` do not flip. Their *printed* ML surface
-  changes (`field(T)` → `field SEP T`), which the round-trip test validates structurally — no
-  baseline text edit needed (the baselines pin verdicts, not printed source).
-- **Ascription cases (29):** their `.sexp` source arena `(: field T)` must migrate to `(field T)`.
-  A mechanical codemod within `Record` heads: `(Record … (: F T) …)` → `(Record … (F T) …)`. Files:
-  `05-compound-types.sexp` (7), `15-rows-and-open-sums.sexp` (4), `14-effects-and-handlers.sexp` (3),
-  `03-equality-and-observation.sexp` (2), `07-type-system.sexp` (2), `06-numeric-model.sexp`
-  (`:622`, `:633`), and the remainder. `corpus-bugfix` owns this (`.sexp` edits are the corpus-bugfix
-  zone) and MUST run the ML round-trip, not just the gate ([[corpus-edit-must-run-ml-round-trip-not-just-gate]]).
-- **Migration is ATOMIC with RS1 if the triple is REJECTED** (canonical discipline): the moment the
-  parser stops accepting `(: field T)` in record context, un-migrated corpus cases red the
-  round-trip. Two safe land orders (the vertical picks): (a) **normalize-not-reject first** — RS1
-  normalizes both `:`-field and (if default) `=`-field to the pair while STILL accepting the old
-  input during a transition, migrate the corpus, then flip to reject the old spelling in a follow-up;
-  or (b) **one atomic unit** — RS1 reject + RS4 corpus migration in the same commit (mirrors
-  [[DESIGN-record-update-syntax]]'s RW1⟂RW3 atomic landing). Default: (a) is gentler on the gate;
-  (b) is cleaner. Flag OQ-2.
-- **Guide:** any `implementation` guide chapter that shows a record TYPE (e.g. `RecordsTuples.tsx`)
-  updates to `field SEP T`. Coordinate with the guide owner.
+**RV4 — corpus migration: ~838 `(record (a v) …)` → `(record (= a v) …)` across 17 files.**
+`corpus-bugfix` zone. Mechanical codemod within `record` VALUE heads (STRING-headed `record`, distinct
+from the NAME-headed `Record` type — the codemod must key off the head to avoid touching type nodes).
+This is the big one; script it. MUST run the ML round-trip. Regenerate `.gate-baseline*` and diff the
+VERDICT set (additive only). Land RV1–RV4 as one coordinated unit, SEPARATE from Phase A.
 
 ## 3. Seams / file anchors
 
 | What | Where |
 |---|---|
-| Type-arg parser (labeled `:` detection → build `(field T)`) | `cadenza-syntax/src/parser.rs:2249`–`2272` |
-| Brace record TYPE parser (`{field SEP T}`) | `cadenza-syntax/src/parser.rs:3791`–`3824` |
-| `=` currently rejected in type-arg position | `parser.rs:571` (`sep_continue`) |
-| `:` rejected in brace type | `parser.rs:3812` (`expect(Colon, …)`) |
-| Value record literal (the `=` precedent) | `parser.rs:3163`–`3222` (`record_literal`) |
-| Type-node print (generic call → the `field(T)` render to fix) | `printer.rs:707`–`709`; `plain_call` `printer.rs:766`–`784` |
-| Value literal re-sugar dispatch (model for field re-sugar) | `printer.rs:342`–`356`; `print_record` `printer.rs:2428` |
+| **TYPE side** | |
+| Colon type-arg → `(: field T)` (already correct) | `cadenza-syntax/src/parser.rs:2249`–`2272` |
+| Brace type `{field: T}` → `(: field T)` (already correct) | `parser.rs:3791`–`3824` |
+| Head-app `Record(field(T))` spelling to reject/normalize (RT1) | `type_postfix` `parser.rs:3624`; `type_arg` `parser.rs:2270` |
+| Type printer: `(: f T)` prints `field: T` (infix, already) | `printer.rs:490`–`494`, `infix` `printer.rs:852` |
+| Type-eval ascription readers (ascription becomes sole path) | `rcdzc/src/eval.rs:299`, `eval.rs:3204`, `compile.rs:974`, `db.rs:5615` |
+| Pair-only readers to add ascription (RT3) | `reduce_ctor` `eval.rs:2758`; `decode_ty` `resolve.rs:5810` |
+| **Encoder flips pair→ascription (RT3, load-bearing)** | `render_name` `ty.rs:1728`; `encode_ty` `ty.rs:1819` (comment `ty.rs:1722`–`1727`) |
+| **VALUE side** | |
+| Value-record parser: build `(= name value)` (RV1) | `record_literal` `parser.rs:3163`–`3222` (field build `:3197`, pun `:3181`) |
+| Value-record printer: emit `{name = value}` from triple (RV2) | `print_record` `printer.rs:2428`–`2439`; pun `is_field_pun` `printer.rs:2522` |
+| Value-record field read (RV3) | `read_record_fields` `resolve.rs:5989`; consumers `infer.rs:1261`, `infer.rs:1563` |
+| **Shared** | |
 | Round-trip fixed-point harness | `cadenza-syntax/tests/corpus_roundtrip.rs`; `assert_canonical_fixed_point` |
-| rcdzc type-eval (both arms today; pair stays) | `rcdzc/src/eval.rs:299`–`304`, `eval.rs:3204`–`3208` |
-| rcdzc pair-only readers (no change needed) | `reduce_ctor` `eval.rs:2758`; `decode_ty` `resolve.rs:5810` |
-| Encoder (emits pair only — confirms canonical) | `rcdzc/src/ty.rs:1729`, `ty.rs:1819` |
-| Tolerant colon arms (dead post-migration; prune in OQ-3) | `eval.rs:299`/`3204`, `compile.rs:974`, `db.rs:5615` |
-| Corpus ascription cases to migrate (29) | `spec/semantics/{05,15,14,03,07,06}-*.sexp` |
-| Gate baselines (verdicts; head-app unaffected) | `spec/semantics/.gate-baseline{,-rust,-rust-async}` |
+| Type corpus (~141 head-app + 29 ascription) | `spec/semantics/*.sexp` |
+| Value corpus (~838 `(record …)` / 17 files) | `spec/semantics/*.sexp` |
+| Gate baselines (regenerate after encoder flip / migration) | `spec/semantics/.gate-baseline{,-rust,-rust-async}` |
 
 ## 4. The gate that protects it
 
-1. `cargo test -p cadenza-syntax` — parser reads `Record(field SEP T)` and `{field SEP T}` to
-   `(Record (field T))`; printer emits `field SEP T` and NEVER `field(T)`; `corpus_roundtrip`
-   structural round-trip holds; `assert_canonical_fixed_point` on `(Record (a Int64) (b Bool))`.
-2. `cargo test -p rcdzc --lib` — record type-eval units green; one wasmtime run where a value of a
-   `(Record (a Int64))` type executes.
-3. `cargo xtask gate` — diff the FAIL SET, ADDITIVE only. Head-app verdicts unchanged; the 29
-   migrated ascription cases stay at their prior verdict (arena `(field T)` now, same meaning). No
-   `Todo→Fail` miscompile.
+Per phase (each phase is its own gated unit):
+1. `cargo test -p cadenza-syntax` — parser produces the canonical node; printer emits the canonical
+   surface and never the old implicit form; `corpus_roundtrip` structural round-trip; a focused
+   `assert_canonical_fixed_point`.
+2. `cargo test -p rcdzc --lib` — type-eval / value-record fold + a wasmtime run; encode↔decode
+   round-trip on the ascription form (Phase A).
+3. `cargo xtask gate` — regenerate `.gate-baseline*` (the encoder flip + migration change rendered
+   descriptions), diff the VERDICT set, ADDITIVE only, no `Todo→Fail` miscompile.
 4. `cargo xtask check` — fmt + clippy `-D warnings` + `codegen --check`. **No `cargo xtask build`** —
-   touches neither `cdz-runtime` nor its frozen hash (a parser/printer + corpus change).
-5. Guide chapters showing record types actually round-trip / run.
+   neither phase touches `cdz-runtime` or its frozen hash.
+5. Guide chapters showing records round-trip / run.
 
 ## 5. Ownership / hand-off
 
-One coordinated vertical, lead + coordinators:
-
-- **Lead: `v-syntax`** — owns the parser normalization (RS1), the printer re-sugar (RS2), and the
-  round-trip harness. This is the bulk of the work and the milestone gate.
-- **`rcdzc` (RS3):** confirmation + a type-eval unit; small, `v-syntax` can carry it or a short rcdzc
-  helper. The colon-arm prune (OQ-3) is a clean follow-up owned by `v-inference`.
-- **Corpus migration (RS4):** `corpus-bugfix` (the `.sexp` zone), running the ML round-trip.
+- **Lead: `v-syntax`** — parser + printer + round-trip on both phases (RT1/RT2, RV1/RV2), plus the
+  rcdzc reads it can carry (RT3, RV3 are localized).
+- **Corpus migration: `corpus-bugfix`** — RT4 (~141 type cases, claimed) and RV4 (~838 value cases);
+  runs the ML round-trip + regenerates baselines. RT4 executes after RT1–RT3 land; RV4 after RV1–RV3.
+- **rcdzc RT3 (encoder flip + pair-reader ascription arms):** `v-syntax` or a short rcdzc helper /
+  `v-inference` — it is the one non-trivial rcdzc change. The dead type-eval pair arms prune later (OQ-C).
 - **Guide:** the guide owner, or folded into the lead's unit.
 
-Land order: prefer normalize-first (RS1 accepts old + new, produces canonical) → corpus migrate
-(RS4) → printer to new surface (RS2) → flip to reject old spelling (follow-up). This keeps every
-intermediate gate green (OQ-2 default (a)).
+Land order: **Phase A first** (RT1+RT2+RT3+RT4 atomic) — smaller, and the colon surface already parses.
+**Phase B second** (RV1+RV2+RV3+RV4 atomic) — the large value-corpus migration, independent.
 
-## 6. Resolved (design-internal defaults — not re-litigating unless the operator flips D2)
+## 6. Resolved (operator DECISIONS, PR #2794 review 2026-08-08) — do NOT re-litigate
 
-- **D1: canonical arena = `(field T)` 2-list pair** (recommended, low-risk). Ascription `(: field T)`
-  eliminated from record-type context. Mirrors the value-record `(name value)` pair; the
-  encode/decode round-trip and ground reducer need no colon arm.
-- **The `field(UInt8)`-looks-like-a-call rendering is the concrete defect** both surface options fix.
-- **One canonical field spelling** (canonical-form discipline) — the unchosen spelling is
-  migrated + normalized/rejected, never a kept alternative.
+- **Field-separator surface = COLON on types** (`field: T`), for cross-annotation consistency + OCaml
+  model. (Was D2.)
+- **Canonical type-field arena = `(: field T)` ascription** — the same node as param binders / `e: T`;
+  colon already parses to it (no parse-time node rewrite). Migrate the `(field T)` head-app cases to it.
+  (Was D1; flipped from the first revision.)
+- **Canonical value-field arena = `(= name value)`** — the `=` survives into the arena, symmetric to
+  the type-side `:`. `{a = 1}` → `(= a 1)`, not `(a 1)`. (New scope.)
+- **Principle: fewer syntax exceptions; the surface token is an explicit AST node; no implicit
+  parser rewriting.** The rcdzc encode/decode delta (pair→ascription) is an accepted tradeoff.
+- Two independent landables: Phase A (type, ~170 occ) then Phase B (value, ~838 occ / 17 files).
 
-## 7. Open decisions (chosen default — the vertical / operator can revisit)
+## 7. Open (implementation-local; the vertical picks, cheap to revisit)
 
-- **D2 — the field-separator surface (OPERATOR decision; surfaced as an `ask`).** Default = `=`
-  (operator's stated preference; matches value-record `{a = 1}`). Alternative = `:`.
-  - **Case for `=`:** consistency with the value-record literal; realizes "a record type is spelled
-    like a record value with types in the fields" (`{x = Int64}` parallels `{x = 1}`); the operator's
-    instinct.
-  - **Case for `:` (decision-relevant, possibly new to the operator):** it is consistent with EVERY
-    OTHER type annotation in Cadenza — parameter binders `name: T`, expression ascription `e: T`, the
-    existing brace type `{field: T}` — whereas `=` in a type position is novel and could misread as
-    "defaults to" / "aliases to". And the *current* split — value `{a = 1}` with `=`, type `{a: T}`
-    with `:` — is precisely the **OCaml record model** (OCaml: value `{ x = 1 }`, type `{ x : int }`),
-    a principled, well-precedented distinction rather than an accident. `:` also already parses +
-    round-trips, so it is less parser work.
-  - The doc builds on `=` today; a flip to `:` changes only the `SEP` token at the RS1/RS2 anchors.
-- **D3 — record/tuple LITERALS as the type surface + tuple literals (operator NOTE 2; scope fork).**
-  - **Record type as brace literal.** RS1 already accepts `{field SEP T}`. OPEN: should it also
-    *print* as a brace `{field SEP T}` (full "literal as type surface"), or keep printing the
-    `Record(field SEP T)` application head? **Default: keep `Record(...)` head spelling in this
-    unit** (smaller, and the app form is unambiguous); brace-printing is a clean Phase-2 follow-up
-    once the field-separator settles. (OQ-1.)
-  - **Tuple types.** `(A, B)` already PARSES as a tuple type (`type_paren`, `parser.rs:3760`) but
-    canonicalizes to `Tuple(A, B)` on print. Making it print as `(A, B)` is the tuple analog of the
-    brace-record-type question — **same Phase-2 default: keep `Tuple(...)` for now.**
-  - **"Adding tuple literals."** Value tuple literals `(a, b)` → `(tuple …)` ALREADY EXIST
-    (`parser.rs:1863`, `print_tuple` `printer.rs:2410`), as do tuple TYPES. **Flag to the operator:**
-    what specifically is missing here? (Possibly: printing type tuples as `(A, B)`, per above; or a
-    1-tuple / nesting nuance.) Captured in the `ask` so the operator can pin the intent; default is
-    "nothing missing on the value side — this reduces to the Phase-2 tuple-type print question".
-- **OQ-1 — brace-print the record type?** Default no (keep `Record(...)`). Phase-2.
-- **OQ-2 — reject the old field spelling immediately, or normalize-then-reject?** Default:
-  normalize-first, reject in a follow-up (gentler gate). §2 RS4.
-- **OQ-3 — prune the now-dead tolerant colon arms in rcdzc.** Default: leave in this unit; prune in a
-  `v-inference` follow-up once the corpus is migrated and the round-trip proves the triple is extinct
-  (some arms may still guard non-record ascription — verify before removing).
+- **OQ-A — the obsolete head-app spelling `Record(field(T))`.** Default: **reject** (a record-type
+  field must be `field: T`); alternative: normalize its arena to `(: field T)`. Reject is the
+  "fewer exceptions / no rewrite" outcome. §2 RT1.
+- **OQ-B — value-record shorthand pun `{x}`.** Default: `(= x x)` (every field `=`-headed, uniform).
+  §2 RV1.
+- **OQ-C — prune the now-dead `(name T)` pair arms in the rcdzc type-eval readers** (`eval.rs:299`/
+  `3204`, `compile.rs:974`, `db.rs:5615`) once the type corpus is fully migrated and the round-trip
+  proves the pair is extinct. Default: leave in the landing units; prune in a `v-inference` follow-up
+  (verify none guard a non-record pair position before removing).
+- **Tuple literals (operator NOTE-2, earlier):** value tuple literals `(a, b)` → `(tuple …)` and tuple
+  TYPES already exist; only their PRINT canonicalizes to `Tuple(...)`. No implicit-node problem there
+  (positional, no dropped separator), so it is OUT of this doc's explicit-node scope. If the operator
+  wants type tuples to print as `(A, B)`, that is a separate small print-only follow-up.
