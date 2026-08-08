@@ -32,7 +32,7 @@ type EffectKind =
   | Emit()
 
 type EffectRequest =
-  | Mk(Record(kind(EffectKind), target(String), payload(Option(Bytes)), correlation(Option(Bytes))))
+  | Mk(Record(kind: EffectKind, target: String, payload: Option(Bytes), correlation: Option(Bytes)))
 
 // kv host import (bound peer iface over the shared value-heap runtime — handle ABI): only put is needed
 // (genesis WRITES setup state; it never reads to decide an action).
@@ -52,7 +52,7 @@ def setup-key(family: String) -> Option(Bytes) =
   else None()
 
 def apply(
-  ct: Record(family(String), version(UInt(32))),
+  ct: Record(family: String, version: UInt(32)),
   payload: Option(Bytes),
   resumes: Option(Bytes),
 ) -> List(EffectRequest) = match resumes with
