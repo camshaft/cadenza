@@ -6018,6 +6018,35 @@ mod tests {
     }
 
     #[test]
+    fn record_type_fields_print_as_colon_ascription_and_round_trip() {
+        // DESIGN-record-type-syntax RT2 (operator PR #2794): the canonical record-TYPE field is the
+        // `(: name T)` ascription node — the SAME node as a param binder / `e: T`, not a bespoke pair.
+        // A `Record` type head prints each `(: field T)` child through the infix `:` path as
+        // `field : T`, and the printed surface re-parses back to the identical ascription arena. This
+        // pins the canonical-form behavior BEFORE Phase A migrates the ~141 head-app `(field T)` cases,
+        // so the atomic RT1+RT3+RT4 land cannot silently regress the ascription round-trip.
+        //
+        // Arena -> surface: the ascription children print as `a : Int64` (infix `:`, spaced), never as
+        // the head-app spelling `a(Int64)`.
+        let a = sexpr::read("(type R (Record (: a Int64) (: b Bool)))").unwrap();
+        let out = print(&a, 80);
+        assert_eq!(out, "type R =\n  | Record(a : Int64, b : Bool)");
+        assert!(
+            !out.contains("a(Int64)"),
+            "field must not print as head-app: {out:?}"
+        );
+        // Surface -> arena -> surface: the printed colon form re-parses to the same ascription arena
+        // and reprints identically (round-trip fixed point).
+        assert_eq!(
+            assert_roundtrip("type R =\n  | Record(a : Int64, b : Bool)", 80),
+            "type R =\n  | Record(a : Int64, b : Bool)"
+        );
+        // Single field, same shape.
+        let a = sexpr::read("(type R (Record (: a Int64)))").unwrap();
+        assert_eq!(print(&a, 80), "type R =\n  | Record(a : Int64)");
+    }
+
+    #[test]
     fn multi_statement_function_body_prints_bare() {
         // A `(do …)` FUNCTION body prints as a bare `;`-separated statement run under the `=` — the
         // exact surface the parser folds back into that `(do …)`. No wrapping parens.
