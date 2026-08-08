@@ -184,6 +184,21 @@ async fn main() -> std::process::ExitCode {
             // memory (default) → in-memory session logs (no durable sink).
             LogConfig::Memory => None,
         };
+        // A SECOND log-sink builder kept for BOOT-RECOVERY reads (I4b): the one above is MOVED into the factory
+        // (it appends a live session's log), so recovery — which READS a persisted log back via
+        // LogSinkBuilder::recover — needs its own owned builder. Config-derived + cheap (a Dynamo builder holds
+        // a client, a file builder a path), so building a second is fine on the boot path. `None` for the
+        // in-memory backend (nothing persisted → nothing to recover).
+        let recovery_log_reader: Option<Box<dyn LogSinkBuilder>> = match &config.log {
+            LogConfig::File { dir } => Some(Box::new(FileLogSinkBuilder::new(dir))),
+            #[cfg(feature = "live-aws-storage")]
+            LogConfig::Dynamo { table } => Some(Box::new(
+                cdz_agent_host::DynamoLogSinkBuilder::new(table.clone()).await,
+            )),
+            #[cfg(not(feature = "live-aws-storage"))]
+            LogConfig::Dynamo { .. } => None,
+            LogConfig::Memory => None,
+        };
         // The durable SESSION REGISTRY (I4b), per [session_registry] config — the index the host loop keeps
         // current (register on install, mark_terminated on terminate) so a restart can boot-recover durably
         // logged sessions WITHOUT an O(all-events) log scan. `dynamo` builds a DynamoSessionRegistry over
@@ -217,7 +232,11 @@ async fn main() -> std::process::ExitCode {
         //   key on boot + snapshotted on each mutation. A build WITHOUT the feature reports a clean "not
         //   compiled in" boot error (config validates regardless of feature, like [blob]/[log]).
         use cdz_agent_host::NameStoreConfig;
-        let agent_host = match &config.name_store {
+        // `mut` for the I4b boot-recovery loop below (agent_host.spawn each recovered session); a build without
+        // `live-aws-storage` compiles that loop out, so the `mut` is unused there — allow it rather than split
+        // the binding by cfg.
+        #[cfg_attr(not(feature = "live-aws-storage"), allow(unused_mut))]
+        let mut agent_host = match &config.name_store {
             NameStoreConfig::Memory => AgentHost::new(),
             #[cfg(feature = "live-aws-storage")]
             NameStoreConfig::S3 { bucket, prefix } => {
@@ -278,7 +297,8 @@ async fn main() -> std::process::ExitCode {
         // Attach the optional log-sink builder to whichever blob-backed factory we build, then box it. (The
         // two arms are distinct concrete factory types, so the with_log_sink + Box happens per-arm; the
         // executor set is moved into the one arm that runs.)
-        let factory: Box<dyn SessionFactory> = match &config.blob {
+        #[cfg_attr(not(feature = "live-aws-storage"), allow(unused_mut))]
+        let mut factory: Box<dyn SessionFactory> = match &config.blob {
             BlobConfig::Memory => {
                 let store =
                     CachingBlobStore::new(cdz_kernel::blob::MemBlobStore::new(), cache_mem_bytes);
@@ -332,6 +352,113 @@ async fn main() -> std::process::ExitCode {
             config.log,
             cache_mem_bytes / (1024 * 1024)
         );
+
+        // §lifecycle I4b BOOT-RECOVERY (the culmination): after the canonical name store is restored (above)
+        // and BEFORE the host loop runs, resurrect the sessions that were live at the last shutdown/crash.
+        // Runs ONLY when a durable SESSION REGISTRY (the recoverable-session index) AND a durable LOG (what
+        // recovery replays) are BOTH configured — a memory registry or memory log has nothing to recover, so
+        // the daemon stays lossy-on-restart (today's behavior) with zero overhead. All the seams are on trunk:
+        // the registry enumerates (list_all), the log reader reads a session's persisted log back
+        // (LogSinkBuilder::recover), and the factory folds+rebuilds it (recover_and_build → the HostedSession +
+        // a RecoveryReport). A session whose log ends Terminated is SKIPPED (not resurrected); a Corrupt
+        // recovery is alarmed-and-skipped (that one session, not the rest); open effects are reported for
+        // re-drive. Best-effort per session: one session's recovery failure is logged, never aborts the boot.
+        #[cfg(feature = "live-aws-storage")]
+        if let (Some(registry), Some(log_reader)) =
+            (session_registry.as_ref(), recovery_log_reader.as_ref())
+        {
+            use cdz_agent_host::SessionId;
+            match registry.list_all().await {
+                Ok(records) => {
+                    let mut recovered_count = 0usize;
+                    for record in &records {
+                        // The registry's status already marks terminated sessions; skip them without even
+                        // reading the log (the cheap index-level skip the registry exists for).
+                        if record.status == cdz_agent_host::SessionStatus::Terminated {
+                            continue;
+                        }
+                        let id = SessionId::new(record.session_id.clone());
+                        // Read this session's persisted log back into a `Recovered`. `Ok(None)` = no durable
+                        // log for it (nothing to recover — skip); `Err` = a read failure (log + skip, don't
+                        // abort the whole boot for one session).
+                        let recovered = match log_reader.recover(&id).await {
+                            Ok(Some(r)) => r,
+                            Ok(None) => continue,
+                            Err(e) => {
+                                tracing::error!(
+                                    target: "cdz_agent_host::recovery",
+                                    session_id = record.session_id.as_str(),
+                                    error = %e,
+                                    "boot-recovery: could not read a session's durable log — skipping it"
+                                );
+                                continue;
+                            }
+                        };
+                        // Fold the log through the factory (reloads the reducer + recover_from). On failure
+                        // (absent reducer bytes / a replay error), log + skip that session.
+                        let (hosted, report) = match factory.recover_and_build(recovered).await {
+                            Ok(pair) => pair,
+                            Err(e) => {
+                                tracing::error!(
+                                    target: "cdz_agent_host::recovery",
+                                    session_id = record.session_id.as_str(),
+                                    error = %e,
+                                    "boot-recovery: could not rebuild a session — skipping it"
+                                );
+                                continue;
+                            }
+                        };
+                        // A log that ends in the Terminated marker is NOT resurrected (defense-in-depth over
+                        // the registry status check above — the durable log tail is the source of truth).
+                        if hosted.is_terminated() {
+                            continue;
+                        }
+                        // A genuinely CORRUPT recovery is an alarm: recover the good prefix but flag it loud
+                        // and skip THIS session (don't register a half-broken one), recovering the rest.
+                        if report.is_corrupt() {
+                            tracing::error!(
+                                target: "cdz_agent_host::recovery",
+                                session_id = record.session_id.as_str(),
+                                "boot-recovery: a session's log recovered CORRUPT — skipping it (the other \
+                                 sessions still recover)"
+                            );
+                            continue;
+                        }
+                        // The open effects the kernel reports are dispatched-but-unsettled at crash; a full
+                        // re-drive (re-perform by idempotency key) is a following slice — for now they're
+                        // surfaced so a deployment can see them (never silently dropped).
+                        if !report.open_effects.is_empty() {
+                            tracing::warn!(
+                                target: "cdz_agent_host::recovery",
+                                session_id = record.session_id.as_str(),
+                                open_effects = report.open_effects.len(),
+                                "boot-recovery: recovered a session with open effects (re-drive is a \
+                                 following slice; they are reported, not dropped)"
+                            );
+                        }
+                        agent_host.spawn(id, hosted);
+                        recovered_count += 1;
+                    }
+                    eprintln!(
+                        "cdz-agent-daemon: boot-recovery recovered {recovered_count} session(s) from {} \
+                         registry record(s)",
+                        records.len()
+                    );
+                }
+                Err(e) => {
+                    // The registry enumeration itself failed — log it, boot with an empty registry rather
+                    // than aborting (a control-plane daemon can still serve fresh installs).
+                    tracing::error!(
+                        target: "cdz_agent_host::recovery",
+                        error = %e,
+                        "boot-recovery: could not enumerate the session registry — booting without recovery"
+                    );
+                }
+            }
+        }
+        // Bind the recovery-read builder so it is consumed in every build (a memory-backend / no-feature build
+        // never reads it). The recovery loop above borrowed it; drop it explicitly now.
+        drop(recovery_log_reader);
 
         // Metrics EXPORT: when the `metrics-export` feature is compiled AND `[observability]` is enabled,
         // clone the host's metrics registry (the Arc-backed handle shares the same storage the host loop
