@@ -17,7 +17,7 @@ import { Ty } from "ty"
 // ARC-A2: the Db types column now stores `Map(Int64, Ty)`; db-infer's raw-column ops bridge at the column
 // boundary (ty-col-to-typed / typed-col-to-ty) so infer-node + downstream consumers stay on `Typed` this
 // slice. TEMPORARY — removed once infer-db/lower-db migrate to Ty.
-import { ty-col-to-typed, typed-col-to-ty } from "ty-bridge"
+import { ty-col-to-typed, ty-to-typed } from "ty-bridge"
 
 import { Db, db-tree, typed-filled } from "db"
 
@@ -28,22 +28,27 @@ import { resolve-into-db } from "db-resolve"
 def db-resolved-col(db: Db) = match db with
   | Db.Db(_, rc, _, _) => rc
 
+/// The RAW `Ty` types column (ARC-A2: what the column actually stores now). Internal/Ty-native readers use this.
+def db-ty-col(db: Db) = match db with
+  | Db.Db(_, _, tc, _) => tc
+
 /// The types column of a Db, AS `Map(Int64, Typed)` — ARC-A2 edge-bridge: the column stores `Ty`, this
-/// converts it back to `Typed` for un-migrated consumers (infer-node/lower-node/bin-type read a Typed column).
+/// converts it back to `Typed` for un-migrated consumers (db-demand/lower-node/bin-type read a Typed column).
 def db-typed-col(db: Db) = match db with
   | Db.Db(_, _, tc, _) => ty-col-to-typed(tc)
 
-/// Merge a `Typed` type column into the Db's types column — ARC-A2 edge-bridge: infer-node produces a whole
-/// `Map(Int64, Typed)`; this converts it to the stored `Map(Int64, Ty)` (typed-col-to-ty) before merging.
-def merge-typed(db: Db, tcol: Map(Int64, Typed)) = match db with
-  | Db.Db(t, rc, _, cc) => Db.Db(t, rc, typed-col-to-ty(tcol), cc)
+/// Merge a `Ty` type column into the Db's types column — ARC-A2: infer-node now produces a `Map(Int64, Ty)`
+/// directly (its typing core migrated to Ty), so this stores it with no conversion. (db-typed-col still bridges
+/// BACK to Typed for the not-yet-migrated consumers db-demand/db-lower — removed in their follow slice.)
+def merge-typed(db: Db, tcol: Map(Int64, Ty)) = match db with
+  | Db.Db(t, rc, _, cc) => Db.Db(t, rc, tcol, cc)
 
 /// INFER into the Db (rcdzc `type_of` demand): resolve ONCE into the Db (P1d fill-once — a HIT if already
 /// resolved), then run `infer-node` over the Db's RESOLVED column (NOT a re-resolve) to fill the types
 /// column. Returns the Db carrying BOTH columns — the memoization payoff (resolve computed once, reused).
 def infer-into-db(db: Db, root: Int64) =
   let db1 = resolve-into-db(db, root) in
-  let tcol = infer-node(db-tree(db1), root, db-resolved-col(db1), Map.empty : Map(Int64, Typed)) in
+  let tcol = infer-node(db-tree(db1), root, db-resolved-col(db1), Map.empty : Map(Int64, Ty)) in
   merge-typed(db1, tcol)
 
 /// The INFER producer read (rcdzc `type_of(db, id)`): demand the type fact at `id`, filling resolve+types
@@ -53,7 +58,18 @@ def typed-of-db(db: Db, root: Int64, id: Int64) =
   // item-3 HM: GROUND the deferred-int sentinel (TIntW(_,0)) to Int64 at the query boundary — an unconstrained
   // literal's default (matches type-at). The raw column may hold a deferred fact for a literal/var that never
   // met a narrow sibling; the reported type never leaks width 0.
-  (db1, (match Map.lookup(db-typed-col(db1), id) with
+  (db1, (match Map.lookup(db-ty-col(db1), id) with
+          | Option.Some(t) => Option.Some(ty-to-typed(ground-deferred(t)))   // ground (Ty) then bridge to Typed for callers
+          | Option.None(_) => Option.None(unit)))
+
+/// The Ty-NATIVE infer query (ARC-A2: the sibling of `typed-of-db` for consumers that have migrated off Typed).
+/// Same demand — infer into the Db, read the types column at `id`, GROUND the deferred-int axis at the query
+/// boundary — but returns the raw grounded `Ty` (no ty-to-typed bridge). db-demand (now Ty-native) uses this for
+/// its demand-vs-walk differential so both sides compare `Ty` via `ty-eq`. (`typed-of-db` stays for db-lower, the
+/// last Typed consumer — its follow slice.)
+def ty-of-db(db: Db, root: Int64, id: Int64) =
+  let db1 = infer-into-db(db, root) in
+  (db1, (match Map.lookup(db-ty-col(db1), id) with
           | Option.Some(t) => Option.Some(ground-deferred(t))
           | Option.None(_) => Option.None(unit)))
 
@@ -115,4 +131,4 @@ def di-comparison-is-bool() =
       | (_, Option.Some(Typed.TBool)) => unit
       | _ => trap("1 < 2 types to TBool")
 
-export { infer-into-db, typed-of-db, db-resolved-col, db-typed-col }
+export { infer-into-db, typed-of-db, ty-of-db, db-resolved-col, db-typed-col, db-ty-col }
