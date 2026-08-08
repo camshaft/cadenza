@@ -6413,3 +6413,5 @@ pass	dc3 the MIDDLE relay hop is chosen by a draw — the branch decides between
 pass	tq1 a Q-shadow inside a TWO-effect region — P draws thread THROUGH the shadow while Q is locally rebound
 pass	tq2 the Q-shadow's SEED mixes P and Q draws — both outer threads advance before the shadow opens, and resume after
 pass	tq3 a Q-shadow wraps only the MIDDLE argument of a pure call — its neighbors dispatch to the outer P and Q frames
+pass	tq4 BOTH effects shadowed in one inner region — two fresh threads run their course, both outer threads untouched
+pass	tq5 a DEF installs the Q-shadow and draws P from inside it — the P dispatch crosses the def AND the shadow to the caller's frame
