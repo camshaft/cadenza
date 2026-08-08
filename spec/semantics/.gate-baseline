@@ -6320,3 +6320,6 @@ pass	uv4 a RELATIONAL @ensures (ret > x) over a TWO-draw body — the postcondit
 pass	lo1 THIRTY dispatches in one region — the fold scales past the corpus's usual handful, arithmetic sum exact
 pass	lo2 a NINE-level shadow tower (outer + eight) — one draw per level, the deepest doubling, strides 1-8
 pass	lo3 EIGHT ops in one effect, called in shuffled order — dispatch-table width, one op advancing mid-sequence
+pass	oc1 an Option-of-TUPLE accumulator — None seeds on first step, Some carries (total,count) advancing both
+pass	oc2 an Option FLOWS between two ops of one effect — find produces Some/None, use consumes it as an op ARG
+pass	oc3 a DOUBLE-wrapped Option resume value — None vs Some(None) vs Some(Some v) all distinguished by the body
