@@ -16374,3 +16374,91 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 27 Int64))
   (call   main (: 0 Int64)) (output (: 17 Int64)))
+
+;; ── list WALKS composed with draws (breaker lf) ──────────────────────────────────────────────────
+;; Recursive index-walks (the fold idiom here) meeting the effect thread: lf1 a PURE walk over a
+;; DRAW-BUILT list scaled by an earlier draw; lf2 a PERFORMING walk (each visit draws, element
+;; order paired with state order); lf3 an arm pushing TWO elements per dispatch where both pushed
+;; values read the PRE-push binding (the arm's state is immutable — no sequencing surprise); lf4 a
+;; per-element dispatch comparing each element against the RISING state (amplify-or-pass); lf5 two
+;; lists in LOCKSTEP with a per-pair 2-arg dispatch, length-guarded via projection helpers (the
+;; nested-Option-match x performing-recursive-callee form stays not-yet-reducible — the nesting,
+;; not the arity, is the trigger).
+
+(case "lf1 a recursive index-walk over a DRAW-BUILT list, scaled by an earlier draw — the walk itself is pure"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (sum-scaled (: xs (List Int64)) (: i Int64) (: k Int64))
+              (match (List.at xs i)
+                ((Some v) (+ (* v k) (sum-scaled xs (+ i 1) k)))
+                ((None) 0)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (+ s 1))))
+                (let ((k (St.next)))
+                  (let ((xs (list (St.next) (St.next) (St.next))))
+                    (sum-scaled xs 0 k)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 105 Int64))
+  (call   main (: 2 Int64)) (output (: 24 Int64)))
+
+(case "lf2 a PERFORMING recursive walk — each element visit draws, pairing element order with state order"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (visit (: xs (List Int64)) (: i Int64))
+              (match (List.at xs i)
+                ((Some v) (+ (* v (St.next)) (visit xs (+ i 1))))
+                ((None) 0)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume s (+ s 1))))
+                (visit (list 3 5 7) 0)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 94 Int64))
+  (call   main (: 0 Int64)) (output (: 19 Int64)))
+
+(case "lf3 the arm pushes TWO elements per dispatch (both lengths read from the PRE-push list) — the third draw reads length 5"
+  (input  (do
+            (effect L (op push2 (-> Int64)))
+            (def (main (: n Int64))
+              (handle L (list n)
+                ((push2 () s (resume (List.len s) (List.push (List.push s (List.len s)) (* (List.len s) 10)))))
+                (do
+                  (L.push2)
+                  (L.push2)
+                  (L.push2))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 5 Int64)))
+
+(case "lf4 a per-element dispatch comparing each element against the RISING state — amplify-or-pass per visit"
+  (input  (do
+            (effect St (op weigh (-> Int64 Int64)))
+            (def (walk (: xs (List Int64)) (: i Int64))
+              (match (List.at xs i)
+                ((Some v) (+ (St.weigh v) (walk xs (+ i 1))))
+                ((None) 0)))
+            (def (main (: n Int64))
+              (handle St n
+                ((weigh (v) s (resume (if (> v s) (* v 100) v) (+ s 1))))
+                (walk (list 2 9 4) 0)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 906 Int64))
+  (call   main (: 1 Int64)) (output (: 1500 Int64))
+  (call   main (: 8 Int64)) (output (: 15 Int64)))
+
+(case "lf5 TWO lists walked in LOCKSTEP with a per-pair 2-arg dispatch — length-guarded via projection helpers"
+  (input  (do
+            (effect St (op mix (-> Int64 Int64 Int64)))
+            (def (pair-or (: xs (List Int64)) (: i Int64))
+              (match (List.at xs i) ((Some v) v) ((None) -1)))
+            (def (zipwalk (: xs (List Int64)) (: ys (List Int64)) (: i Int64))
+              (if (< i (List.len xs))
+                  (+ (St.mix (pair-or xs i) (pair-or ys i)) (zipwalk xs ys (+ i 1)))
+                  0))
+            (def (main (: n Int64))
+              (handle St n
+                ((mix (a b) s (resume (+ (* a b) s) (+ s 1))))
+                (zipwalk (list 1 2 3) (list 10 20 30) 0)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 158 Int64))
+  (call   main (: 0 Int64)) (output (: 143 Int64)))
