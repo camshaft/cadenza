@@ -1948,5 +1948,45 @@
             echo "cdz: CDZ_STORE → nix component store ($CDZ_STORE)"
           '';
         };
+
+        # ── LOCAL WARM-KEEP (v-nix+v-fleet-tooling 2026-08-08) ─────────────────────────────────────
+        #
+        # `nix run .#warm-keep` — keeps the LOCAL /nix/store hot for local-gating. Background: the
+        # operator ran out of GHA credits (2026-08-08), so the fleet gates every MR LOCALLY via
+        # `cargo xtask gate-local` / `.#checks.<sys>.local-gate`. cache-warm.yml (which kept the GHA
+        # cache hot) is itself a GHA workflow — DEAD now — so the local host's /nix/store is the ONLY
+        # warm source. If the heavy warm layer (crane's ~341M cargo-artifacts dep-closure + the
+        # component store) gets garbage-collected between MRs, gate-local drops from ~1s/warm (or ~7-8m
+        # for the changed-crate tier) to a full COLD rebuild — prohibitive per-MR. This app REALISES +
+        # pins that warm layer as durable GC-roots (via `--out-link`, which registers an indirect GC
+        # root), so `nix-collect-garbage` never reclaims it. v-ft's gate-local/drain invokes this (or a
+        # host timer runs it periodically) to replace the dead cache-warm.yml with a LOCAL warm-keep.
+        # Idempotent + fast when already warm (all cache-hit); pins the SAME set the local gate builds.
+        apps.warm-keep =
+          let
+            warmKeep = pkgs.writeShellApplication {
+              name = "cdz-warm-keep";
+              runtimeInputs = [ pkgs.nix pkgs.coreutils ];
+              text = ''
+                # GC-root dir: keep the roots with the repo (survives across MRs, one place to see/clear).
+                root_dir="''${CDZ_WARM_ROOT:-.nix-warm-roots}"
+                mkdir -p "$root_dir"
+                echo "cdz warm-keep: pinning the local warm layer as GC-roots under $root_dir/ (system ${system})"
+                # The heavy layers gate-local depends on: the crane dep-closure (~341M, the big one),
+                # the component store, and the local-gate aggregate itself (pulls the 9 required checks'
+                # closure). --out-link registers each as an indirect GC-root so the store stays hot.
+                nix build \
+                  ".#packages.${system}.cargo-artifacts" \
+                  ".#packages.${system}.store" \
+                  ".#checks.${system}.local-gate" \
+                  --out-link "$root_dir/warm" --print-build-logs
+                echo "cdz warm-keep: done — local /nix/store warm layer pinned (gate-local stays fast)."
+              '';
+            };
+          in
+          {
+            type = "app";
+            program = "${warmKeep}/bin/cdz-warm-keep";
+          };
       });
 }

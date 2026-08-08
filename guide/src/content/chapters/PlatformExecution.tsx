@@ -246,6 +246,15 @@ export default function PlatformExecution() {
         the shape of the thing: the same idea that made a value out of a program's history, scaled into a
         runtime for agents built in Cadenza.
       </P>
+      <P>
+        One thing is left: writing a reducer yourself. The{" "}
+        <Link to="/writing-a-reducer" className="text-cadenza-300 underline-offset-2 hover:underline">
+          next chapter
+        </Link>{" "}
+        turns the model concrete, building a real agent-harness reducer in Cadenza, from the empty reducer up
+        to one that reads state and requests effects, where the language you learned in the first pillar
+        becomes the language an agent runs on.
+      </P>
     </article>
   );
 }
