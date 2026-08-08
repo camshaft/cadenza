@@ -16462,3 +16462,65 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 158 Int64))
   (call   main (: 0 Int64)) (output (: 143 Int64)))
+
+;; ── enumeration as OBSERVATION across mutating dispatches (breaker mi) ───────────────────────────
+;; The static enumeration pins dump once; these observe enumerations ACROSS a mutating sequence:
+;; mi1 Map.to-list dumps BEFORE and AFTER keyed inserts (collision rows shrink the delta); mi2
+;; SORTED Set enumeration after a draw-keyed insert — positional reads with first/last/collision
+;; placements; mi3 the arm aggregates map VALUES via a to-list walk inside the arm (the n=1 row
+;; overwrites the seed value — insert-replace semantics through the effect thread).
+
+(case "mi1 enumeration DELTA across dispatches — dumps before and after keyed inserts, collision rows shrink the delta"
+  (input  (do
+            (effect Db (op put (-> Int64 Int64)) (op dump (-> (List (Tuple Int64 Int64)))))
+            (def (main (: n Int64))
+              (handle Db (map (1 10))
+                ((put (k) m (resume (Map.len m) (Map.insert m k (* k 2))))
+                 (dump () m (resume (Map.to-list m) m)))
+                (let ((before (List.len (Db.dump))))
+                  (do
+                    (Db.put n)
+                    (Db.put 7)
+                    (+ (* 100 (List.len (Db.dump))) (* 10 before))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 310 Int64))
+  (call   main (: 1 Int64)) (output (: 210 Int64))
+  (call   main (: 7 Int64)) (output (: 210 Int64)))
+
+(case "mi2 SORTED Set enumeration survives a draw-keyed insert — positional reads, the collision row exposes the missing third slot"
+  (input  (do
+            (effect Sx (op add (-> Int64 Int64)) (op dump (-> (List Int64))))
+            (def (at-or (: xs (List Int64)) (: i Int64))
+              (match (List.at xs i) ((Some v) v) ((None) -1)))
+            (def (main (: n Int64))
+              (handle Sx (Set.of (list 20 8))
+                ((add (v) s (resume (Set.len s) (Set.insert s v)))
+                 (dump () s (resume (Set.to-list s) s)))
+                (do
+                  (Sx.add n)
+                  (let ((xs (Sx.dump)))
+                    (+ (* 100 (at-or xs 0)) (+ (* 10 (at-or xs 1)) (at-or xs 2)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 600 Int64))
+  (call   main (: 30 Int64)) (output (: 1030 Int64))
+  (call   main (: 8 Int64)) (output (: 999 Int64)))
+
+(case "mi3 the arm AGGREGATES map values via a to-list walk — the n=1 row OVERWRITES the seed value, shrinking the total"
+  (input  (do
+            (effect Db (op put (-> Int64 Int64)) (op total (-> Int64)))
+            (def (sum-snd (: xs (List (Tuple Int64 Int64))) (: i Int64))
+              (match (List.at xs i)
+                ((Some p) (match p ((tuple k v) (+ v (sum-snd xs (+ i 1))))))
+                ((None) 0)))
+            (def (main (: n Int64))
+              (handle Db (map (1 100))
+                ((put (k) m (resume (Map.len m) (Map.insert m k k)))
+                 (total () m (resume (sum-snd (Map.to-list m) 0) m)))
+                (do
+                  (Db.put n)
+                  (Db.put 3)
+                  (Db.total))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 108 Int64))
+  (call   main (: 1 Int64)) (output (: 4 Int64))
+  (call   main (: 3 Int64)) (output (: 103 Int64)))
