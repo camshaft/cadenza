@@ -16841,3 +16841,60 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 61 Int64))
   (call   main (: 0 Int64)) (output (: 1 Int64)))
+
+;; ── SYMBOLS through the effect thread (breaker sy) ───────────────────────────────────────────────
+;; Interned symbols as state, keys, selectors, and commands: sy2 a symbol TOGGLE state (equality
+;; routes the answer while the arm flips fast/slow); sy3 the symbol state as a MAP KEY per
+;; dispatch (the a->b->c walk ends at a missing key); sy4 sequential draws written into record
+;; FIELDS via chained Record.with symbol selectors; sy5 symbol op args as COMMANDS (inc/dbl/nop
+;; route both the answer and the transition — the interpreter-dispatch idiom).
+
+(case "sy2 a SYMBOL toggle state — equality routes the resume value while the arm flips fast/slow per dispatch"
+  (input  (do
+            (effect M (op mode (-> Int64)))
+            (def (main (: n Int64))
+              (handle M (if (> n 3) #"fast" #"slow")
+                ((mode () s (resume (if (= s #"fast") 100 1) (if (= s #"fast") #"slow" #"fast"))))
+                (+ (M.mode) (+ (M.mode) (M.mode)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 201 Int64))
+  (call   main (: 0 Int64)) (output (: 102 Int64)))
+
+(case "sy3 the SYMBOL state is a MAP KEY per dispatch — the a→b→c walk ends at a missing key"
+  (input  (do
+            (effect R (op route (-> Int64)))
+            (def (main (: n Int64))
+              (handle R #"a"
+                ((route () s (resume (match (Map.lookup (map (#"a" 10) (#"b" 20)) s)
+                                       ((Some v) v)
+                                       ((None) -1))
+                                     (if (= s #"a") #"b" #"c"))))
+                (+ (R.route) (+ (* 10 (R.route)) (* 100 (R.route))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 110 Int64)))
+
+(case "sy4 sequential draws written into record FIELDS via Record.with symbol selectors — chained functional updates"
+  (input  (do
+            (effect P (op pick (-> Int64)))
+            (def (main (: n Int64))
+              (handle P n
+                ((pick () s (resume s (+ s 1))))
+                (let ((r (record (x 10) (y 20))))
+                  (let ((r2 (Record.with r #"x" (P.pick))))
+                    (let ((r3 (Record.with r2 #"y" (P.pick))))
+                      (+ (* 100 (. r3 x)) (. r3 y)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 506 Int64))
+  (call   main (: 0 Int64)) (output (: 1 Int64)))
+
+(case "sy5 SYMBOL op args as COMMANDS — inc/dbl/nop route both the answer and the state transition"
+  (input  (do
+            (effect C (op cmd (-> Symbol Int64)))
+            (def (main (: n Int64))
+              (handle C n
+                ((cmd (w) s (resume (if (= w #"inc") (+ s 1) (if (= w #"dbl") (* s 2) 0))
+                                    (if (= w #"inc") (+ s 1) (if (= w #"dbl") (* s 2) s)))))
+                (+ (C.cmd #"inc") (+ (* 10 (C.cmd #"dbl")) (* 100 (C.cmd #"nop"))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 126 Int64))
+  (call   main (: 0 Int64)) (output (: 21 Int64)))
