@@ -6388,3 +6388,6 @@ pass	st3 the SHADOWING frame's arm draws the SAME effect — its dispatch escape
 pass	li1 draws choose BOTH the List.update target and the List.at read index — the collection edit follows the thread
 pass	li2 a list BUILT from pushed draws then read at a draw-picked index — construction and consumption share one thread
 pass	li3 draw PARITY picks prepend vs push while building — the final shape encodes the whole draw sequence
+pass	mp1 draws pick the Map INSERT key and the LOOKUP key — hit-old, hit-updated, and miss all reachable by input
+pass	mp2 map VALUES are draws inserted in key order — weighted lookups replay the draw sequence through the map
+pass	mp3 a draw picks the Map.remove key — lookups of all three keys show exactly one hole where the thread pointed
