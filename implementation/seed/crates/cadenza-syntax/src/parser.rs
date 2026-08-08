@@ -1965,6 +1965,14 @@ impl<'a> Parser<'a> {
         let binds_span = start.merge(self.prev_span());
         let binds = self.list(bindings, binds_span);
         self.expect_keyword(Keyword::In, "`in`");
+        // A same-line TRAILING `//` after `in` (`let x = a in // note<newline> body`) sits at the body's
+        // first-token leading slot. Capture it as a TRAILING comment on the bindings (`(comment-after …
+        // binds)`) so the printer re-emits it same-line after `in` (`let x = a in // note`) — it round-
+        // trips (else `cdz fmt` refuses; the comment-attachment gap that blocked hm-collect.cdz). It is a
+        // TRAILING (same-line) comment, distinct from an own-line comment leading the body (which the
+        // body's own `expr` leading-slot would carry).
+        let in_trail = self.take_trailing_comment_here();
+        let binds = self.wrap_comment_after(in_trail, binds);
         let body = self.expr(0);
         let span = start.merge(self.prev_span());
         self.list(vec![let_head, binds, body], span)
@@ -1990,10 +1998,27 @@ impl<'a> Parser<'a> {
         let t_lead = self.take_comments_here();
         let t = self.expr(crate::token::PREC_SEQ + 1);
         let t = self.wrap_comments(t_lead, t);
+        // A same-line TRAILING `//` after the then-branch (`if a then 1 // note<newline> else …`) sits at
+        // the `else` keyword's leading slot; `expr` did not drain it. Capture + wrap it `(comment-after
+        // …)` on the then-branch so it round-trips (else `cdz fmt` refuses to format the whole file —
+        // the comment-attachment gap that blocked hm-collect.cdz). Mirrors the leading-comment capture
+        // above + the list/tuple/record trailing capture (`take_trailing_comment_here`).
+        let t_trail = self.take_trailing_comment_here();
+        let t = self.wrap_comment_after(t_trail, t);
+        // Own-line `//` comment(s) sitting BEFORE the `else` keyword (`if a then 1<newline> // note<newline>
+        // else 2`) are in the `else` token's leading slot; `expect_keyword` would consume past them,
+        // dropping them. Capture them here (before the bump) and fold them into the else-branch's leading
+        // comments so they print own-line above the else-branch (round-trips; they'd otherwise strand).
+        let mut e_lead = self.take_comments_here();
         self.expect_keyword(Keyword::Else, "`else`");
-        let e_lead = self.take_comments_here();
+        e_lead.extend(self.take_comments_here());
         let e = self.expr(crate::token::PREC_SEQ + 1);
         let e = self.wrap_comments(e_lead, e);
+        // A same-line trailing `//` after the else-branch — the if is at an expression tail, so this is
+        // captured the same way (it re-prints on the else line). Construct-end trailing already
+        // round-trips in many contexts, but capturing here makes the if uniform + robust in nested use.
+        let e_trail = self.take_trailing_comment_here();
+        let e = self.wrap_comment_after(e_trail, e);
         let span = start.merge(self.prev_span());
         self.list(vec![head, c, t, e], span)
     }
