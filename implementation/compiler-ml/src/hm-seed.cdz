@@ -1,0 +1,109 @@
+/// hm-seed.cdz — ARC-B5 S2: the ENV-SEED builder for the constraint-inference stack. The BROAD driver (S3)
+/// works in three steps: SEED an initial node→Ty environment (this module), COLLECT the constraints over it
+/// (hm-collect), SOLVE (hm-solve), then read each node's principal type off the solution. This module is step
+/// one: assign every node in the tree a STARTING type.
+///
+/// SEED RULES (what a node's type STARTS as, before constraints refine it):
+///   NAnnLit(_, sflag, w) → the FIXED annotated int `ty-fixed-int(signed, w)` — the annotation names the type,
+///     it is not inferred (a ground anchor the surrounding vars unify toward).
+///   NBoolLit → `TyBool` (a ground anchor).
+///   everything else (NLit, NVar, NBin, NIf, NLet, NMatch, NApp, NMatchCtor, …) → a FRESH int-var
+///     (hm-vars.fresh-int-ty, a distinct sign+width var pair per node) — the "unknown, to be inferred" starting
+///     point. A bare literal is a fresh var (not the old deferred-int sentinel); a param/composite likewise.
+///     (A node that turns out non-int — a Bool-typed var, a sum — is refined by its constraints; if a node has
+///     NO constraint pinning it, it grounds to the fresh var's default Int64 at the query boundary, same as the
+///     old deferred default. Seeding non-Bool-literal leaves as int-vars is fine: the constraint set + solve
+///     decide the real type, and an unconstrained leaf defaults exactly as today.)
+///
+/// COUNTER THREADING: fresh vars need a monotonic Int64 counter (rcdzc's Fresh, Cadenza-native as state-as-value
+/// — the design-fork resolution). `seed-tree` threads it from a start value and returns `(env, nextCounter)` so
+/// the caller (the S3 driver) can keep allocating fresh vars (e.g. for a def's params) past the seed.
+///
+/// STANDALONE: a pure new module over landed deps (ty/parse-db/hm-vars). Does NOT touch infer-db or hm-collect
+/// (so it doesn't conflict with in-flight hm-collect slices) — zero blast radius. The S3 driver composes
+/// seed-tree + hm-collect.collect-all + hm-solve.solve; this delivers the seed half.
+import { Ty, ty-fixed-int } from "ty"
+import { Node, Tree, node-at, node-count } from "parse-db"
+import { fresh-int-ty } from "hm-vars"
+
+/// The STARTING type for one node, given a fresh-var counter `n`: returns `(ty, nextCounter)`. A ground leaf
+/// (NAnnLit → its fixed int, NBoolLit → TyBool) consumes NO fresh var (counter unchanged); every other node
+/// gets a fresh int-var (counter advanced). A missing node (id past the arena) → a fresh var too (harmless;
+/// the walk only visits real ids).
+def seed-node-ty(tree: Tree, id: Int64, n: Int64) = match node-at(tree, id) with
+  | Option.Some(Node.NAnnLit(_, sflag, w)) => (ty-fixed-int((if sflag == 1 then true else false), w), n)
+  | Option.Some(Node.NBoolLit(_)) => (Ty.TyBool, n)
+  | _ => fresh-int-ty(n)
+
+/// Seed node-ids `[i, upper)` into `env`, threading the fresh-var counter `n`. Tail-recursive walk over the
+/// contiguous id range (arena ids are 0..node-count-1, assigned densely by add-node). Returns `(env, n)`.
+def seed-range(tree: Tree, i: Int64, upper: Int64, env: Map(Int64, Ty), n: Int64) =
+  (if (i >= upper) then (env, n)
+   else (let (ty, n1) = seed-node-ty(tree, i, n) in
+         seed-range(tree, i + 1, upper, Map.insert(env, i, ty), n1)))
+
+/// SEED a whole tree from counter start `n0`: assign every node id `0..node-count` a starting type. Returns
+/// `(env, nextCounter)` — the initial environment for hm-collect + the counter to keep allocating from (params,
+/// composite result vars the caller may add). The entry point the S3 driver calls before collecting constraints.
+def seed-tree(tree: Tree, n0: Int64) = seed-range(tree, 0, node-count(tree), (Map.empty : Map(Int64, Ty)), n0)
+
+// ---- TESTS: every node seeded; ground leaves fixed, others fresh distinct vars ----------------------
+import { add-node, empty-tree } from "parse-db"
+import { IntType, Sign, Width } from "ty"
+
+@test
+def hs-annlit-seeds-fixed-not-fresh() =
+  // an NAnnLit seeds its FIXED annotated type (Int8), consuming no fresh var — the counter is unchanged.
+  let (root, tree) = add-node(empty-tree(), Node.NAnnLit(5, 1, 8)) in
+  match seed-node-ty(tree, root, 0) with
+    | (Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w))), n) => (if (w == 8) and (n == 0) then unit else trap("Int8 fixed, counter unchanged"))
+    | _ => trap("NAnnLit seeds its fixed Int8 type, no fresh var")
+
+@test
+def hs-boollit-seeds-tybool-not-fresh() =
+  // an NBoolLit seeds TyBool, no fresh var (counter unchanged).
+  let (root, tree) = add-node(empty-tree(), Node.NBoolLit(1)) in
+  match seed-node-ty(tree, root, 7) with
+    | (Ty.TyBool, n) => (if n == 7 then unit else trap("TyBool, counter unchanged"))
+    | _ => trap("NBoolLit seeds TyBool")
+
+@test
+def hs-lit-seeds-fresh-var() =
+  // a bare NLit seeds a FRESH int-var (sign-var + width-var), advancing the counter by 2 (fresh-int-ty uses n, n+1).
+  let (root, tree) = add-node(empty-tree(), Node.NLit(42)) in
+  match seed-node-ty(tree, root, 0) with
+    | (Ty.TyInt(IntType.IntType(Sign.SVar(s), Width.WVar(w))), n) => (if (s == 0) and (w == 1) and (n == 2) then unit else trap("fresh var (SVar0,WVar1), counter→2"))
+    | _ => trap("NLit seeds a fresh int-var")
+
+@test
+def hs-seed-tree-covers-every-node-distinct-vars() =
+  // seed a 3-node tree `(+ 1 2)` (NLit@0, NLit@1, NBin@2) → env has all 3 ids, each a DISTINCT fresh var
+  // (counters 0/1, 2/3, 4/5), final counter 6. Pins full coverage + no var reuse across nodes.
+  let (aId, t1) = add-node(empty-tree(), Node.NLit(1)) in
+  let (bId, t2) = add-node(t1, Node.NLit(2)) in
+  let (binId, tree) = add-node(t2, Node.NBin(43, aId, bId)) in
+  match seed-tree(tree, 0) with
+    | (env, n) => (if n == 6 then
+        (match Map.lookup(env, aId) with
+          | Option.Some(Ty.TyInt(IntType.IntType(Sign.SVar(sa), _))) =>
+              (match Map.lookup(env, binId) with
+                | Option.Some(Ty.TyInt(IntType.IntType(Sign.SVar(sc), _))) => (if (sa == 0) and (sc == 4) then unit else trap("distinct vars per node (a=0, bin=4)"))
+                | _ => trap("bin node seeded a fresh var"))
+          | _ => trap("leaf a seeded a fresh var"))
+      else trap("3 nodes × 2 var-ids each → final counter 6"))
+
+@test
+def hs-mixed-tree-anchors-annlit-frees-rest() =
+  // `(+ a (: 5 Int8))` — NLit a@0 (fresh), NAnnLit@1 (FIXED Int8, no var), NBin@2 (fresh). The annotated leaf
+  // is a ground anchor; a + the bin are fresh. Counter: a=0/1, annlit consumes none, bin=2/3 → final 4.
+  let (aId, t1) = add-node(empty-tree(), Node.NLit(1)) in
+  let (annId, t2) = add-node(t1, Node.NAnnLit(5, 1, 8)) in
+  let (binId, tree) = add-node(t2, Node.NBin(43, aId, annId)) in
+  match seed-tree(tree, 0) with
+    | (env, n) => (if n == 4 then
+        (match Map.lookup(env, annId) with
+          | Option.Some(Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w)))) => (if w == 8 then unit else trap("annlit anchored Int8"))
+          | _ => trap("the NAnnLit is seeded as fixed Int8 (an anchor), not a var"))
+      else trap("2 fresh nodes × 2 + 0 for the anchor → counter 4"))
+
+export { seed-tree, seed-range, seed-node-ty }
