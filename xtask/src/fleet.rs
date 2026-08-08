@@ -770,6 +770,16 @@ pub enum FleetCmd {
         /// `LOCAL_GATE_JSON:` so pr-sync can scrape it out of the interleaved gate-local build output.
         #[arg(long)]
         json: bool,
+        /// PUBLISH each GREEN local-gate land directly to `origin/main` (operator-sanctioned 2026-08-08,
+        /// GHA credits exhausted so the candidate-PR path is dead — this is how locally-gated work reaches
+        /// origin without CI). Only meaningful with `--local-gate --execute`. When set, the drain bases each
+        /// MR on `origin/main` (fetched fresh, NOT the possibly-stale local trunk ref — the fork fix), and on
+        /// GREEN pushes the cherry-picked commit to `origin/main` FAST-FORWARD-ONLY (never force). If the push
+        /// is rejected non-fast-forward (someone else advanced origin/main mid-drain), the local advance is
+        /// ABORTED and the MR left queued — no re-fork, no force-clobber. Without this flag the drain only
+        /// advances the LOCAL trunk ref (the prior behaviour, which forked local trunk from origin/main).
+        #[arg(long)]
+        publish_origin: bool,
     },
     /// Report where a merge-request stands in the CI-gated pipeline — in-flight as a candidate PR (with
     /// lane + how to poll its CI), queued at a position in its lane, or resolved (merged/rejected). A
@@ -1018,9 +1028,10 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
             execute,
             local_gate,
             json,
+            publish_origin,
         } => {
             if local_gate {
-                schedule_pass_local_gate(&fleet, execute, json)
+                schedule_pass_local_gate(&fleet, execute, json, publish_origin)
             } else if execute {
                 schedule_pass_execute(&fleet, cap)
             } else {
@@ -9465,7 +9476,7 @@ fn local_gate_summary_json(
     })
 }
 
-fn schedule_pass_local_gate(fleet: &Fleet, execute: bool, json: bool) {
+fn schedule_pass_local_gate(fleet: &Fleet, execute: bool, json: bool, publish_origin: bool) {
     // Accumulates one record per gated MR so `--json` can emit a machine-parseable summary. Verdict is
     // one of merged/reject/left/dry; `sha` is set only on a merge (empty otherwise).
     let mut records: Vec<serde_json::Value> = Vec::new();
@@ -9514,22 +9525,46 @@ fn schedule_pass_local_gate(fleet: &Fleet, execute: bool, json: bool) {
     };
     let git_wt = |args: &[&str]| Command::new("git").current_dir(&wt).args(args).output();
     let git_wt_ok = |args: &[&str]| git_wt(args).map(|o| o.status.success()).unwrap_or(false);
-    // Start from a clean trunk tip (never gate atop residue from a prior op).
-    let _ = git_wt(&["reset", "--hard", TRUNK]);
+    let head_sha = || {
+        git_wt(&["rev-parse", "HEAD"])
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default()
+    };
+    // Where the drain BASES each MR + where a failed gate resets back to. In --publish-origin mode this is
+    // `origin/main` (fetched fresh) so a GREEN land fast-forwards origin/main (the fork fix: never base on
+    // the possibly-stale local trunk ref); otherwise the local `trunk` ref (prior local-only behaviour).
+    if publish_origin {
+        let _ = git_wt(&["fetch", "origin", "main", "--quiet"]);
+        let _ = git_wt(&["reset", "--hard", "origin/main"]);
+    } else {
+        // Start from a clean trunk tip (never gate atop residue from a prior op).
+        let _ = git_wt(&["reset", "--hard", TRUNK]);
+    }
+    // The base commit each MR is cherry-picked ONTO. Captured as a sha because an on-branch cherry-pick
+    // MOVES the `trunk` pointer, so `reset --hard TRUNK` would NOT undo a red pick — reset to this instead.
+    let base = if publish_origin { "origin/main" } else { TRUNK };
     let (mut merged, mut rejected, mut left) = (0usize, 0usize, 0usize);
     for mr in &queued {
+        // The base this MR is picked onto, captured as a sha BEFORE the pick. Undo resets to THIS (an
+        // on-branch cherry-pick moves the `trunk` pointer, so `reset --hard TRUNK` would not undo a red).
+        let base_sha = head_sha();
+        let undo = |git_wt: &dyn Fn(&[&str]) -> std::io::Result<std::process::Output>| {
+            let _ = git_wt(&["reset", "--hard", &base_sha]);
+        };
         // Fetch the ref (the sender's branch tip) so the cherry-pick has the object + its ancestry.
         let _ = git_wt(&["fetch", "origin", &mr.r#ref, "--quiet"]);
         if !git_wt_ok(&["cherry-pick", "--allow-empty", &mr.r#ref]) {
             let _ = git_wt(&["cherry-pick", "--abort"]);
-            let _ = git_wt(&["reset", "--hard", TRUNK]);
+            undo(&git_wt);
             ack(
                 fleet,
                 &mr.file,
                 "reject",
                 "",
                 &format!(
-                    "local-gate: `{}` does not cherry-pick cleanly onto trunk (stale base) — sync onto trunk + resend.",
+                    "local-gate: `{}` does not cherry-pick cleanly onto {base} (stale base) — sync onto trunk + resend.",
                     mr.r#ref
                 ),
             );
@@ -9545,25 +9580,44 @@ fn schedule_pass_local_gate(fleet: &Fleet, execute: bool, json: bool) {
             }
             continue;
         }
-        // The cherry-pick is now the trunk tip; gate THAT tree.
+        // The cherry-pick is now the tip; gate THAT tree.
         match run_gate_local("aarch64") {
             CiVerdict::Green => {
+                let sha = head_sha();
+                // In --publish-origin mode, PUBLISH the green land to origin/main FAST-FORWARD-ONLY before
+                // acking merged. A non-FF rejection (origin/main moved under us) ABORTS this land — undo the
+                // local advance + leave the MR queued (retry next pass), so we never re-fork or force-clobber.
+                if publish_origin {
+                    let pushed = git_wt(&["push", "origin", "HEAD:main"])
+                        .map(|o| o.status.success())
+                        .unwrap_or(false);
+                    if !pushed {
+                        undo(&git_wt);
+                        left += 1;
+                        println!(
+                            "  · {} ({}) → LEFT-QUEUED (gate GREEN but push to origin/main was non-fast-forward — origin advanced mid-drain; retry next pass)",
+                            mr.file, mr.r#ref
+                        );
+                        if json {
+                            records.push(serde_json::json!({
+                                "file": mr.file, "from": mr.from, "ref": mr.r#ref, "verdict": "left", "reason": "push-non-ff", "sha": ""
+                            }));
+                        }
+                        continue;
+                    }
+                }
                 // Keep the advance; re-sync index to the new tip (reap self-cleaning). ack merged.
-                let sha = git_wt(&["rev-parse", "HEAD"])
-                    .ok()
-                    .filter(|o| o.status.success())
-                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                    .unwrap_or_default();
                 let _ = git_wt(&["reset", "--hard", "HEAD"]);
-                ack(
-                    fleet,
-                    &mr.file,
-                    "merged",
-                    &sha,
-                    &format!("landed via local gate (gate-local GREEN); trunk @ {sha}"),
-                );
+                let where_landed = if publish_origin {
+                    format!(
+                        "landed via local gate (gate-local GREEN) + PUBLISHED to origin/main @ {sha}"
+                    )
+                } else {
+                    format!("landed via local gate (gate-local GREEN); trunk @ {sha}")
+                };
+                ack(fleet, &mr.file, "merged", &sha, &where_landed);
                 merged += 1;
-                println!("  ✓ {} ({}) → MERGED, trunk @ {sha}", mr.file, mr.r#ref);
+                println!("  ✓ {} ({}) → MERGED @ {sha}", mr.file, mr.r#ref);
                 if json {
                     records.push(serde_json::json!({
                         "file": mr.file, "from": mr.from, "ref": mr.r#ref, "verdict": "merged", "sha": sha
@@ -9571,7 +9625,7 @@ fn schedule_pass_local_gate(fleet: &Fleet, execute: bool, json: bool) {
                 }
             }
             CiVerdict::Red => {
-                let _ = git_wt(&["reset", "--hard", TRUNK]); // undo the cherry-pick; trunk untouched
+                undo(&git_wt); // undo the cherry-pick; base untouched
                 ack(
                     fleet,
                     &mr.file,
@@ -9591,7 +9645,7 @@ fn schedule_pass_local_gate(fleet: &Fleet, execute: bool, json: bool) {
                 }
             }
             CiVerdict::Pending | CiVerdict::NoChecks => {
-                let _ = git_wt(&["reset", "--hard", TRUNK]); // never false-green; leave queued
+                undo(&git_wt); // never false-green; leave queued
                 left += 1;
                 println!(
                     "  · {} ({}) → NO-CHECKS (couldn't run gate-local) — left queued, retry next pass.",
@@ -14367,6 +14421,21 @@ mod tests {
         let e = local_gate_summary_json(0, 0, 0, 0, Vec::new());
         assert_eq!(e["queued"], 0);
         assert!(e["results"].as_array().unwrap().is_empty());
+        // --publish-origin adds a "left" verdict with reason "push-non-ff" (gate GREEN but origin/main
+        // advanced under the drain → abort, leave queued). It counts as left, not merged/rejected.
+        let ff = local_gate_summary_json(
+            0,
+            0,
+            1,
+            1,
+            vec![serde_json::json!({
+                "file": "c.json", "from": "v-z", "ref": "beadfeed", "verdict": "left", "reason": "push-non-ff", "sha": ""
+            })],
+        );
+        assert_eq!(ff["merged"], 0);
+        assert_eq!(ff["left"], 1);
+        assert_eq!(ff["results"][0]["reason"], "push-non-ff");
+        assert_eq!(ff["results"][0]["verdict"], "left");
     }
 
     #[test]
