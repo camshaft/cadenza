@@ -440,6 +440,55 @@ a reducer queries the catalog, receives a binary-AST doc whose entries match its
 each with doc + signature; the round-trip decodes. **Anchors:** `control/` query family, `event_ast`
 (binary-AST encode, reuse signature-query descriptor), design-cadenza-docs doc model.
 
+### I11b — SCHEMA-HASH effect identity (content-addressed contract versioning)
+
+> Operator: *"I wonder if effects should be identified by hashes of their schemas. That makes it easier
+> to expand effect contracts over time since it does not invalidate any old messages."*
+
+This holds up and fits the platform's everything-hash-identified through-line (sessions = genesis hash,
+blobs = content hash, ws-conns = minted id). An effect's SCHEMA — the operation signatures + type
+contract that I11 already makes an introspectable, binary-AST artifact — gets a content **hash**, and
+that hash is the effect CONTRACT VERSION's stable identity. The benefit the operator cites falls out:
+because a message references the schema-hash it was built against, EXPANDING a contract (adding an op, a
+field) mints a NEW schema-hash while old messages keep resolving to the old schema — content-addressed,
+naturally immutable, self-versioning. No message is ever invalidated by a contract growing.
+
+How it composes with what's already designed:
+
+- **`ContentType` already carries `{family, version}`** (`event.rs`) with a tolerant-reader model
+  (`matches_family` ignores version; `version_in` range-checks). Schema-hash identity REFINES the
+  `version: u32` axis into a content hash: a `{family, schema_hash}` (or `{family, version, schema_hash}`)
+  content-type, where the family is the human/routing name and the schema-hash is the exact contract
+  version. The tolerant-reader rule generalizes cleanly: match `family`, then check whether you
+  understand the `schema_hash` (you hold that schema, or a compatible ancestor) instead of a numeric
+  range. This is additive to the existing wire type, not a replacement — a well-known family keeps its
+  `version` for the built-in effects; extension families gain schema-hash identity.
+- **Registration (I1):** `effect/<family>` resolves to the handler `SessionId`, AND the handler
+  publishes its current schema as a binary-AST artifact whose hash is the contract-version id. So the
+  name is the primary human key and the schema-hash is the exact-contract key — a caller can address
+  "the `weather` handler" (latest) or pin "`weather` at schema-hash H" (a specific contract). ⟨D13
+  default:⟩ **name + schema-hash together** — the name resolves to the CURRENT schema-hash, and old
+  schema-hashes stay valid (the handler keeps serving prior contract versions it still understands, or
+  fails a pinned request `Err(unsupported-schema)`). The name is not the identity; the schema-hash is.
+- **Introspection (I11):** the schema IS the introspectable contract, so hashing it is natural — the
+  I11 catalog reports, per effect, its `family` + its current `schema_hash` + the binary-AST schema
+  itself. A caller discovers the schema, hashes it (or reads the reported hash), and builds messages
+  pinned to it. Version negotiation is: caller reads the handler's advertised schema-hash(es) via
+  introspection, picks one it understands, and stamps its requests with it; the handler dispatches on
+  the stamped schema-hash.
+
+⟨D13 — schema-hash as identity⟩ *default:* schema-hash is an ADDITIVE contract-version identity layered
+on the existing `family` name (name = routing/human key, schema-hash = exact-contract key; the name
+resolves to the current hash, old hashes stay valid). NOT a replacement for the family string
+(register-by-string + human-readable routing + Cedar action-name all still key on the family). Whether
+the schema-hash rides `ContentType` as a third field or replaces the `version: u32` for extension
+families is an implementation fork for the harness owners — flag for the operator; the DEFAULT keeps
+`version` for built-in families and adds schema-hash for extension families, so nothing on the durable
+wire breaks. *Gate (when built):* expand a handler's contract → old messages (stamped with the old
+schema-hash) still resolve + fold correctly; a message pinned to an unknown schema-hash fails honestly
+(`Err(unsupported-schema)`), never misdecodes. **Anchors:** `event.rs` (`ContentType`), the I11
+binary-AST schema artifact + its `hash.rs` content hash, I1 registration (name → current schema-hash).
+
 ## Part C — stateful-resource transport primitives: process / ws-client / ws-server (I12–I14)
 
 > Operator capstone: *"the same thing could be done with a websocket client connection … and the same
