@@ -23,8 +23,8 @@
 ///   - deferred behaves as before (a SignDef/WidthDef takes the other — deferred is not a solvable var, it's a
 ///     literal's not-yet-constrained axis that grounds by defaulting; only SVar/WVar record bindings).
 import { Sign, Width, IntType, Ty, sign-eq, width-eq } from "ty"
-import { Subst, apply-sign, apply-width, subst-bind-sign, subst-bind-width } from "subst"
-import { sign-occurs, width-occurs } from "hm-vars"
+import { Subst, apply-sign, apply-width, apply, subst-bind-sign, subst-bind-width, subst-bind-ty } from "subst"
+import { sign-occurs, width-occurs, ty-occurs } from "hm-vars"
 
 /// Unify two SIGNS under a Subst, returning the extended Subst (or None on conflict). Resolves both sides first,
 /// then: same-var → unchanged; either side an unbound var → occurs-check + bind; two concretes → must be equal;
@@ -71,10 +71,30 @@ def unify-int-su(su: Subst, a: IntType, b: IntType) = match a with
         | Option.Some(su1) => unify-width-su(su1, wa, wb)
         | Option.None(_) => Option.None(unit))
 
-/// Unify two `Ty` under a Subst → `Some(extended Subst)` or `None` (conflict). Ints thread through unify-int-su;
-/// Bool~Bool no-ops (var-free); TyErr always conflicts (poison); TyFn unifies pairwise-params + result threading
-/// the Subst; TySum by decl-identity. The Subst-threading counterpart of unify-ty.cdz's stateless `unify-ty`.
-def unify-ty-su(su: Subst, a: Ty, b: Ty) = match a with
+/// Unify two `Ty` under a Subst → `Some(extended Subst)` or `None` (conflict). Mirrors rcdzc `unify` (unify.rs:236):
+/// FIRST resolve both sides through the current Subst (apply — so a bound var becomes its solution), THEN dispatch.
+/// A TyVar (after resolve, still unbound) is BOUND to the other side after an occurs-check (B3 — rcdzc unify.rs:244
+/// `(Ty::Var(v), t)|(t, Ty::Var(v)) => occurs-check then subst.tys.insert(v,t)`); two same-id vars are already
+/// equal. Concrete pairs dispatch structurally (unify-ty-concrete). This is the inline-unify primitive the demand
+/// type_of calls per node.
+def unify-ty-su(su: Subst, a: Ty, b: Ty) = bind-or-unify-ty(su, apply(su, a), apply(su, b))
+
+/// The resolved-both-sides step (ra/rb already `apply`d): handle the type-variable cases (rcdzc unify.rs:243-256),
+/// else dispatch to the concrete structural unify. A var on EITHER side binds to the other (occurs-checked).
+def bind-or-unify-ty(su: Subst, ra: Ty, rb: Ty) = match ra with
+  | Ty.TyVar(va) => (match rb with
+      | Ty.TyVar(vb) => (if va == vb then Option.Some(su)                         // same var → already equal
+                         else (if ty-occurs(su, va, rb) then Option.None(unit)    // occurs (a in b) → infinite → reject
+                               else Option.Some(subst-bind-ty(su, va, rb))))      // bind va := the other var
+      | _ => (if ty-occurs(su, va, rb) then Option.None(unit)                     // occurs → infinite type → reject
+              else Option.Some(subst-bind-ty(su, va, rb))))                       // bind va := the concrete/compound rb
+  | _ => (match rb with
+      | Ty.TyVar(vb) => (if ty-occurs(su, vb, ra) then Option.None(unit)          // symmetric: var on the RIGHT
+                         else Option.Some(subst-bind-ty(su, vb, ra)))
+      | _ => unify-ty-concrete(su, ra, rb))                                       // neither is a var → structural
+
+/// Structural unify of two NON-var (resolved) types (the concrete dispatch — was unify-ty-su's body pre-B3).
+def unify-ty-concrete(su: Subst, a: Ty, b: Ty) = match a with
   | Ty.TyInt(ita) => (match b with
     | Ty.TyInt(itb) => unify-int-su(su, ita, itb)
     | _ => Option.None(unit))
@@ -92,10 +112,8 @@ def unify-ty-su(su: Subst, a: Ty, b: Ty) = match a with
   | Ty.TySum(na) => (match b with
     | Ty.TySum(nb) => (if na == nb then Option.Some(su) else Option.None(unit))
     | _ => Option.None(unit))
-  // ARC-B5 B1 placeholder: a TyVar does NOT bind yet — B3 adds the real bind-with-occurs (mirroring rcdzc
-  // unify@unify.rs:244 `(Ty::Var(v), t) => occurs-check then subst.tys.insert(v,t)`), which needs the B2
-  // whole-type `tys` map. B1 adds the arm for exhaustiveness only; conservatively declines (a var unifies with
-  // nothing until B3). NOTE: this arm is only reachable once the descent seeds TyVars — no live caller yet.
+  // unreachable: bind-or-unify-ty handles both TyVar cases before dispatching here; a TyVar never reaches
+  // unify-ty-concrete. Arm present for exhaustiveness only.
   | Ty.TyVar(_) => Option.None(unit)
 
 /// Unify two same-length param lists PAIRWISE, threading the Subst left-to-right (each pair sees prior bindings).
@@ -119,7 +137,7 @@ def unify-ty-list-su(su: Subst, a: List(Ty), b: List(Ty), i: Int64) =
 // SUBST-THREADING witnesses they pin exactly this solver's paths + serve as permanent emit-slot regression pins).
 // ---- TESTS: unify BINDS vars into the Subst; a bound var stays solved (real solve, not inert) --------
 import { ty-int64, ty-fixed-int } from "ty"
-import { subst-empty, apply } from "subst"
+import { subst-empty } from "subst"
 
 @test
 def us-binds-sign-var-to-concrete() =
@@ -218,6 +236,64 @@ def us-fn-params-thread-and-bind() =
         | Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w))) => (if w == 64 then unit else trap("param bound to Int64"))
         | _ => trap("fn param sign/width bind through the list"))
     | Option.None(_) => trap("(fn SVarInt -> SVarInt) ~ (fn Int64 -> Int64) unifies")
+
+// ---- B3: whole-type TyVar binding (rcdzc unify.rs:243-256) ----
+
+@test
+def us-b3-tyvar-binds-to-concrete() =
+  // unify TyVar 0 ~ TyBool → binds 0 := TyBool; applying to TyVar 0 yields TyBool. The whole-type analog of
+  // the sign/width var bind, mirroring rcdzc unify.rs:244.
+  match unify-ty-su(subst-empty(), Ty.TyVar(0), Ty.TyBool) with
+    | Option.Some(su) => (match apply(su, Ty.TyVar(0)) with
+        | Ty.TyBool => unit
+        | _ => trap("TyVar 0 ~ TyBool binds 0 to TyBool"))
+    | Option.None(_) => trap("TyVar 0 ~ TyBool must unify (bind)")
+
+@test
+def us-b3-tyvar-binds-on-either-side() =
+  // symmetric: TyBool ~ TyVar 0 (var on the RIGHT) also binds 0 := TyBool (rcdzc's `(t, Var v)` case).
+  match unify-ty-su(subst-empty(), ty-int64(), Ty.TyVar(0)) with
+    | Option.Some(su) => (match apply(su, Ty.TyVar(0)) with
+        | Ty.TyInt(IntType.IntType(Sign.Signed, Width.WFixed(w))) => (if w == 64 then unit else trap("var binds to Int64"))
+        | _ => trap("Int64 ~ TyVar 0 binds 0 to Int64 (var on the right)"))
+    | Option.None(_) => trap("Int64 ~ TyVar 0 must unify")
+
+@test
+def us-b3-same-var-already-equal() =
+  // TyVar 0 ~ TyVar 0 → already equal, no binding, Subst unchanged (rcdzc `(Var v, Var w) if v==w`).
+  match unify-ty-su(subst-empty(), Ty.TyVar(0), Ty.TyVar(0)) with
+    | Option.Some(_) => unit
+    | Option.None(_) => trap("TyVar 0 ~ TyVar 0 is already equal")
+
+@test
+def us-b3-bound-var-stays-solved-conflict() =
+  // THE real-solve pin: bind TyVar 0 := TyBool, then unify TyVar 0 ~ Int64 on that Subst → CONFLICT (0 resolves
+  // to TyBool via apply, and TyBool ~ Int64 is a concrete conflict). A whole-type var solved once stays solved.
+  match unify-ty-su(subst-empty(), Ty.TyVar(0), Ty.TyBool) with
+    | Option.Some(su) => (match unify-ty-su(su, Ty.TyVar(0), ty-int64()) with
+        | Option.None(_) => unit
+        | Option.Some(_) => trap("a var bound to TyBool must conflict with Int64"))
+    | Option.None(_) => trap("first unify binds")
+
+@test
+def us-b3-occurs-check-rejects-infinite() =
+  // occurs-check: unify TyVar 0 ~ (fn (TyVar 0) -> Bool) → 0 occurs in the fn param → REJECT (infinite type),
+  // mirroring rcdzc's occurs guard before the bind. Returns None.
+  let f = Ty.TyFn(List.push(([] : List(Ty)), Ty.TyVar(0)), Ty.TyBool) in
+  match unify-ty-su(subst-empty(), Ty.TyVar(0), f) with
+    | Option.None(_) => unit
+    | Option.Some(_) => trap("TyVar 0 ~ (fn (TyVar0) -> Bool) must fail the occurs-check")
+
+@test
+def us-b3-var-to-var-then-concrete-propagates() =
+  // TyVar 0 ~ TyVar 1 binds 0:=1; then TyVar 1 ~ TyBool binds 1:=Bool; TyVar 0 resolves THROUGH the chain to Bool.
+  match unify-ty-su(subst-empty(), Ty.TyVar(0), Ty.TyVar(1)) with
+    | Option.Some(su1) => (match unify-ty-su(su1, Ty.TyVar(1), Ty.TyBool) with
+        | Option.Some(su2) => (match apply(su2, Ty.TyVar(0)) with
+            | Ty.TyBool => unit
+            | _ => trap("TyVar 0 resolves through 0->1->Bool"))
+        | Option.None(_) => trap("bind 1 := Bool"))
+    | Option.None(_) => trap("bind 0 := 1")
 
 export {
   unify-sign-su,
