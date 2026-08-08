@@ -6395,3 +6395,6 @@ pass	ds1 FOUR discarded draws in a do-chain before the kept one — every discar
 pass	ds2 the DISCARDED statement is itself an op-result chain — both hops advance the thread even though the value dies
 pass	ds3 a DISCARDED handle expression whose interior draws from the outer thread — the frame opens, draws, closes, and the value dies
 pass	ds4 a DISCARDED if whose arms draw DIFFERENT counts — the taken branch's advances survive the discard
+pass	se1 five draws collected into a Set under a cycling state — duplicates collapse, len and membership pin the distinct draws
+pass	se2 MEMBERSHIP of a draw decides a branch that draws again — the set gates the thread's continuation
+pass	se3 a set BUILT from cycling draws probed by a LATER state read — the in-cycle probe hits, the off-cycle probe misses
