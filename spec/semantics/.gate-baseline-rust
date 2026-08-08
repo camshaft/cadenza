@@ -6323,3 +6323,6 @@ pass	lo3 EIGHT ops in one effect, called in shuffled order — dispatch-table wi
 pass	oc1 an Option-of-TUPLE accumulator — None seeds on first step, Some carries (total,count) advancing both
 pass	oc2 an Option FLOWS between two ops of one effect — find produces Some/None, use consumes it as an op ARG
 pass	oc3 a DOUBLE-wrapped Option resume value — None vs Some(None) vs Some(Some v) all distinguished by the body
+pass	rt1 Ok/Err resume values with a DEPENDENT second dispatch — the sign of the falling state flips Ok to Err
+pass	rt2 an Err SHORT-CIRCUITS a recursive Result walk — Ok accumulates, the first Err multiplies out and stops
+pass	rt3 the Err VALUE seeds a RECOVERY region — a fallback same-effect handle runs inside the Err arm
