@@ -16898,3 +16898,46 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 126 Int64))
   (call   main (: 0 Int64)) (output (: 21 Int64)))
+
+;; ── contracts checking EFFECTFUL values (breaker uv) ─────────────────────────────────────────────
+;; The pinned @requires/@ensures x effects cases guard a performing BODY; these point the contract
+;; at effect-derived VALUES: uv2 a @requires-guarded fn FED BY DRAWS (the contract checks each
+;; draw at call time, boundary row included); uv3 the handler ARM calls a @requires-guarded helper
+;; (the contract checks the LIVE STATE per dispatch); uv4 a RELATIONAL @ensures (ret > x) over a
+;; TWO-draw body (the postcondition compares the effectful result to the argument, twice).
+
+(case "uv2 a @requires-guarded fn fed by DRAWS — the contract checks effectful argument values at each call"
+  (input  (do
+            (effect St (op next (-> Unit Int64)))
+            (@ (requires (> x 3)) (def (f (: x Int64)) (* x 10)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next (u) s (resume s (+ s 1))))
+                (+ (f (St.next)) (f (St.next)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 110 Int64))
+  (call   main (: 4 Int64)) (output (: 90 Int64)))
+
+(case "uv3 the handler ARM calls a @requires-guarded helper — the contract checks the live state per dispatch"
+  (input  (do
+            (effect St (op next (-> Unit Int64)))
+            (@ (requires (> x 0)) (def (safe-dbl (: x Int64)) (* x 2)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next (u) s (resume (safe-dbl s) (+ s 1))))
+                (+ (St.next) (St.next))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 22 Int64))
+  (call   main (: 1 Int64)) (output (: 6 Int64)))
+
+(case "uv4 a RELATIONAL @ensures (ret > x) over a TWO-draw body — the postcondition compares the effectful result to the arg, twice"
+  (input  (do
+            (effect St (op next (-> Unit Int64)))
+            (@ (ensures (> ret x)) (def (above (: x Int64)) (+ x (+ (St.next) (St.next)))))
+            (def (main (: n Int64))
+              (handle St 1
+                ((next (u) s (resume s (+ s 1))))
+                (+ (above n) (above 100))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 115 Int64))
+  (call   main (: 0 Int64)) (output (: 110 Int64)))
