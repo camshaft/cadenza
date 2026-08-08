@@ -765,6 +765,11 @@ pub enum FleetCmd {
         /// which MRs would gate. Oldest-first, one at a time (no candidate-PR parallelism to manage).
         #[arg(long)]
         local_gate: bool,
+        /// Emit a machine-parseable JSON summary of the pass (only meaningful with `--local-gate`). One
+        /// object per gated MR (file/from/ref/verdict/sha) plus a tally, on the final line prefixed
+        /// `LOCAL_GATE_JSON:` so pr-sync can scrape it out of the interleaved gate-local build output.
+        #[arg(long)]
+        json: bool,
     },
     /// Report where a merge-request stands in the CI-gated pipeline — in-flight as a candidate PR (with
     /// lane + how to poll its CI), queued at a position in its lane, or resolved (merged/rejected). A
@@ -1012,9 +1017,10 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
             cap,
             execute,
             local_gate,
+            json,
         } => {
             if local_gate {
-                schedule_pass_local_gate(&fleet, execute)
+                schedule_pass_local_gate(&fleet, execute, json)
             } else if execute {
                 schedule_pass_execute(&fleet, cap)
             } else {
@@ -9444,10 +9450,34 @@ fn schedule_pass_execute(fleet: &Fleet, cap: usize) {
 /// machinery and gates straight from the queue. Forward-only preserved (only cherry-pick advances trunk;
 /// a failed gate aborts). The trunk worktree index is hard-synced after each land (the reap self-cleaning
 /// fix, so the next op sees a clean index).
-fn schedule_pass_local_gate(fleet: &Fleet, execute: bool) {
+/// Build the `--local-gate --json` summary object from the tally + the per-MR records. Pure so the
+/// JSON contract pr-sync scrapes (`LOCAL_GATE_JSON:` line) is unit-tested without running a gate.
+fn local_gate_summary_json(
+    merged: usize,
+    rejected: usize,
+    left: usize,
+    queued: usize,
+    results: Vec<serde_json::Value>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "merged": merged, "rejected": rejected, "left": left,
+        "queued": queued, "results": results
+    })
+}
+
+fn schedule_pass_local_gate(fleet: &Fleet, execute: bool, json: bool) {
+    // Accumulates one record per gated MR so `--json` can emit a machine-parseable summary. Verdict is
+    // one of merged/reject/left/dry; `sha` is set only on a merge (empty otherwise).
+    let mut records: Vec<serde_json::Value> = Vec::new();
     let queued = queued_merge_requests(fleet);
     if queued.is_empty() {
         println!("schedule-pass --local-gate: no queued merge-requests — nothing to gate.");
+        if json {
+            println!(
+                "LOCAL_GATE_JSON: {}",
+                local_gate_summary_json(0, 0, 0, 0, Vec::new())
+            );
+        }
         return;
     }
     if !execute {
@@ -9457,8 +9487,20 @@ fn schedule_pass_local_gate(fleet: &Fleet, execute: bool) {
         );
         for mr in &queued {
             println!("  {} (from {}, ref {})", mr.file, mr.from, mr.r#ref);
+            if json {
+                records.push(serde_json::json!({
+                    "file": mr.file, "from": mr.from, "ref": mr.r#ref, "verdict": "dry", "sha": ""
+                }));
+            }
         }
         println!("  Pass --execute to gate + merge-or-reject inline.");
+        if json {
+            let n = queued.len();
+            println!(
+                "LOCAL_GATE_JSON: {}",
+                local_gate_summary_json(0, 0, n, n, records)
+            );
+        }
         return;
     }
     let wt = match trunk_worktree_dir(fleet) {
@@ -9496,6 +9538,11 @@ fn schedule_pass_local_gate(fleet: &Fleet, execute: bool) {
                 "  ✗ {} ({}) → REJECT (stale-base conflict)",
                 mr.file, mr.r#ref
             );
+            if json {
+                records.push(serde_json::json!({
+                    "file": mr.file, "from": mr.from, "ref": mr.r#ref, "verdict": "reject", "reason": "stale-base", "sha": ""
+                }));
+            }
             continue;
         }
         // The cherry-pick is now the trunk tip; gate THAT tree.
@@ -9517,6 +9564,11 @@ fn schedule_pass_local_gate(fleet: &Fleet, execute: bool) {
                 );
                 merged += 1;
                 println!("  ✓ {} ({}) → MERGED, trunk @ {sha}", mr.file, mr.r#ref);
+                if json {
+                    records.push(serde_json::json!({
+                        "file": mr.file, "from": mr.from, "ref": mr.r#ref, "verdict": "merged", "sha": sha
+                    }));
+                }
             }
             CiVerdict::Red => {
                 let _ = git_wt(&["reset", "--hard", TRUNK]); // undo the cherry-pick; trunk untouched
@@ -9532,6 +9584,11 @@ fn schedule_pass_local_gate(fleet: &Fleet, execute: bool) {
                 );
                 rejected += 1;
                 println!("  ✗ {} ({}) → REJECT (gate-local RED)", mr.file, mr.r#ref);
+                if json {
+                    records.push(serde_json::json!({
+                        "file": mr.file, "from": mr.from, "ref": mr.r#ref, "verdict": "reject", "reason": "gate-red", "sha": ""
+                    }));
+                }
             }
             CiVerdict::Pending | CiVerdict::NoChecks => {
                 let _ = git_wt(&["reset", "--hard", TRUNK]); // never false-green; leave queued
@@ -9540,6 +9597,11 @@ fn schedule_pass_local_gate(fleet: &Fleet, execute: bool) {
                     "  · {} ({}) → NO-CHECKS (couldn't run gate-local) — left queued, retry next pass.",
                     mr.file, mr.r#ref
                 );
+                if json {
+                    records.push(serde_json::json!({
+                        "file": mr.file, "from": mr.from, "ref": mr.r#ref, "verdict": "left", "reason": "no-checks", "sha": ""
+                    }));
+                }
             }
         }
     }
@@ -9547,6 +9609,12 @@ fn schedule_pass_local_gate(fleet: &Fleet, execute: bool) {
         "schedule-pass --local-gate: {merged} merged + {rejected} rejected + {left} left-queued (of {} queued).",
         queued.len()
     );
+    if json {
+        println!(
+            "LOCAL_GATE_JSON: {}",
+            local_gate_summary_json(merged, rejected, left, queued.len(), records)
+        );
+    }
 }
 
 /// Whether a lane LABEL is a parallel lane (docs/corpus/leaf subsystems) vs. serialized. Consults the
@@ -14276,6 +14344,29 @@ mod tests {
         // spawn-fail dominates even if build_ok were somehow true (defensive — a not-run gate is unknown).
         assert_eq!(local_gate_verdict(false, true), NoChecks);
         // local_gate_verdict NEVER returns Pending (nix build blocks to completion) — only the 3 above.
+    }
+
+    #[test]
+    fn local_gate_summary_json_has_the_scrape_contract() {
+        // The shape pr-sync scrapes off the `LOCAL_GATE_JSON:` line: a tally + a results array. Keeps
+        // the machine-parse contract locked (field names + counts), independent of running a gate.
+        let results = vec![
+            serde_json::json!({"file": "a.json", "from": "v-x", "ref": "deadbeef", "verdict": "merged", "sha": "abc123"}),
+            serde_json::json!({"file": "b.json", "from": "v-y", "ref": "cafef00d", "verdict": "reject", "reason": "gate-red", "sha": ""}),
+        ];
+        let s = local_gate_summary_json(1, 1, 0, 2, results);
+        assert_eq!(s["merged"], 1);
+        assert_eq!(s["rejected"], 1);
+        assert_eq!(s["left"], 0);
+        assert_eq!(s["queued"], 2);
+        assert_eq!(s["results"].as_array().unwrap().len(), 2);
+        assert_eq!(s["results"][0]["verdict"], "merged");
+        assert_eq!(s["results"][0]["sha"], "abc123");
+        assert_eq!(s["results"][1]["verdict"], "reject");
+        // Empty pass → zeroed tally + empty array (the no-queued-MRs early-out shape), never null.
+        let e = local_gate_summary_json(0, 0, 0, 0, Vec::new());
+        assert_eq!(e["queued"], 0);
+        assert!(e["results"].as_array().unwrap().is_empty());
     }
 
     #[test]
