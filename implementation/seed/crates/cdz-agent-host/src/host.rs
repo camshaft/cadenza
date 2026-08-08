@@ -426,7 +426,8 @@ impl HostedSession {
 
     /// Answer ONE surfaced `control/signature` effect: reflect the target component's exported signature and
     /// FOLD the descriptor back into this session so the emitting reducer resumes with it (§signature-query
-    /// part-1, the `ControlHostSurfaced` fold-back seam `Session::settle_control_result`).
+    /// part-1, the `ControlHostSurfaced` fold-back seam `Session::settle_effect_result` — the generalized
+    /// successor to the original `settle_control_result`, folding by `EffectId`).
     ///
     /// `target_bytes` is the target component's bytes, which the CALLER fetched from the blob store by the
     /// effect's target hash (`ce.request.target` hex) — `HostedSession` is blob-store-free, so the loop does
@@ -437,7 +438,7 @@ impl HostedSession {
     /// (not a component / an undescribable type), settle a classified `EffectOutcome::err` so the reducer
     /// folds the error arm and RESUMES cleanly rather than hanging on an open effect. Returns whether the
     /// settle actually landed (`false` = the id was already settled / the session terminated — a benign
-    /// no-op, per `settle_control_result`).
+    /// no-op, per `settle_effect_result`).
     pub async fn settle_signature_query(
         &mut self,
         ce: &cdz_kernel::effect::ControlEffect,
@@ -459,7 +460,7 @@ impl HostedSession {
             ),
         };
         self.session
-            .settle_control_result(
+            .settle_effect_result(
                 ce.id,
                 outcome,
                 &*self.reducer,

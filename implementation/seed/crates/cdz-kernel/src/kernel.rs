@@ -505,7 +505,7 @@ impl Session {
             .await?;
         // FAIL-SAFE (reviewer LOW, latent): a FOLD-BACK control (`control/signature`) was given a Dispatched
         // frame before surfacing, so it is OPEN awaiting a host settle — but the common `deliver` DROPS the
-        // ControlEffect, so nothing would ever call `settle_control_result` and the effect would orphan
+        // ControlEffect, so nothing would ever call `settle_effect_result` and the effect would orphan
         // (open forever, the reducer's continuation never resumes, quiescence/deadline logic sees a perpetual
         // open). A signature-querier is SUPPOSED to use `deliver_control`; the common `deliver` silently
         // dropping it is a supported-looking misuse. Rather than orphan, settle each dropped fold-back control
@@ -514,7 +514,7 @@ impl Session {
         // frame, not open) is unaffected: it's simply dropped, nothing to settle.
         for ce in &control {
             if crate::effect::effect_ct::is_fold_back_control(&ce.request.content_type.family) {
-                self.settle_control_result(
+                self.settle_effect_result(
                     ce.id,
                     EffectOutcome::err(
                         "fold-back control surfaced on the drop-control deliver path — use \
@@ -975,7 +975,7 @@ impl Session {
                 // FOLD-BACK control (control/signature): the answer must RESUME the emitting reducer's
                 // continuation, so give it a Dispatched frame — exactly like a routed effect or the
                 // capabilities path above — BEFORE surfacing it. This enters `open` keyed by `id` and records
-                // the continuation token, so the host can later settle it by `id` via `settle_control_result`
+                // the continuation token, so the host can later settle it by `id` via `settle_effect_result`
                 // (→ an EffectResult keyed to this token → fold_tip). Without the frame `record_result` would
                 // panic (no token to derive) and the effect could never fold back. authz-exempt (control),
                 // and NOT answered inline — the host produces the answer (e.g. wasmtime reflection). A
@@ -1217,6 +1217,17 @@ impl Session {
             );
             let outcome = executor.perform(&req, idempotency_key).await;
 
+            // DEFERRED (userspace-effects I2): the executor forwarded this effect for asynchronous
+            // fulfillment (e.g. a UserspaceEffectExecutor delegated to a registered handler session) and will
+            // NOT answer now — a later `settle_effect_result(id, …)` folds the real outcome. Leave the
+            // `Dispatched` frame OPEN (do NOT `record_result`): the effect stays in `open`, awaiting its
+            // settle, exactly like a control/signature fold-back (which is now the degenerate case of this
+            // general mechanism). Deferred is a transient signal — it never becomes an `EffectResult` on the
+            // log; the eventual settle folds the real Ok/Err. The continuation resumes then.
+            if matches!(outcome, EffectOutcome::Deferred) {
+                continue;
+            }
+
             // MONOTONIC `now` clamp (operator ruling): only `now` results are clamped. Keyed on the
             // content-type FAMILY (seq-39), not the legacy kind enum.
             let outcome = if req
@@ -1346,25 +1357,29 @@ impl Session {
         true
     }
 
-    /// Settle a fold-back control effect (`control/signature`) with the HOST's answer — the missing half of
-    /// the control-plane fold-back contract. When the drive loop surfaces a fold-back control family
-    /// ([`crate::effect::effect_ct::is_fold_back_control`]) it gives the effect a `Dispatched` frame and hands
-    /// the driver a [`ControlEffect`](crate::effect::ControlEffect) carrying its [`EffectId`]; the host
-    /// produces the answer off-band (e.g. reflecting the target component's signature — wasmtime, host-side)
-    /// and calls this to fold it back into the EMITTING reducer's continuation. The result is a logged
-    /// `EffectResult` causally linked to the `Dispatched` frame and keyed by its continuation token —
-    /// identical to how any routed effect (shell/http) settles — so the guest resumes exactly where it awaited
-    /// the query, and live-kv == replayed-kv (§9d). The reducer's continuation may emit further effects; they
-    /// are driven to quiescence here.
+    /// Settle a DEFERRED effect (by [`EffectId`]) with its real outcome — the async-fulfillment half of the
+    /// userspace-effects contract (I2), and the generalization of the former `control/signature` fold-back.
+    /// When an executor returns [`EffectOutcome::Deferred`] from `perform` (it forwarded the effect for
+    /// asynchronous fulfillment — a `UserspaceEffectExecutor` delegating to a registered handler session, the
+    /// host reflecting a `control/signature`, etc.), the kernel leaves the `Dispatched` frame OPEN; whoever
+    /// fulfills the effect off-band calls this to fold the real answer back into the EMITTING reducer's
+    /// continuation. The result is a logged `EffectResult` causally linked to the `Dispatched` frame and keyed
+    /// by its continuation token — identical to how any routed effect (shell/http) settles — so the guest
+    /// resumes exactly where it awaited, and live-kv == replayed-kv (§9d). The reducer's continuation may emit
+    /// further effects; they are driven to quiescence here.
+    ///
+    /// FAMILY-AGNOSTIC by design: this settles ANY open dispatched effect by its `EffectId`, regardless of
+    /// family — `control/signature` (the fold-back seam this generalizes) is now just the degenerate case.
     ///
     /// Idempotent + at-most-once, exactly like [`Session::time_out_effect`] (whose shape this mirrors): a
     /// TERMINATED session settles nothing (the terminal marker must stay the log tail) → `false`; an `id` that
-    /// is not OPEN — already settled by a prior call, timed out, or never a fold-back dispatch — is a no-op
-    /// `false`, so a late or duplicate host settle can never append a second `EffectResult` for one id (a
-    /// continuation resumes at most once). Returns `true` iff this call settled it. `outcome` is the host's
-    /// answer: `Ok(Some(Inline(descriptor)))` on success, or `EffectOutcome::err(..)` on a reflect/produce
-    /// failure (the reducer folds the error and resumes cleanly, same as a failed routed effect).
-    pub async fn settle_control_result(
+    /// is not OPEN — already settled by a prior call, timed out, or never dispatched — is a no-op `false`, so
+    /// a late or duplicate settle can never append a second `EffectResult` for one id (a continuation resumes
+    /// at most once). Returns `true` iff this call settled it. `outcome` is the real answer: `Ok(..)` on
+    /// success or `EffectOutcome::err(..)`/`err_retryable(..)` on failure (the reducer folds it + resumes
+    /// cleanly, same as any routed effect). Settling WITH `Deferred` is nonsensical (it is a "no result yet"
+    /// signal, not a result) → treated as a no-op `false` so a caller can't leave the effect open-but-"settled".
+    pub async fn settle_effect_result(
         &mut self,
         id: EffectId,
         outcome: EffectOutcome,
@@ -1377,24 +1392,46 @@ impl Session {
         if self.is_terminated() {
             return false;
         }
+        // Settling WITH Deferred is a no-op: Deferred is a "not answered yet" signal, never a real outcome —
+        // recording it would leave the effect BOTH removed-from-open AND without a real result. Reject it.
+        if matches!(outcome, EffectOutcome::Deferred) {
+            return false;
+        }
         // Idempotent: only an OPEN id can be settled. Settled/never-dispatched → no-op, so a late or duplicate
-        // host settle and any other settler (a timeout) can't both settle one id (at-most-once, §16c-S4).
+        // settle and any other settler (a timeout) can't both settle one id (at-most-once, §16c-S4).
         if !self.open.contains(&id.0) {
             return false;
         }
-        // A fold-back control effect was opened by a `Dispatched` frame (like a routed effect), so it HAS a
-        // dispatch hash. An `id` in `open` with no `Dispatched` (an armed TIMER) is not settleable here →
-        // no-op `false`, mirroring time_out_effect's timer guard (never a crash).
+        // A deferred effect was opened by a `Dispatched` frame (like a routed effect), so it HAS a dispatch
+        // hash. An `id` in `open` with no `Dispatched` (an armed TIMER) is not settleable here → no-op
+        // `false`, mirroring time_out_effect's timer guard (never a crash).
         let Some(dispatch_hash) = self.dispatch_hash_of(id) else {
             return false;
         };
         let more = self
             .record_result(id, outcome, reducer, dispatch_hash)
             .await;
-        // The reducer's continuation (now resumed with the query answer) may emit further effects — drive
-        // them to quiescence, same as the routed-result and timeout paths.
+        // The reducer's continuation (now resumed with the answer) may emit further effects — drive them to
+        // quiescence, same as the routed-result and timeout paths.
         self.drive_worklist(more, reducer, authz, executor).await;
         true
+    }
+
+    /// Deprecated alias for [`Session::settle_effect_result`] — the former name from when this seam only
+    /// served `control/signature` fold-back (before userspace-effects I2 generalized it to ANY deferred
+    /// effect). Kept as a thin delegator so the `cdz-agent-host` sig-query call-site migrates at leisure
+    /// (no cross-crate build break in the I2 landing window); it will be removed once that call-site moves.
+    #[deprecated(note = "renamed to settle_effect_result (userspace-effects I2, family-agnostic)")]
+    pub async fn settle_control_result(
+        &mut self,
+        id: EffectId,
+        outcome: EffectOutcome,
+        reducer: &dyn Reducer,
+        authz: &(impl Authorize + ?Sized),
+        executor: &mut (impl Executor + ?Sized),
+    ) -> bool {
+        self.settle_effect_result(id, outcome, reducer, authz, executor)
+            .await
     }
 
     /// The hash of the `Dispatched` event that opened effect `id`, or `None` if `id` has no `Dispatched`
@@ -3110,13 +3147,12 @@ mod monotonic_now_tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn control_signature_is_surfaced_dispatched_and_settle_control_result_resumes_the_guest()
-    {
+    async fn control_signature_is_surfaced_dispatched_and_settle_effect_result_resumes_the_guest() {
         // The fold-back control pattern (control/signature = the THIRD control disposition): unlike
         // capabilities (kernel-answered inline) or summary (fire-and-forget fork-scrape, no Dispatched), a
         // signature query is SURFACED to the driver AND given a Dispatched frame, so it is OPEN and awaiting a
         // HOST answer that must resume the emitting reducer. Prove the whole loop: surface → open+dispatched →
-        // settle_control_result folds the descriptor back → the guest's continuation resumes (writes KV).
+        // settle_effect_result folds the descriptor back → the guest's continuation resumes (writes KV).
         let mut exec = RecordingExecutor::new();
         let mut session = Session::genesis(Hash::of(b"sig-v1"), Hash::of(b"nonce"));
         let control = session
@@ -3176,7 +3212,7 @@ mod monotonic_now_tests {
         // The HOST reflects the target + settles the query with the descriptor bytes → the guest resumes.
         let descriptor = b"(component-signature (export (name run)))".to_vec();
         let settled = session
-            .settle_control_result(
+            .settle_effect_result(
                 sig_id,
                 EffectOutcome::Ok(Some(crate::effect::Payload::Inline(
                     descriptor.clone().into(),
@@ -3191,7 +3227,7 @@ mod monotonic_now_tests {
         assert_eq!(
             session.kv().get(b"sig/descriptor").map(|b| b.to_vec()),
             Some(descriptor),
-            "settle_control_result folds the descriptor back → the emitting reducer resumes with it"
+            "settle_effect_result folds the descriptor back → the emitting reducer resumes with it"
         );
         // The effect is now SETTLED (removed from open) — the continuation resumed exactly once.
         assert_eq!(
@@ -3203,7 +3239,7 @@ mod monotonic_now_tests {
         // At-most-once: a DUPLICATE settle (a late/retried host answer) is a no-op — no second EffectResult,
         // the continuation can't resume twice.
         let dup = session
-            .settle_control_result(
+            .settle_effect_result(
                 sig_id,
                 EffectOutcome::Ok(Some(crate::effect::Payload::Inline(
                     b"other".to_vec().into(),
@@ -3229,7 +3265,7 @@ mod monotonic_now_tests {
 
         // Settling an id that was never dispatched is likewise a no-op (nothing open to resume).
         let never = session
-            .settle_control_result(
+            .settle_effect_result(
                 EffectId(9999),
                 EffectOutcome::Ok(None),
                 &SignatureQueryReducer,
@@ -3241,7 +3277,7 @@ mod monotonic_now_tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn settle_control_result_err_path_resumes_the_guest_with_a_failure() {
+    async fn settle_effect_result_err_path_resumes_the_guest_with_a_failure() {
         // The host couldn't reflect the target (bad bytes, missing blob) → it settles with an Err. The
         // reducer's continuation resumes on the err arm (writes sig/error), same as a failed routed effect —
         // never stuck. Proves the fold-back seam carries a failure as cleanly as a success.
@@ -3259,7 +3295,7 @@ mod monotonic_now_tests {
             .expect("deliver");
         let sig_id = control[0].id;
         let settled = session
-            .settle_control_result(
+            .settle_effect_result(
                 sig_id,
                 EffectOutcome::err("not a valid component".to_string()),
                 &SignatureQueryReducer,
@@ -3388,7 +3424,7 @@ mod monotonic_now_tests {
         );
         // Settling the summary's id is a no-op (it was never opened) — no phantom EffectResult.
         let settled = session
-            .settle_control_result(
+            .settle_effect_result(
                 control[0].id,
                 EffectOutcome::Ok(None),
                 &SummaryEmitReducer,
@@ -4146,6 +4182,204 @@ mod monotonic_now_tests {
                 }
             )),
             "the Err outcome is a first-class log event"
+        );
+    }
+
+    // ---- userspace-effects I2: EffectOutcome::Deferred + settle_effect_result --------------------------
+    //
+    // A routed executor that DEFERS: it returns EffectOutcome::Deferred to say "I forwarded this for async
+    // fulfillment, don't answer now" (models a UserspaceEffectExecutor delegating to a registered handler
+    // session). The kernel must leave the Dispatched frame OPEN (no EffectResult) until a later
+    // settle_effect_result(id, real-outcome) folds the answer back + resumes the emitting reducer.
+    struct DeferringExecutor;
+    #[async_trait::async_trait(?Send)]
+    impl Executor for DeferringExecutor {
+        async fn perform(&mut self, _req: &EffectRequest, _key: Hash) -> EffectOutcome {
+            EffectOutcome::Deferred
+        }
+    }
+
+    // Emits an Http effect on inbound; on its (eventually-settled) result, records the Ok bytes into KV so
+    // the test can see the deferred answer reached the reducer's continuation as a normal folded event.
+    struct HttpThenRecordOkReducer;
+    #[async_trait::async_trait(?Send)]
+    impl Reducer for HttpThenRecordOkReducer {
+        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+            match &event.body {
+                EventBody::Inbound { .. } => FoldOutput::with_effects(vec![Effect {
+                    request: EffectRequest::new(
+                        EffectKind::Http,
+                        "https://ok.host/x",
+                        None,
+                        Timeliness::Interactive,
+                    ),
+                    token: Some(b"cont".to_vec()),
+                }]),
+                EventBody::EffectResult {
+                    result: EffectOutcome::Ok(Some(Payload::Inline(bytes))),
+                    ..
+                } => {
+                    kv.put(b"answer".to_vec(), bytes.to_vec());
+                    FoldOutput::none()
+                }
+                _ => FoldOutput::none(),
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_deferred_effect_stays_open_until_settle_effect_result_folds_the_answer() {
+        // userspace-effects I2: an executor returning Deferred leaves the effect OPEN (no EffectResult
+        // folded); a later settle_effect_result folds the real answer + resumes the emitting reducer's
+        // continuation. This is the general mechanism control/signature's fold-back is now a special case of.
+        let authz = Authorizer::new(vec![Capability {
+            kind: EffectKind::Http,
+            predicate: ResourcePredicate::Any,
+        }]);
+        let mut exec = DeferringExecutor;
+        let mut s = Session::genesis(Hash::of(b"deferred-v1"), Hash::of(b"nonce"));
+        let inbound = || EventBody::Inbound {
+            content_type: ContentType {
+                family: "message".into(),
+                version: 1,
+            },
+            payload: Payload::Inline(b"go".to_vec().into()),
+        };
+        s.deliver(inbound(), None, &HttpThenRecordOkReducer, &authz, &mut exec)
+            .await
+            .unwrap();
+
+        // The executor deferred → the effect is OPEN (Dispatched frame written, NO EffectResult folded yet),
+        // and the reducer's continuation has NOT resumed.
+        assert_eq!(
+            s.open_effects(),
+            1,
+            "a deferred effect stays OPEN — the kernel wrote the Dispatched frame but recorded no result"
+        );
+        assert_eq!(
+            s.kv().get(b"answer"),
+            None,
+            "the continuation hasn't resumed — no answer yet"
+        );
+        assert!(
+            !s.log()
+                .iter()
+                .any(|e| matches!(e.body, EventBody::EffectResult { .. })),
+            "no EffectResult is folded for a Deferred outcome (it's a transient signal, never logged)"
+        );
+
+        // Find the open effect's id (the Dispatched frame), then settle it off-band with the real answer.
+        let id = s
+            .log()
+            .iter()
+            .find_map(|e| match &e.body {
+                EventBody::Dispatched { id, .. } => Some(*id),
+                _ => None,
+            })
+            .expect("a Dispatched frame was written for the deferred effect");
+        let settled = s
+            .settle_effect_result(
+                id,
+                EffectOutcome::Ok(Some(Payload::Inline(b"the-answer".to_vec().into()))),
+                &HttpThenRecordOkReducer,
+                &authz,
+                &mut exec,
+            )
+            .await;
+        assert!(settled, "settling an open deferred effect returns true");
+        // The continuation resumed: the reducer folded the EffectResult + recorded the answer.
+        assert_eq!(
+            s.kv().get(b"answer").map(|v| v.to_vec()),
+            Some(b"the-answer".to_vec()),
+            "settle_effect_result folds the real answer back → the emitting reducer resumes with it"
+        );
+        assert_eq!(s.open_effects(), 0, "the settled effect is no longer open");
+
+        // At-most-once: a duplicate settle is a no-op (no second EffectResult).
+        let dup = s
+            .settle_effect_result(
+                id,
+                EffectOutcome::Ok(Some(Payload::Inline(b"other".to_vec().into()))),
+                &HttpThenRecordOkReducer,
+                &authz,
+                &mut exec,
+            )
+            .await;
+        assert!(
+            !dup,
+            "a duplicate settle of an already-settled id is a no-op"
+        );
+        assert_eq!(
+            s.log()
+                .iter()
+                .filter(|e| matches!(e.body, EventBody::EffectResult { .. }))
+                .count(),
+            1,
+            "exactly one EffectResult — the dup settle appended nothing",
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn settle_effect_result_rejects_a_deferred_outcome_and_unknown_ids() {
+        // Guards: settling WITH Deferred is nonsensical (a "no result yet" signal, not a result) → no-op, so
+        // the effect can't be left open-but-"settled". Settling an unknown/never-dispatched id → no-op too.
+        let authz = Authorizer::new(vec![Capability {
+            kind: EffectKind::Http,
+            predicate: ResourcePredicate::Any,
+        }]);
+        let mut exec = DeferringExecutor;
+        let mut s = Session::genesis(Hash::of(b"deferred-guard-v1"), Hash::of(b"nonce"));
+        s.deliver(
+            EventBody::Inbound {
+                content_type: ContentType {
+                    family: "message".into(),
+                    version: 1,
+                },
+                payload: Payload::Inline(b"go".to_vec().into()),
+            },
+            None,
+            &HttpThenRecordOkReducer,
+            &authz,
+            &mut exec,
+        )
+        .await
+        .unwrap();
+        let id = s
+            .log()
+            .iter()
+            .find_map(|e| match &e.body {
+                EventBody::Dispatched { id, .. } => Some(*id),
+                _ => None,
+            })
+            .expect("dispatched");
+        // Settling WITH Deferred → no-op, effect STAYS open (not falsely settled).
+        assert!(
+            !s.settle_effect_result(
+                id,
+                EffectOutcome::Deferred,
+                &HttpThenRecordOkReducer,
+                &authz,
+                &mut exec
+            )
+            .await,
+            "settling with Deferred is a no-op (Deferred is not a real outcome)"
+        );
+        assert_eq!(
+            s.open_effects(),
+            1,
+            "a Deferred-settle left the effect OPEN, not falsely settled"
+        );
+        // Unknown id → no-op.
+        assert!(
+            !s.settle_effect_result(
+                EffectId(9999),
+                EffectOutcome::Ok(None),
+                &HttpThenRecordOkReducer,
+                &authz,
+                &mut exec
+            )
+            .await,
+            "settling an unknown/never-dispatched id is a no-op"
         );
     }
 

@@ -3690,6 +3690,9 @@ fn effect_outcome_bytes(o: &EffectOutcome) -> Option<Vec<u8>> {
         EffectOutcome::Ok(None) => None,
         EffectOutcome::Err { message: msg, .. } => Some(msg.clone().into_bytes()),
         EffectOutcome::TimedOut => None,
+        // Deferred never reaches the guest: it's intercepted pre-record, so no EffectResult is folded for it
+        // (the eventual settle_effect_result folds a real Ok/Err the guest sees instead).
+        EffectOutcome::Deferred => None,
     }
 }
 
