@@ -6517,13 +6517,15 @@ fn emit(paths: &Paths, profile: &str, file: &Path, from: &str, out: Option<PathB
     println!("wrote {}", out.display());
 }
 
-/// SHA-256 of the bytes, lowercase hex (the recorded hashing choice).
+/// BLAKE3 of the bytes, lowercase hex — the ONE unified content-address digest (operator ruling
+/// 2026-08-08 unified content addressing on blake3, superseding concierge ruling (A) 2026-08-05 which
+/// had kept the external store on SHA-256). This MUST match `cdz_kernel::Hash::of` (`blake3::hash(bytes)`)
+/// and `cdz-run`'s `content_address`, so the store address == blob-store key == compose-dep `+hash` are
+/// one digest. (The local build-cache `hash_tree` below is an internal fingerprint, NOT a content
+/// address that crosses the store/compose boundary, so it stays SHA-256 — no cross-boundary contract.)
 pub(crate) fn content_address(bytes: &[u8]) -> String {
-    let mut h = Sha256::new();
-    h.update(bytes);
-    let digest = h.finalize();
     let mut s = String::with_capacity(64);
-    for b in digest {
+    for b in blake3::hash(bytes).as_bytes() {
         s.push_str(&format!("{b:02x}"));
     }
     s

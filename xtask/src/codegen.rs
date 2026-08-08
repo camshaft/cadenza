@@ -207,7 +207,8 @@ fn emit_or_check(out: &PathBuf, source: &str, check: bool, oracle: &str, summary
 }
 
 /// Build BOTH runtime components and return their content addresses `(release, debug_counters)` —
-/// the SAME SHA-256 derivation `xtask build` uses to key the store. Embedding these ties the compiler's
+/// the SAME BLAKE3 derivation `xtask build` uses to key the store (operator 2026-08-08 blake3
+/// unification). Embedding these ties the compiler's
 /// recorded hashes to the ACTUAL runtime bytes: a runtime-code change (even with an unchanged WIT)
 /// changes a hash, hence the generated file, hence `codegen --check` fails until regenerated. Both
 /// builds write the SAME `target/.../cdz_runtime.wasm` path, so each build's bytes are read IMMEDIATELY,
@@ -487,12 +488,12 @@ fn render(
         #[doc = " Crosses By A Well-Known Import). The content-address suffix is `REQUIRED_RUNTIME_HASH`."]
         pub const RUNTIME_IFACE: &str = #iface;
 
-        #[doc = " The SHA-256 content address of the value-heap runtime component this ABI was generated"]
+        #[doc = " The BLAKE3 content address of the value-heap runtime component this ABI was generated"]
         #[doc = " against — the runtime a program built with this compiler requires. Regenerated from the"]
         #[doc = " built runtime bytes, so it tracks a runtime-code change automatically."]
         pub const REQUIRED_RUNTIME_HASH: &str = #runtime_hash;
 
-        #[doc = " The SHA-256 content address of the DEBUG-COUNTERS runtime build — the same runtime code"]
+        #[doc = " The BLAKE3 content address of the DEBUG-COUNTERS runtime build — the same runtime code"]
         #[doc = " with the `live-objects` leak counter compiled in (`--features debug-counters`). A shipped"]
         #[doc = " program pins `REQUIRED_RUNTIME_HASH` (the release build); a Perceus leak-check harness"]
         #[doc = " composes THIS build to assert `live-objects == 0` after a run. Recorded here so the harness"]
@@ -508,7 +509,7 @@ fn render(
         #[doc = " the interface name the host matches when composing (see cdz-run compose_nfc_into_runtime_linker)."]
         pub const NFC_IFACE: &str = "cadenza:nfc/normalize";
 
-        #[doc = " The SHA-256 content address of the NFC component (`cdz-nfc`) the RUNTIME imports. Regenerated"]
+        #[doc = " The BLAKE3 content address of the NFC component (`cdz-nfc`) the RUNTIME imports. Regenerated"]
         #[doc = " from the built NFC-component bytes like `REQUIRED_RUNTIME_HASH`, so it tracks an NFC-code"]
         #[doc = " change automatically. The host resolves + composes the NFC component from the CAS by this hash"]
         #[doc = " (the store records `nfc = \"<hash>\"`; cdz-run/main.rs verify the loaded bytes against it). The"]

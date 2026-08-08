@@ -1279,29 +1279,35 @@
           '';
         };
 
-        # The content address of a built component = sha256 of its (stripped) bytes. DERIVED from the
+        # The content address of a built component = blake3 of its (stripped) bytes. DERIVED from the
         # artifact nix built — this is the Cadenza content-address a program pins, falling out of the
         # build rather than being asserted. Exposed as a `packages.*-hash` (a plain-text store file).
+        # BLAKE3 content-address (dual-hash COLLAPSE, operator ruling 2026-08-08: unify tree-wide on blake3 for
+        # speed). Was sha256sum; the kernel's Hash::of is blake3, so every content-address — *-hash packages,
+        # componentStore filenames, runtime.toml, the parity checks vs REQUIRED_RUNTIME_HASH, and the compose-dep
+        # import (already blake3) — is now the same blake3 Hash::of. b3sum --no-names → the lowercase 64-char hex
+        # Hash::to_hex produces. Co-lands with v-ah's component_store Hash::of flip + v-rust-backend's codegen
+        # regen of REQUIRED_RUNTIME_HASH/DEBUG_RUNTIME_HASH (else the parity checks red on the stale sha256 constant).
         hashOf = drv: name:
           pkgs.runCommand name { } ''
-            ${pkgs.coreutils}/bin/sha256sum ${drv} | ${pkgs.coreutils}/bin/cut -d' ' -f1 \
-              | ${pkgs.coreutils}/bin/tr -d '\n' > $out
+            ${pkgs.b3sum}/bin/b3sum --no-names ${drv} | ${pkgs.coreutils}/bin/tr -d '\n' > $out
           '';
 
         # ── R2: the content-addressed component STORE ─────────────────────────────────────────────
         #
         # Assemble every nix-built component into ONE store directory, each file named by its DERIVED
-        # content hash: `<sha256>.wasm`. This mirrors `target/cadenza-store` (what `xtask build`
+        # content hash: `<blake3>.wasm`. This mirrors `target/cadenza-store` (what `xtask build`
         # produces) but built + addressed BY NIX — the store the operator's north star describes, from
         # which a cadenza runtime / the harness loads a component by hash. Purely a function of the
         # component derivations, so it's cache-shareable + rebuilt only when a component changes.
         # (A later increment has the runtime/harness RESOLVE from this store; that's a cross-territory
         # change coordinated with v-runtime + the harness — this increment only PRODUCES the store.)
+        # BLAKE3 (dual-hash collapse) — filenames + runtime.toml use b3sum, matching the kernel Hash::of.
         componentStore = pkgs.runCommand "cdz-component-store" { } ''
           set -euo pipefail
           mkdir -p "$out"
           for c in ${runtime} ${runtimeDebug} ${nfc} ${reducerGuest} ${cedarGuest} ${syntaxGuest}; do
-            h=$(${pkgs.coreutils}/bin/sha256sum "$c" | ${pkgs.coreutils}/bin/cut -d' ' -f1)
+            h=$(${pkgs.b3sum}/bin/b3sum --no-names "$c")
             ${pkgs.coreutils}/bin/cp "$c" "$out/$h.wasm"
           done
           # `cdz-run` resolves the runtime's NFC dependency (FINDING#23) by reading `runtime.toml` from the
@@ -1309,9 +1315,9 @@
           # it too — WITHOUT this manifest every heap case that composes the runtime fails to resolve NFC.
           # `xtask build` writes exactly this file (main.rs:466); mirror its format so a program run against
           # THIS nix store composes identically to one run against target/cadenza-store.
-          rt=$(${pkgs.coreutils}/bin/sha256sum ${runtime}      | ${pkgs.coreutils}/bin/cut -d' ' -f1)
-          dbg=$(${pkgs.coreutils}/bin/sha256sum ${runtimeDebug} | ${pkgs.coreutils}/bin/cut -d' ' -f1)
-          nfc=$(${pkgs.coreutils}/bin/sha256sum ${nfc}          | ${pkgs.coreutils}/bin/cut -d' ' -f1)
+          rt=$(${pkgs.b3sum}/bin/b3sum --no-names ${runtime})
+          dbg=$(${pkgs.b3sum}/bin/b3sum --no-names ${runtimeDebug})
+          nfc=$(${pkgs.b3sum}/bin/b3sum --no-names ${nfc})
           cat > "$out/runtime.toml" <<EOF
           # Cadenza content-addressed store — the value-heap runtime + its NFC dependency.
           runtime = "$rt"
@@ -1716,7 +1722,7 @@
               else builtins.head m;
             parity = { name, drv, constName }:
               pkgs.runCommand "${name}-hash-parity" { } ''
-                got=$(${pkgs.coreutils}/bin/sha256sum ${drv} | ${pkgs.coreutils}/bin/cut -d' ' -f1)
+                got=$(${pkgs.b3sum}/bin/b3sum --no-names ${drv})
                 want=${recordedHash constName}
                 if [ "$got" != "$want" ]; then
                   echo "PARITY FAIL: nix-built ${name} hash $got != runtime_abi.rs ${constName} $want" >&2

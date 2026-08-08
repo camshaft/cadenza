@@ -5,31 +5,26 @@
 //! (the runtime's own bare inter-runtime imports like `cadenza:nfc/normalize`, mapped in `runtime.toml`).
 //!
 //! ## Store layout (v-nix-confirmed, mirrors cdz-run's `resolve_nfc_from_store`)
-//! - `<store>/<sha256hex>.wasm` — one component per file, named by its SHA-256 content address.
-//! - `<store>/runtime.toml` — a `name = "<sha256hex>"` manifest mapping the well-known runtime-internal
-//!   components (`runtime`, `debug_runtime`, `nfc`, …) to their SHA-256 content hashes. This is how a BARE
-//!   interface import (no `+<sha256hex>` build-metadata) is resolved: the importer names the interface, the
-//!   manifest names the providing component's SHA-256 hash.
+//! - `<store>/<hash>.wasm` — one component per file, named by its content address (lowercase hex).
+//! - `<store>/runtime.toml` — a `name = "<hash>"` manifest mapping the well-known runtime-internal
+//!   components (`runtime`, `debug_runtime`, `nfc`, …) to their content hashes. This is how a BARE
+//!   interface import (no `+<hash>` build-metadata) is resolved: the importer names the interface, the
+//!   manifest names the providing component's hash.
 //!
-//! ## The dual-hash boundary (operator ruling A, concierge answer 2026-08-05)
-//! This reader is the ONE place two content-address algorithms meet, so it is documented explicitly rather
-//! than left implicit (a silent dual-hash system is where someone later assumes uniformity and reintroduces
-//! a mismatch):
-//! - The EXTERNAL seed/nix component store is **SHA-256**-addressed — by ALL its producers: `xtask`'s
-//!   `content_address`, `cdz-run::cli::content_address` (the canonical impl, `+ resolve_nfc_from_store`),
-//!   and v-nix's `componentStore` (`flake.nix`, `sha256sum → <sha256hex>.wasm`). `REQUIRED_RUNTIME_HASH` IS
-//!   this SHA-256. So THIS reader content-verifies each fetched blob with SHA-256 (see [`sha256_digest`], a
-//!   byte-compare) to MATCH the store it reads — NOT the kernel's blake3 [`Hash::of`], which would mismatch.
-//! - Kernel-INTERNAL durable state (events, KV nodes, blobs — `blob::DiskBlobStore`) stays **blake3**
-//!   ([`crate::hash::Hash::of`]). That address never crosses into this external store and vice versa.
-//!
-//! The full SHA-256 store contract is anchored on `cdz-run::cli::content_address` (v-nix owns it): SHA-256
-//! lowercase-hex of the component bytes; `<sha256hex>.wasm` + `runtime.toml` layout; `runtime.toml` maps the
+//! ## Content addressing — ONE hash everywhere (operator directive 2026-08-08)
+//! The kernel unified onto a SINGLE content-address algorithm — BLAKE3, via [`crate::hash::Hash::of`]. The
+//! former dual-hash boundary (kernel blake3 vs external SHA-256) is GONE: this external store's producers
+//! (`xtask`'s `content_address`, `cdz-run::cli::content_address`, and v-nix's `componentStore` `b3sum →
+//! <hash>.wasm`) and `REQUIRED_RUNTIME_HASH` are ALL blake3 now, the same digest as kernel-internal durable
+//! state (events, KV nodes, blobs). So THIS reader content-verifies each fetched blob with `Hash::of` — the
+//! same algorithm that addresses everything — and a `+<hash>` dep import, a blob-store key, and a
+//! `CDZ_STORE` address are one interchangeable space (killing the resolve-time mismatch a split used to
+//! risk). The store contract is anchored on `cdz-run::cli::content_address` (v-nix owns it): blake3
+//! lowercase-hex of the component bytes; `<hash>.wasm` + `runtime.toml` layout; `runtime.toml` maps the
 //! runtime's BARE inter-runtime deps by name→hash, distinct from a program's own `+hash`-in-import dep.
 //!
-//! Every fetch CONTENT-VERIFIES ([`sha256_digest(bytes)`](sha256_digest) `== *hash.as_bytes()`, a raw
-//! `[u8; 32]` byte-compare — `as_bytes()` returns `&[u8; 32]`, so the check derefs) before returning — a
-//! corrupt or substituted blob can never compose silently. The two paths
+//! Every fetch CONTENT-VERIFIES (`Hash::of(bytes).as_bytes() == hash.as_bytes()`, a raw `[u8; 32]`
+//! byte-compare) before returning — a corrupt or substituted blob can never compose silently. The two paths
 //! differ only in how the hash is obtained: a `+<hash>` dep carries it in the import name; a bare dep looks
 //! it up by name in `runtime.toml`.
 //!
@@ -77,14 +72,10 @@ impl ComponentStore {
     /// Fetch a component's bytes BY CONTENT HASH — a reducer's `+<hash>` dep import (the hash is in the
     /// import name). Reads `<root>/<hash>.wasm` and verifies its content address matches `hash`.
     ///
-    /// WARNING:`hash` is the EXTERNAL store's **SHA-256** address (the 32-byte value carried in the dep's
-    /// `+<hash>` import name, e.g. via `Hash::from_hex(sha256hex)`), even though the parameter is typed as
-    /// the kernel's [`Hash`] (a scheme-agnostic 32-byte container). Do NOT pass `Hash::of(bytes)` — that is
-    /// the kernel-internal **blake3** address and will fail the SHA-256 content-verify below, surfacing as
-    /// `ContentAddressMismatch` (looks like corruption, isn't). See the dual-hash boundary at the module
-    /// head. (A dedicated `StoreAddr` newtype to make this un-mixable at the type level is a follow-up —
-    /// #2218 review; deferred as a broader API change since `ComponentDep.hash` + `declared_deps` share the
-    /// type.)
+    /// `hash` is the store's content address (carried in the dep's `+<hash>` import name, e.g. via
+    /// `Hash::from_hex(hex)`) — now the SAME algorithm as [`Hash::of`] since the kernel unified onto one
+    /// hash (2026-08-08), so `Hash::of(bytes)` and this address are interchangeable and the content-verify
+    /// below can't spuriously mismatch on an algorithm split.
     pub fn get_by_hash(&self, hash: &Hash) -> Result<Vec<u8>, StoreError> {
         let hex = hash.to_hex();
         let path = self.root.join(format!("{hex}.wasm"));
@@ -99,12 +90,11 @@ impl ComponentStore {
             }
         })?;
         // Integrity gate: the bytes MUST hash to their key, or a corrupt/substituted blob would compose.
-        // Verify with SHA-256 — the EXTERNAL store's address algorithm (see the dual-hash boundary note at
-        // the module head) — NOT the kernel's blake3 `Hash::of`, which would mismatch every real blob.
-        // Compare the raw 32-byte digest to the expected key's bytes directly — no hex-encode + String
-        // compare (#2220 review c1). `Hash` is a scheme-agnostic 32-byte container, so `as_bytes()` is the
-        // sha256 value here (see the get_by_hash # Note).
-        if sha256_digest(&bytes) != *hash.as_bytes() {
+        // Verify with the ONE unified content-address algorithm — `Hash::of` (blake3) — the same digest the
+        // external store's producers (xtask/cdz-run/v-nix `componentStore`) now use post-collapse (operator
+        // directive 2026-08-08: one hash everywhere; the former sha256-vs-blake3 dual boundary is gone).
+        // Compare the raw 32-byte digest directly — no hex-encode + String compare (#2220 review c1).
+        if Hash::of(&bytes).as_bytes() != hash.as_bytes() {
             return Err(StoreError::ContentAddressMismatch { hash: hex });
         }
         Ok(bytes)
@@ -133,29 +123,6 @@ impl ComponentStore {
 }
 
 /// The raw SHA-256 digest of `bytes` — the EXTERNAL component store's content address, as 32 bytes. The
-/// store reader ([`ComponentStore::get_by_hash`]) compares THIS directly to the expected key's bytes (no
-/// hex round-trip). SHA-256, NOT the kernel-internal blake3 [`Hash::of`], because the on-disk blobs are
-/// SHA-256-addressed by ALL their producers — `xtask`, `cdz-run::cli::content_address` (the canonical
-/// impl + full contract), and v-nix's `componentStore` (`flake.nix`, `sha256sum`) — and
-/// `REQUIRED_RUNTIME_HASH` IS this value. See the dual-hash boundary at the module head.
-fn sha256_digest(bytes: &[u8]) -> [u8; 32] {
-    use sha2::{Digest, Sha256};
-    Sha256::digest(bytes).into()
-}
-
-/// The SHA-256 content address as lowercase hex (the `<sha256hex>.wasm` file-name form). A thin hex
-/// wrapper over [`sha256_digest`]; used where the hex string is needed (e.g. constructing a store key in
-/// tests). The verify path byte-compares via [`sha256_digest`] directly and never allocates this.
-#[cfg(test)]
-fn sha256_content_address(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    let mut s = String::with_capacity(64);
-    for b in sha256_digest(bytes) {
-        let _ = write!(s, "{b:02x}"); // writing to a String is infallible
-    }
-    s
-}
-
 /// Parse a `runtime.toml` for a `<name> = "<hash>"` line, returning the hash string. A minimal line-based
 /// scan (the manifest is a flat `key = "value"` map — `runtime`/`debug_runtime`/`nfc`); we avoid a full
 /// TOML-parser dep for a two-field manifest. Matches the KEY exactly (so `nfc` doesn't match `nfc_extra`).
@@ -178,12 +145,11 @@ mod tests {
         std::fs::write(dir.join(name), bytes).unwrap();
     }
 
-    /// The store's content address for `bytes` as a `Hash` key — built from the SHA-256 address (the
-    /// EXTERNAL store's algorithm), the same way production derives it from a dep's `+<sha256hex>` import
-    /// name. NOT `Hash::of` (blake3), which would name a file the reader's sha256 verify rejects.
+    /// The store's content address for `bytes` as a `Hash` key. Post-collapse this is just `Hash::of` —
+    /// the ONE unified content-address algorithm the store's producers and the reader's verify now share
+    /// (operator directive 2026-08-08: one hash everywhere).
     fn store_hash(bytes: &[u8]) -> Hash {
-        Hash::from_hex(&sha256_content_address(bytes))
-            .expect("sha256 hex is a valid 64-char content address")
+        Hash::of(bytes)
     }
 
     // A hash-addressed fetch round-trips + content-verifies. Uses a real temp dir with a `<hash>.wasm` file.
