@@ -74,6 +74,15 @@ exclude = [
     # it; a reducer imports the lifted component, not a build dep), own `[workspace]` table, built to wasm
     # + lifted with `wasm-tools component new` on demand.
     "implementation/seed/crates/cdz-syntax-guest",
+    # `cdz-syntax-consumer-guest` (the P2 part-2 CONSUMER guest, v-syntax) is excluded for the SAME reason
+    # as cdz-syntax-guest: it ONLY builds for wasm32-unknown-unknown (a wit-bindgen reducer guest whose
+    # world IMPORTS cadenza:syntax by content-hash + drives a call via `compose_dep_into_linker`), so the
+    # native seed `--workspace` build must never build a cdylib-for-wasm crate. It is the MIRROR of the
+    # producer cdz-syntax-guest (that EXPORTS cadenza:syntax; this IMPORTS it). Its cadenza:syntax import
+    # name carries a `+SYNTAXGUESTHASH` placeholder v-nix's flake templates to the resolved producer hash
+    # at build. Leaf crate (nothing in the seed depends on it; the host loads the lifted component), own
+    # `[workspace]` table, built to wasm + lifted with `wasm-tools component new` on demand.
+    "implementation/seed/crates/cdz-syntax-consumer-guest",
 ]
 
 [profile.dev]
