@@ -6342,3 +6342,5 @@ pass	ha1 an INNER op's arguments draw from the OUTER handler — two outer draws
 pass	ha2 outer-draw feeds the INNER op, whose result feeds an OUTER op again — a three-hop cross-handler value chain
 pass	ha3 INTERLEAVED outer-inner-outer draws in ONE argument list — each draw dispatches to its own handler in sequence
 pass	ha4 an inner op's arguments dispatch to the SAME inner handler — same-effect draws inside the op's own arg list, then an outer draw
+pass	rv1 the inner handler ARM resumes with an OUTER draw — the resume VALUE expression performs against the enclosing handler
+pass	rv2 the inner arm's resume value SUBTRACTS two outer draws — cross-handler order inside the arm, with a doubling outer state

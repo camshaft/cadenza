@@ -17345,3 +17345,40 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 536 Int64))
   (call   main (: 0 Int64)) (output (: 36 Int64)))
+
+;; ── rv: handler-arm RESUME VALUES that themselves perform ────────────────────
+;; The arm's resume-value expression dispatches to the ENCLOSING handler at
+;; dispatch time. rv1 resumes with a single outer draw (two asks advance the
+;; outer thread once each); rv2 resumes with a SUBTRACTION of two outer draws
+;; (antisymmetry pins their order inside the arm) against a doubling outer
+;; state. The mirror face — a performing next-STATE expression — is a known
+;; tail-resumptive-fold decline (non-tail resume); witnesses banked, not cases.
+
+(case "rv1 the inner handler ARM resumes with an OUTER draw — the resume VALUE expression performs against the enclosing handler"
+  (input  (do
+            (effect O (op next (-> Int64)))
+            (effect I (op ask (-> Int64)))
+            (def (main (: n Int64))
+              (handle O n
+                ((next () s (resume s (+ s 1))))
+                (handle I 0
+                  ((ask () t (resume (O.next) t)))
+                  (+ (* 10 (I.ask)) (I.ask)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 56 Int64))
+  (call   main (: 0 Int64)) (output (: 1 Int64)))
+
+(case "rv2 the inner arm's resume value SUBTRACTS two outer draws — cross-handler order inside the arm, with a doubling outer state"
+  (input  (do
+            (effect O (op next (-> Int64)))
+            (effect I (op ask (-> Int64)))
+            (def (main (: n Int64))
+              (handle O n
+                ((next () s (resume s (* 2 s))))
+                (handle I 0
+                  ((ask () t (resume (- (O.next) (O.next)) t)))
+                  (+ (I.ask) (* 10 (O.next))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 195 Int64))
+  (call   main (: 1 Int64)) (output (: 39 Int64))
+  (call   main (: -3 Int64)) (output (: -117 Int64)))
