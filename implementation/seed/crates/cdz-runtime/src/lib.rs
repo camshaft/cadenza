@@ -919,7 +919,15 @@ fn op_box_float(v: f64) -> Handle {
     // canonical form makes every NaN equal to every NaN. A NON-NaN value (incl. ±0.0 and ±inf) keeps
     // its bits verbatim, so `-0.0` stays DISTINCT from `0.0` (their canonical forms genuinely differ).
     // This is the float twin of `op_box_int`'s normalize-on-construct: `box-float` is the SOLE producer
-    // of a float leaf, so canonicalizing here guarantees every stored float has one byte form.
+    // of a float leaf, so canonicalizing here guarantees every stored float has one byte form — one
+    // canonical encoding per value, equal values (every NaN) sharing identical bytes and unequal values
+    // (±0.0) keeping distinct bytes, which `champ_hash`/`champ_eq` compare rawly:
+    //= spec/contracts/deterministic-value-form.md#a-value-has-one-canonical-byte-form
+    //# Each serializable value MUST have exactly one canonical byte encoding.
+    //= spec/contracts/deterministic-value-form.md#a-value-has-one-canonical-byte-form
+    //# Two values that are equal under the language's structural equality MUST have identical canonical byte encodings.
+    //= spec/contracts/deterministic-value-form.md#a-value-has-one-canonical-byte-form
+    //# Two values that are not equal under the language's structural equality MUST have distinct canonical byte encodings.
     let bits = if v.is_nan() { f64::NAN.to_bits() } else { v.to_bits() };
     alloc_raw(Vec::new(), Raw::inline(&bits.to_le_bytes())) // 8-byte scalar: inline, no heap raw
 }
