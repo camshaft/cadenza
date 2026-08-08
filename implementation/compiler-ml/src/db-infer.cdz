@@ -13,6 +13,11 @@ import { Tree } from "parse-db"
 
 import { infer-node, ground-deferred } from "infer-db"
 import { Typed } from "typed"
+import { Ty } from "ty"
+// ARC-A2: the Db types column now stores `Map(Int64, Ty)`; db-infer's raw-column ops bridge at the column
+// boundary (ty-col-to-typed / typed-col-to-ty) so infer-node + downstream consumers stay on `Typed` this
+// slice. TEMPORARY — removed once infer-db/lower-db migrate to Ty.
+import { ty-col-to-typed, typed-col-to-ty } from "ty-bridge"
 
 import { Db, db-tree, typed-filled } from "db"
 
@@ -23,13 +28,15 @@ import { resolve-into-db } from "db-resolve"
 def db-resolved-col(db: Db) = match db with
   | Db.Db(_, rc, _, _) => rc
 
-/// The types column of a Db.
+/// The types column of a Db, AS `Map(Int64, Typed)` — ARC-A2 edge-bridge: the column stores `Ty`, this
+/// converts it back to `Typed` for un-migrated consumers (infer-node/lower-node/bin-type read a Typed column).
 def db-typed-col(db: Db) = match db with
-  | Db.Db(_, _, tc, _) => tc
+  | Db.Db(_, _, tc, _) => ty-col-to-typed(tc)
 
-/// Merge a type column into the Db's types column (single column-swap; infer-node produces the whole column).
+/// Merge a `Typed` type column into the Db's types column — ARC-A2 edge-bridge: infer-node produces a whole
+/// `Map(Int64, Typed)`; this converts it to the stored `Map(Int64, Ty)` (typed-col-to-ty) before merging.
 def merge-typed(db: Db, tcol: Map(Int64, Typed)) = match db with
-  | Db.Db(t, rc, _, cc) => Db.Db(t, rc, tcol, cc)
+  | Db.Db(t, rc, _, cc) => Db.Db(t, rc, typed-col-to-ty(tcol), cc)
 
 /// INFER into the Db (rcdzc `type_of` demand): resolve ONCE into the Db (P1d fill-once — a HIT if already
 /// resolved), then run `infer-node` over the Db's RESOLVED column (NOT a re-resolve) to fill the types

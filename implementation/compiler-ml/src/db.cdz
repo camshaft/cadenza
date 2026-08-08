@@ -25,14 +25,25 @@ import { Resolved } from "resolve-db"
 
 import { Typed } from "typed"
 
+import { Ty } from "ty"
+
+// ARC-A2 MIGRATION BRIDGE (TEMPORARY — deleted in the final A2 slice): the types column now stores the
+// canonical `Ty` (the single-live-type-universe target), but the pipeline consumers (infer-db/db-demand/
+// lower-db/db-state) still speak `Typed`. `fill-typed`/`require-typed` keep their `Typed` signatures by
+// bridging Typed<->Ty at the column edge, so THIS slice swaps the column's storage type WITHOUT touching any
+// consumer — they migrate to the `Ty`-native `fill-ty`/`require-ty` file-by-file in later A2 slices, and this
+// bridge (+ typed.cdz + ty-bridge.cdz) is removed once the last consumer is off `Typed`.
+import { typed-to-ty, ty-to-typed } from "ty-bridge"
+
 import { Core } from "lower-db"
 
 /// The query DB: the source `Tree` (ast column) + one memoized column per derived fact. A single-variant
   /// sum carrying the columns (the ML-surface analog of rcdzc's `Db` struct, mirroring parse-db's
   /// `Tree.Arena(Map, next)` compound-carrier idiom). Columns are `Map(NodeId, Fact)`; an absent key = a
-  /// `Slot::Absent` (fact not yet determined).
+  /// `Slot::Absent` (fact not yet determined). ARC-A2: the TYPES column now stores canonical `Ty`
+  /// (was `Typed`) — the single-type-universe target; consumers still reach it via the Typed edge-bridge below.
   type Db =
-  | Db(Tree, Map(Int64, Resolved), Map(Int64, Typed), Map(Int64, Core))
+  | Db(Tree, Map(Int64, Resolved), Map(Int64, Ty), Map(Int64, Core))
 
 /// A fresh Db over a source `Tree`: every derived column empty (all slots Absent). The load step — rcdzc's
 /// `Db::load` (here the tree is already parsed; the columns fill lazily as producers demand facts).
@@ -40,7 +51,7 @@ def db-of(tree: Tree) =
   Db.Db(
     tree,
     Map.empty : Map(Int64, Resolved),
-    Map.empty : Map(Int64, Typed),
+    Map.empty : Map(Int64, Ty),
     Map.empty : Map(Int64, Core)
   )
 
@@ -65,16 +76,32 @@ def require-resolved(db: Db, id: Int64) =
   let Db.Db(_, rc, _, _) = db in
   Map.lookup(rc, id)
 
-// ---- the TYPES column (filled by infer) -------------------------------------------------------------
-/// FILL the type fact for `id`.
-def fill-typed(db: Db, id: Int64, ty: Typed) =
+// ---- the TYPES column (filled by infer; stores canonical `Ty` as of ARC-A2) -------------------------
+/// FILL the type fact at `id` with a canonical `Ty` — the ARC-A2 `Ty`-native writer (the migration target
+/// consumers move onto slice-by-slice). Plain `Map.insert`; FILL-ONCE is the demand producer's job (see below).
+def fill-ty(db: Db, id: Int64, ty: Ty) =
   let Db.Db(t, rc, tc, cc) = db in
   Db.Db(t, rc, Map.insert(tc, id, ty), cc)
 
-/// REQUIRE the type fact at `id` (`Some` filled — incl. a filled TErr decline — else `None`).
-def require-typed(db: Db, id: Int64) =
+/// REQUIRE the `Ty` fact at `id` (`Some` filled — incl. a filled `TyErr` decline — else `None`). The
+/// `Ty`-native reader; consumers migrate to this off the `Typed` bridge below.
+def require-ty(db: Db, id: Int64) =
   let Db.Db(_, _, tc, _) = db in
   Map.lookup(tc, id)
+
+/// FILL the type fact for `id` — ARC-A2 EDGE-BRIDGE (TEMPORARY): keeps the `Typed` signature for un-migrated
+/// consumers by converting `Typed`→`Ty` at the column edge. Delegates to the `Ty`-native `fill-ty`. Removed
+/// once every consumer calls `fill-ty` directly (final A2 slice).
+def fill-typed(db: Db, id: Int64, ty: Typed) =
+  fill-ty(db, id, typed-to-ty(ty))
+
+/// REQUIRE the type fact at `id` as `Typed` — ARC-A2 EDGE-BRIDGE (TEMPORARY): reads the stored `Ty` and
+/// converts back to `Typed` for un-migrated consumers (`ty-to-typed` grounds any deferred axis, matching the
+/// pre-A2 behavior where the column already held grounded pipeline types). `Some(Typed)` filled else `None`.
+def require-typed(db: Db, id: Int64) =
+  match require-ty(db, id) with
+    | Option.Some(ty) => Option.Some(ty-to-typed(ty))
+    | Option.None(_) => Option.None(unit)
 
 // ---- the CORE column (filled by lower) --------------------------------------------------------------
 /// FILL the core fact for `id`.
@@ -188,12 +215,44 @@ def db-fill-is-a-raw-overwrite-not-fill-once() =
       trap("overwritten to Int64"))
     | _ => trap("fill-typed OVERWROTE @0 to Int64 (raw insert, not fill-once)")
 
+// ---- ARC-A2 tests: the column now stores `Ty`; the Ty-native accessors + the Typed edge-bridge ------
+import { IntType, Sign, Width } from "ty"
+
+@test
+def db-a2-ty-native-fill-require() =
+  // the column is now Ty-native: fill-ty a canonical Ty (UInt8 = TyInt(Unsigned, WFixed 8)), require-ty it back.
+  let db = fill-ty(sample-db(), 0, Ty.TyInt(IntType.IntType(Sign.Unsigned, Width.WFixed(8)))) in
+  match require-ty(db, 0) with
+    | Option.Some(Ty.TyInt(IntType.IntType(Sign.Unsigned, Width.WFixed(w)))) => (if w == 8 then unit else trap("UInt8 stored/read as Ty"))
+    | _ => trap("fill-ty/require-ty round-trips a canonical Ty")
+
+@test
+def db-a2-typed-bridge-over-ty-column() =
+  // the edge-bridge: fill via the Typed writer, read via the Ty-native reader — the stored value is the
+  // BRIDGED Ty (Typed.TBool → Ty.TyBool). Proves fill-typed converts at the edge, not stores Typed.
+  let db = fill-typed(sample-db(), 0, Typed.TBool) in
+  match require-ty(db, 0) with
+    | Option.Some(Ty.TyBool) => unit
+    | _ => trap("fill-typed bridged Typed.TBool → Ty.TyBool in the column")
+
+@test
+def db-a2-poison-survives-bridge-round-trip() =
+  // poison-as-filled-value holds across the bridge: fill-typed TErr → stored Ty.TyErr → require-typed back to
+  // Typed.TErr (a determined decline, NOT Absent). Guards the invariant under the A2 column-type swap.
+  let db = fill-ty(sample-db(), 0, Ty.TyErr) in
+  match require-typed(db, 0) with
+    | Option.Some(Typed.TErr) => unit
+    | Option.None(_) => trap("filled Ty.TyErr is a determined decline, not Absent")
+    | Option.Some(_) => trap("Ty.TyErr bridges back to Typed.TErr")
+
 export {
   Db.*,
   db-of,
   db-tree,
   fill-resolved,
   require-resolved,
+  fill-ty,
+  require-ty,
   fill-typed,
   require-typed,
   fill-core,

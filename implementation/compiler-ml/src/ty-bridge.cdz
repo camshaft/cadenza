@@ -59,6 +59,27 @@ def ty-list-to-typed(ps: List(Ty), i: Int64) =
      | Option.Some(p) => List.concat(List.push([], ty-to-typed(p)), ty-list-to-typed(ps, i + 1))
      | Option.None(_) => ty-list-to-typed(ps, i + 1)))
 
+// ---- ARC-A2 COLUMN-MAP bridges (TEMPORARY, deleted in the final A2 slice) ---------------------------
+// The types column stores `Map(Int64, Ty)` as of ARC-A2, but db-infer's raw-column ops (db-typed-col /
+// merge-typed) and their consumers (infer-node, lower-node, bin-type) still speak `Map(Int64, Typed)`. These
+// convert a whole column map each way at that boundary — the column-level twin of the scalar edge-bridge —
+// so the column-type swap doesn't ripple into infer-db/lower-db yet (they migrate to Ty in later A2 slices).
+/// A `Map(Int64, Ty)` column → `Map(Int64, Typed)` (each entry via ty-to-typed). Fold over the entry list.
+def ty-col-to-typed(m: Map(Int64, Ty)) = ty-col-to-typed-go(Map.to-list(m), 0, (Map.empty : Map(Int64, Typed)))
+def ty-col-to-typed-go(es: List(Tuple(Int64, Ty)), i: Int64, acc: Map(Int64, Typed)) =
+  (if i == List.len(es) then acc
+   else (match List.at(es, i) with
+     | Option.Some((k, v)) => ty-col-to-typed-go(es, i + 1, Map.insert(acc, k, ty-to-typed(v)))
+     | Option.None(_) => acc))
+
+/// A `Map(Int64, Typed)` column → `Map(Int64, Ty)` (each entry via typed-to-ty). The inverse.
+def typed-col-to-ty(m: Map(Int64, Typed)) = typed-col-to-ty-go(Map.to-list(m), 0, (Map.empty : Map(Int64, Ty)))
+def typed-col-to-ty-go(es: List(Tuple(Int64, Typed)), i: Int64, acc: Map(Int64, Ty)) =
+  (if i == List.len(es) then acc
+   else (match List.at(es, i) with
+     | Option.Some((k, v)) => typed-col-to-ty-go(es, i + 1, Map.insert(acc, k, typed-to-ty(v)))
+     | Option.None(_) => acc))
+
 // ---- TESTS: round-trip + cross-mapping -------------------------------------------------------------
 
 import { ty-eq, ty-int64 } from "ty"
@@ -101,4 +122,4 @@ def tb-sum-round-trips() =
       else trap("TSum(1) → TySum(1) keeps id"))
     | _ => trap("TSum → TySum (forward, no grounding/drop)"))
 
-export { typed-to-ty, ty-to-typed }
+export { typed-to-ty, ty-to-typed, ty-col-to-typed, typed-col-to-ty }
