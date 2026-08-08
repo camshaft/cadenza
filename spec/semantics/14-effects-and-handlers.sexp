@@ -17708,3 +17708,59 @@
   (call   main (: 5 Int64)) (output (: 20056 Int64))
   (call   main (: 0 Int64)) (output (: 71 Int64))
   (call   main (: 1 Int64)) (output (: 12 Int64)))
+
+;; ── fa: FOLD-style accumulators through a performing recursion ───────────────
+;; The draw feeds an accumulator PARAMETER rather than the return path. fa1's
+;; accumulator doubles then absorbs each level's draw (non-commutative: order
+;; and count pinned in one value); fa2 threads TWO accumulators (running sum
+;; and prefix-sum-of-prefix-sums) that must stay in step; fa3 draws TWICE per
+;; level and mixes 10*first + second, pinning the intra-level order.
+
+(case "fa1 a FOLD-style accumulator threads through a performing recursion — acc doubles then absorbs each level's draw"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (def (fold (: k Int64) (: acc Int64))
+              (if (<= k 0)
+                  acc
+                  (fold (- k 1) (+ (* 2 acc) (E.next)))))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1))))
+                (+ (* 10 (fold 3 0)) (E.next))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 114 Int64))
+  (call   main (: 0 Int64)) (output (: 43 Int64))
+  (call   main (: -2 Int64)) (output (: -99 Int64)))
+
+(case "fa2 TWO accumulators through one performing recursion — running sum and prefix-sum-of-prefix-sums stay in step with the draws"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (def (fold2 (: k Int64) (: a Int64) (: b Int64))
+              (if (<= k 0)
+                  (+ (* 100 a) b)
+                  (let ((d (E.next)))
+                    (fold2 (- k 1) (+ a d) (+ b (+ a d))))))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1))))
+                (fold2 3 0 0)))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 610 Int64))
+  (call   main (: 0 Int64)) (output (: 304 Int64))
+  (call   main (: -1 Int64)) (output (: -2 Int64)))
+
+(case "fa3 each fold level draws TWICE and mixes them asymmetrically — 10*first + second pins the intra-level draw order"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (def (fold (: k Int64) (: acc Int64))
+              (if (<= k 0)
+                  acc
+                  (fold (- k 1) (+ acc (+ (* 10 (E.next)) (E.next))))))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1))))
+                (fold 3 0)))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 102 Int64))
+  (call   main (: 0 Int64)) (output (: 69 Int64))
+  (call   main (: -3 Int64)) (output (: -30 Int64)))
