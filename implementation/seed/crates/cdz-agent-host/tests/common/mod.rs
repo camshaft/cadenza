@@ -59,3 +59,22 @@ pub fn syntax_component_bytes() -> Option<Vec<u8>> {
         panic!("CDZ_SYNTAX_COMPONENT is set to {path:?} but the component can't be read: {e}")
     }))
 }
+
+/// Load the lifted `cadenza:syntax-consumer` guest component (v-nix `packages.syntax-consumer-guest`, wired as
+/// `CDZ_SYNTAX_CONSUMER_COMPONENT`) — the part-2 flavor-2 CONSUMER: a reducer whose world IMPORTS
+/// `cadenza:syntax/parse` by content-addressed `+hash` (templated to the same producer the sibling
+/// [`syntax_component_bytes`] loads) and, in its fold, calls the COMPOSED `parse.read-sexpr` + records the
+/// result in KV. The compose-consumption E2E blob-puts BOTH this + its syntax dep, then drives the
+/// `ComponentReducer` dep-compose path.
+///
+/// Same skip/read contract as the siblings: `None` ONLY when `CDZ_SYNTAX_CONSUMER_COMPONENT` is UNSET (caller
+/// SKIPS cleanly); when SET the file MUST read (a missing/corrupt component is a misconfig — PANIC).
+#[allow(dead_code)]
+pub fn syntax_consumer_component_bytes() -> Option<Vec<u8>> {
+    let path = std::env::var("CDZ_SYNTAX_CONSUMER_COMPONENT").ok()?; // unset → skip (None)
+    Some(std::fs::read(&path).unwrap_or_else(|e| {
+        panic!(
+            "CDZ_SYNTAX_CONSUMER_COMPONENT is set to {path:?} but the component can't be read: {e}"
+        )
+    }))
+}
