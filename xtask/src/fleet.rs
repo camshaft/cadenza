@@ -7343,9 +7343,25 @@ fn merge_request_foreign_commits(fleet: &Fleet, from: &str, r#ref: &str) -> Opti
                 .collect(),
         )
     };
-    // The commits the MR would INTRODUCE relative to trunk. If trunk or ref is unresolvable, bail
-    // (None) rather than refuse — an unresolvable ref is pr-sync's problem to report, not ours to block.
-    let range = format!("{TRUNK}..{}", r#ref);
+    // The commits the MR would INTRODUCE relative to trunk. Anchor on `merge-base(trunk, ref)..ref` — the
+    // ref's OWN commits since it forked from trunk — NOT the bare `trunk..ref`. When the ref is built on an
+    // OLD trunk tip that is tree-equal but COMMIT-DISTINCT from current trunk (the re-parent model), a bare
+    // `trunk..ref` includes trunk-SIDE commits the ref never authored, over-reporting them as the sender's
+    // foreign commits and risking a false send-refusal on a clean MR (the same stale-base wrong-range class
+    // publish_candidate hit — both use the shared `merge_base_range` helper). The merge-base is the exact
+    // fork point, so the range is precisely the sender's introduced commits regardless of trunk divergence.
+    // Fall back to
+    // `trunk..ref` only if the merge-base can't be resolved. If trunk or ref is unresolvable, bail (None)
+    // rather than refuse — an unresolvable ref is pr-sync's problem to report, not ours to block.
+    let merge_base = Command::new("git")
+        .current_dir(&fleet.repo)
+        .args(["merge-base", TRUNK, r#ref])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty());
+    let range = merge_base_range(merge_base.as_deref(), r#ref);
     let shas = git_lines(&["rev-list", &range])?;
     let commits: Vec<(String, Vec<String>)> = shas
         .into_iter()
@@ -8626,6 +8642,20 @@ fn stale_base_reject_guidance(conflicted_paths: &str) -> String {
     format!("reject the sender stale-base.{files_note} {cure}")
 }
 
+/// The `<base>..<ref>` rev-range naming exactly the commits `ref` INTRODUCES since it forked from its
+/// integration target: `<merge-base>..ref` when the merge-base resolved (immune to a stale/commit-distinct
+/// base — the re-parent model), else the legacy `trunk..ref` fallback (used only when the merge-base
+/// couldn't be computed; the caller's rev-list then reports a bad ref). Shared by `publish_candidate`
+/// (merge-base against origin/main, the publish target) and the send-time contamination guard
+/// (`merge_request_foreign_commits`, merge-base against trunk) — both need the ref's own delta, NOT a bare
+/// `trunk..ref` that over-includes target-side commits on a diverged base. Pure so it is unit-tested.
+fn merge_base_range(merge_base: Option<&str>, r#ref: &str) -> String {
+    match merge_base {
+        Some(mb) if !mb.is_empty() => format!("{mb}..{}", r#ref),
+        _ => format!("{TRUNK}..{}", r#ref),
+    }
+}
+
 /// Any step failing aborts + cleans up the scratch worktree; nothing partial is recorded.
 /// Returns `true` iff a candidate PR was actually opened + its ci-dispatch record written (a real new
 /// dispatch). Returns `false` on every non-dispatch path — the idempotency guard blocked it, `--execute`
@@ -8694,7 +8724,7 @@ fn publish_candidate(
             "publish-candidate DRY for {agent} @ {ref} (lane {lane}) — pass --execute to dispatch:"
         );
         println!(
-            "  0. git worktree add --detach <scratch> origin/main  (+ git cherry-pick trunk..{ref} — the full range, not just the tip)"
+            "  0. git worktree add --detach <scratch> origin/main  (+ git cherry-pick $(git merge-base origin/main {ref})..{ref} — the full range since it forked from origin/main, not just the tip)"
         );
         for (i, cmd) in argv.iter().enumerate() {
             println!("  {}. {}", i + 1, cmd.join(" "));
@@ -8733,14 +8763,29 @@ fn publish_candidate(
         cleanup(&fleet.repo, &scratch_s);
         return false;
     }
-    // 2. Re-parent the MR's commits onto origin/main. Cherry-pick the FULL `trunk..ref` RANGE, not just
-    //    the single `ref` commit — an MR `--ref` can name a MULTI-COMMIT tip (parent fix + tip test
-    //    tweak), and `git cherry-pick <ref>` would land ONLY the tip's diff, SILENTLY DROPPING the
-    //    ancestor commits (v-effects #1705: a slot-clobber miscompile fix in the parent was lost while
-    //    only the tip's 6-line test tweak landed). `trunk..ref` is exactly the agent's unlanded commits
-    //    (trunk is tree-equal to origin/main, so the range applies cleanly), replayed oldest-first.
-    //    `--allow-empty` tolerates a commit whose change is already present.
-    let range = format!("{TRUNK}..{}", r#ref);
+    // 2. Re-parent the MR's commits onto origin/main. Cherry-pick the FULL merge-base RANGE, not just the
+    //    single `ref` commit — an MR `--ref` can name a MULTI-COMMIT tip (parent fix + tip test tweak),
+    //    and `git cherry-pick <ref>` would land ONLY the tip's diff, SILENTLY DROPPING the ancestor
+    //    commits (v-effects #1705: a slot-clobber miscompile fix in the parent was lost while only the
+    //    tip's 6-line test tweak landed). The range is `merge-base(origin/main, ref)..ref` — exactly the
+    //    commits `ref` INTRODUCES since it forked from origin/main, replayed oldest-first. Historically
+    //    this was `trunk..ref`, but that FALSE-CONFLICTS when `ref` is built on an OLD trunk tip that is
+    //    tree-equal but COMMIT-DISTINCT from current origin/main (the re-parent model): `trunk..ref` then
+    //    resolves to a wrong/wide commit set and 3-way-conflicts spuriously even though the ref's own
+    //    delta applies clean (pr-sync 2026-08-08: bc88bc874, 3947a5f3 both bounced, both applied clean as
+    //    single commits). Anchoring on the merge-base with the ACTUAL publish target (origin/main, which
+    //    the scratch has checked out) is immune to that stale/diverged local trunk. `--allow-empty`
+    //    tolerates a commit whose change is already present. Fall back to `trunk..ref` only if the
+    //    merge-base can't be resolved (bad/missing ref) — the rev-list faces below then report it.
+    let merge_base = Command::new("git")
+        .current_dir(&scratch)
+        .args(["merge-base", "origin/main", r#ref])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty());
+    let range = merge_base_range(merge_base.as_deref(), r#ref);
     // EMPTY RANGE up front (ref reachable from trunk / already landed): `trunk..ref` has ZERO commits.
     // This is NOT a conflict — it's "nothing to land" (the MR's commits are already reachable from
     // trunk, e.g. it landed under a re-parented sha and the audit path will ack it). Distinguish it
@@ -11728,6 +11773,21 @@ mod tests {
             !w.contains("Conflicted:"),
             "whitespace-only → no file note: {w}"
         );
+    }
+
+    #[test]
+    fn merge_base_range_anchors_on_merge_base_else_falls_back_to_trunk() {
+        // Merge-base resolved → range is merge-base..ref (the ref's own commits since origin/main),
+        // NOT trunk..ref — immune to a stale/commit-distinct local trunk (the false-conflict fix).
+        assert_eq!(
+            merge_base_range(Some("abc123"), "deadbeef"),
+            "abc123..deadbeef"
+        );
+        // Merge-base unresolved (None) → legacy trunk..ref fallback (rev-list faces report a bad ref).
+        assert_eq!(merge_base_range(None, "deadbeef"), "trunk..deadbeef");
+        // Empty merge-base string (git printed nothing) is treated as unresolved → trunk fallback, never
+        // "..ref" (which would resolve to the ref's whole history from the root — a huge wrong range).
+        assert_eq!(merge_base_range(Some(""), "deadbeef"), "trunk..deadbeef");
     }
 
     #[test]
