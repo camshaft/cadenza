@@ -6398,3 +6398,6 @@ pass	ds4 a DISCARDED if whose arms draw DIFFERENT counts — the taken branch's 
 pass	se1 five draws collected into a Set under a cycling state — duplicates collapse, len and membership pin the distinct draws
 pass	se2 MEMBERSHIP of a draw decides a branch that draws again — the set gates the thread's continuation
 pass	se3 a set BUILT from cycling draws probed by a LATER state read — the in-cycle probe hits, the off-cycle probe misses
+pass	rw1 two sequential Record.with updates each take a DRAW — the second write sees the advanced state, projections read both back
+pass	rw2 draw PARITY picks WHICH field Record.with updates — projections of both fields show exactly one write landed
+pass	rw3 each Record.with value PROJECTS from the record it updates plus a draw — self-referential functional updates chain through the thread
