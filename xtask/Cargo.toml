@@ -60,7 +60,7 @@ wasmparser = "0.239"
 # through this so the committed file is fmt-clean (agreeing with `fmt --check` and `codegen --check`).
 # Preferred over shelling to `rustfmt`, which chokes on very long single lines. Dev-desk only.
 prettyplease = "0.2"
-syn = { version = "2", features = ["full", "parsing"] }
+syn = { version = "2", features = ["full", "parsing", "visit"] }
 # Build the generated source as a token tree (`quote!`) rather than by string concatenation — reads
 # like the Rust it emits, and needs no manual escaping. `prettyplease` pretty-prints the parsed result.
 quote = "1"

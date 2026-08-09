@@ -14,10 +14,13 @@
 //!    a `tests/*.rs` is a separate binary + linkage + slow compile + separate nix derivation). The 97
 //!    pre-existing files are grandfathered via `mandate-integration-test-allowlist.txt`; a NEW one not on
 //!    the allowlist is denied. Going-forward, not a fleet-reddening full-tree ban.
+//!  - **no-hard-coded-runtime-hash** — a bare 64-hex string literal in NON-test source is a hard-coded
+//!    content address (operator no-hard-coded-runtime-names). Excludes the codegen'd `runtime_abi.rs`
+//!    hash-constant home, `#[cfg(test)]` golden-hash assertions, and a `mandate:allow` line. syn-based:
+//!    parses only files whose lines contain a 64-hex literal (a tiny population), skips test-gated items.
 //!
-//! The syn-based DENY rules (no-hex-except-tracing, no-thin-wrapper-fns, no-hard-coded-kernel-names) and
-//! the WARN-level owned-String-where-Arc heuristic are built as follow-on increments — this lands the
-//! first (exact, unambiguous) rule + the framework.
+//! Further syn-based DENY rules (no-hex-except-tracing, no-thin-wrapper-fns) and the WARN-level
+//! owned-String-where-Arc heuristic are follow-on increments behind this same `lint_mandates` entrypoint.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -34,7 +37,8 @@ pub struct Violation {
 pub fn lint_mandates(repo: &Path) -> Result<Vec<Violation>, String> {
     let mut out = Vec::new();
     out.extend(no_new_integration_tests(repo)?);
-    // Follow-on: no_hex_except_tracing, no_thin_wrapper_fns, no_hard_coded_kernel_names (syn-based).
+    out.extend(no_hard_coded_runtime_hash(repo)?);
+    // Follow-on: no_hex_except_tracing, no_thin_wrapper_fns (syn-based).
     Ok(out)
 }
 
@@ -86,6 +90,171 @@ fn no_new_integration_tests(repo: &Path) -> Result<Vec<Violation>, String> {
         }
     }
     Ok(out)
+}
+
+/// The `no-hard-coded-runtime-hash` mandate: a bare 64-hex string literal (`"<64 lowercase hex>"`) in
+/// NON-TEST Rust source is a hard-coded content-address — the operator's no-hard-coded-runtime-names
+/// directive (a hash pinned in source drifts silently on a `REQUIRED_RUNTIME_HASH` bump — exactly the
+/// class of the guide-FOD / genesis-reducer-compose breakage a runtime-hash bump caused, and the pinned
+/// `cadenza:runtime/heap@0.0.0+<hash>` the operator flagged). A content address must be DERIVED (read
+/// the live hash / an input-addressed artifact), never a literal.
+///
+/// EXCLUSIONS (why the current tree is clean, so this is a going-forward guard, not a fleet-redder):
+///  - `rcdzc/src/backend/wasm/runtime_abi.rs` — the CODEGEN'd home of `REQUIRED_RUNTIME_HASH` /
+///    `DEBUG_RUNTIME_HASH` / `REQUIRED_NFC_HASH`. These ARE the canonical derived-then-recorded hashes
+///    (`xtask codegen` regenerates them from the built bytes); the parity gate proves them against the
+///    built artifact. This one file is the single sanctioned literal-hash site.
+///  - anything under a `#[cfg(test)]` item — a test golden-hash assertion (e.g. `event.rs`'s frozen
+///    on-disk-format hash pin) is a legitimate regression witness, not a runtime dependency.
+///  - a `mandate:allow` line comment on (or just above) the literal — the escape hatch for a justified
+///    non-derivable hash, same convention as the other mandates.
+///  - VENDORED (`reference/`) trees — not ours to police.
+fn no_hard_coded_runtime_hash(repo: &Path) -> Result<Vec<Violation>, String> {
+    let impl_root = repo.join("implementation");
+    let mut rs = Vec::new();
+    collect_rs_files(&impl_root, &mut rs).map_err(|e| {
+        format!(
+            "cannot enumerate {} for the mandate lint: {e}",
+            impl_root.display()
+        )
+    })?;
+    let mut out = Vec::new();
+    for f in rs {
+        let rel = f.strip_prefix(repo).unwrap_or(&f);
+        let rel_str = rel.to_string_lossy().replace('\\', "/");
+        if is_vendored_path(&rel_str) || is_runtime_abi_hash_home(&rel_str) {
+            continue;
+        }
+        let src = std::fs::read_to_string(&f)
+            .map_err(|e| format!("cannot read {} for the hash mandate: {e}", f.display()))?;
+        // Cheap prefilter: only parse files that actually contain a 64-hex-looking literal (parsing
+        // every .rs with syn would be needless work — the population is tiny).
+        if !line_has_hex64_literal(&src) {
+            continue;
+        }
+        let file = syn::parse_file(&src)
+            .map_err(|e| format!("cannot parse {} for the hash mandate: {e}", f.display()))?;
+        let mut finder = Hex64Finder::default();
+        syn::visit::visit_file(&mut finder, &file);
+        for lit in finder.hits {
+            out.push(Violation {
+                file: f.clone(),
+                reason: format!(
+                    "hard-coded 64-hex content address \"{}…\" in non-test source — a runtime/content \
+                     hash must be DERIVED (read the live `REQUIRED_RUNTIME_HASH` / an input-addressed \
+                     artifact), never pinned as a literal (it drifts silently on a hash bump — the \
+                     operator no-hard-coded-runtime-names directive). If this is a genuinely-fixed \
+                     external hash, add a `// mandate:allow no-hard-coded-runtime-hash: <reason>` comment",
+                    &lit[..12]
+                ),
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// Is this the one sanctioned literal-hash file — `rcdzc/src/backend/wasm/runtime_abi.rs`, the codegen'd
+/// home of `REQUIRED_RUNTIME_HASH` etc.? Matched on the path tail so it holds regardless of the crate
+/// root prefix.
+fn is_runtime_abi_hash_home(rel_slash: &str) -> bool {
+    rel_slash.ends_with("rcdzc/src/backend/wasm/runtime_abi.rs")
+}
+
+/// A cheap line-level prefilter: does the source contain a `"<64 lowercase hex>"` literal AND lack a
+/// `mandate:allow no-hard-coded-runtime-hash` escape on that line? Used to skip syn-parsing files that
+/// can't possibly hit. (The authoritative check is the syn visitor; this only avoids needless parses.)
+fn line_has_hex64_literal(src: &str) -> bool {
+    src.lines().any(|l| {
+        !l.contains("mandate:allow no-hard-coded-runtime-hash") && line_contains_hex64_string(l)
+    })
+}
+
+/// Does a single line contain a double-quoted run of exactly 64 lowercase-hex characters?
+fn line_contains_hex64_string(line: &str) -> bool {
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'"' {
+            // count the hex run immediately after the quote
+            let start = i + 1;
+            let mut j = start;
+            while j < bytes.len() && bytes[j].is_ascii_hexdigit() && !bytes[j].is_ascii_uppercase()
+            {
+                j += 1;
+            }
+            if j - start == 64 && j < bytes.len() && bytes[j] == b'"' {
+                return true;
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
+/// A `syn` visitor that collects bare 64-lowercase-hex string literals, SKIPPING any item gated by
+/// `#[cfg(test)]` (a test golden-hash assertion is a legitimate witness, not a runtime dependency). The
+/// `mandate:allow` escape is handled by the line prefilter before parsing, so a file whose only hex
+/// literal carries the escape never reaches here.
+#[derive(Default)]
+struct Hex64Finder {
+    hits: Vec<String>,
+    in_test: usize,
+}
+
+impl<'ast> syn::visit::Visit<'ast> for Hex64Finder {
+    fn visit_item(&mut self, item: &'ast syn::Item) {
+        let gated = item_attrs(item).is_some_and(has_cfg_test);
+        if gated {
+            self.in_test += 1;
+        }
+        syn::visit::visit_item(self, item);
+        if gated {
+            self.in_test -= 1;
+        }
+    }
+
+    fn visit_lit_str(&mut self, lit: &'ast syn::LitStr) {
+        if self.in_test == 0 {
+            let v = lit.value();
+            if v.len() == 64
+                && v.bytes()
+                    .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+            {
+                self.hits.push(v);
+            }
+        }
+    }
+}
+
+/// The attributes on any `syn::Item` variant that can carry them (enough variants to cover a
+/// `#[cfg(test)] mod tests` / gated fn/impl; a variant without attrs yields `None`).
+fn item_attrs(item: &syn::Item) -> Option<&[syn::Attribute]> {
+    Some(match item {
+        syn::Item::Mod(i) => &i.attrs,
+        syn::Item::Fn(i) => &i.attrs,
+        syn::Item::Impl(i) => &i.attrs,
+        syn::Item::Const(i) => &i.attrs,
+        syn::Item::Static(i) => &i.attrs,
+        _ => return None,
+    })
+}
+
+/// Does an attribute list contain `#[cfg(test)]`?
+fn has_cfg_test(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(|a| {
+        if !a.path().is_ident("cfg") {
+            return false;
+        }
+        let mut is_test = false;
+        // `cfg(test)` — the meta is a single `test` path token.
+        let _ = a.parse_nested_meta(|m| {
+            if m.path.is_ident("test") {
+                is_test = true;
+            }
+            Ok(())
+        });
+        is_test
+    })
 }
 
 /// Whether a repo-relative path is under a VENDORED / third-party tree the mandate must NOT police.
@@ -200,6 +369,72 @@ mod tests {
         // match on substring — only a whole path SEGMENT `reference` counts.
         assert!(!is_vendored_path(
             "implementation/seed/crates/reference-impl/tests/x.rs"
+        ));
+    }
+
+    fn hex64_hits(src: &str) -> Vec<String> {
+        let file = syn::parse_file(src).expect("parse");
+        let mut f = Hex64Finder::default();
+        syn::visit::visit_file(&mut f, &file);
+        f.hits
+    }
+
+    #[test]
+    fn hard_coded_hash_finder_flags_non_test_literals_only() {
+        let hex = "0652838621bb88fcdc0a348bd81a5c8cc84eefa960af78c5cf7885b2811b2614";
+        // A bare 64-hex literal in ordinary (non-test) source is flagged.
+        let flagged = format!("const H: &str = \"{hex}\";");
+        assert_eq!(hex64_hits(&flagged), vec![hex.to_string()]);
+        // The SAME literal inside a `#[cfg(test)]` module is NOT flagged (a golden-hash assertion).
+        let in_test = format!("#[cfg(test)]\nmod tests {{\n  const H: &str = \"{hex}\";\n}}");
+        assert!(hex64_hits(&in_test).is_empty(), "test-gated hash is exempt");
+        // A #[cfg(test)] fn body is likewise exempt.
+        let in_test_fn = format!("#[cfg(test)]\nfn t() {{ let _ = \"{hex}\"; }}");
+        assert!(hex64_hits(&in_test_fn).is_empty());
+    }
+
+    #[test]
+    fn hard_coded_hash_finder_ignores_non_hash_strings() {
+        // Not 64 chars, has uppercase, or non-hex → not a content-address literal.
+        assert!(
+            hex64_hits("const A: &str = \"deadbeef\";").is_empty(),
+            "short"
+        );
+        let upper = "0652838621BB88FCDC0A348BD81A5C8CC84EEFA960AF78C5CF7885B2811B2614";
+        assert!(
+            hex64_hits(&format!("const A: &str = \"{upper}\";")).is_empty(),
+            "uppercase is not our lowercase-hex content address"
+        );
+        // A 64-char string with a non-hex char is not flagged.
+        let almost = "z652838621bb88fcdc0a348bd81a5c8cc84eefa960af78c5cf7885b2811b2614";
+        assert!(hex64_hits(&format!("const A: &str = \"{almost}\";")).is_empty());
+    }
+
+    #[test]
+    fn hex64_line_prefilter_matches_the_syn_finder() {
+        let hex = "b2a4957895809e29d3e5d15adbca4408a952c8de6c47eadc80e26fe38427d7ed";
+        assert!(line_contains_hex64_string(&format!("  x = \"{hex}\";")));
+        // The mandate:allow escape suppresses the line-level prefilter.
+        assert!(!line_has_hex64_literal(&format!(
+            "  x = \"{hex}\"; // mandate:allow no-hard-coded-runtime-hash: external fixed id"
+        )));
+        // A bare hash with no escape passes the prefilter.
+        assert!(line_has_hex64_literal(&format!("  x = \"{hex}\";")));
+        // Interface-name embedding (heap@0.0.0+<hash>) is NOT a bare 64-hex string, so not matched by
+        // this rule (that pattern is a separate concern — this rule is exactly bare content-address
+        // literals, the tightest unambiguous form).
+        assert!(!line_contains_hex64_string(&format!(
+            "  x = \"cadenza:runtime/heap@0.0.0+{hex}\";"
+        )));
+    }
+
+    #[test]
+    fn runtime_abi_hash_home_is_exempt() {
+        assert!(is_runtime_abi_hash_home(
+            "implementation/seed/crates/rcdzc/src/backend/wasm/runtime_abi.rs"
+        ));
+        assert!(!is_runtime_abi_hash_home(
+            "implementation/seed/crates/cdz-kernel/src/event.rs"
         ));
     }
 
