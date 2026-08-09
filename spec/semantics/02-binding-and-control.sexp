@@ -5197,6 +5197,28 @@
   (call   main (: 0 Int64))
   (output (: 1 Int64)))
 
+; The CONSTANT-FOLD face of the dead-trap elision earns a DIAGNOSTIC, not silence: when the unobserved
+; init PROVABLY traps at compile time (a constant `(/ 100 0)`, not a runtime `d`), the compiler both
+; elides it (the value is unobserved, so the program still yields its result) AND surfaces the non-error
+; CDZ0305 "provably-would-trap" WARNING — an unused element/binding/argument that always traps is likely
+; a bug worth flagging, so it rides alongside the produced artifact rather than denying the build. The
+; runtime-parameter cases above cannot pin this (the trap is not compile-time provable there); this pins
+; the constant form portably with the (warns ..) clause. (Previously asserted only by an rcdzc unit test.)
+(case "an unprojected tuple element that provably traps is elided but earns a CDZ0305 dead-trap warning"
+  (doc    "`(. (tuple 42 (/ 100 0)) 0)` projects element 0 (= 42); element 1's `(/ 100 0)` is a CONSTANT
+           divide-by-zero that the fold proves traps, but it is never projected, so its value is unobserved
+           — the program compiles and yields 42 (the trap-observation rule, core-semantics.md §A Trap Occurs
+           Only Where Its Computation Is Observed). Because the elided computation PROVABLY traps (a compile-
+           time constant, unlike the runtime-`d` elisions above), the build additionally surfaces the non-
+           error CDZ0305 warning — a dead computation that always traps is likely a bug. The (warns ..) pins
+           the stable message lead; a runtime-provable-only regression that dropped the warning flips this.
+           Graded on the wasm target (warnings ride the shared compile stage = target-independent; the rust/
+           rust-async run paths cannot observe compile stderr, so the (warns ..) check is skipped there, not
+           failed). The portable companion of the rcdzc dead-trap unit test.")
+  (input  (do (def (main) (. (tuple 42 (/ 100 0)) 0)) (export main)))
+  (output (: 42 Int64))
+  (warns  CDZ0305 (message "always traps but its value is never used")))
+
 ; ── The elision ruling is PURE-only: an unused binding whose init PERFORMS is NOT elidable ───────────
 ; The cases above establish that an unreferenced binding's init MAY be elided — for PURE inits, whose
 ; only observable is the value (and the trap observation would force). An init that PERFORMS an effect
