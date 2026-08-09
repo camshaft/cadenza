@@ -88,7 +88,7 @@ path an in-place lint would use.
 | `idiomatic/redundant-let` | `(let ,x ,e ,x)` → `,e` (bind then immediately return it) | Verified |
 | `idiomatic/single-arm-match` | `(match ,x (,p ,e))` → `(let ,p ,x ,e)` — **only when `,p` is irrefutable AND unguarded** | Verified (DELEGATES to the existing `match_to_let` codemod, inheriting its precondition — see below) |
 | `naming/camel-case` | a variable/binding name in `camelCase` → warn; offer rename to `snake_case` | Heuristic (auto-rename touches every use site; offer, confirm — operator-flagged) |
-| `idiomatic/nested-match` | nested single-scrutinee `match` on the results of one `match` → one hoisted `match` (the operator's headline example) | Heuristic first (arm cross-product can change readability); promote to Verified once the tuple-scrutinee form is settled |
+| `idiomatic/nested-match` | a `match` whose SCRUTINEE is itself a `match` (`(match (match …) …)` — matching on a match RESULT, the operator's headline example) → warn; offer one combined match over the inner scrutinee | Heuristic (arm cross-product can change readability; promote to Verified once the tuple-scrutinee form is settled). SHIPPED report-only, scrutinee-form ONLY — a match in an arm BODY is ordinary idiomatic dispatch (473 corpus hits vs 11 for the scrutinee form), so flagging it would flood. |
 | `idiomatic/double-negation` | `(not (not ,e))` → `,e` | Verified |
 | `idiomatic/deep-nesting` | call-CHAIN depth deeper than a threshold → warn (offer: hoist inner sub-expressions to `let`-bound named intermediates) | Heuristic (a refactor suggestion, not a mechanical rewrite — the names are the author's) |
 

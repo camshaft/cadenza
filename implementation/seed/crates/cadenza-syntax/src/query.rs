@@ -3561,6 +3561,11 @@ pub mod lint {
         ///   conservative egregious-only placeholder (concierge ruling 2026-08-09, pending the operator's
         ///   final threshold). Uses the `call_depth` metric (nested application forms only), NOT the
         ///   whole-subtree `list_depth` (which over-fires on structural nesting).
+        /// - `idiomatic/nested-match` — a `match` whose SCRUTINEE is itself a `match` (matching on a
+        ///   match RESULT — the operator's headline example) → REPORT-ONLY warning (the combine-into-one-
+        ///   match fix is Heuristic — arm cross-product, unsettled tuple-scrutinee form — so a code-action,
+        ///   not `--fix`). Matches ONLY `(match (match …) …)`, NOT an arm-body match (ordinary idiomatic
+        ///   dispatch — 473 corpus hits vs 11 for the scrutinee form, so the arm-body shape would flood).
         ///
         /// Design §2 once listed `idiomatic/negated-eq` (`(not (== a b))` → `(!= a b)`); it is STRUCK
         /// (ruling 2026-08-09) as VACUOUS — there is no `!=` node to rewrite to. Core Cadenza has no
@@ -3610,6 +3615,18 @@ pub mod lint {
                 // — a follow-on once the operator pins the threshold).
                 "(lint idiomatic/deep-nesting ,(x (calls-deeper-than 10)) ",
                 "\"deeply nested call chain — consider hoisting inner sub-expressions to named `let` bindings\" ",
+                "warning)\n",
+                // idiomatic/nested-match — REPORT-ONLY (no fix): a `match` whose SCRUTINEE is itself a
+                // `match` (matching on the RESULT of one match) — the operator's headline example. The
+                // fix (hoist to one combined match over the inner scrutinee) is Heuristic — the arm
+                // cross-product can change readability + the tuple-scrutinee form is unsettled (design
+                // §nested-match) — so it is offered as a code-action, never applied by --fix. DELIBERATELY
+                // matches ONLY the scrutinee-is-match shape, NOT a match nested in an arm BODY: an
+                // arm-body match is ordinary idiomatic nested dispatch (measured 473 corpus hits vs 11 for
+                // the scrutinee form), so flagging it would be a false-positive flood. `(match (match …) …)`
+                // is the precise, low-false-positive anti-pattern.
+                "(lint idiomatic/nested-match (match (match ,@_) ,@_) ",
+                "\"match on the result of a match — consider one combined match over the inner scrutinee\" ",
                 "warning)\n",
             ))
             .expect("the built-in idiomatic lint catalog compiles")
@@ -6821,8 +6838,8 @@ mod tests {
             let set = LintSet::builtin();
             // if-bool (×2) + redundant-let + double-negation + if-same-branch + single-arm-match
             // (all fixable Verified) + naming/camel-case (×2, def + let binder — REPORT-ONLY, no fix)
-            // + idiomatic/deep-nesting (REPORT-ONLY, the hoist fix is Heuristic).
-            assert_eq!(set.rules.len(), 9, "9 Tier-A rules");
+            // + idiomatic/deep-nesting + idiomatic/nested-match (both REPORT-ONLY, Heuristic fixes).
+            assert_eq!(set.rules.len(), 10, "10 Tier-A rules");
             let names: Vec<&str> = set.rules.iter().filter_map(|r| r.name.as_deref()).collect();
             assert_eq!(
                 names,
@@ -6836,6 +6853,7 @@ mod tests {
                     "naming/camel-case",
                     "naming/camel-case",
                     "idiomatic/deep-nesting",
+                    "idiomatic/nested-match",
                 ]
             );
             // Every FIXABLE catalog rule's fix is Verified; the report-only lints (naming/camel-case —
@@ -6855,9 +6873,11 @@ mod tests {
                     None => assert!(
                         matches!(
                             r.name.as_deref(),
-                            Some("naming/camel-case") | Some("idiomatic/deep-nesting")
+                            Some("naming/camel-case")
+                                | Some("idiomatic/deep-nesting")
+                                | Some("idiomatic/nested-match")
                         ),
-                        "the report-only catalog lints are naming/camel-case + idiomatic/deep-nesting"
+                        "the report-only catalog lints are naming/camel-case + deep-nesting + nested-match"
                     ),
                 }
             }
@@ -6919,6 +6939,29 @@ mod tests {
                     .iter()
                     .all(|d| !d.message.contains("deeply nested")),
                 "shallow structural code is not flagged as deep-nesting"
+            );
+        }
+
+        #[test]
+        fn builtin_nested_match_fires_only_on_a_match_scrutinee_not_an_arm_body() {
+            let set = LintSet::builtin();
+            // FIRES: a match whose SCRUTINEE is itself a match (matching on a match result).
+            let on_result = subj("(do (def (g) (match (match z (1 p) (2 q)) (0 a) (3 c))))");
+            let d = lint::run(&set, &on_result, None);
+            let nm: Vec<_> = d
+                .iter()
+                .filter(|x| x.message.contains("match on the result of a match"))
+                .collect();
+            assert_eq!(nm.len(), 1, "scrutinee-is-match fires once: {d:?}");
+            assert_eq!(nm[0].severity, Severity::Warning, "report-only warning");
+            // QUIET: a match nested in an arm BODY is ordinary idiomatic dispatch, NOT flagged (else it
+            // floods — 473 corpus hits vs 11 for the scrutinee form).
+            let in_arm = subj("(do (def (h) (match x (0 (match y (1 a) (2 b))) (3 c))))");
+            assert!(
+                lint::run(&set, &in_arm, None)
+                    .iter()
+                    .all(|x| !x.message.contains("match on the result of a match")),
+                "an arm-body match is idiomatic dispatch, not flagged"
             );
         }
 
