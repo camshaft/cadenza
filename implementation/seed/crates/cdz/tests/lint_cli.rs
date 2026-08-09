@@ -152,6 +152,58 @@ fn lint_with_no_rule_runs_the_builtin_idiomatic_catalog() {
 }
 
 #[test]
+fn lint_fix_rewrites_the_file_in_place_and_re_lints_clean() {
+    // `cdz lint --fix FILE` applies each firing lint's Verified fix as an equivalence-preserving
+    // codemod, writing the file back. A built-in `idiomatic/if-bool` site (`if b true false`) is
+    // rewritten to the condition; the fixed file re-lints clean (apply-and-recheck).
+    let file = temp_src(
+        "fix",
+        "(module m (def (f (: b Bool)) (if b true false)) (export f))",
+    );
+    let (code, _out, err) = run(&["lint", &file, "--fix"]);
+    assert_eq!(code, 0, "a successful --fix exits 0: {err}");
+    assert!(err.contains("fixed 1 lint"), "reports the fix count: {err}");
+    let fixed = std::fs::read_to_string(&file).unwrap();
+    assert!(
+        fixed.contains("(def (f (: b Bool)) b)"),
+        "the if-bool idiom collapsed to the condition: {fixed}"
+    );
+    // Re-lint: the idiom is gone.
+    let (rcode, rout, _rerr) = run(&["lint", &file]);
+    assert_eq!(rcode, 0, "fixed file re-lints clean");
+    assert!(!rout.contains("idiomatic"), "no idiom remains: {rout}");
+}
+
+#[test]
+fn lint_fix_honors_allow_and_makes_no_change() {
+    // `--allow` on the target lint suppresses BOTH the diagnostic and the fix — the file is untouched.
+    let before = "(module m (def (f (: b Bool)) (if b true false)) (export f))";
+    let file = temp_src("fix-allow", before);
+    let (code, _out, err) = run(&["lint", &file, "--fix", "--allow", "idiomatic/if-bool"]);
+    assert_eq!(code, 0, "no fixable lints still exits 0: {err}");
+    assert!(
+        err.contains("no fixable lints"),
+        "reports nothing to fix: {err}"
+    );
+    let after = std::fs::read_to_string(&file).unwrap();
+    assert_eq!(
+        after, before,
+        "an allowed lint leaves the file unchanged: {after}"
+    );
+}
+
+#[test]
+fn lint_fix_on_stdin_is_rejected() {
+    // A fix rewrites files, so stdin (no path to write back) is a usage error.
+    let (code, _out, err) = run(&["lint", "-", "--from", "sexpr", "--fix"]);
+    assert_ne!(code, 0, "--fix on stdin errors");
+    assert!(
+        err.contains("FILE"),
+        "the error explains --fix needs a file: {err}"
+    );
+}
+
+#[test]
 fn lint_on_a_missing_file_errors() {
     let (code, _out, err) = run(&["lint", "/no/such/file.sexp", "--rule", RULE_ERR]);
     assert_ne!(code, 0, "a missing file is an error");
