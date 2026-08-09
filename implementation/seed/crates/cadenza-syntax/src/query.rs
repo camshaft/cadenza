@@ -212,6 +212,13 @@ enum Guard {
     IsList,
     /// The node is a list whose head name is this string (`(head-is +)`).
     HeadIs(String),
+    /// The node is an IRREFUTABLE match pattern — a var/`_`/tuple/record (recursively), never a
+    /// literal or a sum-constructor pattern (`is-irrefutable`). Delegates to
+    /// [`crate::match_to_let::is_irrefutable`] (the no-context, conservatively-refutable-ctor form),
+    /// so a guarded metavar accepts only a clause head safe to lower to a `let`. Used by the
+    /// `idiomatic/single-arm-match` lint so its fix (`(match ,s (,p ,b))` → `(let ((,p ,s)) ,b)`) is a
+    /// pure template that fires only when the single arm can never fail.
+    IsIrrefutable,
     /// The node itself matches this sub-pattern (`(matches PAT)`). The sub-pattern's captures are a
     /// pure test — they do NOT leak into the outer bindings.
     Matches(Box<Pat>),
@@ -723,13 +730,14 @@ fn compile_guard(t: &Tree) -> Result<Guard, PatternError> {
             "is-bool" => Ok(Guard::IsBool),
             "is-atom" => Ok(Guard::IsAtom),
             "is-list" => Ok(Guard::IsList),
+            "is-irrefutable" => Ok(Guard::IsIrrefutable),
             // An unknown bare-name guard — the guard vocabulary is a small CLOSED set, so LIST it (like the
             // string-escape message lists the escape set). A near-typo (`is-litera` for `is-literal`) is
             // then obvious from the list, and the message doubles as documentation of what a guard can be.
             other => Err(PatternError(format!(
                 "unknown guard `{other}` — a guard is one of `is-literal` `is-name` `is-int` `is-float` \
-                 `is-str` `is-bool` `is-atom` `is-list`, or a form `(head-is NAME)` / `(matches PAT)` / \
-                 `(not GUARD)`"
+                 `is-str` `is-bool` `is-atom` `is-list` `is-irrefutable`, or a form `(head-is NAME)` / \
+                 `(matches PAT)` / `(not GUARD)`"
             ))),
         };
     }
@@ -793,6 +801,9 @@ fn guard_holds(g: &Guard, s: &Tree) -> bool {
         Guard::IsAtom => matches!(s, Tree::Atom(_, _)),
         Guard::IsList => matches!(s, Tree::List(_, _)),
         Guard::HeadIs(name) => head_name(s) == Some(name.as_str()),
+        // An irrefutable match-pattern shape (var/`_`/tuple/record, recursively; never a literal or a
+        // sum-ctor pattern). Purely structural — the no-context form treats every ctor as refutable.
+        Guard::IsIrrefutable => crate::match_to_let::is_irrefutable(s),
         // A sub-pattern test: its captures are local (discarded), so `matches` is a pure predicate.
         Guard::Matches(sub) => {
             let mut scratch = Bindings::default();
@@ -3350,10 +3361,15 @@ pub mod lint {
         ///   condition is dead), Verified. Relies on the engine's non-linear metavar consistency: the
         ///   repeated `,e` matches only when the two arms are structurally equal.
         ///
-        /// `idiomatic/single-arm-match` (`(match x (p e))` → `(let p x e)`) is NOT here yet: its fix must
-        /// DELEGATE to `match_to_let`'s irrefutable+unguarded precondition (a refutable single arm is not
-        /// safe to convert), which a pure `=> TEMPLATE` cannot express — it needs the codemod path, a
-        /// follow-on brick. Design §2 also lists `idiomatic/negated-eq` (`(not (== a b))` → `(!= a b)`);
+        /// - `idiomatic/single-arm-match` — `(match s (p b))` → `(let ((p s)) b)` when the single arm's
+        ///   pattern `p` is IRREFUTABLE (var/`_`/tuple/record), Verified. Expressed as a pure template by
+        ///   the `is-irrefutable` metavar guard, which delegates to `match_to_let::is_irrefutable` (the
+        ///   no-context form — a sum-ctor pattern is conservatively refutable, so the lint never fires on
+        ///   a match whose refutability the `let` would erase). The clause's 2-element `(p b)` arity is
+        ///   what pins "single arm, unguarded": a multi-arm match has more clauses, and a guarded arm is
+        ///   not a bare `(p b)` pair — so the pattern structurally excludes both.
+        ///
+        /// Design §2 also lists `idiomatic/negated-eq` (`(not (== a b))` → `(!= a b)`);
         /// it is NOT shipped because Cadenza has no native `!=` surface — the arena `!=` head prints as a
         /// quoted-name call `` `!=`(a, b) ``, which is LESS idiomatic than the `not(a == b)` it replaces,
         /// so the "fix" would regress readability. The catalog grows increment-by-increment (§2 open catalog).
@@ -3376,6 +3392,9 @@ pub mod lint {
                 "(lint idiomatic/if-same-branch (if ,c ,e ,e) ",
                 "\"both `if` branches are identical — the condition is dead; use the branch directly\" ",
                 "=> ,e verified)\n",
+                "(lint idiomatic/single-arm-match (match ,s (,(p is-irrefutable) ,b)) ",
+                "\"single irrefutable `match` — one arm that can never fail is clearer as a `let`\" ",
+                "=> (let ((,p ,s)) ,b) verified)\n",
             ))
             .expect("the built-in idiomatic lint catalog compiles")
         }
@@ -4832,6 +4851,36 @@ mod tests {
         let p = pat("(f ,(x (not is-literal)))");
         assert_eq!(count(&p, &subj("(f a)")), 1);
         assert_eq!(count(&p, &subj("(f 1)")), 0);
+    }
+
+    #[test]
+    fn guard_is_irrefutable_accepts_var_tuple_record_rejects_literal_and_ctor() {
+        // `(match ,s (,(p is-irrefutable) ,b))` — the arm pattern must be irrefutable.
+        let p = pat("(match ,s (,(p is-irrefutable) ,b))");
+        // var / `_` / tuple / record binders are irrefutable.
+        assert_eq!(count(&p, &subj("(match v (x (g x)))")), 1, "var arm");
+        assert_eq!(count(&p, &subj("(match v (_ 0))")), 1, "wildcard arm");
+        assert_eq!(
+            count(&p, &subj("(match v ((tuple a b) a))")),
+            1,
+            "tuple arm"
+        );
+        assert_eq!(
+            count(&p, &subj("(match v ((record (x a)) a))")),
+            1,
+            "record arm"
+        );
+        // A sum-ctor pattern and a literal are refutable (no-context form), so the guard fails.
+        assert_eq!(
+            count(&p, &subj("(match v ((Some y) y))")),
+            0,
+            "ctor arm refutable"
+        );
+        assert_eq!(
+            count(&p, &subj("(match v (0 x))")),
+            0,
+            "literal arm refutable"
+        );
     }
 
     #[test]
@@ -6351,8 +6400,8 @@ mod tests {
         fn builtin_catalog_compiles_and_names_its_lints() {
             let set = LintSet::builtin();
             // if-bool (×2, the true/false + false/true arms) + redundant-let + double-negation
-            // + if-same-branch.
-            assert_eq!(set.rules.len(), 5, "5 Tier-A rules");
+            // + if-same-branch + single-arm-match.
+            assert_eq!(set.rules.len(), 6, "6 Tier-A rules");
             let names: Vec<&str> = set.rules.iter().filter_map(|r| r.name.as_deref()).collect();
             assert_eq!(
                 names,
@@ -6362,6 +6411,7 @@ mod tests {
                     "idiomatic/redundant-let",
                     "idiomatic/double-negation",
                     "idiomatic/if-same-branch",
+                    "idiomatic/single-arm-match",
                 ]
             );
             // Every catalog rule carries a Verified fix.
@@ -6413,6 +6463,49 @@ mod tests {
                     .tree
                     .to_sexpr(),
                 "(g 1)"
+            );
+        }
+
+        #[test]
+        fn builtin_single_arm_match_fires_only_on_an_irrefutable_arm() {
+            let set = LintSet::builtin();
+            let single = set
+                .rules
+                .iter()
+                .find(|r| r.name.as_deref() == Some("idiomatic/single-arm-match"))
+                .unwrap();
+            // Irrefutable single arms fire: a var binder and a tuple destructure.
+            for src in ["(match p (x (+ x 1)))", "(match p ((tuple a b) (+ a b)))"] {
+                assert_eq!(
+                    lint::run(&set, &subj(src), None).len(),
+                    1,
+                    "single-arm-match fires on irrefutable {src}"
+                );
+            }
+            // A REFUTABLE single arm (a sum-ctor pattern) must NOT fire — the no-context
+            // `is-irrefutable` guard treats every ctor as refutable, so the `let` can't erase a match's
+            // refutability.
+            assert!(
+                lint::run(&set, &subj("(match p ((Some y) y))"), None).is_empty(),
+                "a refutable ctor single-arm does not fire"
+            );
+            // A literal single arm is refutable too.
+            assert!(
+                lint::run(&set, &subj("(match p (0 x))"), None).is_empty(),
+                "a literal single-arm is refutable"
+            );
+            // A multi-arm match is structurally excluded (the pattern is a 3-element `(match s (p b))`).
+            assert!(
+                lint::run(&set, &subj("(match p (x x) (y y))"), None).is_empty(),
+                "a two-arm match does not fire single-arm-match"
+            );
+            // The fix template lowers `(match s (p b))` → `(let ((p s)) b)`.
+            let (tmpl, _) = single.fix.as_ref().unwrap();
+            assert_eq!(
+                crate::query::rewrite(&single.pattern, tmpl, &subj("(match p (x (+ x 1)))"))
+                    .tree
+                    .to_sexpr(),
+                "(let ((x p)) (+ x 1))"
             );
         }
 
