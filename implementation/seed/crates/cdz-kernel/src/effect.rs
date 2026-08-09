@@ -327,23 +327,39 @@ pub mod effect_ct {
     /// the effect FAMILY string a reducer emits (the family `weather` registers AT `effect/weather`).
     pub const EFFECT_REGISTRY_PREFIX: &str = "effect/";
 
+    /// `effect/reply` — a ROUTED OUTBOUND effect family a userspace-effect HANDLER emits to answer a request
+    /// it was forwarded (userspace-effects I4). `target` = the opaque reply-token the delegating executor
+    /// minted + put in the forwarded request's framing (bound to the original `(caller SessionId, EffectId)`);
+    /// `payload` = the response bytes. The HOST `ReplyExecutor` validates+consumes the token and calls
+    /// [`crate::kernel::Session::settle_effect_result`] on the ORIGINAL caller's open (Deferred) effect —
+    /// closing the request→forward→reply→settle loop. Executor-routed + per-effect authz on the token (a
+    /// handler may only reply to a token it holds); a grantable effect (in [`ALL`]) + safe-logging. NOTE this
+    /// shares the `effect/` prefix with [`EFFECT_REGISTRY_PREFIX`] but is a DISTINCT thing: `effect/<family>`
+    /// is a store-NAME (the registration pointer), `effect/reply` is an EFFECT FAMILY (a routed verb) — so it
+    /// is explicitly EXCLUDED from [`is_registered_effect_family`] (it is a built-in, never a userspace family).
+    pub const EFFECT_REPLY: &str = "effect/reply";
+
     /// Is `family` a candidate USERSPACE-EFFECT family — i.e. NOT one of the built-in well-known partitions
     /// (so it would route to a registered handler, if one is registered)? A SYNTACTIC check: an emitted
-    /// effect whose family is not a kernel built-in (EffectKind / control/store/fs/metric/blob/ws) is a
-    /// candidate for `effect/<family>` handler resolution. Whether a handler is ACTUALLY registered is the
-    /// runtime lookup [`crate::name_store::NameStore::resolve_effect_handler`] (mechanism = "resolves in the
-    /// registry"); this predicate is the partition boundary the drive loop / delegating executor uses to
-    /// decide "try the userspace-effect path" vs "a known built-in family". Fail-safe: a family that IS a
-    /// built-in returns false (built-ins are never shadowed by a userspace handler).
+    /// effect whose family is not a kernel built-in (EffectKind / control/store/fs/metric/blob/ws / the
+    /// `effect/reply` routed family) is a candidate for `effect/<family>` handler resolution. Whether a
+    /// handler is ACTUALLY registered is the runtime lookup
+    /// [`crate::name_store::NameStore::resolve_effect_handler`] (mechanism = "resolves in the registry"); this
+    /// predicate is the partition boundary the drive loop / delegating executor uses to decide "try the
+    /// userspace-effect path" vs "a known built-in family". Fail-safe: a family that IS a built-in returns
+    /// false (built-ins are never shadowed by a userspace handler).
     pub fn is_registered_effect_family(family: &str) -> bool {
-        // A built-in well-known family is NOT a userspace effect (built-ins win — no shadowing).
+        // A built-in well-known family is NOT a userspace effect (built-ins win — no shadowing). `effect/reply`
+        // shares the `effect/` prefix but is a built-in ROUTED family (the handler's reply verb), NOT a
+        // userspace registration target — exclude it explicitly so it never mis-routes to handler resolution.
         let is_builtin = super::EffectKind::from_family(family).is_some()
             || is_control_family(family)
             || is_store_family(family)
             || is_fs_family(family)
             || is_metric_family(family)
             || is_blob_family(family)
-            || is_ws_family(family);
+            || is_ws_family(family)
+            || family == EFFECT_REPLY;
         !is_builtin && !family.is_empty()
     }
 
@@ -406,15 +422,16 @@ pub mod effect_ct {
         BLOB_PUT,
         BLOB_GET,
         WS_SEND,
+        EFFECT_REPLY,
     ];
 
     /// If `family` is a WELL-KNOWN family whose string is a FIXED, kernel-defined `&'static` — one of the
     /// built-in effect verbs ([`ALL`], via [`super::EffectKind::from_family`]) or the exact control/store/fs/
     /// metric families (`control/capabilities`, `control/summary`, `store/set`, `store/resolve`, `store/add`,
     /// `store/remove`, `store/resolve-all`, `fs/read`, `fs/write`, `fs/glob`, `metric/publish`, `blob/put`,
-    /// `blob/get`, `ws/send`, `ws/connect`, `ws/disconnect`) — return that canonical `&'static str`. `None`
-    /// for an EXTENSION family (register-by-string). (`ws/connect`/`ws/disconnect` are inbound EVENT families,
-    /// not effects, so they're here for safe-logging but NOT in [`ALL`].)
+    /// `blob/get`, `ws/send`, `ws/connect`, `ws/disconnect`, `effect/reply`) — return that canonical
+    /// `&'static str`. `None` for an EXTENSION family (register-by-string). (`ws/connect`/`ws/disconnect` are
+    /// inbound EVENT families, not effects, so they're here for safe-logging but NOT in [`ALL`].)
     ///
     /// The distinction matters for LOGGING (github-liaison #2180 residual): `ContentType.family` is a
     /// `Cow<'static, str>` and for an extension family it carries the CALLER's `Cow::Owned` verbatim — i.e.
@@ -452,6 +469,7 @@ pub mod effect_ct {
             // ALL) — but they're fixed kernel-defined strings, so classify them safe-to-log-verbatim too.
             WS_CONNECT => Some(WS_CONNECT),
             WS_DISCONNECT => Some(WS_DISCONNECT),
+            EFFECT_REPLY => Some(EFFECT_REPLY),
             _ => None,
         }
     }
@@ -1462,6 +1480,32 @@ mod tests {
         // The inbound event families are NOT grantable effects → absent from ALL (only ws/send is).
         assert!(!effect_ct::ALL.contains(&effect_ct::WS_CONNECT));
         assert!(!effect_ct::ALL.contains(&effect_ct::WS_DISCONNECT));
+    }
+
+    #[test]
+    fn effect_reply_is_a_routed_grantable_family_not_a_userspace_registration_candidate() {
+        // userspace-effects I4: effect/reply is the ROUTED OUTBOUND family a handler emits to answer a
+        // forwarded request (target = reply-token, payload = response). It shares the `effect/` prefix with
+        // EFFECT_REGISTRY_PREFIX but is a BUILT-IN routed effect, NOT a userspace-registration target.
+        assert_eq!(effect_ct::EFFECT_REPLY, "effect/reply");
+        assert!(effect_ct::EFFECT_REPLY.starts_with(effect_ct::EFFECT_REGISTRY_PREFIX));
+        // Grantable (in ALL — the capability projection reports it) + safe-logging (fixed &'static).
+        assert!(effect_ct::ALL.contains(&effect_ct::EFFECT_REPLY));
+        assert_eq!(
+            effect_ct::wellknown_static_str(effect_ct::EFFECT_REPLY),
+            Some(effect_ct::EFFECT_REPLY)
+        );
+        // CRITICAL collision guard: despite the effect/ prefix, effect/reply is NOT a userspace-effect
+        // family — it must never route to handler resolution (it IS the reply verb, a built-in).
+        assert!(
+            !effect_ct::is_registered_effect_family(effect_ct::EFFECT_REPLY),
+            "effect/reply is a built-in routed family, NOT a userspace-registration candidate"
+        );
+        // A genuine userspace family (no effect/ prefix, not a builtin) still IS a candidate.
+        assert!(effect_ct::is_registered_effect_family("weather"));
+        // A guest effect/<x> that isn't the exact reply const logs redacted (None); the registry PREFIX is
+        // a store-name space, not an effect-family — so wellknown_static_str doesn't bless arbitrary effect/*.
+        assert_eq!(effect_ct::wellknown_static_str("effect/weather"), None);
     }
 
     #[test]
