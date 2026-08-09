@@ -327,6 +327,35 @@ def ty-eq-fn-structural() =
        else (if ty-eq(f, ty-int64()) then trap("fn != int") else unit))
      else trap("fn == itself"))))
 
+@test
+def ty-eq-fn-arity-differs() =
+  // HIGHER-ORDER arity: a 2-param arrow (Int64,Int64)->Int64 is NOT equal to a 1-param (Int64)->Int64 — ty-eq
+  // gates on List.len(params) first. The fn-structural test only covered same-arity-different-result; this pins
+  // the arity mismatch → false (a 2-arg fn value never unifies with a 1-arg arrow).
+  (let f2 = Ty.TyFn(List.push(List.push([], ty-int64()), ty-int64()), ty-int64()) in
+   (let f1 = Ty.TyFn(List.push([], ty-int64()), ty-int64()) in
+    (if ty-eq(f2, f1) then trap("2-param arrow must NOT equal 1-param arrow (arity)") else unit)))
+
+@test
+def ty-eq-sum-decl-identity() =
+  // USER SUM decl-identity: two TySums are equal iff SAME declNameId — never structural. TySum(1)==TySum(1),
+  // TySum(1) != TySum(2). This is the cross-type-reject foundation (ctor-app/pattern must share a sum's identity;
+  // tags restart per decl so a different-decl pattern would tag-collide). A TySum is also != a TyInt.
+  (if ty-eq(Ty.TySum(1), Ty.TySum(1)) then
+    (if ty-eq(Ty.TySum(1), Ty.TySum(2)) then trap("different-decl sums must NOT be equal")
+     else (if ty-eq(Ty.TySum(1), ty-int64()) then trap("sum != int") else unit))
+   else trap("same-decl sums must be equal"))
+
+@test
+def ty-eq-var-identity() =
+  // TyVar equality (rcdzc ty.rs:1025): two TyVars are equal iff SAME id; a TyVar is NEVER equal to a concrete
+  // type (it's unsolved — reconciling a var with a concrete is unify's job, not equality's). TyVar(3)==TyVar(3),
+  // TyVar(3) != TyVar(4), TyVar(3) != Int64.
+  (if ty-eq(Ty.TyVar(3), Ty.TyVar(3)) then
+    (if ty-eq(Ty.TyVar(3), Ty.TyVar(4)) then trap("different-id TyVars must NOT be equal")
+     else (if ty-eq(Ty.TyVar(3), ty-int64()) then trap("TyVar != concrete Int64") else unit))
+   else trap("same-id TyVars must be equal"))
+
 // ---- ARC-A1 tests: the 3rd axis state — unification VARIABLE signs/widths (substrate for HM in ARC-B) ----
 @test
 def ty-a1-var-int-is-not-ground() =
