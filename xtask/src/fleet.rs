@@ -798,6 +798,7 @@ pub enum FleetCmd {
         ///   - with `--execute` (the CI-gated candidate-PR path, GHA-on): combine into one candidate PR
         ///     with a local-nix pre-filter, push, reap acks every member; pre-filter RED bisects + rejects
         ///     culprits, survivors fall back to single-MR.
+        ///
         /// Either way a batch never strands an MR (fallback covers every failure). Without `--batch`,
         /// integration is one-MR-at-a-time (the proven default).
         #[arg(long)]
@@ -10296,6 +10297,23 @@ fn schedule_pass_local_gate(
     batch: bool,
     batch_member_cap: usize,
 ) {
+    // SAFETY GUARD (2026-08-09, pr-sync stranding finding): under the GHA-off model, `--local-gate
+    // --execute` WITHOUT `--publish-origin` takes the local-only branch — it advances LOCAL trunk + acks
+    // `merged` but NEVER pushes to origin/main, so the work is STRANDED on local trunk and the ack is a
+    // FALSE merged-ack (peers verify landing by origin/main ancestry — the exact false-premise this whole
+    // module's history warns about). pr-sync hit this: a pass advanced local trunk to 92cb74a8 + would
+    // have false-acked, but origin stayed at a07fc4b4 until a hand-push. There is no legitimate
+    // execute-without-publish use now (the candidate-PR path is dead), so REFUSE it rather than strand.
+    // (DRY without --publish-origin is fine — it only previews; the guard is on --execute.)
+    if execute && !publish_origin {
+        eprintln!(
+            "schedule-pass --local-gate --execute REQUIRES --publish-origin (the GHA-off model FF-pushes \
+             each green land to origin/main). Without it the drain would advance LOCAL trunk + ack merged \
+             WITHOUT pushing — stranding the work off origin/main + false-acking. Re-run with \
+             `--local-gate --execute --publish-origin`. (REFUSED; nothing gated, trunk untouched.)"
+        );
+        return;
+    }
     // Accumulates one record per gated MR so `--json` can emit a machine-parseable summary. Verdict is
     // one of merged/reject/left/dry; `sha` is set only on a merge (empty otherwise).
     let mut records: Vec<serde_json::Value> = Vec::new();
