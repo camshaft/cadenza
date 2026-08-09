@@ -494,4 +494,175 @@ mod tests {
             "effect/reply is a built-in routed family, not a userspace family"
         );
     }
+
+    // ---- I3+I4 CROSS-EXECUTOR round-trip (converted from the deleted userspace_effect_round_trip_e2e
+    // integration test, operator no-integration-tests mandate — hermetic: two executors + two in-process
+    // channels + one shared Rc<ReplyTokenRegistry>, no loop/store/reducer). This is the request→forward→
+    // reply→settle contract that neither executor's OWN unit tests cover (each mocks the other half): I3
+    // MINTS a reply-token into the shared table + forwards the framing, I4 CONSUMES it from the SAME table
+    // and settles the ORIGINAL caller effect the token was bound to. ----
+    use crate::reply_exec::{reply_settle_channel, ReplyExecutor};
+
+    #[tokio::test]
+    async fn request_forwards_and_a_handler_reply_settles_the_original_caller_effect() {
+        // ONE shared reply-token table — the I3 executor mints into it, the I4 executor consumes from it
+        // (an Rc, as the factory wires per-loop). This sharing is the crux the round-trip proves.
+        let reply_tokens = Rc::new(ReplyTokenRegistry::new());
+        // The two host-loop channels the executors feed (drained by the loop in production; by the test here):
+        // the handler Inbox (I3 forward target) + the reply-settle sink (I4 output).
+        let (inbox_tx, mut inbox_rx) = mpsc::unbounded_channel();
+        let (settle_tx, mut settle_rx) = reply_settle_channel();
+
+        let caller = SessionId::new("caller-session");
+
+        // I3: the caller's delegating executor, resolving `weather` -> the handler session.
+        let mut i3 = UserspaceEffectExecutor::new(
+            resolver(&[("weather", "weather-handler")]),
+            inbox_tx,
+            reply_tokens.clone(),
+            caller.clone(),
+        );
+
+        // 1. CALLER performs `weather` (effect id 99). It forwards + DEFERS (does NOT answer synchronously).
+        let out = i3
+            .perform(
+                EffectId(99),
+                &ue_req("weather", Some(b"forecast-for-seattle")),
+                Hash::of(b"idem"),
+            )
+            .await;
+        assert!(
+            matches!(out, EffectOutcome::Deferred),
+            "the userspace effect defers (the handler will settle it), got {out:?}"
+        );
+        assert_eq!(reply_tokens.len(), 1, "the forward minted one reply-token");
+
+        // 2. Play the HANDLER: read the forwarded effect-request off the inbox + extract the raw token bytes.
+        let fwd = inbox_rx
+            .try_recv()
+            .expect("an effect-request Inbound was forwarded");
+        assert_eq!(
+            fwd.session.as_str(),
+            "weather-handler",
+            "forwarded to the resolved handler"
+        );
+        let (fwd_caller, token_bytes, fwd_eid, req_payload) = match fwd.body {
+            EventBody::Inbound {
+                content_type,
+                payload: Payload::Inline(bytes),
+            } => {
+                assert_eq!(content_type.family.as_ref(), "effect-request/weather");
+                parse_framing(&bytes)
+            }
+            other => panic!("expected an effect-request Inbound, got {other:?}"),
+        };
+        assert_eq!(fwd_caller, "caller-session");
+        assert_eq!(
+            fwd_eid, 99,
+            "the framing carries the caller's open effect id"
+        );
+        assert_eq!(
+            req_payload, b"forecast-for-seattle",
+            "opaque request rides verbatim"
+        );
+
+        // 3. HANDLER answers via effect/reply, echoing the RAW token bytes as the target. The I4 executor
+        // validates + consumes it against the SAME registry and enqueues the settle.
+        let mut i4 = ReplyExecutor::new(reply_tokens.clone(), settle_tx);
+        let reply_out = i4
+            .perform(
+                EffectId(1), // the handler's own effect-id for this reply — irrelevant to the settle
+                &EffectRequest::new_with_family(
+                    effect_ct::EFFECT_REPLY,
+                    token_bytes.clone(),
+                    Some(Payload::Inline(b"sunny-and-72".to_vec().into())),
+                    Timeliness::Interactive,
+                ),
+                Hash::of(b"idem2"),
+            )
+            .await;
+        assert!(
+            matches!(reply_out, EffectOutcome::Ok(None)),
+            "the reply acks Ok(None) fire-and-forget, got {reply_out:?}"
+        );
+        assert!(
+            reply_tokens.is_empty(),
+            "the token was consumed one-shot by the reply"
+        );
+
+        // The enqueued settle recovers the ORIGINAL (caller, effect-id) the I3 forward bound the token to,
+        // and carries the handler's reply payload — the round-trip is closed.
+        let settle = settle_rx.try_recv().expect("a ReplySettle was enqueued");
+        assert_eq!(
+            settle.caller, caller,
+            "the settle targets the original caller session"
+        );
+        assert_eq!(
+            settle.effect_id,
+            EffectId(99),
+            "the settle recovers the caller's original open effect id (not the handler's reply id)"
+        );
+        assert!(
+            matches!(&settle.outcome, EffectOutcome::Ok(Some(Payload::Inline(b))) if &b[..] == b"sunny-and-72"),
+            "the caller settles with the handler's reply payload verbatim, got {:?}",
+            settle.outcome
+        );
+    }
+
+    #[tokio::test]
+    async fn a_second_reply_with_the_same_token_is_refused_no_double_settle() {
+        // The one-shot property ACROSS the two executors: after a valid reply consumes the token, a REPLAY of
+        // the same token (a buggy/malicious handler answering twice) is refused + enqueues no second settle —
+        // the double-settle defense holds through the real I3-mint → I4-consume path, not just the registry
+        // unit test.
+        let reply_tokens = Rc::new(ReplyTokenRegistry::new());
+        let (inbox_tx, mut inbox_rx) = mpsc::unbounded_channel();
+        let (settle_tx, mut settle_rx) = reply_settle_channel();
+
+        let mut i3 = UserspaceEffectExecutor::new(
+            resolver(&[("weather", "h")]),
+            inbox_tx,
+            reply_tokens.clone(),
+            SessionId::new("c"),
+        );
+        i3.perform(EffectId(5), &ue_req("weather", None), Hash::of(b"k"))
+            .await;
+        let fwd = inbox_rx.try_recv().expect("forwarded");
+        let token_bytes = match fwd.body {
+            EventBody::Inbound {
+                payload: Payload::Inline(bytes),
+                ..
+            } => parse_framing(&bytes).1,
+            other => panic!("expected Inbound, got {other:?}"),
+        };
+
+        let mut i4 = ReplyExecutor::new(reply_tokens, settle_tx);
+        let reply = |t: Vec<u8>| {
+            EffectRequest::new_with_family(
+                effect_ct::EFFECT_REPLY,
+                t,
+                None,
+                Timeliness::Interactive,
+            )
+        };
+        // First reply settles.
+        assert!(matches!(
+            i4.perform(EffectId(0), &reply(token_bytes.clone()), Hash::of(b"k"))
+                .await,
+            EffectOutcome::Ok(None)
+        ));
+        settle_rx.try_recv().expect("first reply enqueued a settle");
+        // Second reply with the same (consumed) token is refused, enqueues nothing.
+        let dup = i4
+            .perform(EffectId(0), &reply(token_bytes), Hash::of(b"k"))
+            .await;
+        assert!(
+            matches!(&dup, EffectOutcome::Err { .. }),
+            "a replayed token is refused, got {dup:?}"
+        );
+        assert!(
+            settle_rx.try_recv().is_err(),
+            "the refused duplicate enqueues no second settle (double-settle defense)"
+        );
+    }
 }
