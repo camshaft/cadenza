@@ -698,7 +698,7 @@
         # built bytes → byte-identical early-cutoff AND correct rebuild-on-bump, which a fixed pin
         # structurally cannot), NOT a hand-pinned outputHash. Dropping the param makes reintroducing the bug
         # an eval error (unexpected argument), not a silent runtime BlobMissing.
-        mkCadenzaComponent = { name, cdzFile, componentName ? "cadenza:agent-kernel/fold" }:
+        mkCadenzaComponent = { name, cdzFile, componentName ? "cadenza:agent-kernel/fold", contentAddressed ? false }:
           pkgs.stdenvNoCC.mkDerivation ({
             pname = name;
             version = "0.0.0";
@@ -726,19 +726,39 @@
             # default shift) and strip silently corrupts. Make the guard explicit, same as rcdzcWasm
             # (github-liaison #2196 review).
             dontFixup = true;
+          } // pkgs.lib.optionalAttrs contentAddressed {
+            # CONTENT-ADDRESSED (v-nix 2026-08-09, CI-wall-time lever): key the output PATH on the actual
+            # emitted bytes, not the input drv. WHY (vs input-addressed): this component is compiled by
+            # seedCompiler, whose drv rotates on ANY compiler-CLOSURE edit (rcdzc changes ~every commit). An
+            # INPUT-addressed output path therefore rotates on every such edit, so a heavy consumer (the
+            # genesis E2E in cdz-agent-host-native, ~10-12m) cache-MISSES + rebuilds on a large fraction of
+            # fleet MRs — the batch-gate long pole. But the emitted component is byte-IDENTICAL across a
+            # compiler edit that doesn't change the emit (EMPIRICALLY VERIFIED 2026-08-09: an inert rcdzc
+            # doc-comment edit rotated the drv 9lxb5…→8wyzg06… but the output stayed byte-identical, sha256
+            # 6c2c096d…, 2285 B). CA keys the consumer on THOSE bytes → it cache-HITS whenever the emit is
+            # unchanged, and correctly REBUILDS only when a compiler change actually moves the emit. This is
+            # the safe form of the early-cutoff the old FIXED-OUTPUT pin gave (byte-identical hit) WITHOUT the
+            # stale-serve hazard (a real emit change produces new bytes → new path → consumer rebuilds; a
+            # fixed pin instead served stale). Needs experimental-features ca-derivations (enabled fleet-wide
+            # in nix.custom.conf, v-ft 2026-08-09). $out is a single wasm FILE → flat mode.
+            __contentAddressed = true;
+            outputHashMode = "flat";
+            outputHashAlgo = "sha256";
           });
         reducerCadenzaB1 = mkCadenzaComponent { name = "reducer-cadenza-b1"; cdzFile = "reducer_b1.cdz"; };
         reducerCadenzaB2 = mkCadenzaComponent { name = "reducer-cadenza-b2"; cdzFile = "reducer_b2.cdz"; };
         reducerCadenzaB3 = mkCadenzaComponent { name = "reducer-cadenza-b3"; cdzFile = "reducer_b3.cdz"; };
-        # GENESIS is input-addressed like B1/B2/B3 (it can't be anything else — mkCadenzaComponent has no
-        # outputHash param; see the guard-by-construction note there). It is the sole reducer-cadenza
-        # component injected into a heavy native check (cdz-agent-host-native's 60s+ genesis E2E), so it was
-        # briefly a FIXED-OUTPUT pin for per-MR early-cutoff — reverted 2026-08-09 (f2ab207de) when that pin
-        # served a stale old-runtime component on v-runtime's B0 hash bump → BlobMissing. Recover the
-        # early-cutoff, if needed, via a content-addressed derivation, never a hand-pinned outputHash.
+        # GENESIS is CONTENT-ADDRESSED (contentAddressed = true). It is the sole reducer-cadenza component
+        # injected into a heavy native check (cdz-agent-host-native's 60s+ genesis E2E), which cache-MISSED on
+        # every compiler-closure edit while genesis was input-addressed (the seedCompiler drv rotates ~every
+        # commit) — the batch-gate long pole (operator CI-wall-time directive). CA recovers the early-cutoff
+        # SAFELY: cache-hit when the emit is byte-identical, rebuild when it genuinely changes — unlike the
+        # old FIXED-OUTPUT pin (f2ab207de) which served a STALE component on v-runtime's B0 hash bump →
+        # BlobMissing. Empirically proven output-stable across an inert rcdzc edit (see the maker note).
         reducerCadenzaGenesis = mkCadenzaComponent {
           name = "reducer-cadenza-genesis";
           cdzFile = "reducer_genesis.cdz";
+          contentAddressed = true;
         };
 
         # Full-CI-in-nix increment 6e: the GHA `cad-tests` job — `cdz test` on the 4 committed
