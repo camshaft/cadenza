@@ -344,6 +344,15 @@ impl Session {
         &self.tip
     }
 
+    /// The session's GENESIS event (seq 0), held resident (log-decouple I1). The derived replacement for
+    /// `log().first()`/`log()[0]` — read off the resident field, not the log Vec. Its counterpart is
+    /// [`Session::tip`]; together they bracket the log without touching the Vec. Used by recovery/test
+    /// code that seeds a durable-log source with the genesis (the constructor puts genesis in the Vec,
+    /// but a write-through sink attached later must be seeded with it, exactly as the host factory does).
+    pub fn genesis_ref(&self) -> &Event {
+        &self.genesis
+    }
+
     /// The reason this session MOST-RECENTLY faulted, or `None` if its tip isn't a fault. A session
     /// whose tip event is a [`EventBody::FoldFailed`] (§17: a reducer trap / fuel-exhaustion /
     /// instantiate failure the kernel captures as a first-class log event rather than a silent stall)
@@ -2360,6 +2369,55 @@ fn idempotency_key_for(id: EffectId, req: &EffectRequest) -> Hash {
     Hash::of(&buf)
 }
 
+/// Shared test fixture: an in-memory [`crate::log_store::LogSink`] that captures the events written
+/// through it, so a replay-equivalence test reads its input from the durable-log SOURCE (the sink) rather
+/// than the resident log Vec — mirroring PRODUCTION recovery, which reads from `LogStore::recover`, never
+/// from an in-memory Vec. This is the log-decouple I5 step-3 seam: once the resident Vec is dropped, the
+/// full log is only available from the attached sink, exactly as it is on a real recovery. The fixture
+/// seeds itself with the session's genesis on attach (the constructor puts genesis in the Vec, but a
+/// write-through sink attached afterward must be seeded with it — precisely what the host session factory
+/// does, `sink.append(&genesis)` before attaching), then captures every subsequent append.
+#[cfg(test)]
+mod test_log_source {
+    use super::*;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    /// The captured event buffer, shared between the attached sink and the test that reads it back. `Rc`
+    /// (not `Arc`) + `RefCell` — the kernel is single-threaded by design, matching the `?Send` backends.
+    pub type CapturedLog = Rc<RefCell<Vec<Event>>>;
+
+    struct MemLogSink {
+        captured: CapturedLog,
+    }
+
+    #[async_trait::async_trait(?Send)]
+    impl crate::log_store::LogSink for MemLogSink {
+        async fn append(&mut self, event: &Event) -> std::io::Result<()> {
+            self.captured.borrow_mut().push(event.clone());
+            Ok(())
+        }
+    }
+
+    /// Attach a fresh recording sink to `session`, seeded with its genesis, and return the shared buffer.
+    /// After this, every appended event is captured; the test replays from [`replay_input`] to prove the
+    /// durable-log source (not the resident Vec) reconstructs the session — the recovery-equivalence the
+    /// Vec-drop rests on. Call this on a FRESH `genesis` session (before delivering events).
+    pub fn attach_recording_sink(session: &mut Session) -> CapturedLog {
+        let captured: CapturedLog = Rc::new(RefCell::new(vec![session.genesis_ref().clone()]));
+        session.attach_sink(Box::new(MemLogSink {
+            captured: Rc::clone(&captured),
+        }));
+        captured
+    }
+
+    /// The captured durable log as an owned `Vec<Event>` — what a test hands to [`Session::replay`] in
+    /// place of `session.log().to_vec()`. Reading from the SOURCE, not the resident Vec.
+    pub fn replay_input(captured: &CapturedLog) -> Vec<Event> {
+        captured.borrow().clone()
+    }
+}
+
 #[cfg(test)]
 mod status_snapshot_tests {
     use super::*;
@@ -3037,6 +3095,7 @@ mod status_snapshot_tests {
 
 #[cfg(test)]
 mod monotonic_now_tests {
+    use super::test_log_source::*;
     use super::*;
     use crate::authz::Authorizer;
     use crate::effect::{
@@ -3214,15 +3273,17 @@ mod monotonic_now_tests {
     async fn replay_reconstructs_the_same_last_now_and_sequence() {
         let mut exec = StuckClock(1000);
         let mut s = Session::genesis(Hash::of(b"now-v1"), Hash::of(b"test-spawn-nonce"));
+        let captured = attach_recording_sink(&mut s);
         s.deliver(inbound(), None, &mut NowReducer, &now_cap(), &mut exec)
             .await
             .unwrap();
         let live_seq = recorded_now_sequence(&s);
         let live_last_now = s.last_now;
 
-        // Replay the log: the recorded (already-clamped) Now results must rebuild the SAME last_now +
-        // the SAME sequence — replay never re-clamps, it re-derives (determinism).
-        let log = s.log().to_vec();
+        // Replay the log READ BACK FROM THE DURABLE SOURCE (the sink), not the resident Vec — recovery
+        // reconstructs from what was persisted. The recorded (already-clamped) Now results must rebuild
+        // the SAME last_now + the SAME sequence — replay never re-clamps, it re-derives (determinism).
+        let log = replay_input(&captured);
         let replayed = Session::replay(log, &mut NowReducer).await.expect("replay");
         assert_eq!(recorded_now_sequence(&replayed), live_seq);
         assert_eq!(replayed.last_now, live_last_now);
@@ -3238,10 +3299,11 @@ mod monotonic_now_tests {
         // dropped the sync twin — so this pins single-replay determinism instead.)
         let mut exec = StuckClock(1000);
         let mut s = Session::genesis(Hash::of(b"now-v1"), Hash::of(b"test-spawn-nonce"));
+        let captured = attach_recording_sink(&mut s);
         s.deliver(inbound(), None, &mut NowReducer, &now_cap(), &mut exec)
             .await
             .unwrap();
-        let log = s.log().to_vec();
+        let log = replay_input(&captured);
 
         let replayed = Session::replay(log.clone(), &mut NowReducer)
             .await
@@ -3302,6 +3364,7 @@ mod monotonic_now_tests {
             predicate: crate::effect::ResourcePredicate::HostIn(vec!["ok.host".into()]),
         }]);
         let mut s = Session::genesis(Hash::of(b"i2-obl"), Hash::of(b"test-spawn-nonce"));
+        let captured = attach_recording_sink(&mut s);
         s.deliver(
             inbound(),
             None,
@@ -3327,8 +3390,8 @@ mod monotonic_now_tests {
         assert!(s.dispatch_hash_of(EffectId(0)).is_some());
 
         // Replay rebuilds the IDENTICAL open table (recovery-equivalence): same open ids + same
-        // per-obligation family/token/hash.
-        let log = s.log().to_vec();
+        // per-obligation family/token/hash. Read the log from the durable source (sink), not the Vec.
+        let log = replay_input(&captured);
         let replayed = Session::replay(log, &mut EmitTokenedHttp)
             .await
             .expect("replay");
@@ -4273,7 +4336,7 @@ mod monotonic_now_tests {
             "the seed fires despite a prior guest capabilities query (guard keys on cause==genesis)"
         );
         // And the genesis-caused (seed) frame is present exactly once.
-        let genesis_hash = session.log()[0].hash();
+        let genesis_hash = session.genesis_ref().hash();
         let seed_frames = session
             .log()
             .iter()
@@ -4305,6 +4368,7 @@ mod monotonic_now_tests {
         }]);
         let mut session =
             Session::genesis(Hash::of(b"seed-replay-v1"), Hash::of(b"test-spawn-nonce"));
+        let captured = attach_recording_sink(&mut session);
         session
             .seed_capabilities(&mut InertReducer, &authz, &mut exec)
             .await;
@@ -4318,8 +4382,8 @@ mod monotonic_now_tests {
         let live_root = session.snapshot().kv_root;
         let live_len = session.event_count();
 
-        // Replay the durable log — recovery reconstructs the same session.
-        let log = session.log().to_vec();
+        // Replay the durable log READ BACK FROM THE SOURCE (sink) — recovery reconstructs the same session.
+        let log = replay_input(&captured);
         let replayed = Session::replay(log, &mut InertReducer)
             .await
             .expect("a seeded log replays");
@@ -4408,6 +4472,7 @@ mod monotonic_now_tests {
         // "stable across replay" assert exercises an actual log with post-genesis events (not a bare
         // genesis) — otherwise it degenerates to determinism-of-construction (github-liaison/#2362).
         let mut s = Session::genesis(Hash::of(b"reducer-A"), Hash::of(b"nonce-1"));
+        let captured = attach_recording_sink(&mut s);
         s.deliver(
             inbound(),
             None,
@@ -4426,7 +4491,7 @@ mod monotonic_now_tests {
         // the genesis head even after folds appended later events (identity is anchored at log[0]).
         assert_eq!(
             s.genesis_hash(),
-            s.log().first().expect("genesis has a head event").hash(),
+            s.genesis_ref().hash(),
             "genesis_hash must be the hash of the genesis EVENT (log[0]), not something else"
         );
         // (2) It is NOT the reducer hash — genesis_hash wraps the reducer in the genesis event framing, so
@@ -4436,10 +4501,10 @@ mod monotonic_now_tests {
             Hash::of(b"reducer-A"),
             "genesis_hash hashes the whole genesis event, so it must differ from the bare reducer hash"
         );
-        // (3) STABLE across a REAL replay: reconstruct the session from its OWN persisted log via
-        // Session::replay (folding each event back through the reducer) and assert the identity survives.
-        // This is the genuine round-trip — `replayed` is built from s.log(), not a fresh genesis.
-        let replayed = Session::replay(s.log().to_vec(), &mut NowReducer)
+        // (3) STABLE across a REAL replay: reconstruct the session from its OWN persisted log (read back
+        // from the durable source, not the resident Vec) via Session::replay (folding each event back
+        // through the reducer) and assert the identity survives — the genuine recovery round-trip.
+        let replayed = Session::replay(replay_input(&captured), &mut NowReducer)
             .await
             .expect("replay of a well-formed log succeeds");
         assert_eq!(
@@ -4618,6 +4683,7 @@ mod monotonic_now_tests {
         }]);
         let mut exec = FailingHttpExecutor;
         let mut s = Session::genesis(Hash::of(b"http-err-v1"), Hash::of(b"test-spawn-nonce"));
+        let captured = attach_recording_sink(&mut s);
         s.deliver(
             EventBody::Inbound {
                 content_type: ContentType {
@@ -4646,9 +4712,10 @@ mod monotonic_now_tests {
             0,
             "a routed-effect Err settles the dispatch — the session isn't wedged waiting on it"
         );
-        // An Err EffectResult is on the log (the durable failure record a supervisor/replay sees).
+        // An Err EffectResult is on the DURABLE log (read back from the source — the failure record a
+        // supervisor/replay sees is what was persisted, not an in-memory Vec).
         assert!(
-            s.log().iter().any(|e| matches!(
+            replay_input(&captured).iter().any(|e| matches!(
                 &e.body,
                 EventBody::EffectResult {
                     result: EffectOutcome::Err { .. },
@@ -4818,6 +4885,7 @@ mod monotonic_now_tests {
         }]);
         let mut exec = DeferringExecutor;
         let mut s = Session::genesis(Hash::of(b"in-flight-v1"), Hash::of(b"nonce"));
+        let captured = attach_recording_sink(&mut s);
         let inbound = || EventBody::Inbound {
             content_type: ContentType {
                 family: "message".into(),
@@ -4852,7 +4920,7 @@ mod monotonic_now_tests {
 
         // RECOVERY-EQUIVALENCE: replay the exact log → the rebuilt obligation table must yield the SAME
         // derived snapshot (this is what makes the eventual Vec-drop safe — recovery re-derives, not re-reads).
-        let replayed = Session::replay(s.log().to_vec(), &mut HttpThenRecordOkReducer)
+        let replayed = Session::replay(replay_input(&captured), &mut HttpThenRecordOkReducer)
             .await
             .expect("replay");
         let rsnap = replayed.status_snapshot(Some(500), 300_000);
@@ -5004,6 +5072,7 @@ mod monotonic_now_tests {
         // bounded, which is what drives the per-turn /compact problem).
         let mut exec = RecordingExecutor::new();
         let mut s = Session::genesis(Hash::of(b"gap4-compact-v1"), Hash::of(b"nonce"));
+        let captured = attach_recording_sink(&mut s);
         let authz = Authorizer::deny_all(); // the reducer emits no effects; authz is irrelevant here
         let feed = |body: &[u8]| EventBody::Inbound {
             content_type: ContentType {
@@ -5057,9 +5126,10 @@ mod monotonic_now_tests {
             "the working set shrank to the single summary — bounded regardless of turns folded"
         );
 
-        // The pattern is REPLAY-DETERMINISTIC (no kernel change): a fresh replay of the same log reconstructs
-        // the identical post-compaction kv (the compaction is an ordinary fold, already on the log).
-        let replayed = Session::replay(s.log().to_vec(), &mut CompactingReducer)
+        // The pattern is REPLAY-DETERMINISTIC (no kernel change): a fresh replay of the log read back from
+        // the durable source reconstructs the identical post-compaction kv (compaction is an ordinary fold,
+        // already on the log).
+        let replayed = Session::replay(replay_input(&captured), &mut CompactingReducer)
             .await
             .expect("replay a compacted session");
         assert_eq!(
@@ -5083,6 +5153,7 @@ mod monotonic_now_tests {
         // the second compact would drop cycle 1 — the fidelity gap this guards.)
         let mut exec = RecordingExecutor::new();
         let mut s = Session::genesis(Hash::of(b"gap4-multicycle-v1"), Hash::of(b"nonce"));
+        let captured = attach_recording_sink(&mut s);
         let authz = Authorizer::deny_all();
         let feed = |body: &[u8]| EventBody::Inbound {
             content_type: ContentType {
@@ -5136,8 +5207,8 @@ mod monotonic_now_tests {
             "the working set stays bounded (one summary) across repeated compaction cycles"
         );
 
-        // Still replay-deterministic across multiple compaction cycles.
-        let replayed = Session::replay(s.log().to_vec(), &mut CompactingReducer)
+        // Still replay-deterministic across multiple compaction cycles (log read back from the source).
+        let replayed = Session::replay(replay_input(&captured), &mut CompactingReducer)
             .await
             .expect("replay a multi-cycle-compacted session");
         assert_eq!(
@@ -5154,6 +5225,7 @@ mod monotonic_now_tests {
 // time_out_effect), so a terminated session's log tail STAYS the terminal marker (github-liaison #2381).
 #[cfg(test)]
 mod lifecycle_tests {
+    use super::test_log_source::*;
     use super::*;
     use crate::authz::Authorizer;
     use crate::effect::{Capability, EffectRequest, Payload, ResourcePredicate, Timeliness};
@@ -5313,6 +5385,7 @@ mod lifecycle_tests {
             Hash::of(b"lifecycle-term-replay-v1"),
             Hash::of(b"test-spawn-nonce"),
         );
+        let captured = attach_recording_sink(&mut s);
         s.deliver(
             inbound(),
             None,
@@ -5324,7 +5397,7 @@ mod lifecycle_tests {
         .unwrap();
         s.append(terminated_marker(), None).await;
 
-        let recovered = Session::replay(s.log().to_vec(), &mut TimerArmingReducer)
+        let recovered = Session::replay(replay_input(&captured), &mut TimerArmingReducer)
             .await
             .expect("replay of a terminated log succeeds");
         assert!(
@@ -5525,6 +5598,7 @@ mod lifecycle_tests {
     #[tokio::test(flavor = "current_thread")]
     async fn record_spawn_appends_parent_child_edges_readable_and_replay_stable() {
         let mut parent = Session::genesis(Hash::of(b"parent-reducer"), Hash::of(b"parent-nonce"));
+        let captured = attach_recording_sink(&mut parent);
         parent
             .deliver(
                 inbound(),
@@ -5573,7 +5647,7 @@ mod lifecycle_tests {
         );
 
         // Replay-stable: a session recovered from the log has the same spawn edges.
-        let replayed = Session::replay(parent.log().to_vec(), &mut TimerArmingReducer)
+        let replayed = Session::replay(replay_input(&captured), &mut TimerArmingReducer)
             .await
             .expect("replay of a log with Spawned edges succeeds");
         assert_eq!(
