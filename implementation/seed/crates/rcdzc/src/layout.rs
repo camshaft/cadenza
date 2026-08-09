@@ -602,6 +602,36 @@ pub fn source_boundary_name(emitted_name: &str) -> &str {
     }
 }
 
+/// The boundary export names for an ORDERED cross-edge slice, guaranteed UNIQUE. Each edge's name is
+/// [`source_boundary_name`] of its def name; when that is unique across the slice (the common case — one
+/// shared library function per base name) the result is byte-identical to mapping `source_boundary_name`
+/// directly. But two DISTINCT specializations of one base — effect specs `f#eff529`/`f#eff531`, or two
+/// monomorphizations `f#mono3`/`f#mono7` — both strip to the same base `f`, so if both cross the provider
+/// boundary they would export TWICE under `f`: a DUPLICATE component export name, which is invalid wasm
+/// (`failed to parse WebAssembly module`, caught only at load). This disambiguates the 2nd+ occurrence of a
+/// colliding base with a deterministic letter-led kebab suffix (`f-dup2`, `f-dup3`, …) so every export is
+/// unique and a valid extern name, re-bumping if a disambiguated name would itself collide with another
+/// edge's base. The derivation is a pure function of the (order-fixed) edge slice, so the PROVIDER export
+/// order and every CONSUMER import order name the same interface func at the same position — the shared
+/// provider↔consumer boundary-name convention both [`compute_provider_for_edges`] and
+/// [`compute_tests_consumer`] MUST derive identically (they both call THIS).
+pub fn boundary_export_names(db: &Db, edges: &[usize]) -> Vec<String> {
+    let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut out: Vec<String> = Vec::with_capacity(edges.len());
+    for &def in edges {
+        let base = source_boundary_name(&db.defs[def].name).to_string();
+        let mut name = base.clone();
+        let mut k = 2usize;
+        while used.contains(&name) {
+            name = format!("{base}-dup{k}");
+            k += 1;
+        }
+        used.insert(name.clone());
+        out.push(name);
+    }
+    out
+}
+
 pub fn compute_shared_closure_provider(
     db: &mut Db,
     test_layout: &Layout,
@@ -627,16 +657,16 @@ pub fn compute_provider_for_edges(db: &mut Db, edges: &[usize]) -> Result<Layout
             "no shared closure: the @tests call no imported (cross-file) definition",
         ));
     }
+    // The boundary export name for each edge — its SOURCE name (NOT its emitted name, which for a TRANSFORMED
+    // def carries an internal `$`/`#`-marked suffix — `f$acc`, `f#monoN`, `f#effN` — invalid in a component
+    // extern name), DISAMBIGUATED so two distinct specializations of one base (`f#eff529`/`f#eff531`) do not
+    // both export as bare `f` (a duplicate export name → invalid wasm). `boundary_export_names` derives this
+    // as a pure function of the order-fixed edge slice, so the CONSUMER side (increment c) derives the SAME
+    // names at the SAME positions — the shared provider↔consumer boundary-name convention.
+    let names = boundary_export_names(db, edges);
     let mut exports: Vec<ExportPlan> = Vec::new();
-    for &def in edges {
-        // The boundary export name is the def's SOURCE name — NOT its emitted name, which for a
-        // TRANSFORMED def carries an internal suffix (`f$acc` from the linear-non-tail-recursion accumulator
-        // rewrite, `f#monoN` from monomorphization) that contains `$`/`#` — invalid in a component extern
-        // name (ASCII kebab only), so it would be rejected by `invalid_kebab_export_name`. The suffix is
-        // ALWAYS appended (`{base}$acc` / `{base}#monoN`), so the source base is everything before the FIRST
-        // `$` or `#`. The CONSUMER side (increment c) must derive the import name the SAME way, so both
-        // agree on the interface func name — this is the shared provider↔consumer boundary-name convention.
-        let name = source_boundary_name(&db.defs[def].name).to_string();
+    for (ei, &def) in edges.iter().enumerate() {
+        let name = names[ei].clone();
         let body = match db.defs[def].body {
             Some(b) => b,
             None => {
@@ -719,9 +749,12 @@ pub fn compute_tests_consumer(
     let mut additions: Vec<(String, String)> = Vec::new();
     let mut import_map: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
     let base = layout.extern_order.len();
+    // Derive the import op names the SAME way the provider derives its export names (`boundary_export_names`
+    // over the SAME order-fixed `provider_edges` slice), so the consumer imports match the provider exports
+    // by name AND position — including the disambiguation of two specializations of one base (`f`/`f-dup2`).
+    let op_names = boundary_export_names(db, provider_edges);
     for (i, &def) in provider_edges.iter().enumerate() {
-        let op = source_boundary_name(&db.defs[def].name).to_string();
-        additions.push((closure_iface.to_string(), op));
+        additions.push((closure_iface.to_string(), op_names[i].clone()));
         import_map.insert(def, base + i);
     }
     Ok(layout.with_cross_edge_imports(additions, import_map))

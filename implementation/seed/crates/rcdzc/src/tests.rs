@@ -80667,6 +80667,63 @@ mod sidecar_driven {
     }
 
     #[test]
+    fn boundary_export_names_disambiguate_two_specializations_of_one_base() {
+        // REGRESSION (invalid-wasm on spine growth, v-compiler-ml lazy-Db-via-effects). The effect group
+        // fold specializes a recursive performer per handler-context, minting `{base}#eff{N}`; a query
+        // group's mutual performer (`type-of`) can specialize MORE THAN ONCE (distinct call-shapes), so two
+        // specs `type-of#eff529`/`type-of#eff531` both cross the Option-C shared-closure provider boundary.
+        // `source_boundary_name` strips the `#effN` suffix, so BOTH stripped to bare `type-of` → the provider
+        // exported `type-of` TWICE → a duplicate component export name → invalid wasm ("failed to parse
+        // WebAssembly module", caught only at load). `boundary_export_names` disambiguates the 2nd+ collision
+        // with a letter-led kebab suffix so every export is unique AND a valid extern name, and derives it as
+        // a pure function of the ordered edge slice so provider export == consumer import at each position.
+        use crate::db::Def;
+        let mut db = crate::db::Db::load(parse("(module m (def (main) 0) (export main))"));
+        let push = |db: &mut crate::db::Db, name: &str| -> usize {
+            let sig_name = db.push_name(name);
+            let sig = db.push_list(vec![sig_name]);
+            let body = db.push_name("0");
+            db.defs.push(Def {
+                name: name.to_string(),
+                sig_occ: sig,
+                params: Vec::new(),
+                body: Some(body),
+                internal: false,
+            });
+            db.defs.len() - 1
+        };
+        // Two specializations of `type-of` + one unique helper + an accumulator-rewritten `f$acc`.
+        let e0 = push(&mut db, "type-of#eff529");
+        let e1 = push(&mut db, "type-of#eff531");
+        let e2 = push(&mut db, "cache-type#eff530");
+        let e3 = push(&mut db, "helper$acc");
+        let e4 = push(&mut db, "type-of#eff533"); // a THIRD spec of the same base
+        let edges = vec![e0, e1, e2, e3, e4];
+        let names = crate::layout::boundary_export_names(&db, &edges);
+        assert_eq!(
+            names,
+            vec![
+                "type-of".to_string(),
+                "type-of-dup2".to_string(),
+                "cache-type".to_string(),
+                "helper".to_string(),
+                "type-of-dup3".to_string(),
+            ],
+            "distinct specs of one base must get UNIQUE boundary names; a unique base is unchanged"
+        );
+        // The names must be unique (the invariant the wasm boundary requires) and derivation-stable: the same
+        // ordered slice yields the same names (provider export order == consumer import order by construction).
+        let n2 = crate::layout::boundary_export_names(&db, &edges);
+        assert_eq!(names, n2, "derivation is a pure function of the edge slice");
+        let unique: std::collections::HashSet<_> = names.iter().collect();
+        assert_eq!(
+            unique.len(),
+            names.len(),
+            "every boundary export name is unique"
+        );
+    }
+
+    #[test]
     fn def_content_hash_is_invariant_to_the_monomorph_mint_counter() {
         // REGRESSION (gate perf, v-cdz-tooling coordination): a monomorphized specialization mints its name
         // `{base}#mono{db.defs.len()}` (lower.rs), and `db.defs.len()` at mint time is RUN-VARYING. Two
