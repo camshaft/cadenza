@@ -336,6 +336,14 @@ impl Session {
         self.tip.seq + 1
     }
 
+    /// The session's TIP event (its most-recent log entry), held resident (log-decouple I1). This is the
+    /// derived replacement for `log().last()` — callers reading the tail's hash/body/cause read it here,
+    /// off the resident field, so they stop depending on the resident log Vec ahead of its removal (I5
+    /// step 3). The log is always genesis-seeded (never empty), so the tip always exists — no `Option`.
+    pub fn tip(&self) -> &Event {
+        &self.tip
+    }
+
     /// The reason this session MOST-RECENTLY faulted, or `None` if its tip isn't a fault. A session
     /// whose tip event is a [`EventBody::FoldFailed`] (§17: a reducer trap / fuel-exhaustion /
     /// instantiate failure the kernel captures as a first-class log event rather than a silent stall)
@@ -5453,7 +5461,7 @@ mod lifecycle_tests {
         let len_before = s.event_count();
         assert!(!s.is_terminated());
         // Capture the prior tip so we can ASSERT the marker's causal edge points at it (not just claim it).
-        let prior_tip = s.log().last().expect("a tip before terminate").hash();
+        let prior_tip = s.tip().hash();
 
         // terminate() appends the marker (log grows by exactly 1) + returns its hash; the reducer did NOT
         // run on it (fold-free) — the marker is the tail, cause-linked to the prior tip.
@@ -5468,7 +5476,7 @@ mod lifecycle_tests {
             "terminate appends exactly one event"
         );
         assert!(s.is_terminated(), "the session is now terminated");
-        let tail = s.log().last().expect("tail");
+        let tail = s.tip();
         assert_eq!(
             tail.hash(),
             marker_hash,
@@ -5537,14 +5545,14 @@ mod lifecycle_tests {
         let child_a = Hash::of(b"child-a-genesis");
         let child_b = Hash::of(b"child-b-genesis");
         let len_before = parent.event_count();
-        let prior_tip = parent.log().last().expect("tip").hash();
+        let prior_tip = parent.tip().hash();
         let edge_a = parent.record_spawn(child_a).await.expect("record child A");
         assert_eq!(
             parent.event_count(),
             len_before + 1,
             "record_spawn appends exactly one event"
         );
-        let tail_a = parent.log().last().expect("tail");
+        let tail_a = parent.tip();
         assert_eq!(
             tail_a.hash(),
             edge_a,
