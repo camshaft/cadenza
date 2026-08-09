@@ -7087,3 +7087,6 @@ pass	a recursive round with a let draw and a bare do-discarded draw threads the 
 pass	rp2 a RECORD op argument read by field beside an inner sum-state match — the record-payload face of the per-dispatch arm
 pass	rp3 the record payload carries a NESTED record — two-level field projection inside the arm beside the state match
 pass	gp1 a match GUARD inside the handler ARM compares the op PAYLOAD against the live STATE binder — the guard routes admit/reject per dispatch
+pass	gp3 the guard condition calls a PURE HELPER over the state binder — purity analysis admits the def call in guard position
+pass	gp4 a guard LADDER in the arm — two guarded arms with different state-derived thresholds classify each payload three ways
+pass	gp5 the guard DESTRUCTURES the tuple payload AND reads the state — (guard (tuple a b) (> (+ a b) s)) admits by the pair's sum against the live threshold

@@ -21547,3 +21547,62 @@
   (call   main (: 5 Int64)) (output (: 0 Int64))
   (call   main (: 0 Int64)) (output (: 11 Int64))
   (call   main (: -3 Int64)) (output (: 11 Int64)))
+
+
+; ── Guard conditions over the LIVE STATE in handler-arm position (breaker gp follow-ons) ──────
+; Extends the landed gp1 state-read guard with three faces of the arm-guard purity boundary.
+; gp3: the guard condition calls a PURE HELPER over the state binder — purity analysis admits a
+; pure def call in guard position (a PERFORMING guard is CDZ0407-rejected by design). gp4: a
+; guard LADDER — two guarded arms with different state-derived thresholds (2s, then s) classify
+; each payload three ways, pinning first-match-wins ordering over state-reading guards in ARM
+; position (the gl family pins let-lifted BODY ladders). gp5: the guard DESTRUCTURES the tuple
+; payload AND reads the state in one condition — admit by the pair's sum against the live
+; threshold, with an admit-admit row via a negative seed. All rows hand-computed; all pass on
+; wasm, rust, and rust-async.
+
+(case "gp3 the guard condition calls a PURE HELPER over the state binder — purity analysis admits the def call in guard position"
+  (input  (do
+            (effect E (op judge (-> Int64 Int64)))
+            (def (sq (: t Int64)) (* t t))
+            (def (main (: n Int64))
+              (handle E n
+                ((judge (v) s
+                  (match v
+                    ((guard x (> x (sq s))) (resume 1 (+ s x)))
+                    (_x (resume 0 s)))))
+                (+ (* 10 (E.judge 5)) (E.judge 50))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 11 Int64))
+  (call   main (: 0 Int64)) (output (: 11 Int64))
+  (call   main (: -4 Int64)) (output (: 1 Int64)))
+
+(case "gp4 a guard LADDER in the arm — two guarded arms with different state-derived thresholds classify each payload three ways"
+  (input  (do
+            (effect E (op classify (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((classify (v) s
+                  (match v
+                    ((guard x (> x (* 2 s))) (resume 2 (+ s 1)))
+                    ((guard x (> x s)) (resume 1 (+ s 1)))
+                    (_x (resume 0 s)))))
+                (+ (* 10 (E.classify 8)) (E.classify 3))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 22 Int64))
+  (call   main (: 4 Int64)) (output (: 10 Int64))
+  (call   main (: 9 Int64)) (output (: 0 Int64)))
+
+(case "gp5 the guard DESTRUCTURES the tuple payload AND reads the state — (guard (tuple a b) (> (+ a b) s)) admits by the pair's sum against the live threshold"
+  (input  (do
+            (effect E (op rate (-> (Tuple Int64 Int64) Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((rate (p) s
+                  (match p
+                    ((guard (tuple a b) (> (+ a b) s)) (resume (+ (* 10 a) b) (+ s (+ a b))))
+                    ((tuple _a _b) (resume 0 s)))))
+                (+ (* 100 (E.rate (tuple 3 4))) (E.rate (tuple 1 2)))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 3400 Int64))
+  (call   main (: 8 Int64)) (output (: 0 Int64))
+  (call   main (: -5 Int64)) (output (: 3412 Int64)))
