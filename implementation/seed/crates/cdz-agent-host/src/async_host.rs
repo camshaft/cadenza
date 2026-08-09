@@ -281,6 +281,41 @@ async fn apply_lifecycle_ops(
     Ok(())
 }
 
+/// Drain + APPLY the userspace-effect reply-settle commands (design DESIGN-userspace-effects I4, loop-side).
+/// A [`ReplyExecutor`](crate::reply_exec::ReplyExecutor) running in a HANDLER session validated an
+/// `effect/reply` into a [`ReplySettle`](crate::reply_exec::ReplySettle) `{caller, effect_id, outcome}` and
+/// enqueued it here (it can't settle the CALLER's session from inside its own `perform` — the caller's
+/// reducer/authz/executor aren't in scope), the same defer-to-loop shape [`apply_lifecycle_ops`] uses for
+/// `lifecycle/*`. The loop drains after each `deliver` (where `&mut host` is free) and folds each outcome onto
+/// the caller's OPEN (Deferred) effect via [`AgentHost::settle_reply`](crate::host::AgentHost::settle_reply) —
+/// resuming the caller's continuation, closing request→forward→reply→settle.
+///
+/// A settle to an ABSENT caller (gone/terminated between forward + reply) or an already-settled id is a benign
+/// no-op (`settle_reply` returns `false`), logged at debug — a late/stale reply can't corrupt a log. Infallible
+/// from the loop's view (a deferred-effect settle opens no new failure path — a bad settle is a no-op, not an
+/// append fault), so unlike `apply_lifecycle_ops` there is no `KernelError` return.
+async fn apply_reply_settles(
+    host: &mut AgentHost,
+    reply_settle_rx: &mut mpsc::UnboundedReceiver<crate::reply_exec::ReplySettle>,
+) {
+    while let Ok(settle) = reply_settle_rx.try_recv() {
+        let crate::reply_exec::ReplySettle {
+            caller,
+            effect_id,
+            outcome,
+        } = settle;
+        let landed = host.settle_reply(&caller, effect_id, outcome).await;
+        if !landed {
+            tracing::debug!(
+                target: "cdz_agent_host::userspace_effect",
+                caller = %caller.as_str(),
+                effect_id = effect_id.0,
+                "effect/reply settle was a no-op (caller gone/terminated or effect already settled)"
+            );
+        }
+    }
+}
+
 /// One admin command routed to the host loop with a reply channel — the in-process half of the admin
 /// CONTROL INTERFACE. A producer (the future Unix-socket listener, or a test) sends this on the
 /// [`AdminChannel`]; the loop applies it via [`AgentHost::apply_admin`] on the single-threaded loop task
@@ -341,6 +376,15 @@ pub struct AsyncAgentHost {
     /// Retained sender for the lifecycle channel — cloned to each session's [`LifecycleExecutor`]. The loop
     /// drops its own copy at start (like `tx`/`admin_tx`) so the channel closes when the last executor drops.
     lifecycle_tx: LifecycleChannel,
+    /// The userspace-effect reply-settle receiver (design DESIGN-userspace-effects I4): a session's
+    /// [`ReplyExecutor`](crate::reply_exec::ReplyExecutor) enqueues a [`ReplySettle`](crate::reply_exec::ReplySettle)
+    /// here (it can't settle the CALLER's session from its own `perform`), and the loop DRAINS + APPLIES it
+    /// after each `deliver` via [`apply_reply_settles`] — the same defer-to-loop shape as `lifecycle_rx`.
+    reply_settle_rx: mpsc::UnboundedReceiver<crate::reply_exec::ReplySettle>,
+    /// Retained sender for the reply-settle channel — the daemon wires a clone into each session's
+    /// [`ReplyExecutor`] (via [`LiveExecutorSet::with_userspace_effects`](crate::factory::LiveExecutorSet)). The
+    /// loop drops its own copy at start so the channel closes when the last executor drops.
+    reply_settle_tx: crate::reply_exec::ReplySettleSink,
     /// The durable SESSION REGISTRY (I4b), if the daemon configured one — the index the loop keeps current so
     /// boot-recovery can enumerate + re-register sessions after a restart. When present, the loop calls
     /// `register` after a successful install (below) and `mark_terminated` after a terminate (a following
@@ -431,6 +475,7 @@ impl AsyncAgentHost {
     ) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
         let (admin_tx, admin_rx) = mpsc::unbounded_channel();
+        let (reply_settle_tx, reply_settle_rx) = crate::reply_exec::reply_settle_channel();
         AsyncAgentHost {
             host,
             rx,
@@ -441,6 +486,8 @@ impl AsyncAgentHost {
             admin_authz,
             lifecycle_rx,
             lifecycle_tx,
+            reply_settle_rx,
+            reply_settle_tx,
             #[cfg(feature = "live-aws-storage")]
             session_registry: None,
         }
@@ -465,6 +512,15 @@ impl AsyncAgentHost {
     /// id as the `owner`), the way the `Emit` executor gets [`inbox`](Self::inbox).
     pub fn lifecycle_channel(&self) -> LifecycleChannel {
         self.lifecycle_tx.clone()
+    }
+
+    /// A clone of the loop's reply-settle sink (userspace-effects I4) — the daemon wires this into each
+    /// session's [`ReplyExecutor`](crate::reply_exec::ReplyExecutor) via
+    /// [`LiveExecutorSet::with_userspace_effects`](crate::factory::LiveExecutorSet), so a handler's
+    /// `effect/reply` enqueues a [`ReplySettle`](crate::reply_exec::ReplySettle) the loop drains + folds onto
+    /// the caller. Mirrors [`lifecycle_channel`](Self::lifecycle_channel).
+    pub fn reply_settle_sink(&self) -> crate::reply_exec::ReplySettleSink {
+        self.reply_settle_tx.clone()
     }
 
     /// A cloneable sender to feed inbound events into the loop. Every producer that wants to deliver to a
@@ -526,6 +582,8 @@ impl AsyncAgentHost {
             admin_authz,
             mut lifecycle_rx,
             lifecycle_tx,
+            mut reply_settle_rx,
+            reply_settle_tx,
             #[cfg(feature = "live-aws-storage")]
             session_registry,
         } = self;
@@ -539,6 +597,11 @@ impl AsyncAgentHost {
         // DRAIN lifecycle_rx synchronously (try_recv) after each deliver rather than select! on it — a
         // lifecycle op is only ever produced BY a deliver on this same task, so there's nothing to wait for.
         drop(lifecycle_tx);
+        // Same for the reply-settle channel (userspace-effects I4): drop our retained sender so it isn't kept
+        // open by the loop (each session's ReplyExecutor holds its own clone from `reply_settle_sink()`).
+        // DRAINED synchronously (try_recv) after each deliver like lifecycle_rx — a ReplySettle is only ever
+        // produced BY a deliver on this same task (a handler's effect/reply dispatch), so nothing to await.
+        drop(reply_settle_tx);
         // Same for the admin channel: drop our retained sender so `admin_rx.recv()` yields `None` once the
         // last external admin producer (the socket listener) drops its clone. The admin channel closing is
         // NOT a loop-exit condition on its own (an admin-less run still serves inbound + timers) — a closed
@@ -739,6 +802,13 @@ impl AsyncAgentHost {
                 now_ms(),
             )
             .await?;
+
+            // Apply any userspace-effect reply-settles a session's ReplyExecutor recorded this iteration
+            // (userspace-effects I4 defer-to-loop): a handler's effect/reply enqueued a ReplySettle it
+            // couldn't apply itself (the caller's session state isn't in scope from the handler's perform) —
+            // fold each onto the caller's open Deferred effect now that `&mut host` is free. Infallible (a
+            // deferred-effect settle can't corrupt the log; an absent/settled id is a benign no-op).
+            apply_reply_settles(&mut host, &mut reply_settle_rx).await;
 
             // A lifecycle op may have RESUMED a session (§lifecycle I4): replay any inbound held for a
             // now-un-suspended target. Deliver each in-place (still-suspended ones stay held). Partition:
