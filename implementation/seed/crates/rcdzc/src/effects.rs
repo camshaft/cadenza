@@ -4702,6 +4702,33 @@ fn multivalue_leaves_threadable(db: &mut Db, body: StructId, callee_def: usize) 
                     .iter()
                     .all(|&(_, arm_body)| multivalue_leaves_threadable(db, arm_body, callee_def))
         }
+        // A `(let (inits…) dispatch)` whose body is an `if`/`match` — finding #12. `thread_returning_tuple`
+        // descends this (threading the inits, recursing on the body dispatch), so the pre-check must mirror
+        // it: the inits are on the unconditional strict spine (no self-call may be gated behind a conditional
+        // THERE), and the body dispatch's own leaves must be threadable. Without this the whole `let` fell to
+        // the leaf case below and `selfcall_under_conditional` saw the body's tail self-call under the `if` →
+        // rejected, forcing single-return (the trailing-observer miscompile).
+        _ if db.ast.as_form(body, "let").map(|t| t.len()) == Some(2) && {
+            let form = db.ast.as_form(body, "let").unwrap().to_vec();
+            matches!(
+                resolved_of(db, form[1]),
+                Resolved::If { .. } | Resolved::Match { .. }
+            )
+        } =>
+        {
+            let form = db.ast.as_form(body, "let").unwrap().to_vec();
+            let (bindings_occ, body_occ) = (form[0], form[1]);
+            let inits_ok = match db.ast.get(bindings_occ).clone() {
+                Struct::List(pairs) => pairs.iter().all(|&pair| match db.ast.get(pair).clone() {
+                    Struct::List(kv) if kv.len() == 2 => {
+                        !selfcall_under_conditional(db, kv[1], callee_def)
+                    }
+                    _ => false,
+                }),
+                _ => false,
+            };
+            inits_ok && multivalue_leaves_threadable(db, body_occ, callee_def)
+        }
         _ => !selfcall_under_conditional(db, body, callee_def),
     }
 }
@@ -4806,6 +4833,52 @@ fn thread_returning_tuple(
             }
             let match_node = db.push_list(children);
             Some(drain_and_wrap(db, ctx, mark, match_node))
+        }
+        // A `(let ((n init)…) dispatch)` whose BODY is itself a dispatch (`if`/`match`) holding the tail
+        // self-call — finding #12 (`walk k = let d = E.next in (if … (walk (+ k 1))))`). The leaf arm below
+        // would treat the whole `let` as one leaf and `selfcall_under_conditional` would see the self-call
+        // under the body's `if` → decline, dropping the recursion to single-return (the trailing-observer
+        // reads the PRE-call state, 705 vs 708). Instead THREAD the inits (each may perform — advancing
+        // state), then recurse `thread_returning_tuple` on the body under the post-init state, and rebuild the
+        // `let` around the body's tuple so the binders stay in scope. Only descend when the body is a
+        // dispatch (the shape this arm handles); a plain-leaf `let` body still routes through the leaf arm
+        // below (a self-call directly in a leaf `let` is bound by `thread_bounded`, unchanged). The inits are
+        // threaded with `thread_bounded` exactly as the ordinary `let` arm does; a self-call IN an init is on
+        // the unconditional strict spine and pushes a pending temp drained by the wrapping `drain_and_wrap`.
+        _ if db.ast.as_form(body, "let").map(|t| t.len()) == Some(2) && {
+            let form = db.ast.as_form(body, "let").unwrap().to_vec();
+            matches!(
+                resolved_of(db, form[1]),
+                Resolved::If { .. } | Resolved::Match { .. }
+            )
+        } =>
+        {
+            let form = db.ast.as_form(body, "let").unwrap().to_vec();
+            let (bindings_occ, body_occ) = (form[0], form[1]);
+            let Struct::List(pairs) = db.ast.get(bindings_occ).clone() else {
+                return None;
+            };
+            let mark = ctx.pending.borrow().len();
+            let mut cur = states;
+            let mut rpairs = Vec::with_capacity(pairs.len());
+            for pair in pairs {
+                let Struct::List(kv) = db.ast.get(pair).clone() else {
+                    return None;
+                };
+                if kv.len() != 2 {
+                    return None;
+                }
+                let name_copy = copy_pure(db, kv[0]);
+                let (rinit, next) = thread_bounded(db, kv[1], cur, ctx, 0)?;
+                cur = next;
+                rpairs.push(db.push_list(vec![name_copy, rinit]));
+            }
+            // The body dispatch is the let's tail — thread it returning a tuple under the post-init state.
+            let rbody = thread_returning_tuple(db, body_occ, cur, ctx, callee_def)?;
+            let let_head = db.push_name("let");
+            let bindings = db.push_list(rpairs);
+            let rlet = db.push_list(vec![let_head, bindings, rbody]);
+            Some(drain_and_wrap(db, ctx, mark, rlet))
         }
         // A LEAF tail expression — an operator/operand spine, a `let`, a tuple/ctor, a bare value, or a
         // perform. Thread it: any self-call on its unconditional strict spine pushes a pending temp (the

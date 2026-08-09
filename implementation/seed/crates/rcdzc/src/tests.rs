@@ -10899,6 +10899,47 @@ fn a_cross_function_fold_with_no_observed_outstate_stays_single_return() {
     }
 }
 
+/// FINDING #12 (breaker, silent 3-backend miscompile — a REGRESSION from #2866's self-recursive admission).
+/// A SELF-recursive performer whose body is a `let`-WRAPPED dispatch — `walk k = (let ((d (E.next))) (if (=
+/// (% d 7) 0) (* 100 d) (walk (+ k 1))))` — followed by a TRAILING draw that observes its out-state:
+/// `(let ((w (walk 0))) (+ w (E.next)))`. The trailing `(E.next)` must read the state AFTER walk's internal
+/// draws (n=5 draws 5,6,7 → post-state 8), but the single-return path returned the PRE-call state, so the
+/// trailing draw read the seed (705 instead of 708). `mark_caller_observed_outstate` correctly flagged the
+/// observation, but `multivalue_leaves_threadable` / `thread_returning_tuple` did not DESCEND the `let`
+/// wrapping the dispatch — they treated the whole `let` as one leaf and rejected the tail self-call as
+/// "under a conditional", forcing single-return. The fix adds a `let`-wrapped-dispatch arm to both: thread
+/// the inits, recurse into the body dispatch, rebuild the `let`. Now it FOLDS correctly (not a decline).
+#[test]
+fn a_let_wrapped_recursive_dispatch_threads_outstate_to_a_trailing_observer() {
+    use crate::testkit::parse;
+    // A nullary main seeded at n so the component links via `run_linked` (skip-if-no-runtime, the heap-test
+    // pattern — the multi-value out-state threading builds a heap tuple). n=5: walk draws 5,6,7 (7%7==0) →
+    // w=700; post-walk state=8; trailing (E.next)=8 → 708 (was 705, the pre-call seed).
+    let mk = |seed: i64| {
+        format!(
+            "(do (effect E (op next (-> Int64))) \
+             (def (walk (: k Int64)) \
+               (let ((d (E.next))) (if (= (% d 7) 0) (* 100 d) (walk (+ k 1))))) \
+             (def (main) \
+               (handle E {seed} ((next () s (resume s (+ s 1)))) \
+                 (let ((w (walk 0))) (+ w (E.next))))) \
+             (export main))"
+        )
+    };
+    // Each seed FOLDS (the compile must succeed — the core fix; the runtime run is a bonus when present).
+    for (seed, expect) in [(5i64, "708"), (7, "708"), (12, "1415")] {
+        let comp = compile_component(&crate::codec::encode(&parse(&mk(seed)))).expect(
+            "a let-wrapped recursive dispatch must fold, threading its out-state to the trailing observer",
+        );
+        if let Some(v) = run_linked(&comp, "main") {
+            assert_eq!(
+                v, expect,
+                "seed {seed}: the trailing draw must read the POST-walk state (not the pre-call seed)"
+            );
+        }
+    }
+}
+
 /// FIXED (breaker finding, was a CHECK/COMPILE DIVERGENCE — a spurious decline of a well-typed program).
 /// `(def (main (: k Int64)) (handle St k ((get (u) s (resume s s))) (St.get)))` — a RUNTIME-seeded handler
 /// whose IDENTITY arm resumes the seed unchanged through a BARE-perform body. `cdz check` solved the result
