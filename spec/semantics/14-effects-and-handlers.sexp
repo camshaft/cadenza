@@ -20454,3 +20454,197 @@
   (call   main (: 3 Int64)) (output (: -3 Int64))
   (call   main (: 0 Int64)) (output (: 1 Int64))
   (call   main (: -5 Int64)) (output (: -11 Int64)))
+
+
+; ── Handle-composition follow-ons, abort-value chains, and compound data through the thread ──
+; Follow-ons to the batch-196 position matrix: two SEQUENTIAL handles of the SAME inner effect,
+; each seeded by a fresh outer draw (sq1 — sibling re-instantiation, independent inner threads);
+; a CONDITIONALLY-aborting handle inside a SEED whose condition draw comes from the outer thread
+; (sab1 — the finding-#11 shape class exercised at the seed position, abort value or fall-through
+; both becoming the outer init); a do-def binding a whole cross-effect handle region (dd5); and a
+; draw seeding a mid-body handler install whose install expression itself performs (ex1). Abort
+; data flow: the abort VALUE built by a three-op chain, every hop advancing the enclosing thread
+; before the unwind (a2p1). Compound data through the thread: a Bool op argument computed from a
+; draw's residue, the arm branching on the delivered flag — incl. the negative-residue face (hb1);
+; a tuple-returning op whose destructured halves feed TWO different later ops (ts1); a def
+; returning a tuple of two draws destructured by the caller (tb1); a NESTED tuple state rebuilt
+; two levels deep per dispatch (nt1); and a Map with TUPLE values, draw-keyed inserts and
+; destructuring lookups (ml1). All rows hand-computed; all pass on wasm, rust, and rust-async.
+
+(case "sq1 two SEQUENTIAL handles of the SAME inner effect, each seeded by a fresh outer draw — independent inner threads, one advancing outer thread"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (effect B (op get (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1))))
+                (+ (handle B (E.next)
+                     ((get (u) t (resume t (+ t 2))))
+                     (+ (B.get) (B.get)))
+                   (handle B (* 10 (E.next))
+                     ((get (u) t (resume t (+ t 3))))
+                     (+ (B.get) (B.get))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 135 Int64))
+  (call   main (: 0 Int64)) (output (: 25 Int64))
+  (call   main (: -3 Int64)) (output (: -41 Int64)))
+
+(case "sab1 a CONDITIONALLY-aborting handle inside the SEED — the abort value or the fall-through both become the outer init"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (effect B (op get (-> Unit Int64)))
+            (effect Bail (op out (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1))))
+                (+ (handle B
+                     (handle Bail 0
+                       ((out (v) t (+ 100 v)))
+                       (let ((d (E.next)))
+                         (if (> d 0) (do (Bail.out d) 999) (* 5 d))))
+                     ((get (u) t (resume t (+ t 1))))
+                     (+ (B.get) (* 10 (B.get))))
+                   (E.next))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 1171 Int64))
+  (call   main (: 0 Int64)) (output (: 11 Int64))
+  (call   main (: -2 Int64)) (output (: -101 Int64)))
+
+(case "hb1 a BOOL op argument computed by comparing a draw's residue — the arm branches on the delivered flag against live state"
+  (input  (do
+            (effect E (op next (-> Int64)) (op judge (-> Bool Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1)))
+                 (judge (f) s (resume (if f (+ 100 s) (- 0 s)) (+ s 5))))
+                (do (E.next)
+                    (+ (E.judge (= (% (E.next) 3) 0)) (E.next)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 119 Int64))
+  (call   main (: 2 Int64)) (output (: 113 Int64))
+  (call   main (: 0 Int64)) (output (: 5 Int64))
+  (call   main (: -4 Int64)) (output (: 101 Int64)))
+
+(case "ts1 a tuple-returning op SPLIT-refed — each destructured half feeds a DIFFERENT later op against advancing state"
+  (input  (do
+            (effect E (op split (-> (Tuple Int64 Int64)))
+                      (op mixa (-> Int64 Int64))
+                      (op mixb (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((split () s (resume (tuple s (* 2 s)) (+ s 1)))
+                 (mixa (a) s (resume (+ a s) (+ s 2)))
+                 (mixb (b) s (resume (* b s) s)))
+                (match (E.split)
+                  ((tuple a b) (+ (E.mixa a) (E.mixb b))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 91 Int64))
+  (call   main (: 0 Int64)) (output (: 1 Int64))
+  (call   main (: -3 Int64)) (output (: -5 Int64)))
+
+(case "a2p1 the abort VALUE is a three-op chain — every hop advances the enclosing thread before the region tears down"
+  (input  (do
+            (effect E (op a (-> Int64)) (op b (-> Int64 Int64)) (op c (-> Int64 Int64)) (op probe (-> Int64)))
+            (effect Bail (op out (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((a () s (resume s (+ s 2)))
+                 (b (x) s (resume (+ x s) (+ s 3)))
+                 (c (x) s (resume (* 2 x) (+ s 5)))
+                 (probe () s (resume s s)))
+                (+ (* 10 (handle Bail 0
+                           ((out (v) t (+ 1000 v)))
+                           (+ (Bail.out (E.c (E.b (E.a)))) 777)))
+                   (- (E.probe) n))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 10130 Int64))
+  (call   main (: 0 Int64)) (output (: 10050 Int64))
+  (call   main (: -4 Int64)) (output (: 9890 Int64)))
+
+(case "ml1 a Map whose VALUES are tuples — a draw-keyed insert of a drawn pair, lookups destructure both hit and neighbor"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (def (get2 (: m (Map Int64 (Tuple Int64 Int64))) (: k Int64))
+              (match (Map.lookup m k)
+                ((Some p) p)
+                ((None) (tuple -1 -1))))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 2))))
+                (let ((k (+ (% (E.next) 3) 1)))
+                  (let ((v1 (E.next)))
+                    (let ((m (Map.insert (Map.insert (Map.insert (Map.insert (map) 1 (tuple 10 20)) 2 (tuple 30 40)) 3 (tuple 50 60)) k (tuple v1 (* 2 v1)))))
+                      (match (get2 m k)
+                        ((tuple a b)
+                          (match (get2 m (if (= k 1) 2 1))
+                            ((tuple c d) (+ a (+ b (+ c d))))))))))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 42 Int64))
+  (call   main (: 0 Int64)) (output (: 76 Int64))
+  (call   main (: 4 Int64)) (output (: 48 Int64)))
+
+(case "dd5 a do-def BINDS a whole cross-effect handle region — the region's seed draws from the outer thread"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (effect Q (op get (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1))))
+                (do (def r (handle Q (E.next)
+                             ((get () t (resume t t)))
+                             (Q.get)))
+                    (+ (* 100 r) (E.next)))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 304 Int64))
+  (call   main (: 0 Int64)) (output (: 1 Int64))
+  (call   main (: -4 Int64)) (output (: -403 Int64)))
+
+(case "tb1 a def RETURNS a tuple of two draws — the caller destructures the multi-value result of a performing helper"
+  (input  (do
+            (effect E (op next (-> Int64)) (op probe (-> Int64)))
+            (def (pair2)
+              (tuple (E.next) (E.next)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 3)))
+                 (probe () s (resume s s)))
+                (match (pair2)
+                  ((tuple a b) (+ (* 100 a) (+ (* 10 b) (- (E.probe) n)))))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 256 Int64))
+  (call   main (: 0 Int64)) (output (: 36 Int64))
+  (call   main (: -4 Int64)) (output (: -404 Int64)))
+
+(case "nt1 a NESTED tuple state (a (b c)) — the arm destructures two levels and rebuilds with three different strides"
+  (input  (do
+            (effect E (op sum (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (tuple n (tuple 100 7000))
+                ((sum () s (match s
+                             ((tuple a inner)
+                               (match inner
+                                 ((tuple b c)
+                                   (resume (+ a (+ b c))
+                                           (tuple (+ a 1) (tuple (+ b 10) (+ c 700))))))))))
+                (+ (E.sum) (* 10 (E.sum)))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 85243 Int64))
+  (call   main (: 0 Int64)) (output (: 85210 Int64))
+  (call   main (: -6 Int64)) (output (: 85144 Int64)))
+
+(case "ex1 a draw SEEDS a mid-body handler install for a different effect — the install expression itself performs"
+  (input  (do
+            (effect E (op next (-> Int64)) (op probe (-> Int64)))
+            (effect Q (op get (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1)))
+                 (probe () s (resume s s)))
+                (+ (handle Q (* 100 (E.next))
+                     ((get () t (resume t t)))
+                     (Q.get))
+                   (* 10 (- (E.probe) n)))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 310 Int64))
+  (call   main (: 0 Int64)) (output (: 10 Int64))
+  (call   main (: -2 Int64)) (output (: -190 Int64)))

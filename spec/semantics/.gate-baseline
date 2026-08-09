@@ -6985,3 +6985,13 @@ pass	pg1 a PUT/GET store — put returns the value it displaces, a counter track
 pass	wc1 the inner arm's resume value draws from TWO different outer effects — both threads advance per inner dispatch
 pass	shl1 an inner let SHADOWS a draw binder — the shadow scales it locally, the original stays visible after the shadow closes
 pass	ms1 a WHOLE nested handle expression as a MATCH's SCRUTINEE — the region builds an Option, the chosen arm draws again
+pass	sq1 two SEQUENTIAL handles of the SAME inner effect, each seeded by a fresh outer draw — independent inner threads, one advancing outer thread
+pass	sab1 a CONDITIONALLY-aborting handle inside the SEED — the abort value or the fall-through both become the outer init
+pass	hb1 a BOOL op argument computed by comparing a draw's residue — the arm branches on the delivered flag against live state
+pass	ts1 a tuple-returning op SPLIT-refed — each destructured half feeds a DIFFERENT later op against advancing state
+pass	a2p1 the abort VALUE is a three-op chain — every hop advances the enclosing thread before the region tears down
+pass	ml1 a Map whose VALUES are tuples — a draw-keyed insert of a drawn pair, lookups destructure both hit and neighbor
+pass	dd5 a do-def BINDS a whole cross-effect handle region — the region's seed draws from the outer thread
+pass	tb1 a def RETURNS a tuple of two draws — the caller destructures the multi-value result of a performing helper
+pass	nt1 a NESTED tuple state (a (b c)) — the arm destructures two levels and rebuilds with three different strides
+pass	ex1 a draw SEEDS a mid-body handler install for a different effect — the install expression itself performs
