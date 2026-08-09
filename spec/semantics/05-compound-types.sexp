@@ -17152,7 +17152,7 @@
   (input  (do (type C (A) (B))
               (def (f (: o (Option C))) (match o ((Some (A)) 1) ((None) 0)))
               (export f)))
-  (error  CDZ0210))
+  (error  CDZ0210 (message "not covered")))
 
 (case "a MULTI-PAYLOAD variant with a nested same-sum variant reads the right payload depth (known outer disc)"
   (doc    "The MULTI-PAYLOAD analogue of the recursive-sum nested-match miscompile (the single-payload
