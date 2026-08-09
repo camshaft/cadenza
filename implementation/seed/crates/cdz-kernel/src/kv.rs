@@ -15,14 +15,23 @@
 //! behavior-preserving optimization. The *interface* here is what the reducer sees, so it won't change.
 
 use crate::hash::Hash;
+use bytes::Bytes;
 use std::collections::BTreeMap;
 
 /// The reducer's key-value state. Keys and values are opaque bytes (the reducer defines their schema —
 /// §4). `BTreeMap` gives us a canonical key order for free, which is what makes both the root hash and
 /// `prefix_scan` deterministic.
+///
+/// VALUES are stored as [`Bytes`] (Arc-backed), not owned `Vec<u8>` (operator cheaply-clonable directive):
+/// [`Kv::clone`] is on the hot path — `fork_for_query` clones the whole KV per debug query, and the §4
+/// free-snapshot model conceptually clones per event — so a `Bytes` value makes a clone an O(entries)
+/// refcount-bump instead of an O(total-value-bytes) deep copy. The public API is UNCHANGED: `put` still
+/// takes `Vec<u8>` (converted to `Bytes` on insert, a move not a copy), `get`/`prefix_scan` still hand
+/// back `&[u8]`, and `encode`/`decode`/`root_hash` produce the identical frozen bytes — so no reducer,
+/// no caller, and no on-disk/CAS form changes. Keys stay `Vec<u8>` (small, and the BTreeMap ordering key).
 #[derive(Clone, Default, PartialEq, Eq, Debug)]
 pub struct Kv {
-    map: BTreeMap<Vec<u8>, Vec<u8>>,
+    map: BTreeMap<Vec<u8>, Bytes>,
 }
 
 impl Kv {
@@ -33,11 +42,13 @@ impl Kv {
     }
 
     pub fn get(&self, key: &[u8]) -> Option<&[u8]> {
-        self.map.get(key).map(|v| v.as_slice())
+        self.map.get(key).map(|v| v.as_ref())
     }
 
     pub fn put(&mut self, key: Vec<u8>, value: Vec<u8>) {
-        self.map.insert(key, value);
+        // `Vec<u8> -> Bytes` is a MOVE (Bytes::from takes ownership of the Vec's allocation), not a copy —
+        // so the public `put(Vec)` signature is unchanged and no extra allocation happens on insert.
+        self.map.insert(key, Bytes::from(value));
     }
 
     pub fn delete(&mut self, key: &[u8]) -> bool {
@@ -50,7 +61,7 @@ impl Kv {
         self.map
             .range(prefix.to_vec()..)
             .take_while(|(k, _)| k.starts_with(prefix))
-            .map(|(k, v)| (k.as_slice(), v.as_slice()))
+            .map(|(k, v)| (k.as_slice(), v.as_ref()))
             .collect()
     }
 
@@ -108,7 +119,7 @@ impl Kv {
             let klen = read_len(&mut pos)?;
             let key = take(&mut pos, klen)?.to_vec();
             let vlen = read_len(&mut pos)?;
-            let val = take(&mut pos, vlen)?.to_vec();
+            let val = Bytes::copy_from_slice(take(&mut pos, vlen)?);
             // The canonical form is sorted, ascending, with no duplicate keys. Reject bytes that
             // violate that (a non-canonical or tampered encoding) rather than silently accepting a form
             // whose re-`encode` wouldn't reproduce it — that would break the root-hash integrity check.
