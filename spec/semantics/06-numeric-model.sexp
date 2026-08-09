@@ -3711,11 +3711,13 @@
   (doc    "The 'runtime' companion of `(* Int64.max 2)`: with the operands supplied as parameters,
            the compiler β-reduces by substituting the constant arguments, turning the body into
            `(* 9223372036854775807 2)` — now a provable constant overflow. The compiler rejects at
-           compile time (CDZ0304) via β-reduction, exactly as direct constant expressions do.")
+           compile time (CDZ0304) via β-reduction, exactly as direct constant expressions do. The (message
+           ..) pins the actionable repair lead ('compute in a wider type') so the diagnostic stays a route
+           to a fix, not a bare 'overflow'.")
   (input  (do
             (def (mul a b) (* a b))
             (def (main) (mul 9223372036854775807 2)) (export main)))
-  (error  CDZ0304))
+  (error  CDZ0304 (message "compute in a wider type")))
 
 (case "a runtime subtraction that overflows traps"
   (doc    "The 'runtime' companion of `(- Int64.min 1)`: with constant arguments supplied as parameters,
