@@ -27,6 +27,7 @@
 //! registry over live websocket sinks. NOT feature-gated: the executor + the registry trait are always-on
 //! (hermetic), like `blob_exec`; only the socket LISTENER that fills the registry is the `live-ws` piece.
 
+use bytes::Bytes;
 use cdz_kernel::effect::{effect_ct, EffectId, EffectRequest, Payload};
 use cdz_kernel::event::EffectOutcome;
 use cdz_kernel::executor::Executor;
@@ -52,7 +53,13 @@ pub enum WsSendResult {
 pub trait WsConnRegistry {
     /// Write `frame` to the peer connection registered under `conn_id`. Returns [`WsSendResult`] describing the
     /// write; MUST NOT make any policy decision (the kernel already Cedar-authorized the send).
-    fn send_frame(&self, conn_id: &str, frame: &[u8]) -> WsSendResult;
+    ///
+    /// Takes the frame by OWNED [`Bytes`] (not `&[u8]`): the connection sink stores/forwards the frame anyway,
+    /// so a borrow would force the impl to defensively `to_vec()`-copy every outbound frame on the hot send
+    /// path. `Payload::Inline` is already ref-counted `Bytes`, so the executor MOVES it in (O(1) clone, no
+    /// memcpy) — the operator's cheaply-clonable/ownership rule: take the owned cheaply-clonable value, don't
+    /// borrow-then-copy.
+    fn send_frame(&self, conn_id: &str, frame: Bytes) -> WsSendResult;
 }
 
 /// The `ws/send` executor over a connection registry `R`. Owns no policy — the kernel Cedar-authorized the
@@ -98,9 +105,10 @@ impl<R: WsConnRegistry> Executor for WsSendExecutor<R> {
         if conn_id.is_empty() {
             return EffectOutcome::err("ws/send: empty target (expected the peer conn-id)");
         }
-        // payload = the outbound frame bytes. No payload = nothing to send (structural, PERMANENT).
+        // payload = the outbound frame bytes. No payload = nothing to send (structural, PERMANENT). The
+        // inline bytes are ref-counted `Bytes`; CLONE (O(1) ref-count bump, no memcpy) + move into the sink.
         let frame = match &req.payload {
-            Some(Payload::Inline(b)) => b.as_ref(),
+            Some(Payload::Inline(b)) => b.clone(),
             // A blob-ref payload would require this executor to resolve a hash first (not its job) — malformed.
             Some(Payload::Blob(_)) => {
                 return EffectOutcome::err(
@@ -166,7 +174,7 @@ mod tests {
     }
 
     impl WsConnRegistry for MemWsConnRegistry {
-        fn send_frame(&self, conn_id: &str, frame: &[u8]) -> WsSendResult {
+        fn send_frame(&self, conn_id: &str, frame: Bytes) -> WsSendResult {
             if self.failing.borrow().contains(conn_id) {
                 return WsSendResult::WriteFailed("sink full".into());
             }

@@ -91,7 +91,7 @@ async fn live_ws_transport_round_trips_connect_frame_send_disconnect() {
 
     // 3. HOST -> PEER: pushing a frame to the registered sink (what the ws/send executor does) reaches the
     // client over the real socket.
-    sink.send(b"echo-to-peer".to_vec())
+    sink.send(bytes::Bytes::from_static(b"echo-to-peer"))
         .expect("push an outbound frame to the connection sink");
     let got = client
         .next()

@@ -29,6 +29,7 @@
 use crate::async_host::{Inbound, Inbox};
 use crate::host::SessionId;
 use crate::ws_exec::{WsConnRegistry, WsSendResult};
+use bytes::Bytes;
 use cdz_kernel::effect::{effect_ct, Payload};
 use cdz_kernel::event::{ContentType, EventBody};
 use cdz_kernel::hash::Hash;
@@ -98,9 +99,11 @@ pub fn mint_conn_id() -> Hash {
 
 /// The outbound-frame sink for one live connection: an unbounded sender the listener's per-connection writer
 /// task drains onto the real websocket sink. The registry holds one per conn-id; `ws/send` pushes a frame
-/// here and the writer task moves it to the wire. Unbounded so a `ws/send` on the `!Send` host loop never
-/// blocks on a slow peer (backpressure/slow-peer policy is a later refinement, not a v0 host concern).
-pub type OutboundFrameSink = tokio::sync::mpsc::UnboundedSender<Vec<u8>>;
+/// here and the writer task moves it to the wire. Carries ref-counted [`Bytes`] (not `Vec<u8>`): the frame
+/// arrives as the already-ref-counted `Payload::Inline`, so pushing it here is an O(1) move, no memcpy on the
+/// `!Send` host loop. Unbounded so a `ws/send` on the host loop never blocks on a slow peer (backpressure/
+/// slow-peer policy is a later refinement, not a v0 host concern).
+pub type OutboundFrameSink = tokio::sync::mpsc::UnboundedSender<bytes::Bytes>;
 
 /// The loop-side live-connection registry: conn-id -> that connection's outbound sink. Populated by the
 /// listener (register on accept, deregister on close) and read by the [`WsSendExecutor`] via the
@@ -162,7 +165,7 @@ impl LiveWsConnRegistry {
 }
 
 impl WsConnRegistry for LiveWsConnRegistry {
-    fn send_frame(&self, conn_id: &str, frame: &[u8]) -> WsSendResult {
+    fn send_frame(&self, conn_id: &str, frame: Bytes) -> WsSendResult {
         // `conn_id` arrives as the kernel effect target (`req.target` is `Arc<str>` — a string the reducer
         // echoed), so parse it back to the `Hash` the registry keys by. A non-hex/wrong-length target names
         // no real connection (a reducer sent a malformed target) → Unknown, same as a gone peer.
@@ -170,10 +173,11 @@ impl WsConnRegistry for LiveWsConnRegistry {
             return WsSendResult::Unknown;
         };
         match self.conns.borrow().get(&conn_id) {
-            // The connection is live: hand the frame to its writer task's sink. A closed channel (the writer
-            // task ended — the peer dropped mid-send before deregister ran) is a transient write failure: the
-            // disconnect event is in flight, so a retry either lands (race resolves) or resolves Unknown.
-            Some(sink) => match sink.send(frame.to_vec()) {
+            // The connection is live: MOVE the (ref-counted) frame to its writer task's sink — no memcpy, the
+            // Bytes rides the channel by move. A closed channel (the writer task ended — the peer dropped
+            // mid-send before deregister ran) is a transient write failure: the disconnect event is in flight,
+            // so a retry either lands (race resolves) or resolves Unknown.
+            Some(sink) => match sink.send(frame) {
                 Ok(()) => WsSendResult::Delivered,
                 Err(_) => WsSendResult::WriteFailed("connection writer task closed".into()),
             },
@@ -276,22 +280,25 @@ mod tests {
     #[test]
     fn register_then_send_delivers_and_deregister_makes_it_unknown() {
         let reg = LiveWsConnRegistry::new();
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Bytes>();
         let c1 = cid(b"conn-1");
         reg.register(c1, tx);
         assert_eq!(reg.len(), 1);
 
         // A send to the live conn is delivered (the executor addresses it by the conn-id HEX = req.target).
         assert_eq!(
-            reg.send_frame(&c1.to_hex(), b"hello"),
+            reg.send_frame(&c1.to_hex(), Bytes::from_static(b"hello")),
             WsSendResult::Delivered
         );
-        assert_eq!(rx.try_recv().unwrap(), b"hello".to_vec());
+        assert_eq!(rx.try_recv().unwrap(), Bytes::from_static(b"hello"));
 
         // After deregister the conn is gone -> Unknown (the reducer prunes on the disconnect event).
         reg.deregister(&c1);
         assert!(reg.is_empty());
-        assert_eq!(reg.send_frame(&c1.to_hex(), b"x"), WsSendResult::Unknown);
+        assert_eq!(
+            reg.send_frame(&c1.to_hex(), Bytes::from_static(b"x")),
+            WsSendResult::Unknown
+        );
     }
 
     #[test]
@@ -299,24 +306,27 @@ mod tests {
         let reg = LiveWsConnRegistry::new();
         // A valid-hex-but-unregistered conn-id: no such connection.
         assert_eq!(
-            reg.send_frame(&cid(b"nope").to_hex(), b"x"),
+            reg.send_frame(&cid(b"nope").to_hex(), Bytes::from_static(b"x")),
             WsSendResult::Unknown
         );
         // A non-hex target (a reducer sent a malformed ws/send target): names no connection -> Unknown.
-        assert_eq!(reg.send_frame("not-a-hash", b"x"), WsSendResult::Unknown);
+        assert_eq!(
+            reg.send_frame("not-a-hash", Bytes::from_static(b"x")),
+            WsSendResult::Unknown
+        );
     }
 
     #[test]
     fn a_closed_writer_sink_is_a_transient_write_failure() {
         let reg = LiveWsConnRegistry::new();
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Bytes>();
         let c = cid(b"conn-flaky");
         reg.register(c, tx);
         // The writer task ended (peer dropped mid-send before deregister): the receiver is gone, so the
         // channel send errors -> a transient write failure (the disconnect event resolves the race).
         drop(rx);
         assert!(matches!(
-            reg.send_frame(&c.to_hex(), b"x"),
+            reg.send_frame(&c.to_hex(), Bytes::from_static(b"x")),
             WsSendResult::WriteFailed(_)
         ));
     }
@@ -382,9 +392,12 @@ mod tests {
         );
         // The registry keys by the Hash; the executor addresses it by that Hash's hex (= req.target).
         let reg = LiveWsConnRegistry::new();
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<Bytes>();
         reg.register(a, tx);
-        assert_eq!(reg.send_frame(&hex, b"f"), WsSendResult::Delivered);
+        assert_eq!(
+            reg.send_frame(&hex, Bytes::from_static(b"f")),
+            WsSendResult::Delivered
+        );
     }
 
     #[test]
@@ -393,7 +406,7 @@ mod tests {
         // channel; the loop drains + applies each against the !Send registry.
         let (tx, mut rx) = ws_control_channel();
         let reg = LiveWsConnRegistry::new();
-        let (sink, _peer_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+        let (sink, _peer_rx) = tokio::sync::mpsc::unbounded_channel::<Bytes>();
 
         let conn = mint_conn_id();
         tx.send(WsControlOp::Register {
@@ -404,14 +417,17 @@ mod tests {
         reg.apply_control(rx.try_recv().unwrap());
         assert_eq!(reg.len(), 1);
         assert_eq!(
-            reg.send_frame(&conn.to_hex(), b"hi"),
+            reg.send_frame(&conn.to_hex(), Bytes::from_static(b"hi")),
             WsSendResult::Delivered
         );
 
         tx.send(WsControlOp::Deregister { conn_id: conn }).unwrap();
         reg.apply_control(rx.try_recv().unwrap());
         assert!(reg.is_empty());
-        assert_eq!(reg.send_frame(&conn.to_hex(), b"x"), WsSendResult::Unknown);
+        assert_eq!(
+            reg.send_frame(&conn.to_hex(), Bytes::from_static(b"x")),
+            WsSendResult::Unknown
+        );
     }
 
     #[test]

@@ -109,7 +109,9 @@ async fn serve_connection(
     // frames that follow are attributable. If the loop's control/inbox channel is already closed (host
     // shutting down), abandon the connection.
     let conn_id = mint_conn_id();
-    let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    // The outbound sink carries ref-counted `Bytes` (matches `OutboundFrameSink`): the ws/send executor moves
+    // the already-ref-counted `Payload::Inline` frame in with no memcpy on the host loop.
+    let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<bytes::Bytes>();
     if control_tx
         .send(WsControlOp::Register {
             conn_id,
@@ -134,7 +136,12 @@ async fn serve_connection(
             outbound = out_rx.recv() => {
                 match outbound {
                     Some(bytes) => {
-                        if write.send(Message::Binary(bytes)).await.is_err() {
+                        // tungstenite 0.24's `Message::Binary` takes `Vec<u8>`, so the ref-counted frame is
+                        // materialized to a Vec here — the one remaining copy, at the wire edge (was on the
+                        // host loop before). Eliminated end-to-end by bumping tungstenite to >=0.26
+                        // (`Message::Binary(Bytes)`); that bump touches the nix flake vendor, so it's a
+                        // separate v-nix-coordinated change. See the ws-frame-bytes follow-up.
+                        if write.send(Message::Binary(bytes.into())).await.is_err() {
                             break; // peer write failed — connection is going away
                         }
                     }
