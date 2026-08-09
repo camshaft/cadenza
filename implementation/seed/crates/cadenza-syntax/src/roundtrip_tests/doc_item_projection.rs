@@ -5,8 +5,8 @@
 //! (the frozen bijection) and re-reads through the s-expr surface. They exercise the PUBLIC API from
 //! outside the crate, so they live here rather than in-crate.
 
-use cadenza_syntax::ast::{Arenas, StructId};
-use cadenza_syntax::{codec, doc_item, parser, sexpr};
+use crate::ast::{Arenas, StructId};
+use crate::{codec, doc_item, parser, sexpr};
 
 /// Parse ML `src` into its canonical arena (asserting no parse errors), the input to the projection.
 fn program(src: &str) -> Arenas {
@@ -23,8 +23,8 @@ fn program(src: &str) -> Arenas {
 /// item's own head — so search the item's children for a form headed `field`).
 fn item_field<'a>(doc: &'a Arenas, item: StructId, field: &str) -> Option<&'a str> {
     let children = match doc.get(item) {
-        cadenza_syntax::ast::Struct::List(kids) => kids.as_slice(),
-        cadenza_syntax::ast::Struct::Atom(_) => return None,
+        crate::ast::Struct::List(kids) => kids.as_slice(),
+        crate::ast::Struct::Atom(_) => return None,
     };
     for &c in children {
         if let Some(args) = doc.as_form(c, field) {
@@ -48,8 +48,8 @@ fn item_doc(doc: &Arenas, item: StructId) -> Option<&str> {
 /// `List`), NOT a string. (Operator ruling: the compiler emits structured info; a consumer renders it.)
 fn item_sig_node(doc: &Arenas, item: StructId) -> Option<StructId> {
     let children = match doc.get(item) {
-        cadenza_syntax::ast::Struct::List(kids) => kids.as_slice(),
-        cadenza_syntax::ast::Struct::Atom(_) => return None,
+        crate::ast::Struct::List(kids) => kids.as_slice(),
+        crate::ast::Struct::Atom(_) => return None,
     };
     for &c in children {
         if let Some(args) = doc.as_form(c, "sig") {
@@ -99,7 +99,7 @@ export { map }";
     // whole `(def …)` form and NOT the body. A consumer RENDERS it via the ML printer.
     let sig = item_sig_node(&doc, items[0]).expect("a structured sig node");
     assert!(
-        matches!(doc.get(sig), cadenza_syntax::ast::Struct::List(_)),
+        matches!(doc.get(sig), crate::ast::Struct::List(_)),
         "sig is a structured sub-AST (List), not a printed string"
     );
     // The signature head is the function NAME, followed by its params — it is `(map f xs)`.
@@ -108,7 +108,7 @@ export { map }";
         Some("map"),
         "sig subtree is the signature head `(map f xs)` (name + params), not the whole def form"
     );
-    let rendered = cadenza_syntax::sexpr::print_from(&doc, sig);
+    let rendered = crate::sexpr::print_from(&doc, sig);
     assert!(
         rendered.contains("map") && rendered.contains('f') && rendered.contains("xs"),
         "rendering the structured sig yields the signature (name + params), got {rendered:?}"
@@ -205,8 +205,8 @@ export { add }";
 
     // NOT a string leaf — a structured List.
     match doc.get(sig) {
-        cadenza_syntax::ast::Struct::List(_) => {}
-        cadenza_syntax::ast::Struct::Atom(_) => {
+        crate::ast::Struct::List(_) => {}
+        crate::ast::Struct::Atom(_) => {
             panic!("(sig …) must be a structured sub-AST (List), not a printed-string Atom")
         }
     }
@@ -218,7 +218,7 @@ export { add }";
         "the sig subtree is the signature head `(add a b)`, not the `def` form"
     );
     // Structured-is-truth, printed-is-derived: a consumer renders the SAME subtree via the ML printer.
-    let display = cadenza_syntax::sexpr::print_from(&doc, sig);
+    let display = crate::sexpr::print_from(&doc, sig);
     assert!(
         display.contains("add"),
         "rendering the structured sig recovers the signature, got {display:?}"
@@ -240,8 +240,8 @@ export { f, T, E }";
     // name atoms, not strings).
     let field_name = |item: StructId, field: &str| -> Option<String> {
         let kids = match doc.get(item) {
-            cadenza_syntax::ast::Struct::List(k) => k.clone(),
-            cadenza_syntax::ast::Struct::Atom(_) => return None,
+            crate::ast::Struct::List(k) => k.clone(),
+            crate::ast::Struct::Atom(_) => return None,
         };
         for c in kids {
             if let Some(args) = doc.as_form(c, field) {

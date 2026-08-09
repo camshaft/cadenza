@@ -13,7 +13,7 @@
 //! test is purely "does the ML print→parse round-trip preserve the tree". Seeds are fixed, so a failure
 //! reproduces exactly; the failing s-expr is printed for triage.
 
-use cadenza_syntax::{codec, parser, printer, sexpr};
+use crate::{codec, parser, printer, sexpr};
 
 const WIDTH: usize = 100;
 

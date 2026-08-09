@@ -3,13 +3,13 @@
 //! inputs through `cadenza-syntax`'s TEXT/S-EXPR readers + printer (`sexpr::read`, `parser::read_ml`,
 //! `printer::print`) — surfaces that live in `cadenza-syntax`, which sits ABOVE `cadenza-ast`. So they
 //! cannot live in `cadenza-ast` (that would be a circular dep); they run here as integration tests over
-//! the re-exported `cadenza_syntax::canon` + `::codec` + `::ast`. The pure-arena canon/codec tests (no
+//! the re-exported `crate::canon` + `::codec` + `::ast`. The pure-arena canon/codec tests (no
 //! surface) stayed inline in `cadenza-ast`.
 #![allow(clippy::all)]
 
-use cadenza_syntax::ast::{Arenas, Builder, Struct, StructId};
-use cadenza_syntax::canon::*;
-use cadenza_syntax::{canon, codec, parser, printer, sexpr};
+use crate::ast::{Arenas, Builder, Struct, StructId};
+use crate::canon::*;
+use crate::{canon, codec, parser, printer, sexpr};
 
 #[test]
 fn canonicalize_is_iterative_not_recursive_on_a_deep_arena() {
@@ -117,7 +117,7 @@ fn canonicalize_with_map_remaps_a_span_table_to_canonical_ids() {
     let body_a_old = "def add(a, b) = a + b".rfind("a").unwrap(); // byte 16
     // The node whose canonical span starts at 16 must be an `a` atom.
     let hit = (0..canon.structure.len() as u32)
-        .map(cadenza_syntax::ast::StructId)
+        .map(crate::ast::StructId)
         .find(|&id| spans.get(id).map(|s| s.start) == Some(body_a_old));
     let hit = hit.expect("a canonical node spans the body `a`");
     assert_eq!(

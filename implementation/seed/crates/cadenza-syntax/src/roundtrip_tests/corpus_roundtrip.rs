@@ -12,8 +12,8 @@
 //! as the bare glyph `^`); for those the contract is idempotence only, not structural equality — see
 //! [`has_canonicalizing_head`].
 
-use cadenza_syntax::ast::{Arenas, Struct, StructId};
-use cadenza_syntax::{codec, parser, printer, sexpr, token};
+use crate::ast::{Arenas, Struct, StructId};
+use crate::{codec, parser, printer, sexpr, token};
 use std::collections::BTreeMap;
 
 const WIDTH: usize = 100;
@@ -58,12 +58,12 @@ fn inputs_of(file: &Arenas) -> Vec<Arenas> {
 
 /// Copy the sub-tree rooted at `id` (within `src`) into a fresh standalone arena.
 fn lift(src: &Arenas, id: StructId) -> Arenas {
-    let mut b = cadenza_syntax::Builder::new();
+    let mut b = crate::Builder::new();
     let root = copy(src, id, &mut b);
     b.finish(root)
 }
 
-fn copy(src: &Arenas, id: StructId, b: &mut cadenza_syntax::Builder) -> StructId {
+fn copy(src: &Arenas, id: StructId, b: &mut crate::Builder) -> StructId {
     match src.get(id) {
         Struct::Atom(l) => b.atom_leaf(src.leaf(*l).clone()),
         Struct::List(items) => {

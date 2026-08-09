@@ -68,3 +68,8 @@ pub mod token;
 pub mod toml_surface;
 
 pub use ast::{Arenas, Builder, Decimal, Leaf, LeafId, Radix, Struct, StructId};
+
+// In-crate round-trip / projection test suites (relocated from `tests/*.rs` integration binaries per the
+// no-integration-tests directive — same coverage, compiled with the lib, no separate binary).
+#[cfg(test)]
+mod roundtrip_tests;
