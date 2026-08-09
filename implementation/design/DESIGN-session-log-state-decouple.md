@@ -199,12 +199,25 @@ Each increment is independently green (`cargo test -p rcdzc --lib`, `cargo xtask
   (serialize the resident derived state) at quiescent boundaries; `recover_from` gains a
   `(Option<Checkpoint>, tail: Recovered)` path that loads KV by `kv_root` + re-folds only the tail, with the
   from-genesis `replay` as fallback. Gate: a checkpoint→tail-recover round-trip yields a session
-  byte-identical (kv_root, open, settled, next_id, last_now) to a from-genesis replay of the same log.
+  byte-identical (kv_root, open, settled, next_id, last_now, **armed_timers**) to a from-genesis replay of
+  the same log — including the two BOUNDARY-STRADDLING cases the kernel co-author flagged (see the gate
+  section): a timer armed `<N` and fired `>N`, and a `Now` result settled `<N` whose `last_now` must restore
+  from the checkpoint scalar (not be re-derived).
 - **I7 — Host checkpoint + KV-blob backend (D1), host half (`v-agent-harness-host`).** The host store gains
   `write_checkpoint`/`read_latest_checkpoint` keyed by SessionId, a `recover_from(seq)` streaming tail read,
   and wires the KV-blob store (`blob/*` #2612) so `kv_root` bytes persist on checkpoint + fetch on recover.
   A checkpoint cadence policy (every K events / at quiescence / size-triggered) lives HOST-side (mechanism in
-  kernel, policy in host — operator's kernel-lean directive).
+  kernel, policy in host — operator's kernel-lean directive). **Shared durable-backend conventions:** this
+  I7 backend SHARES the host durable-KV conventions established by the name-store Dynamo rework
+  (coordinated with `v-agent-harness-host`, 2026-08-09) — NOT a common supertrait (that would be an
+  adapter, operator-banned), but shared conventions across separate purpose-built traits: `?Send` async,
+  `Bytes` values, `Hash`/binary keys (no hex), one build-once/clone-per-store aws-storage client, and
+  `Mem`/`Dynamo`/`LocalFile` pluggable impls. The backend is THREE purpose-built tables with distinct access
+  patterns: the **checkpoint** table (point-get/put-latest keyed by `SessionId=genesis-hash`), the **log**
+  table (`(SessionId pk, seq sk)`, queried partition-ascending for the `recover_from(seq>N)` streaming tail),
+  and the **KV-blob** store (content-addressed point-get by `kv_root`, reusing the `s3_blob` pattern). The
+  name-store rework lands FIRST (it is not gated on the kernel arc and establishes the conventions); I7
+  reuses them when I1–I6 unblock the kernel half.
 
 ## The gate that protects it
 
@@ -212,6 +225,14 @@ Each increment is independently green (`cargo test -p rcdzc --lib`, `cargo xtask
    `replay(full_log)` ≡ `recover(checkpoint@N + tail>N)` on `(kv_root, open set, settled predicate over all
    issued ids, next_effect_id, last_now, armed_timers, spawned, genesis_hash)`. This is the §16c contract
    made executable — it must hold for clean, torn-tail, and corrupt-tail logs (checkpoint + healed tail).
+   Two BOUNDARY-STRADDLING cases are mandatory (kernel co-author, I6 validation), because they exercise
+   state that crosses the checkpoint seam rather than living wholly before or after it:
+   - **Straddling timer.** A timer armed at `seq < N` (captured in the checkpoint's `armed_timers`) that
+     FIRES at `seq > N` (in the replayed tail) must recover identically — since `OpenObligation` folds
+     timers, `armed_timers` MUST be in the equivalence assert explicitly, not just `open`/`settled`.
+   - **`last_now` across the boundary.** A `Now` effect settled at `seq < N` sets `last_now`; recovery must
+     RESTORE it from the checkpoint scalar (not re-derive it from a tail that no longer contains that
+     result). Assert `last_now` equivalence across the boundary.
 2. **No-resident-log invariant (post-I5).** A `grep -n 'self\.log' kernel.rs` review-gate: the only permitted
    references are `append`'s write-through, `replay`'s transient param, and `recover*`. A new `self.log`
    read is a regression.
