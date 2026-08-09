@@ -76,5 +76,6 @@ pub mod kv;
 pub mod log_store;
 pub mod name_store;
 pub mod reducer;
+pub mod schema_resolver;
 pub mod selector;
 pub mod wasm_host;
