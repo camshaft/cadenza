@@ -6966,3 +6966,15 @@ pass	abmin10 TWO nested foreign abort-only handles under the conditional abort
 pass	abmin12 BOTH branches abort (to different handlers) — no value path remains
 pass	abmin9 the RESUMPTIVE flip of abmin4 — A's arm resumes, so 900307 IS the correct answer here
 pass	oa1 an Option-returning op's None arm aborts LOCALLY — the local bail-out in a match arm homes correctly
+pass	im2min5 a performing self-recursive walk then a TRAILING draw — the callee-advanced state reaches the continuation (finding #12 face)
+pass	rowacc5 the walk carries an ACCUMULATOR — the post-recursion read still sees the callee-advanced state (finding #12 accumulator face)
+pass	sk1 a FILTERED fold — only even draws accumulate but every draw advances the thread, kept-count and span both pinned
+pass	si1 a WHOLE inner handle expression as an outer handler's SEED
+pass	si2 the SEED handle ABORTS — the outer state is the abort value, the seed body's tail never runs
+pass	sr1 a performing self-recursive walk's result SEEDS an inner handle, then a trailing outer draw
+pass	op1 a WHOLE nested handle expression as an op's ARGUMENT beside an outer draw
+pass	ar1 a WHOLE nested handle expression inside a handler ARM's resume value
+pass	rw1 a nested handle at a performing RECURSION's exit leaf, then a trailing outer draw
+pass	pa1 two SIBLING nested handles as the two arguments of one 2-ary op — each region draws the outer thread in arg order
+pass	sc1 a THREE-link seed CHAIN of DISTINCT effects — each handle's whole region value seeds the next
+pass	if1 a WHOLE nested handle expression as an IF's CONDITION beside outer draws

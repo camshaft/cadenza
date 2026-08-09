@@ -20053,3 +20053,224 @@
   (call   main (: 4 Int64)) (output (: 4003 Int64))
   (call   main (: 1 Int64)) (output (: 57703 Int64))
   (call   main (: -2 Int64)) (output (: -1997 Int64)))
+
+
+; ── Post-recursion state threading (finding #12) + the handle-COMPOSITION position matrix ──
+; Two families. First, the finding-#12 faces: a performing SELF-RECURSIVE callee (a walk that
+; draws until a predicate hits) whose out-state must reach the continuation — before the fix
+; (thread a let-wrapped recursive dispatch's out-state to a trailing observer) the state advances
+; inside the callee were silently DISCARDED for the code after the call (the walk-then-observe,
+; accumulator, and filtered-fold shapes below returned wrong values; the mutual-recursion floor
+; still declines, pinned separately as the row-mr witness). Second, the position matrix: a WHOLE
+; nested (handle …) expression is just an expression, so it may sit in ANY evaluation position of
+; an enclosing handled region — as a SEED (si1/si2, incl. an aborting seed whose abort value
+; becomes the outer init), as a seed built FROM a performing recursion (sr1), as an op ARGUMENT
+; (op1, the argument region also performing the OUTER effect), inside a handler ARM's resume
+; value (ar1), at a performing recursion's EXIT LEAF (rw1), as BOTH arguments of one 2-ary op
+; (pa1, argument order pins the outer thread), as a THREE-link seed chain (sc1), and as an IF's
+; CONDITION with the chosen branch reading condition-advanced state (if1). Each case's rows are
+; hand-computed; all pass on wasm, rust, and rust-async.
+
+(case "im2min5 a performing self-recursive walk then a TRAILING draw — the callee-advanced state reaches the continuation (finding #12 face)"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (def (walk (: k Int64))
+              (let ((d (E.next)))
+                (if (= (% d 7) 0) (* 100 d) (walk (+ k 1)))))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1))))
+                (let ((w (walk 0)))
+                  (+ w (E.next)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 708 Int64))
+  (call   main (: 12 Int64)) (output (: 1415 Int64))
+  (call   main (: 7 Int64)) (output (: 708 Int64)))
+
+(case "rowacc5 the walk carries an ACCUMULATOR — the post-recursion read still sees the callee-advanced state (finding #12 accumulator face)"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (def (walk (: k Int64))
+              (let ((d (E.next)))
+                (if (= (% d 7) 0) (+ (* 100 d) (* 10 k)) (walk (+ k 1)))))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1))))
+                (+ (walk 0) (E.next))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 728 Int64)))
+
+(case "sk1 a FILTERED fold — only even draws accumulate but every draw advances the thread, kept-count and span both pinned"
+  (input  (do
+            (effect E (op next (-> Int64)) (op probe (-> Int64)))
+            (def (fold (: k Int64) (: acc Int64) (: kept Int64))
+              (if (<= k 0)
+                  (+ (* 100 acc) (* 10 kept))
+                  (let ((d (E.next)))
+                    (if (= (% d 2) 0)
+                        (fold (- k 1) (+ acc d) (+ kept 1))
+                        (fold (- k 1) acc kept)))))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1)))
+                 (probe () s (resume s s)))
+                (+ (fold 4 0 0) (- (E.probe) n))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 624 Int64))
+  (call   main (: 1 Int64)) (output (: 624 Int64))
+  (call   main (: -4 Int64)) (output (: -576 Int64)))
+
+(case "si1 a WHOLE inner handle expression as an outer handler's SEED"
+  (input  (do
+            (effect A (op tick (-> Unit Int64)))
+            (effect B (op get (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle B
+                (handle A n ((tick (u) s (resume s (+ s 3))))
+                  (+ (A.tick) (* 10 (A.tick))))
+                ((get (u) t (resume t (+ t 1))))
+                (+ (B.get) (* 100 (B.get)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 8685 Int64))
+  (call   main (: 0 Int64)) (output (: 3130 Int64))
+  (call   main (: -4 Int64)) (output (: -1314 Int64)))
+
+(case "si2 the SEED handle ABORTS — the outer state is the abort value, the seed body's tail never runs"
+  (input  (do
+            (effect A (op tick (-> Unit Int64)))
+            (effect B (op get (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle B
+                (handle A n ((tick (u) s (+ s 100))) (do (A.tick) 999))
+                ((get (u) t (resume t (+ t 1))))
+                (+ (B.get) (* 100 (B.get)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 10705 Int64))
+  (call   main (: 0 Int64)) (output (: 10200 Int64))
+  (call   main (: -4 Int64)) (output (: 9796 Int64)))
+
+(case "sr1 a performing self-recursive walk's result SEEDS an inner handle, then a trailing outer draw"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (effect B (op get (-> Unit Int64)))
+            (def (walk (: k Int64))
+              (let ((d (E.next)))
+                (if (= (% d 7) 0) (* 100 d) (walk (+ k 1)))))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1))))
+                (+ (handle B (walk 0)
+                     ((get (u) t (resume t (+ t 1))))
+                     (+ (B.get) (* 100 (B.get))))
+                   (E.next))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 70808 Int64))
+  (call   main (: 12 Int64)) (output (: 141515 Int64))
+  (call   main (: 0 Int64)) (output (: 101 Int64))
+  (call   main (: -13 Int64)) (output (: -70606 Int64)))
+
+(case "op1 a WHOLE nested handle expression as an op's ARGUMENT beside an outer draw"
+  (input  (do
+            (effect E (op next (-> Int64)) (op put (-> Int64 Int64)))
+            (effect B (op g (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1)))
+                 (put (v) s (resume (+ v s) s)))
+                (E.put
+                  (handle B 100
+                    ((g (u) t (resume t (+ t 5))))
+                    (+ (B.g) (+ (B.g) (E.next)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 216 Int64))
+  (call   main (: 0 Int64)) (output (: 206 Int64))
+  (call   main (: -10 Int64)) (output (: 186 Int64)))
+
+(case "ar1 a WHOLE nested handle expression inside a handler ARM's resume value"
+  (input  (do
+            (effect E (op boost (-> Int64 Int64)))
+            (effect B (op g (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((boost (v) s
+                  (resume
+                    (handle B (+ s v)
+                      ((g (u) t (resume t (+ t 3))))
+                      (+ (B.g) (B.g)))
+                    (+ s 1))))
+                (+ (E.boost 10) (E.boost 20))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 88 Int64))
+  (call   main (: 0 Int64)) (output (: 68 Int64))
+  (call   main (: -17 Int64)) (output (: 0 Int64)))
+
+(case "rw1 a nested handle at a performing RECURSION's exit leaf, then a trailing outer draw"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (effect B (op g (-> Unit Int64)))
+            (def (walk (: k Int64))
+              (let ((d (E.next)))
+                (if (= (% d 7) 0)
+                    (handle B d
+                      ((g (u) t (resume t (+ t 1))))
+                      (+ (B.g) (* 10 (B.g))))
+                    (walk (+ k 1)))))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1))))
+                (+ (walk 0) (E.next))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 95 Int64))
+  (call   main (: 0 Int64)) (output (: 11 Int64))
+  (call   main (: -13 Int64)) (output (: -73 Int64)))
+
+(case "pa1 two SIBLING nested handles as the two arguments of one 2-ary op — each region draws the outer thread in arg order"
+  (input  (do
+            (effect E (op next (-> Int64)) (op pair (-> Int64 Int64 Int64)))
+            (effect B (op g (-> Unit Int64)))
+            (effect C (op h (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1)))
+                 (pair (a b) s (resume (+ a (* 100 b)) s)))
+                (E.pair
+                  (handle B 10 ((g (u) t (resume t t))) (+ (B.g) (E.next)))
+                  (handle C 20 ((h (u) t (resume t t))) (+ (C.h) (E.next))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 2615 Int64))
+  (call   main (: 0 Int64)) (output (: 2110 Int64))
+  (call   main (: -30 Int64)) (output (: -920 Int64)))
+
+(case "sc1 a THREE-link seed CHAIN of DISTINCT effects — each handle's whole region value seeds the next"
+  (input  (do
+            (effect A (op tick (-> Unit Int64)))
+            (effect B (op get (-> Unit Int64)))
+            (effect C (op h (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle C
+                (handle B
+                  (handle A n ((tick (u) s (resume s (+ s 2))))
+                    (+ (A.tick) (* 10 (A.tick))))
+                  ((get (u) t (resume t (+ t 1))))
+                  (+ (B.get) (* 10 (B.get))))
+                ((h (u) w (resume w (+ w 5))))
+                (+ (C.h) (C.h))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 1675 Int64))
+  (call   main (: 0 Int64)) (output (: 465 Int64))
+  (call   main (: -6 Int64)) (output (: -987 Int64)))
+
+(case "if1 a WHOLE nested handle expression as an IF's CONDITION beside outer draws"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (effect B (op g (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1))))
+                (if (> (handle B 0 ((g (u) t (resume t t))) (+ (B.g) (E.next))) 0)
+                    (+ 100 (E.next))
+                    (- (E.next) 100))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 106 Int64))
+  (call   main (: 0 Int64)) (output (: -99 Int64))
+  (call   main (: -7 Int64)) (output (: -106 Int64)))
