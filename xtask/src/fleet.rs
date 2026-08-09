@@ -9129,6 +9129,67 @@ fn merge_base_range(merge_base: Option<&str>, r#ref: &str) -> String {
     }
 }
 
+/// Cherry-pick the commits `r#ref` introduces onto the CURRENT worktree tip (`base`), with a re-parent
+/// false-conflict RETRY. Returns true iff the pick lands clean (leaving the picked commits on the tip).
+///
+/// The primary attempt is the merge-base RANGE (`merge-base(base, ref)..ref`) — the commits `ref` adds
+/// since it forked from `base`, oldest-first. But when `ref` sits on a COMMIT-DISTINCT base (the
+/// re-parent model: pr-sync's local trunk advances commit-distinct from origin/main between an agent's
+/// rebase and pr-sync's pick), that range REPLAYS commits already on `base` by CONTENT under different
+/// shas → they conflict (their context is already present). That is a FALSE conflict: the ref's OWN new
+/// delta applies clean. So on a range conflict, RETRY with the patch-id-filtered set
+/// (`git rev-list --reverse --cherry-pick --right-only base...ref`) — exactly the ref's commits NOT
+/// already in `base` by patch-id, dropping the already-landed ones that caused the false conflict. Only
+/// if THAT also fails is it a genuine stale-base conflict the caller rejects. This is the local-gate
+/// path's cure for the churn-driven bounce (v-ft's own batch-bisect MR bounced 6× on it 2026-08-09).
+fn cherry_pick_ref_onto_base(
+    git_wt: &dyn Fn(&[&str]) -> std::io::Result<std::process::Output>,
+    base: &str,
+    r#ref: &str,
+    base_sha: &str,
+) -> bool {
+    let git_wt_ok = |args: &[&str]| git_wt(args).map(|o| o.status.success()).unwrap_or(false);
+    // Primary: the merge-base range (correct + fast for a ref on the current base).
+    let merge_base = git_wt(&["merge-base", base, r#ref])
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty());
+    let range = merge_base_range(merge_base.as_deref(), r#ref);
+    if git_wt_ok(&["cherry-pick", "--allow-empty", &range]) {
+        return true;
+    }
+    // Range conflicted → could be the re-parent FALSE conflict. Abort, reset to the pre-pick base, and
+    // retry with ONLY the ref's patch-id-unique commits (drops the already-landed-by-content replays).
+    let _ = git_wt(&["cherry-pick", "--abort"]);
+    let _ = git_wt(&["reset", "--hard", base_sha]);
+    let unique = git_wt(&[
+        "rev-list",
+        "--reverse",
+        "--cherry-pick",
+        "--right-only",
+        &format!("{base}...{}", r#ref),
+    ])
+    .ok()
+    .filter(|o| o.status.success())
+    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    .unwrap_or_default();
+    if unique.is_empty() {
+        // No patch-id-unique commits → the ref is ENTIRELY already on base by content (nothing to land);
+        // the original range conflict was pure re-parent noise. Treat as clean no-op (empty pick).
+        return true;
+    }
+    // Cherry-pick each unique commit oldest-first; --allow-empty tolerates any that still no-op.
+    for sha in unique.split_whitespace() {
+        if !git_wt_ok(&["cherry-pick", "--allow-empty", sha]) {
+            let _ = git_wt(&["cherry-pick", "--abort"]);
+            let _ = git_wt(&["reset", "--hard", base_sha]);
+            return false; // genuine conflict on a ref-unique commit → real stale base.
+        }
+    }
+    true
+}
+
 /// Any step failing aborts + cleans up the scratch worktree; nothing partial is recorded.
 /// Returns `true` iff a candidate PR was actually opened + its ci-dispatch record written (a real new
 /// dispatch). Returns `false` on every non-dispatch path — the idempotency guard blocked it, `--execute`
@@ -10544,7 +10605,6 @@ fn schedule_pass_local_gate(
         }
     };
     let git_wt = |args: &[&str]| Command::new("git").current_dir(&wt).args(args).output();
-    let git_wt_ok = |args: &[&str]| git_wt(args).map(|o| o.status.success()).unwrap_or(false);
     let head_sha = || {
         git_wt(&["rev-parse", "HEAD"])
             .ok()
@@ -10645,18 +10705,15 @@ fn schedule_pass_local_gate(
             let batch_base = head_sha(); // == origin/main tip (we reset to it just above)
             for m in &members {
                 let _ = git_wt(&["fetch", "origin", &m.r#ref, "--quiet"]);
-                let m_merge_base = git_wt(&["merge-base", base, &m.r#ref])
-                    .ok()
-                    .filter(|o| o.status.success())
-                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                    .filter(|s| !s.is_empty());
-                let m_range = merge_base_range(m_merge_base.as_deref(), &m.r#ref);
-                if git_wt_ok(&["cherry-pick", "--allow-empty", &m_range]) {
+                // Pick each member onto the CURRENT combined tip, with the re-parent false-conflict retry
+                // (`cherry_pick_ref_onto_base`). The reset target on a genuine conflict is the tip BEFORE
+                // this member (so a bad member leaves the prior members' clean combined tree intact).
+                let pre_member_tip = head_sha();
+                if cherry_pick_ref_onto_base(&git_wt, base, &m.r#ref, &pre_member_tip) {
                     applied.push(m);
                 } else {
-                    let _ = git_wt(&["cherry-pick", "--abort"]);
-                    // A member whose range won't cherry-pick onto the combined tip drops out of the batch
-                    // (the per-MR loop will reject it stale-base). Keep the clean tip; continue building.
+                    // A member that won't cherry-pick even after the patch-id-unique retry drops out of
+                    // the batch (the per-MR loop will reject it stale-base). Keep the clean tip; continue.
                 }
             }
             if applied.len() >= 2 {
@@ -10863,14 +10920,11 @@ fn schedule_pass_local_gate(
         // tolerates a commit already present (e.g. a shared-canonical commit-1 that landed standalone,
         // making it an empty pick — commit it empty + continue, do NOT drop the rest). Falls back to the
         // bare `base..ref` (merge_base_range's None arm) only if the merge-base can't resolve.
-        let mr_merge_base = git_wt(&["merge-base", base, &mr.r#ref])
-            .ok()
-            .filter(|o| o.status.success())
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-            .filter(|s| !s.is_empty());
-        let mr_range = merge_base_range(mr_merge_base.as_deref(), &mr.r#ref);
-        if !git_wt_ok(&["cherry-pick", "--allow-empty", &mr_range]) {
-            let _ = git_wt(&["cherry-pick", "--abort"]);
+        // Cherry-pick the ref onto the current tip WITH the re-parent false-conflict retry (see
+        // `cherry_pick_ref_onto_base`): the merge-base range first, then — if it conflicts because the
+        // ref's base is commit-distinct and the range replays already-landed-by-content commits — the
+        // patch-id-unique set. Only a genuine stale-base conflict on a ref-unique commit rejects.
+        if !cherry_pick_ref_onto_base(&git_wt, base, &mr.r#ref, &base_sha) {
             undo(&git_wt);
             ack(
                 fleet,
@@ -10878,7 +10932,7 @@ fn schedule_pass_local_gate(
                 "reject",
                 "",
                 &format!(
-                    "local-gate: `{}` does not cherry-pick cleanly onto {base} (stale base) — sync onto trunk + resend.",
+                    "local-gate: `{}` does not cherry-pick cleanly onto {base} (genuine stale base — a ref-unique commit conflicts, not just re-parent replay) — sync onto trunk + resend.",
                     mr.r#ref
                 ),
             );
