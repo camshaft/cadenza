@@ -2420,6 +2420,7 @@ mod test_log_source {
 
 #[cfg(test)]
 mod status_snapshot_tests {
+    use super::test_log_source::*;
     use super::*;
     use crate::authz::Authorizer;
     use crate::effect::{Capability, EffectKind, EffectRequest, ResourcePredicate, Timeliness};
@@ -2475,6 +2476,7 @@ mod status_snapshot_tests {
         // (the codec round-trip is pinned separately in event.rs/event_ast).
         let mut exec = RecordingExecutor::new();
         let mut s = Session::genesis(Hash::of(b"fail-v1"), Hash::of(b"test-spawn-nonce"));
+        let captured = attach_recording_sink(&mut s);
         s.deliver(
             inbound(),
             None,
@@ -2489,8 +2491,8 @@ mod status_snapshot_tests {
         // `caused_event` field AND the envelope `Event.cause` edge (distinct — the body field is a payload,
         // `Event.cause` is the real causal-DAG parent edge replay/tamper-evidence/consumers walk; a regression
         // that filled one but not the other would break the DAG, so pin BOTH — liaison pr1963).
-        let (reason, body_caused, envelope_cause) = s
-            .log()
+        let durable = replay_input(&captured);
+        let (reason, body_caused, envelope_cause) = durable
             .iter()
             .find_map(|e| match &e.body {
                 EventBody::FoldFailed {
@@ -2505,8 +2507,7 @@ mod status_snapshot_tests {
             "the failure reason is preserved"
         );
         // The inbound the fold choked on is on the log; FoldFailed links to it BOTH ways.
-        let inbound_hash = s
-            .log()
+        let inbound_hash = durable
             .iter()
             .find_map(|e| matches!(&e.body, EventBody::Inbound { .. }).then(|| e.hash()))
             .expect("the inbound is logged");
@@ -2661,6 +2662,7 @@ mod status_snapshot_tests {
             predicate: ResourcePredicate::Exact(peer.into()),
         }]);
         let mut s = Session::genesis(Hash::of(b"emitter-v1"), Hash::of(b"test-spawn-nonce"));
+        let captured = attach_recording_sink(&mut s);
         s.deliver(
             inbound(),
             None,
@@ -2694,8 +2696,7 @@ mod status_snapshot_tests {
 
         // A durable Dispatched frame recorded kind=Emit + the peer target (the crash-recovery-safe record
         // the host routes from — before the effect leaves the kernel).
-        let (kind, target) = s
-            .log()
+        let (kind, target) = replay_input(&captured)
             .iter()
             .find_map(|e| match &e.body {
                 EventBody::Dispatched { kind, target, .. } => Some((kind.clone(), target.clone())),
@@ -2725,6 +2726,7 @@ mod status_snapshot_tests {
             predicate: ResourcePredicate::Exact("session-B".into()),
         }]);
         let mut s = Session::genesis(Hash::of(b"emitter-deny-v1"), Hash::of(b"test-spawn-nonce"));
+        let captured = attach_recording_sink(&mut s);
         s.deliver(
             inbound(),
             None,
@@ -2740,7 +2742,7 @@ mod status_snapshot_tests {
             "an emit to an ungranted peer target must NOT reach the executor (Cedar-denied, so unroutable)"
         );
         assert!(
-            !s.log()
+            !replay_input(&captured)
                 .iter()
                 .any(|e| matches!(&e.body, EventBody::Dispatched { .. })),
             "a denied emit records NO Dispatched frame (it never dispatches)"
@@ -5673,6 +5675,7 @@ mod lifecycle_tests {
 // attached NameStore (not routed to an executor) and its outcome folded back.
 #[cfg(test)]
 mod store_effect_tests {
+    use super::test_log_source::*;
     use super::*;
     use crate::authz::Authorizer;
     use crate::effect::{effect_ct, EffectRequest, Payload, Timeliness};
@@ -6769,6 +6772,7 @@ mod store_effect_tests {
         let authz = shell_allowlist(&["echo"]); // permits program "echo", denies "rm"
         let mut exec = RecordingExecutor::new();
         let mut s = Session::genesis(Hash::of(b"pipeline-target-relax-v1"), Hash::of(b"nonce"));
+        let captured = attach_recording_sink(&mut s);
         s.deliver(
             inbound(),
             None,
@@ -6788,7 +6792,7 @@ mod store_effect_tests {
             "a pipeline whose STAGES are all allowed reaches the executor even if its (vestigial) target isn't"
         );
         assert!(
-            !s.log()
+            !replay_input(&captured)
                 .iter()
                 .any(|e| matches!(e.body, EventBody::AuthzDenied { .. })),
             "no AuthzDenied: the per-stage fan-out is the sole gate, the vestigial target no longer rejects"
