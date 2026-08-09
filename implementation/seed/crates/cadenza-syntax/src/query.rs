@@ -219,6 +219,12 @@ enum Guard {
     /// `idiomatic/single-arm-match` lint so its fix (`(match ,s (,p ,b))` → `(let ((,p ,s)) ,b)`) is a
     /// pure template that fires only when the single arm can never fail.
     IsIrrefutable,
+    /// The node is a `camelCase` name atom (`is-camel-case`): a lowercase-initial identifier that
+    /// contains an interior uppercase letter with no `_` separator (`fooBar`, `myFunc` — but NOT
+    /// `snake_case`, a leading-uppercase `Ctor`/type name, or an all-caps `CONST`). Purely syntactic
+    /// (name shape only). Used by the `naming/camel-case` lint to flag a binding whose name breaks the
+    /// `snake_case` convention.
+    IsCamelCase,
     /// The node itself matches this sub-pattern (`(matches PAT)`). The sub-pattern's captures are a
     /// pure test — they do NOT leak into the outer bindings.
     Matches(Box<Pat>),
@@ -731,13 +737,14 @@ fn compile_guard(t: &Tree) -> Result<Guard, PatternError> {
             "is-atom" => Ok(Guard::IsAtom),
             "is-list" => Ok(Guard::IsList),
             "is-irrefutable" => Ok(Guard::IsIrrefutable),
+            "is-camel-case" => Ok(Guard::IsCamelCase),
             // An unknown bare-name guard — the guard vocabulary is a small CLOSED set, so LIST it (like the
             // string-escape message lists the escape set). A near-typo (`is-litera` for `is-literal`) is
             // then obvious from the list, and the message doubles as documentation of what a guard can be.
             other => Err(PatternError(format!(
                 "unknown guard `{other}` — a guard is one of `is-literal` `is-name` `is-int` `is-float` \
-                 `is-str` `is-bool` `is-atom` `is-list` `is-irrefutable`, or a form `(head-is NAME)` / \
-                 `(matches PAT)` / `(not GUARD)`"
+                 `is-str` `is-bool` `is-atom` `is-list` `is-irrefutable` `is-camel-case`, or a form \
+                 `(head-is NAME)` / `(matches PAT)` / `(not GUARD)`"
             ))),
         };
     }
@@ -804,6 +811,9 @@ fn guard_holds(g: &Guard, s: &Tree) -> bool {
         // An irrefutable match-pattern shape (var/`_`/tuple/record, recursively; never a literal or a
         // sum-ctor pattern). Purely structural — the no-context form treats every ctor as refutable.
         Guard::IsIrrefutable => crate::match_to_let::is_irrefutable(s),
+        // A `camelCase` name atom (name-shape only) — lowercase-initial with an interior uppercase and
+        // no `_`. Not a `Ctor`/type (leading uppercase), not `snake_case`, not all-caps.
+        Guard::IsCamelCase => matches!(s, Tree::Atom(Leaf::Name(n), _) if is_camel_case(n)),
         // A sub-pattern test: its captures are local (discarded), so `matches` is a pure predicate.
         Guard::Matches(sub) => {
             let mut scratch = Bindings::default();
@@ -819,6 +829,28 @@ fn head_name(t: &Tree) -> Option<&str> {
         Tree::List(items, _) => items.first().and_then(|h| h.as_name()),
         _ => None,
     }
+}
+
+/// Is `name` a `camelCase` identifier — the shape the `naming/camel-case` lint flags (Cadenza convention
+/// is `snake_case`)? True iff: it starts with a lowercase letter, contains NO `_`, and has at least one
+/// interior uppercase letter (`fooBar`, `myFunc`). This deliberately EXCLUDES: `snake_case` (has `_`), a
+/// `Ctor`/type/`Module` name (leading uppercase — a different, correct convention), an all-lowercase name
+/// (`foo`), and an all-caps `CONST` (leading uppercase). A qualified segment (`A.b`) is a single name
+/// atom here only when unqualified; a dotted path is a list, not a name, so it never reaches this.
+/// Purely syntactic Unicode-case classification — no scope or type lookup.
+fn is_camel_case(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false; // empty is not a name shape we flag
+    };
+    if !first.is_lowercase() {
+        return false; // must start lowercase (excludes Ctor/type/Module and CONST)
+    }
+    if name.contains('_') {
+        return false; // snake_case (or a synth `__name`) is the convention, not flagged
+    }
+    // At least one interior uppercase letter distinguishes `fooBar` from plain `foo`.
+    chars.any(|c| c.is_uppercase())
 }
 
 /// Match a compiled pattern child-sequence against a subject child-sequence, honoring zero-or-more
@@ -3368,6 +3400,11 @@ pub mod lint {
         ///   a match whose refutability the `let` would erase). The clause's 2-element `(p b)` arity is
         ///   what pins "single arm, unguarded": a multi-arm match has more clauses, and a guarded arm is
         ///   not a bare `(p b)` pair — so the pattern structurally excludes both.
+        /// - `naming/camel-case` — a `camelCase` binding name (a `def` name or a `let` binder) →
+        ///   REPORT-ONLY warning (Cadenza convention is `snake_case`), via the `is-camel-case` metavar
+        ///   guard. NO catalog fix: the auto-rename is Heuristic (it must rewrite every use site, needing
+        ///   resolve info), so it is offered as a code-action, not applied by `--fix` (design §naming).
+        ///   Two rules (def + let binder); a per-parameter form needs splice-element guards (later).
         ///
         /// Design §2 also lists `idiomatic/negated-eq` (`(not (== a b))` → `(!= a b)`);
         /// it is NOT shipped because Cadenza has no native `!=` surface — the arena `!=` head prints as a
@@ -3395,6 +3432,14 @@ pub mod lint {
                 "(lint idiomatic/single-arm-match (match ,s (,(p is-irrefutable) ,b)) ",
                 "\"single irrefutable `match` — one arm that can never fail is clearer as a `let`\" ",
                 "=> (let ((,p ,s)) ,b) verified)\n",
+                // naming/camel-case — REPORT-ONLY (no fix): the auto-rename is Heuristic (it must rewrite
+                // every use site, needing resolve info), so it is offered by a code-action, not the
+                // catalog's `--fix`. Two highest-signal binding positions: a `def` name and a `let`
+                // binder. A per-parameter guard needs splice-element guards (a later engine increment).
+                "(lint naming/camel-case (def (,(n is-camel-case) ,@_) ,@_) ",
+                "\"camelCase binding name — Cadenza convention is snake_case\")\n",
+                "(lint naming/camel-case (let ((,(n is-camel-case) ,_)) ,@_) ",
+                "\"camelCase binding name — Cadenza convention is snake_case\")\n",
             ))
             .expect("the built-in idiomatic lint catalog compiles")
         }
@@ -4880,6 +4925,45 @@ mod tests {
             count(&p, &subj("(match v (0 x))")),
             0,
             "literal arm refutable"
+        );
+    }
+
+    #[test]
+    fn is_camel_case_classifies_only_lowercase_initial_interior_upper_no_underscore() {
+        // camelCase → flagged.
+        assert!(is_camel_case("fooBar"));
+        assert!(is_camel_case("myFunc"));
+        assert!(is_camel_case("aB"));
+        assert!(is_camel_case("parseHTTPResponse"));
+        // NOT camelCase: snake_case, all-lowercase, Ctor/type/Module (leading upper), all-caps CONST,
+        // a synth `__name`, empty.
+        assert!(!is_camel_case("good_name"));
+        assert!(!is_camel_case("foo"));
+        assert!(!is_camel_case("Ctor"));
+        assert!(!is_camel_case("MyType"));
+        assert!(!is_camel_case("CONST"));
+        assert!(!is_camel_case("__synth"));
+        assert!(!is_camel_case("with_Upper_after_underscore")); // has `_` → snake-ish, not flagged
+        assert!(!is_camel_case(""));
+    }
+
+    #[test]
+    fn guard_is_camel_case_matches_only_camel_names() {
+        let p = pat("(def (,(n is-camel-case) ,@_) ,@_)");
+        assert_eq!(
+            count(&p, &subj("(def (myFunc x) x)")),
+            1,
+            "camelCase def name"
+        );
+        assert_eq!(
+            count(&p, &subj("(def (good_name x) x)")),
+            0,
+            "snake_case not flagged"
+        );
+        assert_eq!(
+            count(&p, &subj("(def (f x) x)")),
+            0,
+            "plain lowercase not flagged"
         );
     }
 
@@ -6399,9 +6483,9 @@ mod tests {
         #[test]
         fn builtin_catalog_compiles_and_names_its_lints() {
             let set = LintSet::builtin();
-            // if-bool (×2, the true/false + false/true arms) + redundant-let + double-negation
-            // + if-same-branch + single-arm-match.
-            assert_eq!(set.rules.len(), 6, "6 Tier-A rules");
+            // if-bool (×2) + redundant-let + double-negation + if-same-branch + single-arm-match
+            // (all fixable Verified) + naming/camel-case (×2, def + let binder — REPORT-ONLY, no fix).
+            assert_eq!(set.rules.len(), 8, "8 Tier-A rules");
             let names: Vec<&str> = set.rules.iter().filter_map(|r| r.name.as_deref()).collect();
             assert_eq!(
                 names,
@@ -6412,13 +6496,58 @@ mod tests {
                     "idiomatic/double-negation",
                     "idiomatic/if-same-branch",
                     "idiomatic/single-arm-match",
+                    "naming/camel-case",
+                    "naming/camel-case",
                 ]
             );
-            // Every catalog rule carries a Verified fix.
+            // Every FIXABLE catalog rule's fix is Verified; the `naming/*` lints are report-only (their
+            // auto-rename is Heuristic + needs use-site resolution, so it is a code-action, not `--fix`).
             for r in &set.rules {
-                let (_, app) = r.fix.as_ref().expect("a catalog lint carries a fix");
-                assert_eq!(*app, Applicability::Verified, "catalog fixes are Verified");
+                match r.fix.as_ref() {
+                    Some((_, app)) => {
+                        assert_eq!(*app, Applicability::Verified, "catalog fixes are Verified");
+                        assert!(
+                            r.name
+                                .as_deref()
+                                .is_some_and(|n| n.starts_with("idiomatic/")),
+                            "only idiomatic lints carry a fix in the catalog"
+                        );
+                    }
+                    None => assert!(
+                        r.name.as_deref() == Some("naming/camel-case"),
+                        "the only report-only catalog lint is naming/camel-case"
+                    ),
+                }
             }
+        }
+
+        #[test]
+        fn builtin_naming_camel_case_flags_camel_bindings_report_only() {
+            let set = LintSet::builtin();
+            // A camelCase `def` name and a camelCase `let` binder each fire; snake_case does not.
+            let s = subj("(do (def (myFunc x) x) (def (f) (let ((fooBar 1)) fooBar)))");
+            let diags = lint::run(&set, &s, None);
+            let camel: Vec<_> = diags
+                .iter()
+                .filter(|d| d.message.contains("camelCase"))
+                .collect();
+            assert_eq!(
+                camel.len(),
+                2,
+                "both the def name and the let binder fire: {diags:?}"
+            );
+            assert!(
+                camel.iter().all(|d| d.severity == Severity::Warning),
+                "report-only warnings"
+            );
+            // snake_case bindings fire nothing.
+            let clean = subj("(do (def (good_name x) x) (def (g) (let ((foo_bar 1)) foo_bar)))");
+            assert!(
+                lint::run(&set, &clean, None)
+                    .iter()
+                    .all(|d| !d.message.contains("camelCase")),
+                "snake_case bindings are not flagged"
+            );
         }
 
         #[test]
