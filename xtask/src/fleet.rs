@@ -5757,6 +5757,27 @@ fn content_identical_reset_target<'a>(
     }
 }
 
+/// Decide whether `fleet sync` should base on `origin/main` instead of the local `trunk` ref: TRUE only
+/// when local trunk is STRICTLY AHEAD of origin/main (origin/main is a proper ancestor of trunk) — the
+/// `--publish-origin` publish-lag window where pr-sync advanced local trunk with gated peer commits it
+/// has not pushed yet, so trunk carries not-yet-authoritative history every syncing agent would adopt.
+/// FALSE when: origin/main is unresolved (empty — no origin ref to prefer), trunk is unresolved (empty),
+/// the two are EQUAL (nothing to redirect — the normal in-sync state), or origin/main is NOT an ancestor
+/// of trunk (trunk == origin content under the re-parent model's commit-distinct-but-tree-equal state, or
+/// a genuine fork — keep `trunk` as the integrator's base + let the existing fast-paths handle it). Pure
+/// over its inputs so the strict-ahead decision is unit-tested without git. `origin_is_ancestor_of_trunk`
+/// is the caller's `git merge-base --is-ancestor origin/main trunk` result.
+fn sync_base_prefers_origin_main(
+    origin_main_sha: &str,
+    trunk_sha: &str,
+    origin_is_ancestor_of_trunk: bool,
+) -> bool {
+    !origin_main_sha.is_empty()
+        && !trunk_sha.is_empty()
+        && origin_main_sha != trunk_sha
+        && origin_is_ancestor_of_trunk
+}
+
 fn sync(fleet: &Fleet, force: bool) {
     let cwd = std::env::current_dir().expect("cwd");
     let git = |args: &[&str]| -> std::process::Output {
@@ -5793,6 +5814,43 @@ fn sync(fleet: &Fleet, force: bool) {
     // ahead/behind reporting and is harmless if there's nothing new).
     let _ = git_ok(&["fetch", "-q", "origin"]);
 
+    // SYNC BASE = origin/main when local `trunk` is merely AHEAD of it by unpushed commits (the
+    // --publish-origin publish-lag, 2026-08-09). Under the GHA-off direct-push model pr-sync FF-pushes
+    // each gated land to origin/main, but its LOCAL `trunk` ref advances per-land a beat BEFORE the push
+    // — so between a local-advance and its push, `trunk` is ahead of origin/main by peer commits that are
+    // NOT yet authoritative (not on origin/main, where every agent cuts from + verifies landing by
+    // ancestry). fleet sync historically bases on `trunk`, so an agent syncing in that window ADOPTS those
+    // unpushed peer commits as foreign history and has to `reset --hard origin/main` by hand — a per-tick
+    // tax across EVERY syncing agent (corpus-bugfix: recurs every tick, ~4 straight). FIX: when
+    // origin/main is an ANCESTOR of trunk AND they differ (trunk strictly ahead = the publish-lag), base
+    // on origin/main (the authoritative published tip) instead — the unpushed commits land on origin/main
+    // shortly via pr-sync's push, so nothing is lost, and no agent carries not-yet-published history.
+    // Otherwise (trunk == origin/main, or trunk BEHIND/FORKED from origin — the re-parent model's normal
+    // tree-equal-but-commit-distinct state, or a genuine divergence) keep `trunk` as the base: it is the
+    // integrator's ref and the existing fast-paths + guards are built around it. Only the strict-ahead
+    // publish-lag is redirected. `--is-ancestor origin/main trunk` exits 0 iff origin/main is an ancestor
+    // of trunk; pair it with a sha-inequality so an equal trunk (nothing to redirect) stays on `trunk`.
+    let origin_main_sha = git_stdout(&["rev-parse", "--verify", "-q", "origin/main"]);
+    let trunk_sha_full = git_stdout(&["rev-parse", "--verify", "-q", TRUNK]);
+    let origin_is_ancestor_of_trunk =
+        git_ok(&["merge-base", "--is-ancestor", "origin/main", TRUNK]);
+    let base: &str = if sync_base_prefers_origin_main(
+        &origin_main_sha,
+        &trunk_sha_full,
+        origin_is_ancestor_of_trunk,
+    ) {
+        "origin/main"
+    } else {
+        TRUNK
+    };
+    if base != TRUNK {
+        println!(
+            "fleet sync: local trunk is AHEAD of origin/main (publish-lag: pr-sync gated peer commits \
+             not-yet-pushed) — basing this sync on origin/main (the authoritative published tip) so you \
+             don't adopt unpushed foreign history."
+        );
+    }
+
     // NO-OP GUARD (the re-sha churn v-inference hit): if `trunk` is ALREADY an ancestor of HEAD, the
     // branch fully contains trunk with any local commits cleanly on top — there is nothing to rebase
     // ONTO, so a reset+cherry-pick would only re-parent those commits and give them FRESH shas (new
@@ -5800,15 +5858,15 @@ fn sync(fleet: &Fleet, force: bool) {
     // though trunk never advanced. Skip entirely and leave the branch byte-identical. When trunk HAS
     // advanced (not an ancestor of HEAD), fall through to the real reset+replay below. `--is-ancestor`
     // exits 0 iff TRUNK is an ancestor of HEAD; treat a spawn failure as "advanced" (do the safe replay).
-    if git_ok(&["merge-base", "--is-ancestor", TRUNK, &old_head]) {
-        let trunk_sha = git_stdout(&["rev-parse", "--short", TRUNK]);
-        let ahead = git_stdout(&["rev-list", "--count", &format!("{TRUNK}..{old_head}")]);
+    if git_ok(&["merge-base", "--is-ancestor", base, &old_head]) {
+        let base_sha = git_stdout(&["rev-parse", "--short", base]);
+        let ahead = git_stdout(&["rev-list", "--count", &format!("{base}..{old_head}")]);
         let n: usize = ahead.parse().unwrap_or(0);
         if n == 0 {
-            println!("fleet sync: on trunk ({trunk_sha}); already current, nothing to replay.");
+            println!("fleet sync: on {base} ({base_sha}); already current, nothing to replay.");
         } else {
             println!(
-                "fleet sync: already on trunk ({trunk_sha}) with {n} local commit(s) on top — trunk \
+                "fleet sync: already on {base} ({base_sha}) with {n} local commit(s) on top — base \
                  has not advanced, so nothing to rebase; leaving the branch UNCHANGED (no re-sha, so \
                  any queued merge-request --ref stays valid)."
             );
@@ -5837,15 +5895,15 @@ fn sync(fleet: &Fleet, force: bool) {
     if let Some(role) = my_role.as_deref()
         && role_never_authors(role)
     {
-        if !git_ok(&["reset", "--hard", TRUNK]) {
-            eprintln!("fleet sync: `git reset --hard {TRUNK}` failed.");
+        if !git_ok(&["reset", "--hard", base]) {
+            eprintln!("fleet sync: `git reset --hard {base}` failed.");
             std::process::exit(1);
         }
-        let trunk_sha = git_stdout(&["rev-parse", "--short", "HEAD"]);
+        let base_sha = git_stdout(&["rev-parse", "--short", "HEAD"]);
         println!(
-            "fleet sync: role '{role}' never authors merge-requests → reset to trunk ({trunk_sha}) \
+            "fleet sync: role '{role}' never authors merge-requests → reset to {base} ({base_sha}) \
              WITHOUT patch-id replay (nothing of yours to preserve; any 'unlanded' commit would be a \
-             peer's your base transiently carried). Branch is now clean at trunk."
+             peer's your base transiently carried). Branch is now clean at {base}."
         );
         return;
     }
@@ -5866,7 +5924,7 @@ fn sync(fleet: &Fleet, force: bool) {
     // runs untouched (real work is never auto-dropped). No `--ref` orphaning risk: we don't cherry-pick
     // (no re-sha), and a tree-equal branch adds nothing over trunk for a queued MR to lose.
     let head_tree = git_stdout(&["rev-parse", &format!("{old_head}^{{tree}}")]);
-    let trunk_tree = git_stdout(&["rev-parse", &format!("{TRUNK}^{{tree}}")]);
+    let trunk_tree = git_stdout(&["rev-parse", &format!("{base}^{{tree}}")]);
     if tree_equal_reset_is_lossless(&head_tree, &trunk_tree) {
         // Prefer resetting onto origin/main when it is the SAME content under the canonical published sha
         // (not the possibly-stale local `trunk` ref that lagged/diverged after a re-parent — corpus-bugfix's
@@ -5892,8 +5950,8 @@ fn sync(fleet: &Fleet, force: bool) {
         return;
     }
 
-    // Which local commits are genuinely unlanded (patch-id not upstream)? `git cherry trunk <head>`.
-    let cherry = git_stdout(&["cherry", TRUNK, &old_head]);
+    // Which local commits are genuinely unlanded (patch-id not upstream)? `git cherry <base> <head>`.
+    let cherry = git_stdout(&["cherry", base, &old_head]);
     let mut replay = commits_to_replay(&cherry);
 
     // DROP the auto-generated archive-mirror commit from the replay set (v-fleet-tooling + v-syntax +
@@ -6127,15 +6185,15 @@ fn sync(fleet: &Fleet, force: bool) {
         }
     }
 
-    // Land on the integrated tip.
-    if !git_ok(&["reset", "--hard", TRUNK]) {
-        eprintln!("fleet sync: `git reset --hard {TRUNK}` failed.");
+    // Land on the integrated tip (the chosen base — origin/main under publish-lag, else trunk).
+    if !git_ok(&["reset", "--hard", base]) {
+        eprintln!("fleet sync: `git reset --hard {base}` failed.");
         std::process::exit(1);
     }
     let trunk_sha = git_stdout(&["rev-parse", "--short", "HEAD"]);
 
     if replay.is_empty() {
-        println!("fleet sync: on trunk ({trunk_sha}); no unlanded local commits to replay.");
+        println!("fleet sync: on {base} ({trunk_sha}); no unlanded local commits to replay.");
         return;
     }
 
@@ -6146,9 +6204,9 @@ fn sync(fleet: &Fleet, force: bool) {
             let _ = git_ok(&["cherry-pick", "--abort"]);
             let _ = git_ok(&["reset", "--hard", &old_head]);
             eprintln!(
-                "fleet sync: cherry-pick of {sha} onto trunk ({trunk_sha}) FAILED (likely a real \
-                 conflict with the advanced trunk). Restored your pre-sync HEAD ({}) — nothing lost. \
-                 Resolve the conflict by hand: `git reset --hard {TRUNK}` then cherry-pick + fix.",
+                "fleet sync: cherry-pick of {sha} onto {base} ({trunk_sha}) FAILED (likely a real \
+                 conflict with the advanced base). Restored your pre-sync HEAD ({}) — nothing lost. \
+                 Resolve the conflict by hand: `git reset --hard {base}` then cherry-pick + fix.",
                 &old_head[..old_head.len().min(9)]
             );
             std::process::exit(1);
@@ -6156,7 +6214,7 @@ fn sync(fleet: &Fleet, force: bool) {
     }
     let new_head = git_stdout(&["rev-parse", "--short", "HEAD"]);
     println!(
-        "fleet sync: reset onto trunk ({trunk_sha}) and replayed {} unlanded commit(s) → {new_head}. \
+        "fleet sync: reset onto {base} ({trunk_sha}) and replayed {} unlanded commit(s) → {new_head}. \
          (Dropped any already-landed commit by patch-id, incl. re-parented merges.)",
         replay.len()
     );
@@ -16025,6 +16083,23 @@ mod tests {
 
         // Empty queue → empty batch (caller falls back to single-MR dispatch).
         assert!(select_batch(&[], &none, 6).is_empty());
+    }
+
+    #[test]
+    fn sync_base_prefers_origin_main_only_when_trunk_strictly_ahead() {
+        // The publish-lag case: trunk strictly ahead of origin/main (origin IS ancestor, shas differ) →
+        // base on origin/main (don't adopt pr-sync's unpushed peer commits).
+        assert!(sync_base_prefers_origin_main("aaa", "bbb", true));
+        // EQUAL shas → nothing to redirect (normal in-sync) → keep trunk.
+        assert!(!sync_base_prefers_origin_main("aaa", "aaa", true));
+        // origin/main NOT an ancestor of trunk (re-parent commit-distinct, or a fork) → keep trunk.
+        assert!(!sync_base_prefers_origin_main("aaa", "bbb", false));
+        // Unresolved origin/main (empty — no origin ref) → keep trunk (nothing to prefer).
+        assert!(!sync_base_prefers_origin_main("", "bbb", true));
+        // Unresolved trunk (empty) → keep trunk (can't reason).
+        assert!(!sync_base_prefers_origin_main("aaa", "", true));
+        // Degenerate all-empty → false (the emptiness guards stop a vacuous equal-empty pass).
+        assert!(!sync_base_prefers_origin_main("", "", true));
     }
 
     #[test]
