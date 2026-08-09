@@ -3557,7 +3557,7 @@ fn gate_one_case(
                     )
                 })
                 .collect();
-            let verdict = match grade_ran(&rec, &rans) {
+            let verdict = match grade_ran(&rec, &rans, target) {
                 Grade::Pass => "PASS",
                 Grade::Todo => "todo",
                 Grade::Fail(_) => "FAIL",
@@ -3773,12 +3773,13 @@ fn grade(tools: &Tools, store: &Option<PathBuf>, rec: &CorpusRecord, target: Gat
             )
         })
         .collect();
-    grade_ran(rec, &rans)
+    grade_ran(rec, &rans, target)
 }
 
 /// Combine per-trial outcomes into the case's verdict. `rans[i]` is the outcome of `rec.trials[i]`.
-/// Shared by the tally path and the single-case debug view.
-fn grade_ran(rec: &CorpusRecord, rans: &[Ran]) -> Grade {
+/// Shared by the tally path and the single-case debug view. `target` is threaded so a `(warns …)`
+/// pin can be graded only on the backend that can OBSERVE compile warnings (see the warns arm below).
+fn grade_ran(rec: &CorpusRecord, rans: &[Ran], target: GateTarget) -> Grade {
     let mut todo = false;
     for (trial, ran) in rec.trials.iter().zip(rans) {
         match grade_trial(&trial.expect, ran) {
@@ -3815,7 +3816,20 @@ fn grade_ran(rec: &CorpusRecord, rans: &[Ran]) -> Grade {
     // compile warnings the run captured — some emitted warning must share the code AND (if pinned) contain
     // the message phrase (case-sensitive). ORTHOGONAL to the outcome; checked against the value-producing
     // trial (a warning is on a program that compiled). A decline/trap case carries no warnings to match.
+    //
+    // NON-WASM SKIP (target-aware): a `(warns …)` pin is graded ONLY on the wasm target. Every warning
+    // code is emitted in `compile.rs` — the shared front-end/compile stage (CDZ0306 UnusedBinding,
+    // CDZ0305 DeadTrap, CDZ0213 RedundantArm, CDZ0308 UnreachableBranch), NONE in a backend — so a
+    // warning is TARGET-INDEPENDENT: it provably fires during `compile()` regardless of the emit target.
+    // The wasm gate is therefore a SUFFICIENT WITNESS. The rust / rust-async run paths surface only a
+    // `value <n>` verdict line and swallow the (non-fatal) compile stderr, so their `Ran::Value` carries
+    // no warnings — an OBSERVABILITY gap in the harness, NOT a behavior difference. Skipping (not failing)
+    // the warns check there asserts nothing false and misses nothing real; failing it would red the gate
+    // on a warning that genuinely fired. (Contrast `(error CODE)`: a reject IS observable on all three
+    // because it fails the compile.) Making warns observable on rust would need the rust run path to
+    // surface compile stderr — a separate, larger increment, not needed here.
     if !rec.warns.is_empty()
+        && target == GateTarget::Wasm
         && let Some(Ran::Value(_, _, emitted)) = rans.iter().find(|r| matches!(r, Ran::Value(..)))
     {
         for (code, message) in &rec.warns {
@@ -6959,6 +6973,68 @@ mod trap_grading_tests {
                 &declined_uncoded("some unrelated decline reason")
             ),
             Grade::Fail(_)
+        ));
+    }
+
+    /// Anti-vacuous guard for the `(warns …)` pin (operator seq353 inc2 + the target-aware-skip
+    /// follow-up). The inc1 `(message …)` clause once graded VACUOUSLY (the reader stripped the clause,
+    /// so a garbage message still passed); this fixture pins that a warns pin genuinely grades — a wrong
+    /// message OR a wrong code FAILS on the wasm witness — AND that the pin is correctly SKIPPED (not
+    /// failed) on rust / rust-async, where the harness cannot observe compile warnings. So warns can
+    /// never silently regress to vacuous, and the target-skip can never silently regress to always-fail.
+    #[test]
+    fn grade_warns_pin_is_non_vacuous_on_wasm_and_skipped_off_wasm() {
+        // A case: program compiled to `value 42` AND emitted a real CDZ0306 unused-binding warning.
+        let record = |warn_code: &str, warn_msg: &str| CorpusRecord {
+            description: "unused-binding warns fixture".to_string(),
+            program: "(do (def (main) (let ((unused 99)) 42)) (export main))".to_string(),
+            modules: Vec::new(),
+            trials: vec![Trial {
+                call: None,
+                expect: "output (: 42 Int64)".to_string(),
+            }],
+            needs: Vec::new(),
+            host_responses: Vec::new(),
+            host_calls: Vec::new(),
+            warns: vec![(warn_code.to_string(), Some(warn_msg.to_string()))],
+        };
+        // The run: a value 42 whose compile emitted `unused binding `unused``.
+        let ran = vec![Ran::Value(
+            "(: 42 Int64)".to_string(),
+            Vec::new(),
+            vec![("CDZ0306".to_string(), "unused binding `unused`".to_string())],
+        )];
+
+        // WASM (the witness): correct code + contained message → Pass.
+        assert!(matches!(
+            grade_ran(&record("CDZ0306", "unused binding"), &ran, GateTarget::Wasm),
+            Grade::Pass
+        ));
+        // WASM: garbage MESSAGE → Fail (non-vacuous — a wrong phrase is caught).
+        assert!(matches!(
+            grade_ran(&record("CDZ0306", "TOTAL GARBAGE"), &ran, GateTarget::Wasm),
+            Grade::Fail(_)
+        ));
+        // WASM: garbage CODE → Fail (non-vacuous — a wrong code is caught).
+        assert!(matches!(
+            grade_ran(&record("CDZ9999", "unused binding"), &ran, GateTarget::Wasm),
+            Grade::Fail(_)
+        ));
+        // RUST / RUST-ASYNC: the warns pin is SKIPPED — even a garbage message Passes (the value 42
+        // still matches, and warns is not asserted off the wasm witness). This is the observability-gap
+        // skip, NOT a coverage loss: the warning provably fired (it is compile.rs-emitted), the harness
+        // just cannot see it here. If this ever FAILS, the target-skip regressed to grading off-wasm.
+        assert!(matches!(
+            grade_ran(&record("CDZ9999", "TOTAL GARBAGE"), &ran, GateTarget::Rust),
+            Grade::Pass
+        ));
+        assert!(matches!(
+            grade_ran(
+                &record("CDZ9999", "TOTAL GARBAGE"),
+                &ran,
+                GateTarget::RustAsync
+            ),
+            Grade::Pass
         ));
     }
 
