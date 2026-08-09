@@ -1186,7 +1186,7 @@ pub(crate) fn closure_content_hash(db: &Db, edges: &[usize]) -> String {
 /// Feed the AST subtree rooted at `id` into `h` — the node's structural KIND then, recursively, its
 /// children (a list) or its leaf bytes (a name/literal). A pure function of the subtree's shape + leaf
 /// content, so it is identical for two byte-identical source subtrees regardless of their arena position.
-fn hash_subtree(db: &Db, id: StructId, h: &mut crate::fxhash::FxHasher) {
+pub(crate) fn hash_subtree(db: &Db, id: StructId, h: &mut crate::fxhash::FxHasher) {
     use crate::ast::Struct;
     use std::hash::{Hash, Hasher};
     match db.ast.get(id) {
