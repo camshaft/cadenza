@@ -264,7 +264,11 @@ enum Cmd {
     Uses(UsesArgs),
     /// Report every well-formedness fault in FILE (type mismatch, unbound name, …) as
     /// `file:line:col: severity [CODE]: message` — "diagnostics as you type". No export/run needed;
-    /// exits non-zero if any error-severity fault is present.
+    /// exits non-zero if any error-severity fault is present. FRONT-END ONLY: this runs the
+    /// type-check/resolve pass, NOT the emit/lowering pass, so a fault the compiler only detects while
+    /// LOWERING (e.g. Float64 compound ordering `(< (tuple …) …)`) is NOT reported here — `cdz compile`
+    /// (and the corpus gate, which compiles) still catches it. `check` is the fast editor pass, not a
+    /// full build; run `cdz compile` for emit-path parity.
     Check(CheckArgs),
     /// Apply every VERIFIED fix in FILE — each proposed fix that, applied + re-checked, actually clears
     /// its diagnostic — and write the repaired program back (or preview with `--diff`/`--dry-run`).
@@ -7761,6 +7765,17 @@ fn resolve_check_targets(target: Option<&str>) -> Result<Vec<String>, String> {
 /// caller can mark them covered WITHOUT reloading + reparsing the closure (which `check_one` already
 /// did). On a load failure the closure is empty (the caller still covers `file` itself).
 /// `json`/`verify_fixes` are the `cdz check` flags.
+///
+/// FRONT-END-ONLY BY DESIGN: the diagnostics come from `Query::Diagnostics` (`compile::diagnostics` →
+/// `collect_faults`), which reads the type-check/resolve fault set WITHOUT running `layout`/emit. So a
+/// fault the compiler only detects while LOWERING (`lower.rs` has ~326 reject sites, e.g. Float64
+/// compound ordering `(< (tuple …) …)` / compound-compare) is INVISIBLE to `check` — it exits clean on a
+/// program `cdz compile` rejects (v-diagnostics finding, 2026-08-09). This is deliberate, not a bug:
+/// `Query::Diagnostics` is the "diagnostics as you type" primitive — fast, and it works on a mid-edit
+/// buffer that declares no export (emit needs a target + export). Driving the emit pass here for parity
+/// would make `check` as slow as a full build and change its contract, for faults the corpus gate (which
+/// compiles) + `cdz compile` already catch. If you extend this to surface lowering rejects, do it behind
+/// an opt-in flag (`--emit`/`--full`), never by making the default `check` emit.
 fn check_one(file: &str, json: bool, verify_fixes: bool) -> (bool, Vec<String>) {
     // Follow the entry file's IMPORT CLOSURE so a cross-file reference (an imported type or definition)
     // resolves and checks — `cdz check FILE` then sees the SAME linked program the package compile does.
