@@ -105,11 +105,15 @@ fn cap() -> Authorizer {
 }
 
 /// Run one generated sequence to quiescence and return the resulting session.
-async fn run_sequence(seed: u64, len: usize) -> Session {
+// Returns the built session AND the durable log captured through a recording sink (log-decouple I5:
+// replay-equivalence reads the log from the SOURCE, not the resident Vec). Callers that only need the
+// session's derived state ignore the second element.
+async fn run_sequence(seed: u64, len: usize) -> (Session, crate::test_log_source::CapturedLog) {
     let mut reducer = BusyReducer;
     let authz = cap();
     let mut exec = RecordingExecutor::new();
     let mut session = Session::genesis(Hash::of(b"busy-v1"), Hash::of(b"test-spawn-nonce"));
+    let captured = crate::test_log_source::attach_recording_sink(&mut session);
     let mut rng = Lcg(seed);
     for _ in 0..len {
         let byte = rng.byte();
@@ -125,7 +129,7 @@ async fn run_sequence(seed: u64, len: usize) -> Session {
             .await
             .unwrap();
     }
-    session
+    (session, captured)
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -134,10 +138,10 @@ async fn replay_reconstructs_identical_kv_root_over_many_sequences() {
     // Many seeds × varied lengths — a broad sweep of event sequences.
     for seed in 0..200u64 {
         let len = (seed as usize % 40) + 1;
-        let session = run_sequence(seed.wrapping_mul(2654435761), len).await;
+        let (session, captured) = run_sequence(seed.wrapping_mul(2654435761), len).await;
 
         let original_root = session.snapshot().kv_root;
-        let log = session.log().to_vec();
+        let log = crate::test_log_source::replay_input(&captured);
 
         // Replay the session's OWN log into a fresh Session and compare KV roots.
         let replayed = Session::replay(log.clone(), &mut reducer).await.unwrap();
@@ -147,10 +151,9 @@ async fn replay_reconstructs_identical_kv_root_over_many_sequences() {
             "replay diverged for seed={seed} len={len}: KV root differs (§16c-S3)"
         );
 
-        // Replay must also be idempotent: replaying the replayed session's log again matches.
-        let twice = Session::replay(replayed.log().to_vec(), &mut reducer)
-            .await
-            .unwrap();
+        // Replay must also be idempotent: replaying the same durable log again matches (a replay of log L
+        // yields a session whose log IS L, so the second replay's input is the same `log`).
+        let twice = Session::replay(log.clone(), &mut reducer).await.unwrap();
         assert_eq!(
             twice.snapshot().kv_root,
             original_root,
@@ -165,8 +168,8 @@ async fn identical_sequences_produce_identical_roots() {
     // nondeterminism in the fold/drive path).
     for seed in 0..50u64 {
         let len = (seed as usize % 20) + 1;
-        let a = run_sequence(seed, len).await.snapshot().kv_root;
-        let b = run_sequence(seed, len).await.snapshot().kv_root;
+        let a = run_sequence(seed, len).await.0.snapshot().kv_root;
+        let b = run_sequence(seed, len).await.0.snapshot().kv_root;
         assert_eq!(
             a, b,
             "same sequence produced different roots for seed={seed}"
@@ -184,6 +187,7 @@ async fn different_sequences_generally_produce_different_roots() {
     for seed in 0..100u64 {
         let root = run_sequence(seed.wrapping_mul(2654435761), (seed as usize % 30) + 3)
             .await
+            .0
             .snapshot()
             .kv_root;
         roots.insert(root);
@@ -227,6 +231,7 @@ async fn scan_order_dependent_reducer_still_replays_identically() {
     for seed in 0..100u64 {
         let mut exec = RecordingExecutor::new();
         let mut session = Session::genesis(Hash::of(b"scan-v1"), Hash::of(b"test-spawn-nonce"));
+        let captured = crate::test_log_source::attach_recording_sink(&mut session);
         let mut rng = Lcg(seed.wrapping_mul(11400714819323198485));
         for _ in 0..((seed as usize % 30) + 1) {
             let body = EventBody::Inbound {
@@ -242,9 +247,12 @@ async fn scan_order_dependent_reducer_still_replays_identically() {
                 .unwrap();
         }
         let original = session.snapshot().kv_root;
-        let replayed = Session::replay(session.log().to_vec(), &mut reducer)
-            .await
-            .unwrap();
+        let replayed = Session::replay(
+            crate::test_log_source::replay_input(&captured),
+            &mut reducer,
+        )
+        .await
+        .unwrap();
         assert_eq!(
             replayed.snapshot().kv_root,
             original,

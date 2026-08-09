@@ -197,6 +197,7 @@ async fn the_wasm_guest_drives_the_kernel_loop_and_its_token_reaches_the_dispatc
     }]);
     let mut exec = RecordingExecutor::new();
     let mut session = Session::genesis(Hash::of(b"wasm-reducer-v1"), Hash::of(b"test-spawn-nonce"));
+    let captured = crate::test_log_source::attach_recording_sink(&mut session);
 
     // Deliver an inbound "message" — the guest emits one Http effect with correlation "step-1".
     session
@@ -224,10 +225,12 @@ async fn the_wasm_guest_drives_the_kernel_loop_and_its_token_reaches_the_dispatc
     );
     assert_eq!(exec.seen[0].0.target_str().unwrap(), "https://ok.host/x");
     // And the guest's continuation token rode into the durable Dispatched frame (§19e: emit→Dispatched).
-    let dispatched_token = session.log().iter().find_map(|e| match &e.body {
-        EventBody::Dispatched { token, .. } => Some(token.clone()),
-        _ => None,
-    });
+    let dispatched_token = crate::test_log_source::replay_input(&captured)
+        .iter()
+        .find_map(|e| match &e.body {
+            EventBody::Dispatched { token, .. } => Some(token.clone()),
+            _ => None,
+        });
     assert_eq!(
         dispatched_token,
         Some(Some(b"step-1".to_vec())),
@@ -337,6 +340,7 @@ async fn a_failed_wasm_fold_records_a_foldfailed_event_on_the_log() {
     }]);
     let mut exec = RecordingExecutor::new();
     let mut session = Session::genesis(Hash::of(b"foldfail-v1"), Hash::of(b"test-spawn-nonce"));
+    let captured = crate::test_log_source::attach_recording_sink(&mut session);
 
     // Deliver an inbound message — the guest's fold traps on 1 fuel. deliver() must NOT panic (§17).
     session
@@ -356,11 +360,13 @@ async fn a_failed_wasm_fold_records_a_foldfailed_event_on_the_log() {
         .await
         .expect("deliver does not error on a trapped fold");
 
-    // A FoldFailed event is on the log (the failure was CAPTURED, not swallowed) — with a reason.
-    let fold_failed = session.log().iter().find_map(|e| match &e.body {
-        EventBody::FoldFailed { reason, .. } => Some(reason.clone()),
-        _ => None,
-    });
+    // A FoldFailed event is on the durable log (the failure was CAPTURED, not swallowed) — with a reason.
+    let fold_failed = crate::test_log_source::replay_input(&captured)
+        .iter()
+        .find_map(|e| match &e.body {
+            EventBody::FoldFailed { reason, .. } => Some(reason.clone()),
+            _ => None,
+        });
     assert!(
         fold_failed.is_some(),
         "a trapped wasm fold must record a FoldFailed event, not vanish into a silent empty fold"

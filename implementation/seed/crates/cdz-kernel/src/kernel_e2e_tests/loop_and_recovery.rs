@@ -121,17 +121,20 @@ async fn effect_chain_populates_the_causal_dag() {
     let mut reducer = TwoStepReducer;
     let mut exec = RecordingExecutor::new();
     let mut session = Session::genesis(H::of(b"two-step-v1"), H::of(b"test-spawn-nonce"));
+    let captured = crate::test_log_source::attach_recording_sink(&mut session);
     session
         .deliver(inbound_go(), None, &mut reducer, &http_cap(), &mut exec)
         .await
         .unwrap();
 
+    // Walk the DURABLE log (read back from the source, not the resident Vec — log-decouple I5).
+    let durable = crate::test_log_source::replay_input(&captured);
     // Index every event by its hash so we can follow `cause` edges.
-    let by_hash: HashMap<H, &Event> = session.log().iter().map(|e| (e.hash(), e)).collect();
+    let by_hash: HashMap<H, &Event> = durable.iter().map(|e| (e.hash(), e)).collect();
 
     // Genesis + inbound have no effect-cause; every Dispatched/EffectResult MUST have a cause that
     // resolves to an event actually in this log (no dangling edges, no None).
-    for e in session.log() {
+    for e in &durable {
         match &e.body {
             EventBody::Dispatched { .. } | EventBody::EffectResult { .. } => {
                 let cause = e.cause.expect("effect-chain event must carry a cause (§5)");
@@ -145,7 +148,7 @@ async fn effect_chain_populates_the_causal_dag() {
     }
 
     // Specifically: each EffectResult is caused by a Dispatched (trigger → dispatch → result thread).
-    for e in session.log() {
+    for e in &durable {
         if let EventBody::EffectResult { .. } = &e.body {
             let parent = by_hash[&e.cause.unwrap()];
             assert!(
@@ -157,8 +160,7 @@ async fn effect_chain_populates_the_causal_dag() {
 
     // And the second dispatch (step2) is caused by an EffectResult (step1's) — proving the chain
     // extends past the first hop, not just trigger→dispatch.
-    let second_dispatch = session
-        .log()
+    let second_dispatch = durable
         .iter()
         .filter(|e| matches!(e.body, EventBody::Dispatched { .. }))
         .nth(1)
@@ -191,6 +193,7 @@ async fn denied_effect_is_logged_and_never_executed() {
     }
     let mut exec = RecordingExecutor::new();
     let mut session = Session::genesis(Hash::of(b"exfil"), Hash::of(b"test-spawn-nonce"));
+    let captured = crate::test_log_source::attach_recording_sink(&mut session);
     session
         .deliver(inbound_go(), None, &mut Exfil, &http_cap(), &mut exec)
         .await
@@ -198,9 +201,8 @@ async fn denied_effect_is_logged_and_never_executed() {
 
     // The executor NEVER saw the effect (SEC-F1: denied at the gate)...
     assert_eq!(exec.seen.len(), 0);
-    // ...and the denial is on the authoritative log for audit (§10).
-    assert!(session
-        .log()
+    // ...and the denial is on the authoritative (durable) log for audit (§10).
+    assert!(crate::test_log_source::replay_input(&captured)
         .iter()
         .any(|e| matches!(e.body, EventBody::AuthzDenied { .. })));
 }
@@ -215,6 +217,7 @@ async fn crash_after_dispatch_before_result_does_not_double_fire() {
 
     // Build a log ending in a Dispatched-with-no-result (the crash point).
     let mut session = Session::genesis(Hash::of(b"two-step-v1"), Hash::of(b"test-spawn-nonce"));
+    let captured = crate::test_log_source::attach_recording_sink(&mut session);
     // Drive step 1's dispatch by hand-constructing the crash state via a custom executor that records
     // the effect but then we truncate the log before the result. Easiest: run normally, then chop.
     let authz = http_cap();
@@ -225,8 +228,9 @@ async fn crash_after_dispatch_before_result_does_not_double_fire() {
         .unwrap();
 
     // Full run performed 2 effects. Now emulate a crash right after the FIRST dispatch was made
-    // durable but before its result: take the log up to and including the first `Dispatched`.
-    let full_log = session.log().to_vec();
+    // durable but before its result: take the DURABLE log (from the source) up to and including the
+    // first `Dispatched`.
+    let full_log = crate::test_log_source::replay_input(&captured);
     let first_dispatch_idx = full_log
         .iter()
         .position(|e| matches!(e.body, EventBody::Dispatched { .. }))
@@ -245,8 +249,10 @@ async fn crash_after_dispatch_before_result_does_not_double_fire() {
     // would dedup rather than double-fire. Verify the key is stable across the crash: the recovered
     // dispatch record carries the SAME idempotency key the original executor was called with.
     let orig_key = exec.seen[0].1;
-    let recovered_dispatch = recovered
-        .log()
+    // `recovered` was replayed from `crashed_log` (the prefix of `full_log` up to the first Dispatched),
+    // so its durable dispatch record is that same frame — read it from `full_log` (the resident Vec is
+    // gone; recovery reconstructs from the source, and the frame is byte-identical either way).
+    let recovered_dispatch = full_log
         .iter()
         .find_map(|e| match &e.body {
             EventBody::Dispatched {
@@ -358,11 +364,12 @@ async fn time_out_effect_settles_an_open_dispatch_and_resumes_the_reducer() {
     let mut reducer = GiveUpOnTimeout;
     let mut exec = RecordingExecutor::new();
     let mut session = Session::genesis(Hash::of(b"giveup-v1"), Hash::of(b"test-spawn-nonce"));
+    let captured = crate::test_log_source::attach_recording_sink(&mut session);
     session
         .deliver(inbound_go(), None, &mut reducer, &http_cap(), &mut exec)
         .await
         .unwrap();
-    let full_log = session.log().to_vec();
+    let full_log = crate::test_log_source::replay_input(&captured);
     let dispatch_idx = full_log
         .iter()
         .position(|e| matches!(e.body, EventBody::Dispatched { .. }))
@@ -375,6 +382,12 @@ async fn time_out_effect_settles_an_open_dispatch_and_resumes_the_reducer() {
     let mut restored = Session::replay(full_log[..=dispatch_idx].to_vec(), &mut reducer)
         .await
         .expect("replay");
+    // Attach a sink pre-seeded with the replayed prefix so the timeout events below extend the FULL
+    // durable log (log-decouple I5: the resident Vec is gone; recovery-then-drive reads its log here).
+    let restored_log = crate::test_log_source::attach_recording_sink_seeded(
+        &mut restored,
+        full_log[..=dispatch_idx].to_vec(),
+    );
     assert_eq!(restored.open_effect_ids(), vec![open_id]);
     assert_eq!(restored.kv().get(b"status"), None);
 
@@ -409,9 +422,12 @@ async fn time_out_effect_settles_an_open_dispatch_and_resumes_the_reducer() {
 
     // The timeout outcome folded observably, so a replay of the WHOLE resulting log reconstructs the
     // same KV (the §16c-S3 determinism the observable() predicate guarantees).
-    let replayed = Session::replay(restored.log().to_vec(), &mut reducer)
-        .await
-        .expect("replay after timeout");
+    let replayed = Session::replay(
+        crate::test_log_source::replay_input(&restored_log),
+        &mut reducer,
+    )
+    .await
+    .expect("replay after timeout");
     assert_eq!(replayed.kv().get(b"status"), Some(&b"gave-up"[..]));
     assert_eq!(replayed.kv(), restored.kv());
 }
@@ -425,14 +441,14 @@ async fn time_out_effect_on_an_armed_timer_id_is_a_noop_not_a_panic() {
     let mut reducer = TimerReducer { deadline_ms: 5000 };
     let mut exec = RecordingExecutor::new();
     let mut session = Session::genesis(Hash::of(b"timer-v1"), Hash::of(b"test-spawn-nonce"));
+    let captured = crate::test_log_source::attach_recording_sink(&mut session);
     session
         .deliver(inbound_go(), None, &mut reducer, &timer_cap(), &mut exec)
         .await
         .unwrap();
 
     // The timer is armed → its id is OPEN (an obligation), but it's a TimerArmed, not a Dispatched.
-    let armed_id = session
-        .log()
+    let armed_id = crate::test_log_source::replay_input(&captured)
         .iter()
         .find_map(|e| match &e.body {
             EventBody::TimerArmed { id, .. } => Some(*id),
@@ -482,9 +498,9 @@ async fn attached_log_persists_through_on_append_no_manual_mirroring() {
     // write-through owns every subsequent append.
     {
         let mut store = LogStore::open(&path).unwrap();
-        for e in session.log() {
-            store.append(e).unwrap();
-        }
+        // Seed the store with the log up to the current tip before attaching — here just genesis (read
+        // the resident genesis, not the dropped log Vec). Then write-through owns every append.
+        store.append(session.genesis_ref()).unwrap();
         session.attach_log(store);
     }
 
@@ -506,7 +522,7 @@ async fn attached_log_persists_through_on_append_no_manual_mirroring() {
     assert_eq!(restored.kv().get(b"phase"), Some(&b"done"[..]));
     // Both effects settled during the run, so recovery sees no open obligations.
     assert_eq!(restored.open_effects(), 0);
-    assert_eq!(restored.log().len(), session.log().len());
+    assert_eq!(restored.event_count(), session.event_count());
 
     // Drop `session` (which holds the attached LogStore's open File) BEFORE unlinking: POSIX unlinks
     // an open file fine, but Windows refuses to remove a file with a live handle — the swallowed
@@ -544,6 +560,7 @@ async fn a_reducers_continuation_token_is_recorded_in_the_dispatched_frame() {
 
     let mut exec = RecordingExecutor::new();
     let mut session = Session::genesis(Hash::of(b"token-v1"), Hash::of(b"test-spawn-nonce"));
+    let captured = crate::test_log_source::attach_recording_sink(&mut session);
     session
         .deliver(
             inbound_go(),
@@ -556,7 +573,8 @@ async fn a_reducers_continuation_token_is_recorded_in_the_dispatched_frame() {
         .unwrap();
 
     // The Dispatched frame for the emitted effect carries the reducer's token verbatim.
-    let dispatched_token = session.log().iter().find_map(|e| match &e.body {
+    let durable = crate::test_log_source::replay_input(&captured);
+    let dispatched_token = durable.iter().find_map(|e| match &e.body {
         EventBody::Dispatched { token, .. } => Some(token.clone()),
         _ => None,
     });
@@ -570,7 +588,7 @@ async fn a_reducers_continuation_token_is_recorded_in_the_dispatched_frame() {
     // frame onto the result event when it records the result, so a wasm reducer's fold can read it back
     // as the guest's `resumes` without touching the log/map. The executor here returned Ok, so a result
     // was recorded; its token must equal the dispatch's token (derived from the durable frame).
-    let result_token = session.log().iter().find_map(|e| match &e.body {
+    let result_token = durable.iter().find_map(|e| match &e.body {
         EventBody::EffectResult { token, .. } => Some(token.clone()),
         _ => None,
     });
@@ -583,6 +601,7 @@ async fn a_reducers_continuation_token_is_recorded_in_the_dispatched_frame() {
     // Control: a token-free reducer (the common Rust path via FoldOutput::with) records token None.
     let mut exec2 = RecordingExecutor::new();
     let mut s2 = Session::genesis(Hash::of(b"notoken-v1"), Hash::of(b"test-spawn-nonce"));
+    let captured2 = crate::test_log_source::attach_recording_sink(&mut s2);
     s2.deliver(
         inbound_go(),
         None,
@@ -592,10 +611,12 @@ async fn a_reducers_continuation_token_is_recorded_in_the_dispatched_frame() {
     )
     .await
     .unwrap();
-    let first_token = s2.log().iter().find_map(|e| match &e.body {
-        EventBody::Dispatched { token, .. } => Some(token.clone()),
-        _ => None,
-    });
+    let first_token = crate::test_log_source::replay_input(&captured2)
+        .iter()
+        .find_map(|e| match &e.body {
+            EventBody::Dispatched { token, .. } => Some(token.clone()),
+            _ => None,
+        });
     assert_eq!(
         first_token,
         Some(None),
@@ -632,6 +653,7 @@ async fn a_continuation_token_rides_timer_fired_and_authz_denied_events() {
 
     let mut exec = RecordingExecutor::new();
     let mut session = Session::genesis(Hash::of(b"token-timer-v1"), Hash::of(b"test-spawn-nonce"));
+    let captured = crate::test_log_source::attach_recording_sink(&mut session);
     session
         .deliver(
             inbound_go(),
@@ -644,10 +666,12 @@ async fn a_continuation_token_rides_timer_fired_and_authz_denied_events() {
         .unwrap();
 
     // The token reached the durable TimerArmed frame (the arming analogue of Dispatched.token).
-    let armed_token = session.log().iter().find_map(|e| match &e.body {
-        EventBody::TimerArmed { token, .. } => Some(token.clone()),
-        _ => None,
-    });
+    let armed_token = crate::test_log_source::replay_input(&captured)
+        .iter()
+        .find_map(|e| match &e.body {
+            EventBody::TimerArmed { token, .. } => Some(token.clone()),
+            _ => None,
+        });
     assert_eq!(
         armed_token,
         Some(Some(b"timer-cont-7".to_vec())),
@@ -661,10 +685,12 @@ async fn a_continuation_token_rides_timer_fired_and_authz_denied_events() {
             .await,
         1
     );
-    let fired_token = session.log().iter().find_map(|e| match &e.body {
-        EventBody::TimerFired { token, .. } => Some(token.clone()),
-        _ => None,
-    });
+    let fired_token = crate::test_log_source::replay_input(&captured)
+        .iter()
+        .find_map(|e| match &e.body {
+            EventBody::TimerFired { token, .. } => Some(token.clone()),
+            _ => None,
+        });
     assert_eq!(
         fired_token,
         Some(Some(b"timer-cont-7".to_vec())),
@@ -695,6 +721,7 @@ async fn a_continuation_token_rides_timer_fired_and_authz_denied_events() {
     // A capability that authorizes Timer but NOT Http → the Http effect is denied.
     let mut exec2 = RecordingExecutor::new();
     let mut s2 = Session::genesis(Hash::of(b"token-deny-v1"), Hash::of(b"test-spawn-nonce"));
+    let captured2 = crate::test_log_source::attach_recording_sink(&mut s2);
     s2.deliver(
         inbound_go(),
         None,
@@ -707,10 +734,12 @@ async fn a_continuation_token_rides_timer_fired_and_authz_denied_events() {
     // The effect never reached the executor (denied)...
     assert_eq!(exec2.seen.len(), 0);
     // ...and its continuation token rode the AuthzDenied event.
-    let denied_token = s2.log().iter().find_map(|e| match &e.body {
-        EventBody::AuthzDenied { token, .. } => Some(token.clone()),
-        _ => None,
-    });
+    let denied_token = crate::test_log_source::replay_input(&captured2)
+        .iter()
+        .find_map(|e| match &e.body {
+            EventBody::AuthzDenied { token, .. } => Some(token.clone()),
+            _ => None,
+        });
     assert_eq!(
         denied_token,
         Some(Some(b"denied-cont-9".to_vec())),
@@ -775,12 +804,14 @@ async fn s1_route_guard_does_not_perform_an_effect_whose_dispatch_failed_to_pers
         "the persist failure must be latched for the driver to observe"
     );
     // And the effect's outcome was recorded as a failed-undurable result (observable, folds live==replay),
-    // so the id settled rather than dangling open.
+    // so the id settled rather than dangling open. The failed-undurable EffectResult is the final appended
+    // event, so it's the resident TIP (log-decouple I5: read the tip, not the dropped log Vec — and note
+    // this test's FailingSink can't be a recording source anyway, since its whole job is to fail persists).
     assert_eq!(session.open_effects(), 0);
-    assert!(session.log().iter().any(|e| matches!(
-        &e.body,
+    assert!(matches!(
+        &session.tip().body,
         EventBody::EffectResult { result: EffectOutcome::Err { message: msg, .. }, .. } if msg.contains("not durably logged")
-    )));
+    ));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -800,12 +831,13 @@ async fn persist_crash_recover_reconstructs_kv_and_open_obligations() {
     let mut reducer = TwoStepReducer;
     let mut exec = RecordingExecutor::new();
     let mut session = Session::genesis(Hash::of(b"two-step-v1"), Hash::of(b"test-spawn-nonce"));
+    let captured = crate::test_log_source::attach_recording_sink(&mut session);
     session
         .deliver(inbound_go(), None, &mut reducer, &http_cap(), &mut exec)
         .await
         .unwrap();
 
-    let full_log = session.log().to_vec();
+    let full_log = crate::test_log_source::replay_input(&captured);
     let first_dispatch_idx = full_log
         .iter()
         .position(|e| matches!(e.body, EventBody::Dispatched { .. }))
@@ -858,11 +890,12 @@ async fn session_recover_is_the_one_call_recovery_entry_point() {
     // Persist a session up to a mid-flight dispatch (the crash point), then recover via the one call.
     let mut exec = RecordingExecutor::new();
     let mut session = Session::genesis(Hash::of(b"two-step-v1"), Hash::of(b"test-spawn-nonce"));
+    let captured = crate::test_log_source::attach_recording_sink(&mut session);
     session
         .deliver(inbound_go(), None, &mut reducer, &http_cap(), &mut exec)
         .await
         .unwrap();
-    let full_log = session.log().to_vec();
+    let full_log = crate::test_log_source::replay_input(&captured);
     let first_dispatch_idx = full_log
         .iter()
         .position(|e| matches!(e.body, EventBody::Dispatched { .. }))
@@ -909,15 +942,16 @@ async fn session_recover_from_is_backend_agnostic_no_file_needed() {
         Err(RecoverError::EmptyLog)
     ));
 
-    // Produce a real event prefix WITHOUT touching disk: run a session in memory, take its log, and wrap
-    // it in a `Recovered` as a non-file backend would after reading its stream.
+    // Produce a real event prefix WITHOUT touching disk: run a session in memory, take its (durable-source)
+    // log, and wrap it in a `Recovered` as a non-file backend would after reading its stream.
     let mut exec = RecordingExecutor::new();
     let mut session = Session::genesis(Hash::of(b"two-step-v1"), Hash::of(b"test-spawn-nonce"));
+    let captured = crate::test_log_source::attach_recording_sink(&mut session);
     session
         .deliver(inbound_go(), None, &mut reducer, &http_cap(), &mut exec)
         .await
         .unwrap();
-    let full_log = session.log().to_vec();
+    let full_log = crate::test_log_source::replay_input(&captured);
     let first_dispatch_idx = full_log
         .iter()
         .position(|e| matches!(e.body, EventBody::Dispatched { .. }))
@@ -1073,6 +1107,7 @@ async fn fired_timestamp_is_the_deadline_not_the_wall_clock_that_fired_it() {
     let mut reducer = TimerReducer { deadline_ms: 500 };
     let mut exec = RecordingExecutor::new();
     let mut session = Session::genesis(Hash::of(b"timer"), Hash::of(b"test-spawn-nonce"));
+    let captured = crate::test_log_source::attach_recording_sink(&mut session);
     session
         .deliver(inbound_go(), None, &mut reducer, &timer_cap(), &mut exec)
         .await
@@ -1082,8 +1117,7 @@ async fn fired_timestamp_is_the_deadline_not_the_wall_clock_that_fired_it() {
     session
         .fire_due_timers(9999, &mut reducer, &timer_cap(), &mut exec)
         .await;
-    let fired = session
-        .log()
+    let fired = crate::test_log_source::replay_input(&captured)
         .iter()
         .find_map(|e| match &e.body {
             EventBody::TimerFired { fired_ms, .. } => Some(*fired_ms),
@@ -1103,15 +1137,19 @@ async fn armed_timer_survives_replay() {
     let mut reducer = TimerReducer { deadline_ms: 2000 };
     let mut exec = RecordingExecutor::new();
     let mut session = Session::genesis(Hash::of(b"timer"), Hash::of(b"test-spawn-nonce"));
+    let captured = crate::test_log_source::attach_recording_sink(&mut session);
     session
         .deliver(inbound_go(), None, &mut reducer, &timer_cap(), &mut exec)
         .await
         .unwrap();
 
-    // Replay the log into a fresh session — the armed timer must come back.
-    let restored = Session::replay(session.log().to_vec(), &mut reducer)
-        .await
-        .unwrap();
+    // Replay the durable log (read from the source) into a fresh session — the armed timer must come back.
+    let restored = Session::replay(
+        crate::test_log_source::replay_input(&captured),
+        &mut reducer,
+    )
+    .await
+    .unwrap();
     assert_eq!(restored.next_timer_deadline(), Some(2000));
     assert_eq!(restored.open_effects(), 1);
 
@@ -1147,6 +1185,7 @@ async fn malformed_timer_deadline_is_rejected_not_panicked() {
     }
     let mut exec = RecordingExecutor::new();
     let mut session = Session::genesis(Hash::of(b"badtimer"), Hash::of(b"test-spawn-nonce"));
+    let captured = crate::test_log_source::attach_recording_sink(&mut session);
     session
         .deliver(inbound_go(), None, &mut BadTimer, &timer_cap(), &mut exec)
         .await
@@ -1154,8 +1193,7 @@ async fn malformed_timer_deadline_is_rejected_not_panicked() {
     // No timer armed, nothing left open, and a denial recorded for audit.
     assert_eq!(session.next_timer_deadline(), None);
     assert_eq!(session.open_effects(), 0);
-    assert!(session
-        .log()
+    assert!(crate::test_log_source::replay_input(&captured)
         .iter()
         .any(|e| matches!(e.body, EventBody::AuthzDenied { .. })));
 }
@@ -1250,6 +1288,7 @@ async fn live_shell_denied_command_never_executes() {
     }]);
     let mut exec = ShellExecutor;
     let mut session = Session::genesis(Hash::of(b"denied"), Hash::of(b"test-spawn-nonce"));
+    let captured = crate::test_log_source::attach_recording_sink(&mut session);
     session
         .deliver(
             inbound_go(),
@@ -1262,8 +1301,7 @@ async fn live_shell_denied_command_never_executes() {
         .unwrap();
 
     // Denied at the gate → a denial is logged and nothing ran.
-    assert!(session
-        .log()
+    assert!(crate::test_log_source::replay_input(&captured)
         .iter()
         .any(|e| matches!(e.body, EventBody::AuthzDenied { .. })));
     assert_eq!(session.open_effects(), 0);
@@ -1374,6 +1412,7 @@ async fn authz_denied_is_folded_live_so_replay_matches() {
     }]);
     let mut exec = RecordingExecutor::new();
     let mut session = Session::genesis(Hash::of(b"denial"), Hash::of(b"test-spawn-nonce"));
+    let captured = crate::test_log_source::attach_recording_sink(&mut session);
     session
         .deliver(inbound_go(), None, &mut DenialCounter, &authz, &mut exec)
         .await
@@ -1384,10 +1423,13 @@ async fn authz_denied_is_folded_live_so_replay_matches() {
     assert_eq!(exec.seen.len(), 0);
     let live_root = session.snapshot().kv_root;
 
-    // Replay: must reconstruct the SAME kv (the denial is folded in replay too, matching live).
-    let replayed = Session::replay(session.log().to_vec(), &mut DenialCounter)
-        .await
-        .unwrap();
+    // Replay from the durable source: must reconstruct the SAME kv (the denial folds in replay too).
+    let replayed = Session::replay(
+        crate::test_log_source::replay_input(&captured),
+        &mut DenialCounter,
+    )
+    .await
+    .unwrap();
     assert_eq!(replayed.kv().get(b"denials"), Some(&[1u8][..]));
     assert_eq!(
         replayed.snapshot().kv_root,

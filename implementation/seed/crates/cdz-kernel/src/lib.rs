@@ -84,3 +84,9 @@ pub mod wasm_host;
 // no-integration-tests directive — same coverage, compiled with the lib, no separate binary).
 #[cfg(test)]
 mod kernel_e2e_tests;
+
+// Shared test-only recording-LogSink fixture — the durable-log SOURCE seam every replay/audit test reads
+// from instead of the resident log Vec (log-decouple I5). Crate-level so both `kernel`'s unit tests and
+// the `kernel_e2e_tests` suites reach it via `crate::test_log_source`.
+#[cfg(test)]
+mod test_log_source;

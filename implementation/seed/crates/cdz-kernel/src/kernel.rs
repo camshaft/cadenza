@@ -2369,64 +2369,15 @@ fn idempotency_key_for(id: EffectId, req: &EffectRequest) -> Hash {
     Hash::of(&buf)
 }
 
-/// Shared test fixture: an in-memory [`crate::log_store::LogSink`] that captures the events written
-/// through it, so a replay-equivalence test reads its input from the durable-log SOURCE (the sink) rather
-/// than the resident log Vec — mirroring PRODUCTION recovery, which reads from `LogStore::recover`, never
-/// from an in-memory Vec. This is the log-decouple I5 step-3 seam: once the resident Vec is dropped, the
-/// full log is only available from the attached sink, exactly as it is on a real recovery. The fixture
-/// seeds itself with the session's genesis on attach (the constructor puts genesis in the Vec, but a
-/// write-through sink attached afterward must be seeded with it — precisely what the host session factory
-/// does, `sink.append(&genesis)` before attaching), then captures every subsequent append.
-#[cfg(test)]
-mod test_log_source {
-    use super::*;
-    use std::cell::RefCell;
-    use std::rc::Rc;
-
-    /// The captured event buffer, shared between the attached sink and the test that reads it back. `Rc`
-    /// (not `Arc`) + `RefCell` — the kernel is single-threaded by design, matching the `?Send` backends.
-    pub type CapturedLog = Rc<RefCell<Vec<Event>>>;
-
-    struct MemLogSink {
-        captured: CapturedLog,
-    }
-
-    #[async_trait::async_trait(?Send)]
-    impl crate::log_store::LogSink for MemLogSink {
-        async fn append(&mut self, event: &Event) -> std::io::Result<()> {
-            self.captured.borrow_mut().push(event.clone());
-            Ok(())
-        }
-    }
-
-    /// Attach a fresh recording sink to `session`, seeded with its genesis, and return the shared buffer.
-    /// After this, every appended event is captured; the test replays from [`replay_input`] to prove the
-    /// durable-log source (not the resident Vec) reconstructs the session — the recovery-equivalence the
-    /// Vec-drop rests on. Call this on a FRESH `genesis` session (before delivering events).
-    pub fn attach_recording_sink(session: &mut Session) -> CapturedLog {
-        let captured: CapturedLog = Rc::new(RefCell::new(vec![session.genesis_ref().clone()]));
-        session.attach_sink(Box::new(MemLogSink {
-            captured: Rc::clone(&captured),
-        }));
-        captured
-    }
-
-    /// The captured durable log as an owned `Vec<Event>` — what a test hands to [`Session::replay`] in
-    /// place of `session.log().to_vec()`. Reading from the SOURCE, not the resident Vec.
-    pub fn replay_input(captured: &CapturedLog) -> Vec<Event> {
-        captured.borrow().clone()
-    }
-}
-
 #[cfg(test)]
 mod status_snapshot_tests {
-    use super::test_log_source::*;
     use super::*;
     use crate::authz::Authorizer;
     use crate::effect::{Capability, EffectKind, EffectRequest, ResourcePredicate, Timeliness};
     use crate::event::{ContentType, EventBody};
     use crate::executor::RecordingExecutor;
     use crate::reducer::{FoldOutput, Reducer};
+    use crate::test_log_source::*;
 
     // A reducer that, on an inbound message, publishes a semantic status to `public/` and arms a Timer
     // (an open obligation that stays unsettled — no executor call — so the session reads as Active).
@@ -3097,7 +3048,6 @@ mod status_snapshot_tests {
 
 #[cfg(test)]
 mod monotonic_now_tests {
-    use super::test_log_source::*;
     use super::*;
     use crate::authz::Authorizer;
     use crate::effect::{
@@ -3108,6 +3058,7 @@ mod monotonic_now_tests {
     use crate::hash::Hash;
     use crate::kv::Kv;
     use crate::reducer::{Effect, FoldOutput, Reducer};
+    use crate::test_log_source::*;
 
     // The clamp helper directly: a fresh reading above the floor passes through (and raises last_now);
     // a reading <= last_now is clamped UP to last_now+1 (strictly increasing).
@@ -5228,12 +5179,12 @@ mod monotonic_now_tests {
 // time_out_effect), so a terminated session's log tail STAYS the terminal marker (github-liaison #2381).
 #[cfg(test)]
 mod lifecycle_tests {
-    use super::test_log_source::*;
     use super::*;
     use crate::authz::Authorizer;
     use crate::effect::{Capability, EffectRequest, Payload, ResourcePredicate, Timeliness};
     use crate::executor::RecordingExecutor;
     use crate::reducer::{Effect, FoldOutput, Reducer};
+    use crate::test_log_source::*;
 
     fn inbound() -> EventBody {
         EventBody::Inbound {
@@ -5676,12 +5627,12 @@ mod lifecycle_tests {
 // attached NameStore (not routed to an executor) and its outcome folded back.
 #[cfg(test)]
 mod store_effect_tests {
-    use super::test_log_source::*;
     use super::*;
     use crate::authz::Authorizer;
     use crate::effect::{effect_ct, EffectRequest, Payload, Timeliness};
     use crate::name_store::NameStore;
     use crate::reducer::{FoldOutput, Reducer};
+    use crate::test_log_source::*;
 
     fn inbound() -> EventBody {
         EventBody::Inbound {
