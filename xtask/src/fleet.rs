@@ -10452,17 +10452,25 @@ fn schedule_pass_local_gate(
     if batch && publish_origin && queued.len() >= 2 {
         let members = select_batch_members(&queued, batch_member_cap);
         if members.len() >= 2 {
-            // Re-form the combined tree = origin/main + each member's ref, cherry-picked in order.
+            // Re-form the combined tree = origin/main + each member's RANGE, cherry-picked in order.
+            // RANGE not single-tip (same correctness fix as the per-MR loop, concierge 2026-08-09): a
+            // multi-commit member ref would otherwise land only its tip + silently drop its ancestors.
             let mut applied: Vec<&BatchMr> = Vec::new();
             let batch_base = head_sha(); // == origin/main tip (we reset to it just above)
             for m in &members {
                 let _ = git_wt(&["fetch", "origin", &m.r#ref, "--quiet"]);
-                if git_wt_ok(&["cherry-pick", "--allow-empty", &m.r#ref]) {
+                let m_merge_base = git_wt(&["merge-base", base, &m.r#ref])
+                    .ok()
+                    .filter(|o| o.status.success())
+                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                    .filter(|s| !s.is_empty());
+                let m_range = merge_base_range(m_merge_base.as_deref(), &m.r#ref);
+                if git_wt_ok(&["cherry-pick", "--allow-empty", &m_range]) {
                     applied.push(m);
                 } else {
                     let _ = git_wt(&["cherry-pick", "--abort"]);
-                    // A member that won't cherry-pick onto the combined tip drops out of the batch (the
-                    // per-MR loop will reject it stale-base). Keep the clean tip; continue building.
+                    // A member whose range won't cherry-pick onto the combined tip drops out of the batch
+                    // (the per-MR loop will reject it stale-base). Keep the clean tip; continue building.
                 }
             }
             if applied.len() >= 2 {
@@ -10557,7 +10565,24 @@ fn schedule_pass_local_gate(
         };
         // Fetch the ref (the sender's branch tip) so the cherry-pick has the object + its ancestry.
         let _ = git_wt(&["fetch", "origin", &mr.r#ref, "--quiet"]);
-        if !git_wt_ok(&["cherry-pick", "--allow-empty", &mr.r#ref]) {
+        // Cherry-pick the FULL merge-base RANGE, not just the tip commit (correctness fix, concierge
+        // 2026-08-09 via v-agent-harness-host): an MR `--ref` can be a MULTI-COMMIT tip, and
+        // `cherry-pick <ref>` lands ONLY the tip's diff — SILENTLY DROPPING the ancestor commits, which
+        // half-lands the feature GREEN (the tail compiles standalone, so no red flags it — the exact
+        // partial-land hazard). `merge-base(base, ref)..ref` is precisely the commits `ref` introduces
+        // since it forked from the integration base, replayed oldest-first. This mirrors
+        // `publish_candidate`'s range logic (the same fix landed there for v-effects #1705); the
+        // single-tip pick here was the local-gate path's reintroduction of that class. `--allow-empty`
+        // tolerates a commit already present (e.g. a shared-canonical commit-1 that landed standalone,
+        // making it an empty pick — commit it empty + continue, do NOT drop the rest). Falls back to the
+        // bare `base..ref` (merge_base_range's None arm) only if the merge-base can't resolve.
+        let mr_merge_base = git_wt(&["merge-base", base, &mr.r#ref])
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|s| !s.is_empty());
+        let mr_range = merge_base_range(mr_merge_base.as_deref(), &mr.r#ref);
+        if !git_wt_ok(&["cherry-pick", "--allow-empty", &mr_range]) {
             let _ = git_wt(&["cherry-pick", "--abort"]);
             undo(&git_wt);
             ack(
