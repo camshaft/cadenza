@@ -3345,11 +3345,18 @@ pub mod lint {
         ///   (the arena distinguishes the arms), both Verified.
         /// - `idiomatic/redundant-let` — `(let ((x e)) x)` → `e` (bind then immediately return it),
         ///   Verified. NB the arena let-shape is the binding-LIST `(let ((x e)) x)`, not `(let x e x)`.
+        /// - `idiomatic/double-negation` — `(not (not e))` → `e`, Verified.
+        /// - `idiomatic/if-same-branch` — `(if c e e)` → `e` (both arms structurally equal, so the
+        ///   condition is dead), Verified. Relies on the engine's non-linear metavar consistency: the
+        ///   repeated `,e` matches only when the two arms are structurally equal.
         ///
         /// `idiomatic/single-arm-match` (`(match x (p e))` → `(let p x e)`) is NOT here yet: its fix must
         /// DELEGATE to `match_to_let`'s irrefutable+unguarded precondition (a refutable single arm is not
         /// safe to convert), which a pure `=> TEMPLATE` cannot express — it needs the codemod path, a
-        /// follow-on brick. The catalog grows increment-by-increment (§2 open catalog).
+        /// follow-on brick. Design §2 also lists `idiomatic/negated-eq` (`(not (== a b))` → `(!= a b)`);
+        /// it is NOT shipped because Cadenza has no native `!=` surface — the arena `!=` head prints as a
+        /// quoted-name call `` `!=`(a, b) ``, which is LESS idiomatic than the `not(a == b)` it replaces,
+        /// so the "fix" would regress readability. The catalog grows increment-by-increment (§2 open catalog).
         ///
         /// `compile` of this text is infallible (a unit test pins it), so `expect` is sound.
         pub fn builtin() -> LintSet {
@@ -3363,6 +3370,11 @@ pub mod lint {
                 "\"redundant `if` on a Bool — use `not(condition)`\" => (not ,c) verified)\n",
                 "(lint idiomatic/redundant-let (let ((,x ,e)) ,x) ",
                 "\"redundant `let` — binds a value then immediately returns it; use the value directly\" ",
+                "=> ,e verified)\n",
+                "(lint idiomatic/double-negation (not (not ,e)) ",
+                "\"double negation — `not(not(e))` is just `e`\" => ,e verified)\n",
+                "(lint idiomatic/if-same-branch (if ,c ,e ,e) ",
+                "\"both `if` branches are identical — the condition is dead; use the branch directly\" ",
                 "=> ,e verified)\n",
             ))
             .expect("the built-in idiomatic lint catalog compiles")
@@ -6338,15 +6350,18 @@ mod tests {
         #[test]
         fn builtin_catalog_compiles_and_names_its_lints() {
             let set = LintSet::builtin();
-            // if-bool (×2, the true/false + false/true arms) + redundant-let.
-            assert_eq!(set.rules.len(), 3, "3 Tier-A rules");
+            // if-bool (×2, the true/false + false/true arms) + redundant-let + double-negation
+            // + if-same-branch.
+            assert_eq!(set.rules.len(), 5, "5 Tier-A rules");
             let names: Vec<&str> = set.rules.iter().filter_map(|r| r.name.as_deref()).collect();
             assert_eq!(
                 names,
                 [
                     "idiomatic/if-bool",
                     "idiomatic/if-bool",
-                    "idiomatic/redundant-let"
+                    "idiomatic/redundant-let",
+                    "idiomatic/double-negation",
+                    "idiomatic/if-same-branch",
                 ]
             );
             // Every catalog rule carries a Verified fix.
@@ -6354,6 +6369,51 @@ mod tests {
                 let (_, app) = r.fix.as_ref().expect("a catalog lint carries a fix");
                 assert_eq!(*app, Applicability::Verified, "catalog fixes are Verified");
             }
+        }
+
+        #[test]
+        fn builtin_double_negation_and_if_same_branch_fire_and_fix() {
+            let set = LintSet::builtin();
+            // double-negation: `(not (not e))` → `e`.
+            let s = subj("(do (not (not b)))");
+            let diags = lint::run(&set, &s, None);
+            assert_eq!(diags.len(), 1, "double-negation fires: {diags:?}");
+            assert!(diags[0].message.contains("double negation"), "{diags:?}");
+            // if-same-branch: `(if c e e)` → `e` (both arms structurally equal).
+            let s2 = subj("(do (if c (g 1) (g 1)))");
+            let d2 = lint::run(&set, &s2, None);
+            assert_eq!(d2.len(), 1, "if-same-branch fires on equal arms: {d2:?}");
+            // Differing arms must NOT fire (non-linear metavar consistency).
+            let s3 = subj("(do (if c (g 1) (g 2)))");
+            assert!(
+                lint::run(&set, &s3, None).is_empty(),
+                "distinct arms do not fire if-same-branch"
+            );
+            // The fix templates rewrite to the intended equivalents.
+            let dn = set
+                .rules
+                .iter()
+                .find(|r| r.name.as_deref() == Some("idiomatic/double-negation"))
+                .unwrap();
+            let (dtmpl, _) = dn.fix.as_ref().unwrap();
+            assert_eq!(
+                crate::query::rewrite(&dn.pattern, dtmpl, &subj("(not (not b))"))
+                    .tree
+                    .to_sexpr(),
+                "b"
+            );
+            let sb = set
+                .rules
+                .iter()
+                .find(|r| r.name.as_deref() == Some("idiomatic/if-same-branch"))
+                .unwrap();
+            let (stmpl, _) = sb.fix.as_ref().unwrap();
+            assert_eq!(
+                crate::query::rewrite(&sb.pattern, stmpl, &subj("(if c (g 1) (g 1))"))
+                    .tree
+                    .to_sexpr(),
+                "(g 1)"
+            );
         }
 
         #[test]
