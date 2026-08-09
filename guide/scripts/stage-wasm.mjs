@@ -11,7 +11,7 @@
 
 import { readFile, writeFile, mkdir, cp, readdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -29,46 +29,49 @@ await mkdir(join(dest, "pkg"), { recursive: true });
 await cp(pkg, join(dest, "pkg"), { recursive: true });
 console.log("[stage-wasm] staged compiler pkg/ -> src/wasm/pkg/");
 
-// Read the runtime hash the compiler pins, straight from the compiler wasm's data section (the
-// `REQUIRED_RUNTIME_HASH` string literal is interned there), then find that .wasm in the store. This
-// is the ground truth — no hard-coded hash to drift.
-const compilerWasm = await readFile(join(pkg, "cdz_wasm_bg.wasm"));
-// The data section packs the 64-char hex hash next to other bytes, so a bare /[0-9a-f]{64}/ can
-// slide by one and capture a stray leading nibble. Collect EVERY 64-hex candidate (overlapping) and
-// pick the one that actually names a .wasm in a store — the store filename is the authoritative hash.
-const hay = compilerWasm.toString("latin1");
-const candidates = new Set();
-const re = /[0-9a-f]{64}/g;
-let mm;
-while ((mm = re.exec(hay))) {
-  candidates.add(mm[0]);
-  re.lastIndex = mm.index + 1; // overlapping scan — the real hash may be off by one byte
+// The runtime hash the compiler pins is `required_runtime_hash()` — a real wasm export, the SAME value
+// the app run path uses. Read it AUTHORITATIVELY by instantiating the just-staged compiler wasm, rather
+// than scraping the data section for /[0-9a-f]{64}/: that scrape yields ~139 candidates (the real hash
+// plus a `00010203…` byte run whose overlapping matches all look like hashes), and the old "pick whichever
+// candidate happens to name a .wasm in a store" disambiguation picked WRONG on a REQUIRED_RUNTIME_HASH bump
+// — under the nix local-gate the store holds the runtime by the NEW hash, but a stale/spurious candidate
+// could win (or none matched → fell through to an arbitrary candidate with runtimePath=null → runtime.wasm
+// never staged → check-examples.mjs ENOENT, blocking every hash-bumping MR fleet-wide). The export is ground
+// truth: one hash, no store-dependent guessing.
+let hash;
+try {
+  const stagedPkg = join(dest, "pkg");
+  const { default: initWasm, required_runtime_hash } = await import(
+    pathToFileURL(join(stagedPkg, "cdz_wasm.js")).href
+  );
+  await initWasm({ module_or_path: await readFile(join(stagedPkg, "cdz_wasm_bg.wasm")) });
+  hash = required_runtime_hash();
+} catch (e) {
+  console.error(`[stage-wasm] could not read required_runtime_hash() from the staged compiler wasm: ${e}`);
+  process.exit(1);
 }
-if (candidates.size === 0) {
-  console.error("[stage-wasm] could not find any 64-hex runtime hash in the compiler wasm.");
+if (!/^[0-9a-f]{64}$/.test(hash)) {
+  console.error(`[stage-wasm] required_runtime_hash() returned a non-hash value: ${JSON.stringify(hash)}`);
   process.exit(1);
 }
 
-// Search likely store locations: an explicit CADENZA_STORE (passed by `cargo xtask guide-wasm`),
-// then the worktree store, then the main repo's store.
+// Search likely store locations: an explicit CADENZA_STORE (passed by `cargo xtask guide-wasm` AND the nix
+// local-gate's guide-examples derivation, both export it pointing at their componentStore), CDZ_STORE (the
+// other name the nix derivations export the same componentStore under), then the worktree + main-repo stores.
 const stores = [
   process.env.CADENZA_STORE,
+  process.env.CDZ_STORE,
   join(guide, "..", "target", "cadenza-store"),
   join(guide, "..", "..", "..", "..", "target", "cadenza-store"),
 ].filter(Boolean);
-let hash = null;
 let runtimePath = null;
-outer: for (const h of candidates) {
-  for (const s of stores) {
-    const candidate = join(s, `${h}.wasm`);
-    if (existsSync(candidate)) {
-      hash = h;
-      runtimePath = candidate;
-      break outer;
-    }
+for (const s of stores) {
+  const candidate = join(s, `${hash}.wasm`);
+  if (existsSync(candidate)) {
+    runtimePath = candidate;
+    break;
   }
 }
-hash ??= [...candidates][0];
 if (!runtimePath) {
   console.error(
     `[stage-wasm] runtime ${hash}.wasm not found in any store (${stores.join(", ")}).\n` +
