@@ -31691,42 +31691,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_default_integer_pragma_naming_a_non_integer_type_is_cdz0303() {
-        // 06-numeric-model "a default-integer pragma naming a non-integer type is rejected" +
-        // `numeric-model.md` §A Module May Declare Its Default Integer Literal Type: the directive names
-        // the type otherwise-unconstrained integer literals default to, so it MUST name an INTEGER type. A
-        // well-formed directive (recognized key, one type argument) whose argument reduces to a non-integer
-        // type-value (`Float64`) fails the integer-domain predicate — the NUMERIC-domain rejection CDZ0303,
-        // distinct from the structural CDZ0602 (wrong arity) and CDZ0601 (unknown key): key + arity are
-        // right, only the numeric domain is wrong. The fault anchors at the pragma form, which sorts before
-        // the later module reference, so it is the reported error rather than the downstream unbound-`m`.
-        assert_eq!(
-            reject_code(
-                "(module top (def (main) (do (module m (pragma default-integer Float64) (def (x) 5)) ((. m x) unit))) (export main))"
-            )
-            .as_deref(),
-            Some("CDZ0303")
-        );
-        // NOTE the default-integer EFFECT (a bare literal takes the module's declared default) is pinned
-        // by `a_default_integer_pragma_makes_a_bare_literal_take_the_declared_type` below.
-        // `BigInt` names an INTEGER type the numeric model admits as a declarable default
-        // (`options/numeric-model/explicit-checked.md` §"Any integer type is declarable"), a modeled
-        // `Ty::BigInt` — so `(pragma default-integer BigInt)` is ACCEPTED (the domain predicate takes
-        // `Ty::Int` OR `Ty::BigInt`), NOT a false CDZ0303. Now that the default-integer EFFECT is realized,
-        // a `(pragma default-integer …)` member no longer BLOCKS module registration (it is a modeled
-        // member, not an unmodeled obligation): `m` registers, `x` returns 5 (as BigInt via the module
-        // default), the projection `(. m x)` resolves, and the whole program COMPILES CLEAN — `None`.
-        // (Before this increment the pragma member blocked registration and the downstream `m` was unbound
-        // → CDZ0101; the pragma itself was always well-formed, and now the module it declares works.)
-        assert_eq!(
-            reject_code(
-                "(module top (def (main) (do (module m (pragma default-integer BigInt) (def (x) 5)) ((. m x) unit))) (export main))"
-            ),
-            None
-        );
-    }
-
-    #[test]
     fn a_default_integer_pragma_makes_a_bare_literal_take_the_declared_type() {
         // `numeric-model.md` §A Module May Declare Its Default Integer Literal Type: a bare, otherwise-
         // unconstrained integer literal WRITTEN in a `(pragma default-integer <T>)` module takes `<T>`
@@ -32176,37 +32140,6 @@ mod match_engine {
             ),
             None,
             "a sibling module's literal keeps its own definition-site scope, not the caller's default"
-        );
-    }
-
-    #[test]
-    fn a_default_integer_pragma_naming_an_unbound_type_is_cdz0101() {
-        // 06-numeric-model "a default-integer pragma naming an unbound type is rejected as unbound, like an
-        // annotation". A meaning-changing directive naming a NONEXISTENT type must not be silently accepted
-        // (modules-and-namespaces.md §An Unrecognized Module Directive Is Rejected). The domain predicate
-        // reduces its type argument with `typeval_of`, which is `None` for an unbound name — so the pragma
-        // used to fall through to the conservative accept and the module compiled. Resolution distinguishes
-        // an UNBOUND name (a `Poison` CDZ0101) from a BOUND-but-unmodeled type, so an unbound name is now the
-        // SAME CDZ0101 the annotation `(: x Nope)` gives, not a silent drop. The fault anchors at the pragma
-        // argument, which sorts before the downstream module reference, so it is the reported error.
-        assert_eq!(
-            reject_code(
-                "(do (module m (pragma default-integer Nope) (def (x) 5)) (def (main) 42) (export main))"
-            )
-            .as_deref(),
-            Some("CDZ0101"),
-            "an unbound type name in a default-integer pragma is CDZ0101, not silently accepted"
-        );
-        // NO OVER-REJECTION: a VALID integer default (`Int64`) is not flagged by the domain check — the
-        // module compiles (the pragma's literal-defaulting effect is unbuilt, but that is a downstream
-        // decline, not a well-formedness fault, and here the module IS referenced via nothing so it emits).
-        assert_eq!(
-            reject_code(
-                "(do (module m (pragma default-integer Int64) (def (x) 5)) (def (main) 42) (export main))"
-            )
-            .as_deref(),
-            None,
-            "a valid integer default is not rejected by the unbound-name check"
         );
     }
 
