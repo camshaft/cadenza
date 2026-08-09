@@ -7859,6 +7859,37 @@ fn should_run_gc(last_run: Option<u64>, now: u64, interval_secs: u64) -> bool {
     }
 }
 
+/// `/tmp` inode-use percent at/above which the gc-hook sweeps stale task logs REGARDLESS of the bytes-GC
+/// timer. A tmpfs can hit 100% INODES with low BYTES (many tiny files), which the bytes-based `apps.gc
+/// --max` never triggers — so inode exhaustion (fleet-wide ENOSPC/wedge risk) slips past it; the local-nix
+/// cutover shifts all builds local, raising /tmp churn (concierge 2026-08-08). 90% leaves headroom.
+const TMP_INODE_SWEEP_PCT: u64 = 90;
+
+/// Age (secs) above which a task `.output` log under `/tmp/claude-*` is prunable on an inode sweep. A
+/// day: keeps the current + recent runs' logs (still useful for a resume/diagnosis) but reclaims the
+/// long tail that accumulates across every worktree's tasks — the small-file inode accumulation.
+const TMP_STALE_LOG_SECS: u64 = 24 * 60 * 60;
+
+/// Whether to run an inode sweep: `Some(used_pct)` from `df -i` is at/above [`TMP_INODE_SWEEP_PCT`]. Pure
+/// over the parsed percent so the trigger is unit-tested without touching the filesystem; `None` (couldn't
+/// read df) → false (never sweep on an unknown state — a df failure isn't evidence of pressure).
+fn should_sweep_inodes(tmp_inode_use_pct: Option<u64>) -> bool {
+    matches!(tmp_inode_use_pct, Some(p) if p >= TMP_INODE_SWEEP_PCT)
+}
+
+/// Parse the integer use-% from a `df -i <path>` invocation's stdout (the `IUse%` column, e.g. "100%").
+/// `None` if df failed or the output didn't parse — caller treats None as "no known pressure". Pure over
+/// the raw stdout so the parse is unit-tested.
+fn parse_df_inode_pct(df_stdout: &str) -> Option<u64> {
+    // df -i output: header line, then a data line whose 5th field is `NN%` (IUse%). Take the last line's
+    // token ending in '%' (robust to a device name that wraps onto its own line).
+    df_stdout
+        .lines()
+        .last()
+        .and_then(|l| l.split_whitespace().find(|t| t.ends_with('%')))
+        .and_then(|t| t.trim_end_matches('%').parse::<u64>().ok())
+}
+
 /// The pr-sync-loop nix-store GC hook (operator item 2; placement + contract agreed with v-nix 2026-08-08,
 /// option A). Called at the end of each `schedule-pass --execute` tick. Fires at most every
 /// [`GC_MIN_INTERVAL_SECS`] (timestamp-gated via `Fleet::gc_timestamp_path`), so it is a fast no-op on most
@@ -7880,12 +7911,54 @@ fn should_run_gc(last_run: Option<u64>, now: u64, interval_secs: u64) -> bool {
 /// `fleet.repo`, the bare flakeless hub root (the earlier cwd bug: warm-keep there errored "not part of a
 /// flake" so gc never ran).
 fn maybe_run_gc(fleet: &Fleet) {
+    // INODE-PRESSURE SWEEP (concierge 2026-08-08, infra-critical): a tmpfs `/tmp` can hit 100% INODES
+    // with low BYTES (many tiny files), which the bytes-based `apps.gc --max` below NEVER triggers, so
+    // inode exhaustion (fleet-wide ENOSPC/wedge risk) slips past it — worse now the local-nix cutover
+    // shifts all builds/tests local. So EVERY tick (not timer-gated — inode exhaustion can't wait 3h),
+    // check `df -i /tmp`, and if inodes are high, sweep the FLEET-OWNED /tmp scratch (best-effort, cheap
+    // synchronous `find -delete`, run independently of the bytes-GC timer below). Two swept classes:
+    //   (1) task `.output` logs > TMP_STALE_LOG_SECS across /tmp/claude-* (per-agent loop-task logs);
+    //   (2) cdz test/check scratch dirs (`cdz-test-manifest*` / `cdz-check*` / `cdz-check-imports*` that
+    //       cdz-run writes when cad-tests/gate run locally) OLDER THAN 60 MIN and NOT under a nix-warm-roots
+    //       path — v-nix's tested-safe pattern: the 60-min floor guarantees no ACTIVE gate run is touched,
+    //       the warm-roots exclusion protects the load-bearing warm-store GC roots.
+    // NOTE: nix does NOT build under /tmp (its daemon sandbox is /nix/var/nix/builds — v-nix confirmed), so
+    // there is no nix-build-temp hog here; the cdz-scratch sweep IS the nix/cdz-lane /tmp GC. The dominant
+    // observed hog (toolbox-telemetry-em, ~166K) is NOT fleet-owned — routed to the toolbox owner, not here.
+    let tmp_inode_pct = Command::new("df")
+        .args(["-i", "/tmp"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| parse_df_inode_pct(&String::from_utf8_lossy(&o.stdout)));
+    if should_sweep_inodes(tmp_inode_pct) {
+        let cutoff_min = (TMP_STALE_LOG_SECS / 60).to_string();
+        let swept = Command::new("sh")
+            .arg("-c")
+            .arg(format!(
+                // (1) stale task logs; (2) v-nix's safe cdz-scratch pattern (>60min, warm-roots-excluded).
+                "find /tmp/claude-* -name '*.output' -type f -mmin +{cutoff_min} -delete 2>/dev/null; \
+                 find /tmp -maxdepth 1 -type d \\( -name 'cdz-test-manifest*' -o -name 'cdz-check*' -o -name 'cdz-check-imports*' \\) \
+                   -mmin +60 -not -path '*nix-warm-roots*' -exec rm -rf {{}} + 2>/dev/null; \
+                 df -i /tmp 2>/dev/null | tail -1 | awk '{{print $5}}'"
+            ))
+            .output();
+        eprintln!(
+            "gc-hook: /tmp inodes at {}% (>= {TMP_INODE_SWEEP_PCT}%) → swept fleet-owned scratch (task logs >{}h + cdz-test/check dirs >60min, warm-roots-excluded). /tmp inodes now: {}. (toolbox-telemetry hog is not fleet-owned.)",
+            tmp_inode_pct.unwrap_or(0),
+            TMP_STALE_LOG_SECS / 3600,
+            swept
+                .ok()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .unwrap_or_else(|| "?".into())
+        );
+    }
     let stamp = fleet.gc_timestamp_path();
     let last_run = std::fs::read_to_string(&stamp)
         .ok()
         .and_then(|s| s.trim().parse::<u64>().ok());
     if !should_run_gc(last_run, now_unix(), GC_MIN_INTERVAL_SECS) {
-        return; // within the interval — nothing to do this tick.
+        return; // within the interval — the bytes-GC (nix store) part is timer-gated; inode sweep above ran.
     }
     let nix_bin = nix_binary();
     // STAMP FIRST — advance the 3h clock BEFORE launching, so an interrupted/slow run can't re-fire the hook
@@ -14616,6 +14689,31 @@ mod tests {
         assert!(!should_run_gc(Some(1_000_000), 1_000_000, iv));
         // Clock went backwards (stamp in the future) → saturating_sub = 0 → do NOT fire early.
         assert!(!should_run_gc(Some(2_000_000), 1_000_000, iv));
+    }
+
+    #[test]
+    fn inode_sweep_triggers_on_high_tmp_inode_use() {
+        // At/above the threshold → sweep (inode exhaustion, e.g. the observed 100%).
+        assert!(should_sweep_inodes(Some(TMP_INODE_SWEEP_PCT)));
+        assert!(should_sweep_inodes(Some(100)));
+        // Below threshold → no sweep (normal churn; the bytes-GC timer handles disk).
+        assert!(!should_sweep_inodes(Some(TMP_INODE_SWEEP_PCT - 1)));
+        assert!(!should_sweep_inodes(Some(13))); // the low-BYTES case that must still not sweep on bytes
+        // Unknown (df failed/unparseable) → NEVER sweep (a df failure is not evidence of pressure).
+        assert!(!should_sweep_inodes(None));
+    }
+
+    #[test]
+    fn parse_df_inode_pct_reads_the_iuse_column() {
+        // Real `df -i /tmp` shape: header + data line, IUse% is the field ending in '%'.
+        let out = "Filesystem      Inodes   IUsed IFree IUse% Mounted on\ntmpfs          1048576 1044462  4114  100% /tmp\n";
+        assert_eq!(parse_df_inode_pct(out), Some(100));
+        // A healthier tmpfs.
+        let ok = "Filesystem Inodes IUsed IFree IUse% Mounted on\ntmpfs 1048576 131072 917504 13% /tmp\n";
+        assert_eq!(parse_df_inode_pct(ok), Some(13));
+        // Garbage / empty → None (caller then never sweeps).
+        assert_eq!(parse_df_inode_pct(""), None);
+        assert_eq!(parse_df_inode_pct("no percent here"), None);
     }
 
     #[test]
