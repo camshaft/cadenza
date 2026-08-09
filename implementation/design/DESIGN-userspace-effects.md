@@ -466,12 +466,13 @@ no gap:
   schema-hash as an identity STABLE across cdzast container-format evolution (the `\x00\x01` canonical
   bytes are format-pinned, so equal schemas always hash equal and an identity does not shatter on a
   format bump). The primitive shape is settled with v-syntax (concierge floor (B) keep-cadenza-ast
-  algo-free): `cadenza-ast` exposes `schema_canonical_bytes(arenas) -> Vec<u8>` (single-sources the
-  canonical cdzast `\x00\x01` encoding — the one thing that could drift), and the harness/kernel computes
-  the effect-schema content hash as `Hash::of(schema_canonical_bytes(&schema_ast))` — `Hash::of` being
-  the ONE unified content-address (blake3, operator 2026-08-08), so there is no per-caller
-  re-implementation and cadenza-ast stays dependency-light (no blake3 in the bottom crate). `cadenza-ast`
-  `schema_canonical_bytes` is queued (ref `c2d2c269d`).
+  algo-free): the content-hash input IS `cadenza-ast`'s existing `codec::encode(arenas) -> Vec<u8>` (the
+  canonical cdzast `\x00\x01` bytes — the one thing that could drift, already single-sourced there), and
+  the harness/kernel computes the effect-schema content hash as `Hash::of(encode(&schema_ast))` —
+  `Hash::of` being the ONE unified content-address (blake3, operator 2026-08-08), so there is no
+  per-caller re-implementation and cadenza-ast stays dependency-light (no blake3 in the bottom crate). No
+  wrapper alias is introduced: `encode` is directly the canonical-content-bytes primitive (its doc
+  carries the content-addressing role; operator 2026-08-09 — a same-body rename wrapper was rejected).
 - **The meta-schema is evolvable (operator).** The schema-for-the-schema — the AST node vocabulary used
   to REPRESENT a schema — must itself grow without a hard break. It does, by construction: a new
   contract-description construct is a new HEAD NAME + list shape = NO codec change (tolerant-reader — an
@@ -521,7 +522,7 @@ schema-hash H resolves + folds against schema H; expanding a contract to H' leav
 resolving to H; a message at an unknown schema-hash fails honestly (`Err(unsupported-schema)`), never
 misdecodes; equal schemas hash equal across a cdzast container-format bump. **Anchors:** `event.rs`
 (`ContentType` — remove `version`, add `schema_hash: Hash`; update `matches_family`/drop `version_in`),
-`cadenza-ast` (`schema_canonical_bytes` + `Hash::of`, v-syntax `c2d2c269d`), `hash.rs`, I1 registration
+`cadenza-ast` (`codec::encode` + `Hash::of` — no wrapper alias, operator 2026-08-09), `hash.rs`, I1 registration
 (name → current schema-hash), design-cadenza-docs (the shared cdzast schema representation).
 
 ### D14 — does `ContentType` collapse to JUST the schema-hash? (operator, going past D13)

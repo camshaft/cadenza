@@ -192,12 +192,27 @@ fn int_kind(sign: Sign, radix: Radix) -> u8 {
     }
 }
 
-/// Serialize `arenas` to bytes (with the schema header).
+/// Serialize `arenas` to the canonical `cdzast\x00\x01` bytes (with the schema header).
 ///
 /// The arena is CANONICALIZED first (`canon::canonicalize`), so equal programs encode to identical
 /// bytes regardless of the order their occurrences were built — the two surfaces build the same tree
 /// in different orders (see `canon.rs`). Encoding is thus the point at which the canonical normal
 /// form is imposed; `decode` returns that canonical (structurally-equal, re-indexed) arena.
+///
+/// These bytes ARE the canonical content-address input — the single-source over which a caller takes
+/// a content hash. In particular an effect SCHEMA (its op signatures + type contract, represented AS a
+/// name-headed cdzast AST — DESIGN-userspace-effects I11b) gets its EFFECT-SCHEMA CONTENT HASH as
+/// `Hash::of(encode(&schema_ast))`, where `Hash::of` is the codebase's one unified content-address
+/// (blake3, per the operator's one-algo ruling). The hash step is DELIBERATELY the caller's, not this
+/// crate's: `cadenza-ast` is the dependency-light bottom crate and its [`crate::dict::Hash`] is an
+/// algo-free 32-byte container (caller-hashes is the established contract — concierge ruling
+/// 2026-08-08, floor call (B)). Single-sourcing the ENCODING here removes the one thing that could
+/// drift; the hash step is a uniform `Hash::of` everywhere, so there is no per-caller re-derivation.
+///
+/// Identity taken this way is STABLE across cdzast container-format evolution the same way the kernel's
+/// `Event::hash` is: it hashes the canonical `\x00\x01` bytes, which are format-pinned, so equal schemas
+/// always hash equal regardless of later additive vocabulary growth (new head names need no format bump;
+/// only a genuinely new leaf kind bumps to `\x00\x02`).
 pub fn encode(arenas: &Arenas) -> Vec<u8> {
     // Canonicalize to normal form so equal programs encode to identical bytes. `canonicalize` returns
     // a `Cow` — borrowed (no clone/rebuild) when `arenas` is already canonical, which a fresh parse is.
@@ -230,28 +245,6 @@ pub fn encode(arenas: &Arenas) -> Vec<u8> {
 
     leb128::write_u64(&mut out, arenas.root.0 as u64);
     out
-}
-
-/// The CANONICAL content bytes of `arenas` — the single-source input a content hash is taken over.
-///
-/// This is exactly [`encode`] (the canonical `cdzast\x00\x01` bytes: canonicalized so equal programs
-/// encode identically, versioned header, TOTAL round-trip), named for its content-addressing role so a
-/// caller computing an identity does not re-derive the encoding. In particular an effect SCHEMA (its op
-/// signatures + type contract, represented AS a name-headed cdzast AST — DESIGN-userspace-effects I11b)
-/// gets its EFFECT-SCHEMA CONTENT HASH as `Hash::of(schema_canonical_bytes(&schema_ast))`, where
-/// `Hash::of` is the codebase's one unified content-address (blake3, per the operator's one-algo
-/// ruling). The hash is DELIBERATELY the caller's step, not this crate's: `cadenza-ast` is the
-/// dependency-light bottom crate and its [`crate::dict::Hash`] is an algo-free 32-byte container
-/// (caller-hashes is the established contract — concierge ruling 2026-08-08, floor call (B)). Keeping
-/// the ENCODING here single-sources the one thing that could drift; the hash step is a uniform
-/// `Hash::of` everywhere, so no per-caller re-implementation and no drift.
-///
-/// Identity taken this way is STABLE across cdzast container-format evolution the same way the kernel's
-/// `Event::hash` is: it hashes the canonical `\x00\x01` bytes, which are format-pinned, so equal schemas
-/// always hash equal regardless of later additive vocabulary growth (new head names need no format bump;
-/// only a genuinely new leaf kind bumps to `\x00\x02`).
-pub fn schema_canonical_bytes(arenas: &Arenas) -> Vec<u8> {
-    encode(arenas)
 }
 
 /// Extract the subtree rooted at `id` of `arenas` into its own standalone `Arenas` (a fresh, dense
@@ -2177,19 +2170,14 @@ mod tests {
     }
 
     #[test]
-    fn schema_canonical_bytes_is_encode_and_equal_schemas_share_bytes() {
-        // The effect-schema content-hash INPUT (DESIGN-userspace-effects I11b): `schema_canonical_bytes`
-        // is exactly the canonical `encode` bytes (algo-free — the caller does `Hash::of` over these).
-        let a = sample();
-        assert_eq!(
-            schema_canonical_bytes(&a),
-            encode(&a),
-            "schema_canonical_bytes is the canonical encode bytes"
-        );
-        // The identity property callers rely on: two schema arenas that are STRUCTURALLY EQUAL but built
-        // in a DIFFERENT occurrence order produce IDENTICAL canonical bytes (so `Hash::of` of them is
-        // equal) — `encode` canonicalizes, so occurrence order does not perturb the content address. A
-        // schema `(effect E (op get (-> Unit A)) (op put (-> A Unit)))` built two ways.
+    fn equal_schemas_built_in_different_orders_share_canonical_encode_bytes() {
+        // The effect-schema content-hash STABILITY invariant (DESIGN-userspace-effects I11b): the
+        // content-hash input is exactly the canonical `encode` bytes, over which the caller does
+        // `Hash::of` (algo-free — `cadenza-ast` never hashes). The property callers rely on: two schema
+        // arenas that are STRUCTURALLY EQUAL but built in a DIFFERENT occurrence order produce IDENTICAL
+        // canonical bytes (so `Hash::of` of them is equal) — `encode` canonicalizes, so occurrence order
+        // does not perturb the content address. A schema `(effect E (op get (-> Unit A)) (op put (-> A
+        // Unit)))` built two ways.
         fn schema(order_swapped: bool) -> Arenas {
             let mut b = Builder::new();
             let effect = b.name("effect");
@@ -2226,8 +2214,8 @@ mod tests {
             b.finish(root)
         }
         assert_eq!(
-            schema_canonical_bytes(&schema(false)),
-            schema_canonical_bytes(&schema(true)),
+            encode(&schema(false)),
+            encode(&schema(true)),
             "structurally-equal schemas built in different orders must share canonical bytes \
              (so their effect-schema content hash is equal)"
         );
