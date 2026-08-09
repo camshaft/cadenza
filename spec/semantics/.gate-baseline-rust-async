@@ -7014,3 +7014,6 @@ pass	sh2x a let binder feeds a nested handle's SEED and is read again AFTER the 
 pass	ba1 an EMPTY Bytes arg crosses the wasm host boundary
 pass	tk-ann1 an ASCRIBED empty-Map seed (: Map.empty (Map (Tuple Int64 Int64) Int64)) used across three arms — the annotation grounds the element type every arm sees
 pass	pr1 List.prepend onto a MERGED vector grows the front without disturbing the seam
+pass	bf1 a growing BYTES FRAME as handler state — each op appends a u8 record, the final op bin-decodes head + rest length
+pass	bf2 the frame grows by u16 BE records — dump decodes the SECOND record through a fixed-width first segment
+pass	bf3 tagged-record round-trip — arms ENCODE (tag,val) u8 pairs into the frame state, the body decodes the REPLAYED frame

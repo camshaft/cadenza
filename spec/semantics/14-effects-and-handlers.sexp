@@ -20849,3 +20849,66 @@
                 (do (E.rec) (+ (E.qry n (+ n 1)) (E.cnt)))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 57 Int64)))
+
+
+; ── A binary FRAME as handler state (breaker bf) ──────────────────────────────────────────────
+; The wire-protocol accumulator idiom: the handler state IS a growing Bytes frame, seeded by the
+; empty (bin) literal. bf1 appends u8 records per dispatch and bin-DECODES the accumulated state
+; in a sibling arm — head byte plus remainder length through `(bin (u8 hd) (bytes tl))` (the
+; remainder segment head is `bytes`, and a bare variable arm also serves; there is no `rest`
+; head). bf2 grows the frame by u16 BIG-ENDIAN records and decodes the SECOND record through a
+; fixed-width first segment — record framing survives width changes and mid-frame reads. bf3
+; closes the loop: the arm ENCODES (tag,val) u8 pairs, a replay op returns the WHOLE accumulated
+; frame, and the BODY decodes all four segments back — encode-in-arm, decode-in-body, with the
+; frame crossing the handler boundary as a value. All rows hand-computed; all pass on wasm, rust,
+; and rust-async.
+
+(case "bf1 a growing BYTES FRAME as handler state — each op appends a u8 record, the final op bin-decodes head + rest length"
+  (input  (do
+            (effect W (op log (-> Int64 Int64)) (op dump (-> Int64)))
+            (def (main (: n Int64))
+              (handle W (bin)
+                ((log (v) fr (resume v (Bytes.concat fr (bin (u8 (UInt8.wrap v))))))
+                 (dump () fr (match fr
+                               ((bin (u8 hd) (bytes tl))
+                                (resume (+ (* 100 (Int64.of hd)) (Bytes.len tl)) fr))
+                               (_other (resume -1 fr)))))
+                (do (W.log (+ 10 n)) (W.log (+ 20 n)) (W.dump))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 1101 Int64))
+  (call   main (: 4 Int64)) (output (: 1401 Int64))
+  (call   main (: 0 Int64)) (output (: 1001 Int64)))
+
+(case "bf2 the frame grows by u16 BE records — dump decodes the SECOND record through a fixed-width first segment"
+  (input  (do
+            (effect W (op log (-> Int64 Int64)) (op second (-> Int64)))
+            (def (main (: n Int64))
+              (handle W (bin)
+                ((log (v) fr (resume v (Bytes.concat fr (bin (u16 (UInt16.wrap v))))))
+                 (second () fr (match fr
+                                 ((bin (u16 first) (u16 mid) (bytes tl))
+                                  (resume (Int64.of mid) fr))
+                                 (_other (resume -1 fr)))))
+                (do (W.log (+ 100 n)) (W.log (+ 200 n)) (W.log (+ 300 n)) (W.second))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 201 Int64))
+  (call   main (: 4 Int64)) (output (: 204 Int64))
+  (call   main (: 0 Int64)) (output (: 200 Int64)))
+
+(case "bf3 tagged-record round-trip — arms ENCODE (tag,val) u8 pairs into the frame state, the body decodes the REPLAYED frame"
+  (input  (do
+            (effect W (op rec (-> Int64 Int64 Int64)) (op replay (-> Bytes)))
+            (def (main (: n Int64))
+              (handle W (bin)
+                ((rec (t v) fr (resume v (Bytes.concat fr (bin (u8 (UInt8.wrap t)) (u8 (UInt8.wrap v))))))
+                 (replay () fr (resume fr fr)))
+                (do (W.rec 1 (+ 10 n)) (W.rec 2 (+ 20 n))
+                    (match (W.replay)
+                      ((bin (u8 t1) (u8 v1) (u8 t2) (u8 v2))
+                       (+ (* 1000 (+ (* 100 (Int64.of t1)) (Int64.of v1)))
+                          (+ (* 100 (Int64.of t2)) (Int64.of v2))))
+                      (_other -1)))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 111221 Int64))
+  (call   main (: 4 Int64)) (output (: 114224 Int64))
+  (call   main (: 0 Int64)) (output (: 110220 Int64)))
