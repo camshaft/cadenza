@@ -225,6 +225,13 @@ enum Guard {
     /// (name shape only). Used by the `naming/camel-case` lint to flag a binding whose name breaks the
     /// `snake_case` convention.
     IsCamelCase,
+    /// The node's LIST-nesting depth is STRICTLY GREATER than this threshold (`(deeper-than N)`). Depth
+    /// is the longest chain of nested list nodes rooted at the matched node (an atom is depth 0; a flat
+    /// call `(f a b)` is depth 1; `(f (g (h x)))` is depth 3). A purely STRUCTURAL metric — independent
+    /// of how the form is printed. Used by the `idiomatic/deep-nesting` lint to flag over-nested
+    /// call/argument structure (DESIGN-cadenza-lint §naming/deep-nesting; operator's `hm-collect.cdz`
+    /// motivating case). The threshold is exclusive: `(deeper-than 5)` fires only at depth ≥ 6.
+    DeeperThan(usize),
     /// The node itself matches this sub-pattern (`(matches PAT)`). The sub-pattern's captures are a
     /// pure test — they do NOT leak into the outer bindings.
     Matches(Box<Pat>),
@@ -744,7 +751,7 @@ fn compile_guard(t: &Tree) -> Result<Guard, PatternError> {
             other => Err(PatternError(format!(
                 "unknown guard `{other}` — a guard is one of `is-literal` `is-name` `is-int` `is-float` \
                  `is-str` `is-bool` `is-atom` `is-list` `is-irrefutable` `is-camel-case`, or a form \
-                 `(head-is NAME)` / `(matches PAT)` / `(not GUARD)`"
+                 `(head-is NAME)` / `(matches PAT)` / `(not GUARD)` / `(deeper-than N)`"
             ))),
         };
     }
@@ -769,6 +776,21 @@ fn compile_guard(t: &Tree) -> Result<Guard, PatternError> {
                     PatternError("`not` needs a guard: `(not is-literal)`".into())
                 })?;
                 Ok(Guard::Not(Box::new(compile_guard(inner)?)))
+            }
+            Some("deeper-than") => {
+                // `(deeper-than N)` — N is a non-negative integer-literal threshold.
+                let n = items
+                    .get(1)
+                    .and_then(|t| match t {
+                        Tree::Atom(Leaf::Int { value, .. }, _) => usize::try_from(value).ok(),
+                        _ => None,
+                    })
+                    .ok_or_else(|| {
+                        PatternError(
+                            "`deeper-than` needs a non-negative integer: `(deeper-than 5)`".into(),
+                        )
+                    })?;
+                Ok(Guard::DeeperThan(n))
             }
             _ => Err(PatternError(format!("ill-formed guard `{}`", t.to_sexpr()))),
         }
@@ -814,6 +836,8 @@ fn guard_holds(g: &Guard, s: &Tree) -> bool {
         // A `camelCase` name atom (name-shape only) — lowercase-initial with an interior uppercase and
         // no `_`. Not a `Ctor`/type (leading uppercase), not `snake_case`, not all-caps.
         Guard::IsCamelCase => matches!(s, Tree::Atom(Leaf::Name(n), _) if is_camel_case(n)),
+        // The node's list-nesting depth exceeds the threshold (STRICTLY). Structural, print-independent.
+        Guard::DeeperThan(n) => list_depth(s) > *n,
         // A sub-pattern test: its captures are local (discarded), so `matches` is a pure predicate.
         Guard::Matches(sub) => {
             let mut scratch = Bindings::default();
@@ -829,6 +853,29 @@ fn head_name(t: &Tree) -> Option<&str> {
         Tree::List(items, _) => items.first().and_then(|h| h.as_name()),
         _ => None,
     }
+}
+
+/// The LIST-nesting depth of `t` — the longest chain of nested list nodes rooted here. An atom is 0; a
+/// flat list `(f a b)` is 1; `(f (g (h x)))` is 3 (each nested list adds one). The metric the
+/// `(deeper-than N)` guard / `idiomatic/deep-nesting` lint uses: a purely structural measure of
+/// call/argument nesting, independent of how the form is printed. Iterative over an explicit stack (a
+/// deeply-nested subject must not overflow the native stack — the same discipline `codec`/`canon` use).
+fn list_depth(t: &Tree) -> usize {
+    let mut max = 0;
+    // Stack of (node, depth-of-this-node). A node's depth is 1 + its parent list's depth (0 at an atom).
+    let mut stack = vec![(t, 0usize)];
+    while let Some((node, d)) = stack.pop() {
+        if let Tree::List(items, _) = node {
+            let child_depth = d + 1;
+            if child_depth > max {
+                max = child_depth;
+            }
+            for child in items {
+                stack.push((child, child_depth));
+            }
+        }
+    }
+    max
 }
 
 /// Is `name` a `camelCase` identifier — the shape the `naming/camel-case` lint flags (Cadenza convention
@@ -4965,6 +5012,63 @@ mod tests {
             0,
             "plain lowercase not flagged"
         );
+    }
+
+    #[test]
+    fn list_depth_counts_nested_list_levels() {
+        // An atom is depth 0; a flat list is 1; each nesting level adds one.
+        assert_eq!(list_depth(&subj("x")), 0, "an atom is depth 0");
+        assert_eq!(list_depth(&subj("(f a b)")), 1, "a flat call is depth 1");
+        assert_eq!(
+            list_depth(&subj("(f (g x))")),
+            2,
+            "one nested call is depth 2"
+        );
+        assert_eq!(
+            list_depth(&subj("(f (g (h (i 1))))")),
+            4,
+            "a 4-deep call chain is depth 4"
+        );
+        // Depth is the LONGEST chain — a wide-but-shallow form is not deep.
+        assert_eq!(
+            list_depth(&subj("(f a b c d e (g 1))")),
+            2,
+            "width does not add depth; the one nested arg gives depth 2"
+        );
+    }
+
+    #[test]
+    fn guard_deeper_than_fires_strictly_past_the_threshold() {
+        // `,(x (deeper-than N))` matches a node whose list-depth is STRICTLY > N. `(f (g (h (i 1))))`
+        // is depth 4.
+        let deep = subj("(f (g (h (i 1))))");
+        assert_eq!(
+            count(&pat(",(x (deeper-than 3))"), &deep),
+            1,
+            "depth 4 > 3 fires"
+        );
+        assert_eq!(
+            count(&pat(",(x (deeper-than 4))"), &deep),
+            0,
+            "depth 4 is not > 4"
+        );
+        assert_eq!(
+            count(&pat(",(x (deeper-than 5))"), &deep),
+            0,
+            "depth 4 < 5 does not fire"
+        );
+        // A shallow form never fires a positive threshold.
+        assert_eq!(
+            count(&pat(",(x (deeper-than 2))"), &subj("(f a b)")),
+            0,
+            "flat call, depth 1"
+        );
+    }
+
+    #[test]
+    fn guard_deeper_than_rejects_a_non_integer_threshold() {
+        assert!(Pattern::compile("(f ,(x (deeper-than foo)))").is_err());
+        assert!(Pattern::compile("(f ,(x (deeper-than)))").is_err());
     }
 
     #[test]
