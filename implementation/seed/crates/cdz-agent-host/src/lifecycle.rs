@@ -625,6 +625,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_non_hex_target_is_a_permanent_error_and_records_no_op() {
+        // Fail-closed target parsing (the sessionid-hash sweep): a lifecycle target is the peer's genesis-hash
+        // HEX, so a non-canonical-hex target (vanity label, truncated/over-long, non-hex chars) names NO
+        // session → structural PERMANENT, and NO LifecycleOp is recorded (a malformed control target must not
+        // enqueue a registry mutation the loop would try to apply against a bogus id).
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut exec =
+            LifecycleExecutor::new(tx, SessionId::new(Hash::of(b"ctl")), Hash::of(b"ctl"));
+        for bad in ["victim", "not-hex", "deadbeef" /* too short */] {
+            let out = exec
+                .perform(
+                    EffectId(0),
+                    &terminate_req(bad, Some(b"kill")),
+                    Hash::of(b"k"),
+                )
+                .await;
+            assert!(
+                matches!(&out, EffectOutcome::Err { message, retryability }
+                    if *retryability == Retryability::Permanent && message.contains("canonical session-id hex")),
+                "a non-hex terminate target {bad:?} is PERMANENT, got {out:?}"
+            );
+        }
+        assert!(
+            rx.try_recv().is_err(),
+            "a rejected non-hex target records NO LifecycleOp (nothing enqueued for a bogus id)"
+        );
+    }
+
+    #[tokio::test]
     async fn a_closed_channel_is_a_retryable_error() {
         let (tx, rx) = mpsc::unbounded_channel();
         drop(rx);

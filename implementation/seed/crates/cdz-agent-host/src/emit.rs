@@ -268,6 +268,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_non_hex_target_is_a_permanent_error_and_routes_nothing() {
+        // Fail-closed target parsing (the sessionid-hash sweep): a target is the peer's genesis-hash HEX, so a
+        // non-canonical-hex target (a reducer sent a vanity label, a truncated/over-long id, or non-hex
+        // chars) names NO session and is a STRUCTURAL error → PERMANENT, and NOTHING is routed (no Inbound
+        // leaks to a bogus peer). Distinct from the empty-target case (also permanent, different message).
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut exec = EmitExecutor::new(tx, SessionId::new(Hash::of(b"sender-a")));
+        for bad in [
+            "not-a-hash",
+            "victim",
+            "xyz",
+            "deadbeef", /* too short */
+        ] {
+            let out = exec
+                .perform(EffectId(0), &emit_req(bad, Some(b"x")), Hash::of(b"k"))
+                .await;
+            assert!(
+                matches!(&out, EffectOutcome::Err { message, retryability }
+                    if *retryability == Retryability::Permanent && message.contains("canonical session-id hex")),
+                "a non-hex target {bad:?} is PERMANENT, got {out:?}"
+            );
+        }
+        assert!(
+            matches!(rx.try_recv(), Err(mpsc::error::TryRecvError::Empty)),
+            "a rejected non-hex target routes NO Inbound (nothing leaked to a bogus peer)"
+        );
+    }
+
+    #[tokio::test]
     async fn a_non_emit_family_is_a_permanent_error() {
         let (tx, _rx) = mpsc::unbounded_channel();
         let mut exec = EmitExecutor::new(tx, SessionId::new(Hash::of(b"sender-a")));
