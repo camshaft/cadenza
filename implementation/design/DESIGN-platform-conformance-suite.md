@@ -1,401 +1,302 @@
-# The platform conformance suite — portable, Cadenza-defined reducers + effect handlers + event/end-state assertions
+# The platform conformance suite — portable Cadenza sessions driven to a fixpoint by ONE kick-off event
 
-Owner: TBD (a `vertical`, area `cdz-kernel` + `xtask`/`cdz-corpus`). Design by `design-platform-conformance`,
-EXTENDED for multi-session interaction by `design-platform-conformance-msg`.
-Status: **PROPOSAL — designed AUTONOMOUSLY, awaiting a build owner.** Operator spark via concierge
-(Slack seq356, verbatim): *"I'm wondering if we should spin up a vertical for the platform conformance
-suite. Like we should be able to define reducers in cadenza and effect handlers and make assertions
-around events being processed and end state and everything. … really getting a good portable test
-suite is worth its weight in gold. The compiler corpus suite has been incredibly valuable."* Follow-up
-directive (Slack seq357): *"The design of the platform test suite needs to be autonomous."* — honored
-BOTH ways: (1) this design was shaped without a live operator session — every fork below carries a
-chosen default so the build is not blocked; forks the operator may want to own on return are flagged
-**⟨operator may ratify⟩**; (2) the suite itself is designed to run UNATTENDED in CI — self-contained,
-deterministic, machine-checkable pass/fail, exactly the way the compiler corpus runs under
-`cargo xtask gate`.
+Owner: TBD (a `vertical`, area `cdz-kernel`/`cdz-agent-host` + `xtask`/`cdz-corpus`). Design by
+`design-platform-conformance`, revised + extended by `design-platform-conformance-msg`.
+Status: **PROPOSAL — designed AUTONOMOUSLY, awaiting a build owner.** Operator sparks via concierge:
+
+- **seq356** (verbatim): *"I'm wondering if we should spin up a vertical for the platform conformance
+  suite. Like we should be able to define reducers in cadenza and effect handlers and make assertions
+  around events being processed and end state and everything. … really getting a good portable test
+  suite is worth its weight in gold. The compiler corpus suite has been incredibly valuable."*
+- **seq357**: *"The design of the platform test suite needs to be autonomous."*
+- **seq358**: *"We need to be able to have more than one session interacting as well so we can test out
+  messaging."*
+- **seq359** (the model refinement, verbatim): *"Instead of canned responses I would much prefer to just
+  have a single kick off event that starts the whole thing and drives it to completion. We do not need
+  to model anything custom since we have reducers and effect handlers as sessions. So they just need to
+  respond and react and update their state."*
+
+These are honored together: the suite is shaped without a live operator session (every fork carries a
+chosen default; forks the operator may want to own are flagged **⟨operator may ratify⟩**), and the suite
+runs UNATTENDED in CI — self-contained, deterministic, machine-checkable pass/fail, exactly the way the
+compiler corpus runs under `cargo xtask gate`.
+
+> **What seq359 changed (folded in below, old model deleted — no migration layer).** The first draft of
+> this design (landed `bf8674a36`) drove a case with a SCRIPTED event tape (many `(deliver …)`) and
+> SCRIPTED effect-handler responses (`(family "log" (respond (ok)))` canned tables). The operator does
+> NOT want that. The revised model: a case provides **exactly one kick-off event**, and the constellation
+> of sessions — each a real Cadenza reducer, including the effect handlers, which are themselves sessions
+> — **runs organically to a fixpoint**, reacting and updating their own state, with NO canned responses
+> and NO test-only modeling. This design has been rewritten to that model; the scripted-tape and
+> scripted-response vocabulary is removed, not deprecated-in-place.
 
 Subsystem: primarily `xtask` (the runner/grader) + `cdz-corpus` (the case reader) + a new spec tree
-`spec/platform/`. It exercises `cdz-kernel` (the reducer/event/KV/effect machinery) as the
-system-under-test but adds NO kernel production code — the kernel is a dependency, not a change target.
-Coordinated with `corpus-bugfix` (owns the `cdz-corpus` reader + `Expect` vocabulary + gate baseline
-mechanics — this suite REUSES that infrastructure), `v-agent-harness` (owns the kernel seam: the
-`Reducer`/`Executor` traits, the WIT `cadenza:agent-kernel` world, the `Session` drive loop),
-`v-agent-harness-host` (owns `cdz-agent-host`: `UserspaceEffectExecutor`, `CompositeExecutor`
-family routing, the reply/settle round-trip), and `v-effects` (language-level effect vocabulary).
+`spec/platform/`. It exercises `cdz-kernel` + `cdz-agent-host` (the reducer/event/KV/effect/messaging
+machinery) as the system-under-test but adds NO kernel/host production code — they are dependencies, not
+change targets. Coordinated with `corpus-bugfix` (owns the `cdz-corpus` reader + record model + gate
+baseline mechanics — this suite REUSES that infrastructure; ownership split confirmed: corpus-bugfix
+implements all reader edits to a co-designed grammar, the vertical owns the `xtask` grade path + the
+`spec/platform` baseline), `v-agent-harness` (owns the kernel seam: the `Reducer`/`Executor` traits, the
+WIT `cadenza:agent-kernel` world, the `Session` drive loop), `v-agent-harness-host` (owns `cdz-agent-host`:
+`UserspaceEffectExecutor`, `CompositeExecutor` family routing, the `EmitExecutor` peer-messaging path, the
+reply/settle round-trip), and `v-effects` (language-level effect vocabulary).
 
 > **The one-sentence thesis.** The compiler corpus asks *"does this Cadenza PROGRAM compile+run to this
-> value/error/trap?"*; the platform conformance suite asks *"does this Cadenza REDUCER, driven by this
-> stream of events with these effect-handler responses, emit these effects and settle to this
-> end-state?"* — the same recorded-oracle, backend-agnostic, `cargo xtask gate`-run discipline, applied
-> to the runtime/platform layer instead of the compiler.
->
-> **The multi-session thesis (this extension, operator seq358: *"we need to be able to have more than
-> one session interacting as well so we can test out messaging"*).** A conformance case may define MORE
-> THAN ONE session — each its own Cadenza reducer + effect handlers — and let them INTERACT by
-> messaging. The question becomes: *"do these N Cadenza reducers, driven by an event script and messaging
-> each other, exchange these cross-session messages in this causal order and each settle to its own
-> end-state?"* The messaging seam already exists in production (`EmitExecutor` routes a session's `Emit`
-> effect to a peer's inbox as an `Inbound{family="message"}`); this extension makes that seam
-> PORTABLY-TESTABLE under a deterministic, no-network, no-clock scheduler.
+> value/error/trap?"*; the platform conformance suite asks *"given these Cadenza sessions (reducers +
+> effect-handler sessions) and ONE kick-off event, do the sessions — reacting organically to a fixpoint —
+> emit these effects and these inter-session messages in this order, and each settle to this end-state?"*
+> The same recorded-oracle, backend-agnostic, `cargo xtask gate`-run discipline the compiler corpus uses,
+> applied to the runtime/platform layer — but the driver is a single event feeding REAL reducer/handler
+> logic run to quiescence, not a scripted event tape with canned responses.
 
 ## Why this is worth building (and why it's cheap)
 
-Two independent findings make this a high-leverage, low-risk vertical:
+Three findings make this a high-leverage, low-risk vertical:
 
-1. **The compiler corpus already models the effect boundary.** The corpus vocabulary includes
-   `(host-responses (respond E.op (: v T)) …)` — canned responses to performed effects — and
-   `(host-calls (call E.op arg…) …)` — the **order-verified** observed sequence of host calls a program
-   makes (`cdz-corpus/src/lib.rs`, graded in `xtask/src/main.rs`). That is already "effect-handler
-   responses in, assert on emitted effects out." The platform suite generalizes this from a
-   single program-run to a **fold over a stream of events with durable state between them**.
-
-2. **A platform conformance test is already a small, proven shape.** `cdz-kernel`'s
+1. **A platform conformance run is already a small, proven shape.** `cdz-kernel`'s
    `kernel_e2e_tests/loop_and_recovery.rs` is a working reference: build a `Session::genesis(reducer,
-   nonce)`, register effect handlers on a `CompositeExecutor` (`with_effect(family, …)` /
-   `with_fallback(…)`), feed events via `deliver(EventBody::Inbound{..})`, then assert on
-   events-processed (`session.log()` / `event_count()`) and end-state (`session.kv().get(..)` /
-   `status_snapshot()`). The suite turns that hand-written-Rust pattern into a **portable, declarative,
-   Cadenza-defined case** the gate runs unattended.
+   nonce)`, register effect handlers on a `CompositeExecutor`, feed an event via
+   `deliver(EventBody::Inbound{..})`, then assert on events-processed (`session.event_count()`) and
+   end-state (`session.kv().get(..)` / `status_snapshot()`). The suite turns that hand-written-Rust
+   pattern into a **portable, declarative, Cadenza-defined case** the gate runs unattended.
 
-So the build is mostly (a) a case format, (b) a runner that assembles a Session from a case and drives
-it, and (c) a grader — riding infrastructure that already exists on both the corpus side and the kernel
-side.
+2. **The effect-handler-as-session round-trip already exists.** `cdz-agent-host`'s
+   `UserspaceEffectExecutor` + `effect_reply`/`reply_exec` + `effect_registry` already implement "an
+   effect is served by another Cadenza session": a caller's effect is DEFERRED, delivered to the handler
+   session as an `effect-request/<family>` inbound, the handler folds it and emits `effect/reply`, and the
+   `ReplyExecutor` settles the reply onto the caller's open `EffectId`. seq359's "effect handlers as
+   sessions" is EXACTLY this machinery — the suite consumes it, it does not build it.
 
-## The design decisions (each a fork the seed named, decided with a default)
+3. **Cross-session messaging already exists.** `cdz-agent-host`'s `EmitExecutor` routes a session's `Emit`
+   effect (family `"message"`, `target` = peer `SessionId`) to the peer's inbox as an
+   `Inbound{family="message"}`, fire-and-forget, with a `delivery-failure` bounce to the sender when the
+   target is gone. seq358's messaging is this seam; the suite makes it portably testable.
+
+So the build is mostly (a) a single-kick-off case format, (b) a runner that assembles the session
+constellation from a case and drives it to a fixpoint under a DETERMINISTIC scheduler, and (c) a grader —
+riding infrastructure that already exists on the corpus side, the kernel side, and the host side.
+
+## The design decisions (each carries a default)
 
 ### D1 — Format: EXTEND the corpus infrastructure with a new "session" case genre. ⟨operator may ratify⟩
 **Chosen default: extend `cdz-corpus` + `cargo xtask gate` rather than stand up a parallel runner.**
 
-Rationale: the operator's own framing — *"worth its weight in gold … the compiler corpus has been
-incredibly valuable"* — is a mandate to reuse what works, not to fork it. Concretely we inherit, for
-free: the tab-delimited record reader, the literate markdown surface (`cdz-corpus/src/markdown.rs`, so
-a case has a `.md` twin), the `.gate-baseline` diff-not-count regression mechanics (the thing that
-actually catches per-MR regressions), the `--save`/`--check` flow, the differential-target infra, and
-the operator's existing mental model + tooling. A parallel format would duplicate all of that and split
-the "one conformance suite" story the operator is reaching for.
+The operator's own framing — *"worth its weight in gold … the compiler corpus has been incredibly
+valuable"* — is a mandate to reuse what works. We inherit, for free: the case reader + record model, the
+literate markdown surface (`cdz-corpus/src/markdown.rs`, so a case has a `.md` twin), the `.gate-baseline`
+diff-not-count regression mechanics (what actually catches per-MR regressions), the `--save`/`--check`
+flow, the differential-target infra, and the operator's existing mental model + tooling.
 
 The suite lives in a NEW spec tree — **`spec/platform/NN-feature.sexp`** (mirrors `spec/semantics/`) —
 with its OWN baseline files (`spec/platform/.gate-baseline*`). It is a new *genre* of case within the
-same reader, not a new reader. A platform case is distinguished from a semantics case by carrying a
-`(session …)` block (see D3) instead of a top-level `(input …)` program.
+same reader, not a new reader. A platform case is distinguished by a top-level `(platform-case …)` marker
+(so the grade path dispatches on genre — corpus-bugfix flagged that a new genre wants its own record
+marker) carrying `(session …)` blocks + a `(kickoff …)`, instead of a compiler `(case (input …))`.
 
-> ⟨operator may ratify⟩ The alternative — a fully independent `spec/platform/` runner — stays open if
-> the operator wants the platform suite to evolve its clause vocabulary without touching the compiler
-> corpus reader. Default is REUSE; the seam (D3's grammar) is small enough to relocate later if reuse
-> proves constraining.
+> ⟨operator may ratify⟩ A fully independent `spec/platform/` runner stays open if the operator wants the
+> platform vocabulary to evolve without touching the compiler corpus reader. Default is REUSE; the grammar
+> seam is small enough to relocate later.
 
-### D2 — Runtime: the unit under test is a **Cadenza-defined reducer compiled to a wasm component**, driven through the real Rust kernel. ⟨operator may ratify⟩
-**Chosen default: `Cadenza reducer → rcdzc → wasm component → cdz-kernel` (the WIT `cadenza:agent-kernel`
-`apply` seam), matching the corpus's default wasm target.**
+### D2 — The unit under test is a **Cadenza-defined reducer compiled to a wasm component**, driven through the real kernel; effect handlers are ALSO reducer sessions (seq359). ⟨operator may ratify⟩
+**Chosen default: every session — agent OR effect-handler — is `Cadenza reducer → rcdzc → wasm component
+→ cdz-kernel`, matching the corpus's default wasm target. There are NO canned response tables.**
 
-This is the only choice that honors *"define reducers in cadenza"* AND *"portable"*: the reducer is
-authored in Cadenza, the same source a production agent would run, and it executes on the real kernel
-drive loop — not a hand-written Rust stand-in (that would test the harness, not the platform, and
-wouldn't be portable across implementations). It rides toward the `DESIGN-binary-ast-abi.md`
-`apply(list<u8>) -> list<u8>` boundary, which is exactly the seam that makes a reducer definition
-portable across a Rust guest and a Cadenza guest.
+This is the only choice that honors *"define reducers in cadenza"*, *"effect handlers as sessions"*, AND
+*"portable"*: each reducer is authored in Cadenza, the same source a production agent would run, and
+executes on the real kernel drive loop — not a hand-written Rust stand-in and not a canned-outcome table.
+It rides toward the `DESIGN-binary-ast-abi.md` `apply(list<u8>) -> list<u8>` boundary that makes a reducer
+definition portable across a Rust guest and a Cadenza guest.
 
-Effect handlers have TWO admissible realizations, and the format supports both (D4):
-- **Scripted responses** (default, simplest): the case declares canned outcomes per effect family, like
-  the corpus's `(host-responses …)`. The "handler" is a deterministic table, not a running session.
-- **Cadenza handler sessions** (for the OUTPOST round-trip): the effect is served by *another*
-  Cadenza-defined reducer session via `UserspaceEffectExecutor` deferral + `effect/reply` settle. This
-  is the genuinely-novel platform behavior and is a later increment (I3).
+seq359 collapses the old "two handler realizations" fork: the **scripted-response table is deleted**. An
+effect is served by a handler SESSION — a Cadenza reducer bound to serve one or more effect families —
+via the existing `UserspaceEffectExecutor` deferral + `effect/reply` settle. A case that wants a trivial
+handler (e.g. "every `log` succeeds") writes a two-line Cadenza reducer that folds the effect-request and
+replies `ok`; that is still a real, compiled, deterministic session, not a mock.
 
-Portability ladder (mirrors the corpus's wasm → rust → ML targets, with their own baselines /
-differential grading):
-- **Now (I1):** wasm reducer on the Rust kernel — the oracle.
-- **Later:** a second kernel implementation (e.g. a Cadenza-ML-hosted kernel, once it exists) graded
-  DIFFERENTIALLY against the Rust-kernel oracle — no second baseline, exactly how `run_program_ml`
-  grades the ML compiler against the wasm oracle today. This is the "portable across implementations"
-  payoff and is explicitly out of the first slices.
+Portability ladder (mirrors the corpus's wasm → ML targets):
+- **Now:** wasm reducers on the real kernel/host — the oracle.
+- **Later (I5):** a second implementation (a Cadenza-ML-hosted kernel, or the binary-AST guest as a
+  distinct backend) graded DIFFERENTIALLY against the oracle — no second baseline, exactly how
+  `run_program_ml` grades the ML compiler against the wasm oracle today.
 
-> ⟨operator may ratify⟩ Whether to ALSO keep a small inline-Rust-reducer fast-path for harness-level
-> smoke tests. Default: NO — one path (Cadenza reducer), so the suite can never pass on a reducer that
-> doesn't actually compile from Cadenza. The existing Rust `kernel_e2e_tests` remain as unit tests;
-> the conformance suite does not overlap them.
+> ⟨operator may ratify⟩ Whether to keep a tiny inline-Rust-reducer fast-path for harness smoke tests.
+> Default: NO — one path (Cadenza reducer), so the suite can never pass on a reducer that doesn't actually
+> compile from Cadenza. The existing Rust `kernel_e2e_tests` remain as unit tests; this does not overlap.
 
-### D3 — Case shape: a `(session …)` block replaces `(input …)`; events + assertions are scripted as an ordered trial stream.
-A platform case, in the same s-expression surface as the corpus. Illustrative (grammar, not final
-bytes):
+### D3 — Case shape: N `(session <alias> …)` blocks + exactly ONE `(kickoff …)`; assertions are terminal (whole-run).
+A case defines the constellation of sessions, binds which serve effect families as handlers, gives ONE
+kick-off event, and asserts on the whole-run emitted-effect sequence, the inter-session message sequence,
+and each session's end-state. Illustrative (grammar, not final bytes):
 
 ```
-(case "a counter reducer accumulates across two events and emits a log effect at threshold"
-  (doc "Reducer folds Inbound `bump` events into kv `count`; at count==2 it emits one log effect.")
+(platform-case "a worker asks a clock handler for the time, logs it, and messages a reporter"
+  (doc "kickoff -> worker; worker performs `now` (served by the clock session) then `log`,
+        then Emits a `done` message to the reporter; reporter folds it and records seen=1.")
 
-  ;; The system under test: a Cadenza reducer + the families its handlers serve.
-  (session
-    (reducer <cadenza-reducer-program>)          ;; authored in Cadenza; compiled to a component
-    (handlers                                     ;; effect families this case provides responses for
-      (family "log" (respond (ok)))))             ;; scripted handler: every `log` effect → Ok(())
+  ;; The constellation. Each session is a real Cadenza reducer compiled to a component.
+  (session "worker"   (reducer <worker-reducer>))
+  (session "reporter" (reducer <reporter-reducer>))
+  (session "clock"    (reducer <clock-handler-reducer>)   (serves "now"))   ;; a handler SESSION
+  (session "logger"   (reducer <logger-handler-reducer>)  (serves "log"))   ;; a handler SESSION
 
-  ;; The event script + interleaved assertions. Ordered; each (deliver ..) drives to quiescence.
-  (deliver (inbound "bump" (: unit Unit)))
-  (expect-effects)                                 ;; no effect emitted yet
-  (deliver (inbound "bump" (: unit Unit)))
-  (expect-effects (effect "log" (: "threshold" String)))   ;; order-verified emitted-effect list
+  ;; The ONE kick-off event. Everything else happens organically.
+  (kickoff "worker" (inbound "start" (: unit Unit)))
 
-  ;; Terminal assertions after the whole script.
-  (end-state
-    (kv "count" (: 2 Int64))                       ;; end-state KV, key -> canonical value form
-    (status quiescent))                            ;; StatusSnapshot.state
-  (events-processed 5))                            ;; total appended log length (Genesis + 2 Inbound + …)
+  ;; Whole-run assertions (deterministic order — see D5). None are scripted responses; they OBSERVE
+  ;; what the real sessions did as the constellation ran to a fixpoint.
+  (expect-effects                                    ;; order-verified effects dispatched across the run
+    (effect (from "worker") (family "now"))
+    (effect (from "worker") (family "log") (: "t=0" String)))
+  (expect-messages                                   ;; order-verified inter-session messages delivered
+    (message (from "worker") (to "reporter") (family "message") (: "done" String)))
+
+  ;; Per-session terminal assertions, keyed by alias.
+  (end-state "worker"   (status quiescent))
+  (end-state "reporter" (kv "seen" (: 1 Int64)) (status quiescent)))
 ```
 
-Clause vocabulary (the NEW platform genre; each maps to an existing kernel accessor so grading is a
+Clause vocabulary (the platform genre; each maps to an existing kernel/host accessor so grading is a
 direct comparison, never a heuristic):
 
-| Clause | Meaning | Kernel anchor it grades against |
+| Clause | Meaning | Anchor it grades against |
 |---|---|---|
-| `(session (reducer <prog>) (handlers …))` | the SUT: a Cadenza reducer + scripted/handler families | `Session::genesis` + `CompositeExecutor` |
-| `(deliver (inbound <family> <value>))` | append an inbound event, drive to quiescence | `Session::deliver(EventBody::Inbound{..})` |
-| `(deliver (timer-fired <id>))` etc. | non-inbound stimulus (timers, results) | `EventBody::{TimerFired,EffectResult,…}` |
-| `(expect-effects (effect <family> <value>)…)` | order-verified emitted-effect sequence since the last `deliver` | dispatched effects on the log (cf. corpus `(host-calls …)`) |
-| `(family <name> (respond <outcome>))` | scripted handler outcome (`(ok)`,`(ok <v>)`,`(err "msg")`,`(timed-out)`) | `EffectOutcome` variants |
-| `(handler-session <family> (reducer <prog>))` | a Cadenza handler SESSION (deferral round-trip) — I3 | `UserspaceEffectExecutor` + `effect/reply` |
-| `(end-state (kv <key> <value>)…)` | terminal KV key→value assertions | `Session::kv().get(key)` |
-| `(end-state (status <state>))` | terminal session status | `StatusSnapshot.state` (`Active/Quiescent/Stalled/Closed`) |
-| `(end-state (closed (success <v>)))` | close outcome, if the session closed | `CloseOutcome` (`Success/Failure`) — I4 |
-| `(events-processed <n>)` | total appended log length | `Session::event_count()` |
-| `(recovers)` | replay(full) ≡ recover(checkpoint+tail) yields identical KV | `Session::replay` / `recover` — I4 |
+| `(session <alias> (reducer <prog>) [(serves <family>…)])` | one SUT session; `serves` binds it as the handler for those effect families | `HostedSession::genesis_with_nonce` + `effect_registry` / `UserspaceEffectExecutor` |
+| `(kickoff <alias> (inbound <family> <value>))` | THE single kick-off event; the only external stimulus | `AgentHost::deliver(id_of(alias), Inbound{..}, None)` — called exactly once |
+| `(expect-effects (effect (from <a>) (family <f>) [<value>])…)` | order-verified sequence of effects DISPATCHED over the whole run | `Dispatched` frames on each session's log (cf. corpus `(host-calls …)`) |
+| `(expect-messages (message (from <a>) (to <b>) (family <f>) <value>)…)` | order-verified sequence of inter-session messages DELIVERED over the run | routed `Inbound{family="message"}` deliveries the runner observed |
+| `(expect-delivery-failure (from <a>) (to <alias>) …)` | a bounce: Emit to a gone/unknown peer → sender folds `delivery-failure` | `bounce_delivery_failure` / `DELIVERY_FAILURE_FAMILY` |
+| `(end-state <alias> (kv <key> <value>)…)` | per-session terminal KV assertions | `session(alias).kv().get(key)` |
+| `(end-state <alias> (status <state>))` | per-session terminal status | `StatusSnapshot.state` (`Active/Quiescent/Stalled/Closed`) |
+| `(end-state <alias> (closed (success <v>)))` | close outcome, if the session closed — I4 | `CloseOutcome` (`Success/Failure`) |
+| `(events-processed <alias> <n>)` | per-session total appended log length | `Session::event_count()` |
 
-The values everywhere use the corpus's canonical `(: value Type)` form, so the platform grader reuses
-the corpus value-comparison (`grade_trial`'s value match), and the reducer/handler programs use the
-same homoiconic Cadenza s-expression the corpus `(input …)` uses — so a platform case is authored,
-read, and diffed by exactly the same machinery.
+Values everywhere use the corpus's canonical `(: value Type)` form, so the grader reuses the corpus
+value-comparison, and reducer programs use the same homoiconic Cadenza s-expression the corpus `(input …)`
+uses — so a platform case is authored, read, and diffed by the same machinery. A single-session case is
+the degenerate `N=1` shape (one `(session …)`, no `serves`/`expect-messages`).
 
-### D4 — Assertion surface (the initial vocabulary): emitted-effect sequence + end-state KV + session status; then close/recovery.
-Ordered by increment (D5). The FLOOR that makes the suite meaningful on day one is **emitted-effect
-sequence + end-state KV** (the two the operator named — *"events being processed and end state"*).
-`status` is cheap (same snapshot) and included in I1. `closed`/`recovers` are I4 (they need lifecycle +
-the durable-log recovery gate, which are themselves in-flight designs).
+### D4 — Assertion surface: emitted-effect sequence + inter-session-message sequence + per-session end-state (KV + status); then close/recovery.
+The FLOOR that makes the suite meaningful is **emitted-effect sequence + end-state KV** (the two the
+operator named in seq356 — *"events being processed and end state"*) plus the **inter-session message
+sequence** (seq358). `status` is cheap (same snapshot). `closed`/`recovers` are I4 (they need lifecycle +
+the durable-log recovery gate, themselves in-flight designs). Every assertion OBSERVES the real run; none
+scripts a response.
 
-### D5 — Determinism & autonomy: the suite MUST be self-contained and reproducible with no human, no clock, no network.
-This is the operator's seq357 constraint made concrete — the invariants the runner enforces so a case
-can never be flaky:
+### D5 — Determinism WITHOUT scripting (the seq359 puzzle, solved).
+seq359 removes the scripted tape/responses but keeps the CI-reproducibility requirement. The organic run
+is still fully deterministic because the constellation is a **closed, pure, deterministically-scheduled
+rewrite system** seeded by one event. The four invariants the runner enforces:
 
-1. **No real effects escape.** Every effect family a reducer can emit is served by a scripted
-   `(respond …)` table or a Cadenza `(handler-session …)`; there is no live executor. An emitted effect
-   for a family the case did NOT declare is a **case failure** (surfaced, not silently dropped —
-   mirrors `CompositeExecutor`'s observable-Err-on-unroutable, §9d anti-stuck).
-2. **No wall clock, no randomness.** Timers advance only via explicit `(deliver (timer-fired …))`;
-   `now`-family effects are answered from the scripted table. The kernel is already replay-deterministic
-   (its `replay_determinism` test proves live-kv ≡ replayed-kv); the suite inherits that.
-3. **Fuel-bounded.** Reducer folds run under the kernel's fuel budget; exhaustion is a recorded
-   `FoldFailed`, gradeable as such, never a hang.
-4. **Machine-checkable pass/fail via the baseline diff.** Like the corpus, the verdict is a per-case
-   `Pass/Todo/Fail` rolled into `spec/platform/.gate-baseline`; a `pass → not-pass` flip or a vanished
-   case is a regression that fails `gate --check`. Newly-passing cases are reported, not fatal. This is
-   what lets the vertical grow the suite unattended without renegotiating a pass-count each MR.
+1. **Reducers are pure folds.** A reducer is a pure function of `(event, kv)` (kernel §17 totality). Given
+   a fixed event order, every session's trajectory is determined. Nothing in a fold reads outside its
+   inputs.
+2. **A deterministic scheduler fixes the event order (MD-SCHED).** The runner does NOT use the production
+   `AsyncAgentHost::run` loop — that multiplexes with tokio `select!`, which by its own doc gives **NO
+   ordering/fairness guarantee**. Instead the runner drives the lower primitive
+   `AgentHost::deliver(session, body, cause)` itself and processes a single in-memory queue in **strict
+   FIFO**: deliver the one `(kickoff …)` inbound → drive that session to quiescence → append, in emission
+   order, every effect it dispatched (routed to the `serves` handler session as an `effect-request/<f>`
+   inbound) and every `message` it Emitted (routed to the target as a `message` inbound) → drain the queue
+   FIFO, each delivery driven to quiescence (which may enqueue more effect-requests / replies / messages),
+   and each handler `effect/reply` settled onto the caller's open `EffectId` as an `EffectResult` inbound.
+   This is a deterministic breadth-first drive to a global **fixpoint**: DONE when the queue is empty and
+   every session is quiescent. A fixed, replay-stable interleaving — no `select!`, no wall clock.
+3. **No clock, no randomness, no network.** There is no live executor: every effect family a reducer can
+   emit is served by a handler SESSION declared in the case (`serves`). An effect for an UNSERVED family
+   is a **case failure** (surfaced, mirroring `CompositeExecutor`'s observable-Err-on-unroutable, §9d), so
+   a reducer can never reach a real clock/network. Deterministic session ids: `SessionId` IS the genesis
+   `Hash`, and the runner supplies each session's spawn nonce as `Hash::of(case_salt ++ alias)` (via
+   `genesis_with_nonce` / `derive_genesis_hash`) — NOT OS entropy — so ids are a pure function of the case,
+   identical every run and in CI. Timers, if a case needs them, are out of the FLOOR (I2+): the FLOOR
+   forbids timer/clock effects, so the FLOOR run has no time axis at all.
+4. **Bounded, so a livelock is a Fail not a hang.** Each fold runs under the kernel fuel budget
+   (exhaustion → a recorded `FoldFailed`, gradeable). The global drive runs under a per-case **step
+   budget** (total deliveries); exceeding it (an unbounded effect/message ping-pong) is a recorded
+   `SettleUnbounded` Fail, never a stuck CI job.
+
+The verdict is a per-case `Pass/Todo/Fail` rolled into `spec/platform/.gate-baseline`; a `pass →
+not-pass` flip or a vanished case fails `gate --check`; newly-passing cases are reported, not fatal — so
+the vertical grows the suite unattended without renegotiating a pass-count each MR.
+
+### MD1 — Peer/handler addressing: sessions are named by a stable local ALIAS; the runner binds alias → deterministic SessionId.
+A case addresses peers and handlers WITHOUT hardcoding a genesis-hash-hex (content-derived, would churn on
+any reducer edit). Each session has a short **alias** (`"worker"`, `"clock"`); the runner assigns the
+deterministic id (D5.3) and threads the alias→id map to the reducers so a sender can name its target.
+
+- **How a reducer learns a peer's id.** Before the single kick-off, the runner delivers each session its
+  `(alias, SessionId-hex)` bindings as a genesis-CONFIGURATION `Inbound` (family `platform/peers`, folded
+  into KV under a well-known key) — mirroring the host's existing genesis-setup seed path
+  (`genesis_ct::CONTEXT`, delivered as ordinary early inbound events). This is session CONFIGURATION, not
+  part of the interaction: it is distinct from the one `(kickoff …)` stimulus, so "single kick-off event"
+  is honored (config sets the constellation up; the kick-off starts the interaction). A reducer emitting
+  to `"reporter"` reads `kv["peers"]["reporter"]` for the target id; the runner rewrites the case's
+  alias-addressed `expect-*` clauses to/from ids at the grading boundary, so the author never sees a hash.
+
+> ⟨operator may ratify⟩ Alternative: a name-directory effect (send to `"reporter"` directly, host
+> resolves). Default is alias→id-in-KV because it uses the EXISTING genesis-context seed + the Emit
+> target-is-SessionId contract with no new kernel/host surface. If the OUTPOST federation later adds a
+> `session-directory` lookup effect, the suite adopts it then.
+
+### MD2 — Relation to the OUTPOST / federation (`v-agent-harness-host`).
+The OUTPOST (`design-the-outpost-host-websocket-federation-node`) is the PRODUCTION cross-node router: it
+carries the same `Emit`→peer-`Inbound` messaging and the same effect-handler-session deferral over a
+WebSocket wire between federation nodes. This suite is the **in-process, deterministic conformance oracle**
+for that behavior: the semantics (family `"message"`, target=SessionId, fire-and-forget, delivery-failure
+bounce, cause provenance; effect deferral → `effect-request` → `effect/reply` settle) are identical whether
+routed in-process or over ws-transport, so a constellation that passes a `spec/platform/` case behaves
+identically when federated. The vertical coordinates the messaging + handler-session increments with
+`v-agent-harness-host` so the OUTPOST's wire-level tests and this suite's declarative cases assert the SAME
+contract from the two ends (wire vs. semantics). The suite adds no host/kernel production code.
 
 ## Increments (top-to-bottom, the way a vertical lands them)
 
 Each increment is independently green and independently valuable; each ends with cases in
-`spec/platform/` + a baseline update + a gate step.
+`spec/platform/` + a baseline update + a gate step. seq359 makes handler-sessions foundational, so they
+land at I2 (not late); multi-session messaging is I3.
 
-- **I1 — Single-session, scripted-effect conformance (the end-to-end proof).**
-  - `cdz-corpus`: parse the `(session …)` / `(deliver …)` / `(expect-effects …)` / `(end-state …)` /
-    `(events-processed …)` clauses into the record stream (a `Session`-genre record).
-  - `xtask`: a `run_session_case` path — compile the `(reducer <prog>)` via the existing
+- **I1 — Single session, single kick-off, drive-to-fixpoint (the end-to-end proof).** One `(session …)`
+  (no effects yet, or only self-contained state folds), one `(kickoff …)`; grade `end-state (kv/status)`
+  + `events-processed`.
+  - `cdz-corpus`: parse `(platform-case …)` with `(session <alias> …)`, `(kickoff …)`, `(end-state …)`,
+    `(events-processed …)` into the record stream (a new genre with its own record marker).
+  - `xtask`: a `run_platform_case` path — compile `(reducer <prog>)` via the existing
     `cdz-syntax → rcdzc → component` pipeline (reuse `run_program_wasm`'s toolchain), assemble a
-    `Session::genesis` + a `CompositeExecutor` from the scripted `(family …)` table, replay the
-    `(deliver …)` script, and grade `expect-effects` / `end-state (kv/status)` / `events-processed`.
-  - New gate step + `spec/platform/.gate-baseline`; seed `spec/platform/01-reducer-fold.sexp` with the
-    counter example above plus 3–5 sibling cases (fold accumulation, an effect emitted, an `err`
-    response handled). Ports the `loop_and_recovery` pattern into a portable case.
+    `Session::genesis` with a deterministic nonce, deliver the single kick-off, drive to quiescence, grade.
+  - New gate step + `spec/platform/.gate-baseline`; seed `spec/platform/01-single-session.sexp`.
   - Anchors: `xtask/src/main.rs` (`run_program_wasm` @ ~1276, `grade_trial` @ ~3790, `default_corpus_files`
-    @ ~4026, `baseline_path` @ ~4093); `cdz-corpus/src/lib.rs` (`parse_case` @ ~227, `Expect` @ ~95);
-    `cdz-kernel/src/kernel.rs` (`genesis` @ ~230, `deliver` @ ~623, `kv` @ ~322, `status_snapshot` @
-    ~2117, `event_count` @ ~335); `cdz-kernel/src/executor.rs` (`CompositeExecutor` @ ~73).
+    @ ~4026, `baseline_path` @ ~4093); `cdz-corpus/src/lib.rs` (`parse_case` @ ~227); `cdz-kernel/src/
+    kernel.rs` (`genesis` @ ~230, `deliver` @ ~623, `kv` @ ~322, `status_snapshot` @ ~2117, `event_count`
+    @ ~335, `derive_genesis_hash`); `cdz-agent-host/src/host.rs` (`AgentHost::deliver`,
+    `HostedSession::genesis_with_nonce`, `SessionId`).
 
-- **I2 — Non-inbound stimuli + richer effect assertions.** `(deliver (timer-fired …))`,
-  `(deliver (effect-result …))`; effect payload matching on `target` + payload; `(err …)`/`(timed-out)`
-  responses and asserting the reducer's compensating behavior. Grows `spec/platform/02-*`.
+- **I2 — Effect-handler SESSIONS + the deterministic fixpoint drive (seq359 core).** `(serves <family>…)`
+  on a session; the effect a reducer performs is DEFERRED and served by the bound handler session via the
+  real `UserspaceEffectExecutor` deferral → `effect-request/<family>` inbound → handler `effect/reply` →
+  `ReplyExecutor` settle. Implement the MD-SCHED deterministic FIFO breadth-first drive (D5.2) + the step
+  budget (`SettleUnbounded`). Grade `expect-effects` (whole-run order-verified) + an `err` reply the caller
+  compensates for. Seed `spec/platform/02-handler-sessions.sexp`. Anchors: `cdz-agent-host/src/
+  {userspace_effect_exec,effect_reply,reply_exec,effect_registry}.rs`.
 
-- **I3 — Cadenza handler SESSIONS (the OUTPOST deferral round-trip).** `(handler-session <family>
-  (reducer <prog>))`: the effect is served by a *second* Cadenza reducer via `UserspaceEffectExecutor`
-  (deferral → `effect-request/<family>` Inbound into the handler → handler emits `effect/reply` →
-  `ReplyExecutor` settles onto the caller's open `EffectId`). This is the platform behavior that has no
-  compiler-corpus analogue and is the vertical's highest-value target. Coordinate with
-  `v-agent-harness-host` (owns that machinery). Anchors: `cdz-agent-host/src/{userspace_effect_exec,
-  effect_reply,reply_exec,effect_registry}.rs`.
+- **I3 — Multi-session messaging (seq358).** `Emit` (family `"message"`, target=peer alias→id) routed as a
+  `message` inbound into the peer's log; `(expect-messages …)`; an `(expect-delivery-failure …)` negative
+  case (emit to an unknown alias). Seed `spec/platform/03-messaging.sexp`: ping/pong, fan-out, a
+  request/response whose end-state depends on the reply. Anchors: `cdz-agent-host/src/emit.rs`
+  (`EmitExecutor`, family `"message"`, target=peer SessionId), `cdz-agent-host/src/async_host.rs`
+  (`Inbound`, `bounce_delivery_failure`, `DELIVERY_FAILURE_FAMILY`, `MAX_HELD_INBOUND` — the reference
+  behavior the runner reimplements deterministically).
 
-- **I4 — Lifecycle + recovery assertions.** `(end-state (closed …))` and `(recovers)`: close outcome
-  grading and the `replay ≡ recover(checkpoint+tail)` equivalence check per case. Rides
-  `DESIGN-session-lifecycle.md` + `DESIGN-session-log-state-decouple.md` as they land; gated on them.
-
-- **I6 — Multi-session interaction / messaging (operator seq358).** N interacting sessions that message
-  each other; deterministic breadth-first settle; `expect-messages` + per-alias `end-state`; then
-  causality + composition with handler-sessions. FULLY SPECIFIED in the "MULTI-SESSION extension" section
-  below (MD1–MD5, sub-increments I6a/I6b/I6c). Sequenced after I1–I2, independent of I3–I5.
+- **I4 — Causality + lifecycle + recovery assertions.** Cross-session CAUSALITY: each routed message /
+  effect-result carries its `cause` (the emitting dispatch id, already threaded by `EmitExecutor` /
+  the reply path), so a case can assert "reporter's fold was caused by worker's emit" via the cause edge —
+  the messaging analogue of the corpus's order-verified host-calls, lifted to a cross-session
+  happens-before. Also `(end-state (closed …))` + `(recovers)` (the `replay ≡ recover(checkpoint+tail)`
+  equivalence per session). Rides `DESIGN-session-lifecycle.md` + `DESIGN-session-log-state-decouple.md`.
 
 - **I5 — Second-implementation differential (the portability payoff).** When a second kernel/reducer
-  implementation exists (a Cadenza-ML-hosted kernel, or the binary-AST guest as a distinct backend),
-  run every `spec/platform/` case against it and grade DIFFERENTIALLY against the Rust-kernel oracle —
-  no second baseline, an agreeing outcome = progress, a disagreeing outcome = the only real failure.
-  Mirrors `xtask`'s `cadenza-ml-conformance-covered-subset` step. Explicitly future; unblocks when a
-  second implementation is real.
-
-## MULTI-SESSION extension — inter-session messaging conformance (operator seq358)
-
-This extends the SINGLE-session suite above (I1 = one reducer; I5 = second-implementation differential)
-with a genuinely new axis: a case defining **N interacting sessions** that message each other. It builds
-ON the format and runner above — a multi-session case is the same `spec/platform/` genre with more than
-one `(session …)` block — and lands as its own increment (I6, sequenced after the single-session I1–I2
-prove the runner; independent of I3–I5).
-
-### The messaging seam already exists — the extension makes it PORTABLY testable
-The runtime already implements cross-session messaging (verified in `cdz-agent-host/src/emit.rs` +
-`async_host.rs`), and the design reuses it verbatim rather than inventing a parallel one:
-
-- **Addressing + send.** A reducer in session A performs an `Emit` effect (`EffectKind::Emit` /
-  `effect_ct::EMIT`, family `"message"`) whose `target` is the PEER's `SessionId` (opaque bytes read as
-  UTF-8, `EffectRequest::target_str`) and whose `payload` is the message (opaque — the reducer defines
-  the schema). The kernel authorizes then dispatches to `EmitExecutor`, which routes the signal to the
-  host's shared `Inbox`.
-- **Delivery.** The routed signal becomes an `EventBody::Inbound { content_type.family = "message",
-  payload }` delivered into the TARGET session's log; the peer reducer folds it with the ordinary inbound
-  pattern. Send is FIRE-AND-FORGET — the executor returns `Ok(None)` (a unit ack that the signal was
-  enqueued) the moment the enqueue succeeds; the sender does NOT await the peer's processing.
-- **Undeliverable = bounce, not silent drop.** If `target` is gone/terminated, the loop bounces a
-  `delivery-failure`-family `Inbound` back to the sender's `reply_to` (`bounce_delivery_failure`), so an
-  undeliverable emit is observable to the sender's reducer. The suite asserts on this too (a negative
-  messaging case: emit to an unknown/closed peer → sender folds a `delivery-failure`).
-
-### MD1 — Addressing: cases name sessions by a stable local ALIAS; the runner binds alias → deterministic SessionId.
-A case must address peers WITHOUT hardcoding a genesis-hash-hex (which is content-derived and would churn
-on any reducer edit). So a multi-session case gives each session a short **alias** (`"alice"`, `"bob"`);
-the runner assigns each a deterministic `SessionId` and threads the mapping into the reducers so a sender
-can name its target.
-
-- **Deterministic ids.** `SessionId` IS the session's genesis `Hash`, and the host exposes
-  `HostedSession::genesis_with_nonce` + `Session::derive_genesis_hash(reducer, nonce, parent)` — a
-  caller-SUPPLIED nonce. The runner derives each session's nonce as `Hash::of(case_salt ++ alias)`
-  (NOT OS entropy — that would be non-reproducible), so a case's session ids are a pure function of the
-  case, identical every run and in CI. This is the determinism analogue of the corpus's fixed inputs.
-- **How a reducer learns a peer's id.** The runner delivers each peer's `(alias, SessionId-hex)` bindings
-  as an early genesis-context `Inbound` (family `platform/peers`, one per case, folded into session KV
-  under a well-known key) BEFORE the event script runs — mirroring the host's existing genesis-setup
-  seed path (`genesis_ct::CONTEXT`, delivered as ordinary early inbound events). A reducer that emits to
-  `"bob"` reads `kv["peers"]["bob"]` for the target id. The case's `(emit …)` clauses (below) address by
-  ALIAS; the runner rewrites alias → id at the boundary, so the case author never sees a hash.
-
-> ⟨operator may ratify⟩ Alternative addressing: a flat well-known name registry (send to `"bob"` directly,
-> host resolves). Default is alias→id-in-KV because it uses the EXISTING genesis-context seed + Emit
-> target-is-SessionId contract with no new kernel/host surface. If the OUTPOST federation later adds a
-> name-directory effect (`session-directory` design), the suite adopts it then.
-
-### MD2 — Determinism: a case-driven DETERMINISTIC scheduler, NOT the production `select!` loop.
-This is the load-bearing decision for CI reproducibility. The production multi-session loop
-(`AsyncAgentHost::run`) multiplexes sessions with tokio `select!`, which by its own doc gives **NO
-ordering/fairness guarantee** across the inbound channel + timers — perfect for a live host, fatal for a
-reproducible test. So the conformance runner does NOT use `AsyncAgentHost::run`. Instead it drives the
-lower, deterministic primitive directly:
-
-- The runner holds the `AgentHost` registry (N `HostedSession`s) and its OWN in-memory message queue in
-  place of the mpsc `Inbox`. It calls the synchronous-per-step `AgentHost::deliver(session, body, cause)`
-  itself, one delivery at a time, and DRAINS routed emits from its own queue in **strict FIFO** order.
-- **The scheduling rule (deterministic, total, documented in the case):** process the case's explicit
-  `(deliver …)`/`(emit …)` script in written order; after each delivery, drive that session to
-  quiescence; any `message` emits it produced are appended to the queue in emission order; then drain the
-  queue FIFO, each drained message delivered to its target and driven to quiescence (which may enqueue
-  more) — a deterministic breadth-first settle. The case is DONE when the script is exhausted AND the
-  queue is empty (a quiescent global state). This is a fixed, replay-stable interleaving with no
-  wall-clock and no `select!` nondeterminism.
-- **Timers stay explicit** (as in single-session D5): no timer fires except via an explicit
-  `(deliver <alias> (timer-fired …))` step, so cross-session timing is authored, never raced.
-- **Cycle/liveness bound:** the global settle runs under a per-case message-count budget (like the fuel
-  bound on folds); exceeding it (an unbounded message ping-pong) is a recorded `SettleUnbounded` Fail,
-  never a hang. So a messaging livelock is a gradeable failure, not a stuck CI job.
-
-### MD3 — Case shape: multiple `(session <alias> …)` blocks + alias-addressed `(emit …)` + cross-session assertions.
-The single-session `(session …)` block (D3) gains an alias; a multi-session case has more than one, plus
-new clauses to address a peer and to assert on the cross-session flow. Illustrative:
-
-```
-(case "two sessions exchange a ping/pong and each settles to a seen-count of 1"
-  (doc "alice emits `ping` to bob; bob folds it, increments seen, emits `pong` back; alice folds pong.")
-
-  (session "alice"
-    (reducer <alice-reducer-program>)
-    (handlers (family "message" (respond (ok)))))   ;; the `message` family (Emit ack) → Ok(())
-  (session "bob"
-    (reducer <bob-reducer-program>)
-    (handlers (family "message" (respond (ok)))))
-
-  ;; Stimulus: an external inbound kicks alice, whose reducer emits to bob.
-  (deliver "alice" (inbound "start" (: unit Unit)))
-
-  ;; Cross-session message-flow assertion: the order-verified sequence of DELIVERED inter-session
-  ;; messages across the whole settle (sender-alias, target-alias, family, payload). This is the new
-  ;; multi-session oracle — the analogue of single-session `expect-effects`, but for routed messages.
-  (expect-messages
-    (message (from "alice") (to "bob")   (family "message") (: "ping" String))
-    (message (from "bob")   (to "alice") (family "message") (: "pong" String)))
-
-  ;; Per-session end-state, keyed by alias.
-  (end-state "alice" (kv "seen" (: 1 Int64)) (status quiescent))
-  (end-state "bob"   (kv "seen" (: 1 Int64)) (status quiescent)))
-```
-
-New / extended clauses (each maps to an existing kernel/host accessor so grading stays a direct compare):
-
-| Clause | Meaning | Anchor it grades against |
-|---|---|---|
-| `(session <alias> (reducer <prog>) (handlers …))` | one SUT session, named by a case-local alias | `HostedSession::genesis_with_nonce` (nonce = `Hash::of(salt++alias)`) |
-| `(deliver <alias> <body>)` | deliver a stimulus to a NAMED session, drive to quiescence | `AgentHost::deliver(id_of(alias), body, cause)` |
-| `(emit <alias> (message <target-alias> <value>))` | (optional authored stimulus) inject a message as if from a session — mostly reducers `Emit` themselves | routes through the runner's queue exactly like an `EmitExecutor` output |
-| `(expect-messages (message (from <a>) (to <b>) (family <f>) <value>)…)` | order-verified sequence of DELIVERED inter-session messages over the settle | routed `Inbound{family="message"}` deliveries the runner observed on its queue |
-| `(expect-delivery-failure (from <a>) (to <alias-or-id>) …)` | a bounce: emit to a gone/unknown peer → sender folds `delivery-failure` | `bounce_delivery_failure` / `DELIVERY_FAILURE_FAMILY` |
-| `(end-state <alias> (kv …)(status …))` | per-session terminal assertions, keyed by alias | `session(alias).kv()/status_snapshot()` |
-
-The single-session case (D3) is the degenerate `N=1` shape: one unnamed (or single-alias) session, no
-`(expect-messages …)`. The runner picks the multi-session path iff the case has >1 `(session …)` block
-OR any `expect-messages`/`emit`/aliased clause — so the two genres share one reader + grader.
-
-### MD4 — Increment I6, layered on the single-session runner.
-Sequenced AFTER I1–I2 (which prove the single-session runner + the deterministic drive), independent of
-the I3–I5 (handler-session / lifecycle / differential) axes. Independently green + valuable.
-
-- **I6a — Two-session messaging, scripted handlers (the messaging end-to-end proof).**
-  - `cdz-corpus`: parse aliased `(session <alias> …)`, `(deliver <alias> …)`, `(expect-messages …)`,
-    per-alias `(end-state <alias> …)` into the record (a multi-session Session-genre record).
-  - `xtask`: extend `run_session_case` with a `run_multi_session_case` path — build N `HostedSession`s
-    with deterministic per-alias nonces, seed each with its `platform/peers` alias→id context, run the
-    MD2 deterministic breadth-first settle over the runner's own FIFO queue (NOT `AsyncAgentHost::run`),
-    and grade `expect-messages` (order-verified routed-message sequence) + per-alias `end-state`.
-  - Seed `spec/platform/10-two-session-messaging.sexp`: the ping/pong above, a fan-out (one → two peers),
-    a request/response where the requester's end-state depends on the reply, and an `expect-delivery-failure`
-    negative case (emit to an unknown alias). Baseline into `spec/platform/.gate-baseline`.
-  - Anchors: `cdz-agent-host/src/emit.rs` (`EmitExecutor`, family `"message"`, target=peer SessionId),
-    `cdz-agent-host/src/async_host.rs` (`Inbound`, `bounce_delivery_failure`, `DELIVERY_FAILURE_FAMILY`,
-    `MAX_HELD_INBOUND` backpressure — the reference behavior the runner reimplements deterministically),
-    `cdz-agent-host/src/host.rs` (`AgentHost::deliver`, `HostedSession::genesis_with_nonce`, `SessionId`),
-    `cdz-kernel/src/kernel.rs` (`Session::derive_genesis_hash`).
-
-- **I6b — N-session + causality assertions.** More than two sessions; assert cross-session CAUSALITY, not
-  just the flat delivered-message sequence: each routed message carries its `cause` (the emitting dispatch
-  id, already threaded by `EmitExecutor`), so a case can assert "bob's `pong` was caused by alice's
-  `ping`" via the cause edge on the peer's log — the messaging analogue of the corpus's order-verified
-  host-calls, lifted to a cross-session happens-before. Grows `spec/platform/11-*`.
-
-- **I6c — Messaging × handler-sessions (composes with I3).** A message TARGET can itself be a
-  `(handler-session …)` reducer (I3): the OUTPOST round-trip and peer messaging are the same routing
-  substrate (both `Inbound` deliveries into a peer's log), so once I3 + I6a land, a case can mix
-  reducer-to-reducer messages with effect-deferral-to-a-handler-session. This is where the platform suite
-  most directly exercises the `v-agent-harness-host` federation (the OUTPOST ws-transport host routes
-  exactly these cross-session `Inbound`s over a wire; the suite is its in-process, deterministic oracle).
-
-### MD5 — Relation to the OUTPOST / federation (`v-agent-harness-host`).
-The OUTPOST (`design-the-outpost-host-websocket-federation-node`) is the PRODUCTION cross-node router:
-it carries the same `Emit`→peer-`Inbound` messaging over a WebSocket wire between federation nodes. This
-suite is the **in-process, deterministic conformance oracle** for that behavior: the message SEMANTICS
-(family `"message"`, target=SessionId, fire-and-forget, delivery-failure bounce, cause provenance) are
-identical whether routed in-process or over ws-transport, so a reducer that passes a `spec/platform/`
-messaging case behaves identically when federated. The vertical should coordinate I6c with
-`v-agent-harness-host` so the OUTPOST's wire-level tests and this suite's declarative cases assert the
-SAME contract from the two ends (wire vs. semantics). The suite adds no host/kernel production code
-(consistent with "What this is NOT" below); it consumes the emit/routing machinery as-is.
+  implementation exists, run every `spec/platform/` case against it and grade DIFFERENTIALLY against the
+  oracle — no second baseline; an agreeing outcome = progress, a disagreeing outcome = the only real
+  failure. Mirrors `xtask`'s `cadenza-ml-conformance-covered-subset` step. Unblocks when a second
+  implementation is real.
 
 ## The gate (how it protects itself, unattended)
 
@@ -403,49 +304,43 @@ Adds to `cargo xtask gate`, alongside the existing `spec/semantics/` grading:
 1. `cargo xtask gate` grades `spec/platform/*.sexp` and diffs against `spec/platform/.gate-baseline`
    (regression = a `pass → not-pass` flip or a vanished case; additive-only otherwise) — identical
    discipline to the compiler corpus.
-2. A platform case that emits an undeclared effect family, hangs on fuel, or reads a clock/network is a
-   **Fail** by construction (D5) — the determinism invariants are enforced by the runner, not by
-   convention.
-3. The reducer/handler programs are real Cadenza compiled by the real `rcdzc` — a case that can't
-   compile is a `BadArtifact` Fail, so the suite also guards reducer-authoring against compiler
-   regressions.
-4. **Multi-session determinism is runner-enforced (MD2), not conventional.** A multi-session case runs
-   under the runner's OWN deterministic FIFO scheduler (never the production `select!` loop), deterministic
-   per-alias SessionIds (`Hash::of(salt++alias)`, never OS entropy), explicit-only timers, and a per-case
-   message-count budget — so a reproducible messaging interleaving is a structural property, and an
-   unbounded message ping-pong is a `SettleUnbounded` Fail, never a hung CI job.
+2. Determinism is RUNNER-ENFORCED (D5), not conventional: the runner uses its own FIFO breadth-first drive
+   (never the production `select!` loop), deterministic per-alias SessionIds (`Hash::of(salt++alias)`,
+   never OS entropy), no clock/network/randomness (every effect served by a declared handler session; an
+   effect for an unserved family is a Fail), and a per-case step budget (an unbounded ping-pong is a
+   `SettleUnbounded` Fail, never a hang).
+3. The reducers are real Cadenza compiled by the real `rcdzc` — a case that can't compile is a
+   `BadArtifact` Fail, so the suite also guards reducer-authoring against compiler regressions.
 
 ## Open decisions with a chosen default (nothing here blocks the build)
 
-- **O1 — Bytes of the `(session …)` grammar.** The clauses in D3 are the semantics; exact token spelling
-  (`expect-effects` vs `emits`, `end-state` grouping) is the vertical's to finalize with `corpus-bugfix`
-  (who owns the reader). Default: the spelling above.
-- **O2 — One case = one file, or many cases per file (as `spec/semantics/` does)?** Default: many per
-  file, grouped by feature (`NN-feature.sexp`), matching the corpus.
-- **O3 — Reducer program inline vs. `(module …)` sibling.** For non-trivial reducers, reuse the corpus
-  `(module "name" <prog>)` multi-file mechanism. Default: inline for I1, `(module …)` when a case needs
-  a library.
-- **O4 ⟨operator may ratify⟩ — Does the platform suite share `spec/`'s markdown-literate treatment?**
-  Default: YES — a `.md` twin per file via `cdz-corpus/src/markdown.rs` (adds `session`/`deliver`/
-  `expect-effects`/`end-state`/`expect-messages` fence kinds), so platform conformance is as readable as
-  the corpus.
-- **O5 — Multi-session settle order: strict FIFO breadth-first (MD2 default) vs. a per-session priority.**
-  Default: FIFO breadth-first — the simplest total order that is obviously reproducible and matches "drain
-  the shared inbox in arrival order". A priority/round-robin discipline is deferred unless a real case
-  needs it; whatever the choice, it is FIXED and documented so the interleaving is replay-stable.
-- **O6 — Peer-address surface in the reducer: `platform/peers` KV seed (MD1 default) vs. a name-directory
-  effect.** Default: alias→id delivered as a genesis-context `Inbound` folded into KV, reusing the existing
-  seed path with no new surface. Revisit if/when the `session-directory` design lands a lookup effect.
-- **O7 — `expect-messages` scope: whole-settle sequence (MD3 default) vs. per-`deliver` windows.** Default:
-  one order-verified sequence over the entire settle (simplest, matches the breadth-first drain). A case
-  needing finer granularity can split into multiple `(deliver …)` steps with interleaved `expect-messages`,
-  exactly as single-session `expect-effects` interleaves with `deliver`.
+- **O1 — Bytes of the grammar.** The clauses in D3 are the semantics; exact token spelling (`kickoff` vs
+  `start`, `serves` vs `handles`, `expect-effects` grouping) is the vertical's to finalize WITH
+  `corpus-bugfix` (who owns the reader + the flat tab-delimited record-line encoding a whole ordered
+  effect/message list lowers to). Default: the spelling above. Next step: send corpus-bugfix a concrete
+  sexp STRAWMAN (they asked) so they can map it to the reader Struct/Arena model + record lines.
+- **O2 — Many cases per file** (as `spec/semantics/` does), grouped by feature (`NN-feature.sexp`).
+- **O3 — Reducer program inline vs. `(module …)` sibling.** Reuse the corpus `(module "name" <prog>)`
+  multi-file mechanism for non-trivial reducers. Default: inline for small cases, `(module …)` for larger.
+- **O4 ⟨operator may ratify⟩ — Markdown-literate treatment.** Default: YES — a `.md` twin per file via
+  `cdz-corpus/src/markdown.rs` (adds `session`/`kickoff`/`expect-effects`/`expect-messages`/`end-state`
+  fence kinds), so platform conformance is as readable as the corpus.
+- **O5 — Settle order: strict FIFO breadth-first (D5.2 default) vs. a per-session priority.** Default: FIFO
+  breadth-first — the simplest total order that is obviously reproducible and matches "drain the shared
+  inbox in arrival order". Whatever the choice, it is FIXED + documented so the interleaving is replay-stable.
+- **O6 — `expect-effects`/`expect-messages` scope: whole-run sequence (D3/D4 default).** Default: one
+  order-verified sequence over the entire run (matches the single-kickoff-to-fixpoint model; there is no
+  event tape to window against). A case wanting finer granularity splits into separate cases with
+  different kick-offs.
 
 ## What this is NOT
 
-- Not a change to kernel/host production code — it consumes `cdz-kernel`/`cdz-agent-host` as-is (I3
-  coordinates with, but does not modify, the host's reply machinery).
-- Not a replacement for the in-crate `kernel_e2e_tests` Rust units — those stay; this adds the
-  *portable, Cadenza-defined, declaratively-asserted* layer on top.
+- Not a change to kernel/host production code — it consumes `cdz-kernel`/`cdz-agent-host` as-is (the
+  handler-session + messaging increments coordinate with, but do not modify, the host's reply/emit
+  machinery).
+- Not a scripted/mock harness — there are NO canned responses and NO event tape (seq359). Effect handlers
+  are real Cadenza sessions; the run is organic, driven by ONE kick-off event to a fixpoint.
+- Not a replacement for the in-crate `kernel_e2e_tests` Rust units — those stay; this adds the *portable,
+  Cadenza-defined, declaratively-asserted* layer on top.
 - Not the compiler corpus — it's a sibling suite (`spec/platform/`) sharing the reader + gate + baseline
   machinery, with its own case genre and baselines.
