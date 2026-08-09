@@ -419,6 +419,48 @@
           # future crane-default flip or a comment-less copy of this block (Copilot #2288 review, LOW).
           doCheck = true;
         };
+        # RELEASE dep-cache (v-nix, operator throughput 2026-08-09): the sibling of cargoArtifacts built at
+        # --release. WHY: gate-check / codegen-check / bench-check run `cargo run --profile release -p xtask`
+        # over a RAW vendor with NO crane cache, so ANY rotation (even a corpus-only .sexp edit) recompiles
+        # the ENTIRE release dep closure + first-party from scratch (~330s measured on a 1-line .sexp edit;
+        # deps are ~55 of the first ~62 crates compiled, the bulk). cargoArtifacts above is DEV-profile, so it
+        # can't cache a release build. This caches the RELEASE dep closure ONCE (content-addressed, warm-kept
+        # + shared across runs like cargoArtifacts) so those three checks recompile only first-party on a
+        # rotation. Same buildDepsOnly shape (all-members-stubbed → hash invariant to first-party edits), just
+        # CARGO_PROFILE=release. doCheck=false: these are `cargo run` (bin) checks, not tests — they need the
+        # normal release dep closure, not the dev-dep/test-target layer, so skip the test-warm (smaller cache,
+        # faster warm; the gate/codegen/bench run no test-targets).
+        cargoArtifactsRelease = craneLib.buildDepsOnly {
+          pname = "cadenza-seed-deps-release";
+          version = "0.0.0";
+          src = cargoArtifactsSrc;
+          cargoVendorDir = seedCargoVendor;
+          CARGO_PROFILE = "release";
+          preBuild = ''
+            chmod -R u+w .
+            ${stubNonClosure [ ]}
+          '';
+          doCheck = false;
+        };
+        # RELEASE dep-cache built with the MERGED codegenVendor (root + cdz-runtime + cdz-nfc + build-std
+        # locks) for the codegen/bench checks (v-nix, operator throughput 2026-08-09). gate-check uses the
+        # seedCargoVendor release layer above (it only builds host binaries); codegen/bench need codegenVendor
+        # (codegen builds cdz-runtime/cdz-nfc components via cargo-component; bench compiles against the
+        # cdz-runtime lock), so they get their own release dep-cache over the same merged vendor. Same
+        # buildDepsOnly shape; merged vendor via cargoVendorDir = codegenVendor (the symlinkJoin), matching
+        # how the checks themselves source it (mkCargoVendorEnv { merged = true }).
+        cargoArtifactsReleaseCodegen = craneLib.buildDepsOnly {
+          pname = "cadenza-codegen-deps-release";
+          version = "0.0.0";
+          src = cargoArtifactsSrc;
+          cargoVendorDir = codegenVendor;
+          CARGO_PROFILE = "release";
+          preBuild = ''
+            chmod -R u+w .
+            ${stubNonClosure [ ]}
+          '';
+          doCheck = false;
+        };
         # crane MR2: per-crate CLIPPY via crane, consuming the shared cargoArtifacts (deps pre-compiled) so
         # only C's first-party src recompiles — NOT the whole dep closure every run (the ~14m→~6-7m win).
         #
@@ -1444,28 +1486,38 @@
             ./rust-toolchain.toml
           ];
         };
-        codegenCheck = pkgs.stdenvNoCC.mkDerivation {
+        # CRANE-CONVERTED (v-nix, operator throughput 2026-08-09): consumes the merged-vendor release
+        # dep-cache (cargoArtifactsReleaseCodegen) so a rotation recompiles only first-party, not the release
+        # dep closure — same lever as gate-check. codegenVendor (the merged 4-lock superset) because codegen
+        # builds the cdz-runtime + cdz-nfc components via cargo-component (needs those locks + build-std).
+        # RUSTC_BOOTSTRAP + cargo-component preserved. Behavior UNCHANGED: same `cargo run -p xtask -- codegen
+        # --check` (regenerates runtime_abi.rs, fails on drift).
+        codegenCheck = craneLib.mkCargoDerivation {
           pname = "cdz-codegen-check";
           version = "0.0.0";
           src = codegenSrc;
-          nativeBuildInputs = [ rustToolchain pkgs.wasm-tools pkgs.cargo-component ];
-          buildPhase = ''
-            runHook preBuild
-            export RUSTC_BOOTSTRAP=1
-            # codegenVendor is a symlinkJoin of 4 locks → merged = true (hand-rolled crates-io config).
-            ${mkCargoVendorEnv { vendor = codegenVendor; merged = true; }}
-            # xtask codegen --check regenerates runtime_abi.rs (building cdz-runtime + cdz-nfc components
-            # via cargo-component to fold in their hashes) and fails if the committed file drifted.
-            # Invoke the xtask binary via `cargo run --locked` (not the bare `cargo xtask` alias, which
-            # omits --locked) so a root-lockfile drift is a HARD FAIL for this check (github-liaison
-            # #2027/#2038 — no comparison to other checks; several deliberately omit --locked).
-            cargo run --locked --package xtask --profile release -- codegen --check
-            runHook postBuild
+          cargoArtifacts = cargoArtifactsReleaseCodegen;
+          cargoVendorDir = codegenVendor;
+          CARGO_PROFILE = "release";
+          RUSTC_BOOTSTRAP = "1";
+          doInstallCargoArtifacts = false;
+          nativeBuildInputs = [ pkgs.wasm-tools pkgs.cargo-component ];
+          # cargo-component writes a cache under $HOME/$XDG_CACHE_HOME; crane's mkCargoDerivation doesn't set
+          # a writable HOME (the old stdenv buildPhase did via mkCargoVendorEnv), so point both at $TMPDIR or
+          # cargo-component fails "Unable to create cache directory (Permission denied)".
+          preBuild = ''
+            export HOME="$TMPDIR/home"
+            export XDG_CACHE_HOME="$TMPDIR/cache"
+            mkdir -p "$HOME" "$XDG_CACHE_HOME"
           '';
-          installPhase = ''
-            runHook preInstall
-            echo "ok: cdz-codegen-check (cargo xtask codegen --check)" > "$out"
-            runHook postInstall
+          # xtask codegen --check regenerates runtime_abi.rs (building cdz-runtime + cdz-nfc components via
+          # cargo-component to fold in their hashes) and fails if the committed file drifted. --locked =
+          # hard-fail on root-lockfile drift.
+          buildPhaseCargoCommand = ''
+            cargo run --locked --package xtask --profile release -- codegen --check
+          '';
+          installPhaseCommand = ''
+            echo "ok: cdz-codegen-check (cargo xtask codegen --check, crane release-deps-cached)" > "$out"
           '';
         };
 
@@ -1491,28 +1543,31 @@
             ./spec/semantics
           ];
         };
-        gateCheck = pkgs.stdenvNoCC.mkDerivation {
+        # CRANE-CONVERTED (v-nix, operator throughput 2026-08-09): consumes the RELEASE dep-cache
+        # (cargoArtifactsRelease) via craneLib.mkCargoDerivation so crane restores the release deps' target/
+        # before the run — a rotation recompiles only FIRST-PARTY (rcdzc/cdz/xtask/…), NOT the ~55 release
+        # deps (measured: a corpus-only .sexp edit was ~330s of which the dep closure is the bulk). Gate only
+        # builds the native host binaries (cdz/rcdzc/cdz-run — no build-std, no component builds), so the
+        # ROOT lock (seedCargoVendor) covers it; codegenVendor's extra runtime/nfc/build-std locks were
+        # over-provisioning for gate, and cargoArtifactsRelease is built with seedCargoVendor so the restored
+        # target/ matches. Behavior UNCHANGED: same `cargo run -p xtask -- gate --check --store` command,
+        # same corpus grading against the committed baselines — only the dep-compile is now cached.
+        gateCheck = craneLib.mkCargoDerivation {
           pname = "cdz-gate-check";
           version = "0.0.0";
           src = gateSrc;
-          # wasm-tools for the runtime↔program composition; codegenVendor is a superset root-lock vendor
-          # (it also carries runtime/nfc/build-std locks, harmless here — gate builds only native host
-          # binaries cdz/rcdzc/cdz-run, no build-std).
-          nativeBuildInputs = [ rustToolchain pkgs.wasm-tools ];
-          buildPhase = ''
-            runHook preBuild
-            # codegenVendor is a symlinkJoin of 4 locks → merged = true (hand-rolled crates-io config).
-            ${mkCargoVendorEnv { vendor = codegenVendor; merged = true; }}
-            # Grade the whole corpus against the committed baselines, resolving the runtime from my
-            # nix-built component store (skips the CI job's `xtask build`). --locked = hard-fail on lock
-            # drift (matches siblings).
+          cargoArtifacts = cargoArtifactsRelease;
+          cargoVendorDir = seedCargoVendor;
+          CARGO_PROFILE = "release";
+          doInstallCargoArtifacts = false;
+          nativeBuildInputs = [ pkgs.wasm-tools ];
+          # Grade the whole corpus against the committed baselines, resolving the runtime from my nix-built
+          # component store (skips the CI job's `xtask build`). --locked = hard-fail on lock drift.
+          buildPhaseCargoCommand = ''
             cargo run --locked --package xtask --profile release -- gate --check --store "${componentStore}"
-            runHook postBuild
           '';
-          installPhase = ''
-            runHook preInstall
-            echo "ok: cdz-gate-check (cargo xtask gate --check --store <nix store>)" > "$out"
-            runHook postInstall
+          installPhaseCommand = ''
+            echo "ok: cdz-gate-check (cargo xtask gate --check --store <nix store>, crane release-deps-cached)" > "$out"
           '';
         };
 
@@ -1538,27 +1593,27 @@
             ./spec/bench
           ];
         };
-        benchCheck = pkgs.stdenvNoCC.mkDerivation {
+        # CRANE-CONVERTED (v-nix, operator throughput 2026-08-09): consumes the merged-vendor release
+        # dep-cache (cargoArtifactsReleaseCodegen) so a rotation recompiles only first-party, not the release
+        # dep closure — same lever as gate-check, applied to the bench check. codegenVendor (not
+        # seedCargoVendor) because the bench test compiles against the cdz-runtime lock. Behavior UNCHANGED:
+        # same `cargo run -p xtask -- bench` diffing cdz-runtime's hot_op_allocation_ceilings vs
+        # spec/bench/.alloc-baseline.
+        benchCheck = craneLib.mkCargoDerivation {
           pname = "cdz-bench-check";
           version = "0.0.0";
           src = benchSrc;
-          # codegenVendor is a superset root-lock vendor (also carries the cdz-runtime lock the bench test
-          # compiles against). No wasm-tools/cargo-component: the bench test is a native host build.
-          nativeBuildInputs = [ rustToolchain ];
-          buildPhase = ''
-            runHook preBuild
-            export RUST_MIN_STACK=67108864
-            # codegenVendor is a symlinkJoin of 4 locks → merged = true (hand-rolled crates-io config).
-            ${mkCargoVendorEnv { vendor = codegenVendor; merged = true; }}
-            # Runs cdz-runtime's hot_op_allocation_ceilings test + diffs the ALLOC counts vs
-            # spec/bench/.alloc-baseline. --locked = hard-fail on lock drift (matches siblings).
+          cargoArtifacts = cargoArtifactsReleaseCodegen;
+          cargoVendorDir = codegenVendor;
+          CARGO_PROFILE = "release";
+          doInstallCargoArtifacts = false;
+          nativeBuildInputs = [ ];
+          RUST_MIN_STACK = "67108864";
+          buildPhaseCargoCommand = ''
             cargo run --locked --package xtask --profile release -- bench
-            runHook postBuild
           '';
-          installPhase = ''
-            runHook preInstall
-            echo "ok: cdz-bench-check (cargo xtask bench)" > "$out"
-            runHook postInstall
+          installPhaseCommand = ''
+            echo "ok: cdz-bench-check (cargo xtask bench, crane release-deps-cached)" > "$out"
           '';
         };
 
@@ -1800,6 +1855,8 @@
         # is the wasm module; `.#rcdzc-wasm-hash` its derived content address (for v-agent-harness's
         # compiler-latest store pointer).
         packages.cdz-wasm-pkg = cdzWasmPkg;
+        packages.cargo-artifacts-release = cargoArtifactsRelease;
+        packages.cargo-artifacts-release-codegen = cargoArtifactsReleaseCodegen;
         packages.rcdzc-wasm = rcdzcWasm;
         packages.rcdzc-wasm-hash = hashOf rcdzcWasm "rcdzc-wasm-hash";
 
@@ -2281,11 +2338,17 @@
                 root_dir="''${CDZ_WARM_ROOT:-$HOME/.cdz-warm-roots}"
                 mkdir -p "$root_dir"
                 echo "cdz warm-keep: pinning the local warm layer as GC-roots under $root_dir/ (system ${system})"
-                # The heavy layers gate-local depends on: the crane dep-closure (~341M, the big one),
-                # the component store, and the local-gate aggregate itself (pulls the 9 required checks'
-                # closure). --out-link registers each as an indirect GC-root so the store stays hot.
+                # The heavy layers gate-local depends on: the crane dep-closure (~341M, the big one) at BOTH
+                # profiles (dev = cargo-artifacts for clippy/test; release = cargo-artifacts-release for
+                # gate/codegen/bench — a build-input of those checks that goes dead after they build, so it
+                # needs its OWN root or the pre-save GC drops it → a corpus MR would rebuild the release deps
+                # cold, negating the crane conversion), the component store, and the local-gate aggregate
+                # itself (pulls the 9 required checks' closure). --out-link registers each as an indirect
+                # GC-root so the store stays hot.
                 nix build \
                   ".#packages.${system}.cargo-artifacts" \
+                  ".#packages.${system}.cargo-artifacts-release" \
+                  ".#packages.${system}.cargo-artifacts-release-codegen" \
                   ".#packages.${system}.store" \
                   ".#checks.${system}.local-gate" \
                   --out-link "$root_dir/warm" --print-build-logs
