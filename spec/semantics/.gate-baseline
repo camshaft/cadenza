@@ -527,6 +527,7 @@ pass	a @param value drives a CHAMP map lookup as the KEY
 pass	a @param value sizes a guest-built HEAP structure
 pass	a @requires on a UNIT-returning def is enforced — the precondition traps before the unit body
 pass	a @requires on a recursive def is re-checked at every entry including self-calls
+pass	a @requires over a FLOAT64 parameter enforces at runtime — the check fires on float ordering, not only Int64
 pass	a @requires precondition is enforced for a genuinely-runtime argument
 pass	a @requires predicate over a HEAP collection is enforced at entry and value-transparent when satisfied
 pass	a @requires predicate that CALLS a user-defined function resolves and enforces — not only prelude ops

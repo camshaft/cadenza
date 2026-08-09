@@ -1850,6 +1850,23 @@
             (export main)))
   (trap   "unreachable"))
 
+(case "a @requires over a FLOAT64 parameter enforces at runtime — the check fires on float ordering, not only Int64"
+  (doc    "Every contracted def so far takes Int64 (or Bool/String) params; this pins the enforcement path over
+           a FLOAT64 value, so the injected `(if PRE BODY (trap …))` compares floats at body entry. `@requires(>=
+           r 0.0)` on `(f r) = r` demands a non-negative ratio; the runtime arg crosses via main's Float64 param
+           so nothing folds. main(2.5): `2.5 >= 0.0` holds → pass → 2.5. main(0.0): `0.0 >= 0.0` holds (the
+           boundary is inclusive) → pass → 0.0. main(-1.5): `-1.5 >= 0.0` is FALSE → the precondition fails →
+           trap. Pins that a precondition resolves and enforces float comparison exactly as it does integer
+           comparison — the guarded value flows on the non-negative floats and traps on the negative one, with
+           the inclusive boundary passing.")
+  (input  (do
+            (@ (requires (>= r 0.0)) (def (f (: r Float64)) r))
+            (def (main (: k Float64)) (f k))
+            (export main)))
+  (call   main (: 2.5 Float64))   (output (: 2.5 Float64))
+  (call   main (: 0.0 Float64))   (output (: 0.0 Float64))
+  (call   main (: -1.5 Float64))  (trap "unreachable"))
+
 (case "a @requires whose predicate is a DISJUNCTION (or) enforces: either disjunct satisfies, only the all-false input traps"
   (doc    "Every runtime predicate so far combines with `and` or a bare comparison; this pins a precondition
            built from `or`, the short-circuiting boolean OR prelude op. `@requires(or (<= x 0) (>= x 100))` on
