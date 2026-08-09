@@ -14,20 +14,20 @@
 /// as of the effect group-aware recursive-perform fold (floor #2866 + group-fold #2877 + slot-fix #2889): the
 /// mutual 3-performer cycle specializes and runs end-to-end.
 ///
-/// STATUS: this is the demand-type_of spine, live as a tested module. The NIf and NLet arms now call the REAL
-/// infer-db if-type/let-type via a get-tcol projection (the pure tcol-only combiners — they read child facts
-/// from the current types column, which each child type-of has already memoized). NBin still uses a simplified
-/// combine-bin stand-in (bin-type also needs tree access for its literal-operand range-check — a follow-on with
-/// scalar node projection) and NMatch a combine-match stand-in (match-type is not yet exported from infer-db).
-/// The get-tcol op is a compound Map effect-return (verified emit-valid on trunk); the arms demand all children
-/// FIRST then do one tail get-tcol perform, so they stay clear of the demand-perform-demand fold gap (the
-/// arg-passing NApp arm that needs a perform BETWEEN two demands is held pending a v-effects specializer fix).
+/// STATUS: this is the demand-type_of spine, live as a tested module. The NIf, NLet, and NMatch arms now call
+/// the REAL infer-db if-type/let-type/match-type via a get-tcol projection (the pure tcol-only combiners — they
+/// read child facts from the current types column, which each child type-of has already memoized). NBin still
+/// uses a simplified combine-bin stand-in (bin-type also needs tree access for its literal-operand range-check
+/// — a follow-on with scalar node projection). The get-tcol op is a compound Map effect-return (verified
+/// emit-valid on trunk); the arms demand all children FIRST then do one tail get-tcol perform, so they stay
+/// clear of the demand-perform-demand fold gap (the arg-passing NApp arm that needs a perform BETWEEN two
+/// demands is held pending a v-effects specializer fix).
 /// The live-pipeline flip (route run-of-db / ty-of-db through this) is a later differential-guarded slice.
 import { Node, Tree, node-at, def-body-of, call-is-recursive } from "parse-db"
 import { Db, db-of, db-tree, require-ty, fill-ty, require-resolved, fill-resolved } from "db"
 import { Ty } from "ty"
 import { Resolved } from "resolve-db"
-import { bin-type, if-type, let-type, var-type, t-int-deferred, mk-int, int-parts-of } from "infer-db"
+import { bin-type, if-type, let-type, match-type, var-type, t-int-deferred, mk-int, int-parts-of } from "infer-db"
 
 /// The DbState effect FAMILY — ONE group, per-field ops over the shared column state (operator-confirmed).
 /// Reads return Option (Absent/Filled = the Slot semantics); writes take the scalar payload and resume Unit.
@@ -81,11 +81,14 @@ def compute-type(id: Int64) = match DbState.node-of(id) with
       // TErr, which the old stand-in combine-if did not enforce.
       (let _c = type-of(c) in (let _t = type-of(t) in (let _e = type-of(e) in if-type(DbState.get-tcol(), c, t, e))))
   | Option.Some(Node.NMatch(scrutId, litId, thenId, elseId)) =>
-      // M1-a integer match: demand all four children (scrut + literal-pattern get compared, then/else branches),
-      // then combine — scrut+lit must be non-error, then/else join (mirrors combine-if's discipline). Simplified
-      // stand-in like combine-bin/combine-if; the faithful upgrade calls infer-db match-type via get-tcol.
-      (let st = type-of(scrutId) in (let lt = type-of(litId) in
-        (let tt = type-of(thenId) in (let et = type-of(elseId) in combine-match(st, lt, tt, et)))))
+      // FAITHFUL: demand all four children (memoizing each into the types column), then call the REAL infer-db
+      // match-type over the current column (get-tcol). match-type requires scrut and the literal pattern to
+      // share a type (they are compared) AND the then/else arms to join width-aware (join-branch-types) — so a
+      // Bool-pattern over an Int scrutinee, or mismatched-width arms, decline TErr, which the old combine-match
+      // stand-in did not enforce. Same demands-first-then-tail-perform shape as the NIf/NLet arms (folds).
+      (let _s = type-of(scrutId) in (let _l = type-of(litId) in
+        (let _t = type-of(thenId) in (let _e = type-of(elseId) in
+          match-type(DbState.get-tcol(), scrutId, litId, thenId, elseId)))))
   | Option.Some(Node.NApp(calleeName, argId)) =>
       // slice-2 NULLARY call `(mk)` = NApp(name, -1): its type is the callee BODY's type (beta-reduction over
       // zero args). A RECURSIVE call must NOT descend the body (the demand would loop) — stamp Int64 directly,
@@ -109,13 +112,6 @@ def combine-bin(op: Int64, lt: Ty, rt: Ty) =
      else (if op == 62 then Ty.TyBool
        else (match lt with | Ty.TyErr => Ty.TyErr | _ => (match rt with | Ty.TyErr => Ty.TyErr | _ => lt)))))
 
-/// PURE integer-match combine: scrut + literal-pattern must both be non-error (they get compared), then/else
-/// join to the branch type. Any TErr child → TErr (simplified stand-in; faithful = infer-db match-type).
-def combine-match(st: Ty, lt: Ty, tt: Ty, et: Ty) =
-  (match st with | Ty.TyErr => Ty.TyErr
-    | _ => (match lt with | Ty.TyErr => Ty.TyErr
-      | _ => (match tt with | Ty.TyErr => Ty.TyErr
-        | _ => (match et with | Ty.TyErr => Ty.TyErr | _ => tt))))
 
 /// Project the types column out of the Db (for get-tcol — the pure tcol-only combiners read child facts here).
 def types-col(db: Db) = match db with | Db.Db(_, _, tc, _) => tc
