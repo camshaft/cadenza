@@ -681,24 +681,24 @@
         # `cadenza:agent-kernel/fold` (genesis is an ordinary fold, not a separate world — v-hb confirmed).
         # b1/b2 import just the value-heap runtime by hash; b3/genesis also import cadenza:agent-kernel/kv
         # (host-served, unresolved at build — `wasm-tools validate` still passes, verified).
-        # `outputHash` (optional) makes the component a FIXED-OUTPUT derivation — the throughput lever for
-        # the per-MR gate (operator sub-1-min mandate, v-agent-harness-host ruling 2026-08-09). WHY: the
-        # component is compiled by `seedCompiler`, whose drv rotates on ANY compiler-crate edit (even a leaf
-        # like cdz-num — it is in the compiler's closure). A consumer that injects the component (e.g.
-        # cdz-agent-host-native injecting GENESIS_REDUCER_COMPONENT) therefore rotates + re-runs on EVERY
-        # fleet MR, not just when its own inputs change — for the genesis reducer that meant re-running a
-        # 60s+ policy-swap E2E every MR (drv-diff-confirmed the genesis component was the sole rotating
-        # input). Pinning `outputHash` makes nix EARLY-CUTOFF: the compiler may rebuild, but if the emitted
-        # component bytes are unchanged (verified byte-reproducible), the FOD output PATH is stable → the
-        # consumer cache-hits + skips the rerun. Correctness (v-ah-host's bar): a genuine compiler-semantics
-        # change that alters the emit produces bytes != the pinned hash → the FOD build FAILS the hash check
-        # (loud, not silent) → whoever made the change updates the pinned hash + the E2E re-runs against the
-        # new bytes. So the pinned hash IS the "key on (reducer .cdz + runtime-ABI)" v-ah-host asked for: it
-        # only moves when the emit genuinely changes, and the FOD's own hash check IS the staleness guard —
-        # a stale pin cannot mask a real change (the rebuild-on-input-change produces mismatching bytes →
-        # fail-loud), and no separate assert is needed. Components with NO consumer in a heavy check
-        # (b1/b2/b3, only in *-valid) stay normal derivations — no need to pin.
-        mkCadenzaComponent = { name, cdzFile, componentName ? "cadenza:agent-kernel/fold", outputHash ? null }:
+        # GUARD-BY-CONSTRUCTION (v-nix 2026-08-09): mkCadenzaComponent takes NO `outputHash` — a
+        # reducer-cadenza component can NOT be made a FIXED-OUTPUT derivation, by design. WHY: every
+        # component this maker compiles embeds its runtime DEPENDENCY pin (the compiler bakes the current
+        # REQUIRED_RUNTIME_HASH into the emitted `cadenza:runtime/heap@…+<hash>` import). A FOD's output PATH
+        # is keyed on the hand-pinned hash, NOT its inputs, so on a runtime-ABI bump nix serves the STALE
+        # cached component (old runtime pin) while componentStore rebuilds to the new hash → the consumer's
+        # get_by_hash(<old>) → BlobMissing (this exact bug reded cdz-agent-host-native's genesis E2E on
+        # v-runtime's B0; the sibling cdzWasmPkg FOD reded guide-examples the same way — both reverted to
+        # input-addressed, 6b894c84b + f2ab207de). The "FOD fails loud on a stale pin" guard only fires on a
+        # COLD build; WARM it serves the stale path SILENTLY — the no-workaround-directive booby-trap. So
+        # these stay input-addressed unconditionally: seedCompiler is in nativeBuildInputs → a hash bump
+        # rotates seedCompiler → rotates the derivation → rebuilds → emits the CURRENT-runtime pin. The
+        # per-MR-throughput early-cutoff a FOD gave (skip a consumer's 60s+ E2E on unrelated compiler edits)
+        # must be recovered — if at all — via a content-addressed derivation (keys the path on the ACTUAL
+        # built bytes → byte-identical early-cutoff AND correct rebuild-on-bump, which a fixed pin
+        # structurally cannot), NOT a hand-pinned outputHash. Dropping the param makes reintroducing the bug
+        # an eval error (unexpected argument), not a silent runtime BlobMissing.
+        mkCadenzaComponent = { name, cdzFile, componentName ? "cadenza:agent-kernel/fold" }:
           pkgs.stdenvNoCC.mkDerivation ({
             pname = name;
             version = "0.0.0";
@@ -726,34 +726,16 @@
             # default shift) and strip silently corrupts. Make the guard explicit, same as rcdzcWasm
             # (github-liaison #2196 review).
             dontFixup = true;
-          } // pkgs.lib.optionalAttrs (outputHash != null) {
-            # FIXED-OUTPUT (single wasm file): flat mode, sha256 SRI. See the maker note above.
-            outputHashMode = "flat";
-            outputHashAlgo = "sha256";
-            inherit outputHash;
           });
         reducerCadenzaB1 = mkCadenzaComponent { name = "reducer-cadenza-b1"; cdzFile = "reducer_b1.cdz"; };
         reducerCadenzaB2 = mkCadenzaComponent { name = "reducer-cadenza-b2"; cdzFile = "reducer_b2.cdz"; };
         reducerCadenzaB3 = mkCadenzaComponent { name = "reducer-cadenza-b3"; cdzFile = "reducer_b3.cdz"; };
-        # GENESIS is input-addressed (like B1/B2/B3). It is the sole reducer-cadenza component injected into
-        # a heavy native check — cdz-agent-host-native's 60s+ genesis E2E — so a stable store path is what
-        # stops that E2E re-running on unrelated compiler edits, which is why it was a FIXED-OUTPUT pin.
-        #
-        # WHY NOT FIXED-OUTPUT (reverted 2026-08-09, v-nix — same class as the cdzWasmPkg FOD reverted
-        # earlier this tick): the emitted component embeds its runtime DEPENDENCY pin — the compiler bakes
-        # the current REQUIRED_RUNTIME_HASH into the genesis reducer's `cadenza:runtime/heap@…+<hash>`
-        # import. A FOD's output PATH is keyed on the hand-pinned outputHash, NOT its inputs, so on a
-        # RUNTIME-ABI bump nix served the CACHED component still pinning the OLD runtime hash while
-        # componentStore rebuilt to the NEW one → the genesis E2E's get_by_hash(<old>) → BlobMissing, host.rs
-        # panic, cdz-agent-host-native RED. The "fails loud on a stale pin" guard only fires on a COLD build
-        # (bytes differ); WARM it serves the stale cached path silently — the same booby-trap the
-        # no-workaround directive forbids. This is the SECOND FOD of this class to red a hash bump: v-runtime
-        # B0 (runtime op idx 90 + hash 0652838→8417716f) tripped both cdzWasmPkg [fixed 6b894c84b] and this.
-        # seedCompiler is in mkCadenzaComponent's nativeBuildInputs, so a REQUIRED_RUNTIME_HASH bump rotates
-        # seedCompiler → rotates this derivation → rebuilds → emits the CURRENT-runtime-pinned component →
-        # componentStore + the genesis E2E agree. COST: the genesis E2E no longer store-path-early-cutoffs on
-        # a seedCompiler-rotating edit — restore later via a content-addressed derivation (byte-identical
-        # early-cutoff AND correct rebuild-on-bump, which a fixed pin structurally cannot).
+        # GENESIS is input-addressed like B1/B2/B3 (it can't be anything else — mkCadenzaComponent has no
+        # outputHash param; see the guard-by-construction note there). It is the sole reducer-cadenza
+        # component injected into a heavy native check (cdz-agent-host-native's 60s+ genesis E2E), so it was
+        # briefly a FIXED-OUTPUT pin for per-MR early-cutoff — reverted 2026-08-09 (f2ab207de) when that pin
+        # served a stale old-runtime component on v-runtime's B0 hash bump → BlobMissing. Recover the
+        # early-cutoff, if needed, via a content-addressed derivation, never a hand-pinned outputHash.
         reducerCadenzaGenesis = mkCadenzaComponent {
           name = "reducer-cadenza-genesis";
           cdzFile = "reducer_genesis.cdz";
