@@ -108,10 +108,22 @@ jobs:
       # it's a content gap not a key/save miss; v-ft run-log diagnosis 31251120525). Rooting the output via
       # --out-link keeps it live through the pre-save GC so it lands in the saved narinfo set → candidates restore
       # it warm. The .drv-suffixed save key already rotates with the seed-compiler, so a fresh output saves cleanly.
-      - name: warm the aarch64-only nix checks + ROOT the seed-compiler output (cdz-agent-host-native + cad-tests bearers)
+      - name: warm the aarch64-only nix checks + ROOT the seed-compiler + guest-component outputs (cdz-agent-host-native + cad-tests bearers)
         if: matrix.arch == 'aarch64'
         run: |
           nix build .#packages.aarch64-linux.seed-compiler --out-link seed-compiler-root --print-build-logs
+          # ROOT the guest wasm COMPONENTS (v-nix 2026-08-09, v-agent-harness-host ask): cedar-guest,
+          # reducer-guest, syntax-guest are cargo-wasm builds consumed by cdz-agent-host-native /
+          # cdz-kernel-native as BUILD inputs (via CEDAR_POLICY_COMPONENT / reducer fixtures). They are NOT
+          # in those checks' runtime closure, so the pre-save GC drops them → candidates rebuild the heavy
+          # cedar-policy dep chain (stacker/psm/chrono/lalrpop, ~60s) COLD every MR. --out-link keeps them
+          # live so candidates restore the prebuilt components warm. (They already deterministic + drv-stable
+          # on compiler edits — a cargo-wasm build with its own vendor — so this is a rooting fix, not an FOD.)
+          nix build \
+            .#packages.aarch64-linux.cedar-guest \
+            .#packages.aarch64-linux.reducer-guest \
+            .#packages.aarch64-linux.syntax-guest \
+            --out-link guest-components-root --print-build-logs
           nix build .#checks.aarch64-linux.cdz-agent-host-native --print-build-logs
           nix build .#checks.aarch64-linux.cad-tests --print-build-logs
       # DRV-IN-SAVE-KEY (v-nix+v-ft 2026-08-06): compute the SAVE key with the seed-compiler's OUTPUT drv-hash

@@ -2338,18 +2338,25 @@
                 root_dir="''${CDZ_WARM_ROOT:-$HOME/.cdz-warm-roots}"
                 mkdir -p "$root_dir"
                 echo "cdz warm-keep: pinning the local warm layer as GC-roots under $root_dir/ (system ${system})"
-                # The heavy layers gate-local depends on: the crane dep-closure (~341M, the big one) at BOTH
-                # profiles (dev = cargo-artifacts for clippy/test; release = cargo-artifacts-release for
-                # gate/codegen/bench — a build-input of those checks that goes dead after they build, so it
-                # needs its OWN root or the pre-save GC drops it → a corpus MR would rebuild the release deps
-                # cold, negating the crane conversion), the component store, and the local-gate aggregate
-                # itself (pulls the 9 required checks' closure). --out-link registers each as an indirect
-                # GC-root so the store stays hot.
+                # The heavy layers gate-local depends on, each rooted so the pre-save GC keeps them hot:
+                #  - the crane dep-closure (~341M) at BOTH profiles: dev (cargo-artifacts, clippy/test) +
+                #    release (cargo-artifacts-release + -release-codegen, for gate/codegen/bench — build-inputs
+                #    that go dead after those checks build, so without their own root a corpus MR rebuilds the
+                #    release deps cold, negating the crane conversion);
+                #  - the component store + the local-gate aggregate (pulls the 9 required checks' closure);
+                #  - the guest wasm COMPONENTS (cedar/reducer/syntax) — cargo-wasm build-inputs of
+                #    cdz-agent-host-native / cdz-kernel-native, NOT in those checks' runtime closure, so
+                #    without their own root the GC drops them and a candidate rebuilds the heavy cedar-policy
+                #    dep chain (~60s) cold (v-agent-harness-host ask 2026-08-09).
+                # --out-link registers each as an indirect GC-root so the store stays hot.
                 nix build \
                   ".#packages.${system}.cargo-artifacts" \
                   ".#packages.${system}.cargo-artifacts-release" \
                   ".#packages.${system}.cargo-artifacts-release-codegen" \
                   ".#packages.${system}.store" \
+                  ".#packages.${system}.cedar-guest" \
+                  ".#packages.${system}.reducer-guest" \
+                  ".#packages.${system}.syntax-guest" \
                   ".#checks.${system}.local-gate" \
                   --out-link "$root_dir/warm" --print-build-logs
                 echo "cdz warm-keep: done — local /nix/store warm layer pinned (gate-local stays fast)."
