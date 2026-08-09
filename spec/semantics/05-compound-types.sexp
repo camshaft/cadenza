@@ -237,6 +237,17 @@
   (input     (. (record (= x 1)) z))
   (error     CDZ0212))
 
+(case "an absent field with no close match lists the record's available fields"
+  (doc    "When the projected name is too far from any real field to be a confident typo, the CDZ0212
+           AbsentField diagnostic does not guess a single 'did you mean' — it LISTS the record's actual
+           fields ('record has no field `zzzzzz` — closest matches: `height`, `width`'), rustc's 'available
+           fields are: …'. A record is a CLOSED, small field set, so listing the members is signal the reader
+           acts on (no need to read the type to learn what exists), not noise. The (message ..) pins the
+           closest-matches list; a far miss carries no baseless fix. Multi-field companion of the single-
+           field absent-`z` case above — this one exercises the PLURAL field listing.")
+  (input  (do (def (main) (. (record (= width 10) (= height 20)) zzzzzz)) (export main)))
+  (error  CDZ0212 (message "closest matches:")))
+
 (case "member access of an absent field on a function-returned record is a type error"
   (doc    "The field-presence check reaches a record RETURNED by a function, not only a literal: `(mk)`
            returns `(record (x 1))`, whose type carries only `x`, so `(. (mk) z)` names an absent field —

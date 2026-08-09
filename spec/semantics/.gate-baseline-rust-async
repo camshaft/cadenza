@@ -4154,6 +4154,7 @@ pass	an abortive perform in the tail of an if branch inside a let body abandons 
 pass	an abortive perform short-circuited out of a connective condition is never performed
 pass	an abortive perform under THREE nested handlers abandons the two resumptive frames above it
 pass	an abortive perform under a non-tail conditional abandons the enclosing computation
+pass	an absent field with no close match lists the record's available fields
 pass	an absolute-value branch traps on the minimum integer it cannot represent
 pass	an absorbed conjunction composes as a live disjunction's operand
 pass	an absorbing and-false discards a trap-free left operand's value
