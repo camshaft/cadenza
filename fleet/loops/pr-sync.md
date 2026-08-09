@@ -47,11 +47,27 @@ full window lacks) and integration stalls fleet-wide. Keep it small:
    merge-requests" — which made pr-sync charter-blind to notes, silently piling up an 8h+ note backlog
    and blocking coordination the watchdog's note-backlog signal now flags. Notes matter too.)
 
-   **⚡ INTEGRATION = ONE COMMAND: `cargo xtask fleet schedule-pass --execute`** (the CI-gated executor;
-   replaces the old local-gate/gate-batch/bisect + manual publish loop — see `fleet/CI-GATED-LANES-DESIGN.md`
-   for the model + rationale). You NO LONGER gate locally — GitHub Actions is the gate, running every candidate's
-   full ~16-job check set IN PARALLEL. One `schedule-pass --execute` does BOTH halves of a scheduler
+   **⚡ INTEGRATION = ONE COMMAND: `cargo xtask fleet schedule-pass --batch --execute --batch-cap 3`** (the
+   CI-gated executor; replaces the old local-gate/gate-batch/bisect + manual publish loop — see
+   `fleet/CI-GATED-LANES-DESIGN.md` for the model + rationale). One such pass does BOTH halves of a scheduler
    pass, honoring the reply-invariant + single-writer + forward-only-trunk rules:
+   - **BATCH-PR DISPATCH (operator throughput directive 2026-08-08/09):** the TOP-UP phase combines a
+     file-DISJOINT subset of the queue (up to `--batch-cap`) into ONE candidate PR — re-parents each member
+     onto origin/main in a scratch worktree, runs the local-nix `local-gate` PRE-FILTER on the combined tree
+     (rejecting culprits by bisect BEFORE spending a GHA cycle), pushes ONE PR, and the reap acks EVERY
+     member on the single merge. This amortizes one ~16-job GHA cycle over N lands instead of one tiny PR
+     per MR (branch protection blocks direct FF-push, so batching is how throughput is won).
+     **START SMALL: `--batch-cap 3` for the first few batches** (tiny blast radius while the mechanics are
+     watched live); RAISE toward the default 6 once a couple of batches reap clean with correct per-member
+     acks (concierge 2026-08-09 — just widen the number in this command). It is SAFE by construction: a batch
+     that fails the pre-filter or hits a setup/re-parent problem AUTOMATICALLY FALLS BACK to per-MR dispatch
+     for the affected MRs (never strands one), and a batch is ONE in-flight slot gated on `in-flight < --cap`
+     (member count is the INDEPENDENT `--batch-cap` bound — a low `--batch-cap` never starves dispatch). If
+     you ever need the old one-candidate-per-MR behaviour (debugging a batch), drop `--batch` — plain
+     `schedule-pass --execute` is unchanged and still there.
+   - You NO LONGER gate on GitHub alone for a batch — the local-nix pre-filter gates the combined tree first,
+     then GitHub Actions gates the pushed candidate's full check set IN PARALLEL (the authoritative gate; a
+     red candidate still fails its OWN PR alone). A single-MR fallback candidate is GHA-gated as before.
    - **REAP** each in-flight candidate PR (from `.claude/fleet/ci-dispatch/`): re-reads its `(state,
      verdict)` fresh, then — MERGED on GitHub → advance `trunk` by cherry-picking THIS PR's OWN squash
      `mergeCommit.oid` (from `gh pr view <n> --json mergeCommit --jq .mergeCommit.oid`) onto trunk —
@@ -63,14 +79,14 @@ full window lacks) and integration stalls fleet-wide. Keep it small:
      RED or the PR CLOSED-unmerged → `fleet ack reject` (with why) + free the slot; a NON-required-job
      red (cdz-kernel / `cadenza @test suites`) → LEFT in flight (it still auto-merges — never reject on
      it); still pending → left in flight.
-   - **TOP-UP DISPATCH**: pushes new candidates from the queue up to the in-flight cap (8), respecting
-     per-lane serialization + file-collision (`publish-candidate`: re-parent the `--ref` onto
-     origin/main in a scratch worktree, push `cand/<agent>-<sha>`, `gh pr create --base main --title
-     <commit-subject>`, arm `gh pr merge --squash --auto`, record the ci-dispatch state). GitHub
-     auto-merges each on green; the NEXT pass's reap observes it.
-   NO local gate, NO combined-tree bisect (a red candidate fails its OWN PR alone, blocks nothing). The
-   reply-invariant is preserved: the reap's `fleet ack` delivers exactly one `merged`/`reject` per MR +
-   archives it atomically — you never silently drop a request.
+   - **TOP-UP DISPATCH**: with `--batch` (the standing command), combines a file-disjoint queue subset into
+     ONE batch candidate PR (see BATCH-PR DISPATCH above) up to the in-flight cap (8); MRs that don't fit the
+     batch (collide, or exceed `--batch-cap`) OR that fall back on a batch failure dispatch as individual
+     candidates (`publish-candidate`: re-parent the `--ref` onto origin/main in a scratch worktree, push
+     `cand/<agent>-<sha>`, `gh pr create --base main`, arm `gh pr merge --squash --auto`, record ci-dispatch).
+     GitHub auto-merges each on green; the NEXT pass's reap observes it.
+   The reply-invariant is preserved: the reap's `fleet ack` delivers exactly one `merged`/`reject` per MR
+   (fanned to EVERY member of a batch) + archives it atomically — you never silently drop a request.
 
    **If you ever hand-write a ci-dispatch state file** (a manual fallback while machinery is down),
    write `"status": "in-flight"` — that is the exact token `schedule-pass` counts as live
@@ -82,14 +98,15 @@ full window lacks) and integration stalls fleet-wide. Keep it small:
    dispatch plan WITHOUT side-effects — eyeball it, then run `--execute`. `dispatch-plan <ref>` /
    `mr-status <ref>` inspect a single MR; `lane-of <ref>` shows its lane.
 
-   **⟳ DRAIN-UNTIL-QUIESCENT within the tick (bounded).** ONE `schedule-pass --execute` is a SINGLE
-   reap+dispatch pass — it dispatches only up to the in-flight cap (8) and reaps only what's mergeable
-   right now, then returns. Under load (MRs arriving faster than one pass, or a reap that frees slots a
-   fresh dispatch could immediately fill) a single pass per scheduled tick leaves the queue oscillating
-   at 6-10 and integration lagging — the concierge had to hand-nudge you to resume (2026-08-08). So do
-   NOT stop at one pass while there is more to do: **re-run `schedule-pass --execute` again, in the same
-   tick, whenever the previous pass MADE PROGRESS (reaped ≥1 or dispatched ≥1) AND actionable
-   merge-requests remain queued** (its printed tally + a quick `fleet inbox pr-sync` tell you both).
+   **⟳ DRAIN-UNTIL-QUIESCENT within the tick (bounded).** ONE `schedule-pass --batch --execute --batch-cap 3`
+   is a SINGLE reap+dispatch pass — it dispatches only up to the in-flight cap (8) and reaps only what's
+   mergeable right now, then returns. Under load (MRs arriving faster than one pass, or a reap that frees
+   slots a fresh dispatch could immediately fill) a single pass per scheduled tick leaves the queue
+   oscillating at 6-10 and integration lagging — the concierge had to hand-nudge you to resume (2026-08-08).
+   So do NOT stop at one pass while there is more to do: **re-run the same `schedule-pass --batch --execute
+   --batch-cap 3` again, in the same tick, whenever the previous pass MADE PROGRESS (reaped ≥1 or dispatched
+   ≥1) AND actionable merge-requests remain queued** (its printed tally + a quick `fleet inbox pr-sync` tell
+   you both).
    Repeat until a pass makes NO progress (nothing newly reapable + cap full or queue empty) — that's
    quiescence — OR you've done ~4 passes this tick (the bound). STOP at the bound even if MRs remain:
    the next scheduled tick continues, and stopping keeps you COMPACTABLE (a pass is light, but ~4 +
