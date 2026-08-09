@@ -6959,3 +6959,10 @@ pass	an1 explicitly ASCRIBED draws — (: (E.next) Int64) in let and argument po
 pass	do1 ONE draw consumed by BOTH branches of an if with different weights — the binder is read exactly once per run
 pass	eq1 structural EQUALITY of records built from two draws — a parity-dependent stride decides whether the fields line up
 pass	ct1 the LOOP BOUND is itself a draw — a first dispatch sizes the walk, the walk then draws that many times
+pass	abmin4 if WITHOUT let
+pass	abmin2 outer-abort under a LET+IF inside the unrelated inner handle
+pass	ab8 a draw picks WHICH of two nested abort handlers fires — outer-abort skips the inner arm's scale and the tail draw
+pass	abmin10 TWO nested foreign abort-only handles under the conditional abort
+pass	abmin12 BOTH branches abort (to different handlers) — no value path remains
+pass	abmin9 the RESUMPTIVE flip of abmin4 — A's arm resumes, so 900307 IS the correct answer here
+pass	oa1 an Option-returning op's None arm aborts LOCALLY — the local bail-out in a match arm homes correctly

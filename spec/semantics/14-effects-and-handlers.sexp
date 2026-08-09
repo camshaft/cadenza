@@ -19919,3 +19919,137 @@
   (call   main (: 2 Int64)) (output (: 1204 Int64))
   (call   main (: 0 Int64)) (output (: 102 Int64))
   (call   main (: 7 Int64)) (output (: 3805 Int64)))
+
+;; ── abmin/oa: conditional foreign-abort HOMING (findings #11 and #11-B) ──────
+;; Pins the FIXED behavior of the abort-homing family: a foreign abort under a
+;; conditional must propagate past inner abort-only handles to ITS OWN
+;; handler. abmin4 the minimal if+inner-handle face; abmin2 the effectful-let
+;; face (the draw is the conditional's scrutinee, a resumptive E frame in
+;; play); ab8 a draw ROUTES between two nested abort handlers (else-if chain);
+;; abmin10 TWO foreign frames — the abort crosses both; abmin12 both branches
+;; abort, one foreign one local; abmin9-abr the RESUMPTIVE contrast (with a
+;; resuming arm the value-return semantics are correct — 900307 here is the
+;; right answer). oa1 an Option-returning op's None arm aborts LOCALLY (the
+;; safe zone beside the #11-B def-boundary decline).
+
+(case "abmin4 if WITHOUT let"
+  (input  (do
+            (effect A (op out (-> Int64 Int64)))
+            (effect B (op bout (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle A 0
+                ((out (v) t (+ 9000 v)))
+                (+ (* 100 (handle B 0
+                            ((bout (v) t (+ 500 v)))
+                            (if (= (% n 3) 0) (A.out n) n)))
+                   7)))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 9003 Int64)))
+
+(case "abmin2 outer-abort under a LET+IF inside the unrelated inner handle"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (effect A (op out (-> Int64 Int64)))
+            (effect B (op bout (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1))))
+                (handle A 0
+                  ((out (v) t (+ 9000 v)))
+                  (+ (* 100 (handle B 0
+                              ((bout (v) t (+ 500 v)))
+                              (let ((d (E.next)))
+                                (if (= (% d 3) 0) (A.out d) d))))
+                     (- (E.next) n)))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 9003 Int64)))
+
+(case "ab8 a draw picks WHICH of two nested abort handlers fires — outer-abort skips the inner arm's scale and the tail draw"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (effect Ob (op out (-> Int64 Int64)))
+            (effect Ib (op out (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1))))
+                (handle Ob 0
+                  ((out (v) t (+ 9000 v)))
+                  (+ (* 100 (handle Ib 0
+                              ((out (v) t (+ 500 v)))
+                              (let ((d (E.next)))
+                                (if (= (% d 3) 0)
+                                    (Ob.out d)
+                                    (if (= (% d 3) 1) (Ib.out d) d)))))
+                     (- (E.next) n)))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 9003 Int64))
+  (call   main (: 1 Int64)) (output (: 50101 Int64))
+  (call   main (: 2 Int64)) (output (: 201 Int64))
+  (call   main (: -4 Int64)) (output (: -399 Int64)))
+
+(case "abmin10 TWO nested foreign abort-only handles under the conditional abort"
+  (input  (do
+            (effect A (op out (-> Int64 Int64)))
+            (effect B (op bout (-> Int64 Int64)))
+            (effect C (op cout (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle A 0
+                ((out (v) t (+ 9000 v)))
+                (+ (* 100 (handle B 0
+                            ((bout (v) t (+ 500 v)))
+                            (+ (* 10 (handle C 0
+                                       ((cout (v) t (+ 70 v)))
+                                       (if (> n 0) (A.out n) n)))
+                               3)))
+                   7)))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 9003 Int64)))
+
+(case "abmin12 BOTH branches abort (to different handlers) — no value path remains"
+  (input  (do
+            (effect A (op out (-> Int64 Int64)))
+            (effect B (op bout (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle A 0
+                ((out (v) t (+ 9000 v)))
+                (+ (* 100 (handle B 0
+                            ((bout (v) t (+ 500 v)))
+                            (if (> n 0) (A.out n) (B.bout n))))
+                   7)))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 9003 Int64))
+  (call   main (: -2 Int64)) (output (: 49807 Int64)))
+
+(case "abmin9 the RESUMPTIVE flip of abmin4 — A's arm resumes, so 900307 IS the correct answer here"
+  (input  (do
+            (effect A (op out (-> Int64 Int64)))
+            (effect B (op bout (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle A 0
+                ((out (v) t (resume (+ 9000 v) t)))
+                (+ (* 100 (handle B 0
+                            ((bout (v) t (+ 500 v)))
+                            (if (> n 0) (A.out n) n)))
+                   7)))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 900307 Int64))
+  (call   main (: -2 Int64)) (output (: -193 Int64)))
+
+(case "oa1 an Option-returning op's None arm aborts LOCALLY — the local bail-out in a match arm homes correctly"
+  (input  (do
+            (effect E (op fetch (-> (Option Int64))) (op probe (-> Int64)))
+            (effect Bail (op out (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((fetch () s (resume (if (= (% s 2) 0) (Some s) (None)) (+ s 3)))
+                 (probe () s (resume s s)))
+                (+ (* 100 (handle Bail 0
+                            ((out (v) t (+ 500 v)))
+                            (match (E.fetch)
+                              ((Some v) (* 10 v))
+                              ((None) (Bail.out 77)))))
+                   (- (E.probe) n))))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: 4003 Int64))
+  (call   main (: 1 Int64)) (output (: 57703 Int64))
+  (call   main (: -2 Int64)) (output (: -1997 Int64)))
