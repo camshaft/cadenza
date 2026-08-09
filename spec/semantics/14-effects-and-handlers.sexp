@@ -19479,3 +19479,140 @@
   (call   main (: 5 Int64)) (output (: 1008 Int64))
   (call   main (: 3 Int64)) (output (: 2002 Int64))
   (call   main (: 1 Int64)) (output (: 2998 Int64)))
+
+;; ── md/gc/pw/dg/cs + ne/rs/abf: arithmetic-machine arms and sum op-inputs ────
+;; md1 a MODULAR ring state (stride-3 walk, seed reduced mod 7 at install);
+;; gc1 a EUCLID-step arm (one gcd step per dispatch, b=0 fixpoint); pw1 a
+;; TRIPLING state crossing fixed thresholds; dg1 a DIGIT-extractor arm (peel
+;; low digit, floor by ten); cs1 a COLLATZ-step arm (even halves, odd
+;; triples-plus-one). ne1 an OPTION built from a draw crosses as an op
+;; ARGUMENT (arm matches it against live state); rs1 the RESULT mirror
+;; (Ok scales, Err negates); abf1 ONE handler mixes a resumptive and an
+;; abortive op (two marks advance, the abort carries their mix out).
+
+(case "md1 a MODULAR ring state — the thread walks a size-7 ring with stride 3, entry point reduced mod 7 at the seed"
+  (input  (do
+            (effect E (op step (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (% n 7)
+                ((step () s (resume s (% (+ s 3) 7))))
+                (+ (* 100 (E.step)) (+ (* 10 (E.step)) (E.step)))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 251 Int64))
+  (call   main (: 6 Int64)) (output (: 625 Int64))
+  (call   main (: 13 Int64)) (output (: 625 Int64)))
+
+(case "gc1 a EUCLID-step arm — each dispatch advances (a,b) one gcd step, low digits of the descent spell the trace"
+  (input  (do
+            (effect E (op step (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (tuple n 18)
+                ((step () s (match s
+                              ((tuple a b)
+                                (resume a (if (= b 0) (tuple a b) (tuple b (% a b))))))))
+                (let ((d1 (E.step)))
+                  (let ((d2 (E.step)))
+                    (let ((d3 (E.step)))
+                      (let ((d4 (E.step)))
+                        (+ (* 1000 (% d1 10))
+                           (+ (* 100 (% d2 10))
+                              (+ (* 10 (% d3 10)) (% d4 10))))))))))
+            (export main)))
+  (call   main (: 48 Int64)) (output (: 8826 Int64))
+  (call   main (: 21 Int64)) (output (: 1833 Int64)))
+
+(case "pw1 a TRIPLING state crosses fixed thresholds — three compares catch the crossing at input-dependent depth"
+  (input  (do
+            (effect E (op over (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle E (if (> n 0) n 1)
+                ((over (th) s (resume (if (> s th) 1 0) (* s 3))))
+                (+ (* 100 (E.over 4)) (+ (* 10 (E.over 40)) (E.over 400)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 100 Int64))
+  (call   main (: 20 Int64)) (output (: 110 Int64))
+  (call   main (: 150 Int64)) (output (: 111 Int64)))
+
+(case "dg1 a DIGIT-extractor arm — each dispatch peels the low digit and floors the state by ten, three peels reverse the tail"
+  (input  (do
+            (effect E (op peel (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((peel () s (resume (% s 10) (/ s 10))))
+                (+ (* 100 (E.peel)) (+ (* 10 (E.peel)) (E.peel)))))
+            (export main)))
+  (call   main (: 4728 Int64)) (output (: 827 Int64))
+  (call   main (: 56 Int64)) (output (: 650 Int64))
+  (call   main (: 900 Int64)) (output (: 9 Int64)))
+
+(case "cs1 a COLLATZ-step arm — even states halve, odd states triple-plus-one, low digits of four reads trace the orbit"
+  (input  (do
+            (effect E (op step (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((step () s (resume s (if (= (% s 2) 0) (/ s 2) (+ (* 3 s) 1)))))
+                (let ((d1 (E.step)))
+                  (let ((d2 (E.step)))
+                    (let ((d3 (E.step)))
+                      (let ((d4 (E.step)))
+                        (+ (* 1000 (% d1 10))
+                           (+ (* 100 (% d2 10))
+                              (+ (* 10 (% d3 10)) (% d4 10))))))))))
+            (export main)))
+  (call   main (: 6 Int64)) (output (: 6305 Int64))
+  (call   main (: 7 Int64)) (output (: 7214 Int64))
+  (call   main (: 5 Int64)) (output (: 5684 Int64)))
+
+(case "ne1 an OPTION built from a draw crosses dispatch as an op ARGUMENT — the arm matches it against the live state"
+  (input  (do
+            (effect E (op next (-> Int64)) (op score (-> (Option Int64) Int64)) (op probe (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1)))
+                 (score (o) s (resume (match o
+                                        ((Some v) (+ (* 10 v) s))
+                                        ((None) s))
+                                      (+ s 1)))
+                 (probe () s (resume s s)))
+                (let ((d (E.next)))
+                  (+ (* 10 (E.score (if (> d 0) (Some d) (None))))
+                     (- (E.probe) n)))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 342 Int64))
+  (call   main (: 0 Int64)) (output (: 12 Int64))
+  (call   main (: -4 Int64)) (output (: -28 Int64)))
+
+(case "rs1 a RESULT built from draw parity crosses dispatch as an op ARGUMENT — Ok scales with state, Err folds in negated"
+  (input  (do
+            (type Res (Ok Int64) (Err Int64))
+            (effect E (op next (-> Int64)) (op judge (-> Res Int64)) (op probe (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1)))
+                 (judge (r) s (resume (match r
+                                        ((Res.Ok v) (+ (* 100 v) s))
+                                        ((Res.Err v) (- (- 0 v) s)))
+                                      (+ s 1)))
+                 (probe () s (resume s s)))
+                (let ((d (E.next)))
+                  (+ (* 10 (E.judge (if (= (% d 2) 0) (Res.Ok d) (Res.Err d))))
+                     (- (E.probe) n)))))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: 4052 Int64))
+  (call   main (: 3 Int64)) (output (: -68 Int64))
+  (call   main (: -2 Int64)) (output (: -2008 Int64)))
+
+(case "abf1 one handler mixes a RESUMPTIVE op and an ABORTIVE op — two marks advance the state, the abort carries their mix out"
+  (input  (do
+            (effect Bail (op mark (-> Int64)) (op out (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle Bail n
+                ((mark () t (resume t (+ t 5)))
+                 (out (v) t (+ 1000 v)))
+                (let ((m1 (Bail.mark)))
+                  (let ((m2 (Bail.mark)))
+                    (+ (Bail.out (+ (* 10 m1) m2)) 777)))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 1038 Int64))
+  (call   main (: 0 Int64)) (output (: 1005 Int64))
+  (call   main (: -4 Int64)) (output (: 961 Int64)))
