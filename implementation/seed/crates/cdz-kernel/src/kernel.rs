@@ -527,34 +527,26 @@ impl Session {
     /// in-flight effect whose dispatch is older than it flips the state to `Stalled`. Passing `None` for
     /// `now_ms` skips stall detection (state is Active/Quiescent/Closed only) — for a caller with no clock.
     pub fn status_snapshot(&self, now_ms: Option<u64>, stall_after_ms: u64) -> StatusSnapshot {
-        // In-flight effects: each open id's DURABLE Dispatched frame carries its kind + target (what it's
-        // waiting on) + the dispatch deadline anchor. Scan the log once, keep those whose id is still open.
+        // In-flight effects: the resident open-obligation table (log-decouple I2) carries every open id's
+        // kind + target + deadline anchor, so this reads it directly — O(open) map iteration with ZERO log
+        // access (I5 step 2: the seam that lets step 3 drop the resident log Vec entirely). `open` is a
+        // `BTreeMap<id,_>`, so iteration is ascending id = dispatch/issue order — the same order the old
+        // log scan produced. Skip `is_timer` obligations: a timer isn't an in-flight EFFECT (it's counted
+        // separately as `armed_timers`); the old scan matched only `Dispatched` frames, never `TimerArmed`.
         let mut in_flight = Vec::new();
         let mut oldest_dispatch_ms: Option<u64> = None;
-        for e in &self.log {
-            if let EventBody::Dispatched {
-                id,
-                kind,
-                target,
-                deadline_ms,
-                ..
-            } = &e.body
-            {
-                if self.open.contains_key(&id.0) {
-                    in_flight.push(InFlight {
-                        kind: effect_kind_name(kind),
-                        // Observability only: a lossy UTF-8 view of the opaque byte target (non-UTF-8 bytes
-                        // render as U+FFFD). This is a human-facing status snapshot, not an authz decision,
-                        // so lossy is fine here (the SEC-F1 gates use the fail-closed strict view).
-                        target: String::from_utf8_lossy(target).into_owned(),
-                    });
-                    // The dispatch's deadline anchor (if any) doubles as its dispatch-time reference for
-                    // stall detection; track the oldest so a long-outstanding effect trips Stalled.
-                    if let Some(d) = deadline_ms {
-                        oldest_dispatch_ms =
-                            Some(oldest_dispatch_ms.map_or(*d, |o: u64| o.min(*d)));
-                    }
-                }
+        for ob in self.open.values().filter(|ob| !ob.is_timer) {
+            in_flight.push(InFlight {
+                kind: effect_kind_name(&ob.kind),
+                // Observability only: a lossy UTF-8 view of the opaque byte target (non-UTF-8 bytes
+                // render as U+FFFD). This is a human-facing status snapshot, not an authz decision,
+                // so lossy is fine here (the SEC-F1 gates use the fail-closed strict view).
+                target: String::from_utf8_lossy(&ob.target).into_owned(),
+            });
+            // The dispatch's deadline anchor (if any) doubles as its dispatch-time reference for
+            // stall detection; track the oldest so a long-outstanding effect trips Stalled.
+            if let Some(d) = ob.deadline_ms {
+                oldest_dispatch_ms = Some(oldest_dispatch_ms.map_or(d, |o: u64| o.min(d)));
             }
         }
 
@@ -589,12 +581,11 @@ impl Session {
 
         StatusSnapshot {
             state,
-            event_count: self.log.len() as u64,
-            last_event_kind: self
-                .log
-                .last()
-                .map(|e| event_body_name(&e.body))
-                .unwrap_or("(empty)"),
+            // Derived from the resident tip (log-decouple I1/I5 step 2), not `self.log`: seqs are 0-based
+            // and dense (`seq = log.len()` at append), so the event count is `tip.seq + 1`. The log is
+            // always genesis-seeded (seq 0), never empty — no `(empty)` case.
+            event_count: self.tip.seq + 1,
+            last_event_kind: event_body_name(&self.tip.body),
             in_flight,
             armed_timers: self.open.values().filter(|ob| ob.is_timer).count() as u32,
             published,
@@ -972,6 +963,7 @@ impl Session {
                 family,
                 target,
                 token,
+                deadline_ms,
                 ..
             } => {
                 self.open.insert(
@@ -981,7 +973,11 @@ impl Session {
                         target: target.clone(),
                         family: family.clone(),
                         token: token.clone(),
-                        deadline_ms: None,
+                        // Carry the frame's auto-timeout deadline anchor (log-decouple I5 step 2): the
+                        // `status_snapshot` stall computation reads it, so it must be resident once the
+                        // in-flight scan stops reading the log. `is_timer:false` keeps it out of
+                        // `fire_due_timers`/`next_timer_deadline` (both filter on `is_timer` first).
+                        deadline_ms: *deadline_ms,
                         dispatch_hash: Some(hash),
                         is_timer: false,
                     },
@@ -1907,6 +1903,7 @@ impl Session {
                     family,
                     target,
                     token,
+                    deadline_ms,
                     ..
                 } => {
                     s.open.insert(
@@ -1916,7 +1913,9 @@ impl Session {
                             target: target.clone(),
                             family: family.clone(),
                             token: token.clone(),
-                            deadline_ms: None,
+                            // Same deadline-anchor carry as the append path (I5 step 2) — replay must
+                            // rebuild the identical obligation, so the stall anchor survives recovery.
+                            deadline_ms: *deadline_ms,
                             dispatch_hash: Some(event.hash()),
                             is_timer: false,
                         },
@@ -4787,6 +4786,70 @@ mod monotonic_now_tests {
                 .count(),
             1,
             "exactly one EffectResult — the dup settle appended nothing",
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn status_snapshot_in_flight_is_derived_from_the_open_table_and_is_recovery_equivalent() {
+        // Log-decouple I5 step 2: the status snapshot's in-flight list + event-count/last-kind are derived
+        // from the resident open-obligation table (I2) + tip (I1), with ZERO log access — the seam that lets
+        // step 3 drop the resident log Vec. Pin BOTH the derivation AND recovery-equivalence: a session
+        // replayed from its log must rebuild an obligation table that yields the BYTE-IDENTICAL snapshot
+        // (the deadline anchor + kind + target survive replay). Uses a Deferred effect so a Dispatched frame
+        // stays OPEN (the only way an effect is genuinely in-flight).
+        let authz = Authorizer::new(vec![Capability {
+            kind: EffectKind::Http,
+            predicate: ResourcePredicate::Any,
+        }]);
+        let mut exec = DeferringExecutor;
+        let mut s = Session::genesis(Hash::of(b"in-flight-v1"), Hash::of(b"nonce"));
+        let inbound = || EventBody::Inbound {
+            content_type: ContentType {
+                family: "message".into(),
+                version: 1,
+            },
+            payload: Payload::Inline(b"go".to_vec().into()),
+        };
+        s.deliver(
+            inbound(),
+            None,
+            &mut HttpThenRecordOkReducer,
+            &authz,
+            &mut exec,
+        )
+        .await
+        .unwrap();
+
+        // The deferred Http effect is OPEN → it surfaces in the DERIVED in-flight list (kind + target read
+        // from the obligation, not a log scan), and the session is Active.
+        let snap = s.status_snapshot(Some(500), 300_000);
+        assert_eq!(snap.state, SessionState::Active);
+        assert_eq!(snap.in_flight.len(), 1, "the open Http effect is in-flight");
+        assert_eq!(snap.in_flight[0].kind, effect_kind_name(&EffectKind::Http));
+        assert_eq!(snap.in_flight[0].target, "https://ok.host/x");
+        assert_eq!(
+            snap.armed_timers, 0,
+            "no timers — a real effect, not a timer"
+        );
+        // event_count/last_event_kind are derived off the resident tip: Genesis, Inbound, Dispatched = 3.
+        assert_eq!(snap.event_count, 3);
+        assert_eq!(snap.last_event_kind, "Dispatched");
+
+        // RECOVERY-EQUIVALENCE: replay the exact log → the rebuilt obligation table must yield the SAME
+        // derived snapshot (this is what makes the eventual Vec-drop safe — recovery re-derives, not re-reads).
+        let replayed = Session::replay(s.log().to_vec(), &mut HttpThenRecordOkReducer)
+            .await
+            .expect("replay");
+        let rsnap = replayed.status_snapshot(Some(500), 300_000);
+        assert_eq!(rsnap.state, snap.state, "replayed state matches live");
+        assert_eq!(rsnap.event_count, snap.event_count);
+        assert_eq!(rsnap.last_event_kind, snap.last_event_kind);
+        assert_eq!(rsnap.armed_timers, snap.armed_timers);
+        assert_eq!(rsnap.in_flight.len(), snap.in_flight.len());
+        assert_eq!(rsnap.in_flight[0].kind, snap.in_flight[0].kind);
+        assert_eq!(
+            rsnap.in_flight[0].target, snap.in_flight[0].target,
+            "the in-flight target is rebuilt identically on replay"
         );
     }
 
