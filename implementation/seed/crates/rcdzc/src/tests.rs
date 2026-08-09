@@ -27745,48 +27745,6 @@ mod match_engine {
         );
     }
 
-    #[test]
-    fn a_provable_constant_integer_trap_names_the_cause_and_the_repair() {
-        // A provable constant-integer trap (CDZ0304) knows there is NO runtime value that rescues it, so
-        // it names the cause AND the actionable repair — matching the bar the runtime-numerator `(/ n 0)`
-        // sibling ("guard the divisor or remove the division") and the checked-conversion message set,
-        // rather than stating only the cause ("divide by zero"). Assert per cause: code stays CDZ0304 and
-        // the message carries a repair clause.
-        for (src, want) in [
-            (
-                "(module m (def x (/ 5 0)) (export x))",
-                "remove it or use a nonzero divisor",
-            ),
-            (
-                "(module m (def x (% 5 0)) (export x))",
-                "remove it or use a nonzero divisor",
-            ),
-            (
-                "(module m (def x (<< 1 200)) (export x))",
-                "a shift count must be 0..=63",
-            ),
-            (
-                "(module m (def x (* 9223372036854775807 2)) (export x))",
-                "compute in a wider type",
-            ),
-        ] {
-            let d =
-                reject_full(src).unwrap_or_else(|| panic!("a provable trap is rejected: {src}"));
-            assert_eq!(d.code.as_deref(), Some("CDZ0304"), "got: {}", d.message);
-            assert!(
-                d.message.contains(want),
-                "the const-trap message names the repair `{want}`: {}",
-                d.message
-            );
-        }
-        // NO over-rejection: a well-formed constant op still folds + compiles.
-        assert_eq!(
-            reject_code("(module m (def x (/ 10 2)) (export x) (def (main) x) (export main))"),
-            None,
-            "a valid constant division still compiles"
-        );
-    }
-
     /// Run a program whose RESULT escapes to the host as a resource (no bare func export), returning its
     /// rendered value form, or `None` if the runtime wasm is absent.
     fn run_heap_value_escape(src: &str) -> Option<String> {

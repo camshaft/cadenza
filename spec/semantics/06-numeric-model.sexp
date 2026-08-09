@@ -7697,9 +7697,12 @@
 (case "a constant shift count at or beyond the width over a high UInt64 still rejects"
   (doc    "The count boundary: `(>> (: 18446744073709551615 UInt64) (: 200 UInt64))` — a shift COUNT >= the
            width (200 >= 64) is out of range and must reject CDZ0304, even on the wide fold path (the count
-           guard is not swallowed by the u128 fold).")
+           guard is not swallowed by the u128 fold). The (message ..) pins the actionable range clause — the
+           diagnostic states the valid count range, not just 'out of range' — so a wording degrade that drops
+           the concrete bound flips this case. This is the shift-count leg of the provable-constant-trap
+           repair set (div/mod/mul name their repair; shift names the valid count window).")
   (input  (do (def (main) (>> (: 18446744073709551615 UInt64) (: 200 UInt64))) (export main)))
-  (error  CDZ0304))
+  (error  CDZ0304 (message "a shift count must be 0..=63")))
 
 ; ---- Small-operand shift-left whose RESULT overflows i64 but fits the width (4th/final UInt64 fold
 ; slice; v-inference b2197d097, trunk 8f353b256). The wide slice above only reached the width fold when an
