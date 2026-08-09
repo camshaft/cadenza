@@ -10623,8 +10623,15 @@ fn schedule_pass_local_gate(
             }
             continue;
         }
-        // The cherry-pick is now the tip; gate THAT tree.
-        match run_gate_local("aarch64") {
+        // The cherry-pick is now the tip; gate THAT tree — WALL-BOUNDED (run_gate_local_bounded, 15min)
+        // so a WEDGED check can't hang the whole drain (pr-sync 2026-08-09: the cdz-agent-host-native E2E
+        // wedged twice — builder alive 14min+ with FROZEN cputime / 0% CPU, a nix store-lock or an E2E
+        // waiting on something that never arrives — forcing pr-sync to kill+redispatch by hand each time).
+        // On the wall-timeout the bounded gate kills+reaps the nix build + returns NoChecks, which the
+        // Pending|NoChecks arm below undoes + LEAVES QUEUED for a clean retry next pass — auto-fail-fast
+        // instead of hanging. Runs from `wt` (the trunk worktree holding the cherry-picked tip). Same
+        // wall-bound already used for the batch pre-filter; this extends it to the per-MR drain gate.
+        match run_gate_local_bounded("aarch64", &wt) {
             CiVerdict::Green => {
                 let sha = head_sha();
                 // In --publish-origin mode, PUBLISH the green land to origin/main FAST-FORWARD-ONLY before
