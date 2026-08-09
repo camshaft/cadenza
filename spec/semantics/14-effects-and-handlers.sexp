@@ -21163,3 +21163,173 @@
   (call   main (: 5 Int64)) (output (: 33 Int64))
   (call   main (: 0 Int64)) (output (: 23 Int64))
   (call   main (: -3 Int64)) (output (: 17 Int64)))
+
+; ── Cross-arm element propagation for empty-collection seeds + two-thread races (breaker) ─────
+; First family: an EMPTY collection literal in a handler-state seed leaves its element type open;
+; the concrete type is fixed in ONE arm (an insert/push) and read in a SIBLING arm (a lookup/
+; contains/index). Inference now propagates the solved element type across all arms onto the
+; seed (the fix this family pinned): tk1 tuple-KEYED Map with draw-built keys (hit + miss rows),
+; tk3 the minimal three-arm trigger, tv1 the VALUE-position twin, sk4 the Set-element face, lv1
+; the List-element face. The ascribed-seed workaround (tk-ann1) and non-empty-seed forms were
+; already pinned green. Second family: a RACE between two effect threads — a recursive walk
+; draws BOTH effects per round until the fast thread catches the slow one's input-dependent head
+; start (ra1; the n=5 row catches on round one, zero recursions), and the race's exit value
+; SEEDING a third effect's handle (ra2 — a multi-effect recursion entirely inside a seed
+; expression). All rows hand-computed; all pass on wasm, rust, and rust-async.
+
+(case "tk1 a Map state with TUPLE keys built from consecutive draws — record twice, query a hit and a miss"
+  (input  (do
+            (effect E (op rec (-> Int64))
+                      (op qry (-> Int64 Int64 Int64))
+                      (op cnt (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (tuple n Map.empty)
+                ((rec () st (match st
+                              ((tuple s m)
+                               (resume s (tuple (+ s 2)
+                                                (Map.insert m (tuple s (+ s 1)) (* 10 s)))))))
+                 (qry (a b) st (match st
+                                 ((tuple s m)
+                                  (resume (match (Map.lookup m (tuple a b))
+                                            ((Some v) v)
+                                            ((None) -1))
+                                          st))))
+                 (cnt () st (match st ((tuple s m) (resume s st)))))
+                (do (E.rec) (E.rec)
+                    (+ (E.qry n (+ n 1))
+                       (+ (* 1000 (E.qry (+ n 9) (+ n 10)))
+                          (E.cnt))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: -941 Int64))
+  (call   main (: 0 Int64)) (output (: -996 Int64))
+  (call   main (: -3 Int64)) (output (: -1029 Int64)))
+
+(case "tk3 an UNASCRIBED empty-Map seed with tuple keys solved in one arm, read in siblings — cross-arm element propagation (3 arms)"
+  (input  (do
+            (effect E (op rec (-> Int64)) (op qry (-> Int64 Int64 Int64)) (op cnt (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (tuple n Map.empty)
+                ((rec () st (match st
+                              ((tuple s m)
+                               (resume s (tuple (+ s 2)
+                                                (Map.insert m (tuple s (+ s 1)) (* 10 s)))))))
+                 (qry (a b) st (match st
+                                 ((tuple s m)
+                                  (resume (match (Map.lookup m (tuple a b))
+                                            ((Some v) v)
+                                            ((None) -1))
+                                          st))))
+                 (cnt () st (match st ((tuple s m) (resume s st)))))
+                (do (E.rec) (+ (E.qry n (+ n 1)) (E.cnt)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 57 Int64)))
+
+(case "tv1 tuple VALUES with scalar keys across three arms — element propagation is value-position too"
+  (input  (do
+            (effect E (op rec (-> Int64)) (op qry (-> Int64 Int64)) (op cnt (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (tuple n Map.empty)
+                ((rec () st (match st
+                              ((tuple s m)
+                               (resume s (tuple (+ s 2)
+                                                (Map.insert m s (tuple s (* 10 s))))))))
+                 (qry (k) st (match st
+                               ((tuple s m)
+                                (resume (match (Map.lookup m k)
+                                          ((Some p) (match p ((tuple a b) (+ a b))))
+                                          ((None) -1))
+                                        st))))
+                 (cnt () st (match st ((tuple s m) (resume s st)))))
+                (do (E.rec) (+ (E.qry n) (E.cnt)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 62 Int64))
+  (call   main (: 0 Int64)) (output (: 2 Int64)))
+
+(case "sk4 a Set of TUPLES as handler state with three arms — insert in one arm, contains in a sibling"
+  (input  (do
+            (effect E (op add (-> Int64))
+                      (op has (-> Int64 Int64 Int64))
+                      (op cnt (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (tuple n (Set.of (list)))
+                ((add () st (match st
+                              ((tuple s ss)
+                               (resume s (tuple (+ s 2)
+                                                (Set.insert ss (tuple s (+ s 1))))))))
+                 (has (a b) st (match st
+                                 ((tuple s ss)
+                                  (resume (if (Set.contains ss (tuple a b)) 1 0) st))))
+                 (cnt () st (match st ((tuple s ss) (resume s st)))))
+                (do (E.add) (E.add)
+                    (+ (E.has n (+ n 1))
+                       (+ (* 1000 (E.has (+ n 9) (+ n 10)))
+                          (E.cnt))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 10 Int64))
+  (call   main (: 0 Int64)) (output (: 5 Int64))
+  (call   main (: -3 Int64)) (output (: 2 Int64)))
+
+(case "lv1 a List of TUPLES from the empty (list) literal seed — pushed in one arm, indexed in a sibling"
+  (input  (do
+            (effect E (op push (-> Int64))
+                      (op rd (-> Int64))
+                      (op cnt (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (tuple n (list))
+                ((push () st (match st
+                               ((tuple s xs)
+                                (resume s (tuple (+ s 2)
+                                                 (List.push xs (tuple s (* 2 s))))))))
+                 (rd () st (match st
+                             ((tuple s xs)
+                              (resume (match (List.at xs 0)
+                                        ((Some p) (match p ((tuple a b) (+ a b))))
+                                        ((None) -1))
+                                      st))))
+                 (cnt () st (match st ((tuple s xs) (resume s st)))))
+                (do (E.push) (E.push) (+ (E.rd) (E.cnt)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 24 Int64))
+  (call   main (: 0 Int64)) (output (: 4 Int64))
+  (call   main (: -3 Int64)) (output (: -8 Int64)))
+
+(case "ra1 a RACE between two effect threads — a recursive walk draws BOTH per round until the fast thread catches the slow one's head start"
+  (input  (do
+            (effect A (op next (-> Int64)))
+            (effect B (op next (-> Int64)))
+            (def (race (: steps Int64))
+              (let ((a (A.next)))
+                (let ((b (B.next)))
+                  (if (< a b) (race (+ steps 1)) (+ (* 100 steps) (- a b))))))
+            (def (main (: n Int64))
+              (handle A n
+                ((next () s (resume (+ s 5) (+ s 5))))
+                (handle B (+ n (+ (* 2 (if (< (% n 5) 0) (- 0 (% n 5)) (% n 5))) 3))
+                  ((next () t (resume (+ t 2) (+ t 2))))
+                  (race 0))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 0 Int64))
+  (call   main (: 1 Int64)) (output (: 101 Int64))
+  (call   main (: -4 Int64)) (output (: 301 Int64)))
+
+(case "ra2 the race walk's exit value SEEDS a third effect's handle — two-thread termination feeding the position matrix"
+  (input  (do
+            (effect A (op next (-> Int64)))
+            (effect B (op next (-> Int64)))
+            (effect C (op g (-> Unit Int64)))
+            (def (race (: steps Int64))
+              (let ((a (A.next)))
+                (let ((b (B.next)))
+                  (if (< a b) (race (+ steps 1)) (+ (* 100 steps) (- a b))))))
+            (def (main (: n Int64))
+              (handle A n
+                ((next () s (resume (+ s 5) (+ s 5))))
+                (handle B (+ n (+ (* 2 (if (< (% n 5) 0) (- 0 (% n 5)) (% n 5))) 3))
+                  ((next () t (resume (+ t 2) (+ t 2))))
+                  (handle C (race 0)
+                    ((g (u) w (resume w (+ w 1))))
+                    (+ (C.g) (C.g))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 1 Int64))
+  (call   main (: 1 Int64)) (output (: 203 Int64))
+  (call   main (: -4 Int64)) (output (: 603 Int64)))

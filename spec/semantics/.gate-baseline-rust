@@ -7066,3 +7066,10 @@ pass	an outer op-arg match with an inner state match reading the op-arg payload 
 pass	two DIFFERENT ops sharing the outer-arg-match inner-state-match arm shape each thread their own payload
 pass	three dispatches of an outer-arg-match inner-state-match arm each read their own payload not dispatch one's
 pass	a multi-variant op arg matched against a sum state with an abortive-and-resumptive arm mix threads per dispatch
+pass	tk1 a Map state with TUPLE keys built from consecutive draws — record twice, query a hit and a miss
+pass	tk3 an UNASCRIBED empty-Map seed with tuple keys solved in one arm, read in siblings — cross-arm element propagation (3 arms)
+pass	tv1 tuple VALUES with scalar keys across three arms — element propagation is value-position too
+pass	sk4 a Set of TUPLES as handler state with three arms — insert in one arm, contains in a sibling
+pass	lv1 a List of TUPLES from the empty (list) literal seed — pushed in one arm, indexed in a sibling
+pass	ra1 a RACE between two effect threads — a recursive walk draws BOTH per round until the fast thread catches the slow one's head start
+pass	ra2 the race walk's exit value SEEDS a third effect's handle — two-thread termination feeding the position matrix
