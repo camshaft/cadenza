@@ -189,4 +189,213 @@ mod tests {
             other => panic!("a non-hex blob/get target must be a permanent Err, got {other:?}"),
         }
     }
+
+    // ---- doc-publish→query round-trip through the REAL host stack (converted from the deleted
+    // doc_publish_i3_e2e integration test, operator no-integration-tests mandate — hermetic: a live
+    // BlobExecutor over a shared content-addressed store + the kernel's store/* name-directory + a Cedar-style
+    // authorizer, no S3/network). Proves the BlobExecutor composes in a real multi-effect fold (blob/put ->
+    // store/set index -> store/resolve -> blob/get recovers), not just the isolated put/get above. ----
+    use crate::host::HostedSession;
+    use cdz_kernel::authz::Authorizer;
+    use cdz_kernel::effect::{Capability, ResourcePredicate};
+    use cdz_kernel::event::{ContentType, Event, EventBody};
+    use cdz_kernel::event_ast::{decode_name_set, encode_name_set};
+    use cdz_kernel::executor::CompositeExecutor;
+    use cdz_kernel::kv::Kv;
+    use cdz_kernel::name_store::NameStore;
+    use cdz_kernel::reducer::{FoldOutput, Reducer};
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+
+    /// A SHARED in-memory content-addressed store — the two blob/put + blob/get `BlobExecutor`s (a
+    /// `CompositeExecutor` routes one executor per family) must see EACH OTHER's writes, exactly as the
+    /// deployed daemon's two per-verb `S3BlobStore`s share one bucket. `MemBlobStore` is a per-instance
+    /// HashMap, so this `Arc<Mutex<HashMap>>`-backed store models S3's shared-bucket semantics hermetically.
+    #[derive(Clone, Default)]
+    struct SharedMemBlobStore {
+        blobs: Arc<Mutex<HashMap<Hash, Vec<u8>>>>,
+    }
+
+    #[async_trait::async_trait(?Send)]
+    impl BlobStore for SharedMemBlobStore {
+        async fn put(&mut self, bytes: &[u8]) -> std::io::Result<Hash> {
+            let hash = Hash::of(bytes);
+            self.blobs.lock().unwrap().insert(hash, bytes.to_vec());
+            Ok(hash)
+        }
+        async fn get(&self, hash: &Hash) -> std::io::Result<Option<Vec<u8>>> {
+            Ok(self.blobs.lock().unwrap().get(hash).cloned())
+        }
+    }
+
+    /// The doc-index reducer (the shape a real cadenza-docs reducer folds). PUBLISH: `doc/publish` inbound ->
+    /// `blob/put` the doc-AST -> (hex hash) -> `store/set` `memory/doc/<pkg>`. QUERY: `doc/query` inbound ->
+    /// `store/resolve` -> (name-set) -> `blob/get` the hash -> doc-AST bytes recovered into KV.
+    struct DocPublishReducer {
+        name: &'static str, // e.g. "memory/doc/cadenza-syntax"
+    }
+
+    #[async_trait::async_trait(?Send)]
+    impl Reducer for DocPublishReducer {
+        async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
+            match &event.body {
+                EventBody::Inbound {
+                    content_type,
+                    payload,
+                } => match content_type.family.as_ref() {
+                    "doc/publish" => {
+                        let doc = match payload {
+                            Payload::Inline(b) => b.clone(),
+                            Payload::Blob(_) => return FoldOutput::none(),
+                        };
+                        FoldOutput::with(vec![EffectRequest::new_with_family(
+                            effect_ct::BLOB_PUT,
+                            "doc",
+                            Some(Payload::Inline(doc)),
+                            Timeliness::Interactive,
+                        )])
+                    }
+                    "doc/query" => FoldOutput::with(vec![EffectRequest::new_with_family(
+                        effect_ct::STORE_RESOLVE,
+                        self.name,
+                        None,
+                        Timeliness::Interactive,
+                    )]),
+                    _ => FoldOutput::none(),
+                },
+                EventBody::EffectResult {
+                    result: EffectOutcome::Ok(Some(Payload::Inline(bytes))),
+                    ..
+                } => {
+                    if kv.get(b"published").is_none() {
+                        // Phase 1: blob/put returned the hex hash -> register it at the doc name in the index.
+                        kv.put(b"published".to_vec(), bytes.to_vec());
+                        let hex = String::from_utf8_lossy(bytes).into_owned();
+                        let hash = match Hash::from_hex(&hex) {
+                            Some(h) => h,
+                            None => return FoldOutput::none(),
+                        };
+                        let payload = encode_name_set(self.name, &hash);
+                        FoldOutput::with(vec![EffectRequest::new_with_family(
+                            effect_ct::STORE_SET,
+                            self.name,
+                            Some(Payload::Inline(payload.into())),
+                            Timeliness::Interactive,
+                        )])
+                    } else if let Ok((_n, h)) = decode_name_set(bytes) {
+                        // Phase 2: store/resolve returned the (name, hash) -> fetch the doc bytes from the CAS.
+                        FoldOutput::with(vec![EffectRequest::new_with_family(
+                            effect_ct::BLOB_GET,
+                            h.to_hex(),
+                            None,
+                            Timeliness::Interactive,
+                        )])
+                    } else {
+                        // Phase 3: blob/get returned the doc-AST bytes -> recovered.
+                        kv.put(b"recovered".to_vec(), bytes.to_vec());
+                        FoldOutput::none()
+                    }
+                }
+                _ => FoldOutput::none(),
+            }
+        }
+    }
+
+    /// The doc reducer's authorizer: the CAS verbs (blob/put + blob/get) + the doc-index name verbs
+    /// (store/set + store/resolve on `memory/`, the writable promotion scope where docs register).
+    fn doc_authz() -> Authorizer {
+        Authorizer::new(vec![]).with_family_grants(vec![
+            Capability::for_family(effect_ct::BLOB_PUT, ResourcePredicate::Any),
+            Capability::for_family(effect_ct::BLOB_GET, ResourcePredicate::Any),
+            Capability::for_family(
+                effect_ct::STORE_SET,
+                ResourcePredicate::Prefix("memory/".into()),
+            ),
+            Capability::for_family(
+                effect_ct::STORE_RESOLVE,
+                ResourcePredicate::Prefix("memory/".into()),
+            ),
+        ])
+    }
+
+    fn doc_inbound(family: &'static str, payload: Option<Vec<u8>>) -> EventBody {
+        EventBody::Inbound {
+            content_type: ContentType {
+                family: family.into(),
+                version: 1,
+            },
+            payload: payload.map_or(Payload::Inline(Vec::new().into()), |b| {
+                Payload::Inline(b.into())
+            }),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_doc_publish_then_query_round_trips_the_doc_ast_through_the_real_blob_executor_and_name_index(
+    ) {
+        let doc_ast = b"(doc-module (doc-item (name parse) (summary \"parse source\")))".to_vec();
+        let name = "memory/doc/cadenza-syntax";
+
+        // A live BlobExecutor per blob verb over a SHARED content-addressed store (the daemon wires the SAME
+        // BlobExecutor over two per-verb S3BlobStores pointing at ONE bucket). store/* is applied by the kernel
+        // against the attached NameStore, so only blob/* need executors.
+        let store = SharedMemBlobStore::default();
+        let executor = CompositeExecutor::new()
+            .with_effect(
+                effect_ct::BLOB_PUT,
+                Box::new(BlobExecutor::new(store.clone())),
+            )
+            .with_effect(
+                effect_ct::BLOB_GET,
+                Box::new(BlobExecutor::new(store.clone())),
+            );
+
+        let mut session = HostedSession::genesis(
+            Hash::of(b"doc-publish-v1"),
+            Box::new(DocPublishReducer { name }),
+            Box::new(doc_authz()),
+            executor,
+        )
+        .with_name_store(NameStore::new());
+
+        // PUBLISH: one deliver drives blob/put -> (hex) -> store/set memory/doc/<pkg> to quiescence.
+        session
+            .deliver(doc_inbound("doc/publish", Some(doc_ast.clone())), None)
+            .await
+            .expect("publish delivers");
+        assert_eq!(
+            session.session().open_effects(),
+            0,
+            "the publish chain (blob/put -> store/set) settled"
+        );
+        let entries = session
+            .session()
+            .name_store()
+            .expect("name store attached")
+            .to_set_entries();
+        assert!(
+            entries.iter().any(|(n, _h)| n == name),
+            "the doc registered at {name} in the index: {entries:?}"
+        );
+
+        // QUERY: one deliver drives store/resolve -> blob/get -> recovered.
+        session
+            .deliver(doc_inbound("doc/query", None), None)
+            .await
+            .expect("query delivers");
+        assert_eq!(
+            session.session().open_effects(),
+            0,
+            "the query chain (store/resolve -> blob/get) settled"
+        );
+        let recovered = session
+            .session()
+            .kv()
+            .get(b"recovered")
+            .expect("the query recovered the doc bytes into KV");
+        assert_eq!(
+            recovered, doc_ast,
+            "the queried doc-AST bytes round-trip the published ones through the real blob executor + index"
+        );
+    }
 }
