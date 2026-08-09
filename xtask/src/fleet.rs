@@ -2400,24 +2400,40 @@ fn mr_qualifies_for_landed_check(
 /// proof) and `false` for an empty ref (nothing to check). This is the ONE place the "did the work
 /// actually land?" question is answered, shared by both the queued-inbox no-op sweep AND the
 /// archived-orphan classifier (an archived MR with no correlating reply is NOT a stuck sender if its
-/// ref is on trunk — the work is safe; only the reply-correlation was lost, e.g. a resend-chain
+/// ref landed — the work is safe; only the reply-correlation was lost, e.g. a resend-chain
 /// sibling got the `ack`).
+///
+/// CHECKS AGAINST `origin/main`, NOT the local `trunk` ref (correctness fix, concierge 2026-08-09).
+/// origin/main is the AUTHORITATIVE published tip — "did it land" means "is it on origin/main", where
+/// every agent cuts from + verifies landing by ancestry. The local `trunk` ref carries unpushed /
+/// re-parented state under the --publish-origin model (publish-lag, or a commit whose patch-id collides
+/// with a re-parented local-trunk commit), so checking `trunk` FALSE-POSITIVES: it claimed a genuinely
+/// un-landed MR (v-agent-harness 3aaedac63, ResolveSchema seam — ABSENT from origin/main by file) was
+/// "landed by patch-id" because its patch collided against local trunk, which would have driven a
+/// DANGEROUS reject-as-superseded of real un-landed work. Since this decision gates a reject, it MUST
+/// use the published truth. Fetch origin/main fresh first so a stale local remote-ref can't miss a
+/// recent land (best-effort; the ancestry/cherry checks below fall back to whatever is local on failure).
 fn ref_landed_on_trunk(fleet: &Fleet, r#ref: &str) -> bool {
     if r#ref.is_empty() {
         return false;
     }
-    // Shape 1: ref is a direct ancestor of trunk (landed as-is). `--is-ancestor` exits 0 on true.
+    // Refresh origin/main so the checks below see the authoritative published tip (best-effort).
+    let _ = Command::new("git")
+        .current_dir(&fleet.repo)
+        .args(["fetch", "origin", "main", "--quiet"])
+        .output();
+    // Shape 1: ref is a direct ancestor of origin/main (landed as-is). `--is-ancestor` exits 0 on true.
     let is_ancestor = Command::new("git")
         .current_dir(&fleet.repo)
-        .args(["merge-base", "--is-ancestor", r#ref, TRUNK])
+        .args(["merge-base", "--is-ancestor", r#ref, "origin/main"])
         .output();
     if matches!(is_ancestor, Ok(o) if o.status.success()) {
         return true;
     }
-    // Shape 2: ref was squashed/re-parented but its patch is present upstream (cherry `-` lines).
+    // Shape 2: ref was squashed/re-parented but its patch is present on origin/main (cherry `-` lines).
     let cherry = Command::new("git")
         .current_dir(&fleet.repo)
-        .args(["cherry", TRUNK, r#ref])
+        .args(["cherry", "origin/main", r#ref])
         .output();
     matches!(cherry, Ok(o) if o.status.success() && cherry_says_landed(&String::from_utf8_lossy(&o.stdout)))
 }
