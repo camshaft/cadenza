@@ -3486,6 +3486,10 @@ fn big_from_decimal(s: &str) -> Option<bigint::Big> {
 
 /// value-decode (heap idx 90): parse the value-form `doc_bytes` and, guided by `desc`, construct a fresh
 /// owned heap value. `Handle::NULL` on a malformed document / descriptor mismatch (never traps).
+//= spec/contracts/deterministic-value-form.md#the-canonical-byte-form-has-a-decode-that-inverts-it
+//# Decoding the canonical byte encoding of a value against the type of that value MUST yield a value equal, under the language's structural equality, to the value that was encoded.
+//= spec/contracts/deterministic-value-form.md#decoding-refuses-bytes-that-are-not-a-value-of-the-expected-type
+//# Decoding a byte sequence that is not the canonical byte encoding of any value of the expected type MUST be refused rather than yield a value, so that a decode never misinterprets bytes as a value they do not encode.
 fn op_value_decode(doc_bytes: &[u8], desc: &[u8]) -> Handle {
     let Some(descriptor) = decode_descriptor(desc) else {
         return Handle::NULL;
