@@ -383,6 +383,39 @@ mod tests {
     }
 
     #[test]
+    fn a_noncanonical_session_id_is_rejected_on_every_id_carrying_command() {
+        // Fail-closed wire id parsing (the sessionid-hash sweep): a command's session `id` is the peer's
+        // genesis-hash HEX, parsed back via session_id_from_hex. A non-canonical id (vanity label, non-hex,
+        // wrong length) is a WireError — a malformed admin frame is REJECTED at the transport edge, never
+        // silently coerced into a bogus SessionId. Pins it on all three id-carrying commands (install spec id,
+        // session-status, stop-session). The reducer_hash reject above covers the OTHER hash on install; the
+        // valid reducer_hash here isolates the FAILURE to the id so install's id path is genuinely exercised
+        // (reducer_hash is parsed first, so a bad-id install needs a good reducer_hash to reach the id check).
+        let good_reducer = Hash::of(b"reducer").to_hex();
+        for bad in ["victim", "not-hex", "deadbeef" /* too short */, ""] {
+            let install = AdminCommandWire::InstallSession(InstallSpecWire {
+                id: bad.into(),
+                reducer_hash: good_reducer.clone(),
+                goal: None,
+            });
+            assert!(
+                matches!(install.to_domain(), Err(WireError(m)) if m.contains("canonical hex")),
+                "install with a non-hex id {bad:?} is a WireError"
+            );
+            assert!(
+                matches!(AdminCommandWire::SessionStatus { id: bad.into() }.to_domain(),
+                    Err(WireError(m)) if m.contains("canonical hex")),
+                "session-status with a non-hex id {bad:?} is a WireError"
+            );
+            assert!(
+                matches!(AdminCommandWire::StopSession { id: bad.into() }.to_domain(),
+                    Err(WireError(m)) if m.contains("canonical hex")),
+                "stop-session with a non-hex id {bad:?} is a WireError"
+            );
+        }
+    }
+
+    #[test]
     fn response_status_is_inlined_as_parsed_json_not_a_nested_string() {
         // A Status response carries the session_status_json object inline as JSON, so the whole frame is one
         // clean document (the status is an object, not a re-escaped string).
