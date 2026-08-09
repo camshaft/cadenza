@@ -56629,6 +56629,84 @@ mod diagnostics {
             out.diagnostics
         );
     }
+
+    #[test]
+    fn ordering_a_compound_with_an_unorderable_leaf_is_a_carve_out_not_a_not_yet_built_decline() {
+        // The RELATIONAL-operator (`<`/`<=`/`>`/`>=`) sibling of the compound-`compare` carve-out. A
+        // relational op reaching the compound decline ALWAYS has an un-orderable leaf: an all-orderable
+        // compound already took the runtime `ValueCmp` ordering arm. So a `<` over a float-leaf tuple is a
+        // PERMANENT carve-out (a float has only the IEEE partial order), NOT the "needs a heap walk (not yet
+        // built)" the equality path names — that message MISLED (read as a temporary limit a later slice
+        // lifts). The message now mirrors `compare`: names the un-orderable leaf + the component-wise route.
+        let d = first_error(
+            "(module m (def (f (: x Float64) (: y Float64)) (< (tuple x 1) (tuple y 2))) (export f))",
+        );
+        assert_eq!(
+            d.code, None,
+            "an un-orderable-leaf compound ordering is an uncoded decline: {}",
+            d.message
+        );
+        assert!(
+            d.message
+                .contains("has no total order, so it cannot be ordered")
+                && d.message.contains("float, set, or map leaf")
+                && d.message
+                    .contains("order its orderable components individually"),
+            "the ordering decline names the un-orderable-leaf reason + the component-wise route (NOT a \
+             'not yet built' heap walk): {}",
+            d.message
+        );
+        // It must NOT claim the misleading "not yet built" the equality path uses — this is permanent.
+        assert!(
+            !d.message.contains("not yet built"),
+            "an ordering carve-out must not read as a temporary limitation: {}",
+            d.message
+        );
+        // EQUALITY (`=`) over a float-leaf compound is SUPPORTED (the ValueEqShaped path) — no decline; so the
+        // "needs a heap walk (not yet built)" message stays reachable only for genuinely-unbuilt cases.
+        // ROUND-TRIP witness: the named route — ordering the orderable Int component alone — compiles clean.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: x Float64) (: y Float64)) (< 1 2)) (export f))",
+        );
+        let out = compile(
+            &[Artifact::new(
+                Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&ast),
+            )],
+            &[Target::Wasm],
+        );
+        assert!(
+            !out.diagnostics
+                .iter()
+                .any(|d| d.severity == crate::abi::Severity::Error),
+            "the component-wise route (order the Int component) compiles clean: {:?}",
+            out.diagnostics
+        );
+    }
+
+    #[test]
+    fn a_mismatched_type_ordering_stays_a_single_coded_error_not_a_double_with_the_ordering_decline()
+     {
+        // Dedup guard: `(< 1 "x")` is a type mismatch — `infer` reports the coded CDZ0201 "different types",
+        // and the emit path ALSO declines the ordering carve-out. `dedup_faults` must drop the consequent
+        // decline (it recognizes BOTH the equality heap-walk marker AND the new ordering carve-out message),
+        // so the reader sees ONE primary fault, not a coded reject plus a misleading second decline. This
+        // pins that the message split did not regress the dedup.
+        let errs = all_errors("(module m (def (main) (if (< 1 \"x\") 1 0)) (export main))");
+        assert_eq!(
+            errs.len(),
+            1,
+            "a mismatched-type ordering is a SINGLE coded error, not a double with the ordering decline: {:?}",
+            errs.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            errs[0].code.as_deref(),
+            Some("CDZ0201"),
+            "the one primary is the coded type-mismatch: {}",
+            errs[0].message
+        );
+    }
 }
 
 // ── Stage 1: let + records (compile-time folded) ────────────────────────────────────────────────

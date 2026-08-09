@@ -20674,8 +20674,28 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
                     rhs: args[1],
                     ty: crate::infer::type_of(db, args[0]),
                 }
+            } else if matches!(op, Prim::Lt | Prim::Le | Prim::Gt | Prim::Ge) {
+                // An ORDERING op reaching here is a PERMANENT carve-out, not a not-yet: an all-orderable
+                // compound already took the `is_orderable_compound → ValueCmp` arm above (and an all-nullary
+                // enum the disc-compare arm), so a `<`/`<=`/`>`/`>=` that falls through has an UN-orderable
+                // leaf — a float (only the IEEE partial order, §319), or a Set/Map (no blessed order). Naming
+                // it "needs a heap walk (not yet built)" MISLEADS (reads as a temporary limit that a later
+                // slice lifts); it never will. Mirror the sibling three-way `compare` carve-out (this file's
+                // `lower_compare` float/compound arms): name the un-orderable leaf as the reason AND the
+                // actionable route — order the orderable components individually. Keeps the shared
+                // `COMPOUND_ORDERING_NO_TOTAL_ORDER_DECLINE` substring so the mismatched-type dedup still fires.
+                trace!(target: "rcdzc::lower", op = intrinsic_name(op), "decline: ordering of a compound with an un-orderable (float/set/map) leaf — permanent carve-out");
+                Core::Poison(Reject::decline(
+                    "a compound value with a float, set, or map leaf has no total order, so it cannot be \
+                     ordered by `<`/`<=`/`>`/`>=` (a float offers only the IEEE partial order; a set/map \
+                     carries no blessed order) — order its orderable components individually",
+                ))
             } else {
-                trace!(target: "rcdzc::lower", op = intrinsic_name(op), "decline: comparison of a compound value needs a heap walk");
+                // EQUALITY (`=`) reaching here is a genuinely NOT-YET-BUILT canonicalization (a Set/Map leaf
+                // whose structural `=` the compiler cannot yet walk) — keep the honest heap-walk decline
+                // (the `COMPOUND_COMPARISON_DECLINE` marker, byte-identical: it is corpus-referenced + the
+                // mismatched-type dedup key).
+                trace!(target: "rcdzc::lower", op = intrinsic_name(op), "decline: equality of a compound value needs a heap walk (not yet built)");
                 Core::Poison(Reject::decline(
                     "comparison of a compound value needs a heap walk (not yet built)",
                 ))

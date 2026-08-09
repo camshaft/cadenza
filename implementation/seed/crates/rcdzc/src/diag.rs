@@ -943,6 +943,15 @@ pub const STRAY_RESUME_MESSAGE: &str = "a `resume` is only meaningful inside a h
 /// decline — no "different types" reject accompanies it.
 pub const COMPOUND_COMPARISON_DECLINE: &str = "comparison of a compound value needs a heap walk";
 
+/// The stable SUBSTRING of the ORDERING (`<`/`<=`/`>`/`>=`) carve-out decline: a compound whose leaf is a
+/// float / set / map has NO total order (a float offers only the IEEE partial order; set/map carry no
+/// blessed order), so it cannot be ordered — a PERMANENT carve-out, NOT the "not yet built" heap walk that
+/// [`COMPOUND_COMPARISON_DECLINE`] names for a genuinely-unbuilt equality. `dedup_faults` recognizes THIS
+/// message too (alongside [`COMPOUND_COMPARISON_DECLINE`]) so a mismatched-type ORDERING comparison still
+/// drops the consequent decline for the coded "different types" primary.
+pub const COMPOUND_ORDERING_NO_TOTAL_ORDER_DECLINE: &str =
+    "has no total order, so it cannot be ordered";
+
 /// The stable SUBSTRING shared by every coded cross-kind / mismatched-operand comparison reject `infer`
 /// produces — `<a> and <b> are different types …` (a text-vs-scalar / compound-vs-atom kind boundary, a
 /// Bool-vs-other-scalar pair, or a map-vs-record pair). `dedup_faults` uses it to recognize such a reject

@@ -4237,11 +4237,15 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>, has_bakeable_type_export: bool) ->
                 return false;
             }
             // A mismatched-type comparison (`(< 1 "x")`) reports the coded "… are different types" reject;
-            // the emit path ALSO declines "comparison of a compound value needs a heap walk" (one operand
-            // is a compound/text it cannot fold). Drop that misleading decline for the coded reject.
+            // the emit path ALSO declines — either "comparison of a compound value needs a heap walk"
+            // (equality path) OR the ordering carve-out ("… has no total order, so it cannot be ordered …")
+            // (one operand is a compound/text it cannot fold). Drop that misleading decline for the coded
+            // reject (recognize BOTH decline forms so a mismatched-type ORDERING compare doesn't double-error).
             if has_different_types_comparison_reject
                 && r.is_decline()
-                && r.message.contains(crate::diag::COMPOUND_COMPARISON_DECLINE)
+                && (r.message.contains(crate::diag::COMPOUND_COMPARISON_DECLINE)
+                    || r.message
+                        .contains(crate::diag::COMPOUND_ORDERING_NO_TOTAL_ORDER_DECLINE))
             {
                 return false;
             }
