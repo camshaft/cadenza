@@ -1174,10 +1174,9 @@ async fn live_shell_executor_runs_a_real_command_end_to_end() {
     impl Reducer for ShellReducer {
         async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
-                EventBody::Inbound { .. } => FoldOutput::with(vec![EffectRequest::new(
-                    EffectKind::Shell,
-                    "echo hi",
-                    None,
+                EventBody::Inbound { .. } => FoldOutput::with(vec![EffectRequest::shell(
+                    "echo",
+                    ["hi"],
                     Timeliness::Interactive,
                 )]),
                 EventBody::EffectResult { result, .. } => {
@@ -1199,7 +1198,7 @@ async fn live_shell_executor_runs_a_real_command_end_to_end() {
     // Capability gates Shell to a command-prefix allow-list (never an `Any` shell grant).
     let authz = Authorizer::new(vec![Capability {
         kind: EffectKind::Shell,
-        predicate: ResourcePredicate::Prefix("echo ".into()),
+        predicate: ResourcePredicate::Prefix("echo".into()),
     }]);
     let mut exec = ShellExecutor;
     let mut session = Session::genesis(Hash::of(b"shell"), Hash::of(b"test-spawn-nonce"));
@@ -1232,12 +1231,11 @@ async fn live_shell_denied_command_never_executes() {
     impl Reducer for DeniedShell {
         async fn fold(&mut self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             if matches!(event.body, EventBody::Inbound { .. }) {
-                // Harmless command (PR#992 #3: no `rm -rf` in tests). Outside the `echo ` grant →
-                // denied at the gate anyway; the marker would only appear if the gate FAILED.
-                FoldOutput::with(vec![EffectRequest::new(
-                    EffectKind::Shell,
-                    format!("touch {}", self.0),
-                    None,
+                // Harmless command (PR#992 #3: no `rm -rf` in tests). Program `touch` is outside the
+                // `echo` grant → denied at the gate; the marker would only appear if the gate FAILED.
+                FoldOutput::with(vec![EffectRequest::shell(
+                    "touch",
+                    [self.0.clone()],
                     Timeliness::Interactive,
                 )])
             } else {
@@ -1248,7 +1246,7 @@ async fn live_shell_denied_command_never_executes() {
     // Only `echo ` is permitted → the touch is denied before the executor sees it.
     let authz = Authorizer::new(vec![Capability {
         kind: EffectKind::Shell,
-        predicate: ResourcePredicate::Prefix("echo ".into()),
+        predicate: ResourcePredicate::Prefix("echo".into()),
     }]);
     let mut exec = ShellExecutor;
     let mut session = Session::genesis(Hash::of(b"denied"), Hash::of(b"test-spawn-nonce"));
@@ -1288,16 +1286,16 @@ async fn live_shell_no_injection_via_metacharacters() {
     let marker = marker.as_str();
     let _ = std::fs::remove_file(marker); // clean slate
 
-    struct Injector(String);
+    struct Injector(Vec<String>);
     #[async_trait::async_trait(?Send)]
     impl Reducer for Injector {
         async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
-                // Passes `starts_with("echo ")` but embeds an injection attempt.
-                EventBody::Inbound { .. } => FoldOutput::with(vec![EffectRequest::new(
-                    EffectKind::Shell,
-                    self.0.clone(),
-                    None,
+                // Structured args: the "injection" tokens (`;`, `touch`, marker) are LITERAL args to echo,
+                // not a shell string — so there is nothing to interpret. Program `echo` is the gated target.
+                EventBody::Inbound { .. } => FoldOutput::with(vec![EffectRequest::shell(
+                    "echo",
+                    self.0.iter().cloned(),
                     Timeliness::Interactive,
                 )]),
                 EventBody::EffectResult {
@@ -1313,19 +1311,19 @@ async fn live_shell_no_injection_via_metacharacters() {
     }
     let authz = Authorizer::new(vec![Capability {
         kind: EffectKind::Shell,
-        predicate: ResourcePredicate::Prefix("echo ".into()),
+        predicate: ResourcePredicate::Prefix("echo".into()),
     }]);
     let mut exec = ShellExecutor;
     let mut session = Session::genesis(Hash::of(b"inject"), Hash::of(b"test-spawn-nonce"));
-    let payload = format!("echo ok ; touch {marker}");
+    // The injection tokens as LITERAL args — `;` and `touch` are just strings echo prints, not shell ops.
+    let args = vec![
+        "ok".to_string(),
+        ";".to_string(),
+        "touch".to_string(),
+        marker.to_string(),
+    ];
     session
-        .deliver(
-            inbound_go(),
-            None,
-            &mut Injector(payload),
-            &authz,
-            &mut exec,
-        )
+        .deliver(inbound_go(), None, &mut Injector(args), &authz, &mut exec)
         .await
         .unwrap();
 

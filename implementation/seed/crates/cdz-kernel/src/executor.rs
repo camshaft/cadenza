@@ -215,33 +215,36 @@ impl Executor for RecordingExecutor {
 }
 
 /// A REAL local command executor (feature `live-exec`, Unix only) — the first executor that touches the
-/// world. Runs an `EffectKind::Shell` request's `target` as a program + args, executed **directly via
-/// `Command::new(program).args(...)` — NO `sh -c`** (PR#992 security fix, CWE-78). Returns the outcome
-/// the kernel folds back:
+/// world. Runs an `EffectKind::Shell` request whose PAYLOAD carries a STRUCTURED command — a
+/// `(shell-pipeline (stage (program …) (args …)))` (see [`crate::event_ast::ShellPipeline`]) — executed
+/// **directly via `Command::new(program).args(args)` — NO `sh -c`, NO whitespace-splitting** (PR#992
+/// security fix, CWE-78 + operator structured-args directive). Returns the outcome the kernel folds back:
 /// - exit 0 → `Ok(Some(stdout))`
 /// - non-zero exit → `Err("exit <code>: <stderr>")`
-/// - spawn failure / empty command → `Err`.
+/// - spawn failure / empty|malformed command → `Err`.
 ///
-/// **No shell = no injection (PR#992 WARNING:WARNING: command injection):** the previous `sh -c <target>` let shell
-/// metacharacters in the target (`;`, `|`, `&&`, `$()`, backtick) execute arbitrary commands, DEFEATING
-/// the SEC-F1 `Prefix` allow-list — `echo ok; rm -rf /` passes `starts_with("echo ")` but `sh` ran the
-/// `rm`. Direct exec makes every token a LITERAL argument: a `;` is an argument to the program, not a
-/// separator. The target is split on whitespace into `program` + `args` (v0's minimal arg model — the
-/// operator-directed structured `{program, args}` command model, §18b, is the fuller successor; this is
-/// the injection-safe interim). Note this means the v0 target cannot contain quoted args with spaces —
-/// acceptable for the allow-listed commands v0 runs; the structured model lifts that.
+/// **Structured args, never a split (operator directive):** the command is a `program` + a `Vec<arg>`,
+/// each arg a LITERAL string, exactly like `std::process::Command::new(program).args(vec)`. This replaced
+/// the old brittle model (a flat `target` string `split_whitespace()`'d into program+args), which broke on
+/// quoted args, paths/args containing spaces, and empty args (a `"foo bar"` arg wrongly became two). The
+/// structured payload carries args explicitly, so an arg with spaces survives and NOTHING is re-split.
 ///
-/// **Trust boundary:** this executor does NOT re-authorize; the kernel gated the resolved `target`
-/// against a resource-scoped capability (SEC-F1) before dispatch. But note the fix's defense is
-/// structural (no shell), NOT reliant on the allow-list being metachar-proof — so even an over-broad
-/// grant can't yield injection, only the wrong (still-literal) program.
+/// **No shell = no injection (PR#992):** direct exec makes every token a LITERAL argument — a `;`/`|`/`$()`
+/// is an argument to the program, not a shell separator — so the structural defense holds regardless of
+/// the SEC-F1 allow-list being metachar-proof. Structured args STRENGTHEN this: there is no string to
+/// mis-split, so the metacharacter/splitting surface is closed at the model, not just the exec call.
 ///
-/// **Non-Shell effects** return an `Err` (this is a single-KIND executor; route multiple kinds by
-/// registering it under `Shell` in an [`CompositeExecutor`]). **Idempotency (§16c-S1):** a command is
-/// NOT generally idempotent; a real deployment dedups re-driven dispatches on `idempotency_key` (documented
-/// as the dedup handle). Native async (the subprocess spawn is sync `std::process` today — no `.await`; a
-/// truly-async spawn is a later refinement, but the trait is async so it drops in without a signature
-/// change).
+/// **Single command = a one-stage pipeline:** this single-process executor runs a pipeline of exactly ONE
+/// stage (the structured successor to the old bare target). A multi-stage pipeline (`a | b`) is the host's
+/// piped-stdio spawner (each stage its own SEC-F1-gated program); this kernel executor rejects a >1-stage
+/// pipeline as out-of-scope for the single-process path.
+///
+/// **Trust boundary:** does NOT re-authorize; the kernel gated the resolved `program` (the effect target)
+/// against a resource-scoped capability (SEC-F1) before dispatch.
+///
+/// **Non-Shell effects** return an `Err` (single-KIND executor; register under `Shell` in a
+/// [`CompositeExecutor`]). **Idempotency (§16c-S1):** a command is NOT generally idempotent; a real
+/// deployment dedups on `idempotency_key`. Native async (the subprocess spawn is sync `std::process` today).
 #[cfg(all(feature = "live-exec", unix))]
 pub struct ShellExecutor;
 
@@ -261,21 +264,37 @@ impl Executor for ShellExecutor {
                 req.kind
             ));
         }
-        // A shell command target is text; read the opaque byte target as its fail-closed UTF-8 view
-        // (Target=Bytes ruling). A non-UTF-8 shell target is a malformed command → observable Err.
-        let target = match req.target_str() {
-            Ok(t) => t,
-            Err(_) => {
-                return EffectOutcome::err("shell command target is not valid UTF-8".to_string())
+        // The shell command is a STRUCTURED {program, args} payload (operator directive: NO flat-string
+        // whitespace split). Decode the `(shell-pipeline (stage (program) (args …)))` payload; each arg is a
+        // literal string, so an arg with spaces survives and nothing is re-split.
+        let payload_bytes = match &req.payload {
+            Some(Payload::Inline(b)) => b.as_ref(),
+            _ => return EffectOutcome::err(
+                "shell effect has no structured command payload (expected a (shell-pipeline …))"
+                    .to_string(),
+            ),
+        };
+        let pipeline = match crate::event_ast::decode_shell_pipeline(payload_bytes) {
+            Ok(p) => p,
+            Err(e) => return EffectOutcome::err(format!("shell command payload malformed: {e:?}")),
+        };
+        // This single-process executor runs a ONE-stage pipeline (the structured successor to a bare
+        // command). A multi-stage pipeline is the host's piped-stdio spawner, out of scope here.
+        let stage = match pipeline.stages.as_slice() {
+            [stage] => stage,
+            [] => return EffectOutcome::err("empty command (no pipeline stage)".to_string()),
+            _ => {
+                return EffectOutcome::err(
+                    "multi-stage shell pipeline not supported by the single-process executor"
+                        .to_string(),
+                )
             }
         };
-        // Split the target into program + args on whitespace and exec DIRECTLY — no shell, so
-        // metacharacters are literal arguments, not interpreted (PR#992 CWE-78 fix).
-        let mut parts = target.split_whitespace();
-        let Some(program) = parts.next() else {
+        let program = stage.program.as_str();
+        if program.is_empty() {
             return EffectOutcome::err("empty command".to_string());
-        };
-        let args: Vec<&str> = parts.collect();
+        }
+        let args: Vec<&str> = stage.args.iter().map(|a| a.as_str()).collect();
         let output = std::process::Command::new(program).args(&args).output();
         match output {
             Ok(out) if out.status.success() => {

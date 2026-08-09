@@ -686,6 +686,37 @@ impl EffectRequest {
     pub fn target_str(&self) -> Result<&str, std::str::Utf8Error> {
         std::str::from_utf8(&self.target)
     }
+
+    /// Build a STRUCTURED shell effect request (operator directive: shell invocation is a `program` + a
+    /// `Vec<arg>`, NEVER a flat string whitespace-split). The `program` is the effect TARGET (the SEC-F1
+    /// unit the authorizer gates — a stage program IS the gated target, matching the pipeline path); the
+    /// `args` ride the PAYLOAD as a one-stage `(shell-pipeline (stage (program …) (args …)))` (see
+    /// [`crate::event_ast::ShellPipeline`]), each arg a LITERAL string so an arg with spaces survives and
+    /// nothing is re-split. The canonical way a reducer emits a shell command — use this instead of
+    /// `EffectRequest::new(EffectKind::Shell, "cmd with args", …)` (that flat-string model, whitespace-split
+    /// by the executor, is exactly what the operator's structured-args directive removes). A multi-stage
+    /// pipeline uses [`crate::event_ast::encode_shell_pipeline`] directly with >1 stage.
+    pub fn shell(
+        program: impl Into<String>,
+        args: impl IntoIterator<Item = impl Into<String>>,
+        timeliness: Timeliness,
+    ) -> Self {
+        let program: String = program.into();
+        let stage = crate::event_ast::ShellStage {
+            program: program.clone(),
+            args: args.into_iter().map(Into::into).collect(),
+        };
+        let payload = crate::event_ast::encode_shell_pipeline(&crate::event_ast::ShellPipeline {
+            stages: vec![stage],
+        });
+        // Target = the program (the SEC-F1-gated unit); args ride the structured payload.
+        EffectRequest::new(
+            EffectKind::Shell,
+            program.as_bytes(),
+            Some(Payload::Inline(payload.into())),
+            timeliness,
+        )
+    }
 }
 
 /// How latency-sensitive an effect is — the operator's timeliness parameter (batchable-or-not). A sum,
@@ -1264,6 +1295,41 @@ mod tests {
                 Timeliness::Interactive
             ),
             EffectRequest::new(EffectKind::Now, "", None, Timeliness::Interactive),
+        );
+    }
+
+    #[test]
+    fn shell_builds_a_structured_program_plus_args_request_no_whitespace_split() {
+        // operator directive: shell invocation is a structured {program, args}, NEVER a flat string split.
+        // EffectRequest::shell puts the PROGRAM in the target (the SEC-F1-gated unit) + the args in a
+        // one-stage (shell-pipeline …) payload — each arg literal, so an arg WITH SPACES survives intact.
+        let req = EffectRequest::shell(
+            "echo",
+            ["hello world", ";", "not-a-separator"],
+            Timeliness::Interactive,
+        );
+        assert_eq!(req.kind, EffectKind::Shell);
+        // Target = the program (what authz gates), NOT the whole command line.
+        assert_eq!(req.target_str().unwrap(), "echo");
+        // Args ride the structured payload; decode it back and confirm they are LITERAL + un-split.
+        let Some(Payload::Inline(bytes)) = &req.payload else {
+            panic!("shell request must carry a structured pipeline payload");
+        };
+        let pipeline = crate::event_ast::decode_shell_pipeline(bytes).expect("decodes");
+        assert_eq!(
+            pipeline.stages.len(),
+            1,
+            "a single command is a one-stage pipeline"
+        );
+        let stage = &pipeline.stages[0];
+        assert_eq!(stage.program, "echo");
+        assert_eq!(
+            stage.args,
+            vec![
+                "hello world".to_string(), // an arg WITH A SPACE survives as ONE arg (the whole point)
+                ";".to_string(), // a metacharacter is a literal arg, never a shell separator
+                "not-a-separator".to_string(),
+            ]
         );
     }
 
