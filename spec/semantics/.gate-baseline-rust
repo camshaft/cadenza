@@ -7087,3 +7087,8 @@ pass	gp1 a match GUARD inside the handler ARM compares the op PAYLOAD against th
 pass	gp3 the guard condition calls a PURE HELPER over the state binder — purity analysis admits the def call in guard position
 pass	gp4 a guard LADDER in the arm — two guarded arms with different state-derived thresholds classify each payload three ways
 pass	gp5 the guard DESTRUCTURES the tuple payload AND reads the state — (guard (tuple a b) (> (+ a b) s)) admits by the pair's sum against the live threshold
+pass	ss5 an op ARG selects WHICH tuple-state slot to bump — index-routed slot mutation, four dispatches revisit slot 0
+pass	ss6 the slot SELECTOR is derived from the state itself — |a mod 3| routes each bump, a same-slot revisit and a two-slot walk both pinned
+pass	ss7 a 2-ary op carries SELECTOR and MAGNITUDE — which slot and by how much are both payload-driven, a trailing read pins slot 0
+pass	rg1 the arm ROTATES the tuple state (a b c)->(b c a) per dispatch and returns the evicted head — four weighted reads wrap the ring
+pass	rg2 the rotation DIRECTION flips on the evicted head's parity — even rotates left, odd rotates right, negative-odd exercises truncated mod

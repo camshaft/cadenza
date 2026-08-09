@@ -21606,3 +21606,96 @@
   (call   main (: 2 Int64)) (output (: 3400 Int64))
   (call   main (: 8 Int64)) (output (: 0 Int64))
   (call   main (: -5 Int64)) (output (: 3412 Int64)))
+
+
+; ── Data-driven slot routing and whole-state permutation (breaker ss5-7 / rg1-2) ──────────────
+; The multi-slot tuple state under DATA-DRIVEN shape changes. Slot routing: an op ARG selects
+; which slot to bump through an if-chain (ss5, with a slot-0 revisit reading its own bump); the
+; selector DERIVES from the state itself via |a mod 3| (ss6 — same-slot revisit, two-slot walk,
+; and the negative-seed abs face); a 2-ary op carries selector AND magnitude (ss7, a trailing
+; read pinning the accumulated slot). Whole-state permutation: the arm ROTATES (a b c)→(b c a)
+; per dispatch returning the evicted head — four weighted reads wrap the ring (rg1); the rotation
+; DIRECTION flips on the evicted head's parity, a branch choosing between two permutations in
+; next-state position, incl. the negative-odd truncated-mod face (rg2). All rows hand-computed;
+; all pass on wasm, rust, and rust-async.
+
+(case "ss5 an op ARG selects WHICH tuple-state slot to bump — index-routed slot mutation, four dispatches revisit slot 0"
+  (input  (do
+            (effect E (op sel (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle E (tuple n 10 100)
+                ((sel (i) st (match st
+                               ((tuple a b c)
+                                (if (= i 0) (resume a (tuple (+ a 1) b c))
+                                    (if (= i 1) (resume b (tuple a (+ b 1) c))
+                                        (resume c (tuple a b (+ c 1)))))))))
+                (+ (E.sel 0) (+ (E.sel 2) (+ (E.sel 1) (E.sel 0))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 121 Int64))
+  (call   main (: 0 Int64)) (output (: 111 Int64)))
+
+(case "ss6 the slot SELECTOR is derived from the state itself — |a mod 3| routes each bump, a same-slot revisit and a two-slot walk both pinned"
+  (input  (do
+            (effect E (op step (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (tuple n 10 100)
+                ((step () st (match st
+                               ((tuple a b c)
+                                (let ((m (% a 3)))
+                                  (let ((i (if (< m 0) (- 0 m) m)))
+                                    (if (= i 0) (resume a (tuple (+ a 1) b c))
+                                        (if (= i 1) (resume b (tuple a (+ b 1) c))
+                                            (resume c (tuple a b (+ c 1)))))))))))
+                (+ (E.step) (E.step))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 201 Int64))
+  (call   main (: 0 Int64)) (output (: 10 Int64))
+  (call   main (: -4 Int64)) (output (: 21 Int64)))
+
+(case "ss7 a 2-ary op carries SELECTOR and MAGNITUDE — which slot and by how much are both payload-driven, a trailing read pins slot 0"
+  (input  (do
+            (effect E (op sel (-> Int64 Int64 Int64)) (op rd0 (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (tuple n 10 100)
+                ((sel (i d) st (match st
+                                 ((tuple a b c)
+                                  (if (= i 0) (resume a (tuple (+ a d) b c))
+                                      (if (= i 1) (resume b (tuple a (+ b d) c))
+                                          (resume c (tuple a b (+ c d))))))))
+                 (rd0 () st (match st ((tuple a b c) (resume a st)))))
+                (+ (E.sel 0 3) (+ (E.sel 2 7) (E.rd0)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 113 Int64))
+  (call   main (: 0 Int64)) (output (: 103 Int64)))
+
+(case "rg1 the arm ROTATES the tuple state (a b c)->(b c a) per dispatch and returns the evicted head — four weighted reads wrap the ring"
+  (input  (do
+            (effect E (op pop (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (tuple n 10 100)
+                ((pop () st (match st
+                              ((tuple a b c) (resume a (tuple b c a))))))
+                (+ (E.pop)
+                   (+ (* 2 (E.pop))
+                      (+ (* 3 (E.pop))
+                         (* 4 (E.pop)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 345 Int64))
+  (call   main (: 0 Int64)) (output (: 320 Int64))
+  (call   main (: -3 Int64)) (output (: 305 Int64)))
+
+(case "rg2 the rotation DIRECTION flips on the evicted head's parity — even rotates left, odd rotates right, negative-odd exercises truncated mod"
+  (input  (do
+            (effect E (op pop (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (tuple n 10 100)
+                ((pop () st (match st
+                              ((tuple a b c)
+                               (resume a (if (= (% a 2) 0)
+                                             (tuple b c a)
+                                             (tuple c a b)))))))
+                (+ (E.pop) (+ (* 2 (E.pop)) (* 3 (E.pop))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 220 Int64))
+  (call   main (: 0 Int64)) (output (: 320 Int64))
+  (call   main (: -3 Int64)) (output (: 188 Int64)))
