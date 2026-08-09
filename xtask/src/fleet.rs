@@ -1944,6 +1944,30 @@ fn ack(fleet: &Fleet, request: &str, outcome: &str, r#ref: &str, body: &str) {
         std::process::exit(1);
     }
 
+    // SILENT-DROP BACKSTOP (v-test-hygiene 2026-08-09): a `merged` ack MUST correspond to work actually
+    // on origin/main. A manual `fleet ack merged` composed from an "empty cherry-pick ⇒ already landed"
+    // heuristic is UNSAFE — an empty pick does NOT prove landed (a stacked-MR tip whose parent isn't
+    // upstream picks empty/conflicting yet is genuinely absent; b92a636ad was false-acked TWICE this
+    // way, silently dropping a real corpus enrichment). So verify by ground truth: if the ack is
+    // `merged` but `ref_landed_on_trunk` (ancestor-of / patch-present-on origin/main, the authoritative
+    // check) says NO, REFUSE — the resolver would otherwise archive unlanded work as done. Skip the
+    // check for an empty ref (a hand-ack with no ref can't be verified — the reply-invariant still
+    // holds) and for `reject` (rejecting an unlanded ref is always valid). This makes the empty-pick
+    // silent-drop structurally impossible: a mistaken merged-ack fails loudly instead of dropping work.
+    if outcome == "merged" && !r#ref.is_empty() && !ref_landed_on_trunk(fleet, r#ref) {
+        eprintln!(
+            "fleet ack: REFUSING a `merged` ack for {} — ref `{}` is NOT on origin/main (neither an \
+             ancestor nor patch-present by `git cherry`). A `merged` ack must correspond to landed work; \
+             an empty/conflicting cherry-pick does NOT prove landed (a stacked-MR tip whose parent isn't \
+             upstream picks empty yet is absent). If the work genuinely didn't land, `--outcome reject` \
+             it (ask the sender to squash a multi-commit stack to ONE commit + resend); if you believe it \
+             DID land, verify by file content on origin/main first. (silent-drop backstop)",
+            path.display(),
+            r#ref
+        );
+        std::process::exit(1);
+    }
+
     // 1) Reply to the sender FIRST (deliver, then archive) — if the archive somehow fails, the sender
     // has still been told, which is the safe direction: a stray un-archived request re-processes
     // (idempotent-ish: a second ack just sends a second reply), whereas a lost reply is invisible.
