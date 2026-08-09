@@ -7103,3 +7103,4 @@ pass	rg2 the rotation DIRECTION flips on the evicted head's parity — even rota
 pass	lk1 a STRING-keyed lock — the arm compares the string payload against the stored key by equality; parity picks the key, a fail counter rides along
 pass	lk2 a ROLLING-code lock — each successful match advances the key index through a list of string keys, |n mod 3| picks the start
 pass	lk3 LOCKOUT after two failures — the fail counter flips a dead flag that rejects even the correct key thereafter
+pass	an unused let binding compiles and runs but the build surfaces a CDZ0306 unused-binding warning

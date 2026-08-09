@@ -6013,3 +6013,18 @@
   (call   main (: 9 Int64)) (output (: 90 Int64))
   (call   main (: 7 Int64)) (output (: 7 Int64))
   (call   main (: 2 Int64)) (output (: 200 Int64)))
+
+(case "an unused let binding compiles and runs but the build surfaces a CDZ0306 unused-binding warning"
+  (doc    "Witnesses dead-code surfacing (the code-quality/dead-code warning band): a let binder that is
+           never referenced does not change the program's value (`main` still returns 42), but the compiler
+           emits a CDZ0306 `unused binding` WARNING rather than silently keeping the dead binding. This is
+           the FIRST use of the portable (warns ..) clause — a case that compiles CLEAN and runs to a value
+           can additionally assert an expected compiler warning (code + a message substring), orthogonal to
+           its (output ..). The binder NAME is in the warning message's dynamic tail (`unused binding `x``),
+           so only the stable lead `unused binding` is pinned. Graded on the wasm target (warnings are
+           emitted in the shared compile stage = target-independent, so wasm is a sufficient witness; the
+           rust/rust-async run paths cannot observe compile stderr, so the (warns ..) check is skipped there,
+           not failed).")
+  (input  (do (def (main) (let ((unused 99)) 42)) (export main)))
+  (output (: 42 Int64))
+  (warns  CDZ0306 (message "unused binding")))
