@@ -19223,3 +19223,117 @@
   (call   main (: 2 Int64)) (output (: 783 Int64))
   (call   main (: 0 Int64)) (output (: 123 Int64))
   (call   main (: -3 Int64)) (output (: -867 Int64)))
+
+;; ── bw/u: BIT operations and UInt64 threads ──────────────────────────────────
+;; bw1 mask/set-bit/draw-driven-shift in the body; bw2 an XOR accumulator
+;; through a recursion; bw3 a shift-up-then-back round trip over masked draws
+;; (value AND count from the thread); bw4 the ARM bit-mixes its argument with
+;; the live state. u1 a UInt64 state thread ABOVE Int64.max (high half
+;; survives dispatch); u3 MIN-adjacent/max UInt64 literals echo through as op
+;; ARGUMENTS exactly; u4 a high-half UInt64 rides as a SUM payload (variant by
+;; parity, Hi arm range-checks). Top-wrap wrapping-add on the high half is a
+;; staged decline; witness banked.
+
+(case "bw1 BIT operations over draws — mask, set-bit, and a draw-driven shift count all read the live thread"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 5))))
+                (let ((d1 (E.next)))
+                  (let ((d2 (E.next)))
+                    (+ (* 100 (& d1 7))
+                       (+ (* 10 (<< 1 (& d1 3)))
+                          (| d2 8)))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 388 Int64))
+  (call   main (: 0 Int64)) (output (: 23 Int64))
+  (call   main (: 6 Int64)) (output (: 651 Int64)))
+
+(case "bw2 an XOR accumulator folds four draws through a recursion — bit-mixing order-sensitive under the stride"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (def (mix (: k Int64) (: acc Int64))
+              (if (<= k 0) acc (mix (- k 1) (^ acc (E.next)))))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 3))))
+                (+ (* 10 (mix 4 0)) 12)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 92 Int64))
+  (call   main (: 0 Int64)) (output (: 132 Int64))
+  (call   main (: 9 Int64)) (output (: 252 Int64)))
+
+(case "bw3 shift-up then shift-back round trip over MASKED draws — both the value and the shift count come from the thread"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 6))))
+                (let ((d (& (E.next) 15)))
+                  (let ((k (& (E.next) 3)))
+                    (let ((up (<< d k)))
+                      (+ (* 1000 (if (= (>> up k) d) 1 5))
+                         (+ (* 10 up) k)))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 1061 Int64))
+  (call   main (: 0 Int64)) (output (: 1002 Int64))
+  (call   main (: 10 Int64)) (output (: 1100 Int64)))
+
+(case "bw4 the ARM bit-mixes its argument with the live state — low nibble from the arg, bits 4-5 stamped from the state"
+  (input  (do
+            (effect E (op tag (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((tag (x) s (resume (+ (& x 15) (<< (& s 3) 4)) (+ s 1))))
+                (+ (* 100 (E.tag 9)) (E.tag 20))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 2536 Int64))
+  (call   main (: 0 Int64)) (output (: 920 Int64))
+  (call   main (: 6 Int64)) (output (: 4152 Int64)))
+
+(case "u1 a UInt64 state thread ABOVE Int64.max — high-half values survive dispatch, mod-10 digits pin the sequence"
+  (input  (do
+            (effect E (op next (-> UInt64)))
+            (def (main (: n UInt64))
+              (handle E (+ (: 9223372036854775808 UInt64) n)
+                ((next () s (resume s (+ s (: 1 UInt64)))))
+                (let ((d1 (E.next)))
+                  (let ((d2 (E.next)))
+                    (+ (* (: 10 UInt64) (% d1 (: 10 UInt64))) (% d2 (: 10 UInt64)))))))
+            (export main)))
+  (call   main (: 5 UInt64)) (output (: 34 UInt64))
+  (call   main (: 0 UInt64)) (output (: 89 UInt64))
+  (call   main (: 7 UInt64)) (output (: 56 UInt64)))
+
+(case "u3 UInt64 arguments ABOVE Int64.max echo through dispatch exactly — 2^63+41 and u64-max both survive, count pins trips"
+  (input  (do
+            (effect E (op keep (-> UInt64 UInt64)) (op count (-> UInt64)))
+            (def (main (: u UInt64))
+              (handle E (: 0 UInt64)
+                ((keep (x) s (resume x (+ s (: 1 UInt64))))
+                 (count () s (resume s s)))
+                (+ (* (: 100 UInt64) (if (= (E.keep (: 9223372036854775849 UInt64)) (: 9223372036854775849 UInt64)) (: 1 UInt64) (: 9 UInt64)))
+                   (+ (* (: 10 UInt64) (if (= (E.keep (: 18446744073709551615 UInt64)) (: 18446744073709551615 UInt64)) (: 1 UInt64) (: 9 UInt64)))
+                      (E.count)))))
+            (export main)))
+  (call   main (: 0 UInt64)) (output (: 112 UInt64)))
+
+(case "u4 a UInt64 ABOVE Int64.max rides as a SUM payload — parity picks Lo/Hi, the Hi arm range-checks the high half"
+  (input  (do
+            (type UBox (Lo UInt64) (Hi UInt64))
+            (effect E (op make (-> UBox)) (op probe (-> UInt64)))
+            (def (main (: n UInt64))
+              (handle E n
+                ((make () s (resume (if (= (% s (: 2 UInt64)) (: 0 UInt64))
+                                        (UBox.Lo s)
+                                        (UBox.Hi (+ (: 9223372036854775808 UInt64) s)))
+                                    (+ s (: 1 UInt64))))
+                 (probe () s (resume s s)))
+                (+ (* (: 10 UInt64) (match (E.make)
+                                      ((UBox.Lo v) (+ (: 100 UInt64) v))
+                                      ((UBox.Hi v) (if (>= v (: 9223372036854775808 UInt64)) (: 1 UInt64) (: 9 UInt64)))))
+                   (- (E.probe) n))))
+            (export main)))
+  (call   main (: 4 UInt64)) (output (: 1041 UInt64))
+  (call   main (: 3 UInt64)) (output (: 11 UInt64)))
