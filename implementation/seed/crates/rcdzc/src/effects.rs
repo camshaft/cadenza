@@ -4840,18 +4840,21 @@ fn multivalue_leaves_threadable(db: &mut Db, body: StructId, callee_def: usize) 
                     .iter()
                     .all(|&(_, arm_body)| multivalue_leaves_threadable(db, arm_body, callee_def))
         }
-        // A `(let (inits…) dispatch)` whose body is an `if`/`match` — finding #12. `thread_returning_tuple`
-        // descends this (threading the inits, recursing on the body dispatch), so the pre-check must mirror
-        // it: the inits are on the unconditional strict spine (no self-call may be gated behind a conditional
-        // THERE), and the body dispatch's own leaves must be threadable. Without this the whole `let` fell to
-        // the leaf case below and `selfcall_under_conditional` saw the body's tail self-call under the `if` →
-        // rejected, forcing single-return (the trailing-observer miscompile).
+        // A `(let (inits…) dispatch)` whose body is an `if`/`match` — finding #12 — OR a NESTED `let` chain
+        // ending in a dispatch — finding #14 (`race k = let a=(A.next) in let b=(B.next) in (if … (race …) k)`,
+        // a two-effect recursion). `thread_returning_tuple` descends this (threading the inits, recursing on the
+        // body — which may be another `let`), so the pre-check must mirror it: the inits are on the unconditional
+        // strict spine (no self-call may be gated behind a conditional THERE), and the body's own leaves must be
+        // threadable (recursing through a nested `let`). Without this a nested `let a in let b in (if …)` fell to
+        // the leaf case below and `selfcall_under_conditional` saw the tail self-call under the `if` → rejected,
+        // forcing single-return (the trailing-observer miscompile — a later `(A.next)` reads PRE-recursion state).
         _ if db.ast.as_form(body, "let").map(|t| t.len()) == Some(2) && {
             let form = db.ast.as_form(body, "let").unwrap().to_vec();
             matches!(
                 resolved_of(db, form[1]),
                 Resolved::If { .. } | Resolved::Match { .. }
-            )
+            ) || db.ast.as_form(form[1], "let").map(|t| t.len()) == Some(2)
+                || db.ast.as_form(form[1], "do").is_some()
         } =>
         {
             let form = db.ast.as_form(body, "let").unwrap().to_vec();
@@ -4866,6 +4869,23 @@ fn multivalue_leaves_threadable(db: &mut Db, body: StructId, callee_def: usize) 
                 _ => false,
             };
             inits_ok && multivalue_leaves_threadable(db, body_occ, callee_def)
+        }
+        // A `(do stmt… tail)` — the leading stmts are for-effect (each threaded on the unconditional strict
+        // spine); the tail carries the recursion. Mirrors `thread_returning_tuple`'s do arm (breaker #14 ra6).
+        // The stmts must not gate a self-call behind a conditional, and the tail's leaves must be threadable.
+        _ if db
+            .ast
+            .as_form(body, "do")
+            .map(|t| t.len() >= 2)
+            .unwrap_or(false) =>
+        {
+            let items = db.ast.as_form(body, "do").unwrap().to_vec();
+            let (tail, stmts) = items.split_last().unwrap();
+            let (tail, stmts) = (*tail, stmts.to_vec());
+            stmts
+                .iter()
+                .all(|&st| !selfcall_under_conditional(db, st, callee_def))
+                && multivalue_leaves_threadable(db, tail, callee_def)
         }
         _ => !selfcall_under_conditional(db, body, callee_def),
     }
@@ -5018,7 +5038,8 @@ fn thread_returning_tuple(
             matches!(
                 resolved_of(db, form[1]),
                 Resolved::If { .. } | Resolved::Match { .. }
-            )
+            ) || db.ast.as_form(form[1], "let").map(|t| t.len()) == Some(2)
+                || db.ast.as_form(form[1], "do").is_some()
         } =>
         {
             let form = db.ast.as_form(body, "let").unwrap().to_vec();
@@ -5047,6 +5068,42 @@ fn thread_returning_tuple(
             let bindings = db.push_list(rpairs);
             let rlet = db.push_list(vec![let_head, bindings, rbody]);
             Some(drain_and_wrap(db, ctx, mark, rlet))
+        }
+        // A `(do stmt… tail)` whose tail is a dispatch (`if`/`match`) or a nested `let`/`do` chain — breaker
+        // #14 ra6 (`(let ((a (E.next))) (do (E.next) (if … (race …) k)))`, a let-body-do with a PERFORMING
+        // discarded head). The leaf arm below would treat the whole `do` as one leaf and `selfcall_under_
+        // conditional` would see the tail self-call under the `if` → single-return, dropping the out-state the
+        // discarded head advanced (the trailing observer reads pre-recursion state). Thread the leading stmts
+        // (each may PERFORM — advancing state, its value discarded) with `thread_bounded`, recurse
+        // `thread_returning_tuple` on the tail under the post-stmt state, and rebuild the `do`. Mirrors the
+        // `let`-dispatch arm above (the do-analogue). Only when the tail is threadable-shaped; a plain-leaf do
+        // tail still routes through the leaf arm.
+        _ if db
+            .ast
+            .as_form(body, "do")
+            .map(|t| t.len() >= 2)
+            .unwrap_or(false) =>
+        {
+            let items = db.ast.as_form(body, "do").unwrap().to_vec();
+            let (tail, stmts) = items.split_last().unwrap();
+            let (tail, stmts) = (*tail, stmts.to_vec());
+            let mark = ctx.pending.borrow().len();
+            let mut cur = states;
+            let mut rstmts = Vec::with_capacity(stmts.len());
+            for st in stmts {
+                // A leading stmt is evaluated for effect (value discarded); thread its state forward.
+                let (rst, next) = thread_bounded(db, st, cur, ctx, 0)?;
+                cur = next;
+                rstmts.push(rst);
+            }
+            // The tail is the do's value — thread it returning a tuple under the post-stmt state.
+            let rtail = thread_returning_tuple(db, tail, cur, ctx, callee_def)?;
+            let do_head = db.push_name("do");
+            let mut children = vec![do_head];
+            children.extend(rstmts);
+            children.push(rtail);
+            let rdo = db.push_list(children);
+            Some(drain_and_wrap(db, ctx, mark, rdo))
         }
         // A LEAF tail expression — an operator/operand spine, a `let`, a tuple/ctor, a bare value, or a
         // perform. Thread it: any self-call on its unconditional strict spine pushes a pending temp (the

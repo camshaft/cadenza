@@ -11618,6 +11618,97 @@ fn an_op_arg_match_outer_with_a_state_match_inner_reading_the_payload_computes_p
     );
 }
 
+/// A TWO-EFFECT recursion (nested A+B handlers, a shared recursive callee performing BOTH) threads BOTH
+/// slots' post-recursion out-state to a continuation observer now (breaker #14). `race` does `(let a=(A.next)
+/// in (let b=(B.next) in (if (< a b) (race (+ k 1)) k)))` — a NESTED `let` chain ending in an `if` holding the
+/// tail self-call. `multivalue_leaves_threadable` / `thread_returning_tuple` only matched a `(let inits
+/// DISPATCH)` whose body was directly an `if`/`match` (finding #12); a nested `let a in let b in if` fell to
+/// the leaf case, `selfcall_under_conditional` saw the self-call under the `if`, and the callee dropped to
+/// single-return — so the trailing `(A.next)` after `(race 0)` read the PRE-recursion state (10 vs 15, a
+/// silent wrong value on all backends). Fixed by letting both the pre-check and the threader descend a `let`
+/// whose body is itself a `let` (recursing to the dispatch). Pins that it COMPILES + no decline; the run
+/// value (main(5)=15) is checked by the corpus case via cdz-run.
+#[test]
+fn a_two_effect_recursion_threads_both_slots_outstate_to_a_continuation_observer() {
+    use crate::testkit::parse;
+    let src = "(do \
+        (effect A (op next (-> Int64))) \
+        (effect B (op next (-> Int64))) \
+        (def (race (: k Int64)) \
+          (let ((a (A.next))) \
+            (let ((b (B.next))) \
+              (if (< a b) (race (+ k 1)) k)))) \
+        (def (main (: n Int64)) \
+          (handle A n \
+            ((next () s (resume (+ s 5) (+ s 5)))) \
+            (handle B (+ n 3) \
+              ((next () t (resume (+ t 2) (+ t 2)))) \
+              (let ((steps (race 0))) \
+                (+ (* 100 steps) (A.next)))))) \
+        (export main))";
+    let out = crate::compile::compile(
+        &[crate::abi::Artifact::new(
+            crate::abi::Artifact::KIND_AST,
+            "main",
+            crate::codec::encode(&parse(src)),
+        )],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        out.artifact(crate::backend::Target::Wasm.artifact_kind())
+            .is_some(),
+        "a two-effect recursion observed by a trailing draw must compile (both slots threaded)",
+    );
+    assert!(
+        !out.diagnostics
+            .iter()
+            .any(|d| d.message.contains("$s") || d.message.contains("$t")),
+        "no leaked internal specialization state-param / multi-value temp name",
+    );
+}
+
+/// A recurring round with a `let`-draw + a BARE `do`-discarded draw (`(let ((a (E.next))) (do (E.next) (if …
+/// (race …) k)))`) threads its out-state now (breaker #14 ra6, the do-body face). The nested-let descent
+/// covered a `let`-whose-body-is-`let`; a `let`-whose-body-is-`do` (with a performing discarded head) fell to
+/// the same leaf case and single-returned, dropping the advance. Fixed by giving both the pre-check and the
+/// threader a `do` arm (thread the for-effect leading stmts, recurse on the tail). Pins compile + no decline;
+/// the run value (main(5)=130, the discarded head advances the threaded state) is verified by the corpus case.
+#[test]
+fn a_recurring_round_with_a_bare_do_discarded_draw_threads_its_outstate() {
+    use crate::testkit::parse;
+    let src = "(do \
+        (effect E (op next (-> Int64))) \
+        (def (race (: k Int64)) \
+          (let ((a (E.next))) \
+            (do (E.next) \
+                (if (< a 20) (race (+ k 1)) k)))) \
+        (def (main (: n Int64)) \
+          (handle E n \
+            ((next () s (resume (+ s 5) (+ s 5)))) \
+            (let ((steps (race 0))) \
+              (+ (* 100 steps) (E.next))))) \
+        (export main))";
+    let out = crate::compile::compile(
+        &[crate::abi::Artifact::new(
+            crate::abi::Artifact::KIND_AST,
+            "main",
+            crate::codec::encode(&parse(src)),
+        )],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        out.artifact(crate::backend::Target::Wasm.artifact_kind())
+            .is_some(),
+        "a recurring round with a bare do-discarded draw must compile (out-state threaded)",
+    );
+    assert!(
+        !out.diagnostics
+            .iter()
+            .any(|d| d.message.contains("$s") || d.message.contains("$t")),
+        "no leaked internal specialization state-param / multi-value temp name",
+    );
+}
+
 /// A handler ARM that RESUMES PER `if`-BRANCH now folds. `get-ty(nid) s => (if (= nid 0) (resume (Some t) s)
 /// (resume (None) s))` selects the resume value by a condition over the op arg. `peel_resume_from_arm_body`
 /// handled `do`/`let`/`match` resume-wrappers but NOT `if`, so the whole handler declined before reaching
