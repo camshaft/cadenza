@@ -77,6 +77,45 @@ pub struct OpenObligation {
     pub is_timer: bool,
 }
 
+/// The set of SETTLED effect ids (terminal outcome recorded), as a WATERMARK + sparse EXCEPTIONS
+/// (log/state-decouple I4, design D3) rather than a per-id `BTreeSet` that grows unboundedly for a
+/// long-lived session. Effect ids are assigned in monotonic issue order, so the CONTIGUOUS settled prefix
+/// collapses into `watermark` (every `id < watermark` is settled) and only the out-of-order gaps —
+/// dispatched-but-not-yet-settled ids below a higher settled id — live in `exceptions`, which stays small
+/// (bounded by the concurrent open frontier, not the session lifetime). `is_settled` = `id < watermark ||
+/// exceptions.contains(id)`. Correctness is identical to the old set: a late result for a below-watermark
+/// id still reads as settled (dropped, timeout-cancels §16c-S4).
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct SettledSet {
+    /// Every id STRICTLY BELOW this is settled (the contiguous settled prefix). Advances past newly-
+    /// contiguous ids on each settle.
+    watermark: u64,
+    /// Settled ids at or above the watermark (out-of-order settles) — pruned as the watermark advances
+    /// past them. Small: bounded by the concurrent open frontier, not the session's total effect count.
+    exceptions: BTreeSet<u64>,
+}
+
+impl SettledSet {
+    /// Is `id` settled? `id < watermark` (in the contiguous prefix) OR a recorded out-of-order exception.
+    pub fn is_settled(&self, id: u64) -> bool {
+        id < self.watermark || self.exceptions.contains(&id)
+    }
+
+    /// Record `id` as settled: add it as an exception, then advance the watermark past any now-contiguous
+    /// run, pruning those ids from `exceptions` (so the set stays watermark + sparse gaps). Idempotent — a
+    /// re-settle of an already-settled id is a no-op.
+    pub fn insert(&mut self, id: u64) {
+        if self.is_settled(id) {
+            return;
+        }
+        self.exceptions.insert(id);
+        // Collapse the contiguous settled prefix into the watermark.
+        while self.exceptions.remove(&self.watermark) {
+            self.watermark += 1;
+        }
+    }
+}
+
 /// A single-session kernel instance: the authoritative log plus the derived KV and the id counter.
 /// The reducer/executor/authorizer are supplied per operation so the same log can be replayed under a
 /// pinned reducer (the §16c-S3 "replay under the version that wrote it" discipline).
@@ -114,8 +153,10 @@ pub struct Session {
     /// replay so it never collides after recovery.
     next_effect_id: u64,
     /// Effect ids that have a *terminal* outcome recorded (Ok/Err/TimedOut). Used to enforce
-    /// timeout-cancels: a late result for a settled id is dropped (§16c-S4).
-    settled: BTreeSet<u64>,
+    /// timeout-cancels: a late result for a settled id is dropped (§16c-S4). A [`SettledSet`]
+    /// (log/state-decouple I4, D3): watermark + sparse exceptions, so it stays bounded by the concurrent
+    /// open frontier rather than growing one entry per effect for a session's whole lifetime.
+    settled: SettledSet,
     /// The resident OPEN-OBLIGATION TABLE (log/state-decouple I2, design D2): effect id → the frame data
     /// an open (dispatched-but-unsettled) effect needs, so the kernel answers `dispatch_hash_of` /
     /// `dispatch_token_of` / `dispatch_family_of` / `time_out_effect` / the `status_snapshot` in-flight
@@ -210,7 +251,7 @@ impl Session {
             closed: false,
             kv: Kv::new(),
             next_effect_id: 0,
-            settled: BTreeSet::new(),
+            settled: SettledSet::default(),
             open: BTreeMap::new(),
             last_now: 0,
             store: None,
@@ -1398,7 +1439,7 @@ impl Session {
         reducer: &mut dyn Reducer,
         dispatch_hash: Hash,
     ) -> Vec<(Effect, Hash)> {
-        if self.settled.contains(&id.0) {
+        if self.settled.is_settled(id.0) {
             return Vec::new();
         }
         let token = self.dispatch_token_of(id).unwrap_or_else(|| {
@@ -1822,7 +1863,7 @@ impl Session {
             closed: false,
             kv: Kv::new(),
             next_effect_id: 0,
-            settled: BTreeSet::new(),
+            settled: SettledSet::default(),
             open: BTreeMap::new(),
             last_now: 0,
             store: None,
@@ -4370,6 +4411,44 @@ mod monotonic_now_tests {
             child.genesis_hash(),
             "parent provenance is in the hashed body → a spawned child's id differs from a root's"
         );
+    }
+
+    #[test]
+    fn settled_set_watermark_advances_and_bounds_exceptions_d3() {
+        // log-decouple I4 / D3: settled ≡ id < watermark || exceptions.contains(id). An IN-ORDER settle
+        // advances the watermark with EMPTY exceptions (bounded); an OUT-OF-ORDER settle holds a sparse
+        // exception until the gap fills, then collapses into the watermark. A late/duplicate settle for a
+        // below-watermark id still reads settled (timeout-cancels §16c-S4).
+        let mut s = SettledSet::default();
+        assert!(!s.is_settled(0));
+        // In-order: settling 0,1,2 advances the watermark to 3 with no lingering exceptions.
+        s.insert(0);
+        s.insert(1);
+        s.insert(2);
+        assert_eq!(s.watermark, 3);
+        assert!(
+            s.exceptions.is_empty(),
+            "contiguous settles collapse into the watermark"
+        );
+        assert!(s.is_settled(0) && s.is_settled(1) && s.is_settled(2));
+        assert!(!s.is_settled(3));
+        // Out-of-order: settle 5 (gap at 3,4) → held as an exception, watermark unchanged.
+        s.insert(5);
+        assert_eq!(s.watermark, 3);
+        assert_eq!(s.exceptions, [5].into_iter().collect());
+        assert!(s.is_settled(5) && !s.is_settled(3) && !s.is_settled(4));
+        // Fill the gap: settle 3 then 4 → the 3,4,5 run collapses, watermark jumps to 6, exceptions empty.
+        s.insert(3);
+        s.insert(4);
+        assert_eq!(s.watermark, 6);
+        assert!(
+            s.exceptions.is_empty(),
+            "filling the gap collapses the run into the watermark"
+        );
+        // A late/duplicate settle for a below-watermark id is a no-op + still reads settled.
+        s.insert(1);
+        assert_eq!(s.watermark, 6);
+        assert!(s.is_settled(1));
     }
 
     #[test]
