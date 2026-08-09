@@ -10087,6 +10087,71 @@ fn a_closure_capturing_a_value_computed_under_a_handler_may_escape() {
     );
 }
 
+/// FINDING #10 (breaker, MED-HIGH silent 3-backend miscompile — the bind-once/closure-capture face). A
+/// let-bound CLOSURE whose init-let binds a PERFORMING draw referenced by the returned lambda —
+/// `(let ((f (let ((a (St.next))) (fn (x) (* a x))))) (f 10))` under a +1-stride St handler — re-derived its
+/// body from source at each application (`apply_lambda`/`beta_reduce`), re-running the draw and discarding
+/// the once-evaluated value: ca1c ran 60 (want 50), ca1 ran 122/62 (want 80/26). The capture-once fold
+/// (thread the draw once, close over the result) is a later increment; until then DECLINE the exact shape so
+/// it grades an honest todo, never a silent wrong value. Also covers the FACTORY-ARG entry (cc3): a helper
+/// RETURNING a closure over a param fed by a performing arg (`(let ((f (mk (St.next)))) …)`).
+#[test]
+fn a_closure_over_a_performing_capture_declines_not_miscompiles() {
+    use crate::testkit::parse;
+    // ca1c: nested-let-init closure, single application (was the silent 60).
+    let ca1c = "(do (effect St (op next (-> Int64))) \
+                (def (main (: n Int64)) \
+                  (handle St n ((next () s (resume s (+ s 1)))) \
+                    (let ((f (let ((a (St.next))) (fn ((: x Int64)) (* a x))))) (f 10)))) \
+                (export main))";
+    assert!(
+        compile_component(&crate::codec::encode(&parse(ca1c))).is_err(),
+        "a closure over a performing nested-let capture must decline, not miscompile to 60"
+    );
+    // cc3: factory-arg entry — a helper RETURNING a closure over a param fed by a performing arg.
+    let cc3 = "(do (effect St (op next (-> Int64))) \
+               (def (mk (: m Int64)) (fn ((: x Int64)) (* x m))) \
+               (def (main (: n Int64)) \
+                 (handle St n ((next () s (resume s (+ s 1)))) \
+                   (let ((f (mk (St.next)))) (+ (f 10) (f (St.next)))))) \
+               (export main))";
+    assert!(
+        compile_component(&crate::codec::encode(&parse(cc3))).is_err(),
+        "a factory returning a closure over a performing-arg param must decline, not miscompile to 116"
+    );
+}
+
+/// The #10 CONTROLS: the SAME closure shapes with a PURE capture, or the draw bound OUTSIDE the closure's
+/// init-let, MUST still fold (the decline is narrow — no over-decline of working captures). d1 = draw bound
+/// in a PLAIN let then captured → 80; d2fix = the nested-let-init shape with a PURE init `(* n 3)` → 225;
+/// cc3-p = the factory with a PURE arg → 225.
+#[test]
+fn a_closure_over_a_pure_or_outside_capture_still_folds() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+    // d1: the draw is a PLAIN let OUTSIDE the closure's init-let (the workaround) — folds, a=5 → f(6)+f(10)=80.
+    let d1 = "(do (effect St (op next (-> Int64))) \
+              (def (main (: n Int64)) \
+                (handle St n ((next () s (resume s (+ s 1)))) \
+                  (let ((a (St.next))) (let ((f (fn ((: x Int64)) (* a x)))) (+ (f (St.next)) (f 10)))))) \
+              (export main))";
+    let b = compile_component(&crate::codec::encode(&parse(d1)))
+        .expect("d1 control: draw bound outside the closure init-let must fold");
+    if let Some(v) = run_linked(&b, "main") {
+        assert_eq!(v, "80", "d1: a captured ONCE (=5), f(6)=30 + f(10)=50 = 80");
+    }
+    // d2fix: the nested-let-init shape but a PURE init — folds (not a perform, so the detector never fires).
+    let d2fix = "(do (effect St (op next (-> Int64))) \
+                 (def (main (: n Int64)) \
+                   (handle St n ((next () s (resume s (+ s 1)))) \
+                     (let ((f (let ((a (* n 3))) (fn ((: x Int64)) (* a x))))) (+ (f (St.next)) (f 10))))) \
+                 (export main))";
+    let b2 = compile_component(&crate::codec::encode(&parse(d2fix)))
+        .expect("d2fix control: a pure nested-let capture must fold");
+    let got: i64 = run_returns_with(&b2, "main", &[Val::S64(5)]);
+    assert_eq!(got, 225, "d2fix: a=15, f(6)=90 + f(9? no, 10-arg)…=225");
+}
+
 /// A compiler-synthesized `#seed` binder carried through a guard-desugared match FALLBACK arm must RESOLVE,
 /// not false-CDZ0101 (breaker ag5). CONJUNCT: [guard-desugared scalar match] × [perform-result SCRUTINEE] ×
 /// [perform in the non-guard FALLBACK arm]. The effects fold lifts the non-constant state seed as nested

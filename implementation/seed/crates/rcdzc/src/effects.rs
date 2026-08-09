@@ -2253,6 +2253,22 @@ pub fn reduce_handle(
     if body_has_block_wrapped_scrutinee_or_statement_branch_perform(db, body, &ctx) {
         return None;
     }
+    // finding #10 (breaker, MED-HIGH silent miscompile — the bind-once/closure-capture face). A `let`-bound
+    // CLOSURE whose value is `(let ((a <perform>)) (fn … a …))` — the capture `a` is a PERFORMING inner-let
+    // init — re-performs that draw PER APPLICATION: the closure re-derives its body from source through
+    // `apply_lambda`/`beta_reduce` at each `(f x)`, discarding the once-evaluated draw and re-running it
+    // inside the body (ca1c: single app 60 not 50; ca1: two apps 122 not 80). The `capture_subst` closes only
+    // a STRONGLY-PURE init into the body; a performing init is left a live reference the re-derivation
+    // re-fires. Correctly folding it (thread the draw ONCE before the closure value, close the closure over
+    // the RESULT) is the eval-count/state-commitment capture-once increment; until then DECLINE the exact
+    // shape (a silent wrong value → an honest "not yet reducible" todo). NARROW by construction (see
+    // `body_has_closure_over_performing_capture`): only a let-bound closure whose init-let binds a discharged/
+    // foreign perform referenced by the returned lambda — the direct handle-body captures (corpus-8688) and
+    // the let-outside-the-closure workaround (d1) bind the draw in a PLAIN let, not the closure's init-let, so
+    // they are untouched; a PURE inner init (d2fix) is not a perform, so it folds.
+    if body_has_closure_over_performing_capture(db, body, &ctx) {
+        return None;
+    }
     // E5 PURE ONE-HOLE-CONTINUATION fold (general one-shot, the pure-continuation case). When the handle
     // BODY reaches EXACTLY ONE discharged perform `P` through STRICT, UNCONDITIONAL, effect-free positions
     // (`pure_hole`), its delimited continuation is the PURE one-hole context `C = body[P := □]`. Resuming
@@ -6125,6 +6141,106 @@ fn body_returns_lambda(db: &mut Db, node: StructId) -> bool {
             .map(<[_]>::to_vec)
             .filter(|tail| tail.len() == 2)
             .is_some_and(|tail| body_returns_lambda(db, tail[1])),
+    }
+}
+
+/// finding #10 detector: whether `node` contains a `let` binding whose init is a CLOSURE OVER A PERFORMING
+/// INNER-LET CAPTURE — `(let ((f (let ((a <perform>)…) (fn … a …)))) …)`. Such a closure re-derives its body
+/// from source at each application (`apply_lambda`/`beta_reduce`), re-running the performing init and
+/// discarding the once-evaluated draw — a silent per-application miscompile (breaker #10, ca1/ca1c). The
+/// capture-once fold (thread the draw once, close over the result) is a later increment; this detects the
+/// exact shape so `reduce_handle` declines it to the safe floor. NARROW: fires only when (1) the init is a
+/// `(let (binds…) lambda-returning-body)` whose (2) at least one binding's init reaches a DISCHARGED or
+/// FOREIGN perform AND (3) the returned lambda REFERENCES that binder. A closure whose captures are all pure
+/// (d2fix), or a draw bound in a PLAIN let OUTSIDE the closure's init-let (d1, corpus-8688 direct handle-body
+/// bindings), does not match — those bind the perform in a `let` the fold already threads once.
+fn body_has_closure_over_performing_capture(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> bool {
+    // FACTORY-ARG entry (cc3): `init` is a call `(mk <performing-arg>…)` to a non-recursive helper that
+    // RETURNS A LAMBDA closing over its param — `(def (mk (: m Int64)) (fn (x) (* x m)))`. The performing arg
+    // (`(St.next)`) feeds the captured param, and the same `apply_lambda`/`beta_reduce` re-derivation re-runs
+    // it per application (cc3: 116 not 80). Detect: a call whose callee body returns a lambda and whose an
+    // argument reaches a discharged/foreign perform. Same fix locus, wider entry (finding #10, cc-batch).
+    fn init_is_factory_over_performing_arg(db: &mut Db, init: StructId, ctx: &HandlerCtx) -> bool {
+        let Resolved::Apply { head, args } = resolved_of(db, init) else {
+            return false;
+        };
+        if is_perform(db, head, ctx).is_some() {
+            return false; // a direct perform, not a factory call
+        }
+        let Some(callee) = crate::eval::lambda_body(db, head)
+            .or_else(|| crate::eval::lambda_body_of_nullary(db, head))
+        else {
+            return false;
+        };
+        if crate::eval::is_recursive(db, callee) || !body_returns_lambda(db, callee) {
+            return false;
+        }
+        // Some arg performs (discharged or foreign) → its once-drawn value is re-derived per application.
+        args.iter().any(|&a| {
+            subtree_reaches_discharged_op(db, a, ctx) || body_reaches_foreign_perform(db, a, ctx)
+        })
+    }
+    // Is `init` a `(let (binds…) <returns-lambda>)` where a binding's init performs and the lambda refs it?
+    fn init_is_performing_capture_closure(db: &mut Db, init: StructId, ctx: &HandlerCtx) -> bool {
+        if init_is_factory_over_performing_arg(db, init, ctx) {
+            return true;
+        }
+        let Some(inner) = db.ast.as_form(init, "let").map(|t| t.to_vec()) else {
+            return false;
+        };
+        if inner.len() != 2 || !body_returns_lambda(db, inner[1]) {
+            return false;
+        }
+        let Struct::List(pairs) = db.ast.get(inner[0]).clone() else {
+            return false;
+        };
+        // Whether the returned-lambda body references a binder NAME (a by-name scan — the binder is a
+        // synthesized `#a…`/user name, and resolution chains are unreliable here because the closure init is
+        // not yet reparented, so `subtree_references_binder`'s resolve-chain match reads false; a name scan is
+        // the robust check for this detector).
+        fn refs_name(db: &Db, node: StructId, name: &str) -> bool {
+            if db.ast.as_name(node) == Some(name) {
+                return true;
+            }
+            match db.ast.get(node) {
+                Struct::List(children) => children.iter().any(|&c| refs_name(db, c, name)),
+                Struct::Atom(_) => false,
+            }
+        }
+        pairs.iter().any(|&pair| match db.ast.get(pair).clone() {
+            Struct::List(kv) if kv.len() == 2 => {
+                let performs = subtree_reaches_discharged_op(db, kv[1], ctx)
+                    || body_reaches_foreign_perform(db, kv[1], ctx);
+                let refs = db
+                    .ast
+                    .as_name(kv[0])
+                    .map(str::to_string)
+                    .is_some_and(|nm| refs_name(db, inner[1], &nm));
+                performs && refs
+            }
+            _ => false,
+        })
+    }
+    // Scan every `let` binding init in the body for the shape.
+    if let Some(form) = db.ast.as_form(node, "let").map(|t| t.to_vec())
+        && form.len() == 2
+        && let Struct::List(pairs) = db.ast.get(form[0]).clone()
+    {
+        for pair in pairs {
+            if let Struct::List(kv) = db.ast.get(pair).clone()
+                && kv.len() == 2
+                && init_is_performing_capture_closure(db, kv[1], ctx)
+            {
+                return true;
+            }
+        }
+    }
+    // Recurse structurally so a nested occurrence (inside a branch, a deeper let body) is caught too.
+    match db.ast.get(node).clone() {
+        Struct::List(children) => children
+            .iter()
+            .any(|&c| body_has_closure_over_performing_capture(db, c, ctx)),
+        Struct::Atom(_) => false,
     }
 }
 
