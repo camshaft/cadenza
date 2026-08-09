@@ -340,6 +340,41 @@ fn a_tuple_keyed_map_handler_state_annotates_the_solved_key_across_arms() {
 }
 
 #[test]
+fn a_tuple_keyed_map_handler_state_solves_the_key_on_the_async_backend_too() {
+    // rust-async PARITY twin of `a_tuple_keyed_map_handler_state_annotates_the_solved_key_across_arms`
+    // (v-rust-backend owns rust-async). The cross-arm collection-key propagation lives in inference
+    // (`refine_init_collection_ty`), UPSTREAM of the backend split, so the seed `Map.empty` node is
+    // solved to `Map((Int64,Int64), Int64)` before EITHER backend emits — the async backend must spell
+    // the same `BTreeMap<(i64, i64), i64>` (its map annotation uses `async_or_rust_type`, byte-identical
+    // to `rust_type` for a closure-free map). Guards against a future async-mode regression that only the
+    // sync test would miss. (Annotation-level: the async harness needs an executor to RUN, but the emit's
+    // key-type spelling is what the E0308 turned on, so asserting the annotation pins the fix on async.)
+    let tk = "(module m \
+        (effect E (op rec (-> Int64)) (op qry (-> Int64 Int64 Int64)) (op cnt (-> Int64))) \
+        (def (run (: n Int64)) \
+          (handle E (tuple n Map.empty) \
+            ((rec () st (match st \
+                          ((tuple s m) \
+                           (resume s (tuple (+ s 2) \
+                                            (Map.insert m (tuple s (+ s 1)) (* 10 s))))))) \
+             (qry (a b) st (match st \
+                             ((tuple s m) \
+                              (resume (match (Map.lookup m (tuple a b)) \
+                                        ((Some v) v) \
+                                        ((None) -1)) \
+                                      st)))) \
+             (cnt () st (match st ((tuple s m) (resume s st))))) \
+            (do (E.rec) (+ (E.qry n (+ n 1)) (E.cnt))))) \
+        (export run))";
+    let rs_async = compile_rust_async(tk);
+    assert!(
+        rs_async.contains("BTreeMap<(i64, i64), i64>"),
+        "the async backend must ALSO annotate the tuple key solved across arms (parity with sync — the \
+         solve is in inference, upstream of the backend split):\n{rs_async}"
+    );
+}
+
+#[test]
 fn bigint_of_a_genuine_uint64_widens_unsigned_not_sign_extended() {
     // REGRESSION (corpus-bugfix finding #4, wasm oracle 817): `(BigInt.of n)` on a genuine UInt64 whose
     // TOP BIT is set must widen UNSIGNED, not sign-extend the i64 carrier. BigIntOfI64 emitted a bare
