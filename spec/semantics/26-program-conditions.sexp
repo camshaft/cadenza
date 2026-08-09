@@ -1850,6 +1850,25 @@
             (export main)))
   (trap   "unreachable"))
 
+(case "a @requires whose predicate is a DISJUNCTION (or) enforces: either disjunct satisfies, only the all-false input traps"
+  (doc    "Every runtime predicate so far combines with `and` or a bare comparison; this pins a precondition
+           built from `or`, the short-circuiting boolean OR prelude op. `@requires(or (<= x 0) (>= x 100))` on
+           `(f x) = x` demands x lies OUTSIDE the open interval (0, 100) — the injected `(if (or (<= x 0) (>= x
+           100)) BODY (trap …))` passes when EITHER disjunct holds and traps only when BOTH are false. Runtime
+           arg via main's param so nothing folds. main(-5): the first disjunct (-5 <= 0) holds → pass → -5.
+           main(150): the first disjunct is false (150 <= 0) but the second (150 >= 100) holds → `or`
+           short-circuits to true → pass → 150. main(50): BOTH disjuncts are false (50 <= 0 false, 50 >= 100
+           false) → the precondition is false → trap. Pins that a disjunctive precondition resolves `or` as the
+           prelude op and enforces its true short-circuit semantics at runtime — a satisfying value on EITHER
+           side flows, and only the all-false case traps.")
+  (input  (do
+            (@ (requires (or (<= x 0) (>= x 100))) (def (f (: x Int64)) x))
+            (def (main (: k Int64)) (f k))
+            (export main)))
+  (call   main (: -5 Int64))  (output (: -5 Int64))
+  (call   main (: 150 Int64)) (output (: 150 Int64))
+  (call   main (: 50 Int64))  (trap "unreachable"))
+
 (case "STACKED @requires: EVERY precondition is enforced — a violated OUTER @requires traps (not only the innermost)"
   (doc    "Soundness pin for stacked preconditions. A def may carry several `@requires`, which desugar to
            NESTED annotation wrappers: `(@ (requires (>= x 0)) (@ (requires (<= x 100)) (def (f x) (+ x 1))))`.
