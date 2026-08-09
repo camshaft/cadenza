@@ -19774,3 +19774,148 @@
   (call   main (: 3 Int64)) (output (: 121 Int64))
   (call   main (: 0 Int64)) (output (: 100 Int64))
   (call   main (: -5 Int64)) (output (: 65 Int64)))
+
+;; ── dl/np/ho2/pm/an/do/eq/ct: binder, closure, and syntax faces ──────────────
+;; dl1 TEN chained lets each drawing once (weights 1..10 pin every binder);
+;; np1 a NESTED record value from one draw (double projections); ho2 a PURE
+;; factory closure applied to a draw (captured constant pure — the safe
+;; mirror of the performing-init zone); pm1 LITERAL match arms grade the
+;; state inside the arm; an1 explicitly ASCRIBED draws are observationally
+;; transparent; do1 ONE draw consumed by both if-branches (read-only binder
+;; reuse); eq1 structural EQUALITY of draw-built records (both verdicts
+;; reachable); ct1 the LOOP BOUND is itself a draw.
+
+(case "dl1 TEN chained lets each drawing once — position weights 1..10 pin every binder to its draw"
+  (input  (do
+            (effect E (op next (-> Int64)) (op probe (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1)))
+                 (probe () s (resume s s)))
+                (let ((v1 (E.next)))
+                  (let ((v2 (E.next)))
+                    (let ((v3 (E.next)))
+                      (let ((v4 (E.next)))
+                        (let ((v5 (E.next)))
+                          (let ((v6 (E.next)))
+                            (let ((v7 (E.next)))
+                              (let ((v8 (E.next)))
+                                (let ((v9 (E.next)))
+                                  (let ((v10 (E.next)))
+                                    (+ (* 10 (+ (* 1 v1) (+ (* 2 v2) (+ (* 3 v3) (+ (* 4 v4) (+ (* 5 v5) (+ (* 6 v6) (+ (* 7 v7) (+ (* 8 v8) (+ (* 9 v9) (* 10 v10)))))))))))
+                                       (- (E.probe) n))))))))))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 6060 Int64))
+  (call   main (: 0 Int64)) (output (: 3310 Int64))
+  (call   main (: -7 Int64)) (output (: -540 Int64)))
+
+(case "np1 a NESTED record value built from one draw — projections through two levels read the same drawn base"
+  (input  (do
+            (effect E (op next (-> Int64)) (op probe (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1)))
+                 (probe () s (resume s s)))
+                (let ((d (E.next)))
+                  (let ((r (record (a d) (b (record (x (* 2 d)) (y (+ d 5)))))))
+                    (+ (* 100 (. r a))
+                       (+ (* 10 (. (. r b) x))
+                          (+ (. (. r b) y)
+                             (* 1000 (- (E.probe) n)))))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 1368 Int64))
+  (call   main (: 0 Int64)) (output (: 1005 Int64))
+  (call   main (: -4 Int64)) (output (: 521 Int64)))
+
+(case "ho2 a PURE factory returns a closure applied to a draw — the captured constant is pure, only the argument is drawn"
+  (input  (do
+            (effect E (op next (-> Int64)) (op probe (-> Int64)))
+            (def (mk (: k Int64)) (fn ((: x Int64)) (+ (* x k) 1)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1)))
+                 (probe () s (resume s s)))
+                (let ((f (mk 7)))
+                  (+ (* 10 (f (E.next))) (- (E.probe) n)))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 221 Int64))
+  (call   main (: 0 Int64)) (output (: 11 Int64))
+  (call   main (: -2 Int64)) (output (: -129 Int64)))
+
+(case "pm1 LITERAL match arms grade the state INSIDE the handler arm — a mod-4 walker crosses all four literal rows"
+  (input  (do
+            (effect E (op tag (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (% n 4)
+                ((tag () s (resume (match s
+                                     (0 70)
+                                     (1 81)
+                                     (2 92)
+                                     (_ 63))
+                                   (% (+ s 1) 4))))
+                (+ (E.tag) (+ (* 10 (E.tag)) (* 100 (E.tag))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 10080 Int64))
+  (call   main (: 2 Int64)) (output (: 7722 Int64))
+  (call   main (: 3 Int64)) (output (: 8863 Int64)))
+
+(case "an1 explicitly ASCRIBED draws — (: (E.next) Int64) in let and argument positions changes nothing observable"
+  (input  (do
+            (effect E (op next (-> Int64)) (op probe (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1)))
+                 (probe () s (resume s s)))
+                (let ((a (: (E.next) Int64)))
+                  (+ (* 10 (+ a (: (E.next) Int64))) (- (E.probe) n)))))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: 92 Int64))
+  (call   main (: 0 Int64)) (output (: 12 Int64))
+  (call   main (: -3 Int64)) (output (: -48 Int64)))
+
+(case "do1 ONE draw consumed by BOTH branches of an if with different weights — the binder is read exactly once per run"
+  (input  (do
+            (effect E (op next (-> Int64)) (op probe (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1)))
+                 (probe () s (resume s s)))
+                (let ((d (E.next)))
+                  (+ (if (> d 2) (+ (* 100 d) 7) (- (* 10 d) 7))
+                     (* 1000 (- (E.probe) n))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 1507 Int64))
+  (call   main (: 1 Int64)) (output (: 1003 Int64))
+  (call   main (: -6 Int64)) (output (: 933 Int64)))
+
+(case "eq1 structural EQUALITY of records built from two draws — a parity-dependent stride decides whether the fields line up"
+  (input  (do
+            (effect E (op next (-> Int64)) (op probe (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (if (= (% s 2) 0) (+ s 2) (+ s 1))))
+                 (probe () s (resume s s)))
+                (let ((a (E.next)))
+                  (let ((b (E.next)))
+                    (+ (if (= (record (x a) (y (+ a 1))) (record (x a) (y b))) 100 200)
+                       (- (E.probe) n))))))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: 204 Int64))
+  (call   main (: 3 Int64)) (output (: 103 Int64))
+  (call   main (: 7 Int64)) (output (: 103 Int64)))
+
+(case "ct1 the LOOP BOUND is itself a draw — a first dispatch sizes the walk, the walk then draws that many times"
+  (input  (do
+            (effect E (op next (-> Int64)) (op probe (-> Int64)))
+            (def (walk (: k Int64) (: acc Int64))
+              (if (<= k 0) acc (walk (- k 1) (+ acc (E.next)))))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1)))
+                 (probe () s (resume s s)))
+                (+ (* 100 (walk (+ (% (E.next) 4) 1) 0))
+                   (- (E.probe) n))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 1204 Int64))
+  (call   main (: 0 Int64)) (output (: 102 Int64))
+  (call   main (: 7 Int64)) (output (: 3805 Int64)))
