@@ -18,8 +18,7 @@
 //! mechanism (executors registered for Now/Http/Model, not Timer/Shell/Emit) the manifest must show all
 //! three grant-states, and the model family must flip Denied→Granted under a session probe-target override.
 
-mod common;
-
+use crate::common::policy_component_bytes;
 use bytes::Bytes;
 use cdz_agent_host::{
     ClockExecutor, HttpExecutor, HttpMethod, HttpResponse, HttpTransport, ModelExecutor,
@@ -29,7 +28,6 @@ use cdz_kernel::effect::{effect_ct, project_manifest, GrantState};
 use cdz_kernel::executor::CompositeExecutor;
 use cdz_kernel::hash::Hash;
 use cdz_kernel::wasm_host::ComponentAuthorizer;
-use common::policy_component_bytes;
 
 /// Stub transports — the manifest only probes `handles_family` (mechanism) + `authorize` (policy); it
 /// NEVER routes an effect to an executor, so these `perform`-half impls are never actually invoked. They

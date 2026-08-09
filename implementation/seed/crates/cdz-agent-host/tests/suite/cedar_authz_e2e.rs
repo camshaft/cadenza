@@ -12,8 +12,7 @@
 //! crate's default gate needs no wasm-tools + no 3.3 MB blob enters the repo. The real decision assertion
 //! runs in CI where the component exists.
 
-mod common;
-
+use crate::common::policy_component_bytes;
 use cdz_agent_host::{ModelExecutor, ModelTransport};
 use cdz_kernel::effect::{effect_ct, EffectRequest, Payload, Timeliness};
 use cdz_kernel::event::{ContentType, EffectOutcome, Event, EventBody};
@@ -23,7 +22,6 @@ use cdz_kernel::kernel::Session;
 use cdz_kernel::kv::Kv;
 use cdz_kernel::reducer::{FoldOutput, Reducer};
 use cdz_kernel::wasm_host::ComponentAuthorizer;
-use common::policy_component_bytes;
 
 /// A stub model transport (the Model executor's I/O half) — the agent's Model effect that gets AUTHORIZED
 /// reaches this; a canned completion keeps the loop hermetic. (An unauthorized effect never gets here.)
