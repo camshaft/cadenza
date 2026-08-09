@@ -77,12 +77,27 @@ pub struct CompositeExecutor {
     /// [`with_effect`](Self::with_effect) (register-by-string — a NEW family is served with no `EffectKind`
     /// variant + no kernel edit).
     by_family: HashMap<String, Box<dyn Executor>>,
+    /// Optional DEFAULT-ROUTE executor, consulted ONLY when [`by_family`](Self::by_family) has no EXACT
+    /// match for the request's family (userspace-effects I3). The `by_family` map serves a FIXED,
+    /// registered-ahead-of-time family set; a userspace-effect family is DYNAMIC — a handler session claims
+    /// `effect/weather` / `effect/vector-search` / … at runtime, so there is no fixed string to
+    /// [`with_effect`]-register a delegating executor under, and the map can't hold an open set. The
+    /// fallback closes that gap: the host registers ONE `UserspaceEffectExecutor` here
+    /// ([`with_fallback`](Self::with_fallback)) and it serves ANY family that resolves to a registered
+    /// handler. `None` = no fallback (the pre-I3 behavior: an unmatched family is the no-executor Err).
+    ///
+    /// The fallback MUST self-guard (§9d anti-stuck preserved): it returns its OWN observable `Err` for a
+    /// family it does not actually handle (e.g. no handler registered for it), so a genuinely-unroutable
+    /// family still produces an observable failure the reducer folds — just via the fallback rather than
+    /// the bare None arm. Routing NEVER silently drops.
+    fallback: Option<Box<dyn Executor>>,
 }
 
 impl CompositeExecutor {
     pub fn new() -> Self {
         CompositeExecutor {
             by_family: HashMap::new(),
+            fallback: None,
         }
     }
 
@@ -97,6 +112,17 @@ impl CompositeExecutor {
         self
     }
 
+    /// Register the DEFAULT-ROUTE executor consulted when no [`with_effect`](Self::with_effect) family
+    /// matches (userspace-effects I3 — see the [`fallback`](Self::fallback) field). Builder-style; last
+    /// registration wins. The host registers a `UserspaceEffectExecutor` here so a DYNAMIC userspace-effect
+    /// family (claimed at runtime, so not in the fixed `by_family` set) still routes to the delegating
+    /// executor instead of hitting the no-executor Err. The fallback self-guards, so registering it does
+    /// NOT make every unknown family "handled" — a family it can't serve still returns an observable Err.
+    pub fn with_fallback(mut self, executor: Box<dyn Executor>) -> Self {
+        self.fallback = Some(executor);
+        self
+    }
+
     /// Is an executor registered for this kind (i.e. for its family)?
     pub fn handles(&self, kind: &EffectKind) -> bool {
         self.handles_family(kind.family())
@@ -107,7 +133,15 @@ impl CompositeExecutor {
     /// `handles_family` override delegates here, so `&dyn Executor` sees the same answer as a concrete
     /// `CompositeExecutor` caller (one source of truth, two reach-paths).
     pub fn handles_family(&self, family: &str) -> bool {
+        // A family is handled if an exact executor is registered OR the fallback serves it. The fallback's
+        // `handles_family` is its own honest answer (a `UserspaceEffectExecutor` reports true only for a
+        // family that resolves to a registered handler), so the manifest projection stays accurate — it
+        // does NOT blanket-claim every family just because a fallback exists.
         self.by_family.contains_key(family)
+            || self
+                .fallback
+                .as_ref()
+                .is_some_and(|f| f.handles_family(family))
     }
 }
 
@@ -119,15 +153,21 @@ impl Executor for CompositeExecutor {
         req: &EffectRequest,
         idempotency_key: Hash,
     ) -> EffectOutcome {
-        // Route by the request's content-type FAMILY (seq-39): a request whose family has no registered
-        // executor is an OBSERVABLE Err (§9d anti-stuck), never a panic/drop. `id` threads through unchanged
-        // so a delegating leaf executor can bind its reply-token to (caller, id).
+        // Route by the request's content-type FAMILY (seq-39): an EXACT-family executor wins. `id` threads
+        // through unchanged so a delegating leaf executor can bind its reply-token to (caller, id).
         match self.by_family.get_mut(req.content_type.family.as_ref()) {
             Some(inner) => inner.perform(id, req, idempotency_key).await,
-            None => EffectOutcome::err(format!(
-                "no executor registered for effect family {:?} (target {:?})",
-                req.content_type.family, req.target
-            )),
+            // No exact match: consult the DEFAULT-ROUTE fallback (userspace-effects I3) if registered — it
+            // serves DYNAMIC families (a userspace effect claimed at runtime, absent from the fixed
+            // `by_family` set) and self-guards (returns its own Err for a family it can't handle). With no
+            // fallback this is the original no-executor OBSERVABLE Err (§9d anti-stuck), never a drop/panic.
+            None => match self.fallback.as_mut() {
+                Some(fb) => fb.perform(id, req, idempotency_key).await,
+                None => EffectOutcome::err(format!(
+                    "no executor registered for effect family {:?} (target {:?})",
+                    req.content_type.family, req.target
+                )),
+            },
         }
     }
 
@@ -504,5 +544,116 @@ mod tests {
             ),
             other => panic!("an unregistered family must be an observable Err, got {other:?}"),
         }
+    }
+
+    // A stand-in for the host's `UserspaceEffectExecutor` (userspace-effects I3): serves ONLY families it
+    // "resolves a handler for" (here, a fixed allow-set), self-guarding by returning a PERMANENT Err for
+    // any other family — exactly the anti-stuck contract the fallback relies on.
+    struct FallbackExecutor {
+        handled: &'static [&'static str],
+    }
+    #[async_trait::async_trait(?Send)]
+    impl Executor for FallbackExecutor {
+        async fn perform(
+            &mut self,
+            _id: EffectId,
+            req: &EffectRequest,
+            _key: Hash,
+        ) -> EffectOutcome {
+            if self.handled.contains(&req.content_type.family.as_ref()) {
+                EffectOutcome::Ok(Some(Payload::Inline(b"fallback-ran".to_vec().into())))
+            } else {
+                // SELF-GUARD: a family this delegating executor does not actually handle still gets an
+                // observable Err (§9d) — the fallback never blanket-accepts.
+                EffectOutcome::err(format!(
+                    "no handler registered for userspace effect family {:?}",
+                    req.content_type.family
+                ))
+            }
+        }
+        fn handles_family(&self, family: &str) -> bool {
+            self.handled.contains(&family)
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn fallback_serves_a_dynamic_family_with_no_exact_registration() {
+        // userspace-effects I3: a DYNAMIC family (no `with_effect` registration) routes to the fallback
+        // instead of hitting the no-executor Err — the whole point of the default-route arm.
+        let mut exec = CompositeExecutor::new()
+            .with_effect(
+                crate::effect::effect_ct::HTTP,
+                Box::new(TagExecutor(b"http")),
+            )
+            .with_fallback(Box::new(FallbackExecutor {
+                handled: &["effect/weather"],
+            }));
+        let mut ext = req(EffectKind::Http, "today");
+        ext.content_type.family = "effect/weather".into();
+        assert_eq!(
+            exec.perform(EffectId(1), &ext, Hash::of(b"k")).await,
+            EffectOutcome::Ok(Some(Payload::Inline(b"fallback-ran".to_vec().into()))),
+            "a dynamic family with no exact executor routes to the fallback"
+        );
+        // handles_family ORs the fallback's honest answer.
+        assert!(exec.handles_family("effect/weather"));
+        assert!(exec.handles_family(crate::effect::effect_ct::HTTP));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn exact_family_match_wins_over_the_fallback() {
+        // The fallback is consulted ONLY on an exact-match miss — a registered family never reaches it.
+        let mut exec = CompositeExecutor::new()
+            .with_effect(
+                crate::effect::effect_ct::HTTP,
+                Box::new(TagExecutor(b"exact")),
+            )
+            .with_fallback(Box::new(FallbackExecutor {
+                handled: &[crate::effect::effect_ct::HTTP], // even if the fallback claims it...
+            }));
+        assert_eq!(
+            exec.perform(EffectId(1), &req(EffectKind::Http, "x"), Hash::of(b"k"))
+                .await,
+            EffectOutcome::Ok(Some(Payload::Inline(b"exact".to_vec().into()))),
+            "an exact by_family match takes precedence over the fallback"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn fallback_self_guard_preserves_the_anti_stuck_err_for_a_genuinely_unhandled_family() {
+        // §9d anti-stuck preserved: with a fallback registered, a family NEITHER exactly-registered NOR
+        // served by the fallback still produces an observable Err (from the fallback's self-guard) — routing
+        // never silently drops just because a fallback exists.
+        let mut exec = CompositeExecutor::new().with_fallback(Box::new(FallbackExecutor {
+            handled: &["effect/weather"],
+        }));
+        let mut ext = req(EffectKind::Http, "x");
+        ext.content_type.family = "effect/unregistered".into();
+        match exec.perform(EffectId(1), &ext, Hash::of(b"k")).await {
+            EffectOutcome::Err { message: msg, .. } => assert!(
+                msg.contains("effect/unregistered"),
+                "the fallback's self-guard names the unhandled family: {msg}"
+            ),
+            other => panic!("a family the fallback can't handle must still Err, got {other:?}"),
+        }
+        // And handles_family is honest: false for a family neither path serves.
+        assert!(!exec.handles_family("effect/unregistered"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn no_fallback_keeps_the_original_no_executor_err() {
+        // Backward-compat: with NO fallback registered, an unmatched family is the original no-executor Err
+        // (the pre-I3 behavior) — the fallback is purely additive.
+        let mut exec = CompositeExecutor::new()
+            .with_effect(crate::effect::effect_ct::HTTP, Box::new(TagExecutor(b"h")));
+        let mut ext = req(EffectKind::Http, "x");
+        ext.content_type.family = "effect/weather".into();
+        match exec.perform(EffectId(1), &ext, Hash::of(b"k")).await {
+            EffectOutcome::Err { message: msg, .. } => {
+                assert!(msg.contains("no executor registered"), "{msg}")
+            }
+            other => panic!("no fallback → the no-executor Err, got {other:?}"),
+        }
+        assert!(!exec.handles_family("effect/weather"));
     }
 }
