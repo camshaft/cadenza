@@ -713,16 +713,29 @@ fn genesis_event(family: &'static str, payload: &[u8]) -> EventBody {
 /// The host: a registry of running agent sessions keyed by [`SessionId`]. Owns each [`HostedSession`],
 /// routes inbound events to the right one, and is the object a `session-status <id>` query reads.
 ///
+/// The host's shared handle to the canonical [`NameStore`](cdz_kernel::name_store::NameStore): an
+/// `Rc<RefCell<..>>` so the host, and any on-loop executor that must resolve LIVE name registrations, hold the
+/// SAME store (v-agent-harness ruling A, 2026-08-09). Single-threaded (`Rc`/`RefCell`, not `Arc`/`Mutex` — the
+/// host loop is `!Send` by design, like the rest of the executor set). Sharing is replay-safe: the `NameStore`
+/// is external mutable state, never rebuilt from the log, so its in-memory identity carries no determinism.
+pub type SharedNameStore = std::rc::Rc<std::cell::RefCell<cdz_kernel::name_store::NameStore>>;
+
 /// Constructed via [`new`](Self::new) / [`with_canonical_store`](Self::with_canonical_store) (each creates
 /// the metrics registry). `Default` delegates to `new` (it can't be derived — the metrics registry is a
 /// required collaborator, not a `Default` field — so the impl forwards to `new`).
 pub struct AgentHost {
     sessions: HashMap<SessionId, HostedSession>,
     /// The §4c v0.3 canonical shared name store, if this host is share-backed (see
-    /// [`AgentHost::with_canonical_store`]). `None` = share-less host. Held BY VALUE: each session gets a
-    /// replay-copy at spawn and folds its appends back after each turn — no shared handle. (Type:
-    /// [`cdz_kernel::name_store::NameStore`].)
-    canonical: Option<cdz_kernel::name_store::NameStore>,
+    /// [`AgentHost::with_canonical_store`]). `None` = share-less host. Held as a SHARED handle
+    /// ([`SharedNameStore`] = `Rc<RefCell<NameStore>>`): the host owns it, each spawned session gets a
+    /// replay-COPY at spawn + folds its appends back after each turn (the single-writer-per-name §4c model),
+    /// AND on-loop executors that must resolve LIVE registrations (the userspace-effect fallback's
+    /// [`HandlerResolver`](crate::userspace_effect_exec::HandlerResolver)) hold a CLONE of this `Rc` so a
+    /// handler registered by a peer THIS turn is visible immediately — not one merge-back behind. Sharing is
+    /// replay-safe: the `NameStore` is EXTERNAL mutable state (re-attached after recover, never rebuilt from
+    /// the log — §4c / kernel `name_store` field doc), so determinism comes from the logged events, never the
+    /// store's in-memory identity (v-agent-harness ruling A, 2026-08-09).
+    canonical: Option<SharedNameStore>,
     /// The §4c canonical-store DURABILITY backend (AWS-backends arc I4a), if durability is enabled. `None` =
     /// no durability (the default — snapshotting is best-effort + opt-in, so existing tests/behavior are
     /// unchanged). When `Some` AND the host is canonical-backed, the host snapshots the canonical store after
@@ -776,18 +789,19 @@ impl AgentHost {
     /// Opt-in: a host built with [`new`](Self::new) stays share-less and every session keeps whatever store
     /// (or none) it was spawned with.
     ///
-    /// Lifecycle (single-writer-per-name, conflict-free): the host holds ONE canonical store; on
-    /// [`spawn`](Self::spawn) a session gets a by-VALUE copy of it (a replay of `canonical.to_set_entries()`),
-    /// so it's born seeing everyone's published pointers; after each [`deliver`](Self::deliver) turn the host
-    /// folds that session's new writes back with `canonical.merge_appends_from(session.name_store())`. No
-    /// shared handle / interior mutability — by-value copies + a reconcile, composing with the per-session
-    /// [`HostedSession::with_name_store`] seam.
+    /// Lifecycle (single-writer-per-name, conflict-free): the host holds ONE canonical store (a
+    /// [`SharedNameStore`] `Rc<RefCell<..>>`); on [`spawn`](Self::spawn) a session gets a by-VALUE copy of it
+    /// (a replay of `canonical.to_set_entries()`), so it's born seeing everyone's published pointers; after
+    /// each [`deliver`](Self::deliver) turn the host folds that session's new writes back with
+    /// `canonical.borrow_mut().merge_appends_from(session.name_store())`. The `Rc<RefCell<..>>` also lets an
+    /// on-loop executor hold a clone to resolve LIVE registrations (ruling A) — the per-session copy is still
+    /// the spawn/merge-back model, composing with the [`HostedSession::with_name_store`] seam.
     pub fn with_canonical_store(canonical: cdz_kernel::name_store::NameStore) -> Self {
         let registry = crate::metrics::Registry::new();
         let metrics = crate::metrics::HostMetrics::new(&registry);
         AgentHost {
             sessions: HashMap::new(),
-            canonical: Some(canonical),
+            canonical: Some(std::rc::Rc::new(std::cell::RefCell::new(canonical))),
             name_snapshot: None,
             registry,
             metrics,
@@ -854,13 +868,24 @@ impl AgentHost {
         Self::with_canonical_store(restored).with_name_snapshot_store(store)
     }
 
-    /// Borrow the host-owned CANONICAL shared name store (`None` for a share-less host). The read-back dual
-    /// of [`with_canonical_store`](Self::with_canonical_store): a driver observes the shared directory the
-    /// host maintains (group memberships after death-retract, published pointers), e.g. to `resolve_all` a
-    /// group post-eviction. Read-only — the host owns the mutation policy (session-write fold-back +
-    /// §I5 death-retract).
-    pub fn canonical_store(&self) -> Option<&cdz_kernel::name_store::NameStore> {
+    /// The host-owned CANONICAL shared name store handle (`None` for a share-less host). The read-back dual of
+    /// [`with_canonical_store`](Self::with_canonical_store): a driver observes the shared directory the host
+    /// maintains (group memberships after death-retract, published pointers) via `.borrow()`, e.g.
+    /// `host.canonical_store().unwrap().borrow().resolve_all(group)`. It ALSO hands an on-loop executor a
+    /// CLONE of the `Rc` (a cheap refcount bump) so the userspace-effect fallback resolves handler
+    /// registrations LIVE against the same store the host mutates (ruling A). The host owns the mutation policy
+    /// (session-write fold-back + §I5 death-retract); a holder that only reads uses `.borrow()`.
+    pub fn canonical_store(&self) -> Option<&SharedNameStore> {
         self.canonical.as_ref()
+    }
+
+    /// A CLONE of the canonical shared-store handle (`None` for a share-less host) — the seam an on-loop
+    /// executor (the userspace-effect [`HandlerResolver`](crate::userspace_effect_exec::HandlerResolver))
+    /// captures to resolve `effect/<family>` registrations LIVE at perform-time (ruling A). Cloning the `Rc`
+    /// is an O(1) refcount bump; the executor `.borrow()`s it per resolve. Distinct from
+    /// [`canonical_store`](Self::canonical_store) only in intent (an owned handle to keep vs a borrow to read).
+    pub fn shared_canonical_store(&self) -> Option<SharedNameStore> {
+        self.canonical.clone()
     }
 
     /// Register a new running session under `id`. Returns the id back for convenience. If `id` already
@@ -876,7 +901,7 @@ impl AgentHost {
     /// [`new`](Self::new)) the session keeps whatever store (or none) it was spawned with.
     pub fn spawn(&mut self, id: SessionId, session: HostedSession) -> SessionId {
         let session = match &self.canonical {
-            Some(canonical) => session.with_name_store(replay_of(canonical)),
+            Some(canonical) => session.with_name_store(replay_of(&canonical.borrow())),
             None => session,
         };
         let replaced = self.sessions.insert(id.clone(), session).is_some();
@@ -1171,13 +1196,22 @@ impl AgentHost {
         // the host is canonical-backed AND the session has a store. BEST-EFFORT snapshot: a save failure is
         // logged, never fails the turn.
         if outcome.is_ok() {
-            if let Some(canonical) = &mut self.canonical {
+            if let Some(canonical) = &self.canonical {
                 if let Some(session_store) =
                     self.sessions.get(id).and_then(|s| s.session().name_store())
                 {
-                    canonical.merge_appends_from(session_store);
-                    if let Some(snapshot_store) = &mut self.name_snapshot {
-                        let bytes = canonical.snapshot_bytes();
+                    // Fold the session's new writes into the shared canonical, then (if durable) snapshot the
+                    // result. The RefCell borrow is scoped to the merge + snapshot_bytes read and DROPPED
+                    // before the async save — a RefCell borrow must not be held across an `.await` (and the
+                    // borrow is over in-memory work only; the I/O save takes owned `bytes`).
+                    let snapshot_bytes = {
+                        let mut c = canonical.borrow_mut();
+                        c.merge_appends_from(session_store);
+                        self.name_snapshot.is_some().then(|| c.snapshot_bytes())
+                    };
+                    if let (Some(bytes), Some(snapshot_store)) =
+                        (snapshot_bytes, &mut self.name_snapshot)
+                    {
                         if let Err(e) = snapshot_store.save(&bytes).await {
                             tracing::warn!(
                                 target: "cdz_agent_host::name_snapshot",
@@ -1414,9 +1448,13 @@ impl AgentHost {
     /// group-store OR a measured perf issue (whichever first), at which point a session→groups reverse index
     /// (or the central store's own index) becomes the O(1) path. See the directory-i5 index note.
     fn retract_dead_member_from_groups(&mut self, dead: &SessionId) {
-        let Some(canonical) = &mut self.canonical else {
+        let Some(canonical) = self.canonical.clone() else {
             return; // per-session-store mode: no host-writable group set to retract from
         };
+        // One `borrow_mut` for the whole retract (read the group logs + append the remove ops) — no await
+        // here, so a single scoped mutable borrow is correct + cheapest. The `Rc` clone above is an O(1)
+        // refcount bump that sidesteps borrowing `self` twice (we mutate the shared store, not `self`).
+        let mut canonical = canonical.borrow_mut();
         // The member value is the dead session's genesis hash (= its SessionId hex parsed back to a Hash). A
         // non-hex id can't be a group member value → nothing to retract.
         let Some(dead_hash) = Hash::from_hex(dead.as_str()) else {
@@ -2212,7 +2250,11 @@ mod tests {
 
         // Both members present before the death.
         assert_eq!(
-            host.canonical_store().unwrap().resolve_all(GROUP).unwrap(),
+            host.canonical_store()
+                .unwrap()
+                .borrow()
+                .resolve_all(GROUP)
+                .unwrap(),
             [victim_hash, survivor_hash].into_iter().collect(),
             "both members are in the group before termination"
         );
@@ -2224,7 +2266,12 @@ mod tests {
             .expect("fresh terminate");
 
         // The victim is evicted; the survivor remains (observed-remove is precise).
-        let members = host.canonical_store().unwrap().resolve_all(GROUP).unwrap();
+        let members = host
+            .canonical_store()
+            .unwrap()
+            .borrow()
+            .resolve_all(GROUP)
+            .unwrap();
         assert!(
             !members.contains(&victim_hash),
             "the terminated session is auto-evicted from the group (I5)"
@@ -2279,6 +2326,7 @@ mod tests {
             assert!(
                 host.canonical_store()
                     .unwrap()
+                    .borrow()
                     .resolve_all(g)
                     .unwrap()
                     .contains(&victim_hash),
@@ -2292,7 +2340,7 @@ mod tests {
             .expect("victim present")
             .expect("fresh terminate");
 
-        let store = host.canonical_store().unwrap();
+        let store = host.canonical_store().unwrap().borrow();
         // Evicted everywhere.
         for g in [LOBBY, OPS, SOLO] {
             assert!(
@@ -3628,12 +3676,20 @@ mod tests {
         assert_eq!(
             host.canonical_store()
                 .unwrap()
+                .borrow()
                 .resolve(NameStore::COMPILER_LATEST)
                 .unwrap(),
             value,
             "the session's store/set folded into the canonical store"
         );
-        assert_eq!(host.canonical_store().unwrap().to_set_entries().len(), 1);
+        assert_eq!(
+            host.canonical_store()
+                .unwrap()
+                .borrow()
+                .to_set_entries()
+                .len(),
+            1
+        );
     }
 
     #[tokio::test]
@@ -3654,7 +3710,7 @@ mod tests {
         host1.deliver(&id, inbound_go(), None).await;
 
         // The bytes the host durably saved == the canonical store's snapshot_bytes (the save argument).
-        let saved = host1.canonical_store().unwrap().snapshot_bytes();
+        let saved = host1.canonical_store().unwrap().borrow().snapshot_bytes();
         assert!(
             !saved.is_empty(),
             "a non-empty snapshot was produced from the write"
@@ -3667,7 +3723,7 @@ mod tests {
         // A NEW host restores its canonical store from that backend on boot.
         let host2 = AgentHost::with_canonical_store_restored(Box::new(backend)).await;
         assert_eq!(
-            host2.canonical_store().unwrap().resolve(NameStore::COMPILER_LATEST).unwrap(),
+            host2.canonical_store().unwrap().borrow().resolve(NameStore::COMPILER_LATEST).unwrap(),
             value,
             "the restored host boots with the previously-published pointer (durable across a restart)"
         );
@@ -3686,7 +3742,11 @@ mod tests {
             "restore leaves a canonical-backed host"
         );
         assert!(
-            host.canonical_store().unwrap().to_set_entries().is_empty(),
+            host.canonical_store()
+                .unwrap()
+                .borrow()
+                .to_set_entries()
+                .is_empty(),
             "nothing saved yet → an empty canonical store"
         );
     }
@@ -3701,7 +3761,11 @@ mod tests {
         let host = AgentHost::with_canonical_store_restored(Box::new(backend)).await;
         assert!(host.canonical_store().is_some());
         assert!(
-            host.canonical_store().unwrap().to_set_entries().is_empty(),
+            host.canonical_store()
+                .unwrap()
+                .borrow()
+                .to_set_entries()
+                .is_empty(),
             "a corrupt snapshot falls back to an empty store (best-effort durability, no panic)"
         );
     }

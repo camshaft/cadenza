@@ -1469,7 +1469,12 @@ mod tests {
         // Victim terminated + removed.
         assert!(!host.contains(&victim_id), "victim terminated via the loop");
         // I5: the victim is auto-evicted from the group; the survivor stays.
-        let members = host.canonical_store().unwrap().resolve_all(GROUP).unwrap();
+        let members = host
+            .canonical_store()
+            .unwrap()
+            .borrow()
+            .resolve_all(GROUP)
+            .unwrap();
         assert!(
             !members.contains(&victim_hash),
             "terminate-through-the-loop auto-evicted the victim from its group (I5 end to end)"
