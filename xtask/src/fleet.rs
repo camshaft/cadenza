@@ -7976,6 +7976,52 @@ fn run_gate_local_bounded(arch: &str, dir: &Path) -> CiVerdict {
     }
 }
 
+/// Map a `cargo fmt --all --check` exit into a trunk-fmt verdict. Pure so the classification is
+/// unit-tested without a git tree: `spawned_ok=false` → Unknown (can't run fmt — never alarm on our own
+/// tooling failure, which is not a trunk regression); `fmt_ok=true` → Clean; else → Red.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TrunkFmtVerdict {
+    Clean,
+    Red,
+    Unknown,
+}
+
+fn trunk_fmt_verdict(spawned_ok: bool, fmt_ok: bool) -> TrunkFmtVerdict {
+    if !spawned_ok {
+        TrunkFmtVerdict::Unknown
+    } else if fmt_ok {
+        TrunkFmtVerdict::Clean
+    } else {
+        TrunkFmtVerdict::Red
+    }
+}
+
+/// PRE-FLIGHT trunk-fmt assertion for the `--local-gate --publish-origin` drain (concierge-greenlit
+/// belt-and-suspenders 2026-08-09). The automated land path CANNOT push fmt-red — every candidate is
+/// gated by the `local-gate` aggregate whose `fmtCheck` runs `cargo fmt --all --check`. But an
+/// operator-scoped HAND-LAND (the one gate-skipping path, used twice this session for throughput
+/// keystones) CAN put an unformatted commit on origin/main out-of-band. If that happens, the NEXT drain
+/// pass bases every candidate on that fmt-red tip, so all of them would inherit the red base's fmtCheck
+/// and get MASS-FALSE-REJECTED (an innocent-candidate cascade). So before gating, assert the freshly-
+/// fetched base is fmt-clean; if it isn't, alarm the concierge (rate-limited) and the caller SKIPS the
+/// pass rather than reject the whole queue against a poisoned base.
+///
+/// Runs `cargo fmt --all --check` from the trunk worktree `dir` — the SAME command `fmtCheck` runs, and
+/// it uses the PINNED toolchain (rust-toolchain.toml governs the worktree), so it can't false-alarm on a
+/// rustfmt version mismatch the way an ambient rustfmt can (the exact stale-worktree/version false-
+/// positive v-nix hit 2026-08-09). Cheap (a formatting check, no rebuild). Returns the verdict; the
+/// caller owns the escalation + skip so this stays testable.
+fn check_trunk_fmt_clean(dir: &Path) -> TrunkFmtVerdict {
+    let out = Command::new("cargo")
+        .current_dir(dir)
+        .args(["fmt", "--all", "--check"])
+        .output();
+    match out {
+        Ok(o) => trunk_fmt_verdict(true, o.status.success()),
+        Err(_) => trunk_fmt_verdict(false, false),
+    }
+}
+
 fn gate_local(arch: &str) {
     let verdict = run_gate_local(arch);
     println!(
@@ -10445,6 +10491,60 @@ fn schedule_pass_local_gate(
     if publish_origin {
         let _ = git_wt(&["fetch", "origin", "main", "--quiet"]);
         let _ = git_wt(&["reset", "--hard", "origin/main"]);
+        // PRE-FLIGHT trunk-fmt assertion (concierge-greenlit belt-and-suspenders 2026-08-09): the base is
+        // now fresh origin/main. The automated path can't push fmt-red (fmtCheck gates every land), but an
+        // operator HAND-LAND (the one gate-skipping path) can leave origin/main fmt-red out-of-band. If so,
+        // gating each candidate on this poisoned base mass-false-rejects the WHOLE queue (every candidate
+        // inherits the red base's fmtCheck). So assert the base is fmt-clean BEFORE gating; if not, alarm
+        // the concierge (rate-limited) + SKIP the pass (leave the queue intact for a clean retry once the
+        // fmt is fixed) rather than reject innocents. Uses the pinned toolchain so it can't version-false-
+        // alarm like the ambient-rustfmt stale-worktree positive v-nix hit.
+        if let TrunkFmtVerdict::Red = check_trunk_fmt_clean(&wt) {
+            let om = head_sha();
+            eprintln!(
+                "schedule-pass --local-gate: origin/main ({}) is FMT-RED (`cargo fmt --all --check` fails) — \
+                 a hand-land bypassed the gate. SKIPPING this pass (gating on a red base would mass-false-\
+                 reject the queue). Fix trunk fmt (priority) then re-run.",
+                &om[..om.len().min(12)]
+            );
+            let now = now_unix();
+            let key = "trunk-fmt-red";
+            let notified_recently =
+                sat_notify_age_secs(fleet, key, now).is_some_and(|s| s < SAT_NOTIFY_GRACE);
+            if !notified_recently {
+                deliver(
+                    fleet,
+                    &Message {
+                        from: "pr-sync".to_string(),
+                        to: "concierge".to_string(),
+                        kind: "note".to_string(),
+                        subject: format!(
+                            "TRUNK FMT-RED on origin/main @ {} — a hand-land bypassed the fmt gate; merge path HELD until fixed",
+                            &om[..om.len().min(12)]
+                        ),
+                        body: "pr-sync's pre-flight trunk-fmt assertion found origin/main fmt-red (`cargo \
+                               fmt --all --check` fails under the pinned toolchain). The automated land path \
+                               cannot do this (fmtCheck gates every land), so it was an operator-scoped \
+                               HAND-LAND that skipped the gate. pr-sync SKIPPED this drain pass rather than \
+                               mass-false-reject the whole queue against a poisoned base — the queue is \
+                               intact and will drain once trunk fmt is green. Please route a `cargo fmt` fix \
+                               to the owning vertical as priority. (Rate-limited: one note per ~30min.)"
+                            .to_string(),
+                        seq: next_seq(),
+                        r#ref: String::new(),
+                        in_reply_to: String::new(),
+                    },
+                );
+                stamp_sat_notify(fleet, key);
+            }
+            if json {
+                println!(
+                    "LOCAL_GATE_JSON: {}",
+                    local_gate_summary_json(0, 0, 0, queued.len(), records)
+                );
+            }
+            return;
+        }
     } else {
         // Start from a clean trunk tip (never gate atop residue from a prior op).
         let _ = git_wt(&["reset", "--hard", TRUNK]);
@@ -15456,6 +15556,20 @@ mod tests {
         // spawn-fail dominates even if build_ok were somehow true (defensive — a not-run gate is unknown).
         assert_eq!(local_gate_verdict(false, true), NoChecks);
         // local_gate_verdict NEVER returns Pending (nix build blocks to completion) — only the 3 above.
+    }
+
+    #[test]
+    fn trunk_fmt_verdict_only_alarms_on_a_confirmed_red_never_on_a_tooling_failure() {
+        use TrunkFmtVerdict::*;
+        // `cargo fmt --all --check` exited 0 → base is formatted → Clean (proceed with the drain).
+        assert_eq!(trunk_fmt_verdict(true, true), Clean);
+        // exited non-zero → a real fmt diff on the base (a hand-land bypassed the gate) → Red (skip+alarm).
+        assert_eq!(trunk_fmt_verdict(true, false), Red);
+        // couldn't SPAWN cargo (missing binary / env) → Unknown, NOT Red — our own tooling failing is not
+        // a trunk regression, so it must never trip the concierge alarm or skip the pass (no false alarm).
+        assert_eq!(trunk_fmt_verdict(false, false), Unknown);
+        // spawn-fail dominates even if fmt_ok were somehow true (defensive — a not-run check is unknown).
+        assert_eq!(trunk_fmt_verdict(false, true), Unknown);
     }
 
     #[test]
