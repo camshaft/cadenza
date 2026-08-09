@@ -57,3 +57,21 @@ def ho-apply-result-in-if-cond() =
   (match run-src("(do (def (apply f x) (f x)) (def (inc n) (+ n 1)) (def (main) (if (< (apply inc 0) 5) 100 200)) (export main))") with
     | Option.Some(v) => (if v == 100 then unit else trap("(if (< (apply inc 0) 5) 100 200) = 100"))
     | Option.None(_) => trap("HO result in if-cond runs"))
+
+@test
+def ho-arg-is-nested-apply() =
+  // NESTED HO: the argument to the outer apply is ITSELF an apply — (apply inc (apply dbl 10)) = inc(dbl 10) =
+  // inc(20) = 21. All prior HO tests passed a plain value or var as the fn-param's argument; this pins that an
+  // HO application composes as the ARGUMENT of another HO application (the inner apply's arrow-result flows in
+  // as the outer apply's arg).
+  (match run-src("(do (def (apply f x) (f x)) (def (inc n) (+ n 1)) (def (dbl n) (+ n n)) (def (main) (apply inc (apply dbl 10))) (export main))") with
+    | Option.Some(v) => (if v == 21 then unit else trap("apply inc (apply dbl 10) = 21"))
+    | Option.None(_) => trap("nested HO application (apply as an arg) runs"))
+
+@test
+def ho-twice-dbl-composes() =
+  // twice with a NON-inc fn: (twice dbl 3) = dbl(dbl 3) = dbl 6 = 12. All prior twice tests used inc; this pins
+  // that the f(f x) double-application composes for a different fn-param body (dbl doubles, so 3 → 6 → 12).
+  (match run-src("(do (def (twice f x) (f (f x))) (def (dbl n) (+ n n)) (def (main) (twice dbl 3)) (export main))") with
+    | Option.Some(v) => (if v == 12 then unit else trap("twice dbl 3 = 12"))
+    | Option.None(_) => trap("twice with dbl (non-inc fn) runs"))
