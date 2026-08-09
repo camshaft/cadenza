@@ -2126,6 +2126,20 @@
               cargoCmd = "cargo run --locked --package xtask --profile release -- lint-emoji";
               # src = seedSrc (default): implementation/seed/crates + xtask — matches the lint's walk exactly.
             };
+            # mandate-lint (v-nix 2026-08-09, v-ft/operator request): `cargo xtask lint-mandates` — the
+            # mechanizable-mandate lint (currently the no-integration-tests mandate: a NEW tests/*.rs not on
+            # xtask/mandate-integration-test-allowlist.txt is a DENY). Unlike emojiLintCheck (advisory), this
+            # is folded INTO the localGate fail-set below so a mandate violation REJECTS the merge path
+            # (operator: mandates enforced at commit-time). Same shape as emojiLintCheck: scans
+            # implementation/**/*.rs + reads the allowlist; seedSrc (default) covers both (implementation/seed
+            # /crates + the whole ./xtask dir, which holds the allowlist .txt). Fast native source-scan
+            # (seconds, ~no gate-time add). v-ft pre-fixed a vendored-file false-positive so it won't red on
+            # fold-in.
+            mandateLintCheck = cargoWorkspaceCheck {
+              name = "cargo-xtask-lint-mandates";
+              cargoCmd = "cargo run --locked --package xtask --profile release -- lint-mandates";
+              # src = seedSrc (default): implementation/seed/crates + xtask (incl. the allowlist .txt).
+            };
 
             # LOCAL GATE — the GHA-outage fallback (operator-greenlit, concierge-assigned, v-ft leads the
             # pr-sync wiring). One `nix build .#checks.aarch64-linux.local-gate` = a single green/red over
@@ -2168,11 +2182,15 @@
                 # 2026-08-09): same coverage (per-crate tests + cdz == workspace, asserted by
                 # testCrateCoverageAssert), but a 1-crate edit reruns only that crate's test derivation
                 # instead of the whole workspace. localGate stays the same green/red aggregate for pr-sync.
+                # mandateLintCheck folded into the fail-set (v-ft/operator 2026-08-09): a mechanizable-mandate
+                # DENY (e.g. a new non-allowlisted tests/*.rs) now REJECTS the merge path. It's a cheap native
+                # source-scan (seconds), so it adds ~no gate time. Distinct from emojiLintCheck, which stays
+                # advisory (exposed as a check but NOT in this fail-set).
                 inherit clippyShardA clippyShardB codegenCheck gateCheck guideExamplesCheck
                   benchCheck runtimeHashParity fmtCheck testCraneAggregate roundtripCheck
-                  cdzAgentHostNativeCheck cdzKernelNativeCheck;
+                  cdzAgentHostNativeCheck cdzKernelNativeCheck mandateLintCheck;
               } ''
-              echo "ok: local-gate — 9 merge-required contexts (ruleset-10 minus test-macos) + cdz-agent-host/kernel-native, green on aarch64-nix" > $out
+              echo "ok: local-gate — 9 merge-required contexts (ruleset-10 minus test-macos) + cdz-agent-host/kernel-native + mandate-lint, green on aarch64-nix" > $out
             '';
           in
           {
@@ -2284,6 +2302,9 @@
             # emoji-lint: the GHA emoji-lint job's nix equivalent (cargo xtask lint-emoji, comment-scoped
             # NO-emoji ban over implementation/**/*.rs). Folded in since GHA-off made localGate the sole gate.
             emoji-lint = emojiLintCheck;
+            # mandate-lint: cargo xtask lint-mandates (no-integration-tests + future mechanizable mandates).
+            # Folded into localGate's FAIL-SET (above) so a violation blocks the merge path (operator).
+            mandate-lint = mandateLintCheck;
             # LOCAL GATE aggregate — the GHA-outage fallback (see the `localGate` binding above). pr-sync
             # invokes `nix build .#checks.aarch64-linux.local-gate` for a single green/red over the 9
             # merge-required contexts (ruleset-10 minus test-macos) without any GH runner.
