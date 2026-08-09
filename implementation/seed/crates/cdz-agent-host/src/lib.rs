@@ -210,4 +210,68 @@ pub(crate) mod testutil {
             }
         }
     }
+
+    /// A host-side recording [`LogSink`](cdz_kernel::log_store::LogSink) test fixture — mirrors the kernel's
+    /// crate-private `test_log_source` seam (log/state-decouple I5). Once the kernel drops the resident log
+    /// Vec + removes `Session::log()`, a test that needs the full durable log reads it from the SOURCE (the
+    /// attached sink) rather than the resident Vec — exactly as production recovery reads it from
+    /// `LogStore::recover`. The kernel fixture is `pub(crate)` to the kernel, so the host mirrors it over the
+    /// public seam (`Session::attach_sink` + `Session::genesis_ref` + the `LogSink` trait).
+    #[cfg(test)]
+    pub(crate) mod log_capture {
+        use cdz_kernel::event::Event;
+        use cdz_kernel::kernel::Session;
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        /// The captured event buffer, shared between the attached sink and the test that reads it. `Rc` +
+        /// `RefCell` (not `Arc`) — the kernel is single-threaded by design (the `?Send` backends).
+        pub(crate) type CapturedLog = Rc<RefCell<Vec<Event>>>;
+
+        struct MemLogSink {
+            captured: CapturedLog,
+        }
+
+        #[async_trait::async_trait(?Send)]
+        impl cdz_kernel::log_store::LogSink for MemLogSink {
+            async fn append(&mut self, event: &Event) -> std::io::Result<()> {
+                self.captured.borrow_mut().push(event.clone());
+                Ok(())
+            }
+        }
+
+        /// Attach a fresh recording sink to `session`, seeded with its genesis, and return the shared
+        /// buffer. After this every appended event is captured; the test replays from [`replay_input`] to
+        /// prove the durable-log SOURCE (not the resident Vec) reconstructs the session. Call on a FRESH
+        /// `genesis` session, before delivering events.
+        pub(crate) fn attach_recording_sink(session: &mut Session) -> CapturedLog {
+            let captured: CapturedLog = Rc::new(RefCell::new(vec![session.genesis_ref().clone()]));
+            session.attach_sink(Box::new(MemLogSink {
+                captured: Rc::clone(&captured),
+            }));
+            captured
+        }
+
+        /// The captured durable log as an owned `Vec<Event>` — what a test hands to
+        /// [`Session::replay`](cdz_kernel::kernel::Session::replay) in place of `session.log().to_vec()`.
+        /// Reading from the SOURCE, not the resident Vec.
+        pub(crate) fn replay_input(captured: &CapturedLog) -> Vec<Event> {
+            captured.borrow().clone()
+        }
+
+        /// A bare recording sink + its shared buffer, for the `HostedSession::with_sink` builder path (which
+        /// attaches POST-genesis, exactly like a production durable sink — so the genesis event predates the
+        /// sink and isn't captured; the buffer holds the events appended during subsequent turns). Use this
+        /// when a test needs to inspect the durable log of a `HostedSession` (which owns its `Session`) rather
+        /// than a bare `Session`. Returns `(sink_to_attach, captured_buffer)`.
+        pub(crate) fn recording_sink() -> (Box<dyn cdz_kernel::log_store::LogSink>, CapturedLog) {
+            let captured: CapturedLog = Rc::new(RefCell::new(Vec::new()));
+            (
+                Box::new(MemLogSink {
+                    captured: Rc::clone(&captured),
+                }),
+                captured,
+            )
+        }
+    }
 }

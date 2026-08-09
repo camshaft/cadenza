@@ -717,6 +717,7 @@ mod tests {
             .with_effect(effect_ct::SHELL, Box::new(ShellExecutor::new()));
         let mut session =
             Session::genesis(Hash::of(b"tool-agent-v1"), Hash::of(b"tool-agent-nonce"));
+        let captured = crate::testutil::log_capture::attach_recording_sink(&mut session);
 
         session
             .deliver(tool_task(), None, &mut reducer, &agent_caps(), &mut exec)
@@ -744,9 +745,13 @@ mod tests {
 
         // Replay-equivalence: the model + shell outcomes are in the log, so replay reconstructs the identical
         // KV without re-invoking the transport or re-running the command (a side-effecting tool runs once).
-        let replayed = Session::replay(session.log().to_vec(), &mut reducer)
-            .await
-            .unwrap();
+        // Replay from the durable-log SOURCE (recording sink), not a resident Vec (I5).
+        let replayed = Session::replay(
+            crate::testutil::log_capture::replay_input(&captured),
+            &mut reducer,
+        )
+        .await
+        .unwrap();
         assert_eq!(
             replayed.kv().get(b"answer"),
             Some(&b"done: built-green"[..])

@@ -802,6 +802,7 @@ mod tests {
             Hash::of(b"fetch-agent-v1"),
             Hash::of(b"fetch-agent-v1-nonce"),
         );
+        let captured = crate::testutil::log_capture::attach_recording_sink(&mut session);
 
         session
             .deliver(fetch_go(), None, &mut FetchAgent, &host_cap(), &mut exec)
@@ -818,10 +819,13 @@ mod tests {
         assert_eq!(session.open_effects(), 0);
 
         // Replay-equivalence: the response is recorded, so replay reconstructs the identical KV without
-        // re-fetching.
-        let replayed = Session::replay(session.log().to_vec(), &mut reducer)
-            .await
-            .unwrap();
+        // re-fetching. Replay from the durable-log SOURCE (recording sink), not a resident Vec (I5).
+        let replayed = Session::replay(
+            crate::testutil::log_capture::replay_input(&captured),
+            &mut reducer,
+        )
+        .await
+        .unwrap();
         assert_eq!(replayed.snapshot().kv_root, session.snapshot().kv_root);
     }
 
@@ -866,14 +870,15 @@ mod tests {
             Hash::of(b"exfil-agent-v1"),
             Hash::of(b"exfil-agent-v1-nonce"),
         );
+        let captured = crate::testutil::log_capture::attach_recording_sink(&mut session);
         session
             .deliver(fetch_go(), None, &mut ExfilAgent, &host_cap(), &mut exec)
             .await
             .unwrap();
 
-        // Denied at the gate → a denial is on the log and nothing left open.
-        assert!(session
-            .log()
+        // Denied at the gate → a denial is on the log (read from the recording sink, I5) and nothing open.
+        assert!(captured
+            .borrow()
             .iter()
             .any(|e| matches!(e.body, EventBody::AuthzDenied { .. })));
         assert_eq!(session.open_effects(), 0);

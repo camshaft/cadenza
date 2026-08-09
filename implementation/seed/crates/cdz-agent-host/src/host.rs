@@ -1682,7 +1682,9 @@ mod tests {
         // schedulable.
         let original = now_host();
         let original_id = original.genesis_hash();
-        let log = original.session().log().to_vec();
+        // A never-delivered session's durable log is exactly its genesis event (log-decouple I5: read it off
+        // the derived `genesis_ref`, not the resident Vec).
+        let log = vec![original.session().genesis_ref().clone()];
         assert!(
             !log.is_empty(),
             "a genesis'd session has at least its seq-0 event"
@@ -2078,21 +2080,27 @@ mod tests {
             "the durable session ran its turn without a kernel error"
         );
 
-        // The in-memory log has the full event stream (Genesis + the turn's events)…
-        let in_mem = host.get(&id).unwrap().session().log().len();
-        assert!(in_mem > 1, "the session appended a turn's events");
-        // …and recovering the durable file replays every event appended AFTER the sink was attached. The
-        // sink is attached post-genesis (with_sink is a builder over genesis), so the Genesis event predates
-        // it and isn't persisted through this sink — the durable log holds the (in_mem - 1) later events.
+        // Recovering the durable file replays every event appended AFTER the sink was attached. The sink is
+        // attached post-genesis (with_sink is a builder over genesis), so the Genesis event predates it and
+        // isn't persisted through this sink — the durable log holds the turn's later events (log-decouple I5:
+        // there is no resident Vec to length-compare against; assert on the durable SOURCE, which is what a
+        // real recovery reads). A Now turn appends the Inbound + the Now Dispatched + its EffectResult.
         let recovered = LogStore::recover(&path).expect("recover the durable log");
-        assert_eq!(
-            recovered.events.len(),
-            in_mem - 1,
-            "every event appended after the sink was attached was persisted (all but pre-sink Genesis)"
-        );
         assert!(
             !recovered.events.is_empty(),
             "the turn's events reached durable storage"
+        );
+        assert!(
+            recovered.events.len() >= 3,
+            "the durable log holds the turn's post-genesis events (Inbound + Now dispatch + result), got {}",
+            recovered.events.len()
+        );
+        assert!(
+            recovered
+                .events
+                .iter()
+                .any(|e| matches!(e.body, EventBody::Inbound { .. })),
+            "the turn's Inbound reached durable storage"
         );
         // Clean up the unique per-run dir (best-effort — the process is ending; a leftover unique dir can't
         // poison another run since the pid+seq is distinct each time).
@@ -3170,7 +3178,9 @@ mod tests {
         host.deliver(&id, inbound_go(), None).await;
         let hosted = host.get(&id).unwrap();
         assert_eq!(hosted.session().kv().get(b"phase"), Some(&b"working"[..]));
-        let live_event_count = hosted.session().log().len();
+        // The live session's tip seq is the non-interference witness (log-decouple I5: no resident Vec to
+        // length-count; the tip seq advances per appended event, so an unchanged seq == the log didn't grow).
+        let live_tip_seq = hosted.session().snapshot().seq;
 
         // Fork-for-query it: caller supplies the same (native Reducer) reducer + a model-only authz
         // (deny_all here — the summarize fold takes no world-effects; the control/summary effect is
@@ -3190,7 +3200,7 @@ mod tests {
         // Session; fork_for_query took &self).
         let hosted = host.get(&id).unwrap();
         assert_eq!(hosted.session().kv().get(b"phase"), Some(&b"working"[..]));
-        assert_eq!(hosted.session().log().len(), live_event_count);
+        assert_eq!(hosted.session().snapshot().seq, live_tip_seq);
     }
 
     /// A report-aware agent that emits control effects on a `report` — but emits `control/capabilities`
@@ -3658,7 +3668,9 @@ mod tests {
             .kv()
             .get(b"capabilities")
             .map(|b| b.to_vec());
-        let log_len_before = hosted.session().log().len();
+        // The tip seq before the push (log-decouple I5: no resident Vec to length-count; the tip seq advances
+        // per appended event, so an unchanged seq == nothing was appended).
+        let tip_seq_before = hosted.session().snapshot().seq;
 
         // No mutation between seed and push → the manifest hasn't moved → push is a no-op.
         let surfaced = hosted.push_capabilities_changed().await;
@@ -3673,8 +3685,8 @@ mod tests {
             "no capability change → the recorded manifest is untouched"
         );
         assert_eq!(
-            hosted.session().log().len(),
-            log_len_before,
+            hosted.session().snapshot().seq,
+            tip_seq_before,
             "no capability change → nothing appended to the log (the coalescing/gate)"
         );
     }
@@ -4146,22 +4158,23 @@ mod tests {
 
     #[tokio::test]
     async fn a_resolve_only_grant_denies_a_store_set_allow_read_deny_write() {
+        let (sink, captured) = crate::testutil::log_capture::recording_sink();
         let mut session = HostedSession::genesis(
             Hash::of(b"consumer-v1"),
             Box::new(SetOnly),
             Box::new(resolve_only_system()),
             CompositeExecutor::new(),
         )
-        .with_name_store(cdz_kernel::name_store::NameStore::new());
+        .with_name_store(cdz_kernel::name_store::NameStore::new())
+        .with_sink(sink);
 
         session.deliver(store_inbound_go(), None).await.unwrap();
 
         // Write authority is a SEPARATE grant: resolve-only → the store/set is denied at the gate (§4c
-        // allow-read-deny-write), on the log, nothing left open.
+        // allow-read-deny-write), on the log (read from the recording sink, I5), nothing left open.
         assert!(
-            session
-                .session()
-                .log()
+            captured
+                .borrow()
                 .iter()
                 .any(|e| matches!(e.body, EventBody::AuthzDenied { .. })),
             "a store/set under a resolve-only grant is denied"
@@ -4173,12 +4186,14 @@ mod tests {
     async fn a_store_effect_with_no_name_store_attached_folds_an_error_not_a_panic() {
         // Plain genesis (no with_name_store) → no store bound. A store/* effect must fold an observable Err
         // (§9d/§17), never panic. The grant permits it, so this exercises the missing-store path, not authz.
+        let (sink, captured) = crate::testutil::log_capture::recording_sink();
         let mut session = HostedSession::genesis(
             Hash::of(b"no-store-v1"),
             Box::new(SetOnly),
             Box::new(set_and_resolve_system()),
             CompositeExecutor::new(),
-        );
+        )
+        .with_sink(sink);
 
         session.deliver(store_inbound_go(), None).await.unwrap();
         assert_eq!(
@@ -4187,7 +4202,7 @@ mod tests {
             "the store effect settled (as an Err) — no hang, no panic"
         );
         assert!(
-            session.session().log().iter().any(|e| matches!(
+            captured.borrow().iter().any(|e| matches!(
                 &e.body,
                 EventBody::EffectResult {
                     result: EffectOutcome::Err { .. },

@@ -327,6 +327,9 @@ mod tests {
             Hash::of(b"clock-agent-v1"),
             Hash::of(b"clock-agent-v1-nonce"),
         );
+        // Capture the durable log via a recording sink (log-decouple I5: the full log is read from the SOURCE,
+        // not a resident Vec — exactly as production recovery reads it from `LogStore::recover`).
+        let captured = crate::testutil::log_capture::attach_recording_sink(&mut session);
         session
             .deliver(clock_go(), None, &mut ClockAgent, &now_cap(), &mut exec)
             .await
@@ -336,9 +339,12 @@ mod tests {
 
         // Replay the WHOLE log into a fresh session — no executor is consulted; the recorded EffectResult
         // supplies the instant. The reconstructed KV must be byte-identical to the live one.
-        let replayed = Session::replay(session.log().to_vec(), &mut reducer)
-            .await
-            .unwrap();
+        let replayed = Session::replay(
+            crate::testutil::log_capture::replay_input(&captured),
+            &mut reducer,
+        )
+        .await
+        .unwrap();
         assert_eq!(replayed.kv().get(b"phase"), Some(&b"running"[..]));
         assert_eq!(
             replayed.kv().get(b"started_at").map(|b| b.to_vec()),
@@ -360,15 +366,17 @@ mod tests {
             Hash::of(b"clock-agent-v1"),
             Hash::of(b"clock-agent-v1-nonce"),
         );
+        let captured = crate::testutil::log_capture::attach_recording_sink(&mut session);
         session
             .deliver(clock_go(), None, &mut reducer, &deny, &mut exec)
             .await
             .unwrap();
 
-        // Never advanced to running (the time never came back), and the denial is logged.
+        // Never advanced to running (the time never came back), and the denial is logged (read the durable
+        // log from the recording sink — log-decouple I5, no resident Vec).
         assert_ne!(session.kv().get(b"phase"), Some(&b"running"[..]));
-        assert!(session
-            .log()
+        assert!(captured
+            .borrow()
             .iter()
             .any(|e| matches!(e.body, EventBody::AuthzDenied { .. })));
         assert_eq!(session.open_effects(), 0);

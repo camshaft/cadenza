@@ -977,8 +977,10 @@ mod tests {
 
         let reducer_hash = Hash::of(b"recovered-reducer-not-in-store");
         let original = Session::genesis(reducer_hash, Hash::of(b"nonce"));
+        // A never-delivered session's durable log is exactly its genesis event (log-decouple I5: read the
+        // genesis off the derived `genesis_ref`, not the resident Vec).
         let recovered = Recovered {
-            events: original.log().to_vec(),
+            events: vec![original.genesis_ref().clone()],
             kind: RecoveryKind::Clean,
             good_prefix_len: 0,
         };
@@ -1554,7 +1556,7 @@ mod tests {
         // genesis event, so the error names it.
         let reducer_hash = Hash::of(b"genesis-reducer-v1");
         let recovered = Recovered {
-            events: original.session().log().to_vec(),
+            events: vec![original.session().genesis_ref().clone()],
             kind: RecoveryKind::Clean,
             good_prefix_len: 0,
         };
@@ -1637,7 +1639,7 @@ mod tests {
 
         let original = genesis_session();
         let recovered = Recovered {
-            events: original.session().log().to_vec(),
+            events: vec![original.session().genesis_ref().clone()],
             kind: RecoveryKind::Clean,
             good_prefix_len: 0,
         };
