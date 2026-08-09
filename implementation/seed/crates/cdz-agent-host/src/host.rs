@@ -3992,4 +3992,186 @@ mod tests {
              and the reducer resumed"
         );
     }
+
+    // ---- §4c store/* over a hosted session (converted from the deleted name_store_e2e integration test,
+    // operator no-integration-tests mandate — same coverage as in-crate units: no wasm, HostedSession +
+    // Rust reducers + the real Authorizer). ----
+
+    const STORE_NAME: &str = "system/compiler/latest";
+
+    /// Publishes then reads back a well-known pointer: on inbound `store/set`s STORE_NAME → <hash>; on that
+    /// settle `store/resolve`s it; on the resolve settle records the resolved hash's hex in KV.
+    struct SetThenResolve;
+    #[async_trait::async_trait(?Send)]
+    impl Reducer for SetThenResolve {
+        async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
+            use cdz_kernel::event_ast::{decode_name_set, encode_name_set};
+            match &event.body {
+                EventBody::Inbound { .. } => {
+                    let payload = encode_name_set(STORE_NAME, &Hash::of(b"compiler-wasm-v1"));
+                    FoldOutput::with(vec![EffectRequest::new_with_family(
+                        effect_ct::STORE_SET,
+                        STORE_NAME,
+                        Some(Payload::Inline(payload.into())),
+                        Timeliness::Interactive,
+                    )])
+                }
+                EventBody::EffectResult {
+                    result: EffectOutcome::Ok(body),
+                    ..
+                } => match kv.get(b"phase") {
+                    None => {
+                        kv.put(b"phase".to_vec(), b"resolving".to_vec());
+                        FoldOutput::with(vec![EffectRequest::new_with_family(
+                            effect_ct::STORE_RESOLVE,
+                            STORE_NAME,
+                            None,
+                            Timeliness::Interactive,
+                        )])
+                    }
+                    Some(_) => {
+                        if let Some(Payload::Inline(bytes)) = body {
+                            if let Ok((_n, h)) = decode_name_set(bytes) {
+                                kv.put(b"resolved".to_vec(), h.to_hex().into_bytes());
+                            }
+                        }
+                        FoldOutput::none()
+                    }
+                },
+                _ => FoldOutput::none(),
+            }
+        }
+    }
+
+    /// Only tries to WRITE — on inbound a single `store/set` (no resolve), so a test can assert the write is
+    /// denied without a resolve muddying the picture.
+    struct SetOnly;
+    #[async_trait::async_trait(?Send)]
+    impl Reducer for SetOnly {
+        async fn fold(&mut self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+            use cdz_kernel::event_ast::encode_name_set;
+            if matches!(event.body, EventBody::Inbound { .. }) {
+                let payload = encode_name_set(STORE_NAME, &Hash::of(b"compiler-wasm-v1"));
+                FoldOutput::with(vec![EffectRequest::new_with_family(
+                    effect_ct::STORE_SET,
+                    STORE_NAME,
+                    Some(Payload::Inline(payload.into())),
+                    Timeliness::Interactive,
+                )])
+            } else {
+                FoldOutput::none()
+            }
+        }
+    }
+
+    fn store_inbound_go() -> EventBody {
+        EventBody::Inbound {
+            content_type: ContentType {
+                family: "message".into(),
+                version: 1,
+            },
+            payload: Payload::Inline(b"go".to_vec().into()),
+        }
+    }
+
+    /// Grant both store actions on the `system/` prefix (the §4c write+read authority a publisher gets).
+    fn set_and_resolve_system() -> Authorizer {
+        Authorizer::new(vec![]).with_family_grants(vec![
+            Capability::for_family(
+                effect_ct::STORE_SET,
+                ResourcePredicate::Prefix("system/".into()),
+            ),
+            Capability::for_family(
+                effect_ct::STORE_RESOLVE,
+                ResourcePredicate::Prefix("system/".into()),
+            ),
+        ])
+    }
+
+    /// Grant ONLY resolve on `system/` — a read-only consumer; a `store/set` is denied (allow-read-deny-write).
+    fn resolve_only_system() -> Authorizer {
+        Authorizer::new(vec![]).with_family_grants(vec![Capability::for_family(
+            effect_ct::STORE_RESOLVE,
+            ResourcePredicate::Prefix("system/".into()),
+        )])
+    }
+
+    #[tokio::test]
+    async fn a_hosted_agents_store_set_then_resolve_round_trips_through_its_attached_name_store() {
+        let mut session = HostedSession::genesis(
+            Hash::of(b"publisher-v1"),
+            Box::new(SetThenResolve),
+            Box::new(set_and_resolve_system()),
+            CompositeExecutor::new(),
+        )
+        .with_name_store(cdz_kernel::name_store::NameStore::new());
+
+        session.deliver(store_inbound_go(), None).await.unwrap();
+
+        // The set applied and the resolve read the latest — through the host's attached store.
+        assert_eq!(
+            session.session().kv().get(b"resolved"),
+            Some(Hash::of(b"compiler-wasm-v1").to_hex().as_bytes()),
+            "store/set → store/resolve round-tripped through the attached NameStore"
+        );
+        assert_eq!(
+            session.open_effects(),
+            0,
+            "both store effects settled (store/* is not executor-routed)"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_resolve_only_grant_denies_a_store_set_allow_read_deny_write() {
+        let mut session = HostedSession::genesis(
+            Hash::of(b"consumer-v1"),
+            Box::new(SetOnly),
+            Box::new(resolve_only_system()),
+            CompositeExecutor::new(),
+        )
+        .with_name_store(cdz_kernel::name_store::NameStore::new());
+
+        session.deliver(store_inbound_go(), None).await.unwrap();
+
+        // Write authority is a SEPARATE grant: resolve-only → the store/set is denied at the gate (§4c
+        // allow-read-deny-write), on the log, nothing left open.
+        assert!(
+            session
+                .session()
+                .log()
+                .iter()
+                .any(|e| matches!(e.body, EventBody::AuthzDenied { .. })),
+            "a store/set under a resolve-only grant is denied"
+        );
+        assert_eq!(session.open_effects(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_store_effect_with_no_name_store_attached_folds_an_error_not_a_panic() {
+        // Plain genesis (no with_name_store) → no store bound. A store/* effect must fold an observable Err
+        // (§9d/§17), never panic. The grant permits it, so this exercises the missing-store path, not authz.
+        let mut session = HostedSession::genesis(
+            Hash::of(b"no-store-v1"),
+            Box::new(SetOnly),
+            Box::new(set_and_resolve_system()),
+            CompositeExecutor::new(),
+        );
+
+        session.deliver(store_inbound_go(), None).await.unwrap();
+        assert_eq!(
+            session.open_effects(),
+            0,
+            "the store effect settled (as an Err) — no hang, no panic"
+        );
+        assert!(
+            session.session().log().iter().any(|e| matches!(
+                &e.body,
+                EventBody::EffectResult {
+                    result: EffectOutcome::Err { .. },
+                    ..
+                }
+            )),
+            "a store/* effect with no attached store folds an observable Err"
+        );
+    }
 }
