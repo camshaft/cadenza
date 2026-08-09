@@ -4467,8 +4467,10 @@ mod tests {
         // The blob store holding compiled artifacts. `put` is content-addressed → the hash we publish is the
         // hash the resolve hands back, and blob-get at it returns these exact bytes.
         let mut blobs = MemBlobStore::new();
-        let artifact_hash = blobs
-            .put(&component)
+        // Content hash computed once + supplied to put (put no longer computes/returns it).
+        let artifact_hash = Hash::of(&component);
+        blobs
+            .put(artifact_hash, bytes::Bytes::from(component.clone()))
             .await
             .expect("put the compiled wasm component into the blob store");
 
@@ -4605,7 +4607,11 @@ mod tests {
         // The shared artifact store (host-owned). `put` is content-addressed → the hash the publisher writes
         // is the hash the consumer resolves, and blob-get at it returns these exact bytes.
         let mut blobs = MemBlobStore::new();
-        let artifact_hash = blobs.put(&component).await.expect("put the wasm artifact");
+        let artifact_hash = Hash::of(&component);
+        blobs
+            .put(artifact_hash, bytes::Bytes::from(component.clone()))
+            .await
+            .expect("put the wasm artifact");
 
         // (1) PUBLISHER: session A sets COMPILER_LATEST → artifact_hash into its OWN per-session store.
         let mut publisher = HostedSession::genesis(

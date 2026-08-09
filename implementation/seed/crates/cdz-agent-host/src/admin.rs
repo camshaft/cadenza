@@ -262,7 +262,7 @@ pub trait SessionFactory {
     /// DEFAULT: `Ok(None)` — a factory with no blob store (a test stub) resolves every hash as absent, so the
     /// loop settles the signature query's Err arm cleanly. The real
     /// [`ComponentSessionFactory`](crate::ComponentSessionFactory) overrides with a real `blob.get`.
-    async fn fetch_blob(&self, _hash: &Hash) -> Result<Option<Vec<u8>>, String> {
+    async fn fetch_blob(&self, _hash: &Hash) -> Result<Option<bytes::Bytes>, String> {
         Ok(None)
     }
 }

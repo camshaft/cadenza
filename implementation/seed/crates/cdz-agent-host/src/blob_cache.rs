@@ -45,7 +45,7 @@ use std::collections::VecDeque;
 /// eviction time, whether an entry has proven reuse (promote from `small` to `main` / get a second chance in
 /// `main`) or is a one-hit-wonder (evict).
 struct Entry {
-    bytes: Vec<u8>,
+    bytes: bytes::Bytes,
     accessed: bool,
 }
 
@@ -76,7 +76,7 @@ impl CacheState {
     fn admit(
         &mut self,
         hash: Hash,
-        bytes: Vec<u8>,
+        bytes: bytes::Bytes,
         small_budget: usize,
         main_budget: usize,
         ghost_cap: usize,
@@ -242,7 +242,7 @@ impl<B> CachingBlobStore<B> {
     /// Admit `bytes` under `hash` via the S3-FIFO policy. A blob larger than the whole budget is NOT cached
     /// (it would force evicting everything to hold one value) — served through without being retained. A blob
     /// already cached just gets its accessed bit set (no re-admit, no double-count).
-    fn cache_put(&self, hash: Hash, bytes: &[u8]) {
+    fn cache_put(&self, hash: Hash, bytes: &bytes::Bytes) {
         if self.budget == 0 || bytes.len() > self.budget {
             return;
         }
@@ -252,9 +252,10 @@ impl<B> CachingBlobStore<B> {
             entry.accessed = true;
             return;
         }
+        // Clone the ref-counted `Bytes` into the cache (O(1) refcount bump, not a deep copy of the blob).
         st.admit(
             hash,
-            bytes.to_vec(),
+            bytes.clone(),
             self.small_budget,
             self.main_budget,
             self.ghost_cap,
@@ -275,18 +276,18 @@ impl<B> CachingBlobStore<B> {
 
 #[async_trait::async_trait(?Send)]
 impl<B: BlobStore> BlobStore for CachingBlobStore<B> {
-    /// Write THROUGH to the inner store, then admit the just-stored bytes (a fresh `put` is often followed by a
-    /// `get` of the same hash — e.g. store a doc then immediately query it back).
-    async fn put(&mut self, bytes: &[u8]) -> std::io::Result<Hash> {
-        let hash = self.inner.put(bytes).await?;
-        self.cache_put(hash, bytes);
-        Ok(hash)
+    /// Write THROUGH to the inner store under the SUPPLIED hash (computed once by the caller — no re-hash per
+    /// tier), then admit the just-stored bytes (a fresh `put` is often followed by a `get` of the same hash —
+    /// e.g. store a doc then immediately query it back). Admitting clones the ref-counted `Bytes` (O(1)).
+    async fn put(&mut self, hash: Hash, bytes: bytes::Bytes) -> std::io::Result<()> {
+        self.cache_put(hash, &bytes);
+        self.inner.put(hash, bytes).await
     }
 
     /// Serve from cache on a hit (setting the accessed bit so S3-FIFO promotes it on reuse); on a miss, fetch
     /// from the inner store and admit it. Content-addressed keys mean a cached value is always valid — no
     /// invalidation.
-    async fn get(&self, hash: &Hash) -> std::io::Result<Option<Vec<u8>>> {
+    async fn get(&self, hash: &Hash) -> std::io::Result<Option<bytes::Bytes>> {
         if self.budget > 0 {
             let mut st = self.state.borrow_mut();
             if let Some(entry) = st.entries.get_mut(hash) {
@@ -318,8 +319,24 @@ mod tests {
     use cdz_kernel::blob::MemBlobStore;
 
     /// A blob of `n` bytes, all `b`. Its hash is content-derived, so distinct (b, n) give distinct keys.
-    fn blob(b: u8, n: usize) -> Vec<u8> {
-        vec![b; n]
+    fn blob(b: u8, n: usize) -> bytes::Bytes {
+        bytes::Bytes::from(vec![b; n])
+    }
+
+    /// A blob of `n` bytes filled with `b` then a per-`i` marker appended, so each `i` yields DISTINCT content
+    /// (distinct hash) — the flood/churn tests need every admission to be a fresh key.
+    fn distinct_blob(b: u8, n: usize, i: u32) -> bytes::Bytes {
+        let mut v = vec![b; n];
+        v.extend_from_slice(&i.to_le_bytes());
+        bytes::Bytes::from(v)
+    }
+
+    /// Test helper mirroring the OLD `put(&bytes) -> Hash` ergonomics over the new `put(hash, Bytes) -> ()`:
+    /// compute the content hash once, store, return the hash (what the tests key on).
+    async fn put_blob<S: BlobStore>(store: &mut S, bytes: &bytes::Bytes) -> Hash {
+        let hash = Hash::of(bytes);
+        store.put(hash, bytes.clone()).await.unwrap();
+        hash
     }
 
     /// A BlobStore that records every get() call and can be told to "go blind" (return None regardless), so a
@@ -331,10 +348,10 @@ mod tests {
     }
     #[async_trait::async_trait(?Send)]
     impl BlobStore for CountingBlobStore {
-        async fn put(&mut self, bytes: &[u8]) -> std::io::Result<Hash> {
-            self.inner.put(bytes).await
+        async fn put(&mut self, hash: Hash, bytes: bytes::Bytes) -> std::io::Result<()> {
+            self.inner.put(hash, bytes).await
         }
-        async fn get(&self, hash: &Hash) -> std::io::Result<Option<Vec<u8>>> {
+        async fn get(&self, hash: &Hash) -> std::io::Result<Option<bytes::Bytes>> {
             self.gets.set(self.gets.get() + 1);
             if self.blind.get() {
                 return Ok(None);
@@ -349,7 +366,7 @@ mod tests {
         // get still returns the bytes (from cache) AND must NOT have called inner.get again.
         let mut inner = MemBlobStore::new();
         let bytes = blob(1, 100);
-        let hash = inner.put(&bytes).await.unwrap();
+        let hash = put_blob(&mut inner, &bytes).await;
         let counting = CountingBlobStore {
             inner,
             gets: std::cell::Cell::new(0),
@@ -379,7 +396,7 @@ mod tests {
     async fn miss_populates_the_cache_from_the_inner_store() {
         let mut inner = MemBlobStore::new();
         let bytes = blob(2, 200);
-        let hash = inner.put(&bytes).await.unwrap();
+        let hash = put_blob(&mut inner, &bytes).await;
         let c = CachingBlobStore::new(inner, 1024);
         assert_eq!(c.cached_bytes(), 0, "nothing cached before the first get");
         assert_eq!(c.get(&hash).await.unwrap().as_deref(), Some(&bytes[..]));
@@ -398,16 +415,13 @@ mod tests {
         // (We reach into a fresh inner via put through the cache to keep it simple.)
         let mut c = c;
         let hot = blob(b'H', 80);
-        let hot_hash = c.put(&hot).await.unwrap();
+        let hot_hash = put_blob(&mut c, &hot).await;
         // Access the hot blob again so its accessed bit is set (proves reuse → eligible for promotion).
         let _ = c.get(&hot_hash).await.unwrap();
         // Flood with one-hit-wonders, each distinct + each fetched exactly once (put = one write+admit).
         for i in 0..200u32 {
-            let w = blob((i % 250) as u8, 40 + (i as usize % 30));
-            // Distinct content per i so hashes differ: prefix a per-i marker by using i in the fill+len.
-            let mut w = w;
-            w.extend_from_slice(&i.to_le_bytes());
-            let _ = c.put(&w).await.unwrap();
+            let w = distinct_blob((i % 250) as u8, 40 + (i as usize % 30), i);
+            let _ = put_blob(&mut c, &w).await;
         }
         // The hot blob survived the one-hit-wonder flood (it was promoted to main; the flood churned small).
         assert_eq!(
@@ -424,20 +438,18 @@ mod tests {
         // indirectly: after a ghost-promotion the blob is in main and survives further small-only churn.
         let mut c = CachingBlobStore::new(MemBlobStore::new(), 1000);
         let x = blob(b'X', 80);
-        let hx = c.put(&x).await.unwrap(); // admitted to small
-                                           // Evict it from small WITHOUT accessing (pure one-hit) by flooding small with other new blobs.
+        let hx = put_blob(&mut c, &x).await; // admitted to small
+                                             // Evict it from small WITHOUT accessing (pure one-hit) by flooding small with other new blobs.
         for i in 0..50u32 {
-            let mut w = blob(b'a', 40);
-            w.extend_from_slice(&i.to_le_bytes());
-            let _ = c.put(&w).await.unwrap();
+            let w = distinct_blob(b'a', 40, i);
+            let _ = put_blob(&mut c, &w).await;
         }
         // x should have been evicted to ghost (never accessed). Re-put it → ghost hit → admitted to main.
-        let _ = c.put(&x).await.unwrap();
+        let _ = put_blob(&mut c, &x).await;
         // Now flood small again; a main-resident x survives.
         for i in 50..100u32 {
-            let mut w = blob(b'b', 40);
-            w.extend_from_slice(&i.to_le_bytes());
-            let _ = c.put(&w).await.unwrap();
+            let w = distinct_blob(b'b', 40, i);
+            let _ = put_blob(&mut c, &w).await;
         }
         assert_eq!(
             c.get(&hx).await.unwrap().as_deref(),
@@ -451,9 +463,8 @@ mod tests {
         // Whatever the access pattern, cached_bytes stays within the total budget (small + main bounds hold).
         let mut c = CachingBlobStore::new(MemBlobStore::new(), 500);
         for i in 0..100u32 {
-            let mut w = blob((i % 200) as u8, 60);
-            w.extend_from_slice(&i.to_le_bytes());
-            let _ = c.put(&w).await.unwrap();
+            let w = distinct_blob((i % 200) as u8, 60, i);
+            let _ = put_blob(&mut c, &w).await;
             assert!(
                 c.cached_bytes() <= 500,
                 "cached_bytes {} exceeded budget 500 at i={i}",
@@ -466,7 +477,7 @@ mod tests {
     async fn a_blob_larger_than_the_budget_is_served_but_not_cached() {
         let mut c = CachingBlobStore::new(MemBlobStore::new(), 50);
         let big = blob(9, 100);
-        let h = c.put(&big).await.unwrap();
+        let h = put_blob(&mut c, &big).await;
         assert_eq!(c.cached_bytes(), 0, "oversized blob not cached on put");
         assert_eq!(
             c.get(&h).await.unwrap().as_deref(),
@@ -484,7 +495,7 @@ mod tests {
     async fn budget_zero_is_a_pure_passthrough() {
         let mut c = CachingBlobStore::new(MemBlobStore::new(), 0);
         let bytes = blob(7, 100);
-        let h = c.put(&bytes).await.unwrap();
+        let h = put_blob(&mut c, &bytes).await;
         assert_eq!(c.cached_bytes(), 0);
         assert_eq!(c.cached_entries(), 0);
         assert_eq!(c.get(&h).await.unwrap().as_deref(), Some(&bytes[..]));
@@ -495,8 +506,8 @@ mod tests {
     async fn re_putting_identical_bytes_does_not_double_count() {
         let mut c = CachingBlobStore::new(MemBlobStore::new(), 1024);
         let bytes = blob(3, 100);
-        let _ = c.put(&bytes).await.unwrap();
-        let _ = c.put(&bytes).await.unwrap();
+        let _ = put_blob(&mut c, &bytes).await;
+        let _ = put_blob(&mut c, &bytes).await;
         assert_eq!(c.cached_entries(), 1, "same content = one entry");
         assert_eq!(c.cached_bytes(), 100, "counted once");
     }

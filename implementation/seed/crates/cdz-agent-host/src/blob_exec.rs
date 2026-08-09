@@ -57,7 +57,7 @@ impl<B: BlobStore> Executor for BlobExecutor<B> {
         if family == effect_ct::BLOB_PUT {
             // Store the payload bytes → return the content hash as a HEX handle the reducer threads to get.
             let bytes = match &req.payload {
-                Some(Payload::Inline(b)) => b.as_ref(),
+                Some(Payload::Inline(b)) => b.clone(),
                 // A blob/put with no inline payload has nothing to store; a blob-ref payload would need this
                 // executor to already resolve a hash (circular) — both are malformed → PERMANENT.
                 Some(Payload::Blob(_)) => {
@@ -67,8 +67,12 @@ impl<B: BlobStore> Executor for BlobExecutor<B> {
                 }
                 None => return EffectOutcome::err("blob/put: no payload bytes to store"),
             };
-            match self.store.put(bytes).await {
-                Ok(hash) => {
+            // Compute the content hash ONCE here (put no longer computes it — the hash is threaded to each
+            // storage tier so a multi-tier write doesn't re-blake3 the same bytes). Move the ref-counted
+            // `Bytes` into `put`; still report the hash to the reducer as the hex handle it threads to get.
+            let hash = Hash::of(&bytes);
+            match self.store.put(hash, bytes).await {
+                Ok(()) => {
                     EffectOutcome::Ok(Some(Payload::Inline(hash.to_hex().into_bytes().into())))
                 }
                 Err(e) => EffectOutcome::err(format!("blob/put failed: {e}")),
@@ -87,8 +91,8 @@ impl<B: BlobStore> Executor for BlobExecutor<B> {
                 ));
             };
             match self.store.get(&hash).await {
-                // HIT → the stored bytes verbatim.
-                Ok(Some(bytes)) => EffectOutcome::Ok(Some(Payload::Inline(bytes.into()))),
+                // HIT → the stored bytes verbatim (already ref-counted `Bytes`, moved straight into the payload).
+                Ok(Some(bytes)) => EffectOutcome::Ok(Some(Payload::Inline(bytes))),
                 // MISS → Ok(None): "ran fine, no such blob" (a normal answer the reducer folds), NOT an Err.
                 Ok(None) => EffectOutcome::Ok(None),
                 // Backend I/O error OR a corrupt-blob integrity failure (Err(InvalidData) on a hash mismatch —
@@ -213,17 +217,17 @@ mod tests {
     /// HashMap, so this `Arc<Mutex<HashMap>>`-backed store models S3's shared-bucket semantics hermetically.
     #[derive(Clone, Default)]
     struct SharedMemBlobStore {
-        blobs: Arc<Mutex<HashMap<Hash, Vec<u8>>>>,
+        blobs: Arc<Mutex<HashMap<Hash, bytes::Bytes>>>,
     }
 
     #[async_trait::async_trait(?Send)]
     impl BlobStore for SharedMemBlobStore {
-        async fn put(&mut self, bytes: &[u8]) -> std::io::Result<Hash> {
-            let hash = Hash::of(bytes);
-            self.blobs.lock().unwrap().insert(hash, bytes.to_vec());
-            Ok(hash)
+        async fn put(&mut self, hash: Hash, bytes: bytes::Bytes) -> std::io::Result<()> {
+            // The content hash is SUPPLIED (computed once by the caller) — store under it, don't re-hash.
+            self.blobs.lock().unwrap().insert(hash, bytes);
+            Ok(())
         }
-        async fn get(&self, hash: &Hash) -> std::io::Result<Option<Vec<u8>>> {
+        async fn get(&self, hash: &Hash) -> std::io::Result<Option<bytes::Bytes>> {
             Ok(self.blobs.lock().unwrap().get(hash).cloned())
         }
     }

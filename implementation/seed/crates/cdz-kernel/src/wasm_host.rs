@@ -414,7 +414,10 @@ async fn resolve_dep_bytes(
     blobs: &dyn crate::blob::BlobStore,
 ) -> Result<Vec<u8>, ComponentError> {
     match blobs.get(&dep.hash).await {
-        Ok(Some(bytes)) => Ok(bytes),
+        // BlobStore::get now yields cheaply-clonable `Bytes`; the component-dep path holds owned `Vec<u8>`
+        // (a one-time materialize for wasmtime `Component::new`), so take the bytes out here. (Widening the
+        // dep tuple to `Bytes` is a separate follow-up; this slice is scoped to the BlobStore trait.)
+        Ok(Some(bytes)) => Ok(bytes.to_vec()),
         Ok(None) => Err(ComponentError::DepMissing { hash: dep.hash }),
         Err(e) => Err(ComponentError::DepStoreError {
             hash: dep.hash,
@@ -5337,7 +5340,12 @@ mod tests {
         use crate::blob::{BlobStore, MemBlobStore};
         let mut blobs = MemBlobStore::new();
         let dep_bytes = b"pretend a content-addressed dependency component";
-        let hash = blobs.put(dep_bytes).await.unwrap();
+        // put no longer computes the hash (caller supplies it — compute-once); Bytes is the value type.
+        let hash = crate::hash::Hash::of(dep_bytes);
+        blobs
+            .put(hash, bytes::Bytes::from_static(dep_bytes))
+            .await
+            .unwrap();
         let dep = ComponentDep {
             import_name: format!("cadenza:runtime/heap@0.0.0+{}", hash.to_hex()),
             hash,

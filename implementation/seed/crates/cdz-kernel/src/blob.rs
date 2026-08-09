@@ -19,6 +19,7 @@
 //! network/outpost-fetching backend (§12) implements the same trait.
 
 use crate::hash::Hash;
+use bytes::Bytes;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -40,14 +41,22 @@ static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 /// kernel is single-threaded by design (matches the Executor/Reducer/Authorize traits).
 #[async_trait::async_trait(?Send)]
 pub trait BlobStore {
-    /// Store `bytes` and return their content hash (the key). Idempotent: storing bytes already
-    /// present is a no-op that returns the same hash (content-addressed → the key can't collide with
-    /// different content).
-    async fn put(&mut self, bytes: &[u8]) -> std::io::Result<Hash>;
+    /// Store `bytes` under their content `hash` (the key). The hash is SUPPLIED, not recomputed
+    /// (operator directive): a blob is written through N cache tiers (mem-s3fifo → disk → S3) and the
+    /// content hash is a pure function of the bytes, so it is computed ONCE at the top and threaded —
+    /// recomputing blake3 per backend/tier is wasted CPU. `bytes` is [`bytes::Bytes`] (cheaply-clonable:
+    /// a clone is an O(1) refcount bump, never a deep copy, as the blob threads the tiers). Idempotent:
+    /// storing a key already present is a no-op (content-addressed → the key can't hold different
+    /// content). A backend MAY verify `Hash::of(&bytes) == hash` defensively; it MUST NOT recompute the
+    /// key from the bytes and store under that (the caller's supplied hash IS the key — a disk backend's
+    /// `get` re-verify catches a lying caller).
+    async fn put(&mut self, hash: Hash, bytes: Bytes) -> std::io::Result<()>;
 
-    /// Fetch the bytes for `hash`, or `None` if absent. A backend that can verify integrity SHOULD
-    /// (re-hash the bytes, refuse a mismatch) — content-addressing makes tamper-detection free.
-    async fn get(&self, hash: &Hash) -> std::io::Result<Option<Vec<u8>>>;
+    /// Fetch the bytes for `hash`, or `None` if absent. Returns [`bytes::Bytes`] (cheaply-clonable — a
+    /// blob cached across tiers hands out O(1) refcount clones, not deep copies). A backend that can
+    /// verify integrity SHOULD (re-hash the bytes, refuse a mismatch) — content-addressing makes
+    /// tamper-detection free.
+    async fn get(&self, hash: &Hash) -> std::io::Result<Option<Bytes>>;
 
     /// Is a blob present? A backend SHOULD override this with a real existence probe (a disk backend
     /// stats the file, an object store issues a HEAD) — the check is only as cheap as the impl makes it.
@@ -61,7 +70,7 @@ pub trait BlobStore {
 /// In-memory blob store — for tests and single-process use where durability isn't needed.
 #[derive(Default)]
 pub struct MemBlobStore {
-    blobs: HashMap<Hash, Vec<u8>>,
+    blobs: HashMap<Hash, Bytes>,
 }
 
 impl MemBlobStore {
@@ -82,14 +91,15 @@ impl MemBlobStore {
 
 #[async_trait::async_trait(?Send)]
 impl BlobStore for MemBlobStore {
-    async fn put(&mut self, bytes: &[u8]) -> std::io::Result<Hash> {
-        let hash = Hash::of(bytes);
+    async fn put(&mut self, hash: Hash, bytes: Bytes) -> std::io::Result<()> {
         // Idempotent: only insert if absent (content-addressed → an existing key holds identical bytes).
-        self.blobs.entry(hash).or_insert_with(|| bytes.to_vec());
-        Ok(hash)
+        // The `hash` is the caller's pre-computed key (computed once at the top); we do NOT recompute it.
+        self.blobs.entry(hash).or_insert(bytes);
+        Ok(())
     }
 
-    async fn get(&self, hash: &Hash) -> std::io::Result<Option<Vec<u8>>> {
+    async fn get(&self, hash: &Hash) -> std::io::Result<Option<Bytes>> {
+        // O(1) refcount clone (Bytes), not a deep copy.
         Ok(self.blobs.get(hash).cloned())
     }
 
@@ -132,8 +142,10 @@ impl DiskBlobStore {
 
 #[async_trait::async_trait(?Send)]
 impl BlobStore for DiskBlobStore {
-    async fn put(&mut self, bytes: &[u8]) -> std::io::Result<Hash> {
-        let hash = Hash::of(bytes);
+    async fn put(&mut self, hash: Hash, bytes: Bytes) -> std::io::Result<()> {
+        // `hash` is the caller's pre-computed content key (computed ONCE at the top, threaded through the
+        // tiers — operator directive: no per-backend recompute). We write under it; the `get` self-verify
+        // catches a mismatched caller. `bytes: Bytes` is cheaply-clonable (no deep copy to reach here).
         let path = self.path_for(&hash);
         // Idempotent — BUT don't blindly trust an existing file (PR#1010): a blob that bit-rotted or was
         // tampered on disk still sits under the right name, and skipping the write on mere existence
@@ -141,7 +153,7 @@ impl BlobStore for DiskBlobStore {
         // file's bytes actually hash to the key; only then treat the put as a no-op. If it's missing or
         // corrupt, fall through and (re)write it — a put is the moment we can heal a bad blob.
         match std::fs::read(&path) {
-            Ok(existing) if Hash::of(&existing) == hash => return Ok(hash),
+            Ok(existing) if Hash::of(&existing) == hash => return Ok(()),
             Ok(_) => { /* corrupt on disk — fall through to rewrite the good bytes */ }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => { /* not present — write it */ }
             Err(e) => return Err(e),
@@ -158,7 +170,7 @@ impl BlobStore for DiskBlobStore {
         let shard = self.shard_dir(&hex);
         std::fs::create_dir_all(&shard)?;
         let tmp = shard.join(format!("{}.{}.{}.tmp", &hex[4..], std::process::id(), seq));
-        std::fs::write(&tmp, bytes)?;
+        std::fs::write(&tmp, &bytes)?;
         // Rename tmp → final. POSIX rename atomically REPLACES an existing target, but Windows rename
         // FAILS if the target exists — so the corrupt-rewrite path (target present but bad bytes) would
         // leave the corruption UNHEALED on Windows (Copilot PR#1016, same rename-over-existing class as
@@ -185,17 +197,17 @@ impl BlobStore for DiskBlobStore {
                 return Err(e);
             }
         }
-        Ok(hash)
+        Ok(())
     }
 
-    async fn get(&self, hash: &Hash) -> std::io::Result<Option<Vec<u8>>> {
+    async fn get(&self, hash: &Hash) -> std::io::Result<Option<Bytes>> {
         let path = self.path_for(hash);
         match std::fs::read(&path) {
             Ok(bytes) => {
                 // Self-verify (integrity is free with content-addressing): the file's bytes MUST hash
                 // to the requested key, or it's corrupt/tampered — refuse to serve it.
                 if Hash::of(&bytes) == *hash {
-                    Ok(Some(bytes))
+                    Ok(Some(Bytes::from(bytes)))
                 } else {
                     Err(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
@@ -220,6 +232,15 @@ impl BlobStore for DiskBlobStore {
 mod tests {
     use super::*;
 
+    /// Test helper: compute the content hash ONCE (as a real caller does — put no longer computes it) +
+    /// store the bytes under it, returning the hash for assertions. Mirrors the production compute-once
+    /// pattern.
+    async fn put_blob<S: BlobStore>(store: &mut S, bytes: &'static [u8]) -> Hash {
+        let hash = Hash::of(bytes);
+        store.put(hash, Bytes::from_static(bytes)).await.unwrap();
+        hash
+    }
+
     fn temp_dir(tag: &str) -> PathBuf {
         let mut p = std::env::temp_dir();
         p.push(format!("cdz-kernel-blob-{}-{}", std::process::id(), tag));
@@ -240,7 +261,7 @@ mod tests {
         // blob lands at root/{hex[0..2]}/{hex[2..4]}/{hex[4..]}, the standard CAS fan-out (no giant flat dir).
         let dir = temp_dir("shard");
         let mut store = DiskBlobStore::open(&dir).unwrap();
-        let h = store.put(b"sharded blob").await.unwrap();
+        let h = put_blob(&mut store, b"sharded blob").await;
         let hex = h.to_hex();
         // The blob is at the sharded path, and NOT at the old flat path.
         assert!(
@@ -262,7 +283,7 @@ mod tests {
     }
 
     async fn round_trip<S: BlobStore>(store: &mut S) {
-        let h = store.put(b"hello blob").await.unwrap();
+        let h = put_blob(store, b"hello blob").await;
         // The key is the content hash.
         assert_eq!(h, Hash::of(b"hello blob"));
         assert_eq!(
@@ -274,7 +295,7 @@ mod tests {
         assert_eq!(store.get(&Hash::of(b"never stored")).await.unwrap(), None);
         assert!(!store.has(&Hash::of(b"never stored")).await.unwrap());
         // Idempotent put: same bytes → same hash, no duplicate.
-        let h2 = store.put(b"hello blob").await.unwrap();
+        let h2 = put_blob(store, b"hello blob").await;
         assert_eq!(h, h2);
     }
 
@@ -309,7 +330,7 @@ mod tests {
         // refuse it, not serve wrong bytes (content-addressed integrity, free).
         let dir = temp_dir("corrupt");
         let mut store = DiskBlobStore::open(&dir).unwrap();
-        let h = store.put(b"genuine").await.unwrap();
+        let h = put_blob(&mut store, b"genuine").await;
         // Tamper: overwrite the blob file with different bytes under the same (now-wrong) hash name.
         let path = sharded_path(&dir, &h);
         std::fs::write(&path, b"tampered").unwrap();
@@ -325,7 +346,7 @@ mod tests {
         // must verify the existing file and, finding it bad, rewrite the good bytes.
         let dir = temp_dir("heal");
         let mut store = DiskBlobStore::open(&dir).unwrap();
-        let h = store.put(b"genuine").await.unwrap();
+        let h = put_blob(&mut store, b"genuine").await;
         let path = sharded_path(&dir, &h);
         // Corrupt the on-disk blob (bytes no longer hash to the name).
         std::fs::write(&path, b"rotted!!").unwrap();
@@ -335,7 +356,7 @@ mod tests {
             std::io::ErrorKind::InvalidData
         );
         // Re-put the genuine bytes: put must heal (rewrite), not trust existence.
-        let h2 = store.put(b"genuine").await.unwrap();
+        let h2 = put_blob(&mut store, b"genuine").await;
         assert_eq!(h, h2);
         // Now the blob is good again.
         assert_eq!(
@@ -353,8 +374,8 @@ mod tests {
         // Put twice; a leftover `{hash}.tmp` (the OLD shared name) must never exist, and both succeed.
         let dir = temp_dir("tmp-unique");
         let mut store = DiskBlobStore::open(&dir).unwrap();
-        let h1 = store.put(b"same content").await.unwrap();
-        let h2 = store.put(b"same content").await.unwrap();
+        let h1 = put_blob(&mut store, b"same content").await;
+        let h2 = put_blob(&mut store, b"same content").await;
         assert_eq!(h1, h2);
         // The old collision-prone temp name must not be present, and only the final blob file remains in the
         // SHARD dir (root/{hh}/{hh}/) — the blob basename is hex[4..], no leftover temp files.
@@ -381,8 +402,8 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn distinct_content_distinct_keys() {
         let mut store = MemBlobStore::new();
-        let a = store.put(b"alpha").await.unwrap();
-        let b = store.put(b"beta").await.unwrap();
+        let a = put_blob(&mut store, b"alpha").await;
+        let b = put_blob(&mut store, b"beta").await;
         assert_ne!(a, b);
         assert_eq!(store.len(), 2);
     }

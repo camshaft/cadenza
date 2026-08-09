@@ -29,6 +29,7 @@ use cdz_agent_host::{
 use cdz_kernel::blob::{BlobStore, MemBlobStore};
 use cdz_kernel::event::EventBody;
 use cdz_kernel::executor::CompositeExecutor;
+use cdz_kernel::hash::Hash;
 use common::reducer_component_bytes;
 use std::time::Duration;
 
@@ -71,8 +72,8 @@ async fn smoke(component: Vec<u8>) {
     // The reducer blob store the deployed daemon's install factory loads from (BlobConfig::Memory arm). Put
     // the real wasm component in it → content-addressed, so the hash we get back is the hash we install by.
     let mut blob = MemBlobStore::new();
-    let reducer_hash = blob
-        .put(&component)
+    let reducer_hash = Hash::of(&component);
+    blob.put(reducer_hash, bytes::Bytes::from(component.clone()))
         .await
         .expect("put the wasm reducer component into the blob store");
 

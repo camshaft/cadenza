@@ -92,8 +92,9 @@ fn s3_io_err(context: &str, e: impl std::fmt::Display) -> io::Error {
 
 #[async_trait::async_trait(?Send)]
 impl BlobStore for S3BlobStore {
-    async fn put(&mut self, bytes: &[u8]) -> io::Result<Hash> {
-        let hash = Hash::of(bytes);
+    async fn put(&mut self, hash: Hash, bytes: bytes::Bytes) -> io::Result<()> {
+        // The content hash is SUPPLIED by the caller (computed once at the top, not re-hashed per tier). The
+        // key IS that content hash.
         let key = self.key_for(&hash);
         // Idempotent by content-addressing: PutObject overwrites, and the key IS the content hash, so a
         // re-put writes byte-identical content — never a mutation. (We don't HEAD-then-skip: an unconditional
@@ -103,14 +104,14 @@ impl BlobStore for S3BlobStore {
             .put_object()
             .bucket(&self.bucket)
             .key(&key)
-            .body(bytes.to_vec().into())
+            .body(bytes.into())
             .send()
             .await
             .map_err(|e| s3_io_err("put_object", aws_sdk_s3::error::DisplayErrorContext(&e)))?;
-        Ok(hash)
+        Ok(())
     }
 
-    async fn get(&self, hash: &Hash) -> io::Result<Option<Vec<u8>>> {
+    async fn get(&self, hash: &Hash) -> io::Result<Option<bytes::Bytes>> {
         let key = self.key_for(hash);
         let resp = match self
             .client
@@ -133,14 +134,14 @@ impl BlobStore for S3BlobStore {
                 };
             }
         };
-        // Collect the streamed body into bytes.
+        // Collect the streamed body into ref-counted `Bytes` (no extra copy — `into_bytes` already yields
+        // `bytes::Bytes`).
         let data = resp
             .body
             .collect()
             .await
             .map_err(|e| s3_io_err("get_object body", e))?
-            .into_bytes()
-            .to_vec();
+            .into_bytes();
         // Self-verify (integrity is free with content-addressing): the object's bytes MUST hash to the
         // requested key, or it's corrupt/tampered — refuse to serve it (same discipline as DiskBlobStore).
         if Hash::of(&data) == *hash {

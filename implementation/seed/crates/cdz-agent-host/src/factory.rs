@@ -885,7 +885,7 @@ where
     /// `control/signature` effect's target component bytes. Delegates straight to
     /// [`BlobStore::get`](cdz_kernel::blob::BlobStore::get): `Ok(Some)` present, `Ok(None)` absent (a clean
     /// miss), `Err` a backend failure (mapped to a String, never a panic).
-    async fn fetch_blob(&self, hash: &Hash) -> Result<Option<Vec<u8>>, String> {
+    async fn fetch_blob(&self, hash: &Hash) -> Result<Option<bytes::Bytes>, String> {
         self.blob
             .get(hash)
             .await
@@ -951,7 +951,10 @@ mod tests {
         // Bytes present but NOT a valid component → from_component_bytes declines → clean error, no panic.
         let mut blob = MemBlobStore::new();
         let garbage = b"this is not a wasm component".to_vec();
-        let hash = blob.put(&garbage).await.unwrap();
+        let hash = cdz_kernel::hash::Hash::of(&garbage);
+        blob.put(hash, bytes::Bytes::from(garbage.clone()))
+            .await
+            .unwrap();
         let mut factory = ComponentSessionFactory::new(blob, hermetic_executors, deny_all_authz);
         let spec = InstallSpec {
             id: SessionId::new("bad"),
@@ -1011,7 +1014,10 @@ mod tests {
             return;
         };
         let mut blob = MemBlobStore::new();
-        let hash = blob.put(&bytes).await.unwrap();
+        let hash = cdz_kernel::hash::Hash::of(&bytes);
+        blob.put(hash, bytes::Bytes::from(bytes.clone()))
+            .await
+            .unwrap();
         // Grant the session Http so the fold's requested effect authorizes (the KV `count` write happens in
         // the fold regardless, but granting Http keeps the turn from erroring on an AuthzDenied).
         let authz = || -> Box<dyn Authorize> {
@@ -1429,7 +1435,10 @@ mod tests {
             return;
         };
         let mut blob = MemBlobStore::new();
-        let policy_hash = blob.put(&bytes).await.unwrap();
+        let policy_hash = cdz_kernel::hash::Hash::of(&bytes);
+        blob.put(policy_hash, bytes::Bytes::from(bytes.clone()))
+            .await
+            .unwrap();
         let factory = ComponentSessionFactory::new(blob, hermetic_executors, deny_all_authz);
 
         let mut session = genesis_session();
@@ -1577,7 +1586,10 @@ mod tests {
         // hash; an absent hash is a clean Ok(None) (a miss the loop settles as the Err arm), not an error.
         let mut blob = MemBlobStore::new();
         let bytes = b"a target component's bytes".to_vec();
-        let hash = blob.put(&bytes).await.unwrap();
+        let hash = cdz_kernel::hash::Hash::of(&bytes);
+        blob.put(hash, bytes::Bytes::from(bytes.clone()))
+            .await
+            .unwrap();
         let factory = ComponentSessionFactory::new(blob, hermetic_executors, deny_all_authz);
         assert_eq!(
             factory.fetch_blob(&hash).await.unwrap().as_deref(),

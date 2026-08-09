@@ -206,19 +206,19 @@ impl<B> DiskCacheTier<B> {
 
 #[async_trait::async_trait(?Send)]
 impl<B: BlobStore> BlobStore for DiskCacheTier<B> {
-    /// Write THROUGH to the inner store, then populate the disk cache.
-    async fn put(&mut self, bytes: &[u8]) -> std::io::Result<Hash> {
-        let hash = self.inner.put(bytes).await?;
-        self.cache_write(&hash, bytes);
-        Ok(hash)
+    /// Write THROUGH to the inner store under the SUPPLIED hash (computed once by the caller — no re-hash per
+    /// tier), then populate the disk cache. `Bytes` moves into the inner `put`; the cache write borrows it.
+    async fn put(&mut self, hash: Hash, bytes: bytes::Bytes) -> std::io::Result<()> {
+        self.cache_write(&hash, &bytes);
+        self.inner.put(hash, bytes).await
     }
 
     /// Serve from the disk cache on a hit (verified); on a miss, fetch from the inner store and populate the
     /// cache (promote-on-hit). Content-addressed → a cached file is always valid for its key, no invalidation.
-    async fn get(&self, hash: &Hash) -> std::io::Result<Option<Vec<u8>>> {
+    async fn get(&self, hash: &Hash) -> std::io::Result<Option<bytes::Bytes>> {
         if self.budget > 0 && self.index.borrow().sizes.contains_key(hash) {
             if let Some(bytes) = self.cache_read(hash) {
-                return Ok(Some(bytes));
+                return Ok(Some(bytes.into()));
             }
             // cache_read found a corrupt file (already de-indexed + removed) — fall through to the inner store.
         }
@@ -244,8 +244,16 @@ mod tests {
     use super::*;
     use cdz_kernel::blob::MemBlobStore;
 
-    fn blob(b: u8, n: usize) -> Vec<u8> {
-        vec![b; n]
+    fn blob(b: u8, n: usize) -> bytes::Bytes {
+        bytes::Bytes::from(vec![b; n])
+    }
+
+    /// Test helper mirroring the OLD `put(&bytes) -> Hash` ergonomics over the new `put(hash, Bytes) -> ()`:
+    /// compute the content hash once, store, return the hash (what the tests key on).
+    async fn put_blob<S: BlobStore>(store: &mut S, bytes: &bytes::Bytes) -> Hash {
+        let hash = Hash::of(bytes);
+        store.put(hash, bytes.clone()).await.unwrap();
+        hash
     }
 
     /// A unique proven-fresh cache dir per test (no fixed temp path).
@@ -261,10 +269,10 @@ mod tests {
     }
     #[async_trait::async_trait(?Send)]
     impl BlobStore for CountingBlobStore {
-        async fn put(&mut self, bytes: &[u8]) -> std::io::Result<Hash> {
-            self.inner.put(bytes).await
+        async fn put(&mut self, hash: Hash, bytes: bytes::Bytes) -> std::io::Result<()> {
+            self.inner.put(hash, bytes).await
         }
-        async fn get(&self, hash: &Hash) -> std::io::Result<Option<Vec<u8>>> {
+        async fn get(&self, hash: &Hash) -> std::io::Result<Option<bytes::Bytes>> {
             self.gets.set(self.gets.get() + 1);
             if self.blind.get() {
                 return Ok(None);
@@ -278,7 +286,7 @@ mod tests {
         let dir = cache_dir("diskcache-hit");
         let mut inner = MemBlobStore::new();
         let bytes = blob(1, 100);
-        let hash = inner.put(&bytes).await.unwrap();
+        let hash = put_blob(&mut inner, &bytes).await;
         let counting = CountingBlobStore {
             inner,
             gets: std::cell::Cell::new(0),
@@ -313,10 +321,10 @@ mod tests {
         let a = blob(b'a', 100);
         let bb = blob(b'b', 100);
         let cc = blob(b'c', 100);
-        let ha = c.put(&a).await.unwrap();
-        let _hb = c.put(&bb).await.unwrap();
+        let ha = put_blob(&mut c, &a).await;
+        let _hb = put_blob(&mut c, &bb).await;
         assert_eq!(c.cached_bytes(), 200);
-        let _hc = c.put(&cc).await.unwrap();
+        let _hc = put_blob(&mut c, &cc).await;
         assert_eq!(c.cached_bytes(), 200, "stayed within the 250 budget");
         assert!(
             !dir.join(ha.to_hex()).exists(),
@@ -330,7 +338,7 @@ mod tests {
         let dir = cache_dir("diskcache-oversized");
         let mut c = DiskCacheTier::new(MemBlobStore::new(), &dir, 50);
         let big = blob(9, 100);
-        let h = c.put(&big).await.unwrap();
+        let h = put_blob(&mut c, &big).await;
         assert_eq!(c.cached_bytes(), 0, "oversized blob not cached");
         assert_eq!(
             c.get(&h).await.unwrap().as_deref(),
@@ -346,7 +354,7 @@ mod tests {
         let dir = cache_dir("diskcache-zero");
         let mut c = DiskCacheTier::new(MemBlobStore::new(), &dir, 0);
         let bytes = blob(7, 100);
-        let h = c.put(&bytes).await.unwrap();
+        let h = put_blob(&mut c, &bytes).await;
         assert_eq!(c.cached_bytes(), 0);
         assert_eq!(c.get(&h).await.unwrap().as_deref(), Some(&bytes[..]));
         assert_eq!(c.cached_bytes(), 0, "disabled tier never caches");
@@ -361,7 +369,7 @@ mod tests {
         let bytes = blob(5, 120);
         let hash = {
             let mut c = DiskCacheTier::new(MemBlobStore::new(), &dir, 1024);
-            let h = c.put(&bytes).await.unwrap();
+            let h = put_blob(&mut c, &bytes).await;
             assert_eq!(c.cached_bytes(), 120);
             h
         };
@@ -387,7 +395,7 @@ mod tests {
         let dir = cache_dir("diskcache-corrupt");
         let mut inner = MemBlobStore::new();
         let bytes = blob(4, 100);
-        let hash = inner.put(&bytes).await.unwrap();
+        let hash = put_blob(&mut inner, &bytes).await;
         let c = DiskCacheTier::new(inner, &dir, 1024);
         // Populate the cache via a get (miss → inner → cache).
         assert_eq!(c.get(&hash).await.unwrap().as_deref(), Some(&bytes[..]));
