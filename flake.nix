@@ -1112,10 +1112,21 @@
         #   src      : the tightly-scoped fileset source for this crate
         #   vendor   : its merged offline cargo vendor dir (own lock + rust-src build-std lock)
         #   features : cargo `--features` list (release = [], debug = ["debug-counters"])
-        mkStripComponent = { pname, crateDir, artifact, src, vendor, features ? [ ] }:
+        #   emitRaw  : also expose the RAW pre-strip wasm as a second output `raw` (R3, v-nix+v-runtime
+        #              2026-08-09). WHY: `xtask codegen` reads the `cdz-abi` CUSTOM SECTION (read_abi_imm_unit
+        #              → the 4-byte CDZ_ABI_IMM_UNIT) from the RAW build BEFORE `wasm-tools strip -a` removes
+        #              all custom sections — then hashes the STRIPPED bytes. R3 inverts codegen to CONSUME the
+        #              nix runtime instead of self-building it a 3rd time (on top of this derivation + the
+        #              gate build), so the derivation must expose BOTH: `out` (stripped = the hashed artifact,
+        #              UNCHANGED) + `raw` (pre-strip, cdz-abi intact) from ONE build (multi-output, not a 2nd
+        #              derivation — that would rebuild + defeat the dedup). `out` stays byte-identical, so
+        #              adding `raw` is a true no-op on REQUIRED_RUNTIME_HASH. Only the runtime sets emitRaw
+        #              (nfc's hash is content_address of the stripped nfc; it reads no custom section).
+        mkStripComponent = { pname, crateDir, artifact, src, vendor, features ? [ ], emitRaw ? false }:
           pkgs.stdenvNoCC.mkDerivation {
             inherit pname src;
             version = "0.0.0";
+            outputs = if emitRaw then [ "out" "raw" ] else [ "out" ];
 
             nativeBuildInputs = [ rustToolchain pkgs.wasm-tools pkgs.cargo-component ];
 
@@ -1141,9 +1152,14 @@
             '';
 
             # CANONICALIZE (strip the tool-version producers sections) — the same step xtask's
-            # canonicalize_runtime does. The stripped bytes are the content-addressed artifact.
+            # canonicalize_runtime does. The stripped bytes are the content-addressed artifact ($out). When
+            # emitRaw, ALSO copy the pre-strip wasm to $raw (cdz-abi custom section intact) BEFORE stripping,
+            # so an R3 consumer reads cdz-abi from $raw + hashes $out — codegen's read-raw-hash-stripped shape.
             installPhase = ''
               runHook preInstall
+              ${pkgs.lib.optionalString emitRaw ''
+                cp target/wasm32-unknown-unknown/release/${artifact}.wasm "$raw"
+              ''}
               wasm-tools strip -a \
                 target/wasm32-unknown-unknown/release/${artifact}.wasm \
                 -o "$out"
@@ -1152,19 +1168,22 @@
           };
 
         # The value-heap runtime derivations bind mkStripComponent to the cdz-runtime crate.
-        mkRuntime = { pname, features }:
+        mkRuntime = { pname, features, emitRaw ? false }:
           mkStripComponent {
-            inherit pname features;
+            inherit pname features emitRaw;
             crateDir = "cdz-runtime";
             artifact = "cdz_runtime";
             src = runtimeSrc;
             vendor = runtimeVendor;
           };
 
-        # The RELEASE runtime — what a shipped program pins (REQUIRED_RUNTIME_HASH).
+        # The RELEASE runtime — what a shipped program pins (REQUIRED_RUNTIME_HASH). emitRaw = true adds the
+        # `raw` output (pre-strip wasm, cdz-abi intact) for R3's codegen-consumer; the default `out` (stripped
+        # = the hashed artifact) is byte-unchanged, so this is a no-op on REQUIRED_RUNTIME_HASH.
         runtime = mkRuntime {
           pname = "cdz-runtime-component";
           features = [ ];
+          emitRaw = true;
         };
 
         # The DEBUG-COUNTERS runtime — same code + the `live-objects` leak counter
@@ -1817,6 +1836,11 @@
         # is never asserted here — it falls out of the build (operator north star). Parity with the
         # committed REQUIRED_RUNTIME_HASH is a `checks` assertion below, not a pin.
         packages.runtime = runtime;
+        # R3 (v-nix+v-runtime 2026-08-09): the RAW pre-strip runtime wasm (cdz-abi custom section intact) —
+        # the `raw` output of the SAME single build as `packages.runtime` (no extra rebuild). An R3 codegen
+        # consumer reads cdz-abi from here (read_abi_imm_unit) + hashes packages.runtime (stripped). Additive:
+        # packages.runtime (stripped) is byte-unchanged, so exposing this does not move REQUIRED_RUNTIME_HASH.
+        packages.runtime-raw = runtime.raw;
         packages.runtime-debug = runtimeDebug;
         packages.runtime-hash = hashOf runtime "cdz-runtime-hash";
         packages.runtime-debug-hash = hashOf runtimeDebug "cdz-runtime-debug-hash";
