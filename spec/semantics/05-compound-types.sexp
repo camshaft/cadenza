@@ -3982,9 +3982,11 @@
            member `length` — closest matches: `len`, `at`, `concat`'. `length` is a natural slip for `len`,
            so the did-you-mean points straight at the fix. Pins the ordinary unknown-member diagnostic
            (distinct from the targeted CDZ0603 retired-name path): the reader is told WHICH module and the
-           nearest real members, not a bare 'unbound'. The program's outcome is the rejection.")
+           nearest real members, not a bare 'unbound'. The program's outcome is the rejection. The (message
+           ..) pins the did-you-mean lead — the diagnostic offers the nearest real members, not a dead-end
+           'unbound' — so a wording degrade that drops the suggestion list flips this case.")
   (input  (do (def (main) (List.length (list 1 2))) (export main)))
-  (error CDZ0201))
+  (error CDZ0201 (message "closest matches:")))
 
 (case "a record whose field is a runtime tuple nests across the boundary"
   (doc    "`(record (x n) (y (tuple n 1)))` with n=5 produces `(record (x 5) (y (tuple 5 1)))` — a
