@@ -83,6 +83,7 @@ pub mod metric_exec;
 pub mod metrics;
 pub mod model;
 pub mod name_snapshot;
+pub mod reply_exec;
 pub mod retry;
 #[cfg(feature = "live-aws-storage")]
 pub mod s3_blob;
@@ -150,6 +151,7 @@ pub use model::{ModelExecutor, ModelTransport};
 #[cfg(feature = "live-aws-storage")]
 pub use name_snapshot::S3NameStoreSnapshot;
 pub use name_snapshot::{MemNameStoreSnapshot, NameStoreSnapshotStore};
+pub use reply_exec::{reply_settle_channel, ReplyExecutor, ReplySettle, ReplySettleSink};
 pub use retry::Retryability;
 #[cfg(feature = "live-aws-storage")]
 pub use s3_blob::S3BlobStore;
