@@ -639,8 +639,25 @@
         # `cadenza:agent-kernel/fold` (genesis is an ordinary fold, not a separate world — v-hb confirmed).
         # b1/b2 import just the value-heap runtime by hash; b3/genesis also import cadenza:agent-kernel/kv
         # (host-served, unresolved at build — `wasm-tools validate` still passes, verified).
-        mkCadenzaComponent = { name, cdzFile, componentName ? "cadenza:agent-kernel/fold" }:
-          pkgs.stdenvNoCC.mkDerivation {
+        # `outputHash` (optional) makes the component a FIXED-OUTPUT derivation — the throughput lever for
+        # the per-MR gate (operator sub-1-min mandate, v-agent-harness-host ruling 2026-08-09). WHY: the
+        # component is compiled by `seedCompiler`, whose drv rotates on ANY compiler-crate edit (even a leaf
+        # like cdz-num — it is in the compiler's closure). A consumer that injects the component (e.g.
+        # cdz-agent-host-native injecting GENESIS_REDUCER_COMPONENT) therefore rotates + re-runs on EVERY
+        # fleet MR, not just when its own inputs change — for the genesis reducer that meant re-running a
+        # 60s+ policy-swap E2E every MR (drv-diff-confirmed the genesis component was the sole rotating
+        # input). Pinning `outputHash` makes nix EARLY-CUTOFF: the compiler may rebuild, but if the emitted
+        # component bytes are unchanged (verified byte-reproducible), the FOD output PATH is stable → the
+        # consumer cache-hits + skips the rerun. Correctness (v-ah-host's bar): a genuine compiler-semantics
+        # change that alters the emit produces bytes != the pinned hash → the FOD build FAILS the hash check
+        # (loud, not silent) → whoever made the change updates the pinned hash + the E2E re-runs against the
+        # new bytes. So the pinned hash IS the "key on (reducer .cdz + runtime-ABI)" v-ah-host asked for: it
+        # only moves when the emit genuinely changes, and the FOD's own hash check IS the staleness guard —
+        # a stale pin cannot mask a real change (the rebuild-on-input-change produces mismatching bytes →
+        # fail-loud), and no separate assert is needed. Components with NO consumer in a heavy check
+        # (b1/b2/b3, only in *-valid) stay normal derivations — no need to pin.
+        mkCadenzaComponent = { name, cdzFile, componentName ? "cadenza:agent-kernel/fold", outputHash ? null }:
+          pkgs.stdenvNoCC.mkDerivation ({
             pname = name;
             version = "0.0.0";
             src = reducerCadenzaTestSrc; # fixture-dir-rooted → the reducer .cdz are at the src top level.
@@ -667,11 +684,26 @@
             # default shift) and strip silently corrupts. Make the guard explicit, same as rcdzcWasm
             # (github-liaison #2196 review).
             dontFixup = true;
-          };
+          } // pkgs.lib.optionalAttrs (outputHash != null) {
+            # FIXED-OUTPUT (single wasm file): flat mode, sha256 SRI. See the maker note above.
+            outputHashMode = "flat";
+            outputHashAlgo = "sha256";
+            inherit outputHash;
+          });
         reducerCadenzaB1 = mkCadenzaComponent { name = "reducer-cadenza-b1"; cdzFile = "reducer_b1.cdz"; };
         reducerCadenzaB2 = mkCadenzaComponent { name = "reducer-cadenza-b2"; cdzFile = "reducer_b2.cdz"; };
         reducerCadenzaB3 = mkCadenzaComponent { name = "reducer-cadenza-b3"; cdzFile = "reducer_b3.cdz"; };
-        reducerCadenzaGenesis = mkCadenzaComponent { name = "reducer-cadenza-genesis"; cdzFile = "reducer_genesis.cdz"; };
+        # GENESIS is FIXED-OUTPUT (it is the sole reducer-cadenza component injected into a heavy native
+        # check — cdz-agent-host-native's 60s+ genesis E2E — so its store-path stability is what stops that
+        # E2E re-running on every unrelated compiler edit; see the mkCadenzaComponent note). The pin is the
+        # emitted component's sha256 (byte-reproducible, verified: FOD output path stable across a cdz-num
+        # edit). Update this hash ONLY when a genuine reducer_genesis.cdz or runtime-ABI change moves the emit
+        # (the FOD build fails loud if the pin is stale — that IS the staleness guard).
+        reducerCadenzaGenesis = mkCadenzaComponent {
+          name = "reducer-cadenza-genesis";
+          cdzFile = "reducer_genesis.cdz";
+          outputHash = "sha256-c5DBRnR0kQgloBKXP2RPlPYZD9GfZUib4qKMODih1xs=";
+        };
 
         # Full-CI-in-nix increment 6e: the GHA `cad-tests` job — `cdz test` on the 4 committed
         # in-tree Cadenza PROJECTS (implementation/{cad,compiler-ml,choreography,iterators}). These are
