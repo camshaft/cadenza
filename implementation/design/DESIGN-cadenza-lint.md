@@ -90,8 +90,15 @@ path an in-place lint would use.
 | `naming/camel-case` | a variable/binding name in `camelCase` → warn; offer rename to `snake_case` | Heuristic (auto-rename touches every use site; offer, confirm — operator-flagged) |
 | `idiomatic/nested-match` | nested single-scrutinee `match` on the results of one `match` → one hoisted `match` (the operator's headline example) | Heuristic first (arm cross-product can change readability); promote to Verified once the tuple-scrutinee form is settled |
 | `idiomatic/double-negation` | `(not (not ,e))` → `,e` | Verified |
-| `idiomatic/negated-eq` | `(not (== ,a ,b))` → `(!= ,a ,b)` | Verified |
-| `idiomatic/deep-nesting` | call/argument nesting deeper than a threshold → warn (offer: hoist inner sub-expressions to `let`-bound named intermediates) | Heuristic (a refactor suggestion, not a mechanical rewrite — the names are the author's) |
+| `idiomatic/deep-nesting` | call-CHAIN depth deeper than a threshold → warn (offer: hoist inner sub-expressions to `let`-bound named intermediates) | Heuristic (a refactor suggestion, not a mechanical rewrite — the names are the author's) |
+
+> **Struck: `idiomatic/negated-eq`** (`(not (== ,a ,b))` → `(!= ,a ,b)`). This lint is VACUOUS — it
+> has no valid rewrite target. Core Cadenza has NO `!=` node: the compiler has no `Prim::Ne` (only
+> Lt/Gt/Le/Ge/Eq — see `spec/semantics/02-binding-and-control.sexp`, the "compiler has NO `Prim::Ne`"
+> note), there is no `!=` lexer token or `op_str` head (a `!=` appears only in the cedar policy
+> sublanguage), and `!=` desugars to `(not (= …))`. So `(not (= a b))` is ALREADY the canonical form
+> with nothing to rewrite *to*. A lint that cannot fire on any real program is dead; struck by ruling
+> 2026-08-09.
 
 **Motivating real-world case (operator, PR #2790 `hm-collect.cdz`):** deeply-nested arguments in the
 compiler-ml codebase, flagged as *not* setting a good example of idiomatic Cadenza. `idiomatic/deep-
@@ -258,9 +265,10 @@ with no existing analogue, so it gets its own increment slice + a reject-test su
   pass is additive, off the compile path).
 
 **I2 — the rest of the Tier-A catalog.**
-- `idiomatic/if-same-branch`, `idiomatic/double-negation`, `idiomatic/negated-eq`, `idiomatic/nested-
+- `idiomatic/if-same-branch`, `idiomatic/double-negation`, `idiomatic/nested-
   match` (Heuristic), `idiomatic/deep-nesting` (Heuristic — the operator's PR-#2790 motivating case),
   and the `naming/camel-case` **rename fix** (needs `UsesOf` to rewrite every use site safely).
+  (`idiomatic/negated-eq` was STRUCK — vacuous, no `!=` node to rewrite to; see the Tier-A table note.)
   Each: rule + fix + tests. Grow the catalog as coherent per-lint (or small-group) units.
 - `idiomatic/deep-nesting` coordinates with `v-syntax`'s formatter-layout assessment (§2 boundary): the
   lint fires on structural depth, never on layout; a shared test asserts a well-formatted deep call still

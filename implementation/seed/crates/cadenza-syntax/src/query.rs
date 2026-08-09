@@ -3556,11 +3556,17 @@ pub mod lint {
         ///   guard. NO catalog fix: the auto-rename is Heuristic (it must rewrite every use site, needing
         ///   resolve info), so it is offered as a code-action, not applied by `--fix` (design §naming).
         ///   Two rules (def + let binder); a per-parameter form needs splice-element guards (later).
+        /// - `idiomatic/deep-nesting` — a node whose call-CHAIN depth exceeds N (`calls-deeper-than 10`)
+        ///   → REPORT-ONLY warning (the hoist-to-`let` fix is Heuristic, a code-action). N=10 is a
+        ///   conservative egregious-only placeholder (concierge ruling 2026-08-09, pending the operator's
+        ///   final threshold). Uses the `call_depth` metric (nested application forms only), NOT the
+        ///   whole-subtree `list_depth` (which over-fires on structural nesting).
         ///
-        /// Design §2 also lists `idiomatic/negated-eq` (`(not (== a b))` → `(!= a b)`);
-        /// it is NOT shipped because Cadenza has no native `!=` surface — the arena `!=` head prints as a
-        /// quoted-name call `` `!=`(a, b) ``, which is LESS idiomatic than the `not(a == b)` it replaces,
-        /// so the "fix" would regress readability. The catalog grows increment-by-increment (§2 open catalog).
+        /// Design §2 once listed `idiomatic/negated-eq` (`(not (== a b))` → `(!= a b)`); it is STRUCK
+        /// (ruling 2026-08-09) as VACUOUS — there is no `!=` node to rewrite to. Core Cadenza has no
+        /// `Prim::Ne` (only Lt/Gt/Le/Ge/Eq), no `!=` lexer token or `op_str` head (`!=` lives only in the
+        /// cedar sublanguage), and `!=` desugars to `(not (= …))` — so `(not (= a b))` is ALREADY the
+        /// canonical form. The catalog grows increment-by-increment (§2 open catalog).
         ///
         /// `compile` of this text is infallible (a unit test pins it), so `expect` is sound.
         pub fn builtin() -> LintSet {
@@ -3591,6 +3597,20 @@ pub mod lint {
                 "\"camelCase binding name — Cadenza convention is snake_case\")\n",
                 "(lint naming/camel-case (let ((,(n is-camel-case) ,_)) ,@_) ",
                 "\"camelCase binding name — Cadenza convention is snake_case\")\n",
+                // idiomatic/deep-nesting — REPORT-ONLY (no fix): a call-CHAIN nested deeper than the
+                // threshold is non-idiomatic (operator PR-2790 hm-collect.cdz); the fix (hoist inner
+                // sub-expressions to let-bound names) is Heuristic — the names are the author's — so it is
+                // offered as a code-action, never applied by --fix. Threshold N=10 is a CONSERVATIVE
+                // egregious-only placeholder (concierge ruling 2026-08-09, pending the operator's final
+                // threshold): the empirical study showed no clean cutoff (dense compiler-ml files light up
+                // at N=6 and N=8), so N=10 flags only pathological nesting without redding dense-but-legit
+                // code. Uses the call_depth metric (nested application forms only), NOT list_depth. NB it
+                // fires on EVERY node whose call-depth exceeds N, so a single deep chain reports on its
+                // outer nodes too (an outermost-only de-dup needs ancestor context the metavar guard lacks
+                // — a follow-on once the operator pins the threshold).
+                "(lint idiomatic/deep-nesting ,(x (calls-deeper-than 10)) ",
+                "\"deeply nested call chain — consider hoisting inner sub-expressions to named `let` bindings\" ",
+                "warning)\n",
             ))
             .expect("the built-in idiomatic lint catalog compiles")
         }
@@ -6800,8 +6820,9 @@ mod tests {
         fn builtin_catalog_compiles_and_names_its_lints() {
             let set = LintSet::builtin();
             // if-bool (×2) + redundant-let + double-negation + if-same-branch + single-arm-match
-            // (all fixable Verified) + naming/camel-case (×2, def + let binder — REPORT-ONLY, no fix).
-            assert_eq!(set.rules.len(), 8, "8 Tier-A rules");
+            // (all fixable Verified) + naming/camel-case (×2, def + let binder — REPORT-ONLY, no fix)
+            // + idiomatic/deep-nesting (REPORT-ONLY, the hoist fix is Heuristic).
+            assert_eq!(set.rules.len(), 9, "9 Tier-A rules");
             let names: Vec<&str> = set.rules.iter().filter_map(|r| r.name.as_deref()).collect();
             assert_eq!(
                 names,
@@ -6814,10 +6835,12 @@ mod tests {
                     "idiomatic/single-arm-match",
                     "naming/camel-case",
                     "naming/camel-case",
+                    "idiomatic/deep-nesting",
                 ]
             );
-            // Every FIXABLE catalog rule's fix is Verified; the `naming/*` lints are report-only (their
-            // auto-rename is Heuristic + needs use-site resolution, so it is a code-action, not `--fix`).
+            // Every FIXABLE catalog rule's fix is Verified; the report-only lints (naming/camel-case —
+            // Heuristic use-site rename; idiomatic/deep-nesting — Heuristic author-named hoist) carry no
+            // catalog fix, offered as code-actions instead.
             for r in &set.rules {
                 match r.fix.as_ref() {
                     Some((_, app)) => {
@@ -6830,8 +6853,11 @@ mod tests {
                         );
                     }
                     None => assert!(
-                        r.name.as_deref() == Some("naming/camel-case"),
-                        "the only report-only catalog lint is naming/camel-case"
+                        matches!(
+                            r.name.as_deref(),
+                            Some("naming/camel-case") | Some("idiomatic/deep-nesting")
+                        ),
+                        "the report-only catalog lints are naming/camel-case + idiomatic/deep-nesting"
                     ),
                 }
             }
@@ -6863,6 +6889,36 @@ mod tests {
                     .iter()
                     .all(|d| !d.message.contains("camelCase")),
                 "snake_case bindings are not flagged"
+            );
+        }
+
+        #[test]
+        fn builtin_deep_nesting_fires_on_a_pathological_call_chain_report_only() {
+            let set = LintSet::builtin();
+            // A call chain deeper than N=10 fires the deep-nesting warning (report-only, no fix).
+            // 12 nested applications -> call-depth 12 > 10.
+            let deep = subj("(a (b (c (d (e (f (g (h (i (j (k (l 1))))))))))))");
+            let diags = lint::run(&set, &deep, None);
+            let dn: Vec<_> = diags
+                .iter()
+                .filter(|d| d.message.contains("deeply nested"))
+                .collect();
+            assert!(
+                !dn.is_empty(),
+                "a >10-deep call chain fires deep-nesting: {diags:?}"
+            );
+            assert!(
+                dn.iter().all(|d| d.severity == Severity::Warning),
+                "deep-nesting is a report-only warning"
+            );
+            // Ordinary shallow code (a structural spine + a shallow call) never fires it — this is the
+            // whole point of call_depth over list_depth: structural nesting does not count.
+            let shallow = subj("(module m (def (main) (let ((x 1)) (+ x (g 2)))))");
+            assert!(
+                lint::run(&set, &shallow, None)
+                    .iter()
+                    .all(|d| !d.message.contains("deeply nested")),
+                "shallow structural code is not flagged as deep-nesting"
             );
         }
 
