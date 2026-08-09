@@ -4421,32 +4421,30 @@ fn check(paths: &Paths, profile: &str) {
     // than as an integrator fix-forward. Concierge ruling (2026-07-19): the surgical, contention-aware
     // fix vs a full second `cargo test --workspace`.
     //
-    // CONTENT-CACHED (2026-07-19): this re-runs the full `rcdzc --lib` (2176 tests) + 2 cdz targets
-    // storeless, ~230s on a loaded host — too costly to pay EVERY batch when a store-guard can only
-    // regress if the rcdzc/cdz TEST sources change. Key the cached verdict on the `cdz` binary PLUS the
-    // two guarded-test source trees: `cdz/tests` (the cdz integration tests) AND `rcdzc/src` (the rcdzc
-    // `--lib` unit tests). CRUCIAL: rcdzc's tests are `#[cfg(test)]`, so they are NOT compiled into the
-    // release `cdz` binary — keying on the binary alone would MISS an edit to `rcdzc/src/tests.rs` (the
-    // exact file holding the rcdzc store-guarded `run_heap_value`/`find_runtime_wasm` tests) and wrongly
-    // skip the rerun though the guarded set changed (PR#648 / Copilot catch — my original claim that the
-    // binary covered them was wrong). With all three inputs in the key: any of them changing flips the
-    // key -> full storeless re-run; all unchanged -> the guarded test set is unchanged -> skip the ~230s
-    // sweep. Same mechanism as the compiler-ml suite. Fail-open (no cache handle -> always run), and only
-    // a just-observed GREEN is ever recorded (a false green is impossible).
+    // CONTENT-CACHED (2026-07-19): this re-runs the full `rcdzc --lib` (2176 tests) storeless, ~230s on a
+    // loaded host — too costly to pay EVERY batch when a store-guard can only regress if the rcdzc TEST
+    // sources change. Key the cached verdict on `rcdzc/src` (the rcdzc `--lib` unit tests). rcdzc's tests
+    // are `#[cfg(test)]`, so they are NOT compiled into the release `cdz` binary — keying on the binary
+    // alone would MISS an edit to `rcdzc/src/tests.rs` (the file holding the store-guarded
+    // `run_heap_value`/`find_runtime_wasm` tests) and wrongly skip the rerun though the guarded set changed
+    // (PR#648 / Copilot catch). So the source tree is the load-bearing input. (The `cdz/tests` tree +
+    // `cdz` binary were dropped from the key 2026-08-09 alongside removing the cdz storeless entries — the
+    // cdz CLI test suite was deleted (`5f14b9c40`), so `cdz/tests` no longer exists; keying on a missing
+    // path made `new_multi` return None → the cache silently DISABLED, paying the ~230s sweep every batch.)
+    // rcdzc/src changing flips the key → full storeless re-run; unchanged → skip the sweep. Fail-open (no
+    // cache handle -> always run), and only a just-observed GREEN is ever recorded (a false green is
+    // impossible).
     let storeless_cache = CachedStep::new_multi(
         paths,
         "storeless-rerun",
-        Path::new(&cdz),
-        &[
-            &paths.seed.join("crates/cdz/tests"),
-            &paths.seed.join("crates/rcdzc/src"),
-        ],
+        &paths.seed.join("crates/rcdzc/src/lib.rs"),
+        &[&paths.seed.join("crates/rcdzc/src")],
     );
     if let Some(cache) = &storeless_cache
         && cache.is_green()
     {
         println!(
-            "  ✓ storeless-rerun (cached green @ {} — cdz binary + cdz/tests + rcdzc/src all unchanged)",
+            "  ✓ storeless-rerun (cached green @ {} — rcdzc/src unchanged)",
             cache.short_key()
         );
     } else {
@@ -5637,21 +5635,19 @@ fn storeless_rerun(paths: &Paths) -> Result<(), String> {
         ));
     }
 
-    // The exact crates/targets the 3 recurring incidents came from (rcdzc erased-newtype; cdz
-    // sum-property in test_manifest_cli; run-emitted-decline in run_emitted_cli). Scoped, not a full
+    // The recurring storeless incident this still guards: rcdzc erased-newtype. Scoped, not a full
     // `--workspace`, so this stays a fraction of a second test phase (concierge contention ruling).
+    //
+    // The two cdz `--test` entries (test_manifest_cli sum-property, run_emitted_cli run-emitted-decline)
+    // were REMOVED 2026-08-09: the cdz CLI integration-test suite was consolidated then DELETED wholesale
+    // (`5f14b9c40` dropped `cdz/tests/suite/**`, 60 files), so those `--test <name>` targets no longer
+    // exist and `cargo test -p cdz --test test_manifest_cli` errored `no test target named …` — a stale
+    // reference that false-failed `xtask check` for every worktree before it ran a single test (v-inference
+    // flagged). With the tests gone there is nothing left to storeless-rerun for cdz; rcdzc --lib remains
+    // the live coverage. Re-add a cdz entry ONLY if a runtime-driving cdz test with a store-skip guard
+    // returns.
     let store_str = empty_store.to_string_lossy().to_string();
-    let runs: [(&str, &[&str]); 3] = [
-        ("rcdzc --lib", &["test", "-p", "rcdzc", "--lib"]),
-        (
-            "cdz test_manifest_cli",
-            &["test", "-p", "cdz", "--test", "test_manifest_cli"],
-        ),
-        (
-            "cdz run_emitted_cli",
-            &["test", "-p", "cdz", "--test", "run_emitted_cli"],
-        ),
-    ];
+    let runs: [(&str, &[&str]); 1] = [("rcdzc --lib", &["test", "-p", "rcdzc", "--lib"])];
 
     let mut failures: Vec<String> = Vec::new();
     for (label, args) in runs {
@@ -5696,9 +5692,9 @@ fn storeless_rerun(paths: &Paths) -> Result<(), String> {
     } else {
         Err(format!(
             "{} storeless rerun(s) FAILED — a value-heap-driving test ran without its store-skip guard, \
-             which reds CI's storeless `cargo test --workspace` (no store). Fix: add the \
-             `store_present()`/`find_runtime_wasm→None` skip to the offending test (see \
-             `cdz/tests/run_emitted_cli.rs::store_present`).\n\n{}",
+             which reds CI's storeless `cargo test --workspace` (no store). Fix: add a \
+             `store_present()`/`find_runtime_wasm→None` skip to the offending test so it skips when \
+             `CADENZA_STORE` resolves to an empty/absent store.\n\n{}",
             failures.len(),
             failures.join("\n\n")
         ))
