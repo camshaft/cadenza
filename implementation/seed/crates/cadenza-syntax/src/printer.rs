@@ -32,6 +32,13 @@ const INDENT: isize = 2;
 /// `if` condition, so a nested conditional condition reads as `if (if …) then …`.
 const PREC_KEYWORD: u8 = 1;
 
+/// The parent-precedence that forces a bitwise-or `|` INFIX subexpression to parenthesize: one above
+/// `|`'s infix binding power (`token::infix_prec("|")` = 7), so `prec(7) < parent_prec(8)` triggers the
+/// paren. Used ONLY for a match/handle arm body headed by `|` — a bare `|` at the arm's own level
+/// re-parses as the next arm's separator (`Parser::arm_bar_terminates`), so `=> (x | 8)` is mandatory.
+/// (`PREC_KEYWORD` cannot do this — it wraps block forms but never an infix, whose lowest prec is 1.)
+const PREC_PIPE_PAREN: u8 = 8;
+
 /// Pretty-print `arenas` to ML text targeting `width` columns. This is the CANONICAL, RE-READABLE
 /// surface: a name that would re-lex as something else is backtick-escaped, a `Rational` value leaf
 /// (`1/4`) is quoted, a unit is spelled as its full `Unit.base(#name)` construction — everything the
@@ -1534,6 +1541,42 @@ impl<'a> Printer<'a> {
         }
     }
 
+    /// Whether a match/handle arm BODY is a top-level bitwise-or `(| a b)` infix — which the printer
+    /// renders with a bare `|` glyph (`a | b`). At the arm's own bracket level a `|` TERMINATES the arm
+    /// (`Parser::arm_bar_terminates`), so a bare-`|` body re-parses as the start of the next arm and the
+    /// right operand dangles (breaker's pipe-in-arm round-trip bug: `| tag(x,s) => x | 8` lost `8`).
+    /// So an arm body headed by `|` MUST parenthesize — `=> (x | 8)` — for EVERY arm (the last/only arm
+    /// too, since the bare `|` starts a phantom arm regardless of what follows). The `|` inside a call's
+    /// args (`resume(x | 8, …)`) is already safe — `arg_exprs` clears the flag — so only a body whose
+    /// OWN head is `|` needs this; a `|` nested inside a sub-call/bracket does not.
+    fn arm_body_is_bare_pipe_infix(&self, id: StructId) -> bool {
+        // Peel transparent comment wrappers, then check the head is the `|` bitwise-or operator.
+        let mut node = id;
+        loop {
+            if let Some(a) = self.a.as_form(node, "comment")
+                && a.len() == 2
+                && self.is_string(a[0])
+            {
+                node = a[1];
+                continue;
+            }
+            if let Some(a) = self.a.as_form(node, "comment-after")
+                && a.len() == 2
+                && self.is_string(a[1])
+            {
+                node = a[0];
+                continue;
+            }
+            break;
+        }
+        match self.a.get(node) {
+            Struct::List(items) if !items.is_empty() => {
+                self.head_name(items[0]).as_deref() == Some("|")
+            }
+            _ => false,
+        }
+    }
+
     /// Print an expression in a VALUE position (a let-binding value). A construct that "eats forward"
     /// to the end of the enclosing sequence — a `let` (its body scopes to end) or a `(do …)` sequence
     /// — must PARENTHESIZE here, or it would swallow the statements that follow the binding:
@@ -2123,8 +2166,17 @@ impl<'a> Printer<'a> {
         // A non-last arm's greedy block-form body (`match`/`let`/`if`/…) parenthesizes so its arms
         // don't run into the next `| op` handler arm on re-parse; the last arm's body is terminated
         // by `in`, so it needs no guard. `PREC_KEYWORD` forces block-form parens without wrapping an
-        // infix body — identical to `print_match`'s non-last-arm treatment.
-        self.expr(body, if last { 0 } else { PREC_KEYWORD });
+        // infix body — identical to `print_match`'s non-last-arm treatment. A bare-`|` (bitwise-or) body
+        // parenthesizes for EVERY arm (even the last: a bare `|` still starts a phantom arm before `in`)
+        // via `PREC_PIPE_PAREN` (> `|`'s infix prec, so the infix itself parens).
+        let body_prec = if self.arm_body_is_bare_pipe_infix(body) {
+            PREC_PIPE_PAREN
+        } else if last {
+            0
+        } else {
+            PREC_KEYWORD
+        };
+        self.expr(body, body_prec);
     }
 
     /// `host E, … in body` — an entrypoint delegation. `args` is `(E …) body`; the effects render as a
@@ -2755,8 +2807,18 @@ impl<'a> Printer<'a> {
                 // paren defect: hm-collect.cdz's `(if …)`/`(let …)` match-arm bodies). The last arm needs
                 // no guard (nothing follows). PREC_KEYWORD forces the block-form parens; 0 prints bare.
                 let last = i + 1 == arms.len();
-                let needs_paren = !last && self.arm_body_tail_is_open_arm_form(body, 0);
-                self.expr(body, if needs_paren { PREC_KEYWORD } else { 0 });
+                // A bare-`|` (bitwise-or) body parenthesizes for EVERY arm (the `|` glyph would start a
+                // phantom next arm) — forced with `PREC_PIPE_PAREN` (> `|`'s infix prec 7) so the INFIX
+                // itself parenthesizes, since PREC_KEYWORD only wraps block forms not infixes. A greedy
+                // open-arm-form tail parenthesizes only for a NON-last arm (PREC_KEYWORD).
+                let body_prec = if self.arm_body_is_bare_pipe_infix(body) {
+                    PREC_PIPE_PAREN
+                } else if !last && self.arm_body_tail_is_open_arm_form(body, 0) {
+                    PREC_KEYWORD
+                } else {
+                    0
+                };
+                self.expr(body, body_prec);
             }
             // Trailing comments after the body, same line (innermost closest to the body).
             for &text in trail_texts.iter().rev() {
@@ -7913,6 +7975,45 @@ mod tests {
         assert!(
             if_else_match.contains("=> (if p then"),
             "a non-last `if` whose else-tail is a match keeps parens, got:\n{if_else_match}"
+        );
+    }
+
+    #[test]
+    fn a_bitwise_or_arm_body_parenthesizes_so_the_bare_pipe_does_not_start_a_new_arm() {
+        // breaker's pipe-in-arm round-trip bug: a match/handle arm body that is a top-level bitwise-or
+        // `(| a b)` prints with a bare `|` glyph (`a | b`); at the arm's own level a `|` TERMINATES the
+        // arm (`Parser::arm_bar_terminates`), so a bare-`|` body re-parses as the next arm's separator and
+        // the right operand dangles. The printer must parenthesize it — `=> (x | 8)` — for EVERY arm
+        // (the last/only arm too). Build the arm arena directly (the ML surface can't author a bare `|`
+        // body). handle + match, and the resume/call arg case (already parser-safe) for good measure.
+        // A single-arm handle whose body is `(| x 8)`.
+        let a = sexpr::read("(handle E n ((tag (x) s (| x 8))) (E.tag 3))").unwrap();
+        let out = print(&a, 200);
+        assert!(
+            out.contains("=> (x | 8)"),
+            "a bitwise-or handle-arm body parenthesizes the bare `|`, got:\n{out}"
+        );
+        // A match arm whose body is `(| x 8)`.
+        let m = sexpr::read("(match v ((C (x)) (| x 8)) (_ 0))").unwrap();
+        let mout = print(&m, 200);
+        assert!(
+            mout.contains("=> (x | 8)"),
+            "a bitwise-or match-arm body parenthesizes the bare `|`, got:\n{mout}"
+        );
+        // Round-trip: both re-parse identically (the whole point — without the parens the `| 8` / `| _`
+        // would be swallowed as a phantom next arm).
+        assert_roundtrip("match v with | C(x) => (x | 8) | _ => 0", 200);
+        // The nested-operand shape breaker's bw4 used: `(| (& x 15) (<< (& s 3) 4))`.
+        let nested = sexpr::read(
+            "(handle E n ((tag (x) s (resume (| (& x 15) (<< (& s 3) 4)) (+ s 1)))) (E.tag 3))",
+        )
+        .unwrap();
+        let nout = print(&nested, 200);
+        let re = parser::read_ml(&nout);
+        assert!(
+            re.ok(),
+            "a resume(| …, …) arm body round-trips (call args clear the arm-bar flag): {nout:?} -> {:?}",
+            re.errors
         );
     }
 

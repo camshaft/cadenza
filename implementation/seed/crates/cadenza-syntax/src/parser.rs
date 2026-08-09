@@ -1828,6 +1828,13 @@ impl<'a> Parser<'a> {
     /// Parse `( e, … )` and return the argument occurrences.
     fn arg_exprs(&mut self) -> Vec<StructId> {
         self.expect(Kind::LParen, "`(`");
+        // A call's `( … )` is a bracket boundary, so a `|` inside a call ARGUMENT is bitwise-or, not a
+        // match/handle-arm terminator — clear `arm_bar_terminates` for the duration (restored after),
+        // exactly as `bracketed_bars` does for a parenthesized/list/record sub-expression. Without this a
+        // `resume(x | 8, …)` in an arm body printed by the ML printer failed to re-parse: the reader took
+        // the `|` inside the call args as the start of the next arm (breaker's pipe-in-arm round-trip bug).
+        let saved_arm_bar = self.arm_bar_terminates;
+        self.arm_bar_terminates = false;
         let mut args = Vec::new();
         if !self.at(Kind::RParen) {
             loop {
@@ -1857,6 +1864,7 @@ impl<'a> Parser<'a> {
             }
         }
         self.expect(Kind::RParen, "`)`");
+        self.arm_bar_terminates = saved_arm_bar;
         args
     }
 
