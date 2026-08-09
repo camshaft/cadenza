@@ -47,17 +47,23 @@ pub struct ComponentStore {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StoreError {
     /// `runtime.toml` is absent or unreadable at the store root — needed to resolve a bare/named dep.
-    ManifestMissing { path: String },
+    ManifestMissing { path: std::sync::Arc<str> },
     /// The manifest has no `<name> = "<hash>"` line for the requested name (e.g. `nfc`).
-    NameNotInManifest { name: String },
+    NameNotInManifest { name: std::sync::Arc<str> },
     /// A manifest hash string isn't a valid content address (malformed `runtime.toml` entry).
-    MalformedHash { name: String, value: String },
+    MalformedHash {
+        name: std::sync::Arc<str>,
+        value: std::sync::Arc<str>,
+    },
     /// No `<hash>.wasm` blob in the store for the resolved hash.
-    BlobMissing { hash: String },
+    BlobMissing { hash: std::sync::Arc<str> },
     /// The blob file exists but couldn't be read (I/O error).
-    BlobUnreadable { hash: String, source: String },
+    BlobUnreadable {
+        hash: std::sync::Arc<str>,
+        source: std::sync::Arc<str>,
+    },
     /// The blob's bytes do NOT hash to their key — a corrupt or substituted entry (integrity failure).
-    ContentAddressMismatch { hash: String },
+    ContentAddressMismatch { hash: std::sync::Arc<str> },
 }
 
 impl ComponentStore {
@@ -81,11 +87,13 @@ impl ComponentStore {
         let path = self.root.join(format!("{hex}.wasm"));
         let bytes = std::fs::read(&path).map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
-                StoreError::BlobMissing { hash: hex.clone() }
+                StoreError::BlobMissing {
+                    hash: hex.as_str().into(),
+                }
             } else {
                 StoreError::BlobUnreadable {
-                    hash: hex.clone(),
-                    source: e.to_string(),
+                    hash: hex.as_str().into(),
+                    source: e.to_string().into(),
                 }
             }
         })?;
@@ -95,7 +103,7 @@ impl ComponentStore {
         // directive 2026-08-08: one hash everywhere; the former sha256-vs-blake3 dual boundary is gone).
         // Compare the raw 32-byte digest directly — no hex-encode + String compare (#2220 review c1).
         if Hash::of(&bytes).as_bytes() != hash.as_bytes() {
-            return Err(StoreError::ContentAddressMismatch { hash: hex });
+            return Err(StoreError::ContentAddressMismatch { hash: hex.into() });
         }
         Ok(bytes)
     }
@@ -108,15 +116,13 @@ impl ComponentStore {
         let manifest_path = self.root.join("runtime.toml");
         let manifest =
             std::fs::read_to_string(&manifest_path).map_err(|_| StoreError::ManifestMissing {
-                path: manifest_path.display().to_string(),
+                path: manifest_path.display().to_string().into(),
             })?;
-        let hex =
-            manifest_hash_for(&manifest, name).ok_or_else(|| StoreError::NameNotInManifest {
-                name: name.to_string(),
-            })?;
+        let hex = manifest_hash_for(&manifest, name)
+            .ok_or_else(|| StoreError::NameNotInManifest { name: name.into() })?;
         let hash = Hash::from_hex(&hex).ok_or_else(|| StoreError::MalformedHash {
-            name: name.to_string(),
-            value: hex.clone(),
+            name: name.into(),
+            value: hex.as_str().into(),
         })?;
         self.get_by_hash(&hash)
     }

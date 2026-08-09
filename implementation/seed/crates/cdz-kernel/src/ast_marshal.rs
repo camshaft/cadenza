@@ -41,22 +41,25 @@ pub enum MarshalError {
     /// error-context. These have no tagged-AST value form (they're host/async-runtime handles, not
     /// values that cross the wire), so a component returning one at the invoke boundary is a genuine
     /// "not marshallable" condition, surfaced rather than silently encoded as something wrong.
-    Unmarshallable { val_kind: String },
+    Unmarshallable { val_kind: std::sync::Arc<str> },
     /// [`ast_to_val`]: the supplied bytes are not a decodable tagged-AST (`codec::decode` returned None) —
     /// a torn/corrupt arg payload, distinct from a well-formed AST of the wrong shape.
     Undecodable,
     /// [`ast_to_val`]: the decoded AST does not match the target WIT [`Type`] — the shape the caller's
     /// component expects (e.g. a record form where the type is a variant, or a missing field/case).
     /// `expected` names the WIT type kind; `found` is a BOUNDED shape hint (never the full untrusted AST).
-    TypeMismatch { expected: String, found: String },
+    TypeMismatch {
+        expected: std::sync::Arc<str>,
+        found: std::sync::Arc<str>,
+    },
     /// [`ast_to_val`]: an integer leaf is outside the target WIT integer type's range (e.g. a `300` for a
     /// `u8`, or a negative for a `u32`). The AST carries an arbitrary-precision `BigInt`, so a value that
     /// doesn't fit the declared width is a loud error, not a silent truncation.
-    IntOutOfRange { wit_type: String },
+    IntOutOfRange { wit_type: std::sync::Arc<str> },
     /// [`ast_to_val`]: the target WIT [`Type`] is one the arg-marshalling doesn't build (a resource
     /// handle, future/stream, error-context, or float pending the decimal slice) — the dual of
     /// [`MarshalError::Unmarshallable`] on the type side.
-    UnsupportedType { wit_type: String },
+    UnsupportedType { wit_type: std::sync::Arc<str> },
 }
 
 /// Marshal a wasmtime component [`Val`] into cadenza tagged-AST wire bytes ([`cadenza_ast::codec`]).
@@ -711,9 +714,9 @@ fn opt_payload(
     }
 }
 
-fn type_mismatch(expected: &str, found: impl Into<String>) -> MarshalError {
+fn type_mismatch(expected: &str, found: impl Into<std::sync::Arc<str>>) -> MarshalError {
     MarshalError::TypeMismatch {
-        expected: expected.to_string(),
+        expected: expected.into(),
         found: found.into(),
     }
 }
@@ -752,7 +755,7 @@ fn as_u8_list(items: &[Val]) -> Option<Vec<u8>> {
 
 fn unmarshallable(kind: &str) -> MarshalError {
     MarshalError::Unmarshallable {
-        val_kind: kind.to_string(),
+        val_kind: kind.into(),
     }
 }
 
