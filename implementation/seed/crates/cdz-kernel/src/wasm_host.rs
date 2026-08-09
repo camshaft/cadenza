@@ -392,7 +392,7 @@ fn declared_deps(
         let Some((_iface, hash_hex)) = name.rsplit_once('+') else {
             continue;
         };
-        let hash = parse_hash_hex(hash_hex).ok_or_else(|| {
+        let hash = Hash::from_hex(hash_hex).ok_or_else(|| {
             ComponentError::InvalidComponent(format!(
                 "component dependency import {name:?} has a malformed content-address hash {hash_hex:?}"
             ))
@@ -893,10 +893,6 @@ async fn compose_dep_into_linker_async<T: Send + 'static>(
 /// Parse a component dependency's `+<hash>` content-address build-metadata into a [`Hash`]. Delegates
 /// to [`Hash::from_hex`] — the single home for the canonical-lowercase-hex rule (PR#1013 #4) — rather
 /// than reimplementing it here (this used to carry its own copy of the length/lowercase checks).
-fn parse_hash_hex(hex: &str) -> Option<Hash> {
-    Hash::from_hex(hex)
-}
-
 /// A host-side handle to a live `cadenza:runtime/heap` instance, exposing the value-heap ops the reducer
 /// fold-boundary MARSHALLING needs (operator ruling C, 2026-08-04): the kernel host builds the reducer's
 /// structurally-typed WIT arguments (a content-type `record`, `option<list<u8>>` payloads) as value-heap
@@ -3998,17 +3994,6 @@ mod tests {
         // (A ComponentAuthorizer over a real policy denies fail-closed on a policy trap — exercised e2e
         // once the Cedar policy guest exists; the trait impl's Err arms encode the fail-closed contract.)
         let _ = <ComponentAuthorizer as Authorize>::authorize; // name-check the impl exists
-    }
-
-    #[test]
-    fn parse_hash_hex_round_trips_and_rejects_bad_input() {
-        let h = Hash::of(b"the dependency");
-        assert_eq!(parse_hash_hex(&h.to_hex()), Some(h));
-        assert_eq!(parse_hash_hex("tooshort"), None);
-        assert_eq!(parse_hash_hex(&"z".repeat(64)), None); // right length, non-hex
-                                                           // PR#1013 #4: UPPERCASE hex is rejected — content addresses are canonical lowercase, so the
-                                                           // uppercase spelling of a valid hash must NOT parse (else one blob would have two keys).
-        assert_eq!(parse_hash_hex(&h.to_hex().to_uppercase()), None);
     }
 
     #[test]
