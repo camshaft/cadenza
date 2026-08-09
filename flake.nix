@@ -464,10 +464,28 @@
             pname = "cargo-clippy-${crate}";
             cargoClippyExtraArgs = "-p ${crate} --all-targets -- -D warnings";
           });
-        # NOTE: there is no per-crate crane TEST maker — checks.test reverted to a whole-workspace
-        # `cargo test --workspace` (option-b, v-ft crane re-measure): crane cargoTest couldn't beat cargo-test
-        # here (dev-dep recompiles kept it ~18-19m vs the ~16m cargo baseline). craneCrateCommon is retained for
-        # the CLIPPY makers only (clippy KEEPS its crane win).
+        # per-crate TEST via crane, consuming the shared cargoArtifacts (deps + dev-dep/test-target layer
+        # pre-compiled, since cargoArtifacts is doCheck=true) so a crate's test rerun recompiles only ITS
+        # closure's first-party src + runs only ITS test binaries — NOT the whole workspace.
+        #
+        # THROUGHPUT REVIVAL (v-nix, operator 1-min-gate mandate 2026-08-09): a per-crate test maker existed
+        # before and was reverted to a whole-workspace `cargo test --workspace` (option-b) because under the
+        # OLD monolithic GHA model crane cargoTest with doCheck=FALSE deps recompiled the dev-dep/test-target
+        # closure per crate (~18-19m vs ~16m cargo baseline). TWO things changed: (1) cargoArtifacts is now
+        # doCheck=TRUE, so the dev-dep + test-target layer is ALREADY warm in the shared cache — the exact
+        # recompile that caused the old regression is gone; (2) the gate is now PER-MR (GHA-off cutover), so
+        # the whole-workspace `cargo test --workspace` RE-RUNS EVERY test on ANY one-crate edit (diagnosed via
+        # drv-hash probe: testCheck rotates on any first-party change) — that per-MR re-run is the ~25min
+        # stall the operator is calling out ("a small change should take a minute"). Per-crate cargoTest makes
+        # a one-crate edit rerun only that crate + dependents' tests, cache-hitting the rest — the same win
+        # the per-crate clippy shards already deliver. Coverage parity (∪ per-crate == workspace) is asserted
+        # by testCrateCoverageAssert below (mirrors crateClosureAssert), so no test is silently dropped.
+        mkCrateTestCrane = { crate, extraSrc ? [ ], extraInputs ? [ ] }@args:
+          craneLib.cargoTest ((craneCrateCommon args) // {
+            pname = "cargo-test-${crate}";
+            # crane's cargoTest injects --locked; cargoTestExtraArgs scopes it to this crate's own tests.
+            cargoTestExtraArgs = "-p ${crate}";
+          });
         # CLOSURE guard (concierge mandate): pure-eval assert that the fromTOML walk yields the EXPECTED
         # closures for anchor crates — a Cargo.toml restructure that breaks the walk fails LOUD (throws at
         # eval → fails `nix flake check`) rather than silently under-scoping a crate's inputs.
@@ -1798,6 +1816,59 @@
               (perCrateClippyCrane // { inherit crateCdzCheck; }) ''
               echo "ok: clippy aggregate — all per-crate crane cargoClippy checks + cdz (crane MR2)" > $out
             '';
+            # per-crate TEST set — the SAME closure-isolated crates as perCrateClippyCrane (identical
+            # crate/extraSrc/extraInputs), via mkCrateTestCrane instead of mkCrateClippyCrane. This REPLACES
+            # the whole-workspace testCheck's re-run-everything behavior: a 1-crate edit reruns only that
+            # crate's (+ dependents') test derivation, the rest cache-hit. cdz stays in crateCdzCheck (its
+            # run_rust_cli tests are whole-workspace-integration — see that binding), so the union is
+            # {per-crate tests} + cdz, matching `cargo test --workspace`. Coverage parity is asserted by
+            # testCrateCoverageAssert (below) so a new workspace member can't silently escape the test set.
+            perCrateTestCrane = {
+              test-cadenza-ast = mkCrateTestCrane { crate = "cadenza-ast"; };
+              test-cadenza-syntax = mkCrateTestCrane { crate = "cadenza-syntax"; extraSrc = [ ./spec/semantics ]; };
+              test-cdz-calc = mkCrateTestCrane { crate = "cdz-calc"; extraSrc = [ ./implementation/seed/crates/cdz-runtime/src/bigint.rs ]; };
+              test-cdz-corpus = mkCrateTestCrane { crate = "cdz-corpus"; extraSrc = [ ./spec/semantics ]; };
+              test-cdz-num = mkCrateTestCrane { crate = "cdz-num"; extraSrc = [ ./implementation/seed/crates/cdz-runtime/src/bigint.rs ]; };
+              test-cdz-rt = mkCrateTestCrane { crate = "cdz-rt"; };
+              test-cdz-run = mkCrateTestCrane { crate = "cdz-run"; extraSrc = [ ./implementation/compiler-ml ]; };
+              test-cdz-rust-render = mkCrateTestCrane { crate = "cdz-rust-render"; };
+              test-rcdzc = mkCrateTestCrane {
+                crate = "rcdzc";
+                extraSrc = [ ./spec/semantics ./implementation/compiler-ml ./implementation/seed/crates/cdz-runtime/src/bigint.rs ];
+              };
+              test-xtask = mkCrateTestCrane { crate = "xtask"; extraSrc = [ ./spec/semantics ./implementation/compiler-ml ]; extraInputs = [ pkgs.git ]; };
+            };
+            # COVERAGE-PARITY assert (concierge mandate — no test silently dropped vs `cargo test
+            # --workspace`): the per-crate test crates PLUS cdz (crateCdzCheck) must EXACTLY equal the
+            # workspace member set (rootCrateNames). A new workspace member that isn't given a per-crate test
+            # derivation would silently escape the gate — this throws at EVAL (fails `nix flake check` + the
+            # localGate build) if the union drifts from rootCrateNames, in either direction. Mirrors
+            # crateClosureAssert's fail-loud discipline. `test-<crate>` → `<crate>` by stripping the prefix.
+            testCrateCoverageAssert =
+              let
+                covered = (map
+                  (n: builtins.substring 5 (builtins.stringLength n) n) # strip "test-"
+                  (builtins.attrNames perCrateTestCrane)) ++ [ "cdz" ];
+                missing = builtins.filter (c: !(builtins.elem c covered)) rootCrateNames;
+                extra = builtins.filter (c: !(builtins.elem c rootCrateNames)) covered;
+              in
+              if missing != [ ] || extra != [ ] then
+                throw ("flake.nix per-crate test coverage-parity: the per-crate test set + cdz must equal the "
+                  + "workspace members. MISSING (a member with no per-crate test): ${builtins.toString missing}; "
+                  + "EXTRA (a test crate not a workspace member): ${builtins.toString extra}. "
+                  + "Add/remove a mkCrateTestCrane entry so the union matches rootCrateNames.")
+              else
+                pkgs.runCommand "cargo-test-crate-coverage-assert" { } ''
+                  echo "ok: per-crate test set + cdz == workspace members (${builtins.toString rootCrateNames})" > $out
+                '';
+            # per-crate TEST aggregate — a single green/red over all per-crate tests + cdz (workspace-src).
+            # This is what localGate folds in place of the whole-workspace testCheck: same coverage, but a
+            # 1-crate edit reruns only that crate's test derivation (the operator 1-min-gate mandate). Depends
+            # on testCrateCoverageAssert so the aggregate is red if the set ever drifts from the workspace.
+            testCraneAggregate = pkgs.runCommand "cargo-test-crane-aggregate"
+              (perCrateTestCrane // { inherit crateCdzCheck testCrateCoverageAssert; }) ''
+              echo "ok: test aggregate — all per-crate crane cargoTest checks + cdz (per-crate-incremental)" > $out
+            '';
             # 2-WAY CLIPPY SHARD (v-nix+v-fleet-tooling 2026-08-07, data-driven CI-speed): clippy is the sole
             # critical-path pole (~8.8m) and RUN-TIME-bound (queue ~0.1m / run ~8.9m — v-ft calm-window n=119),
             # so splitting it into 2 PARALLEL GHA jobs directly halves the pole for only +1 x86 slot/candidate.
@@ -1929,8 +2000,12 @@
                 # them (one green/red, hermetic + cached) and drops that manual step (v-nix+v-ft 2026-08-08).
                 # Both resolve the per-arch value-heap runtime hash from CDZ_STORE, so they MUST be the
                 # aarch64 derivations (#2348) — localGate IS the aarch64 aggregate, so that holds by construction.
+                # testCraneAggregate REPLACES the whole-workspace testCheck (operator 1-min-gate mandate,
+                # 2026-08-09): same coverage (per-crate tests + cdz == workspace, asserted by
+                # testCrateCoverageAssert), but a 1-crate edit reruns only that crate's test derivation
+                # instead of the whole workspace. localGate stays the same green/red aggregate for pr-sync.
                 inherit clippyShardA clippyShardB codegenCheck gateCheck guideExamplesCheck
-                  benchCheck runtimeHashParity fmtCheck testCheck roundtripCheck
+                  benchCheck runtimeHashParity fmtCheck testCraneAggregate roundtripCheck
                   cdzAgentHostNativeCheck cdzKernelNativeCheck;
               } ''
               echo "ok: local-gate — 9 merge-required contexts (ruleset-10 minus test-macos) + cdz-agent-host/kernel-native, green on aarch64-nix" > $out
@@ -2009,6 +2084,12 @@
             # compile floor without the crane dev-dep-recompile penalty (v-ft's sharding lever). Context name
             # unchanged (`checks / test (ubuntu-latest)`) → no ruleset edit.
             test = testCheck;
+            # PER-CRATE TEST aggregate (operator 1-min-gate mandate, 2026-08-09): the per-crate-incremental
+            # replacement for the whole-workspace `test` that localGate now folds. Same coverage (asserted by
+            # test-crate-coverage-assert), but a 1-crate edit reruns only that crate's test derivation. The
+            # whole-workspace `test` above is KEPT (standalone / the GHA `test (ubuntu-latest)` context name).
+            test-crane-aggregate = testCraneAggregate;
+            test-crate-coverage-assert = testCrateCoverageAssert;
             # Full-CI-in-nix increment 3: the native half of the GHA rcdzc-wasm job (the wasm build half
             # is the rcdzcWasm derivation / rcdzc-wasm-hash, already covered).
             rcdzc-wasm-native = rcdzcWasmNativeCheck;
@@ -2043,10 +2124,13 @@
           }
           # seq-126 Part B: expose each per-crate CRANE CLIPPY check individually (granular signal + `nix flake
           # check` runs them). checks.clippy forces this same set; exposing them adds per-crate cache
-          # granularity + a precise red when one crate fails. These are cargoArtifacts-cached. (No per-crate
-          # TEST checks — checks.test is a whole-workspace `cargo test --workspace`, option-b; the crane
-          # cargoTest per-crate set was retired when test reverted to cargo.)
+          # granularity + a precise red when one crate fails. These are cargoArtifacts-cached.
           // perCrateClippyCrane
+          # PER-CRATE TEST checks (operator 1-min-gate mandate, 2026-08-09): expose the per-crate crane
+          # cargoTest derivations individually (checks.<sys>.test-<crate>) alongside the test-crane-aggregate.
+          # A candidate touching ONE crate builds just its test-<crate> (+ dependents); the rest cache-hit.
+          # cargoArtifacts-cached (deps + dev-dep layer warm since cargoArtifacts is doCheck=true).
+          // perCrateTestCrane
           # PER-PROJECT cad-tests split (2026-08-08): expose the 4 per-project `cdz test` derivations
           # individually (checks.<sys>.cad-test-{cad,compiler-ml,choreography,iterators}) alongside the
           # `cad-tests` aggregate. A candidate touching ONE project builds just that project's check; the
