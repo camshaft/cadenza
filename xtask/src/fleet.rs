@@ -10414,9 +10414,61 @@ fn local_gate_summary_json(
     queued: usize,
     results: Vec<serde_json::Value>,
 ) -> serde_json::Value {
+    local_gate_summary_json_timed(
+        merged,
+        rejected,
+        left,
+        queued,
+        results,
+        &GateTiming::default(),
+    )
+}
+
+/// Aggregate gate-timing for one `schedule-pass` invocation, so pr-sync can report the operator's
+/// data-driven throughput metrics (gate wall-time, batch RED rate) instead of guessing. Every heavy
+/// `run_gate_local_bounded` call this pass adds its wall-seconds to `total_gate_secs` and bumps
+/// `gate_runs`; the batch prelude records its own `batch_gate_secs` + whether that combined gate went RED
+/// (`batch_red`, which triggers the bisect). Cheap wall-clock only (`Instant`), no effect on gating.
+#[derive(Default, Clone)]
+struct GateTiming {
+    total_gate_secs: u64,
+    gate_runs: usize,
+    batch_gate_secs: u64,
+    batch_attempted: bool,
+    batch_red: bool,
+}
+
+/// Time a `run_gate_local_bounded` call, folding its wall-seconds into `timing`. Returns the verdict
+/// unchanged — a thin wrapper so every gate in the drain is measured uniformly for the throughput report.
+fn timed_gate(arch: &str, dir: &Path, timing: &mut GateTiming) -> CiVerdict {
+    let started = std::time::Instant::now();
+    let verdict = run_gate_local_bounded(arch, dir);
+    timing.total_gate_secs += started.elapsed().as_secs();
+    timing.gate_runs += 1;
+    verdict
+}
+
+/// The `--json` summary WITH the gate-timing block folded in (the timed callers use this; the untimed
+/// early-return paths use [`local_gate_summary_json`], which passes a zero timing). Additive to the
+/// `LOCAL_GATE_JSON:` contract pr-sync scrapes — new keys, existing consumers unaffected.
+fn local_gate_summary_json_timed(
+    merged: usize,
+    rejected: usize,
+    left: usize,
+    queued: usize,
+    results: Vec<serde_json::Value>,
+    timing: &GateTiming,
+) -> serde_json::Value {
     serde_json::json!({
         "merged": merged, "rejected": rejected, "left": left,
-        "queued": queued, "results": results
+        "queued": queued, "results": results,
+        "gate": {
+            "total_gate_secs": timing.total_gate_secs,
+            "gate_runs": timing.gate_runs,
+            "batch_attempted": timing.batch_attempted,
+            "batch_gate_secs": timing.batch_gate_secs,
+            "batch_red": timing.batch_red,
+        }
     })
 }
 
@@ -10568,6 +10620,8 @@ fn schedule_pass_local_gate(
     // MOVES the `trunk` pointer, so `reset --hard TRUNK` would NOT undo a red pick — reset to this instead.
     let base = if publish_origin { "origin/main" } else { TRUNK };
     let (mut merged, mut rejected, mut left) = (0usize, 0usize, 0usize);
+    // Gate-timing for the operator's data-driven throughput report (relayed via pr-sync's --json scrape).
+    let mut timing = GateTiming::default();
 
     // ── BATCH PRELUDE (operator under-10-min throughput directive 2026-08-09) ──
     // A COLD gate-local is ~25min whether it gates 1 or N MRs (the cargo-artifacts deps-layer rebuild
@@ -10611,7 +10665,12 @@ fn schedule_pass_local_gate(
                     "  ⊞ batch: gating a combined tree of {} file-disjoint MRs ONCE (amortized gate)…",
                     applied.len()
                 );
-                match run_gate_local_bounded("aarch64", &wt) {
+                timing.batch_attempted = true;
+                let batch_started = std::time::Instant::now();
+                let batch_verdict = timed_gate("aarch64", &wt, &mut timing);
+                timing.batch_gate_secs = batch_started.elapsed().as_secs();
+                timing.batch_red = matches!(batch_verdict, CiVerdict::Red);
+                match batch_verdict {
                     CiVerdict::Green => {
                         let pushed = git_wt(&["push", "origin", "HEAD:main"])
                             .map(|o| o.status.success())
@@ -10665,9 +10724,10 @@ fn schedule_pass_local_gate(
                             "  ⊞ batch gate RED — bisecting {} members to isolate the culprit(s) (log-depth, not per-MR)…",
                             applied_owned.len()
                         );
-                        let (land_idx, broken_idx) = partition_batch(applied_owned.len(), |subset| {
-                            gate_subset_reparent(&wt, &applied_owned, subset)
-                        });
+                        let (land_idx, broken_idx) =
+                            partition_batch(applied_owned.len(), |subset| {
+                                gate_subset_reparent(&wt, &applied_owned, subset)
+                            });
                         // Reject the isolated culprit(s) — each excluded so the rest can land; the author
                         // rebases + resends (an INTERACTION failure removes one of the pair, also correct).
                         for &i in &broken_idx {
@@ -10842,7 +10902,7 @@ fn schedule_pass_local_gate(
         // Pending|NoChecks arm below undoes + LEAVES QUEUED for a clean retry next pass — auto-fail-fast
         // instead of hanging. Runs from `wt` (the trunk worktree holding the cherry-picked tip). Same
         // wall-bound already used for the batch pre-filter; this extends it to the per-MR drain gate.
-        match run_gate_local_bounded("aarch64", &wt) {
+        match timed_gate("aarch64", &wt, &mut timing) {
             CiVerdict::Green => {
                 let sha = head_sha();
                 // In --publish-origin mode, PUBLISH the green land to origin/main FAST-FORWARD-ONLY before
@@ -10925,10 +10985,33 @@ fn schedule_pass_local_gate(
         "schedule-pass --local-gate: {merged} merged + {rejected} rejected + {left} left-queued (of {} queued).",
         queued.len()
     );
+    // Throughput metrics line (operator data-driven directive 2026-08-09): gate wall-time dominates the
+    // single-integrator cadence, so surface it every pass. `batch RED` here means the combined-tree gate
+    // failed and we bisected — the batch-red-rate signal the next-lever decision keys on.
+    if timing.gate_runs > 0 {
+        println!(
+            "  ⏱ gate wall-time: {} across {} gate run(s){}",
+            fmt_age(timing.total_gate_secs),
+            timing.gate_runs,
+            if timing.batch_attempted {
+                format!(
+                    " (batch gate {}, {})",
+                    fmt_age(timing.batch_gate_secs),
+                    if timing.batch_red {
+                        "RED→bisected"
+                    } else {
+                        "GREEN"
+                    }
+                )
+            } else {
+                String::new()
+            }
+        );
+    }
     if json {
         println!(
             "LOCAL_GATE_JSON: {}",
-            local_gate_summary_json(merged, rejected, left, queued.len(), records)
+            local_gate_summary_json_timed(merged, rejected, left, queued.len(), records, &timing)
         );
     }
     // Periodic nix-store GC (same hook as schedule_pass_execute): under the local-gate model this drain
@@ -15861,6 +15944,30 @@ mod tests {
         assert_eq!(ff["left"], 1);
         assert_eq!(ff["results"][0]["reason"], "push-non-ff");
         assert_eq!(ff["results"][0]["verdict"], "left");
+        // The untimed summary carries a zeroed `gate` block (never null), so a consumer can always read it.
+        assert_eq!(ff["gate"]["total_gate_secs"], 0);
+        assert_eq!(ff["gate"]["batch_attempted"], false);
+    }
+
+    #[test]
+    fn local_gate_summary_json_timed_carries_the_throughput_metrics() {
+        // The operator's data-driven throughput block: gate wall-time + batch RED signal (2026-08-09).
+        let timing = GateTiming {
+            total_gate_secs: 430,
+            gate_runs: 2,
+            batch_gate_secs: 410,
+            batch_attempted: true,
+            batch_red: true,
+        };
+        let s = local_gate_summary_json_timed(3, 1, 0, 4, Vec::new(), &timing);
+        assert_eq!(s["gate"]["total_gate_secs"], 430);
+        assert_eq!(s["gate"]["gate_runs"], 2);
+        assert_eq!(s["gate"]["batch_gate_secs"], 410);
+        assert_eq!(s["gate"]["batch_attempted"], true);
+        assert_eq!(s["gate"]["batch_red"], true);
+        // The tally + results contract is unchanged alongside the new block.
+        assert_eq!(s["merged"], 3);
+        assert_eq!(s["queued"], 4);
     }
 
     #[test]
