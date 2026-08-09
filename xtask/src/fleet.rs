@@ -10472,10 +10472,28 @@ fn schedule_pass_local_gate(
         }
     }
 
+    // TICK-FIT BOUND (pr-sync 2026-08-09: the all-drain gated ALL queued in ONE pass — 16min landed 1 MR,
+    // stdout buffered till pass-end, unkillable-without-losing-verdicts — a bad fit for the bounded tick
+    // model). A GREEN gate is the expensive step (heavy nix build, minutes); a stale-base/conflict reject
+    // is cheap (no gate). So bound the invocation by the count of HEAVY GREEN gates: after the batch
+    // prelude (if it landed a batch, that WAS this invocation's heavy work → do no more), the per-MR loop
+    // STOPS after `PER_INVOCATION_GREEN_CAP` green lands, letting the drain-until-quiescent loop in
+    // pr-sync.md re-run for the next chunk (each re-run is a fresh, observable, compactable pass). Cheap
+    // rejects still flow (they don't count toward the cap). One heavy land per invocation keeps each pass
+    // short + its verdict printed before the next, instead of one opaque hour-long drain.
+    const PER_INVOCATION_GREEN_CAP: usize = 1;
+    let batch_landed = !landed_by_batch.is_empty();
+    let mut green_lands = 0usize;
+
     for mr in &queued {
         // Skip MRs already landed by the batch prelude above (acked + pushed).
         if landed_by_batch.contains(&mr.file) {
             continue;
+        }
+        // Bound: if the batch prelude already did this invocation's heavy work, OR we've hit the per-
+        // invocation green-land cap, STOP — leave the rest queued for the next drain-until-quiescent pass.
+        if batch_landed || green_lands >= PER_INVOCATION_GREEN_CAP {
+            break;
         }
         // The base this MR is picked onto, captured as a sha BEFORE the pick. Undo resets to THIS (an
         // on-branch cherry-pick moves the `trunk` pointer, so `reset --hard TRUNK` would not undo a red).
@@ -10547,6 +10565,7 @@ fn schedule_pass_local_gate(
                 };
                 ack(fleet, &mr.file, "merged", &sha, &where_landed);
                 merged += 1;
+                green_lands += 1; // count the heavy green land toward the per-invocation bound
                 println!("  ✓ {} ({}) → MERGED @ {sha}", mr.file, mr.r#ref);
                 if json {
                     records.push(serde_json::json!({
