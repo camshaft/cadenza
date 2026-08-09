@@ -112,6 +112,12 @@ pub enum NameAuthority {
     Session,
     /// `memory/…` — the memory-promotion authority (§9 graduation gate).
     Memory,
+    /// `effect/<family>` — the USERSPACE-EFFECT registration authority (userspace-effects I1): the name
+    /// `effect/<family>` points at a handler session's `SessionId` (= genesis hash), so a Cedar-granted
+    /// `store/set effect/<family>` is how a session CLAIMS/repoints an effect family to itself. This is the
+    /// anti-hijack surface for userspace effects (mirrors `system/`: only a grant over the exact
+    /// `effect/<family>` may repoint it, else a rogue session could steal another's effect family).
+    Effect,
     /// Any other prefix — NO known authority owns it, so no one may set it (fail-closed).
     Unscoped,
 }
@@ -453,9 +459,29 @@ impl NameStore {
             NameAuthority::Session
         } else if governs("memory/") {
             NameAuthority::Memory
+        } else if governs(crate::effect::effect_ct::EFFECT_REGISTRY_PREFIX) {
+            // `effect/<family>` — the userspace-effect registration authority (I1). Only a session
+            // Cedar-granted `store/set effect/<family>` may claim/repoint the handler pointer.
+            NameAuthority::Effect
         } else {
             NameAuthority::Unscoped
         }
+    }
+
+    /// Resolve `effect/<family>` → the registered handler's [`SessionId`] (genesis hash), or `None` if no
+    /// handler has claimed that family (userspace-effects I1). A thin typed wrapper over [`resolve`](Self::resolve)
+    /// for the `effect/` registration namespace: the host's delegating executor calls this to decide
+    /// `handles_family` ("is a handler registered?") and to route a forwarded request. `family` is the bare
+    /// family string (e.g. `weather`); this prepends the `effect/` prefix. Returns `None` for an
+    /// unregistered family (never an error — an absent handler is a normal "not a userspace effect" answer,
+    /// the caller falls through to the built-in partitions).
+    pub fn resolve_effect_handler(&self, family: &str) -> Option<Hash> {
+        let name = format!(
+            "{}{}",
+            crate::effect::effect_ct::EFFECT_REGISTRY_PREFIX,
+            family
+        );
+        self.resolve(&name).ok()
     }
 
     /// Apply a `store/*` effect by its FAMILY (slice-3a vocab: [`crate::effect::effect_ct::STORE_SET`] /
@@ -1547,5 +1573,63 @@ mod tests {
             s.resolve_all("session/room/ghost"),
             Err(NameStoreError::NoSuchName)
         );
+    }
+
+    // userspace-effects I1: the effect/* registration namespace. effect/<family> is a governed (writable)
+    // authority pointing at a handler SessionId; resolve_effect_handler round-trips it; a degenerate
+    // "effect/" (no family) is Unscoped/unwritable (the anti-hijack fail-closed backstop).
+    #[test]
+    fn effect_registry_registers_and_resolves_a_handler_and_is_anti_hijack_scoped() {
+        let mut s = NameStore::new();
+        let handler = Hash::of(b"weather-handler-session-id");
+        // effect/<family> is the Effect authority (governed, writable — a Cedar-granted store/set claims it),
+        // NOT Unscoped: this is what lets the drive-loop authz gate require a grant over the exact name.
+        assert_eq!(
+            NameStore::authority_prefix_of("effect/weather"),
+            NameAuthority::Effect
+        );
+        // Register effect/weather → H via the store set (the store SEMANTIC; the Cedar who-may-write gate is
+        // the drive loop's, keyed on the Effect authority above).
+        s.set("effect/weather", SetEntry::unsigned(handler))
+            .unwrap();
+        // Resolve it back through the typed resolver (bare family → prepends effect/).
+        assert_eq!(s.resolve_effect_handler("weather"), Some(handler));
+        // An unregistered family resolves to None (a normal "not a userspace effect" answer, not an error).
+        assert_eq!(s.resolve_effect_handler("stocks"), None);
+        // ANTI-HIJACK fail-closed: a degenerate "effect/" (empty family tail) governs NO real name → Unscoped
+        // → unwritable, so a malformed registration can never claim the whole namespace.
+        assert_eq!(
+            NameStore::authority_prefix_of("effect/"),
+            NameAuthority::Unscoped
+        );
+        assert_eq!(
+            s.set("effect/", SetEntry::unsigned(handler)),
+            Err(NameStoreError::UnscopedNameUnwritable),
+            "a degenerate effect/ (no family) is unwritable — fail-closed anti-hijack"
+        );
+    }
+
+    // is_registered_effect_family: the SYNTACTIC partition boundary — a family that is NOT a built-in
+    // well-known partition is a userspace-effect candidate (built-ins are never shadowed by a handler).
+    #[test]
+    fn is_registered_effect_family_excludes_builtins_admits_novel_families() {
+        use crate::effect::effect_ct;
+        // Novel families (not a kernel built-in) → userspace-effect candidates.
+        assert!(effect_ct::is_registered_effect_family("weather"));
+        assert!(effect_ct::is_registered_effect_family("stocks"));
+        // Built-in well-known families are NOT userspace effects (no shadowing).
+        assert!(!effect_ct::is_registered_effect_family(effect_ct::SHELL));
+        assert!(!effect_ct::is_registered_effect_family(effect_ct::HTTP));
+        assert!(!effect_ct::is_registered_effect_family(
+            effect_ct::STORE_SET
+        ));
+        assert!(!effect_ct::is_registered_effect_family(effect_ct::FS_READ));
+        assert!(!effect_ct::is_registered_effect_family(effect_ct::BLOB_PUT));
+        assert!(!effect_ct::is_registered_effect_family(effect_ct::WS_SEND));
+        assert!(!effect_ct::is_registered_effect_family(
+            effect_ct::CAPABILITIES
+        ));
+        // Empty family is not a candidate.
+        assert!(!effect_ct::is_registered_effect_family(""));
     }
 }
