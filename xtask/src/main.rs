@@ -1025,7 +1025,15 @@ enum Ran {
     /// for a codeless DECLINE (an unimplemented construct: `Reject::decline`), which grades as `todo`
     /// (not-yet-built), never a disagreement. This is the "grade by what the compiler DOES" rule applied
     /// to rejections: a coded reject is a decision to check, a codeless decline is a gap to fill.
-    Declined { code: Option<String> },
+    /// `message` is the diagnostic PROSE recovered from `cdz compile` stderr (empty when none / not on
+    /// a stderr-capturing path) — the corpus `(error CODE (message "…"))` / `(declines (message "…"))`
+    /// clause grades a load-bearing SUBSTRING of it, case-sensitive, no normalization (v-diagnostics
+    /// ruling: messages are single-source single-line, case is load-bearing). The portable-diagnostic-
+    /// test capability (operator seq353); absent clause = code-only grading, unchanged.
+    Declined {
+        code: Option<String>,
+        message: String,
+    },
     /// The component ran but trapped.
     Trap(String),
     /// The backend produced an artifact that FAILED TO BUILD/LOAD — a broken artifact, distinct from a
@@ -1121,7 +1129,10 @@ fn run_program(
         GateTarget::CadenzaMl
             if !modules.is_empty() || !host_responses.is_empty() || !host_calls.is_empty() =>
         {
-            Ran::Declined { code: None }
+            Ran::Declined {
+                code: None,
+                message: String::new(),
+            }
         }
         GateTarget::CadenzaMl => run_program_ml(tools, program, call),
     }
@@ -1182,7 +1193,10 @@ fn run_program_ml(tools: &Tools, program: &str, _call: Option<&Call>) -> Ran {
         .unwrap_or("")
         .trim();
     if verdict == "declined" {
-        Ran::Declined { code: None }
+        Ran::Declined {
+            code: None,
+            message: String::new(),
+        }
     } else if let Some(v) = verdict.strip_prefix("value ") {
         Ran::Value(v.trim().to_string(), Vec::new())
     } else if let Some(msg) = verdict.strip_prefix("error ") {
@@ -1240,7 +1254,10 @@ fn run_program_emitted(tools: &Tools, program: &str) -> Ran {
         .unwrap_or("")
         .trim();
     if verdict == "declined" {
-        Ran::Declined { code: None }
+        Ran::Declined {
+            code: None,
+            message: String::new(),
+        }
     } else if let Some(v) = verdict.strip_prefix("value ") {
         Ran::Value(v.trim().to_string(), Vec::new())
     } else if let Some(msg) = verdict.strip_prefix("error ") {
@@ -1388,8 +1405,9 @@ fn emit_component_single_at(
     } else {
         // A rejection: recover the diagnostic CODE from the first `error [CODE]` line rcdzc printed to
         // stderr. A TYPED rejection carries a code; a codeless DECLINE (unimplemented construct) none.
-        Err(Ran::Declined {
-            code: first_error_code(&rcdzc_out.stderr),
+        Err({
+            let (code, message) = first_error_diag(&rcdzc_out.stderr);
+            Ran::Declined { code, message }
         })
     }
 }
@@ -1466,8 +1484,9 @@ fn emit_component_package(
     if out.status.success() {
         Ok(out.stdout)
     } else {
-        Err(Ran::Declined {
-            code: first_error_code(&out.stderr),
+        Err({
+            let (code, message) = first_error_diag(&out.stderr);
+            Ran::Declined { code, message }
         })
     }
 }
@@ -1520,8 +1539,9 @@ fn emit_rust_single(
     };
     let _ = syntax.wait();
     if !rcdzc_out.status.success() {
-        return Err(Ran::Declined {
-            code: first_error_code(&rcdzc_out.stderr),
+        return Err({
+            let (code, message) = first_error_diag(&rcdzc_out.stderr);
+            Ran::Declined { code, message }
         });
     }
     Ok(String::from_utf8_lossy(&rcdzc_out.stdout).to_string())
@@ -1615,8 +1635,9 @@ fn emit_rust_package(
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).to_string())
     } else {
-        Err(Ran::Declined {
-            code: first_error_code(&out.stderr),
+        Err({
+            let (code, message) = first_error_diag(&out.stderr);
+            Ran::Declined { code, message }
         })
     }
 }
@@ -3038,17 +3059,35 @@ fn observed_host_calls(stderr: &[u8]) -> Vec<String> {
 /// (`rcdzc: error [CDZ0210] (node 3): …`). `None` if no line carries a bracketed code (a codeless
 /// decline, or a warning-only run). Scans line-by-line for the first `error [` so a later warning's
 /// code cannot shadow the error the corpus expects.
-fn first_error_code(stderr: &[u8]) -> Option<String> {
+/// The FIRST error diagnostic's CODE **and** MESSAGE, recovered from `cdz compile` stderr — the
+/// message half of the portable-diagnostic-test capability (operator seq353), so a corpus reject case
+/// can pin a load-bearing phrase of the diagnostic prose, not just its `(error CODE)`. `cdz compile`
+/// (the gate's emit path) prints one of two shapes on a rejection (verified on trunk): a CODED reject
+/// `cdz: error [CDZ0101] (node 4): unbound name ...`, or an UNCODED decline `cdz: error: <full
+/// message>` (a codeless decline's prose redirect).
+/// Returns `(code, message)`: `code` is the `[CODE]` (`None` for an uncoded decline), and `message` is
+/// the prose after the code + optional ` (node N):` locator (empty if no error line is found).
+/// TOTAL over any stderr (never panics). Structured fix fields (kind/verified/edits) are NOT on this
+/// path — `cdz check --json` emits those, a SEPARATE later increment's data source.
+fn first_error_diag(stderr: &[u8]) -> (Option<String>, String) {
     for line in String::from_utf8_lossy(stderr).lines() {
-        // Match `… error [CODE]…` — a typed ERROR (not a warning). The code is between `[` and `]`.
-        if let Some(rest) = line.split_once("error [").map(|(_, r)| r)
-            && let Some(code) = rest.split(']').next()
-            && !code.is_empty()
+        // Coded: `… error [CODE]…: message`. Code between `[` and `]`; message after the first `: `
+        // that follows the `]` (skipping the optional ` (node N)` locator the compiler inserts).
+        if let Some((_, after_err)) = line.split_once("error [")
+            && let Some((code, rest)) = after_err.split_once(']')
+            && !code.trim().is_empty()
         {
-            return Some(code.trim().to_string());
+            let message = rest.split_once(": ").map(|(_, m)| m).unwrap_or("").trim();
+            return (Some(code.trim().to_string()), message.to_string());
+        }
+        // Uncoded decline: `… error: <message>` (no `[CODE]`). Only fires when there is no `error [`.
+        if !line.contains("error [")
+            && let Some((_, msg)) = line.split_once("error: ")
+        {
+            return (None, msg.trim().to_string());
         }
     }
-    None
+    (None, String::new())
 }
 
 /// Options for `gate` (grows without re-threading a widening arg list).
@@ -3156,7 +3195,7 @@ fn sweep_outcome_key(ran: &Ran) -> String {
             Some(kind) => format!("trap {kind}"),
             None => format!("trap raw:{}", first_line(msg.as_bytes())),
         },
-        Ran::Declined { code } => format!("declined {}", code.as_deref().unwrap_or("-")),
+        Ran::Declined { code, .. } => format!("declined {}", code.as_deref().unwrap_or("-")),
         Ran::BadArtifact(msg) => format!("bad-artifact {msg}"),
     }
 }
@@ -3326,7 +3365,10 @@ fn sweep_one_case(
             GateTarget::Rust | GateTarget::RustAsync
                 if !rec.host_responses.is_empty() || !rec.host_calls.is_empty() =>
             {
-                Ran::Declined { code: None }
+                Ran::Declined {
+                    code: None,
+                    message: String::new(),
+                }
             }
             GateTarget::Rust => {
                 // Host cases declined above (level-independent) → no responses/calls reach here → `&[]`.
@@ -3352,7 +3394,10 @@ fn sweep_one_case(
                 &[],
             ),
             // Rejected up front in `gate_opt_sweep`; unreachable here.
-            GateTarget::CadenzaMl => Ran::Declined { code: None },
+            GateTarget::CadenzaMl => Ran::Declined {
+                code: None,
+                message: String::new(),
+            },
         }
     };
     let mut diffs = Vec::new();
@@ -3490,8 +3535,8 @@ fn gate_one_case(
                 let actual = match ran {
                     Ran::Value(v, calls) if calls.is_empty() => format!("value {v}"),
                     Ran::Value(v, calls) => format!("value {v} [host-calls: {}]", calls.join(", ")),
-                    Ran::Declined { code: Some(c) } => format!("rejected [{c}]"),
-                    Ran::Declined { code: None } => {
+                    Ran::Declined { code: Some(c), .. } => format!("rejected [{c}]"),
+                    Ran::Declined { code: None, .. } => {
                         "declined (compiler can't compile it yet)".to_string()
                     }
                     Ran::Trap(t) => format!("trap: {t}"),
@@ -3717,6 +3762,29 @@ fn grade_ran(rec: &CorpusRecord, rans: &[Ran]) -> Grade {
     if todo { Grade::Todo } else { Grade::Pass }
 }
 
+/// Split an `error`/`declines` payload into its leading token (the CODE, or empty for `declines`) and
+/// an optional `(message "PHRASE")` clause — the diagnostic-text half of the portable-diagnostic-test
+/// capability (operator seq353). E.g. `CDZ0201 (message "malformed record")` → `("CDZ0201", Some("malformed
+/// record"))`; `CDZ0201` → `("CDZ0201", None)`; `(message "IEEE partial order")` → `("", Some("IEEE partial
+/// order"))`. The PHRASE is graded as a case-sensitive SUBSTRING of the emitted diagnostic message, with
+/// NO normalization (v-diagnostics ruling: messages are single-source/single-line, case is load-bearing).
+/// A malformed/unterminated `(message …)` yields `None` (the clause is simply not asserted — never panics).
+fn split_message_clause(payload: &str) -> (&str, Option<&str>) {
+    match payload.find("(message ") {
+        None => (payload.trim(), None),
+        Some(at) => {
+            let head = payload[..at].trim();
+            let rest = &payload[at + "(message ".len()..];
+            // The phrase is a "double-quoted" span: take from the first `"` to the next `"`.
+            let phrase = rest
+                .strip_prefix('"')
+                .and_then(|r| r.split('"').next())
+                .filter(|p| !p.is_empty());
+            (head, phrase)
+        }
+    }
+}
+
 /// Compare ONE trial's run outcome against its recorded `expect` payload — the pure per-trial grading
 /// logic. (A case combines these across its trials in `grade_ran`.)
 fn grade_trial(expect: &str, ran: &Ran) -> Grade {
@@ -3762,10 +3830,23 @@ fn grade_trial(expect: &str, ran: &Ran) -> Grade {
         // or corpus) turns each Todo into a Pass; treating them as Fail would swamp the honest
         // accepted-ill-formed signal with taxonomy noise. Only running an ill-formed program is a Fail.
         "error" => {
-            let want = payload.trim();
+            // `error CODE` or `error CODE (message "phrase")` — CODE exact-matches; the optional message
+            // clause additionally requires the emitted diagnostic to CONTAIN the phrase (case-sensitive).
+            let (want, msg_phrase) = split_message_clause(payload);
             match ran {
                 Ran::Value(v, _) => Grade::Fail(format!("expected rejection {want}, ran → {v}")),
-                Ran::Declined { code: Some(got) } if got == want => Grade::Pass,
+                Ran::Declined {
+                    code: Some(got),
+                    message,
+                } if got == want => match msg_phrase {
+                    // No message clause → CODE alone decides (unchanged behavior).
+                    None => Grade::Pass,
+                    // Message clause present → the emitted diagnostic must contain the pinned phrase.
+                    Some(phrase) if message.contains(phrase) => Grade::Pass,
+                    Some(phrase) => Grade::Fail(format!(
+                        "rejected [{got}] but message did not contain {phrase:?} (got: {message:?})"
+                    )),
+                },
                 // Rejected (a different code), a codeless decline, or a trap — refused, not miscompiled.
                 Ran::Declined { .. } | Ran::Trap(_) => Grade::Todo,
                 // A broken artifact cannot validate a rejection CODE (the front-end never rejected — the
@@ -3813,14 +3894,26 @@ fn grade_trial(expect: &str, ran: &Ran) -> Grade {
         // to `declines` pins "this must not emit", not a specific diagnostic code (that is `error CODE`'s
         // job). Should the compiler later gain a coded rejection for the same shape, this still passes;
         // should it later EMIT the shape, the case flips to Fail and the corpus is updated to `output`.
-        "declines" => match ran {
-            Ran::Declined { .. } => Grade::Pass,
-            Ran::Value(v, _) => Grade::Fail(format!("expected a decline, ran → {v}")),
-            Ran::Trap(t) => Grade::Fail(format!("expected a decline, trapped: {t}")),
-            Ran::BadArtifact(e) => {
-                Grade::Fail(format!("expected a decline, artifact did not build: {e}"))
+        "declines" => {
+            // `declines` (any refusal passes) or `declines (message "phrase")` (the decline's diagnostic
+            // must additionally contain the pinned phrase, case-sensitive — pins WHY it declines, e.g. the
+            // float-compare "IEEE partial order" redirect, without pinning a specific code).
+            let (_, msg_phrase) = split_message_clause(payload);
+            match ran {
+                Ran::Declined { message, .. } => match msg_phrase {
+                    None => Grade::Pass,
+                    Some(phrase) if message.contains(phrase) => Grade::Pass,
+                    Some(phrase) => Grade::Fail(format!(
+                        "declined but message did not contain {phrase:?} (got: {message:?})"
+                    )),
+                },
+                Ran::Value(v, _) => Grade::Fail(format!("expected a decline, ran → {v}")),
+                Ran::Trap(t) => Grade::Fail(format!("expected a decline, trapped: {t}")),
+                Ran::BadArtifact(e) => {
+                    Grade::Fail(format!("expected a decline, artifact did not build: {e}"))
+                }
             }
-        },
+        }
         _ => Grade::Todo,
     }
 }
@@ -5123,8 +5216,8 @@ fn ml_agrees_with_oracle(ml: &Ran, oracle: &Ran) -> bool {
 fn ran_summary(r: &Ran) -> String {
     match r {
         Ran::Value(v, _) => format!("value {v}"),
-        Ran::Declined { code: Some(c) } => format!("reject {c}"),
-        Ran::Declined { code: None } => "declined".to_string(),
+        Ran::Declined { code: Some(c), .. } => format!("reject {c}"),
+        Ran::Declined { code: None, .. } => "declined".to_string(),
         Ran::Trap(m) => format!("trap {m}"),
         Ran::BadArtifact(m) => format!("bad-artifact {m}"),
     }
@@ -6680,6 +6773,128 @@ mod trap_grading_tests {
     /// restored by each test's own cleanup, so a stale poison must not wedge the rest.
     static ENV_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    // ── first_error_diag: code+message recovery off cdz compile stderr (portable-diagnostic-test
+    //    capability, operator seq353 — the message half) ───────────────────────────────────────────
+    // ── split_message_clause + grade_trial message-clause matching (the payoff: portable diagnostic
+    //    MESSAGE assertions, operator seq353) ────────────────────────────────────────────────────────
+    #[test]
+    fn split_message_clause_extracts_code_and_phrase() {
+        assert_eq!(split_message_clause("CDZ0201"), ("CDZ0201", None));
+        assert_eq!(
+            split_message_clause("CDZ0201 (message \"malformed record\")"),
+            ("CDZ0201", Some("malformed record"))
+        );
+        // declines form: no leading code, just the clause.
+        assert_eq!(
+            split_message_clause("(message \"IEEE partial order\")"),
+            ("", Some("IEEE partial order"))
+        );
+        // Malformed clause (unterminated / empty) → phrase not asserted, never panics.
+        assert_eq!(split_message_clause("CDZ0201 (message \"").0, "CDZ0201");
+        assert_eq!(
+            split_message_clause("CDZ0201 (message \"\")"),
+            ("CDZ0201", None)
+        );
+    }
+
+    #[test]
+    fn grade_error_with_message_clause_requires_the_substring() {
+        let declined = |code: &str, msg: &str| Ran::Declined {
+            code: Some(code.to_string()),
+            message: msg.to_string(),
+        };
+        // CODE matches + message contains the phrase → Pass.
+        assert!(matches!(
+            grade_trial(
+                "error CDZ0101 (message \"unbound name\")",
+                &declined("CDZ0101", "unbound name `foo`")
+            ),
+            Grade::Pass
+        ));
+        // CODE matches but message MISSING the phrase → Fail (the pin caught a message drift).
+        assert!(matches!(
+            grade_trial(
+                "error CDZ0101 (message \"did you mean\")",
+                &declined("CDZ0101", "unbound name `foo`")
+            ),
+            Grade::Fail(_)
+        ));
+        // No message clause → CODE alone decides (back-compat, unchanged).
+        assert!(matches!(
+            grade_trial("error CDZ0101", &declined("CDZ0101", "anything")),
+            Grade::Pass
+        ));
+        // Case-sensitive: wrong case does NOT match (case is load-bearing per v-diagnostics).
+        assert!(matches!(
+            grade_trial(
+                "error CDZ0101 (message \"Unbound\")",
+                &declined("CDZ0101", "unbound name `foo`")
+            ),
+            Grade::Fail(_)
+        ));
+    }
+
+    #[test]
+    fn grade_declines_with_message_clause_pins_the_reason() {
+        let declined_uncoded = |msg: &str| Ran::Declined {
+            code: None,
+            message: msg.to_string(),
+        };
+        // Uncoded decline whose message contains the pinned redirect phrase → Pass.
+        assert!(matches!(
+            grade_trial(
+                "declines (message \"IEEE partial order\")",
+                &declined_uncoded("cannot compare Float64 by IEEE partial order; use </<=/>/>=")
+            ),
+            Grade::Pass
+        ));
+        // Bare `declines` (no clause) still passes on any decline (back-compat, unchanged).
+        assert!(matches!(
+            grade_trial("declines", &declined_uncoded("whatever")),
+            Grade::Pass
+        ));
+        // Message clause present but not contained → Fail.
+        assert!(matches!(
+            grade_trial(
+                "declines (message \"partial order\")",
+                &declined_uncoded("some unrelated decline reason")
+            ),
+            Grade::Fail(_)
+        ));
+    }
+
+    #[test]
+    fn first_error_diag_reads_code_and_message_from_a_coded_reject() {
+        // The shape verified on trunk: `cdz: error [CDZ0101] (node 4): unbound name `nope``.
+        let (code, msg) = first_error_diag(b"cdz: error [CDZ0101] (node 4): unbound name `nope`");
+        assert_eq!(code.as_deref(), Some("CDZ0101"));
+        assert_eq!(msg, "unbound name `nope`");
+    }
+
+    #[test]
+    fn first_error_diag_reads_an_uncoded_decline_message() {
+        // A codeless decline (prose redirect) — no `[CODE]`, message after `error: `.
+        let (code, msg) = first_error_diag(
+            b"cdz: error: cannot compare Float64 by IEEE partial order; use </<=/>/>=",
+        );
+        assert_eq!(code, None);
+        assert!(msg.contains("IEEE partial order"));
+    }
+
+    #[test]
+    fn first_error_diag_is_consistent_and_total() {
+        // A coded line with no ` : ` message still yields the code + an empty message (no panic).
+        let (code, msg) = first_error_diag(b"cdz: error [CDZ0303]");
+        assert_eq!(code.as_deref(), Some("CDZ0303"));
+        assert_eq!(msg, "");
+        // No error line at all → (None, "") — never panics.
+        assert_eq!(
+            first_error_diag(b"warning: unused\nplain noise"),
+            (None, String::new())
+        );
+        assert_eq!(first_error_diag(b""), (None, String::new()));
+    }
+
     // ── ENFORCING cadenza-ml conformance verdict (v-fleet-tooling ruling (b)) ─────────────────────────
     // The gate_only-path differential reds the MERGE gate iff a COVERED case disagrees with the oracle.
     // These lock the operator's rule ("if the implementations disagree the gate is red") + the liveness
@@ -7153,7 +7368,10 @@ mod trap_grading_tests {
         // didn't — a real differential, the case the diff exists to catch).
         assert!(!ml_agrees_with_oracle(
             &Ran::Value("1".into(), vec![]),
-            &Ran::Declined { code: None }
+            &Ran::Declined {
+                code: None,
+                message: String::new()
+            }
         ));
         assert!(!ml_agrees_with_oracle(
             &Ran::Value("1".into(), vec![]),
@@ -7272,10 +7490,12 @@ mod trap_grading_tests {
         // Distinct decline CODES → distinct keys.
         assert_ne!(
             sweep_outcome_key(&Ran::Declined {
-                code: Some("CDZ0302".into())
+                code: Some("CDZ0302".into()),
+                message: String::new(),
             }),
             sweep_outcome_key(&Ran::Declined {
-                code: Some("CDZ0304".into())
+                code: Some("CDZ0304".into()),
+                message: String::new(),
             })
         );
     }
@@ -7328,7 +7548,8 @@ mod trap_grading_tests {
             grade_trial(
                 "trap integer overflow",
                 &Ran::Declined {
-                    code: Some("CDZ0302".to_string())
+                    code: Some("CDZ0302".to_string()),
+                    message: String::new(),
                 }
             ),
             Grade::Todo
