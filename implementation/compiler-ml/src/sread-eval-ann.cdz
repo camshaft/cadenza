@@ -203,6 +203,31 @@ def se-ann-mixed-width-arith-declines() =
     | Option.Some(_) => trap("mixed-width arith declines (strict same-width)")
 
 @test
+def se-ann-mixed-sign-arith-declines() =
+  // the SIGN twin of the mixed-width case: `(+ (: 5 Int8) (: 5 UInt8))` — SAME width (8), DIFFERENT sign →
+  // CDZ0301 no-implicit-conversion → TErr → declines. Pins that arith unifies the WHOLE int type (sign AND
+  // width), so a signed+unsigned pair is not silently coerced (distinct from the mixed-WIDTH pin above).
+  match run-src("(+ (: 5 Int8) (: 5 UInt8))") with
+    | Option.None(_) => unit
+    | Option.Some(_) => trap("mixed-sign arith (Int8 + UInt8) declines (strict same-type)")
+
+@test
+def se-ann-mixed-sign-comparison-declines() =
+  // relational is `∀a. a → a → Bool` over ONE int type too: `(< (: 5 Int8) (: 5 UInt8))` mixed sign → TErr →
+  // declines (not a silent cross-sign compare). Pins the sign axis of the relational same-type gate.
+  match run-src("(< (: 5 Int8) (: 5 UInt8))") with
+    | Option.None(_) => unit
+    | Option.Some(_) => trap("mixed-sign comparison (Int8 < UInt8) declines")
+
+@test
+def se-ann-same-sign-same-width-arith-runs() =
+  // control for the two decline pins above: `(+ (: 5 Int8) (: 5 Int8))` → 10 (SAME type runs), so the
+  // declines are genuinely sign/width-specific, not a blanket annotated-arith reject.
+  match run-src("(+ (: 5 Int8) (: 5 Int8))") with
+    | Option.Some(v) => (if v == 10 then unit else trap("Int8 + Int8 = 10"))
+    | Option.None(_) => trap("same-sign same-width arith runs")
+
+@test
 def se-ann-narrow-comparison-runs() =
   // narrow COMPARISON does NOT wrap (comparing in-range integers is width-agnostic), so it stays permissive:
   // `(< (: 5 Int8) (: 10 Int8))` → true (value 1). Only arithmetic is gated pending the wrap slice.
