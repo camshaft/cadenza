@@ -780,10 +780,24 @@ fn is_binder_occurrence(db: &Db, id: StructId) -> bool {
     {
         return true;
     }
-    // `id` must be the pattern/name slot — the pair's/arm's/binder's first child.
+    // `id` must be the pattern/name slot — the pair's/arm's/binder's first child. EXCEPTION: a
+    // canonical record field is the `(= key value)` ascription triple (Phase B), where the KEY is the
+    // SECOND child (index 1), not the first. Such a key is a LABEL under a record form and must be
+    // β-immune exactly like the legacy `(key value)` pair's first child — without this a
+    // `(def (f (: x Int64)) (record (= x 5)))` substitutes the arg for the key `x`, corrupting
+    // `(record (= x 5))` into `(record (= 7 5))` → CDZ0201. Handle it directly, before the first-child gate.
     let crate::ast::Struct::List(pair_children) = db.ast.get(pair) else {
         return false;
     };
+    if pair_children.len() == 3
+        && db.ast.as_name(pair_children[0]) == Some("=")
+        && pair_children.get(1) == Some(&id)
+        && let Some(grandparent) = db.parent_of(pair)
+        && (db.ast.head_name(grandparent) == Some("record")
+            || db.ast.head_ctor(grandparent) == Some("record"))
+    {
+        return true;
+    }
     if pair_children.first() != Some(&id) {
         return false;
     }

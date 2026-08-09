@@ -1555,8 +1555,8 @@
            (a walk admitting only positional children misses the field map).")
   (input  (do
             (def (main (: a Int64))
-              (if (= (record (f (Bytes.concat (Bytes.of (list (UInt8.wrap a))) (Bytes.of (list (UInt8.wrap 2))))) (g 1))
-                     (record (f (Bytes.of (list (UInt8.wrap 1) (UInt8.wrap 2)))) (g 1))) 1 0))
+              (if (= (record (= f (Bytes.concat (Bytes.of (list (UInt8.wrap a))) (Bytes.of (list (UInt8.wrap 2))))) (= g 1))
+                     (record (= f (Bytes.of (list (UInt8.wrap 1) (UInt8.wrap 2)))) (= g 1))) 1 0))
             (export main)))
   (call   main (: 1 Int64))
   (output (: 1 Int64)))
@@ -1927,7 +1927,7 @@
   (input  (do
             (def (main (: k Int64))
               (do
-                (def pkt (record (hdr (Bytes.of (list 1 2))) (body (Bytes.concat (Bytes.of (list 10 (UInt8.wrap k))) (Bytes.of (list 30))))))
+                (def pkt (record (= hdr (Bytes.of (list 1 2))) (= body (Bytes.concat (Bytes.of (list 10 (UInt8.wrap k))) (Bytes.of (list 30))))))
                 (def total (Bytes.concat (. pkt hdr) (. pkt body)))
                 (+ (* 100 (Bytes.len total))
                    (+ (* 10 (Option.expect (Bytes.at total 1) "b1"))

@@ -6496,18 +6496,31 @@ fn record_field_typo_fix(db: &mut Db, expected: &Ty, actual: &Ty, arg: StructId)
     None
 }
 
-/// The ENTRY node (`(k v)` pair) of the field named `field` in a WRITTEN record literal `expr` — the whole
-/// pair, so a delete fix can remove `(field value)` as a unit. `None` if `expr` is not an inline record
-/// literal (in the RAW AST) or has no such field. Same raw-AST discipline as [`record_field_key_occ`].
+/// The (key-node, value-node) of a record-literal field ENTRY, handling both the canonical
+/// `(= name value)` ascription triple (RV2, Phase B — key = child 1, value = child 2) and the legacy
+/// `(name value)` pair. `None` if `entry` is neither shape. A record VALUE field carries the `=` head;
+/// a record PATTERN field stays a bare pair (patterns were not migrated), and both are read here.
+fn record_field_kv(db: &Db, entry: StructId) -> Option<(StructId, StructId)> {
+    match db.ast.get(entry) {
+        crate::ast::Struct::List(kv) if kv.len() == 3 && db.ast.as_name(kv[0]) == Some("=") => {
+            Some((kv[1], kv[2]))
+        }
+        crate::ast::Struct::List(kv) if kv.len() == 2 => Some((kv[0], kv[1])),
+        _ => None,
+    }
+}
+
+/// The ENTRY node (the `(= k v)` / `(k v)` field) named `field` in a WRITTEN record literal `expr` — the
+/// whole field, so a delete fix can remove it as a unit. `None` if `expr` is not an inline record literal
+/// (in the RAW AST) or has no such field. Same raw-AST discipline as [`record_field_key_occ`].
 fn record_field_entry_occ(db: &Db, expr: StructId, field: &str) -> Option<StructId> {
     let entries = db
         .ast
         .as_ctor_form(expr, "record")
         .or_else(|| db.ast.as_form(expr, "record"))?;
     for &entry in entries {
-        if let crate::ast::Struct::List(kv) = db.ast.get(entry)
-            && kv.len() == 2
-            && let Some(sym) = crate::resolve::read_key(db, kv[0])
+        if let Some((key_id, _)) = record_field_kv(db, entry)
+            && let Some(sym) = crate::resolve::read_key(db, key_id)
             && sym.name == field
         {
             return Some(entry);
@@ -6552,9 +6565,11 @@ fn record_field_add_fix(db: &mut Db, expected: &Ty, actual: &Ty, arg: StructId) 
         return None;
     }
     let form = record_literal_form(db, arg)?;
+    // Synthesize each missing field as the canonical `(= name value)` ascription triple (RV2, Phase B),
+    // so the inserted entry matches the value-record field shape the printer/resolver expect.
     let arms: Vec<String> = missing
         .iter()
-        .map(|k| format!("({} (trap \"TODO\"))", k.name))
+        .map(|k| format!("(= {} (trap \"TODO\"))", k.name))
         .collect();
     Some(Fix::insert_arms_heuristic(form, arms))
 }
@@ -6651,12 +6666,11 @@ fn record_field_value_occ(db: &Db, expr: StructId, field: &str) -> Option<Struct
         .as_ctor_form(expr, "record")
         .or_else(|| db.ast.as_form(expr, "record"))?;
     for &entry in entries {
-        if let crate::ast::Struct::List(kv) = db.ast.get(entry)
-            && kv.len() == 2
-            && let Some(sym) = crate::resolve::read_key(db, kv[0])
+        if let Some((key_id, val_id)) = record_field_kv(db, entry)
+            && let Some(sym) = crate::resolve::read_key(db, key_id)
             && sym.name == field
         {
-            return Some(kv[1]);
+            return Some(val_id);
         }
     }
     None
@@ -6675,12 +6689,11 @@ fn record_field_key_occ(db: &Db, expr: StructId, field: &str) -> Option<StructId
         .as_ctor_form(expr, "record")
         .or_else(|| db.ast.as_form(expr, "record"))?;
     for &entry in entries {
-        if let crate::ast::Struct::List(kv) = db.ast.get(entry)
-            && kv.len() == 2
-            && let Some(sym) = crate::resolve::read_key(db, kv[0])
+        if let Some((key_id, _)) = record_field_kv(db, entry)
+            && let Some(sym) = crate::resolve::read_key(db, key_id)
             && sym.name == field
         {
-            return Some(kv[0]);
+            return Some(key_id);
         }
     }
     None

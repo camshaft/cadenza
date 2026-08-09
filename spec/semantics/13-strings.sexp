@@ -3618,7 +3618,7 @@
   (input  (do
             (def (rep (: s String) (: n Int64))
               (if (< n 1) s (rep (String.concat s "x") (- n 1))))
-            (def (main) (if (= (record (f (rep "hi" 3)) (g 1)) (record (f "hixxx") (g 1))) 1 0))
+            (def (main) (if (= (record (= f (rep "hi" 3)) (= g 1)) (record (= f "hixxx") (= g 1))) 1 0))
             (export main)))
   (output (: 1 Int64)))
 
@@ -3707,7 +3707,7 @@
             (def (rep (: s String) (: n Int64))
               (if (< n 1) s (rep (String.concat s "x") (- n 1))))
             (def (main)
-              (if (= (record (f (Option.Some (rep "hi" 3))) (g 1)) (record (f (Option.Some "hixxx")) (g 1))) 1 0))
+              (if (= (record (= f (Option.Some (rep "hi" 3))) (= g 1)) (record (= f (Option.Some "hixxx")) (= g 1))) 1 0))
             (export main)))
   (output (: 1 Int64)))
 

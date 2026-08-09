@@ -1101,7 +1101,7 @@
            whose field `x` is the runtime `n`. n=3 → the records (hence tuples) are equal → true; n=9 →
            `x` differs → false. Pins that the structural-equality walk recurses through a RECORD nested in a
            TUPLE at run time (a heap value inside a heap value), comparing the runtime leaf.")
-  (input  (do (def (main (: n Int64)) (= (tuple (record (x n) (y 2)) 5) (tuple (record (x 3) (y 2)) 5))) (export main)))
+  (input  (do (def (main (: n Int64)) (= (tuple (record (= x n) (= y 2)) 5) (tuple (record (= x 3) (= y 2)) 5))) (export main)))
   (call   main (: 3 Int64)) (output (: true Bool))
   (call   main (: 9 Int64)) (output (: false Bool)))
 
@@ -1265,7 +1265,7 @@
   (input  (do
             (type Tree (Leaf) (Branch (Record (: v Int64) (: kids (Tuple Tree Tree)))))
             (def (mk (: n Int64))
-              (Branch (record (v n) (kids (tuple (Leaf) (Leaf))))))
+              (Branch (record (= v n) (= kids (tuple (Leaf) (Leaf))))))
             (def (main (: a Int64))
               (= (mk a) (mk 5)))
             (export main)))
@@ -1294,7 +1294,7 @@
            false — the field `x` holds -0.0 in one record and 0.0 in the other, distinct canonical byte
            forms, so the records are unequal. Pins the canonical-byte-form float distinction through a
            record field, the field-access analogue of the tuple-element case.")
-  (input  (= (record (x -0.0)) (record (x 0.0))))
+  (input  (= (record (= x -0.0)) (record (= x 0.0))))
   (output (: false Bool)))
 
 ; The runtime float-leaf cases above are ONE level deep (a float directly in a tuple/list/sum/record). These
@@ -1309,7 +1309,7 @@
            boundary Float parameter forced to NaN via `(- x Float64.nan)` so the compound is runtime-built
            (no fold). Pins the heap walk canonicalizes a float leaf at depth 2, not only depth 1 — a walk
            that raw-compared a nested float would answer false (nan != nan under a bit compare).")
-  (input  (do (def (main (: x Float64)) (= (record (t (tuple (- x Float64.nan) 3))) (record (t (tuple (- x Float64.nan) 3))))) (export main)))
+  (input  (do (def (main (: x Float64)) (= (record (= t (tuple (- x Float64.nan) 3))) (record (= t (tuple (- x Float64.nan) 3))))) (export main)))
   (call   main (: 1.0 Float64))
   (output (: true Bool)))
 
@@ -1319,7 +1319,7 @@
            Float parameter (`(* z -0.0)` yields -0.0 at runtime, no fold). Pins the canonical byte distinction
            for signed zero holds at depth 2 — a walk that stopped distinguishing signed zero below the top
            level would wrongly answer true.")
-  (input  (do (def (main (: z Float64)) (= (record (t (tuple (* z -0.0) 3))) (record (t (tuple 0.0 3))))) (export main)))
+  (input  (do (def (main (: z Float64)) (= (record (= t (tuple (* z -0.0) 3))) (record (= t (tuple 0.0 3))))) (export main)))
   (call   main (: 0.0 Float64))
   (output (: false Bool)))
 
@@ -1593,7 +1593,7 @@
            Together with the tuple and sum cases this pins runtime `value-eq` across every scalar-leaf
            compound shape.")
   (input  (do
-            (def (mk n) (record (x n) (y (+ n 1))))
+            (def (mk n) (record (= x n) (= y (+ n 1))))
             (def (main) (if (= (mk 3) (mk 3)) 1 0)) (export main)))
   (output (: 1 Int64)))
 
@@ -1786,7 +1786,7 @@
            Has One Canonical Byte Form). Pins that the equality fold normalizes field order before
            comparing, so the same record written two ways is one value — not a position-wise comparison
            that would call these unequal.")
-  (input  (= (record (x 1) (y 2)) (record (y 2) (x 1))))
+  (input  (= (record (= x 1) (= y 2)) (record (= y 2) (= x 1))))
   (output (: true Bool)))
 
 (case "a runtime compound structural equality is expressible as a hand-written recursive comparator"
@@ -2713,7 +2713,7 @@
 (case "record ordering compares in canonical sorted field order, not written order"
   (doc    "The RECORD face of the compound order (core-semantics.md:341 — 'the same canonical order its equality and canonical byte form use'): fields written (zebra, apple) compare in SORTED order, so apple decides FIRST — (z1,a9) vs (z2,a0) is Greater (3) by apple 9>0, though written-order zebra 1<2 would say Less. Runtime k blocks the fold.")
   (input  (do
-            (def (mk (: z Int64) (: a Int64)) (record (zebra z) (apple a)))
+            (def (mk (: z Int64) (: a Int64)) (record (= zebra z) (= apple a)))
             (def (main (: k Int64))
               (match (compare (mk 1 9) (mk (+ 2 k) 0))
                 ((Ordering.Less _u) 1)
@@ -2726,7 +2726,7 @@
 (case "record ordering falls to the later canonical field when the earlier ties"
   (doc    "The tie face: apple 5 = 5, so zebra (canonically SECOND) decides — 1 < 4 → Less (1). With the decisive face above it pins both directions of the sorted-field walk.")
   (input  (do
-            (def (mk (: z Int64) (: a Int64)) (record (zebra z) (apple a)))
+            (def (mk (: z Int64) (: a Int64)) (record (= zebra z) (= apple a)))
             (def (main (: k Int64))
               (match (compare (mk 1 5) (mk (+ 4 k) 5))
                 ((Ordering.Less _u) 1)

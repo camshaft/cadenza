@@ -2821,8 +2821,13 @@ fn encode_value(
                 out.push(b.list(&[colon_s, value, type_s]));
             }
             EncodeWork::Pair { katom } => {
+                // Record field value-output form is the `(= name value)` ascription (record-type Phase B
+                // full-symmetry migration — literals, patterns, AND value-output all spell `(= name value)`;
+                // operator-ruled 2026-08-09). Emit the `=` head before the key atom and the field value.
                 let fval = out.pop()?;
-                out.push(b.list(&[katom, fval]));
+                let eq_leaf = b.name_leaf("=");
+                let eq = b.atom(eq_leaf);
+                out.push(b.list(&[eq, katom, fval]));
             }
             EncodeWork::SetOf { list_head_s, nelems } => {
                 // The top `nelems` results are the elements in canonical order, under the pre-emitted
@@ -9485,7 +9490,10 @@ mod tests {
                     let katom = b.atom(kname);
                     let fval =
                         encode_value_recursive(desc, b, op_arr_get(h, i as u32), *fs, depth + 1)?;
-                    children.push(b.list(&[katom, fval]));
+                    // `(= name value)` ascription form (record Phase B full-symmetry migration).
+                    let eq_leaf = b.name_leaf("=");
+                    let eq = b.atom(eq_leaf);
+                    children.push(b.list(&[eq, katom, fval]));
                 }
                 b.list(&children)
             }
@@ -12859,8 +12867,9 @@ mod tests {
             Shape::Record(fields) => {
                 let mut out = String::from("(record");
                 for (i, (k, s)) in fields.iter().enumerate() {
+                    // `(= name value)` ascription form (record-type Phase B full-symmetry migration).
                     out.push_str(&format!(
-                        " ({k} {})",
+                        " (= {k} {})",
                         render(op_arr_get(handle, i as u32), s)
                     ));
                 }
@@ -14997,7 +15006,7 @@ mod tests {
                 a,
                 &Shape::Record(vec![("x", Shape::Int), ("y", Shape::Int)])
             ),
-            "(record (x 3) (y 1))"
+            "(record (= x 3) (= y 1))"
         );
     }
 
@@ -15457,7 +15466,7 @@ mod tests {
     #[test]
     fn deeply_nested_render() {
         reset();
-        // (record (xs (list 1 2)) (tag (Some 9)) (raw b"\x07") (name "hi"))
+        // (record (= xs (list 1 2)) (= tag (Some 9)) (= raw b"\x07") (= name "hi"))
         let xs = op_arr_alloc(2);
         op_arr_set(xs, 0, op_box_int(1));
         op_arr_set(xs, 1, op_box_int(2));
@@ -15481,7 +15490,7 @@ mod tests {
         ]);
         assert_eq!(
             render(rec, &shape),
-            "(record (xs (list 1 2)) (tag (Some 9)) (raw b\"\\x07\") (name \"hi\"))"
+            "(record (= xs (list 1 2)) (= tag (Some 9)) (= raw b\"\\x07\") (= name \"hi\"))"
         );
     }
 
@@ -15544,7 +15553,7 @@ mod tests {
         nm(&mut d, "name");
         leb(&mut d, 5); // [6] Record
         leb(&mut d, 6); // root
-        // The value: (record (xs (list 1 2)) (tag (Some 9)) (raw b"\x07") (name "hi")). `xs` is a REAL
+        // The value: (record (= xs (list 1 2)) (= tag (Some 9)) (= raw b"\x07") (= name "hi")). `xs` is a REAL
         // RRB vec (Shape::List reads via vec-get), the others heap sum/bytes/str leaves.
         let xs = {
             let mut v = op_vec_empty();

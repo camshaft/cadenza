@@ -2575,13 +2575,21 @@ impl<'a> Printer<'a> {
     /// pun). A field with any other value prints the full `name = value`.
     fn print_record(&mut self, fields: &[StructId]) {
         self.bracketed_pairs_comment_aware("{", "}", fields, |p, field| {
-            if let Struct::List(pair) = p.a.get(field) {
-                let (name, value) = (pair[0], pair[1]);
-                p.expr(name, 0);
-                if !p.is_field_pun(name, value) {
-                    p.doc.word(" = ");
-                    p.expr(value, 0);
+            // A value-record field is the canonical `(= name value)` triple (RV2, DESIGN-record-type-
+            // syntax Phase B) — read name/value from children 1/2, dropping the `=` head; the printed
+            // SURFACE `{ name = value }` is UNCHANGED (only the arena gained the explicit `=`). Tolerate
+            // the legacy bare `(name value)` pair too, so a stray un-migrated node still prints.
+            let (name, value) = match p.a.get(field) {
+                Struct::List(items) if items.len() == 3 && p.a.as_name(items[0]) == Some("=") => {
+                    (items[1], items[2])
                 }
+                Struct::List(pair) if pair.len() == 2 => (pair[0], pair[1]),
+                _ => return,
+            };
+            p.expr(name, 0);
+            if !p.is_field_pun(name, value) {
+                p.doc.word(" = ");
+                p.expr(value, 0);
             }
         });
     }
@@ -2908,11 +2916,12 @@ impl<'a> Printer<'a> {
                     });
                     return;
                 }
-                // record pattern `(record (field p) …)` -> `{ field = p, … }`, the field-directed twin of
-                // the record literal (the operator-ruled bare-brace pattern surface). Each entry is a
-                // `(field sub-pattern)` pair; the field is a plain name, the value slot a sub-pattern.
-                // Always renders `field = p` (a punned `(x x)` prints `{ x = x }`, which re-reads to the
-                // same `(record (x x))`). Guarded on the record-pattern shape (all entries `(name p)`).
+                // record pattern `(record (= field p) …)` -> `{ field = p, … }`, the field-directed twin
+                // of the record literal (the operator-ruled bare-brace pattern surface). Each entry is the
+                // canonical `(= field sub-pattern)` triple — the SAME form as a value-record field (path
+                // B, full symmetry); the field is a plain name, the value slot a sub-pattern. Always
+                // renders `field = p` (a punned `(= x x)` prints `{ x = x }`, re-reading to the same
+                // `(record (= x x))`). Guarded on the record-pattern shape (all entries `(= name p)`).
                 if self.head_name(items[0]).as_deref() == Some("record")
                     && self.is_record_pattern(&items[1..])
                 {
@@ -2923,8 +2932,9 @@ impl<'a> Printer<'a> {
                         return;
                     }
                     self.print_pattern_seq("{ ", " }", &items[1..], |p, entry| {
-                        if let Struct::List(pair) = p.a.get(entry) {
-                            let (field, sub) = (pair[0], pair[1]);
+                        // `(= field sub-pattern)` — field = child 1, sub-pattern = child 2 (drop `=`).
+                        // Tolerate a legacy `(field sub-pattern)` pair so a stray un-migrated node prints.
+                        if let Some((field, sub)) = p.record_pattern_field(entry) {
                             p.expr(field, 0);
                             p.doc.word(" = ");
                             p.pattern(sub);
@@ -3024,15 +3034,28 @@ impl<'a> Printer<'a> {
     /// fewer fields, still all `(name p)` pairs.) Distinguishes a genuine record pattern from a
     /// name-headed constructor application (`(Record a b)`, positional) that must NOT print as braces.
     fn is_record_pattern(&self, items: &[StructId]) -> bool {
-        // Every entry is a `(field sub-pattern)` pair with a plain-name field. An EMPTY record pattern
-        // `(record)` (`{}`, binds nothing) is ALSO a valid record pattern — the parser produces it
-        // uniformly in param/let/match (`def f({}) = …` -> `(record)`), so accepting it here lets the
-        // let-binder render `{}` consistently with the param (which already does), not the backtick-`let`
+        // Every entry is the canonical `(= field sub-pattern)` triple with a plain-name field (path B,
+        // same form as a value-record field) — or a legacy `(field sub-pattern)` pair (tolerated). An
+        // EMPTY record pattern `(record)` (`{}`, binds nothing) is ALSO a valid record pattern — the
+        // parser produces it uniformly in param/let/match (`def f({}) = …` -> `(record)`), so accepting
+        // it here lets the let-binder render `{}` consistently with the param, not the backtick-`let`
         // fallback. (`items.is_empty()` short-circuits the `all` to true, so no field check runs.)
-        items.iter().all(|&e| {
-            matches!(self.a.get(e), Struct::List(p)
-                if p.len() == 2 && self.head_name(p[0]).is_some())
-        })
+        items
+            .iter()
+            .all(|&e| self.record_pattern_field(e).is_some())
+    }
+
+    /// The (field, sub-pattern) of a record-pattern entry, handling both the canonical
+    /// `(= field sub-pattern)` triple (field = child 1) and a legacy `(field sub-pattern)` pair
+    /// (field = child 0). The field must be a plain name. `None` if neither shape.
+    fn record_pattern_field(&self, entry: StructId) -> Option<(StructId, StructId)> {
+        match self.a.get(entry) {
+            Struct::List(p) if p.len() == 3 && self.a.as_name(p[0]) == Some("=") => {
+                self.head_name(p[1]).is_some().then_some((p[1], p[2]))
+            }
+            Struct::List(p) if p.len() == 2 && self.head_name(p[0]).is_some() => Some((p[0], p[1])),
+            _ => None,
+        }
     }
 
     /// `,x` when the interior is atomic (a name / literal / member chain), else `,{ expr }`.
@@ -3710,17 +3733,28 @@ impl<'a> Printer<'a> {
         })
     }
 
-    /// A record the `{ name = e, … }` surface handles: every field is a `(name value)` pair whose
-    /// key is a plain field name (so it re-reads as a `name = value` binding).
+    /// A record the `{ name = e, … }` surface handles: every field is the canonical `(= name value)`
+    /// ascription triple (RV2, Phase B) — or the legacy `(name value)` pair — whose KEY is a plain
+    /// field name (so it re-reads as a `name = value` binding). NOTE this is record-SPECIFIC (not shared
+    /// with `is_pairs`, which maps still use for their pair entries): only value-RECORD fields gained the
+    /// `=` head; a map entry stays a bare `(key value)` pair.
     fn is_record_shape(&self, args: &[StructId]) -> bool {
-        self.is_pairs(args)
-            && args.iter().all(|&a| {
-                let inner = self.strip_field_comments(a);
-                match self.a.get(inner) {
-                    Struct::List(p) => self.plain_key(p[0]).is_some(),
-                    _ => false,
+        // Reject a non-last same-line comment wrapper (no faithful `{…}` rendering) — same as `is_pairs`.
+        if self.has_nonlast_comment_after(args) {
+            return false;
+        }
+        args.iter().all(|&a| {
+            let inner = self.strip_field_comments(a);
+            match self.a.get(inner) {
+                // `(= name value)` — the canonical field; key is `p[1]`, must be a plain field name.
+                Struct::List(p) if p.len() == 3 && self.a.as_name(p[0]) == Some("=") => {
+                    self.plain_key(p[1]).is_some()
                 }
-            })
+                // Legacy `(name value)` pair — key is `p[0]`.
+                Struct::List(p) if p.len() == 2 => self.plain_key(p[0]).is_some(),
+                _ => false,
+            }
+        })
     }
 
     /// A map the `#{ key: v, … }` surface handles: every entry is a `(key value)` pair (any key),
@@ -4164,7 +4198,9 @@ mod tests {
             1 => format!("(f {} {})", sub(rng), sub(rng)),
             2 => format!("(if {} {} {})", sub(rng), sub(rng), sub(rng)),
             3 => format!("(let ((x {}) (y {})) {})", sub(rng), sub(rng), sub(rng)),
-            4 => format!("(record (x {}) (y {}))", sub(rng), sub(rng)),
+            // A value-RECORD field is the canonical `(= name value)` triple (RV1/RV2, Phase B), so the
+            // generated arena matches what the parser emits and the printer round-trips faithfully.
+            4 => format!("(record (= x {}) (= y {}))", sub(rng), sub(rng)),
             _ => format!("(* {} (+ {} {}))", sub(rng), sub(rng), sub(rng)),
         }
     }
@@ -4193,7 +4229,9 @@ mod tests {
             0 => format!("(tuple {} {})", sub(rng), sub(rng)),
             1 => format!("(tuple {})", sub(rng)), // 1-tuple: `(p,)`
             2 => format!("(list {} {})", sub(rng), sub(rng)),
-            3 => format!("(record (f {}) (g {}))", sub(rng), sub(rng)),
+            // A record PATTERN field is the canonical `(= field sub-pattern)` triple (path B — same form
+            // as a value-record field), matching what the parser emits.
+            3 => format!("(record (= f {}) (= g {}))", sub(rng), sub(rng)),
             4 => format!("(map ({} {}))", "k", sub(rng)),
             // ctor application `Ctor(p, …)` (name head, so it prints as an application, not a literal).
             5 => format!("(C {} {})", sub(rng), sub(rng)),
@@ -6305,7 +6343,7 @@ mod tests {
         // drop-guard. strip_comments peels it — a record with a trailing comment compiles.
         assert_eq!(
             sexpr::print(&parser::read_ml("def r() -> Int64 = { a = 1, b = 2 // last\n}").arenas),
-            "(def (r) (: (\"record\" (a 1) (comment-after \"last\" (b 2))) Int64))",
+            "(def (r) (: (\"record\" (= a 1) (comment-after \"last\" (= b 2))) Int64))",
             "a trailing comment on the last RECORD field is captured, not dropped"
         );
         assert_eq!(
@@ -6340,14 +6378,14 @@ mod tests {
             sexpr::print(
                 &parser::read_ml("def r() -> Int64 = {\n  // lead\n  a = 1, b = 2 }").arenas
             ),
-            "(def (r) (: (\"record\" (comment \"lead\" (a 1)) (b 2)) Int64))",
+            "(def (r) (: (\"record\" (comment \"lead\" (= a 1)) (= b 2)) Int64))",
             "own-line comment before the first record field is captured, printer renders it above"
         );
         assert_eq!(
             sexpr::print(
                 &parser::read_ml("def r() -> Int64 = { a = 1,\n  // mid\n  b = 2 }").arenas
             ),
-            "(def (r) (: (\"record\" (a 1) (comment \"mid\" (b 2))) Int64))",
+            "(def (r) (: (\"record\" (= a 1) (comment \"mid\" (= b 2))) Int64))",
             "own-line comment before a non-first record field is captured (no swallow hazard)"
         );
         assert_eq!(
@@ -6367,7 +6405,7 @@ mod tests {
                 &parser::read_ml("def r() -> Int64 = {\n  // lead\n  a = 1, b = 2 // last\n}")
                     .arenas
             ),
-            "(def (r) (: (\"record\" (comment \"lead\" (a 1)) (comment-after \"last\" (b 2))) Int64))",
+            "(def (r) (: (\"record\" (comment \"lead\" (= a 1)) (comment-after \"last\" (= b 2))) Int64))",
             "leading own-line + trailing same-line record comments compose"
         );
         // Clean record/map (incl. pun) keep their flat layout.
@@ -6383,9 +6421,10 @@ mod tests {
         // handed to `emit` as if `comment` were the field name (`// c1` then a spurious `comment = "c2"`).
         // The peel is now a LOOP over both leading `(comment …)` and trailing `(comment-after …)` layers.
         // TWO leading comments: both print as `// …` lines above the field; round-trips.
-        let a =
-            sexpr::read(r#"(def (r) (: ("record" (comment "c1" (comment "c2" (a 1))) (b 2)) _))"#)
-                .unwrap();
+        let a = sexpr::read(
+            r#"(def (r) (: ("record" (comment "c1" (comment "c2" (= a 1))) (= b 2)) _))"#,
+        )
+        .unwrap();
         let printed = print(&a, 80);
         assert_eq!(
             printed, "def r() -> _ = {\n  // c1\n  // c2\n  a = 1,\n  b = 2\n}",
@@ -6393,13 +6432,13 @@ mod tests {
         );
         assert_eq!(
             sexpr::print(&parser::read_ml(&printed).arenas),
-            r#"(def (r) (: ("record" (comment "c1" (comment "c2" (a 1))) (b 2)) _))"#,
+            r#"(def (r) (: ("record" (comment "c1" (comment "c2" (= a 1))) (= b 2)) _))"#,
             "a doubly-commented field round-trips"
         );
         // A leading + trailing combo on one field normalizes to a stable (idempotent) nesting — nothing
         // dropped or mis-attributed; re-printing is a fixed point.
         let combo = sexpr::read(
-            r#"(def (r) (: ("record" (a 1) (comment "lead" (comment-after "trail" (b 2)))) _))"#,
+            r#"(def (r) (: ("record" (= a 1) (comment "lead" (comment-after "trail" (= b 2)))) _))"#,
         )
         .unwrap();
         let p1 = print(&combo, 80);
@@ -7022,14 +7061,16 @@ mod tests {
         // fallback), in both let and param position.
         assert_eq!(
             print(
-                &sexpr::read("(def (main) (let (((record (x a) (y b)) r)) (+ a b)))").unwrap(),
+                &sexpr::read("(def (main) (let (((record (= x a) (= y b)) r)) (+ a b)))").unwrap(),
                 80
             ),
             "def main() =\n  let { x = a, y = b } = r in\n  a + b"
         );
+        // Both a record PATTERN binder AND a record VALUE are the canonical `(= name value)` triple
+        // (path B — full symmetry; operator ruling): patterns and literals spell the identical form.
         for sx in [
-            "(def (main) (let (((record (x a) (y b)) (record (x 3) (y 4)))) (+ a b)))",
-            "(def (f (record (x a))) a)",
+            "(def (main) (let (((record (= x a) (= y b)) (record (= x 3) (= y 4)))) (+ a b)))",
+            "(def (f (record (= x a))) a)",
         ] {
             let a = sexpr::read(sx).unwrap();
             let ml = print(&a, 80);
@@ -7172,7 +7213,7 @@ mod tests {
         // Sugaring a NAME head means the reprint re-reads with a STRING head; `structurally_eq`
         // normalizes the two head kinds for the four ctors, so the round-trip still holds.
         for src in [
-            "(record (x 1) (y 2))",
+            "(record (= x 1) (= y 2))",
             "(tuple 1 2 3)",
             "(list 1 2 3)",
             "(map (a 1))",
@@ -7189,21 +7230,29 @@ mod tests {
 
     #[test]
     fn record_field_shorthand() {
-        // `{ x }` puns to `(record (x x))`; the printer renders a same-name field back as `{ x }`.
-        assert_eq!(print(&sexpr::read("(record (x x))").unwrap(), 80), "{ x }");
+        // A value-record field is the canonical `(= name value)` triple (RV1/RV2, Phase B). `{ x }`
+        // puns to `(record (= x x))`; the printer renders a same-name field back as `{ x }`. The printer
+        // also tolerates the legacy `(x x)` pair (prints `{ x }` too) so a stray un-migrated node still
+        // renders.
         assert_eq!(
-            print(&sexpr::read("(record (x x) (y 2))").unwrap(), 80),
+            print(&sexpr::read("(record (= x x))").unwrap(), 80),
+            "{ x }"
+        );
+        assert_eq!(print(&sexpr::read("(record (x x))").unwrap(), 80), "{ x }"); // legacy pair tolerated
+        assert_eq!(
+            print(&sexpr::read("(record (= x x) (= y 2))").unwrap(), 80),
             "{ x, y = 2 }"
         );
         // a non-punned field keeps `name = value`.
         assert_eq!(
-            print(&sexpr::read("(record (x 1))").unwrap(), 80),
+            print(&sexpr::read("(record (= x 1))").unwrap(), 80),
             "{ x = 1 }"
         );
-        // parse `{ x }` → the pun (a STRING-headed record primitive, per the reader's literal desugar).
+        // parse `{ x }` → the pun as the canonical `(= x x)` triple (a STRING-headed record primitive,
+        // per the reader's literal desugar).
         assert_eq!(
             sexpr::print(&parser::read_ml("{ x }").arenas),
-            "(\"record\" (x x))"
+            "(\"record\" (= x x))"
         );
         assert_eq!(assert_roundtrip("{ x }", 80), "{ x }");
         assert_eq!(assert_roundtrip("{ x = x }", 80), "{ x }");

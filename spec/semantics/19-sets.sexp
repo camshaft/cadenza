@@ -110,10 +110,10 @@
            independence a tuple element cannot witness.")
   (input  (do
             (def (main (: k Int64))
-              (let ((s (Set.of (list (record (x 1) (y 2)) (record (x 3) (y k)) (record (x 1) (y 2))))))
+              (let ((s (Set.of (list (record (= x 1) (= y 2)) (record (= x 3) (= y k)) (record (= x 1) (= y 2))))))
                 (+ (* 100 (Set.len s))
-                   (+ (* 10 (if (Set.contains s (record (x 1) (y 2))) 1 0))
-                      (if (Set.contains s (record (y 2) (x 1))) 1 0)))))
+                   (+ (* 10 (if (Set.contains s (record (= x 1) (= y 2))) 1 0))
+                      (if (Set.contains s (record (= y 2) (= x 1))) 1 0)))))
             (export main)))
   (call main (: 4 Int64)) (output (: 211 Int64)))
 
@@ -1629,7 +1629,7 @@
            `value_cmp_shaped` sort, over a runtime `a` so nothing folds. Expected: 1.")
   (input  (do
             (def (main (: a Int64))
-              (match (List.at (Set.to-list (Set.of (list (record (x 3) (y a)) (record (x 1) (y 2)) (record (x 2) (y 0))))) 0)
+              (match (List.at (Set.to-list (Set.of (list (record (= x 3) (= y a)) (record (= x 1) (= y 2)) (record (= x 2) (= y 0))))) 0)
                 ((Some r) (. r x))
                 ((None u) -1)))
             (export main)))
@@ -2233,7 +2233,7 @@
            record-threaded ord-wrapper, 94ea8c58b), the record twin of the tuple-float-key case.")
   (input  (do
             (def (main (: x Float64))
-              (match (Map.lookup (Map.insert Map.empty (record (f (+ x 1.25)) (n 3)) 42) (record (f 2.5) (n 3)))
+              (match (Map.lookup (Map.insert Map.empty (record (= f (+ x 1.25)) (= n 3)) 42) (record (= f 2.5) (= n 3)))
                 ((Some v) v) ((None _) -1)))
             (export main)))
   (call   main (: 1.25 Float64))
@@ -2246,7 +2246,7 @@
            the shared Int field or the record shape.")
   (input  (do
             (def (main (: x Float64))
-              (match (Map.lookup (Map.insert Map.empty (record (f (+ x 1.25)) (n 3)) 42) (record (f 9.5) (n 3)))
+              (match (Map.lookup (Map.insert Map.empty (record (= f (+ x 1.25)) (= n 3)) 42) (record (= f 9.5) (= n 3)))
                 ((Some v) v) ((None _) -1)))
             (export main)))
   (call   main (: 1.25 Float64))
@@ -2259,7 +2259,7 @@
            tuple-float set-dedup case.")
   (input  (do
             (def (main (: x Float64))
-              (Set.len (Set.insert (Set.insert (Set.of (list)) (record (f (+ x 1.25)) (n 3))) (record (f 2.5) (n 3)))))
+              (Set.len (Set.insert (Set.insert (Set.of (list)) (record (= f (+ x 1.25)) (= n 3))) (record (= f 2.5) (= n 3)))))
             (export main)))
   (call   main (: 1.25 Float64))
   (output (: 1 Int64)))
@@ -2306,7 +2306,7 @@
            over tuple, f8e5b1c0d). Pins the record-of-tuple-float nested key.")
   (input  (do
             (def (main (: x Float64))
-              (match (Map.lookup (Map.insert Map.empty (record (p (tuple (+ x 1.25) 3)) (n 9)) 42) (record (p (tuple 2.5 3)) (n 9)))
+              (match (Map.lookup (Map.insert Map.empty (record (= p (tuple (+ x 1.25) 3)) (= n 9)) 42) (record (= p (tuple 2.5 3)) (= n 9)))
                 ((Some v) v) ((None _) -1)))
             (export main)))
   (call   main (: 1.25 Float64))
@@ -2764,7 +2764,7 @@
            bytes exactly as the map-KEY twin (pinned above) does.")
   (input  (do
             (def (main (: x Float64))
-              (Set.len (Set.of (list (record (f x) (n 1)) (record (f 2.5) (n 1))))))
+              (Set.len (Set.of (list (record (= f x) (= n 1)) (record (= f 2.5) (= n 1))))))
             (export main)))
   (call   main (: 0.5 Float64))
   (output (: 2 Int64))
@@ -3453,8 +3453,8 @@
            set's canonical content; a row hash that stopped at the set's slot handle splits the hit.")
   (input  (do
             (def (main (: n Int64))
-              (match (Map.lookup (Map.insert Map.empty (record (s (Set.of (list 1 2))) (id 7)) 42)
-                                 (record (s (Set.of (list n 1))) (id 7)))
+              (match (Map.lookup (Map.insert Map.empty (record (= s (Set.of (list 1 2))) (= id 7)) 42)
+                                 (record (= s (Set.of (list n 1))) (= id 7)))
                 ((Some v) v) ((None _u) -1)))
             (export main)))
   (call   main (: 2 Int64)) (output (: 42 Int64))

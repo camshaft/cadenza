@@ -11,7 +11,7 @@
            Row polymorphism, not a fixed shape, is what inference assigns.")
   (input  (do
             (def (get-x r) (. r x))
-            (def (main) (get-x (record (x 1) (y 2)))) (export main)))
+            (def (main) (get-x (record (= x 1) (= y 2)))) (export main)))
   (output (: 1 Int64)))
 
 (case "an open-row function is applied at TWO different record widths in one program"
@@ -25,8 +25,8 @@
   (input  (do
             (def (get-x r) (. r x))
             (def (main (: n Int64))
-              (+ (get-x (record (x n)))
-                 (get-x (record (x 10) (y 20) (z 30)))))
+              (+ (get-x (record (= x n)))
+                 (get-x (record (= x 10) (= y 20) (= z 30)))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 15 Int64)))
 
@@ -40,9 +40,9 @@
   (input  (do
             (def (get-xy r) (+ (* (. r x) 10) (. r y)))
             (def (main (: n Int64))
-              (+ (get-xy (record (x 1) (y 2)))
-                 (+ (* (get-xy (record (a n) (x 3) (y 4))) 100)
-                    (* (get-xy (record (w 9) (x 6) (y 7) (z 8))) 10000))))
+              (+ (get-xy (record (= x 1) (= y 2)))
+                 (+ (* (get-xy (record (= a n) (= x 3) (= y 4))) 100)
+                    (* (get-xy (record (= w 9) (= x 6) (= y 7) (= z 8))) 10000))))
             (export main)))
   (call main (: 5 Int64)) (output (: 673412 Int64)))
 
@@ -59,7 +59,7 @@
                 r))
             (def (main (: n Int64))
               (do
-                (def out (touch (record (x 3) (y 40) (z n))))
+                (def out (touch (record (= x 3) (= y 40) (= z n))))
                 (+ (. out x) (+ (. out y) (. out z)))))
             (export main)))
   (call main (: 500 Int64)) (output (: 543 Int64))
@@ -76,7 +76,7 @@
             ((list h .. t) (sum-l t (+ acc h)))))
         (def (main (: n Int64))
           (do
-            (def m (Record.merge (record (xs (list 1 n))) (record (ys (list 7)))))
+            (def m (Record.merge (record (= xs (list 1 n))) (record (= ys (list 7)))))
             (+ (* (sum-l (. m xs) 0) 10) (sum-l (. m ys) 0))))
         (export main)))
   (call main (: 2 Int64)) (output (: 37 Int64))
@@ -93,7 +93,7 @@
             ((list h .. t) (sum-l t (+ acc h)))))
         (def (main (: n Int64))
           (do
-            (def r (record (xs (list 1 2)) (ys (list 7 n))))
+            (def r (record (= xs (list 1 2)) (= ys (list 7 n))))
             (def r2 (Record.with r #"xs" (list 9)))
             (+ (* (sum-l (. r2 xs) 0) 100)
                (+ (* (sum-l (. r2 ys) 0) 10)
@@ -130,7 +130,7 @@
            Map-with-list-value case), and the sibling scalar reads independently on both backends.")
   (input  (do
             (def (main (: i Int64))
-              (let ((r (record (xs (list 10 20 30)) (n 5))))
+              (let ((r (record (= xs (list 10 20 30)) (= n 5))))
                 (+ (* 100 (Option.expect (List.at (. r xs) i) "idx")) (. r n))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 1005 Int64))
@@ -143,8 +143,8 @@
            yields true; `=` is never silently widened to ignore the extra field.")
   (input  (do
             (def (main)
-              (= (. (record (x 1) (y 2)) x)
-                 (. (record (x 1)) x))) (export main)))
+              (= (. (record (= x 1) (= y 2)) x)
+                 (. (record (= x 1)) x))) (export main)))
   (output (: true Bool)))
 
 ; --- Record reshaping: explicit row operations yield a new closed record -------------------
@@ -165,8 +165,8 @@
            narrows a record to exactly the stated field names, each bound to the value the operand holds.
            `(Record.project (record (a 1) (b 2) (c 3)) (a c))` keeps `a` and `c`, dropping `b`, yielding
            the closed record `(record (a 1) (c 3))`. The result renders in canonical key-sorted order.")
-  (input  (Record.project (record (a 1) (b 2) (c 3)) (a c)))
-  (output (: (record (a 1) (c 3)) (Record (: a Int64) (: c Int64)))))
+  (input  (Record.project (record (= a 1) (= b 2) (= c 3)) (a c)))
+  (output (: (record (= a 1) (= c 3)) (Record (: a Int64) (: c Int64)))))
 
 (case "a row op over a constant record folds through a single-use let binding"
   (doc    "Witnesses type-system.md #A Record Is Restricted To A Named Set Of Its Fields (the compile-time
@@ -175,7 +175,7 @@
            reading `.f` yields `5`. The control for the multi-use case below — a fold that must see through a
            let binding, not only a record literal written inline at the projection site.")
   (input  (do
-            (def (main) (let ((r (record (f 5) (g 8)))) (. (Record.project r (f)) f)))
+            (def (main) (let ((r (record (= f 5) (= g 8)))) (. (Record.project r (f)) f)))
             (export main)))
   (output (: 5 Int64)))
 
@@ -189,7 +189,7 @@
            fold must follow the binder to the constant record at every use, not only a singly-used one.")
   (input  (do
             (def (main)
-              (let ((r (record (f 5) (g 8))))
+              (let ((r (record (= f 5) (= g 8))))
                 (+ (. (Record.project r (f)) f) (. (Record.project r (g)) g))))
             (export main)))
   (output (: 13 Int64)))
@@ -207,7 +207,7 @@
            reach it. Expected: 37.")
   (input  (do
             (def (main (: a Int64) (: b Int64))
-              (let ((r (record (x a) (y b) (z 99))))
+              (let ((r (record (= x a) (= y b) (= z 99))))
                 (let ((p (Record.project r (x y))))
                   (+ (* 10 (. p x)) (. p y)))))
             (export main)))
@@ -220,7 +220,7 @@
            decline or lose the boundary value. Expected: 5.")
   (input  (do
             (def (main (: a Int64))
-              (let ((r (record (x a) (y 2))))
+              (let ((r (record (= x a) (= y 2))))
                 (let ((w (Record.without r (y))))
                   (. w x))))
             (export main)))
@@ -231,7 +231,7 @@
            a projection naming a field the operand does not contain is a compile-time rejection (CDZ0212),
            so a projection cannot silently produce a field the operand never held. `z` is not a field of
            `(record (a 1) (b 2))`.")
-  (input  (Record.project (record (a 1) (b 2)) (a z)))
+  (input  (Record.project (record (= a 1) (= b 2)) (a z)))
   (error  CDZ0212))
 
 (case "projecting a record with a duplicate label is rejected"
@@ -242,7 +242,7 @@
            deduplicated to a single field. A duplicate label is almost always an author error (a typo, a
            copy-paste); the projection label-list check matches the record-literal duplicate-field check.")
   (input  (do
-            (def (main) (. (Record.project (record (a 1) (b 2)) (a a)) a))
+            (def (main) (. (Record.project (record (= a 1) (= b 2)) (a a)) a))
             (export main)))
   (error  CDZ0201))
 
@@ -251,14 +251,14 @@
            `Record.without` derives the record of the operand's fields EXCEPT those named. `(Record.without
            (record (a 1) (b 2) (c 3)) (b))` drops `b`, yielding `(record (a 1) (c 3))` — the complement of
            projecting the fields kept.")
-  (input  (Record.without (record (a 1) (b 2) (c 3)) (b)))
-  (output (: (record (a 1) (c 3)) (Record (: a Int64) (: c Int64)))))
+  (input  (Record.without (record (= a 1) (= b 2) (= c 3)) (b)))
+  (output (: (record (= a 1) (= c 3)) (Record (: a Int64) (: c Int64)))))
 
 (case "dropping an absent field from a record is rejected"
   (doc    "Witnesses type-system.md #A Record Is Reduced By Dropping A Named Set Of Its Fields (2nd
            sentence): dropping a field the operand does not contain is a compile-time rejection (CDZ0212),
            not a silent no-op. `z` is not a field of `(record (a 1))`.")
-  (input  (Record.without (record (a 1)) (z)))
+  (input  (Record.without (record (= a 1)) (z)))
   (error  CDZ0212))
 
 (case "merging two records with disjoint fields unions their fields"
@@ -266,8 +266,8 @@
            `Record.merge` combines two records into one whose field set is the union, each field bound to
            its source's value. `(Record.merge (record (a 1)) (record (b 2)))` yields `(record (a 1) (b 2))`
            — the row analogue of forming a record from two groups of fields.")
-  (input  (Record.merge (record (a 1)) (record (b 2))))
-  (output (: (record (a 1) (b 2)) (Record (: a Int64) (: b Int64)))))
+  (input  (Record.merge (record (= a 1)) (record (= b 2))))
+  (output (: (record (= a 1) (= b 2)) (Record (: a Int64) (: b Int64)))))
 
 ; The merge above builds both operand records from CONSTANT literals, so the union folds to a constant
 ; record. A record carrying a RUNTIME field value cannot fold — the merge runs on the value heap. These
@@ -281,7 +281,7 @@
            102. Pins that a runtime merge unions BOTH operands' fields, each bound to its source's value,
            read back by member access.")
   (input  (do (def (main (: n Int64))
-                (+ (. (Record.merge (record (a n)) (record (b 2))) a) (. (Record.merge (record (a n)) (record (b 2))) b))) (export main)))
+                (+ (. (Record.merge (record (= a n)) (record (= b 2))) a) (. (Record.merge (record (= a n)) (record (= b 2))) b))) (export main)))
   (call   main (: 7 Int64)) (output (: 9 Int64))
   (call   main (: 100 Int64)) (output (: 102 Int64)))
 
@@ -291,7 +291,7 @@
            merge does not confuse or alias the two runtime slots. Pins per-field value fidelity on the
            runtime path when neither operand is constant.")
   (input  (do (def (main (: x Int64) (: y Int64))
-                (- (. (Record.merge (record (a x)) (record (b y))) b) (. (Record.merge (record (a x)) (record (b y))) a))) (export main)))
+                (- (. (Record.merge (record (= a x)) (record (= b y))) b) (. (Record.merge (record (= a x)) (record (= b y))) a))) (export main)))
   (call   main (: 3 Int64) (: 10 Int64)) (output (: 7 Int64))
   (call   main (: 50 Int64) (: 8 Int64)) (output (: -42 Int64)))
 
@@ -311,7 +311,7 @@
   (input  (do
             (def (get-x r) (. r x))
             (def (main (: a Int64))
-              (get-x (Record.merge (record (x a)) (record (y 100)))))
+              (get-x (Record.merge (record (= x a)) (record (= y 100)))))
             (export main)))
   (call   main (: 7 Int64))
   (output (: 7 Int64)))
@@ -324,7 +324,7 @@
   (input  (do
             (def (get-x r) (. r x))
             (def (main (: a Int64))
-              (get-x (Record.with (record (x 1) (y 2)) #"x" a)))
+              (get-x (Record.with (record (= x 1) (= y 2)) #"x" a)))
             (export main)))
   (call   main (: 42 Int64))
   (output (: 42 Int64)))
@@ -346,7 +346,7 @@
               (Record.with outer #"pos" (Record.with (. outer pos) #"y" (+ (. (. outer pos) y) d))))
             (def (main (: d Int64))
               (do
-                (def p0 (record (pos (record (x 1) (y 2))) (vel (record (x 30) (y 40)))))
+                (def p0 (record (= pos (record (= x 1) (= y 2))) (= vel (record (= x 30) (= y 40)))))
                 (. (. (bump p0 d) pos) y)))
             (export main)))
   (call   main (: 5 Int64)) (output (: 7 Int64)))
@@ -365,7 +365,7 @@
            effect lowering (an effectful operand is materialized once by out-state threading) and guarded
            structurally by rcdzc's emit-once lib test, so no runtime perform-count row is needed.")
   (input  (do
-            (def (mk (: n Int64)) (record (a n) (b (+ n 1)) (c (+ n 2))))
+            (def (mk (: n Int64)) (record (= a n) (= b (+ n 1)) (= c (+ n 2))))
             (def (main (: v Int64)) (. (Record.with (mk v) #"a" 99) c))
             (export main)))
   (call   main (: 10 Int64)) (output (: 12 Int64)))
@@ -379,7 +379,7 @@
   (doc    "Record.project over a RUNTIME record (recursion-forced `mk`) keeping {a,c} — was a decline 'not
            yet built'. Materializes the operand once; reads the kept first field `a` → 1.")
   (input  (do
-            (def (mk (: n Int64)) (if (= n 0) (record (a 1) (b 2) (c 3)) (mk (- n 1))))
+            (def (mk (: n Int64)) (if (= n 0) (record (= a 1) (= b 2) (= c 3)) (mk (- n 1))))
             (def (upd (: v Int64)) (. (Record.project (mk (+ v 987654321)) (a c)) a))
             (def (main (: v Int64)) (upd v))
             (export main)))
@@ -390,7 +390,7 @@
            kept field `c` → 3 — a kept field other than the first also reads correctly through the
            materialized operand.")
   (input  (do
-            (def (mk (: n Int64)) (if (= n 0) (record (a 1) (b 2) (c 3)) (mk (- n 1))))
+            (def (mk (: n Int64)) (if (= n 0) (record (= a 1) (= b 2) (= c 3)) (mk (- n 1))))
             (def (upd (: v Int64)) (. (Record.project (mk (+ v 987654321)) (a c)) c))
             (def (main (: v Int64)) (upd v))
             (export main)))
@@ -401,7 +401,7 @@
            the operand once; reads the surviving first field `a` → 1. The drop-shifts-layout twin of the
            project case.")
   (input  (do
-            (def (mk (: n Int64)) (if (= n 0) (record (a 1) (b 2) (c 3)) (mk (- n 1))))
+            (def (mk (: n Int64)) (if (= n 0) (record (= a 1) (= b 2) (= c 3)) (mk (- n 1))))
             (def (upd (: v Int64)) (. (Record.without (mk (+ v 987654321)) (b)) a))
             (def (main (: v Int64)) (upd v))
             (export main)))
@@ -412,7 +412,7 @@
            reading the surviving `c` → 3 — after the drop shifts c's position it must still read correctly
            through the materialized operand.")
   (input  (do
-            (def (mk (: n Int64)) (if (= n 0) (record (a 1) (b 2) (c 3)) (mk (- n 1))))
+            (def (mk (: n Int64)) (if (= n 0) (record (= a 1) (= b 2) (= c 3)) (mk (- n 1))))
             (def (upd (: v Int64)) (. (Record.without (mk (+ v 987654321)) (b)) c))
             (def (main (: v Int64)) (upd v))
             (export main)))
@@ -423,7 +423,7 @@
            field `a` — was a decline. Materializes the operand once; reads tuple element 0 (the popped `a`)
            → 1.")
   (input  (do
-            (def (mk (: n Int64)) (if (= n 0) (record (a 1) (b 2) (c 3)) (mk (- n 1))))
+            (def (mk (: n Int64)) (if (= n 0) (record (= a 1) (= b 2) (= c 3)) (mk (- n 1))))
             (def (upd (: v Int64)) (. (Record.pop (mk (+ v 987654321)) a) 0))
             (def (main (: v Int64)) (upd v))
             (export main)))
@@ -435,8 +435,8 @@
            SECOND operand `(mkB …)` = {c,d} → 3 — a field from the second operand's row survives the union
            at its correct slot.")
   (input  (do
-            (def (mkA (: n Int64)) (if (= n 0) (record (a 1) (b 2)) (mkA (- n 1))))
-            (def (mkB (: n Int64)) (if (= n 0) (record (c 3) (d 4)) (mkB (- n 1))))
+            (def (mkA (: n Int64)) (if (= n 0) (record (= a 1) (= b 2)) (mkA (- n 1))))
+            (def (mkB (: n Int64)) (if (= n 0) (record (= c 3) (= d 4)) (mkB (- n 1))))
             (def (upd (: v Int64)) (. (Record.merge (mkA (+ v 987654321)) (mkB (+ v 111222333))) c))
             (def (main (: v Int64)) (upd v))
             (export main)))
@@ -450,7 +450,7 @@
            would misread a slot after the drop shifted positions.")
   (input  (do
             (def (main (: a Int64) (: b Int64))
-              (let ((r (Record.without (Record.merge (record (x a)) (record (y b) (z 9))) (z))))
+              (let ((r (Record.without (Record.merge (record (= x a)) (record (= y b) (= z 9))) (z))))
                 (+ (. r x) (. r y))))
             (export main)))
   (call   main (: 30 Int64) (: 12 Int64))
@@ -475,7 +475,7 @@
   (input  (do
             (def (main (: k Int64))
               (do
-                (def inv (Map.insert Map.empty 1 (record (name "widget") (qty k))))
+                (def inv (Map.insert Map.empty 1 (record (= name "widget") (= qty k))))
                 (def r (Option.expect (Map.lookup inv 1) "slot"))
                 (. (Record.extend (Record.without r (qty)) #"qty" (+ (. r qty) 5)) qty)))
             (export main)))
@@ -491,7 +491,7 @@
   (input  (do
             (def (main (: k Int64))
               (do
-                (def r0 (record (name "widget") (qty k)))
+                (def r0 (record (= name "widget") (= qty k)))
                 (def inv (List.push (list) r0))
                 (def r (Option.expect (List.at inv 0) "slot"))
                 (. (Record.extend (Record.without r (qty)) #"qty" (+ (. r qty) 5)) qty)))
@@ -507,7 +507,7 @@
   (input  (do
             (def (main (: k Int64))
               (do
-                (def inv (Map.insert Map.empty 1 (record (name "widget") (qty k))))
+                (def inv (Map.insert Map.empty 1 (record (= name "widget") (= qty k))))
                 (def r (Option.expect (Map.lookup inv 1) "slot"))
                 (+ (* 10 (String.byte-len (. (Record.without r (qty)) name)))
                    (. (Record.extend r #"extra" 5) extra))))
@@ -526,7 +526,7 @@
             (def (bump-x (: r (Record (: x Int64) (: y Int64))))
               (Record.with r #"x" (+ (. r x) 1)))
             (def (main (: k Int64))
-              (let ((seed (record (x k) (y 100))))
+              (let ((seed (record (= x k) (= y 100))))
                 (let ((alias (list seed)))
                   (let ((done (bump-x seed)))
                     (+ (. done x)
@@ -548,7 +548,7 @@
             (def (go-n (: r (Record (: x Int64) (: y Int64))) (: n Int64))
               (if (> n 0) (go-n (bump-x r) (- n 1)) r))
             (def (main (: k Int64))
-              (let ((seed (record (x k) (y 100))))
+              (let ((seed (record (= x k) (= y 100))))
                 (let ((done (go-n seed 5)))
                   (+ (. done x) (* 1000 (. seed x))))))
             (export main)))
@@ -563,7 +563,7 @@
   (input  (do
             (def (main (: k Int64))
               (do
-                (def inner (Map.insert Map.empty 2 (record (name "widget") (qty k))))
+                (def inner (Map.insert Map.empty 2 (record (= name "widget") (= qty k))))
                 (def outer (Map.insert Map.empty 1 inner))
                 (def r (Option.expect (Map.lookup (Option.expect (Map.lookup outer 1) "o") 2) "i"))
                 (. (Record.extend (Record.without r (qty)) #"qty" (+ (. r qty) 5)) qty)))
@@ -588,7 +588,7 @@
                 ((Slot.Empty _u) (Slot.Empty unit))))
             (def (main (: k Int64))
               (do
-                (def inv (Map.insert Map.empty 1 (Slot.Filled (record (name (String.concat "wid" "get")) (qty k)))))
+                (def inv (Map.insert Map.empty 1 (Slot.Filled (record (= name (String.concat "wid" "get")) (= qty k)))))
                 (def v (bump-qty (Option.expect (Map.lookup inv 1) "slot") 5))
                 (match v ((Slot.Filled r) (. r qty)) ((Slot.Empty _u) -1))))
             (export main)))
@@ -601,7 +601,7 @@
            the combined record never has to choose which operand's value the shared field takes — the
            row-operation companion of the duplicate-field literal `(record (a 1) (a 2))` (CDZ0201). `a` is
            shared, so `Record.merge` REJECTS rather than picking a winner (no silent clobber).")
-  (input  (Record.merge (record (a 1)) (record (a 2))))
+  (input  (Record.merge (record (= a 1)) (record (= a 2))))
   (error  CDZ0211))
 
 (case "merging with the empty record on the left is the identity"
@@ -610,14 +610,14 @@
            (b 2))` — merging in nothing adds nothing. Pins the empty-operand identity the disjoint-merge
            cases above (which union two non-empty records) do not exercise — the record companion of the
            empty-list / empty-set / empty-tuple identity laws.")
-  (input  (= (Record.merge (record) (record (a 1) (b 2))) (record (a 1) (b 2))))
+  (input  (= (Record.merge (record) (record (= a 1) (= b 2))) (record (= a 1) (= b 2))))
   (output (: true Bool)))
 
 (case "merging with the empty record on the right is the identity"
   (doc    "The mirror: `(Record.merge (record (a 1) (b 2)) (record))` equals `(record (a 1) (b 2))` — the
            empty record is the identity on the right as well as the left. Pins that a merge with an empty
            operand on either side is a no-op on value (merge is symmetric on the empty record).")
-  (input  (= (Record.merge (record (a 1) (b 2)) (record)) (record (a 1) (b 2))))
+  (input  (= (Record.merge (record (= a 1) (= b 2)) (record)) (record (= a 1) (= b 2))))
   (output (: true Bool)))
 
 (case "merging two empty records is the empty record"
@@ -633,8 +633,8 @@
            `Record.extend` adds a field ABSENT from the operand, defined as `(Record.merge r (record (z v)))`.
            `(Record.extend (record (a 1)) #"b" 2)` yields `(record (a 1) (b 2))`. The added field may hold
            any type. The field name is a `#field` label operand (a static label, not a runtime value).")
-  (input  (Record.extend (record (a 1)) #"b" 2))
-  (output (: (record (a 1) (b 2)) (Record (: a Int64) (: b Int64)))))
+  (input  (Record.extend (record (= a 1)) #"b" 2))
+  (output (: (record (= a 1) (= b 2)) (Record (: a Int64) (: b Int64)))))
 
 (case "extending a record with an already-present field is rejected"
   (doc    "Witnesses type-system.md #A Field Is Added To Or Replaced In A Record By A Derived Operation
@@ -642,7 +642,7 @@
            so `extend` never silently overwrites. `a` is already present, so this is a clobber `extend`
            forbids — the author means `Record.with` to replace. Rides the strict `Record.merge` disjointness
            its rewrite uses.")
-  (input  (Record.extend (record (a 1)) #"a" 2))
+  (input  (Record.extend (record (= a 1)) #"a" 2))
   (error  CDZ0211))
 
 (case "updating a record field replaces its value"
@@ -650,16 +650,16 @@
            (2nd sentence): `Record.with` replaces a field PRESENT in the operand, defined as `(Record.merge
            (Record.without r (z)) (record (z v)))`. `(Record.with (record (a 1) (b 2)) #"b" 9)` yields
            `(record (a 1) (b 9))` — an explicit update distinct from `extend`.")
-  (input  (Record.with (record (a 1) (b 2)) #"b" 9))
-  (output (: (record (a 1) (b 9)) (Record (: a Int64) (: b Int64)))))
+  (input  (Record.with (record (= a 1) (= b 2)) #"b" 9))
+  (output (: (record (= a 1) (= b 9)) (Record (: a Int64) (: b Int64)))))
 
 (case "updating a record field changes its type to the new value's"
   (doc    "Witnesses type-system.md #A Field Is Added To Or Replaced In A Record By A Derived Operation
            (2nd sentence: 'a new value of a possibly different type'): the result is a new closed record
            whose field `b` has whatever type the new value holds. `(Record.with (record (a 1) (b 2)) #"b"
            true)` retypes `b` from Int64 to Bool, yielding `(record (a 1) (b true))` of type `(Record (: a Int64) (: b Bool))`. Pins that `with` is not constrained to the field's prior type.")
-  (input  (Record.with (record (a 1) (b 2)) #"b" true))
-  (output (: (record (a 1) (b true)) (Record (: a Int64) (: b Bool)))))
+  (input  (Record.with (record (= a 1) (= b 2)) #"b" true))
+  (output (: (record (= a 1) (= b true)) (Record (: a Int64) (: b Bool)))))
 
 (case "Record.with over a RUNTIME field leaves the original record readable (persistence)"
   (doc    "The runtime + persistence face of `Record.with` (the pins above are const-folded whole-value
@@ -670,7 +670,7 @@
            record companion of the Map/Set persistence pins.")
   (input  (do
             (def (main (: n Int64))
-              (let ((r (record (x n) (y 20))))
+              (let ((r (record (= x n) (= y 20))))
                 (let ((r2 (Record.with r #"x" 99)))
                   (+ (* 100 (. r2 x)) (+ (* 10 (. r2 y)) (. r x))))))
             (export main)))
@@ -682,7 +682,7 @@
            not an addition, so `with` and `extend` stay distinct. `z` is not a field of `(record (a 1))`,
            so `Record.with` REJECTS — the author means `Record.extend` to add. Rides the `Record.without`
            presence check its rewrite uses.")
-  (input  (Record.with (record (a 1)) #"z" 5))
+  (input  (Record.with (record (= a 1)) #"z" 5))
   (error  CDZ0212))
 
 (case "Record.with replaces a nested-record field wholesale and the original keeps its inner"
@@ -694,9 +694,9 @@
            1000·r2.x.p + 100·r1.x.p + 10·r2.y + r2.x.q = 30790 at a=7. Expected: 30790.")
   (input  (do
             (def (main (: a Int64))
-              (let ((inner1 (record (p a) (q 2)))
-                    (inner2 (record (p 30) (q 40))))
-                (let ((r1 (record (x inner1) (y 5))))
+              (let ((inner1 (record (= p a) (= q 2)))
+                    (inner2 (record (= p 30) (= q 40))))
+                (let ((r1 (record (= x inner1) (= y 5))))
                   (let ((r2 (Record.with r1 #"x" inner2)))
                     (+ (* 1000 (. (. r2 x) p))
                        (+ (* 100 (. (. r1 x) p))
@@ -712,7 +712,7 @@
            handle: the push must not mutate the field in place). 3·10 + 2 = 32.")
   (input  (do
             (def (main (: a Int64))
-              (let ((r (record (items (list 1 2)) (tag 7))))
+              (let ((r (record (= items (list 1 2)) (= tag 7))))
                 (let ((r2 (Record.with r #"items" (List.push (. r items) a))))
                   (+ (* 10 (List.len (. r2 items))) (List.len (. r items))))))
             (export main)))
@@ -728,7 +728,7 @@
            twice independently would lose the chain). Expected: 207.")
   (input  (do
             (def (main (: a Int64))
-              (let ((r (record (x a) (y 2))))
+              (let ((r (record (= x a) (= y 2))))
                 (let ((r2 (Record.with (Record.with r #"x" 10) #"x" 20)))
                   (+ (* 10 (. r2 x)) (. r x)))))
             (export main)))
@@ -746,7 +746,7 @@
   (input  (do
             (def (main (: d Int64))
               (do
-                (def p0 (record (pos (record (x 1) (y 2))) (vel (record (x 30) (y 40)))))
+                (def p0 (record (= pos (record (= x 1) (= y 2))) (= vel (record (= x 30) (= y 40)))))
                 (def p1 (Record.with p0 #"pos" (Record.with (. p0 pos) #"y" d)))
                 (+ (* (. (. p1 pos) y) 10) (. (. p1 pos) x))))
             (export main)))
@@ -764,7 +764,7 @@
               (. (. outer pos) y))
             (def (main (: d Int64))
               (do
-                (def p0 (record (pos (record (x 1) (y 2))) (vel (record (x 30) (y 40)))))
+                (def p0 (record (= pos (record (= x 1) (= y 2))) (= vel (record (= x 30) (= y 40)))))
                 (+ (gety p0) d)))
             (export main)))
   (call   main (: 5 Int64)) (output (: 7 Int64)))
@@ -776,7 +776,7 @@
            (rather than the first with's result) would lose the x update.")
   (input  (do
             (def (main (: a Int64) (: b Int64))
-              (let ((r (Record.with (Record.with (record (x 1) (y 2) (z 3)) #"x" a) #"y" b)))
+              (let ((r (Record.with (Record.with (record (= x 1) (= y 2) (= z 3)) #"x" a) #"y" b)))
                 (+ (* 100 (. r x)) (+ (* 10 (. r y)) (. r z)))))
             (export main)))
   (call   main (: 4 Int64) (: 5 Int64))
@@ -789,7 +789,7 @@
            un-updated record into both slots would read 1010 on both.")
   (input  (do
             (def (main (: b Bool))
-              (let ((r (record (x 10) (y 20))))
+              (let ((r (record (= x 10) (= y 20))))
                 (let ((r2 (if b (Record.with r #"x" 99) r)))
                   (+ (* 100 (. r x)) (. r2 x)))))
             (export main)))
@@ -807,7 +807,7 @@
            (`… now takes three operands r #b v — replace the (name value) pair with a #field label and a
            value`). This negative case PINS the rejection so a future change can't silently re-accept the
            old form and reintroduce the call-like render.")
-  (input  (Record.with (record (a 1) (b 2)) (b 9)))
+  (input  (Record.with (record (= a 1) (= b 2)) (b 9)))
   (error  CDZ0201))
 
 (case "the OLD 2-operand `Record.extend (name value)` pair form is rejected (migrated to 3 operands)"
@@ -815,7 +815,7 @@
            treatment as `Record.with` for family uniformity, so its OLD grouped `(name value)` pair is
            also migrated + rejected as an arity error (CDZ0201) with the same migration-routing message.
            Pins the rejection alongside the `with` sibling.")
-  (input  (Record.extend (record (a 1)) (b 2)))
+  (input  (Record.extend (record (= a 1)) (b 2)))
   (error  CDZ0201))
 
 (case "extending a record with a non-#label (bare identifier) field-name operand is rejected"
@@ -829,7 +829,7 @@
            diagnostic naming the static-label rule. Scoped to the name-INTRODUCTION operand of extend/with;
            the read/drop ops `(. r x)`/`pop`/`without`/`project` legitimately take a bare label and stay
            valid.")
-  (input  (do (def (main (: k Int64)) (let ((wide (Record.extend (record (x 10)) fname k))) (. wide fname))) (export main)))
+  (input  (do (def (main (: k Int64)) (let ((wide (Record.extend (record (= x 10)) fname k))) (. wide fname))) (export main)))
   (call   main (: 7 Int64)) (error CDZ0215))
 
 (case "popping a field yields its value and the remaining record"
@@ -839,15 +839,15 @@
            record of the remaining fields. `(Record.pop (record (a 1) (b 2)) a)` yields `(tuple 1 (record
            (b 2)))`. No Option: field presence is static, so a missing field is CDZ0212, not a runtime None
            (contrast `List.at` on a runtime index).")
-  (input  (Record.pop (record (a 1) (b 2)) a))
-  (output (: (tuple 1 (record (b 2))) (Tuple Int64 (Record (: b Int64))))))
+  (input  (Record.pop (record (= a 1) (= b 2)) a))
+  (output (: (tuple 1 (record (= b 2))) (Tuple Int64 (Record (: b Int64))))))
 
 (case "popping an absent field is rejected"
   (doc    "Witnesses type-system.md #A Record Is Reduced By Dropping A Named Set Of Its Fields (2nd
            sentence), via `Record.pop`'s `Record.without` rewrite: popping a field the record does not
            contain is a compile-time rejection (CDZ0212), not a runtime None — a record field name is a
            static label, not a runtime index. `z` is absent from `(record (a 1))`.")
-  (input  (Record.pop (record (a 1)) z))
+  (input  (Record.pop (record (= a 1)) z))
   (error  CDZ0212))
 
 (case "record reshaping is subset comparison as explicit projection"
@@ -857,7 +857,7 @@
            closed one-field record and compares it by ordinary structural equality — true. The
            general-projection form of the plain-`.` subset-comparison case above; `=` is never widened to
            ignore `y`, `Record.project` narrows the shape first.")
-  (input  (= (Record.project (record (x 1) (y 2)) (x)) (record (x 1))))
+  (input  (= (Record.project (record (= x 1) (= y 2)) (x)) (record (= x 1))))
   (output (: true Bool)))
 
 ; The cases above pin each record operation in isolation (extend, without, with, merge, project). These pin
@@ -871,7 +871,7 @@
            `b`, without drops it, and the result equals the original by structural `=`. Pins that
            extend/without are inverse on the added field: the field-set bookkeeping adds then removes exactly
            `b`, leaving `a` untouched.")
-  (input  (= (Record.without (Record.extend (record (a 1)) #"b" 2) (b)) (record (a 1))))
+  (input  (= (Record.without (Record.extend (record (= a 1)) #"b" 2) (b)) (record (= a 1))))
   (output (: true Bool)))
 
 (case "updating a record field preserves the other fields' values"
@@ -879,7 +879,7 @@
            replaces only `b`, leaving `a` and `c` at their original values. Pins that an update is local to
            the named field: the surrounding fields (both before and after the updated one) keep their values
            and positions, not just the updated field being correct.")
-  (input  (= (Record.with (record (a 1) (b 2) (c 3)) #"b" 9) (record (a 1) (b 9) (c 3))))
+  (input  (= (Record.with (record (= a 1) (= b 2) (= c 3)) #"b" 9) (record (= a 1) (= b 9) (= c 3))))
   (output (: true Bool)))
 
 (case "merging two disjoint records then projecting one side recovers it"
@@ -887,7 +887,7 @@
            (b 2))` — merge unions the disjoint fields, then project narrows back to the left side's labels,
            recovering it exactly. Pins the merge/project round-trip: the merged record carries all three
            fields with their values, and projecting `(a b)` selects the two by name unchanged.")
-  (input  (= (Record.project (Record.merge (record (a 1) (b 2)) (record (c 3))) (a b)) (record (a 1) (b 2))))
+  (input  (= (Record.project (Record.merge (record (= a 1) (= b 2)) (record (= c 3))) (a b)) (record (= a 1) (= b 2))))
   (output (: true Bool)))
 
 ; --- Tuple reshaping: explicit positional operations yield a new tuple ----------------------
@@ -1364,7 +1364,7 @@
   (input  (do
         (def (main (: k Int64))
           (do
-            (def m (Record.merge (record (f (fn ((: y Int64)) (+ y k)))) (record (b 7))))
+            (def m (Record.merge (record (= f (fn ((: y Int64)) (+ y k)))) (record (= b 7))))
             (+ (* 10 ((. m f) 3)) (. m b))))
         (export main)))
   (call   main (: 5 Int64)) (output (: 87 Int64))
@@ -1381,7 +1381,7 @@
   (input  (do
         (def (main (: k Int64))
           (do
-            (def r (record (f (fn ((: y Int64)) (* y k))) (b 7)))
+            (def r (record (= f (fn ((: y Int64)) (* y k))) (= b 7)))
             (def p (Record.pop r f))
             (+ (* 10 ((. p 0) 3)) (. (. p 1) b))))
         (export main)))
@@ -1398,8 +1398,8 @@
   (input  (do
         (def (call-f r) ((. r f) 10))
         (def (main (: k Int64))
-          (+ (* 100 (call-f (record (f (fn ((: y Int64)) (+ y k))))))
-             (call-f (record (f (fn ((: y Int64)) (* y 2))) (extra 99)))))
+          (+ (* 100 (call-f (record (= f (fn ((: y Int64)) (+ y k))))))
+             (call-f (record (= f (fn ((: y Int64)) (* y 2))) (= extra 99)))))
         (export main)))
   (call   main (: 5 Int64)) (output (: 1520 Int64))
   (call   main (: 0 Int64)) (output (: 1020 Int64)))
@@ -1409,7 +1409,7 @@
   (input  (do
             (def (main (: k Int64))
               (do
-                (def ops (record (add (fn ((: x Int64)) (+ x k))) (dbl (fn ((: x Int64)) (* x 2)))))
+                (def ops (record (= add (fn ((: x Int64)) (+ x k))) (= dbl (fn ((: x Int64)) (* x 2)))))
                 (def r2 (Record.extend ops #"neg" (fn ((: x Int64)) (- 0 x))))
                 (+ (* 100 ((. r2 add) 5))
                    (+ (* 10 ((. r2 dbl) 5))
@@ -1475,7 +1475,7 @@
   (input  (do
         (def (main (: k Int64))
           (do
-            (def m (Map.insert Map.empty 1 (record (x 10))))
+            (def m (Map.insert Map.empty 1 (record (= x 10))))
             (def r (Option.expect (Map.lookup m 1) "p"))
             (def wide (Record.extend r #"y" k))
             (def m2 (Map.insert Map.empty 1 wide))
@@ -1498,7 +1498,7 @@
   (input  (do
         (def (main (: k Int64))
           (do
-            (def m (Map.insert Map.empty 1 (record (x 10) (y k))))
+            (def m (Map.insert Map.empty 1 (record (= x 10) (= y k))))
             (def r (Option.expect (Map.lookup m 1) "p"))
             (def slim (Record.without r (y)))
             (def m2 (Map.insert Map.empty 1 slim))
@@ -1519,8 +1519,8 @@
                 ((Option.Some r) (sum-xs rs (+ i 1) (+ acc (get-x r))))
                 ((Option.None _u) acc)))
             (def (main (: n Int64))
-              (+ (sum-xs (list (record (x n) (t 1)) (record (x 20) (t 2))) 0 0)
-                 (get-x (record (x 5) (y 6) (z 7)))))
+              (+ (sum-xs (list (record (= x n) (= t 1)) (record (= x 20) (= t 2))) 0 0)
+                 (get-x (record (= x 5) (= y 6) (= z 7)))))
             (export main)))
   (call   main (: 3 Int64))
   (output (: 28 Int64)))
@@ -1536,8 +1536,8 @@
            the updated record onto a different field layout than direct construction) breaks a leg.")
   (input  (do
             (def (main (: n Int64))
-              (+ (* 10 (if (= (Record.without (record (a n) (b 2)) (b)) (record (a n))) 1 0))
-                 (if (= (Record.with (record (a 1) (b n)) #"a" 9) (record (a 9) (b n))) 1 0)))
+              (+ (* 10 (if (= (Record.without (record (= a n) (= b 2)) (b)) (record (= a n))) 1 0))
+                 (if (= (Record.with (record (= a 1) (= b n)) #"a" 9) (record (= a 9) (= b n))) 1 0)))
             (export main)))
   (call   main (: 7 Int64)) (output (: 11 Int64)))
 
@@ -1549,8 +1549,8 @@
            literal construction would compare unequal while projecting identically.")
   (input  (do
             (def (main (: n Int64))
-              (+ (* 10 (if (= (Record.merge (record (a n)) (record (b 2))) (record (a n) (b 2))) 1 0))
-                 (if (= (Record.extend (record (a n)) #"b" 2) (record (a n) (b 2))) 1 0)))
+              (+ (* 10 (if (= (Record.merge (record (= a n)) (record (= b 2))) (record (= a n) (= b 2))) 1 0))
+                 (if (= (Record.extend (record (= a n)) #"b" 2) (record (= a n) (= b 2))) 1 0)))
             (export main)))
   (call   main (: 7 Int64)) (output (: 11 Int64)))
 
@@ -1569,9 +1569,9 @@
   (input  (do
             (def (via (: a Int64)) (Map.remove (Map.insert (Map.insert Map.empty 1 a) 2 20) 2))
             (def (main (: a Int64))
-              (let ((recv (record (m (via a)) (t 1)))
-                    (recd (record (m (Map.insert Map.empty 1 a)) (t 1)))
-                    (decoy (record (m (Map.insert Map.empty 1 a)) (t 2))))
+              (let ((recv (record (= m (via a)) (= t 1)))
+                    (recd (record (= m (Map.insert Map.empty 1 a)) (= t 1)))
+                    (decoy (record (= m (Map.insert Map.empty 1 a)) (= t 2))))
                 (+ (* 10 (if (= recv recd) 1 0))
                    (if (= recv decoy) 1 0))))
             (export main)))
@@ -1589,7 +1589,7 @@
            (Dynamic key→value association is what Map is for.)")
   (input  (do
             (def (main (: b Bool))
-              (let ((r2 (Record.with (record (x 1) (y 2)) (if b #"x" #"y") 9)))
+              (let ((r2 (Record.with (record (= x 1) (= y 2)) (if b #"x" #"y") 9)))
                 (+ (* 10 (. r2 x)) (. r2 y))))
             (export main)))
   (call   main (: true Bool)) (error CDZ0215))
@@ -1603,9 +1603,9 @@
   (input  (do
             (def (main (: n Int64))
               (do
-                (def via-merge (Record.merge (record (a n)) (record (b 2))))
-                (def via-without (Record.without (record (a n) (b 2) (c 9)) (c)))
-                (Set.len (Set.of (list via-merge via-without (record (a n) (b 2)))))))
+                (def via-merge (Record.merge (record (= a n)) (record (= b 2))))
+                (def via-without (Record.without (record (= a n) (= b 2) (= c 9)) (c)))
+                (Set.len (Set.of (list via-merge via-without (record (= a n) (= b 2)))))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 1 Int64)))
 
@@ -1618,11 +1618,11 @@
   (input  (do
             (def (main (: n Int64))
               (do
-                (def base (record (a n) (b 2)))
+                (def base (record (= a n) (= b 2)))
                 (def derived (Record.with base #"a" 5))
-                (+ (* 10 (match (Map.lookup (Map.insert Map.empty (record (a 5) (b 2)) 42) derived)
+                (+ (* 10 (match (Map.lookup (Map.insert Map.empty (record (= a 5) (= b 2)) 42) derived)
                            ((Some v) v) ((None _u) -1)))
-                   (if (= derived (record (a 5) (b 2))) 1 0))))
+                   (if (= derived (record (= a 5) (= b 2))) 1 0))))
             (export main)))
   (call   main (: 9 Int64)) (output (: 421 Int64)))
 
@@ -1635,9 +1635,9 @@
   (input  (do
             (def (main (: n Int64))
               (do
-                (def g0 (record (a n) (b n) (c n)))
+                (def g0 (record (= a n) (= b n) (= c n)))
                 (def g3 (Record.with (Record.with (Record.with g0 #"a" 1) #"b" 2) #"c" 3))
-                (+ (* 10 (match (Map.lookup (Map.insert Map.empty (record (a 1) (b 2) (c 3)) 7) g3)
+                (+ (* 10 (match (Map.lookup (Map.insert Map.empty (record (= a 1) (= b 2) (= c 3)) 7) g3)
                            ((Some v) v) ((None _u) -1)))
                    (. g0 a))))
             (export main)))

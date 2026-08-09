@@ -1506,7 +1506,7 @@
            in a non-final position has no observable effect, so the block yields its last form (42). The
            earlier `do` cases only drop scalars; this pins that a COMPOUND intermediate is dropped the
            same way rather than blocking the block.")
-  (input  (do (record (a 1)) 42))
+  (input  (do (record (= a 1)) 42))
   (output (: 42 Int64)))
 
 (case "a sequencing block discards a pure list intermediate"
@@ -2255,7 +2255,7 @@
            an unevaluated branch cannot carry a deferred type error. This pins the compound-vs-scalar instance
            of the dead-branch check, which the scalar-vs-scalar cases above do not exercise (folding a compound
            branch away is where the check is easiest to skip).")
-  (input  (if false (record (a 1)) 7))
+  (input  (if false (record (= a 1)) 7))
   (error  CDZ0203))
 
 ; The branch-type-agreement check must fire when the conditional is INSIDE A FUNCTION BODY with a
@@ -3360,7 +3360,7 @@
            is written as a literal, a variable, an arithmetic expression, or a field projection.
            (Binding the field to a name first and matching that already works; matching the projection
            directly must behave identically.)")
-  (input  (let ((r (record (n 5))))
+  (input  (let ((r (record (= n 5))))
             (match (. r n)
               (5 100)
               (_ 200))))
@@ -3379,7 +3379,7 @@
 (case "a match on a record field selects a later literal arm"
   (doc    "Confirms the field-access scrutinee is matched against EACH literal arm, not just skipped to
            the wildcard: with r.n = 6, the 5 arm is passed over and the 6 arm selected, yielding 300.")
-  (input  (let ((r (record (n 6))))
+  (input  (let ((r (record (= n 6))))
             (match (. r n)
               (5 100)
               (6 300)
@@ -4036,7 +4036,7 @@
            record analogue of the tuple destructure above, and the same binding a `(match r ((record (x a)
            (y b)) …))` arm would make. A record field is read by name, so this destructure reuses the
            ordinary member-access projection. `(+ a b)` = 7.")
-  (input  (let (((record (x a) (y b)) (record (x 3) (y 4)))) (+ a b)))
+  (input  (let (((record (= x a) (= y b)) (record (= x 3) (= y 4)))) (+ a b)))
   (output (: 7 Int64)))
 
 (case "a record binding pattern binds fields by name, out of order and partial"
@@ -4045,7 +4045,7 @@
            still reads its own field — `c` = field `a` = 10, `b` = field `z` = 20 → 100*10+20 = 1020. This
            is the flexibility a tuple lacks (positional), and a partial pattern that names a subset of the
            fields is equally valid. Pins field-order-independence + partiality of a record binding pattern.")
-  (input  (let (((record (z b) (a c)) (record (a 10) (z 20)))) (+ (* 100 c) b)))
+  (input  (let (((record (= z b) (= a c)) (record (= a 10) (= z 20)))) (+ (* 100 c) b)))
   (output (: 1020 Int64)))
 
 (case "a let record pattern destructures a helper CALL's runtime record result"
@@ -4056,9 +4056,9 @@
            by-NAME field binding must read the runtime heap record.")
   (input  (do
             (def (stats (: a Int64) (: b Int64))
-              (record (lo (if (< a b) a b)) (hi (if (< a b) b a))))
+              (record (= lo (if (< a b) a b)) (= hi (if (< a b) b a))))
             (def (main (: a Int64) (: b Int64))
-              (let (((record (lo l) (hi h)) (stats a b)))
+              (let (((record (= lo l) (= hi h)) (stats a b)))
                 (+ (* 100 l) h)))
             (export main)))
   (call   main (: 7 Int64) (: 3 Int64)) (output (: 307 Int64))
@@ -4073,9 +4073,9 @@
            message with a discriminating field).")
   (input  (do
             (def (main (: n Int64))
-              (match (record (tag n) (v 10))
-                ((record (tag 1) (v x)) x)
-                ((record (tag 2) (v x)) (* x 10))
+              (match (record (= tag n) (= v 10))
+                ((record (= tag 1) (= v x)) x)
+                ((record (= tag 2) (= v x)) (* x 10))
                 (_ -1)))
             (export main)))
   (call   main (: 1 Int64)) (output (: 10 Int64))
@@ -4090,8 +4090,8 @@
            binding-path the let-binder cases above exercise. `(f (record (x 3) (y 4)))` = 7. The record twin
            of the list-rest / tuple param patterns; its ML surface `def f({ x = a, y = b })` round-trips now
            that v-syntax admits a record pattern in a parameter slot (the surface gap this case waited on).")
-  (input  (do (def (f (record (x a) (y b))) (+ a b))
-              (def (main) (f (record (x 3) (y 4))))
+  (input  (do (def (f (record (= x a) (= y b))) (+ a b))
+              (def (main) (f (record (= x 3) (= y 4))))
               (export main)))
   (output (: 7 Int64)))
 
@@ -4116,7 +4116,7 @@
            have is a type mismatch (CDZ0203), not a silent miss. `(let (((record (nope a)) (record (x 3) (y
            4)))) a)` names `nope`, absent from `(Record (: x Int64) (: y Int64))`. Pins that a record binding
            pattern's fields must exist on the value — the record analogue of a tuple pattern's arity check.")
-  (input  (let (((record (nope a)) (record (x 3) (y 4)))) a))
+  (input  (let (((record (= nope a)) (record (= x 3) (= y 4)))) a))
   (error  CDZ0203))
 
 (case "a destructuring record let over a runtime value binds its fields"
@@ -4126,8 +4126,8 @@
            Pattern). Pins that a record destructure reads the bound value's fields at RUN TIME, not only
            when the record folds to a constant — the record companion of the runtime tuple/list destructures.")
   (input  (do
-            (def (mk n) (record (x n) (y (+ n 1))))
-            (def (f p) (let (((record (x a) (y b)) p)) (+ a b)))
+            (def (mk n) (record (= x n) (= y (+ n 1))))
+            (def (f p) (let (((record (= x a) (= y b)) p)) (+ a b)))
             (def (main) (f (mk 10)))
             (export main)))
   (output (: 21 Int64)))
@@ -4138,7 +4138,7 @@
            Binding Position Accepts An Irrefutable Pattern: `_` is a trivial irrefutable sub-pattern). This
            is the field-level companion of the partial pattern (which OMITS a field) — here the field is
            named but its value discarded. Pins that a wildcard field value is irrefutable and binds nothing.")
-  (input  (let (((record (x a) (y _)) (record (x 7) (y 4)))) a))
+  (input  (let (((record (= x a) (= y _)) (record (= x 7) (= y 4)))) a))
   (output (: 7 Int64)))
 
 (case "a later let binding sees an earlier record pattern's field binders"
@@ -4147,7 +4147,7 @@
            binding introduced (core-semantics.md #The Bindings Of One `let` Take Effect In Order). `a`*`b` =
            3*4 = 12. The record twin of the tuple case above — pins that record field binders are in scope
            for the bindings that follow.")
-  (input  (let (((record (x a) (y b)) (record (x 3) (y 4))) (c (* a b))) c))
+  (input  (let (((record (= x a) (= y b)) (record (= x 3) (= y 4))) (c (* a b))) c))
   (output (: 12 Int64)))
 
 (case "a let binder may be a single-variant-sum pattern that destructures the payload"
@@ -4628,7 +4628,7 @@
            divide-by-zero stays guarded. Completes the guard pin across all three hoisted shapes.")
   (input  (do
             (def (main (: d Int64))
-              (. (if (> d 0) (record (a (/ 100 d))) (record (a 5))) a))
+              (. (if (> d 0) (record (= a (/ 100 d))) (record (= a 5))) a))
             (export main)))
   (call   main (: 0 Int64))
   (output (: 5 Int64)))
@@ -4930,7 +4930,7 @@
            k = 0 → {a:10, b:9} → 19. The record-shape (keyed alignment) pin for the multi-arm sink.")
   (input  (do
             (def (main (: k Int64))
-              (let ((r (match k (0 (record (a 10) (b 9))) (1 (record (a 20) (b 9))) (_ (record (a 30) (b 9))))))
+              (let ((r (match k (0 (record (= a 10) (= b 9))) (1 (record (= a 20) (= b 9))) (_ (record (= a 30) (= b 9))))))
                 (+ (. r a) (. r b))))
             (export main)))
   (call   main (: 2 Int64))

@@ -3095,14 +3095,18 @@ impl<'a> Parser<'a> {
                             self.bump(); // `=`
                             self.pattern()
                         } else if let Some(n) = pun {
-                            // shorthand `{ x }` -> `(x x)`: the field binds a same-named binder.
+                            // shorthand `{ x }` -> `(= x x)`: the field binds a same-named binder.
                             self.name(n, f_start)
                         } else {
                             self.expect(Kind::Eq, "`=`");
                             self.pattern()
                         };
                         let f_span = f_start.merge(self.prev_span());
-                        items.push(self.list(vec![field, value], f_span));
+                        // A record-PATTERN field is the canonical `(= name sub-pattern)` triple — the SAME
+                        // form as a value-record field (RV1), so patterns and literals spell identically
+                        // (operator ruling: path B, full symmetry). Was a bare `(name sub-pattern)` pair.
+                        let eq = self.name("=", f_start);
+                        items.push(self.list(vec![eq, field, value], f_span));
                         if !self.sep_continue(Kind::RBrace) {
                             break;
                         }
@@ -3270,8 +3274,15 @@ impl<'a> Parser<'a> {
                     self.expr(crate::token::PREC_SEQ + 1)
                 };
                 let f_span = f_start.merge(self.prev_span());
-                let field = self.list(vec![name, value], f_span);
-                // Wrap any own-line LEADING comment around the field pair (printer renders it above).
+                // RV1 (DESIGN-record-type-syntax Phase B): a value-record field is the explicit
+                // `(= name value)` node — the `=` the author writes survives into the arena (symmetric
+                // to the type-side `(: name T)` ascription; operator: "much more explicit and less
+                // magical"). Was the bare `(name value)` pair that dropped the `=`. Shorthand `{ x }`
+                // puns to `(= x x)` (every field is `=`-headed, uniform). The `record` STRING head is
+                // unchanged; only the field node gains the `=` head.
+                let eq = self.name("=", f_start);
+                let field = self.list(vec![eq, name, value], f_span);
+                // Wrap any own-line LEADING comment around the field triple (printer renders it above).
                 let field = self.wrap_comments(leading, field);
                 // A `//` trailing the LAST field on the same line (`{ a = 1, b = 2 // last }`) sits in the
                 // `}` token's leading slot; capture it as `(comment-after "text" (name value))` (gated on
@@ -5172,11 +5183,11 @@ mod tests {
         // now parses like the other compound params). A partial (name a subset of fields) is fine.
         assert_eq!(
             sexpr::print(&parse_ok("def f({ x = a, y = b }) = a")),
-            "(def (f (record (x a) (y b))) a)"
+            "(def (f (record (= x a) (= y b))) a)"
         );
         assert_eq!(
             sexpr::print(&parse_ok("def f({ x = a }) = a")),
-            "(def (f (record (x a))) a)"
+            "(def (f (record (= x a))) a)"
         );
         // Pattern parameters COMPOSE and mix with plain-name / annotated params.
         assert_eq!(

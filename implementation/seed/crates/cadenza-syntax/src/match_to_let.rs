@@ -77,8 +77,16 @@ pub fn is_irrefutable_with(pat: &Tree, single_ctors: &SingleVariantCtors) -> boo
                     rest.iter().all(|p| is_irrefutable_with(p, single_ctors))
                 }
                 Tree::Atom(Leaf::Name(h), _) if h == "record" => {
-                    // Each field is `(fieldname subpat)`; the sub-pattern is the 2nd element.
+                    // Each field is the canonical `(= fieldname subpat)` triple (path B — same form as a
+                    // value-record field); the sub-pattern is the LAST element. A legacy `(fieldname
+                    // subpat)` pair is tolerated (sub-pattern = 2nd element).
                     rest.iter().all(|field| match field {
+                        Tree::List(fitems, _)
+                            if fitems.len() == 3
+                                && matches!(&fitems[0], Tree::Atom(Leaf::Name(eq), _) if eq == "=") =>
+                        {
+                            is_irrefutable_with(&fitems[2], single_ctors)
+                        }
                         Tree::List(fitems, _) if fitems.len() == 2 => {
                             is_irrefutable_with(&fitems[1], single_ctors)
                         }
@@ -290,7 +298,7 @@ mod tests {
         assert!(normalize_sexpr("def f(p) = match p with | _ => 9").contains("(let ((_ p)) 9)"));
         assert!(
             normalize_sexpr("def f(p) = match p with | { x = a } => a")
-                .contains("(let (((record (x a)) p)) a)")
+                .contains("(let (((record (= x a)) p)) a)")
         );
     }
 

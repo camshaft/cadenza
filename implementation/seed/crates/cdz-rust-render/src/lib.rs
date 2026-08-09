@@ -204,11 +204,12 @@ pub fn rust_call_arg(val: &str) -> String {
         "record" => {
             // A record value crosses in the SAME positional Rust tuple the backend emits (fields in canonical
             // SORTED-key order). The corpus writes a record arg in one of TWO surface forms:
-            //  - NAMED-pair form `(record (a 3) (b 4))` — each element is a `(name value)` pair; sort by NAME
-            //    so the positional tuple matches the backend's sorted-key field order.
+            //  - NAMED-field form `(record (= a 3) (= b 4))` — each element is the canonical `(= name value)`
+            //    ascription triple (DESIGN-record-type-syntax Phase B); sort by NAME so the positional tuple
+            //    matches the backend's sorted-key field order. (A legacy `(name value)` pair is tolerated.)
             //  - POSITIONAL value form `(record 3 4)` — bare values ALREADY in field order (the `record` head
             //    is dropped by cdz-run's tuple-literal parser; several DIRECT-CALL record-arg cases use this).
-            // Disambiguate by whether EVERY element is parenthesized: a named-pair element is `(a 3)`, a
+            // Disambiguate by whether EVERY element is parenthesized: a named-field element is `(= a 3)`, a
             // positional scalar element is a bare `3`. (A positional element that is itself a compound would
             // also be parenthesized; the record-arg corpus is scalar-field, so this split is exact there.)
             let raw = split_top_level(rest);
@@ -219,6 +220,8 @@ pub fn rust_call_arg(val: &str) -> String {
                     .filter_map(|f| {
                         let f = f.trim();
                         let body = f.strip_prefix('(')?.strip_suffix(')')?.trim();
+                        // Canonical `= name value` triple → strip the `=` head; else a legacy `name value`.
+                        let body = body.strip_prefix("= ").map(str::trim_start).unwrap_or(body);
                         let (name, fval) = body.split_once(char::is_whitespace)?;
                         Some((name.trim().to_string(), rust_call_arg(fval)))
                     })
@@ -693,7 +696,11 @@ pub fn cdz_render_at(
                 on_path,
             ));
         }
-        let groups = vec!["({} {})"; fields.len()].join(" ");
+        // Each field renders as the canonical `(= name value)` ascription triple (DESIGN-record-type-
+        // syntax Phase B), matching the wasm runtime's value-output render + the migrated corpus — so the
+        // -rust / -rust-async baselines agree with the wasm `.gate-baseline`. `args` still interleaves
+        // name + value per field; only the emitted group wrapper gains the `=` head.
+        let groups = vec!["(= {} {})"; fields.len()].join(" ");
         return format!("format!(\"(record {groups})\", {})", args.join(", "));
     }
     // A `(List T)` value is the Rust `Vec<T>` the backend emits — render it as cdz-run's canonical

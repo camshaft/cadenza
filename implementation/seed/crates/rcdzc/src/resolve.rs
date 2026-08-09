@@ -1367,9 +1367,19 @@ fn collect_arm_binder_leaves(db: &Db, pat: StructId, out: &mut Vec<(String, Stru
                 }
             }
         }
-        // A compound pattern `(head arg…)` — skip the HEAD (a ctor / `list`/`tuple`/`map` alias / `guard`),
-        // recurse the arguments. A `(map (k v) …)` entry is itself a compound, so the recursion reaches its
-        // `k`/`v` leaves naturally.
+        // A record-pattern FIELD `(= field sub-pattern)` (path B — same form as a value-record field):
+        // the field NAME binds nothing (it names the record slot, not a binder), only the sub-pattern
+        // (child 2) does. Without this arm the generic recursion below would collect the field name as a
+        // spurious binder (the `=` head is skipped, then BOTH `field` and the sub-pattern are walked).
+        Struct::List(children)
+            if children.len() == 3 && db.ast.as_name(children[0]) == Some("=") =>
+        {
+            collect_arm_binder_leaves(db, children[2], out);
+        }
+        // A compound pattern `(head arg…)` — skip the HEAD (a ctor / `list`/`tuple`/`map`/`record` alias
+        // / `guard`), recurse the arguments. A `(map (k v) …)` entry is itself a compound, so the
+        // recursion reaches its `k`/`v` leaves naturally. A `(record (= f p) …)` field is handled by the
+        // arm above; a legacy `(record (f p))` pair still recurses here (head `f` skipped, `p` collected).
         Struct::List(children) => {
             for &arg in children.iter().skip(1) {
                 collect_arm_binder_leaves(db, arg, out);
@@ -2709,10 +2719,25 @@ fn guard_cond_tuple_binds(
         .then_some((scrutinee, path, heads))
 }
 
-/// If `form` is a GUARD `(guard (record (x a) …) <cond>)`, ascended from the cond, whose record pattern
+/// The (key-occurrence, sub-pattern) of a record-PATTERN field, handling both the canonical
+/// `(= key sub-pattern)` triple (path B — key = child 1, sub-pattern = child 2) and a legacy
+/// `(key sub-pattern)` pair (key = child 0). `None` if neither shape. Shared by every record-pattern
+/// field reader (guard-cond binds, Case 6rec, the let-binder resolver's nested path) so the triple vs
+/// pair distinction lives in ONE place.
+fn record_pattern_field_kv(db: &Db, field: StructId) -> Option<(StructId, StructId)> {
+    match db.ast.get(field) {
+        Struct::List(kv) if kv.len() == 3 && db.ast.as_name(kv[0]) == Some("=") => {
+            Some((kv[1], kv[2]))
+        }
+        Struct::List(kv) if kv.len() == 2 => Some((kv[0], kv[1])),
+        _ => None,
+    }
+}
+
+/// If `form` is a GUARD `(guard (record (= x a) …) <cond>)`, ascended from the cond, whose record pattern
 /// binds `name` at a BARE-binder field, return `(scrutinee, field-key)` — the enclosing match's scrutinee
 /// and the field label, so a guard-cond reference resolves to a `Member` projection (the record analogue
-/// of [`guard_cond_tuple_binds`], Case 6recg). A field binder is a `(field <name>)` VALUE position; the
+/// of [`guard_cond_tuple_binds`], Case 6recg). A field binder is a `(= field <name>)` VALUE position; the
 /// KEY is a label, never a binder. A NESTED compound field value is not returned here (Case 6rec's body
 /// path handles the decline); only the wireable bare-binder field is resolved in the guard cond.
 fn guard_cond_record_binds(
@@ -2745,13 +2770,12 @@ fn guard_cond_record_binds(
     if arm == scrutinee {
         return None;
     }
-    // A bare-binder field value `(x a)` binding `name` → the field key, for a `Member` projection.
+    // A bare-binder field value `(= x a)` binding `name` → the field key, for a `Member` projection.
     for &pair in fields {
-        if let Struct::List(kv) = db.ast.get(pair)
-            && kv.len() == 2
-            && db.ast.as_name(kv[1]) == Some(name)
+        if let Some((key_id, binder_id)) = record_pattern_field_kv(db, pair)
+            && db.ast.as_name(binder_id) == Some(name)
             && name != "_"
-            && let Some(key) = read_key(db, kv[0])
+            && let Some(key) = read_key(db, key_id)
         {
             return Some((scrutinee, key));
         }
@@ -2869,13 +2893,12 @@ fn match_arm_record_binds(
         Some(&s) if s != form => s,
         _ => return None,
     };
-    // A BARE-binder field value `(x a)` binding `name` → a projection of the scrutinee at field `x`.
+    // A BARE-binder field value `(= x a)` binding `name` → a projection of the scrutinee at field `x`.
     for &pair in fields {
-        if let Struct::List(kv) = db.ast.get(pair)
-            && kv.len() == 2
-            && db.ast.as_name(kv[1]) == Some(name)
+        if let Some((key_id, binder_id)) = record_pattern_field_kv(db, pair)
+            && db.ast.as_name(binder_id) == Some(name)
             && name != "_"
-            && let Some(key) = read_key(db, kv[0])
+            && let Some(key) = read_key(db, key_id)
         {
             return Some((scrutinee, Some(key)));
         }
@@ -2883,10 +2906,7 @@ fn match_arm_record_binds(
     // Otherwise: is `name` bound NESTED inside a field's compound value? (The not-yet-wired case — the
     // caller declines naming the feature. A name bound by NO field returns `None` → its real CDZ0101.)
     for &pair in fields {
-        if let Struct::List(kv) = db.ast.get(pair)
-            && kv.len() == 2
-        {
-            let value_pat = kv[1];
+        if let Some((_key_id, value_pat)) = record_pattern_field_kv(db, pair) {
             let (mut path, mut heads) = (Vec::new(), Vec::new());
             let bound = if is_tuple_pattern(db, value_pat) {
                 find_binder_in_tuple(db, value_pat, name, &mut path, &mut heads)
@@ -4003,13 +4023,11 @@ fn record_pattern_binds_name(db: &Db, record_pat: StructId, name: &str) -> bool 
         return false;
     };
     fields.iter().any(|&pair| {
-        let Struct::List(kv) = db.ast.get(pair) else {
+        // A record-pattern field is the canonical `(= key sub-pattern)` triple (Phase B) — or a legacy
+        // `(key sub-pattern)` pair; `record_pattern_field_kv` returns the (key, sub-pattern) for both.
+        let Some((_key_id, value_pat)) = record_pattern_field_kv(db, pair) else {
             return false;
         };
-        if kv.len() != 2 {
-            return false;
-        }
-        let value_pat = kv[1];
         if let Some(nm) = db.ast.as_name(value_pat) {
             return nm == name && nm != "_";
         }
@@ -4389,13 +4407,23 @@ fn last_binder_named(
                 .map(<[_]>::to_vec)
             {
                 for pair in &fields {
+                    // A record-pattern field is the canonical `(= key binder)` triple (path B — same form
+                    // as a value-record field): key = child 1, binder = child 2. A legacy `(key binder)`
+                    // pair is tolerated (key = child 0, binder = child 1).
                     let Struct::List(kv2) = db.ast.get(*pair) else {
                         continue;
                     };
-                    if kv2.len() == 2
-                        && db.ast.as_name(kv2[1]) == Some(name)
+                    let (key_id, binder_id) =
+                        if kv2.len() == 3 && db.ast.as_name(kv2[0]) == Some("=") {
+                            (kv2[1], kv2[2])
+                        } else if kv2.len() == 2 {
+                            (kv2[0], kv2[1])
+                        } else {
+                            continue;
+                        };
+                    if db.ast.as_name(binder_id) == Some(name)
                         && name != "_"
-                        && let Some(key) = read_key(db, kv2[0])
+                        && let Some(key) = read_key(db, key_id)
                     {
                         return Some(Resolved::Member {
                             operand: kv[1],
@@ -6004,27 +6032,48 @@ pub(crate) fn read_record_fields(
 ) -> Result<BTreeMap<Symbol, StructId>, Reject> {
     let mut fields: BTreeMap<Symbol, StructId> = BTreeMap::new();
     for &field in fields_tail {
-        let kv = match db.ast.get(field) {
-            Struct::List(kv) if kv.len() == 2 => kv,
+        // A value-record field is the canonical `(= name value)` ascription triple (DESIGN-record-type-
+        // syntax Phase B): key = child 1, value = child 2, `=` head dropped. The legacy `(name value)`
+        // pair is still accepted (an un-migrated node / hand-built AST), so both shapes read.
+        let (key_id, val_id) = match db.ast.get(field) {
+            // The canonical `(= name value)` ascription triple (Phase B): key = child 1, value = child 2.
+            Struct::List(kv) if kv.len() == 3 && db.ast.as_name(kv[0]) == Some("=") => {
+                (kv[1], kv[2])
+            }
+            // A field LED BY `=` but not exactly 3 elements is a MALFORMED ascription field — e.g.
+            // `(= a)` (a field named `a` with NO value, the migrated form of the ill-formed `(a)`), or
+            // `(= a 1 2)` (surplus). It is NOT a legacy pair (that would misread the `=` head as the key).
+            // Fixed-arity reject anchored at the entry (want the 3-element `(= key value)`).
+            Struct::List(kv)
+                if db.ast.as_name(kv.first().copied().unwrap_or(field)) == Some("=") =>
+            {
+                return Err(fixed_arity_reject(
+                    field,
+                    kv,
+                    3,
+                    "record field must be (= key value)",
+                ));
+            }
+            // A legacy `(name value)` pair (an un-migrated node / hand-built AST) — head is NOT `=`.
+            Struct::List(kv) if kv.len() == 2 => (kv[0], kv[1]),
             Struct::List(kv) => {
-                // A wrong-arity field entry `(x 1 2)` / `(x)` — a fixed-arity shape (want 2). A SURPLUS
-                // element gets the shared delete-the-surplus fix (`(x 1 2)` → `(x 1)`); too few is
-                // message-only. Anchored at the offending entry.
+                // A wrong-arity non-`=` field entry `(x 1 2)` / `(x)`. A SURPLUS element gets the shared
+                // delete-the-surplus fix; too few is message-only. Anchored at the offending entry.
                 return Err(fixed_arity_reject(
                     field,
                     kv,
                     2,
-                    "record field must be (key value)",
+                    "record field must be (= key value)",
                 ));
             }
             _ => {
                 return Err(Reject::coded(
                     Code::Malformed,
-                    "record field must be (key value)",
+                    "record field must be (= key value)",
                 ));
             }
         };
-        let label = match read_key(db, kv[0]) {
+        let label = match read_key(db, key_id) {
             Some(sym) => sym,
             None => {
                 return Err(Reject::coded(
@@ -6039,7 +6088,7 @@ pub(crate) fn read_record_fields(
         // already binds the name. Anchor at the offending entry and carry a `delete` fix (heuristic — the
         // author might instead have meant to RENAME one field, but removing the duplicate is the direct
         // resolution of "named more than once"; `--verify-fixes` confirms it recompiles).
-        if fields.insert(label.clone(), kv[1]).is_some() {
+        if fields.insert(label.clone(), val_id).is_some() {
             return Err(Reject::coded(
                 Code::Malformed,
                 format!("record names field `{}` more than once", label.name),

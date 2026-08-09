@@ -304,11 +304,18 @@ fn collect_pattern_binders(ast: &Arenas, pat: StructId, out: &mut Vec<StructId>)
                 out.push(pat);
             }
         }
+        // A record-pattern FIELD `(= field sub-pattern)` (path B): the field NAME binds nothing, only
+        // the sub-pattern (child 2). Without this the generic recursion below would collect the field
+        // name as a spurious binder (the `=` head is skipped, then both `field` and the sub-pattern walk).
+        Struct::List(items) if items.len() == 3 && ast.as_name(items[0]) == Some("=") => {
+            collect_pattern_binders(ast, items[2], out);
+        }
         Struct::List(items) => {
             // A compound pattern `(head sub…)`: the head is the ctor / `tuple`|`list`|`map`|`record` alias /
             // the `.`-qualified ctor form `(. T Ctor)` — NOT a binder. Every following element is a
             // sub-pattern (recurse); a `..` rest marker is skipped (its neighbor name is an ordinary binder
-            // reached by the recursion). Skip element 0 (the head).
+            // reached by the recursion). Skip element 0 (the head). A `(record (= f p) …)` field is handled
+            // by the arm above; a legacy `(record (f p))` pair recurses here (head `f` skipped, `p` walked).
             let items = items.clone();
             for &sub in items.iter().skip(1) {
                 // Skip the `..` rest marker itself (a bare `..` name); its binder neighbor recurses normally.

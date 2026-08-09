@@ -92,14 +92,14 @@ pub const RUNTIME_IFACE: &str = "cadenza:runtime/heap";
 /// against — the runtime a program built with this compiler requires. Regenerated from the
 /// built runtime bytes, so it tracks a runtime-code change automatically.
 pub const REQUIRED_RUNTIME_HASH: &str =
-    "8417716f2b0d85838d2e279ba76f1889e9bd1bad923aa84c8939d8416187d34d";
+    "9a7981b75de00b20c1bd5344ed1d1b9a43db2cefdf154492ee6437f2579e122c";
 /// The BLAKE3 content address of the DEBUG-COUNTERS runtime build — the same runtime code
 /// with the `live-objects` leak counter compiled in (`--features debug-counters`). A shipped
 /// program pins `REQUIRED_RUNTIME_HASH` (the release build); a Perceus leak-check harness
 /// composes THIS build to assert `live-objects == 0` after a run. Recorded here so the harness
 /// locates the debug runtime by content address (from the store), never by rebuilding it.
 pub const DEBUG_RUNTIME_HASH: &str =
-    "2af8a0bde44476dbe69be8a61995ea3e3caea2b08f00cb311da4e2b765f90044";
+    "25692f9379afb099f92bb72d73b2d07f825a917c58136be7e18d85742ea6532c";
 /// The NFC-normalization interface — the plain WIT name the value-heap RUNTIME imports for
 /// Unicode Normalization Form C. FINDING#23 (operator ruling d): NFC lives in a SEPARATE
 /// component (the heavy `unicode-normalization` tables); the runtime's WIT `world` declares

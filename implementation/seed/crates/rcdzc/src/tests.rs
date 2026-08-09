@@ -52684,7 +52684,7 @@ mod diagnostics {
         // SURPLUS record field → delete fix.
         let rec = find(
             "(module m (def (main) (record (x 1 2))) (export main))",
-            "record field must be (key value)",
+            "record field must be (= key value)",
         );
         assert_eq!(rec.code.as_deref(), Some("CDZ0201"), "got: {}", rec.message);
         assert_eq!(
@@ -52709,7 +52709,7 @@ mod diagnostics {
         // TOO FEW — nothing to delete, no fix.
         let few_rec = find(
             "(module m (def (main) (record (x))) (export main))",
-            "record field must be (key value)",
+            "record field must be (= key value)",
         );
         assert!(
             few_rec.fix.is_none(),
@@ -58937,8 +58937,8 @@ mod stage1 {
             mf
         );
         assert!(
-            mf.replacement.contains("(y (trap \"TODO\"))"),
-            "the add fix appends a placeholder `y` field: {:?}",
+            mf.replacement.contains("(= y (trap \"TODO\"))"),
+            "the add fix appends a placeholder `y` field as the canonical (= name value) triple: {:?}",
             mf.replacement
         );
         // The LET-BINDER twin: a record literal with a misspelled field bound to a `(: r (Record …))`
@@ -59014,14 +59014,15 @@ mod stage1 {
         let fm = dm.fix.as_ref().expect("an add fix is carried");
         assert_eq!(fm.kind, crate::abi::FixKind::InsertInto);
         assert!(
-            fm.replacement.contains("(y (trap \"TODO\"))")
-                && fm.replacement.contains("(z (trap \"TODO\"))"),
-            "the add fix appends placeholders for BOTH missing fields: {:?}",
+            fm.replacement.contains("(= y (trap \"TODO\"))")
+                && fm.replacement.contains("(= z (trap \"TODO\"))"),
+            "the add fix appends canonical (= name value) placeholders for BOTH missing fields: {:?}",
             fm.replacement
         );
-        // The added-fields form compiles (the placeholder inhabits any field type).
+        // The added-fields form compiles (the placeholder inhabits any field type). Value-record fields
+        // are the canonical `(= name value)` triple.
         let miss_fixed = "(module m (def (f (: r (Record (x Int64) (y Int64) (z Int64)))) r) \
-                          (def (main) (f (record (x 1) (y (trap \"TODO\")) (z (trap \"TODO\"))))) \
+                          (def (main) (f (record (= x 1) (= y (trap \"TODO\")) (= z (trap \"TODO\"))))) \
                           (export main))";
         assert!(
             compile_component(&crate::codec::encode(&parse(miss_fixed))).is_ok(),
@@ -59061,7 +59062,7 @@ mod stage1 {
             da.fix
                 .as_ref()
                 .is_some_and(|f| f.kind == crate::abi::FixKind::InsertInto
-                    && f.replacement.contains("(y (trap \"TODO\"))")),
+                    && f.replacement.contains("(= y (trap \"TODO\"))")),
             "the value-annotation site also offers the add fix: {} fix={:?}",
             da.message,
             da.fix
@@ -78468,7 +78469,7 @@ mod constant_resource_escape {
         let src = "(module m (def (main) (record (a 3) (b 1))) (export main))";
         assert_eq!(
             run_and_decode(src),
-            "(: (record (a 3) (b 1)) (Record (: a Int64) (: b Int64)))"
+            "(: (record (= a 3) (= b 1)) (Record (: a Int64) (: b Int64)))"
         );
     }
 }

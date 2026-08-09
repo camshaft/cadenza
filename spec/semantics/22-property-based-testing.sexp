@@ -261,7 +261,7 @@
            by field (a named-field product walk, distinct from the positional tuple walk). Runs at the
            boundary so the generation + the record field-walk compare are real instructions, not a fold.")
   (input  (do (def (next (: s Int64)) (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
-              (def (gen (: s Int64)) (record (x (& (next s) 255)) (y (< (& (next (next s)) 255) 128))))
+              (def (gen (: s Int64)) (record (= x (& (next s) 255)) (= y (< (& (next (next s)) 255) 128))))
               (def (main (: seed Int64)) (= (gen seed) (gen seed)))
               (export main)))
   (call   main (: 12345 Int64)) (output (: true Bool))

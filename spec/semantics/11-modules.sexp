@@ -494,7 +494,7 @@
            well-typed program (\"def without a signature\"); a value definition binding a record MUST bind
            here and project.")
   (input  (do
-            (def tbl (record (a 7) (b 8)))
+            (def tbl (record (= a 7) (= b 8)))
             (def (main) (. tbl b)) (export main)))
   (output (: 8 Int64)))
 
@@ -1144,8 +1144,8 @@
   (input (do
         (import "lib" (get-x))
         (def (main (: n Int64))
-          (+ (* (get-x (record (x 5) (y 6) (z n))) 10)
-             (get-x (record (x 3)))))
+          (+ (* (get-x (record (= x 5) (= y 6) (= z n))) 10)
+             (get-x (record (= x 3)))))
         (export main)))
   (module "lib"
     (do

@@ -8801,10 +8801,15 @@ pub(crate) fn check_binding_pattern(
             let crate::ast::Struct::List(kv) = db.ast.get(pair) else {
                 continue; // a malformed field pair is faulted by `pattern_constraints` below
             };
-            if kv.len() != 2 {
-                continue;
-            }
-            let (key_occ, value_pat) = (kv[0], kv[1]);
+            // A record-pattern field is the canonical `(= key sub-pattern)` triple (Phase B): key = child
+            // 1, sub-pattern = child 2. A legacy `(key sub-pattern)` pair is tolerated (key = child 0).
+            let (key_occ, value_pat) = if kv.len() == 3 && db.ast.as_name(kv[0]) == Some("=") {
+                (kv[1], kv[2])
+            } else if kv.len() == 2 {
+                (kv[0], kv[1])
+            } else {
+                continue; // a malformed field is faulted by `pattern_constraints` below
+            };
             let key = crate::resolve::read_key(db, key_occ);
             // FIELD EXISTENCE (CDZ0201): when the value type is a SOLVED record, every named field the
             // pattern destructures must be a field of that record — a `(record (z a))` over `(Record (x
@@ -9168,7 +9173,14 @@ fn collect_pattern_binders(
         if children.first().and_then(|&h| db.ast.as_name(h)) == Some(".") {
             return Ok(());
         }
-        // Skip the head (a ctor / `tuple` alias); recurse each argument sub-pattern.
+        // A record-pattern FIELD `(= field sub-pattern)` (path B): only the sub-pattern (child 2) binds;
+        // the field NAME does not. Without this the generic recursion would collect the field name as a
+        // spurious binder (and falsely fault CDZ0102 when two fields share a slot name).
+        if children.len() == 3 && db.ast.as_name(children[0]) == Some("=") {
+            return collect_pattern_binders(db, children[2], seen);
+        }
+        // Skip the head (a ctor / `tuple`/`record` alias); recurse each argument sub-pattern. A
+        // `(record (= f p) …)` field is handled above; a legacy `(f p)` pair recurses here (head skipped).
         for &arg in children.iter().skip(1) {
             collect_pattern_binders(db, arg, seen)?;
         }
@@ -9691,18 +9703,24 @@ fn pattern_constraints(
             let crate::ast::Struct::List(kv) = db.ast.get(pair) else {
                 return Err(Reject::coded(
                     Code::Malformed,
-                    "a record pattern field must be a `(field <pattern>)` pair",
+                    "a record pattern field must be a `(= field <pattern>)` triple",
                 )
                 .at(pair));
             };
-            if kv.len() != 2 {
+            // A record-pattern field is the canonical `(= field <pattern>)` triple (path B — same form
+            // as a value-record field): field = child 1, sub-pattern = child 2, `=` head dropped. A
+            // legacy `(field <pattern>)` pair is tolerated (field = child 0).
+            let (key_occ, value_pat) = if kv.len() == 3 && db.ast.as_name(kv[0]) == Some("=") {
+                (kv[1], kv[2])
+            } else if kv.len() == 2 {
+                (kv[0], kv[1])
+            } else {
                 return Err(Reject::coded(
                     Code::Malformed,
-                    "a record pattern field must be a `(field <pattern>)` pair",
+                    "a record pattern field must be a `(= field <pattern>)` triple",
                 )
                 .at(pair));
-            }
-            let (key_occ, value_pat) = (kv[0], kv[1]);
+            };
             // The field's sorted slot + type. A solved record resolves the slot by name (CDZ0201 if the
             // field is absent); an `Any` scrutinee uses the written order and types the field `Any`.
             let (slot, field_ty) = match &field_slots {
@@ -14999,11 +15017,15 @@ fn template_value_ast_flagged(
             // A record is a positional heap array in canonical (sorted) field order — the same order the
             // BTreeMap iterates, so the `arr-get` index is the field's position in that order.
             for (i, (name, t)) in fields.iter().enumerate() {
+                let eq = b.name("=");
                 let fname = b.name(&name.name);
                 path.push(i as u32);
                 let fval = template_value_ast_flagged(b, t, path, out, via_sum_payload)?;
                 path.pop();
-                children.push(b.list(vec![fname, fval]));
+                // `(= name value)` ascription form (record-type Phase B full-symmetry migration —
+                // literals, patterns, AND value-output all spell `(= name value)`; operator-ruled
+                // 2026-08-09). Mirrors the runtime `value_encode` + rust `cdz_render` record renders.
+                children.push(b.list(vec![eq, fname, fval]));
             }
             Some(b.list(children))
         }
@@ -15312,9 +15334,13 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
             let mut children = vec![head];
             // Canonical (sorted) field order — a `BTreeMap` iterates sorted, matching the type render.
             for (name, &v) in fields.iter() {
+                let eq = b.name("=");
                 let fname = b.name(name.name.clone());
                 let fval = const_value_ast(db, b, v)?;
-                children.push(b.list(vec![fname, fval]));
+                // `(= name value)` ascription form (record-type Phase B full-symmetry migration —
+                // literals, patterns, AND value-output all spell `(= name value)`; operator-ruled
+                // 2026-08-09). Distinct from a map's `(key value)` pairs, which stay pair-form.
+                children.push(b.list(vec![eq, fname, fval]));
             }
             Some(b.list(children))
         }
@@ -26659,7 +26685,7 @@ mod tests {
         // Fields in canonical (sorted) order a, b → positional [a, b].
         assert_eq!(
             render(&ty, &V::Record(vec![V::Int(3), V::Int(1)])),
-            "(: (record (a 3) (b 1)) (Record (: a Int64) (: b Int64)))"
+            "(: (record (= a 3) (= b 1)) (Record (: a Int64) (: b Int64)))"
         );
     }
 

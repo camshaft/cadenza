@@ -10,7 +10,7 @@
   (doc    "Witnesses core-semantics.md #Member Access Projects A Record Field. The dotted
            display `p.x` is sugar for the canonical member-access form (. p x); a reader
            expands one to the other (options/code-shape/), so both denote the same tree.")
-  (input  (let ((p (record (x 1) (y 2)))) p.x))
+  (input  (let ((p (record (= x 1) (= y 2)))) p.x))
   (output (: 1 Int64)))
 
 (case "a record scrutinee is bound whole by a match binder"
@@ -21,7 +21,7 @@
            (x 3) (y 4)) (r (+ (. r x) (. r y))))` binds `r` to the record and projects its fields → 7.
            Pins that a record scrutinee matches (binding the whole value) like a tuple/sum scrutinee does,
            the degenerate single-binder case.")
-  (input  (match (record (x 3) (y 4))
+  (input  (match (record (= x 3) (= y 4))
             (r (+ (. r x) (. r y)))))
   (output (: 7 Int64)))
 
@@ -32,7 +32,7 @@
            that a sum stored in a record field is recovered by projection and matched exactly as a bare
            sum is — the composition of member access with sum matching.")
   (input  (do
-            (def (f o) (let ((r (record (tag o)))) (match (. r tag) ((Some x) x) ((None _) -1))))
+            (def (f o) (let ((r (record (= tag o)))) (match (. r tag) ((Some x) x) ((None _) -1))))
             (def (main) (f (Some 7))) (export main)))
   (output (: 7 Int64)))
 
@@ -46,7 +46,7 @@
   (input  (do
             (type Status (Active Int64) (Idle))
             (def (main (: n Int64))
-              (let ((r (record (id 7) (st (if (> n 0) (Active n) (Idle))))))
+              (let ((r (record (= id 7) (= st (if (> n 0) (Active n) (Idle))))))
                 (match (. r st)
                   ((Active v) v)
                   ((Idle u) -1))))
@@ -68,7 +68,7 @@
            into the field-key or projection-key positions (which would corrupt `(record (x 5))` into
            `(record (7 5))` and reject the valid program CDZ0201) — a key names a field, it does not read
            a variable.")
-  (input  (do (def (f (: x Int64)) (. (record (x 5)) x)) (def (main) (f 7)) (export main)))
+  (input  (do (def (f (: x Int64)) (. (record (= x 5)) x)) (def (main) (f 7)) (export main)))
   (output (: 5 Int64)))
 
 (case "a multi-field record with one param-named key survives the call"
@@ -76,7 +76,7 @@
            key `x` coincides with the parameter but is a label, so the WHOLE record literal stays well
            formed under the call. Pins that key immunity is per-key across the whole record, not just the
            projected field. `(f 7)` gives 2.")
-  (input  (do (def (f (: x Int64)) (. (record (x 1) (y 2)) y)) (def (main) (f 7)) (export main)))
+  (input  (do (def (f (: x Int64)) (. (record (= x 1) (= y 2)) y)) (def (main) (f 7)) (export main)))
   (output (: 2 Int64)))
 
 (case "a record field VALUE still reads the parameter it names after the call"
@@ -86,7 +86,7 @@
            value `x` (an ordinary expression) is β-substituted as usual, so a fix that over-immunized the
            whole field pair (dropping the value substitution too) would wrongly yield the un-substituted
            parameter here.")
-  (input  (do (def (f (: x Int64)) (. (record (y x)) y)) (def (main) (f 7)) (export main)))
+  (input  (do (def (f (: x Int64)) (. (record (= y x)) y)) (def (main) (f 7)) (export main)))
   (output (: 7 Int64)))
 
 ; --- A record's field names are a SET: each name appears at most once --------------------
@@ -100,14 +100,14 @@
            ill-typed and the compiler rejects it (CDZ0201, core-semantics.md #A Record Has A Fixed Set
            Of Named Fields), or declines if it does not yet cover the fixed-field-set rule
            (reject-don't-miscompile).")
-  (input      (record (a 1) (a 2)))
+  (input      (record (= a 1) (= a 2)))
   (error      CDZ0201))
 
 (case "a record with a non-adjacent duplicate field name is a type error"
   (doc    "The duplicate need not be adjacent: `(record (a 1) (b 2) (a 3))` still names `a` twice, so
            it is ill-typed (CDZ0201). Pins that the fixed-field-set check is over the whole field list,
            not only consecutive names.")
-  (input      (record (a 1) (b 2) (a 3)))
+  (input      (record (= a 1) (= b 2) (= a 3)))
   (error      CDZ0201))
 
 ; The same fixed-field-set rule governs a record TYPE, not only a record VALUE. `(Record (: x Int64) (: x ; Bool))` — the capital-`R` TYPE form (distinct from the lowercase `record` value alias) — names field
@@ -123,7 +123,7 @@
            ill-formed and rejected (CDZ0201), the type-form twin of the value-form `(record (a 1) (a 2))`
            reject. Not silently deduplicated to `(Record (: x Bool))` by a last-wins insert. Here the type is
            written in an annotation's type position.")
-  (input      (: (record (x 1)) (Record (: x Int64) (: x Bool))))
+  (input      (: (record (= x 1)) (Record (: x Int64) (: x Bool))))
   (error      CDZ0201))
 
 (case "a duplicate field in a variant's record-type payload is a type error"
@@ -169,7 +169,7 @@
   (doc    "Witnesses core-semantics.md #Member Access Projects A Record Field: the canonical
            form is (. <record> <key>); `p.y` is its display sugar. This case writes the
            canonical form directly to pin that the tree carries (. …), not a dotted atom.")
-  (input  (let ((p (record (x 1) (y 2)))) (. p y)))
+  (input  (let ((p (record (= x 1) (= y 2)))) (. p y)))
   (output (: 2 Int64)))
 
 (case "a boolean record field is projected as the program result"
@@ -178,7 +178,7 @@
            the run boundary as the program's result. A field's type is whatever the field holds, not
            uniformly Int64 (an Int64 field already works; this pins a Bool field does too — the
            companion of the boolean tuple-element case).")
-  (input   (. (record (flag true)) flag))
+  (input   (. (record (= flag true)) flag))
   (output  (: true Bool)))
 
 (case "member access on a non-record is a type error"
@@ -234,7 +234,7 @@
            not contain (type-system.md #A Record Is Restricted To A Named Set Of Its Fields;
            core-semantics.md #Member Access Projects A Record Field). Rejected before lowering, not
            deferred to a runtime trap. A valid field (`(. (record (x 1)) x)` = 1) is unaffected.")
-  (input     (. (record (x 1)) z))
+  (input     (. (record (= x 1)) z))
   (error     CDZ0212))
 
 (case "member access of an absent field on a function-returned record is a type error"
@@ -247,7 +247,7 @@
            callee, resolves to no `(record …)` and imposes nothing — it is not false-rejected (declining or
            taking the runtime path instead).")
   (input  (do
-            (def (mk) (record (x 1)))
+            (def (mk) (record (= x 1)))
             (def (main) (. (mk) z)) (export main)))
   (error  CDZ0212))
 
@@ -268,7 +268,7 @@
            `(. (record (a 1)) 0)` applies a positional accessor to a non-tuple — a type error
            (CDZ0201), the mirror of `(. (tuple 1 2) f)` (member access on a tuple) above. Pins that
            `(. x N)` requires a tuple, rejecting a record operand.")
-  (input     (. (record (a 1)) 0))
+  (input     (. (record (= a 1)) 0))
   (error     CDZ0201))
 
 ; The index of a positional tuple access must be WITHIN the operand tuple's static arity, not only a
@@ -500,7 +500,7 @@
            `(+ x 1)` directly — the record is built at the access site, so the projection reduces to the
            field's occurrence (no heap record). `(main 5)` → 6. Pins the field-of-just-built-record fold
            threads the runtime field value, both backends.")
-  (input  (do (def (main (: x Int64)) (. (record (a x) (b (+ x 1))) b)) (export main)))
+  (input  (do (def (main (: x Int64)) (. (record (= a x) (= b (+ x 1))) b)) (export main)))
   (call   main (: 5 Int64))
   (output (: 6 Int64)))
 
@@ -524,7 +524,7 @@
            Its Fields) — rejected before lowering, not deferred to a runtime trap. The `let`-bound record
            `p` resolves to a compile-time `(record (x 1))`, so the field set is statically known at the
            access site.")
-  (input  (let ((p (record (x 1)))) (. p z)))
+  (input  (let ((p (record (= x 1)))) (. p z)))
   (error  CDZ0212))
 
 (case "member access on a record chosen by a conditional projects the field"
@@ -535,7 +535,7 @@
            access must project the field, not trap. The record is a genuine record however it was
            produced; member access does not require the record to be a compile-time literal.")
   (input  (do
-            (def (f n) (. (if (= n 0) (record (a 1)) (record (a 2))) a))
+            (def (f n) (. (if (= n 0) (record (= a 1)) (record (= a 2))) a))
             (def (main) (f 0)) (export main)))
   (output (: 1 Int64)))
 
@@ -544,7 +544,7 @@
            selected, so the field `a` projects to 2. Confirms the projection follows the runtime
            branch selection, not a fixed branch.")
   (input  (do
-            (def (f n) (. (if (= n 0) (record (a 1)) (record (a 2))) a))
+            (def (f n) (. (if (= n 0) (record (= a 1)) (record (= a 2))) a))
             (def (main) (f 9)) (export main)))
   (output (: 2 Int64)))
 
@@ -596,7 +596,7 @@
            binding slot). p=1 → else branch `(record (x 99) (y 3))` → 99+3 = 102.")
   (input  (do
             (def (main (: p Int64))
-              (let ((r (if (= p 0) (record (x (+ p 5)) (y (+ p 2))) (record (x 99) (y (+ p 2))))))
+              (let ((r (if (= p 0) (record (= x (+ p 5)) (= y (+ p 2))) (record (= x 99) (= y (+ p 2))))))
                 (+ (. r x) (. r y))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 7 Int64))
@@ -621,7 +621,7 @@
            tuple result — earlier this was spuriously rejected CDZ0201 because the operand did not
            reduce to a compile-time record even though its TYPE was one.")
   (input  (do
-            (def (mk n) (record (x n) (y 2)))
+            (def (mk n) (record (= x n) (= y 2)))
             (def (main (: v Int64)) (. (mk v) x))
             (export main)))
   (call   main (: 41 Int64))
@@ -633,7 +633,7 @@
            independent of the runtime argument. Confirms the field-name→sorted-index mapping reads the
            right slot, not only field 0.")
   (input  (do
-            (def (mk n) (record (x n) (y 2)))
+            (def (mk n) (record (= x n) (= y 2)))
             (def (main (: v Int64)) (. (mk v) y))
             (export main)))
   (call   main (: 41 Int64))
@@ -646,7 +646,7 @@
            Pins that the runtime field read indexes by the field's SORTED position, not the source
            write order — the `BTreeMap` order the record builder and every `arr-get` share.")
   (input  (do
-            (def (mk n) (record (z 9) (a n)))
+            (def (mk n) (record (= z 9) (= a n)))
             (def (main (: v Int64)) (. (mk v) a))
             (export main)))
   (call   main (: 1 Int64))
@@ -659,7 +659,7 @@
            runtime-branched tuple projected in the caller: a field read on a conditionally-selected
            record still resolves to an `arr-get` at the field's sorted index.")
   (input  (do
-            (def (pick b) (if b (record (x 1) (y 2)) (record (x 3) (y 4))))
+            (def (pick b) (if b (record (= x 1) (= y 2)) (record (= x 3) (= y 4))))
             (def (main (: b Bool)) (. (pick b) y))
             (export main)))
   (call   main (: true Bool))
@@ -675,7 +675,7 @@
            would be reading slot 0 = `b` had the write order leaked). Pins that member-read-into-if-of-records
            keeps the per-branch sorted-index resolution the sorted-order case above requires.")
   (input  (do
-            (def (main (: b Bool)) (. (if b (record (a 1) (b 2)) (record (b 4) (a 3))) a))
+            (def (main (: b Bool)) (. (if b (record (= a 1) (= b 2)) (record (= b 4) (= a 3))) a))
             (export main)))
   (call   main (: false Bool))
   (output (: 3 Int64)))
@@ -739,7 +739,7 @@
            across the record kind.")
   (input  (do
             (def (main (: p Int64))
-              (let ((r (if (= p 0) (record (x (+ p 5)) (y (+ p 2))) (record (x 99) (y (+ p 2))))))
+              (let ((r (if (= p 0) (record (= x (+ p 5)) (= y (+ p 2))) (record (= x 99) (= y (+ p 2))))))
                 (+ (. r x) (. r y))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 7 Int64))
@@ -900,7 +900,7 @@
            the per-branch field resolution AND the untaken-branch trap shielding of the single-step fold.")
   (input  (do
             (def (main (: b Bool) (: z Int64))
-              (. (. (if b (record (a (record (x 1)))) (record (a (record (x (/ 1 z)))))) a) x))
+              (. (. (if b (record (= a (record (= x 1)))) (record (= a (record (= x (/ 1 z)))))) a) x))
             (export main)))
   (call   main (: true Bool) (: 0 Int64))
   (output (: 1 Int64)))
@@ -1079,7 +1079,7 @@
   (doc    "Witnesses type-system.md #User Types Are Declarable As Nominal Or Structural (2nd
            sentence) at the value level: two structural records of the same shape and contents are
            well-typed to compare, and the compiler evaluates the comparison to true.")
-  (input  (= (record (x 1) (y 2)) (record (x 1) (y 2))))
+  (input  (= (record (= x 1) (= y 2)) (record (= x 1) (= y 2))))
   (output (: true Bool)))
 
 (case "runtime structural equality over a payload-carrying sum agrees on both backends"
@@ -1132,7 +1132,7 @@
            a set is unordered) — true regardless of the written order. Pins that record `=` compares
            field SETS, not positional field lists, mirroring the map order-independence case. MUST be
            true.")
-  (input  (= (record (a 1) (b 2)) (record (b 2) (a 1))))
+  (input  (= (record (= a 1) (= b 2)) (record (= b 2) (= a 1))))
   (output (: true Bool)))
 
 (case "a RECORD used as a map key hashes and matches by its field SET, independent of written order"
@@ -1143,7 +1143,7 @@
            and matches by its canonical field-set form, not the written field order — a key path that
            hashed the written order would false-miss the reordered lookup. The record companion of the
            bare-Rational and compound map-key cases.")
-  (input  (do (def (main) (match (Map.lookup (Map.insert (Map.empty) (record (x 1) (y 2)) 42) (record (y 2) (x 1))) ((Some v) v) ((None u) -1))) (export main)))
+  (input  (do (def (main) (match (Map.lookup (Map.insert (Map.empty) (record (= x 1) (= y 2)) 42) (record (= y 2) (= x 1))) ((Some v) v) ((None u) -1))) (export main)))
   (output (: 42 Int64)))
 
 (case "a record map key with a Rational field matches by the field's normalized form"
@@ -1154,7 +1154,7 @@
            leaf, and find the same slot -> 42. A key path that canonicalized a bare or tuple-nested Rational
            but NOT one nested in a record would false-miss. The record companion of the compound (tuple)
            Rational-leaf map-key case in 03-equality.")
-  (input  (do (def (main) (Option.expect (Map.lookup (Map.insert (Map.empty) (record (r (Rational.of 1 2))) 42) (record (r (Rational.of 2 4)))) "found")) (export main)))
+  (input  (do (def (main) (Option.expect (Map.lookup (Map.insert (Map.empty) (record (= r (Rational.of 1 2))) 42) (record (= r (Rational.of 2 4)))) "found")) (export main)))
   (output (: 42 Int64)))
 
 (case "projecting a field is independent of the order fields are written"
@@ -1162,7 +1162,7 @@
            projects `a` = 1 even though `a` is written second. Pins that projection resolves the field
            name against the record's set, not by the order of construction — the projection companion of
            the order-independent equality case.")
-  (input  (. (record (b 2) (a 1)) a))
+  (input  (. (record (= b 2) (= a 1)) a))
   (output (: 1 Int64)))
 
 ; --- Member access chains: projecting a field of a projected record ----------------------
@@ -1177,7 +1177,7 @@
            `outer`, then `inner` from it, yielding 7. Pins that member access composes — the operand of
            a `.` may itself be a `.` projection, exactly as it may be a conditional-selected or
            function-returned record (witnessed elsewhere).")
-  (input  (. (. (record (outer (record (inner 7)))) outer) inner))
+  (input  (. (. (record (= outer (record (= inner 7)))) outer) inner))
   (output (: 7 Int64)))
 
 (case "a THREE-deep member-access chain reads a RUNTIME leaf through nested records"
@@ -1189,7 +1189,7 @@
            runtime leaf keeps every level's projection LIVE — the config-tree read idiom.")
   (input  (do
             (def (main (: n Int64))
-              (. (. (. (record (a (record (b (record (c n)))))) a) b) c))
+              (. (. (. (record (= a (record (= b (record (= c n)))))) a) b) c))
             (export main)))
   (call   main (: 42 Int64)) (output (: 42 Int64)))
 
@@ -1204,7 +1204,7 @@
            carry the payload's record shape to `r`. A binder that dropped the shape would leave `r`
            shapeless and the projection would have no slot to index.")
   (input  (do
-            (def (mk n) (Some (record (a n) (b (+ n 1)))))
+            (def (mk n) (Some (record (= a n) (= b (+ n 1)))))
             (def (main)
               (match (mk 41)
                 ((Some r) (. r b))
@@ -1226,7 +1226,7 @@
            leave the value slotless — historically this compiled to a VALID component that TRAPPED at
            run (a decline leaked past the emit retry into a runtime trap), which this case pins against.")
   (input  (do
-            (def (mk n) (Some (record (a n) (b (+ n 1)))))
+            (def (mk n) (Some (record (= a n) (= b (+ n 1)))))
             (def (main) (. (Option.expect (mk 41) "x") b)) (export main)))
   (output (: 42 Int64)))
 
@@ -1240,7 +1240,7 @@
            has no slot to index. Pins that Result.expect — not only Option.expect — threads a compound
            payload's shape to a downstream field access, across the two-variant Result sum.")
   (input  (do
-            (def (mk n) (Ok (record (a n) (b (+ n 1)))))
+            (def (mk n) (Ok (record (= a n) (= b (+ n 1)))))
             (def (main) (. (Result.expect (mk 41) "x") b)) (export main)))
   (output (: 42 Int64)))
 
@@ -1461,7 +1461,7 @@
            = 150. A record is the same positional heap array as a tuple, so a narrow field crosses the
            heap boundary with the same i32↔i64 slot conversion — the fix is on the heap box/unbox edge,
            not tuple- or record-specific.")
-  (input  (do (def (main (: a UInt8) (: b UInt8)) (let ((r (record (x a) (y b)))) (+ (. r x) (. r y)))) (export main)))
+  (input  (do (def (main (: a UInt8) (: b UInt8)) (let ((r (record (= x a) (= y b)))) (+ (. r x) (. r y)))) (export main)))
   (call   main (: 100 UInt8) (: 50 UInt8))
   (output (: 150 UInt8)))
 
@@ -1486,9 +1486,9 @@
            (component-abi.md §The Runtime Does Not Name Or Render Values). Recursive → not folded → a
            genuine heap value that crosses the host boundary as a resource whose `encode()` walks it.")
   (input  (do
-            (def (f n) (if (= n 0) (record (a n) (b 7)) (f (- n 1))))
+            (def (f n) (if (= n 0) (record (= a n) (= b 7)) (f (- n 1))))
             (def (main) (f 3)) (export main)))
-  (output (: (record (a 0) (b 7)) (Record (: a Int64) (: b Int64)))))
+  (output (: (record (= a 0) (= b 7)) (Record (: a Int64) (: b Int64)))))
 
 (case "a nested runtime tuple built behind a recursive call escapes to the host"
   (doc    "`(tuple n (tuple n n))` with n=0 (reached via recursion so it does NOT constant-fold) →
@@ -1508,9 +1508,9 @@
            that the type-directed renderer recurses through a HETEROGENEOUS nesting (record → tuple),
            dispatching each sub-shape to its own head; the field holds the inner tuple's handle.")
   (input  (do
-            (def (f n) (if (= n 0) (record (x n) (y (tuple n 1))) (f (- n 1))))
+            (def (f n) (if (= n 0) (record (= x n) (= y (tuple n 1))) (f (- n 1))))
             (def (main) (f 2)) (export main)))
-  (output (: (record (x 0) (y (tuple 0 1))) (Record (: x Int64) (: y (Tuple Int64 Int64))))))
+  (output (: (record (= x 0) (= y (tuple 0 1))) (Record (: x Int64) (: y (Tuple Int64 Int64))))))
 
 (case "a recursive sum constructor with a CHECKED-ARITH payload and a recursive-call sibling payload"
   (doc    "A recursive `map` over a linked list `(type ILst (INil) (ICons Int64 ILst))` whose `ICons`
@@ -1623,7 +1623,7 @@
            projection would collapse). `sum over i∈{0,1,2} of Map.len({i:i}) = 1+1+1 = 3`. Companion to the
            SumPayload retain-child pin above; both faces of the `func[27]` slot-width collision fix.")
   (input  (do
-            (def (mk (: n Int64)) (let ((x (+ n 1))) (record (a (Map.insert (Map.empty) x x)) (b x))))
+            (def (mk (: n Int64)) (let ((x (+ n 1))) (record (= a (Map.insert (Map.empty) x x)) (= b x))))
             (def (loop (: i Int64) (: acc Int64))
               (if (< i 3) (loop (+ i 1) (+ acc (Map.len (. (mk i) a)))) acc))
             (def (main) (loop 0 0))
@@ -1646,9 +1646,9 @@
            the compiler-emitted renderer bakes them from the static type). Companion of the runtime
            tuple result, distinguished only by its static type / rendering.")
   (input  (do
-            (def (f n) (record (a n) (b 1)))
+            (def (f n) (record (= a n) (= b 1)))
             (def (main) (f 3)) (export main)))
-  (output (: (record (a 3) (b 1)) (Record (: a Int64) (: b Int64)))))
+  (output (: (record (= a 3) (= b 1)) (Record (: a Int64) (: b Int64)))))
 
 (case "record fields render in canonical (key-sorted) order regardless of source order"
   (doc    "`(record (b n) (a 1))` with n=2 renders `(record (a 1) (b 2))` — fields in sorted key
@@ -1656,9 +1656,9 @@
            and the emitted renderer AGREE on the sorted field order, so a field value lands under its
            correct name; a slot/name misalignment would render `(record (a 2) (b 1))`.")
   (input  (do
-            (def (f n) (record (b n) (a 1)))
+            (def (f n) (record (= b n) (= a 1)))
             (def (main) (f 2)) (export main)))
-  (output (: (record (a 1) (b 2)) (Record (: a Int64) (: b Int64)))))
+  (output (: (record (= a 1) (= b 2)) (Record (: a Int64) (: b Int64)))))
 
 (case "a list with a runtime element is returned as a program result"
   (doc    "`(list n 2 3)` with n=1 produces `(list 1 2 3)` — a list one of whose elements is a runtime
@@ -1741,7 +1741,7 @@
               (if (= n 0) acc (build (- n 1) (List.push acc n))))
             (def (main (: n Int64))
               (let ((xs (build n (list))))
-                (let ((r (record (a xs) (b xs))))
+                (let ((r (record (= a xs) (= b xs))))
                   (+ (* 10 (List.len (. r a))) (List.len (. r b))))))
             (export main)))
   (call   main (: 3 Int64)) (output (: 33 Int64)))
@@ -3992,9 +3992,9 @@
            recurses through a heterogeneous nesting (record → tuple), dispatching each sub-shape to
            its own renderer.")
   (input  (do
-            (def (f n) (record (x n) (y (tuple n 1))))
+            (def (f n) (record (= x n) (= y (tuple n 1))))
             (def (main) (f 5)) (export main)))
-  (output (: (record (x 5) (y (tuple 5 1))) (Record (: x Int64) (: y (Tuple Int64 Int64))))))
+  (output (: (record (= x 5) (= y (tuple 5 1))) (Record (: x Int64) (: y (Tuple Int64 Int64))))))
 
 ; --- A constructor whose payload is itself a constructor keeps its own variant tag -------
 ; A Sum value is (variant-tag, payload); its canonical form is `(Variant payload)`
@@ -7533,7 +7533,7 @@
            into the visible record to the ctor spine.")
   (input  (do
             (type T (Mk Int64 Int64))
-            (def (main) (let ((r (record (f (T.Mk 7)) (g 0)))) (match ((. r f) 3) ((T.Mk a b) (+ a b)))))
+            (def (main) (let ((r (record (= f (T.Mk 7)) (= g 0)))) (match ((. r f) 3) ((T.Mk a b) (+ a b)))))
             (export main)))
   (call   main)
   (output (: 10 Int64)))
@@ -7901,7 +7901,7 @@
            types (type-system.md #Structural Values Are Comparable Only When Their Shapes Match). A
            list of them is not homogeneous → CDZ0201, exactly as comparing them `(= (record (a 1))
            (record (b 2)))` is rejected.")
-  (input     (list (record (a 1)) (record (b 2))))
+  (input     (list (record (= a 1)) (record (= b 2))))
   (error     CDZ0201))
 
 (case "a list of tuples with different arities is a type error"
@@ -8407,7 +8407,7 @@
            handle whose field projects — the symbol-table-as-a-VECTOR idiom (a list of entry records indexed
            by position), the record companion of the list-of-maps case above.")
   (input  (do (def (main (: i Int64))
-                (match (List.at (list (record (v 10) (tag 1)) (record (v 20) (tag 2))) i)
+                (match (List.at (list (record (= v 10) (= tag 1)) (record (= v 20) (= tag 2))) i)
                   ((Some r) (. r v))
                   (None -1))) (export main)))
   (call   main (: 0 Int64)) (output (: 10 Int64))
@@ -8427,9 +8427,9 @@
                 ((Some r) (count-adults xs (+ i 1) (if (>= (. r age) 18) (+ acc 1) acc)))
                 ((None u) acc)))
             (def (main (: cutoff-age Int64))
-              (count-adults (list (record (name 1) (age 30))
-                                  (record (name 2) (age 15))
-                                  (record (name 3) (age cutoff-age))) 0 0))
+              (count-adults (list (record (= name 1) (= age 30))
+                                  (record (= name 2) (= age 15))
+                                  (record (= name 3) (= age cutoff-age))) 0 0))
             (export main)))
   (call   main (: 20 Int64)) (output (: 2 Int64))
   (call   main (: 10 Int64)) (output (: 1 Int64)))
@@ -8667,8 +8667,8 @@
   (input  (do
             (def (main (: k Int64))
               (let ((m (Map.insert Map.empty 1
-                         (list (tuple 10 (record (v 100) (w 200)))
-                               (tuple 20 (record (v 300) (w 400)))))))
+                         (list (tuple 10 (record (= v 100) (= w 200)))
+                               (tuple 20 (record (= v 300) (= w 400)))))))
                 (match (Map.lookup m k)
                   ((Some xs) (match (List.at xs 1)
                     ((Some t) (. (. t 1) v))
@@ -9039,7 +9039,7 @@
            so a map associating them as values is not value-homogeneous — CDZ0201 (collections-and-text.md
            #A Map Associates Keys With Values: values of ONE type). Mirrors the list-of-diff-field-records
            case.")
-  (input      (= (map ("a" (record (x 1))) ("b" (record (y 2)))) (map ("a" (record (x 1))) ("b" (record (y 2))))))
+  (input      (= (map ("a" (record (= x 1))) ("b" (record (= y 2)))) (map ("a" (record (= x 1))) ("b" (record (= y 2))))))
   (error      CDZ0201))
 
 (case "a map with tuple values of different arities is a type error"
@@ -9064,7 +9064,7 @@
            collections-and-text.md #A Map Associates Keys With Values). Comparing values of two
            different types is a type error the compiler rejects (CDZ0201), even though they carry the
            same keys mapped to the same values.")
-  (input      (= (map ("a" 1) ("b" 2)) (record (a 1) (b 2))))
+  (input      (= (map ("a" 1) ("b" 2)) (record (= a 1) (= b 2))))
   (error      CDZ0201))
 
 (case "comparing an empty map to an empty record is a type error"
@@ -9165,7 +9165,7 @@
            are comparable only when their sets of field names are identical. `(record (a 1))` and
            `(record (b 1))` have disjoint field names — different shapes — so the comparison is a type
            error (CDZ0203).")
-  (input      (= (record (a 1)) (record (b 1))))
+  (input      (= (record (= a 1)) (record (= b 1))))
   (error      CDZ0203))
 
 (case "comparing records whose field sets differ in size is a type error"
@@ -9174,7 +9174,7 @@
            shapes. The comparison is a type error the compiler rejects (CDZ0203). (Contrast `(record
            (a 1))` vs `(record (a 2))` — same shape, different value — which is an ordinary false, not
            a type error.)")
-  (input      (= (record (a 1)) (record (a 1) (b 2))))
+  (input      (= (record (= a 1)) (record (= a 1) (= b 2))))
   (error      CDZ0203))
 
 (case "comparing sums with disjoint variant sets is a type error"
@@ -9825,7 +9825,7 @@
   (input  (do
             (type P (Pt (Record (: x Int64) (: y Int64))) O)
             (def (sum r) (+ (. r x) (. r y)))
-            (def (main) (match (P.Pt (record (x 3) (y 4))) ((P.Pt r) (sum r)) (P.O 0)))
+            (def (main) (match (P.Pt (record (= x 3) (= y 4))) ((P.Pt r) (sum r)) (P.O 0)))
             (export main)))
   (output (: 7 Int64)))
 
@@ -9877,8 +9877,8 @@
            parameters).")
   (input  (do
             (type P (Pt (Record (: x Int64) (: y Int64))) O)
-            (def (main) (P.Pt (record (x 1) (y 2)))) (export main)))
-  (output (: (Pt (record (x 1) (y 2))) P)))
+            (def (main) (P.Pt (record (= x 1) (= y 2)))) (export main)))
+  (output (: (Pt (record (= x 1) (= y 2))) P)))
 
 ; --- A user variant renders its BARE name, uniformly with built-in sums -----------------------------
 ; The escaped value form of a variant is its BARE variant name applied to its payload — `(Sm 42)`,
@@ -10023,7 +10023,7 @@
   (doc    "A record `(record (a 5) (u unit))` with a Unit-typed field; projecting the `a` field yields 5.
            A record IS a positional heap array at run time, so its Unit field takes the sentinel-slot
            treatment tuples do.")
-  (input (do (def (main) (. (record (a 5) (u unit)) a)) (export main)))
+  (input (do (def (main) (. (record (= a 5) (= u unit)) a)) (export main)))
   (output (: 5 Int64)))
 
 (case "a Unit projected out of a multi-payload sum and bound to a name"
@@ -10106,7 +10106,7 @@
            NAME `val` stays a label), the record sibling of the tuple-payload case above.")
   (input  (do
             (type Box (B (Record (: val a))) N)
-            (def (main) (match (Box.B (record (val 7))) ((Box.B r) (. r val)) (Box.N 0)))
+            (def (main) (match (Box.B (record (= val 7))) ((Box.B r) (. r val)) (Box.N 0)))
             (export main)))
   (output (: 7 Int64)))
 
@@ -11863,17 +11863,17 @@
   (input  (do
             (def (step (: st (Record (: mn Int64) (: mx Int64) (: sm Int64) (: ct Int64))) (: h Int64))
               (record
-                (mn (if (= (. st ct) 0) h (if (< h (. st mn)) h (. st mn))))
-                (mx (if (= (. st ct) 0) h (if (> h (. st mx)) h (. st mx))))
-                (sm (+ (. st sm) h))
-                (ct (+ (. st ct) 1))))
+                (= mn (if (= (. st ct) 0) h (if (< h (. st mn)) h (. st mn))))
+                (= mx (if (= (. st ct) 0) h (if (> h (. st mx)) h (. st mx))))
+                (= sm (+ (. st sm) h))
+                (= ct (+ (. st ct) 1))))
             (def (walk (: xs (List Int64)) (: st (Record (: mn Int64) (: mx Int64) (: sm Int64) (: ct Int64))))
               (match xs
                 ((list) st)
                 ((list h .. t) (walk t (step st h)))))
             (def (main (: n Int64))
               (do
-                (def st (walk (list 4 n 9 2) (record (mn 0) (mx 0) (sm 0) (ct 0))))
+                (def st (walk (list 4 n 9 2) (record (= mn 0) (= mx 0) (= sm 0) (= ct 0))))
                 (+ (* (+ (* (. st mn) 100) (. st mx)) 10000)
                    (+ (* (. st sm) 100) (. st ct)))))
             (export main)))
@@ -12254,7 +12254,7 @@
               (match t
                 ((Tree.Leaf n)  n)
                 ((Tree.Br rec)  (+ (. rec w) (+ (sum (. rec l)) (sum (. rec r)))))))
-            (def (main (: k Int64)) (sum (Tree.Br (record (l (Tree.Leaf k)) (r (Tree.Leaf 2)) (w 1)))))
+            (def (main (: k Int64)) (sum (Tree.Br (record (= l (Tree.Leaf k)) (= r (Tree.Leaf 2)) (= w 1)))))
             (export main)))
   (call   main (: 7 Int64))
   (output (: 10 Int64)))
@@ -12504,7 +12504,7 @@
            (=1) plus the scalar `(. r n)` field. `k=5` → 6. Together with the two sum-payload pins this
            covers BOTH the record-field and sum-payload live-Map-handle boxing sites the func27 fix touched.")
   (input  (do
-            (def (build (: k Int64)) (record (m (Map.insert (Map.empty) k k)) (n k)))
+            (def (build (: k Int64)) (record (= m (Map.insert (Map.empty) k k)) (= n k)))
             (def (main (: k Int64)) (let ((r (build k))) (+ (Map.len (. r m)) (. r n))))
             (export main)))
   (call   main (: 5 Int64))
@@ -13269,7 +13269,7 @@
   (input    (do
               (type Point  (Mk (Record (: x Int64) (: y Int64))))
               (type Vector (Mk (Record (: x Int64) (: y Int64))))
-              (= (Point.Mk (record (x 0) (y 0))) (Vector.Mk (record (x 0) (y 0))))))
+              (= (Point.Mk (record (= x 0) (= y 0))) (Vector.Mk (record (= x 0) (= y 0))))))
   (error    CDZ0202))
 
 ; --- The other half of the nominal boundary: nominal vs the untagged shape ----------------
@@ -13289,7 +13289,7 @@
            underlying value).")
   (input    (do
               (type Point (Mk (Record (: x Int64) (: y Int64))))
-              (= (Point.Mk (record (x 0) (y 0))) (record (x 0) (y 0)))))
+              (= (Point.Mk (record (= x 0) (= y 0))) (record (= x 0) (= y 0)))))
   (error    CDZ0202))
 
 (case "a plain record compared to a nominal record of the same shape is a type error"
@@ -13298,7 +13298,7 @@
            is checked on either side of the comparison, not only the left.")
   (input    (do
               (type Point (Mk (Record (: x Int64) (: y Int64))))
-              (= (record (x 0) (y 0)) (Point.Mk (record (x 0) (y 0))))))
+              (= (record (= x 0) (= y 0)) (Point.Mk (record (= x 0) (= y 0))))))
   (error    CDZ0202))
 
 ; --- The nominal boundary holds for user-declared SUM types too, not only nominal records -----------
@@ -14346,9 +14346,9 @@
            sorted positions), the record arm of the tuple-key wrapper fix.")
   (input  (do
             (def (main (: x Float64))
-              (let ((m (Map.insert (Map.insert Map.empty (record (f x) (n 1)) 10) (record (f 2.5) (n 1)) 20)))
+              (let ((m (Map.insert (Map.insert Map.empty (record (= f x) (= n 1)) 10) (record (= f 2.5) (= n 1)) 20)))
                 (+ (* 10 (Map.len m))
-                   (match (Map.lookup m (record (f x) (n 1))) ((Some v) v) ((None u) -1)))))
+                   (match (Map.lookup m (record (= f x) (= n 1))) ((Some v) v) ((None u) -1)))))
             (export main)))
   (call   main (: 0.5 Float64)) (output (: 30 Int64))
   (call   main (: 2.5 Float64)) (output (: 30 Int64)))
@@ -14359,7 +14359,7 @@
            edge — the canonical-byte discipline survives the record's sorted-field erasure.")
   (input  (do
             (def (main (: x Float64))
-              (Map.len (Map.insert (Map.insert Map.empty (record (f x) (n 1)) 10) (record (f 0.0) (n 1)) 20)))
+              (Map.len (Map.insert (Map.insert Map.empty (record (= f x) (= n 1)) 10) (record (= f 0.0) (= n 1)) 20)))
             (export main)))
   (call   main (: -0.0 Float64)) (output (: 2 Int64))
   (call   main (: 0.0 Float64)) (output (: 1 Int64)))
@@ -14372,12 +14372,12 @@
            would collide the 6-7 keys sharing each x residue and misroute the descent.")
   (input  (do
             (def (fill (: i Int64) (: m (Map (Record (: x Int64) (: y Int64)) Int64)))
-              (if (= i 0) m (fill (- i 1) (Map.insert m (record (x (% i 6)) (y (/ i 6))) i))))
+              (if (= i 0) m (fill (- i 1) (Map.insert m (record (= x (% i 6)) (= y (/ i 6))) i))))
             (def (main (: n Int64))
               (do
                 (def m (fill n Map.empty))
                 (+ (* 10 (Map.len m))
-                   (match (Map.lookup m (record (x 4) (y 5))) ((Some v) v) ((None _u) -1)))))
+                   (match (Map.lookup m (record (= x 4) (= y 5))) ((Some v) v) ((None _u) -1)))))
             (export main)))
   (call   main (: 40 Int64)) (output (: 434 Int64)))
 
@@ -14389,15 +14389,15 @@
            canonical form.")
   (input  (do
             (def (grow (: i Int64) (: n Int64) (: m (Map (Record (: x Int64) (: y Int64)) Int64)))
-              (if (= i n) m (grow (+ i 1) n (Map.insert m (record (x (+ i 100)) (y i)) i))))
+              (if (= i n) m (grow (+ i 1) n (Map.insert m (record (= x (+ i 100)) (= y i)) i))))
             (def (shrink (: i Int64) (: n Int64) (: m (Map (Record (: x Int64) (: y Int64)) Int64)))
-              (if (= i n) m (shrink (+ i 1) n (Map.remove m (record (x (+ i 100)) (y i))))))
+              (if (= i n) m (shrink (+ i 1) n (Map.remove m (record (= x (+ i 100)) (= y i))))))
             (def (main (: n Int64))
               (do
-                (def direct (Map.insert Map.empty (record (x 7) (y 8)) 50))
+                (def direct (Map.insert Map.empty (record (= x 7) (= y 8)) 50))
                 (def churned (shrink 1 n (grow 1 n direct)))
                 (+ (* 10 (if (= churned direct) 1 0))
-                   (match (Map.lookup churned (record (x 7) (y 8))) ((Some v) (if (= v 50) 1 0)) ((None _u) -1)))))
+                   (match (Map.lookup churned (record (= x 7) (= y 8))) ((Some v) (if (= v 50) 1 0)) ((None _u) -1)))))
             (export main)))
   (call   main (: 30 Int64)) (output (: 11 Int64)))
 
@@ -14423,7 +14423,7 @@
            above, pins both nesting orders of the depth-2 float-key discipline.")
   (input  (do
             (def (main (: x Float64))
-              (Map.len (Map.insert (Map.insert Map.empty (record (p (tuple x 1)) (n 7)) 10) (record (p (tuple 0.5 1)) (n 7)) 20)))
+              (Map.len (Map.insert (Map.insert Map.empty (record (= p (tuple x 1)) (= n 7)) 10) (record (= p (tuple 0.5 1)) (= n 7)) 20)))
             (export main)))
   (call   main (: -0.5 Float64)) (output (: 2 Int64))
   (call   main (: 0.5 Float64)) (output (: 1 Int64)))
@@ -15016,7 +15016,7 @@
            field `b` is a division by zero that is never read, so it is unobserved and its trap does not
            occur — the program yields 42. Pins the elision is not tuple-specific: any un-observed element
            of a constructed value need not be evaluated.")
-  (input  (do (def (main (: x Int64)) (. (record (a 42) (b (/ 100 x))) a)) (export main)))
+  (input  (do (def (main (: x Int64)) (. (record (= a 42) (= b (/ 100 x))) a)) (export main)))
   (call   main (: 0 Int64))
   (output (: 42 Int64)))
 
@@ -15079,9 +15079,9 @@
            builds the record from its input — `main(5) = (record (lo 5) (hi 15))`, rendered in canonical
            (sorted) field order `(record (hi 15) (lo 5))`. Two calls pin that both fields track the
            argument, not a constant.")
-  (input  (do (def (main (: a Int64)) (record (lo a) (hi (+ a 10)))) (export main)))
-  (call   main (: 5 Int64)) (output (: (record (hi 15) (lo 5)) (Record (: hi Int64) (: lo Int64))))
-  (call   main (: 0 Int64)) (output (: (record (hi 10) (lo 0)) (Record (: hi Int64) (: lo Int64)))))
+  (input  (do (def (main (: a Int64)) (record (= lo a) (= hi (+ a 10)))) (export main)))
+  (call   main (: 5 Int64)) (output (: (record (= hi 15) (= lo 5)) (Record (: hi Int64) (: lo Int64))))
+  (call   main (: 0 Int64)) (output (: (record (= hi 10) (= lo 0)) (Record (: hi Int64) (: lo Int64)))))
 
 (case "a parameterized export returns a built-in Option computed from its argument"
   (doc    "The built-in `Option` companion (the sum case above used a user `(type Option …)`): `main(a)`
@@ -15198,7 +15198,7 @@
   (doc    "A RECORD parameter crosses as a `tuple<…>` in canonical sorted-key order; `main((record (x 3)
            (y 8))) = (tuple 8 3)` swaps the fields. Proves the record-param + tuple-result compound path.")
   (input  (do (def (main (: p (Record (: x Int64) (: y Int64)))) (tuple (. p y) (. p x))) (export main)))
-  (call   main (: (record (x 3) (y 8)) (Record (: x Int64) (: y Int64))))
+  (call   main (: (record (= x 3) (= y 8)) (Record (: x Int64) (: y Int64))))
   (output (: (tuple 8 3) (Tuple Int64 Int64))))
 
 (case "an export mixing a scalar and a tuple parameter returns a list from both"
@@ -15245,7 +15245,7 @@
   (doc    "A record whose field is a tuple is likewise a nested fixed-shape compound; its fields cross in
            canonical sorted-key order. `main((record (pt (tuple 10 20)) (n 30))) = (list 10 20 30)`.")
   (input  (do (def (main (: p (Record (: pt (Tuple Int64 Int64)) (: n Int64)))) (list (. (. p pt) 0) (. (. p pt) 1) (. p n))) (export main)))
-  (call   main (: (record (pt (tuple 10 20)) (n 30)) (Record (: pt (Tuple Int64 Int64)) (: n Int64))))
+  (call   main (: (record (= pt (tuple 10 20)) (= n 30)) (Record (: pt (Tuple Int64 Int64)) (: n Int64))))
   (output (: (list 10 20 30) (List Int64))))
 
 (case "an export mixing a scalar and a nested-tuple parameter returns a list from both"
@@ -15269,8 +15269,8 @@
            discipline tuples/lists already use). Expected: 2.")
   (input  (do
             (def (f (: r (Record (: a Int64) (: b Int64))))
-              (record (a (+ (. r a) 1)) (b (. r b))))
-            (def (main) (. (f (f (record (a 0) (b 5)))) a))
+              (record (= a (+ (. r a) 1)) (= b (. r b))))
+            (def (main) (. (f (f (record (= a 0) (= b 5)))) a))
             (export main)))
   (output (: 2 Int64)))
 
@@ -15705,7 +15705,7 @@
            projections) stops at the record and misses the dup.")
   (input  (do
             (def (main (: d Int64))
-              (let ((t (tuple (record (f (List.push (list) d))) 5)))
+              (let ((t (tuple (record (= f (List.push (list) d))) 5)))
                 (+ (List.len (List.push (. (. t 0) f) 9))
                    (List.len (. (. t 0) f)))))
             (export main)))
@@ -15717,7 +15717,7 @@
            2 + 1 = 3. With the record-in-tuple case this pins both orders of the kind crossing.")
   (input  (do
             (def (main (: d Int64))
-              (let ((r (record (a (tuple (List.push (list) d) 9)))))
+              (let ((r (record (= a (tuple (List.push (list) d) 9)))))
                 (+ (List.len (List.push (. (. r a) 0) 9))
                    (List.len (. (. r a) 0)))))
             (export main)))
@@ -16794,8 +16794,8 @@
            fold). Earlier the record-match arm was a not-yet-implemented decline (CDZ0201) and a field
            reference leaked a misleading 'unbound name' — this case now pins the working destructure.")
   (input  (do (def (f (: r (Record (: x Int64) (: y Int64))))
-                (match r ((record (x a) (y b)) (+ a b))))
-              (def (main) (f (record (x 3) (y 4))))
+                (match r ((record (= x a) (= y b)) (+ a b))))
+              (def (main) (f (record (= x 3) (= y 4))))
               (export main)))
   (output (: 7 Int64)))
 
@@ -16806,8 +16806,8 @@
            field `z` regardless of written order → `100*c + b` = 100*10 + 20 = 1020. The match twin of the
            record BINDING pattern's field-order independence — a flexibility a positional tuple pattern lacks.")
   (input  (do (def (f (: r (Record (: a Int64) (: z Int64))))
-                (match r ((record (z b) (a c)) (+ (* 100 c) b))))
-              (def (main) (f (record (a 10) (z 20))))
+                (match r ((record (= z b) (= a c)) (+ (* 100 c) b))))
+              (def (main) (f (record (= a 10) (= z 20))))
               (export main)))
   (output (: 1020 Int64)))
 
@@ -16829,8 +16829,8 @@
            Expected (n=5): 50.")
   (input  (do
             (def (probe (: n Int64))
-              (match (record (id n) (tags (list n (+ n 1))) (name "x"))
-                ((record (id k)) (* k 10))))
+              (match (record (= id n) (= tags (list n (+ n 1))) (= name "x"))
+                ((record (= id k)) (* k 10))))
             (def (main (: n Int64)) (probe n))
             (export main)))
   (call   main (: 5 Int64)) (output (: 50 Int64)))
@@ -16841,8 +16841,8 @@
            record arm is taken → 3. (An UNGUARDED record arm; a GUARDED record arm is a later increment —
            it currently declines cleanly rather than lowering, pending the guard×record leaf gating.)")
   (input  (do (def (f (: r (Record (: x Int64))))
-                (match r ((record (x a)) a) (_ 99)))
-              (def (main) (f (record (x 3))))
+                (match r ((record (= x a)) a) (_ 99)))
+              (def (main) (f (record (= x 3))))
               (export main)))
   (output (: 3 Int64)))
 
@@ -16854,8 +16854,8 @@
            match arm supports a refutable field probe (not only bare-binder fields), the record analogue of
            `(tuple 3 b)` / `(Some 0)`. Two `(call …)` values drive the runtime scrutinee through `f`.")
   (input  (do (def (f (: r (Record (: x Int64) (: y Int64))))
-                (match r ((record (x 3) (y b)) b) (_ -1)))
-              (def (main (: k Int64)) (f (record (x k) (y 4))))
+                (match r ((record (= x 3) (= y b)) b) (_ -1)))
+              (def (main (: k Int64)) (f (record (= x k) (= y 4))))
               (export main)))
   (call   main (: 3 Int64))
   (output (: 4 Int64))
@@ -16876,8 +16876,8 @@
            never exercise the projection). x=5 → guard holds → 5+6 = 11; x=-5 → guard fails → -1; x=0 →
            guard `(> 0 0)` fails → -1.")
   (input  (do (def (f (: r (Record (: x Int64) (: y Int64))))
-                (match r ((guard (record (x a) (y b)) (> a 0)) (+ a b)) (_ -1)))
-              (def (main (: k Int64)) (f (record (x k) (y (+ k 1)))))
+                (match r ((guard (record (= x a) (= y b)) (> a 0)) (+ a b)) (_ -1)))
+              (def (main (: k Int64)) (f (record (= x k) (= y (+ k 1)))))
               (export main)))
   (call   main (: 5 Int64))
   (output (: 11 Int64))
@@ -16892,7 +16892,7 @@
            binder). `(match (record (x 5)) ((record) 0) (_ 1))` → 0 (the `(record)` arm is taken, the `_`
            unreached). Pins that a zero-field record pattern is the trivial always-match, not a shape
            mismatch against a non-empty record.")
-  (input  (do (def (main) (match (record (x 5)) ((record) 0) (_ 1))) (export main)))
+  (input  (do (def (main) (match (record (= x 5)) ((record) 0) (_ 1))) (export main)))
   (output (: 0 Int64)))
 
 (case "a record pattern destructures a ROW-OP derived record (with-chain result)"
@@ -16906,10 +16906,10 @@
   (input  (do
             (def (main (: n Int64))
               (do
-                (def base (record (a n) (b 2) (c 3)))
+                (def base (record (= a n) (= b 2) (= c 3)))
                 (def derived (Record.with (Record.with base #"a" 10) #"c" 30))
                 (match derived
-                  ((record (a x) (c z)) (+ (* 100 x) z)))))
+                  ((record (= a x) (= c z)) (+ (* 100 x) z)))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 1030 Int64)))
 
@@ -16924,9 +16924,9 @@
   (input  (do
             (def (main (: n Int64))
               (do
-                (def m (Map.insert Map.empty 1 (record (xs (list n 2)) (tag "t"))))
+                (def m (Map.insert Map.empty 1 (record (= xs (list n 2)) (= tag "t"))))
                 (match (Map.lookup m 1)
-                  ((Some r) (match r ((record (xs ys)) (List.len ys))))
+                  ((Some r) (match r ((record (= xs ys)) (List.len ys))))
                   ((None _u) -1))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 2 Int64)))
@@ -16943,7 +16943,7 @@
            parameterized body, not only the emit walk. The nested-in-compound twin of the top-level
            record-match + the record-BINDING nested-compound declines.")
   (input  (do (def (f (: t (Tuple (Record (: x Int64)) Int64)))
-                (match t ((tuple (record (x a)) c) (+ a c))))
+                (match t ((tuple (record (= x a)) c) (+ a c))))
               (export f)))
   (error  CDZ0201))
 
@@ -17025,7 +17025,7 @@
               (if (= n 0) acc
                   (go r (- n 1) (+ acc (List.len (List.push (. r f) 9))))))
             (def (main (: d Int64))
-              (go (record (f (List.push (List.push (list) d) 8))) 4 0))
+              (go (record (= f (List.push (List.push (list) d) 8))) 4 0))
             (export main)))
   (call   main (: 7 Int64))
   (output (: 12 Int64)))
@@ -17372,7 +17372,7 @@
   (input  (do
             (type DbBox (DbBox (Record (: a Int64) (: b Int64))))
             (def (unwrap (: x DbBox)) (match x ((DbBox r) (. r a))))
-            (def (main) (unwrap (DbBox (record (a 1) (b 2)))))
+            (def (main) (unwrap (DbBox (record (= a 1) (= b 2)))))
             (export main)))
   (output (: 1 Int64)))
 
@@ -17397,9 +17397,9 @@
                 ((Root) -1)
                 ((Scope r parent) (if (= (. r tag) t) (. r v) (find-v parent t)))))
             (def (main (: t Int64))
-              (let ((e (Scope (record (v 30) (tag 3))
-                       (Scope (record (v 20) (tag 2))
-                       (Scope (record (v 10) (tag 1)) (Root))))))
+              (let ((e (Scope (record (= v 30) (= tag 3))
+                       (Scope (record (= v 20) (= tag 2))
+                       (Scope (record (= v 10) (= tag 1)) (Root))))))
                 (+ (* 10 (depth e)) (find-v e t))))
             (export main)))
   (call   main (: 2 Int64)) (output (: 50 Int64))
@@ -17854,8 +17854,8 @@
   (input  (do
         (def (main (: n Int64))
           (do
-            (def k1 (record (s (Set.of (list 1 2 3)))))
-            (def k2 (record (s (Set.insert (Set.insert (Set.of (list n)) 2) 1))))
+            (def k1 (record (= s (Set.of (list 1 2 3)))))
+            (def k2 (record (= s (Set.insert (Set.insert (Set.of (list n)) 2) 1))))
             (match (Map.lookup (Map.insert Map.empty k1 42) k2)
               ((Some v) v)
               ((None _u) -1))))
@@ -18011,7 +18011,7 @@
   (input  (do
             (def (main (: k Int64))
               (do
-                (def r (record (f01 "a") (f02 2) (f03 (list 1 2)) (f04 4) (f05 (String.concat "b" "c")) (f06 6) (f07 7) (f08 8) (f09 9) (f10 k) (f11 11) (f12 12) (f13 13) (f14 14) (f15 15) (f16 (tuple 1 2))))
+                (def r (record (= f01 "a") (= f02 2) (= f03 (list 1 2)) (= f04 4) (= f05 (String.concat "b" "c")) (= f06 6) (= f07 7) (= f08 8) (= f09 9) (= f10 k) (= f11 11) (= f12 12) (= f13 13) (= f14 14) (= f15 15) (= f16 (tuple 1 2))))
                 (def r2 (Record.without r (f08)))
                 (+ (* 1000 (. r2 f10))
                    (+ (* 100 (String.byte-len (. r2 f05)))
@@ -18067,7 +18067,7 @@
   (input  (do
             (def (main (: k Int64))
               (do
-                (def cfg (Map.insert (Map.insert Map.empty "timeout" (record (v 30) (unit-s "s"))) "retries" (record (v k) (unit-s ""))))
+                (def cfg (Map.insert (Map.insert Map.empty "timeout" (record (= v 30) (= unit-s "s"))) "retries" (record (= v k) (= unit-s ""))))
                 (match (Map.lookup cfg "retries")
                   ((Option.Some r) (+ (* 10 (. r v)) (String.byte-len (. r unit-s))))
                   ((Option.None _u) -1))))
@@ -18272,9 +18272,9 @@
   (input  (do
             (def (main (: k Int64))
               (do
-                (def inv (Map.insert Map.empty 1 (record (name "widget") (qty k))))
+                (def inv (Map.insert Map.empty 1 (record (= name "widget") (= qty k))))
                 (def r (Option.expect (Map.lookup inv 1) "slot"))
-                (def fresh (record (name (. r name)) (qty (+ (. r qty) 5))))
+                (def fresh (record (= name (. r name)) (= qty (+ (. r qty) 5))))
                 (+ (* 10 (. fresh qty)) (String.byte-len (. fresh name)))))
             (export main)))
   (call   main (: 3 Int64))

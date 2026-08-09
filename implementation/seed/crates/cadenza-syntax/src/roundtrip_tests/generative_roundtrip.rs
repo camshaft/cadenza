@@ -94,11 +94,11 @@ fn gen_expr(rng: &mut Rng, depth: usize) -> String {
             let elems: Vec<String> = (0..n).map(|_| sub(rng)).collect();
             format!("(\"tuple\" {})", elems.join(" "))
         }
-        // record literal: ("record" (field value)…)
+        // record literal: ("record" (= field value)…) — the (= name value) ascription form
         9 => {
             let n = 1 + rng.below(3);
             let fields: Vec<String> = (0..n)
-                .map(|i| format!("({} {})", ["m", "n", "o"][i], sub(rng)))
+                .map(|i| format!("(= {} {})", ["m", "n", "o"][i], sub(rng)))
                 .collect();
             format!("(\"record\" {})", fields.join(" "))
         }

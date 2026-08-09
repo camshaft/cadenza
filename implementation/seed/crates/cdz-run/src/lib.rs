@@ -2809,13 +2809,19 @@ fn coerce_one(s: &str, t: &Type) -> Result<Val> {
     })
 }
 
-/// If `field` is a RECORD-field group `(name value)` — a 2-element paren group whose first element is a bare
-/// field NAME (an identifier, not a number/bool) — return `(name, value)`. A record closure argument erases to
-/// a component `tuple<…>` at the boundary, so the corpus's record VALUE `(record (x 10) (y 3))` presents each
-/// field this way; the driver reorders + unwraps them. Returns `None` for a plain scalar or a positional
-/// tuple field (so those stay untouched).
+/// If `field` is a RECORD-field group — the canonical `(= name value)` ascription triple (DESIGN-record-
+/// type-syntax Phase B) or a legacy `(name value)` pair — whose NAME element is a bare field name (an
+/// identifier, not a number/bool) — return `(name, value)`. A record closure argument erases to a
+/// component `tuple<…>` at the boundary, so the corpus's record VALUE `(record (= x 10) (= y 3))` presents
+/// each field this way; the driver reorders + unwraps them. Returns `None` for a plain scalar or a
+/// positional tuple field (so those stay untouched).
 fn named_field(field: &str) -> Option<(String, String)> {
     let parts = parse_tuple_fields(field)?;
+    // Canonical triple `(= name value)` → drop the `=` head; else a legacy pair `(name value)`.
+    let parts: &[String] = match parts.split_first() {
+        Some((head, rest)) if head == "=" && rest.len() == 2 => rest,
+        _ => &parts,
+    };
     if parts.len() == 2
         && !parts[0].is_empty()
         && parts[0]

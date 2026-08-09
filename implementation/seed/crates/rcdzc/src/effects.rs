@@ -5919,15 +5919,30 @@ fn thread_bounded(
                 let Struct::List(kv) = db.ast.get(field).clone() else {
                     return None;
                 };
-                if kv.len() != 2 {
-                    return None;
-                }
+                // A field is the canonical `(= label value)` ascription triple (Phase B) — label = child
+                // 1, value = child 2, rebuilt WITH the `=` head — or a legacy `(label value)` pair.
+                let (eq_head, label_id, value_id) =
+                    if kv.len() == 3 && db.ast.as_name(kv[0]) == Some("=") {
+                        (Some(kv[0]), kv[1], kv[2])
+                    } else if kv.len() == 2 {
+                        (None, kv[0], kv[1])
+                    } else {
+                        return None;
+                    };
                 // The label is copied structurally (a field name, not a value to thread); the VALUE is
-                // threaded (it may perform).
-                let label_copy = copy_pure(db, kv[0]);
-                let (rvalue, next) = thread_bounded(db, kv[1], cur, ctx, inline_depth)?;
+                // threaded (it may perform). The `=` head (if any) is preserved so the rebuilt field keeps
+                // the canonical triple shape.
+                let label_copy = copy_pure(db, label_id);
+                let (rvalue, next) = thread_bounded(db, value_id, cur, ctx, inline_depth)?;
                 cur = next;
-                rfields.push(db.push_list(vec![label_copy, rvalue]));
+                let rebuilt = match eq_head {
+                    Some(eq) => {
+                        let eq_copy = copy_pure(db, eq);
+                        db.push_list(vec![eq_copy, label_copy, rvalue])
+                    }
+                    None => db.push_list(vec![label_copy, rvalue]),
+                };
+                rfields.push(rebuilt);
             }
             let head = db.push_atom(Leaf::Str("record".to_string()));
             let mut children = vec![head];

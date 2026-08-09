@@ -619,7 +619,7 @@
            The width fit-check must descend into a RECORD field's declared type; before the descent reached
            records, this escaped the check entirely and silently truncated (999 → -25 as Int8 on wasm; rust
            E0308 — a backend-divergent miscompile). Pins that the descent reaches record fields.")
-  (input  (: (record (x 999)) (Record (: x Int8))))
+  (input  (: (record (= x 999)) (Record (: x Int8))))
   (error  CDZ0302))
 
 (case "a FITTING narrow record-field literal grounds to the field width and computes (emit twin of the reject)"
@@ -630,7 +630,7 @@
            grounding a narrow record-field literal to the declared slot width in the rust Core::Record emit
            (the record twin of the branch/match-arm grounding). Pins that a fitting narrow record-field
            literal is emittable + computes on all backends — the working counterpart the overflow case rejects.")
-  (input  (do (def (get (: r (Record (: x Int8)))) (. r x)) (def (main) (get (record (x 100)))) (export main)))
+  (input  (do (def (get (: r (Record (: x Int8)))) (. r x)) (def (main) (get (record (= x 100)))) (export main)))
   (output (: 100 Int8)))
 
 (case "a literal MAP VALUE that overflows the annotated value width is rejected"
@@ -799,7 +799,7 @@
   (doc    "The float twin of the record-field arm: `(: (record (x 1.0e300)) (Record (: x Float32)))` — the
            field's Float32 grounds the literal, which overflows binary32 → CDZ0302. Pins that the record
            descent covers float widths as the Option/Result payload arms do.")
-  (input  (: (record (x 1.0e300)) (Record (: x Float32))))
+  (input  (: (record (= x 1.0e300)) (Record (: x Float32))))
   (error  CDZ0302))
 
 (case "a fitting Float32 record field passed through a typed parameter computes"
@@ -811,7 +811,7 @@
            bare literal's f64 width instead of the DECLARED field type would mismatch the projection.")
   (input  (do
             (def (get (: r (Record (: x Float32)))) (. r x))
-            (def (main) (get (record (x 1.5))))
+            (def (main) (get (record (= x 1.5))))
             (export main)))
   (call   main) (output (: 1.5 Float32)))
 

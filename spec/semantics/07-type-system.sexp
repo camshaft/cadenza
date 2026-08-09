@@ -616,7 +616,7 @@
            `(Record (: a Bool))` (type-system.md #Annotations Constrain, Never Contradict). A generation
            that does not yet check a record field's type declines rather than accepting
            (reject-don't-miscompile).")
-  (input  (: (record (a 1)) (Record (: a Bool))))
+  (input  (: (record (= a 1)) (Record (: a Bool))))
   (error  CDZ0203))
 
 ; --- A record's field SET must match the annotation, not only each field's type ------------
@@ -635,7 +635,7 @@
            missing `b`). A record type is not satisfied by a value carrying a subset of its fields — field
            presence is static (the row-poly widening that would accept this is a separate opt-in). The
            field-SET companion of the wrong-field-TYPE case above.")
-  (input  (: (record (a 1)) (Record (: a Int64) (: b Int64))))
+  (input  (: (record (= a 1)) (Record (: a Int64) (: b Int64))))
   (error  CDZ0203))
 
 (case "a record carrying a field the annotation does not name is rejected"
@@ -644,7 +644,7 @@
            field `c` on the expected record'). A record value is not accepted against a type with FEWER
            fields — the extra field is not silently dropped. Pins the superset direction of the field-set
            check (the value has more fields than the type).")
-  (input  (: (record (a 1) (b 2) (c 3)) (Record (: a Int64) (: b Int64))))
+  (input  (: (record (= a 1) (= b 2) (= c 3)) (Record (: a Int64) (: b Int64))))
   (error  CDZ0203))
 
 (case "a record whose field is misnamed is both missing and extra"
@@ -653,7 +653,7 @@
            and carrying an EXTRA `x`. Rejected (CDZ0203) with both faults named ('missing field `b`; no
            such field `x`'). Pins that a single misnamed field surfaces as the combined field-set
            mismatch, the shape a field-name typo takes.")
-  (input  (: (record (a 1) (x 2)) (Record (: a Int64) (: b Int64))))
+  (input  (: (record (= a 1) (= x 2)) (Record (: a Int64) (: b Int64))))
   (error  CDZ0203))
 
 ; The variant-payload TYPE check must fire wherever the constructor appears — including as the direct
@@ -783,7 +783,7 @@
            so the fault is the operator's, not a fold.")
   (input  (do
             (def (f (: r (Record (: a Int64))) (: q (Record (: a Int64)))) (+ r q))
-            (def (main) (f (record (a 1)) (record (a 2)))) (export main)))
+            (def (main) (f (record (= a 1)) (record (= a 2)))) (export main)))
   (error  CDZ0201))
 
 (case "addition of two sets is rejected — a set is not a number"
@@ -930,7 +930,7 @@
            field set). Rejected CDZ0203, the diagnostic naming the delta (missing `x`; no such field `y`).
            Pins that `=` requires matching field sets, not merely that both operands are records — the
            structural companion of the cross-kind `(= 1 \"x\")` case.")
-  (input  (= (record (x 1)) (record (y 2))))
+  (input  (= (record (= x 1)) (record (= y 2))))
   (error  CDZ0203))
 
 (case "equality of two tuples of different arity is a type error"
@@ -947,7 +947,7 @@
            separate opt-in — 15-rows-and-open-sums). Rejected CDZ0203 (no such field `y` on the smaller
            record's type). Pins that `=` is not silently widened to ignore the extra field, the subset
            facet of the field-set check.")
-  (input  (= (record (x 1)) (record (x 1) (y 2))))
+  (input  (= (record (= x 1)) (record (= x 1) (= y 2))))
   (error  CDZ0203))
 
 ; --- The comparison operators type-check their operands exactly as = and + do -------------
@@ -1161,7 +1161,7 @@
            — a record entry is a `(name value)` pair. The compiler rejects it (CDZ0201), never
            panicking reaching for the absent value node. Same never-crash class as the `(let ((x)) x)`
            binding-with-no-value case above, for a record entry.")
-  (input  (record (a)))
+  (input  (record (= a)))
   (error  CDZ0201))
 
 (case "a map entry with no value expression is rejected, not a crash"
@@ -1666,10 +1666,10 @@
            field's TYPE differs — `(y String)` vs `(y Int64)` → false. `1 + 0 = 1`. Pins that a record
            type-value's equality carries each field's type (the record analogue of the tuple case above).")
   (input  (do
-            (def (main) (+ (if (Type.eq (Type.of (record (x 1) (y "a")))
-                                        (Type.of (record (x 2) (y "b")))) 1 0)
-                           (if (Type.eq (Type.of (record (x 1) (y "a")))
-                                        (Type.of (record (x 1) (y 2)))) 10 0)))
+            (def (main) (+ (if (Type.eq (Type.of (record (= x 1) (= y "a")))
+                                        (Type.of (record (= x 2) (= y "b")))) 1 0)
+                           (if (Type.eq (Type.of (record (= x 1) (= y "a")))
+                                        (Type.of (record (= x 1) (= y 2)))) 10 0)))
             (export main)))
   (output (: 1 Int64)))
 
@@ -1862,8 +1862,8 @@
             (def (f x) (+ x 1))
             (def (f2 z) (+ z 9))
             (def (g b) (if b 0 1))
-            (def (main) (+ (if (Type.eq (Type.of (record (fld f))) (Type.of (record (fld g)))) 1 0)
-                           (if (Type.eq (Type.of (record (fld f))) (Type.of (record (fld f2)))) 100 0)))
+            (def (main) (+ (if (Type.eq (Type.of (record (= fld f))) (Type.of (record (= fld g)))) 1 0)
+                           (if (Type.eq (Type.of (record (= fld f))) (Type.of (record (= fld f2)))) 100 0)))
             (export main)))
   (output (: 100 Int64)))
 
@@ -1959,7 +1959,7 @@
             (def (main (: n Int64))
               (do
                 (def f (fn ((: x Int64)) (+ x n)))
-                (Map.len (Map.insert Map.empty (record (id 1) (cb f)) 42))))
+                (Map.len (Map.insert Map.empty (record (= id 1) (= cb f)) 42))))
             (export main)))
   (error  CDZ0216))
 
@@ -2141,7 +2141,7 @@
 (case "a generic newtype with a structural-record payload mentioning the type parameter constructs"
   (input  (do
             (type Box (Box (Record (: v a) (: tag Int64))))
-            (def (main) (match (Box (record (v 42) (tag 7))) ((Box r) (. r tag))))
+            (def (main) (match (Box (record (= v 42) (= tag 7))) ((Box r) (. r tag))))
             (export main)))
   (output (: 7 Int64)))
 
@@ -2253,7 +2253,7 @@
            but skipped the record group as nested — until the one-level record descent (1d4aaee7d);
            pinned so the descent doesn't regress.")
   (input  (do
-            (type R (record (: field NoSuchField)))
+            (type R (record (= : field NoSuchField)))
             (def (main) 42)
             (export main)))
   (error  CDZ0101))

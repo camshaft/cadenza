@@ -545,7 +545,7 @@
            n = 1 → 10 + 1 = 11. Pins the both-backend miscompile where the compound binding's contained
            closure was speculatively lifted, poisoning the inline fold of the projected closure.")
   (input  (do
-            (def (main (: n Int64)) (let ((r (record (f (fn (x) (+ x n)))))) ((. r f) 10)))
+            (def (main (: n Int64)) (let ((r (record (= f (fn (x) (+ x n)))))) ((. r f) 10)))
             (export main)))
   (call   main (: 1 Int64))
   (output (: 11 Int64)))
@@ -1367,7 +1367,7 @@
   (input  (do
             (type H (M (Record (: f (-> Int64 Int64)) (: n Int64))))
             (def (run (: h H)) (match h ((H.M rec) ((. rec f) rec.n))))
-            (def (main) (run (H.M (record (f (fn ((: x Int64)) (+ x 1))) (n 41)))))
+            (def (main) (run (H.M (record (= f (fn ((: x Int64)) (+ x 1))) (= n 41)))))
             (export main)))
   (call   main)
   (output (: 42 Int64)))
@@ -2469,7 +2469,7 @@
   (doc    "The control the case above must match: `(record (f (fn (x) (+ x 1))))` stores a function in
            field `f`; `(. … f)` extracts it and applying it to 5 yields 6. The seed runs this — a
            function stored in a record is resolved and called. The tuple case must behave identically.")
-  (input   ((. (record (f (fn (x) (+ x 1)))) f) 5))
+  (input   ((. (record (= f (fn (x) (+ x 1)))) f) 5))
   (output  (: 6 Int64)))
 
 (case "a field is projected from a record returned by a function"
@@ -2479,7 +2479,7 @@
            Accessing a field inside the lambda body already works, and accessing a directly-written or
            let-bound record works — projecting the record a lambda RETURNS must behave the same, not
            trap. This is the record-builder idiom a compiler uses constantly.")
-  (input   (. ((fn (x) (record (v x))) 7) v))
+  (input   (. ((fn (x) (record (= v x))) 7) v))
   (output  (: 7 Int64)))
 
 (case "an element is projected from a tuple returned by a function"
@@ -2492,7 +2492,7 @@
   (doc    "The same record-builder reached through a named binding: `mk` is a lambda returning a
            record; `(mk 7)` builds {v: 7} and `(. (mk 7) v)` projects 7. Binding the builder to a name
            does not change that its result is an accessible record.")
-  (input   (let ((mk (fn (x) (record (v x)))))
+  (input   (let ((mk (fn (x) (record (= v x)))))
              (. (mk 7) v)))
   (output  (: 7 Int64)))
 
@@ -2550,7 +2550,7 @@
            like projecting a unary function's record result (above), not trap. The seed traps on the
            nullary case.")
   (input   (do
-             (def (mk) (record (a 5)))
+             (def (mk) (record (= a 5)))
              (def (main) (. (mk) a)) (export main)))
   (output  (: 5 Int64)))
 
@@ -4158,7 +4158,7 @@
            site, not spuriously rejected standalone.")
   (input  (do
             (def (get-x r) (. r x))
-            (def (mk n)    (record (x n) (y 2)))
+            (def (mk n)    (record (= x n) (= y 2)))
             (def (main (: v Int64)) (get-x (mk v)))
             (export main)))
   (call   main (: 41 Int64))
@@ -4184,7 +4184,7 @@
            compound parameter all resolve at the call site and compose with arithmetic on the results.")
   (input  (do
             (def (sum-xy r) (+ (. r x) (. r y)))
-            (def (mk n)     (record (x n) (y 2)))
+            (def (mk n)     (record (= x n) (= y 2)))
             (def (main (: v Int64)) (sum-xy (mk v)))
             (export main)))
   (call   main (: 7 Int64))
@@ -5465,8 +5465,8 @@
             (def (show-with (: t Type) (: dict (Record (: describe (-> t Int64)))) (: x t))
               ((. dict describe) x))
             (def (main)
-              (+ (show-with Int64 (record (describe describe-int)) 5)
-                 (show-with Bool (record (describe describe-bool)) true)))
+              (+ (show-with Int64 (record (= describe describe-int)) 5)
+                 (show-with Bool (record (= describe describe-bool)) true)))
             (export main)))
   (output (: 6 Int64)))
 
@@ -5815,7 +5815,7 @@
   (input  (do
             (def (fold-n (const (: d (Record (: op (-> Int64 Int64))))) (: n Int64) (: acc Int64))
               (if (= n 0) acc (fold-n d (- n 1) ((. d op) acc))))
-            (def (main) (fold-n (record (op (fn (x) (+ x 10)))) 3 0))
+            (def (main) (fold-n (record (= op (fn (x) (+ x 10)))) 3 0))
             (export main)))
   (output (: 30 Int64)))
 
@@ -5827,8 +5827,8 @@
   (input  (do
             (def (fold-n (const (: d (Record (: op (-> Int64 Int64))))) (: n Int64) (: acc Int64))
               (if (= n 0) acc (fold-n d (- n 1) ((. d op) acc))))
-            (def (main) (+ (fold-n (record (op (fn (x) (+ x 10)))) 3 0)
-                           (fold-n (record (op (fn (x) (* x 2)))) 3 1)))
+            (def (main) (+ (fold-n (record (= op (fn (x) (+ x 10)))) 3 0)
+                           (fold-n (record (= op (fn (x) (* x 2)))) 3 1)))
             (export main)))
   (output (: 38 Int64)))
 
@@ -5846,7 +5846,7 @@
   (input  (do
             (def (fold-n (const (: d (Record (: op (-> Int64 Int64))))) (: n Int64) (: acc Int64))
               (if (= n 0) acc (fold-n d (- n 1) ((. d op) acc))))
-            (def (main (: k Int64)) (fold-n (record (op (fn (x) (+ x k)))) 3 0))
+            (def (main (: k Int64)) (fold-n (record (= op (fn (x) (+ x k)))) 3 0))
             (export main)))
   (error  CDZ0201))
 
@@ -5961,8 +5961,8 @@
             (@ inline-never
               (def (apply2 (const (: d (Record (: op (-> Int64 Int64))))) (: x Int64))
                 ((. d op) ((. d op) x))))
-            (def (main) (+ (apply2 (record (op (fn (n) (+ n 10)))) 5)
-                           (apply2 (record (op (fn (n) (+ n 10)))) 100)))
+            (def (main) (+ (apply2 (record (= op (fn (n) (+ n 10)))) 5)
+                           (apply2 (record (= op (fn (n) (+ n 10)))) 100)))
             (export main)))
   (output (: 145 Int64)))
 

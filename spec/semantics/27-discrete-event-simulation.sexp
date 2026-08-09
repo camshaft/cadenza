@@ -1008,7 +1008,7 @@
                   (List.prepend (insort t e) h)))))
         (def (main (: k Int64))
           (do
-            (def q (insort (insort (list) (tuple 30 (record (id 3) (pri 1)))) (tuple k (record (id 1) (pri 9)))))
+            (def q (insort (insort (list) (tuple 30 (record (= id 3) (= pri 1)))) (tuple k (record (= id 1) (= pri 9)))))
             (match q
               ((list h .. _t) (+ (* 10 (. (. h 1) id)) (. (. h 1) pri)))
               (_ -1))))
