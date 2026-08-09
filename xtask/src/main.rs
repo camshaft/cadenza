@@ -123,6 +123,12 @@ enum Cmd {
     /// advisory job (no full build). Comment-scoped + Unicode-test-doc-excluded, so functional emoji in
     /// string/char literals (the language's own lex/parse/print fixtures) are correctly left alone.
     LintEmoji,
+    /// Mandate lint, standalone (operator directive): fail if any mechanizable STANDING MANDATE is
+    /// violated in `implementation/**/*.rs` — currently the no-integration-tests mandate (a NEW
+    /// `tests/*.rs` cargo integration test not on the grandfather allowlist). A cheap source-scan, the
+    /// same shape as `lint-emoji`; v-fleet-tooling folds it into `check`/`localGate` so a violating MR
+    /// fails the gate. (Follow-on: syn-based no-hex-except-tracing / no-thin-wrapper / no-hard-coded-name.)
+    LintMandates,
     /// Round-trip every corpus program through the syntax surfaces: `sexpr` must reproduce the exact
     /// binary AST; `ml` (the long-term syntax, allowed to canonicalize once) must round-trip to a
     /// FIXED POINT (`ml(ml(x)) == ml(x)`). Guards `cadenza-syntax` independently of the compiler.
@@ -271,6 +277,20 @@ fn main() {
                 std::process::exit(1);
             }
         },
+        Cmd::LintMandates => match mandates::lint_mandates(&paths.repo) {
+            Ok(v) if v.is_empty() => println!("lint-mandates: ok — no mandate violations"),
+            Ok(violations) => {
+                for x in &violations {
+                    eprintln!("lint-mandates: {}: {}", x.file.display(), x.reason);
+                }
+                eprintln!("lint-mandates: {} mandate violation(s)", violations.len());
+                std::process::exit(1);
+            }
+            Err(msg) => {
+                eprintln!("lint-mandates: {msg}");
+                std::process::exit(1);
+            }
+        },
         Cmd::Roundtrip { files } => roundtrip(&paths, profile, files),
         Cmd::Fmt { files, to, check } => fmt(&paths, profile, files, &to, check),
         Cmd::Emit { file, from, out } => emit(&paths, profile, &file, &from, out),
@@ -325,6 +345,7 @@ mod codegen;
 mod duvet_check;
 mod fleet;
 mod install_lsp;
+mod mandates;
 
 /// The workspace directory anchors, resolved once from this crate's manifest location. xtask lives
 /// at `<repo>/xtask`, so the repo root is the manifest's parent and the seed workspace is the fixed
