@@ -21488,3 +21488,62 @@
                   (+ (* 100 steps) (E.next)))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 130 Int64)))
+
+; ── Record op payloads by projection + the guard-vs-state face (breaker rp2/rp3/gp1) ──────────
+; rp2/rp3: a record PAYLOAD consumed by FIELD PROJECTION (no outer match — the arm-peel's match
+; path is never involved) beside an inner sum-state match, fresh per dispatch across Idle→Run.
+; rp2 is the flat record; rp3 nests a record inside the payload and projects two levels. Both pin
+; the RT4 canonical (Record (: k Int64)) ascription in effect-op signature position and the
+; Phase-B canonical (= name value) triple in the record literals. gp1: a match GUARD inside the
+; handler arm comparing the op payload against the LIVE STATE binder — the admit path grows the
+; state by the payload, the reject path leaves it; the three rows cover reject-both, admit-both,
+; and the negative-seed thresholds. (A guard that PERFORMS is CDZ0407-rejected by design — the
+; purity policy reaches arm position; pinned by the diagnostics family.) All rows hand-computed;
+; all pass on wasm, rust, and rust-async.
+
+(case "rp2 a RECORD op argument read by field beside an inner sum-state match — the record-payload face of the per-dispatch arm"
+  (input  (do
+            (type Mode (Idle) (Run Int64))
+            (effect M (op step (-> (Record (: k Int64) (: w Int64)) Int64)))
+            (def (main (: n Int64))
+              (handle M (Mode.Idle)
+                ((step (c) s
+                  (match s
+                    ((Mode.Idle) (resume (* (. c k) (. c w)) (Mode.Run (* (. c k) (. c w)))))
+                    ((Mode.Run j) (resume (+ j (* (. c k) (. c w))) (Mode.Run j))))))
+                (+ (M.step (record (= k (+ 10 n)) (= w 2)))
+                   (M.step (record (= k 3) (= w 4))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 72 Int64))
+  (call   main (: 0 Int64)) (output (: 52 Int64)))
+
+(case "rp3 the record payload carries a NESTED record — two-level field projection inside the arm beside the state match"
+  (input  (do
+            (type Mode (Idle) (Run Int64))
+            (effect M (op step (-> (Record (: m (Record (: k Int64))) (: w Int64)) Int64)))
+            (def (main (: n Int64))
+              (handle M (Mode.Idle)
+                ((step (c) s
+                  (match s
+                    ((Mode.Idle) (resume (* (. (. c m) k) (. c w)) (Mode.Run (* (. (. c m) k) (. c w)))))
+                    ((Mode.Run j) (resume (+ j (* (. (. c m) k) (. c w))) (Mode.Run j))))))
+                (+ (M.step (record (= m (record (= k (+ 10 n)))) (= w 2)))
+                   (M.step (record (= m (record (= k 3))) (= w 4))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 72 Int64))
+  (call   main (: 0 Int64)) (output (: 52 Int64)))
+
+(case "gp1 a match GUARD inside the handler ARM compares the op PAYLOAD against the live STATE binder — the guard routes admit/reject per dispatch"
+  (input  (do
+            (effect E (op judge (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((judge (v) s
+                  (match v
+                    ((guard x (> x s)) (resume 1 (+ s x)))
+                    (_x (resume 0 s)))))
+                (+ (* 10 (E.judge 3)) (E.judge 4))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 0 Int64))
+  (call   main (: 0 Int64)) (output (: 11 Int64))
+  (call   main (: -3 Int64)) (output (: 11 Int64)))
