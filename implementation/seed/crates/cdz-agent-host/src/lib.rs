@@ -69,6 +69,7 @@ pub mod converse_json;
 pub mod disk_cache;
 #[cfg(feature = "live-aws-storage")]
 pub mod dynamo_log;
+pub mod effect_registry;
 pub mod effect_reply;
 pub mod emit;
 #[cfg(feature = "metrics-export")]
@@ -118,6 +119,7 @@ pub use config::{
 pub use disk_cache::DiskCacheTier;
 #[cfg(feature = "live-aws-storage")]
 pub use dynamo_log::{DynamoLogSink, DynamoLogSinkBuilder};
+pub use effect_registry::{effect_families_owned_by, resolve_handler_session};
 pub use effect_reply::{ReplyTarget, ReplyTokenRegistry};
 pub use emit::EmitExecutor;
 #[cfg(feature = "metrics-export-prometheus")]
