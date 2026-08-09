@@ -214,7 +214,87 @@ fn emit_or_check(out: &PathBuf, source: &str, check: bool, oracle: &str, summary
 /// builds write the SAME `target/.../cdz_runtime.wasm` path, so each build's bytes are read IMMEDIATELY,
 /// before the next overwrites. Exits on a build failure (a hash cannot be honestly recorded without the
 /// built artifact).
+/// R3 (nix codegen-consumes-nix-bytes, opt-in): the env flag that switches codegen from SELF-BUILDING the
+/// runtime/nfc components (via `cargo component`, 3× runtime + 1× nfc) to CONSUMING the bytes the nix
+/// derivations already build (`packages.runtime{,-raw,-debug}` + `packages.nfc`), removing the duplicate
+/// build. Default (unset) keeps the self-build — a hard swap is forbidden by the operator no-cutover rule,
+/// so this lands opt-in + parallel-proven (the nix path must produce the IDENTICAL hashes; see the
+/// `codegen_nix_consume_matches_self_build` parity test) before the default ever flips.
+const CODEGEN_FROM_NIX_ENV: &str = "CDZ_CODEGEN_FROM_NIX";
+
+/// The `nix` binary to invoke — PATH first (honor a custom/newer nix), else the standard multi-user
+/// profile location. Mirrors `fleet::nix_binary` (kept local to avoid cross-module exposure of a private
+/// helper; both resolve identically).
+fn codegen_nix_binary() -> String {
+    if std::process::Command::new("nix")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success())
+    {
+        return "nix".to_string();
+    }
+    const PROFILE_NIX: &str = "/nix/var/nix/profiles/default/bin/nix";
+    if std::path::Path::new(PROFILE_NIX).exists() {
+        return PROFILE_NIX.to_string();
+    }
+    "nix".to_string()
+}
+
+/// `nix build .#<attr> --no-link --print-out-paths` → the built store path. Panics on a build/eval
+/// failure or empty output (codegen cannot honestly record a hash without the artifact — same
+/// exit-on-failure contract as the self-build path). The attr is a flake output name (e.g. `runtime`,
+/// `runtime-raw`, `runtime-debug`, `nfc`).
+fn nix_build_out_path(attr: &str) -> std::path::PathBuf {
+    let nix = codegen_nix_binary();
+    let out = std::process::Command::new(&nix)
+        .args([
+            "build",
+            &format!(".#{attr}"),
+            "--no-link",
+            "--print-out-paths",
+        ])
+        .output()
+        .unwrap_or_else(|e| panic!("xtask codegen: could not invoke `{nix} build .#{attr}`: {e}"));
+    if !out.status.success() {
+        panic!(
+            "xtask codegen: `nix build .#{attr}` failed ({}):\n{}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if path.is_empty() {
+        panic!("xtask codegen: `nix build .#{attr}` produced no output path");
+    }
+    std::path::PathBuf::from(path)
+}
+
+/// R3 consumer: derive the runtime hashes by CONSUMING the nix-built outputs instead of self-building.
+/// `.#runtime-raw` (pre-strip, carries `cdz-abi`) → `read_abi_imm_unit`; `.#runtime` (stripped/canonicalized
+/// in-derivation, the shipped artifact) → `content_address` = REQUIRED_RUNTIME_HASH; `.#runtime-debug`
+/// (stripped) → DEBUG_RUNTIME_HASH. The nix `runtime` output is ALREADY canonicalized (the derivation runs
+/// `canonicalize_runtime`), so it is content-addressed DIRECTLY — no re-strip. Byte-equivalent to the
+/// self-build path by construction (verified: `nix .#runtime` b3sum == the self-built canonicalized hash).
+fn runtime_hashes_from_nix() -> (String, String, u32) {
+    let raw_path = nix_build_out_path("runtime-raw");
+    let imm_unit = read_abi_imm_unit(&raw_path);
+    let release_path = nix_build_out_path("runtime");
+    let release_bytes = std::fs::read(&release_path)
+        .unwrap_or_else(|e| panic!("xtask codegen: read nix runtime {release_path:?}: {e}"));
+    let release_hash = content_address(&release_bytes);
+    let debug_path = nix_build_out_path("runtime-debug");
+    let debug_bytes = std::fs::read(&debug_path)
+        .unwrap_or_else(|e| panic!("xtask codegen: read nix runtime-debug {debug_path:?}: {e}"));
+    let debug_hash = content_address(&debug_bytes);
+    (release_hash, debug_hash, imm_unit)
+}
+
 fn build_runtime_hashes(paths: &Paths) -> (String, String, u32) {
+    // R3 (opt-in): consume the nix-built runtime bytes instead of self-building (removes the duplicate
+    // 3× runtime + gate-build rebuild). Default keeps the self-build until parallel-proven + default-flipped.
+    if std::env::var_os(CODEGEN_FROM_NIX_ENV).is_some() {
+        return runtime_hashes_from_nix();
+    }
     let sh = Shell::new().expect("open a shell");
     // Release runtime — what a shipped program pins and composes. CANONICALIZE (strip the tool-version
     // `producers` sections) before hashing, exactly as `build` does when it stores the artifact — so the
@@ -253,6 +333,14 @@ fn build_runtime_hashes(paths: &Paths) -> (String, String, u32) {
 /// runtime carries none of it and its own hash is unaffected. `canonicalize_runtime` strips the tool-version
 /// `producers` sections so the hash is reproducible across hosts (identical to the artifact `build` stores).
 fn build_nfc_hash(paths: &Paths) -> String {
+    // R3 (opt-in): consume the nix-built NFC bytes. `.#nfc` is stripped/canonicalized in-derivation (like
+    // `.#runtime`) and carries no custom section codegen reads, so it is content-addressed DIRECTLY.
+    if std::env::var_os(CODEGEN_FROM_NIX_ENV).is_some() {
+        let nfc_path = nix_build_out_path("nfc");
+        let nfc_bytes = std::fs::read(&nfc_path)
+            .unwrap_or_else(|e| panic!("xtask codegen: read nix nfc {nfc_path:?}: {e}"));
+        return content_address(&nfc_bytes);
+    }
     let sh = Shell::new().expect("open a shell");
     let nfc_wasm = build_component_with_features(&sh, &paths.seed, "cdz-nfc", "cdz_nfc", &[]);
     let nfc_bytes = crate::canonicalize_runtime(&nfc_wasm);
