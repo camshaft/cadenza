@@ -293,7 +293,7 @@ mod tests {
                 id: EffectId(seq),
                 kind: crate::effect::EffectKind::Http,
                 family: crate::effect::EffectKind::Http.family().into(),
-                target: "https://ok.host/x".into(),
+                target: "https://ok.host/x".as_bytes().into(),
                 idempotency_key: Hash::of(b"k"),
                 deadline_ms: None,
                 token: None,

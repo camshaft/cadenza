@@ -417,7 +417,10 @@ impl Session {
                 if self.open.contains(&id.0) {
                     in_flight.push(InFlight {
                         kind: effect_kind_name(kind),
-                        target: target.to_string(),
+                        // Observability only: a lossy UTF-8 view of the opaque byte target (non-UTF-8 bytes
+                        // render as U+FFFD). This is a human-facing status snapshot, not an authz decision,
+                        // so lossy is fine here (the SEC-F1 gates use the fail-closed strict view).
+                        target: String::from_utf8_lossy(target).into_owned(),
                     });
                     // The dispatch's deadline anchor (if any) doubles as its dispatch-time reference for
                     // stall detection; track the oldest so a long-outstanding effect trips Stalled.
@@ -1134,8 +1137,11 @@ impl Session {
                 .content_type
                 .matches_family(crate::effect::effect_ct::TIMER)
             {
-                match req.target.parse::<u64>() {
-                    Ok(deadline_ms) => {
+                // The timer deadline is a u64 ms encoded as text in the opaque byte target; read the
+                // fail-closed UTF-8 view then parse. A non-UTF-8 / non-u64 target is a malformed timer
+                // (observable AuthzDenied, resumes the continuation — §9d), never a panic.
+                match req.target_str().ok().and_then(|t| t.parse::<u64>().ok()) {
+                    Some(deadline_ms) => {
                         self.append(
                             EventBody::TimerArmed {
                                 id,
@@ -1146,7 +1152,7 @@ impl Session {
                         )
                         .await;
                     }
-                    Err(_) => {
+                    None => {
                         let denial_hash = self
                             .append(
                                 EventBody::AuthzDenied {
@@ -1455,7 +1461,17 @@ impl Session {
     /// codec it would use for a set.
     fn apply_store_effect(&mut self, req: &EffectRequest, idempotency_key: Hash) -> EffectOutcome {
         let family = req.content_type.family.as_ref();
-        let name = req.target.as_ref();
+        // A store NAME is text (a `system/…`/`effect/…`/group name); the opaque byte target is read as its
+        // fail-closed UTF-8 view (operator Target=Bytes ruling). A non-UTF-8 target for a store effect is a
+        // malformed request → observable Err, never a panic.
+        let name =
+            match req.target_str() {
+                Ok(n) => n,
+                Err(_) => return EffectOutcome::err(
+                    "store effect target is not valid UTF-8 (a store name must be a UTF-8 string)"
+                        .to_string(),
+                ),
+            };
         // A `store/set` carries the target hash in an inline `name-set` payload; `store/resolve` carries
         // none. Decode → the optional hash apply_effect expects. A set with a missing/garbage payload is a
         // malformed effect (observable Err), not a panic. VALIDATE the payload's embedded name against the
@@ -1540,7 +1556,16 @@ impl Session {
         idempotency_key: Hash,
     ) -> EffectOutcome {
         let family = req.content_type.family.as_ref();
-        let name = req.target.as_ref();
+        // A group NAME is text; read the opaque byte target as its fail-closed UTF-8 view (Target=Bytes
+        // ruling). Non-UTF-8 → malformed group effect, observable Err.
+        let name =
+            match req.target_str() {
+                Ok(n) => n,
+                Err(_) => return EffectOutcome::err(
+                    "group effect target is not valid UTF-8 (a group name must be a UTF-8 string)"
+                        .to_string(),
+                ),
+            };
         // add/remove carry a `member-op` payload (member + tag); resolve-all carries none. Decode → the
         // optional MemberOp apply_group_effect expects. VALIDATE the payload's embedded name against the effect
         // TARGET (the target is what the authorizer gated, SEC-F1): an op whose payload names a DIFFERENT group
@@ -2084,7 +2109,7 @@ fn idempotency_key_for(id: EffectId, req: &EffectRequest) -> Hash {
     let family = req.content_type.family.as_bytes();
     buf.extend_from_slice(&(family.len() as u64).to_le_bytes());
     buf.extend_from_slice(family);
-    buf.extend_from_slice(req.target.as_bytes());
+    buf.extend_from_slice(&req.target);
     Hash::of(&buf)
 }
 
@@ -2307,7 +2332,11 @@ mod status_snapshot_tests {
         );
         let (req, _key) = &exec.seen[0];
         assert!(matches!(req.kind, EffectKind::Emit), "kind is Emit");
-        assert_eq!(req.target.as_ref(), peer, "target is the peer session id");
+        assert_eq!(
+            req.target_str().unwrap(),
+            peer,
+            "target is the peer session id"
+        );
         assert_eq!(
             req.payload,
             Some(crate::effect::Payload::Inline(
@@ -2330,7 +2359,11 @@ mod status_snapshot_tests {
             matches!(kind, EffectKind::Emit),
             "Dispatched records kind=Emit"
         );
-        assert_eq!(target.as_ref(), peer, "Dispatched records the peer target");
+        assert_eq!(
+            std::str::from_utf8(target.as_ref()).unwrap(),
+            peer,
+            "Dispatched records the peer target"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -3100,7 +3133,7 @@ mod monotonic_now_tests {
 
         // Routed half: exactly the regular effect reached the executor (control never did).
         assert_eq!(exec.seen.len(), 1, "only the effect/* effect routes");
-        assert_eq!(exec.seen[0].0.target.as_ref(), "world");
+        assert_eq!(exec.seen[0].0.target_str().unwrap(), "world");
         assert_eq!(
             exec.seen[0].0.content_type.family.as_ref(),
             crate::effect::effect_ct::EMIT
@@ -6284,8 +6317,9 @@ mod store_effect_tests {
                     EffectOutcome::Ok(Some(Payload::Inline(hex.into_bytes().into())))
                 }
                 effect_ct::BLOB_GET => {
-                    // Target = the hex hash (the handle blob/put returned + the reducer store/resolve'd).
-                    match self.blobs.get(req.target.as_ref()) {
+                    // Target = the hex hash (the handle blob/put returned + the reducer store/resolve'd) —
+                    // a UTF-8 hex string read via the fail-closed byte-target view (Target=Bytes ruling).
+                    match req.target_str().ok().and_then(|h| self.blobs.get(h)) {
                         Some(bytes) => {
                             EffectOutcome::Ok(Some(Payload::Inline(bytes.clone().into())))
                         }

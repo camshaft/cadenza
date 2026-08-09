@@ -1869,7 +1869,9 @@ fn body_form(b: &mut Builder, body: &EventBody) -> StructId {
             let idv = u64_leaf(b, id.0);
             let k = kind_atom(b, kind);
             let fam = str_leaf(b, family);
-            let t = str_leaf(b, target);
+            // Target is opaque bytes (Target=Bytes ruling) → a `Bytes` leaf, not a `Str` leaf (it may not be
+            // UTF-8). This changes the Dispatched AST shape from the pre-ruling `Str` leaf.
+            let t = bytes_leaf(b, target);
             let idem = hash_form(b, idempotency_key);
             let dl = opt_ms_form(b, *deadline_ms);
             let tok = opt_bytes_form(b, token.as_deref());
@@ -2018,6 +2020,22 @@ fn read_bytes(a: &Arenas, id: StructId) -> Result<Vec<u8>, EventAstError> {
             _ => Err(shape("expected bytes leaf")),
         },
         _ => Err(shape("expected atom")),
+    }
+}
+
+/// Read an effect TARGET as bytes, tolerating BOTH leaf shapes: a `Bytes` leaf (the current shape after the
+/// Target=Bytes ruling) OR a `Str` leaf (a PRE-ruling AST, where the target was marshalled as a `Str` leaf —
+/// its UTF-8 bytes are the same target). This keeps a durable log / AST written before the ruling decodable
+/// (backward compat), while the encoder now emits `Bytes`. A str's bytes ARE the target, so reading them as
+/// bytes is lossless and identical to what the old `Str` path produced.
+fn read_target_bytes(a: &Arenas, id: StructId) -> Result<Vec<u8>, EventAstError> {
+    match a.get(id) {
+        Struct::Atom(leaf) => match a.leaf(*leaf) {
+            Leaf::Bytes(bytes) => Ok(bytes.clone()),
+            Leaf::Str(s) => Ok(s.clone().into_bytes()),
+            _ => Err(shape("expected bytes or str leaf for target")),
+        },
+        _ => Err(shape("expected atom for target")),
     }
 }
 
@@ -2234,7 +2252,7 @@ fn read_body(a: &Arenas, id: StructId) -> Result<EventBody, EventAstError> {
                     id: EffectId(read_u64(a, *idv)?),
                     kind: read_kind(a, *k)?,
                     family: read_str(a, *fam)?.into(),
-                    target: read_str(a, *t)?.into(),
+                    target: std::sync::Arc::from(read_target_bytes(a, *t)?.as_slice()),
                     idempotency_key: read_hash(a, *idem)?,
                     deadline_ms: read_opt_ms(a, *dl)?,
                     token: read_opt_bytes(a, *tok)?,
@@ -2243,7 +2261,7 @@ fn read_body(a: &Arenas, id: StructId) -> Result<EventBody, EventAstError> {
                     id: EffectId(read_u64(a, *idv)?),
                     kind: read_kind(a, *k)?,
                     family: read_kind(a, *k)?.family().into(),
-                    target: read_str(a, *t)?.into(),
+                    target: std::sync::Arc::from(read_target_bytes(a, *t)?.as_slice()),
                     idempotency_key: read_hash(a, *idem)?,
                     deadline_ms: read_opt_ms(a, *dl)?,
                     token: read_opt_bytes(a, *tok)?,
@@ -2389,7 +2407,7 @@ mod tests {
                     id: EffectId(7),
                     kind: EffectKind::Http,
                     family: EffectKind::Http.family().into(),
-                    target: "https://ok.host/p".into(),
+                    target: "https://ok.host/p".as_bytes().into(),
                     idempotency_key: h,
                     deadline_ms: Some(12345),
                     token: Some(b"resume-tok".to_vec()),
@@ -2402,7 +2420,7 @@ mod tests {
                     id: EffectId(8),
                     kind: EffectKind::Shell,
                     family: EffectKind::Shell.family().into(),
-                    target: "cargo test".into(),
+                    target: "cargo test".as_bytes().into(),
                     idempotency_key: h,
                     deadline_ms: None,
                     token: None,
@@ -2418,7 +2436,7 @@ mod tests {
                     id: EffectId(9),
                     kind: EffectKind::Emit,
                     family: crate::effect::effect_ct::CAPABILITIES.into(),
-                    target: "self".into(),
+                    target: "self".as_bytes().into(),
                     idempotency_key: h,
                     deadline_ms: None,
                     token: None,
