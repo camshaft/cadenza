@@ -28,6 +28,7 @@
 //!
 //! ## Output (tab-delimited lines on stdout, for xtask to parse + grade)
 //! ```text
+//! end-fault\t<alias>\t<reason>          present ONLY when the fold trapped/failed (grades Fail)
 //! end-status\t<alias>\t<state>          state in active|quiescent|stalled|closed
 //! events-processed\t<alias>\t<n>
 //! end-kv\t<alias>\t<key-utf8-or-hex>\t<value-hex>
@@ -150,6 +151,19 @@ async fn main() -> Result<()> {
 
     // Report the terminal end-state as tab lines for xtask to grade.
     let mut out = String::new();
+    // A FOLD FAILURE (a reducer trap / fuel-exhaustion / instantiate failure) is recorded on the log as a
+    // `FoldFailed` tip — it is NOT a `deliver` Err (deliver returns Ok, the kernel captures the fault as a
+    // first-class event, §17 can't-brick), and the KV is atomically restored, leaving the session
+    // Quiescent. So a miscompiled reducer would read as a clean `quiescent` end-state and FALSE-PASS unless
+    // the fault is surfaced. Emit an `end-fault` line whenever the tip is a fault; xtask grades any
+    // end-fault a Fail (a conformance case asserts a SUCCESSFUL run, never a fold that trapped).
+    if let Some(reason) = session.last_fault_reason() {
+        out.push_str(&format!(
+            "end-fault\t{}\t{}\n",
+            args.alias,
+            reason.replace(['\t', '\n'], " ")
+        ));
+    }
     let snap = session.status_snapshot(None, args.stall_after_ms);
     out.push_str(&format!(
         "end-status\t{}\t{}\n",
