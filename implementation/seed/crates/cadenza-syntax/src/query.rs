@@ -2018,6 +2018,72 @@ pub mod driver {
         (arr.finish(), lint::has_error(&diags))
     }
 
+    /// Build the `Verified`-fix rewrite set for `lints` under `levels`: each NAMED lint that (a) is
+    /// not suppressed (`Allow`) and (b) carries a fix of an eligible applicability contributes a
+    /// `pattern → fix-template` rewrite rule, in catalog order (so a fix pass is deterministic).
+    /// `include_heuristic` opts `Heuristic` fixes in; by default only `Verified` fixes apply
+    /// (DESIGN-cadenza-lint §2 — a Heuristic fix is offered, not auto-applied).
+    fn fix_ruleset(
+        lints: &lint::LintSet,
+        levels: &lint::LintLevels,
+        include_heuristic: bool,
+    ) -> RuleSet {
+        let mut rules = Vec::new();
+        for rule in &lints.rules {
+            // A lint suppressed to `Allow` fires no diagnostic, so it applies no fix either.
+            if rule.name.as_deref().and_then(|n| levels.effective(n))
+                == Some(lint::LintLevel::Allow)
+            {
+                continue;
+            }
+            if let Some((template, app)) = &rule.fix {
+                let eligible = matches!(app, lint::Applicability::Verified) || include_heuristic;
+                if eligible {
+                    rules.push(Rule::new(rule.pattern.clone(), template.clone()));
+                }
+            }
+        }
+        RuleSet::new(rules)
+    }
+
+    /// Apply the `Verified` (and, when `include_heuristic`, `Heuristic`) fixes of `lints` to `target`
+    /// as a validated, formatting-preserving codemod: reuse [`apply_rewrite_preserving`] (splice only
+    /// changed subtrees at their spans, leaving layout/comments verbatim), falling back to a whole-tree
+    /// reprint when a span-splice can't be validated. `levels` gates which named lints fire (a lint set
+    /// to `Allow` — by `--allow` or an `@allow` attribute — applies no fix). Fixes run to a fixed point,
+    /// so a fix that exposes a nested idiom collapses in the same pass. Returns the fixed program text
+    /// plus the number of sites rewritten; when nothing is fixable the source is returned with count 0.
+    ///
+    /// The `Verified` bar means every applied fix is semantically equivalent (licensed by the
+    /// apply-and-recheck witness gate, DESIGN-cadenza-lint §6); the validated transaction here rejects
+    /// any fix whose result does not re-parse to the intended tree, so a broken template never writes.
+    pub fn lint_fix_with_levels(
+        lints: &lint::LintSet,
+        target: &Target,
+        src: &str,
+        surface: Format,
+        levels: &lint::LintLevels,
+        include_heuristic: bool,
+        width: usize,
+    ) -> Result<RewriteOutcome, String> {
+        let rules = fix_ruleset(lints, levels, include_heuristic);
+        if rules.rules.is_empty() {
+            return Ok(RewriteOutcome {
+                output: src.to_string(),
+                count: 0,
+            });
+        }
+        // Prefer the formatting-preserving splice (the DEFAULT for a codemod over hand-formatted
+        // source): it needs spans and errors without them, so a spanless target (or a splice that
+        // can't be validated) falls straight through to the whole-tree reprint below.
+        if let Ok(o) =
+            apply_rewrite_preserving(&rules, Strategy::BottomUp, target, src, surface, true)
+        {
+            return Ok(o);
+        }
+        apply_rewrite(&rules, Strategy::BottomUp, target, surface, width, true)
+    }
+
     /// A per-source-label cache of [`LineIndex`], so resolving MANY clone sites in one source builds that
     /// source's index ONCE (O(len)) and binary-searches per site — turning the report's O(sites × len)
     /// newline re-scan into O(len + sites·log). Keyed by the file label a `CloneSite` carries.
@@ -5564,6 +5630,100 @@ mod tests {
                 !had_error && report.is_empty(),
                 "allow suppresses: {report:?}"
             );
+        }
+
+        #[test]
+        fn lint_fix_applies_verified_fixes_and_round_trips() {
+            // The apply-and-recheck witness DESIGN-cadenza-lint §6 licenses `Verified`: fixing the
+            // built-in `idiomatic/if-bool` rewrites `(if b true false)` → `b`, the result re-parses,
+            // and re-linting the fixed program is clean (the idiom is gone).
+            let src = "(module m (def (f (: b Bool)) (if b true false)) (export f))";
+            let (target, _) = driver::load(src.as_bytes(), Format::Sexpr).unwrap();
+            let set = crate::query::lint::LintSet::builtin();
+            let levels = crate::query::lint::LintLevels::default();
+            let out = driver::lint_fix_with_levels(
+                &set,
+                &target,
+                src,
+                Format::Sexpr,
+                &levels,
+                false,
+                100,
+            )
+            .unwrap();
+            assert_eq!(
+                out.count, 1,
+                "the one if-bool site was fixed: {}",
+                out.output
+            );
+            assert!(
+                out.output.contains("(def (f (: b Bool)) b)"),
+                "if-bool collapsed to the condition: {}",
+                out.output
+            );
+            // Re-lint the fixed program — the idiom is gone (apply-and-recheck).
+            let (fixed, _) = driver::load(out.output.as_bytes(), Format::Sexpr).unwrap();
+            let diags = crate::query::lint::run(&set, &fixed.tree, fixed.spans.as_ref());
+            assert!(diags.is_empty(), "fixed program is idiom-clean: {diags:?}");
+        }
+
+        #[test]
+        fn lint_fix_respects_allow_and_applies_no_fix() {
+            // A lint suppressed to `Allow` (via a level, mirroring `--allow` / an `@allow` attribute)
+            // fires no diagnostic AND applies no fix — the source is returned unchanged, count 0.
+            use crate::query::lint::{LintLevel, LintLevels};
+            let src = "(module m (def (f (: b Bool)) (if b true false)) (export f))";
+            let (target, _) = driver::load(src.as_bytes(), Format::Sexpr).unwrap();
+            let set = crate::query::lint::LintSet::builtin();
+            let mut levels = LintLevels::new();
+            levels.set("idiomatic/if-bool", LintLevel::Allow);
+            let out = driver::lint_fix_with_levels(
+                &set,
+                &target,
+                src,
+                Format::Sexpr,
+                &levels,
+                false,
+                100,
+            )
+            .unwrap();
+            assert_eq!(out.count, 0, "an allowed lint applies no fix");
+            assert_eq!(out.output, src, "source returned verbatim: {}", out.output);
+        }
+
+        #[test]
+        fn lint_fix_leaves_verified_only_by_default_and_takes_heuristic_on_opt_in() {
+            // A `Heuristic` fix is NOT applied by default (offered, not auto-applied); `include_heuristic`
+            // opts it in. Uses a user rule so the applicability is under the test's control.
+            let src = "(do (risky a))";
+            let (target, _) = driver::load(src.as_bytes(), Format::Sexpr).unwrap();
+            let set = crate::query::lint::LintSet::compile(
+                "(lint style/risky (risky ,x) \"prefer safe\" => (safe ,x) heuristic)",
+            )
+            .unwrap();
+            let levels = crate::query::lint::LintLevels::default();
+            // Default: heuristic excluded → no change.
+            let off = driver::lint_fix_with_levels(
+                &set,
+                &target,
+                src,
+                Format::Sexpr,
+                &levels,
+                false,
+                100,
+            )
+            .unwrap();
+            assert_eq!(
+                off.count, 0,
+                "heuristic fix withheld by default: {}",
+                off.output
+            );
+            // Opt-in: heuristic applied.
+            let on =
+                driver::lint_fix_with_levels(&set, &target, src, Format::Sexpr, &levels, true, 100)
+                    .unwrap();
+            assert_eq!(on.count, 1, "heuristic fix applied under opt-in");
+            assert!(on.output.contains("safe"), "the fix ran: {}", on.output);
         }
     }
 

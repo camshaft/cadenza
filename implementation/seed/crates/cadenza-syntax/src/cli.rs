@@ -183,6 +183,22 @@ pub struct LintArgs {
     /// Promote a named lint (or group) to an error (fails the run). Repeatable. See `--allow`.
     #[arg(long = "deny", value_name = "NAME")]
     deny: Vec<String>,
+
+    /// Apply each lint's `Verified` fix in place (an equivalence-preserving codemod), rewriting each
+    /// input FILE. Only `Verified` fixes apply (add `--heuristic` to opt in Heuristic ones); a lint
+    /// set to `--allow` (or an in-source `@allow`) applies no fix. Requires FILE inputs (never stdin);
+    /// the edit is formatting-preserving. Mutually exclusive with `--json`.
+    #[arg(long)]
+    fix: bool,
+
+    /// With `--fix`, also apply `Heuristic` fixes (offered-not-auto by default). Ignored without `--fix`.
+    #[arg(long)]
+    heuristic: bool,
+
+    /// Target line width for a reprinted `--fix` result (used only when the formatting-preserving
+    /// splice must fall back to a whole-tree reprint).
+    #[arg(short, long, default_value_t = Options::default().width)]
+    width: usize,
 }
 
 #[derive(Args)]
@@ -1227,6 +1243,11 @@ fn run_clones(args: &ClonesArgs) -> Result<(), String> {
 /// Lint the targets against a rule set, printing diagnostics (or JSON). Returns whether any
 /// `error`-severity diagnostic fired (the caller maps `true` → non-zero exit, the CI gate).
 fn run_lint(args: &LintArgs) -> Result<bool, String> {
+    if args.fix && args.json {
+        return Err(
+            "--fix is mutually exclusive with --json (a fix rewrites files, not JSON)".into(),
+        );
+    }
     // Assemble the rule set from --rules FILE and/or inline --rule forms.
     let mut set = LintSet::default();
     if let Some(path) = &args.rules {
@@ -1262,6 +1283,9 @@ fn run_lint(args: &LintArgs) -> Result<bool, String> {
     }
 
     let targets = collect_targets(&args.files, args.from)?;
+    if args.fix && targets.iter().any(|t| t.path.is_none()) {
+        return Err("--fix needs FILE input(s), not stdin".into());
+    }
     let multi = targets.len() > 1;
     let mut any_error = false;
     let mut json_objs: Vec<String> = Vec::new();
@@ -1277,6 +1301,32 @@ fn run_lint(args: &LintArgs) -> Result<bool, String> {
         // each file honors its OWN in-source attributes.
         let mut levels = crate::query::lint::LintLevels::from_attributes(&target.tree);
         levels.overlay(&cli_levels);
+
+        if args.fix {
+            // Apply each firing lint's Verified fix (Heuristic too under --heuristic) as a validated,
+            // formatting-preserving codemod, then write the file back only when it changed. Reporting
+            // is a separate action from fixing (DESIGN-cadenza-lint §5): --fix rewrites, it does not
+            // also print the warnings it resolved.
+            let outcome = query::driver::lint_fix_with_levels(
+                &set,
+                &target,
+                &src,
+                spec.format,
+                &levels,
+                args.heuristic,
+                args.width,
+            )
+            .map_err(|e| with_path(&spec.path, &e))?;
+            let path = spec.path.as_deref().expect("--fix requires a path");
+            if outcome.count == 0 {
+                eprintln!("cdz: {path}: no fixable lints");
+            } else {
+                let content = ensure_trailing_newline(&outcome.output);
+                std::fs::write(path, content).map_err(|e| format!("writing {path}: {e}"))?;
+                eprintln!("cdz: {path}: fixed {} lint(s)", outcome.count);
+            }
+            continue;
+        }
 
         if args.json {
             let (j, had_error) = query::driver::lint_json_with_levels(
