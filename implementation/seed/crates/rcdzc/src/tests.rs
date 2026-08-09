@@ -11276,17 +11276,18 @@ fn a_tail_mutual_recursive_group_where_both_partners_perform_folds() {
     );
 }
 
-/// SAFE-DECLINE (soundness floor): a NON-TAIL mutual-recursive group where a partner call PRECEDES an
-/// out-state observation must DECLINE cleanly, NOT specialize to a dropped-advance miscompile. `compute`
-/// recurses via a `let`-init `(typeof (- n 1))` (a mutual partner that performs `put`) then reads state
-/// AFTER the call returns `(+ child (St.get))`. Single-return threads the partner call with the INCOMING
-/// state and returns it unchanged, so the partner's put-advance is DROPPED and the post-call `get` reads the
-/// stale pre-recursion state — a SILENT wrong value (`main(2)` folded to 3, the sound answer is 4). The
-/// multi-value machinery projects a SELF-call's out-state but not a mutual partner's, so
-/// `mutual_partner_precedes_observation` declines this until the group-aware multi-value fold lands. Pins
-/// the CLEAN decline (no `$s0` leak, no miscompile) so a regression to either is caught.
+/// The GROUP-AWARE multi-value fold over a mutual-recursive SCC: a NON-TAIL mutual group where a partner
+/// call PRECEDES an out-state observation now COMPILES (was a clean decline in the soundness-floor slice).
+/// `compute` recurses via a `let`-init `(typeof (- n 1))` (a mutual partner that performs `put`) then reads
+/// state AFTER the call returns `(+ child (St.get))`. Single-return would thread the partner call with the
+/// INCOMING state and drop its advance (the post-call `get` reading stale state — a miscompile, `main(2)`→3).
+/// The group fold reserves the whole SCC as multi-value, so each member returns `(value, out-state)` and a
+/// cross-def partner call is let-bound + out-state-projected (`(. t 1)`) like a self-call — `compute`'s
+/// post-recursion `get` reads `typeof`'s ADVANCED out-state. Pins that it COMPILES (no `$s0` leak, no
+/// decline); the RUN value (`main(2)` = 4) is verified by the corpus case `a non-tail mutual-recursive group
+/// observing a partner's out-state folds…` (which runs via cdz-run with the linked runtime).
 #[test]
-fn a_non_tail_mutual_group_observing_a_partners_out_state_declines_cleanly() {
+fn a_non_tail_mutual_group_observing_a_partners_out_state_folds_via_group_multivalue() {
     use crate::testkit::parse;
     let src = "(do \
         (effect St (op get (-> Unit Int64)) (op put (-> Int64 Unit))) \
@@ -11309,18 +11310,17 @@ fn a_non_tail_mutual_group_observing_a_partners_out_state_declines_cleanly() {
         )],
         &[crate::backend::Target::Wasm],
     );
-    // No component (a clean decline), and the decline must NOT be the internal-name leak — an honest
-    // "not yet reducible" todo naming the base function, never a `CDZ0101 unbound name …$s0`.
+    // Produces a component (the group fold specializes the SCC), and no internal-name leak (`$s`/`$t`).
     assert!(
         out.artifact(crate::backend::Target::Wasm.artifact_kind())
-            .is_none(),
-        "a non-tail mutual group observing a partner's out-state must decline, not miscompile"
+            .is_some(),
+        "the group multi-value fold must compile a non-tail mutual group observing a partner's out-state"
     );
     assert!(
         !out.diagnostics
             .iter()
-            .any(|d| d.message.contains("$s0") || d.message.contains("$s1")),
-        "the decline must be clean — no leaked internal specialization state-param name"
+            .any(|d| d.message.contains("$s") || d.message.contains("$t")),
+        "no leaked internal specialization state-param / multi-value temp name"
     );
 }
 

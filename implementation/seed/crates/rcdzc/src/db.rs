@@ -1802,6 +1802,19 @@ pub struct Db {
     /// to consult. Only UPGRADES a threadable callee to multi-value — a non-threadable one is left as-is.
     pub(crate) force_multivalue: std::collections::HashSet<(StructId, String)>,
 
+    /// Members of a MUTUALLY-RECURSIVE SCC being group-specialized in MULTI-VALUE mode together (the
+    /// group-aware recursive-perform fold). Keyed `(member-body-occ, handler-context-key)` like
+    /// `force_multivalue`. When `specialize_recursive` finds the entry callee's SCC has a mutual partner
+    /// whose out-state a later spine item observes, it records EVERY SCC member here up front, so each
+    /// member: (a) computes `multivalue = true` (threads its body via `thread_returning_tuple`), and (b)
+    /// skips the `mutual_partner_precedes_observation` clean-decline (that guard is the SINGLE-return
+    /// floor — with the whole group multi-value, a mutual-partner call is let-bound + out-state-projected
+    /// like a self-call by the head-agnostic recursive-call arm). Cleared when the group finishes (or on
+    /// any member's decline, so a partial group never leaks). Distinct from `multivalue_specs` (which is
+    /// keyed by the SYNTHESIZED spec NAME and read by the call-rewrite arm); this is keyed by the ORIGINAL
+    /// body so the per-member mode decision inside `specialize_recursive` can consult it.
+    pub(crate) group_multivalue_bodies: std::collections::HashSet<(StructId, String)>,
+
     /// Memo of `effects::subtree_performs` — whether the subtree at a node reaches a discharged perform (a
     /// `resume`, or a call into a discharged effect) under a given handler context. Keyed by `(node,
     /// handler-context-key)` (the same resolved-identity string `effect_specializations` uses). The
@@ -2736,6 +2749,7 @@ impl Db {
             multivalue_specs: std::collections::HashSet::new(),
             effect_spec_captures: std::collections::HashMap::new(),
             force_multivalue: std::collections::HashSet::new(),
+            group_multivalue_bodies: std::collections::HashSet::new(),
             subtree_performs_cache: crate::fxhash::FxHashMap::default(),
             reduced_callable_walked: crate::fxhash::FxHashSet::default(),
             type_specializations: crate::fxhash::FxHashMap::default(),
