@@ -20790,3 +20790,62 @@
   (call   main (: 5 Int64)) (output (: 128 Int64))
   (call   main (: 0 Int64)) (output (: 13 Int64))
   (call   main (: -3 Int64)) (output (: -56 Int64)))
+
+
+; ── Seed-binder reuse, host Bytes boundary, and the ascribed-seed workaround (breaker riders) ──
+; sh2x extends the freshen-the-seed fix (the sh2d/sh2n flip): the let binder feeds the nested
+; handle's SEED and is read again AFTER the region — the freshened seed reference and the tail
+; reference must resolve to the same binder. ba1 pins an EMPTY Bytes argument crossing the wasm
+; host boundary. tk-ann1 pins the ASCRIBED empty-collection seed: with an explicit
+; (: Map.empty (Map (Tuple Int64 Int64) Int64)) ascription the tuple-keyed map state works across
+; three arms on every backend — the workaround face of the open-element-Var inference gap (the
+; unascribed twin is a filed issue; its witnesses will join this family when the cross-arm
+; unification lands). All rows hand-computed; all pass on wasm, rust, and rust-async.
+
+(case "sh2x a let binder feeds a nested handle's SEED and is read again AFTER the region — the freshened seed reference and the tail reference are the same binder"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (effect B (op get (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1))))
+                (let ((k (+ n 3)))
+                  (+ (handle B (* k 2)
+                       ((get (u) t (resume t (+ t 1))))
+                       (+ (B.get) (B.get)))
+                     k))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 41 Int64))
+  (call   main (: 0 Int64)) (output (: 16 Int64))
+  (call   main (: -4 Int64)) (output (: -4 Int64)))
+
+(case "ba1 an EMPTY Bytes arg crosses the wasm host boundary"
+  (input  (do
+            (effect io (op sink (-> Bytes Int64)))
+            (def (main (: k Int64))
+              (host (io)
+                (io.sink (Bytes.of (list)))))
+            (export main)))
+  (host-responses (respond io.sink (: 42 Int64)))
+  (host-calls (call io.sink))
+  (call   main (: 0 Int64)) (output (: 42 Int64)))
+
+(case "tk-ann1 an ASCRIBED empty-Map seed (: Map.empty (Map (Tuple Int64 Int64) Int64)) used across three arms — the annotation grounds the element type every arm sees"
+  (input  (do
+            (effect E (op rec (-> Int64)) (op qry (-> Int64 Int64 Int64)) (op cnt (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (tuple n (: Map.empty (Map (Tuple Int64 Int64) Int64)))
+                ((rec () st (match st
+                              ((tuple s m)
+                               (resume s (tuple (+ s 2)
+                                                (Map.insert m (tuple s (+ s 1)) (* 10 s)))))))
+                 (qry (a b) st (match st
+                                 ((tuple s m)
+                                  (resume (match (Map.lookup m (tuple a b))
+                                            ((Some v) v)
+                                            ((None) -1))
+                                          st))))
+                 (cnt () st (match st ((tuple s m) (resume s st)))))
+                (do (E.rec) (+ (E.qry n (+ n 1)) (E.cnt)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 57 Int64)))

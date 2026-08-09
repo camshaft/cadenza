@@ -7005,3 +7005,7 @@ pass	fr1 a TRIPLING Float64 thread crosses a fixed threshold — three compares 
 pass	qs1 two perform-drawn quantities of one dimension ADD — same-unit combine over two crossings
 pass	tp4 readers and a SPIN writer share one tuple state — sum flows into slot a while old a shifts to b
 pass	rr1 RECORD handler state updated by one arm, field-read by a SIBLING arm plus a third counter arm — the record twin of the collection cross-arm shape
+pass	sh2x a let binder feeds a nested handle's SEED and is read again AFTER the region — the freshened seed reference and the tail reference are the same binder
+pass	ba1 an EMPTY Bytes arg crosses the wasm host boundary
+pass	tk-ann1 an ASCRIBED empty-Map seed (: Map.empty (Map (Tuple Int64 Int64) Int64)) used across three arms — the annotation grounds the element type every arm sees
+pass	pr1 List.prepend onto a MERGED vector grows the front without disturbing the seam
