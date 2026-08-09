@@ -119,7 +119,7 @@ pub use config::{
 pub use disk_cache::DiskCacheTier;
 #[cfg(feature = "live-aws-storage")]
 pub use dynamo_log::{DynamoLogSink, DynamoLogSinkBuilder};
-pub use effect_registry::{effect_families_owned_by, resolve_handler_session};
+pub use effect_registry::{effect_families_owned_by, resolve_handler_session, CanonicalResolver};
 pub use effect_reply::{ReplyTarget, ReplyTokenRegistry};
 pub use emit::EmitExecutor;
 #[cfg(feature = "metrics-export-prometheus")]

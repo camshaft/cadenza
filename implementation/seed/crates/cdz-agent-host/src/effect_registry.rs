@@ -67,6 +67,31 @@ pub fn effect_families_owned_by(canonical: &NameStore, handler: &SessionId) -> V
         .collect()
 }
 
+/// The LIVE [`HandlerResolver`](crate::userspace_effect_exec::HandlerResolver) for the userspace-effect
+/// fallback executor: wraps the host's shared canonical [`SharedNameStore`](crate::host::SharedNameStore)
+/// handle and resolves `effect/<family>` off it at PERFORM time (v-agent-harness ruling A). Because it holds
+/// a CLONE of the host's `Rc<RefCell<NameStore>>` (not a spawn-time by-value copy), a handler a peer
+/// registered THIS turn is visible immediately — the property the by-value session store couldn't give. Each
+/// resolve takes a short `.borrow()`; there is no `.await` across it (resolution is a synchronous store read),
+/// so the RefCell borrow is always released before any await in the caller.
+pub struct CanonicalResolver {
+    canonical: crate::host::SharedNameStore,
+}
+
+impl CanonicalResolver {
+    /// Build the resolver over a clone of the host's shared canonical-store handle (from
+    /// [`AgentHost::shared_canonical_store`](crate::host::AgentHost::shared_canonical_store)).
+    pub fn new(canonical: crate::host::SharedNameStore) -> Self {
+        CanonicalResolver { canonical }
+    }
+}
+
+impl crate::userspace_effect_exec::HandlerResolver for CanonicalResolver {
+    fn resolve_handler(&self, family: &str) -> Option<SessionId> {
+        resolve_handler_session(&self.canonical.borrow(), family)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,5 +192,45 @@ mod tests {
         let store = NameStore::new();
         assert_eq!(resolve_handler_session(&store, "weather"), None);
         assert!(effect_families_owned_by(&store, &SessionId::new("h")).is_empty());
+    }
+
+    #[test]
+    fn canonical_resolver_sees_a_registration_written_after_construction_live() {
+        use crate::userspace_effect_exec::HandlerResolver;
+        use cdz_kernel::name_store::SetEntry;
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        // The crux of ruling A: the resolver holds the SHARED store handle, so a handler registered LATER
+        // (by a peer, this turn) is visible immediately — NOT a spawn-time snapshot. Build the resolver over
+        // an EMPTY shared store, THEN register effect/weather, THEN resolve → it must see the fresh handler.
+        let shared: crate::host::SharedNameStore = Rc::new(RefCell::new(NameStore::new()));
+        let resolver = CanonicalResolver::new(shared.clone());
+
+        // Nothing registered yet → unresolved.
+        assert_eq!(
+            resolver.resolve_handler("weather"),
+            None,
+            "no handler before registration"
+        );
+
+        // A peer registers effect/weather AFTER the resolver was constructed (writing through the SAME Rc).
+        let handler = Hash::of(b"weather-handler-genesis");
+        shared
+            .borrow_mut()
+            .set(
+                &format!("{}{}", effect_ct::EFFECT_REGISTRY_PREFIX, "weather"),
+                SetEntry::unsigned(handler),
+            )
+            .expect("effect/ is a scoped writable prefix");
+
+        // The resolver sees it LIVE (proves it reads the shared store, not a captured copy).
+        assert_eq!(
+            resolver.resolve_handler("weather"),
+            Some(SessionId::new(handler.to_hex())),
+            "the resolver resolves a registration written after its construction (live shared-store read)"
+        );
+        // An unregistered family still resolves to None (falls through to the built-in path).
+        assert_eq!(resolver.resolve_handler("stocks"), None);
     }
 }
