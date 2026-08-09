@@ -455,52 +455,15 @@ struct StateSlot {
     state_ty: Option<crate::ty::Ty>,
 }
 
-/// The run-stable CONTENT HASH of a handler arm — its body, params, state binder, and continuation binder
-/// hashed structurally (`hash_subtree` desuffixes synth names + skips run-varying arena decl-ids). Used by
-/// [`HandlerCtx::new`] to key a specialization by the arm's CONTENT, so a fold-copied arm (fresh occurrence,
-/// identical content) coalesces with its original in the memo while two genuinely-distinct handlers of the
-/// same effect stay distinct. MEMOIZED per arm `op` occurrence (`db.arm_content_hash`): `HandlerCtx::new` is
-/// hot (per handle-fold attempt), and re-walking the arm subtree each call is superlinear on a large handler.
-fn arm_content_hash(db: &mut Db, arm: &HandleArm) -> u64 {
-    if let Some(&h) = db.arm_content_hash.get(&arm.op) {
-        return h;
-    }
-    use std::hash::Hasher;
-    let mut h = crate::fxhash::FxHasher::default();
-    crate::sidecar::hash_subtree(db, arm.body, &mut h);
-    for &p in &arm.params {
-        crate::sidecar::hash_subtree(db, p, &mut h);
-    }
-    crate::sidecar::hash_subtree(db, arm.state, &mut h);
-    if let Some(k) = arm.cont {
-        crate::sidecar::hash_subtree(db, k, &mut h);
-    }
-    let hash = h.finish();
-    db.arm_content_hash.insert(arm.op, hash);
-    hash
-}
-
 impl HandlerCtx {
     /// Build a handler context from its operation→arm map and its state slots (one per enclosing handler,
     /// outermost first). The key is the discharged ops (`decl:idx`) plus each arm's occurrence, sorted — a
     /// stable RESOLVED identity. A single-handler context has one slot; a merged nested context (built by
     /// `merged_nested_ctx`) has one per handler.
     fn new(db: &mut Db, arms: HashMap<(u32, u32), HandleArm>, slots: Vec<StateSlot>) -> HandlerCtx {
-        // The key identifies each discharged op by `decl:idx` plus a CONTENT hash of the arm (its body,
-        // params, state binder) — NOT the arm's physical node occurrence `arm.op.0`. The occurrence is
-        // arena POSITION, not identity: the recursive-perform fold COPIES the handler arms with fresh node
-        // ids on each specialization pass, so a position-keyed identity made the SAME handler yield a
-        // DIFFERENT key every copy → the `db.effect_specializations` memo (specialize_recursive) never hit
-        // and re-specialized the same callee once per copy (redundant specializations of an identical
-        // handler — observed 10+ identical specs on the large demand spine, one contributor to its compile
-        // cost). A content hash is stable across copies (structurally-identical arm copies hash the same)
-        // yet still DISTINGUISHES two genuinely-different handlers of the same effect (different arm bodies →
-        // different hashes), so the memo coalesces re-demands of one handler without colliding distinct ones.
-        // `hash_subtree` is the run-stable structural hash (desuffixes synth `#mono`/`$` names, skips
-        // run-varying arena decl-ids), the same content identity the sidecar closure/def cache uses.
         let mut parts: Vec<String> = arms
             .iter()
-            .map(|((d, i), arm)| format!("{d}:{i}#{:016x}", arm_content_hash(db, arm)))
+            .map(|((d, i), arm)| format!("{d}:{i}@{}", arm.op.0))
             .collect();
         parts.sort();
         let key = parts.join(",");

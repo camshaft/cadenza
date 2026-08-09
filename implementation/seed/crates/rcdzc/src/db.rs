@@ -1773,15 +1773,6 @@ pub struct Db {
     /// index of the synthesized specialization, so the same call under the same context reuses one def.
     pub(crate) effect_specializations: crate::fxhash::FxHashMap<(StructId, String), usize>,
 
-    /// Memoized CONTENT HASH of a handler arm, keyed by the arm's `op` occurrence — the run-stable
-    /// structural hash of the arm (body + params + state + cont) that `HandlerCtx::new` uses to build the
-    /// specialization key. `HandlerCtx::new` runs on a HOT path (per handle-fold attempt, which recurses),
-    /// and hashing the whole arm subtree there each call is superlinear on a large handler (the 8-op/9-arm
-    /// demand spine — the cost cliff's `cdz check` regression). The arm subtree is immutable, so its hash is
-    /// computed ONCE per occurrence and cached here. A fold's COPIED arm gets a fresh occurrence → hashed
-    /// once more (correct: the content hash is identical to the original's, so the spec key still coalesces).
-    pub(crate) arm_content_hash: crate::fxhash::FxHashMap<StructId, u64>,
-
     /// The synthesized specialization NAMES that use the MULTI-VALUE-RETURN calling convention (repro-1):
     /// `f#ctx` returns `(value, out-state-per-slot)` instead of a bare value, so a later sibling self-call
     /// can thread the recursion's advanced out-state. EVERY caller of such a spec — the recursive self-call
@@ -2765,7 +2756,6 @@ impl Db {
             core: Column::new(),
             core_override: crate::fxhash::FxHashMap::default(),
             effect_specializations: crate::fxhash::FxHashMap::default(),
-            arm_content_hash: crate::fxhash::FxHashMap::default(),
             multivalue_specs: std::collections::HashSet::new(),
             effect_spec_captures: std::collections::HashMap::new(),
             force_multivalue: std::collections::HashSet::new(),
