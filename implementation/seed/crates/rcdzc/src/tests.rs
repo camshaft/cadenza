@@ -56490,6 +56490,54 @@ mod diagnostics {
             out.diagnostics
         );
     }
+
+    #[test]
+    fn compare_of_a_compound_with_an_unorderable_leaf_names_the_component_wise_route() {
+        // A COMPOUND (tuple/record/list/sum) is ordered lexicographically ONLY when every leaf offers a
+        // total order. A float (or bytes/set/map) leaf INSIDE a compound makes the whole compound
+        // un-orderable (a float offers only the IEEE partial order; §319 / core-semantics.md
+        // #compound-ordering-is-lexicographic), so `compare` over it declines — but the message must not
+        // dead-end: it names the actionable route, comparing the orderable components individually. This
+        // pins that redirect (lower.rs compound-`compare` arm) so a refactor can't degrade it. Runtime
+        // float params inside a tuple so it reaches lowering (a constant compound would fold).
+        let d = first_error(
+            "(module m (def (f (: x Float64) (: y Float64)) (compare (tuple x 1) (tuple y 2))) (export f))",
+        );
+        // An uncoded DECLINE (the un-orderable-leaf carve-out), not a coded rejection.
+        assert_eq!(
+            d.code, None,
+            "an un-orderable-leaf compound compare is an uncoded decline: {}",
+            d.message
+        );
+        assert!(
+            d.message.contains("no total order the compiler can walk yet")
+                // names WHY (the offending leaf kinds) AND the component-wise route
+                && d.message.contains("float/bytes/set/map leaf")
+                && d.message.contains("compare its orderable components individually"),
+            "the decline names the un-orderable-leaf reason AND the component-wise route: {}",
+            d.message
+        );
+        // ROUND-TRIP witness: the named route — comparing the orderable component (the Int field) on its
+        // own — compiles clean, so the redirect points at a form that type-checks.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: x Float64) (: y Float64)) (compare 1 2)) (export f))",
+        );
+        let out = compile(
+            &[Artifact::new(
+                Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&ast),
+            )],
+            &[Target::Wasm],
+        );
+        assert!(
+            !out.diagnostics
+                .iter()
+                .any(|d| d.severity == crate::abi::Severity::Error),
+            "the component-wise route (compare the orderable Int component) compiles clean: {:?}",
+            out.diagnostics
+        );
+    }
 }
 
 // ── Stage 1: let + records (compile-time folded) ────────────────────────────────────────────────
