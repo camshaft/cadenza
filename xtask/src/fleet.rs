@@ -798,6 +798,12 @@ pub enum FleetCmd {
         /// it, dispatch is one-candidate-per-MR (the proven default).
         #[arg(long)]
         batch: bool,
+        /// Max MERGE-REQUESTS combined into ONE batch candidate PR (the batch's blast-radius bound).
+        /// INDEPENDENT of `--cap` (which bounds in-flight PRs): a batch is ONE PR = one in-flight slot,
+        /// carrying up to this many file-disjoint members. Default [`BATCH_PR_CAP`]; set lower (e.g. 2-3)
+        /// for a tiny first-batch blast radius during validation. Only meaningful with `--batch`.
+        #[arg(long, default_value_t = BATCH_PR_CAP)]
+        batch_cap: usize,
     },
     /// Report where a merge-request stands in the CI-gated pipeline — in-flight as a candidate PR (with
     /// lane + how to poll its CI), queued at a position in its lane, or resolved (merged/rejected). A
@@ -1048,11 +1054,12 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
             json,
             publish_origin,
             batch,
+            batch_cap,
         } => {
             if local_gate {
                 schedule_pass_local_gate(&fleet, execute, json, publish_origin)
             } else if execute {
-                schedule_pass_execute(&fleet, cap, batch)
+                schedule_pass_execute(&fleet, cap, batch, batch_cap)
             } else {
                 schedule_plan(&fleet, cap) // DRY preview == the read-only plan
             }
@@ -9889,7 +9896,7 @@ fn advance_trunk_for_merged_pr(fleet: &Fleet, pr: u64) -> Result<String, String>
 /// in-flight candidate PR then tops up dispatch under the cap. This is pr-sync's integration loop as one
 /// command; it WRITES `trunk`, so only pr-sync should run it. Each step is idempotent + fail-safe so a
 /// re-run (or a crash mid-pass) never double-lands or double-acks.
-fn schedule_pass_execute(fleet: &Fleet, cap: usize, batch: bool) {
+fn schedule_pass_execute(fleet: &Fleet, cap: usize, batch: bool, batch_member_cap: usize) {
     let dispatched: Vec<CiDispatch> = read_ci_dispatches(fleet)
         .into_iter()
         .filter(dispatch_is_in_flight)
@@ -10076,59 +10083,71 @@ fn schedule_pass_execute(fleet: &Fleet, cap: usize, batch: bool) {
         // ONE candidate PR (local-nix pre-filter → push), amortizing one GHA cycle over N lands. On a
         // pre-filter RED the culprits are rejected + the survivors fall back to single-MR dispatch; on a
         // setup failure the whole selection falls back to single-MR (never a lost MR).
-        let batch_cap = BATCH_PR_CAP.min(cap.saturating_sub(still_in_flight.len()).max(1));
-        let selected = select_batch(&queued, &in_flight_files, batch_cap);
-        let members: Vec<BatchMr> = selected.iter().filter_map(|f| mr_of(f)).collect();
-        match members.len() {
-            0 => {} // nothing disjoint to batch this pass
-            1 => {
-                // A one-member "batch" is just a single candidate — skip the batch machinery.
-                if dispatch_single(&members[0].file) {
-                    dispatched_now += 1;
+        //
+        // A batch is ONE candidate PR = ONE in-flight slot, carrying up to `batch_member_cap`
+        // file-DISJOINT members. So the `cap` in-flight-PR throttle gates on whether a slot is FREE
+        // (in_flight < cap) — NOT on member count. Member count is bounded INDEPENDENTLY by
+        // `batch_member_cap` (the blast-radius bound, `--batch-cap`, default BATCH_PR_CAP). Coupling the
+        // member count to free-slot-count (the old `BATCH_PR_CAP.min(cap - in_flight)`) UNDER-batched
+        // exactly when the queue was busy (few free slots) — the case batching helps MOST — and with a
+        // low `--cap` (e.g. 3) below the current in-flight it dispatched NOTHING (pr-sync validation,
+        // 2026-08-09: in-flight 6 > cap 3 → member-cap collapsed to 1 → degraded to single → nothing).
+        if still_in_flight.len() >= cap {
+            // No free in-flight slot — throttle (a batch still occupies one slot). Dispatch nothing new.
+        } else {
+            let selected = select_batch(&queued, &in_flight_files, batch_member_cap);
+            let members: Vec<BatchMr> = selected.iter().filter_map(|f| mr_of(f)).collect();
+            match members.len() {
+                0 => {} // nothing disjoint to batch this pass
+                1 => {
+                    // A one-member "batch" is just a single candidate — skip the batch machinery.
+                    if dispatch_single(&members[0].file) {
+                        dispatched_now += 1;
+                    }
                 }
-            }
-            _ => match publish_batch_candidate(fleet, &members, /*execute=*/ true) {
-                BatchDispatch::Dispatched { pr, members } => {
-                    dispatched_now += 1;
-                    println!(
-                        "  ⊞ dispatched batch PR #{pr} carrying {} MRs.",
-                        members.len()
-                    );
-                }
-                BatchDispatch::PrefilterRed { broken, survivors } => {
-                    // Reject the bisected culprit(s) — they failed the local gate BEFORE any GHA spend.
-                    for m in &broken {
-                        ack(
-                            fleet,
-                            &m.file,
-                            "reject",
-                            "",
-                            "batch local-nix pre-filter: your MR failed the required-set gate in the combined tree (isolated by bisect) — fix + resend.",
+                _ => match publish_batch_candidate(fleet, &members, /*execute=*/ true) {
+                    BatchDispatch::Dispatched { pr, members } => {
+                        dispatched_now += 1;
+                        println!(
+                            "  ⊞ dispatched batch PR #{pr} carrying {} MRs.",
+                            members.len()
                         );
-                        reaped_rejected += 1;
                     }
-                    println!(
-                        "  ⊟ batch pre-filter RED: rejected {} culprit(s), {} survivor(s) fall back to single-MR dispatch.",
-                        broken.len(),
-                        survivors.len()
-                    );
-                    // Survivors: dispatch individually so a green MR isn't held hostage by a batch neighbour.
-                    for m in &survivors {
-                        if dispatch_single(&m.file) {
-                            dispatched_now += 1;
+                    BatchDispatch::PrefilterRed { broken, survivors } => {
+                        // Reject the bisected culprit(s) — they failed the local gate BEFORE any GHA spend.
+                        for m in &broken {
+                            ack(
+                                fleet,
+                                &m.file,
+                                "reject",
+                                "",
+                                "batch local-nix pre-filter: your MR failed the required-set gate in the combined tree (isolated by bisect) — fix + resend.",
+                            );
+                            reaped_rejected += 1;
+                        }
+                        println!(
+                            "  ⊟ batch pre-filter RED: rejected {} culprit(s), {} survivor(s) fall back to single-MR dispatch.",
+                            broken.len(),
+                            survivors.len()
+                        );
+                        // Survivors: dispatch individually so a green MR isn't held hostage by a batch neighbour.
+                        for m in &survivors {
+                            if dispatch_single(&m.file) {
+                                dispatched_now += 1;
+                            }
                         }
                     }
-                }
-                BatchDispatch::Failed => {
-                    // Setup/push failure — never lose the MRs; dispatch each individually this pass.
-                    for m in &members {
-                        if dispatch_single(&m.file) {
-                            dispatched_now += 1;
+                    BatchDispatch::Failed => {
+                        // Setup/push failure — never lose the MRs; dispatch each individually this pass.
+                        for m in &members {
+                            if dispatch_single(&m.file) {
+                                dispatched_now += 1;
+                            }
                         }
                     }
-                }
-            },
-        }
+                },
+            }
+        } // free-slot guard
     } else {
         // ── SINGLE-MR strategy (the proven default): one candidate PR per MR, file-collision-scheduled.
         let picks = schedule_dispatch(&queued, &in_flight_files, cap, still_in_flight.len());
