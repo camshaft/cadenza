@@ -6908,3 +6908,10 @@ pass	rc3 a record state whose FIELD is a tuple — the counter ticks while the p
 pass	bt1 a BOOL handler state TOGGLES per dispatch — three draws read the alternating flag, seeded by input parity
 pass	ng1 the arm NEGATES alternate draws — a Bool flip in a tuple state signs the rising thread (+,-,+)
 pass	sw1 a three-slot state SWAPS its pair while a counter ticks — the encoding exposes position, order, and dispatch count at once
+pass	bw1 BIT operations over draws — mask, set-bit, and a draw-driven shift count all read the live thread
+pass	bw2 an XOR accumulator folds four draws through a recursion — bit-mixing order-sensitive under the stride
+pass	bw3 shift-up then shift-back round trip over MASKED draws — both the value and the shift count come from the thread
+pass	bw4 the ARM bit-mixes its argument with the live state — low nibble from the arg, bits 4-5 stamped from the state
+pass	u1 a UInt64 state thread ABOVE Int64.max — high-half values survive dispatch, mod-10 digits pin the sequence
+pass	u3 UInt64 arguments ABOVE Int64.max echo through dispatch exactly — 2^63+41 and u64-max both survive, count pins trips
+pass	u4 a UInt64 ABOVE Int64.max rides as a SUM payload — parity picks Lo/Hi, the Hi arm range-checks the high half
