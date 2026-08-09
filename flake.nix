@@ -1695,21 +1695,29 @@
           );
         };
         # The browser compiler wasm `pkg/` (cdz_wasm_bg.wasm + the wasm-bindgen JS glue) as its OWN
-        # derivation, FIXED-OUTPUT (operator sub-1-min throughput, 2026-08-09). WHY EXTRACT: guideExamplesCheck
-        # built this INLINE, so its src fileset (correctly) includes the compiler crate closure (cdz-wasm →
-        # rcdzc → cadenza-syntax/ast/cdz-run/cdz-rt/cdz-num), and ANY compiler-crate edit — even an unrelated
-        # leaf like cdz-num — rotated the WHOLE guide-examples derivation and re-ran the entire npm check
-        # battery (npm ci + test:unit + check:{prose,diagnostics,examples,calculator,…} + vite build), even
-        # though those content checks depend only on the GUIDE source, not the compiler. Extracting the wasm
-        # build here + FIXED-OUTPUT-pinning it (same lever as reducer-cadenza-genesis) makes nix early-cutoff:
-        # the compiler may rebuild, but if the emitted pkg is byte-identical (verified reproducible — the
-        # sibling rcdzc-wasm build is deterministic), this derivation's OUTPUT PATH is stable → guideExamples
-        # consumes an unchanged input → the npm battery cache-hits on a compiler-only edit. This fileset is
-        # ONLY the compiler crates (NOT ./guide), so a guide-content edit doesn't rebuild the wasm and a
-        # compiler edit doesn't touch the npm battery. Correctness: a genuine compiler change that alters the
-        # emit → bytes != the pinned hash → FOD build fails loud → bump the pin + the guide rebuilds against
-        # the new compiler (the FOD's own hash check is the staleness guard). $out is a DIRECTORY (pkg/), so
-        # outputHashMode = "recursive" (NAR hash of the tree), unlike genesis's flat single-file hash.
+        # INPUT-ADDRESSED derivation. WHY EXTRACT: guideExamplesCheck built this INLINE, so its src fileset
+        # (correctly) includes the compiler crate closure (cdz-wasm → rcdzc → cadenza-syntax/ast/cdz-run/
+        # cdz-rt/cdz-num); pulling the wasm build into its own derivation keeps the two disjoint filesets
+        # separate (this is compiler crates only, NOT ./guide).
+        #
+        # WHY NOT FIXED-OUTPUT (reverted 2026-08-09, v-nix — was the operator sub-1-min throughput lever):
+        # a FOD's output PATH is keyed on its hand-pinned outputHash, NOT its inputs, so nix serves the
+        # CACHED output without rebuilding whenever that path already exists. But cdz_wasm_bg.wasm embeds
+        # REQUIRED_RUNTIME_HASH (cdz-wasm required_runtime_hash() → rcdzc runtime_abi.rs). On a
+        # REQUIRED_RUNTIME_HASH bump the wasm bytes legitimately change while the pinned outputHash did NOT,
+        # so a WARM local-gate served the STALE wasm (still embedding the old hash) while componentStore
+        # rebuilt to the new one. stage-wasm.mjs then scanned the stale wasm, looked for the OLD runtime hash
+        # in componentStore (which has only the NEW one), found nothing, skipped staging → guide/src/wasm/
+        # runtime.wasm absent → check:examples ENOENT → local-gate RED. The "fails loud on a bad pin" guard
+        # only fires on a COLD build (no cached output to serve); warm it fails SILENTLY-stale. This blocked
+        # EVERY REQUIRED_RUNTIME_HASH-bumping MR fleet-wide — the first such bumps since the GHA→local-gate
+        # cutover (v-runtime B0, v-syntax record-render) — which is why it surfaced only now. Input-addressed
+        # tracks the compiler source (rcdzc IS in the fileset), so a hash bump rotates this derivation →
+        # rebuilds the wasm → stages the new runtime → green. COST: a compiler-only edit no longer
+        # early-cutoffs the npm battery. Restore that later via a floating content-addressed derivation
+        # (__contentAddressed = true) if the fleet enables ca-derivations — CA keys the path on the ACTUAL
+        # built bytes, giving byte-identical-output early-cutoff AND a correct rebuild-on-bump, which a fixed
+        # pin structurally cannot.
         guideCompilerWasmSrc = pkgs.lib.fileset.toSource {
           root = ./.;
           fileset = pkgs.lib.fileset.unions (
@@ -1727,10 +1735,11 @@
             ${mkCargoVendorEnv { vendor = cdzWasmVendor; }}
             # REMAP the vendored-crate + toolchain store paths out of the embedded panic/debug location
             # strings. Without this the release wasm bakes absolute /nix/store/…-cargo-vendor-dir/… and
-            # …-rust-…/… paths into its debug strings, which (a) makes a FIXED-OUTPUT derivation ILLEGAL
-            # ("must not reference store paths") and (b) makes the output non-reproducible (the vendor-dir
-            # hash rotates). Remapping to stable placeholders strips both — the emitted wasm is then
-            # store-path-free + byte-stable across vendor/toolchain rotations, so the FOD output path holds.
+            # …-rust-…/… paths into its debug strings, which makes the output non-reproducible (the
+            # vendor-dir hash rotates). Remapping to stable placeholders strips that — the emitted wasm is
+            # then byte-stable across vendor/toolchain rotations. (Kept from the prior FOD form, where it was
+            # also mandatory for store-path-free output; now it just preserves determinism + a stable path,
+            # and is a prerequisite for the future content-addressed early-cutoff noted above.)
             export RUSTFLAGS="--remap-path-prefix=$(${pkgs.coreutils}/bin/readlink -f ${cdzWasmVendor})=vendor --remap-path-prefix=${rustToolchain}=rust ''${RUSTFLAGS:-}"
             ( cd implementation/seed/crates/cdz-wasm
               cargo build --release --target wasm32-unknown-unknown --locked
@@ -1746,11 +1755,6 @@
             cp -r implementation/seed/crates/cdz-wasm/pkg "$out"
             runHook postInstall
           '';
-          # FIXED-OUTPUT (directory): recursive NAR hash. See the note above. Pin is set after the
-          # remap-path-prefix strip makes the output store-path-free + reproducible.
-          outputHashMode = "recursive";
-          outputHashAlgo = "sha256";
-          outputHash = "sha256-VYA+zy4SUmnDO0KexlCqd6j3c9QsjafPmibQ2WKQgog=";
         };
         guideExamplesCheck = pkgs.stdenvNoCC.mkDerivation {
           pname = "cdz-guide-examples";
@@ -1770,9 +1774,9 @@
           buildPhase = ''
             runHook preBuild
 
-            # ── 1. Consume the pre-built browser compiler wasm pkg/ (cdzWasmPkg, a FIXED-OUTPUT derivation
-            # whose output path is stable across unrelated compiler edits → the npm battery below cache-hits
-            # on a compiler-only edit). Copy it into place where stage-wasm.mjs expects it.
+            # ── 1. Consume the pre-built browser compiler wasm pkg/ (cdzWasmPkg, an input-addressed
+            # derivation keyed on the compiler crate closure — rotates on a compiler/runtime-hash edit so the
+            # staged runtime always matches the embedded hash). Copy it where stage-wasm.mjs expects it.
             cp -r ${cdzWasmPkg} implementation/seed/crates/cdz-wasm/pkg
             chmod -R u+w implementation/seed/crates/cdz-wasm/pkg
 
