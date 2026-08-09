@@ -1,0 +1,4 @@
+# Bolero's default corpus/state dir when `cargo bolero test` is run WITHOUT `--corpus-dir`
+# (fuzz-cycle.sh always passes explicit dirs outside the tree, but a bare manual invocation
+# drops state here). Never tracked.
+/src/__fuzz__/
