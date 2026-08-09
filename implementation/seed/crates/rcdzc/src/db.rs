@@ -1815,6 +1815,16 @@ pub struct Db {
     /// body so the per-member mode decision inside `specialize_recursive` can consult it.
     pub(crate) group_multivalue_bodies: std::collections::HashSet<(StructId, String)>,
 
+    /// Memo of `effects::mutual_scc_of` — the mutually-recursive SCC (def indices) containing a callee,
+    /// keyed `(callee_def, handler-context-key)`. SCC membership is program-STATIC (the call graph does not
+    /// change during a fold), and the discharged-op filter is fixed by the context key — so the result is
+    /// stable and computed ONCE per (callee, ctx). Removes the double-compute on the group-entry path (the
+    /// predicate + the member-registration call the same `mutual_scc_of`) and any re-derives across sibling
+    /// SCC members. `mutual_scc_of` is a forward BFS + a per-def reaches-BFS over the call graph, the first
+    /// call-graph-scaled cost in the effect fold (v-compiler-perf advisory on #2877); memoizing keeps it off
+    /// the hot path. Populated + read only inside `mutual_scc_of`.
+    pub(crate) mutual_scc: crate::fxhash::FxHashMap<(usize, String), Vec<usize>>,
+
     /// Memo of `effects::subtree_performs` — whether the subtree at a node reaches a discharged perform (a
     /// `resume`, or a call into a discharged effect) under a given handler context. Keyed by `(node,
     /// handler-context-key)` (the same resolved-identity string `effect_specializations` uses). The
@@ -2750,6 +2760,7 @@ impl Db {
             effect_spec_captures: std::collections::HashMap::new(),
             force_multivalue: std::collections::HashSet::new(),
             group_multivalue_bodies: std::collections::HashSet::new(),
+            mutual_scc: crate::fxhash::FxHashMap::default(),
             subtree_performs_cache: crate::fxhash::FxHashMap::default(),
             reduced_callable_walked: crate::fxhash::FxHashSet::default(),
             type_specializations: crate::fxhash::FxHashMap::default(),
