@@ -4798,6 +4798,36 @@ fn group_multivalue_leaves_threadable(db: &mut Db, body: StructId, callee_def: u
                     group_multivalue_leaves_threadable(db, arm_body, callee_def)
                 })
         }
+        // A `(let (inits…) dispatch)` whose body is an `if`/`match` — the group-SCC analogue of the #12 arm in
+        // `multivalue_leaves_threadable`. `thread_returning_tuple` DOES descend this (threads each init with
+        // `thread_bounded`, recurses on the body dispatch returning a tuple), so the pre-check must mirror it or
+        // the group is declined up front and never threaded. The inits are on the unconditional strict spine
+        // (no re-entrant call may be gated behind a conditional THERE — a demand-perform-demand init `(let a =
+        // demand(child) in …)` is on the strict spine, fine), and the body dispatch's own leaves must be
+        // group-threadable. Without this the whole `let` fell to the leaf case below and
+        // `reentrant_call_under_conditional` saw the body's arm partner-call under the `match` → declined,
+        // blocking the mutual demand/cache/compute spine (compiler-ml's lazy DB).
+        _ if db.ast.as_form(body, "let").map(|t| t.len()) == Some(2) && {
+            let form = db.ast.as_form(body, "let").unwrap().to_vec();
+            matches!(
+                resolved_of(db, form[1]),
+                Resolved::If { .. } | Resolved::Match { .. }
+            )
+        } =>
+        {
+            let form = db.ast.as_form(body, "let").unwrap().to_vec();
+            let (bindings_occ, body_occ) = (form[0], form[1]);
+            let inits_ok = match db.ast.get(bindings_occ).clone() {
+                Struct::List(pairs) => pairs.iter().all(|&pair| match db.ast.get(pair).clone() {
+                    Struct::List(kv) if kv.len() == 2 => {
+                        !reentrant_call_under_conditional(db, kv[1], callee_def)
+                    }
+                    _ => false,
+                }),
+                _ => false,
+            };
+            inits_ok && group_multivalue_leaves_threadable(db, body_occ, callee_def)
+        }
         _ => !reentrant_call_under_conditional(db, body, callee_def),
     }
 }

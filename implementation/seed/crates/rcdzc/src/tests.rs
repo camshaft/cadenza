@@ -11516,6 +11516,67 @@ fn a_recursive_performer_result_fed_directly_to_a_helper_in_a_match_arm_folds() 
     );
 }
 
+/// A mutual-group DEMAND-PERFORM-DEMAND arm inside a `let`-wrapped dispatch now FOLDS (was a tail-resumptive
+/// decline that blocked compiler-ml's lazy-DB spine). `demand`/`cache`/`compute` are a mutual SCC over a
+/// per-node state effect; `compute`'s arm is `(let ((a (demand child))) (match (St.put …) (_ (demand child))))`
+/// — a `let` whose INIT is a mutual-partner call, whose BODY is a dispatch whose arm performs then calls a
+/// partner AGAIN (demand-perform-demand). The group pre-check `group_multivalue_leaves_threadable` had only
+/// `if`/`match`/leaf arms, so this `(let inits dispatch)` fell to the LEAF case → `reentrant_call_under_
+/// conditional` saw the partner `demand` under the arm's `match` → declined the whole SCC up front, before
+/// `thread_returning_tuple` (which ALREADY descends a let-wrapped dispatch, the #12 arm) could thread it.
+/// Fixed by giving the group pre-check the same `(let inits dispatch)` arm its single-performer twin
+/// `multivalue_leaves_threadable` carries: inits on the unconditional strict spine + body dispatch leaves
+/// group-threadable. Pins that it COMPILES; the run value is checked below (get always misses → force compute;
+/// kids returns a smaller id until 0; demand(3) folds down the finite spine to the leaf id 0).
+#[test]
+fn a_mutual_group_demand_perform_demand_in_a_let_wrapped_dispatch_folds() {
+    use crate::testkit::parse;
+    let src = "(do \
+        (effect St (op get (-> Int64 (Option Int64))) (op put (-> (Tuple Int64 Int64) Unit)) \
+                   (op kids (-> Int64 (Option Int64)))) \
+        (def (demand (: id Int64)) \
+          (match (St.get id) \
+            (((. Option Some) v) v) \
+            (((. Option None) u) (cache id (compute id))))) \
+        (def (cache (: id Int64) (: v Int64)) (match (St.put (tuple id v)) (_ v))) \
+        (def (compute (: id Int64)) \
+          (match (St.kids id) \
+            (((. Option Some) childId) \
+              (let ((a (demand childId))) \
+                (match (St.put (tuple id a)) (_ (demand childId))))) \
+            (((. Option None) u) id))) \
+        (def (run (: root Int64)) \
+          (handle St root \
+            ((get (id) s (resume (. Option None) s)) \
+             (put (pair) s (match pair ((tuple x y) (resume unit s)))) \
+             (kids (id) s (resume (if (<= id 0) (. Option None) (Some (- id 1))) s))) \
+            (demand root))) \
+        (export run))";
+    let out = crate::compile::compile(
+        &[crate::abi::Artifact::new(
+            crate::abi::Artifact::KIND_AST,
+            "main",
+            crate::codec::encode(&parse(src)),
+        )],
+        &[crate::backend::Target::Wasm],
+    );
+    // The group fold specializes the SCC (produces a component) and does NOT decline. Before the fix the group
+    // pre-check declined the let-wrapped demand-perform-demand arm ("not yet reducible by the tail-resumptive
+    // fold"). The RUN value (demand(3) = 0, folding down the runtime-opaque spine) is verified by the corpus
+    // case `a mutual-group demand-perform-demand arm in a let-wrapped dispatch folds…` via cdz-run.
+    assert!(
+        out.artifact(crate::backend::Target::Wasm.artifact_kind())
+            .is_some(),
+        "the group let-dispatch pre-check arm must let a mutual-group demand-perform-demand SCC compile",
+    );
+    assert!(
+        !out.diagnostics.iter().any(|d| d
+            .message
+            .contains("not yet reducible by the tail-resumptive fold")),
+        "no tail-resumptive-fold decline on the demand-perform-demand mutual group",
+    );
+}
+
 /// A handler ARM that RESUMES PER `if`-BRANCH now folds. `get-ty(nid) s => (if (= nid 0) (resume (Some t) s)
 /// (resume (None) s))` selects the resume value by a condition over the op arg. `peel_resume_from_arm_body`
 /// handled `do`/`let`/`match` resume-wrappers but NOT `if`, so the whole handler declined before reaching
