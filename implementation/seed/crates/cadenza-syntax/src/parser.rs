@@ -778,6 +778,48 @@ impl<'a> Parser<'a> {
         node
     }
 
+    /// Drain any OWN-LINE `//` comment(s) sitting in the CLOSER token's leading slot (a trailing comment
+    /// on its own line before `]`/`}`/`)` after the last element, e.g. `[1, 2\n // note\n]`) and attach
+    /// them to the LAST element of `items` as leading `(comment …)` wrappers. Without this the comment is
+    /// stranded in the closer's slot and dropped (the comment-drop guard then refuses to format the file).
+    /// Mirrors the module-body trailing-comment fix (attach-to-last): the comment's PRINTED position moves
+    /// ABOVE the last element rather than staying just before the closer — the same accepted v1 limitation
+    /// the module body has — but the comment is PRESERVED (round-trip no longer drops it). `head_len` is
+    /// the count of non-element leading items (1 for a name-headed `("list" …)`, 0 for a bare list). DOC
+    /// (`///`) leads are left in place by `take_comments_here` (the `///`-in-collection case is separately
+    /// operator-gated), so this only moves ordinary `//` comments.
+    ///
+    /// GATED to skip when the last element is ALREADY comment-wrapped (`(comment …)`/`(comment-after …)`):
+    /// prepending the closer comment there would REORDER it above the element's own earlier comment
+    /// (`[1, // mid\n 2\n // last\n]` → `last` printed above `mid`), an unfaithful round-trip. In that
+    /// collision the closer comment is left stranded (the drop-guard refuses — no corruption), exactly the
+    /// pre-fix behavior; only the clean single-comment case is captured. A no-op too when the closer has no
+    /// leading comment or `items` has no element (only the head, or empty).
+    fn drain_closer_comment_onto_last(&mut self, items: &mut [StructId], head_len: usize) {
+        if items.len() <= head_len {
+            return; // no element to attach to (empty collection)
+        }
+        let last_ix = items.len() - 1;
+        // If the last element already carries a comment wrapper, attaching here would reorder — leave the
+        // closer comment for the drop-guard (no corruption) rather than emit an out-of-order round-trip.
+        if self.node_is_comment_wrapped(items[last_ix]) {
+            return;
+        }
+        let trailing = self.take_comments_here();
+        if trailing.is_empty() {
+            return;
+        }
+        items[last_ix] = self.wrap_comments(trailing, items[last_ix]);
+    }
+
+    /// Is `node` already wrapped in a leading `(comment …)` or trailing `(comment-after …)`? Used to gate
+    /// [`Self::drain_closer_comment_onto_last`] off a reordering collision.
+    fn node_is_comment_wrapped(&self, node: StructId) -> bool {
+        matches!(self.builder.get(node), crate::ast::Struct::List(kids)
+            if kids.first().is_some_and(|h|
+                matches!(self.builder.as_name(*h), Some("comment") | Some("comment-after"))))
+    }
+
     /// Build `(doc "text")` body-form nodes from a run of doc leads.
     fn doc_nodes(&mut self, docs: Vec<Lead>) -> Vec<StructId> {
         docs.into_iter()
@@ -1918,6 +1960,8 @@ impl<'a> Parser<'a> {
                     items.push(elem);
                 }
             }
+            // Own-line `//` before `)` (`(1, 2\n // note\n)`) → attach to the last element (see the helper).
+            self.drain_closer_comment_onto_last(&mut items, 1);
             self.expect(Kind::RParen, "`)`");
             let span = start.merge(self.prev_span());
             return self.list(items, span);
@@ -3233,6 +3277,9 @@ impl<'a> Parser<'a> {
                 }
             }
         }
+        // An own-line `//` comment before the `]` (`[1, 2\n // note\n]`) is in the closer's leading slot —
+        // attach it to the last element so it survives the round-trip (else the drop-guard refuses).
+        self.drain_closer_comment_onto_last(&mut items, 1);
         self.expect(Kind::RBracket, "`]`");
         let span = start.merge(self.prev_span());
         self.list(items, span)
@@ -3303,6 +3350,8 @@ impl<'a> Parser<'a> {
                 }
             }
         }
+        // Own-line `//` before `}` (`{ a = 1\n // note\n }`) → attach to the last field (see the helper).
+        self.drain_closer_comment_onto_last(&mut items, 1);
         self.expect(Kind::RBrace, "`}`");
         let span = start.merge(self.prev_span());
         self.list(items, span)
@@ -3364,6 +3413,8 @@ impl<'a> Parser<'a> {
                 }
             }
         }
+        // Own-line `//` before `}` (`#{ a = 1\n // note\n }`) → attach to the last entry (see the helper).
+        self.drain_closer_comment_onto_last(&mut items, 1);
         self.expect(Kind::RBrace, "`}`");
         let span = start.merge(self.prev_span());
         self.list(items, span)
@@ -3432,6 +3483,8 @@ impl<'a> Parser<'a> {
                 }
             }
         }
+        // Own-line `//` before `)` (`#(1, 2\n // note\n)`) → attach to the last element (see the helper).
+        self.drain_closer_comment_onto_last(&mut elems, 1);
         self.expect(Kind::RParen, "`)`");
         let span = start.merge(self.prev_span());
         let list = self.list(elems, span);
@@ -4003,6 +4056,56 @@ mod tests {
             elems.len(),
             2,
             "two top-level forms survive the trailing comment"
+        );
+    }
+
+    #[test]
+    fn an_own_line_comment_before_a_collection_closer_attaches_to_the_last_element() {
+        use crate::sexpr;
+        // An own-line `//` after the last element, before the closer, was dropped (the reader left it in
+        // the closer's leading slot). Now it attaches to the LAST element as a leading `(comment …)` —
+        // the same attach-to-last shape a trailing top-level comment gets (its printed position moves
+        // ABOVE the last element, the accepted v1 limitation; the point is it is PRESERVED, not dropped).
+        // list:
+        assert_eq!(
+            sexpr::print(&parse_ok("def l() = [1, 2\n // c\n]")),
+            "(def (l) (\"list\" 1 (comment \"c\" 2)))"
+        );
+        // tuple:
+        assert_eq!(
+            sexpr::print(&parse_ok("def t() = (1, 2\n // c\n)")),
+            "(def (t) (\"tuple\" 1 (comment \"c\" 2)))"
+        );
+        // record (field is a `(= name value)` triple; the comment wraps the whole field):
+        assert_eq!(
+            sexpr::print(&parse_ok("def r() = { a = 1, b = 2\n // c\n }")),
+            "(def (r) (\"record\" (= a 1) (comment \"c\" (= b 2))))"
+        );
+        // set desugars to `Set.of([…])` — the comment wraps the last list element:
+        assert_eq!(
+            sexpr::print(&parse_ok("def s() = #(1, 2\n // c\n)")),
+            "(def (s) ((. Set of) (\"list\" 1 (comment \"c\" 2))))"
+        );
+        // map (head is the STRING `"map"`; an entry is a `(key value)` PAIR — the `=` is just the
+        // separator, NOT the record `(= …)` triple, so no `=` head here):
+        assert_eq!(
+            sexpr::print(&parse_ok("def m() = #{ a = 1\n // c\n }")),
+            "(def (m) (\"map\" (comment \"c\" (a 1))))"
+        );
+    }
+
+    #[test]
+    fn a_closer_comment_does_not_reorder_when_the_last_element_already_has_a_comment() {
+        use crate::sexpr;
+        // COLLISION GUARD: when the last element ALREADY carries a leading comment (`[1, // mid\n 2\n
+        // // last\n]`), attaching the closer comment there would print `last` ABOVE `mid` — an
+        // out-of-order round-trip. So the drain is skipped in that case; the closer comment stays in its
+        // slot (the drop-guard refuses to format, no corruption — the pre-fix behavior). The reader keeps
+        // ONLY the mid comment on `2`; the last comment is NOT attached (would reorder).
+        assert_eq!(
+            sexpr::print(&parse_ok("def m() = [1,\n // mid\n 2\n // last\n]")),
+            "(def (m) (\"list\" 1 (comment \"mid\" 2)))",
+            "the closer comment is not attached (would reorder above the element's own comment)"
         );
     }
 
