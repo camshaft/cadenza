@@ -56442,6 +56442,54 @@ mod diagnostics {
             "node {node} must be a user node"
         );
     }
+
+    #[test]
+    fn compare_on_a_float_names_the_relational_operators_as_the_fix() {
+        // `compare` reports a total order (a three-way Less/Equal/Greater), but a floating-point type offers
+        // only the IEEE PARTIAL order (a NaN is unordered) — a permanent CARVE-OUT, not a not-yet. The
+        // decline must not dead-end at "no total order"; it names the concrete route the reader takes
+        // instead: the boolean relational operators `<`/`<=`/`>`/`>=`, which DO work on floats. This pins
+        // that actionable redirect (lower.rs float-`compare` arm) so a refactor can't quietly degrade it to
+        // a terse "no total order" decline. Runtime float params so it reaches lowering (a constant `compare`
+        // would fold, not decline).
+        let d = first_error(
+            "(module m (def (f (: x Float64) (: y Float64)) (compare x y)) (export f))",
+        );
+        // An uncoded DECLINE (a carve-out the compiler will never realize), not a coded rejection.
+        assert_eq!(
+            d.code, None,
+            "a permanent carve-out is an uncoded decline: {}",
+            d.message
+        );
+        assert!(
+            d.message.contains("IEEE partial order")
+                && d.message.contains("no three-way comparison")
+                // the actionable redirect — the operators that DO order floats
+                && d.message.contains("`<`, `<=`, `>`, `>=`"),
+            "the decline names the IEEE-partial-order reason AND the relational-operator fix: {}",
+            d.message
+        );
+        // ROUND-TRIP witness: the named repair (a relational operator on the same float operands) compiles
+        // clean — the redirect points at a form that actually type-checks.
+        let ast = crate::testkit::parse(
+            "(module m (def (f (: x Float64) (: y Float64)) (< x y)) (export f))",
+        );
+        let out = compile(
+            &[Artifact::new(
+                Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&ast),
+            )],
+            &[Target::Wasm],
+        );
+        assert!(
+            !out.diagnostics
+                .iter()
+                .any(|d| d.severity == crate::abi::Severity::Error),
+            "the suggested relational-operator repair compiles clean: {:?}",
+            out.diagnostics
+        );
+    }
 }
 
 // ── Stage 1: let + records (compile-time folded) ────────────────────────────────────────────────
