@@ -190,6 +190,39 @@ pub struct LiveExecutorSet {
     /// exists only when BOTH `live-net` (this struct) AND `live-aws-storage` are compiled.
     #[cfg(feature = "live-aws-storage")]
     blob_store: Option<(String, String)>,
+    /// The userspace-effects loop collaborators (design DESIGN-userspace-effects I3/I4), if the daemon wired
+    /// them. Set via [`with_userspace_effects`](Self::with_userspace_effects) at boot. When present, `build`
+    /// registers, for each installed session: the delegating [`UserspaceEffectExecutor`](crate::UserspaceEffectExecutor)
+    /// as the [`CompositeExecutor`] FALLBACK (a dynamic userspace family with a registered handler resolves +
+    /// forwards + defers) + the [`ReplyExecutor`](crate::ReplyExecutor) under `effect/reply`. All-or-nothing:
+    /// the three collaborators (loop inbox, reply-settle sink, shared reply-token table) come as one wiring the
+    /// daemon supplies together; `None` (a pure control-plane / test build) = no userspace-effect delegation is
+    /// wired (an unhandled userspace family falls through to the kernel's unhandled-effect path as before).
+    /// The live handler resolver is built per-session from the host's shared canonical store, passed to `build`.
+    userspace_effects: Option<UserspaceEffectWiring>,
+}
+
+/// The boot-time collaborators the userspace-effect executors need, wired ONCE by the daemon and shared across
+/// every session's `build` (design DESIGN-userspace-effects I3/I4). Grouped because they are all-or-nothing:
+/// the delegating executor forwards into `inbox`, mints into `reply_tokens`, and the reply executor consumes
+/// `reply_tokens` + enqueues onto `reply_settle` — a partial set can't route the request→reply→settle loop.
+#[cfg(feature = "live-net")]
+#[derive(Clone)]
+pub struct UserspaceEffectWiring {
+    /// The host loop's [`Inbox`](crate::Inbox) sender — the I3 delegating executor forwards an
+    /// `effect-request/<family>` [`Inbound`](crate::Inbound) into it (same shape [`EmitExecutor`] uses).
+    inbox: crate::Inbox,
+    /// The loop's reply-settle sink — the I4 [`ReplyExecutor`](crate::ReplyExecutor) enqueues a
+    /// [`ReplySettle`](crate::reply_exec::ReplySettle) here; the loop drains it + settles the caller's effect.
+    reply_settle: crate::reply_exec::ReplySettleSink,
+    /// The shared one-shot reply-token table (I3 mints on forward, I4 consumes on reply — ONE table across all
+    /// sessions on the single-threaded loop, so an `Rc`).
+    reply_tokens: std::rc::Rc<crate::ReplyTokenRegistry>,
+    /// A clone of the host's shared canonical [`SharedNameStore`](crate::host::SharedNameStore) handle — the
+    /// per-session [`CanonicalResolver`](crate::CanonicalResolver) resolves `effect/<family>` LIVE off it
+    /// (ruling A). Shared (an `Rc` clone) so a handler registered THIS turn is visible to every session's
+    /// fallback immediately.
+    canonical: crate::host::SharedNameStore,
 }
 
 #[cfg(feature = "live-net")]
@@ -212,7 +245,32 @@ impl LiveExecutorSet {
             lifecycle: None,
             #[cfg(feature = "live-aws-storage")]
             blob_store: None,
+            userspace_effects: None,
         })
+    }
+
+    /// Wire the userspace-effects loop collaborators (design DESIGN-userspace-effects I3/I4) so each built
+    /// session delegates a DYNAMIC userspace effect family to its registered handler. Called ONCE at daemon
+    /// boot with the loop's [`Inbox`](crate::Inbox), the reply-settle sink
+    /// ([`reply_settle_channel`](crate::reply_exec::reply_settle_channel)), the shared reply-token table, and a
+    /// clone of the host's shared canonical store ([`AgentHost::shared_canonical_store`](crate::host::AgentHost::shared_canonical_store)).
+    /// Without this, a built session serves no userspace-effect delegation (an unhandled userspace family
+    /// falls through to the kernel's unhandled-effect path). The three channel/table collaborators come as one
+    /// (all-or-nothing — a partial set can't route request→reply→settle).
+    pub fn with_userspace_effects(
+        mut self,
+        inbox: crate::Inbox,
+        reply_settle: crate::reply_exec::ReplySettleSink,
+        reply_tokens: std::rc::Rc<crate::ReplyTokenRegistry>,
+        canonical: crate::host::SharedNameStore,
+    ) -> Self {
+        self.userspace_effects = Some(UserspaceEffectWiring {
+            inbox,
+            reply_settle,
+            reply_tokens,
+            canonical,
+        });
+        self
     }
 
     /// Wire the CONTENT-ADDRESSED blob store (bucket + key prefix) for the `blob/put`+`blob/get` executor
@@ -379,7 +437,35 @@ impl ExecutorSetBuilder for LiveExecutorSet {
             }
             c
         };
-        composite
+        // Userspace-effects I3/I4: when the daemon wired the loop collaborators, register for this session
+        // (a) the ReplyExecutor under `effect/reply` (a handler's reply verb → validate+consume the token →
+        // enqueue a ReplySettle the loop folds onto the caller), and (b) the UserspaceEffectExecutor as the
+        // composite FALLBACK — a DYNAMIC userspace family (no built-in executor) with a registered handler
+        // resolves LIVE off the shared canonical store (CanonicalResolver, ruling A), forwards the request to
+        // the handler + DEFERS. The fallback SELF-GUARDS (is_registered_effect_family && a handler resolves),
+        // so a genuinely-unhandled family still returns its own PERMANENT Err = the kernel's anti-stuck
+        // no-executor behavior is preserved. `id` is this session's owner (the caller a forward binds its
+        // reply-token to). Not metered: the delegating executor forwards + defers (no leaf outcome to tally);
+        // the eventual settle folds the handler's real outcome.
+        if let Some(ue) = &self.userspace_effects {
+            let resolver = crate::CanonicalResolver::new(ue.canonical.clone());
+            composite
+                .with_effect(
+                    effect_ct::EFFECT_REPLY,
+                    Box::new(crate::ReplyExecutor::new(
+                        ue.reply_tokens.clone(),
+                        ue.reply_settle.clone(),
+                    )),
+                )
+                .with_fallback(Box::new(crate::UserspaceEffectExecutor::new(
+                    resolver,
+                    ue.inbox.clone(),
+                    ue.reply_tokens.clone(),
+                    id.clone(),
+                )))
+        } else {
+            composite
+        }
     }
 }
 
