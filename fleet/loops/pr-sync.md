@@ -91,6 +91,16 @@ stalls fleet-wide. Keep it small:
    which MRs it would gate WITHOUT side-effects — eyeball it, then add `--execute --publish-origin`.
    `mr-status <ref>` inspects a single MR; `lane-of <ref>` shows its lane.
 
+   **⏱ EMIT THROUGHPUT METRICS — pass `--json` (operator data-driven directive).** Run your integration
+   pass as `schedule-pass --local-gate --execute --publish-origin --json`. The `--json` flag appends a
+   `LOCAL_GATE_JSON: {…}` line carrying the `gate` block (`total_gate_secs`, `gate_runs`,
+   `batch_gate_secs`, `batch_red`) alongside the merged/rejected/left tally — the MACHINE-scrapable
+   throughput data the operator asked for (gate wall-time + batch-RED rate) to pick the next CI-latency
+   lever from DATA, not intuition. Without `--json` only the human `⏱` line prints and the numbers never
+   reach a report. When the concierge/operator asks for a throughput baseline, scrape that JSON line
+   (it's one line, low-context — don't paste the whole build log). The metrics are cheap wall-clock, no
+   gating effect.
+
    **⟳ DRAIN-UNTIL-QUIESCENT within the tick (bounded).** ONE `schedule-pass --local-gate --execute
    --publish-origin` gates + FF-pushes the queued MRs it can this pass, then returns. Under load (MRs
    arriving faster than one pass) a single pass per scheduled tick leaves the queue lagging — the concierge
