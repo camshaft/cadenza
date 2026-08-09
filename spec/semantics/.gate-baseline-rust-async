@@ -6942,3 +6942,12 @@ pass	cs1 a COLLATZ-step arm — even states halve, odd states triple-plus-one, l
 pass	ne1 an OPTION built from a draw crosses dispatch as an op ARGUMENT — the arm matches it against the live state
 pass	rs1 a RESULT built from draw parity crosses dispatch as an op ARGUMENT — Ok scales with state, Err folds in negated
 pass	abf1 one handler mixes a RESUMPTIVE op and an ABORTIVE op — two marks advance the state, the abort carries their mix out
+pass	ta3a a THREE-argument op — the arm folds all three positions with the live state, two calls see it advance
+pass	ss2 a STRING state GROWS by a parity-picked suffix per dispatch — byte-len pins the concatenation history
+pass	lp1 a LIST handler state — each feed pushes and returns the pre-push length, a summing walk reads the final list
+pass	ix1 the op argument INDEXES a list held in a two-slot state — in-range reads project, out-of-range yields the arm's fallback
+pass	tw1 arms of TWO different effects call one shared PURE helper — square-plus-one applied to each live state
+pass	ch4 the SAME op chained into itself — E.b of E.b of E.a, the middle hop's argument is already a hop
+pass	hof1 a higher-order APPLY-TWICE over a draw — the fn value crosses the call while the thread advances underneath
+pass	lam1 INLINE and LET-BOUND lambdas applied to one draw — both closure forms read the same drawn value
+pass	ag2 TWO aggregator effects interleaved — each keeps its own running sum, weighted reads pin the four-feed order

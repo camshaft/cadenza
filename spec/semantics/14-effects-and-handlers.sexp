@@ -19616,3 +19616,161 @@
   (call   main (: 3 Int64)) (output (: 1038 Int64))
   (call   main (: 0 Int64)) (output (: 1005 Int64))
   (call   main (: -4 Int64)) (output (: 961 Int64)))
+
+;; ── ta3a/ss2/lp1/ix1/tw1/ch4/hof1/lam1/ag2: composition faces ────────────────
+;; ta3a a THREE-argument op (arm folds all positions with the state); ss2 a
+;; STRING state grows by a parity-picked suffix; lp1 a LIST state (push
+;; returns pre-push length, a recursive walk sums the final list from a
+;; reader op); ix1 the op argument indexes a list held in state (in-range
+;; projects, out-of-range hits the arm fallback); tw1 arms of TWO effects
+;; share one pure helper; ch4 the SAME op chained into itself; hof1 a
+;; higher-order apply-twice over a draw; lam1 inline and let-bound lambdas
+;; applied to one draw (pure closures, drawn args); ag2 TWO aggregator
+;; effects with same-NAMED ops (qualified dispatch disambiguates).
+
+(case "ta3a a THREE-argument op — the arm folds all three positions with the live state, two calls see it advance"
+  (input  (do
+            (effect E (op mix3 (-> Int64 Int64 Int64 Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((mix3 (a b c) s (resume (+ (* 100 a) (+ (* 10 b) (+ c s))) (+ s 1))))
+                (+ (E.mix3 1 2 3) (E.mix3 4 5 6))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 580 Int64))
+  (call   main (: 5 Int64)) (output (: 590 Int64))
+  (call   main (: -3 Int64)) (output (: 574 Int64)))
+
+(case "ss2 a STRING state GROWS by a parity-picked suffix per dispatch — byte-len pins the concatenation history"
+  (input  (do
+            (effect E (op grow (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (tuple "" n)
+                ((grow () s (match s
+                              ((tuple acc k)
+                                (resume (String.byte-len acc)
+                                        (tuple (String.concat acc (if (= (% k 2) 0) "ab" "xyz"))
+                                               (+ k 1)))))))
+                (do (E.grow) (E.grow) (E.grow)
+                    (+ (* 10 (E.grow)) 3))))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: 73 Int64))
+  (call   main (: 3 Int64)) (output (: 83 Int64))
+  (call   main (: 1 Int64)) (output (: 83 Int64)))
+
+(case "lp1 a LIST handler state — each feed pushes and returns the pre-push length, a summing walk reads the final list"
+  (input  (do
+            (effect E (op push (-> Int64 Int64)) (op total (-> Int64)))
+            (def (sum-list (: xs (List Int64)) (: i Int64) (: acc Int64))
+              (match (List.at xs i)
+                ((Some v) (sum-list xs (+ i 1) (+ acc v)))
+                ((None) acc)))
+            (def (main (: n Int64))
+              (handle E (list)
+                ((push (x) s (resume (List.len s) (List.push s x)))
+                 (total () s (resume (sum-list s 0 0) s)))
+                (let ((a (E.push n)))
+                  (let ((b (E.push (* 2 n))))
+                    (let ((c (E.push 7)))
+                      (+ (* 1000 (E.total))
+                         (+ (* 100 a) (+ (* 10 b) c))))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 16012 Int64))
+  (call   main (: 0 Int64)) (output (: 7012 Int64))
+  (call   main (: -2 Int64)) (output (: 1012 Int64)))
+
+(case "ix1 the op argument INDEXES a list held in a two-slot state — in-range reads project, out-of-range yields the arm's fallback"
+  (input  (do
+            (effect E (op at (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle E (tuple (list 10 20 30 40) n)
+                ((at (u) s (match s
+                             ((tuple xs k)
+                               (resume (match (List.at xs (% k 6))
+                                         ((Some v) v)
+                                         ((None) -1))
+                                       (tuple xs (+ k 2)))))))
+                (+ (* 100 (E.at 0)) (E.at 0))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 2040 Int64))
+  (call   main (: 4 Int64)) (output (: -90 Int64))
+  (call   main (: 3 Int64)) (output (: 3999 Int64)))
+
+(case "tw1 arms of TWO different effects call one shared PURE helper — square-plus-one applied to each live state"
+  (input  (do
+            (effect P (op sq (-> Int64)))
+            (effect Q (op sq (-> Int64)))
+            (def (sq1 (: x Int64)) (+ (* x x) 1))
+            (def (main (: n Int64))
+              (handle P n
+                ((sq () s (resume (sq1 s) (+ s 1))))
+                (handle Q 100
+                  ((sq () t (resume (sq1 t) (+ t 10))))
+                  (+ (P.sq) (+ (Q.sq) (P.sq))))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 10016 Int64))
+  (call   main (: 0 Int64)) (output (: 10004 Int64))
+  (call   main (: -3 Int64)) (output (: 10016 Int64)))
+
+(case "ch4 the SAME op chained into itself — E.b of E.b of E.a, the middle hop's argument is already a hop"
+  (input  (do
+            (effect E (op a (-> Int64)) (op b (-> Int64 Int64)) (op probe (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((a () s (resume s (+ s 2)))
+                 (b (x) s (resume (+ x s) (+ s 3)))
+                 (probe () s (resume s s)))
+                (+ (* 10 (E.b (E.b (E.a)))) (- (E.probe) n))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 138 Int64))
+  (call   main (: 0 Int64)) (output (: 78 Int64))
+  (call   main (: -5 Int64)) (output (: -72 Int64)))
+
+(case "hof1 a higher-order APPLY-TWICE over a draw — the fn value crosses the call while the thread advances underneath"
+  (input  (do
+            (effect E (op next (-> Int64)) (op probe (-> Int64)))
+            (def (dbl1 (: x Int64)) (+ (* 2 x) 1))
+            (def (twice (: f (-> Int64 Int64)) (: x Int64)) (f (f x)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1)))
+                 (probe () s (resume s s)))
+                (+ (* 10 (twice dbl1 (E.next))) (- (E.probe) n))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 151 Int64))
+  (call   main (: 0 Int64)) (output (: 31 Int64))
+  (call   main (: -4 Int64)) (output (: -129 Int64)))
+
+(case "lam1 INLINE and LET-BOUND lambdas applied to one draw — both closure forms read the same drawn value"
+  (input  (do
+            (effect E (op next (-> Int64)) (op probe (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1)))
+                 (probe () s (resume s s)))
+                (let ((d (E.next)))
+                  (let ((f (fn ((: y Int64)) (* 2 (+ y 10)))))
+                    (+ (* 100 ((fn ((: x Int64)) (- (* 3 x) 1)) d))
+                       (+ (* 10 (f d)) (- (E.probe) n)))))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 741 Int64))
+  (call   main (: 0 Int64)) (output (: 101 Int64))
+  (call   main (: -3 Int64)) (output (: -859 Int64)))
+
+(case "ag2 TWO aggregator effects interleaved — each keeps its own running sum, weighted reads pin the four-feed order"
+  (input  (do
+            (effect P (op feed (-> Int64 Int64)))
+            (effect Q (op feed (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle P 0
+                ((feed (x) s (resume (+ s x) (+ s x))))
+                (handle Q 0
+                  ((feed (x) t (resume (+ t x) (+ t x))))
+                  (let ((r1 (P.feed n)))
+                    (let ((r2 (Q.feed 10)))
+                      (let ((r3 (P.feed n)))
+                        (let ((r4 (Q.feed 10)))
+                          (+ r1 (+ (* 2 r2) (+ (* 3 r3) (* 4 r4)))))))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 121 Int64))
+  (call   main (: 0 Int64)) (output (: 100 Int64))
+  (call   main (: -5 Int64)) (output (: 65 Int64)))
