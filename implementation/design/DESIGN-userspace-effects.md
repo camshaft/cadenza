@@ -487,9 +487,10 @@ How it composes with what's already designed:
   (`matches_family` ignores version; `version_in` range-checks). The operator ruled (verbatim: *"I do
   not want to preserve any kind of backward compatibility. Rip out the old versioning crap."*): the
   `version: u32` axis is REMOVED entirely and schema-hash becomes the contract-version identity for ALL
-  families — built-in and extension alike. `ContentType` becomes `{family, schema_hash}` (family = the
-  human/routing/Cedar-action key; schema_hash = the exact contract version). This is a BREAKING
-  `ContentType` change, which is fine + preferred: there is no deployed durable state to protect (v0), so
+  families — built-in and extension alike. (D13's interim shape was `ContentType {family, schema_hash}`;
+  **D14=A below then eliminated the struct entirely** — the wire is a bare schema-hash and `family` is a
+  SCHEMA field. Read this bullet as the version-axis removal; D14=A is the final envelope shape.) This is
+  a BREAKING `ContentType` change, which is fine + preferred: there is no deployed durable state (v0), so
   a compat shim is exactly the "old thing that never gets cleaned up" the no-migration-cruft directive
   rejects. The tolerant-reader rule re-expresses cleanly: match `family`, then check whether you
   understand the `schema_hash` (you hold that schema) instead of a numeric `version_in` range — a known
@@ -509,11 +510,13 @@ How it composes with what's already designed:
   introspection, picks one it understands, and stamps its requests' `ContentType.schema_hash` with it;
   the handler dispatches on the stamped schema-hash.
 
-⟨D13 — RESOLVED by the operator⟩ schema-hash **REPLACES** `version: u32` in `ContentType` (NOT a third
-field, no `version` kept for built-ins, no backward compat — rip the u32 version axis out entirely).
-`ContentType` becomes `{family, schema_hash}`; the schema is a binary cdzast AST; schema-hash = the
-content hash of its canonical `\x00\x01` bytes. The family string is untouched (still the routing/Cedar
-key). *Gate (when built):* the `version: u32` field is gone from `ContentType`; a message stamped with
+⟨D13 — RESOLVED by the operator; then SUPERSEDED by D14=A⟩ schema-hash **REPLACES** `version: u32` (no
+third field, no `version` kept, no backward compat — rip the u32 version axis out entirely). D13's
+interim framing had `ContentType` become `{family, schema_hash}`; **D14=A (below) then went further and
+ELIMINATED the `ContentType` struct entirely** — the wire content-identity is a BARE schema-hash and the
+`family` is a SCHEMA field, not a wire field. So the final shape is: wire = one `Hash`; the schema (a
+binary cdzast AST; schema-hash = the content hash of its canonical `\x00\x01` bytes) is the single
+self-describing source of name + contract + authz. *Gate (when built):* the `version: u32` field is gone from `ContentType`; a message stamped with
 schema-hash H resolves + folds against schema H; expanding a contract to H' leaves H-stamped messages
 resolving to H; a message at an unknown schema-hash fails honestly (`Err(unsupported-schema)`), never
 misdecodes; equal schemas hash equal across a cdzast container-format bump. **Anchors:** `event.rs`
@@ -560,18 +563,123 @@ though: because the schema is SELF-DESCRIBING, that name does not need to be a S
   `schema_hash` → the handler. An old `H_old` message routes by resolving `H_old`'s schema, reading its
   declared name, and looking up the current handler for that name.
 
-⟨D14 — RECOMMENDATION, surfaced to the operator⟩ **Collapse the wire envelope to a single schema-hash
-`Hash` (eliminate the `ContentType` STRUCT), and move the stable family/name INTO the self-describing
-schema as a declared field.** This achieves the operator's "content type just IS the schema-hash" for
-the ENVELOPE while preserving the one thing a bare hash cannot do — a routing/Cedar key stable across
-contract evolution — by relocating it into the schema (where "self-describing" makes it belong) rather
-than keeping a parallel `ContentType.family`. Net: the wire carries one `Hash`; the name is a schema
-field, recovered by introspection. This is the maximal-clean version of the rip-out-the-envelope
-directive. *The alternative* (keep a thin `{family, schema_hash}` so routing needn't dereference the
-schema on every message) trades one extra wire field for avoiding a schema-lookup at routing time — a
-performance/latency consideration, not a semantic one. **Flagged to the operator** (foundational
-envelope-shape call); coordinate the chosen shape with `v-agent-harness` (owns `ContentType`). Default
-pending the ruling: the collapse (identity = schema-hash; name is a schema field).
+⟨D14 — DECIDED = A (FULL COLLAPSE), operator⟩ The operator chose the full collapse (verbatim: *"put
+the whole thing in the schema. We have the whole s3fifo cache so the perf is not a problem."*). LOCKED:
+
+- **The wire content-identity is a BARE schema-hash — a single `Hash`. The `ContentType` STRUCT is
+  ELIMINATED.** There is no `family` field and no `version` field on the wire; the content-identity an
+  effect/event carries is exactly one schema-hash.
+- **The self-describing schema is the single source** for everything the type used to carry: the stable
+  name (the `(effect Weather …)` head), the type contract (op signatures), and the authz contract
+  (D15). Routing resolves `schema-hash → schema → declared name`; Cedar keys on the hash-identified
+  schema (D15).
+- **The perf concern that motivated the thin-`{family, schema_hash}` alternative (B) is a NON-ISSUE:**
+  the S3-FIFO cache makes `schema-hash → schema` resolution cheap, so routing does the lookup through
+  the cache with no meaningful cost. There is no per-message schema-lookup penalty worth a wire field.
+
+This composes with everything already locked: D13 (schema-hash replaces `version: u32`), the
+self-describing schema (name-in-schema), and D15 (authz contract in schema / grants external /
+hash-keyed / no-auto-carry / opt-in `supersedes` lineage). **The ENTIRE schema-identity + authz arc is
+now settled:** the wire is just a schema-hash; the schema is the single self-describing source of
+name + type-contract + authz; resolution goes through the s3fifo cache. This is a breaking envelope
+change owned by `v-agent-harness` (it folds with their binary-target rework) — the `ContentType` struct
+is removed, not merely re-fielded. See the reconciliation note under D13 above (D14=A supersedes D13's
+interim `{family, schema_hash}` framing — the family is NOT a wire field, it is a schema field).
+
+### D15 — the schema is self-describing for AUTHZ too; authz is HASH-BOUND (operator thread; anti-collision by construction)
+
+The operator extended D14 into authz across three messages, ending at the maximally-secure model. The
+important part is a soundness distinction that must NOT be hand-waved (operator: *"do not hand-wave
+it"*). Working the thread through:
+
+1. **Schema self-describes authz facts (operator).** The schema should declare not just its routing
+   name but its authz-relevant structure — the stable Cedar ACTION name and the RESOURCE shape (target
+   kind, capability class, the predicates a policy matches). So the Cedar action + resource model is
+   DERIVED FROM the schema, not a separate registration. This reinforces D14-collapse-A: the schema is
+   the single self-describing source for (1) the content/type contract, (2) the routing name, (3) the
+   authz action + resource declarations.
+
+2. **The collision soundness question (operator).** If authz keys on a name the SCHEMA declares, two
+   DIFFERENT schemas (different hash) could both declare `weather` — and a grant meant for schema-A's
+   `weather` would leak to a malicious schema-B that merely declares `weather` too. A bare
+   self-declared name is spoofable; something must bind the name to a legitimate identity.
+
+3. **The resolution — bind authz to the HASH-identified schema (operator: "the most secure way").**
+   Because the schema-hash covers the schema's authz declarations, a same-name-different-hash collision
+   CANNOT cross grants BY CONSTRUCTION: schema-B is a different hash, so a grant bound to schema-A's
+   hash-identified authz simply does not apply to it. The name becomes a human/routing label; the
+   AUTHORITY is the hash-bound authz. This is stronger than "the name-server registration binds the
+   name" — it moves the security root INTO the content-addressed schema, so no registration-authority is
+   even needed to PREVENT the collision.
+
+**The one distinction that keeps this sound (must be explicit).** "Authz bound to the schema" must mean
+the authz **CONTRACT/shape** is hash-bound, NOT that the handler ships its own **permit-rules**. These
+are different:
+- **Hash-bind the authz CONTRACT** — the action name, the resource shape, the predicate-relevant
+  structure Cedar matches against. This is the handler-author's legitimate self-description, and
+  hash-binding it is exactly what kills the collision (a grant references the hash-identified action +
+  resource shape; a different schema is a different hash is a different authz identity). ✅ Adopt this.
+- **Do NOT let the schema carry the permit-DECISION (who may invoke).** *Who is permitted* is the
+  OPERATOR's/caller's policy, not the handler-author's — §20b: policy is the operator's, swappable, on
+  the log; the handler provides mechanism, not policy. If a handler shipped `permit(everyone)` inside
+  its schema, it would authorize ITSELF — a confused-deputy / self-authorization hole. So the Cedar
+  POLICY (the permit/forbid rules) stays the operator's separate, log-named, swappable artifact (I5 /
+  §20b); it simply KEYS ON the hash-bound authz identity the schema declares.
+
+So the sound model is: **the schema is self-describing for the authz CONTRACT (hash-bound, unforgeable,
+collision-proof by construction); the authz POLICY remains the operator's, keyed on that hash-bound
+identity.** The name is a routing/human label with no security weight; the schema-hash + its declared
+authz contract is the authority the operator's policy grants against. This resolves the collision
+without a registration-authority (the hash-binding does it), while keeping the grant AUTHORITY with the
+operator (not the handler-author) — the two together are what make it both collision-proof AND not
+self-authorizing.
+
+⟨D15 — SETTLED by the operator⟩ The operator confirmed this model exactly and settled the succession
+question. The locked authz model:
+
+- **Grants live OUTSIDE the schema** (operator: *"I do not think the grants should be inside the schema.
+  It should definitely live outside of it."*) — confirms the contract-vs-decision split above: the
+  permit-decision/policy is a SEPARATE, operator-owned, swappable artifact (§20b), never in the schema.
+  No self-authorization/confused-deputy.
+- **Authz resources are identified by SCHEMA-HASH** (operator: *"identify authz resources by the schema
+  hash and then it is completely unambiguous which resources are being granted."*) — a grant names the
+  schema-hash as the resource, so which resource is granted is unambiguous and collision-proof by
+  construction. The hash-bound authz CONTRACT is the resource identity; the external policy grants
+  against it.
+- **Version succession = NO auto-carry; migration-at-registration by the registrant** (operator: *"if a
+  new schema gets registered then whoever is registering it can do the migration and include grant
+  upgrades."*). A grant to `weather@H1` does NOT auto-apply to `weather@H2`. Registration of a new
+  version is the point where grant migration happens — explicit, registrant-driven, never a silent
+  widen. So a contract expansion never silently widens an existing grant; the registrant deliberately
+  carries grants forward.
+- **OPT-IN lineage: bake the predecessor hash INTO the new schema** (operator: *"bake the old hash of
+  the previous version into the schema of the new version … to grandfather in old grants."*). A new
+  version H2 DECLARES its predecessor H1 as a schema field — e.g. `(effect Weather (supersedes H1)
+  (op …) …)`. Because the link is baked in, it is itself HASH-BOUND (part of what H2's hash covers) =
+  unforgeable + verifiable. USES: (1) the external authz policy MAY, if it chooses, follow the declared
+  H1→H2 lineage to grandfather an H1 grant forward to H2 — opt-in, driven by the successor's own
+  declaration + the registrant's migration, NOT a silent auto-carry; (2) a verifiable version chain for
+  audit/discovery. Crucially this preserves the security properties: declaring `supersedes(H1)` does NOT
+  self-grant — the permit-decision stays external + operator-controlled, so a rogue schema that declares
+  `supersedes(H1)` grandfathers in NOTHING unless the operator's policy chooses to honor that lineage.
+  It merely OFFERS a verifiable lineage the external policy may consult. It composes cleanly with
+  grants-external + hash-keyed-resource (lineage is a schema-declared hint, not an authz grant itself).
+- **What registration does now.** With the authz identity hash-bound, name-server registration
+  (`effect/<name> → current schema-hash`) is ROUTING/DISCOVERY + namespace-claim only — no longer the
+  security root (the hash-binding is). It answers "which handler + which current contract," and may gate
+  WHO can claim a routing name (a namespace-ownership concern), but not "who may call" (that is the
+  external policy keyed on the schema-hash).
+- **Resource-shape vocabulary (I5 detail).** What the schema declares for the Cedar resource model
+  (target kind, capability class) must align with the `ResourcePredicate` / Cedar entity model —
+  coordinate with the I5 owner + `design-dogwood-cedar` when that work resumes.
+
+**Locked authz model (for the deferred I5 build):** authz CONTRACT hash-bound in the self-describing
+schema (collision-proof by construction); **grants EXTERNAL** — the operator's swappable Cedar policy
+keyed on the schema-hash resource; **no auto-succession** — the registrant does grant-migration
+explicitly at registration; **opt-in lineage** via a hash-bound `(supersedes H_prev)` schema declaration
+the external policy MAY follow to grandfather grants (never self-granting). Registration = routing +
+namespace-claim, not the security root. The authz-collision thread is CLOSED; the model is set (I5
+build deferred to the operator's return, but no open design question remains).
 
 ## Part C — stateful-resource transport primitives: process / ws-client / ws-server (I12–I14)
 
