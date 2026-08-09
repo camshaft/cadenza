@@ -870,7 +870,11 @@ pub enum GrantState {
 /// is `None` when there is no scope to report (an `Absent` family, or a `Denied` one).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct CapabilityEntry {
-    pub family: String,
+    /// The effect family this entry describes. `Arc<str>` (operator cheaply-clonable directive: an id/name/
+    /// family is a cheaply-clonable `Arc<str>`, never an owned `String`) — a well-known family is a
+    /// `&'static str` const so `.into()` is an `Arc::from(&str)` once at build, then O(1) refcount clones as
+    /// the manifest threads through projection/diff/answer.
+    pub family: std::sync::Arc<str>,
     pub grant: GrantState,
     pub scope: Option<ResourcePredicate>,
 }
@@ -893,7 +897,10 @@ pub struct CapabilityManifest {
 /// snapshot manifest carries the current scope; a scope-only refinement doesn't change usability.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct GrantChange {
-    pub family: String,
+    /// Which effect family's grant-state moved. `Arc<str>` (operator cheaply-clonable directive) — a
+    /// cheaply-clonable family handle, never an owned `String`; sourced from the manifest entry's `family`
+    /// (itself `Arc<str>`), so producing a change is an O(1) refcount clone.
+    pub family: std::sync::Arc<str>,
     pub from: GrantState,
     pub to: GrantState,
 }
@@ -917,12 +924,12 @@ impl CapabilityManifest {
         let self_idx: BTreeMap<&str, &GrantState> = self
             .entries
             .iter()
-            .map(|e| (e.family.as_str(), &e.grant))
+            .map(|e| (e.family.as_ref(), &e.grant))
             .collect();
         let prev_idx: BTreeMap<&str, &GrantState> = prev
             .entries
             .iter()
-            .map(|e| (e.family.as_str(), &e.grant))
+            .map(|e| (e.family.as_ref(), &e.grant))
             .collect();
         // Walk the union of family names (BTreeMap keys are sorted → the walk is ordered).
         self_idx
@@ -945,7 +952,7 @@ impl CapabilityManifest {
                     return None;
                 }
                 Some(GrantChange {
-                    family: fam.to_string(),
+                    family: fam.into(),
                     from,
                     to,
                 })
@@ -1003,7 +1010,7 @@ pub async fn project_manifest(
             }
         };
         entries.push(CapabilityEntry {
-            family: family.to_string(),
+            family: family.into(),
             grant,
             scope: None,
         });
@@ -1819,7 +1826,7 @@ mod tests {
             manifest
                 .entries
                 .iter()
-                .find(|e| e.family == fam)
+                .find(|e| e.family.as_ref() == fam)
                 .map(|e| e.grant.clone())
                 .unwrap()
         };
@@ -1843,7 +1850,7 @@ mod tests {
             .all(|e| e.grant == GrantState::Absent));
         // Every canonical family is represented.
         for &fam in effect_ct::ALL {
-            assert!(manifest.entries.iter().any(|e| e.family == fam));
+            assert!(manifest.entries.iter().any(|e| e.family.as_ref() == fam));
         }
     }
 
@@ -1872,7 +1879,7 @@ mod tests {
         .await;
 
         for entry in &manifest.entries {
-            if entry.family == effect_ct::NOW {
+            if entry.family.as_ref() == effect_ct::NOW {
                 assert_eq!(entry.grant, GrantState::Granted, "Now: mechanism + policy");
             } else {
                 assert_eq!(
@@ -1900,7 +1907,7 @@ mod tests {
         let model_state = |m: &CapabilityManifest| {
             m.entries
                 .iter()
-                .find(|e| e.family == effect_ct::MODEL)
+                .find(|e| e.family.as_ref() == effect_ct::MODEL)
                 .unwrap()
                 .grant
                 .clone()
@@ -1982,7 +1989,7 @@ mod tests {
         let g = |fam: &str| {
             m.entries
                 .iter()
-                .find(|e| e.family == fam)
+                .find(|e| e.family.as_ref() == fam)
                 .unwrap()
                 .grant
                 .clone()
@@ -2018,7 +2025,7 @@ mod tests {
         // I6's pure heart: which families' usability CHANGED between two projected manifests, and how — the
         // input to the `capabilities-changed` push (delivered ONLY to sessions whose manifest actually moved).
         let entry = |family: &str, grant: GrantState| CapabilityEntry {
-            family: family.to_string(),
+            family: family.into(),
             grant,
             scope: None,
         };
@@ -2044,12 +2051,12 @@ mod tests {
             changes,
             vec![
                 GrantChange {
-                    family: effect_ct::MODEL.to_string(),
+                    family: effect_ct::MODEL.into(),
                     from: GrantState::Denied,
                     to: GrantState::Granted,
                 },
                 GrantChange {
-                    family: effect_ct::SHELL.to_string(),
+                    family: effect_ct::SHELL.into(),
                     from: GrantState::Absent,
                     to: GrantState::Granted,
                 },
@@ -2071,7 +2078,7 @@ mod tests {
         assert_eq!(
             with_timer.grant_changes(&empty),
             vec![GrantChange {
-                family: effect_ct::TIMER.to_string(),
+                family: effect_ct::TIMER.into(),
                 from: GrantState::Absent,
                 to: GrantState::Granted,
             }],
@@ -2081,7 +2088,7 @@ mod tests {
         assert_eq!(
             empty.grant_changes(&with_timer),
             vec![GrantChange {
-                family: effect_ct::TIMER.to_string(),
+                family: effect_ct::TIMER.into(),
                 from: GrantState::Granted,
                 to: GrantState::Absent,
             }],
