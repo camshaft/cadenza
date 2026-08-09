@@ -10576,9 +10576,10 @@ fn schedule_pass_local_gate(
     // store lands; the two compose multiplicatively). Only in --batch --publish-origin mode. On GREEN we
     // FF-push the WHOLE combined tree to origin/main once + ack EVERY member; the members are then
     // removed from `queued` so the per-MR loop below handles only the remainder (non-batched / collided).
-    // On a batch RED (or NoChecks / non-FF push), we land NOTHING from the batch and let the per-MR loop
-    // gate each individually — the per-MR loop IS the bisect (the one culprit reds alone, the greens
-    // land), simpler than an in-batch bisect and it never mis-rejects an innocent member.
+    // On a batch RED we BISECT (partition_batch over gate_subset_reparent): the green survivors land
+    // wholesale in one FF-push this pass, only the isolated culprit(s) reject — log-depth, replacing the
+    // old per-MR fallback that cost ~N gate cycles over ~N bounded ticks (operator throughput priority
+    // 2026-08-09). On NoChecks / non-FF push we land NOTHING + let the per-MR loop retry (no false-green).
     let mut landed_by_batch: std::collections::HashSet<String> = std::collections::HashSet::new();
     if batch && publish_origin && queued.len() >= 2 {
         let members = select_batch_members(&queued, batch_member_cap);
@@ -10649,12 +10650,107 @@ fn schedule_pass_local_gate(
                             );
                         }
                     }
+                    CiVerdict::Red => {
+                        // RED → BISECT the culprit(s) instead of dropping the whole batch to the per-MR loop
+                        // (throughput fix, operator priority 2026-08-09). The old fallback re-gated every
+                        // member individually across MANY bounded passes (per-MR loop is capped at 1 green
+                        // land/invocation), so one bad member in a 6-batch cost ~6 full gate cycles over ~6
+                        // ticks. `partition_batch` binary-searches the culprit in log-depth (~3 gates for a
+                        // 6-batch) using `gate_subset_reparent` (re-form the subset onto origin/main + gate)
+                        // as the oracle — the SAME machinery the candidate-PR `publish-batch` path uses. The
+                        // green survivors land WHOLESALE in one FF-push this pass; only the culprit(s) reject.
+                        let applied_owned: Vec<BatchMr> =
+                            applied.iter().map(|m| (*m).clone()).collect();
+                        println!(
+                            "  ⊞ batch gate RED — bisecting {} members to isolate the culprit(s) (log-depth, not per-MR)…",
+                            applied_owned.len()
+                        );
+                        let (land_idx, broken_idx) = partition_batch(applied_owned.len(), |subset| {
+                            gate_subset_reparent(&wt, &applied_owned, subset)
+                        });
+                        // Reject the isolated culprit(s) — each excluded so the rest can land; the author
+                        // rebases + resends (an INTERACTION failure removes one of the pair, also correct).
+                        for &i in &broken_idx {
+                            let m = &applied_owned[i];
+                            ack(
+                                fleet,
+                                &m.file,
+                                "reject",
+                                "",
+                                &format!(
+                                    "batch bisect: `{}` was isolated as a culprit (or interaction-breaker) when the {}-MR combined-tree gate went RED — excluded so the rest could land. Rebase onto current origin/main + resend; if it passes ALONE it was an interaction with a batch-mate now landed.",
+                                    m.r#ref,
+                                    applied_owned.len()
+                                ),
+                            );
+                            rejected += 1;
+                            if json {
+                                records.push(serde_json::json!({
+                                    "file": m.file, "from": m.from, "ref": m.r#ref, "verdict": "reject", "reason": "batch-bisect-culprit", "sha": ""
+                                }));
+                            }
+                        }
+                        // Land the confirmed-green survivors WHOLESALE: re-form just them onto origin/main
+                        // (partition_batch's oracle left the worktree on some subset), gate is already
+                        // proven green for this exact set by the final partition_batch call, FF-push once.
+                        let survivors: Vec<BatchMr> =
+                            land_idx.iter().map(|&i| applied_owned[i].clone()).collect();
+                        if survivors.len() >= 2 && reform_reparent(&wt, &survivors) {
+                            let survivor_sha = head_sha();
+                            let pushed = git_wt(&["push", "origin", "HEAD:main"])
+                                .map(|o| o.status.success())
+                                .unwrap_or(false);
+                            if pushed {
+                                let _ = git_wt(&["reset", "--hard", "HEAD"]);
+                                for m in &survivors {
+                                    ack(
+                                        fleet,
+                                        &m.file,
+                                        "merged",
+                                        &survivor_sha,
+                                        &format!(
+                                            "landed in a BISECTED BATCH of {} survivors (combined-tree gate-local GREEN after isolating {} culprit(s)) + PUBLISHED to origin/main @ {survivor_sha}",
+                                            survivors.len(),
+                                            broken_idx.len()
+                                        ),
+                                    );
+                                    landed_by_batch.insert(m.file.clone());
+                                    merged += 1;
+                                    if json {
+                                        records.push(serde_json::json!({
+                                            "file": m.file, "from": m.from, "ref": m.r#ref, "verdict": "merged", "sha": survivor_sha, "batch": survivors.len()
+                                        }));
+                                    }
+                                }
+                                println!(
+                                    "  ⊞ batch bisect: MERGED {} survivor(s) @ {survivor_sha}, rejected {} culprit(s)",
+                                    survivors.len(),
+                                    broken_idx.len()
+                                );
+                            } else {
+                                // Non-FF (origin advanced mid-bisect) → land nothing; reset + let per-MR retry.
+                                let _ = git_wt(&["reset", "--hard", &batch_base]);
+                                println!(
+                                    "  ⊞ batch bisect: survivors GREEN but push non-FF (origin advanced) — per-MR retry next pass."
+                                );
+                            }
+                        } else {
+                            // 0–1 survivor (nothing to batch) → reset; the per-MR loop lands the lone survivor.
+                            let _ = git_wt(&["reset", "--hard", &batch_base]);
+                            println!(
+                                "  ⊞ batch bisect: {} culprit(s) isolated, {} survivor(s) (too few to batch) — per-MR loop lands the remainder.",
+                                broken_idx.len(),
+                                survivors.len()
+                            );
+                        }
+                    }
                     _ => {
-                        // RED / NoChecks → land nothing from the batch; reset + fall back to per-MR (which
-                        // isolates the culprit: it reds alone, the innocents land individually).
+                        // NoChecks (gate couldn't run / timed out) → never false-green + don't reject on a
+                        // non-verdict; reset + fall back to per-MR (which re-gates each, leaving them queued
+                        // on a NoChecks so nothing is lost).
                         let _ = git_wt(&["reset", "--hard", &batch_base]);
                         println!(
-                            "  ⊞ batch combined-tree gate not-GREEN — falling back to per-MR (isolates the culprit)."
+                            "  ⊞ batch combined-tree gate NO-CHECKS (couldn't run) — falling back to per-MR (no false-green, nothing rejected)."
                         );
                     }
                 }
