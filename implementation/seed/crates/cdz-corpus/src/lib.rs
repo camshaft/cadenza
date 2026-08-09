@@ -124,6 +124,82 @@ pub enum Expect {
     Declines(Option<String>),
 }
 
+/// A platform-conformance case (`(platform-case "title" …)`) — the runtime/platform analog of a
+/// compiler `(case …)`, in the separate `spec/platform/` tree (DESIGN-platform-conformance-suite.md,
+/// operator seq358/seq359). Distinct GENRE from `Record`: a constellation of interacting reducer
+/// SESSIONS is driven from ONE kick-off event to a fixpoint (no scripted response tape), and the case
+/// asserts the emitted effects/messages + each session's end-state. The reader parses + normalizes it;
+/// v-platform-conformance's xtask `run_platform_case` grade path drives the fixpoint and compares.
+#[derive(Debug)]
+pub struct PlatformRecord {
+    /// The case title (the first string child of `(platform-case "…" …)`).
+    pub title: String,
+    /// The `(doc "…")` prose, if present — documentation only.
+    pub doc: Option<String>,
+    /// The `(session <alias> (reducer <prog>) (serves <family>…)?)` blocks, in declaration order. Each
+    /// carries its alias, its reducer program (normalized one-line like a `(case (input …))` program —
+    /// the reader does NOT compile it), and the effect families it serves as a handler.
+    pub sessions: Vec<PlatformSession>,
+    /// The single `(kickoff <alias> (inbound <family> <value>))` — the one event that seeds the run.
+    pub kickoff: Kickoff,
+    /// Ordered `(expect-effects (effect (from <a>) (family <f>) <value>?)…)` — each emitted effect the
+    /// run must produce, in stream order (order-verified, like `host_calls`). Value-form optional (an
+    /// effect with no payload omits it).
+    pub expect_effects: Vec<ExpectEffect>,
+    /// Ordered `(expect-messages (message (from <a>) (to <b>) (family <f>) <value>)…)` — the inter-session
+    /// messages the run must deliver, in stream order.
+    pub expect_messages: Vec<ExpectMessage>,
+    /// `(expect-delivery-failure (from <a>) (to <b>)…)` — messages whose delivery must FAIL (e.g. to a
+    /// closed session), as `(from, to)` alias pairs.
+    pub expect_delivery_failures: Vec<(String, String)>,
+    /// Per-alias end-state key/value assertions: `(end-state <alias> (kv <key> <value>)…)` → one
+    /// `(alias, key, value-form)` each.
+    pub end_kv: Vec<(String, String, String)>,
+    /// Per-alias end-state status: `(end-state <alias> … (status <state>))` → one `(alias, status)` each
+    /// (status in active/quiescent/stalled/closed).
+    pub end_status: Vec<(String, String)>,
+    /// Per-alias `(events-processed <alias> <n>)` — the total processed-log length the session must reach
+    /// (grades `Session::event_count()`).
+    pub events_processed: Vec<(String, String)>,
+}
+
+/// One `(session <alias> (reducer <prog>) (serves <family>…))` block of a platform case.
+#[derive(Debug)]
+pub struct PlatformSession {
+    /// The session's alias (how the kickoff/effects/messages/end-state address it).
+    pub alias: String,
+    /// The reducer program, normalized one-line (same normalization as a `(case (input …))` program).
+    pub program: String,
+    /// The effect families this session serves as a handler (zero or more), in order.
+    pub serves: Vec<String>,
+}
+
+/// The single kick-off event of a platform case: an inbound `family` carrying `value` delivered to
+/// session `alias` to seed the fixpoint.
+#[derive(Debug)]
+pub struct Kickoff {
+    pub alias: String,
+    pub inbound: String,
+    pub value: String,
+}
+
+/// One expected emitted effect: session `from` performed effect `family`, optionally carrying `value`.
+#[derive(Debug)]
+pub struct ExpectEffect {
+    pub from: String,
+    pub family: String,
+    pub value: Option<String>,
+}
+
+/// One expected inter-session message: `from` sent `to` an effect `family` carrying `value`.
+#[derive(Debug)]
+pub struct ExpectMessage {
+    pub from: String,
+    pub to: String,
+    pub family: String,
+    pub value: String,
+}
+
 /// Extract a `(message "phrase")` sibling clause's string from a clause's tail, if present — the
 /// diagnostic-message pin (operator seq353) shared by `(error …)` and `(declines …)`. `None` when no
 /// well-formed `(message STR)` child is present.
@@ -163,6 +239,26 @@ pub fn read(text: &str) -> Result<Vec<Record>, String> {
 /// verifies. This is the reader the xtask gate uses for a migrated file.
 pub fn read_markdown(text: &str) -> Result<Vec<Record>, String> {
     read(&markdown::to_sexpr(text)?)
+}
+
+/// Parse a PLATFORM-conformance file's `text` into [`PlatformRecord`]s — the separate `spec/platform/`
+/// genre (operator seq358/seq359). Dispatches on the `(platform-case …)` head, exactly as [`read`]
+/// dispatches on `(case …)`; a non-`platform-case` top-level form is skipped, so a file may mix (though
+/// in practice platform files are homogeneous). Errors only if the file does not parse as s-expressions;
+/// a malformed individual case is a hard error (fail loud, like `read`).
+pub fn read_platform(text: &str) -> Result<Vec<PlatformRecord>, String> {
+    let arenas = sexpr::read_all(text).map_err(|e| format!("corpus parse error: {}", e.0))?;
+    let top = match arenas.get(arenas.root) {
+        cadenza_syntax::ast::Struct::List(items) => &items[1..], // skip the synthetic `do` head
+        _ => return Ok(Vec::new()),
+    };
+    let mut records = Vec::new();
+    for &case_id in top {
+        if arenas.head_name(case_id) == Some("platform-case") {
+            records.push(parse_platform_case(&arenas, case_id)?);
+        }
+    }
+    Ok(records)
 }
 
 /// Render `records` to the flat record stream (see the module docs for the format).
@@ -269,6 +365,127 @@ pub fn render(records: &[Record]) -> String {
 /// Convenience: read + render in one step (what the `corpus` command emits).
 pub fn to_records(text: &str) -> Result<String, String> {
     Ok(render(&read(text)?))
+}
+
+/// Render `PlatformRecord`s to the flat record stream — the `spec/platform/` genre analog of [`render`].
+/// FIXED-ARITY tab lines + one line per element of an ordered list (mirrors `host-call`/`module`), so
+/// v-platform-conformance's `run_platform_case` parses with the same split-on-tab loop, no s-expr parser:
+///   `platform-case\t<title>` · `doc\t<text>`? · `session\t<alias>\t<program>` (1+) ·
+///   `serves\t<alias>\t<family>` (0+) · `kickoff\t<alias>\t<inbound>\t<value>` (1) ·
+///   `expect-effect\t<from>\t<family>[\t<value>]` (0+, order) ·
+///   `expect-message\t<from>\t<to>\t<family>\t<value>` (0+, order) ·
+///   `expect-delivery-failure\t<from>\t<to>` (0+) · `end-kv\t<alias>\t<key>\t<value>` (0+) ·
+///   `end-status\t<alias>\t<status>` (0+) · `events-processed\t<alias>\t<n>` (0+) · `---` terminator.
+pub fn render_platform(records: &[PlatformRecord]) -> String {
+    let mut out = String::new();
+    for r in records {
+        out.push_str("platform-case\t");
+        out.push_str(&r.title);
+        out.push('\n');
+        if let Some(doc) = &r.doc {
+            out.push_str("doc\t");
+            out.push_str(doc);
+            out.push('\n');
+        }
+        for s in &r.sessions {
+            out.push_str("session\t");
+            out.push_str(&s.alias);
+            out.push('\t');
+            out.push_str(&s.program);
+            out.push('\n');
+            for family in &s.serves {
+                out.push_str("serves\t");
+                out.push_str(&s.alias);
+                out.push('\t');
+                out.push_str(family);
+                out.push('\n');
+            }
+        }
+        out.push_str("kickoff\t");
+        out.push_str(&r.kickoff.alias);
+        out.push('\t');
+        out.push_str(&r.kickoff.inbound);
+        out.push('\t');
+        out.push_str(&r.kickoff.value);
+        out.push('\n');
+        for e in &r.expect_effects {
+            out.push_str("expect-effect\t");
+            out.push_str(&e.from);
+            out.push('\t');
+            out.push_str(&e.family);
+            if let Some(v) = &e.value {
+                out.push('\t');
+                out.push_str(v);
+            }
+            out.push('\n');
+        }
+        for m in &r.expect_messages {
+            out.push_str("expect-message\t");
+            out.push_str(&m.from);
+            out.push('\t');
+            out.push_str(&m.to);
+            out.push('\t');
+            out.push_str(&m.family);
+            out.push('\t');
+            out.push_str(&m.value);
+            out.push('\n');
+        }
+        for (from, to) in &r.expect_delivery_failures {
+            out.push_str("expect-delivery-failure\t");
+            out.push_str(from);
+            out.push('\t');
+            out.push_str(to);
+            out.push('\n');
+        }
+        for (alias, key, value) in &r.end_kv {
+            out.push_str("end-kv\t");
+            out.push_str(alias);
+            out.push('\t');
+            out.push_str(key);
+            out.push('\t');
+            out.push_str(value);
+            out.push('\n');
+        }
+        for (alias, status) in &r.end_status {
+            out.push_str("end-status\t");
+            out.push_str(alias);
+            out.push('\t');
+            out.push_str(status);
+            out.push('\n');
+        }
+        for (alias, n) in &r.events_processed {
+            out.push_str("events-processed\t");
+            out.push_str(alias);
+            out.push('\t');
+            out.push_str(n);
+            out.push('\n');
+        }
+        out.push_str("---\n");
+    }
+    out
+}
+
+/// Convenience: read + render platform cases in one step (the `spec/platform/` genre analog of
+/// [`to_records`]).
+pub fn to_platform_records(text: &str) -> Result<String, String> {
+    Ok(render_platform(&read_platform(text)?))
+}
+
+/// Whether `text` is a PLATFORM-genre corpus file — i.e. its first top-level form is a `(platform-case
+/// …)` rather than a compiler `(case …)`. The two genres are disjoint (a file is homogeneous), so the
+/// leading form's head decides. Used by the `records` CLI to route to [`read_platform`]. A file that
+/// does not parse, or has no forms, is NOT platform (falls through to the normal reader, which reports
+/// the parse error). Cheap: reads the s-exprs but inspects only the first child.
+pub fn is_platform_genre(text: &str) -> bool {
+    let Ok(arenas) = sexpr::read_all(text) else {
+        return false;
+    };
+    match arenas.get(arenas.root) {
+        cadenza_syntax::ast::Struct::List(items) => items
+            .get(1) // [0] is the synthetic `do` head
+            .is_some_and(|&first| arenas.head_name(first) == Some("platform-case")),
+        _ => false,
+    }
 }
 
 /// Parse one `(case …)` occurrence into a [`Record`].
@@ -483,6 +700,242 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
     })
 }
 
+/// Parse a `(platform-case "title" <clause>…)` into a [`PlatformRecord`]. Mirrors [`parse_case`]'s
+/// clause walk. Clauses (all optional except a kickoff, which the fixpoint needs to start):
+///   `(doc "…")` · `(session <alias> (reducer <prog>) (serves <family>…)?)` (1+) ·
+///   `(kickoff <alias> (inbound <family> <value>))` (exactly 1) ·
+///   `(expect-effects (effect (from <a>) (family <f>) <value>?)…)` (ordered) ·
+///   `(expect-messages (message (from <a>) (to <b>) (family <f>) <value>)…)` (ordered) ·
+///   `(expect-delivery-failure (from <a>) (to <b>))` (0+) ·
+///   `(end-state <alias> (kv <key> <value>)… (status <state>)?)` · `(events-processed <alias> <n>)`.
+fn parse_platform_case(a: &Arenas, case_id: StructId) -> Result<PlatformRecord, String> {
+    let items = match a.get(case_id) {
+        cadenza_syntax::ast::Struct::List(items) => items,
+        _ => return Err("platform-case is not a list".into()),
+    };
+    let title = items
+        .get(1)
+        .and_then(|&id| string_leaf(a, id))
+        .ok_or("platform-case has no title string")?;
+
+    let mut doc: Option<String> = None;
+    let mut sessions: Vec<PlatformSession> = Vec::new();
+    let mut kickoff: Option<Kickoff> = None;
+    let mut expect_effects: Vec<ExpectEffect> = Vec::new();
+    let mut expect_messages: Vec<ExpectMessage> = Vec::new();
+    let mut expect_delivery_failures: Vec<(String, String)> = Vec::new();
+    let mut end_kv: Vec<(String, String, String)> = Vec::new();
+    let mut end_status: Vec<(String, String)> = Vec::new();
+    let mut events_processed: Vec<(String, String)> = Vec::new();
+
+    for &clause in &items[2..] {
+        match a.head_name(clause) {
+            Some("doc") => {
+                doc = a
+                    .as_form(clause, "doc")
+                    .and_then(|t| t.first().copied())
+                    .and_then(|id| string_leaf(a, id));
+            }
+            // `(session <alias> (reducer <prog>) (serves <family>…)?)` — a reducer session. The reducer
+            // program is normalized one-line exactly like a `(case (input …))` program (NOT compiled here);
+            // `serves` is a CHILD clause listing the effect families this session handles.
+            Some("session") => {
+                if let Some(tail) = a.as_form(clause, "session")
+                    && let Some(&alias_id) = tail.first()
+                    && let Some(alias) = a.as_name(alias_id)
+                {
+                    let mut program = String::new();
+                    let mut serves: Vec<String> = Vec::new();
+                    for &child in &tail[1..] {
+                        match a.head_name(child) {
+                            Some("reducer") => {
+                                if let Some(prog) =
+                                    a.as_form(child, "reducer").and_then(|t| t.first().copied())
+                                {
+                                    program = normalize_program(a, prog);
+                                }
+                            }
+                            Some("serves") => {
+                                if let Some(stail) = a.as_form(child, "serves") {
+                                    for &f in stail {
+                                        if let Some(fam) = a.as_name(f) {
+                                            serves.push(fam.to_string());
+                                        }
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    sessions.push(PlatformSession {
+                        alias: alias.to_string(),
+                        program,
+                        serves,
+                    });
+                }
+            }
+            // `(kickoff <alias> (inbound <family> <value>))` — the single seed event.
+            Some("kickoff") => {
+                if let Some(tail) = a.as_form(clause, "kickoff")
+                    && let Some(&alias_id) = tail.first()
+                    && let Some(alias) = a.as_name(alias_id)
+                    && let Some(&inbound_id) = tail.get(1)
+                    && let Some(itail) = a.as_form(inbound_id, "inbound")
+                    && let Some(&fam_id) = itail.first()
+                    && let Some(inbound) = a.as_name(fam_id)
+                {
+                    let value = itail
+                        .get(1)
+                        .map(|&v| value_form_text(a, v))
+                        .unwrap_or_default();
+                    kickoff = Some(Kickoff {
+                        alias: alias.to_string(),
+                        inbound: inbound.to_string(),
+                        value,
+                    });
+                }
+            }
+            // `(expect-effects (effect (from <a>) (family <f>) <value>?)…)` — ordered emitted effects.
+            Some("expect-effects") => {
+                if let Some(tail) = a.as_form(clause, "expect-effects") {
+                    for &e in tail {
+                        if let Some(etail) = a.as_form(e, "effect") {
+                            let from = child_name_arg(a, etail, "from");
+                            let family = child_name_arg(a, etail, "family");
+                            if let (Some(from), Some(family)) = (from, family) {
+                                let value = etail
+                                    .iter()
+                                    .find(|&&c| {
+                                        a.head_name(c) != Some("from")
+                                            && a.head_name(c) != Some("family")
+                                    })
+                                    .map(|&v| value_form_text(a, v));
+                                expect_effects.push(ExpectEffect {
+                                    from,
+                                    family,
+                                    value,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            // `(expect-messages (message (from <a>) (to <b>) (family <f>) <value>)…)` — ordered messages.
+            Some("expect-messages") => {
+                if let Some(tail) = a.as_form(clause, "expect-messages") {
+                    for &m in tail {
+                        if let Some(mtail) = a.as_form(m, "message") {
+                            let from = child_name_arg(a, mtail, "from");
+                            let to = child_name_arg(a, mtail, "to");
+                            let family = child_name_arg(a, mtail, "family");
+                            if let (Some(from), Some(to), Some(family)) = (from, to, family) {
+                                let value = mtail
+                                    .iter()
+                                    .find(|&&c| {
+                                        !matches!(
+                                            a.head_name(c),
+                                            Some("from") | Some("to") | Some("family")
+                                        )
+                                    })
+                                    .map(|&v| value_form_text(a, v))
+                                    .unwrap_or_default();
+                                expect_messages.push(ExpectMessage {
+                                    from,
+                                    to,
+                                    family,
+                                    value,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            // `(expect-delivery-failure (from <a>) (to <b>))` — a message whose delivery must fail.
+            Some("expect-delivery-failure") => {
+                if let Some(tail) = a.as_form(clause, "expect-delivery-failure")
+                    && let Some(from) = child_name_arg(a, tail, "from")
+                    && let Some(to) = child_name_arg(a, tail, "to")
+                {
+                    expect_delivery_failures.push((from, to));
+                }
+            }
+            // `(end-state <alias> (kv <key> <value>)… (status <state>)?)` — per-session end assertions.
+            Some("end-state") => {
+                if let Some(tail) = a.as_form(clause, "end-state")
+                    && let Some(&alias_id) = tail.first()
+                    && let Some(alias) = a.as_name(alias_id)
+                {
+                    for &child in &tail[1..] {
+                        match a.head_name(child) {
+                            Some("kv") => {
+                                if let Some(ktail) = a.as_form(child, "kv")
+                                    && let Some(&key_id) = ktail.first()
+                                    && let Some(key) = a.as_name(key_id)
+                                    && let Some(&val_id) = ktail.get(1)
+                                {
+                                    end_kv.push((
+                                        alias.to_string(),
+                                        key.to_string(),
+                                        value_form_text(a, val_id),
+                                    ));
+                                }
+                            }
+                            Some("status") => {
+                                if let Some(stail) = a.as_form(child, "status")
+                                    && let Some(&st_id) = stail.first()
+                                    && let Some(st) = a.as_name(st_id)
+                                {
+                                    end_status.push((alias.to_string(), st.to_string()));
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            // `(events-processed <alias> <n>)` — the processed-log length the session must reach.
+            Some("events-processed") => {
+                if let Some(tail) = a.as_form(clause, "events-processed")
+                    && let Some(&alias_id) = tail.first()
+                    && let Some(alias) = a.as_name(alias_id)
+                    && let Some(&n_id) = tail.get(1)
+                {
+                    events_processed.push((alias.to_string(), value_of(a, n_id)));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let kickoff = kickoff.ok_or_else(|| format!("platform-case {title:?} has no (kickoff …)"))?;
+    if sessions.is_empty() {
+        return Err(format!("platform-case {title:?} has no (session …)"));
+    }
+
+    Ok(PlatformRecord {
+        title,
+        doc,
+        sessions,
+        kickoff,
+        expect_effects,
+        expect_messages,
+        expect_delivery_failures,
+        end_kv,
+        end_status,
+        events_processed,
+    })
+}
+
+/// A `(<head> <name>)` child clause's name argument (e.g. `(from worker)` → `"worker"`), searched among
+/// a clause's children — the addressing shape shared by effect/message `(from …)`/`(to …)`/`(family …)`.
+fn child_name_arg(a: &Arenas, tail: &[StructId], head: &str) -> Option<String> {
+    tail.iter().find_map(|&child| {
+        a.as_form(child, head)
+            .and_then(|t| t.first().copied())
+            .and_then(|id| a.as_name(id).map(str::to_string))
+    })
+}
+
 /// Normalize a case's `input` occurrence to the runnable export shape, returning one-line s-expr text:
 ///   - `(do … (export …))` → unchanged
 ///   - `(module name def…)` → `(do def… (export main))`
@@ -626,6 +1079,93 @@ mod tests {
         assert_eq!(recs[0].trials.len(), 1);
         assert!(recs[0].trials[0].call.is_none());
         assert!(matches!(&recs[0].trials[0].expect, Expect::Output(v) if v == "(: 5 Int64)"));
+    }
+
+    /// A `(platform-case …)` parses the session/kickoff/end-state shape and RENDERS the flat fixed-arity
+    /// record lines v-platform-conformance's grade path consumes. Full parse→render pipeline (the two-crate
+    /// discipline: a record line the reader never emits would silently fail the grade downstream).
+    #[test]
+    fn platform_case_parses_and_renders_the_fixed_arity_record_lines() {
+        let recs = read_platform(
+            r#"(platform-case "worker asks a clock then messages a reporter"
+                 (doc "one kickoff; runs to a fixpoint")
+                 (session worker   (reducer (do (def (main) 0) (export main))))
+                 (session reporter (reducer (do (def (main) 0) (export main))))
+                 (session clock    (reducer (do (def (main) 0) (export main))) (serves now))
+                 (kickoff worker (inbound start (: unit Unit)))
+                 (expect-effects
+                   (effect (from worker) (family now))
+                   (effect (from worker) (family log) (: "t=0" String)))
+                 (expect-messages
+                   (message (from worker) (to reporter) (family message) (: "done" String)))
+                 (expect-delivery-failure (from worker) (to closed))
+                 (end-state worker   (status quiescent))
+                 (end-state reporter (kv seen (: 1 Int64)) (status quiescent))
+                 (events-processed worker 3))"#,
+        )
+        .unwrap();
+        assert_eq!(recs.len(), 1);
+        let r = &recs[0];
+        assert_eq!(r.title, "worker asks a clock then messages a reporter");
+        assert_eq!(r.doc.as_deref(), Some("one kickoff; runs to a fixpoint"));
+        assert_eq!(r.sessions.len(), 3);
+        assert_eq!(r.sessions[2].alias, "clock");
+        assert_eq!(r.sessions[2].serves, vec!["now".to_string()]);
+        assert_eq!(r.kickoff.alias, "worker");
+        assert_eq!(r.kickoff.inbound, "start");
+        assert_eq!(r.kickoff.value, "(: unit Unit)");
+        // Ordered effects: the payload-less one carries None, the second keeps its value form.
+        assert_eq!(r.expect_effects.len(), 2);
+        assert_eq!(r.expect_effects[0].family, "now");
+        assert_eq!(r.expect_effects[0].value, None);
+        assert_eq!(
+            r.expect_effects[1].value.as_deref(),
+            Some("(: \"t=0\" String)")
+        );
+        assert_eq!(r.expect_messages.len(), 1);
+        assert_eq!(r.expect_messages[0].to, "reporter");
+        assert_eq!(
+            r.expect_delivery_failures,
+            vec![("worker".to_string(), "closed".to_string())]
+        );
+        assert_eq!(
+            r.end_kv,
+            vec![(
+                "reporter".to_string(),
+                "seen".to_string(),
+                "(: 1 Int64)".to_string()
+            )]
+        );
+        assert_eq!(r.end_status.len(), 2);
+        assert_eq!(
+            r.events_processed,
+            vec![("worker".to_string(), "3".to_string())]
+        );
+
+        // Render emits the confirmed fixed-arity lines (the cdz-corpus→xtask contract).
+        let out = render_platform(&recs);
+        assert!(out.contains("platform-case\tworker asks a clock then messages a reporter\n"));
+        assert!(out.contains("session\tclock\t"));
+        assert!(out.contains("serves\tclock\tnow\n"));
+        assert!(out.contains("kickoff\tworker\tstart\t(: unit Unit)\n"));
+        assert!(out.contains("expect-effect\tworker\tnow\n")); // no value column when payload-less
+        assert!(out.contains("expect-effect\tworker\tlog\t(: \"t=0\" String)\n"));
+        assert!(out.contains("expect-message\tworker\treporter\tmessage\t(: \"done\" String)\n"));
+        assert!(out.contains("expect-delivery-failure\tworker\tclosed\n"));
+        assert!(out.contains("end-kv\treporter\tseen\t(: 1 Int64)\n"));
+        assert!(out.contains("end-status\tworker\tquiescent\n"));
+        assert!(out.contains("events-processed\tworker\t3\n"));
+    }
+
+    /// A platform-case MUST carry a kickoff and at least one session — the fixpoint has nothing to run
+    /// otherwise. A missing kickoff is a hard parse error (fail loud, like a case with no result clause).
+    #[test]
+    fn platform_case_without_a_kickoff_is_an_error() {
+        let err = read_platform(
+            r#"(platform-case "no kickoff" (session worker (reducer (do (def (main) 0) (export main)))))"#,
+        )
+        .unwrap_err();
+        assert!(err.contains("no (kickoff"));
     }
 
     /// Interleaved `(call …) (output …)` pairs parse to one trial each, in order — the multi-call form.

@@ -69,6 +69,15 @@ fn run_records(files: &[String]) -> Result<(), String> {
     for path in files {
         let text = std::fs::read_to_string(path).map_err(|e| format!("reading {path}: {e}"))?;
         let is_markdown = Path::new(path).extension().is_some_and(|x| x == "md");
+        // PLATFORM genre (operator seq358/seq359): a file of `(platform-case …)` forms emits the platform
+        // record stream instead of the compiler-case stream. Auto-detected by the leading form's head, so
+        // no new flag — a `spec/platform/*.sexp` file just works, and a semantics file is unaffected. The
+        // two genres are disjoint (a file is one or the other), so a single leading-head check suffices.
+        if !is_markdown && crate::is_platform_genre(&text) {
+            let records = crate::read_platform(&text).map_err(|e| format!("{path}: {e}"))?;
+            out.push_str(&crate::render_platform(&records));
+            continue;
+        }
         let records = if is_markdown {
             crate::read_markdown(&text)
         } else {
