@@ -19364,3 +19364,118 @@
             (export main)))
   (call   main (: 4 UInt64)) (output (: 1041 UInt64))
   (call   main (: 3 UInt64)) (output (: 11 UInt64)))
+
+;; ── fe/sb/pf/mm/cl/cx: arm-side computation shapes ───────────────────────────
+;; fe5 Float64 ARGUMENTS halved in the arm (exact fractions both directions);
+;; fe6 a Float64 TUPLE state (one slot additive, one doubling); sb1 the
+;; text-to-bytes bridge follows the thread twice (draw-picked string, draw
+;; index); pf1 an AGGREGATOR arm returns the running sum of every value fed;
+;; mm1 a MIN/MAX arm tightens a (lo,hi) window over three feeds; cl1 a
+;; NARROWING clamp (window shrinks per dispatch); cx1 a COUNTDOWN arm
+;; exhausts mid-sequence (floor returns the arm's own constant).
+
+(case "fe5 Float64 arguments HALVED in the arm — exact binary fractions cross dispatch both directions, count folds in"
+  (input  (do
+            (effect E (op halve (-> Float64 Float64)) (op count (-> Float64)))
+            (def (main (: u Float64))
+              (handle E 0.0
+                ((halve (x) s (resume (* x 0.5) (+ s 1.0)))
+                 (count () s (resume s s)))
+                (+ (E.halve 3.0) (+ (E.halve 0.25) (E.count)))))
+            (export main)))
+  (call   main (: 0.0 Float64)) (output (: 3.625 Float64)))
+
+(case "fe6 a Float64 TUPLE state — one slot advances additively, the other doubles, both exact across two dispatches"
+  (input  (do
+            (effect E (op pair (-> (Tuple Float64 Float64))))
+            (def (main (: u Float64))
+              (handle E (tuple 0.5 1.0)
+                ((pair () s (match s
+                              ((tuple a b) (resume s (tuple (+ a 1.5) (* b 2.0)))))))
+                (match (E.pair)
+                  ((tuple a1 b1)
+                    (match (E.pair)
+                      ((tuple a2 b2) (+ (* 100.0 a1) (+ (* 10.0 b1) (+ a2 b2)))))))))
+            (export main)))
+  (call   main (: 0.0 Float64)) (output (: 64.0 Float64)))
+
+(case "sb1 String.to-bytes of a draw-picked string read at a draw index — the text-to-bytes bridge follows the thread twice"
+  (input  (do
+            (effect E (op next (-> Int64)) (op probe (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1)))
+                 (probe () s (resume s s)))
+                (let ((b (String.to-bytes (if (= (% (E.next) 2) 0) "abc" "wxyz"))))
+                  (let ((i (% (E.next) (Bytes.len b))))
+                    (match (Bytes.at b i)
+                      ((Some v) (+ (* 10 v) (- (E.probe) n)))
+                      (None -1))))))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: 992 Int64))
+  (call   main (: 3 Int64)) (output (: 1192 Int64))
+  (call   main (: 0 Int64)) (output (: 982 Int64)))
+
+(case "pf1 an AGGREGATOR arm — the op returns the running sum of every value fed to it, three feeds pin the accumulation"
+  (input  (do
+            (effect E (op feed (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle E 0
+                ((feed (x) s (resume (+ s x) (+ s x))))
+                (let ((r1 (E.feed n)))
+                  (let ((r2 (E.feed 7)))
+                    (let ((r3 (E.feed n)))
+                      (+ (* 100 r1) (+ (* 10 r2) r3)))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 413 Int64))
+  (call   main (: 0 Int64)) (output (: 77 Int64))
+  (call   main (: -2 Int64)) (output (: -147 Int64)))
+
+(case "mm1 a MIN/MAX tracking arm — three feeds tighten the (lo,hi) tuple state, readers project the final spread"
+  (input  (do
+            (effect E (op feed (-> Int64 Int64)) (op lo (-> Int64)) (op hi (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (tuple 1000 -1000)
+                ((feed (x) s (match s
+                               ((tuple l h) (resume x (tuple (if (< x l) x l)
+                                                             (if (> x h) x h))))))
+                 (lo () s (match s ((tuple l h) (resume l s))))
+                 (hi () s (match s ((tuple l h) (resume h s)))))
+                (do (E.feed n)
+                    (E.feed 7)
+                    (E.feed (- 0 n))
+                    (+ (* 100 (E.lo)) (E.hi)))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: -293 Int64))
+  (call   main (: 0 Int64)) (output (: 7 Int64))
+  (call   main (: -9 Int64)) (output (: -891 Int64)))
+
+(case "cl1 a NARROWING clamp arm — the [lo,hi] window shrinks by one each side per dispatch, three args meet three windows"
+  (input  (do
+            (effect E (op clamp (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle E (tuple 0 10)
+                ((clamp (x) s (match s
+                                ((tuple l h)
+                                  (resume (if (< x l) l (if (> x h) h x))
+                                          (tuple (+ l 1) (- h 1)))))))
+                (let ((a (E.clamp n)))
+                  (let ((b (E.clamp 5)))
+                    (let ((c (E.clamp (+ n 3))))
+                      (+ (* 100 a) (+ (* 10 b) c)))))))
+            (export main)))
+  (call   main (: 7 Int64)) (output (: 758 Int64))
+  (call   main (: -4 Int64)) (output (: 52 Int64))
+  (call   main (: 12 Int64)) (output (: 1058 Int64)))
+
+(case "cx1 a COUNTDOWN arm exhausts mid-sequence — positive states pass through, the floor returns a sentinel-free constant"
+  (input  (do
+            (effect E (op take (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((take () s (resume (if (> s 0) s 999) (- s 2))))
+                (+ (E.take) (+ (E.take) (+ (E.take) (E.take))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 1008 Int64))
+  (call   main (: 3 Int64)) (output (: 2002 Int64))
+  (call   main (: 1 Int64)) (output (: 2998 Int64)))

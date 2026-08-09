@@ -6927,3 +6927,10 @@ pass	bw4 the ARM bit-mixes its argument with the live state — low nibble from 
 pass	u1 a UInt64 state thread ABOVE Int64.max — high-half values survive dispatch, mod-10 digits pin the sequence
 pass	u3 UInt64 arguments ABOVE Int64.max echo through dispatch exactly — 2^63+41 and u64-max both survive, count pins trips
 pass	u4 a UInt64 ABOVE Int64.max rides as a SUM payload — parity picks Lo/Hi, the Hi arm range-checks the high half
+pass	fe5 Float64 arguments HALVED in the arm — exact binary fractions cross dispatch both directions, count folds in
+pass	fe6 a Float64 TUPLE state — one slot advances additively, the other doubles, both exact across two dispatches
+pass	sb1 String.to-bytes of a draw-picked string read at a draw index — the text-to-bytes bridge follows the thread twice
+pass	pf1 an AGGREGATOR arm — the op returns the running sum of every value fed to it, three feeds pin the accumulation
+pass	mm1 a MIN/MAX tracking arm — three feeds tighten the (lo,hi) tuple state, readers project the final spread
+pass	cl1 a NARROWING clamp arm — the [lo,hi] window shrinks by one each side per dispatch, three args meet three windows
+pass	cx1 a COUNTDOWN arm exhausts mid-sequence — positive states pass through, the floor returns a sentinel-free constant
