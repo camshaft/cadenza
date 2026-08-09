@@ -16667,10 +16667,14 @@ fn normalized_rational(num: crate::ast::IntValue, den: crate::ast::IntValue) -> 
     use crate::ast::IntValue;
     if den.is_zero() {
         // A zero denominator has no value — a provable constant trap (CDZ0304, the rational analogue of a
-        // constant ÷0), carrying the message a corpus `(trap "rational with zero denominator")` matches.
+        // constant ÷0). Name the repair like the sibling divide-by-zero CDZ0304 ("use a nonzero divisor")
+        // rather than dead-ending at the bare fault: a rational `n/d` denotes a number only when `d` is
+        // nonzero. The `contains("zero denominator")` lead stays stable for any matcher; the actionable
+        // tail is additive. (`trap_kind` does not classify this reason, so no runtime-trap grading depends
+        // on the exact text.)
         return Core::Poison(Reject::coded(
             Code::ConstTrap,
-            "rational with zero denominator",
+            "a rational with a zero denominator has no value — use a nonzero denominator",
         ));
     }
     if num.is_zero() {

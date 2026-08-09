@@ -38405,6 +38405,26 @@ mod match_engine {
     }
 
     #[test]
+    fn a_constant_rational_with_a_zero_denominator_names_the_nonzero_repair() {
+        use crate::testkit::parse;
+        // `(Rational.of 1 0)` is a compile-provable trap (CDZ0304, the rational analogue of a constant
+        // ÷0). The message must not dead-end at the bare fault ("rational with zero denominator") — it
+        // names the repair like the sibling divide-by-zero CDZ0304 ("use a nonzero divisor"): a rational
+        // `n/d` denotes a number only when `d` is nonzero.
+        let d = compile_component(&crate::codec::encode(&parse(
+            "(module m (def (main) ((. Rational of) 1 0)) (export main))",
+        )))
+        .expect_err("a zero-denominator rational is a compile-provable trap");
+        assert_eq!(d.code.as_deref(), Some("CDZ0304"), "got: {}", d.message);
+        assert!(
+            d.message.contains("zero denominator")
+                && d.message.contains("use a nonzero denominator"),
+            "names the fault AND the nonzero-denominator repair (not a bare dead-end): {}",
+            d.message
+        );
+    }
+
+    #[test]
     fn a_runtime_rational_truncate_is_the_integer_part_toward_zero() {
         // `Rational.truncate : Rational → Int64` — the integer part TOWARD ZERO, narrowed to Int64. A
         // DERIVATION (no new runtime op): `(Int64.of (/ (numerator r) (denominator r)))` over the existing
