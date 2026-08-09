@@ -3472,6 +3472,69 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn a_policy_swap_pushes_a_capabilities_change_the_agent_observes() {
+        // §20b policy-swap OBSERVABILITY as a UNIT test (operator directive: replace the 60s component-linking
+        // policy_swap_e2e with fast units — an in-process Authorizer swap exercises the SAME swap→push→fold
+        // mechanism as a live Cedar-guest reload, minus the wasm component link). The E2E's only genuinely
+        // end-to-end part is `ComponentAuthorizer::from_policy_bytes` lifting a real Cedar guest; that lift is
+        // covered by cedar_authz_e2e. What THIS proves — the mechanism the host owns — is: a session that
+        // STARTS deny-all, after a policy swap + push_capabilities_changed, folds a capabilities-changed
+        // manifest to the agent that MOVED and equals EXACTLY the new policy's projected surface.
+        let served =
+            || CompositeExecutor::new().with_effect(effect_ct::NOW, Box::new(ClockExecutor::new()));
+        let mut hosted = HostedSession::genesis(
+            Hash::of(b"policy-swap-unit-v1"),
+            Box::new(CapabilityAwareAgent),
+            Box::new(Authorizer::deny_all()),
+            served(),
+        );
+        hosted.seed_capabilities().await;
+        let manifest_under_deny_all = hosted
+            .session()
+            .kv()
+            .get(b"capabilities")
+            .expect("seeded baseline manifest")
+            .to_vec();
+
+        // LIVE SWAP to a policy that PERMITS Now (stands in for the Cedar guest's broad grant), then push —
+        // the same set_authorizer + push_capabilities_changed path reload_policy_from_component_bytes runs
+        // after the wasm lift.
+        let new_policy = Authorizer::new(vec![Capability {
+            kind: EffectKind::Now,
+            predicate: ResourcePredicate::Any,
+        }]);
+        hosted.set_authorizer(Box::new(Authorizer::new(vec![Capability {
+            kind: EffectKind::Now,
+            predicate: ResourcePredicate::Any,
+        }])));
+        let pushed = hosted.push_capabilities_changed().await;
+        assert!(
+            pushed.is_empty(),
+            "the capabilities-changed push is answered inline"
+        );
+
+        let manifest_after_swap = hosted
+            .session()
+            .kv()
+            .get(b"capabilities")
+            .expect("a capabilities-changed folded after the swap")
+            .to_vec();
+        // The manifest MOVED (deny-all → permit-Now is a different grant surface) AND equals exactly the
+        // manifest the kernel projects over this session's served surface against the NEW policy — proving the
+        // swap installed THAT policy + is observable to the agent, not merely "changed".
+        assert_ne!(
+            manifest_after_swap, manifest_under_deny_all,
+            "the policy swap changed the session's capability manifest (observable to the agent)"
+        );
+        assert_eq!(
+            manifest_after_swap,
+            expected_manifest(&served(), &new_policy).await,
+            "the pushed manifest is exactly the one the newly-swapped policy projects (the swap installed \
+             THAT policy)"
+        );
+    }
+
     /// A never-called Http transport — `add_executor` only needs a constructible executor to register the
     /// family; the test probes `handles_family` (mechanism), never performs a request.
     struct NeverHttp;
