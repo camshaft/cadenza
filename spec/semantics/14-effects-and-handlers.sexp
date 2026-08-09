@@ -21422,3 +21422,69 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 15 Int64))
   (call   main (: 0 Int64)) (output (: 10 Int64)))
+
+(case "a recursive callee performing TWO effects per round threads both slots' out-state to a trailing observer"
+  (doc    "The multi-draw recursion state-fork (breaker #14). `race` draws A then B each round and self-recurses;
+           the caller reads A's post-recursion out-state via a trailing `(A.next)` after `(race 0)`. The
+           multi-value state-fork used to thread only a `(let inits DISPATCH)` whose body was directly if/match;
+           a NESTED let chain `(let a=(A.next) in (let b=(B.next) in (if …)))` fell to the leaf case and forced
+           single-return, dropping the advance — the trailing draw read PRE-recursion state (10 not 15). Fixed by
+           descending nested-let chains. main(5): round0 A=10 B=13 (10<13 recurse), round1 A=15 B=18 (15<18…)
+           — the finite draw sequence resolves; the trailing (A.next) reads the ADVANCED state.")
+  (input  (do
+            (effect A (op next (-> Int64)))
+            (effect B (op next (-> Int64)))
+            (def (race (: k Int64))
+              (let ((a (A.next)))
+                (let ((b (B.next)))
+                  (if (< a b) (race (+ k 1)) k))))
+            (def (main (: n Int64))
+              (handle A n
+                ((next () s (resume (+ s 5) (+ s 5))))
+                (handle B (+ n 3)
+                  ((next () t (resume (+ t 2) (+ t 2))))
+                  (let ((steps (race 0)))
+                    (+ (* 100 steps) (A.next))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 15 Int64)))
+
+(case "a recursive callee drawing the SAME op twice per round threads the out-state to a trailing observer"
+  (doc    "The same-effect face of the multi-draw fork (breaker #14 ra5): `race` draws `E.next` TWICE per round
+           via a nested let, self-recurses on `(< (+ a b) 30)`. The two draws sit in a nested `(let a in let b
+           in if)` chain; without the nested-let descent the recursion single-returns and the trailing `(E.next)`
+           reads pre-recursion state (110 not 130). main(5): round0 a=10 b=15 (state 5->10->15, 25<30 recurse);
+           round1 a=20 b=25 (state->20->25, 45>=30 return k=1); trailing (E.next) reads 25->30 = 100*1+30 = 130.")
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (def (race (: k Int64))
+              (let ((a (E.next)))
+                (let ((b (E.next)))
+                  (if (< (+ a b) 30) (race (+ k 1)) k))))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume (+ s 5) (+ s 5))))
+                (let ((steps (race 0)))
+                  (+ (* 100 steps) (E.next)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 130 Int64)))
+
+(case "a recursive round with a let draw and a bare do-discarded draw threads the out-state to a trailing observer"
+  (doc    "The do-body face of the multi-draw fork (breaker #14 ra6): `race` draws `E.next` into `a`, then a
+           `(do (E.next) (if …))` performs a SECOND draw for-effect (value discarded) before the dispatch. A
+           `let` whose body is a `do` with a performing head fell to the leaf case; fixed by giving the fold a
+           `do` arm (thread the for-effect stmts, recurse on the tail). main(5): round0 a=10 (state 5->10), do
+           draws 15 (->15), a=10<20 recurse; round1 a=20 (->20), do draws 25 (->25), a=20<20 false return k=1;
+           trailing (E.next) 25->30 = 100*1+30 = 130. A dropped out-state would read pre-recursion (110).")
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (def (race (: k Int64))
+              (let ((a (E.next)))
+                (do (E.next)
+                    (if (< a 20) (race (+ k 1)) k))))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume (+ s 5) (+ s 5))))
+                (let ((steps (race 0)))
+                  (+ (* 100 steps) (E.next)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 130 Int64)))

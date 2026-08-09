@@ -7080,3 +7080,6 @@ pass	the STATE-outer nesting of the dual-sum arm threads fresh payloads across t
 pass	the inner sum-state match routed through a HELPER DEF taking the payload as a parameter — a def boundary in the peeled arm body
 pass	a LET-derived value between the op-arg match and the state match — interposed bindings re-evaluate per dispatch
 pass	an inner match on a LOCALLY-BUILT Option from the payload (scalar state) — a non-state inner scrutinee beside the dispatch
+pass	a recursive callee performing TWO effects per round threads both slots' out-state to a trailing observer
+pass	a recursive callee drawing the SAME op twice per round threads the out-state to a trailing observer
+pass	a recursive round with a let draw and a bare do-discarded draw threads the out-state to a trailing observer
