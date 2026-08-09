@@ -18,7 +18,7 @@
 //! re-driven dispatch after a crash (or at least be aware the same key means "the same logical call").
 
 use bytes::Bytes;
-use cdz_kernel::effect::{effect_ct, EffectRequest, Payload};
+use cdz_kernel::effect::{effect_ct, EffectId, EffectRequest, Payload};
 use cdz_kernel::event::EffectOutcome;
 use cdz_kernel::executor::Executor;
 use cdz_kernel::hash::Hash;
@@ -70,7 +70,12 @@ impl<T: ModelTransport> ModelExecutor<T> {
 
 #[async_trait::async_trait(?Send)]
 impl<T: ModelTransport> Executor for ModelExecutor<T> {
-    async fn perform(&mut self, req: &EffectRequest, idempotency_key: Hash) -> EffectOutcome {
+    async fn perform(
+        &mut self,
+        _id: EffectId,
+        req: &EffectRequest,
+        idempotency_key: Hash,
+    ) -> EffectOutcome {
         // These are structural request errors — retrying can't fix them, so they're PERMANENT (§17
         // totality: an observable Err, never a panic).
         // Key the guard on the effect FAMILY STRING (seq-39 / effect-schema slice 2), not the EffectKind
@@ -468,6 +473,7 @@ mod tests {
         });
         match exec
             .perform(
+                EffectId(0),
                 &model_req(Some(Payload::Inline(b"prompt".to_vec().into()))),
                 Hash::of(b"k"),
             )
@@ -485,7 +491,10 @@ mod tests {
         let mut exec = ModelExecutor::new(StubTransport {
             response: Bytes::new(),
         });
-        match exec.perform(&model_req(None), Hash::of(b"k")).await {
+        match exec
+            .perform(EffectId(0), &model_req(None), Hash::of(b"k"))
+            .await
+        {
             EffectOutcome::Err {
                 message,
                 retryability,
@@ -505,6 +514,7 @@ mod tests {
         });
         match exec
             .perform(
+                EffectId(0),
                 &model_req(Some(Payload::Blob(Hash::of(b"big-body")))),
                 Hash::of(b"k"),
             )
@@ -536,6 +546,7 @@ mod tests {
         let mut exec = ModelExecutor::new(ThrottledTransport);
         match exec
             .perform(
+                EffectId(0),
                 &model_req(Some(Payload::Inline(b"prompt".to_vec().into()))),
                 Hash::of(b"k"),
             )
@@ -570,7 +581,7 @@ mod tests {
             Some(Payload::Inline(b"x".to_vec().into())),
             Timeliness::Interactive,
         );
-        match exec.perform(&req, Hash::of(b"k")).await {
+        match exec.perform(EffectId(0), &req, Hash::of(b"k")).await {
             EffectOutcome::Err {
                 message,
                 retryability,

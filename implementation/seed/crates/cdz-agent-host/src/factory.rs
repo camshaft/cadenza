@@ -24,7 +24,7 @@ use crate::host::HostedSession;
 use crate::metrics::EffectMetrics;
 use cdz_kernel::authz::Authorize;
 use cdz_kernel::blob::BlobStore;
-use cdz_kernel::effect::EffectRequest;
+use cdz_kernel::effect::{EffectId, EffectRequest};
 use cdz_kernel::event::EffectOutcome;
 use cdz_kernel::executor::{CompositeExecutor, Executor};
 use cdz_kernel::hash::Hash;
@@ -92,9 +92,16 @@ impl MeteredExecutor {
 
 #[async_trait::async_trait(?Send)]
 impl Executor for MeteredExecutor {
-    async fn perform(&mut self, req: &EffectRequest, idempotency_key: Hash) -> EffectOutcome {
+    async fn perform(
+        &mut self,
+        id: EffectId,
+        req: &EffectRequest,
+        idempotency_key: Hash,
+    ) -> EffectOutcome {
         let started = std::time::Instant::now();
-        let outcome = self.inner.perform(req, idempotency_key).await;
+        // Forward the kernel-assigned EffectId to the inner executor unchanged (the metering wrapper must be
+        // transparent — a delegating inner executor binds its reply-token to this id).
+        let outcome = self.inner.perform(id, req, idempotency_key).await;
         self.metrics
             .record_latency_us(crate::metrics::micros_u64(started.elapsed()));
         // Tally the metric + trace at the SAME tap. The family names which effect; a failure logs its
@@ -1113,7 +1120,12 @@ mod tests {
     }
     #[async_trait::async_trait(?Send)]
     impl Executor for ScriptedExecutor {
-        async fn perform(&mut self, _req: &EffectRequest, _key: Hash) -> EffectOutcome {
+        async fn perform(
+            &mut self,
+            _id: EffectId,
+            _req: &EffectRequest,
+            _key: Hash,
+        ) -> EffectOutcome {
             self.outcomes
                 .borrow_mut()
                 .pop_front()
@@ -1160,17 +1172,17 @@ mod tests {
         // records each into the registry along the way (registry Counters are drain-on-report with no value
         // getter, so we assert pass-through + a reportable registry, not per-counter values).
         assert!(matches!(
-            metered.perform(&req, Hash::of(b"k")).await,
+            metered.perform(EffectId(0), &req, Hash::of(b"k")).await,
             EffectOutcome::Ok(_)
         ));
         assert!(matches!(
-            metered.perform(&req, Hash::of(b"k")).await,
+            metered.perform(EffectId(0), &req, Hash::of(b"k")).await,
             EffectOutcome::Err { .. }
         ));
-        metered.perform(&req, Hash::of(b"k")).await;
-        metered.perform(&req, Hash::of(b"k")).await;
+        metered.perform(EffectId(0), &req, Hash::of(b"k")).await;
+        metered.perform(EffectId(0), &req, Hash::of(b"k")).await;
         assert!(matches!(
-            metered.perform(&req, Hash::of(b"k")).await,
+            metered.perform(EffectId(0), &req, Hash::of(b"k")).await,
             EffectOutcome::TimedOut
         ));
 
@@ -1225,8 +1237,8 @@ mod tests {
         req_a.content_type.family = "fam-a".into();
         let mut req_b = req_a.clone();
         req_b.content_type.family = "fam-b".into();
-        composite.perform(&req_a, Hash::of(b"a")).await;
-        composite.perform(&req_b, Hash::of(b"b")).await;
+        composite.perform(EffectId(0), &req_a, Hash::of(b"a")).await;
+        composite.perform(EffectId(0), &req_b, Hash::of(b"b")).await;
 
         // Both families' outcomes recorded through the one shared Arc into the one registry — which reports
         // over them (proves cross-family aggregation into a single registry-backed set).

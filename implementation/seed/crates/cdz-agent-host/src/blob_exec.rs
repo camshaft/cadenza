@@ -25,7 +25,7 @@
 //! S3 backend it can wrap is the only `live-aws-storage` piece.
 
 use cdz_kernel::blob::BlobStore;
-use cdz_kernel::effect::{effect_ct, EffectRequest, Payload};
+use cdz_kernel::effect::{effect_ct, EffectId, EffectRequest, Payload};
 use cdz_kernel::event::EffectOutcome;
 use cdz_kernel::executor::Executor;
 use cdz_kernel::hash::Hash;
@@ -46,7 +46,12 @@ impl<B: BlobStore> BlobExecutor<B> {
 
 #[async_trait::async_trait(?Send)]
 impl<B: BlobStore> Executor for BlobExecutor<B> {
-    async fn perform(&mut self, req: &EffectRequest, _idempotency_key: Hash) -> EffectOutcome {
+    async fn perform(
+        &mut self,
+        _id: EffectId,
+        req: &EffectRequest,
+        _idempotency_key: Hash,
+    ) -> EffectOutcome {
         let family = req.content_type.family.as_ref();
         if family == effect_ct::BLOB_PUT {
             // Store the payload bytes → return the content hash as a HEX handle the reducer threads to get.
@@ -128,7 +133,7 @@ mod tests {
         let mut exec = BlobExecutor::new(MemBlobStore::new());
         // put → hex hash handle
         let hex = match exec
-            .perform(&put_req(b"doc-ast-bytes"), Hash::of(b"k"))
+            .perform(EffectId(0), &put_req(b"doc-ast-bytes"), Hash::of(b"k"))
             .await
         {
             EffectOutcome::Ok(Some(Payload::Inline(b))) => String::from_utf8(b.to_vec()).unwrap(),
@@ -139,7 +144,10 @@ mod tests {
             "the put result is a valid hex content hash: {hex:?}"
         );
         // get(that hash) → the bytes verbatim
-        match exec.perform(&get_req(&hex), Hash::of(b"k")).await {
+        match exec
+            .perform(EffectId(0), &get_req(&hex), Hash::of(b"k"))
+            .await
+        {
             EffectOutcome::Ok(Some(Payload::Inline(b))) => {
                 assert_eq!(
                     b.as_ref(),
@@ -156,7 +164,10 @@ mod tests {
         let mut exec = BlobExecutor::new(MemBlobStore::new());
         // A valid-hex hash that was never stored → Ok(None), NOT an Err (a CAS miss is a normal fold input).
         let absent = Hash::of(b"never-stored").to_hex();
-        match exec.perform(&get_req(&absent), Hash::of(b"k")).await {
+        match exec
+            .perform(EffectId(0), &get_req(&absent), Hash::of(b"k"))
+            .await
+        {
             EffectOutcome::Ok(None) => {}
             other => panic!("an absent blob must be Ok(None), got {other:?}"),
         }
@@ -167,7 +178,7 @@ mod tests {
         use cdz_kernel::event::Retryability;
         let mut exec = BlobExecutor::new(MemBlobStore::new());
         match exec
-            .perform(&get_req("not-a-hex-hash"), Hash::of(b"k"))
+            .perform(EffectId(0), &get_req("not-a-hex-hash"), Hash::of(b"k"))
             .await
         {
             EffectOutcome::Err {

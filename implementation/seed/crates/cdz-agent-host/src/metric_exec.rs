@@ -29,7 +29,7 @@
 //!   (never-log-guest-controlled-strings) and rejects unsafe strings PERMANENT — the host NEVER logs the raw
 //!   guest string. (This is safety mechanism, NOT a cardinality/count policy — that's Cedar's.)
 
-use cdz_kernel::effect::{effect_ct, EffectRequest, Payload};
+use cdz_kernel::effect::{effect_ct, EffectId, EffectRequest, Payload};
 use cdz_kernel::event::EffectOutcome;
 use cdz_kernel::event_ast::{decode_metric_publish, decode_metrics_publish, MetricSample};
 use cdz_kernel::executor::Executor;
@@ -216,7 +216,12 @@ impl MetricExecutor {
 
 #[async_trait::async_trait(?Send)]
 impl Executor for MetricExecutor {
-    async fn perform(&mut self, req: &EffectRequest, _idempotency_key: Hash) -> EffectOutcome {
+    async fn perform(
+        &mut self,
+        _id: EffectId,
+        req: &EffectRequest,
+        _idempotency_key: Hash,
+    ) -> EffectOutcome {
         // Family-keyed, matching the router + authz decision. A non-metric/publish family is structural →
         // PERMANENT (§17: observable Err, never a panic).
         if !req.content_type.matches_family(effect_ct::METRIC_PUBLISH) {
@@ -336,7 +341,11 @@ mod tests {
             ("agent.model_ms", "timing", 88.0),
         ] {
             let out = exec
-                .perform(&publish_req(&sample(name, kind, val)), Hash::of(b"k"))
+                .perform(
+                    EffectId(0),
+                    &publish_req(&sample(name, kind, val)),
+                    Hash::of(b"k"),
+                )
                 .await;
             assert!(
                 matches!(out, EffectOutcome::Ok(None)),
@@ -356,7 +365,8 @@ mod tests {
         let mut exec = MetricExecutor::new(registry);
         let m = sample("agent.turns", "counter", 1.0);
         assert!(matches!(
-            exec.perform(&publish_req(&m), Hash::of(b"k")).await,
+            exec.perform(EffectId(0), &publish_req(&m), Hash::of(b"k"))
+                .await,
             EffectOutcome::Ok(None)
         ));
         assert_eq!(
@@ -366,7 +376,8 @@ mod tests {
         );
         // Repeat: same key → cache hit, no new entry.
         assert!(matches!(
-            exec.perform(&publish_req(&m), Hash::of(b"k")).await,
+            exec.perform(EffectId(0), &publish_req(&m), Hash::of(b"k"))
+                .await,
             EffectOutcome::Ok(None)
         ));
         assert_eq!(
@@ -377,6 +388,7 @@ mod tests {
         // A DIFFERENT name → a distinct cached series.
         assert!(matches!(
             exec.perform(
+                EffectId(0),
                 &publish_req(&sample("agent.other", "counter", 1.0)),
                 Hash::of(b"k")
             )
@@ -405,14 +417,16 @@ mod tests {
             ],
         };
         assert!(matches!(
-            exec.perform(&publish_req(&labeled), Hash::of(b"k")).await,
+            exec.perform(EffectId(0), &publish_req(&labeled), Hash::of(b"k"))
+                .await,
             EffectOutcome::Ok(None)
         ));
         // Same labels in REVERSE order → same series (sorted key), so no new cache entry.
         let mut reordered = labeled.clone();
         reordered.labels.reverse();
         assert!(matches!(
-            exec.perform(&publish_req(&reordered), Hash::of(b"k")).await,
+            exec.perform(EffectId(0), &publish_req(&reordered), Hash::of(b"k"))
+                .await,
             EffectOutcome::Ok(None)
         ));
         assert_eq!(
@@ -426,7 +440,7 @@ mod tests {
             ..labeled.clone()
         };
         assert!(matches!(
-            exec.perform(&publish_req(&other_labels), Hash::of(b"k"))
+            exec.perform(EffectId(0), &publish_req(&other_labels), Hash::of(b"k"))
                 .await,
             EffectOutcome::Ok(None)
         ));
@@ -446,6 +460,7 @@ mod tests {
         for i in 0..200 {
             let out = exec
                 .perform(
+                    EffectId(0),
                     &publish_req(&sample(&format!("m{i}"), "counter", 1.0)),
                     Hash::of(b"k"),
                 )
@@ -468,6 +483,7 @@ mod tests {
         let mut exec = MetricExecutor::new(registry);
         let out = exec
             .perform(
+                EffectId(0),
                 &publish_req(&sample("m", "histogram-ish", 1.0)),
                 Hash::of(b"k"),
             )
@@ -485,6 +501,7 @@ mod tests {
         // A statsd-line-corrupting char (':') in the name → rejected PERMANENT (guest-string safety).
         let out = exec
             .perform(
+                EffectId(0),
                 &publish_req(&sample("bad:name", "counter", 1.0)),
                 Hash::of(b"k"),
             )
@@ -496,6 +513,7 @@ mod tests {
         // A control char likewise.
         let out = exec
             .perform(
+                EffectId(0),
                 &publish_req(&sample("bad\nname", "counter", 1.0)),
                 Hash::of(b"k"),
             )
@@ -517,7 +535,7 @@ mod tests {
             Timeliness::Interactive,
         );
         assert!(
-            matches!(exec.perform(&wrong, Hash::of(b"k")).await, EffectOutcome::Err { message, .. } if message.contains("only handles"))
+            matches!(exec.perform(EffectId(0), &wrong, Hash::of(b"k")).await, EffectOutcome::Err { message, .. } if message.contains("only handles"))
         );
         assert!(
             exec.handles_family(effect_ct::METRIC_PUBLISH) && !exec.handles_family(effect_ct::EMIT)
@@ -530,7 +548,7 @@ mod tests {
             Timeliness::Interactive,
         );
         assert!(
-            matches!(exec.perform(&no_payload, Hash::of(b"k")).await, EffectOutcome::Err { message, .. } if message.contains("requires a payload"))
+            matches!(exec.perform(EffectId(0), &no_payload, Hash::of(b"k")).await, EffectOutcome::Err { message, .. } if message.contains("requires a payload"))
         );
         // Undecodable payload.
         let garbage = EffectRequest::new_with_family(
@@ -540,7 +558,7 @@ mod tests {
             Timeliness::Interactive,
         );
         assert!(
-            matches!(exec.perform(&garbage, Hash::of(b"k")).await, EffectOutcome::Err { message, .. } if message.contains("did not decode"))
+            matches!(exec.perform(EffectId(0), &garbage, Hash::of(b"k")).await, EffectOutcome::Err { message, .. } if message.contains("did not decode"))
         );
     }
 
@@ -562,7 +580,9 @@ mod tests {
         ] {
             let mut s = sample(&format!("m.{unit}.{kind}"), kind, 1.0);
             s.unit = unit.into();
-            let out = exec.perform(&publish_req(&s), Hash::of(b"k")).await;
+            let out = exec
+                .perform(EffectId(0), &publish_req(&s), Hash::of(b"k"))
+                .await;
             assert!(
                 matches!(out, EffectOutcome::Ok(None)),
                 "unit {unit:?} on a {kind} records cleanly (unknown unit is not an error), got {out:?}"
@@ -590,7 +610,9 @@ mod tests {
             sample("agent.queue", "gauge", 5.0),
             sample("agent.latency", "timing", 12.0),
         ];
-        let out = exec.perform(&batch_req(&batch), Hash::of(b"k")).await;
+        let out = exec
+            .perform(EffectId(0), &batch_req(&batch), Hash::of(b"k"))
+            .await;
         assert!(
             matches!(out, EffectOutcome::Ok(None)),
             "batch records, got {out:?}"
@@ -606,7 +628,9 @@ mod tests {
             sample("agent.ok", "counter", 1.0),
             sample("bad:name", "counter", 1.0), // unsafe (':' corrupts a statsd line)
         ];
-        let out = exec.perform(&batch_req(&bad_batch), Hash::of(b"k")).await;
+        let out = exec
+            .perform(EffectId(0), &batch_req(&bad_batch), Hash::of(b"k"))
+            .await;
         assert!(
             matches!(&out, EffectOutcome::Err { message, retryability } if *retryability == Retryability::Permanent && message.contains("unsafe chars")),
             "a batch with an unsafe sample is rejected whole, got {out:?}"
@@ -619,6 +643,7 @@ mod tests {
         // A SINGLE (non-batch) metric-publish payload still works (back-compat fallback).
         let out = exec
             .perform(
+                EffectId(0),
                 &publish_req(&sample("agent.single", "counter", 1.0)),
                 Hash::of(b"k"),
             )
