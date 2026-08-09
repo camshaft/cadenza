@@ -433,6 +433,20 @@ impl Arenas {
         }
     }
 
+    /// The DECLARED NAME of an effect-schema AST: the `Name` head of a root `(effect Name (op …) …)`
+    /// form — e.g. `Weather` for `(effect Weather (op get (-> Unit Reading)))`. `None` if the root is
+    /// not an `(effect …)` form or its name slot is absent/not a name.
+    ///
+    /// This is the stable family/name that effect routing and authorization key on, resolved from a
+    /// decoded schema AST alongside its content hash (`Hash::of(encode(&schema_ast))`): identity by
+    /// hash, name by this reader (DESIGN-userspace-effects, envelope D14 — the schema-hash is the wire
+    /// key, the resolver maps hash → schema AST → this declared name). Reading the head out is real
+    /// extraction over the arena, not an alias — an `(effect …)`-shape check plus the name projection.
+    pub fn schema_declared_name(&self) -> Option<&str> {
+        let tail = self.as_form(self.root, "effect")?;
+        self.as_name(*tail.first()?)
+    }
+
     /// Structural (denotational) equality with another arena: do the two `root`s denote the same
     /// tree of leaves? This is the right comparison for round-trips — the raw `Arenas` fields differ
     /// after a round-trip (leaf interning order, occurrence numbering) even when the programs are
@@ -1031,5 +1045,40 @@ mod tests {
             );
             assert!(!mutated.structurally_eq(&a), "inequality must be symmetric");
         }
+    }
+
+    #[test]
+    fn schema_declared_name_reads_the_effect_head_name() {
+        // A schema AST `(effect Weather (op get (-> Unit Reading)))` — the declared name is `Weather`,
+        // the family/name effect routing keys on (DESIGN-userspace-effects envelope D14: resolve
+        // schema-hash → schema AST → this name).
+        let mut b = Builder::new();
+        let effect = b.name("effect");
+        let ename = b.name("Weather");
+        let op = b.name("op");
+        let get = b.name("get");
+        let arrow = b.name("->");
+        let unit = b.name("Unit");
+        let reading = b.name("Reading");
+        let sig = b.list(vec![arrow, unit, reading]);
+        let op_get = b.list(vec![op, get, sig]);
+        let root = b.list(vec![effect, ename, op_get]);
+        let schema = b.finish(root);
+        assert_eq!(schema.schema_declared_name(), Some("Weather"));
+
+        // A non-effect-schema AST yields None (the resolver treats it as "not a schema").
+        let mut b2 = Builder::new();
+        let module = b2.name("module");
+        let m = b2.name("m");
+        let not_root = b2.list(vec![module, m]);
+        let not_schema = b2.finish(not_root);
+        assert_eq!(not_schema.schema_declared_name(), None);
+
+        // A bare `(effect)` with no name slot (malformed) is None, not a panic.
+        let mut b3 = Builder::new();
+        let e3 = b3.name("effect");
+        let bare_root = b3.list(vec![e3]);
+        let bare = b3.finish(bare_root);
+        assert_eq!(bare.schema_declared_name(), None);
     }
 }
