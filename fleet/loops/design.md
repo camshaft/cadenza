@@ -12,8 +12,16 @@ human is correct.
 
 ## Setup
 Your worktree is `.claude/worktrees/<you>` off `trunk`. Your inbox holds a seed `assign` from the
-concierge with the operator's initial spark (a `note` in `--body`). Read the fleet contract, but
-note your loop is conversation-driven, not tick-driven — you may sit in dialogue for a while.
+concierge with the operator's initial spark (a `note` in `--body`). Read the fleet contract.
+
+**Arm your recurring loop at kickoff, before you start the design conversation.** Run the
+`/loop <interval> <tick>` command your window handed you as the very first thing you do — it
+schedules a durable cron AND runs the first tick, so the two are not in tension. Do NOT defer it
+until the design is finished: your work is interactive and can sit in dialogue for a long stretch,
+and if the cron is not armed you never heartbeat, never drain your inbox, and never notice a
+pr-sync reply while you are heads-down with the operator or idle waiting on them — so the watchdog
+has to keep nudging you back to life every sweep (the dead-cron cold-start). The recurring tick is
+your safety net; the interactive design conversation happens on top of it, not instead of it.
 
 ## What you do
 1. `cargo xtask fleet heartbeat <you>` when you start / resume.
