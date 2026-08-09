@@ -327,6 +327,25 @@ impl Session {
         &self.log
     }
 
+    /// The reason this session MOST-RECENTLY faulted, or `None` if its tip isn't a fault. A session
+    /// whose tip event is a [`EventBody::FoldFailed`] (§17: a reducer trap / fuel-exhaustion /
+    /// instantiate failure the kernel captures as a first-class log event rather than a silent stall)
+    /// reads `Some(reason)`; anything else — including a `FoldFailed` the session later progressed past
+    /// — reads `None`, because only the TIP is the freshest signal a "what is X doing?" query wants.
+    ///
+    /// This is the DERIVED accessor for the one steady-state read the host status view needs off the
+    /// log's fault tip (the derived [`SessionState`] has no "errored" variant — a just-faulted, idle
+    /// session reads `Quiescent`, masking the fault). It reads the resident `tip` (log/state-decouple
+    /// I1), NOT `self.log.last()`, so it stands on its own once the resident log Vec is dropped (I5) —
+    /// letting the host stop reaching into `log()` for this. Returns an owned `Arc<str>` (cheaply
+    /// clonable, and independent of the log's lifetime) rather than a borrow of the event's reason.
+    pub fn last_fault_reason(&self) -> Option<std::sync::Arc<str>> {
+        match &self.tip.body {
+            EventBody::FoldFailed { reason, .. } => Some(reason.as_str().into()),
+            _ => None,
+        }
+    }
+
     /// The current snapshot descriptor (§4): the free per-event checkpoint.
     pub fn snapshot(&self) -> Snapshot {
         Snapshot {
@@ -2447,6 +2466,48 @@ mod status_snapshot_tests {
         assert!(
             s.kv().get(b"public/status").is_some(),
             "the session survives a failed fold and processes the next event"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn last_fault_reason_reads_the_tip_only_and_clears_when_the_session_progresses() {
+        // The DERIVED accessor for the host status view's one steady-state fault read (log/state-decouple
+        // I5: the host stops reaching into `log()` for it). Pins TIP-ONLY freshness: a session whose tip is
+        // a FoldFailed reads Some(reason); once it progresses past the fault, it reads None again.
+        let mut exec = RecordingExecutor::new();
+        let mut s = Session::genesis(Hash::of(b"fail-v1"), Hash::of(b"test-spawn-nonce"));
+
+        // Fresh (tip = Genesis): no fault.
+        assert_eq!(
+            s.last_fault_reason(),
+            None,
+            "a fresh session has no fault tip"
+        );
+
+        // Fold a failing inbound → tip becomes FoldFailed → the reason surfaces.
+        s.deliver(
+            inbound(),
+            None,
+            &mut FailingReducer,
+            &Authorizer::deny_all(),
+            &mut exec,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            s.last_fault_reason().as_deref(),
+            Some("wasm reducer trapped: unreachable"),
+            "with a FoldFailed tip the fault reason surfaces"
+        );
+
+        // A SUBSEQUENT successful fold moves the tip past the fault → the fault clears (freshest signal only).
+        s.deliver(inbound(), None, &mut StatusReducer, &timer_cap(), &mut exec)
+            .await
+            .unwrap();
+        assert_eq!(
+            s.last_fault_reason(),
+            None,
+            "a FoldFailed the session progressed past is NOT reported — only the tip is the fresh signal"
         );
     }
 
