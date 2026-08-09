@@ -1037,6 +1037,39 @@ def id-err-propagates-through-let-value() =
   (match parse-of([letkw(), var(1), eq(), var(2), inkw(), n(5)]) with | (root, tree) =>
     (if type-err-at(tree, root, root) then unit else trap("a let with an ill-typed value is TErr")))
 
+// ---- match-type DIRECT unit tests (M1-a integer match combiner) ------------------------------------------
+// match-type had no direct test (only exercised via the NMatch infer arm). These pin its contract over a
+// hand-built types-column keyed by four node-ids (scrut=1, lit=2, then=3, else=4): scrut~lit must share a
+// type AND the then/else arms must join, else TErr. Uses same-width Int types so a mismatch is genuinely a
+// type difference, not a deferred-grounding artifact.
+@test
+def id-match-type-all-int-joins-to-int() =
+  // scrut/lit/then/else all Int64 → the match's type is Int64 (scrut~lit share, arms join).
+  (let tc = Map.insert(Map.insert(Map.insert(Map.insert((Map.empty : Map(Int64, Ty)),
+              1, mk-int(true, 64)), 2, mk-int(true, 64)), 3, mk-int(true, 64)), 4, mk-int(true, 64)) in
+   (match match-type(tc, 1, 2, 3, 4) with
+     | Ty.TyErr => trap("all-Int64 match should type Int64, not TErr")
+     | t => (if is-int-ty(t) then (match int-parts-of(t) with | (_, w) => (if w == 64 then unit else trap("match types Int64 width 64"))) else trap("match types an int"))))
+
+@test
+def id-match-type-scrut-lit-type-mismatch-declines() =
+  // scrut Int64 but the literal pattern is Bool → scrut~lit do NOT share a type → TErr (matching an Int
+  // scrutinee against a Bool pattern is ill-typed, the scrut==lit comparison rule).
+  (let tc = Map.insert(Map.insert(Map.insert(Map.insert((Map.empty : Map(Int64, Ty)),
+              1, mk-int(true, 64)), 2, Ty.TyBool), 3, mk-int(true, 64)), 4, mk-int(true, 64)) in
+   (match match-type(tc, 1, 2, 3, 4) with
+     | Ty.TyErr => unit
+     | _ => trap("Int scrutinee against a Bool pattern must decline TErr")))
+
+@test
+def id-match-type-arms-dont-join-declines() =
+  // scrut~lit share (both Int64) but the then arm is Int64 and the else arm is Bool → arms don't join → TErr.
+  (let tc = Map.insert(Map.insert(Map.insert(Map.insert((Map.empty : Map(Int64, Ty)),
+              1, mk-int(true, 64)), 2, mk-int(true, 64)), 3, mk-int(true, 64)), 4, Ty.TyBool) in
+   (match match-type(tc, 1, 2, 3, 4) with
+     | Ty.TyErr => unit
+     | _ => trap("then Int / else Bool arms must not join (TErr)")))
+
 @test
 def id-milestone-is-int() =
   // THE MILESTONE `let x = 2 in x * 3 + 1`: fully well-typed — every node TInt, program TInt. This is the
@@ -1630,4 +1663,4 @@ def id-nmatchctor-terr-scrutinee-taints-match-pr849() =
                 | Option.Some(Ty.TyErr) => unit                              // TErr scrutinee taints the match
                 | _ => trap("a TErr scrutinee must taint the whole NMatchCtor → TErr, not be masked by well-typed arms (PR#849)")))))))))
 
-export { infer-node, infer-tree, type-at, ground-deferred, well-typed, all-defs-well-scoped, type-err-at, typed-count, is-bool-at, is-int-at, def-arrow-type, bin-type, if-type, let-type, var-type, mk-int, int-parts-of, is-deferred-int, t-int-deferred }
+export { infer-node, infer-tree, type-at, ground-deferred, well-typed, all-defs-well-scoped, type-err-at, typed-count, is-bool-at, is-int-at, def-arrow-type, bin-type, if-type, let-type, match-type, var-type, mk-int, int-parts-of, is-deferred-int, t-int-deferred }
