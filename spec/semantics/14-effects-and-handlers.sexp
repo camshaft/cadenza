@@ -21333,3 +21333,92 @@
   (call   main (: 5 Int64)) (output (: 1 Int64))
   (call   main (: 1 Int64)) (output (: 203 Int64))
   (call   main (: -4 Int64)) (output (: 603 Int64)))
+
+
+; ── Peel-boundary green faces around the #13 op-arg-match fix (breaker cm complements) ────────
+; Complements to the four landed stale-sum-payload pins (the outer-arg-match × inner-state-match
+; faces): these pin the shapes around the peel's boundary that always threaded correctly and must
+; KEEP doing so. The state-OUTER nesting (the peeled arm-body match IS the state match — threading
+; it is the correct behavior the fix must preserve); the inner state-match routed through a helper
+; def (the payload arrives fresh at the call boundary); a let-derived value interposed between the
+; two matches (interposed bindings re-evaluate per dispatch); and an inner match on a locally-built
+; Option rather than the state (a non-state inner scrutinee). All hand-computed; all pass on wasm,
+; rust, and rust-async.
+
+(case "the STATE-outer nesting of the dual-sum arm threads fresh payloads across three dispatches — the peel's state-match threading face"
+  (input  (do
+            (type Mode (Idle) (Run Int64))
+            (type Cmd (Go Int64))
+            (effect M (op step (-> Cmd Int64)))
+            (def (main (: n Int64))
+              (handle M (Mode.Idle)
+                ((step (c) s
+                  (match s
+                    ((Mode.Idle) (match c ((Cmd.Go k) (resume k (Mode.Run k)))))
+                    ((Mode.Run j) (match c ((Cmd.Go k) (resume (+ j k) (Mode.Run (+ j k)))))))))
+                (+ (M.step (Cmd.Go (+ 10 n)))
+                   (+ (M.step (Cmd.Go 7))
+                      (M.step (Cmd.Go 1))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 60 Int64))
+  (call   main (: 0 Int64)) (output (: 45 Int64))
+  (call   main (: -3 Int64)) (output (: 36 Int64)))
+
+(case "the inner sum-state match routed through a HELPER DEF taking the payload as a parameter — a def boundary in the peeled arm body"
+  (input  (do
+            (type Mode (Idle) (Run Int64))
+            (type Cmd (Go Int64))
+            (effect M (op step (-> Cmd Int64)))
+            (def (decide (: s Mode) (: k Int64))
+              (match s
+                ((Mode.Idle) (tuple k (Mode.Run k)))
+                ((Mode.Run j) (tuple (+ j k) (Mode.Run (+ j k))))))
+            (def (main (: n Int64))
+              (handle M (Mode.Idle)
+                ((step (c) s
+                  (match c
+                    ((Cmd.Go k) (match (decide s k)
+                                  ((tuple v s2) (resume v s2)))))))
+                (+ (M.step (Cmd.Go (+ 10 n)))
+                   (M.step (Cmd.Go 7)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 37 Int64))
+  (call   main (: 0 Int64)) (output (: 27 Int64)))
+
+(case "a LET-derived value between the op-arg match and the state match — interposed bindings re-evaluate per dispatch"
+  (input  (do
+            (type Mode (Idle) (Run Int64))
+            (type Cmd (Go Int64))
+            (effect M (op step (-> Cmd Int64)))
+            (def (main (: n Int64))
+              (handle M (Mode.Idle)
+                ((step (c) s
+                  (match c
+                    ((Cmd.Go k)
+                     (let ((m (* 2 k)))
+                       (match s
+                         ((Mode.Idle) (resume m (Mode.Run m)))
+                         ((Mode.Run j) (resume (+ j m) (Mode.Run (+ j m))))))))))
+                (+ (M.step (Cmd.Go (+ 10 n)))
+                   (M.step (Cmd.Go 7)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 74 Int64))
+  (call   main (: 0 Int64)) (output (: 54 Int64)))
+
+(case "an inner match on a LOCALLY-BUILT Option from the payload (scalar state) — a non-state inner scrutinee beside the dispatch"
+  (input  (do
+            (type Cmd (Go Int64))
+            (effect M (op step (-> Cmd Int64)))
+            (def (main (: n Int64))
+              (handle M 0
+                ((step (c) s
+                  (match c
+                    ((Cmd.Go k)
+                     (match (if (> k 8) (Some k) (None))
+                       ((Some x) (resume (+ x s) (+ s 1)))
+                       ((None) (resume 0 s)))))))
+                (+ (M.step (Cmd.Go (+ 10 n)))
+                   (M.step (Cmd.Go 7)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 15 Int64))
+  (call   main (: 0 Int64)) (output (: 10 Int64)))

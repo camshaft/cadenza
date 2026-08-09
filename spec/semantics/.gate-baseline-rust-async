@@ -7076,3 +7076,7 @@ pass	sk4 a Set of TUPLES as handler state with three arms — insert in one arm,
 pass	lv1 a List of TUPLES from the empty (list) literal seed — pushed in one arm, indexed in a sibling
 pass	ra1 a RACE between two effect threads — a recursive walk draws BOTH per round until the fast thread catches the slow one's head start
 pass	ra2 the race walk's exit value SEEDS a third effect's handle — two-thread termination feeding the position matrix
+pass	the STATE-outer nesting of the dual-sum arm threads fresh payloads across three dispatches — the peel's state-match threading face
+pass	the inner sum-state match routed through a HELPER DEF taking the payload as a parameter — a def boundary in the peeled arm body
+pass	a LET-derived value between the op-arg match and the state match — interposed bindings re-evaluate per dispatch
+pass	an inner match on a LOCALLY-BUILT Option from the payload (scalar state) — a non-state inner scrutinee beside the dispatch
