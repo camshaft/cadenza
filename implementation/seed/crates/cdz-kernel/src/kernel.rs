@@ -116,17 +116,18 @@ impl SettledSet {
     }
 }
 
-/// A single-session kernel instance: the authoritative log plus the derived KV and the id counter.
-/// The reducer/executor/authorizer are supplied per operation so the same log can be replayed under a
-/// pinned reducer (the §16c-S3 "replay under the version that wrote it" discipline).
+/// A single-session kernel instance: bounded resident STATE (derived KV + head/tip + open-obligation
+/// table + settled watermark + id counter) with the append-only log persisted THROUGH the attached
+/// [`crate::log_store::LogSink`], NOT held resident (log/state-decouple I5). The reducer/executor/authorizer
+/// are supplied per operation so the same log can be replayed under a pinned reducer (the §16c-S3 "replay
+/// under the version that wrote it" discipline). The full log is read back only on recovery (via
+/// [`crate::log_store::LogStore::recover`] → [`Session::replay`]); nothing in steady state scans it.
 pub struct Session {
-    log: Vec<Event>,
     /// The GENESIS event (seq 0), held resident (log/state-decouple I1). The genesis is immutable after
     /// construction and is what [`genesis_hash`](Self::genesis_hash)/[`reducer_hash`](Self::reducer_hash)/
-    /// [`genesis_provenance`](Self::genesis_provenance) read — so they read THIS field, not `self.log.first()`.
-    /// This is the first step of decoupling the derived head/tip identity from the resident `log` Vec: I1
-    /// keeps `log` resident (Vec still here) but routes the head/tip accessors off these fields, so a later
-    /// increment (I5) can drop the Vec without touching those accessors. `genesis == log[0]` invariant.
+    /// [`genesis_provenance`](Self::genesis_provenance) read. With the resident log Vec now DROPPED (I5),
+    /// this resident copy is the sole in-memory home of the head identity — recovery re-seeds it from the
+    /// durable log's first event (`log[0]`), so the `genesis == log[0]` invariant still holds.
     genesis: Event,
     /// The current TIP event (last appended), held resident (log/state-decouple I1). What
     /// [`tip_hash`](Self::tip_hash) + the next-seq/snapshot reads use — off THIS field, not `self.log.last()`.
@@ -240,10 +241,10 @@ impl Session {
         // Build the genesis event ONCE — the SAME construction `derive_genesis_hash` hashes, so a host
         // pre-computing the child's SessionId and this kernel registering it can never disagree (single
         // source of truth). It seeds the resident `genesis`/`tip` (log/state-decouple I1: head/tip identity
-        // lives in fields, not read off the Vec) AND the resident log.
+        // lives in fields). The resident log Vec is GONE (I5) — genesis reaches durable storage when the
+        // caller persists it through the attached sink (the host factory does `sink.append(&genesis)`).
         let genesis_event = Self::genesis_event(reducer, spawn_nonce, parent);
         Session {
-            log: vec![genesis_event.clone()],
             genesis: genesis_event.clone(),
             tip: genesis_event,
             spawned: Vec::new(),
@@ -321,10 +322,6 @@ impl Session {
 
     pub fn kv(&self) -> &Kv {
         &self.kv
-    }
-
-    pub fn log(&self) -> &[Event] {
-        &self.log
     }
 
     /// The number of events in this session's log — derived from the resident tip (log-decouple I1/I5),
@@ -687,7 +684,7 @@ impl Session {
         level = "debug",
         name = "kernel.deliver",
         skip_all,
-        fields(event = event_body_name(&body), log_len = self.log.len())
+        fields(event = event_body_name(&body), log_len = self.event_count())
     )]
     pub async fn deliver_control(
         &mut self,
@@ -809,11 +806,9 @@ impl Session {
         // (cause-linked to an Inbound fold) never has — see `already_seeded_capabilities`. In the normal
         // "seed immediately after genesis" call the tip IS genesis, so this only matters if a caller seeds
         // later, but keying on genesis explicitly makes the identity correct regardless of call ordering.
-        let cause = self
-            .log
-            .first()
-            .map(|e| e.hash())
-            .expect("log always has genesis");
+        // The genesis event's hash — read the resident `genesis` (log-decouple I1/I5), not `log.first()`
+        // (the resident Vec is gone; genesis is held resident and is the immutable head).
+        let cause = self.genesis_ref().hash();
         let seed = Effect {
             request,
             token: None,
@@ -893,11 +888,8 @@ impl Session {
         );
         // A mid-session push is cause-linked to the current tip (the mutation that prompted it), NOT genesis —
         // so it's distinct from the seed (`already_seeded_capabilities` keys the seed on cause==genesis).
-        let cause = self
-            .log
-            .last()
-            .map(|e| e.hash())
-            .expect("log always has at least genesis");
+        // Read the resident `tip` (log-decouple I1/I5), not `log.last()` (the resident Vec is gone).
+        let cause = self.tip.hash();
         let push = Effect {
             request,
             token: None,
@@ -973,7 +965,10 @@ impl Session {
     /// the driver observes the failure via [`Session::take_persist_error`]. (Strict abort-on-persist-fail
     /// — tier A — is a raised design decision; this is the tier-B baseline.)
     async fn append(&mut self, body: EventBody, cause: Option<Hash>) -> Hash {
-        let seq = self.log.len() as u64;
+        // Next seq = one past the current tip (log-decouple I5: derived from the resident tip, not the
+        // dropped log Vec's len). Genesis is the initial tip at seq 0, so the first append is seq 1 —
+        // identical to the old `log.len()` (which was 1 after the genesis-seeded Vec).
+        let seq = self.tip.seq + 1;
         let event = Event { seq, cause, body };
         let hash = event.hash();
         // Maintain the open-obligation table + settled set as obligations are created and discharged
@@ -1063,10 +1058,10 @@ impl Session {
                 }
             }
         }
-        // The just-appended event is the new TIP (log/state-decouple I1: `tip` is resident, so `tip_hash`
-        // + next-seq read this, not `self.log.last()`). Keep the `tip == log.last()` invariant here.
-        self.tip = event.clone();
-        self.log.push(event);
+        // The just-appended event is the new TIP (log/state-decouple I1: `tip` is resident). With the log
+        // Vec dropped (I5), this is the sole in-memory record of the tip — the event itself lives only in
+        // the durable sink (persisted above) and is read back on recovery.
+        self.tip = event;
         hash
     }
 
@@ -1892,9 +1887,9 @@ impl Session {
             _ => return Err(KernelError::MissingGenesis),
         };
         let mut s = Session {
-            log: Vec::new(),
             // Seed the resident genesis/tip (log/state-decouple I1) from the validated first event; `tip`
-            // advances to the last event as the replay loop pushes (kept == log.last() throughout).
+            // advances to the last event as the replay loop folds each (I5: no resident Vec to push into —
+            // the input `log` IS the durable source being replayed, not a resident copy).
             genesis: genesis_event.clone(),
             tip: genesis_event,
             spawned: Vec::new(),
@@ -2009,10 +2004,10 @@ impl Session {
             if observable(&event.body) {
                 let _ = reducer.fold(&event, &mut s.kv).await;
             }
-            // Advance the resident tip to the event being appended (log/state-decouple I1 invariant
-            // tip == log.last()); after the loop, tip is the last replayed event.
-            s.tip = event.clone();
-            s.log.push(event);
+            // Advance the resident tip to the event just folded (log/state-decouple I1); after the loop,
+            // tip is the last replayed event. No resident Vec to push into (I5) — the input `log` was the
+            // durable source, already consumed by this loop.
+            s.tip = event;
         }
         Ok(s)
     }
