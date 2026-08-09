@@ -21699,3 +21699,80 @@
   (call   main (: 5 Int64)) (output (: 220 Int64))
   (call   main (: 0 Int64)) (output (: 320 Int64))
   (call   main (: -3 Int64)) (output (: 188 Int64)))
+
+
+; ── String-keyed locks: payload-vs-state equality, rolling codes, and lockout (breaker lk) ────
+; The access-control idiom family over STRING comparison in the arm. lk1: the arm compares the
+; string PAYLOAD against the stored KEY by equality — parity picks the key, the lock state gates
+; three verdicts (miss / unlock / already-open). lk2: a ROLLING code — each successful match
+; advances the key index through a (List String) state via List.at, |n mod 3| picking the start.
+; lk3: LOCKOUT — a fail counter flips a dead flag that rejects even the correct key thereafter,
+; with the dispatch sequence branching in the body. String-vs-string equality between payload
+; and state was previously unpinned (the sd pins compare built content against literals). All
+; rows hand-computed; all pass on wasm, rust, and rust-async.
+
+(case "lk1 a STRING-keyed lock — the arm compares the string payload against the stored key by equality; parity picks the key, a fail counter rides along"
+  (input  (do
+            (effect L (op try (-> String Int64)))
+            (def (main (: n Int64))
+              (handle L (tuple (if (= (% n 2) 0) "ab" "cd") 1 0)
+                ((try (a) st (match st
+                               ((tuple key locked fails)
+                                (if (= locked 1)
+                                    (if (= a key)
+                                        (resume 1 (tuple key 0 fails))
+                                        (resume 0 (tuple key 1 (+ fails 1))))
+                                    (resume 2 st))))))
+                (let ((r1 (L.try "cd")))
+                  (let ((r2 (L.try "ab")))
+                    (let ((r3 (L.try "cd")))
+                      (match (L.try "zz")
+                        (_last (+ (* 100 r1) (+ (* 10 r2) r3)))))))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 12 Int64))
+  (call   main (: 1 Int64)) (output (: 122 Int64))
+  (call   main (: 0 Int64)) (output (: 12 Int64)))
+
+(case "lk2 a ROLLING-code lock — each successful match advances the key index through a list of string keys, |n mod 3| picks the start"
+  (input  (do
+            (effect L (op try (-> String Int64)))
+            (def (main (: n Int64))
+              (handle L (tuple (list "aa" "bb" "cc")
+                               (let ((m (% n 3))) (if (< m 0) (- 0 m) m)))
+                ((try (a) st (match st
+                               ((tuple keys ki)
+                                (match (List.at keys ki)
+                                  ((Some key)
+                                   (if (= a key)
+                                       (resume 1 (tuple keys (% (+ ki 1) 3)))
+                                       (resume 0 st)))
+                                  ((None) (resume -1 st)))))))
+                (+ (* 1000 (L.try "aa"))
+                   (+ (* 100 (L.try "bb"))
+                      (+ (* 10 (L.try "bb"))
+                         (L.try "cc"))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 1101 Int64))
+  (call   main (: 1 Int64)) (output (: 101 Int64))
+  (call   main (: 2 Int64)) (output (: 1 Int64)))
+
+(case "lk3 LOCKOUT after two failures — the fail counter flips a dead flag that rejects even the correct key thereafter"
+  (input  (do
+            (effect L (op try (-> String Int64)))
+            (def (main (: n Int64))
+              (handle L (tuple 0 0)
+                ((try (a) st (match st
+                               ((tuple fails dead)
+                                (if (= dead 1)
+                                    (resume 9 st)
+                                    (if (= a "ab")
+                                        (resume 1 st)
+                                        (resume 0 (tuple (+ fails 1)
+                                                         (if (>= (+ fails 1) 2) 1 0)))))))))
+                (if (> n 0)
+                    (+ (* 100 (L.try "xx")) (+ (* 10 (L.try "xx")) (L.try "ab")))
+                    (+ (* 100 (L.try "xx")) (+ (* 10 (L.try "ab")) (L.try "ab"))))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 9 Int64))
+  (call   main (: 0 Int64)) (output (: 11 Int64))
+  (call   main (: -2 Int64)) (output (: 11 Int64)))

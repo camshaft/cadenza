@@ -7097,3 +7097,6 @@ pass	ss6 the slot SELECTOR is derived from the state itself — |a mod 3| routes
 pass	ss7 a 2-ary op carries SELECTOR and MAGNITUDE — which slot and by how much are both payload-driven, a trailing read pins slot 0
 pass	rg1 the arm ROTATES the tuple state (a b c)->(b c a) per dispatch and returns the evicted head — four weighted reads wrap the ring
 pass	rg2 the rotation DIRECTION flips on the evicted head's parity — even rotates left, odd rotates right, negative-odd exercises truncated mod
+pass	lk1 a STRING-keyed lock — the arm compares the string payload against the stored key by equality; parity picks the key, a fail counter rides along
+pass	lk2 a ROLLING-code lock — each successful match advances the key index through a list of string keys, |n mod 3| picks the start
+pass	lk3 LOCKOUT after two failures — the fail counter flips a dead flag that rejects even the correct key thereafter
