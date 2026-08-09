@@ -232,6 +232,18 @@ enum Guard {
     /// call/argument structure (DESIGN-cadenza-lint §naming/deep-nesting; operator's `hm-collect.cdz`
     /// motivating case). The threshold is exclusive: `(deeper-than 5)` fires only at depth ≥ 6.
     DeeperThan(usize),
+    /// The node's CALL-CHAIN depth is STRICTLY GREATER than this threshold (`(calls-deeper-than N)`).
+    /// Unlike [`Guard::DeeperThan`] (whole-subtree list-nesting, which over-counts ordinary structural
+    /// nesting — a `module` holding `def`s holding `let`s scores high regardless of any call nesting),
+    /// this counts ONLY the longest chain of nested APPLICATION forms: a list whose head is a plain
+    /// callee name (not a keyword/reserved word, not an infix-operator head, not a compound-value
+    /// constructor `tuple`/`list`/`record`/`map`). So `(f (g (h x)))` is call-depth 3, but a
+    /// `(module … (def … (let … (+ a b))))` spine is call-depth 0 (no application forms) and
+    /// `(collect (map (filter xs p) f) init)` counts its nested `collect`/`map`/`filter` calls. This is
+    /// the metric the `idiomatic/deep-nesting` lint needs (DESIGN-cadenza-lint §deep-nesting, operator's
+    /// PR-#2790 `hm-collect.cdz`: deeply nested call ARGUMENTS, not structural depth). Exclusive:
+    /// `(calls-deeper-than 4)` fires only at call-depth ≥ 5.
+    CallsDeeperThan(usize),
     /// The node itself matches this sub-pattern (`(matches PAT)`). The sub-pattern's captures are a
     /// pure test — they do NOT leak into the outer bindings.
     Matches(Box<Pat>),
@@ -751,7 +763,8 @@ fn compile_guard(t: &Tree) -> Result<Guard, PatternError> {
             other => Err(PatternError(format!(
                 "unknown guard `{other}` — a guard is one of `is-literal` `is-name` `is-int` `is-float` \
                  `is-str` `is-bool` `is-atom` `is-list` `is-irrefutable` `is-camel-case`, or a form \
-                 `(head-is NAME)` / `(matches PAT)` / `(not GUARD)` / `(deeper-than N)`"
+                 `(head-is NAME)` / `(matches PAT)` / `(not GUARD)` / `(deeper-than N)` / \
+                 `(calls-deeper-than N)`"
             ))),
         };
     }
@@ -791,6 +804,22 @@ fn compile_guard(t: &Tree) -> Result<Guard, PatternError> {
                         )
                     })?;
                 Ok(Guard::DeeperThan(n))
+            }
+            Some("calls-deeper-than") => {
+                // `(calls-deeper-than N)` — N is a non-negative integer-literal threshold.
+                let n = items
+                    .get(1)
+                    .and_then(|t| match t {
+                        Tree::Atom(Leaf::Int { value, .. }, _) => usize::try_from(value).ok(),
+                        _ => None,
+                    })
+                    .ok_or_else(|| {
+                        PatternError(
+                            "`calls-deeper-than` needs a non-negative integer: `(calls-deeper-than 4)`"
+                                .into(),
+                        )
+                    })?;
+                Ok(Guard::CallsDeeperThan(n))
             }
             _ => Err(PatternError(format!("ill-formed guard `{}`", t.to_sexpr()))),
         }
@@ -838,6 +867,9 @@ fn guard_holds(g: &Guard, s: &Tree) -> bool {
         Guard::IsCamelCase => matches!(s, Tree::Atom(Leaf::Name(n), _) if is_camel_case(n)),
         // The node's list-nesting depth exceeds the threshold (STRICTLY). Structural, print-independent.
         Guard::DeeperThan(n) => list_depth(s) > *n,
+        // The node's CALL-CHAIN depth exceeds the threshold (STRICTLY) — nested application forms only,
+        // skipping structural/keyword/operator/compound-ctor heads. Print-independent.
+        Guard::CallsDeeperThan(n) => call_depth(s) > *n,
         // A sub-pattern test: its captures are local (discarded), so `matches` is a pure predicate.
         Guard::Matches(sub) => {
             let mut scratch = Bindings::default();
@@ -876,6 +908,78 @@ fn list_depth(t: &Tree) -> usize {
         }
     }
     max
+}
+
+/// The CALL-CHAIN depth of `t` — the longest chain of nested APPLICATION forms rooted here. Distinct
+/// from [`list_depth`], which counts EVERY list level (so ordinary structural nesting — a `module`
+/// holding `def`s holding `let`s — dominates the count regardless of any call nesting, the exact reason
+/// whole-subtree depth over-fires as a `deep-nesting` metric). Here only an APPLICATION form (see
+/// [`is_application_form`]) adds one to the depth; a structural/keyword/operator/compound-ctor list adds
+/// zero but is still descended into (a call nested inside a `let` body still counts). So
+/// `(f (g (h x)))` is 3, `(collect (map (filter xs p) f) init)` is 3 (collect→map→filter), and a
+/// `(module m (def (main) (+ x 1)))` spine adds 0 for `module`/`def`/`+`.
+///
+/// One bounded imprecision: a def SIGNATURE `(main)` and a let BINDER `(x e)` are plain-name-headed
+/// lists, shape-indistinguishable from a nullary/unary application, so each reads as a depth-1
+/// application. This never COMPOUNDS into a deep chain (a signature/binder is always shallow — its
+/// depth is 1 plus whatever the bound EXPRESSION nests, which is counted on its own merits), so it
+/// shifts the metric by at most a constant and is immaterial above the threshold the `deep-nesting`
+/// lint uses. Distinguishing them would need parent-position context the free-standing metric does not
+/// carry; the empirical threshold study (compiler-ml source) confirms the signal is clean regardless.
+///
+/// Iterative over an explicit stack (a deep subject must not overflow the native stack — the same
+/// discipline `list_depth`/`codec`/`canon` use).
+fn call_depth(t: &Tree) -> usize {
+    let mut max = 0;
+    // Stack of (node, call-depth-accumulated-to-this-node's-parent). A node contributes +1 only when it
+    // is itself an application form; every child inherits the (possibly incremented) depth.
+    let mut stack = vec![(t, 0usize)];
+    while let Some((node, d)) = stack.pop() {
+        if let Tree::List(items, _) = node {
+            let here = if is_application_form(node) { d + 1 } else { d };
+            if here > max {
+                max = here;
+            }
+            for child in items {
+                stack.push((child, here));
+            }
+        }
+    }
+    max
+}
+
+/// Is `t` an APPLICATION form — a call `(callee arg…)` whose head is a plain callee name, as opposed to
+/// a structural/keyword form, an infix-operator form, or a compound-value constructor? An application is
+/// the thing `idiomatic/deep-nesting` counts: user function/constructor calls nested as arguments. A
+/// head is NOT an application head when it is:
+///  - not a bare name (a list head, e.g. `((f) x)` — rare; treated as non-application for depth),
+///  - a KEYWORD or reserved word (`let`/`if`/`match`/`fn`/`def`/`module`/… ∪ `and`/`or`) — structural,
+///  - an INFIX-operator head (`+`/`-`/`=`/`<`/… via [`token::infix_prec`]) — an operator form, and note
+///    equality's arena head is `=` (shared with a Phase-B record field `(= name value)`, also excluded),
+///  - a COMPOUND-VALUE constructor (`tuple`/`list`/`record`/`map`) — a data literal, not a call,
+///  - a structural non-keyword head the sexpr layer uses (`do`/`@`/`pragma`/`.`/`:` handled via the
+///    operator/keyword checks above where applicable; `do`/`@`/`pragma`/`.` are listed explicitly).
+///
+/// Everything else — an ordinary lowercase callee or an uppercase constructor applied to args — IS an
+/// application. Purely syntactic (head-name shape only), no scope/type lookup.
+fn is_application_form(t: &Tree) -> bool {
+    let Some(head) = head_name(t) else {
+        return false;
+    };
+    // Keyword or word-operator (`and`/`or`) — a structural/operator form, never a call.
+    if crate::token::is_reserved(head) {
+        return false;
+    }
+    // An infix-operator head (arena head, e.g. `=`/`+`/`<`/`->`/`|>`) — an operator form, not a call.
+    if crate::token::infix_prec(head).is_some() {
+        return false;
+    }
+    // A compound-value constructor or a structural sexpr head is a data literal / grouping, not a call;
+    // everything else is an application.
+    !matches!(
+        head,
+        "tuple" | "list" | "record" | "map" | "do" | "@" | "pragma" | "."
+    )
 }
 
 /// Is `name` a `camelCase` identifier — the shape the `naming/camel-case` lint flags (Cadenza convention
@@ -5069,6 +5173,114 @@ mod tests {
     fn guard_deeper_than_rejects_a_non_integer_threshold() {
         assert!(Pattern::compile("(f ,(x (deeper-than foo)))").is_err());
         assert!(Pattern::compile("(f ,(x (deeper-than)))").is_err());
+    }
+
+    #[test]
+    fn call_depth_counts_only_nested_application_forms() {
+        // An atom / a bare name is call-depth 0.
+        assert_eq!(call_depth(&subj("x")), 0, "an atom is call-depth 0");
+        // A flat application is 1; each nested application adds one.
+        assert_eq!(
+            call_depth(&subj("(f a b)")),
+            1,
+            "a flat call is call-depth 1"
+        );
+        assert_eq!(
+            call_depth(&subj("(f (g (h (i 1))))")),
+            4,
+            "a 4-deep call chain is call-depth 4"
+        );
+        // The KEY distinction from list_depth: STRUCTURAL nesting (keyword heads) does not COMPOUND
+        // into call depth. A module/def/let spine with no real calls stays SHALLOW (call-depth <= 1 —
+        // the lone def signature `(main)` reads as a depth-1 application, the documented bounded
+        // imprecision) even though its list_depth is high. That gap is the whole point.
+        let spine = subj("(module m (def (main) (let ((x 1)) x)))");
+        assert!(
+            call_depth(&spine) <= 1,
+            "module/def/let keyword heads do not compound; the spine is call-shallow (got {})",
+            call_depth(&spine)
+        );
+        assert!(
+            list_depth(&spine) >= 4,
+            "the same spine IS structurally deep (list_depth) — that is exactly why list_depth is the \
+             wrong metric for deep-nesting"
+        );
+        // A call nested INSIDE a structural body still counts (structural heads are descended into).
+        assert_eq!(
+            call_depth(&subj("(def (main) (f (g (h 1))))")),
+            3,
+            "def wraps a depth-3 call chain; the def head contributes 0 but the body counts"
+        );
+        // Infix-operator heads (arena `+`, `=`, `<`, …) are NOT applications.
+        assert_eq!(
+            call_depth(&subj("(+ a (* b c))")),
+            0,
+            "arithmetic operators are not application forms"
+        );
+        // Equality's arena head `=` — shared with a Phase-B record field `(= name value)` — is an
+        // operator head, so neither an equality nor a record field counts as a call.
+        assert_eq!(
+            call_depth(&subj("(= a b)")),
+            0,
+            "equality (arena head =) is an operator, not a call"
+        );
+        assert_eq!(
+            call_depth(&subj("(record (= m 1) (= n 2))")),
+            0,
+            "a record literal and its (= field value) fields are not calls"
+        );
+        // Compound-value constructors (tuple/list/record/map) are data literals, not calls — their
+        // heads contribute 0, so a nest of pure constructors is call-depth 0.
+        assert_eq!(
+            call_depth(&subj("(tuple (list 1 2) (list 3 4))")),
+            0,
+            "tuple/list constructors are data literals, not application forms"
+        );
+        // A constructor call applied to arguments (an uppercase callee) DOES count — it is an
+        // application of a data constructor, the nesting the lint cares about.
+        assert_eq!(
+            call_depth(&subj("(Some (Wrap (Inner 1)))")),
+            3,
+            "constructor applications are calls"
+        );
+        // Width does not add depth — only the longest single chain.
+        assert_eq!(
+            call_depth(&subj("(f a b c d (g 1))")),
+            2,
+            "one nested-call arg gives call-depth 2 regardless of width"
+        );
+    }
+
+    #[test]
+    fn guard_calls_deeper_than_fires_strictly_past_the_threshold() {
+        // `,(x (calls-deeper-than N))` matches a node whose CALL-depth is STRICTLY > N.
+        // `(f (g (h (i 1))))` is call-depth 4.
+        let deep = subj("(f (g (h (i 1))))");
+        assert_eq!(
+            count(&pat(",(x (calls-deeper-than 3))"), &deep),
+            1,
+            "call-depth 4 > 3 fires (on the outermost node)"
+        );
+        assert_eq!(
+            count(&pat(",(x (calls-deeper-than 4))"), &deep),
+            0,
+            "call-depth 4 is not > 4"
+        );
+        // A structural spine with no calls never fires, however deep it nests.
+        assert_eq!(
+            count(
+                &pat(",(x (calls-deeper-than 1))"),
+                &subj("(module m (def (main) (let ((x 1)) x)))")
+            ),
+            0,
+            "a call-free structural spine never fires calls-deeper-than"
+        );
+    }
+
+    #[test]
+    fn guard_calls_deeper_than_rejects_a_non_integer_threshold() {
+        assert!(Pattern::compile("(f ,(x (calls-deeper-than foo)))").is_err());
+        assert!(Pattern::compile("(f ,(x (calls-deeper-than)))").is_err());
     }
 
     #[test]
