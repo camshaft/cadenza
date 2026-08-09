@@ -2397,4 +2397,26 @@ mod tests {
         let (loop_result, ()) = tokio::join!(async_host.run(sd_rx, || 0), client);
         loop_result.expect("clean shutdown");
     }
+
+    // ---- userspace-effects I4 loop-side: the reply-settle seam ----
+
+    /// `AgentHost::settle_reply` reports `false` for an absent caller (the registry-facing no-op the loop's
+    /// reply-settle drain relies on), distinct from a landed settle — the belt to the I6 terminate-prune's
+    /// token refusal, and the reason a late/stale `effect/reply` to a gone caller can't corrupt a log.
+    #[tokio::test]
+    async fn agent_host_settle_reply_is_false_for_an_absent_caller() {
+        use cdz_kernel::effect::EffectId;
+        let mut host = AgentHost::new();
+        let landed = host
+            .settle_reply(
+                &SessionId::new("never-registered"),
+                EffectId(7),
+                EffectOutcome::Ok(None),
+            )
+            .await;
+        assert!(
+            !landed,
+            "settling an absent caller lands nothing (benign false)"
+        );
+    }
 }

@@ -470,6 +470,35 @@ impl HostedSession {
             .await
     }
 
+    /// Settle a DEFERRED effect on THIS session with a userspace-effect handler's reply outcome
+    /// (userspace-effects I4, loop-side). A caller session performed a userspace effect that the I3
+    /// [`UserspaceEffectExecutor`](crate::userspace_effect_exec::UserspaceEffectExecutor) FORWARDED to a
+    /// handler + left OPEN (returned [`EffectOutcome::Deferred`]); the handler answered with an `effect/reply`
+    /// that the [`ReplyExecutor`](crate::reply_exec::ReplyExecutor) validated into a
+    /// [`ReplySettle`](crate::reply_exec::ReplySettle) `{caller, effect_id, outcome}`. The loop drains that
+    /// command (see `apply_reply_settles`) and calls THIS on the `caller` session to fold `outcome` onto the
+    /// open `effect_id`, resuming the caller's continuation — closing the request→forward→reply→settle loop.
+    ///
+    /// A thin wrapper over the same `Session::settle_effect_result` seam `settle_signature_query` uses (the
+    /// family-agnostic deferred-settle, userspace-effects I2). Returns whether the settle landed (`false` = the
+    /// id was already settled / the session terminated — a benign no-op, per `settle_effect_result`, so a
+    /// stale/duplicate reply the token layer somehow let through still can't corrupt the log).
+    pub async fn settle_reply(
+        &mut self,
+        effect_id: cdz_kernel::effect::EffectId,
+        outcome: cdz_kernel::event::EffectOutcome,
+    ) -> bool {
+        self.session
+            .settle_effect_result(
+                effect_id,
+                outcome,
+                &mut *self.reducer,
+                &*self.authz,
+                &mut self.executor,
+            )
+            .await
+    }
+
     /// Seed the GENESIS-SETUP events into a freshly-`genesis`'d session — the host side of the bootstrap
     /// ceremony (contract with v-harness-bootstrap). Delivers, in order, a [`genesis/root`](genesis_ct::ROOT)
     /// event carrying the established trust-root identity, an optional [`genesis/authorizer`](genesis_ct::AUTHORIZER)
@@ -1273,6 +1302,26 @@ impl AgentHost {
             self.metrics.record_session_removed();
         }
         removed
+    }
+
+    /// Settle a DEFERRED userspace effect on the `caller` session with a handler's reply outcome
+    /// (userspace-effects I4, loop-side) — the registry-facing half of the `effect/reply` path, resolving the
+    /// caller by id then delegating to [`HostedSession::settle_reply`]. The loop's `apply_reply_settles`
+    /// drains a [`ReplySettle`](crate::reply_exec::ReplySettle) and calls this so the caller's OPEN effect
+    /// resumes with the handler's answer. Returns whether the settle LANDED: `false` if the caller is ABSENT
+    /// (gone/terminated between the forward and the reply — no session to settle, like [`terminate`](Self::terminate)'s
+    /// `None`) OR the id was already settled / the session terminated (the idempotent no-op `settle_reply`
+    /// reports). Benign either way — a late/stale reply can't corrupt a log.
+    pub async fn settle_reply(
+        &mut self,
+        caller: &SessionId,
+        effect_id: cdz_kernel::effect::EffectId,
+        outcome: cdz_kernel::event::EffectOutcome,
+    ) -> bool {
+        match self.sessions.get_mut(caller) {
+            Some(s) => s.settle_reply(effect_id, outcome).await,
+            None => false,
+        }
     }
 
     /// TERMINATE a registered session by id (§lifecycle I5): install the durable `Terminated` marker on its
