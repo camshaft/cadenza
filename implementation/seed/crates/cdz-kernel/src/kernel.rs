@@ -3450,6 +3450,7 @@ mod monotonic_now_tests {
         // (control is exempt — a normal effect under deny_all would be AuthzDenied).
         let mut exec = RecordingExecutor::new();
         let mut session = Session::genesis(Hash::of(b"control-v1"), Hash::of(b"test-spawn-nonce"));
+        let captured = attach_recording_sink(&mut session);
         let control = session
             .deliver_control(
                 inbound(),
@@ -3476,8 +3477,7 @@ mod monotonic_now_tests {
         assert_eq!(exec.seen.len(), 0);
         // Authz-EXEMPT: deny_all did NOT produce an AuthzDenied for it (a normal effect would be denied).
         assert!(
-            !session
-                .log()
+            !replay_input(&captured)
                 .iter()
                 .any(|e| matches!(e.body, EventBody::AuthzDenied { .. })),
             "a control/* effect must skip authz entirely — no AuthzDenied"
@@ -3545,6 +3545,7 @@ mod monotonic_now_tests {
         // e.g. short-circuits the whole turn on the first control family; this pins the split.
         let mut exec = RecordingExecutor::new();
         let mut session = Session::genesis(Hash::of(b"mixed-v1"), Hash::of(b"test-spawn-nonce"));
+        let captured = attach_recording_sink(&mut session);
         // Grant the emit family (any resource) so the REGULAR effect authorizes; control is exempt anyway.
         let authz = Authorizer::new(vec![Capability {
             kind: EffectKind::Emit,
@@ -3583,8 +3584,7 @@ mod monotonic_now_tests {
         // The regular effect was authorized (granted) → no AuthzDenied event for it, and it produced a
         // dispatch. (Control being exempt also produces no AuthzDenied — so zero denials total here.)
         assert!(
-            !session
-                .log()
+            !replay_input(&captured)
                 .iter()
                 .any(|e| matches!(e.body, EventBody::AuthzDenied { .. })),
             "granted regular effect + exempt control → no AuthzDenied"
@@ -3645,6 +3645,7 @@ mod monotonic_now_tests {
         // settle_effect_result folds the descriptor back → the guest's continuation resumes (writes KV).
         let mut exec = RecordingExecutor::new();
         let mut session = Session::genesis(Hash::of(b"sig-v1"), Hash::of(b"nonce"));
+        let captured = attach_recording_sink(&mut session);
         let control = session
             .deliver_control(
                 inbound(),
@@ -3680,8 +3681,8 @@ mod monotonic_now_tests {
             1,
             "a surfaced control/signature is an OPEN dispatched effect awaiting the host's answer"
         );
-        let dispatched_family = session
-            .log()
+        let durable = replay_input(&captured);
+        let dispatched_family = durable
             .iter()
             .find_map(|e| match &e.body {
                 EventBody::Dispatched { family, .. } => Some(family.clone()),
@@ -3694,8 +3695,7 @@ mod monotonic_now_tests {
             "the dispatch records control/signature (so recovery classifies it, not the emit placeholder)"
         );
         // No AuthzDenied — control is exempt even under deny_all (a routed effect would be denied).
-        assert!(!session
-            .log()
+        assert!(!durable
             .iter()
             .any(|e| matches!(e.body, EventBody::AuthzDenied { .. })));
 
@@ -3743,8 +3743,8 @@ mod monotonic_now_tests {
             !dup,
             "a duplicate settle of an already-settled id is a no-op"
         );
-        let result_count = session
-            .log()
+        // Re-read the durable log (the sink kept capturing through the settle) — exactly one EffectResult.
+        let result_count = replay_input(&captured)
             .iter()
             .filter(|e| matches!(e.body, EventBody::EffectResult { .. }))
             .count();
@@ -3813,6 +3813,7 @@ mod monotonic_now_tests {
         let mut exec = RecordingExecutor::new();
         let mut session =
             Session::genesis(Hash::of(b"sig-deliver-failsafe-v1"), Hash::of(b"nonce"));
+        let captured = attach_recording_sink(&mut session);
         session
             .deliver(
                 inbound(),
@@ -3837,8 +3838,7 @@ mod monotonic_now_tests {
         );
         // Exactly one EffectResult (the fail-safe settle) — the effect is durably settled, not phantom-open.
         assert_eq!(
-            session
-                .log()
+            replay_input(&captured)
                 .iter()
                 .filter(|e| matches!(e.body, EventBody::EffectResult { .. }))
                 .count(),
@@ -3853,6 +3853,7 @@ mod monotonic_now_tests {
         // fail-safe loop doesn't append a spurious EffectResult for a summary (which has no open effect).
         let mut exec = RecordingExecutor::new();
         let mut session = Session::genesis(Hash::of(b"sum-deliver-v1"), Hash::of(b"nonce"));
+        let captured = attach_recording_sink(&mut session);
         session
             .deliver(
                 inbound(),
@@ -3869,8 +3870,7 @@ mod monotonic_now_tests {
             "a fire-and-forget summary never opens an effect"
         );
         assert!(
-            !session
-                .log()
+            !replay_input(&captured)
                 .iter()
                 .any(|e| matches!(e.body, EventBody::EffectResult { .. })),
             "no EffectResult for a summary — the fail-safe is scoped to fold-back controls only"
@@ -3885,6 +3885,7 @@ mod monotonic_now_tests {
         // there is no Dispatched frame — and settling its (non-open) id is a no-op.
         let mut exec = RecordingExecutor::new();
         let mut session = Session::genesis(Hash::of(b"sum-nodispatch-v1"), Hash::of(b"nonce"));
+        let captured = attach_recording_sink(&mut session);
         let control = session
             .deliver_control(
                 inbound(),
@@ -3906,8 +3907,7 @@ mod monotonic_now_tests {
             "control/summary is fire-and-forget — no Dispatched frame, never an open effect"
         );
         assert!(
-            !session
-                .log()
+            !replay_input(&captured)
                 .iter()
                 .any(|e| matches!(e.body, EventBody::Dispatched { .. })),
             "no Dispatched frame for a fire-and-forget summary (only fold-back controls dispatch)"
@@ -3963,6 +3963,7 @@ mod monotonic_now_tests {
             predicate: crate::effect::ResourcePredicate::Any,
         }]);
         let mut session = Session::genesis(Hash::of(b"caps-v1"), Hash::of(b"test-spawn-nonce"));
+        let captured = attach_recording_sink(&mut session);
         let control = session
             .deliver_control(
                 inbound(),
@@ -3983,8 +3984,8 @@ mod monotonic_now_tests {
         // The durable Dispatched frame records the CONTROL family (not the `Emit` placeholder kind) — so
         // crash recovery can classify this open dispatch as control/capabilities and re-answer it inline,
         // rather than misreading it as a real emit (PR #1668 review, durability fix).
-        let dispatched_family = session
-            .log()
+        let durable = replay_input(&captured);
+        let dispatched_family = durable
             .iter()
             .find_map(|e| match &e.body {
                 EventBody::Dispatched { family, .. } => Some(family.clone()),
@@ -3998,8 +3999,7 @@ mod monotonic_now_tests {
         );
 
         // The kernel folded an EffectResult carrying the manifest bytes. Find it + decode.
-        let payload = session
-            .log()
+        let payload = durable
             .iter()
             .find_map(|e| match &e.body {
                 EventBody::EffectResult {
@@ -4067,6 +4067,7 @@ mod monotonic_now_tests {
             predicate: crate::effect::ResourcePredicate::Any,
         }]);
         let mut session = Session::genesis(Hash::of(b"seed-v1"), Hash::of(b"test-spawn-nonce"));
+        let captured = attach_recording_sink(&mut session);
         // Precondition: a bare genesis log has exactly the Genesis event, no manifest yet.
         assert_eq!(session.event_count(), 1);
 
@@ -4081,8 +4082,8 @@ mod monotonic_now_tests {
 
         // The seed's durable Dispatched records the control family (recovery-classifiable), cause-linked
         // to genesis.
-        let dispatched_family = session
-            .log()
+        let durable = replay_input(&captured);
+        let dispatched_family = durable
             .iter()
             .find_map(|e| match &e.body {
                 EventBody::Dispatched { family, .. } => Some(family.clone()),
@@ -4097,8 +4098,7 @@ mod monotonic_now_tests {
 
         // Born knowing: a capabilities-manifest EffectResult is in the log after the seed, decodable, with
         // the served+granted emit family reading granted.
-        let payload = session
-            .log()
+        let payload = durable
             .iter()
             .find_map(|e| match &e.body {
                 EventBody::EffectResult {
@@ -4141,6 +4141,7 @@ mod monotonic_now_tests {
             },
         ]);
         let mut session = Session::genesis(Hash::of(b"push-v1"), Hash::of(b"test-spawn-nonce"));
+        let captured = attach_recording_sink(&mut session);
 
         // Seed the baseline manifest with an emit-only executor (http is Absent — no executor serves it).
         let mut narrow = CompositeExecutor::new().with_effect(
@@ -4150,8 +4151,10 @@ mod monotonic_now_tests {
         session
             .seed_capabilities(&mut InertReducer, &authz, &mut narrow)
             .await;
-        let cap_results = |s: &Session| {
-            s.log()
+        // Count the manifest EffectResults on the DURABLE log (read from the sink each call — it keeps
+        // capturing as the seed + push fold more results through append).
+        let cap_results = || {
+            replay_input(&captured)
                 .iter()
                 .filter(|e| {
                     matches!(
@@ -4164,7 +4167,7 @@ mod monotonic_now_tests {
                 })
                 .count()
         };
-        assert_eq!(cap_results(&session), 1, "seed folded one manifest");
+        assert_eq!(cap_results(), 1, "seed folded one manifest");
 
         // Surface change: now an http executor is also present. push with the WIDER surface → http moved
         // Absent→Granted, so a capabilities-changed manifest is folded (a second result appears).
@@ -4185,13 +4188,12 @@ mod monotonic_now_tests {
             "the push is answered inline, not surfaced"
         );
         assert_eq!(
-            cap_results(&session),
+            cap_results(),
             2,
             "a real surface change folds a second (capabilities-changed) manifest"
         );
         // The pushed manifest reads http as granted now (served + permitted).
-        let latest_payload = session
-            .log()
+        let latest_payload = replay_input(&captured)
             .iter()
             .rev()
             .find_map(|e| match &e.body {
@@ -4243,15 +4245,17 @@ mod monotonic_now_tests {
         }]);
         let mut session =
             Session::genesis(Hash::of(b"seed-idem-v1"), Hash::of(b"test-spawn-nonce"));
+        let captured = attach_recording_sink(&mut session);
 
         let first = session
             .seed_capabilities(&mut InertReducer, &authz, &mut exec)
             .await;
         assert!(first.is_empty(), "seed answered inline");
         let after_first = session.event_count();
-        // Exactly one control/capabilities dispatch after the first seed.
-        let cap_dispatches = |s: &Session| {
-            s.log()
+        // Exactly one control/capabilities dispatch after the first seed — counted on the DURABLE log
+        // (read from the sink each call).
+        let cap_dispatches = || {
+            replay_input(&captured)
                 .iter()
                 .filter(|e| {
                     matches!(&e.body, EventBody::Dispatched { family, .. }
@@ -4259,11 +4263,7 @@ mod monotonic_now_tests {
                 })
                 .count()
         };
-        assert_eq!(
-            cap_dispatches(&session),
-            1,
-            "one seed dispatch after first call"
-        );
+        assert_eq!(cap_dispatches(), 1, "one seed dispatch after first call");
 
         // Second call: no-op — empty return, log UNCHANGED, still exactly one seed dispatch.
         let second = session
@@ -4276,7 +4276,7 @@ mod monotonic_now_tests {
             "a repeat seed appends nothing to the log"
         );
         assert_eq!(
-            cap_dispatches(&session),
+            cap_dispatches(),
             1,
             "still exactly one seed dispatch — never double-seeded"
         );
@@ -4301,6 +4301,7 @@ mod monotonic_now_tests {
             Hash::of(b"query-then-seed-v1"),
             Hash::of(b"test-spawn-nonce"),
         );
+        let captured = attach_recording_sink(&mut session);
 
         // Guest issues a control/capabilities query (via an inbound-triggered fold) BEFORE any seed.
         session
@@ -4313,8 +4314,9 @@ mod monotonic_now_tests {
             )
             .await
             .expect("guest query");
-        let cap_dispatches = |s: &Session| {
-            s.log()
+        // Count capabilities dispatches on the DURABLE log (read from the sink each call).
+        let cap_dispatches = || {
+            replay_input(&captured)
                 .iter()
                 .filter(|e| {
                     matches!(&e.body, EventBody::Dispatched { family, .. }
@@ -4323,7 +4325,7 @@ mod monotonic_now_tests {
                 .count()
         };
         assert_eq!(
-            cap_dispatches(&session),
+            cap_dispatches(),
             1,
             "the guest query dispatched one capabilities frame"
         );
@@ -4333,14 +4335,13 @@ mod monotonic_now_tests {
             .seed_capabilities(&mut InertReducer, &authz, &mut exec)
             .await;
         assert_eq!(
-            cap_dispatches(&session),
+            cap_dispatches(),
             2,
             "the seed fires despite a prior guest capabilities query (guard keys on cause==genesis)"
         );
         // And the genesis-caused (seed) frame is present exactly once.
         let genesis_hash = session.genesis_ref().hash();
-        let seed_frames = session
-            .log()
+        let seed_frames = replay_input(&captured)
             .iter()
             .filter(|e| {
                 matches!(&e.body, EventBody::Dispatched { family, .. }
@@ -4786,6 +4787,7 @@ mod monotonic_now_tests {
         }]);
         let mut exec = DeferringExecutor;
         let mut s = Session::genesis(Hash::of(b"deferred-v1"), Hash::of(b"nonce"));
+        let captured = attach_recording_sink(&mut s);
         let inbound = || EventBody::Inbound {
             content_type: ContentType {
                 family: "message".into(),
@@ -4816,15 +4818,14 @@ mod monotonic_now_tests {
             "the continuation hasn't resumed — no answer yet"
         );
         assert!(
-            !s.log()
+            !replay_input(&captured)
                 .iter()
                 .any(|e| matches!(e.body, EventBody::EffectResult { .. })),
             "no EffectResult is folded for a Deferred outcome (it's a transient signal, never logged)"
         );
 
         // Find the open effect's id (the Dispatched frame), then settle it off-band with the real answer.
-        let id = s
-            .log()
+        let id = replay_input(&captured)
             .iter()
             .find_map(|e| match &e.body {
                 EventBody::Dispatched { id, .. } => Some(*id),
@@ -4864,7 +4865,7 @@ mod monotonic_now_tests {
             "a duplicate settle of an already-settled id is a no-op"
         );
         assert_eq!(
-            s.log()
+            replay_input(&captured)
                 .iter()
                 .filter(|e| matches!(e.body, EventBody::EffectResult { .. }))
                 .count(),
@@ -4948,6 +4949,7 @@ mod monotonic_now_tests {
         }]);
         let mut exec = DeferringExecutor;
         let mut s = Session::genesis(Hash::of(b"deferred-guard-v1"), Hash::of(b"nonce"));
+        let captured = attach_recording_sink(&mut s);
         s.deliver(
             EventBody::Inbound {
                 content_type: ContentType {
@@ -4963,8 +4965,7 @@ mod monotonic_now_tests {
         )
         .await
         .unwrap();
-        let id = s
-            .log()
+        let id = replay_input(&captured)
             .iter()
             .find_map(|e| match &e.body {
                 EventBody::Dispatched { id, .. } => Some(*id),
@@ -6808,6 +6809,7 @@ mod store_effect_tests {
         let authz = shell_allowlist(&["echo"]); // permits "echo", denies the stage program "rm"
         let mut exec = RecordingExecutor::new();
         let mut s = Session::genesis(Hash::of(b"pipeline-target-relax-v2"), Hash::of(b"nonce"));
+        let captured = attach_recording_sink(&mut s);
         s.deliver(
             inbound(),
             None,
@@ -6826,7 +6828,7 @@ mod store_effect_tests {
             "a pipeline with a denied STAGE program must not reach the executor, even with an allowed target"
         );
         assert!(
-            s.log()
+            replay_input(&captured)
                 .iter()
                 .any(|e| matches!(e.body, EventBody::AuthzDenied { .. })),
             "the denied-stage pipeline must be AuthzDenied (the fan-out is the sole, still-enforced gate)"
