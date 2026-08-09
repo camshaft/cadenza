@@ -64,6 +64,12 @@ def compute-type(id: Int64) = match DbState.node-of(id) with
       (let _v = type-of(valId) in type-of(bodyId))
   | Option.Some(Node.NIf(c, t, e)) =>
       (let _c = type-of(c) in (let tt = type-of(t) in (let et = type-of(e) in combine-if(_c, tt, et))))
+  | Option.Some(Node.NMatch(scrutId, litId, thenId, elseId)) =>
+      // M1-a integer match: demand all four children (scrut + literal-pattern get compared, then/else branches),
+      // then combine — scrut+lit must be non-error, then/else join (mirrors combine-if's discipline). Simplified
+      // stand-in like combine-bin/combine-if; the faithful upgrade calls infer-db match-type via get-tcol.
+      (let st = type-of(scrutId) in (let lt = type-of(litId) in
+        (let tt = type-of(thenId) in (let et = type-of(elseId) in combine-match(st, lt, tt, et)))))
   | Option.Some(_) => Ty.TyErr
   | Option.None(_) => Ty.TyErr
 
@@ -81,6 +87,14 @@ def combine-if(ct: Ty, tt: Ty, et: Ty) =
     | Ty.TyBool => (match tt with | Ty.TyErr => Ty.TyErr | _ => (match et with | Ty.TyErr => Ty.TyErr | _ => tt))
     | _ => Ty.TyErr)
 
+/// PURE integer-match combine: scrut + literal-pattern must both be non-error (they get compared), then/else
+/// join to the branch type. Any TErr child → TErr (simplified stand-in; faithful = infer-db match-type).
+def combine-match(st: Ty, lt: Ty, tt: Ty, et: Ty) =
+  (match st with | Ty.TyErr => Ty.TyErr
+    | _ => (match lt with | Ty.TyErr => Ty.TyErr
+      | _ => (match tt with | Ty.TyErr => Ty.TyErr
+        | _ => (match et with | Ty.TyErr => Ty.TyErr | _ => tt))))
+
 /// Driver: install ONE handler for the DbState family carrying the whole Db as shared state. Each per-field op
 /// reads/writes ONLY its column slice via the existing db.cdz accessors, then resumes threading the (updated)
 /// Db. The performer never destructures the Db — only these handler arms do — the finer-grained-ops-over-one-
@@ -96,10 +110,23 @@ def run-type-of(db0: Db, root: Int64) =
 
 export { run-type-of }
 
-// ---- acceptance test exercising the mutual-performer group over the per-field family (triggers the fold) ----
-import { Tok, parse-tokens } from "parse-db"
+// ---- acceptance test exercising the mutual-performer group over the per-field family ----
+import { Tok, parse-tokens, empty-tree, add-node } from "parse-db"
 import { is-int-ty } from "ty"
 import { resolve-into-db } from "db-resolve"
 @test
 def pfq-arith() = match parse-tokens([Tok.TNum(1), Tok.TOp(43), Tok.TNum(2)]) with
   | (root, tree) => (let db = resolve-into-db(db-of(tree), root) in (if is-int-ty(run-type-of(db, root)) then unit else trap("int")))
+
+@test
+def pfq-match() =
+  // NMatch arm: hand-built `match 1 (0 => 10) (_ => 20)` (parse-tokens doesn't build NMatch; hand-build the
+  // arena). Exercises the 4-child demand arm under the group fold → an int type. This was the shape that
+  // tripped the invalid-wasm emit bug (now fixed by the boundary-name dedup 6431b69a4).
+  (match add-node(empty-tree(), Node.NLit(1)) with | (scrutId, t1) =>
+    (match add-node(t1, Node.NLit(0)) with | (litId, t2) =>
+      (match add-node(t2, Node.NLit(10)) with | (thenId, t3) =>
+        (match add-node(t3, Node.NLit(20)) with | (elseId, t4) =>
+          (match add-node(t4, Node.NMatch(scrutId, litId, thenId, elseId)) with | (root, tree) =>
+            (let db = resolve-into-db(db-of(tree), root) in
+              (if is-int-ty(run-type-of(db, root)) then unit else trap("integer match is int"))))))))
