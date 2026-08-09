@@ -4026,8 +4026,23 @@ fn a_record_match_pattern_typo_field_suggests_the_nearest_field() {
         "a confident near-miss names the fault AND suggests the nearest field: {}",
         typo.message
     );
-    // A FAR-MISS field (beyond `nearest`'s cutoff) must NOT get a baseless suggestion — the plain
-    // message stands (no "did you mean").
+    // AND it carries an APPLYABLE replace fix on the field-name node — full parity with the member-access
+    // CDZ0212 did-you-mean (a heuristic rename `helpr` → `helper`), not just prose.
+    let fix = typo
+        .fix
+        .as_ref()
+        .expect("a confident record-pattern typo carries a rename fix");
+    assert_eq!(fix.kind, crate::abi::FixKind::Replace);
+    assert_eq!(
+        fix.replacement, "helper",
+        "renames the typoed field to the nearest"
+    );
+    assert!(
+        !fix.verified,
+        "the nearest-name guess is heuristic, not verified"
+    );
+    // A FAR-MISS field (beyond `nearest`'s cutoff) must NOT get a baseless suggestion NOR a fix — the
+    // plain message stands.
     let far = compile_component(&crate::codec::encode(&parse(
         "(module m (def (f (: r (Record (helper Int64)))) (match r ((record (zzz y)) y))) \
          (def (main) (f (record (helper 1)))) (export main))",
@@ -4038,6 +4053,10 @@ fn a_record_match_pattern_typo_field_suggests_the_nearest_field() {
         far.message.contains("field `zzz`") && !far.message.contains("did you mean"),
         "a far-miss field carries no baseless suggestion: {}",
         far.message
+    );
+    assert!(
+        far.fix.is_none(),
+        "a far-miss field carries no baseless rename fix"
     );
 }
 

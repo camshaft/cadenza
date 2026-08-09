@@ -9732,19 +9732,24 @@ fn pattern_constraints(
                     {
                         Some(hit) => hit,
                         None => {
-                            // A near-miss field name is a TYPO — suggest the nearest actual field, the
-                            // record-PATTERN twin of the member-access `(. r fooo)` did-you-mean (CDZ0212).
-                            // Same typo class; without this the pattern path dead-ended at "does not have"
-                            // while the access path named the fix. `suggest::nearest` returns a confident
-                            // single candidate (its cutoff) or None (a far miss keeps the plain message).
+                            // A near-miss field name is a TYPO — suggest the nearest actual field AND carry
+                            // an APPLYABLE replace fix, the record-PATTERN twin of the member-access `(. r
+                            // fooo)` did-you-mean (CDZ0212) and the variant-pattern typo fix above. Same
+                            // typo class; without this the pattern path dead-ended at "does not have".
+                            // `suggest::nearest` returns a confident single candidate (its cutoff) or None (a
+                            // far miss keeps the plain message + no fix). The fix REPLACES the field-name node
+                            // `key_occ` with the candidate, so applying it rewrites `(record (helpr y))` →
+                            // `(record (helper y))` — heuristic (the nearest name is a guess at intent).
                             let field_name = key.map(|k| k.name).unwrap_or_default();
-                            let suggestion = crate::diag::suggest::nearest(
+                            let candidate = crate::diag::suggest::nearest(
                                 &field_name,
                                 fs.keys().map(|k| k.name.as_str()),
-                            )
-                            .map(|near| format!(" — did you mean `{near}`?"))
-                            .unwrap_or_default();
-                            return Err(Reject::coded(
+                            );
+                            let suggestion = candidate
+                                .as_ref()
+                                .map(|near| format!(" — did you mean `{near}`?"))
+                                .unwrap_or_default();
+                            let reject = Reject::coded(
                                 Code::Malformed,
                                 format!(
                                     "a record pattern names field `{field_name}`, which the matched value \
@@ -9752,7 +9757,13 @@ fn pattern_constraints(
                                     ty.render_name()
                                 ),
                             )
-                            .at(pair));
+                            .at(pair);
+                            return Err(match candidate {
+                                Some(near) => {
+                                    reject.with_fix(Fix::replace_heuristic(key_occ, near))
+                                }
+                                None => reject,
+                            });
                         }
                     }
                 }
