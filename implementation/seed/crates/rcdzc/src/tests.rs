@@ -66359,6 +66359,60 @@ mod stage1 {
     }
 
     #[test]
+    fn a_def_boundary_conditional_abort_with_a_foreign_op_argument_declines() {
+        // FINDING #11-B (breaker, oamin4/oa3 — MED-HIGH 3-backend silent miscompile). A helper that aborts in
+        // a MATCH arm, called with a FOREIGN op-result argument, in a let-init: `(let ((a (unwrap (E.fetch)
+        // tag))) cont)` where `unwrap o tag = (match o (Some v -> v)(None -> Bail.out tag))`. When `E.fetch`
+        // returns None the `Bail.out` must home to the Bail handler boundary, but the fold captured it
+        // per-branch and threaded the abort value into the continuation (`a=511` then the continuation runs) —
+        // a silent wrong value (single call → 10223, breaker's chained pair → 2667423). The abort is opaque to
+        // the `if`-only hoist AND the ordinary cross-fn guard (which walks `if`/`and`, not `match` arms). The
+        // #11-B gate (`init_is_foreign_arg_match_abort_call`) flags the shape so `reduce_handle` declines to
+        // the safe floor — the def-boundary conditional abort the non-local-exit convention will later fold.
+        let src = "(do (effect E (op fetch (-> (Option Int64)))) (effect Bail (op out (-> Int64 Int64))) \
+                   (def (unwrap (: o (Option Int64)) (: tag Int64)) \
+                     (match o ((Some v) v) ((None) (Bail.out tag)))) \
+                   (def (main (: n Int64)) \
+                     (handle E n ((fetch () s (resume (if (= (% s 2) 0) (Some s) (None)) (+ s 2)))) \
+                       (+ (* 10 (handle Bail 0 ((out (v) t (+ 500 v))) \
+                                  (let ((a (unwrap (E.fetch) 11))) (* a 2)))) 3))) \
+                   (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_err(),
+            "a def-boundary conditional abort with a foreign op-result argument must decline, not miscompile to 10223"
+        );
+    }
+
+    #[test]
+    fn a_def_boundary_conditional_abort_with_pure_arguments_still_folds() {
+        // The #11-B CONTROL (breaker oamin1/oamin5): the SAME `unwrap`-aborts-in-a-match-arm helper, but called
+        // with PURE arguments — `(let ((a (unwrap (if (> n 0) (Some n) (None)) 11))) …)`. Here the scrutinee is
+        // pure, so the fold captures the conditional abort per-branch SOUNDLY and it homes to Bail correctly.
+        // The #11-B gate is narrow (it fires only when an ARGUMENT directly performs a FOREIGN op), so this
+        // pure-arg shape MUST keep folding — a guard that declined it would be an over-decline of a working
+        // program. main(-1): None → Bail.out 11 → 500+11 = 511. main(4): Some 4 → a=4 → 10*4+3 = 43.
+        let src = "(do (effect Bail (op out (-> Int64 Int64))) \
+                   (def (unwrap (: o (Option Int64)) (: tag Int64)) \
+                     (match o ((Some v) v) ((None) (Bail.out tag)))) \
+                   (def (main (: n Int64)) \
+                     (handle Bail 0 ((out (v) t (+ 500 v))) \
+                       (let ((a (unwrap (if (> n 0) (Some n) (None)) 11))) (+ (* 10 a) 3)))) \
+                   (export main))";
+        let comp = compile_component(&crate::codec::encode(&parse(src)))
+            .expect("a def-boundary conditional abort with PURE arguments must still fold (oamin1/oamin5 control)");
+        assert_eq!(
+            run_returns_with::<i64>(&comp, "main", &[wasmtime::component::Val::S64(-1)]),
+            511,
+            "None → Bail.out 11 homes to Bail (500+11)"
+        );
+        assert_eq!(
+            run_returns_with::<i64>(&comp, "main", &[wasmtime::component::Val::S64(4)]),
+            43,
+            "Some 4 → a=4 → 10*4 + 3"
+        );
+    }
+
+    #[test]
     fn a_non_tail_cross_function_conditional_abort_declines() {
         // E4 cross-fn soundness guard (a MISCOMPILE regression): a helper that CONDITIONALLY aborts, called
         // in a non-tail position — `(+ 10 (check -1))` where `check n = (if (< n 0) (Bail.bail 99) n)`. The

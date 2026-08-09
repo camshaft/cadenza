@@ -3351,6 +3351,64 @@ fn call_reaches_conditional_abortive(db: &mut Db, head: StructId, ctx: &HandlerC
     subtree_has_conditional_abortive(db, body, ctx, false)
 }
 
+/// finding #11-B (oamin4/oa3): whether `init` is a call `(helper arg…)` whose callee ABORTS INSIDE A MATCH
+/// ARM and one of whose ARGUMENTS reaches a FOREIGN perform — the def-boundary conditional-abort shape that
+/// slips past the syntactic hoist and the ordinary cross-fn guard (which walks `if`/`and` conditionals but
+/// not `match` arms). The `unwrap`-shape `(unwrap (E.fetch) tag)`: `unwrap` aborts in its `(None) => Bail.out
+/// tag` arm (a CONDITIONAL abort — the `(Some v) => v` arm returns a value that flows into the continuation),
+/// and the `E.fetch` argument performs an OUTER handler's op. Under such a call the abort must home to the
+/// Bail boundary, but the fold captures it per-branch and threads the abort value into the continuation (a
+/// silent wrong value: single call → 10223, chained pair → 2667423). GATED on the foreign argument so the
+/// PURE-argument controls (oamin1/oamin5: `(unwrap (if …) tag)`) — where the abort DOES home correctly —
+/// keep folding. Narrow by construction: it fires only for a call carrying a foreign perform into a
+/// match-aborting helper, the exact def-boundary shape the non-local-exit convention will later fold.
+fn init_is_foreign_arg_match_abort_call(db: &mut Db, init: StructId, ctx: &HandlerCtx) -> bool {
+    let Resolved::Apply { head, args } = resolved_of(db, init) else {
+        return false;
+    };
+    if is_perform(db, head, ctx).is_some() {
+        return false; // a direct perform, not a helper call
+    }
+    let Some(body) = crate::eval::lambda_body(db, head)
+        .or_else(|| crate::eval::lambda_body_of_nullary(db, head))
+    else {
+        return false;
+    };
+    if crate::eval::is_recursive(db, body) {
+        return false; // a recursive callee is specialized, not inlined — covered elsewhere
+    }
+    // The callee aborts inside a match arm (a conditional abort the `if`-only hoist/guard cannot see), AND an
+    // ARGUMENT of the call DIRECTLY performs a foreign op (the outer `E.fetch` — the sound-capture blocker).
+    // Test the ARGUMENTS narrowly (`next_state_directly_performs_foreign` = a literal `(Outer.op …)` not
+    // followed through user calls), NOT `body_reaches_foreign_perform`, which follows the callee and would
+    // OVER-report on the helper's own match/pattern heads (flagging the pure-arg controls oamin1/oamin5).
+    if !callee_aborts_in_match_arm(db, body, ctx) {
+        return false;
+    }
+    args.iter()
+        .any(|&a| next_state_directly_performs_foreign(db, a, ctx))
+}
+
+/// Whether `node` contains an abortive perform sitting inside a `match` ARM BODY — the match-arm analogue of
+/// the `if`-branch conditional abort `subtree_has_conditional_abortive` already detects. Kept SEPARATE from
+/// that walk so the existing cross-fn guard sites (which correctly fold a pure-scrutinee match-arm abort per
+/// branch) are unperturbed; only the finding #11-B let-init gate consults this.
+fn callee_aborts_in_match_arm(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> bool {
+    if let Resolved::Match { arms, .. } = resolved_of(db, node)
+        && arms
+            .iter()
+            .any(|&(_, arm_body)| subtree_has_abortive_perform(db, arm_body, ctx))
+    {
+        return true;
+    }
+    match db.ast.get(node).clone() {
+        Struct::List(children) => children
+            .iter()
+            .any(|&c| callee_aborts_in_match_arm(db, c, ctx)),
+        Struct::Atom(_) => false,
+    }
+}
+
 /// Whether `node` contains an abortive perform reached from UNDER a conditional (`if`/`match`/short-circuit
 /// connective) — `under_cond` tracks whether we have descended into a conditional position. A bare abort
 /// not under any conditional is NOT reported (it is the sound unconditional-collapse case).
@@ -4302,6 +4360,16 @@ fn body_has_unsound_abortive_perform(
                         Struct::List(pkv) if pkv.len() == 2 => !subtree_performs(db, pkv[1], ctx),
                         _ => true,
                     });
+                    // finding #11-B (oamin4/oa3): a def-boundary conditional abort with a foreign-performing
+                    // argument — `(let ((a (unwrap (E.fetch) tag))) …)` where `unwrap` aborts in a match arm and
+                    // `E.fetch` performs an outer op. The abort must home to the handler boundary, but the fold
+                    // captures it per-branch and threads the abort value into the let continuation (a silent
+                    // wrong value). It is opaque to the `if`-only hoist AND to the ordinary cross-fn guard (which
+                    // walks `if`/`and`, not `match` arms). Flag it here so `reduce_handle` declines to the safe
+                    // floor. GATED on the foreign argument so the PURE-arg controls (oamin1/oamin5) still fold.
+                    if init_is_foreign_arg_match_abort_call(db, kv[1], ctx) {
+                        return true;
+                    }
                     let init_tail = tail && preceding_pure;
                     if body_has_unsound_abortive_perform(db, kv[1], ctx, init_tail, under_cond) {
                         return true;
