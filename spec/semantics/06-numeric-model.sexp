@@ -282,6 +282,15 @@
   (input  (Rational.round (* (Rational.of 9223372036854775807 1) (Rational.of 3 1))))
   (error  CDZ0304))
 
+; The NO-OVER-REJECTION twin of the four CDZ0304 folds above: a CONSTANT rational whose integer part DOES fit
+; Int64 must still FOLD to that integer, not be swept up by the overflow-reject guard. `(Rational.truncate
+; (Rational.of 7 2))` is the compile-time-constant face (the runtime-parameter truncate cases above pin the
+; derivation's runtime shape; this pins that the CONST-FOLD path — the same path that rejects the overflowing
+; forms with CDZ0304 — computes an in-range value cleanly). 7/2 truncates toward zero to 3.
+(case "a CONST in-range rational truncate still folds to its integer part, not over-rejected as overflow"
+  (input  (do (def (main) (Rational.truncate (Rational.of 7 2))) (export main)))
+  (output (: 3 Int64)))
+
 ; --- List.len fold must preserve a TRAPPING element construction (trap-preservation) --------------------
 ; The List.len constant-arity fold computes length from the list SPINE without reading element VALUES, so it
 ; could drop a trapping element construction. It must NOT: a Rational.of with a RUNTIME zero denominator

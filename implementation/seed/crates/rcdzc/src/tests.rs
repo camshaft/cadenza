@@ -27700,38 +27700,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_constant_rational_rounding_op_whose_integer_part_overflows_int64_rejects_cdz0304() {
-        // adv-60: `Rational.truncate`/`floor`/`ceil`/`round` narrow the (arbitrary-precision) integer part
-        // to Int64. When that part exceeds Int64 — even though every SOURCE literal fits — the runtime twin's
-        // checked narrowing TRAPS, so the const fold must reject a compile-provable trap AT THE FOLD with
-        // CDZ0304 (ConstTrap) + the op's span, like `(+ Int64.max 1)`. Previously the fold emitted an out-of-
-        // width `Core::ConstInt`, tripping the backend's downstream width check as a span-less CDZ0302
-        // ("integer literal does not fit its width") — misattributing the fold-manufactured overflow to a
-        // source literal (none is out of width) and giving no node to anchor (invisible to `cdz check` too).
-        // `3 * Int64.max` overflows for all four rounding ops.
-        for op in ["truncate", "floor", "ceil", "round"] {
-            let src = format!(
-                "(module m (def (main) (Rational.{op} \
-                   (* (Rational.of 9223372036854775807 1) (Rational.of 3 1)))) (export main))"
-            );
-            assert_eq!(
-                reject_code(&src).as_deref(),
-                Some("CDZ0304"),
-                "Rational.{op} of an integer part beyond Int64 is a compile-provable trap → CDZ0304 \
-                 (ConstTrap) at the fold, not a span-less downstream CDZ0302"
-            );
-        }
-        // NO OVER-REJECTION: an in-range rational rounds/folds normally (7/2 truncates to 3, fits Int64).
-        let in_range =
-            "(module m (def (main) (Rational.truncate (Rational.of 7 2))) (export main))";
-        assert_eq!(
-            reject_code(in_range),
-            None,
-            "an in-range Rational.truncate must still fold (7/2 → 3), not be over-rejected"
-        );
-    }
-
-    #[test]
     fn a_quantity_whose_reference_scaled_magnitude_overflows_its_inner_int_declines() {
         // A quantity displays scaled to its dimension's REFERENCE unit; when that scaled magnitude exceeds
         // the inner Int width it is a compile-time overflow (CDZ0304), NOT a value to render. Operator

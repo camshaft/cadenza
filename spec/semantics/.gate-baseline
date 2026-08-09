@@ -604,6 +604,7 @@ pass	a COMPOUND generated value is reproducible from its seed (a tuple draws ide
 pass	a COMPOUND map key with a Rational leaf hashes+matches by the leaf's normalized form
 pass	a CONCRETELY-exported error sum flows back through two call layers and dispatches at the entry
 pass	a CONSECUTIVE dedup collapses runs but keeps recurrences separated by other values
+pass	a CONST in-range rational truncate still folds to its integer part, not over-rejected as overflow
 pass	a CONST narrow wrap folds with sign-extension at the target width, matching the runtime wrap
 pass	a CONST rational ceil whose integer part exceeds Int64 rejects CDZ0304 at the fold, not a span-less CDZ0302
 pass	a CONST rational floor whose integer part exceeds Int64 rejects CDZ0304 at the fold, not a span-less CDZ0302
