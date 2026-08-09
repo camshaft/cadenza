@@ -20274,3 +20274,183 @@
   (call   main (: 5 Int64)) (output (: 106 Int64))
   (call   main (: 0 Int64)) (output (: -99 Int64))
   (call   main (: -7 Int64)) (output (: -106 Int64)))
+
+
+; ── Stateful-protocol arms, draw-driven control flow, and binder/scrutinee faces (breaker riders) ──
+; A pooled batch of independent faces. Protocol/aggregate arms: an explicit feedback loop where each
+; result re-enters as the next op argument (tw2); a bitmask cycle detector that stops on the first
+; repeated residue (cy1); a begin/end protocol flag rejecting double-begin and end-without-begin
+; (pk1); a running (sum,count) average with a truncating divide incl. a negative total (rn1); a
+; put/get store whose put returns the displaced value (pg1). Draw-driven control flow: sign
+; trichotomy routing three rows three ways (tri1); an if condition computed from LET-bound draws
+; (ov1). Cross-thread and binder faces: an inner arm's resume value drawing from TWO different
+; outer effects (wc1); an inner let SHADOWING a draw binder without disturbing the original (shl1);
+; and a WHOLE nested handle as a MATCH's scrutinee, the region building an Option whose chosen arm
+; draws again — incl. the negative-operand truncated-mod parity face (ms1). All rows hand-computed;
+; all pass on wasm, rust, and rust-async.
+
+(case "tw2 an explicit FEEDBACK loop — each call feeds the previous result back as the op's first argument beside a fresh draw"
+  (input  (do
+            (effect E (op mix (-> Int64 Int64)) (op probe (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((mix (r) s (resume (* 2 (+ r s)) (+ s 2)))
+                 (probe () s (resume s s)))
+                (+ (* 10 (E.mix (E.mix (E.mix 1))))
+                   (- (E.probe) n))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 666 Int64))
+  (call   main (: 0 Int64)) (output (: 246 Int64))
+  (call   main (: -5 Int64)) (output (: -454 Int64)))
+
+(case "cy1 a CYCLE detector — a bitmask accumulator of seen residues stops the walk on the first repeat"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (def (walk (: seen Int64) (: steps Int64))
+              (if (>= steps 6)
+                  (+ (* 100 steps) seen)
+                  (let ((d (% (E.next) 4)))
+                    (if (= (& seen (<< 1 d)) 0)
+                        (walk (| seen (<< 1 d)) (+ steps 1))
+                        (+ (* 100 (+ steps 1)) seen)))))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 2))))
+                (walk 0 0)))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 305 Int64))
+  (call   main (: 1 Int64)) (output (: 310 Int64))
+  (call   main (: 2 Int64)) (output (: 305 Int64)))
+
+(case "pk1 a BEGIN/END protocol arm — a Bool flag rejects double-begin and end-without-begin, the sequence encodes the violations"
+  (input  (do
+            (effect E (op begin (-> Int64)) (op end (-> Int64)))
+            (def (main (: n Int64))
+              (handle E false
+                ((begin () open (if open (resume -1 open) (resume 1 true)))
+                 (end () open (if open (resume 7 false) (resume -1 open))))
+                (let ((r1 (E.begin)))
+                  (let ((r2 (E.begin)))
+                    (let ((r3 (E.end)))
+                      (let ((r4 (E.end)))
+                        (+ (* 1000 r1) (+ (* 100 r2) (+ (* 10 r3) r4)))))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 969 Int64)))
+
+(case "rn1 a RUNNING-AVERAGE state (sum,count) — three feeds then a truncating divide read, negative total exercises toward-zero"
+  (input  (do
+            (effect E (op feed (-> Int64 Int64)) (op avg (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (tuple 0 0)
+                ((feed (x) s (match s
+                               ((tuple tot cnt) (resume x (tuple (+ tot x) (+ cnt 1))))))
+                 (avg () s (match s
+                             ((tuple tot cnt) (resume (+ (* 10 (/ tot cnt)) cnt) s)))))
+                (do (E.feed n) (E.feed (+ n 6)) (E.feed 3)
+                    (E.avg))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 53 Int64))
+  (call   main (: 0 Int64)) (output (: 33 Int64))
+  (call   main (: -9 Int64)) (output (: -27 Int64)))
+
+(case "tri1 sign TRICHOTOMY of a draw — negative, zero-literal, and positive rows each route distinctly"
+  (input  (do
+            (effect E (op next (-> Int64)) (op probe (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1)))
+                 (probe () s (resume s s)))
+                (+ (* 10 (match (E.next)
+                           ((guard d (< d 0)) (- 100 d))
+                           (0 555)
+                           (d (+ 200 d))))
+                   (- (E.probe) n))))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: 2041 Int64))
+  (call   main (: 0 Int64)) (output (: 5551 Int64))
+  (call   main (: -6 Int64)) (output (: 1061 Int64)))
+
+(case "ov1 an if CONDITION from LET-bound draws — two draws feed a comparison that routes the branch"
+  (input  (do
+            (effect E (op next (-> Int64)) (op probe (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1)))
+                 (probe () s (resume s s)))
+                (let ((a (E.next)))
+                  (let ((b (E.next)))
+                    (+ (if (> (+ a b) 5) 100 200)
+                       (* 10 (- (E.probe) n)))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 120 Int64))
+  (call   main (: 0 Int64)) (output (: 220 Int64))
+  (call   main (: 2 Int64)) (output (: 220 Int64)))
+
+(case "pg1 a PUT/GET store — put returns the value it displaces, a counter tracks writes, get reads the survivor"
+  (input  (do
+            (effect E (op put (-> Int64 Int64)) (op get (-> Int64)) (op writes (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (tuple 0 0)
+                ((put (x) s (match s
+                              ((tuple last ctr) (resume last (tuple x (+ ctr 1))))))
+                 (get () s (match s ((tuple last ctr) (resume last s))))
+                 (writes () s (match s ((tuple last ctr) (resume ctr s)))))
+                (let ((r1 (E.put (* 10 n))))
+                  (let ((r2 (E.put 7)))
+                    (+ r1 (+ r2 (+ (* 100 (E.get)) (* 1000 (E.writes)))))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 2730 Int64))
+  (call   main (: 0 Int64)) (output (: 2700 Int64))
+  (call   main (: -2 Int64)) (output (: 2680 Int64)))
+
+(case "wc1 the inner arm's resume value draws from TWO different outer effects — both threads advance per inner dispatch"
+  (input  (do
+            (effect P (op next (-> Int64)))
+            (effect Q (op next (-> Int64)))
+            (effect I (op ask (-> Int64)))
+            (def (main (: n Int64))
+              (handle P n
+                ((next () s (resume s (+ s 1))))
+                (handle Q 100
+                  ((next () t (resume t (+ t 10))))
+                  (handle I 0
+                    ((ask () u (resume (+ (P.next) (Q.next)) u)))
+                    (+ (I.ask) (* 1000 (I.ask)))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 114103 Int64))
+  (call   main (: 0 Int64)) (output (: 111100 Int64))
+  (call   main (: -7 Int64)) (output (: 104093 Int64)))
+
+(case "shl1 an inner let SHADOWS a draw binder — the shadow scales it locally, the original stays visible after the shadow closes"
+  (input  (do
+            (effect E (op next (-> Int64)) (op probe (-> Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1)))
+                 (probe () s (resume s s)))
+                (let ((d (E.next)))
+                  (+ (let ((d (* d 100))) d)
+                     (+ d (* 10 (- (E.probe) n)))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 313 Int64))
+  (call   main (: 0 Int64)) (output (: 10 Int64))
+  (call   main (: -2 Int64)) (output (: -192 Int64)))
+
+(case "ms1 a WHOLE nested handle expression as a MATCH's SCRUTINEE — the region builds an Option, the chosen arm draws again"
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (effect B (op g (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1))))
+                (match (handle B 0
+                         ((g (u) t (resume t t)))
+                         (let ((v (+ (B.g) (E.next))))
+                           (if (= (% v 2) 0) (Some v) (None))))
+                  ((Some x) (+ (* 10 x) (E.next)))
+                  ((None) (- (E.next) 7)))))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: 45 Int64))
+  (call   main (: 3 Int64)) (output (: -3 Int64))
+  (call   main (: 0 Int64)) (output (: 1 Int64))
+  (call   main (: -5 Int64)) (output (: -11 Int64)))

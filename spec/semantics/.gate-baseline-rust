@@ -6975,3 +6975,13 @@ pass	rw1 a nested handle at a performing RECURSION's exit leaf, then a trailing 
 pass	pa1 two SIBLING nested handles as the two arguments of one 2-ary op — each region draws the outer thread in arg order
 pass	sc1 a THREE-link seed CHAIN of DISTINCT effects — each handle's whole region value seeds the next
 pass	if1 a WHOLE nested handle expression as an IF's CONDITION beside outer draws
+pass	tw2 an explicit FEEDBACK loop — each call feeds the previous result back as the op's first argument beside a fresh draw
+pass	cy1 a CYCLE detector — a bitmask accumulator of seen residues stops the walk on the first repeat
+pass	pk1 a BEGIN/END protocol arm — a Bool flag rejects double-begin and end-without-begin, the sequence encodes the violations
+pass	rn1 a RUNNING-AVERAGE state (sum,count) — three feeds then a truncating divide read, negative total exercises toward-zero
+pass	tri1 sign TRICHOTOMY of a draw — negative, zero-literal, and positive rows each route distinctly
+pass	ov1 an if CONDITION from LET-bound draws — two draws feed a comparison that routes the branch
+pass	pg1 a PUT/GET store — put returns the value it displaces, a counter tracks writes, get reads the survivor
+pass	wc1 the inner arm's resume value draws from TWO different outer effects — both threads advance per inner dispatch
+pass	shl1 an inner let SHADOWS a draw binder — the shadow scales it locally, the original stays visible after the shadow closes
+pass	ms1 a WHOLE nested handle expression as a MATCH's SCRUTINEE — the region builds an Option, the chosen arm draws again
