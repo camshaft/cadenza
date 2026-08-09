@@ -8052,7 +8052,15 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
         own_binders.extend(arm.params.iter().copied());
         own_binders.insert(arm.state);
     }
-    let captured_specs = captured_enclosing_params(db, ctx, &own_binders);
+    // Original param NAMES — a capture whose NAME collides with an original param must NOT be threaded as an
+    // extra param: the spec fn already binds that name (the original param shadows the capture inside the body),
+    // so appending it would (a) make the param list non-linear (CDZ0102 `id` bound more than once — breaker
+    // two-effect-helpers, where two helpers driving the SAME DbState group each capture a cross-scope `id`
+    // whose binder StructId differs from `type-of`'s own `id` param, dodging the by-StructId `own_binders`
+    // filter) and (b) bind the wrong value (the body's `id` reads the original, not the appended capture).
+    let orig_param_names: std::collections::HashSet<String> =
+        orig_param_specs.iter().map(|(n, _)| n.clone()).collect();
+    let captured_specs = captured_enclosing_params(db, ctx, &own_binders, &orig_param_names);
     // A capture with an undetermined type cannot annotate its extra param — decline the whole specialization
     // (mirrors the `orig_params` `Ty::Any` guard), so the shape stays a clean todo rather than emitting a
     // loosely-typed param.
@@ -9277,6 +9285,7 @@ fn captured_enclosing_params(
     db: &mut Db,
     ctx: &HandlerCtx,
     own_binders: &std::collections::HashSet<StructId>,
+    orig_param_names: &std::collections::HashSet<String>,
 ) -> Vec<(String, crate::ty::Ty)> {
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut out: Vec<(String, crate::ty::Ty)> = Vec::new();
@@ -9288,6 +9297,9 @@ fn captured_enclosing_params(
     let mut arm_bodies: Vec<((u32, u32), StructId)> =
         ctx.arms.iter().map(|(&k, a)| (k, a.body)).collect();
     arm_bodies.sort_by_key(|&(k, _)| k);
+    // Pre-seed `seen` with the original param names so a same-named enclosing capture is skipped (the original
+    // param shadows it in the spec body — appending it would duplicate the name → CDZ0102).
+    seen.extend(orig_param_names.iter().cloned());
     for (_, body) in arm_bodies {
         collect_captures(db, body, own_binders, &mut seen, &mut out);
     }
