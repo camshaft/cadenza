@@ -1625,9 +1625,14 @@ pass	a def BODY that itself binds `ret` in an inner let composes soundly with @e
 pass	a def parameter may be a record pattern that destructures by field
 pass	a def-bound perform composes with a recursive performing loop in one handle body
 pass	a def-returning-lambda partial application passes through a HOF parameter
+pass	a default-float pragma naming a non-float integer type is rejected
+pass	a default-float pragma naming a non-float rational type is rejected
+pass	a default-float pragma naming an unbound type is rejected as unbound
+pass	a default-float pragma with no type argument is a malformed directive
 pass	a default-fraction pragma fixes a type but adds no conversion — no-promotion still holds
 pass	a default-fraction pragma grounds a bare DECIMAL literal to its exact fraction
 pass	a default-fraction pragma makes a bare literal exact — 1/3 not 0
+pass	a default-fraction pragma naming a FLOAT type is rejected (the Float64 leg of the domain check)
 pass	a default-fraction pragma naming a non-rational type is rejected
 pass	a default-integer pragma fixes a type but adds no conversion — no-promotion still holds
 pass	a default-integer pragma makes a bare literal take the declared integer type

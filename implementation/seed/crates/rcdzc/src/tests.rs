@@ -31726,50 +31726,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_default_fraction_pragma_naming_a_non_rational_type_is_cdz0303() {
-        // `numeric-model.md` §A Module May Declare Its Default Fraction Literal Type: the directive names
-        // the EXACT RATIONAL type an otherwise-unconstrained numeric literal grounds to, so it MUST name a
-        // rational type. A well-formed directive whose argument reduces to a non-rational type-value
-        // (`Int64`/`Float64`) fails the rational-domain predicate → CDZ0303 (the fraction twin of the
-        // integer domain reject).
-        for bad in ["Int64", "Float64"] {
-            let d = reject_full(&format!(
-                "(module top (def (main) (do (module m (pragma default-fraction {bad}) (def (x) 5)) ((. m x) unit))) (export main))"
-            ))
-            .expect("default-fraction naming a non-rational type must reject");
-            assert_eq!(
-                d.code.as_deref(),
-                Some("CDZ0303"),
-                "default-fraction {bad} must be the rational-domain reject"
-            );
-            // The exact-fraction domain has EXACTLY ONE admitted type (`Rational`), so — unlike
-            // `default-integer` (many valid targets → no fix) — the reject carries a VERIFIED replace of
-            // the named type with `Rational`, which clears the diagnostic by construction.
-            let fix = d
-                .fix
-                .expect("default-fraction's sole valid target carries a verified Rational fix");
-            assert_eq!(fix.kind, crate::abi::FixKind::Replace);
-            assert_eq!(
-                fix.replacement, "Rational",
-                "the fix retypes the named type to the sole rational type: {bad}"
-            );
-            assert!(
-                fix.verified,
-                "Rational is the ONLY admitted rational type, so the retype is verified, not a guess"
-            );
-        }
-        // `Rational` names the exact rational type — ACCEPTED (the module registers, `x` returns 5/1 via
-        // the fraction default, the projection resolves, the whole program compiles clean).
-        assert_eq!(
-            reject_code(
-                "(module top (def (main) (do (module m (pragma default-fraction Rational) (def (x) 5)) ((. m x) unit))) (export main))"
-            ),
-            None,
-            "default-fraction Rational is accepted"
-        );
-    }
-
-    #[test]
     fn a_default_fraction_pragma_grounds_a_bare_numeric_literal_to_rational() {
         // THE EFFECT: a bare, otherwise-unconstrained numeric literal in a `(pragma default-fraction
         // Rational)` module is a `Rational` — so `(/ 1 3)` is EXACT rational division (not integer
@@ -31822,63 +31778,6 @@ mod match_engine {
             )
             .as_deref(),
             Some("CDZ0602")
-        );
-    }
-
-    #[test]
-    fn a_default_float_pragma_naming_a_non_float_type_is_cdz0303() {
-        // `numeric-model.md` §A Module May Declare Its Default Float Literal Type: the directive names the
-        // FLOATING-POINT type an otherwise-unconstrained DECIMAL literal grounds to, so it MUST name a float
-        // type. A well-formed directive whose argument reduces to a non-float type-value (`Int64`/`Rational`)
-        // fails the float-domain predicate → CDZ0303 (the float twin of the integer/rational domain reject).
-        for bad in ["Int64", "Rational"] {
-            assert_eq!(
-                reject_code(&format!(
-                    "(module top (def (main) (do (module m (pragma default-float {bad}) (def (x) 1.5)) ((. m x) unit))) (export main))"
-                ))
-                .as_deref(),
-                Some("CDZ0303"),
-                "default-float {bad} must be the float-domain reject"
-            );
-        }
-        // `Float32`/`Float64` name a floating-point type — ACCEPTED (the module registers, the projection
-        // resolves, the whole program compiles clean).
-        for good in ["Float32", "Float64"] {
-            assert_eq!(
-                reject_code(&format!(
-                    "(module top (def (main) (do (module m (pragma default-float {good}) (def (x) 1.5)) ((. m x) unit))) (export main))"
-                )),
-                None,
-                "default-float {good} is accepted"
-            );
-        }
-    }
-
-    #[test]
-    fn a_default_float_pragma_with_wrong_arity_is_cdz0602() {
-        // A recognized key with its required type argument OMITTED → the structural CDZ0602 (malformed) —
-        // the float twin of the default-integer/default-fraction arity check.
-        assert_eq!(
-            reject_code(
-                "(module top (def (main) (do (module m (pragma default-float) (def (x) 1.5)) ((. m x) unit))) (export main))"
-            )
-            .as_deref(),
-            Some("CDZ0602")
-        );
-    }
-
-    #[test]
-    fn a_default_float_pragma_naming_an_unbound_type_is_cdz0101() {
-        // A meaning-changing directive naming a NONEXISTENT type must not be silently accepted — the same
-        // CDZ0101 the annotation `(: x Nope)` gives, matching the default-integer twin (resolution
-        // distinguishes an unbound name's `Poison` from a bound-but-unmodeled type).
-        assert_eq!(
-            reject_code(
-                "(do (module m (pragma default-float Nope) (def (x) 1.5)) (def (main) 42) (export main))"
-            )
-            .as_deref(),
-            Some("CDZ0101"),
-            "an unbound type name in a default-float pragma is CDZ0101, not silently accepted"
         );
     }
 

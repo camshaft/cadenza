@@ -3044,6 +3044,68 @@
             ((. m x) unit)))
   (error  CDZ0303))
 
+(case "a default-fraction pragma naming a FLOAT type is rejected (the Float64 leg of the domain check)"
+  (doc    "The Float64 sibling of the default-fraction non-rational reject above: `(pragma default-fraction
+           Float64)` names a valid type whose domain is FLOAT, not exact-rational, so it fails the
+           rational-domain predicate → CDZ0303. Pins that the domain check rejects a float type, not only
+           an integer type — the two non-rational neighbours of the exact-rational domain.")
+  (input  (do
+            (module m
+              (pragma default-fraction Float64)
+              (def (x) 5))
+            ((. m x) unit)))
+  (error  CDZ0303))
+
+; The default-FLOAT pragma domain reject family — the float twin of the default-integer/fraction rejects
+; above. `(pragma default-float <T>)` names the type bare decimal literals ground to, so <T> MUST be a
+; float type; a non-float type is the numeric-domain CDZ0303, a missing/extra argument is the structural
+; CDZ0602, and an unbound type name is CDZ0101 (as an annotation naming it would be). Same three faces the
+; default-integer pragma pins above, on the float key.
+(case "a default-float pragma naming a non-float integer type is rejected"
+  (doc    "`(pragma default-float Int64)` names an integer type, not a float, so it fails the float-domain
+           predicate → the numeric CDZ0303 (KEY recognized, argument a valid type, only the numeric domain
+           wrong), the float twin of the default-integer non-integer reject.")
+  (input  (do
+            (module m
+              (pragma default-float Int64)
+              (def (x) 1.5))
+            ((. m x) unit)))
+  (error  CDZ0303))
+
+(case "a default-float pragma naming a non-float rational type is rejected"
+  (doc    "`(pragma default-float Rational)` names the exact-rational type, not a float, so it fails the
+           float-domain predicate → CDZ0303. The Rational leg of the default-float domain check (Int64 leg
+           above): a valid type in the wrong numeric domain.")
+  (input  (do
+            (module m
+              (pragma default-float Rational)
+              (def (x) 1.5))
+            ((. m x) unit)))
+  (error  CDZ0303))
+
+(case "a default-float pragma with no type argument is a malformed directive"
+  (doc    "`(pragma default-float)` omits the required type argument — a structural malformation of the
+           directive (wrong arity), CDZ0602, distinct from the numeric-domain CDZ0303 (right arity, wrong
+           domain) and the unknown-key CDZ0601. Pins the arity face of the default-float directive.")
+  (input  (do
+            (module m
+              (pragma default-float)
+              (def (x) 1.5))
+            ((. m x) unit)))
+  (error  CDZ0602))
+
+(case "a default-float pragma naming an unbound type is rejected as unbound"
+  (doc    "`(pragma default-float Nope)` names a type that does not exist — no prelude type, no local
+           declaration — so it is an unbound name, CDZ0101, exactly as an annotation `(: x Nope)` naming it
+           would be, not a silent drop. The unbound face of the default-float directive.")
+  (input  (do
+            (module m
+              (pragma default-float Nope)
+              (def (x) 1.5))
+            (def (main) 42)
+            (export main)))
+  (error  CDZ0101))
+
 ; --- A FILE-TOP / root-scope pragma takes effect, exactly as a nested-module one does ------
 ; numeric-model.md #A Module May Declare Its Default … Literal Type says a MODULE may declare its default
 ; via a module directive, with NO do-nesting requirement — and a file IS a module. So a `(pragma <key>
