@@ -166,6 +166,33 @@ def hv-ty-occurs-through-chain() =
   let su = subst-bind-ty(subst-empty(), 1, Ty.TyFn(List.push([], Ty.TyVar(0)), Ty.TyBool)) in
   if ty-occurs(su, 0, Ty.TyVar(1)) then unit else trap("occurs resolves TyVar 1 through the chain, finds 0 in the fn")
 
+@test
+def hv-ty-no-occurs-in-sum() =
+  // a whole-type var NEVER occurs in a TySum (decl-identity — a sum has no inner Ty). Pins the TySum arm of
+  // ty-occurs-go (was untested). So binding v := TySum(n) never trips the occurs-check.
+  if ty-occurs(subst-empty(), 0, Ty.TySum(5)) then trap("a var must NOT occur in a TySum") else unit
+
+@test
+def hv-ty-occurs-in-tyfn-result() =
+  // occurs finds a var in the RESULT of a TyFn, not just the params: `(Bool) -> TyVar0` — 0 occurs. Prior
+  // under-tyfn test only checked a param; this pins the ty-occurs-go recursion into the result arm.
+  let f = Ty.TyFn(List.push([], Ty.TyBool), Ty.TyVar(0)) in
+  if ty-occurs(subst-empty(), 0, f) then unit else trap("TyVar 0 occurs in a TyFn result")
+
+@test
+def hv-ty-occurs-in-second-param() =
+  // ty-occurs-list scans EVERY param: `(Bool, TyVar0) -> Bool` — 0 occurs in the 2nd param. Pins the list
+  // recursion past index 0 (prior tests had the var in the 1st/only param).
+  let f = Ty.TyFn(List.push(List.push([], Ty.TyBool), Ty.TyVar(0)), Ty.TyBool) in
+  if ty-occurs(subst-empty(), 0, f) then unit else trap("TyVar 0 occurs in the 2nd TyFn param")
+
+@test
+def hv-ty-occurs-fuel-terminates-on-cycle() =
+  // SAFETY: a cyclic tys binding (TyVar 0 := TyVar 0) makes ty-occurs FOLLOW 0→0→…; the fuel guard stops it and
+  // returns false rather than looping. Pins the fuel==0 arm of ty-occurs-go (occurs must always terminate).
+  let su = subst-bind-ty(subst-empty(), 9, Ty.TyVar(9)) in
+  if ty-occurs(su, 0, Ty.TyVar(9)) then trap("cyclic-binding occurs must terminate false, not loop") else unit
+
 export {
   fresh-sign,
   fresh-width,
