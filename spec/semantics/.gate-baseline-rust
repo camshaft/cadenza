@@ -536,6 +536,7 @@ pass	a @requires predicate that itself traps keeps its own trap kind
 pass	a @requires predicate that references `ret` is REJECTED CDZ0101 — only @ensures binds the result
 pass	a @requires relating TWO heap params enforces the zip precondition at runtime
 pass	a @requires whose predicate is a DISJUNCTION (or) enforces: either disjunct satisfies, only the all-false input traps
+pass	a @requires whose predicate is a NEGATION (not) enforces: the wrapped condition must be FALSE, its truth traps
 pass	a @requires-guarded def PERFORMS in its body — contract check and effect specialization compose
 pass	a @test-stacked @requires+@ensures def keeps full contract enforcement for a direct call
 pass	a @test-tier @ensures on a performing def runs and checks

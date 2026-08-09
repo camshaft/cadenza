@@ -1869,6 +1869,23 @@
   (call   main (: 150 Int64)) (output (: 150 Int64))
   (call   main (: 50 Int64))  (trap "unreachable"))
 
+(case "a @requires whose predicate is a NEGATION (not) enforces: the wrapped condition must be FALSE, its truth traps"
+  (doc    "The sibling of the disjunction pin — a precondition built from `not`, the boolean-negation prelude op.
+           `@requires(not (= x 0))` on `(f x) = x` demands x is anything but zero: the injected `(if (not (= x
+           0)) BODY (trap …))` passes when the wrapped equality is FALSE and traps when it is TRUE. Runtime arg
+           via main's param so nothing folds. main(7): `(= 7 0)` is false → `(not false)` = true → pass → 7.
+           main(-3): `(= -3 0)` is false → pass → -3. main(0): `(= 0 0)` is true → `(not true)` = false → the
+           precondition is false → trap. Pins that a negated predicate resolves `not` as the prelude op and
+           enforces its inversion at runtime — the guarded value flows exactly when the wrapped condition does
+           NOT hold, and the sole zero input traps.")
+  (input  (do
+            (@ (requires (not (= x 0))) (def (f (: x Int64)) x))
+            (def (main (: k Int64)) (f k))
+            (export main)))
+  (call   main (: 7 Int64))   (output (: 7 Int64))
+  (call   main (: -3 Int64))  (output (: -3 Int64))
+  (call   main (: 0 Int64))   (trap "unreachable"))
+
 (case "STACKED @requires: EVERY precondition is enforced — a violated OUTER @requires traps (not only the innermost)"
   (doc    "Soundness pin for stacked preconditions. A def may carry several `@requires`, which desugar to
            NESTED annotation wrappers: `(@ (requires (>= x 0)) (@ (requires (<= x 100)) (def (f x) (+ x 1))))`.
