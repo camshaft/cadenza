@@ -4465,6 +4465,29 @@ fn check(paths: &Paths, profile: &str) {
         &wasm,
     );
 
+    // cdz-session-run (the DRIVE-ONLY edge binary for the platform-conformance suite) is ALSO its own
+    // isolated workspace — it carries the kernel's wasmtime+tokio tree, deliberately kept OUT of the seed
+    // workspace so the corpus gate never pays for it (same isolation as cdz-kernel/cdz-agent-host). That
+    // leaves it OUTSIDE the `--workspace` clippy above, so gate it explicitly here the same way cdz-wasm
+    // is: fmt/build/clippy against its own manifest on the host target. `-p cdz-session-run` scopes each
+    // step to its own package (its path-dep on cdz-kernel would otherwise re-check the kernel tree).
+    let session_run = paths.seed.join("crates/cdz-session-run");
+    log.step(
+        "cdz-session-run-fmt",
+        "cargo fmt -p cdz-session-run --check",
+        &session_run,
+    );
+    log.step(
+        "cdz-session-run-build",
+        "cargo build -p cdz-session-run",
+        &session_run,
+    );
+    log.step(
+        "cdz-session-run-clippy",
+        "cargo clippy -p cdz-session-run --all-targets -- -D warnings",
+        &session_run,
+    );
+
     // The behavior gate — invoke this same xtask binary. Use `gate --check` (vs the baseline) when a
     // baseline exists, so `check` asks "did anything REGRESS?" rather than "are there any known
     // gaps?" — a green check means the library is healthy AND the compiler didn't backslide. With no

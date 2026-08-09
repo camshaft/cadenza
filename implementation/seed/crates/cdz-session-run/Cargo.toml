@@ -1,0 +1,40 @@
+# cdz-session-run — the DRIVE-ONLY edge binary for the platform-conformance suite.
+#
+# Given a Cadenza reducer already compiled to a wasm component (bytes on --reducer), a single kick-off
+# event, and a content-addressed --store to resolve the reducer's `cadenza:runtime/heap` dep, it drives
+# the reducer through the REAL cdz-kernel `Session` (genesis -> deliver kick-off -> quiesce) and prints
+# the observed end-state (per-key KV bytes, session status, processed-event count) as tab-delimited lines
+# on stdout. It does NO compilation, NO corpus parsing, and NO grading — xtask's `run_platform_case` owns
+# those (it compiles each reducer via the existing cdz-syntax|rcdzc pipeline, parses the (platform-case ..)
+# records via cdz-corpus, and grades this binary's printed lines against the case's `expect-*`/`end-*`).
+#
+# WHY A SEPARATE ISOLATED CRATE (its OWN empty `[workspace]`, like cdz-kernel/cdz-agent-host/cdz-run): the
+# kernel's wasmtime+tokio tree is deliberately kept OUT of the seed workspace so `cargo build --workspace`
+# and the compiler corpus gate never pay for it (cdz-kernel/Cargo.toml header, operator directive
+# 2026-08-01). xtask builds this binary + shells out to it ONLY for the platform gate, so the corpus gate
+# stays free of the kernel tree and xtask stays thin (its subprocess architecture preserved). I1 is
+# single-session (no cross-session messaging), so it drives `Session` directly and does NOT need
+# `cdz-agent-host`; I3 multi-session adds the AgentHost + a deterministic FIFO fixpoint here.
+[workspace]
+
+[package]
+name = "cdz-session-run"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "cdz-session-run"
+path = "src/main.rs"
+
+[dependencies]
+# The real kernel — Session/deliver/Kv/ComponentReducer/Authorizer/RecordingExecutor + ComponentStore.
+# The whole point is to drive the SAME machinery production runs, not a stand-in.
+cdz-kernel = { path = "../cdz-kernel" }
+# Typed CLI with generated --help — the same parser the rest of the workspace uses.
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+# Single-threaded runtime to drive the kernel's async `Session::deliver` (a one-shot poll; the wasm fold
+# holds a non-Send wasmtime store, so current-thread only — the same flavor cdz-kernel's own async tests
+# use). NO multi-thread/net/fs features.
+tokio = { version = "1", features = ["rt", "macros"] }
