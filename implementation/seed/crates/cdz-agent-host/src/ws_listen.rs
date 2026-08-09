@@ -67,7 +67,6 @@ impl WsListener {
                 accepted = self.listener.accept() => {
                     match accepted {
                         Ok((stream, _peer_addr)) => {
-                            let session = session.clone();
                             let inbox = inbox.clone();
                             let control_tx = control_tx.clone();
                             tokio::spawn(async move {
@@ -121,7 +120,7 @@ async fn serve_connection(
     {
         return Ok(()); // loop gone
     }
-    if !emit_ws_event(&inbox, ws_connect_inbound(session.clone(), conn_id)) {
+    if !emit_ws_event(&inbox, ws_connect_inbound(session, conn_id)) {
         // Inbox closed after we registered: deregister so we don't leak the entry, then stop.
         let _ = control_tx.send(WsControlOp::Deregister { conn_id });
         return Ok(());
@@ -153,14 +152,14 @@ async fn serve_connection(
             inbound = read.next() => {
                 match inbound {
                     Some(Ok(Message::Binary(bytes))) => {
-                        if !emit_ws_event(&inbox, ws_frame_inbound(session.clone(), conn_id, &bytes)) {
+                        if !emit_ws_event(&inbox, ws_frame_inbound(session, conn_id, &bytes)) {
                             break; // inbox gone
                         }
                     }
                     Some(Ok(Message::Text(text))) => {
                         if !emit_ws_event(
                             &inbox,
-                            ws_frame_inbound(session.clone(), conn_id, text.as_bytes()),
+                            ws_frame_inbound(session, conn_id, text.as_bytes()),
                         ) {
                             break;
                         }
@@ -197,6 +196,7 @@ mod tests {
     use crate::ws_socket::{ws_control_channel, WS_FRAME_FAMILY};
     use cdz_kernel::effect::{effect_ct, Payload};
     use cdz_kernel::event::EventBody;
+    use cdz_kernel::hash::Hash;
     use tokio_tungstenite::tungstenite::Message;
 
     /// Read the (family, payload-bytes) out of a ws transport `Inbound` body.
@@ -224,7 +224,7 @@ mod tests {
         let (inbox_tx, mut inbox_rx) = tokio::sync::mpsc::unbounded_channel();
         let (control_tx, mut control_rx) = ws_control_channel();
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
-        let session = SessionId::new("outpost-ws-e2e");
+        let session = SessionId::new(Hash::of(b"outpost-ws-e2e"));
         let serve = tokio::spawn(listener.serve(session, inbox_tx, control_tx, shutdown_rx));
 
         // A real websocket CLIENT dials the listener over loopback.

@@ -55,30 +55,38 @@ pub mod genesis_ct {
     pub const KV_CONTEXT: &[u8] = b"bootstrap/context";
 }
 
-/// A session's identity in the host registry. A short opaque string the operator/driver assigns (e.g.
-/// `"concierge"`, `"builder-42"`) — distinct from the kernel's per-effect `EffectId` and from the
-/// content `Hash` of the reducer. Owned so the registry key needs no lifetime.
+/// A session's identity in the host registry — the session's genesis [`Hash`] (operator ruling: "session IDs
+/// must be HASHES, not arbitrary strings"). The registry keys by this 32-byte `Copy` hash, NOT an owned
+/// string. A human NAME (e.g. `"concierge"`, `"builder-42"`) is a SEPARATE display-only label carried
+/// alongside the session ([`HostedSession::name`]), never the identity — an admin install supplies a name
+/// and the host mints/derives the id as the session's genesis hash.
 ///
-/// Backed by `Arc<str>` (operator cheap-clone directive, same as the kernel's `EffectRequest.target`):
-/// a `SessionId` is CLONED on every `spawn` (it's the `HashMap` key) and again by `session_ids()`
-/// (`keys().cloned()`), so an `Arc<str>` clone is an O(1) refcount bump, not a fresh heap `String`. It
-/// derefs to `&str`, so every read/compare is unchanged, and `new` takes `impl Into<Arc<str>>` so
-/// `&str`/`String` call sites are unaffected.
+/// A `Hash` is a `Copy` `[u8; 32]` (cheaply clonable — the operator's binary-everywhere / no-owned-String
+/// rule): keying + `spawn` + `session_ids()` copy 32 bytes with no allocation, and identity is uniform with
+/// every other host handle (conn-id, reply-token). The hex form is for the WIRE (admin DTO) + TRACING only,
+/// via [`SessionId::to_hex`] — never on the routing/storage path.
 //
 // The host drives sessions through the kernel's ASYNC loop (`Session::deliver`) so a long fold can
 // cooperatively yield and sessions interleave (§15b). A reducer is therefore held as a `Box<dyn
 // Reducer>` — the SINGLE reducer trait (operator "one async trait only"): a pure-Rust reducer writes
 // a native `impl Reducer` (its `fold` runs to completion with no await point), and a wasm
 // reducer uses `AsyncComponentReducer`. Both box directly as `Box<dyn Reducer>` — no wrapper.
-#[derive(Clone, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
-pub struct SessionId(pub std::sync::Arc<str>);
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
+pub struct SessionId(pub Hash);
 
 impl SessionId {
-    pub fn new(id: impl Into<std::sync::Arc<str>>) -> Self {
-        SessionId(id.into())
+    /// The session id from its genesis [`Hash`] — the host's canonical identity (a spawned child's id IS its
+    /// genesis hash; a root/admin-installed session's id is the genesis hash the host mints on install).
+    pub fn new(genesis: Hash) -> Self {
+        SessionId(genesis)
     }
-    pub fn as_str(&self) -> &str {
-        &self.0
+    /// The underlying genesis [`Hash`] (the registry key; content-addressed identity).
+    pub fn hash(&self) -> Hash {
+        self.0
+    }
+    /// The hex rendering — for the WIRE (admin DTO) + TRACING/display ONLY, never routing/storage.
+    pub fn to_hex(&self) -> String {
+        self.0.to_hex()
     }
 }
 
@@ -100,7 +108,7 @@ pub(crate) fn mint_spawn_nonce() -> Hash {
 fn child_ids(s: &HostedSession) -> Vec<SessionId> {
     s.spawned_children()
         .iter()
-        .map(|h| SessionId::new(h.to_hex()))
+        .map(|h| SessionId::new(*h))
         .collect()
 }
 
@@ -904,7 +912,7 @@ impl AgentHost {
             Some(canonical) => session.with_name_store(replay_of(&canonical.borrow())),
             None => session,
         };
-        let replaced = self.sessions.insert(id.clone(), session).is_some();
+        let replaced = self.sessions.insert(id, session).is_some();
         self.metrics.record_session_installed();
         // A spawn onto an existing id REPLACES (drops) the old session without a `remove` call — count that
         // implicit drop as a removal too, so `sessions_live` (installed − removed) stays accurate.
@@ -915,7 +923,7 @@ impl AgentHost {
         // dependence). `replaced` distinguishes a fresh install from a restart.
         tracing::info!(
             target: "cdz_agent_host::session",
-            session_id = id.as_str(),
+            session_id = id.to_hex(),
             replaced,
             "session installed"
         );
@@ -1013,7 +1021,7 @@ impl AgentHost {
             Session::derive_genesis_hash(reducer_hash, spawn_nonce, Some(parent_genesis)),
             "pre-built child's genesis hash must match its (reducer, nonce, parent) provenance"
         );
-        let child_id = SessionId::new(child_hash.to_hex());
+        let child_id = SessionId::new(child_hash);
 
         // Record the durable parent→child edge FIRST: a terminated parent refuses the append (FoldRefused),
         // and we then register NOTHING — so a terminated session can never spawn a live orphan.
@@ -1022,7 +1030,7 @@ impl AgentHost {
             return Some(Err(e));
         }
         // Edge recorded → register the child (reuses `spawn`: canonical-store replay + metrics + trace).
-        self.spawn(child_id.clone(), child);
+        self.spawn(child_id, child);
         Some(Ok(child_id))
     }
 
@@ -1080,7 +1088,7 @@ impl AgentHost {
             self.metrics.record_delivery_to_unknown_session();
             tracing::warn!(
                 target: "cdz_agent_host::session",
-                session_id = id.as_str(),
+                session_id = id.to_hex(),
                 "delivery to unknown session (routed nowhere)"
             );
             return None;
@@ -1117,7 +1125,7 @@ impl AgentHost {
             self.metrics.record_delivery_to_unknown_session();
             tracing::warn!(
                 target: "cdz_agent_host::session",
-                session_id = id.as_str(),
+                session_id = id.to_hex(),
                 "delivery to unknown session (routed nowhere)"
             );
             return None;
@@ -1181,12 +1189,12 @@ impl AgentHost {
         match outcome {
             Ok(()) => tracing::debug!(
                 target: "cdz_agent_host::session",
-                session_id = id.as_str(),
+                session_id = id.to_hex(),
                 "turn ok"
             ),
             Err(e) => tracing::warn!(
                 target: "cdz_agent_host::session",
-                session_id = id.as_str(),
+                session_id = id.to_hex(),
                 error = ?e,
                 "turn errored"
             ),
@@ -1215,7 +1223,7 @@ impl AgentHost {
                         if let Err(e) = snapshot_store.save(&bytes).await {
                             tracing::warn!(
                                 target: "cdz_agent_host::name_snapshot",
-                                session_id = id.as_str(),
+                                session_id = id.to_hex(),
                                 error = %e,
                                 "failed to snapshot the canonical name store (durability best-effort; \
                                  the in-memory store is still authoritative for this run)"
@@ -1260,7 +1268,7 @@ impl AgentHost {
             .sessions
             .iter()
             .filter(|(_, s)| &s.genesis_hash() == genesis);
-        let first = matches.next().map(|(id, _)| id.clone())?;
+        let first = matches.next().map(|(id, _)| *id)?;
         // Fold in any further matches, keeping the lexicographically-smallest SessionId as the stable winner.
         // Under the fresh-nonce uniqueness contract there is exactly one match, so this is a no-op; the branch
         // exists only to make a contract violation deterministic + loud rather than iteration-order-dependent.
@@ -1271,7 +1279,7 @@ impl AgentHost {
                  (expected unique by the fresh-spawn_nonce contract) — routing to the min SessionId"
             );
             if id < &best {
-                id.clone()
+                *id
             } else {
                 best
             }
@@ -1296,9 +1304,9 @@ impl AgentHost {
     /// nothing) for a controller with no descendants — correctly denying lifecycle control of any peer.
     pub fn descendant_set_of(&self, controller: &SessionId) -> ResourcePredicate {
         let mut out: Vec<std::sync::Arc<str>> = Vec::new();
-        // Alloc-light (#2447 review c2): key the visited set on SessionId (Eq+Hash, cheap Arc<str> clone) —
-        // no per-id String; and push the SessionId's OWN `Arc<str>` (`id.0.clone()`) rather than copying its
-        // bytes into a fresh Arc.
+        // Alloc-light: key the visited set on SessionId (a Copy genesis `Hash` — Eq+Hash, no allocation per
+        // id). The Cedar resource strings are rendered as each id's hex only when pushed onto `out` below
+        // (the predicate is matched against the effect-target hex).
         let mut visited: std::collections::HashSet<SessionId> = std::collections::HashSet::new();
         // Seed the frontier with the controller's DIRECT children (the controller itself is not its own
         // descendant — a session can't lifecycle-control itself via this authority).
@@ -1308,14 +1316,14 @@ impl AgentHost {
             .map(child_ids)
             .unwrap_or_default();
         while let Some(id) = frontier.pop() {
-            if !visited.insert(id.clone()) {
+            if !visited.insert(id) {
                 continue; // already recorded (cycle-guard / diamond)
             }
             // Descend into this child's own children (transitive), if it's still registered.
             if let Some(child) = self.sessions.get(&id) {
                 frontier.extend(child_ids(child));
             }
-            out.push(id.0.clone()); // reuse SessionId's internal Arc<str>
+            out.push(id.to_hex().into()); // Cedar resource = the id hex (descendant set is matched against effect-target hex)
         }
         ResourcePredicate::OneOf(out)
     }
@@ -1457,7 +1465,7 @@ impl AgentHost {
         let mut canonical = canonical.borrow_mut();
         // The member value is the dead session's genesis hash (= its SessionId hex parsed back to a Hash). A
         // non-hex id can't be a group member value → nothing to retract.
-        let Some(dead_hash) = Hash::from_hex(dead.as_str()) else {
+        let Some(dead_hash) = Some(dead.hash()) else {
             return;
         };
         // Collect (group, tag) pairs for the dead member's LIVE adds (an add-tag not already covered by a
@@ -1490,7 +1498,7 @@ impl AgentHost {
             );
         }
         tracing::info!(
-            dead = %dead.as_str(),
+            dead = %dead.to_hex(),
             groups = retract.len(),
             "session-directory I5: auto-evicted a terminated session from its groups (scan-on-death)"
         );
@@ -1756,7 +1764,7 @@ mod tests {
     #[tokio::test]
     async fn host_spawns_and_drives_a_session_through_a_real_executor() {
         let mut host = AgentHost::new();
-        let id = host.spawn(SessionId::new("agent-1"), now_host());
+        let id = host.spawn(SessionId::new(Hash::of(b"agent-1")), now_host());
         assert!(host.contains(&id));
         assert_eq!(host.len(), 1);
 
@@ -2060,8 +2068,8 @@ mod tests {
 
         let sink = LogStore::open(&path).expect("open log store");
         let mut host = AgentHost::new();
-        let id = SessionId::new("durable");
-        host.spawn(id.clone(), now_host().with_sink(Box::new(sink)));
+        let id = SessionId::new(Hash::of(b"durable"));
+        host.spawn(id, now_host().with_sink(Box::new(sink)));
         // Drive a turn — the session appends events (Inbound + the Now dispatch/result), each written
         // through to the sink. Assert the turn actually SUCCEEDED (Some(Ok)) — a KernelError turn would
         // still append the Inbound, so a log-length-only check could pass on a failed turn (#1988 review).
@@ -2096,28 +2104,31 @@ mod tests {
         let mut host = AgentHost::new();
         // No session registered → None (an unknown id is distinct from a loop error).
         assert!(host
-            .deliver(&SessionId::new("nope"), inbound_go(), None)
+            .deliver(&SessionId::new(Hash::of(b"nope")), inbound_go(), None)
             .await
             .is_none());
-        assert!(host.get(&SessionId::new("nope")).is_none());
+        assert!(host.get(&SessionId::new(Hash::of(b"nope"))).is_none());
     }
 
     #[test]
     fn registry_lists_and_removes_sessions() {
         let mut host = AgentHost::new();
-        host.spawn(SessionId::new("b"), now_host());
-        host.spawn(SessionId::new("a"), now_host());
-        // Listed sorted (deterministic).
-        assert_eq!(
-            host.session_ids(),
-            vec![SessionId::new("a"), SessionId::new("b")]
-        );
+        host.spawn(SessionId::new(Hash::of(b"b")), now_host());
+        host.spawn(SessionId::new(Hash::of(b"a")), now_host());
+        // Listed sorted deterministically by SessionId (= genesis-hash byte order), independent of insertion
+        // order. Build the expected vec by the SAME sort so it pins ordering without hardcoding hash bytes.
+        let mut expected = vec![
+            SessionId::new(Hash::of(b"a")),
+            SessionId::new(Hash::of(b"b")),
+        ];
+        expected.sort();
+        assert_eq!(host.session_ids(), expected);
         // Remove one → gone.
-        assert!(host.remove(&SessionId::new("a")).is_some());
-        assert!(!host.contains(&SessionId::new("a")));
+        assert!(host.remove(&SessionId::new(Hash::of(b"a"))).is_some());
+        assert!(!host.contains(&SessionId::new(Hash::of(b"a"))));
         assert_eq!(host.len(), 1);
         // Removing an absent id is None, not a panic.
-        assert!(host.remove(&SessionId::new("a")).is_none());
+        assert!(host.remove(&SessionId::new(Hash::of(b"a"))).is_none());
     }
 
     #[tokio::test]
@@ -2128,15 +2139,16 @@ mod tests {
         // metrics (the export path). The per-boundary increment logic is exercised; the values reach the
         // exporter, not a test getter.
         let mut host = AgentHost::new();
-        host.spawn(SessionId::new("a"), now_host());
-        host.spawn(SessionId::new("b"), now_host());
+        host.spawn(SessionId::new(Hash::of(b"a")), now_host());
+        host.spawn(SessionId::new(Hash::of(b"b")), now_host());
         // A delivered turn to a known session (the `now` reducer completes Ok).
-        host.deliver(&SessionId::new("a"), inbound_go(), None).await;
+        host.deliver(&SessionId::new(Hash::of(b"a")), inbound_go(), None)
+            .await;
         // A delivery to an UNKNOWN id — recorded distinctly (deliveries_to_unknown_session), not as a turn.
-        host.deliver(&SessionId::new("ghost"), inbound_go(), None)
+        host.deliver(&SessionId::new(Hash::of(b"ghost")), inbound_go(), None)
             .await;
         // Remove one.
-        host.remove(&SessionId::new("b"));
+        host.remove(&SessionId::new(Hash::of(b"b")));
 
         assert!(
             host.registry().try_take_current_metrics_line().is_some(),
@@ -2150,9 +2162,9 @@ mod tests {
         // implicit drop (record_session_removed) so the installed/removed counters stay balanced on restarts.
         // Drive it (no panic) — the increment is on the replace path in spawn(); values reach the exporter.
         let mut host = AgentHost::new();
-        let id = SessionId::new("worker");
-        host.spawn(id.clone(), now_host());
-        host.spawn(id.clone(), now_host()); // restart — replaces + records a removal
+        let id = SessionId::new(Hash::of(b"worker"));
+        host.spawn(id, now_host());
+        host.spawn(id, now_host()); // restart — replaces + records a removal
         assert_eq!(host.len(), 1, "replace, not add");
         assert!(host.registry().try_take_current_metrics_line().is_some());
     }
@@ -2164,8 +2176,8 @@ mod tests {
         // first session to a known state, re-spawn a FRESH session under the same id, and assert the state
         // was reset (old dropped) + the registry didn't grow.
         let mut host = AgentHost::new();
-        let id = SessionId::new("worker");
-        host.spawn(id.clone(), now_host());
+        let id = SessionId::new(Hash::of(b"worker"));
+        host.spawn(id, now_host());
         // Drive the first instance to completion → it recorded "ran".
         host.deliver(&id, inbound_go(), None).await;
         assert_eq!(
@@ -2175,7 +2187,7 @@ mod tests {
         assert_eq!(host.len(), 1);
 
         // Re-spawn a FRESH session under the SAME id (a restart). The old one is dropped, not kept.
-        host.spawn(id.clone(), now_host());
+        host.spawn(id, now_host());
         assert_eq!(
             host.len(),
             1,
@@ -2195,8 +2207,8 @@ mod tests {
         // bounces via registry-absence (enforced at the loop arm, a later slice) — here we pin the
         // registry-mutation half: marked terminated, then gone.
         let mut host = AgentHost::new();
-        let id = SessionId::new("victim");
-        host.spawn(id.clone(), now_host());
+        let id = SessionId::new(Hash::of(b"victim"));
+        host.spawn(id, now_host());
         assert!(host.contains(&id));
 
         let by = Hash::of(b"controller-session");
@@ -2245,8 +2257,8 @@ mod tests {
 
         let mut host = AgentHost::with_canonical_store(canonical);
         // Register a terminatable session under the victim's genesis-hash-hex id.
-        let victim_id = SessionId::new(victim_hash.to_hex());
-        host.spawn(victim_id.clone(), now_host());
+        let victim_id = SessionId::new(victim_hash);
+        host.spawn(victim_id, now_host());
 
         // Both members present before the death.
         assert_eq!(
@@ -2318,8 +2330,8 @@ mod tests {
             .unwrap();
 
         let mut host = AgentHost::with_canonical_store(canonical);
-        let victim_id = SessionId::new(victim_hash.to_hex());
-        host.spawn(victim_id.clone(), now_host());
+        let victim_id = SessionId::new(victim_hash);
+        host.spawn(victim_id, now_host());
 
         // Present in all three before the death.
         for g in [LOBBY, OPS, SOLO] {
@@ -2412,7 +2424,7 @@ mod tests {
         // Register the parent under a VANITY id (NOT its genesis-hash hex) — a top-level named supervisor is
         // exactly this case, and the id is OPAQUE host metadata. The emit path resolves the parent by
         // matching genesis_hash() (PR #2481 c1), NOT by hex-ing child.parent() into a SessionId — so this
-        // test would FAIL against the old `SessionId::new(parent_hash.to_hex())` lookup (the signal would be
+        // test would FAIL against the old `SessionId::new(parent_hash)` lookup (the signal would be
         // silently dropped), which is the regression it pins.
         let supervisor = HostedSession::genesis(
             Hash::of(b"supervisor-v1"),
@@ -2420,13 +2432,13 @@ mod tests {
             Box::new(Authorizer::deny_all()),
             CompositeExecutor::new(),
         );
-        let parent = SessionId::new("concierge"); // vanity id ≠ hex(genesis_hash)
+        let parent = SessionId::new(Hash::of(b"concierge")); // vanity id ≠ hex(genesis_hash)
         assert_ne!(
-            parent.as_str(),
+            parent.to_hex(),
             supervisor.genesis_hash().to_hex(),
             "the parent is deliberately registered under a vanity id, not its genesis-hash hex"
         );
-        host.spawn(parent.clone(), supervisor);
+        host.spawn(parent, supervisor);
 
         // Spawn a real child UNDER the parent (records the parent→child edge; the child's SessionId is its
         // provenance-dependent genesis hash, and its `parent()` points back at the supervisor).
@@ -2441,7 +2453,7 @@ mod tests {
             .await
             .expect("parent present")
             .expect("child spawned");
-        let child_hash = Hash::from_hex(child_id.as_str()).expect("child id is genesis-hash hex");
+        let child_hash = child_id.hash();
 
         // Nothing folded yet — the parent has seen no child-exited signal.
         assert!(
@@ -2495,13 +2507,13 @@ mod tests {
         let mut host = AgentHost::new();
         let s = now_host();
         let genesis = s.genesis_hash();
-        let vanity = SessionId::new("concierge");
+        let vanity = SessionId::new(Hash::of(b"concierge"));
         assert_ne!(
-            vanity.as_str(),
+            vanity.to_hex(),
             genesis.to_hex(),
             "registered under a vanity id, not its genesis-hash hex"
         );
-        host.spawn(vanity.clone(), s);
+        host.spawn(vanity, s);
         assert_eq!(
             host.session_id_by_genesis_hash(&genesis),
             Some(vanity),
@@ -2545,8 +2557,8 @@ mod tests {
             "same (reducer, nonce) ⇒ same genesis hash (the forced collision)"
         );
         let genesis = a.genesis_hash();
-        host.spawn(SessionId::new("aaa"), a);
-        host.spawn(SessionId::new("bbb"), b);
+        host.spawn(SessionId::new(Hash::of(b"aaa")), a);
+        host.spawn(SessionId::new(Hash::of(b"bbb")), b);
         // Two registered sessions share a genesis hash → the resolver trips the uniqueness debug_assert.
         let _ = host.session_id_by_genesis_hash(&genesis);
     }
@@ -2556,8 +2568,8 @@ mod tests {
         // §lifecycle I7 edge: a ROOT session (parent() == None) has no supervisor to notify — terminating it
         // is a clean no-op on the emit path (no panic, no bounce). Proven by terminating a plain root session.
         let mut host = AgentHost::new();
-        let root = SessionId::new("root");
-        host.spawn(root.clone(), now_host());
+        let root = SessionId::new(Hash::of(b"root"));
+        host.spawn(root, now_host());
         assert!(
             host.get(&root).unwrap().session().parent().is_none(),
             "a root session has no parent"
@@ -2579,8 +2591,8 @@ mod tests {
         // the child dies, the emit is a no-op — no delivery-to-unknown, no panic. Terminate the parent FIRST,
         // then the child, and confirm the child terminate still completes cleanly.
         let mut host = AgentHost::new();
-        let parent = SessionId::new("gone-parent");
-        host.spawn(parent.clone(), now_host());
+        let parent = SessionId::new(Hash::of(b"gone-parent"));
+        host.spawn(parent, now_host());
         let child_id = host
             .spawn_child(
                 &parent,
@@ -2623,8 +2635,8 @@ mod tests {
             Box::new(Authorizer::deny_all()),
             CompositeExecutor::new(),
         );
-        let parent = SessionId::new("concierge"); // vanity id (also exercises the c1 genesis-hash lookup)
-        host.spawn(parent.clone(), supervisor);
+        let parent = SessionId::new(Hash::of(b"concierge")); // vanity id (also exercises the c1 genesis-hash lookup)
+        host.spawn(parent, supervisor);
 
         let child_id = host
             .spawn_child(
@@ -2637,7 +2649,7 @@ mod tests {
             .await
             .expect("parent present")
             .expect("child spawned");
-        let child_hash = Hash::from_hex(child_id.as_str()).expect("child id is genesis-hash hex");
+        let child_hash = child_id.hash();
 
         // SUSPEND the supervisor BEFORE the child dies — the scheduler bit is set.
         assert!(host.suspend(&parent), "supervisor suspended");
@@ -2668,7 +2680,11 @@ mod tests {
         // No such id (already gone / never registered) → None, not a panic — matching remove().
         let mut host = AgentHost::new();
         let out = host
-            .terminate(&SessionId::new("ghost"), Hash::of(b"ctl"), "x".into())
+            .terminate(
+                &SessionId::new(Hash::of(b"ghost")),
+                Hash::of(b"ctl"),
+                "x".into(),
+            )
             .await;
         assert!(
             out.is_none(),
@@ -2698,8 +2714,8 @@ mod tests {
         // §lifecycle I3: AgentHost::spawn_child builds a child with parent-provenance, registers it under
         // SessionId = hex(child genesis_hash), and records the durable parent→child edge on the parent's log.
         let mut host = AgentHost::new();
-        let parent = SessionId::new("parent");
-        host.spawn(parent.clone(), now_host());
+        let parent = SessionId::new(Hash::of(b"parent"));
+        host.spawn(parent, now_host());
 
         let out = host
             .spawn_child(
@@ -2717,7 +2733,7 @@ mod tests {
         // The child is registered, and its id IS its genesis-hash hex (the operator's SessionId ruling).
         assert!(host.contains(&child_id), "child registered under its id");
         assert_eq!(
-            child_id.as_str(),
+            child_id.to_hex(),
             host.get(&child_id).unwrap().genesis_hash().to_hex(),
             "child SessionId = hex(its genesis_hash)"
         );
@@ -2726,7 +2742,7 @@ mod tests {
         assert_eq!(edges.len(), 1, "parent recorded one spawn edge");
         assert_eq!(
             edges[0].to_hex(),
-            child_id.as_str(),
+            child_id.to_hex(),
             "the edge's child_hash is the child's genesis hash (= its id)"
         );
     }
@@ -2740,8 +2756,8 @@ mod tests {
         // with the SAME nonce — the two must match byte-for-byte or the returned id is a lie. If a refactor
         // ever re-minted the nonce loop-side, this test flips.
         let mut host = AgentHost::new();
-        let parent = SessionId::new("parent");
-        host.spawn(parent.clone(), now_host());
+        let parent = SessionId::new(Hash::of(b"parent"));
+        host.spawn(parent, now_host());
         let parent_genesis = host.get(&parent).unwrap().genesis_hash();
 
         let reducer_hash = Hash::of(b"child-reducer-v1");
@@ -2766,7 +2782,7 @@ mod tests {
             other => panic!("expected Some(Ok(child_id)), got {other:?}"),
         };
         assert_eq!(
-            child_id.as_str(),
+            child_id.to_hex(),
             pre_computed.to_hex(),
             "the registered child id == derive_genesis_hash's pre-computation (executor's returned id is real)"
         );
@@ -2805,7 +2821,7 @@ mod tests {
         let mut host = AgentHost::new();
         let out = host
             .spawn_child(
-                &SessionId::new("ghost-parent"),
+                &SessionId::new(Hash::of(b"ghost-parent")),
                 Hash::of(b"child-v1"),
                 Box::new(GenesisRecordingReducer),
                 Box::new(Authorizer::deny_all()),
@@ -2825,7 +2841,7 @@ mod tests {
         // edge BEFORE registering the child, so the whole spawn is refused with NO child left registered
         // (no orphan whose parent rejected the edge).
         let mut host = AgentHost::new();
-        let parent = SessionId::new("dead-parent");
+        let parent = SessionId::new(Hash::of(b"dead-parent"));
         // Terminate the parent HostedSession BEFORE registering it (installs the Terminated tail), then
         // spawn it into the registry so spawn_child finds a registered-but-terminated parent.
         let mut parent_session = now_host();
@@ -2833,7 +2849,7 @@ mod tests {
             .terminate(Hash::of(b"ctl"), "kill".into())
             .await
             .expect("parent terminates");
-        host.spawn(parent.clone(), parent_session);
+        host.spawn(parent, parent_session);
         let before = host.len();
         let out = host
             .spawn_child(
@@ -2890,16 +2906,16 @@ mod tests {
         // and freezes it into a OneOf(hex-id set). Build root → child → grandchild + a second child, assert
         // root's descendant set = {child, child2, grandchild} (all 3, transitively), NOT just direct children.
         let mut host = AgentHost::new();
-        let root = SessionId::new("root");
-        host.spawn(root.clone(), now_host());
+        let root = SessionId::new(Hash::of(b"root"));
+        host.spawn(root, now_host());
         let child = spawn_kid(&mut host, &root, b"child-1").await;
         let child2 = spawn_kid(&mut host, &root, b"child-2").await;
         let grandchild = spawn_kid(&mut host, &child, b"grandchild-1").await;
 
         let mut want = vec![
-            child.as_str().to_string(),
-            child2.as_str().to_string(),
-            grandchild.as_str().to_string(),
+            child.to_hex().to_string(),
+            child2.to_hex().to_string(),
+            grandchild.to_hex().to_string(),
         ];
         want.sort();
         assert_eq!(
@@ -2916,7 +2932,7 @@ mod tests {
         // The intermediate child's set = just its own child (the grandchild), NOT root or its sibling.
         assert_eq!(
             oneof_set(&host.descendant_set_of(&child)),
-            vec![grandchild.as_str().to_string()],
+            vec![grandchild.to_hex().to_string()],
             "an intermediate session's descendant set is only ITS subtree"
         );
     }
@@ -2924,15 +2940,15 @@ mod tests {
     #[test]
     fn descendant_set_of_an_absent_or_childless_controller_is_empty() {
         let mut host = AgentHost::new();
-        host.spawn(SessionId::new("lonely"), now_host());
+        host.spawn(SessionId::new(Hash::of(b"lonely")), now_host());
         // A registered session with no spawns → empty; admits no target (denies all lifecycle control).
         assert_eq!(
-            oneof_set(&host.descendant_set_of(&SessionId::new("lonely"))),
+            oneof_set(&host.descendant_set_of(&SessionId::new(Hash::of(b"lonely")))),
             Vec::<String>::new()
         );
         // An absent controller → empty (no tree to walk), fail-closed.
         assert_eq!(
-            oneof_set(&host.descendant_set_of(&SessionId::new("ghost"))),
+            oneof_set(&host.descendant_set_of(&SessionId::new(Hash::of(b"ghost")))),
             Vec::<String>::new()
         );
     }
@@ -2943,8 +2959,8 @@ mod tests {
         // idempotent; a suspended session is NOT terminated (orthogonal). AgentHost by-id + HostedSession
         // direct both work; absent id = false.
         let mut host = AgentHost::new();
-        let id = SessionId::new("worker");
-        host.spawn(id.clone(), now_host());
+        let id = SessionId::new(Hash::of(b"worker"));
+        host.spawn(id, now_host());
         assert!(!host.is_suspended(&id), "starts schedulable");
 
         assert!(
@@ -2963,20 +2979,21 @@ mod tests {
         assert!(host.resume(&id), "resume is idempotent");
 
         // Absent id: suspend/resume/is_suspended all report absence, no panic.
-        assert!(!host.suspend(&SessionId::new("ghost")));
-        assert!(!host.resume(&SessionId::new("ghost")));
-        assert!(!host.is_suspended(&SessionId::new("ghost")));
+        assert!(!host.suspend(&SessionId::new(Hash::of(b"ghost"))));
+        assert!(!host.resume(&SessionId::new(Hash::of(b"ghost"))));
+        assert!(!host.is_suspended(&SessionId::new(Hash::of(b"ghost"))));
     }
 
     #[tokio::test]
     async fn two_sessions_run_independently() {
         let mut host = AgentHost::new();
-        host.spawn(SessionId::new("a"), now_host());
-        host.spawn(SessionId::new("b"), now_host());
+        host.spawn(SessionId::new(Hash::of(b"a")), now_host());
+        host.spawn(SessionId::new(Hash::of(b"b")), now_host());
         // Drive only "a".
-        host.deliver(&SessionId::new("a"), inbound_go(), None).await;
+        host.deliver(&SessionId::new(Hash::of(b"a")), inbound_go(), None)
+            .await;
         assert_eq!(
-            host.get(&SessionId::new("a"))
+            host.get(&SessionId::new(Hash::of(b"a")))
                 .unwrap()
                 .session()
                 .kv()
@@ -2985,7 +3002,7 @@ mod tests {
         );
         // "b" untouched — independent state.
         assert_eq!(
-            host.get(&SessionId::new("b"))
+            host.get(&SessionId::new(Hash::of(b"b")))
                 .unwrap()
                 .session()
                 .kv()
@@ -3000,8 +3017,8 @@ mod tests {
         // reaches the deadline (the reactive-timer path, driven by the host's scheduler tick, not an
         // executor).
         let mut host = AgentHost::new();
-        let id = SessionId::new("timed");
-        host.spawn(id.clone(), timer_host(1000));
+        let id = SessionId::new(Hash::of(b"timed"));
+        host.spawn(id, timer_host(1000));
         host.deliver(&id, inbound_go(), None).await;
 
         // Armed but not yet fired: one open obligation (the timer), not yet woken.
@@ -3024,19 +3041,19 @@ mod tests {
         // returns the total count. Two sessions with different deadlines → a tick between them fires only
         // the earlier one; a later tick fires the other. A session with no timer contributes 0 (not woken).
         let mut host = AgentHost::new();
-        host.spawn(SessionId::new("early"), timer_host(1000));
-        host.spawn(SessionId::new("late"), timer_host(5000));
-        host.spawn(SessionId::new("no-timer"), now_host()); // arms no timer
-        host.deliver(&SessionId::new("early"), inbound_go(), None)
+        host.spawn(SessionId::new(Hash::of(b"early")), timer_host(1000));
+        host.spawn(SessionId::new(Hash::of(b"late")), timer_host(5000));
+        host.spawn(SessionId::new(Hash::of(b"no-timer")), now_host()); // arms no timer
+        host.deliver(&SessionId::new(Hash::of(b"early")), inbound_go(), None)
             .await;
-        host.deliver(&SessionId::new("late"), inbound_go(), None)
+        host.deliver(&SessionId::new(Hash::of(b"late")), inbound_go(), None)
             .await;
         // no-timer session gets no inbound → no armed timer.
 
         // Tick at 1000: only "early" is due → 1 fired total.
         assert_eq!(host.fire_due_timers(1000).await, 1);
         assert_eq!(
-            host.get(&SessionId::new("early"))
+            host.get(&SessionId::new(Hash::of(b"early")))
                 .unwrap()
                 .session()
                 .kv()
@@ -3044,7 +3061,7 @@ mod tests {
             Some(&b"1"[..])
         );
         assert_eq!(
-            host.get(&SessionId::new("late"))
+            host.get(&SessionId::new(Hash::of(b"late")))
                 .unwrap()
                 .session()
                 .kv()
@@ -3056,7 +3073,7 @@ mod tests {
         // Tick at 5000: "late" now due (and "early" already fired) → 1 more fired.
         assert_eq!(host.fire_due_timers(5000).await, 1);
         assert_eq!(
-            host.get(&SessionId::new("late"))
+            host.get(&SessionId::new(Hash::of(b"late")))
                 .unwrap()
                 .session()
                 .kv()
@@ -3077,17 +3094,17 @@ mod tests {
         // Empty registry → no timer → None.
         assert_eq!(host.next_timer_deadline_across_sessions(), None);
 
-        host.spawn(SessionId::new("late"), timer_host(5000));
-        host.spawn(SessionId::new("early"), timer_host(1000));
-        host.spawn(SessionId::new("no-timer"), now_host()); // arms no timer
+        host.spawn(SessionId::new(Hash::of(b"late")), timer_host(5000));
+        host.spawn(SessionId::new(Hash::of(b"early")), timer_host(1000));
+        host.spawn(SessionId::new(Hash::of(b"no-timer")), now_host()); // arms no timer
 
         // Before any inbound, no session has armed its timer yet → still None.
         assert_eq!(host.next_timer_deadline_across_sessions(), None);
 
         // Arm both timers (the no-timer session gets no inbound, so it contributes nothing).
-        host.deliver(&SessionId::new("late"), inbound_go(), None)
+        host.deliver(&SessionId::new(Hash::of(b"late")), inbound_go(), None)
             .await;
-        host.deliver(&SessionId::new("early"), inbound_go(), None)
+        host.deliver(&SessionId::new(Hash::of(b"early")), inbound_go(), None)
             .await;
 
         // The wheel returns the MIN of the two armed deadlines (1000), not 5000 and not the no-timer None.
@@ -3139,9 +3156,9 @@ mod tests {
     async fn fork_for_query_summarizes_a_copy_without_touching_the_live_session() {
         // §4b tier-1: fork-for-query asks a COPY to summarize itself; the live session is untouched.
         let mut host = AgentHost::new();
-        let id = SessionId::new("worker");
+        let id = SessionId::new(Hash::of(b"worker"));
         host.spawn(
-            id.clone(),
+            id,
             HostedSession::genesis(
                 Hash::of(b"reporting-v1"),
                 Box::new(ReportingAgent),
@@ -3211,9 +3228,9 @@ mod tests {
         // also rides this channel until it's kernel-answered). Emit capabilities-then-summary so a
         // take-first read would return the capabilities payload; assert we get the summary.
         let mut host = AgentHost::new();
-        let id = SessionId::new("multi");
+        let id = SessionId::new(Hash::of(b"multi"));
         host.spawn(
-            id.clone(),
+            id,
             HostedSession::genesis(
                 Hash::of(b"multi-control-v1"),
                 Box::new(MultiControlAgent),
@@ -3255,9 +3272,9 @@ mod tests {
         // The `None` branch: a reducer that summarizes nowhere (emits no control/summary) yields None —
         // the honest "it didn't summarize" signal, replacing the old public/summary-absent path.
         let mut host = AgentHost::new();
-        let id = SessionId::new("silent");
+        let id = SessionId::new(Hash::of(b"silent"));
         host.spawn(
-            id.clone(),
+            id,
             HostedSession::genesis(
                 Hash::of(b"no-summary-v1"),
                 Box::new(NoSummaryAgent),
@@ -3311,9 +3328,9 @@ mod tests {
         // control/summary with a non-inline payload does NOT mask a later inline summary. The old
         // find-by-family-then-check-inline returned None here.
         let mut host = AgentHost::new();
-        let id = SessionId::new("blob-then-inline");
+        let id = SessionId::new(Hash::of(b"blob-then-inline"));
         host.spawn(
-            id.clone(),
+            id,
             HostedSession::genesis(
                 Hash::of(b"blob-then-inline-v1"),
                 Box::new(BlobThenInlineSummaryAgent),
@@ -3727,7 +3744,7 @@ mod tests {
         let value = Hash::of(b"compiler-wasm-v1");
         let mut host = AgentHost::with_canonical_store(NameStore::new())
             .with_name_snapshot_store(Box::new(MemNameStoreSnapshot::new()));
-        let id = host.spawn(SessionId::new("writer"), store_set_host(value));
+        let id = host.spawn(SessionId::new(Hash::of(b"writer")), store_set_host(value));
 
         let outcome = host.deliver(&id, inbound_go(), None).await;
         assert!(
@@ -3769,7 +3786,7 @@ mod tests {
         let value = Hash::of(b"compiler-wasm-v7");
         let mut host1 = AgentHost::with_canonical_store(NameStore::new())
             .with_name_snapshot_store(Box::new(MemNameStoreSnapshot::new()));
-        let id = host1.spawn(SessionId::new("writer"), store_set_host(value));
+        let id = host1.spawn(SessionId::new(Hash::of(b"writer")), store_set_host(value));
         host1.deliver(&id, inbound_go(), None).await;
 
         // The bytes the host durably saved == the canonical store's snapshot_bytes (the save argument).
@@ -3842,7 +3859,10 @@ mod tests {
         let mut host =
             AgentHost::new().with_name_snapshot_store(Box::new(MemNameStoreSnapshot::new()));
         assert!(host.canonical_store().is_none());
-        let id = host.spawn(SessionId::new("writer"), store_set_host(Hash::of(b"v")));
+        let id = host.spawn(
+            SessionId::new(Hash::of(b"writer")),
+            store_set_host(Hash::of(b"v")),
+        );
         let outcome = host.deliver(&id, inbound_go(), None).await;
         assert!(
             matches!(outcome, Some(Ok(()))),
@@ -3979,7 +3999,10 @@ mod tests {
         // wiring the async loop uses, hermetically (the absent path needs no wasm component).
         let target = Hash::of(b"target-not-in-any-store");
         let mut host = AgentHost::new();
-        let id = host.spawn(SessionId::new("sq"), signature_query_host(&target.to_hex()));
+        let id = host.spawn(
+            SessionId::new(Hash::of(b"sq")),
+            signature_query_host(&target.to_hex()),
+        );
         // No factory → the target resolves to None → settle the Err arm.
         let outcome = host
             .deliver_answering_signatures(&id, inbound_go(), None, None)
@@ -4260,7 +4283,7 @@ mod tests {
         // PUBLISH: spawn a publisher (born with a replay of the empty canonical), deliver "go" → it sets the
         // pointer; on deliver return the host folds its write back into canonical (merge_appends_from).
         let pub_id = host.spawn(
-            SessionId::new("publisher"),
+            SessionId::new(Hash::of(b"publisher")),
             HostedSession::genesis(
                 Hash::of(b"publisher-v1"),
                 Box::new(SharedPublisher { hash: published }),
@@ -4276,7 +4299,7 @@ mod tests {
         // CONSUME: spawn a DIFFERENT session LATER — born with a replay of the NOW-updated canonical, so it
         // already carries the publisher's pointer, no explicit export/replay bridge.
         let con_id = host.spawn(
-            SessionId::new("consumer"),
+            SessionId::new(Hash::of(b"consumer")),
             HostedSession::genesis(
                 Hash::of(b"consumer-v1"),
                 Box::new(SharedConsumer),
@@ -4311,7 +4334,7 @@ mod tests {
         // (nonexistent) name space (no cross-session leak).
         let mut host = AgentHost::new();
         let id = host.spawn(
-            SessionId::new("no-store"),
+            SessionId::new(Hash::of(b"no-store")),
             HostedSession::genesis(
                 Hash::of(b"no-store-v1"),
                 Box::new(SharedConsumer),
@@ -4339,7 +4362,7 @@ mod tests {
         );
 
         let id2 = host.spawn(
-            SessionId::new("no-store-2"),
+            SessionId::new(Hash::of(b"no-store-2")),
             HostedSession::genesis(
                 Hash::of(b"no-store-2-v1"),
                 Box::new(SharedConsumer),

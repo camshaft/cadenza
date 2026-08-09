@@ -305,7 +305,7 @@ impl crate::factory::LogSinkBuilder for DynamoLogSinkBuilder {
         Ok(Some(Box::new(DynamoLogSink::from_conf(
             &self.config,
             self.table.clone(),
-            id.as_str(),
+            id.to_hex(),
         ))))
     }
 
@@ -319,11 +319,11 @@ impl crate::factory::LogSinkBuilder for DynamoLogSinkBuilder {
         &self,
         id: &crate::host::SessionId,
     ) -> Result<Option<cdz_kernel::log_store::Recovered>, String> {
-        let sink = DynamoLogSink::from_conf(&self.config, self.table.clone(), id.as_str());
+        let sink = DynamoLogSink::from_conf(&self.config, self.table.clone(), id.to_hex());
         sink.read_recovered().await.map(Some).map_err(|e| {
             format!(
                 "could not recover Dynamo log for session {}: {e}",
-                id.as_str()
+                id.to_hex()
             )
         })
     }
@@ -370,7 +370,7 @@ mod tests {
         let builder = DynamoLogSinkBuilder::from_conf(test_cfg(), "cdz-log");
         // The builder yields a sink (Some) for any session id — the daemon attaches it as the durable log.
         let sink = builder
-            .build(&crate::host::SessionId::new("worker-2"))
+            .build(&crate::host::SessionId::new(Hash::of(b"worker-2")))
             .await
             .expect("builder succeeds");
         assert!(

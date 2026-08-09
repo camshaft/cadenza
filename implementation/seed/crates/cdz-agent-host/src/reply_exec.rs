@@ -178,7 +178,7 @@ mod tests {
         // The core I4 path: a handler echoing a valid reply-token consumes it, recovers (caller, effect-id),
         // and enqueues a ReplySettle carrying Ok(payload); the executor acks Ok(None).
         let tokens = Rc::new(ReplyTokenRegistry::new());
-        let token = tokens.mint(SessionId::new("caller-a"), EffectId(42));
+        let token = tokens.mint(SessionId::new(Hash::of(b"caller-a")), EffectId(42));
         let (settle_tx, mut settle_rx) = reply_settle_channel();
         let mut exec = ReplyExecutor::new(tokens.clone(), settle_tx);
 
@@ -199,7 +199,7 @@ mod tests {
         let settle = settle_rx.try_recv().expect("a ReplySettle was enqueued");
         assert_eq!(
             settle.caller,
-            SessionId::new("caller-a"),
+            SessionId::new(Hash::of(b"caller-a")),
             "settles the caller"
         );
         assert_eq!(
@@ -217,7 +217,7 @@ mod tests {
     #[tokio::test]
     async fn a_payloadless_reply_settles_the_caller_with_ok_none() {
         let tokens = Rc::new(ReplyTokenRegistry::new());
-        let token = tokens.mint(SessionId::new("c"), EffectId(1));
+        let token = tokens.mint(SessionId::new(Hash::of(b"c")), EffectId(1));
         let (settle_tx, mut settle_rx) = reply_settle_channel();
         let mut exec = ReplyExecutor::new(tokens, settle_tx);
         let out = exec
@@ -240,7 +240,7 @@ mod tests {
         // Unlike the I3 forward (which folds into a byte envelope + rejects a blob-ref), the settle carries a
         // Payload natively, so a blob-ref reply settles the caller with that blob ref unchanged.
         let tokens = Rc::new(ReplyTokenRegistry::new());
-        let token = tokens.mint(SessionId::new("c"), EffectId(3));
+        let token = tokens.mint(SessionId::new(Hash::of(b"c")), EffectId(3));
         let (settle_tx, mut settle_rx) = reply_settle_channel();
         let mut exec = ReplyExecutor::new(tokens, settle_tx);
         let blob = Hash::of(b"a-big-response-blob");
@@ -263,7 +263,7 @@ mod tests {
     #[tokio::test]
     async fn a_forged_or_consumed_token_is_refused_and_settles_nothing() {
         let tokens = Rc::new(ReplyTokenRegistry::new());
-        let token = tokens.mint(SessionId::new("c"), EffectId(1));
+        let token = tokens.mint(SessionId::new(Hash::of(b"c")), EffectId(1));
         let (settle_tx, mut settle_rx) = reply_settle_channel();
         let mut exec = ReplyExecutor::new(tokens.clone(), settle_tx);
 
@@ -357,7 +357,7 @@ mod tests {
         // The loop's settle receiver is gone → the reply can't be routed to a settle → RETRYABLE. (The token
         // is consumed by then, but the drain being gone means host shutdown, so a redrive is moot.)
         let tokens = Rc::new(ReplyTokenRegistry::new());
-        let token = tokens.mint(SessionId::new("c"), EffectId(1));
+        let token = tokens.mint(SessionId::new(Hash::of(b"c")), EffectId(1));
         let (settle_tx, settle_rx) = reply_settle_channel();
         drop(settle_rx);
         let mut exec = ReplyExecutor::new(tokens, settle_tx);

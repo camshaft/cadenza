@@ -396,6 +396,7 @@ async fn main() -> std::process::ExitCode {
             (session_registry.as_ref(), recovery_log_reader.as_ref())
         {
             use cdz_agent_host::SessionId;
+            use cdz_kernel::hash::Hash;
             match registry.list_all().await {
                 Ok(records) => {
                     let mut recovered_count = 0usize;
@@ -405,7 +406,18 @@ async fn main() -> std::process::ExitCode {
                         if record.status == cdz_agent_host::SessionStatus::Terminated {
                             continue;
                         }
-                        let id = SessionId::new(record.session_id.clone());
+                        // The registry stores the session id as its canonical genesis-hash hex. Parse it back
+                        // to the `Hash` id; a non-hex entry is registry corruption — log + skip that session
+                        // (fail-closed), don't abort the whole boot.
+                        let Some(id) = Hash::from_hex(&record.session_id).map(SessionId::new)
+                        else {
+                            tracing::error!(
+                                target: "cdz_agent_host::recovery",
+                                session_id = record.session_id.as_str(),
+                                "boot-recovery: registry entry's session id is not canonical genesis-hash hex — skipping it"
+                            );
+                            continue;
+                        };
                         // Read this session's persisted log back into a `Recovered`. `Ok(None)` = no durable
                         // log for it (nothing to recover — skip); `Err` = a read failure (log + skip, don't
                         // abort the whole boot for one session).

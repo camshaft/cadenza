@@ -334,8 +334,8 @@ mod tests {
     #[test]
     fn connect_inbound_carries_the_conn_id_hex_under_ws_connect() {
         let c = cid(b"conn-42");
-        let ev = ws_connect_inbound(SessionId::new("outpost"), c);
-        assert_eq!(ev.session, SessionId::new("outpost"));
+        let ev = ws_connect_inbound(SessionId::new(Hash::of(b"outpost")), c);
+        assert_eq!(ev.session, SessionId::new(Hash::of(b"outpost")));
         let (family, payload) = drain_family(&ev.body);
         assert_eq!(family, effect_ct::WS_CONNECT);
         assert_eq!(
@@ -352,7 +352,7 @@ mod tests {
     #[test]
     fn disconnect_inbound_carries_the_conn_id_hex_under_ws_disconnect() {
         let c = cid(b"conn-42");
-        let ev = ws_disconnect_inbound(SessionId::new("outpost"), c);
+        let ev = ws_disconnect_inbound(SessionId::new(Hash::of(b"outpost")), c);
         let (family, payload) = drain_family(&ev.body);
         assert_eq!(family, effect_ct::WS_DISCONNECT);
         assert_eq!(payload, c.to_hex().into_bytes());
@@ -361,7 +361,7 @@ mod tests {
     #[test]
     fn frame_inbound_length_prefixes_the_conn_id_hex_then_the_opaque_frame() {
         let c = cid(b"cid");
-        let ev = ws_frame_inbound(SessionId::new("outpost"), c, b"opaque-bytes");
+        let ev = ws_frame_inbound(SessionId::new(Hash::of(b"outpost")), c, b"opaque-bytes");
         let (family, payload) = drain_family(&ev.body);
         assert_eq!(family, WS_FRAME_FAMILY);
         // [len:u32-le][conn-id-hex][frame]
@@ -436,11 +436,14 @@ mod tests {
         let c = cid(b"c1");
         assert!(emit_ws_event(
             &tx,
-            ws_connect_inbound(SessionId::new("outpost"), c)
+            ws_connect_inbound(SessionId::new(Hash::of(b"outpost")), c)
         ));
         drop(rx);
         assert!(
-            !emit_ws_event(&tx, ws_disconnect_inbound(SessionId::new("outpost"), c)),
+            !emit_ws_event(
+                &tx,
+                ws_disconnect_inbound(SessionId::new(Hash::of(b"outpost")), c)
+            ),
             "a closed inbox (loop shutting down) reports the event was dropped"
         );
     }

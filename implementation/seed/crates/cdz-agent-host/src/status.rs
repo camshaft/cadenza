@@ -91,7 +91,7 @@ fn state_str(state: SessionState) -> &'static str {
 
 fn render(id: &SessionId, snap: &StatusSnapshot, errored: Option<String>) -> String {
     let mut out = String::from("{");
-    out.push_str(&format!("\"session_id\":{},", escape(id.as_str())));
+    out.push_str(&format!("\"session_id\":{},", escape(&id.to_hex())));
     out.push_str(&format!("\"state\":{},", escape(state_str(snap.state))));
     // A just-faulted session (tip = FoldFailed) is `errored:true` with the trap reason — the kernel's
     // structural `state` can't express this (no Errored variant), so a supervisor/concierge reads this
@@ -228,14 +228,17 @@ mod tests {
     #[tokio::test]
     async fn renders_active_session_with_published_view_as_json() {
         let mut host = AgentHost::new();
-        let id = SessionId::new("agent-1");
-        host.spawn(id.clone(), timer_host());
+        let id = SessionId::new(Hash::of(b"agent-1"));
+        host.spawn(id, timer_host());
         host.deliver(&id, inbound_go(), None).await;
 
         let json = host_session_status_json(&host, &id, Some(1000), DEFAULT_STALL_AFTER_MS)
             .expect("session exists");
         // Structural facts: an armed timer → Active; the published view is exposed.
-        assert!(json.contains("\"session_id\":\"agent-1\""), "{json}");
+        assert!(
+            json.contains(&format!("\"session_id\":\"{}\"", id.to_hex())),
+            "{json}"
+        );
         assert!(json.contains("\"state\":\"Active\""), "{json}");
         assert!(json.contains("\"armed_timers\":1"), "{json}");
         assert!(
@@ -268,9 +271,9 @@ mod tests {
         }
         let executor = cdz_kernel::executor::CompositeExecutor::new();
         let mut host = AgentHost::new();
-        let id = SessionId::new("boom");
+        let id = SessionId::new(Hash::of(b"boom"));
         host.spawn(
-            id.clone(),
+            id,
             HostedSession::genesis(
                 Hash::of(b"faulter"),
                 Box::new(Faulter),
@@ -297,7 +300,7 @@ mod tests {
         let host = AgentHost::new();
         assert!(host_session_status_json(
             &host,
-            &SessionId::new("nope"),
+            &SessionId::new(Hash::of(b"nope")),
             Some(0),
             DEFAULT_STALL_AFTER_MS
         )
@@ -338,9 +341,9 @@ mod tests {
             predicate: ResourcePredicate::Any,
         }]);
         let mut host = AgentHost::new();
-        let id = SessionId::new("q");
+        let id = SessionId::new(Hash::of(b"q"));
         host.spawn(
-            id.clone(),
+            id,
             HostedSession::genesis(
                 Hash::of(b"clock-once"),
                 Box::new(ClockOnce),

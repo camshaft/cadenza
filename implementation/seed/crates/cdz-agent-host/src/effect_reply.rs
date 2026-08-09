@@ -116,7 +116,7 @@ mod tests {
     use super::*;
 
     fn caller(s: &str) -> SessionId {
-        SessionId::new(s)
+        SessionId::new(Hash::of(s.as_bytes()))
     }
 
     #[test]

@@ -75,7 +75,9 @@ pub fn effect_request_inbound(
     family: &str,
     payload: &[u8],
 ) -> Inbound {
-    let caller_bytes = caller.as_str().as_bytes();
+    // The caller id rides the framing as its RAW 32 bytes (a SessionId IS the genesis Hash — no hex).
+    let caller_hash = caller.hash();
+    let caller_bytes = caller_hash.as_bytes();
     // The reply-token rides the framing as its RAW 32 bytes (no hex) — the handler echoes them verbatim on
     // effect/reply's Arc<[u8]> target; the I4 ReplyExecutor validates them as bytes (operator zero-hex).
     let token_bytes = reply_token.as_bytes();
@@ -186,9 +188,8 @@ impl<R: HandlerResolver> Executor for UserspaceEffectExecutor<R> {
 
         // Mint the one-shot reply-token bound to (this caller, this effect-id) + thread it into the forwarded
         // framing. Minted AFTER the structural checks so a rejected request leaves no dangling token.
-        let token = self.reply_tokens.mint(self.owner.clone(), id);
-        let inbound =
-            effect_request_inbound(handler, self.owner.clone(), id, token, family, payload);
+        let token = self.reply_tokens.mint(self.owner, id);
+        let inbound = effect_request_inbound(handler, self.owner, id, token, family, payload);
 
         match self.inbox.send(inbound) {
             // Forwarded — DEFER: the kernel leaves the caller's effect OPEN; the handler's `effect/reply`
@@ -231,11 +232,13 @@ mod tests {
         }
     }
 
+    /// Build a family→handler resolver; each handler is addressed by the canonical genesis-hash id its
+    /// label hashes to (`Hash::of(label)`), the same id the forwarded Inbound routes to.
     fn resolver(pairs: &[(&str, &str)]) -> MapResolver {
         MapResolver(
             pairs
                 .iter()
-                .map(|(f, h)| (f.to_string(), SessionId::new(*h)))
+                .map(|(f, h)| (f.to_string(), SessionId::new(Hash::of(h.as_bytes()))))
                 .collect(),
         )
     }
@@ -251,11 +254,15 @@ mod tests {
         )
     }
 
-    /// Parse the forwarded framing back out: (caller, reply-token RAW bytes, effect-id, payload).
-    fn parse_framing(bytes: &[u8]) -> (String, Vec<u8>, u64, Vec<u8>) {
+    /// Parse the forwarded framing back out: (caller, reply-token RAW bytes, effect-id, payload). The caller
+    /// id rides as its RAW 32 genesis-hash bytes (a SessionId IS the genesis Hash — no hex on this seam).
+    fn parse_framing(bytes: &[u8]) -> (SessionId, Vec<u8>, u64, Vec<u8>) {
         let clen = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
         let mut o = 4;
-        let caller = String::from_utf8(bytes[o..o + clen].to_vec()).unwrap();
+        let caller_bytes: [u8; 32] = bytes[o..o + clen]
+            .try_into()
+            .expect("the caller id is 32 raw genesis-hash bytes");
+        let caller = SessionId::new(Hash::from_bytes(caller_bytes));
         o += clen;
         let tlen =
             u32::from_le_bytes([bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]]) as usize;
@@ -286,7 +293,7 @@ mod tests {
             resolver(&[("weather", "weather-handler")]),
             tx,
             tokens.clone(),
-            SessionId::new("caller-a"),
+            SessionId::new(Hash::of(b"caller-a")),
         );
 
         let out = exec
@@ -308,13 +315,13 @@ mod tests {
             .try_recv()
             .expect("an effect-request Inbound was forwarded");
         assert_eq!(
-            fwd.session.as_str(),
-            "weather-handler",
+            fwd.session,
+            SessionId::new(Hash::of(b"weather-handler")),
             "forwarded to the resolved handler session"
         );
         assert_eq!(
-            fwd.reply_to.as_ref().map(|s| s.as_str()),
-            Some("caller-a"),
+            fwd.reply_to,
+            Some(SessionId::new(Hash::of(b"caller-a"))),
             "reply_to is the caller (bounce/return address)"
         );
         match fwd.body {
@@ -329,7 +336,11 @@ mod tests {
                 );
                 assert_eq!(content_type.version, EFFECT_REQUEST_VERSION);
                 let (caller, token_bytes, eid, req_payload) = parse_framing(&bytes);
-                assert_eq!(caller, "caller-a", "framing carries the caller id");
+                assert_eq!(
+                    caller,
+                    SessionId::new(Hash::of(b"caller-a")),
+                    "framing carries the caller id"
+                );
                 assert_eq!(eid, 42, "framing carries the open effect id");
                 assert_eq!(
                     req_payload, b"forecast?",
@@ -340,7 +351,7 @@ mod tests {
                 let target = tokens
                     .validate_and_consume(&token_bytes)
                     .expect("the framed reply-token validates");
-                assert_eq!(target.caller, SessionId::new("caller-a"));
+                assert_eq!(target.caller, SessionId::new(Hash::of(b"caller-a")));
                 assert_eq!(target.effect_id, EffectId(42));
             }
             other => panic!("expected an Inbound with inline framing, got {other:?}"),
@@ -356,7 +367,7 @@ mod tests {
             resolver(&[("ping", "ping-handler")]),
             tx,
             tokens,
-            SessionId::new("c"),
+            SessionId::new(Hash::of(b"c")),
         );
         let out = exec
             .perform(EffectId(1), &ue_req("ping", None), Hash::of(b"k"))
@@ -381,8 +392,12 @@ mod tests {
         // crucially mints no dangling token.
         let (tx, mut rx) = mpsc::unbounded_channel();
         let tokens = Rc::new(ReplyTokenRegistry::new());
-        let mut exec =
-            UserspaceEffectExecutor::new(resolver(&[]), tx, tokens.clone(), SessionId::new("c"));
+        let mut exec = UserspaceEffectExecutor::new(
+            resolver(&[]),
+            tx,
+            tokens.clone(),
+            SessionId::new(Hash::of(b"c")),
+        );
         let out = exec
             .perform(EffectId(1), &ue_req("weather", Some(b"x")), Hash::of(b"k"))
             .await;
@@ -400,7 +415,8 @@ mod tests {
         // family, so it is refused PERMANENT (never claimed away from the real http executor).
         let (tx, _rx) = mpsc::unbounded_channel();
         let tokens = Rc::new(ReplyTokenRegistry::new());
-        let mut exec = UserspaceEffectExecutor::new(resolver(&[]), tx, tokens, SessionId::new("c"));
+        let mut exec =
+            UserspaceEffectExecutor::new(resolver(&[]), tx, tokens, SessionId::new(Hash::of(b"c")));
         let out = exec
             .perform(EffectId(1), &ue_req(effect_ct::HTTP, None), Hash::of(b"k"))
             .await;
@@ -420,7 +436,7 @@ mod tests {
             resolver(&[("weather", "h")]),
             tx,
             tokens.clone(),
-            SessionId::new("c"),
+            SessionId::new(Hash::of(b"c")),
         );
         let req = EffectRequest::new_with_family(
             "weather",
@@ -451,7 +467,7 @@ mod tests {
             resolver(&[("weather", "h")]),
             tx,
             tokens.clone(),
-            SessionId::new("c"),
+            SessionId::new(Hash::of(b"c")),
         );
         let out = exec
             .perform(EffectId(1), &ue_req("weather", Some(b"x")), Hash::of(b"k"))
@@ -475,7 +491,7 @@ mod tests {
             resolver(&[("weather", "h")]),
             tx,
             tokens,
-            SessionId::new("c"),
+            SessionId::new(Hash::of(b"c")),
         );
         assert!(
             exec.handles_family("weather"),
@@ -513,14 +529,14 @@ mod tests {
         let (inbox_tx, mut inbox_rx) = mpsc::unbounded_channel();
         let (settle_tx, mut settle_rx) = reply_settle_channel();
 
-        let caller = SessionId::new("caller-session");
+        let caller = SessionId::new(Hash::of(b"caller-session"));
 
         // I3: the caller's delegating executor, resolving `weather` -> the handler session.
         let mut i3 = UserspaceEffectExecutor::new(
             resolver(&[("weather", "weather-handler")]),
             inbox_tx,
             reply_tokens.clone(),
-            caller.clone(),
+            caller,
         );
 
         // 1. CALLER performs `weather` (effect id 99). It forwards + DEFERS (does NOT answer synchronously).
@@ -542,8 +558,8 @@ mod tests {
             .try_recv()
             .expect("an effect-request Inbound was forwarded");
         assert_eq!(
-            fwd.session.as_str(),
-            "weather-handler",
+            fwd.session,
+            SessionId::new(Hash::of(b"weather-handler")),
             "forwarded to the resolved handler"
         );
         let (fwd_caller, token_bytes, fwd_eid, req_payload) = match fwd.body {
@@ -556,7 +572,7 @@ mod tests {
             }
             other => panic!("expected an effect-request Inbound, got {other:?}"),
         };
-        assert_eq!(fwd_caller, "caller-session");
+        assert_eq!(fwd_caller, caller);
         assert_eq!(
             fwd_eid, 99,
             "the framing carries the caller's open effect id"
@@ -623,7 +639,7 @@ mod tests {
             resolver(&[("weather", "h")]),
             inbox_tx,
             reply_tokens.clone(),
-            SessionId::new("c"),
+            SessionId::new(Hash::of(b"c")),
         );
         i3.perform(EffectId(5), &ue_req("weather", None), Hash::of(b"k"))
             .await;

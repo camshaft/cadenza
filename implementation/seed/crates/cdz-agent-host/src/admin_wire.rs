@@ -2,13 +2,12 @@
 //! frame between an admin client and the running daemon.
 //!
 //! The domain types ([`AdminCommand`]/[`AdminResponse`]/[`InstallSpec`] in [`crate::admin`]) are kept
-//! serde-free on purpose: they hold a [`SessionId`] (an `Arc<str>`, which needs serde's `rc` feature to
-//! derive) and a [`Hash`](struct@Hash) (which is not `Serialize`). Rather than push serde requirements onto
-//! the domain types (and onto the kernel's `Hash`), the wire layer mirrors them with small serde-native
-//! DTOs — ids as
-//! plain `String`, the reducer hash as its canonical hex — and converts. That decoupling makes the WIRE
-//! CONTRACT explicit and versionable (it's what an external admin client encodes against), and keeps the
-//! domain types transport-agnostic.
+//! serde-free on purpose: they hold a [`SessionId`] (a genesis [`Hash`](struct@Hash), which is not
+//! `Serialize`) and a reducer [`Hash`](struct@Hash) (likewise). Rather than push serde requirements onto the
+//! domain types (and onto the kernel's `Hash`), the wire layer mirrors them with small serde-native DTOs —
+//! ids as their canonical hex `String`, the reducer hash as its canonical hex — and converts. That decoupling
+//! makes the WIRE CONTRACT explicit and versionable (it's what an external admin client encodes against), and
+//! keeps the domain types transport-agnostic.
 //!
 //! The frame codec is length-prefixed JSON: a 4-byte big-endian `u32` length followed by that many bytes
 //! of the JSON body. That framing is what a stream transport (the Unix-domain-socket listener, the next
@@ -88,10 +87,21 @@ pub const MAX_FRAME_LEN: usize = 1024 * 1024;
 
 // ── domain ⇄ wire conversions ────────────────────────────────────────────────────────────────────────
 
+/// Parse a wire session-id HEX back to a [`SessionId`] (the genesis [`Hash`]). A non-canonical-hex id is a
+/// [`WireError`] — a malformed admin frame is rejected, never silently coerced. The hex↔Hash conversion lives
+/// ONLY here at the wire edge; the domain [`SessionId`] is the raw `Hash`.
+fn session_id_from_hex(id: &str) -> Result<SessionId, WireError> {
+    Hash::from_hex(id).map(SessionId::new).ok_or_else(|| {
+        WireError(format!(
+            "session id is not canonical hex (64 lowercase): {id:?}"
+        ))
+    })
+}
+
 impl From<&InstallSpec> for InstallSpecWire {
     fn from(spec: &InstallSpec) -> Self {
         InstallSpecWire {
-            id: spec.id.as_str().to_string(),
+            id: spec.id.to_hex(),
             reducer_hash: spec.reducer_hash.to_hex(),
             goal: spec.goal.clone(),
         }
@@ -109,7 +119,8 @@ impl InstallSpecWire {
             ))
         })?;
         Ok(InstallSpec {
-            id: SessionId::new(self.id.as_str()),
+            // The wire `id` is the session-id HEX (a SessionId is the genesis Hash; hex only at this edge).
+            id: session_id_from_hex(&self.id)?,
             reducer_hash,
             goal: self.goal.clone(),
         })
@@ -121,12 +132,10 @@ impl From<&AdminCommand> for AdminCommandWire {
         match cmd {
             AdminCommand::InstallSession(spec) => AdminCommandWire::InstallSession(spec.into()),
             AdminCommand::ListSessions => AdminCommandWire::ListSessions,
-            AdminCommand::SessionStatus { id } => AdminCommandWire::SessionStatus {
-                id: id.as_str().to_string(),
-            },
-            AdminCommand::StopSession { id } => AdminCommandWire::StopSession {
-                id: id.as_str().to_string(),
-            },
+            AdminCommand::SessionStatus { id } => {
+                AdminCommandWire::SessionStatus { id: id.to_hex() }
+            }
+            AdminCommand::StopSession { id } => AdminCommandWire::StopSession { id: id.to_hex() },
         }
     }
 }
@@ -140,10 +149,10 @@ impl AdminCommandWire {
             }
             AdminCommandWire::ListSessions => AdminCommand::ListSessions,
             AdminCommandWire::SessionStatus { id } => AdminCommand::SessionStatus {
-                id: SessionId::new(id.as_str()),
+                id: session_id_from_hex(id)?,
             },
             AdminCommandWire::StopSession { id } => AdminCommand::StopSession {
-                id: SessionId::new(id.as_str()),
+                id: session_id_from_hex(id)?,
             },
         })
     }
@@ -156,13 +165,11 @@ impl AdminResponseWire {
     /// producing a malformed frame.
     pub fn from_domain(resp: &AdminResponse) -> Self {
         match resp {
-            // Domain ids are SessionId (Arc<str>); the wire carries them as plain String — the
-            // String↔SessionId conversion lives here at the transport boundary, not in the domain type.
-            AdminResponse::Installed { id } => AdminResponseWire::Installed {
-                id: id.as_str().to_string(),
-            },
+            // Domain ids are SessionId (a genesis Hash); the wire carries them as canonical hex String — the
+            // hex↔SessionId conversion lives here at the transport boundary, not in the domain type.
+            AdminResponse::Installed { id } => AdminResponseWire::Installed { id: id.to_hex() },
             AdminResponse::Sessions { ids } => AdminResponseWire::Sessions {
-                ids: ids.iter().map(|s| s.as_str().to_string()).collect(),
+                ids: ids.iter().map(|s| s.to_hex()).collect(),
             },
             AdminResponse::Status { json } => match serde_json::from_str(json) {
                 Ok(status) => AdminResponseWire::Status { status },
@@ -170,9 +177,7 @@ impl AdminResponseWire {
                     message: format!("status body was not valid JSON: {e}"),
                 },
             },
-            AdminResponse::Stopped { id } => AdminResponseWire::Stopped {
-                id: id.as_str().to_string(),
-            },
+            AdminResponse::Stopped { id } => AdminResponseWire::Stopped { id: id.to_hex() },
             AdminResponse::Error { message } => AdminResponseWire::Error {
                 message: message.clone(),
             },
@@ -234,7 +239,7 @@ mod tests {
 
     fn spec(id: &str) -> InstallSpec {
         InstallSpec {
-            id: SessionId::new(id),
+            id: SessionId::new(Hash::of(id.as_bytes())),
             reducer_hash: Hash::of(id.as_bytes()),
             goal: Some("do the thing".into()),
         }
@@ -247,10 +252,10 @@ mod tests {
             AdminCommand::InstallSession(spec("worker")),
             AdminCommand::ListSessions,
             AdminCommand::SessionStatus {
-                id: SessionId::new("s1"),
+                id: SessionId::new(Hash::of(b"s1")),
             },
             AdminCommand::StopSession {
-                id: SessionId::new("victim"),
+                id: SessionId::new(Hash::of(b"victim")),
             },
         ] {
             let wire = AdminCommandWire::from(&cmd);
@@ -267,7 +272,7 @@ mod tests {
         let wire = AdminCommandWire::from(&AdminCommand::InstallSession(spec("w")));
         let json: serde_json::Value = serde_json::to_value(&wire).unwrap();
         assert_eq!(json["cmd"], "install-session");
-        assert_eq!(json["id"], "w");
+        assert_eq!(json["id"], SessionId::new(Hash::of(b"w")).to_hex());
         assert_eq!(json["reducer_hash"], Hash::of(b"w").to_hex());
         assert_eq!(json["goal"], "do the thing");
     }
@@ -287,21 +292,21 @@ mod tests {
         // external admin client authors against and the round-trip would still pass). Pin the literal `cmd`
         // string (+ the id field) so any wire-tag drift is a loud failure.
         let status = serde_json::to_value(AdminCommandWire::from(&AdminCommand::SessionStatus {
-            id: SessionId::new("s1"),
+            id: SessionId::new(Hash::of(b"s1")),
         }))
         .unwrap();
         assert_eq!(
             status,
-            serde_json::json!({"cmd": "session-status", "id": "s1"})
+            serde_json::json!({"cmd": "session-status", "id": SessionId::new(Hash::of(b"s1")).to_hex()})
         );
 
         let stop = serde_json::to_value(AdminCommandWire::from(&AdminCommand::StopSession {
-            id: SessionId::new("victim"),
+            id: SessionId::new(Hash::of(b"victim")),
         }))
         .unwrap();
         assert_eq!(
             stop,
-            serde_json::json!({"cmd": "stop-session", "id": "victim"})
+            serde_json::json!({"cmd": "stop-session", "id": SessionId::new(Hash::of(b"victim")).to_hex()})
         );
     }
 
@@ -311,32 +316,38 @@ mod tests {
         // an external admin client PARSES; a rename would silently break clients with the round-trip green.
         let installed =
             serde_json::to_value(AdminResponseWire::from_domain(&AdminResponse::Installed {
-                id: SessionId::new("w"),
+                id: SessionId::new(Hash::of(b"w")),
             }))
             .unwrap();
         assert_eq!(
             installed,
-            serde_json::json!({"result": "installed", "id": "w"})
+            serde_json::json!({"result": "installed", "id": SessionId::new(Hash::of(b"w")).to_hex()})
         );
 
         let sessions =
             serde_json::to_value(AdminResponseWire::from_domain(&AdminResponse::Sessions {
-                ids: vec![SessionId::new("a"), SessionId::new("b")],
+                ids: vec![
+                    SessionId::new(Hash::of(b"a")),
+                    SessionId::new(Hash::of(b"b")),
+                ],
             }))
             .unwrap();
         assert_eq!(
             sessions,
-            serde_json::json!({"result": "sessions", "ids": ["a", "b"]})
+            serde_json::json!({"result": "sessions", "ids": [
+                SessionId::new(Hash::of(b"a")).to_hex(),
+                SessionId::new(Hash::of(b"b")).to_hex(),
+            ]})
         );
 
         let stopped =
             serde_json::to_value(AdminResponseWire::from_domain(&AdminResponse::Stopped {
-                id: SessionId::new("gone"),
+                id: SessionId::new(Hash::of(b"gone")),
             }))
             .unwrap();
         assert_eq!(
             stopped,
-            serde_json::json!({"result": "stopped", "id": "gone"})
+            serde_json::json!({"result": "stopped", "id": SessionId::new(Hash::of(b"gone")).to_hex()})
         );
 
         let error = serde_json::to_value(AdminResponseWire::from_domain(&AdminResponse::Error {
@@ -352,7 +363,7 @@ mod tests {
     #[test]
     fn a_goalless_install_omits_the_goal_field() {
         let wire = AdminCommandWire::from(&AdminCommand::InstallSession(InstallSpec {
-            id: SessionId::new("w"),
+            id: SessionId::new(Hash::of(b"w")),
             reducer_hash: Hash::of(b"w"),
             goal: None,
         }));
@@ -438,7 +449,7 @@ mod tests {
         // lets the caller decode the second from the remainder.
         let f1 = encode_frame(&AdminCommandWire::from(&AdminCommand::ListSessions)).unwrap();
         let f2 = encode_frame(&AdminCommandWire::from(&AdminCommand::StopSession {
-            id: SessionId::new("x"),
+            id: SessionId::new(Hash::of(b"x")),
         }))
         .unwrap();
         let mut buf = f1.clone();
@@ -450,7 +461,12 @@ mod tests {
 
         let (second, _): (AdminCommandWire, usize) =
             decode_frame(&buf[consumed..]).unwrap().unwrap();
-        assert_eq!(second, AdminCommandWire::StopSession { id: "x".into() });
+        assert_eq!(
+            second,
+            AdminCommandWire::StopSession {
+                id: SessionId::new(Hash::of(b"x")).to_hex()
+            }
+        );
     }
 
     #[test]

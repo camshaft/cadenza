@@ -107,8 +107,8 @@ async fn bounce_delivery_failure(
     // none is guest-controlled payload, so no guest-string-logging concern (§4 keeps the echoed payload out of
     // the log entirely).
     tracing::warn!(
-        sender = %sender.as_str(),
-        failed_target = %failed_target.as_str(),
+        sender = %sender.to_hex(),
+        failed_target = %failed_target.to_hex(),
         reason = %reason,
         "delivery-failure: bouncing an undeliverable cross-session Emit back to its sender"
     );
@@ -158,14 +158,11 @@ async fn apply_lifecycle_ops(
     while let Ok(op) = lifecycle_rx.try_recv() {
         match op {
             LifecycleOp::Terminate { target, by, reason } => {
-                // `by` = the controller's genesis hash (recorded as who terminated). Resolve it by the
-                // controller session's genesis_hash() (content lookup — works for a vanity id), falling back
-                // to from_hex for a genesis-hex id no longer registered (§tick-#784: don't assume hex==id).
-                let by_hash = host
-                    .get(&by)
-                    .map(|s| s.genesis_hash())
-                    .or_else(|| Hash::from_hex(by.as_str()))
-                    .unwrap_or_else(|| Hash::of(by.as_str().as_bytes()));
+                // `by` = the controller's genesis hash (recorded as who terminated). A SessionId IS the
+                // genesis Hash now (operator ruling), so it's the controller's genesis directly — no
+                // registry lookup / hex parse / Hash::of fallback needed (the pre-Rule-A dance for an opaque
+                // string id that might be a vanity name or a hex hash).
+                let by_hash = by.hash();
                 match host.terminate(&target, by_hash, reason).await {
                     // Terminated, or a benign no-op (already-terminated FoldRefused / absent None) — nothing
                     // more to do; the durable marker (if fresh) + registry removal are done inside terminate.
@@ -177,11 +174,11 @@ async fn apply_lifecycle_ops(
                         // log's Terminated tail is the source of truth; the registry is an index over it).
                         #[cfg(feature = "live-aws-storage")]
                         if let Some(registry) = session_registry {
-                            if let Err(e) = registry.mark_terminated(target.as_str(), now_ms).await
+                            if let Err(e) = registry.mark_terminated(&target.to_hex(), now_ms).await
                             {
                                 tracing::warn!(
                                     target: "cdz_agent_host::session_registry",
-                                    session_id = target.as_str(),
+                                    session_id = target.to_hex(),
                                     "session-registry mark_terminated failed (best-effort; terminate still applied): {e}"
                                 );
                             }
@@ -216,25 +213,16 @@ async fn apply_lifecycle_ops(
                     // materialize a child. Loud no-op, not a silent drop; the parent already has the id but
                     // no session backs it. A deployed daemon always has a factory.
                     tracing::warn!(
-                        parent = %parent.as_str(), child_id = %child_id.as_str(),
+                        parent = %parent.to_hex(), child_id = %child_id.to_hex(),
                         "lifecycle/spawn: no session factory configured — cannot materialize the child reducer (child NOT registered)"
                     );
                     continue;
                 };
-                // The parent genesis hash = the parent SESSION's genesis_hash() (content lookup via the
-                // registry — works for a VANITY-id parent, e.g. a "concierge" supervisor). This MUST match
-                // the child_id the executor pre-computed (both derive from the same parent genesis), so the
-                // loop registers the child under the id the parent's reducer already folded. Fall back to
-                // from_hex for a genesis-hex parent no longer registered; a truly-unresolvable parent skips
-                // loud (§tick-#784: resolve provenance by genesis-hash, never assume hex==id).
-                let Some(parent_genesis) = host
-                    .get(&parent)
-                    .map(|s| s.genesis_hash())
-                    .or_else(|| Hash::from_hex(parent.as_str()))
-                else {
-                    tracing::warn!(parent = %parent.as_str(), "lifecycle/spawn: parent genesis unresolvable (not registered + not genesis-hex) — skipping");
-                    continue;
-                };
+                // The parent genesis hash IS the parent SessionId (operator ruling: the id is the genesis
+                // Hash), so it's a direct read — no registry lookup / hex parse / unresolvable case (the
+                // pre-Rule-A dance for an opaque string id). It matches the child_id the executor
+                // pre-computed (both derive from this same parent genesis).
+                let parent_genesis = parent.hash();
                 match factory
                     .build_spawned(reducer_hash, parent_genesis, spawn_nonce)
                     .await
@@ -259,7 +247,7 @@ async fn apply_lifecycle_ops(
                                 );
                             }
                             Some(Err(KernelError::FoldRefused)) | None => {
-                                tracing::warn!(parent = %parent.as_str(), "lifecycle/spawn: parent gone/terminated — child not spawned (benign)");
+                                tracing::warn!(parent = %parent.to_hex(), "lifecycle/spawn: parent gone/terminated — child not spawned (benign)");
                             }
                             Some(Err(e)) => return Err(e),
                         }
@@ -269,7 +257,7 @@ async fn apply_lifecycle_ops(
                         // silent drop. The parent has the id but no live child (a Failure-to-parent is a
                         // follow-on refinement; v0 logs).
                         tracing::warn!(
-                            parent = %parent.as_str(), reducer_hash = %reducer_hash.to_hex(),
+                            parent = %parent.to_hex(), reducer_hash = %reducer_hash.to_hex(),
                             reason = %reason,
                             "lifecycle/spawn: factory could not build the child reducer — child NOT registered"
                         );
@@ -308,7 +296,7 @@ async fn apply_reply_settles(
         if !landed {
             tracing::debug!(
                 target: "cdz_agent_host::userspace_effect",
-                caller = %caller.as_str(),
+                caller = %caller.to_hex(),
                 effect_id = effect_id.0,
                 "effect/reply settle was a no-op (caller gone/terminated or effect already settled)"
             );
@@ -682,11 +670,11 @@ impl AsyncAgentHost {
                                 if held_inbound.len() >= HELD_INBOUND_CAP {
                                     let shed = held_inbound.remove(0);
                                     tracing::warn!(
-                                        target_session = %shed.session.as_str(),
+                                        target_session = %shed.session.to_hex(),
                                         cap = HELD_INBOUND_CAP,
                                         "held-inbound buffer at cap — shedding the oldest held message (suspend is meant to be short-lived; a stuck-suspended target or flooding producer hit the ceiling)"
                                     );
-                                    if let Some(sender) = shed.reply_to.clone() {
+                                    if let Some(sender) = shed.reply_to {
                                         let payload = bounce_echo_payload(&shed.body);
                                         bounce_delivery_failure(
                                             &mut host, &sender, &shed.session, payload,
@@ -708,9 +696,8 @@ impl AsyncAgentHost {
                             // These must be taken BEFORE `msg.body` moves into deliver.
                             let bounce_ctx = msg
                                 .reply_to
-                                .clone()
                                 .map(|sender| (sender, bounce_echo_payload(&msg.body)));
-                            let target = msg.session.clone();
+                            let target = msg.session;
                             match host
                                 .deliver_answering_signatures(&msg.session, msg.body, msg.cause, factory.as_deref_mut())
                                 .await
@@ -830,9 +817,8 @@ impl AsyncAgentHost {
                     // (only when reply_to is set — a held Emit; an external inbound never bounces).
                     let bounce_ctx = msg
                         .reply_to
-                        .clone()
                         .map(|sender| (sender, bounce_echo_payload(&msg.body)));
-                    let target = msg.session.clone();
+                    let target = msg.session;
                     match host
                         .deliver_answering_signatures(
                             &msg.session,
@@ -938,11 +924,11 @@ async fn handle_admin(
     if let (Some(registry), AdminResponse::Installed { id }, Some(reducer_hash)) =
         (session_registry, &resp, &install_reducer_hash)
     {
-        if let Err(e) = registry.register(id.as_str(), *reducer_hash, now_ms).await {
+        if let Err(e) = registry.register(&id.to_hex(), *reducer_hash, now_ms).await {
             // Non-sensitive: the session id + a registry-write error. Never a guest-controlled string.
             tracing::warn!(
                 target: "cdz_agent_host::session_registry",
-                session_id = id.as_str(),
+                session_id = id.to_hex(),
                 "session-registry register failed (best-effort; install still succeeded): {e}"
             );
         }
@@ -1022,8 +1008,8 @@ mod tests {
         // Two sessions registered; both fed an inbound via the shared inbox; the single loop drives each
         // in turn. After both are delivered + the senders dropped, the loop ends and BOTH ran.
         let mut host = AgentHost::new();
-        host.spawn(SessionId::new("a"), mark_host());
-        host.spawn(SessionId::new("b"), mark_host());
+        host.spawn(SessionId::new(Hash::of(b"a")), mark_host());
+        host.spawn(SessionId::new(Hash::of(b"b")), mark_host());
         let async_host = AsyncAgentHost::new(host);
         let inbox = async_host.inbox();
 
@@ -1032,7 +1018,7 @@ mod tests {
         // senders gone). A fixed clock (no timers armed here) keeps it deterministic.
         inbox
             .send(Inbound {
-                session: SessionId::new("a"),
+                session: SessionId::new(Hash::of(b"a")),
                 body: go(),
                 cause: None,
                 reply_to: None,
@@ -1040,7 +1026,7 @@ mod tests {
             .unwrap();
         inbox
             .send(Inbound {
-                session: SessionId::new("b"),
+                session: SessionId::new(Hash::of(b"b")),
                 body: go(),
                 cause: None,
                 reply_to: None,
@@ -1057,7 +1043,7 @@ mod tests {
         // Both sessions ran their loop through the real ClockExecutor.
         for id in ["a", "b"] {
             assert_eq!(
-                host.get(&SessionId::new(id))
+                host.get(&SessionId::new(Hash::of(id.as_bytes())))
                     .unwrap()
                     .session()
                     .kv()
@@ -1194,25 +1180,27 @@ mod tests {
         // constructs the peer Inbound + sends it on the real Inbox), and B's real fold of the routed message.
         let (tx, mut rx) = mpsc::unbounded_channel::<Inbound>();
 
+        // The two peers, addressed by their canonical genesis-hash hex (the emit target + authz predicate
+        // are the same hex the EmitExecutor parses back to a SessionId).
+        let session_a = SessionId::new(Hash::of(b"session-a"));
+        let session_b = SessionId::new(Hash::of(b"session-b"));
+
         // A: EmitterAgent → emits to B on its trigger, dispatched by the REAL EmitExecutor over `tx`.
         // AUTHORIZED to Emit exactly to B (the kernel gates the emit before dispatch, SEC-F1 — an un-granted
         // target would be DENIED, and this proves the AUTHORIZED path).
         let mut a = HostedSession::genesis(
             Hash::of(b"emitter-v1"),
             Box::new(EmitterAgent {
-                peer: "session-b".to_string(),
+                peer: session_b.to_hex(),
                 message: b"hello-from-a".to_vec(),
             }),
             Box::new(Authorizer::new(vec![Capability {
                 kind: EffectKind::Emit,
-                predicate: ResourcePredicate::Exact("session-b".into()),
+                predicate: ResourcePredicate::Exact(session_b.to_hex().into()),
             }])),
             CompositeExecutor::new().with_effect(
                 effect_ct::EMIT,
-                Box::new(crate::EmitExecutor::new(
-                    tx.clone(),
-                    SessionId::new("session-a"),
-                )),
+                Box::new(crate::EmitExecutor::new(tx.clone(), session_a)),
             ),
         );
         // B: ReceiverAgent → folds the routed message into KV. Performs no effects (deny-all authz is fine).
@@ -1241,16 +1229,15 @@ mod tests {
             .try_recv()
             .expect("A's Emit routed a peer Inbound onto the inbox");
         assert_eq!(
-            routed.session.as_str(),
-            "session-b",
+            routed.session, session_b,
             "routed to the target peer session"
         );
         // The routed Inbound carries the EMITTER as reply_to (§lifecycle I5): this is the return-address the
         // loop bounces a delivery-failure to if B is gone/terminated. Assert it so a regression that drops or
         // mis-stamps reply_to (bounces would stop reaching the emitter) is caught (Copilot #2408 c3).
         assert_eq!(
-            routed.reply_to.as_ref().map(|s| s.as_str()),
-            Some("session-a"),
+            routed.reply_to,
+            Some(session_a),
             "the routed Inbound stamps the emitter as reply_to (the bounce return-address)"
         );
         // Exactly one message was routed: the channel is now EMPTY (not disconnected — the EmitExecutor
@@ -1318,7 +1305,7 @@ mod tests {
         // routes a `delivery-failure` Inbound back to the sender, which folds it. Drive the real loop.
         let mut host = AgentHost::new();
         // Only the SENDER is registered; the target "ghost" is absent (models a terminated-then-removed peer).
-        host.spawn(SessionId::new("sender"), {
+        host.spawn(SessionId::new(Hash::of(b"sender")), {
             HostedSession::genesis(
                 Hash::of(b"bounce-recorder-v1"),
                 Box::new(BounceRecorder),
@@ -1334,7 +1321,7 @@ mod tests {
         // stamps). The loop's deliver → None (absent) → bounce a delivery-failure to "sender".
         inbox
             .send(Inbound {
-                session: SessionId::new("ghost"),
+                session: SessionId::new(Hash::of(b"ghost")),
                 body: EventBody::Inbound {
                     content_type: ContentType {
                         family: "message".into(),
@@ -1343,7 +1330,7 @@ mod tests {
                     payload: Payload::Inline(b"undeliverable".to_vec().into()),
                 },
                 cause: None,
-                reply_to: Some(SessionId::new("sender")),
+                reply_to: Some(SessionId::new(Hash::of(b"sender"))),
             })
             .unwrap();
         drop(inbox);
@@ -1355,7 +1342,7 @@ mod tests {
 
         // The sender folded a delivery-failure carrying the failed message's payload (correlation echo).
         assert_eq!(
-            host.get(&SessionId::new("sender"))
+            host.get(&SessionId::new(Hash::of(b"sender")))
                 .unwrap()
                 .session()
                 .kv()
@@ -1370,13 +1357,13 @@ mod tests {
         // The bounce is ONLY for cross-session Emits (reply_to set). An ORDINARY external inbound (reply_to
         // None) to an absent id stays the benign stray-id no-op — no bounce, no panic, clean loop exit.
         let mut host = AgentHost::new();
-        host.spawn(SessionId::new("live"), mark_host());
+        host.spawn(SessionId::new(Hash::of(b"live")), mark_host());
         let async_host = AsyncAgentHost::new(host);
         let inbox = async_host.inbox();
         let (_sd_tx, sd_rx) = tokio::sync::oneshot::channel();
         inbox
             .send(Inbound {
-                session: SessionId::new("nobody"),
+                session: SessionId::new(Hash::of(b"nobody")),
                 body: go(),
                 cause: None,
                 reply_to: None, // external producer, no originating session → no bounce
@@ -1388,7 +1375,7 @@ mod tests {
             .await
             .expect("a stray external inbound is a clean no-op, not a loop error");
         // The live session is untouched (it was never addressed); nothing bounced anywhere.
-        assert!(host.contains(&SessionId::new("live")));
+        assert!(host.contains(&SessionId::new(Hash::of(b"live"))));
     }
 
     #[tokio::test]
@@ -1400,7 +1387,7 @@ mod tests {
         let mut async_host = AsyncAgentHost::new(AgentHost::new());
         // The victim: an ordinary session (deny-all authz is fine; it performs nothing).
         async_host.host_mut().spawn(
-            SessionId::new("victim"),
+            SessionId::new(Hash::of(b"victim")),
             HostedSession::genesis(
                 Hash::of(b"victim-v1"),
                 Box::new(MarkAgent),
@@ -1410,39 +1397,40 @@ mod tests {
         );
         // The CONTROLLER: a LifecycleExecutor over THIS loop's lifecycle channel (owner = "controller"),
         // authorized to lifecycle/terminate the victim. Fetched after wrapping (the channel lives on the loop).
+        let victim_hex = SessionId::new(Hash::of(b"victim")).to_hex();
         let controller = HostedSession::genesis(
             Hash::of(b"controller-v1"),
             Box::new(TerminatorAgent {
-                victim: "victim".to_string(),
+                victim: victim_hex.clone(),
             }),
             // lifecycle/* is a register-by-string family (no dedicated EffectKind) → grant it via a
             // FAMILY grant (Capability::for_family), not a kind-based Capability. Authorized to
-            // lifecycle/terminate exactly the victim.
+            // lifecycle/terminate exactly the victim (by its canonical genesis-hash hex).
             Box::new(
                 Authorizer::new(vec![]).with_family_grants(vec![Capability::for_family(
                     effect_ct::LIFECYCLE_TERMINATE,
-                    ResourcePredicate::Exact("victim".into()),
+                    ResourcePredicate::Exact(victim_hex.into()),
                 )]),
             ),
             CompositeExecutor::new().with_effect(
                 effect_ct::LIFECYCLE_TERMINATE,
                 Box::new(crate::LifecycleExecutor::new(
                     async_host.lifecycle_channel(),
-                    SessionId::new("controller"),
+                    SessionId::new(Hash::of(b"controller")),
                     Hash::of(b"controller"),
                 )),
             ),
         );
         async_host
             .host_mut()
-            .spawn(SessionId::new("controller"), controller);
+            .spawn(SessionId::new(Hash::of(b"controller")), controller);
 
         let inbox = async_host.inbox();
         let (_sd_tx, sd_rx) = tokio::sync::oneshot::channel();
         // Trigger the controller → it emits lifecycle/terminate(victim). Drop inbox → loop drains + returns.
         inbox
             .send(Inbound {
-                session: SessionId::new("controller"),
+                session: SessionId::new(Hash::of(b"controller")),
                 body: go(),
                 cause: None,
                 reply_to: None,
@@ -1454,11 +1442,11 @@ mod tests {
             .await
             .expect("clean shutdown, no kernel error");
         assert!(
-            !host.contains(&SessionId::new("victim")),
+            !host.contains(&SessionId::new(Hash::of(b"victim"))),
             "the victim was terminated + removed from the registry via lifecycle/terminate through the loop"
         );
         // The controller itself is untouched (it terminated a PEER, not itself).
-        assert!(host.contains(&SessionId::new("controller")));
+        assert!(host.contains(&SessionId::new(Hash::of(b"controller"))));
     }
 
     #[tokio::test]
@@ -1479,7 +1467,7 @@ mod tests {
             CompositeExecutor::new(),
         );
         let victim_hash = victim_session.genesis_hash();
-        let victim_id = SessionId::new(victim_hash.to_hex());
+        let victim_id = SessionId::new(victim_hash);
         let survivor_hash = Hash::of(b"survivor-i5");
         let origin = Hash::of(b"adder-origin");
 
@@ -1492,39 +1480,37 @@ mod tests {
             .unwrap();
 
         let mut async_host = AsyncAgentHost::new(AgentHost::with_canonical_store(canonical));
-        async_host
-            .host_mut()
-            .spawn(victim_id.clone(), victim_session);
+        async_host.host_mut().spawn(victim_id, victim_session);
         // The controller: authorized to lifecycle/terminate the victim (by its hex id), wired to this loop.
         let controller = HostedSession::genesis(
             Hash::of(b"controller-i5-v1"),
             Box::new(TerminatorAgent {
-                victim: victim_id.as_str().to_string(),
+                victim: victim_id.to_hex(),
             }),
             Box::new(
                 Authorizer::new(vec![]).with_family_grants(vec![Capability::for_family(
                     effect_ct::LIFECYCLE_TERMINATE,
-                    ResourcePredicate::Exact(victim_id.as_str().into()),
+                    ResourcePredicate::Exact(victim_id.to_hex().into()),
                 )]),
             ),
             CompositeExecutor::new().with_effect(
                 effect_ct::LIFECYCLE_TERMINATE,
                 Box::new(crate::LifecycleExecutor::new(
                     async_host.lifecycle_channel(),
-                    SessionId::new("controller"),
+                    SessionId::new(Hash::of(b"controller")),
                     Hash::of(b"controller"),
                 )),
             ),
         );
         async_host
             .host_mut()
-            .spawn(SessionId::new("controller"), controller);
+            .spawn(SessionId::new(Hash::of(b"controller")), controller);
 
         let inbox = async_host.inbox();
         let (_sd_tx, sd_rx) = tokio::sync::oneshot::channel();
         inbox
             .send(Inbound {
-                session: SessionId::new("controller"),
+                session: SessionId::new(Hash::of(b"controller")),
                 body: go(),
                 cause: None,
                 reply_to: None,
@@ -1570,10 +1556,11 @@ mod tests {
         // actual genesis-hash matches the id we wired.
         let parent_reducer = Hash::of(b"spawner-parent-v1");
         let parent_nonce = Hash::of(b"spawner-parent-nonce");
-        let parent_id = SessionId::new(
-            cdz_kernel::kernel::Session::derive_genesis_hash(parent_reducer, parent_nonce, None)
-                .to_hex(),
-        );
+        let parent_id = SessionId::new(cdz_kernel::kernel::Session::derive_genesis_hash(
+            parent_reducer,
+            parent_nonce,
+            None,
+        ));
 
         let mut async_host = AsyncAgentHost::with_factory(AgentHost::new(), Box::new(StubFactory));
         let parent_session = HostedSession::genesis_with_nonce(
@@ -1590,7 +1577,7 @@ mod tests {
                 effect_ct::LIFECYCLE_SPAWN,
                 Box::new(crate::LifecycleExecutor::new(
                     async_host.lifecycle_channel(),
-                    parent_id.clone(),
+                    parent_id,
                     cdz_kernel::kernel::Session::derive_genesis_hash(
                         parent_reducer,
                         parent_nonce,
@@ -1599,15 +1586,13 @@ mod tests {
                 )),
             ),
         );
-        async_host
-            .host_mut()
-            .spawn(parent_id.clone(), parent_session);
+        async_host.host_mut().spawn(parent_id, parent_session);
 
         let inbox = async_host.inbox();
         let (_sd_tx, sd_rx) = tokio::sync::oneshot::channel();
         inbox
             .send(Inbound {
-                session: parent_id.clone(),
+                session: parent_id,
                 body: go(),
                 cause: None,
                 reply_to: None,
@@ -1619,16 +1604,21 @@ mod tests {
             .await
             .expect("clean shutdown, no kernel error");
 
-        // The parent folded the child id the executor returned.
+        // The parent folded the child id the executor returned — the RAW 32 genesis-hash bytes.
         let folded = host
             .get(&parent_id)
             .unwrap()
             .session()
             .kv()
             .get(b"child")
-            .map(|v| String::from_utf8(v.to_vec()).unwrap())
+            .map(|v| v.to_vec())
             .expect("parent folded the returned child id");
-        let child_id = SessionId::new(folded.clone());
+        let child_hash = Hash::from_bytes(
+            folded[..]
+                .try_into()
+                .expect("the folded child id is 32 raw genesis-hash bytes"),
+        );
+        let child_id = SessionId::new(child_hash);
         // The child is REGISTERED (the loop materialized + registered it via the factory) under that id.
         assert!(
             host.contains(&child_id),
@@ -1638,8 +1628,7 @@ mod tests {
         let edges = host.get(&parent_id).unwrap().spawned_children();
         assert_eq!(edges.len(), 1, "parent recorded exactly one spawn edge");
         assert_eq!(
-            edges[0].to_hex(),
-            folded,
+            edges[0], child_hash,
             "the edge's child_hash is the registered child id (sync-return contract holds end to end)"
         );
     }
@@ -1677,15 +1666,18 @@ mod tests {
     /// Build a controller session wired to suspend/resume `target` through THIS loop's lifecycle channel,
     /// authorized on both families for exactly that target.
     fn suspend_resume_controller(async_host: &AsyncAgentHost, target: &str) -> HostedSession {
+        // `target` is a test label; the controller addresses the peer by its canonical genesis-hash hex (the
+        // same id the peer is spawned under, `Hash::of(label)`), which the LifecycleExecutor parses back.
+        let target = SessionId::new(Hash::of(target.as_bytes())).to_hex();
         HostedSession::genesis(
             Hash::of(b"suspend-resume-controller-v1"),
             Box::new(SuspendResumeController {
-                target: target.to_string(),
+                target: target.clone(),
             }),
             Box::new(Authorizer::new(vec![]).with_family_grants(vec![
                 Capability::for_family(
                     effect_ct::LIFECYCLE_SUSPEND,
-                    ResourcePredicate::Exact(target.into()),
+                    ResourcePredicate::Exact(target.clone().into()),
                 ),
                 Capability::for_family(
                     effect_ct::LIFECYCLE_RESUME,
@@ -1699,7 +1691,7 @@ mod tests {
                     effect_ct::LIFECYCLE_SUSPEND,
                     Box::new(crate::LifecycleExecutor::new(
                         async_host.lifecycle_channel(),
-                        SessionId::new("controller"),
+                        SessionId::new(Hash::of(b"controller")),
                         Hash::of(b"controller"),
                     )),
                 )
@@ -1707,17 +1699,18 @@ mod tests {
                     effect_ct::LIFECYCLE_RESUME,
                     Box::new(crate::LifecycleExecutor::new(
                         async_host.lifecycle_channel(),
-                        SessionId::new("controller"),
+                        SessionId::new(Hash::of(b"controller")),
                         Hash::of(b"controller"),
                     )),
                 ),
         )
     }
 
-    /// A message Inbound to a target session (external producer — no reply_to), carrying `payload`.
+    /// A message Inbound to a target session (external producer — no reply_to), carrying `payload`. `target`
+    /// is a test label; the session key is its `Hash::of` genesis (the same way these tests spawn sessions).
     fn message_to(target: &str, payload: &[u8]) -> Inbound {
         Inbound {
-            session: SessionId::new(target),
+            session: SessionId::new(Hash::of(target.as_bytes())),
             body: EventBody::Inbound {
                 content_type: ContentType {
                     family: "message".into(),
@@ -1733,7 +1726,7 @@ mod tests {
     /// A controller-trigger Inbound (`b"suspend"` / `b"resume"`) delivered to the controller session.
     fn control_trigger(payload: &[u8]) -> Inbound {
         Inbound {
-            session: SessionId::new("controller"),
+            session: SessionId::new(Hash::of(b"controller")),
             body: EventBody::Inbound {
                 content_type: ContentType {
                     family: "message".into(),
@@ -1757,7 +1750,7 @@ mod tests {
         let mut host = AgentHost::new();
         // The SENDER records every delivery-failure bounce it folds (counts them via appending a byte).
         host.spawn(
-            SessionId::new("sender"),
+            SessionId::new(Hash::of(b"sender")),
             HostedSession::genesis(
                 Hash::of(b"bounce-counter-v1"),
                 Box::new(BounceCounter),
@@ -1767,7 +1760,7 @@ mod tests {
         );
         // The victim: suspended below so all its inbound is held.
         host.spawn(
-            SessionId::new("victim"),
+            SessionId::new(Hash::of(b"victim")),
             HostedSession::genesis(
                 Hash::of(b"receiver-v1"),
                 Box::new(ReceiverAgent),
@@ -1775,7 +1768,7 @@ mod tests {
                 CompositeExecutor::new(),
             ),
         );
-        host.suspend(&SessionId::new("victim")); // suspend BEFORE running → all victim inbound is held
+        host.suspend(&SessionId::new(Hash::of(b"victim"))); // suspend BEFORE running → all victim inbound is held
         let async_host = AsyncAgentHost::new(host);
         let inbox = async_host.inbox();
         let (_sd_tx, sd_rx) = tokio::sync::oneshot::channel();
@@ -1784,7 +1777,7 @@ mod tests {
         for i in 0..(HELD_INBOUND_CAP + OVER) {
             inbox
                 .send(Inbound {
-                    session: SessionId::new("victim"),
+                    session: SessionId::new(Hash::of(b"victim")),
                     body: EventBody::Inbound {
                         content_type: ContentType {
                             family: "message".into(),
@@ -1793,7 +1786,7 @@ mod tests {
                         payload: Payload::Inline(vec![i as u8].into()),
                     },
                     cause: None,
-                    reply_to: Some(SessionId::new("sender")),
+                    reply_to: Some(SessionId::new(Hash::of(b"sender"))),
                 })
                 .unwrap();
         }
@@ -1805,9 +1798,9 @@ mod tests {
 
         // The victim is still suspended + never folded anything (all held); the sender folded exactly OVER
         // bounces — the OVER oldest messages shed at the cap, each bounced (not silently lost).
-        assert!(host.is_suspended(&SessionId::new("victim")));
+        assert!(host.is_suspended(&SessionId::new(Hash::of(b"victim"))));
         assert_eq!(
-            host.get(&SessionId::new("sender"))
+            host.get(&SessionId::new(Hash::of(b"sender")))
                 .unwrap()
                 .session()
                 .kv()
@@ -1825,7 +1818,7 @@ mod tests {
         // victim (FIFO after the suspend applies) → the loop holds it. No resume → the victim never folds it.
         let mut async_host = AsyncAgentHost::new(AgentHost::new());
         async_host.host_mut().spawn(
-            SessionId::new("victim"),
+            SessionId::new(Hash::of(b"victim")),
             HostedSession::genesis(
                 Hash::of(b"receiver-v1"),
                 Box::new(ReceiverAgent),
@@ -1836,7 +1829,7 @@ mod tests {
         let controller = suspend_resume_controller(&async_host, "victim");
         async_host
             .host_mut()
-            .spawn(SessionId::new("controller"), controller);
+            .spawn(SessionId::new(Hash::of(b"controller")), controller);
 
         let inbox = async_host.inbox();
         let (_sd_tx, sd_rx) = tokio::sync::oneshot::channel();
@@ -1851,9 +1844,9 @@ mod tests {
 
         // The victim is still registered (suspend does not remove it) but NEVER folded the held message —
         // its KV["inbox"] is unset (held, not delivered, not dropped).
-        assert!(host.contains(&SessionId::new("victim")));
+        assert!(host.contains(&SessionId::new(Hash::of(b"victim"))));
         assert_eq!(
-            host.get(&SessionId::new("victim"))
+            host.get(&SessionId::new(Hash::of(b"victim")))
                 .unwrap()
                 .session()
                 .kv()
@@ -1870,7 +1863,7 @@ mod tests {
         // victim folds it. Same FIFO one-loop-run arc as the terminate E2E.
         let mut async_host = AsyncAgentHost::new(AgentHost::new());
         async_host.host_mut().spawn(
-            SessionId::new("victim"),
+            SessionId::new(Hash::of(b"victim")),
             HostedSession::genesis(
                 Hash::of(b"receiver-v1"),
                 Box::new(ReceiverAgent),
@@ -1881,7 +1874,7 @@ mod tests {
         let controller = suspend_resume_controller(&async_host, "victim");
         async_host
             .host_mut()
-            .spawn(SessionId::new("controller"), controller);
+            .spawn(SessionId::new(Hash::of(b"controller")), controller);
 
         let inbox = async_host.inbox();
         let (_sd_tx, sd_rx) = tokio::sync::oneshot::channel();
@@ -1898,7 +1891,7 @@ mod tests {
         // The held message replayed on resume and the victim folded it (not dropped): KV["inbox"] now carries
         // the held payload verbatim.
         assert_eq!(
-            host.get(&SessionId::new("victim"))
+            host.get(&SessionId::new(Hash::of(b"victim")))
                 .unwrap()
                 .session()
                 .kv()
@@ -1907,7 +1900,7 @@ mod tests {
             "the inbound held during suspension replays on resume + is folded (not dropped)"
         );
         assert!(
-            !host.is_suspended(&SessionId::new("victim")),
+            !host.is_suspended(&SessionId::new(Hash::of(b"victim"))),
             "the victim is no longer suspended after resume"
         );
     }
@@ -1921,7 +1914,7 @@ mod tests {
         let mut async_host = AsyncAgentHost::new(AgentHost::new());
         for v in ["victim-a", "victim-b"] {
             async_host.host_mut().spawn(
-                SessionId::new(v),
+                SessionId::new(Hash::of(v.as_bytes())),
                 HostedSession::genesis(
                     Hash::of(b"receiver-v1"),
                     Box::new(ReceiverAgent),
@@ -1934,32 +1927,33 @@ mod tests {
         // host_mut() spawn — they borrow `&async_host` (for the lifecycle channel), which can't overlap the
         // `&mut` from host_mut().
         let controller_a = suspend_resume_controller(&async_host, "victim-a");
+        let victim_b_hex = SessionId::new(Hash::of(b"victim-b")).to_hex();
         let controller_b = HostedSession::genesis(
             Hash::of(b"suspend-b-controller-v1"),
             Box::new(SuspendResumeController {
-                target: "victim-b".to_string(),
+                target: victim_b_hex.clone(),
             }),
             Box::new(
                 Authorizer::new(vec![]).with_family_grants(vec![Capability::for_family(
                     effect_ct::LIFECYCLE_SUSPEND,
-                    ResourcePredicate::Exact("victim-b".into()),
+                    ResourcePredicate::Exact(victim_b_hex.into()),
                 )]),
             ),
             CompositeExecutor::new().with_effect(
                 effect_ct::LIFECYCLE_SUSPEND,
                 Box::new(crate::LifecycleExecutor::new(
                     async_host.lifecycle_channel(),
-                    SessionId::new("controller-b"),
+                    SessionId::new(Hash::of(b"controller-b")),
                     Hash::of(b"controller-b"),
                 )),
             ),
         );
         async_host
             .host_mut()
-            .spawn(SessionId::new("controller"), controller_a);
+            .spawn(SessionId::new(Hash::of(b"controller")), controller_a);
         async_host
             .host_mut()
-            .spawn(SessionId::new("controller-b"), controller_b);
+            .spawn(SessionId::new(Hash::of(b"controller-b")), controller_b);
 
         let inbox = async_host.inbox();
         let (_sd_tx, sd_rx) = tokio::sync::oneshot::channel();
@@ -1967,7 +1961,7 @@ mod tests {
         inbox.send(control_trigger(b"suspend")).unwrap(); // controller → suspend victim-a
         inbox
             .send(Inbound {
-                session: SessionId::new("controller-b"),
+                session: SessionId::new(Hash::of(b"controller-b")),
                 body: EventBody::Inbound {
                     content_type: ContentType {
                         family: "message".into(),
@@ -1990,7 +1984,7 @@ mod tests {
 
         // A resumed → its held inbound replayed + folded.
         assert_eq!(
-            host.get(&SessionId::new("victim-a"))
+            host.get(&SessionId::new(Hash::of(b"victim-a")))
                 .unwrap()
                 .session()
                 .kv()
@@ -2000,11 +1994,11 @@ mod tests {
         );
         // B still suspended → its held inbound stays held (NOT leaked to it, NOT dropped): KV unset + still suspended.
         assert!(
-            host.is_suspended(&SessionId::new("victim-b")),
+            host.is_suspended(&SessionId::new(Hash::of(b"victim-b"))),
             "B is still suspended (never resumed)"
         );
         assert_eq!(
-            host.get(&SessionId::new("victim-b"))
+            host.get(&SessionId::new(Hash::of(b"victim-b")))
                 .unwrap()
                 .session()
                 .kv()
@@ -2024,7 +2018,7 @@ mod tests {
         let mut async_host = AsyncAgentHost::new(AgentHost::new());
         // The SENDER (a live registered session) records any delivery-failure bounce it receives.
         async_host.host_mut().spawn(
-            SessionId::new("sender"),
+            SessionId::new(Hash::of(b"sender")),
             HostedSession::genesis(
                 Hash::of(b"bounce-recorder-v1"),
                 Box::new(BounceRecorder),
@@ -2034,7 +2028,7 @@ mod tests {
         );
         // The VICTIM: an ordinary session, suspended then terminated below.
         async_host.host_mut().spawn(
-            SessionId::new("victim"),
+            SessionId::new(Hash::of(b"victim")),
             HostedSession::genesis(
                 Hash::of(b"receiver-v1"),
                 Box::new(ReceiverAgent),
@@ -2046,31 +2040,32 @@ mod tests {
         let sr_controller = suspend_resume_controller(&async_host, "victim");
         async_host
             .host_mut()
-            .spawn(SessionId::new("controller"), sr_controller);
-        // A controller that terminates victim (on b"go").
+            .spawn(SessionId::new(Hash::of(b"controller")), sr_controller);
+        // A controller that terminates victim (on b"go"), addressing it by its canonical genesis-hash hex.
+        let victim_hex = SessionId::new(Hash::of(b"victim")).to_hex();
         let killer = HostedSession::genesis(
             Hash::of(b"killer-v1"),
             Box::new(TerminatorAgent {
-                victim: "victim".to_string(),
+                victim: victim_hex.clone(),
             }),
             Box::new(
                 Authorizer::new(vec![]).with_family_grants(vec![Capability::for_family(
                     effect_ct::LIFECYCLE_TERMINATE,
-                    ResourcePredicate::Exact("victim".into()),
+                    ResourcePredicate::Exact(victim_hex.into()),
                 )]),
             ),
             CompositeExecutor::new().with_effect(
                 effect_ct::LIFECYCLE_TERMINATE,
                 Box::new(crate::LifecycleExecutor::new(
                     async_host.lifecycle_channel(),
-                    SessionId::new("killer"),
+                    SessionId::new(Hash::of(b"killer")),
                     Hash::of(b"killer"),
                 )),
             ),
         );
         async_host
             .host_mut()
-            .spawn(SessionId::new("killer"), killer);
+            .spawn(SessionId::new(Hash::of(b"killer")), killer);
 
         let inbox = async_host.inbox();
         let (_sd_tx, sd_rx) = tokio::sync::oneshot::channel();
@@ -2080,7 +2075,7 @@ mod tests {
         inbox.send(control_trigger(b"suspend")).unwrap();
         inbox
             .send(Inbound {
-                session: SessionId::new("victim"),
+                session: SessionId::new(Hash::of(b"victim")),
                 body: EventBody::Inbound {
                     content_type: ContentType {
                         family: "message".into(),
@@ -2089,12 +2084,12 @@ mod tests {
                     payload: Payload::Inline(b"held-emit".to_vec().into()),
                 },
                 cause: None,
-                reply_to: Some(SessionId::new("sender")), // a cross-session Emit's return-address
+                reply_to: Some(SessionId::new(Hash::of(b"sender"))), // a cross-session Emit's return-address
             })
             .unwrap();
         inbox
             .send(Inbound {
-                session: SessionId::new("killer"),
+                session: SessionId::new(Hash::of(b"killer")),
                 body: go(),
                 cause: None,
                 reply_to: None,
@@ -2109,13 +2104,13 @@ mod tests {
 
         // The victim was terminated + removed.
         assert!(
-            !host.contains(&SessionId::new("victim")),
+            !host.contains(&SessionId::new(Hash::of(b"victim"))),
             "victim terminated while suspended + removed"
         );
         // The sender folded a delivery-failure bounce carrying the held Emit's echoed payload — the held
         // Emit did NOT drop silently (the #2452 c1 fix).
         assert_eq!(
-            host.get(&SessionId::new("sender"))
+            host.get(&SessionId::new(Hash::of(b"sender")))
                 .unwrap()
                 .session()
                 .kv()
@@ -2163,7 +2158,7 @@ mod tests {
             predicate: ResourcePredicate::Any,
         }]);
         host.spawn(
-            SessionId::new("t"),
+            SessionId::new(Hash::of(b"t")),
             HostedSession::genesis(
                 Hash::of(b"timer-v1"),
                 Box::new(TimerAgent { deadline_ms: 1000 }),
@@ -2172,9 +2167,10 @@ mod tests {
             ),
         );
         // Arm the timer directly (pre-run) so it's already armed when the loop starts.
-        host.deliver(&SessionId::new("t"), go(), None).await;
+        host.deliver(&SessionId::new(Hash::of(b"t")), go(), None)
+            .await;
         assert_eq!(
-            host.get(&SessionId::new("t"))
+            host.get(&SessionId::new(Hash::of(b"t")))
                 .unwrap()
                 .session()
                 .kv()
@@ -2193,7 +2189,7 @@ mod tests {
             .await
             .expect("clean shutdown");
         assert_eq!(
-            host.get(&SessionId::new("t"))
+            host.get(&SessionId::new(Hash::of(b"t")))
                 .unwrap()
                 .session()
                 .kv()
@@ -2210,13 +2206,13 @@ mod tests {
         // the (never-taken) sleep arm — the point is that run_with_wall_clock wires the clock + delegates to
         // run() correctly, so a deployed daemon can call it with no clock plumbing.
         let mut host = AgentHost::new();
-        host.spawn(SessionId::new("wall"), mark_host());
+        host.spawn(SessionId::new(Hash::of(b"wall")), mark_host());
         let async_host = AsyncAgentHost::new(host);
         let inbox = async_host.inbox();
         let (_sd_tx, sd_rx) = tokio::sync::oneshot::channel();
         inbox
             .send(Inbound {
-                session: SessionId::new("wall"),
+                session: SessionId::new(Hash::of(b"wall")),
                 body: go(),
                 cause: None,
                 reply_to: None,
@@ -2229,7 +2225,7 @@ mod tests {
             .await
             .expect("clean shutdown on the wall clock, no kernel error");
         assert_eq!(
-            host.get(&SessionId::new("wall"))
+            host.get(&SessionId::new(Hash::of(b"wall")))
                 .unwrap()
                 .session()
                 .kv()
@@ -2272,7 +2268,7 @@ mod tests {
 
     fn install(id: &str) -> AdminCommand {
         AdminCommand::InstallSession(InstallSpec {
-            id: SessionId::new(id),
+            id: SessionId::new(Hash::of(id.as_bytes())),
             reducer_hash: Hash::of(id.as_bytes()),
             goal: None,
         })
@@ -2323,38 +2319,41 @@ mod tests {
             assert_eq!(
                 admin_call(&admin, install("a")).await,
                 AdminResponse::Installed {
-                    id: SessionId::new("a")
+                    id: SessionId::new(Hash::of(b"a"))
                 }
             );
             assert_eq!(
                 admin_call(&admin, install("b")).await,
                 AdminResponse::Installed {
-                    id: SessionId::new("b")
+                    id: SessionId::new(Hash::of(b"b"))
                 }
             );
+            let mut expected_ids = vec![
+                SessionId::new(Hash::of(b"a")),
+                SessionId::new(Hash::of(b"b")),
+            ];
+            expected_ids.sort(); // listed sorted by SessionId (= genesis-hash byte order)
             assert_eq!(
                 admin_call(&admin, AdminCommand::ListSessions).await,
-                AdminResponse::Sessions {
-                    ids: vec![SessionId::new("a"), SessionId::new("b")]
-                }
+                AdminResponse::Sessions { ids: expected_ids }
             );
             // A stop, then list reflects the removal.
             assert_eq!(
                 admin_call(
                     &admin,
                     AdminCommand::StopSession {
-                        id: SessionId::new("a")
+                        id: SessionId::new(Hash::of(b"a"))
                     }
                 )
                 .await,
                 AdminResponse::Stopped {
-                    id: SessionId::new("a")
+                    id: SessionId::new(Hash::of(b"a"))
                 }
             );
             assert_eq!(
                 admin_call(&admin, AdminCommand::ListSessions).await,
                 AdminResponse::Sessions {
-                    ids: vec![SessionId::new("b")]
+                    ids: vec![SessionId::new(Hash::of(b"b"))]
                 }
             );
             // Drop the admin channel (last producer) → the loop's channels close → run() returns.
@@ -2484,7 +2483,7 @@ mod tests {
         let mut host = AgentHost::new();
         let landed = host
             .settle_reply(
-                &SessionId::new("never-registered"),
+                &SessionId::new(Hash::of(b"never-registered")),
                 EffectId(7),
                 EffectOutcome::Ok(None),
             )
@@ -2573,9 +2572,9 @@ mod tests {
             predicate: ResourcePredicate::Any,
         }]);
         let mut host = AgentHost::new();
-        let id = SessionId::new("tick-role");
+        let id = SessionId::new(Hash::of(b"tick-role"));
         host.spawn(
-            id.clone(),
+            id,
             HostedSession::genesis(
                 Hash::of(b"tick-role-v1"),
                 Box::new(TickLoopRole),
@@ -2708,25 +2707,25 @@ mod tests {
                     tokio::task::spawn_local(async move { async_host.run(sd_rx, || u64::MAX).await });
 
                 // INSTALL a session at runtime through the admin channel (what the socket listener does per frame).
-                let id = "worker-1";
+                let id = SessionId::new(Hash::of(b"worker-1"));
                 let resp = admin_call(
                     &admin,
                     AdminCommand::InstallSession(InstallSpec {
-                        id: SessionId::new(id),
+                        id,
                         reducer_hash: Hash::of(b"tick-role-v1"),
                         goal: Some("run your tick loop".to_string()),
                     }),
                 )
                 .await;
                 assert!(
-                    matches!(&resp, AdminResponse::Installed { id: got } if got.as_str() == id),
+                    matches!(&resp, AdminResponse::Installed { id: got } if *got == id),
                     "the daemon installed the session, got {resp:?}"
                 );
 
                 // KICK the installed agent's loop via the inbox; the timer wheel then fires it to its budget.
                 inbox
                     .send(Inbound {
-                        session: SessionId::new(id),
+                        session: id,
                         body: EventBody::Inbound {
                             content_type: ContentType {
                                 family: "message".into(),
@@ -2750,7 +2749,7 @@ mod tests {
 
                 // The installed agent TICKED LIVE through the deployed loop, to its budget.
                 let session = host
-                    .get(&SessionId::new(id))
+                    .get(&id)
                     .expect("worker still registered");
                 let kv = session.session().kv();
                 assert_eq!(
@@ -2824,18 +2823,18 @@ mod tests {
 
         // INSTALL a session BY CONTENT HASH through the admin channel — the factory blob-fetches + LIFTS the
         // bytes into a runnable AsyncComponentReducer (a missing blob or a non-lifting component fails loud).
-        let id = "wasm-worker-1";
+        let id = SessionId::new(Hash::of(b"wasm-worker-1"));
         let resp = admin_call(
             &admin,
             AdminCommand::InstallSession(InstallSpec {
-                id: SessionId::new(id),
+                id,
                 reducer_hash,
                 goal: Some("run the compiled reducer".to_string()),
             }),
         )
         .await;
         assert!(
-            matches!(&resp, AdminResponse::Installed { id: got } if got.as_str() == id),
+            matches!(&resp, AdminResponse::Installed { id: got } if *got == id),
             "the daemon lifted the wasm reducer from the blob store + installed the session, got {resp:?}"
         );
 
@@ -2843,7 +2842,7 @@ mod tests {
         // deny-all authorizer + empty executor set; the point is the LIFTED program RUNS through the loop (§17).
         inbox
             .send(Inbound {
-                session: SessionId::new(id),
+                session: id,
                 body: EventBody::Inbound {
                     content_type: ContentType {
                         family: "message".into(),

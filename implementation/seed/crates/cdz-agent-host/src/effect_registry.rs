@@ -32,9 +32,7 @@ use cdz_kernel::name_store::NameStore;
 /// routes a forwarded request by calling this against the host-owned canonical store (which reflects handler
 /// registrations as they happen — distinct from an executor's spawn-time by-value store copy).
 pub fn resolve_handler_session(canonical: &NameStore, family: &str) -> Option<SessionId> {
-    canonical
-        .resolve_effect_handler(family)
-        .map(|h| SessionId::new(h.to_hex()))
+    canonical.resolve_effect_handler(family).map(SessionId::new)
 }
 
 /// Every userspace-effect family currently registered to `handler` in `canonical` — the inverse of
@@ -58,7 +56,7 @@ pub fn effect_families_owned_by(canonical: &NameStore, handler: &SessionId) -> V
             // the `effect/` prefix to yield the bare family. A non-`effect/` name or a pointer at a different
             // session is not this handler's registration.
             let family = name.strip_prefix(prefix)?;
-            if hash.to_hex() == handler.as_str() {
+            if hash == handler.hash() {
                 Some(family.to_string())
             } else {
                 None
@@ -117,7 +115,7 @@ mod tests {
 
     /// The SessionId a handler genesis hash addresses (id = genesis-hash-hex).
     fn sid_of(h: Hash) -> SessionId {
-        SessionId::new(h.to_hex())
+        SessionId::new(h)
     }
 
     #[test]
@@ -166,7 +164,7 @@ mod tests {
         let h = Hash::of(b"a-handler");
         let store = store_with(&[("weather", h)], &[]);
         // A session that has registered nothing owns no families.
-        let stranger = SessionId::new("never-registered-anything");
+        let stranger = SessionId::new(Hash::of(b"never-registered-anything"));
         assert!(
             effect_families_owned_by(&store, &stranger).is_empty(),
             "a session with no registrations owns no effect families"
@@ -191,7 +189,7 @@ mod tests {
     fn an_empty_store_has_no_registrations() {
         let store = NameStore::new();
         assert_eq!(resolve_handler_session(&store, "weather"), None);
-        assert!(effect_families_owned_by(&store, &SessionId::new("h")).is_empty());
+        assert!(effect_families_owned_by(&store, &SessionId::new(Hash::of(b"h"))).is_empty());
     }
 
     #[test]
@@ -227,7 +225,7 @@ mod tests {
         // The resolver sees it LIVE (proves it reads the shared store, not a captured copy).
         assert_eq!(
             resolver.resolve_handler("weather"),
-            Some(SessionId::new(handler.to_hex())),
+            Some(SessionId::new(handler)),
             "the resolver resolves a registration written after its construction (live shared-store read)"
         );
         // An unregistered family still resolves to None (falls through to the built-in path).

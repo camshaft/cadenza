@@ -98,7 +98,13 @@ impl Executor for EmitExecutor {
                 "EmitExecutor: an Emit effect requires a non-empty target (the peer session id to route to)",
             );
         }
-        let target = SessionId::new(target_str);
+        // The target is the peer session id = its genesis Hash, carried as hex on the wire. Parse it back; a
+        // non-hex target names no session (a reducer sent a malformed target) → structural PERMANENT.
+        let Some(target) = Hash::from_hex(target_str).map(SessionId::new) else {
+            return EffectOutcome::err(
+                "EmitExecutor: an Emit target must be a canonical session-id hex (the peer's genesis hash)",
+            );
+        };
 
         // The message payload rides VERBATIM into the peer's Inbound (opaque — the reducer defines the
         // schema). A payload-less emit routes an empty-payload message (a bare signal is legitimate); a
@@ -129,7 +135,7 @@ impl Executor for EmitExecutor {
             cause: None,
             // The emitter's id: the loop's bounce path (§lifecycle I5) routes a `delivery-failure` here if
             // the target is gone/terminated. Cloning an `Arc<str>` (O(1) refcount bump).
-            reply_to: Some(self.owner.clone()),
+            reply_to: Some(self.owner),
         };
         match self.inbox.send(inbound) {
             // Enqueued for the target session — fire-and-forget: Ok(None) is the unit ack that the signal
@@ -173,12 +179,13 @@ mod tests {
         // The core cross-session routing: an Emit(target=B, payload) becomes an Inbound addressed to B on
         // the shared inbox, carrying family "message" + the payload verbatim, and the executor acks Ok(None).
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let mut exec = EmitExecutor::new(tx, SessionId::new("sender-a"));
+        let mut exec = EmitExecutor::new(tx, SessionId::new(Hash::of(b"sender-a")));
+        let target = SessionId::new(Hash::of(b"session-b"));
 
         let out = exec
             .perform(
                 EffectId(0),
-                &emit_req("session-b", Some(b"hello-peer")),
+                &emit_req(&target.to_hex(), Some(b"hello-peer")),
                 Hash::of(b"k"),
             )
             .await;
@@ -188,11 +195,7 @@ mod tests {
         );
 
         let routed = rx.try_recv().expect("an Inbound was routed to the inbox");
-        assert_eq!(
-            routed.session.as_str(),
-            "session-b",
-            "routed to the target session"
-        );
+        assert_eq!(routed.session, target, "routed to the target session");
         match routed.body {
             EventBody::Inbound {
                 content_type,
@@ -219,9 +222,13 @@ mod tests {
     async fn a_payloadless_emit_routes_an_empty_message() {
         // A bare signal (no payload) is legitimate — it routes an empty-payload message, not an error.
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let mut exec = EmitExecutor::new(tx, SessionId::new("sender-a"));
+        let mut exec = EmitExecutor::new(tx, SessionId::new(Hash::of(b"sender-a")));
         let out = exec
-            .perform(EffectId(0), &emit_req("b", None), Hash::of(b"k"))
+            .perform(
+                EffectId(0),
+                &emit_req(&SessionId::new(Hash::of(b"b")).to_hex(), None),
+                Hash::of(b"k"),
+            )
             .await;
         assert!(matches!(out, EffectOutcome::Ok(None)));
         let routed = rx.try_recv().expect("routed");
@@ -240,7 +247,7 @@ mod tests {
     #[tokio::test]
     async fn an_empty_target_is_a_permanent_error() {
         let (tx, _rx) = mpsc::unbounded_channel();
-        let mut exec = EmitExecutor::new(tx, SessionId::new("sender-a"));
+        let mut exec = EmitExecutor::new(tx, SessionId::new(Hash::of(b"sender-a")));
         let out = exec
             .perform(EffectId(0), &emit_req("", Some(b"x")), Hash::of(b"k"))
             .await;
@@ -263,7 +270,7 @@ mod tests {
     #[tokio::test]
     async fn a_non_emit_family_is_a_permanent_error() {
         let (tx, _rx) = mpsc::unbounded_channel();
-        let mut exec = EmitExecutor::new(tx, SessionId::new("sender-a"));
+        let mut exec = EmitExecutor::new(tx, SessionId::new(Hash::of(b"sender-a")));
         let req =
             EffectRequest::new_with_family(effect_ct::HTTP, "b", None, Timeliness::Interactive);
         let out = exec.perform(EffectId(0), &req, Hash::of(b"k")).await;
@@ -281,10 +288,10 @@ mod tests {
         // inline + payloadless paths are covered above; this pins the third payload arm. Distinct from the
         // closed-inbox RETRYABLE: a blob ref is a request-shape problem, retrying won't help.
         let (tx, _rx) = mpsc::unbounded_channel();
-        let mut exec = EmitExecutor::new(tx, SessionId::new("sender-a"));
+        let mut exec = EmitExecutor::new(tx, SessionId::new(Hash::of(b"sender-a")));
         let req = EffectRequest::new_with_family(
             effect_ct::EMIT,
-            "b",
+            SessionId::new(Hash::of(b"b")).to_hex(),
             Some(Payload::Blob(Hash::of(b"some-blob-ref"))),
             Timeliness::Interactive,
         );
@@ -301,9 +308,13 @@ mod tests {
         // malformed-request PERMANENT.
         let (tx, rx) = mpsc::unbounded_channel();
         drop(rx); // loop's receiver gone
-        let mut exec = EmitExecutor::new(tx, SessionId::new("sender-a"));
+        let mut exec = EmitExecutor::new(tx, SessionId::new(Hash::of(b"sender-a")));
         let out = exec
-            .perform(EffectId(0), &emit_req("b", Some(b"x")), Hash::of(b"k"))
+            .perform(
+                EffectId(0),
+                &emit_req(&SessionId::new(Hash::of(b"b")).to_hex(), Some(b"x")),
+                Hash::of(b"k"),
+            )
             .await;
         assert!(
             matches!(&out, EffectOutcome::Err { message, retryability } if *retryability == Retryability::Retryable && message.contains("inbox is closed")),
@@ -455,7 +466,7 @@ mod tests {
 
         // The controller: Emit to any member id + (FamilyGrant, the §4c prefix-authority) store/add +
         // store/resolve-all on the session/ group-name prefix. Groups live in its NameStore.
-        let controller_id = SessionId::new("controller");
+        let controller_id = SessionId::new(Hash::of(b"controller"));
         let authz = Authorizer::new(vec![Capability {
             kind: EffectKind::Emit,
             predicate: ResourcePredicate::Any,
@@ -474,7 +485,7 @@ mod tests {
         // kernel store-arm (needs the attached NameStore).
         let executor = CompositeExecutor::new().with_effect(
             effect_ct::EMIT,
-            Box::new(EmitExecutor::new(tx.clone(), controller_id.clone())),
+            Box::new(EmitExecutor::new(tx.clone(), controller_id)),
         );
         let mut controller = HostedSession::genesis(
             Hash::of(b"controller-reducer"),
@@ -507,7 +518,7 @@ mod tests {
                     if content_type.matches_family("message") && b.as_ref() == b"broadcast!"),
                 "each multicast Inbound carries the broadcast message"
             );
-            routed.push((inbound.session.as_str().to_string(), inbound.body));
+            routed.push((inbound.session.to_hex().to_string(), inbound.body));
         }
         let mut routed_targets: Vec<String> = routed.iter().map(|(t, _)| t.clone()).collect();
         routed_targets.sort();

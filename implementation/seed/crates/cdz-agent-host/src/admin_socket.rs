@@ -351,19 +351,24 @@ mod tests {
             let installed = client_call(
                 &mut stream,
                 AdminCommand::InstallSession(InstallSpec {
-                    id: SessionId::new("s1"),
+                    id: SessionId::new(Hash::of(b"s1")),
                     reducer_hash: Hash::of(b"s1"),
                     goal: None,
                 }),
             )
             .await;
-            assert_eq!(installed, AdminResponseWire::Installed { id: "s1".into() });
+            assert_eq!(
+                installed,
+                AdminResponseWire::Installed {
+                    id: SessionId::new(Hash::of(b"s1")).to_hex()
+                }
+            );
 
             let listed = client_call(&mut stream, AdminCommand::ListSessions).await;
             assert_eq!(
                 listed,
                 AdminResponseWire::Sessions {
-                    ids: vec!["s1".into()]
+                    ids: vec![SessionId::new(Hash::of(b"s1")).to_hex()]
                 }
             );
             // Done: close the client stream, then stop the socket + host loop.
@@ -545,19 +550,24 @@ mod tests {
             let installed = client_call(
                 &mut stream,
                 AdminCommand::InstallSession(InstallSpec {
-                    id: SessionId::new("w1"),
+                    id: SessionId::new(Hash::of(b"w1")),
                     reducer_hash: Hash::of(b"w1"),
                     goal: Some("do the thing".into()),
                 }),
             )
             .await;
-            assert_eq!(installed, AdminResponseWire::Installed { id: "w1".into() });
+            assert_eq!(
+                installed,
+                AdminResponseWire::Installed {
+                    id: SessionId::new(Hash::of(b"w1")).to_hex()
+                }
+            );
 
             // STATUS: the installed session is observable over the socket (a status JSON object comes back).
             let status = client_call(
                 &mut stream,
                 AdminCommand::SessionStatus {
-                    id: SessionId::new("w1"),
+                    id: SessionId::new(Hash::of(b"w1")),
                 },
             )
             .await;
@@ -565,7 +575,7 @@ mod tests {
                 AdminResponseWire::Status { status } => {
                     assert_eq!(
                         status.get("session_id").and_then(|v| v.as_str()),
-                        Some("w1"),
+                        Some(SessionId::new(Hash::of(b"w1")).to_hex().as_str()),
                         "the status snapshot names the session: {status}"
                     );
                 }
@@ -577,12 +587,12 @@ mod tests {
             let unknown = client_call(
                 &mut stream,
                 AdminCommand::SessionStatus {
-                    id: SessionId::new("nope"),
+                    id: SessionId::new(Hash::of(b"nope")),
                 },
             )
             .await;
             assert!(
-                matches!(&unknown, AdminResponseWire::Error { message } if message.contains("nope")),
+                matches!(&unknown, AdminResponseWire::Error { message } if message.contains(&SessionId::new(Hash::of(b"nope")).to_hex())),
                 "status of an unknown session is a clean error over the socket, got {unknown:?}"
             );
 
@@ -590,11 +600,16 @@ mod tests {
             let stopped = client_call(
                 &mut stream,
                 AdminCommand::StopSession {
-                    id: SessionId::new("w1"),
+                    id: SessionId::new(Hash::of(b"w1")),
                 },
             )
             .await;
-            assert_eq!(stopped, AdminResponseWire::Stopped { id: "w1".into() });
+            assert_eq!(
+                stopped,
+                AdminResponseWire::Stopped {
+                    id: SessionId::new(Hash::of(b"w1")).to_hex()
+                }
+            );
 
             // LIST confirms it's gone — the full install→stop lifecycle round-tripped over the transport.
             let listed = client_call(&mut stream, AdminCommand::ListSessions).await;

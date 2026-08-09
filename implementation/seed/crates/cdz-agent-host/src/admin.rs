@@ -170,7 +170,7 @@ impl AdminAuthorizer for AllowList {
 /// [`Error`](AdminResponse::Error) rather than a panic — an admin command must never crash the daemon.
 ///
 /// Ids are carried as [`SessionId`] (not `String`), symmetric with [`AdminCommand`]/[`InstallSpec`]: an
-/// in-process caller keeps type-safety + the `Arc<str>` cheap clone, and the String↔SessionId conversion
+/// in-process caller keeps type-safety + the cheap `Copy` genesis `Hash`, and the hex↔SessionId conversion
 /// happens only at the transport boundary (`admin_wire`), not here (#1949 review).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AdminResponse {
@@ -300,7 +300,7 @@ impl AgentHost {
                     return AdminResponse::Error {
                         message: format!(
                             "no session factory available to install {}",
-                            spec.id.as_str()
+                            spec.id.to_hex()
                         ),
                     };
                 };
@@ -308,18 +308,18 @@ impl AgentHost {
                 // spawn() itself would REPLACE, so we guard here before building/registering).
                 if self.contains(&spec.id) {
                     return AdminResponse::Error {
-                        message: format!("session already installed: {}", spec.id.as_str()),
+                        message: format!("session already installed: {}", spec.id.to_hex()),
                     };
                 }
                 match factory.build(&spec).await {
                     Ok(session) => {
-                        let id = spec.id.clone();
-                        self.spawn(id.clone(), session);
+                        let id = spec.id;
+                        self.spawn(id, session);
                         AdminResponse::Installed { id }
                     }
                     // Build failed → registry untouched, error surfaced.
                     Err(e) => AdminResponse::Error {
-                        message: format!("install failed for {}: {e}", spec.id.as_str()),
+                        message: format!("install failed for {}: {e}", spec.id.to_hex()),
                     },
                 }
             }
@@ -331,13 +331,13 @@ impl AgentHost {
                     json: session_status_json(&id, hosted, now_ms, DEFAULT_STALL_AFTER_MS),
                 },
                 None => AdminResponse::Error {
-                    message: format!("unknown session: {}", id.as_str()),
+                    message: format!("unknown session: {}", id.to_hex()),
                 },
             },
             AdminCommand::StopSession { id } => match self.remove(&id) {
                 Some(_) => AdminResponse::Stopped { id },
                 None => AdminResponse::Error {
-                    message: format!("unknown session: {}", id.as_str()),
+                    message: format!("unknown session: {}", id.to_hex()),
                 },
             },
         }
@@ -413,7 +413,7 @@ mod tests {
 
     fn spec(id: &str) -> InstallSpec {
         InstallSpec {
-            id: SessionId::new(id),
+            id: SessionId::new(Hash::of(id.as_bytes())),
             reducer_hash: Hash::of(id.as_bytes()),
             goal: Some("do the thing".into()),
         }
@@ -433,11 +433,11 @@ mod tests {
         assert_eq!(
             resp,
             AdminResponse::Installed {
-                id: SessionId::new("worker")
+                id: SessionId::new(Hash::of(b"worker"))
             }
         );
         assert!(
-            host.contains(&SessionId::new("worker")),
+            host.contains(&SessionId::new(Hash::of(b"worker"))),
             "session registered"
         );
         assert_eq!(host.len(), 1);
@@ -527,12 +527,14 @@ mod tests {
         let resp = host
             .apply_admin(AdminCommand::ListSessions, None, None)
             .await;
-        assert_eq!(
-            resp,
-            AdminResponse::Sessions {
-                ids: vec![SessionId::new("a"), SessionId::new("b")]
-            }
-        );
+        // Listed sorted by SessionId (= genesis-hash byte order); build the expected the same way so the
+        // assertion pins ordering without hardcoding hash bytes.
+        let mut ids = vec![
+            SessionId::new(Hash::of(b"a")),
+            SessionId::new(Hash::of(b"b")),
+        ];
+        ids.sort();
+        assert_eq!(resp, AdminResponse::Sessions { ids });
     }
 
     #[tokio::test]
@@ -550,7 +552,7 @@ mod tests {
         let ok = host
             .apply_admin(
                 AdminCommand::SessionStatus {
-                    id: SessionId::new("s1"),
+                    id: SessionId::new(Hash::of(b"s1")),
                 },
                 None,
                 Some(0),
@@ -558,7 +560,13 @@ mod tests {
             .await;
         match ok {
             AdminResponse::Status { json } => {
-                assert!(json.contains("\"session_id\":\"s1\""), "{json}");
+                assert!(
+                    json.contains(&format!(
+                        "\"session_id\":\"{}\"",
+                        SessionId::new(Hash::of(b"s1")).to_hex()
+                    )),
+                    "{json}"
+                );
                 assert!(json.contains("\"errored\":false"), "{json}");
             }
             other => panic!("expected Status, got {other:?}"),
@@ -567,14 +575,14 @@ mod tests {
         let missing = host
             .apply_admin(
                 AdminCommand::SessionStatus {
-                    id: SessionId::new("ghost"),
+                    id: SessionId::new(Hash::of(b"ghost")),
                 },
                 None,
                 Some(0),
             )
             .await;
         assert!(
-            matches!(missing, AdminResponse::Error { message } if message.contains("unknown session") && message.contains("ghost")),
+            matches!(missing, AdminResponse::Error { message } if message.contains("unknown session") && message.contains(&SessionId::new(Hash::of(b"ghost")).to_hex())),
         );
     }
 
@@ -594,7 +602,7 @@ mod tests {
         let stopped = host
             .apply_admin(
                 AdminCommand::StopSession {
-                    id: SessionId::new("victim"),
+                    id: SessionId::new(Hash::of(b"victim")),
                 },
                 None,
                 None,
@@ -603,7 +611,7 @@ mod tests {
         assert_eq!(
             stopped,
             AdminResponse::Stopped {
-                id: SessionId::new("victim")
+                id: SessionId::new(Hash::of(b"victim"))
             }
         );
         assert!(host.is_empty(), "the session was removed");
@@ -612,7 +620,7 @@ mod tests {
         let again = host
             .apply_admin(
                 AdminCommand::StopSession {
-                    id: SessionId::new("victim"),
+                    id: SessionId::new(Hash::of(b"victim")),
                 },
                 None,
                 None,
@@ -637,7 +645,7 @@ mod tests {
         .await;
         host.apply_admin(
             AdminCommand::StopSession {
-                id: SessionId::new("r"),
+                id: SessionId::new(Hash::of(b"r")),
             },
             None,
             None,
@@ -653,7 +661,7 @@ mod tests {
         assert_eq!(
             reinstalled,
             AdminResponse::Installed {
-                id: SessionId::new("r")
+                id: SessionId::new(Hash::of(b"r"))
             }
         );
         assert_eq!(host.len(), 1);
@@ -671,14 +679,14 @@ mod tests {
         assert_eq!(AdminCommand::ListSessions.action(), "admin/list-sessions");
         assert_eq!(
             AdminCommand::SessionStatus {
-                id: SessionId::new("x")
+                id: SessionId::new(Hash::of(b"x"))
             }
             .action(),
             "admin/session-status"
         );
         assert_eq!(
             AdminCommand::StopSession {
-                id: SessionId::new("x")
+                id: SessionId::new(Hash::of(b"x"))
             }
             .action(),
             "admin/stop-session"
@@ -725,7 +733,7 @@ mod tests {
             .authorize(
                 "anyone",
                 &AdminCommand::StopSession {
-                    id: SessionId::new("x")
+                    id: SessionId::new(Hash::of(b"x"))
                 }
             )
             .await
@@ -739,10 +747,10 @@ mod tests {
             AdminCommand::InstallSession(spec("x")),
             AdminCommand::ListSessions,
             AdminCommand::SessionStatus {
-                id: SessionId::new("x"),
+                id: SessionId::new(Hash::of(b"x")),
             },
             AdminCommand::StopSession {
-                id: SessionId::new("x"),
+                id: SessionId::new(Hash::of(b"x")),
             },
         ] {
             assert!(
@@ -795,9 +803,9 @@ mod tests {
         assert_eq!(
             resp,
             AdminResponse::Installed {
-                id: SessionId::new("ok")
+                id: SessionId::new(Hash::of(b"ok"))
             }
         );
-        assert!(host.contains(&SessionId::new("ok")));
+        assert!(host.contains(&SessionId::new(Hash::of(b"ok"))));
     }
 }

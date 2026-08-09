@@ -405,7 +405,7 @@ impl ExecutorSetBuilder for LiveExecutorSet {
                     Box::new(MeteredExecutor::new(
                         Box::new(crate::LifecycleExecutor::new(
                             lifecycle.clone(),
-                            id.clone(),
+                            *id,
                             owner_genesis,
                         )),
                         m.clone(),
@@ -462,7 +462,7 @@ impl ExecutorSetBuilder for LiveExecutorSet {
                     resolver,
                     ue.inbox.clone(),
                     ue.reply_tokens.clone(),
-                    id.clone(),
+                    *id,
                 )))
         } else {
             composite
@@ -531,16 +531,12 @@ impl FileLogSinkBuilder {
         FileLogSinkBuilder { root: root.into() }
     }
 
-    /// The per-session log path for `id`: `<root>/<sanitized-id>.log`. The id is sanitized into a single safe
-    /// filename component (path separators → `_`) so a crafted id can't escape the root. `build` (append) and
-    /// `recover` (read-back) MUST agree on this path, so both go through here.
+    /// The per-session log path for `id`: `<root>/<id-hex>.log`. The id is a genesis [`Hash`] rendered as hex
+    /// (`[0-9a-f]{64}`), which is a single safe filename component by construction — it holds no path
+    /// separator, so no crafted id can escape the root. `build` (append) and `recover` (read-back) MUST agree
+    /// on this path, so both go through here.
     fn log_path(&self, id: &crate::host::SessionId) -> std::path::PathBuf {
-        let safe: String = id
-            .as_str()
-            .chars()
-            .map(|c| if c == '/' || c == '\\' { '_' } else { c })
-            .collect();
-        self.root.join(format!("{safe}.log"))
+        self.root.join(format!("{}.log", id.to_hex()))
     }
 }
 
@@ -797,7 +793,7 @@ where
             spawn_nonce,
             Some(parent_genesis),
         );
-        let child_id = crate::host::SessionId::new(child_genesis.to_hex());
+        let child_id = crate::host::SessionId::new(child_genesis);
         let executors = self.executors.build(&child_id, child_genesis).await;
         // DENY-ALL child authorizer (NOT self.authz.build() — a spawned child does not inherit the install
         // policy; it starts deny-by-default and earns caps via a later explicit grant).
@@ -870,7 +866,7 @@ where
         // The recovered session's id/genesis are already fixed by its log; build the executor set against its
         // genesis hash (its spawn-provenance for any executor that needs the session identity).
         let owner_genesis = session.genesis_hash();
-        let id = crate::host::SessionId::new(owner_genesis.to_hex());
+        let id = crate::host::SessionId::new(owner_genesis);
         let executors = self.executors.build(&id, owner_genesis).await;
         let hosted = HostedSession::from_recovered(
             session,
@@ -932,7 +928,7 @@ mod tests {
         let mut factory =
             ComponentSessionFactory::new(MemBlobStore::new(), hermetic_executors, deny_all_authz);
         let spec = InstallSpec {
-            id: SessionId::new("ghost"),
+            id: SessionId::new(Hash::of(b"ghost")),
             reducer_hash: Hash::of(b"nonexistent-reducer"),
             goal: None,
         };
@@ -957,7 +953,7 @@ mod tests {
             .unwrap();
         let mut factory = ComponentSessionFactory::new(blob, hermetic_executors, deny_all_authz);
         let spec = InstallSpec {
-            id: SessionId::new("bad"),
+            id: SessionId::new(Hash::of(b"bad")),
             reducer_hash: hash,
             goal: None,
         };
@@ -1033,7 +1029,7 @@ mod tests {
         let resp = host
             .apply_admin(
                 AdminCommand::InstallSession(InstallSpec {
-                    id: SessionId::new("real"),
+                    id: SessionId::new(Hash::of(b"real")),
                     reducer_hash: hash,
                     goal: None,
                 }),
@@ -1044,7 +1040,7 @@ mod tests {
         assert_eq!(
             resp,
             AdminResponse::Installed {
-                id: SessionId::new("real")
+                id: SessionId::new(Hash::of(b"real"))
             },
             "a real reducer component installs"
         );
@@ -1054,7 +1050,7 @@ mod tests {
         use cdz_kernel::event::{ContentType, EventBody};
         let outcome = host
             .deliver(
-                &SessionId::new("real"),
+                &SessionId::new(Hash::of(b"real")),
                 EventBody::Inbound {
                     content_type: ContentType {
                         family: "message".into(),
@@ -1071,7 +1067,7 @@ mod tests {
         );
         // The reducer WROTE to its own KV during the fold — proof it actually executed (not just registered).
         assert_eq!(
-            host.get(&SessionId::new("real"))
+            host.get(&SessionId::new(Hash::of(b"real")))
                 .unwrap()
                 .session()
                 .kv()
@@ -1083,46 +1079,45 @@ mod tests {
 
     #[tokio::test]
     async fn file_log_sink_builder_opens_a_per_session_log() {
-        // The [log]=file sink builder: build(id) opens a LogStore at <root>/<id>.log and returns Some. A
+        // The [log]=file sink builder: build(id) opens a LogStore at <root>/<id-hex>.log and returns Some. A
         // fresh path yields a usable sink + the file exists after open. Unique proven-fresh root (no fixed
         // temp path — #1991 review).
         let root = crate::testutil::unique_temp_dir("filelog");
         let builder = FileLogSinkBuilder::new(&root);
+        let id = SessionId::new(Hash::of(b"sess-1"));
         let sink = builder
-            .build(&SessionId::new("sess-1"))
+            .build(&id)
             .await
             .expect("build ok")
             .expect("file backend yields a sink");
         // The sink is a real LogStore; dropping it is fine — the point is the per-session file was created.
         drop(sink);
         assert!(
-            root.join("sess-1.log").exists(),
-            "per-session log file created at <root>/<id>.log"
+            root.join(format!("{}.log", id.to_hex())).exists(),
+            "per-session log file created at <root>/<id-hex>.log"
         );
         let _ = std::fs::remove_dir_all(&root);
     }
 
     #[tokio::test]
-    async fn file_log_sink_builder_sanitizes_a_slashed_session_id() {
-        // A session id with a '/' must NOT escape the root — it's sanitized to a single filename component.
-        // Unique proven-fresh root (#1991 review).
-        let root = crate::testutil::unique_temp_dir("filelog-sanitize");
+    async fn file_log_sink_builder_keeps_the_log_under_root_as_a_single_component() {
+        // The session id is a genesis-hash HEX (`[0-9a-f]{64}`) — a single safe filename component by
+        // construction (no path separators), so the log file can NEVER escape the root. This pins that
+        // path-safety invariant (which replaced the old id-string sanitization — a Hash id can't hold a '/').
+        let root = crate::testutil::unique_temp_dir("filelog-safe");
         let builder = FileLogSinkBuilder::new(&root);
-        let _sink = builder
-            .build(&SessionId::new("evil/../escape"))
-            .await
-            .expect("build ok")
-            .expect("sink");
-        // The log stayed under root (the '/'s became '_'), nothing escaped.
+        let id = SessionId::new(Hash::of(b"evil/../escape"));
+        let _sink = builder.build(&id).await.expect("build ok").expect("sink");
+        // Exactly one file, directly under root, named <id-hex>.log — no traversal, no nested dirs.
         let entries: Vec<_> = std::fs::read_dir(&root)
             .unwrap()
             .filter_map(|e| e.ok())
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .collect();
-        assert_eq!(
-            entries,
-            vec!["evil_.._escape.log".to_string()],
-            "{entries:?}"
+        assert_eq!(entries, vec![format!("{}.log", id.to_hex())], "{entries:?}");
+        assert!(
+            id.to_hex().chars().all(|c| c.is_ascii_hexdigit()),
+            "a session id renders as pure hex — no path separator can appear"
         );
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1138,7 +1133,7 @@ mod tests {
 
         let root = crate::testutil::unique_temp_dir("filelog-recover");
         let builder = FileLogSinkBuilder::new(&root);
-        let id = SessionId::new("sess-recover");
+        let id = SessionId::new(Hash::of(b"sess-recover"));
         let genesis = Event {
             seq: 0,
             cause: None,
@@ -1178,7 +1173,7 @@ mod tests {
         let root = crate::testutil::unique_temp_dir("filelog-recover-missing");
         let builder = FileLogSinkBuilder::new(&root);
         let got = builder
-            .recover(&SessionId::new("never-existed"))
+            .recover(&SessionId::new(Hash::of(b"never-existed")))
             .await
             .expect("recover of a missing log is Ok, not Err");
         assert!(got.is_none(), "a missing session log recovers as None");
@@ -1200,7 +1195,7 @@ mod tests {
             }
         }
         let got = NoRecoverBuilder
-            .recover(&SessionId::new("any"))
+            .recover(&SessionId::new(Hash::of(b"any")))
             .await
             .expect("default recover is Ok");
         assert!(got.is_none(), "the trait default declines with None");
@@ -1458,7 +1453,7 @@ mod tests {
         // need the real policy's grant set; this env-gated test proves the resolve→lift→install→push path is
         // total against a real component, complementing the deterministic error-path tests above.
         let status = crate::status::session_status_json(
-            &SessionId::new("genesis-test"),
+            &SessionId::new(Hash::of(b"genesis-test")),
             &session,
             None,
             crate::status::DEFAULT_STALL_AFTER_MS,
