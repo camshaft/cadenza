@@ -4174,4 +4174,191 @@ mod tests {
             "a store/* effect with no attached store folds an observable Err"
         );
     }
+
+    // ---- §4c v0.3 SHARED canonical store lifecycle (converted from the deleted shared_store_host_e2e
+    // integration test, operator no-integration-tests mandate — hermetic: AgentHost + HostedSession + Rust
+    // reducers, no wasm/network). Exercises the shared-canonical refactor (with_canonical_store + spawn-replay
+    // + merge-back) that this file owns. ----
+
+    const SHARED_POINTER: &str = cdz_kernel::name_store::NameStore::COMPILER_LATEST;
+
+    /// PUBLISHER: on inbound, `store/set`s SHARED_POINTER → the hash it carries.
+    struct SharedPublisher {
+        hash: Hash,
+    }
+    #[async_trait::async_trait(?Send)]
+    impl Reducer for SharedPublisher {
+        async fn fold(&mut self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+            use cdz_kernel::event_ast::encode_name_set;
+            if matches!(event.body, EventBody::Inbound { .. }) {
+                FoldOutput::with(vec![EffectRequest::new_with_family(
+                    effect_ct::STORE_SET,
+                    SHARED_POINTER,
+                    Some(Payload::Inline(
+                        encode_name_set(SHARED_POINTER, &self.hash).into(),
+                    )),
+                    Timeliness::Interactive,
+                )])
+            } else {
+                FoldOutput::none()
+            }
+        }
+    }
+
+    /// CONSUMER: on inbound, `store/resolve`s SHARED_POINTER; records the resolved hash's hex in KV.
+    struct SharedConsumer;
+    #[async_trait::async_trait(?Send)]
+    impl Reducer for SharedConsumer {
+        async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
+            use cdz_kernel::event_ast::decode_name_set;
+            match &event.body {
+                EventBody::Inbound { .. } => {
+                    FoldOutput::with(vec![EffectRequest::new_with_family(
+                        effect_ct::STORE_RESOLVE,
+                        SHARED_POINTER,
+                        None,
+                        Timeliness::Interactive,
+                    )])
+                }
+                EventBody::EffectResult {
+                    result: EffectOutcome::Ok(Some(Payload::Inline(bytes))),
+                    ..
+                } => {
+                    if let Ok((_n, h)) = decode_name_set(bytes) {
+                        kv.put(b"resolved".to_vec(), h.to_hex().into_bytes());
+                    }
+                    FoldOutput::none()
+                }
+                _ => FoldOutput::none(),
+            }
+        }
+    }
+
+    fn share_set_system() -> Box<Authorizer> {
+        Box::new(
+            Authorizer::new(vec![]).with_family_grants(vec![Capability::for_family(
+                effect_ct::STORE_SET,
+                ResourcePredicate::Prefix("system/".into()),
+            )]),
+        )
+    }
+    fn share_resolve_system() -> Box<Authorizer> {
+        Box::new(
+            Authorizer::new(vec![]).with_family_grants(vec![Capability::for_family(
+                effect_ct::STORE_RESOLVE,
+                ResourcePredicate::Prefix("system/".into()),
+            )]),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_later_spawned_session_sees_what_an_earlier_session_published_via_the_canonical_store(
+    ) {
+        let published = Hash::of(b"compiler-wasm-v3");
+        let mut host = AgentHost::with_canonical_store(cdz_kernel::name_store::NameStore::new());
+
+        // PUBLISH: spawn a publisher (born with a replay of the empty canonical), deliver "go" → it sets the
+        // pointer; on deliver return the host folds its write back into canonical (merge_appends_from).
+        let pub_id = host.spawn(
+            SessionId::new("publisher"),
+            HostedSession::genesis(
+                Hash::of(b"publisher-v1"),
+                Box::new(SharedPublisher { hash: published }),
+                share_set_system(),
+                CompositeExecutor::new(),
+            ),
+        );
+        host.deliver(&pub_id, inbound_go(), None)
+            .await
+            .expect("publisher session exists")
+            .expect("the publish turn ran");
+
+        // CONSUME: spawn a DIFFERENT session LATER — born with a replay of the NOW-updated canonical, so it
+        // already carries the publisher's pointer, no explicit export/replay bridge.
+        let con_id = host.spawn(
+            SessionId::new("consumer"),
+            HostedSession::genesis(
+                Hash::of(b"consumer-v1"),
+                Box::new(SharedConsumer),
+                share_resolve_system(),
+                CompositeExecutor::new(),
+            ),
+        );
+        host.deliver(&con_id, inbound_go(), None)
+            .await
+            .expect("consumer session exists")
+            .expect("the resolve turn ran");
+
+        let resolved = host
+            .get(&con_id)
+            .expect("consumer registered")
+            .session()
+            .kv()
+            .get(b"resolved")
+            .expect("consumer recorded a resolved hash");
+        assert_eq!(
+            resolved,
+            published.to_hex().as_bytes(),
+            "a later-spawned consumer resolved COMPILER_LATEST to what the earlier publisher set — via the \
+             canonical shared store, no explicit bridge"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_share_less_host_leaves_sessions_store_less() {
+        // A plain AgentHost::new() (no canonical) attaches NO store → a store/* effect folds an observable
+        // Err (never a panic) — the opt-in boundary. Two share-less sessions never see each other's
+        // (nonexistent) name space (no cross-session leak).
+        let mut host = AgentHost::new();
+        let id = host.spawn(
+            SessionId::new("no-store"),
+            HostedSession::genesis(
+                Hash::of(b"no-store-v1"),
+                Box::new(SharedConsumer),
+                share_resolve_system(),
+                CompositeExecutor::new(),
+            ),
+        );
+        host.deliver(&id, inbound_go(), None)
+            .await
+            .expect("session exists")
+            .expect("the turn ran (the store/* effect settled as an Err, no panic)");
+        assert_eq!(
+            host.get(&id).unwrap().open_effects(),
+            0,
+            "the resolve settled (as an Err — no store attached on a share-less host)"
+        );
+        assert!(
+            host.get(&id)
+                .unwrap()
+                .session()
+                .kv()
+                .get(b"resolved")
+                .is_none(),
+            "nothing resolved — a share-less host attaches no store"
+        );
+
+        let id2 = host.spawn(
+            SessionId::new("no-store-2"),
+            HostedSession::genesis(
+                Hash::of(b"no-store-2-v1"),
+                Box::new(SharedConsumer),
+                share_resolve_system(),
+                CompositeExecutor::new(),
+            ),
+        );
+        host.deliver(&id2, inbound_go(), None)
+            .await
+            .expect("session 2 exists")
+            .expect("session 2's turn ran (store/* settled as an Err, no panic)");
+        assert!(
+            host.get(&id2)
+                .unwrap()
+                .session()
+                .kv()
+                .get(b"resolved")
+                .is_none(),
+            "a second share-less session also resolves nothing — no store handed down, no cross-session leak"
+        );
+    }
 }
