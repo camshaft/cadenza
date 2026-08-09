@@ -327,6 +327,15 @@ impl Session {
         &self.log
     }
 
+    /// The number of events in this session's log — derived from the resident tip (log-decouple I1/I5),
+    /// NOT `self.log.len()`. Seqs are 0-based and dense (`seq = log.len()` at append) and the log is always
+    /// genesis-seeded (seq 0, never empty), so the count is `tip.seq + 1`. This is the derived replacement
+    /// for the `log().len()` reads scattered across callers/tests, so they stop depending on the resident
+    /// log Vec ahead of its removal (I5 step 3 makes that a pure deletion).
+    pub fn event_count(&self) -> u64 {
+        self.tip.seq + 1
+    }
+
     /// The reason this session MOST-RECENTLY faulted, or `None` if its tip isn't a fault. A session
     /// whose tip event is a [`EventBody::FoldFailed`] (§17: a reducer trap / fuel-exhaustion /
     /// instantiate failure the kernel captures as a first-class log event rather than a silent stall)
@@ -581,10 +590,8 @@ impl Session {
 
         StatusSnapshot {
             state,
-            // Derived from the resident tip (log-decouple I1/I5 step 2), not `self.log`: seqs are 0-based
-            // and dense (`seq = log.len()` at append), so the event count is `tip.seq + 1`. The log is
-            // always genesis-seeded (seq 0), never empty — no `(empty)` case.
-            event_count: self.tip.seq + 1,
+            // Derived from the resident tip (log-decouple I1/I5 step 2), not `self.log` — see `event_count`.
+            event_count: self.event_count(),
             last_event_kind: event_body_name(&self.tip.body),
             in_flight,
             armed_timers: self.open.values().filter(|ob| ob.is_timer).count() as u32,
@@ -2734,7 +2741,7 @@ mod status_snapshot_tests {
             .unwrap();
 
         // The parent is Active with one armed timer and its published status set.
-        let parent_events_before = s.log().len();
+        let parent_events_before = s.event_count();
         let parent_snap_before = s.status_snapshot(Some(500), 300_000);
         assert_eq!(parent_snap_before.state, SessionState::Active);
         assert_eq!(parent_snap_before.armed_timers, 1);
@@ -2742,7 +2749,7 @@ mod status_snapshot_tests {
         // Fork it: the fork inherits the materialized KV (incl. the `public/` status) but starts as a
         // clean reactive session — its own genesis, NO inherited in-flight obligations or armed timers.
         let fork = s.fork_for_query();
-        assert_eq!(fork.log().len(), 1); // just the fork's own genesis
+        assert_eq!(fork.event_count(), 1); // just the fork's own genesis
         assert_eq!(fork.open_effects(), 0); // did NOT inherit the parent's open timer obligation
         assert_eq!(fork.next_timer_deadline(), None);
         // Same reducer-hash (folds identically) — the snapshot descriptor proves it.
@@ -2757,7 +2764,7 @@ mod status_snapshot_tests {
         assert_eq!(fork.kv().get(b"private/secret"), Some(&b"nope"[..]));
 
         // NON-INTERFERENCE: forking read the parent immutably — its log, timers, and state are unchanged.
-        assert_eq!(s.log().len(), parent_events_before);
+        assert_eq!(s.event_count(), parent_events_before);
         let parent_snap_after = s.status_snapshot(Some(500), 300_000);
         assert_eq!(parent_snap_after.state, SessionState::Active);
         assert_eq!(parent_snap_after.armed_timers, 1);
@@ -2809,7 +2816,7 @@ mod status_snapshot_tests {
             sync_s.snapshot().kv_root,
             "async KV root must equal sync KV root"
         );
-        assert_eq!(async_s.log().len(), sync_s.log().len());
+        assert_eq!(async_s.event_count(), sync_s.event_count());
         let sync_snap = sync_s.status_snapshot(Some(500), 300_000);
         let async_snap = async_s.status_snapshot(Some(500), 300_000);
         assert_eq!(async_snap.state, sync_snap.state);
@@ -2894,7 +2901,7 @@ mod status_snapshot_tests {
         s.deliver(inbound(), None, &mut StatusReducer, &timer_cap(), &mut exec)
             .await
             .unwrap();
-        let parent_events = s.log().len();
+        let parent_events = s.event_count();
 
         let mut fork = s.fork_for_query();
         let mut fork_exec = RecordingExecutor::new();
@@ -2908,11 +2915,11 @@ mod status_snapshot_tests {
         .await
         .unwrap();
         // The fork folded the query and did work in its OWN log.
-        assert!(fork.log().len() > 1);
+        assert!(fork.event_count() > 1);
         assert_eq!(fork.status_snapshot(Some(0), 300_000).armed_timers, 1);
 
         // The parent's log length is untouched by anything the fork did.
-        assert_eq!(s.log().len(), parent_events);
+        assert_eq!(s.event_count(), parent_events);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -2933,7 +2940,7 @@ mod status_snapshot_tests {
         )
         .await
         .unwrap();
-        let live_events_before = live.log().len();
+        let live_events_before = live.event_count();
         assert_eq!(
             live.kv().get(b"private/goal"),
             Some(&b"the auth module"[..])
@@ -2974,7 +2981,7 @@ mod status_snapshot_tests {
 
         // NON-INTERFERENCE: the live session never saw the query — its log is unchanged and it has no
         // `public/summary` (only the fork produced one).
-        assert_eq!(live.log().len(), live_events_before);
+        assert_eq!(live.event_count(), live_events_before);
         assert!(live.kv().get(b"public/summary").is_none());
     }
 
@@ -3235,7 +3242,7 @@ mod monotonic_now_tests {
         assert_eq!(replayed.snapshot().kv_root, s.snapshot().kv_root);
         assert_eq!(replayed.last_now, s.last_now);
         assert_eq!(replayed.last_now, 1002);
-        assert_eq!(replayed.log().len(), s.log().len());
+        assert_eq!(replayed.event_count(), s.event_count());
         assert_eq!(recorded_now_sequence(&replayed), recorded_now_sequence(&s));
 
         // Two replays of the same log agree — the re-fold has no hidden nondeterminism.
@@ -3988,7 +3995,7 @@ mod monotonic_now_tests {
         }]);
         let mut session = Session::genesis(Hash::of(b"seed-v1"), Hash::of(b"test-spawn-nonce"));
         // Precondition: a bare genesis log has exactly the Genesis event, no manifest yet.
-        assert_eq!(session.log().len(), 1);
+        assert_eq!(session.event_count(), 1);
 
         let surfaced = session
             .seed_capabilities(&mut InertReducer, &authz, &mut exec)
@@ -4135,13 +4142,13 @@ mod monotonic_now_tests {
         assert!(http_granted, "the pushed manifest reads http as granted");
 
         // No change: a second push with the SAME (wide) surface is the empty-delta no-op — nothing folded.
-        let log_len = session.log().len();
+        let log_len = session.event_count();
         let noop = session
             .push_capabilities_changed(&mut InertReducer, &authz, &mut wide)
             .await;
         assert!(noop.is_empty());
         assert_eq!(
-            session.log().len(),
+            session.event_count(),
             log_len,
             "an unchanged surface pushes nothing (the manifest-didn't-move gate)"
         );
@@ -4168,7 +4175,7 @@ mod monotonic_now_tests {
             .seed_capabilities(&mut InertReducer, &authz, &mut exec)
             .await;
         assert!(first.is_empty(), "seed answered inline");
-        let after_first = session.log().len();
+        let after_first = session.event_count();
         // Exactly one control/capabilities dispatch after the first seed.
         let cap_dispatches = |s: &Session| {
             s.log()
@@ -4191,7 +4198,7 @@ mod monotonic_now_tests {
             .await;
         assert!(second.is_empty(), "a repeat seed is a no-op");
         assert_eq!(
-            session.log().len(),
+            session.event_count(),
             after_first,
             "a repeat seed appends nothing to the log"
         );
@@ -4301,7 +4308,7 @@ mod monotonic_now_tests {
             "the seed's dispatch is settled by its answer — no open in-flight obligation"
         );
         let live_root = session.snapshot().kv_root;
-        let live_len = session.log().len();
+        let live_len = session.event_count();
 
         // Replay the durable log — recovery reconstructs the same session.
         let log = session.log().to_vec();
@@ -4315,7 +4322,7 @@ mod monotonic_now_tests {
             "born-knowing KV state must survive replay identically"
         );
         assert_eq!(
-            replayed.log().len(),
+            replayed.event_count(),
             live_len,
             "replay folds the logged seed result — it does not re-drive/re-seed (no new events)"
         );
@@ -4403,7 +4410,7 @@ mod monotonic_now_tests {
         .await
         .unwrap();
         assert!(
-            s.log().len() > 1,
+            s.event_count() > 1,
             "the session must carry post-genesis events so replay-stability is a NON-vacuous claim"
         );
 
@@ -5267,7 +5274,7 @@ mod lifecycle_tests {
             s.is_terminated(),
             "the Terminated tail marks the session terminated"
         );
-        let len_after_marker = s.log().len();
+        let len_after_marker = s.event_count();
 
         // The next delivery is REFUSED — not applied, not silently dropped.
         let refused = s
@@ -5284,7 +5291,7 @@ mod lifecycle_tests {
             "a fold on a terminated session must return FoldRefused, got {refused:?}"
         );
         assert_eq!(
-            s.log().len(),
+            s.event_count(),
             len_after_marker,
             "a refused fold must NOT append any event — the terminated log stays frozen"
         );
@@ -5355,7 +5362,7 @@ mod lifecycle_tests {
 
         s.append(terminated_marker(), None).await;
         assert!(s.is_terminated());
-        let len_after_marker = s.log().len();
+        let len_after_marker = s.event_count();
 
         let fired = s
             .fire_due_timers(
@@ -5367,7 +5374,7 @@ mod lifecycle_tests {
             .await;
         assert_eq!(fired, 0, "a terminated session fires no timers");
         assert_eq!(
-            s.log().len(),
+            s.event_count(),
             len_after_marker,
             "fire_due_timers must append nothing on a terminated session"
         );
@@ -5404,7 +5411,7 @@ mod lifecycle_tests {
         let open_id = EffectId(0); // the first (only) open id
 
         s.append(terminated_marker(), None).await;
-        let len_after_marker = s.log().len();
+        let len_after_marker = s.event_count();
 
         // time_out_effect on the terminated session is a no-op — no EffectResult appended, tail preserved.
         let timed_out = s
@@ -5417,7 +5424,7 @@ mod lifecycle_tests {
             .await;
         assert!(!timed_out, "a terminated session times out no effect");
         assert_eq!(
-            s.log().len(),
+            s.event_count(),
             len_after_marker,
             "time_out_effect must append nothing on a terminated session"
         );
@@ -5443,7 +5450,7 @@ mod lifecycle_tests {
         )
         .await
         .unwrap();
-        let len_before = s.log().len();
+        let len_before = s.event_count();
         assert!(!s.is_terminated());
         // Capture the prior tip so we can ASSERT the marker's causal edge points at it (not just claim it).
         let prior_tip = s.log().last().expect("a tip before terminate").hash();
@@ -5456,7 +5463,7 @@ mod lifecycle_tests {
             .await
             .expect("terminate on a live session succeeds");
         assert_eq!(
-            s.log().len(),
+            s.event_count(),
             len_before + 1,
             "terminate appends exactly one event"
         );
@@ -5492,14 +5499,14 @@ mod lifecycle_tests {
         assert!(matches!(refused, Err(KernelError::FoldRefused)));
 
         // A SECOND terminate is rejected — no double-marker (idempotent-by-rejection), log unchanged.
-        let len_after = s.log().len();
+        let len_after = s.event_count();
         let second = s.terminate(by, "again".to_string()).await;
         assert!(
             matches!(second, Err(KernelError::FoldRefused)),
             "terminating an already-terminated session returns FoldRefused, got {second:?}"
         );
         assert_eq!(
-            s.log().len(),
+            s.event_count(),
             len_after,
             "a rejected second terminate appends nothing"
         );
@@ -5529,11 +5536,11 @@ mod lifecycle_tests {
         // cause-linked to the prior tip.
         let child_a = Hash::of(b"child-a-genesis");
         let child_b = Hash::of(b"child-b-genesis");
-        let len_before = parent.log().len();
+        let len_before = parent.event_count();
         let prior_tip = parent.log().last().expect("tip").hash();
         let edge_a = parent.record_spawn(child_a).await.expect("record child A");
         assert_eq!(
-            parent.log().len(),
+            parent.event_count(),
             len_before + 1,
             "record_spawn appends exactly one event"
         );
