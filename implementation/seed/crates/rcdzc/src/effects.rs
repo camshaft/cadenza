@@ -7526,7 +7526,7 @@ fn self_calls_tail(db: &mut Db, node: StructId, callee_def: usize, tail: bool) -
 /// `f$acc` reads `is_recursive(f.body)=false` — so specializing `f` (the seed-wrapper) under a MERGED
 /// context threads the NON-recursive wrapper (its body is just the seed call), which drops the advance (the
 /// rn post-observer safe-decline). The ACTUAL recursion lives in `f$acc`. When `def_index` is such a
-/// seed-wrapper — `slots>1` (merged), `db.transformed[def_index]=Some(f$acc)`, body is a call
+/// seed-wrapper — `slots>1` (merged), `db.transformed.get(&def_index)=Some(f$acc)`, body is a call
 /// `(f$acc <orig-args…> <seed…>)` naming `f$acc` — return `Some((f$acc-index, seed-args))`: the caller
 /// specializes `f$acc` and threads the SEEDS (the wrapper-body args past the original params) as extra
 /// call-site args (before the trailing states, mirroring the captured-enclosing-param plumbing). Approach
@@ -7554,7 +7554,7 @@ fn accum_seed_redirect(
     // The wrapper body must be a call `(f$acc <orig-args…> <seed…>)` naming the accum copy, with at least
     // the wrapper's own params as leading args (the rest are the accumulator seeds `f$acc` introduced).
     if call_children.is_empty()
-        || db.ast.as_name(call_children[0]) != Some(&db.defs[acc].name.clone())
+        || db.ast.as_name(call_children[0]) != Some(db.defs[acc].name.as_str())
         || call_children.len() - 1 < wrapper_params
     {
         return None;
