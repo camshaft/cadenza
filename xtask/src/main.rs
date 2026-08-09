@@ -4502,6 +4502,27 @@ fn check(paths: &Paths, profile: &str) {
     // never touches functional emoji in string/char literals (Unicode test strings, output markers) or the
     // legitimate technical typography (em-dash/arrows/math) it deliberately allows. See `emoji_free_lint`.
     log.step_native("emoji-free", || emoji_free_lint(paths));
+    // Mandate-enforcement lint (operator directive 2026-08-09: mandates keep being violated + found
+    // post-hoc — make a violation UNMERGEABLE at the gate). A HARD step, mirroring emoji-free: fail the
+    // check on any DENY-level mandate violation in `implementation/**/*.rs`. Currently: no-new-integration
+    // -tests (a `tests/*.rs` not on the grandfather allowlist + not vendored). Cheap (a source walk, no
+    // rebuild). v-syntax authored `mandates::lint_mandates` (handed off as a patch — xtask is v-ft's
+    // crate); v-ft wires it here + into localGate (via v-nix, mirroring emojiLintCheck) so it gates the
+    // sole merge path. Follow-on syn rules (hex/thin-wrapper/hard-coded-names) extend mandates.rs behind
+    // this same entrypoint (no re-wire). Maps violations → one Err naming the count + first file.
+    log.step_native("mandates", || match mandates::lint_mandates(&paths.repo) {
+        Ok(v) if v.is_empty() => Ok(()),
+        Ok(violations) => {
+            let first = &violations[0];
+            Err(format!(
+                "{} mandate violation(s) — first: {}: {} (run `cargo xtask lint-mandates` for the full list)",
+                violations.len(),
+                first.file.display(),
+                first.reason
+            ))
+        }
+        Err(msg) => Err(msg),
+    });
     // WARN-only: surface the byte-len-bounds-scalar-String.at latent-ASCII shape (concierge ruling C
     // part 2). Never reds the gate — always Ok unless the corpus can't be enumerated.
     log.step_native("bytelen-scalar-walk-warn", || {

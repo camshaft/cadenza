@@ -61,6 +61,17 @@ fn no_new_integration_tests(repo: &Path) -> Result<Vec<Violation>, String> {
         // Compare by the repo-relative path (the allowlist's form).
         let rel = f.strip_prefix(repo).unwrap_or(&f);
         let rel_str = rel.to_string_lossy().replace('\\', "/");
+        // EXCLUDE VENDORED / third-party trees (v-ft 2026-08-09, caught by the pre-wire standalone
+        // validation): a `reference/` path segment marks vendored code we do NOT author (e.g.
+        // implementation/music/reference/euphony-rs/…/tests/api.rs) — the operator prefer-unit-tests
+        // mandate is OUR discipline, not applicable to a third-party crate's own test layout, and
+        // enumerating every vendored tests/*.rs into the allowlist is churn (new vendored files would
+        // re-red). Skipping the vendored tree is the correct scope + is future-proof. Without this the
+        // lint reds on a PRE-EXISTING vendored file every MR → blocks the whole fleet (localGate is the
+        // sole gate) — the exact fleet-block failure mode the pre-wire validation exists to catch.
+        if is_vendored_path(&rel_str) {
+            continue;
+        }
         if !allow.contains(&rel_str) {
             out.push(Violation {
                 file: f.clone(),
@@ -75,6 +86,16 @@ fn no_new_integration_tests(repo: &Path) -> Result<Vec<Violation>, String> {
         }
     }
     Ok(out)
+}
+
+/// Whether a repo-relative path is under a VENDORED / third-party tree the mandate must NOT police.
+/// A `reference/` path segment marks vendored code we don't author (e.g.
+/// `implementation/music/reference/euphony-rs/…`). Our prefer-unit-tests (and other) mandates are our
+/// own discipline; a third-party crate's test layout is not ours to change, and allowlisting each
+/// vendored file is churn (new vendored files would re-red). Pure over the slash-normalized rel path so
+/// the exclusion is unit-tested.
+fn is_vendored_path(rel_slash: &str) -> bool {
+    rel_slash.split('/').any(|seg| seg == "reference")
 }
 
 /// Is `path` a cargo INTEGRATION-test source — a `.rs` file under a crate's top-level `tests/` directory?
@@ -160,6 +181,26 @@ mod tests {
         assert!(!is_integration_test_path(Path::new(
             "implementation/seed/crates/cdz-kernel/tests/fixtures/reducer.cdz"
         )));
+    }
+
+    #[test]
+    fn vendored_path_excludes_reference_trees_only() {
+        // A `reference/` segment = vendored third-party (not ours to mandate) → excluded.
+        assert!(is_vendored_path(
+            "implementation/music/reference/euphony-rs/euphony/tests/api.rs"
+        ));
+        assert!(is_vendored_path(
+            "implementation/foo/reference/bar/tests/x.rs"
+        ));
+        // Our own crates (no `reference/` segment) are NOT excluded — the mandate applies.
+        assert!(!is_vendored_path(
+            "implementation/seed/crates/cdz/tests/lint_cli.rs"
+        ));
+        // A substring-but-not-a-segment (e.g. a crate literally named with 'reference' inside) must not
+        // match on substring — only a whole path SEGMENT `reference` counts.
+        assert!(!is_vendored_path(
+            "implementation/seed/crates/reference-impl/tests/x.rs"
+        ));
     }
 
     #[test]
