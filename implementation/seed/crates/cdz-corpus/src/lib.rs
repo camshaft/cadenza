@@ -742,7 +742,7 @@ fn parse_platform_case(a: &Arenas, case_id: StructId) -> Result<PlatformRecord, 
             Some("session") => {
                 if let Some(tail) = a.as_form(clause, "session")
                     && let Some(&alias_id) = tail.first()
-                    && let Some(alias) = a.as_name(alias_id)
+                    && let Some(alias) = atom_text(a, alias_id)
                 {
                     let mut program = String::new();
                     let mut serves: Vec<String> = Vec::new();
@@ -758,8 +758,8 @@ fn parse_platform_case(a: &Arenas, case_id: StructId) -> Result<PlatformRecord, 
                             Some("serves") => {
                                 if let Some(stail) = a.as_form(child, "serves") {
                                     for &f in stail {
-                                        if let Some(fam) = a.as_name(f) {
-                                            serves.push(fam.to_string());
+                                        if let Some(fam) = atom_text(a, f) {
+                                            serves.push(fam);
                                         }
                                     }
                                 }
@@ -768,7 +768,7 @@ fn parse_platform_case(a: &Arenas, case_id: StructId) -> Result<PlatformRecord, 
                         }
                     }
                     sessions.push(PlatformSession {
-                        alias: alias.to_string(),
+                        alias,
                         program,
                         serves,
                     });
@@ -778,19 +778,19 @@ fn parse_platform_case(a: &Arenas, case_id: StructId) -> Result<PlatformRecord, 
             Some("kickoff") => {
                 if let Some(tail) = a.as_form(clause, "kickoff")
                     && let Some(&alias_id) = tail.first()
-                    && let Some(alias) = a.as_name(alias_id)
+                    && let Some(alias) = atom_text(a, alias_id)
                     && let Some(&inbound_id) = tail.get(1)
                     && let Some(itail) = a.as_form(inbound_id, "inbound")
                     && let Some(&fam_id) = itail.first()
-                    && let Some(inbound) = a.as_name(fam_id)
+                    && let Some(inbound) = atom_text(a, fam_id)
                 {
                     let value = itail
                         .get(1)
                         .map(|&v| value_form_text(a, v))
                         .unwrap_or_default();
                     kickoff = Some(Kickoff {
-                        alias: alias.to_string(),
-                        inbound: inbound.to_string(),
+                        alias,
+                        inbound,
                         value,
                     });
                 }
@@ -863,29 +863,25 @@ fn parse_platform_case(a: &Arenas, case_id: StructId) -> Result<PlatformRecord, 
             Some("end-state") => {
                 if let Some(tail) = a.as_form(clause, "end-state")
                     && let Some(&alias_id) = tail.first()
-                    && let Some(alias) = a.as_name(alias_id)
+                    && let Some(alias) = atom_text(a, alias_id)
                 {
                     for &child in &tail[1..] {
                         match a.head_name(child) {
                             Some("kv") => {
                                 if let Some(ktail) = a.as_form(child, "kv")
                                     && let Some(&key_id) = ktail.first()
-                                    && let Some(key) = a.as_name(key_id)
+                                    && let Some(key) = atom_text(a, key_id)
                                     && let Some(&val_id) = ktail.get(1)
                                 {
-                                    end_kv.push((
-                                        alias.to_string(),
-                                        key.to_string(),
-                                        value_form_text(a, val_id),
-                                    ));
+                                    end_kv.push((alias.clone(), key, value_form_text(a, val_id)));
                                 }
                             }
                             Some("status") => {
                                 if let Some(stail) = a.as_form(child, "status")
                                     && let Some(&st_id) = stail.first()
-                                    && let Some(st) = a.as_name(st_id)
+                                    && let Some(st) = atom_text(a, st_id)
                                 {
-                                    end_status.push((alias.to_string(), st.to_string()));
+                                    end_status.push((alias.clone(), st));
                                 }
                             }
                             _ => {}
@@ -897,10 +893,10 @@ fn parse_platform_case(a: &Arenas, case_id: StructId) -> Result<PlatformRecord, 
             Some("events-processed") => {
                 if let Some(tail) = a.as_form(clause, "events-processed")
                     && let Some(&alias_id) = tail.first()
-                    && let Some(alias) = a.as_name(alias_id)
+                    && let Some(alias) = atom_text(a, alias_id)
                     && let Some(&n_id) = tail.get(1)
                 {
-                    events_processed.push((alias.to_string(), value_of(a, n_id)));
+                    events_processed.push((alias, value_of(a, n_id)));
                 }
             }
             _ => {}
@@ -926,13 +922,14 @@ fn parse_platform_case(a: &Arenas, case_id: StructId) -> Result<PlatformRecord, 
     })
 }
 
-/// A `(<head> <name>)` child clause's name argument (e.g. `(from worker)` → `"worker"`), searched among
-/// a clause's children — the addressing shape shared by effect/message `(from …)`/`(to …)`/`(family …)`.
+/// A `(<head> <atom>)` child clause's argument (e.g. `(from "worker")` → `"worker"`), searched among a
+/// clause's children — the addressing shape shared by effect/message `(from …)`/`(to …)`/`(family …)`.
+/// The atom is a string or bare name (via [`atom_text`]), matching the alias spelling elsewhere.
 fn child_name_arg(a: &Arenas, tail: &[StructId], head: &str) -> Option<String> {
     tail.iter().find_map(|&child| {
         a.as_form(child, head)
             .and_then(|t| t.first().copied())
-            .and_then(|id| a.as_name(id).map(str::to_string))
+            .and_then(|id| atom_text(a, id))
     })
 }
 
@@ -1056,6 +1053,16 @@ fn dotted_op(a: &Arenas, id: StructId) -> String {
     sexpr::print_from(a, id)
 }
 
+/// The text of an ATOM used as an identifier in a platform case — a bare NAME (`worker`) OR a quoted
+/// STRING leaf (`"worker"`). Platform cases spell aliases/families/keys/statuses as strings (the
+/// co-designed canonical form, e.g. `(session "worker" …)`), but a bare name is equally meaningful; this
+/// accepts either so the reader is robust to both spellings. `None` for any non-atom.
+fn atom_text(a: &Arenas, id: StructId) -> Option<String> {
+    a.as_name(id)
+        .map(str::to_string)
+        .or_else(|| string_leaf(a, id))
+}
+
 /// The string a `Str` leaf carries, if `id` is one.
 fn string_leaf(a: &Arenas, id: StructId) -> Option<String> {
     match a.get(id) {
@@ -1086,22 +1093,24 @@ mod tests {
     /// discipline: a record line the reader never emits would silently fail the grade downstream).
     #[test]
     fn platform_case_parses_and_renders_the_fixed_arity_record_lines() {
+        // The CANONICAL co-designed form spells aliases/families/keys/statuses as quoted STRINGS
+        // (`(session "worker" …)`), so the reader must read a string leaf here, not only a bare name.
         let recs = read_platform(
             r#"(platform-case "worker asks a clock then messages a reporter"
                  (doc "one kickoff; runs to a fixpoint")
-                 (session worker   (reducer (do (def (main) 0) (export main))))
-                 (session reporter (reducer (do (def (main) 0) (export main))))
-                 (session clock    (reducer (do (def (main) 0) (export main))) (serves now))
-                 (kickoff worker (inbound start (: unit Unit)))
+                 (session "worker"   (reducer (do (def (main) 0) (export main))))
+                 (session "reporter" (reducer (do (def (main) 0) (export main))))
+                 (session "clock"    (reducer (do (def (main) 0) (export main))) (serves "now"))
+                 (kickoff "worker" (inbound "start" (: unit Unit)))
                  (expect-effects
-                   (effect (from worker) (family now))
-                   (effect (from worker) (family log) (: "t=0" String)))
+                   (effect (from "worker") (family "now"))
+                   (effect (from "worker") (family "log") (: "t=0" String)))
                  (expect-messages
-                   (message (from worker) (to reporter) (family message) (: "done" String)))
-                 (expect-delivery-failure (from worker) (to closed))
-                 (end-state worker   (status quiescent))
-                 (end-state reporter (kv seen (: 1 Int64)) (status quiescent))
-                 (events-processed worker 3))"#,
+                   (message (from "worker") (to "reporter") (family "message") (: "done" String)))
+                 (expect-delivery-failure (from "worker") (to "closed"))
+                 (end-state "worker"   (status "quiescent"))
+                 (end-state "reporter" (kv "seen" (: 1 Int64)) (status "quiescent"))
+                 (events-processed "worker" 3))"#,
         )
         .unwrap();
         assert_eq!(recs.len(), 1);
