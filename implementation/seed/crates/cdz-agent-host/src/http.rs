@@ -22,7 +22,7 @@
 //! dispatch; this executor does not re-authorize.
 
 use bytes::Bytes;
-use cdz_kernel::effect::{effect_ct, EffectRequest, Payload};
+use cdz_kernel::effect::{effect_ct, EffectId, EffectRequest, Payload};
 use cdz_kernel::event::EffectOutcome;
 use cdz_kernel::event_ast::{decode_http_request_with_headers, encode_http_response};
 use cdz_kernel::executor::Executor;
@@ -140,7 +140,12 @@ impl<T: HttpTransport> HttpExecutor<T> {
 
 #[async_trait::async_trait(?Send)]
 impl<T: HttpTransport> Executor for HttpExecutor<T> {
-    async fn perform(&mut self, req: &EffectRequest, idempotency_key: Hash) -> EffectOutcome {
+    async fn perform(
+        &mut self,
+        _id: EffectId,
+        req: &EffectRequest,
+        idempotency_key: Hash,
+    ) -> EffectOutcome {
         // Family-keyed (seq-39), not the EffectKind enum — the same decision the router + authz make.
         if !req.content_type.matches_family(effect_ct::HTTP) {
             // Structural — PERMANENT, a supervisor must not retry it (§17: observable Err, never a panic).
@@ -416,8 +421,10 @@ mod tests {
             expect_body: None,
             response: resp(200, &[("content-type", "text/plain")], b"response body"),
         });
-        let (status, headers, body) =
-            decode_result(exec.perform(&http_req("get", None), Hash::of(b"k")).await);
+        let (status, headers, body) = decode_result(
+            exec.perform(EffectId(0), &http_req("get", None), Hash::of(b"k"))
+                .await,
+        );
         assert_eq!(status, 200);
         assert_eq!(
             headers,
@@ -441,6 +448,7 @@ mod tests {
         });
         let (status, headers, body) = decode_result(
             exec.perform(
+                EffectId(0),
                 &http_req_h(
                     "post",
                     &[
@@ -470,8 +478,10 @@ mod tests {
             expect_body: None,
             response: resp(404, &[], b"not found"),
         });
-        let (status, _headers, body) =
-            decode_result(exec.perform(&http_req("get", None), Hash::of(b"k")).await);
+        let (status, _headers, body) = decode_result(
+            exec.perform(EffectId(0), &http_req("get", None), Hash::of(b"k"))
+                .await,
+        );
         assert_eq!(
             status, 404,
             "a 404 is a completed response, not a transport error"
@@ -489,7 +499,8 @@ mod tests {
             response: resp(200, &[], b"a"),
         });
         assert!(matches!(
-            exec.perform(&http_req("post", None), Hash::of(b"k")).await,
+            exec.perform(EffectId(0), &http_req("post", None), Hash::of(b"k"))
+                .await,
             EffectOutcome::Ok(_)
         ));
         let mut exec = HttpExecutor::new(StubHttp {
@@ -499,8 +510,12 @@ mod tests {
             response: resp(200, &[], b"b"),
         });
         assert!(matches!(
-            exec.perform(&http_req("delete", Some(b"why")), Hash::of(b"k"))
-                .await,
+            exec.perform(
+                EffectId(0),
+                &http_req("delete", Some(b"why")),
+                Hash::of(b"k")
+            )
+            .await,
             EffectOutcome::Ok(_)
         ));
     }
@@ -514,7 +529,7 @@ mod tests {
             response: resp(207, &[], b"x"),
         });
         assert!(matches!(
-            exec.perform(&http_req("propfind", None), Hash::of(b"k"))
+            exec.perform(EffectId(0), &http_req("propfind", None), Hash::of(b"k"))
                 .await,
             EffectOutcome::Ok(_)
         ));
@@ -543,7 +558,7 @@ mod tests {
             Some(Payload::Blob(Hash::of(b"big"))),
             Timeliness::Interactive,
         );
-        match exec.perform(&req, Hash::of(b"k")).await {
+        match exec.perform(EffectId(0), &req, Hash::of(b"k")).await {
             EffectOutcome::Err {
                 message,
                 retryability,
@@ -578,7 +593,7 @@ mod tests {
             None,
             Timeliness::Interactive,
         );
-        match exec.perform(&no_payload, Hash::of(b"k")).await {
+        match exec.perform(EffectId(0), &no_payload, Hash::of(b"k")).await {
             EffectOutcome::Err {
                 message,
                 retryability,
@@ -595,7 +610,7 @@ mod tests {
             Some(Payload::Inline(b"not a sexpr".to_vec().into())),
             Timeliness::Interactive,
         );
-        match exec.perform(&garbage, Hash::of(b"k")).await {
+        match exec.perform(EffectId(0), &garbage, Hash::of(b"k")).await {
             EffectOutcome::Err {
                 message,
                 retryability,
@@ -624,7 +639,10 @@ mod tests {
             }
         }
         let mut exec = HttpExecutor::new(FlakyHttp);
-        match exec.perform(&http_req("get", None), Hash::of(b"k")).await {
+        match exec
+            .perform(EffectId(0), &http_req("get", None), Hash::of(b"k"))
+            .await
+        {
             EffectOutcome::Err {
                 message,
                 retryability,
@@ -659,7 +677,7 @@ mod tests {
             None,
             Timeliness::Interactive,
         );
-        match exec.perform(&req, Hash::of(b"k")).await {
+        match exec.perform(EffectId(0), &req, Hash::of(b"k")).await {
             EffectOutcome::Err {
                 message,
                 retryability,

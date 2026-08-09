@@ -28,7 +28,7 @@
 //! (executor pre-compute → loop factory-resolve + register) is wired end to end.
 
 use crate::host::SessionId;
-use cdz_kernel::effect::{effect_ct, EffectRequest};
+use cdz_kernel::effect::{effect_ct, EffectId, EffectRequest};
 use cdz_kernel::event::EffectOutcome;
 use cdz_kernel::executor::Executor;
 use cdz_kernel::hash::Hash;
@@ -169,7 +169,12 @@ impl LifecycleExecutor {
 
 #[async_trait::async_trait(?Send)]
 impl Executor for LifecycleExecutor {
-    async fn perform(&mut self, req: &EffectRequest, _idempotency_key: Hash) -> EffectOutcome {
+    async fn perform(
+        &mut self,
+        _id: EffectId,
+        req: &EffectRequest,
+        _idempotency_key: Hash,
+    ) -> EffectOutcome {
         let family = req.content_type.family.as_ref();
         // SPAWN is structurally distinct from terminate/suspend/resume (no peer `target` — it CREATES a
         // child; the reducer identity rides the payload; it RETURNS the child's SessionId synchronously). So
@@ -294,7 +299,7 @@ mod tests {
             Some(Payload::Inline(reducer_hash.as_bytes().to_vec().into())),
             Timeliness::Interactive,
         );
-        let out = exec.perform(&req, Hash::of(b"k")).await;
+        let out = exec.perform(EffectId(0), &req, Hash::of(b"k")).await;
         // The returned id is the effect result (Ok(Some(payload=child_id_hex))).
         let EffectOutcome::Ok(Some(Payload::Inline(returned))) = &out else {
             panic!("spawn returns Ok(Some(child_id)), got {out:?}");
@@ -346,7 +351,7 @@ mod tests {
             Timeliness::Interactive,
         );
         assert!(
-            matches!(&exec.perform(&req, Hash::of(b"k")).await,
+            matches!(&exec.perform(EffectId(0), &req, Hash::of(b"k")).await,
                 EffectOutcome::Err { message, retryability } if *retryability == Retryability::Permanent && message.contains("reducer_hash")),
             "spawn with no reducer_hash payload is PERMANENT"
         );
@@ -368,7 +373,7 @@ mod tests {
             Some(Payload::Inline(reducer_hash.as_bytes().to_vec().into())),
             Timeliness::Interactive,
         );
-        let out = exec.perform(&req, Hash::of(b"k")).await;
+        let out = exec.perform(EffectId(0), &req, Hash::of(b"k")).await;
         // Spawn ACCEPTED (Ok) despite the vanity id — and the returned child id == derive_genesis_hash from
         // the THREADED genesis (not from the id string).
         let EffectOutcome::Ok(Some(Payload::Inline(bytes))) = &out else {
@@ -415,6 +420,7 @@ mod tests {
             LifecycleExecutor::new(tx, SessionId::new("controller"), Hash::of(b"controller"));
         let out = exec
             .perform(
+                EffectId(0),
                 &terminate_req("victim", Some(b"operator kill")),
                 Hash::of(b"k"),
             )
@@ -438,7 +444,7 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let mut exec = LifecycleExecutor::new(tx, SessionId::new("ctl"), Hash::of(b"ctl"));
         let out = exec
-            .perform(&terminate_req("b", None), Hash::of(b"k"))
+            .perform(EffectId(0), &terminate_req("b", None), Hash::of(b"k"))
             .await;
         assert!(matches!(out, EffectOutcome::Ok(None)));
         let LifecycleOp::Terminate { reason, .. } = rx.try_recv().expect("recorded") else {
@@ -464,7 +470,7 @@ mod tests {
             Timeliness::Interactive,
         );
         assert!(matches!(
-            exec.perform(&suspend, Hash::of(b"k")).await,
+            exec.perform(EffectId(0), &suspend, Hash::of(b"k")).await,
             EffectOutcome::Ok(None)
         ));
         let LifecycleOp::Suspend { target, by } = rx.try_recv().expect("suspend recorded") else {
@@ -480,7 +486,7 @@ mod tests {
             Timeliness::Interactive,
         );
         assert!(matches!(
-            exec.perform(&resume, Hash::of(b"k")).await,
+            exec.perform(EffectId(0), &resume, Hash::of(b"k")).await,
             EffectOutcome::Ok(None)
         ));
         let LifecycleOp::Resume { target, .. } = rx.try_recv().expect("resume recorded") else {
@@ -505,7 +511,7 @@ mod tests {
                 Timeliness::Interactive,
             );
             assert!(
-                matches!(&exec.perform(&inline, Hash::of(b"k")).await,
+                matches!(&exec.perform(EffectId(0), &inline, Hash::of(b"k")).await,
                     EffectOutcome::Err { message, retryability } if *retryability == Retryability::Permanent && message.contains("takes no payload")),
                 "{family} with an inline payload is PERMANENT"
             );
@@ -517,7 +523,7 @@ mod tests {
                 Timeliness::Interactive,
             );
             assert!(
-                matches!(&exec.perform(&blob, Hash::of(b"k")).await,
+                matches!(&exec.perform(EffectId(0), &blob, Hash::of(b"k")).await,
                     EffectOutcome::Err { message, retryability } if *retryability == Retryability::Permanent && message.contains("takes no payload")),
                 "{family} with a blob-ref payload is PERMANENT (no silent drop)"
             );
@@ -535,7 +541,7 @@ mod tests {
             Timeliness::Interactive,
         );
         assert!(
-            matches!(&exec.perform(&req, Hash::of(b"k")).await,
+            matches!(&exec.perform(EffectId(0), &req, Hash::of(b"k")).await,
                 EffectOutcome::Err { message, retryability } if *retryability == Retryability::Permanent && message.contains("cannot lifecycle/suspend itself")),
             "self-suspend is PERMANENT"
         );
@@ -553,7 +559,7 @@ mod tests {
             Some(Payload::Blob(Hash::of(b"some-blob"))),
             Timeliness::Interactive,
         );
-        let out = exec.perform(&req, Hash::of(b"k")).await;
+        let out = exec.perform(EffectId(0), &req, Hash::of(b"k")).await;
         assert!(
             matches!(&out, EffectOutcome::Err { message, retryability } if *retryability == Retryability::Permanent && message.contains("blob-ref reason is unsupported")),
             "a blob-ref reason is rejected PERMANENT, got {out:?}"
@@ -565,7 +571,7 @@ mod tests {
         let (tx, _rx) = mpsc::unbounded_channel();
         let mut exec = LifecycleExecutor::new(tx, SessionId::new("me"), Hash::of(b"me"));
         let out = exec
-            .perform(&terminate_req("me", None), Hash::of(b"k"))
+            .perform(EffectId(0), &terminate_req("me", None), Hash::of(b"k"))
             .await;
         assert!(
             matches!(&out, EffectOutcome::Err { message, retryability } if *retryability == Retryability::Permanent && message.contains("cannot lifecycle/terminate itself")),
@@ -577,7 +583,9 @@ mod tests {
     async fn an_empty_target_is_a_permanent_error() {
         let (tx, _rx) = mpsc::unbounded_channel();
         let mut exec = LifecycleExecutor::new(tx, SessionId::new("ctl"), Hash::of(b"ctl"));
-        let out = exec.perform(&terminate_req("", None), Hash::of(b"k")).await;
+        let out = exec
+            .perform(EffectId(0), &terminate_req("", None), Hash::of(b"k"))
+            .await;
         assert!(
             matches!(&out, EffectOutcome::Err { message, retryability } if *retryability == Retryability::Permanent && message.contains("non-empty target")),
             "empty target is PERMANENT, got {out:?}"
@@ -590,7 +598,7 @@ mod tests {
         drop(rx);
         let mut exec = LifecycleExecutor::new(tx, SessionId::new("ctl"), Hash::of(b"ctl"));
         let out = exec
-            .perform(&terminate_req("b", None), Hash::of(b"k"))
+            .perform(EffectId(0), &terminate_req("b", None), Hash::of(b"k"))
             .await;
         assert!(
             matches!(&out, EffectOutcome::Err { message, retryability } if *retryability == Retryability::Retryable && message.contains("channel is closed")),
@@ -608,7 +616,7 @@ mod tests {
             None,
             Timeliness::Interactive,
         );
-        let out = exec.perform(&req, Hash::of(b"k")).await;
+        let out = exec.perform(EffectId(0), &req, Hash::of(b"k")).await;
         assert!(
             matches!(&out, EffectOutcome::Err { retryability, .. } if *retryability == Retryability::Permanent)
         );

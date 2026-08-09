@@ -9,7 +9,7 @@
 //! side-effecting executor, re-driving the same key after a crash must not double-apply — the executor
 //! dedups on it. Naturally-idempotent executors can ignore it.
 
-use crate::effect::{EffectKind, EffectRequest, Payload};
+use crate::effect::{EffectId, EffectKind, EffectRequest, Payload};
 use crate::event::EffectOutcome;
 use crate::hash::Hash;
 use std::collections::HashMap;
@@ -27,9 +27,25 @@ use std::collections::HashMap;
 #[async_trait::async_trait(?Send)]
 pub trait Executor {
     /// Perform `req` — the un-suffixed name (the whole trait is `async`, so an `_async` suffix would be
-    /// redundant). `idempotency_key` lets a side-effecting executor dedup a re-driven dispatch after a
-    /// crash. Returns the outcome the kernel folds back as an `EffectResult`. May `.await` real I/O.
-    async fn perform(&mut self, req: &EffectRequest, idempotency_key: Hash) -> EffectOutcome;
+    /// redundant). Returns the outcome the kernel folds back as an `EffectResult`. May `.await` real I/O.
+    ///
+    /// `id` is the kernel `EffectId` the loop assigned this dispatch — the SAME id that keys the durable
+    /// `Dispatched` frame and that a later [`crate::kernel::Session::settle_effect_result`] settles. Most
+    /// executors ignore it (they answer synchronously and the loop folds the returned outcome). A DELEGATING
+    /// executor NEEDS it: a userspace-effect executor that returns [`EffectOutcome::Deferred`] forwards the
+    /// request to a handler session and must bind its reply-token to `(caller, id)` so the handler's
+    /// `effect/reply` settles the RIGHT open effect (`settle_effect_result` takes the `EffectId`). The id is
+    /// already on the log in the `Dispatched` record, so surfacing it here exposes no new kernel state.
+    ///
+    /// `idempotency_key` lets a side-effecting executor dedup a re-driven dispatch after a crash (a
+    /// `Hash` = `idempotency_key_for(id, req)`, not the id itself — it is a stable dedup handle, not a
+    /// reversible id, which is why the id is passed distinctly).
+    async fn perform(
+        &mut self,
+        id: EffectId,
+        req: &EffectRequest,
+        idempotency_key: Hash,
+    ) -> EffectOutcome;
 
     /// Does this executor serve effect `family`? The MECHANISM dimension the capability-manifest
     /// projection ([`crate::effect::project_manifest`]) probes over the canonical family set — "does the
@@ -97,11 +113,17 @@ impl CompositeExecutor {
 
 #[async_trait::async_trait(?Send)]
 impl Executor for CompositeExecutor {
-    async fn perform(&mut self, req: &EffectRequest, idempotency_key: Hash) -> EffectOutcome {
+    async fn perform(
+        &mut self,
+        id: EffectId,
+        req: &EffectRequest,
+        idempotency_key: Hash,
+    ) -> EffectOutcome {
         // Route by the request's content-type FAMILY (seq-39): a request whose family has no registered
-        // executor is an OBSERVABLE Err (§9d anti-stuck), never a panic/drop.
+        // executor is an OBSERVABLE Err (§9d anti-stuck), never a panic/drop. `id` threads through unchanged
+        // so a delegating leaf executor can bind its reply-token to (caller, id).
         match self.by_family.get_mut(req.content_type.family.as_ref()) {
-            Some(inner) => inner.perform(req, idempotency_key).await,
+            Some(inner) => inner.perform(id, req, idempotency_key).await,
             None => EffectOutcome::err(format!(
                 "no executor registered for effect family {:?} (target {:?})",
                 req.content_type.family, req.target
@@ -141,7 +163,12 @@ impl RecordingExecutor {
 
 #[async_trait::async_trait(?Send)]
 impl Executor for RecordingExecutor {
-    async fn perform(&mut self, req: &EffectRequest, idempotency_key: Hash) -> EffectOutcome {
+    async fn perform(
+        &mut self,
+        _id: EffectId,
+        req: &EffectRequest,
+        idempotency_key: Hash,
+    ) -> EffectOutcome {
         self.seen.push((req.clone(), idempotency_key));
         EffectOutcome::Ok(Some(Payload::Inline(b"ok".to_vec().into())))
     }
@@ -181,7 +208,12 @@ pub struct ShellExecutor;
 #[cfg(all(feature = "live-exec", unix))]
 #[async_trait::async_trait(?Send)]
 impl Executor for ShellExecutor {
-    async fn perform(&mut self, req: &EffectRequest, _idempotency_key: Hash) -> EffectOutcome {
+    async fn perform(
+        &mut self,
+        _id: EffectId,
+        req: &EffectRequest,
+        _idempotency_key: Hash,
+    ) -> EffectOutcome {
         use crate::effect::EffectKind;
         if req.kind != EffectKind::Shell {
             return EffectOutcome::err(format!(
@@ -224,7 +256,12 @@ mod tests {
     struct TagExecutor(&'static [u8]);
     #[async_trait::async_trait(?Send)]
     impl Executor for TagExecutor {
-        async fn perform(&mut self, _req: &EffectRequest, _key: Hash) -> EffectOutcome {
+        async fn perform(
+            &mut self,
+            _id: EffectId,
+            _req: &EffectRequest,
+            _key: Hash,
+        ) -> EffectOutcome {
             EffectOutcome::Ok(Some(Payload::Inline(self.0.to_vec().into())))
         }
     }
@@ -235,7 +272,11 @@ mod tests {
         let mut tagged = TagExecutor(b"async-ran");
         let dyn_exec: &mut dyn Executor = &mut tagged;
         let out = dyn_exec
-            .perform(&req(EffectKind::Http, "https://ok/x"), Hash::of(b"k"))
+            .perform(
+                EffectId(1),
+                &req(EffectKind::Http, "https://ok/x"),
+                Hash::of(b"k"),
+            )
             .await;
         assert_eq!(
             out,
@@ -259,13 +300,21 @@ mod tests {
 
         // Each kind reaches its own executor — the multi-kind session a single executor couldn't serve.
         assert_eq!(
-            exec.perform(&req(EffectKind::Http, "https://ok/x"), Hash::of(b"k"))
-                .await,
+            exec.perform(
+                EffectId(1),
+                &req(EffectKind::Http, "https://ok/x"),
+                Hash::of(b"k")
+            )
+            .await,
             EffectOutcome::Ok(Some(Payload::Inline(b"http-ran".to_vec().into())))
         );
         assert_eq!(
-            exec.perform(&req(EffectKind::Shell, "echo hi"), Hash::of(b"k"))
-                .await,
+            exec.perform(
+                EffectId(1),
+                &req(EffectKind::Shell, "echo hi"),
+                Hash::of(b"k")
+            )
+            .await,
             EffectOutcome::Ok(Some(Payload::Inline(b"shell-ran".to_vec().into())))
         );
     }
@@ -278,7 +327,7 @@ mod tests {
             .with_effect(crate::effect::effect_ct::HTTP, Box::new(TagExecutor(b"h")));
         assert!(!exec.handles(&EffectKind::Model));
         match exec
-            .perform(&req(EffectKind::Model, "gpt"), Hash::of(b"k"))
+            .perform(EffectId(1), &req(EffectKind::Model, "gpt"), Hash::of(b"k"))
             .await
         {
             EffectOutcome::Err { message: msg, .. } => {
@@ -310,7 +359,7 @@ mod tests {
         let mut ext = req(EffectKind::Http, "x");
         ext.content_type.family = "embedding".into();
         assert_eq!(
-            exec.perform(&ext, Hash::of(b"k")).await,
+            exec.perform(EffectId(1), &ext, Hash::of(b"k")).await,
             EffectOutcome::Ok(Some(Payload::Inline(b"embed-e".to_vec().into())))
         );
         // with(EffectKind) delegates to with_effect(kind.family(), ..) — same registration.
@@ -319,7 +368,7 @@ mod tests {
         assert!(viaenum.handles_family(crate::effect::effect_ct::HTTP));
         assert_eq!(
             viaenum
-                .perform(&req(EffectKind::Http, "x"), Hash::of(b"k"))
+                .perform(EffectId(1), &req(EffectKind::Http, "x"), Hash::of(b"k"))
                 .await,
             EffectOutcome::Ok(Some(Payload::Inline(b"h".to_vec().into())))
         );
@@ -338,7 +387,7 @@ mod tests {
                 Box::new(TagExecutor(b"second")),
             );
         assert_eq!(
-            exec.perform(&req(EffectKind::Http, "x"), Hash::of(b"k"))
+            exec.perform(EffectId(1), &req(EffectKind::Http, "x"), Hash::of(b"k"))
                 .await,
             EffectOutcome::Ok(Some(Payload::Inline(b"second".to_vec().into())))
         );
@@ -351,7 +400,12 @@ mod tests {
         struct KeyEcho;
         #[async_trait::async_trait(?Send)]
         impl Executor for KeyEcho {
-            async fn perform(&mut self, _req: &EffectRequest, key: Hash) -> EffectOutcome {
+            async fn perform(
+                &mut self,
+                _id: EffectId,
+                _req: &EffectRequest,
+                key: Hash,
+            ) -> EffectOutcome {
                 EffectOutcome::Ok(Some(Payload::Inline(key.as_bytes().to_vec().into())))
             }
         }
@@ -359,8 +413,37 @@ mod tests {
             CompositeExecutor::new().with_effect(crate::effect::effect_ct::HTTP, Box::new(KeyEcho));
         let key = Hash::of(b"the-key");
         assert_eq!(
-            exec.perform(&req(EffectKind::Http, "x"), key).await,
+            exec.perform(EffectId(1), &req(EffectKind::Http, "x"), key)
+                .await,
             EffectOutcome::Ok(Some(Payload::Inline(key.as_bytes().to_vec().into())))
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn composite_threads_the_effect_id_to_the_inner_executor() {
+        // userspace-effects I3: the delegating executor binds its reply-token to the dispatch's EffectId, so
+        // the router MUST forward the SAME id (the one keying the open Dispatched frame) to the inner leaf
+        // executor unchanged — else a Deferred executor would mint a token against the wrong id and its
+        // later `effect/reply` would settle the wrong open effect. Prove the id round-trips through the route.
+        struct IdEcho;
+        #[async_trait::async_trait(?Send)]
+        impl Executor for IdEcho {
+            async fn perform(
+                &mut self,
+                id: EffectId,
+                _req: &EffectRequest,
+                _key: Hash,
+            ) -> EffectOutcome {
+                EffectOutcome::Ok(Some(Payload::Inline(id.0.to_le_bytes().to_vec().into())))
+            }
+        }
+        let mut exec =
+            CompositeExecutor::new().with_effect(crate::effect::effect_ct::HTTP, Box::new(IdEcho));
+        assert_eq!(
+            exec.perform(EffectId(4242), &req(EffectKind::Http, "x"), Hash::of(b"k"))
+                .await,
+            EffectOutcome::Ok(Some(Payload::Inline(4242u64.to_le_bytes().to_vec().into()))),
+            "the composite router forwards the dispatch EffectId to the inner executor unchanged"
         );
     }
 
@@ -399,14 +482,14 @@ mod tests {
         r.content_type.family = EffectKind::Model.family().into();
         // Routed by family ("model") to the MODEL executor, despite kind == Http.
         assert_eq!(
-            exec.perform(&r, Hash::of(b"k")).await,
+            exec.perform(EffectId(1), &r, Hash::of(b"k")).await,
             EffectOutcome::Ok(Some(Payload::Inline(b"model-executor".to_vec().into())))
         );
         // And a family with NO registered executor (and no EffectKind variant) is an observable Err naming
         // that family — the fail-closed seam the register-by-string slice hardens to retry::permanent.
         let mut ext = req(EffectKind::Http, "x");
         ext.content_type.family = "embedding".into();
-        match exec.perform(&ext, Hash::of(b"k")).await {
+        match exec.perform(EffectId(1), &ext, Hash::of(b"k")).await {
             EffectOutcome::Err { message: msg, .. } => assert!(
                 msg.contains("embedding"),
                 "unroutable extension family named in the err: {msg}"

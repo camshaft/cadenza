@@ -26,7 +26,7 @@
 
 use crate::async_host::{Inbound, Inbox};
 use crate::host::SessionId;
-use cdz_kernel::effect::{effect_ct, EffectRequest, Payload};
+use cdz_kernel::effect::{effect_ct, EffectId, EffectRequest, Payload};
 use cdz_kernel::event::{ContentType, EffectOutcome, EventBody};
 use cdz_kernel::executor::Executor;
 use cdz_kernel::hash::Hash;
@@ -60,7 +60,12 @@ impl EmitExecutor {
 
 #[async_trait::async_trait(?Send)]
 impl Executor for EmitExecutor {
-    async fn perform(&mut self, req: &EffectRequest, _idempotency_key: Hash) -> EffectOutcome {
+    async fn perform(
+        &mut self,
+        _id: EffectId,
+        req: &EffectRequest,
+        _idempotency_key: Hash,
+    ) -> EffectOutcome {
         // `_idempotency_key` is deliberately unused (#2351 review c2, present-tense per #2356 review B): the
         // dedup it exists for lives at the PERSISTENCE layer — de-duping a redelivered emit requires a
         // durable peer-inbox to check the key against, which in-memory `Inbox` routing has none of, so the
@@ -165,7 +170,11 @@ mod tests {
         let mut exec = EmitExecutor::new(tx, SessionId::new("sender-a"));
 
         let out = exec
-            .perform(&emit_req("session-b", Some(b"hello-peer")), Hash::of(b"k"))
+            .perform(
+                EffectId(0),
+                &emit_req("session-b", Some(b"hello-peer")),
+                Hash::of(b"k"),
+            )
             .await;
         assert!(
             matches!(out, EffectOutcome::Ok(None)),
@@ -205,7 +214,9 @@ mod tests {
         // A bare signal (no payload) is legitimate — it routes an empty-payload message, not an error.
         let (tx, mut rx) = mpsc::unbounded_channel();
         let mut exec = EmitExecutor::new(tx, SessionId::new("sender-a"));
-        let out = exec.perform(&emit_req("b", None), Hash::of(b"k")).await;
+        let out = exec
+            .perform(EffectId(0), &emit_req("b", None), Hash::of(b"k"))
+            .await;
         assert!(matches!(out, EffectOutcome::Ok(None)));
         let routed = rx.try_recv().expect("routed");
         match routed.body {
@@ -225,7 +236,7 @@ mod tests {
         let (tx, _rx) = mpsc::unbounded_channel();
         let mut exec = EmitExecutor::new(tx, SessionId::new("sender-a"));
         let out = exec
-            .perform(&emit_req("", Some(b"x")), Hash::of(b"k"))
+            .perform(EffectId(0), &emit_req("", Some(b"x")), Hash::of(b"k"))
             .await;
         match out {
             EffectOutcome::Err {
@@ -253,7 +264,7 @@ mod tests {
             None,
             Timeliness::Interactive,
         );
-        let out = exec.perform(&req, Hash::of(b"k")).await;
+        let out = exec.perform(EffectId(0), &req, Hash::of(b"k")).await;
         assert!(
             matches!(out, EffectOutcome::Err { message, retryability } if retryability == Retryability::Permanent && message.contains("only handles")),
             "a non-Emit family is rejected PERMANENT"
@@ -275,7 +286,7 @@ mod tests {
             Some(Payload::Blob(Hash::of(b"some-blob-ref"))),
             Timeliness::Interactive,
         );
-        let out = exec.perform(&req, Hash::of(b"k")).await;
+        let out = exec.perform(EffectId(0), &req, Hash::of(b"k")).await;
         assert!(
             matches!(&out, EffectOutcome::Err { message, retryability } if *retryability == Retryability::Permanent && message.contains("blob-ref")),
             "a blob-ref Emit payload is rejected PERMANENT (no blob-store access to forward it), got {out:?}"
@@ -290,7 +301,7 @@ mod tests {
         drop(rx); // loop's receiver gone
         let mut exec = EmitExecutor::new(tx, SessionId::new("sender-a"));
         let out = exec
-            .perform(&emit_req("b", Some(b"x")), Hash::of(b"k"))
+            .perform(EffectId(0), &emit_req("b", Some(b"x")), Hash::of(b"k"))
             .await;
         assert!(
             matches!(&out, EffectOutcome::Err { message, retryability } if *retryability == Retryability::Retryable && message.contains("inbox is closed")),

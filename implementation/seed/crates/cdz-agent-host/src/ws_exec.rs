@@ -26,7 +26,7 @@
 //! registry over live websocket sinks. NOT feature-gated: the executor + the registry trait are always-on
 //! (hermetic), like `blob_exec`; only the socket LISTENER that fills the registry is the `live-ws` piece.
 
-use cdz_kernel::effect::{effect_ct, EffectRequest, Payload};
+use cdz_kernel::effect::{effect_ct, EffectId, EffectRequest, Payload};
 use cdz_kernel::event::EffectOutcome;
 use cdz_kernel::executor::Executor;
 use cdz_kernel::hash::Hash;
@@ -70,7 +70,12 @@ impl<R: WsConnRegistry> WsSendExecutor<R> {
 
 #[async_trait::async_trait(?Send)]
 impl<R: WsConnRegistry> Executor for WsSendExecutor<R> {
-    async fn perform(&mut self, req: &EffectRequest, _idempotency_key: Hash) -> EffectOutcome {
+    async fn perform(
+        &mut self,
+        _id: EffectId,
+        req: &EffectRequest,
+        _idempotency_key: Hash,
+    ) -> EffectOutcome {
         let family = req.content_type.family.as_ref();
         // The kernel routes by family, but be explicit: this executor serves ONLY ws/send (the outbound
         // effect). ws/connect + ws/disconnect are INBOUND events the listener emits, never effects dispatched
@@ -183,7 +188,7 @@ mod tests {
         reg.open("conn-1");
         let mut exec = WsSendExecutor::new(reg);
         let out = exec
-            .perform(&send_req("conn-1", b"hello"), Hash::of(b"k"))
+            .perform(EffectId(0), &send_req("conn-1", b"hello"), Hash::of(b"k"))
             .await;
         assert_eq!(
             out,
@@ -201,7 +206,9 @@ mod tests {
     #[tokio::test]
     async fn send_to_an_unknown_conn_id_is_a_permanent_err() {
         let mut exec = WsSendExecutor::new(MemWsConnRegistry::default());
-        let out = exec.perform(&send_req("gone", b"x"), Hash::of(b"k")).await;
+        let out = exec
+            .perform(EffectId(0), &send_req("gone", b"x"), Hash::of(b"k"))
+            .await;
         match out {
             EffectOutcome::Err { retryability, .. } => assert_eq!(
                 retryability,
@@ -218,7 +225,7 @@ mod tests {
         reg.fail("conn-flaky");
         let mut exec = WsSendExecutor::new(reg);
         let out = exec
-            .perform(&send_req("conn-flaky", b"x"), Hash::of(b"k"))
+            .perform(EffectId(0), &send_req("conn-flaky", b"x"), Hash::of(b"k"))
             .await;
         match out {
             EffectOutcome::Err { retryability, .. } => assert_eq!(
@@ -235,7 +242,8 @@ mod tests {
         let mut exec = WsSendExecutor::new(MemWsConnRegistry::default());
         // empty conn-id
         assert!(matches!(
-            exec.perform(&send_req("", b"x"), Hash::of(b"k")).await,
+            exec.perform(EffectId(0), &send_req("", b"x"), Hash::of(b"k"))
+                .await,
             EffectOutcome::Err { .. }
         ));
         // no payload
@@ -246,7 +254,7 @@ mod tests {
             Timeliness::Interactive,
         );
         assert!(matches!(
-            exec.perform(&no_payload, Hash::of(b"k")).await,
+            exec.perform(EffectId(0), &no_payload, Hash::of(b"k")).await,
             EffectOutcome::Err { .. }
         ));
     }
@@ -272,7 +280,7 @@ mod tests {
             Timeliness::Interactive,
         );
         assert!(matches!(
-            exec.perform(&misrouted, Hash::of(b"k")).await,
+            exec.perform(EffectId(0), &misrouted, Hash::of(b"k")).await,
             EffectOutcome::Err { .. }
         ));
     }

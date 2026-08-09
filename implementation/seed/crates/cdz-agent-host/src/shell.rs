@@ -26,7 +26,7 @@
 //! dedup handle a re-driven dispatch (post-crash) can key on. v0 runs the command each perform (documented);
 //! a dedup cache is a later refinement.
 
-use cdz_kernel::effect::{effect_ct, EffectRequest, Payload};
+use cdz_kernel::effect::{effect_ct, EffectId, EffectRequest, Payload};
 use cdz_kernel::event::EffectOutcome;
 use cdz_kernel::executor::Executor;
 use cdz_kernel::hash::Hash;
@@ -53,7 +53,12 @@ impl Default for ShellExecutor {
 
 #[async_trait::async_trait(?Send)]
 impl Executor for ShellExecutor {
-    async fn perform(&mut self, req: &EffectRequest, _idempotency_key: Hash) -> EffectOutcome {
+    async fn perform(
+        &mut self,
+        _id: EffectId,
+        req: &EffectRequest,
+        _idempotency_key: Hash,
+    ) -> EffectOutcome {
         // Family guard (seq-39 family-string source of truth, same as Clock/Http/Model). A wrong family is
         // structural → PERMANENT (§17: an observable Err, never a panic; a supervisor must not retry it).
         if !req.content_type.matches_family(effect_ct::SHELL) {
@@ -303,7 +308,9 @@ mod tests {
             Some(Payload::Inline(encode_shell_pipeline(&pipeline).into())),
             Timeliness::Interactive,
         );
-        let out = ShellExecutor::new().perform(&req, Hash::of(b"k")).await;
+        let out = ShellExecutor::new()
+            .perform(EffectId(0), &req, Hash::of(b"k"))
+            .await;
         match out {
             EffectOutcome::Ok(Some(Payload::Inline(bytes))) => {
                 match decode_shell_pipeline_outcome(&bytes).expect("decodes as a pipeline outcome")
@@ -356,7 +363,7 @@ mod tests {
         // A generous timeout: a correct runner finishes in ms; a deadlocked one never returns (the bug).
         let out = tokio::time::timeout(
             std::time::Duration::from_secs(20),
-            ShellExecutor::new().perform(&req, Hash::of(b"k")),
+            ShellExecutor::new().perform(EffectId(0), &req, Hash::of(b"k")),
         )
         .await
         .expect("pipeline must not deadlock on a large final stdout (>64KB)");
@@ -404,7 +411,9 @@ mod tests {
             Some(Payload::Inline(encode_shell_pipeline(&pipeline).into())),
             Timeliness::Interactive,
         );
-        let out = ShellExecutor::new().perform(&req, Hash::of(b"k")).await;
+        let out = ShellExecutor::new()
+            .perform(EffectId(0), &req, Hash::of(b"k"))
+            .await;
         match out {
             EffectOutcome::Ok(Some(Payload::Inline(bytes))) => {
                 match decode_shell_pipeline_outcome(&bytes).expect("decodes") {
@@ -428,7 +437,9 @@ mod tests {
     #[tokio::test]
     async fn a_command_runs_and_returns_its_stdout() {
         let mut exec = ShellExecutor::new();
-        let out = exec.perform(&shell_req("echo hello"), Hash::of(b"k")).await;
+        let out = exec
+            .perform(EffectId(0), &shell_req("echo hello"), Hash::of(b"k"))
+            .await;
         match out {
             EffectOutcome::Ok(Some(Payload::Inline(bytes))) => {
                 assert_eq!(
@@ -448,7 +459,7 @@ mod tests {
         // independent of any policy (policy lives in Cedar). Proves a `;`-injected command never runs.
         let mut exec = ShellExecutor::new();
         let out = exec
-            .perform(&shell_req("echo a ; rm -rf /"), Hash::of(b"k"))
+            .perform(EffectId(0), &shell_req("echo a ; rm -rf /"), Hash::of(b"k"))
             .await;
         match out {
             EffectOutcome::Ok(Some(Payload::Inline(bytes))) => {
@@ -466,7 +477,9 @@ mod tests {
     async fn a_non_zero_exit_is_a_permanent_error_with_the_stderr() {
         // `false` exits non-zero → a real command failure the reducer folds, PERMANENT (not a host fault).
         let mut exec = ShellExecutor::new();
-        let out = exec.perform(&shell_req("false"), Hash::of(b"k")).await;
+        let out = exec
+            .perform(EffectId(0), &shell_req("false"), Hash::of(b"k"))
+            .await;
         assert!(
             matches!(&out, EffectOutcome::Err { message, retryability } if *retryability == Retryability::Permanent && message.contains("exit ")),
             "a non-zero exit is a PERMANENT command-failure, got {out:?}"
@@ -478,6 +491,7 @@ mod tests {
         let mut exec = ShellExecutor::new();
         let out = exec
             .perform(
+                EffectId(0),
                 &shell_req("this-program-does-not-exist-xyz"),
                 Hash::of(b"k"),
             )
@@ -497,7 +511,7 @@ mod tests {
             None,
             Timeliness::Interactive,
         );
-        let out = exec.perform(&req, Hash::of(b"k")).await;
+        let out = exec.perform(EffectId(0), &req, Hash::of(b"k")).await;
         assert!(
             matches!(&out, EffectOutcome::Err { message, retryability } if *retryability == Retryability::Permanent && message.contains("only handles")),
             "a non-Shell family is rejected PERMANENT, got {out:?}"
@@ -508,7 +522,9 @@ mod tests {
     #[tokio::test]
     async fn an_empty_command_target_is_a_permanent_error() {
         let mut exec = ShellExecutor::new();
-        let out = exec.perform(&shell_req("   "), Hash::of(b"k")).await;
+        let out = exec
+            .perform(EffectId(0), &shell_req("   "), Hash::of(b"k"))
+            .await;
         assert!(
             matches!(&out, EffectOutcome::Err { message, .. } if message.contains("empty command")),
             "an empty/whitespace target is PERMANENT, got {out:?}"

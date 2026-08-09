@@ -21,7 +21,7 @@
 //! classified `EffectOutcome::Err`, never a panic. Most fs errors are PERMANENT for a given path+op (a
 //! missing file won't appear on a blind retry); the reducer decides what to do.
 
-use cdz_kernel::effect::{effect_ct, EffectRequest, Payload};
+use cdz_kernel::effect::{effect_ct, EffectId, EffectRequest, Payload};
 use cdz_kernel::event::EffectOutcome;
 use cdz_kernel::executor::Executor;
 use cdz_kernel::hash::Hash;
@@ -47,7 +47,12 @@ impl Default for FsExecutor {
 
 #[async_trait::async_trait(?Send)]
 impl Executor for FsExecutor {
-    async fn perform(&mut self, req: &EffectRequest, _idempotency_key: Hash) -> EffectOutcome {
+    async fn perform(
+        &mut self,
+        _id: EffectId,
+        req: &EffectRequest,
+        _idempotency_key: Hash,
+    ) -> EffectOutcome {
         let path = req.target.as_ref();
         // Route on the fs/* family (seq-39 family-string source of truth). The path was already authorized by
         // the Cedar policy (SEC-F1) before dispatch — this executor does the raw syscall for the one op Cedar
@@ -158,6 +163,7 @@ mod tests {
         // write
         let out = exec
             .perform(
+                EffectId(0),
                 &fs_req(effect_ct::FS_WRITE, &ps, Some(b"cargo test")),
                 Hash::of(b"k"),
             )
@@ -165,7 +171,11 @@ mod tests {
         assert!(matches!(out, EffectOutcome::Ok(_)), "write ok, got {out:?}");
         // read back
         let out = exec
-            .perform(&fs_req(effect_ct::FS_READ, &ps, None), Hash::of(b"k"))
+            .perform(
+                EffectId(0),
+                &fs_req(effect_ct::FS_READ, &ps, None),
+                Hash::of(b"k"),
+            )
             .await;
         match out {
             EffectOutcome::Ok(Some(Payload::Inline(bytes))) => {
@@ -180,6 +190,7 @@ mod tests {
         let mut exec = FsExecutor::new();
         let out = exec
             .perform(
+                EffectId(0),
                 &fs_req(effect_ct::FS_READ, "/no/such/cdz-fsexec/path", None),
                 Hash::of(b"k"),
             )
@@ -196,7 +207,11 @@ mod tests {
         let ps = dir.join("x").to_string_lossy().into_owned();
         let mut exec = FsExecutor::new();
         let out = exec
-            .perform(&fs_req(effect_ct::FS_WRITE, &ps, None), Hash::of(b"k"))
+            .perform(
+                EffectId(0),
+                &fs_req(effect_ct::FS_WRITE, &ps, None),
+                Hash::of(b"k"),
+            )
             .await;
         assert!(
             matches!(&out, EffectOutcome::Err { message, .. } if message.contains("requires a payload")),
@@ -212,7 +227,11 @@ mod tests {
         let pat = format!("{}/*", dir.to_string_lossy());
         let mut exec = FsExecutor::new();
         let out = exec
-            .perform(&fs_req(effect_ct::FS_GLOB, &pat, None), Hash::of(b"k"))
+            .perform(
+                EffectId(0),
+                &fs_req(effect_ct::FS_GLOB, &pat, None),
+                Hash::of(b"k"),
+            )
             .await;
         match out {
             EffectOutcome::Ok(Some(Payload::Inline(bytes))) => {
@@ -238,7 +257,7 @@ mod tests {
             None,
             Timeliness::Interactive,
         );
-        let out = exec.perform(&req, Hash::of(b"k")).await;
+        let out = exec.perform(EffectId(0), &req, Hash::of(b"k")).await;
         assert!(
             matches!(&out, EffectOutcome::Err { message, retryability } if *retryability == Retryability::Permanent && message.contains("only handles")),
             "a non-fs family is PERMANENT, got {out:?}"
