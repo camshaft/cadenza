@@ -53,10 +53,13 @@ impl Executor for FsExecutor {
         req: &EffectRequest,
         _idempotency_key: Hash,
     ) -> EffectOutcome {
-        let path = req.target.as_ref();
-        // Route on the fs/* family (seq-39 family-string source of truth). The path was already authorized by
-        // the Cedar policy (SEC-F1) before dispatch — this executor does the raw syscall for the one op Cedar
-        // permitted, nothing more.
+        // The target is the path. It is now opaque Arc<[u8]>; a path is UTF-8 here, so a non-UTF-8 target is
+        // malformed → PERMANENT (fail-closed). The path was already authorized by Cedar (SEC-F1) before dispatch.
+        let Ok(path) = req.target_str() else {
+            return EffectOutcome::err("fs: target path is not valid UTF-8");
+        };
+        // Route on the fs/* family (seq-39 family-string source of truth). This executor does the raw syscall
+        // for the one op Cedar permitted, nothing more.
         if req.content_type.matches_family(effect_ct::FS_READ) {
             match std::fs::read(path) {
                 Ok(bytes) => EffectOutcome::Ok(Some(Payload::Inline(bytes.into()))),
@@ -140,7 +143,7 @@ mod tests {
     fn fs_req(family: &'static str, path: &str, payload: Option<&[u8]>) -> EffectRequest {
         EffectRequest::new_with_family(
             family,
-            path.to_string(),
+            path,
             payload.map(|b| Payload::Inline(b.to_vec().into())),
             Timeliness::Interactive,
         )
@@ -251,12 +254,7 @@ mod tests {
     async fn a_non_fs_family_is_a_permanent_error() {
         let mut exec = FsExecutor::new();
         // A Shell-kind request routed here (wrong family) → PERMANENT.
-        let req = EffectRequest::new(
-            EffectKind::Shell,
-            "echo hi".to_string(),
-            None,
-            Timeliness::Interactive,
-        );
+        let req = EffectRequest::new(EffectKind::Shell, "echo hi", None, Timeliness::Interactive);
         let out = exec.perform(EffectId(0), &req, Hash::of(b"k")).await;
         assert!(
             matches!(&out, EffectOutcome::Err { message, retryability } if *retryability == Retryability::Permanent && message.contains("only handles")),

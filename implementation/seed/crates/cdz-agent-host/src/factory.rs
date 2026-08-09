@@ -1162,12 +1162,7 @@ mod tests {
         assert!(metered.handles_family("scripted"));
         assert!(!metered.handles_family("other"));
 
-        let req = EffectRequest::new(
-            EffectKind::Model,
-            "m".to_string(),
-            None,
-            Timeliness::Interactive,
-        );
+        let req = EffectRequest::new(EffectKind::Model, "m", None, Timeliness::Interactive);
         // Each outcome passes THROUGH unchanged (the decorator is transparent) — the wrap classifies +
         // records each into the registry along the way (registry Counters are drain-on-report with no value
         // getter, so we assert pass-through + a reportable registry, not per-counter values).
@@ -1228,12 +1223,7 @@ mod tests {
             );
 
         // Route one effect to each family (CompositeExecutor dispatches by req.content_type.family).
-        let mut req_a = EffectRequest::new(
-            EffectKind::Emit,
-            "t".to_string(),
-            None,
-            Timeliness::Interactive,
-        );
+        let mut req_a = EffectRequest::new(EffectKind::Emit, "t", None, Timeliness::Interactive);
         req_a.content_type.family = "fam-a".into();
         let mut req_b = req_a.clone();
         req_b.content_type.family = "fam-b".into();

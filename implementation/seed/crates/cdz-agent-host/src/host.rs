@@ -1092,13 +1092,14 @@ impl AgentHost {
                 continue;
             }
             // The target rides the effect as a content-hash hex; resolve it to bytes through the factory.
+            // The target is opaque Arc<[u8]>; a non-UTF-8 (or non-hex) target yields no hash → the None arm.
             let target_bytes = match (
                 factory.as_deref_mut(),
-                Hash::from_hex(ce.request.target.as_ref()),
+                ce.request.target_str().ok().and_then(Hash::from_hex),
             ) {
                 (Some(f), Some(hash)) => f.fetch_blob(&hash).await.ok().flatten(),
-                // No factory, or a non-hex target — no bytes to reflect (settle_signature_query settles
-                // the Err arm, so the reducer resumes).
+                // No factory, or a non-UTF-8/non-hex target — no bytes to reflect (settle_signature_query
+                // settles the Err arm, so the reducer resumes).
                 _ => None,
             };
             if let Some(s) = self.sessions.get_mut(id) {
@@ -3739,7 +3740,7 @@ mod tests {
             .collect();
         assert_eq!(sig.len(), 1, "the control/signature effect was surfaced");
         assert_eq!(
-            sig[0].request.target.as_ref(),
+            sig[0].request.target_str().expect("a hex target is UTF-8"),
             target.to_hex(),
             "the surfaced effect carries the reducer-named target"
         );

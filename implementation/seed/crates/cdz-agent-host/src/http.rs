@@ -182,15 +182,20 @@ impl<T: HttpTransport> Executor for HttpExecutor<T> {
                     );
                 }
             };
+        // target = the request URL. The target is now opaque Arc<[u8]>; a URL is UTF-8, so a non-UTF-8
+        // target is malformed → PERMANENT (fail-closed). The kernel's SEC-F1 HostIn gate already ran on the
+        // target before dispatch; this is just the mechanical byte→str read.
+        let url = match req.target_str() {
+            Ok(u) => u,
+            Err(_) => {
+                return EffectOutcome::err(
+                    "HttpExecutor: the Http target (URL) is not valid UTF-8",
+                );
+            }
+        };
         match self
             .transport
-            .request(
-                method,
-                &req.target,
-                &headers,
-                body.as_deref(),
-                idempotency_key,
-            )
+            .request(method, url, &headers, body.as_deref(), idempotency_key)
             .await
         {
             // A completed response — encode its status + headers + body into the result as an
@@ -381,7 +386,7 @@ mod tests {
     fn http_req(method: &str, body: Option<&[u8]>) -> EffectRequest {
         EffectRequest::new_with_family(
             effect_ct::HTTP,
-            "https://ok.host/x".to_string(),
+            "https://ok.host/x",
             Some(Payload::Inline(encode_http_request(method, body).into())),
             Timeliness::Interactive,
         )
@@ -395,7 +400,7 @@ mod tests {
             .collect();
         EffectRequest::new_with_family(
             effect_ct::HTTP,
-            "https://ok.host/x".to_string(),
+            "https://ok.host/x",
             Some(Payload::Inline(
                 encode_http_request_with_headers(method, &hs, body).into(),
             )),
@@ -554,7 +559,7 @@ mod tests {
         let mut exec = HttpExecutor::new(NeverCalled);
         let req = EffectRequest::new_with_family(
             effect_ct::HTTP,
-            "https://ok.host/x".to_string(),
+            "https://ok.host/x",
             Some(Payload::Blob(Hash::of(b"big"))),
             Timeliness::Interactive,
         );
@@ -589,7 +594,7 @@ mod tests {
         let mut exec = HttpExecutor::new(NeverCalled);
         let no_payload = EffectRequest::new_with_family(
             effect_ct::HTTP,
-            "https://ok.host/x".to_string(),
+            "https://ok.host/x",
             None,
             Timeliness::Interactive,
         );
@@ -606,7 +611,7 @@ mod tests {
         let mut exec = HttpExecutor::new(NeverCalled);
         let garbage = EffectRequest::new_with_family(
             effect_ct::HTTP,
-            "https://ok.host/x".to_string(),
+            "https://ok.host/x",
             Some(Payload::Inline(b"not a sexpr".to_vec().into())),
             Timeliness::Interactive,
         );
@@ -671,12 +676,8 @@ mod tests {
             }
         }
         let mut exec = HttpExecutor::new(NeverCalled);
-        let req = EffectRequest::new_with_family(
-            effect_ct::MODEL,
-            "m".to_string(),
-            None,
-            Timeliness::Interactive,
-        );
+        let req =
+            EffectRequest::new_with_family(effect_ct::MODEL, "m", None, Timeliness::Interactive);
         match exec.perform(EffectId(0), &req, Hash::of(b"k")).await {
             EffectOutcome::Err {
                 message,

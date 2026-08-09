@@ -131,12 +131,14 @@ pub enum EventBody {
         /// (re-answer `control/capabilities` inline vs. re-drive a real emit), and is the direction the
         /// effect model is migrating onto (family is the source of truth, `kind` the legacy tag).
         family: std::sync::Arc<str>,
-        /// The resolved target argument (URL / session-id / command). `Arc<str>` (operator cheap-clone
-        /// directive): the dispatch frame is CLONED as it threads through record/replay/status, and the
-        /// source [`crate::effect::EffectRequest::target`] is ALREADY `Arc<str>`, so recording it here is an
-        /// O(1) refcount bump (`req.target.clone()`) instead of a fresh `String` alloc per dispatch. Derefs
-        /// to `&str`, so readers are unaffected.
-        target: std::sync::Arc<str>,
+        /// The resolved target argument (url / session-id / command / hash — opaque bytes). `Arc<[u8]>`
+        /// (operator Target=Bytes ruling 2026-08-09): the source [`crate::effect::EffectRequest::target`] is
+        /// `Arc<[u8]>`, so recording it here is an O(1) refcount bump (`req.target.clone()`), and the durable
+        /// frame carries the exact bytes the effect was dispatched with (a non-UTF-8 target is preserved
+        /// faithfully on the log). On the wire it is length-prefixed bytes exactly as before — byte-identical
+        /// to the old `Arc<str>` encoding (a str was already encoded as its UTF-8 bytes), so this is NOT a
+        /// wire break. A reader wanting text uses a fail-closed UTF-8 view.
+        target: std::sync::Arc<[u8]>,
         /// Idempotency key (§16c-S1/D): re-driving a dispatch with the same key must not double-apply.
         /// For naturally-idempotent effects this can equal the id; for side-effecting ones the
         /// executor dedups on it.
@@ -489,6 +491,15 @@ impl<'a> Cursor<'a> {
             .map(|s| s.to_string())
             .map_err(|_| DecodeError::BadUtf8)
     }
+
+    /// Read a length-prefixed RAW byte string — the same u64-len + bytes framing as [`string`](Self::string)
+    /// but WITHOUT UTF-8 validation (operator Target=Bytes ruling: an effect target is opaque bytes, not
+    /// necessarily UTF-8). Wire-compatible with a `string()`-encoded value (a str was already its UTF-8
+    /// bytes), so a pre-ruling log decodes identically.
+    fn bytes(&mut self) -> Result<Vec<u8>, DecodeError> {
+        let len = self.len()?;
+        Ok(self.take(len)?.to_vec())
+    }
 }
 
 fn decode_body(c: &mut Cursor) -> Result<EventBody, DecodeError> {
@@ -524,7 +535,9 @@ fn decode_body(c: &mut Cursor) -> Result<EventBody, DecodeError> {
             let id = EffectId(c.u64()?);
             let kind = decode_kind(c.u8()?)?;
             let family = c.string()?;
-            let target = c.string()?;
+            // Target is opaque bytes (Target=Bytes ruling) — read raw, no UTF-8 validation. Wire-compatible
+            // with the old `string()` encoding (a str was its UTF-8 bytes under the same len-prefix framing).
+            let target = c.bytes()?;
             let idempotency_key = Hash::from_bytes(c.hash()?);
             let deadline_ms = decode_opt_u64(c)?;
             let token = decode_opt_bytes(c)?;
@@ -532,7 +545,7 @@ fn decode_body(c: &mut Cursor) -> Result<EventBody, DecodeError> {
                 id,
                 kind,
                 family: family.into(),
-                target: target.into(),
+                target: std::sync::Arc::from(target.as_slice()),
                 idempotency_key,
                 deadline_ms,
                 token,
@@ -726,7 +739,7 @@ fn encode_body(body: &EventBody, out: &mut Vec<u8>) {
             out.extend_from_slice(&id.0.to_le_bytes());
             out.push(kind_tag(kind));
             encode_str(family, out);
-            encode_str(target, out);
+            encode_bytes(target, out);
             out.extend_from_slice(idempotency_key.as_bytes());
             encode_opt_u64(*deadline_ms, out);
             encode_opt_bytes(token.as_deref(), out);
@@ -801,6 +814,14 @@ fn kind_tag(kind: &EffectKind) -> u8 {
 fn encode_str(s: &str, out: &mut Vec<u8>) {
     out.extend_from_slice(&(s.len() as u64).to_le_bytes());
     out.extend_from_slice(s.as_bytes());
+}
+
+/// Encode a length-prefixed RAW byte string — the same u64-len + bytes framing as [`encode_str`], for an
+/// opaque byte field (an effect target — Target=Bytes ruling). Byte-identical to `encode_str` for a value
+/// that happens to be UTF-8, so a target's on-wire shape is unchanged from when it was an `Arc<str>`.
+fn encode_bytes(b: &[u8], out: &mut Vec<u8>) {
+    out.extend_from_slice(&(b.len() as u64).to_le_bytes());
+    out.extend_from_slice(b);
 }
 
 fn encode_opt_u64(v: Option<u64>, out: &mut Vec<u8>) {
@@ -994,7 +1015,7 @@ mod tests {
                 id: EffectId(7),
                 kind: EffectKind::Http,
                 family: EffectKind::Http.family().into(),
-                target: "https://ok.host/p".into(),
+                target: "https://ok.host/p".as_bytes().into(),
                 idempotency_key: Hash::from_bytes([0xCDu8; 32]),
                 deadline_ms: Some(1000),
                 token: Some(b"step-1".to_vec()),
@@ -1154,7 +1175,7 @@ mod tests {
                     id: EffectId(7),
                     kind: EffectKind::Http,
                     family: EffectKind::Http.family().into(),
-                    target: "https://ok.host/p".into(),
+                    target: "https://ok.host/p".as_bytes().into(),
                     idempotency_key: h,
                     deadline_ms: Some(12345),
                     token: Some(b"resume-tok".to_vec()),
@@ -1167,7 +1188,7 @@ mod tests {
                     id: EffectId(8),
                     kind: EffectKind::Shell,
                     family: EffectKind::Shell.family().into(),
-                    target: "cargo test".into(),
+                    target: "cargo test".as_bytes().into(),
                     idempotency_key: h,
                     deadline_ms: None,
                     token: None,

@@ -564,12 +564,15 @@ pub struct EffectRequest {
     pub kind: EffectKind,
     /// The resolved target the capability predicate gates (SEC-F1). Never trust the kind alone.
     ///
-    /// `Arc<str>` (operator Bytes/cheap-clone directive): an effect is CLONED as it threads
-    /// dispatch→authz→executor, and a URL/command/session-id target is immutable string data — so an
-    /// `Arc<str>` clone is an O(1) refcount bump, not a fresh heap `String`. It derefs to `&str` (so every
-    /// read/`admits`/transport call is unchanged, incl. downstream `&req.target` via deref-coercion), and
-    /// `EffectRequest::new` takes `impl Into<Arc<str>>` so `&str`/`String` call sites are unaffected.
-    pub target: std::sync::Arc<str>,
+    /// `Arc<[u8]>` (operator ruling 2026-08-09): the target is UNIFORM OPAQUE BYTES, not a string — the
+    /// operator's point is that the resolved targets are not all genuinely UTF-8 (a shell command, an http
+    /// url, an fs path, a session id, a content hash), so modelling them as `Arc<str>` was wrong. Bytes is
+    /// the honest shape. Still cheaply-clonable (an `Arc<[u8]>` clone is an O(1) refcount bump as an effect
+    /// threads dispatch→authz→executor, per the cheap-clone directive). Readers that WANT a string view use
+    /// [`EffectRequest::target_str`] (a fail-closed UTF-8 view); the authz gate does exactly that so a
+    /// non-UTF-8 target simply fails every string predicate (fail-closed, SEC-F1-safe). `EffectRequest::new`
+    /// takes `impl AsRef<[u8]>` so `&str`/`String`/`&[u8]` call sites all pass unchanged.
+    pub target: std::sync::Arc<[u8]>,
     /// Opaque request body. `None` for argument-free effects (e.g. `Now`).
     pub payload: Option<Payload>,
     /// How latency-sensitive this effect is (§ operator timeliness directive). A [`Timeliness::Batchable`]
@@ -605,7 +608,7 @@ impl EffectRequest {
     /// therefore always gets a matching `content_type` — the two can't drift.
     pub fn new(
         kind: EffectKind,
-        target: impl Into<std::sync::Arc<str>>,
+        target: impl AsRef<[u8]>,
         payload: Option<Payload>,
         timeliness: Timeliness,
     ) -> Self {
@@ -617,7 +620,9 @@ impl EffectRequest {
                 version: 1,
             },
             kind,
-            target: target.into(),
+            // `impl AsRef<[u8]>` so `&str`/`String`/`&[u8]`/`Vec<u8>` all pass unchanged (the operator
+            // Target=Bytes ruling); `Arc::from(&[u8])` is the one heap copy at construction, then O(1) clones.
+            target: std::sync::Arc::from(target.as_ref()),
             payload,
             timeliness,
         }
@@ -633,7 +638,7 @@ impl EffectRequest {
     /// authoritative identity). `version` is 1. Additive alongside `new`; both yield the same shape.
     pub fn new_with_family(
         family: impl Into<std::borrow::Cow<'static, str>>,
-        target: impl Into<std::sync::Arc<str>>,
+        target: impl AsRef<[u8]>,
         payload: Option<Payload>,
         timeliness: Timeliness,
     ) -> Self {
@@ -664,10 +669,22 @@ impl EffectRequest {
         EffectRequest {
             content_type: ContentType { family, version: 1 },
             kind,
-            target: target.into(),
+            target: std::sync::Arc::from(target.as_ref()),
             payload,
             timeliness,
         }
+    }
+
+    /// A fail-closed UTF-8 STRING VIEW of the opaque byte [`target`](Self::target), for the readers that
+    /// interpret it as text (a URL, an fs path, a shell command, a hex hash, a session id). `Err` when the
+    /// target is not valid UTF-8 — the caller treats that as "does not match" / "not a valid <thing>",
+    /// which keeps the SEC-F1 authz gate FAIL-CLOSED: a non-UTF-8 target satisfies no string predicate
+    /// ([`ResourcePredicate::admits`] is fed this view, and a non-UTF-8 target is denied, never admitted).
+    /// This is the ONE place the bytes→str reinterpretation lives, so every string-reading call site is a
+    /// `req.target_str()` (host executors, the shell split, name resolution) rather than a scattered
+    /// `str::from_utf8(&req.target)`.
+    pub fn target_str(&self) -> Result<&str, std::str::Utf8Error> {
+        std::str::from_utf8(&self.target)
     }
 }
 
@@ -781,7 +798,11 @@ impl Capability {
     /// identical to the old `kind ==` check (a request built via [`EffectRequest::new`] has
     /// `content_type.family == kind.family()` by construction).
     pub fn permits(&self, req: &EffectRequest) -> bool {
-        req.content_type.matches_family(self.kind.family()) && self.predicate.admits(&req.target)
+        // Feed the predicate the fail-closed UTF-8 view of the opaque byte target (operator Target=Bytes
+        // ruling): a non-UTF-8 target admits nothing (SEC-F1 stays fail-closed — a malformed target is
+        // never granted).
+        req.content_type.matches_family(self.kind.family())
+            && req.target_str().is_ok_and(|t| self.predicate.admits(t))
     }
 
     /// Grant an effect FAMILY that has no built-in [`EffectKind`] — the register-by-string authz seam
@@ -822,7 +843,9 @@ impl FamilyGrant {
     /// Does this family-grant permit `req`? Family STRING match AND predicate admits the resolved target —
     /// the same SEC-F1 two-condition rule [`Capability::permits`] applies, keyed on the family string.
     pub fn permits(&self, req: &EffectRequest) -> bool {
-        req.content_type.matches_family(&self.family) && self.predicate.admits(&req.target)
+        // Fail-closed UTF-8 view (operator Target=Bytes ruling): a non-UTF-8 target satisfies no predicate.
+        req.content_type.matches_family(&self.family)
+            && req.target_str().is_ok_and(|t| self.predicate.admits(t))
     }
 }
 
@@ -1216,7 +1239,7 @@ mod tests {
         assert_eq!(via_new.content_type.version, 1);
         let via_literal = EffectRequest {
             kind: EffectKind::Http,
-            target: "https://ok.host/x".into(),
+            target: "https://ok.host/x".as_bytes().into(),
             payload: Some(Payload::Inline(b"body".to_vec().into())),
             timeliness: Timeliness::Interactive,
             content_type: ContentType {

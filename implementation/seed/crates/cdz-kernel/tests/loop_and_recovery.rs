@@ -96,8 +96,14 @@ async fn reactive_two_step_loop_runs_to_completion() {
     // inbound delivery (reactivity: append wakes the reducer, §9d).
     assert_eq!(session.kv().get(b"phase"), Some(&b"done"[..]));
     assert_eq!(exec.seen.len(), 2);
-    assert_eq!(exec.seen[0].0.target.as_ref(), "https://ok.host/step1");
-    assert_eq!(exec.seen[1].0.target.as_ref(), "https://ok.host/step2");
+    assert_eq!(
+        exec.seen[0].0.target_str().unwrap(),
+        "https://ok.host/step1"
+    );
+    assert_eq!(
+        exec.seen[1].0.target_str().unwrap(),
+        "https://ok.host/step2"
+    );
     // Every effect settled; nothing left open.
     assert_eq!(session.open_effects(), 0);
 }

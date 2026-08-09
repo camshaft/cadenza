@@ -3569,6 +3569,16 @@ impl crate::authz::Authorize for ComponentAuthorizer {
     /// call today (no `.await`); a fuel-yielding async policy eval is a later refinement (the trait is
     /// async so it drops in without a signature change).
     async fn authorize(&self, req: &crate::effect::EffectRequest) -> Result<(), String> {
+        // The Cedar policy gates on `target` as a STRING; the effect target is opaque bytes (Target=Bytes
+        // ruling). FAIL-CLOSED (SEC-F1, consistent with the flat `Capability::permits` path which feeds the
+        // predicate a fail-closed UTF-8 view): a non-UTF-8 target is DENIED before the policy runs — never
+        // lossily coerced (a U+FFFD-substituted string could spuriously match a policy the flat path denies).
+        let target = match req.target_str() {
+            Ok(t) => t.to_string(),
+            Err(_) => {
+                return Err("authz deny (fail-closed): effect target is not valid UTF-8".to_string())
+            }
+        };
         let mut store = wasmtime::Store::new(&self.engine, ());
         if store.set_fuel(DEFAULT_FOLD_FUEL).is_err() {
             return Err("authz: fuel init failed (fail-closed deny)".to_string());
@@ -3590,7 +3600,7 @@ impl crate::authz::Authorize for ComponentAuthorizer {
             // keying `action` on the enum would present "emit" to the policy for a `store/set`, so a Cedar
             // policy could never gate store writes (or any register-by-string family) correctly.
             action: req.content_type.family.to_string(),
-            target: req.target.to_string(),
+            target,
             // SUBJECT (§directory-D5): a group membership op (`store/add`/`store/remove`) carries the member
             // value in its `member-op` payload — the STRUCTURED SUBJECT the self-vs-other rule keys on
             // (subject==principal ⇒ self-join; subject!=principal ⇒ needs owner authority). Extract it here so
@@ -3848,7 +3858,7 @@ mod tests {
         };
         let e = guest_effect_to_kernel_effect(g);
         assert_eq!(e.request.kind, crate::effect::EffectKind::Http);
-        assert_eq!(e.request.target.as_ref(), "https://example.test");
+        assert_eq!(e.request.target_str().unwrap(), "https://example.test");
         assert_eq!(e.request.timeliness, crate::effect::Timeliness::Interactive);
         match &e.request.payload {
             Some(crate::effect::Payload::Inline(b)) => assert_eq!(b.as_ref(), b"body"),

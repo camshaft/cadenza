@@ -221,9 +221,17 @@ impl Executor for ShellExecutor {
                 req.kind
             ));
         }
+        // A shell command target is text; read the opaque byte target as its fail-closed UTF-8 view
+        // (Target=Bytes ruling). A non-UTF-8 shell target is a malformed command → observable Err.
+        let target = match req.target_str() {
+            Ok(t) => t,
+            Err(_) => {
+                return EffectOutcome::err("shell command target is not valid UTF-8".to_string())
+            }
+        };
         // Split the target into program + args on whitespace and exec DIRECTLY — no shell, so
         // metacharacters are literal arguments, not interpreted (PR#992 CWE-78 fix).
-        let mut parts = req.target.split_whitespace();
+        let mut parts = target.split_whitespace();
         let Some(program) = parts.next() else {
             return EffectOutcome::err("empty command".to_string());
         };

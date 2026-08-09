@@ -222,7 +222,7 @@ async fn the_wasm_guest_drives_the_kernel_loop_and_its_token_reaches_the_dispatc
         1,
         "the guest's one Http effect was dispatched"
     );
-    assert_eq!(exec.seen[0].0.target.as_ref(), "https://ok.host/x");
+    assert_eq!(exec.seen[0].0.target_str().unwrap(), "https://ok.host/x");
     // And the guest's continuation token rode into the durable Dispatched frame (§19e: emit→Dispatched).
     let dispatched_token = session.log().iter().find_map(|e| match &e.body {
         EventBody::Dispatched { token, .. } => Some(token.clone()),

@@ -16,8 +16,10 @@
 //! `EffectResult` on the sender's log.
 //!
 //! WIRE CONTRACT (agreed with v-agent-harness, the kernel-side authority):
-//! - `target` is the RAW host [`SessionId`] string (the [`AgentHost`](crate::AgentHost) registry key); the
-//!   kernel treats it as an opaque routing hint (§9b), no namespacing.
+//! - `target` is the host [`SessionId`] (the [`AgentHost`](crate::AgentHost) registry key), carried in the
+//!   effect's opaque byte target ([`EffectRequest::target`] is `Arc<[u8]>`) and read as UTF-8 via
+//!   [`EffectRequest::target_str`]; the kernel treats it as an opaque routing hint (§9b), no namespacing. A
+//!   non-UTF-8 target is a fail-closed PERMANENT error.
 //! - the routed [`Inbound`] carries `content_type.family = "message"` (the same family an ordinary inbound
 //!   message uses, so a receiver reducer folds it with the existing pattern) + the sender's `payload`
 //!   VERBATIM (opaque — the reducer defines the message schema, §4; a sender that wants to prove provenance
@@ -83,16 +85,20 @@ impl Executor for EmitExecutor {
             ));
         }
 
-        // `target` is the peer session id (raw SessionId string, opaque routing hint). An empty target has
-        // no peer to route to — structural PERMANENT.
-        if req.target.is_empty() {
+        // `target` is the peer session id (opaque routing hint). The target is now opaque Arc<[u8]>; a peer
+        // session id is UTF-8, so a non-UTF-8 target is malformed → structural PERMANENT (fail-closed).
+        let Ok(target_str) = req.target_str() else {
+            return EffectOutcome::err(
+                "EmitExecutor: an Emit target must be a valid UTF-8 peer session id",
+            );
+        };
+        // An empty target has no peer to route to — structural PERMANENT.
+        if target_str.is_empty() {
             return EffectOutcome::err(
                 "EmitExecutor: an Emit effect requires a non-empty target (the peer session id to route to)",
             );
         }
-        // Clone the `Arc<str>` (O(1) refcount bump) rather than round-tripping `as_ref()` → a fresh alloc
-        // (#2351 review c3): `SessionId` IS an `Arc<str>` and `req.target` already is one.
-        let target = SessionId::new(req.target.clone());
+        let target = SessionId::new(target_str);
 
         // The message payload rides VERBATIM into the peer's Inbound (opaque — the reducer defines the
         // schema). A payload-less emit routes an empty-payload message (a bare signal is legitimate); a
@@ -156,7 +162,7 @@ mod tests {
     fn emit_req(target: &str, payload: Option<&[u8]>) -> EffectRequest {
         EffectRequest::new_with_family(
             effect_ct::EMIT,
-            target.to_string(),
+            target,
             payload.map(|b| Payload::Inline(b.to_vec().into())),
             Timeliness::Interactive,
         )
@@ -258,12 +264,8 @@ mod tests {
     async fn a_non_emit_family_is_a_permanent_error() {
         let (tx, _rx) = mpsc::unbounded_channel();
         let mut exec = EmitExecutor::new(tx, SessionId::new("sender-a"));
-        let req = EffectRequest::new_with_family(
-            effect_ct::HTTP,
-            "b".to_string(),
-            None,
-            Timeliness::Interactive,
-        );
+        let req =
+            EffectRequest::new_with_family(effect_ct::HTTP, "b", None, Timeliness::Interactive);
         let out = exec.perform(EffectId(0), &req, Hash::of(b"k")).await;
         assert!(
             matches!(out, EffectOutcome::Err { message, retryability } if retryability == Retryability::Permanent && message.contains("only handles")),
@@ -282,7 +284,7 @@ mod tests {
         let mut exec = EmitExecutor::new(tx, SessionId::new("sender-a"));
         let req = EffectRequest::new_with_family(
             effect_ct::EMIT,
-            "b".to_string(),
+            "b",
             Some(Payload::Blob(Hash::of(b"some-blob-ref"))),
             Timeliness::Interactive,
         );
