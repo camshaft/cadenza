@@ -2084,6 +2084,26 @@ pub fn reduce_handle(
     // local binders and their in-scope references are rewritten. (breaker's silent-miscompile finding,
     // corpus-bugfix 2026-07-28.)
     let body = freshen_local_binders(db, body);
+    // ABORTIVE-OUTER + NESTED-HANDLE PRE-REDUCTION (finding #11). When THIS handler is abortive and its body
+    // contains a NESTED inner handle of a DIFFERENT effect that itself wraps a perform of THIS handler's op —
+    // `(handle A abortive (+ (* 100 (handle B tail (if c (A.out n) n))) 7))` — the `A.out` is buried under
+    // BOTH the inner `handle-internal B` node AND (here) a conditional. `hoist_conditional_abort` below and
+    // the abort-reach guards do NOT descend into a nested handle node, so the buried `A.out` is invisible:
+    // the inner B-handle later reduces during A's `thread` (the inside-out Handle arm), surfacing `(if c
+    // (A.out n) n)` — but by then the hoist has already run, so the conditional abort is captured BRANCH-LOCAL
+    // (yielding 9003 as the `if`'s value) and the enclosing `* 100`/`+ 7` continue → 900307, a silent
+    // miscompile (finding #11: conditional foreign abort homes to the wrong inner boundary). REDUCE the inner
+    // handles FIRST — B keeps `A.out` residual (foreign to B, `copy_pure`'d) and its wrapper is removed — so
+    // the body becomes `(+ (* 100 (if c (A.out n) n)) 7)`, where `hoist_conditional_abort` CAN lift the
+    // conditional abort to a branch tail A discharges. The UNCONDITIONAL case (abmin) already worked (the
+    // inside-out thread reduces B then discharges the bare `A.out`); this makes the CONDITIONAL case take the
+    // same homing path. GATED to abortive + a genuinely nested handle so the common body is untouched; sound
+    // because reducing an inner handle is the same reduction the thread path performs, only sequenced earlier.
+    let body = if !ctx.abortive.is_empty() && body_contains_nested_handle(db, body) {
+        reduce_inner_handles(db, body)
+    } else {
+        body
+    };
     // ABORTIVE (E4) NON-TAIL HOIST. An abort in a strict OPERAND under a conditional — `(+ 100 (if c
     // (Bail.bail 7) 50))` — is not directly foldable (the abort must escape the `+`). But an abort
     // ABANDONS the enclosing computation, so distributing the surrounding strict op INTO both `if` branches

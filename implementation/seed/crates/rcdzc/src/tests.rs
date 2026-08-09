@@ -65673,19 +65673,27 @@ mod stage1 {
     }
 
     #[test]
-    fn an_abortive_perform_alongside_an_effectful_sibling_declines() {
-        // E4 hoist soundness LIMIT: the non-tail hoist distributes the enclosing op into both branches, so
-        // it requires the op's OTHER operands to be PURE (duplicating them is observably free). When a
-        // sibling operand is EFFECTFUL — here `(Get.get 0)` under a tail-resumptive `Get` handler, in
-        // `(+ (Get.get 0) (if c (Bail.bail 7) 50))` — the sibling runs (threads state) BEFORE the abort, so
-        // it can be neither duplicated nor dropped. The hoist declines to lift, and the guard flags the
-        // still-non-tail abort → `reduce_handle` DECLINES rather than miscompile. Regression guard.
+    fn an_abortive_perform_alongside_an_effectful_sibling_now_folds_via_inner_handle_pre_reduction()
+    {
+        // FINDING #11 fix: this used to DECLINE (the E4 hoist requires pure siblings, and `(Get.get 0)` reads
+        // effectful). But the sibling is under a NESTED inner `Get` handle, and the outer `Bail` handler is
+        // ABORTIVE — so `reduce_handle` now PRE-REDUCES the inner `Get` handle first (finding #11 fix), folding
+        // `(Get.get 0)` to the constant `5`. The body becomes `(+ 5 (if true (Bail.bail 7) 50))` — a PURE
+        // sibling `5` alongside the conditional abort — which `hoist_conditional_abort` legitimately lifts to
+        // `(if true (+ 5 (Bail.bail 7)) (+ 5 50))`, and the abort homes to `Bail`. `Get.get` still runs exactly
+        // once (folded before the abort, correct eval order). Folds to the Bail arm value 7 (the abort abandons
+        // the `+`), not a miscompile — a strict improvement over the prior safe-decline.
         let src = "(do (effect Get (op get (-> Int64 Int64))) (effect Bail (op bail (-> Int64 Int64))) \
                    (def (main) (handle Bail 0 ((bail (n) s n)) \
                      (handle Get 0 ((get (n) s (resume 5 s))) (+ (Get.get 0) (if true (Bail.bail 7) 50))))) (export main))";
-        assert!(
-            compile_component(&crate::codec::encode(&parse(src))).is_err(),
-            "an abort alongside an effectful sibling must decline, not miscompile"
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(src)))
+                    .expect("the inner Get handle pre-reduces so the abort hoist applies"),
+                "main"
+            ),
+            7,
+            "Bail.bail 7 aborts the `+` and homes to the Bail arm → 7"
         );
     }
 
@@ -66257,19 +66265,66 @@ mod stage1 {
     }
 
     #[test]
-    fn an_abortive_let_init_after_an_effectful_binding_declines() {
-        // E4 let-init hoist LIMIT: lifting a conditional `let`-init out of the let duplicates the `if`
-        // condition AND every PRECEDING binding init across the two branches. When an earlier binding is
-        // EFFECTFUL — `(let ((a (Get.get 0)) (k (if c (Bail.bail 7) 0))) …)` with a tail-resumptive `Get` —
-        // it runs (threads state) before the abort and cannot be duplicated or dropped, so the hoist
-        // declines to lift and the guard flags the still-conditional init → `reduce_handle` DECLINES.
+    fn an_abortive_let_init_after_an_effectful_binding_now_folds_via_inner_handle_pre_reduction() {
+        // FINDING #11 fix: this used to DECLINE (the let-init hoist requires the preceding binding pure, and
+        // `a = (Get.get 0)` is effectful). But `Get.get` sits under a NESTED inner `Get` handle and the outer
+        // `Bail` is ABORTIVE, so `reduce_handle` now PRE-REDUCES the inner `Get` handle (finding #11 fix),
+        // folding `a` to the constant `5`. With `a` pure, the conditional `let`-init abort hoists soundly and
+        // homes to `Bail`. `Get.get` still runs once. `main(3)` (x<5): `k` aborts → Bail arm value 7. `main(9)`
+        // (x>=5): a=5, k=0 → 5. A strict improvement over the prior safe-decline (correct fold, verified both
+        // branches), not a miscompile.
         let src = "(do (effect Get (op get (-> Int64 Int64))) (effect Bail (op bail (-> Int64 Int64))) \
                    (def (main (: x Int64)) (handle Bail 0 ((bail (n) s n)) \
                      (handle Get 0 ((get (n) s (resume 5 s))) \
                        (let ((a (Get.get 0)) (k (if (< x 5) (Bail.bail 7) 0))) (+ a k))))) (export main))";
-        assert!(
-            compile_component(&crate::codec::encode(&parse(src))).is_err(),
-            "an abortive let-init after an effectful binding must decline, not miscompile"
+        let comp = compile_component(&crate::codec::encode(&parse(src)))
+            .expect("the inner Get handle pre-reduces so the let-init abort hoist applies");
+        assert_eq!(
+            run_returns_with::<i64>(&comp, "main", &[wasmtime::component::Val::S64(3)]),
+            7,
+            "x<5: the k-init aborts → Bail arm value 7"
+        );
+        assert_eq!(
+            run_returns_with::<i64>(&comp, "main", &[wasmtime::component::Val::S64(9)]),
+            5,
+            "x>=5: a=5, k=0 → 5"
+        );
+    }
+
+    #[test]
+    fn a_conditional_foreign_abort_under_an_inner_handle_homes_to_its_own_handler() {
+        // FINDING #11 (breaker, MED-HIGH 3-backend silent miscompile): a FOREIGN abortive op under a
+        // CONDITIONAL, inside a DIFFERENT effect's inner handler, homed to the wrong (inner) boundary — its
+        // value flowed as ordinary data through the inner + outer frames instead of unwinding to its own
+        // handler. `handle A abortive (+ (* 100 (handle B tail (if c (A.out n) n))) 7)`: `A.out` (abortive,
+        // A's own op) sits under an `if` inside the inner B handle. Before the fix, `A.out`'s arm value became
+        // the `if`'s value → `×100 + 7` = 900307. The fix pre-reduces the inner B handle when the OUTER
+        // handler is abortive (finding #11 fix in `reduce_handle`), surfacing `(if c (A.out n) n)` so the
+        // conditional-abort hoist lifts it and `A.out` homes to A. main(3) (3%3==0): A.out 3 → 9000+3 = 9003
+        // (abort abandons the `* 100`/`+ 7`). main(4): else branch, n=4 → 100*4+7 = 407. main(6): A.out 6 → 9006.
+        let src = "(do (effect A (op out (-> Int64 Int64))) (effect B (op bout (-> Int64 Int64))) \
+                   (def (main (: n Int64)) \
+                     (handle A 0 ((out (v) t (+ 9000 v))) \
+                       (+ (* 100 (handle B 0 ((bout (v) t (+ 500 v))) (if (= (% n 3) 0) (A.out n) n))) 7))) \
+                   (export main))";
+        let comp = compile_component(&crate::codec::encode(&parse(src)))
+            .expect("a conditional foreign abort under an inner handle must fold, homing to its own handler");
+        // abort branch (n divisible by 3): the abort unwinds past B AND the enclosing arithmetic to A's arm.
+        assert_eq!(
+            run_returns_with::<i64>(&comp, "main", &[wasmtime::component::Val::S64(3)]),
+            9003,
+            "A.out 3 homes to A (9000+3), abandoning the * 100 / + 7 — not 900307"
+        );
+        assert_eq!(
+            run_returns_with::<i64>(&comp, "main", &[wasmtime::component::Val::S64(6)]),
+            9006,
+            "A.out 6 homes to A (9000+6)"
+        );
+        // else branch (not divisible): no abort, the `if` yields `n`, the arithmetic runs.
+        assert_eq!(
+            run_returns_with::<i64>(&comp, "main", &[wasmtime::component::Val::S64(4)]),
+            407,
+            "n=4 → 100*4 + 7"
         );
     }
 
