@@ -7821,6 +7821,30 @@ fn local_gate_verdict(spawned_ok: bool, build_ok: bool) -> CiVerdict {
 /// contexts) and maps the outcome via `local_gate_verdict`: spawn-fail→NoChecks, exit0→Green,
 /// nonzero→Red (never Pending — the build blocks to completion). PATH-robust `nix` resolution (the fleet
 /// host has nix off a non-login shell's PATH). Inherits stdio so the build log is visible to the caller.
+/// Concurrency cap for a `local-gate` nix build. The `localGate` aggregate inherits 12 constituent
+/// derivations (clippy-a/b + codegen + gate + guide + bench + runtime + fmt + test + roundtrip + 2
+/// natives) and nix builds them ALL in parallel by default (`--max-jobs auto` = one job per core), so a
+/// single COLD gate saturates the box (pr-sync 2026-08-09: load 109 / 110 concurrent builds, the 3rd nix
+/// saturation this session — and a RED batch's per-MR/bisect re-gate compounds it). Cap the DERIVATION
+/// parallelism so one gate stays civil and a re-gate can't melt the machine; within-derivation
+/// parallelism (rustc threads) still uses the cores, so the wall-clock hit is small. 4 concurrent
+/// build-jobs keeps load bounded while still overlapping the independent constituents.
+const NIX_GATE_MAX_JOBS: &str = "4";
+
+/// The shared `nix build` argv for a `local-gate` invocation, INCLUDING the [`NIX_GATE_MAX_JOBS`]
+/// concurrency cap — the single source of truth so `run_gate_local` + `run_gate_local_bounded` can never
+/// drift on flags. `--max-jobs N` caps concurrent DERIVATION builds (the saturation source).
+fn nix_gate_argv(target: &str) -> [String; 6] {
+    [
+        "build".into(),
+        target.into(),
+        "--no-link".into(),
+        "--print-out-paths".into(),
+        "--max-jobs".into(),
+        NIX_GATE_MAX_JOBS.into(),
+    ]
+}
+
 /// Run the LOCAL nix gate — `nix build .#checks.<arch>-linux.local-gate` — from the process CWD and map
 /// the outcome to a [`CiVerdict`] (spawn-fail→NoChecks, exit0→Green, nonzero→Red). Inherits stdio so the
 /// build log streams live. UNBOUNDED (blocks to completion) — correct for the manual `gate-local` CLI +
@@ -7829,10 +7853,10 @@ fn local_gate_verdict(spawned_ok: bool, build_ok: bool) -> CiVerdict {
 fn run_gate_local(arch: &str) -> CiVerdict {
     let target = format!(".#checks.{arch}-linux.local-gate");
     let nix_bin = nix_binary();
-    eprintln!("gate-local: running `{nix_bin} build {target}` (local required-set gate; aarch64)…");
-    let out = Command::new(&nix_bin)
-        .args(["build", &target, "--no-link", "--print-out-paths"])
-        .status();
+    eprintln!(
+        "gate-local: running `{nix_bin} build {target}` (local required-set gate; aarch64; --max-jobs {NIX_GATE_MAX_JOBS})…"
+    );
+    let out = Command::new(&nix_bin).args(nix_gate_argv(&target)).status();
     let (spawned_ok, build_ok) = match out {
         Ok(s) => (true, s.success()),
         Err(e) => {
@@ -7866,11 +7890,11 @@ fn run_gate_local_bounded(arch: &str, dir: &Path) -> CiVerdict {
     let target = format!(".#checks.{arch}-linux.local-gate");
     let nix_bin = nix_binary();
     eprintln!(
-        "batch pre-filter: `{nix_bin} build {target}` (bounded {}s) over the combined tree…",
+        "batch pre-filter: `{nix_bin} build {target}` (bounded {}s, --max-jobs {NIX_GATE_MAX_JOBS}) over the combined tree…",
         BATCH_PREFILTER_TIMEOUT_SECS
     );
     let child = Command::new(&nix_bin)
-        .args(["build", &target, "--no-link", "--print-out-paths"])
+        .args(nix_gate_argv(&target))
         .current_dir(dir)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
