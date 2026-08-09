@@ -97,7 +97,10 @@ pub enum Expect {
     Output(String),
     /// `(error <CODE>)` (or a `(compiler (error <CODE>))` for a provable-at-compile-time trap) — the
     /// diagnostic code the compiler must reject with.
-    Error(String),
+    /// The optional second field is a load-bearing SUBSTRING of the diagnostic MESSAGE the corpus pins
+    /// (`(error <CODE> (message "phrase"))`), the portable-diagnostic-test capability (operator seq353):
+    /// the gate additionally requires the emitted diagnostic to CONTAIN that phrase. `None` = code-only.
+    Error(String, Option<String>),
     /// `(trap "<reason>")` — the run halts with this reason.
     Trap(String),
     /// `(declines)` — the compiler DECLINES to emit a component for this program: a well-formed program
@@ -109,7 +112,21 @@ pub enum Expect {
     /// shape — e.g. a type with no boundary representation, per `component-abi.md` §A Type That Has No
     /// Defined Boundary Representation Must Not Appear In An Exported Or Imported Signature). Grades Pass
     /// when the compiler declines, Fail when it emits (the "declines rather than miscompiles" property).
-    Declines,
+    /// The optional field is a load-bearing SUBSTRING of the decline's diagnostic MESSAGE the corpus pins
+    /// (`(declines (message "phrase"))`) — the gate additionally requires the decline diagnostic to
+    /// CONTAIN that phrase (operator seq353). `None` = any decline passes (the historical behavior).
+    Declines(Option<String>),
+}
+
+/// Extract a `(message "phrase")` sibling clause's string from a clause's tail, if present — the
+/// diagnostic-message pin (operator seq353) shared by `(error …)` and `(declines …)`. `None` when no
+/// well-formed `(message STR)` child is present.
+fn message_clause(a: &Arenas, tail: &[StructId]) -> Option<String> {
+    tail.iter().find_map(|&child| {
+        a.as_form(child, "message")
+            .and_then(|t| t.first().copied())
+            .and_then(|id| string_leaf(a, id))
+    })
 }
 
 /// Parse a corpus file's `text` into records. Returns an error only if the file itself does not
@@ -181,18 +198,31 @@ pub fn render(records: &[Record]) -> String {
                     out.push_str("output ");
                     out.push_str(v);
                 }
-                Expect::Error(code) => {
+                // `error CODE`, plus ` (message "phrase")` VERBATIM when the case pins a message — the
+                // exact surface xtask's split_message_clause parses (operator seq353). Absent → byte-
+                // identical to the historical `error CODE` line (back-compat).
+                Expect::Error(code, message) => {
                     out.push_str("error ");
                     out.push_str(code);
+                    if let Some(m) = message {
+                        out.push_str(" (message \"");
+                        out.push_str(m);
+                        out.push_str("\")");
+                    }
                 }
                 Expect::Trap(reason) => {
                     out.push_str("trap ");
                     out.push_str(reason);
                 }
-                // `(declines)` carries no payload — the bare keyword IS the expectation. The grader keys
-                // on the `declines` prefix alone (no value follows).
-                Expect::Declines => {
+                // `declines`, plus ` (message "phrase")` when the case pins the decline's diagnostic prose;
+                // bare `declines` (byte-identical to before) when it does not.
+                Expect::Declines(message) => {
                     out.push_str("declines");
+                    if let Some(m) = message {
+                        out.push_str(" (message \"");
+                        out.push_str(m);
+                        out.push_str("\")");
+                    }
                 }
             }
             out.push('\n');
@@ -300,15 +330,18 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
                 }
             }
             Some("error") => {
-                // `(error <CODE>)` — closes a trial with a compile-time rejection code.
-                if let Some(code) = a
-                    .as_form(clause, "error")
-                    .and_then(|t| t.first().copied())
-                    .and_then(|id| a.as_name(id).map(str::to_string))
+                // `(error <CODE>)` or `(error <CODE> (message "phrase"))` — closes a trial with a
+                // compile-time rejection code, optionally pinning a substring of the diagnostic message.
+                if let Some(tail) = a.as_form(clause, "error")
+                    && let Some(code) = tail
+                        .first()
+                        .copied()
+                        .and_then(|id| a.as_name(id).map(str::to_string))
                 {
+                    let message = message_clause(a, tail);
                     trials.push(Trial {
                         call: pending_call.take(),
-                        expect: Expect::Error(code),
+                        expect: Expect::Error(code, message),
                     });
                 }
             }
@@ -326,11 +359,15 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
                 }
             }
             Some("declines") => {
-                // `(declines)` — closes a trial that must produce NO artifact: the compiler declines
-                // (codelessly) rather than emit a component. A bare keyword clause, no payload.
+                // `(declines)` or `(declines (message "phrase"))` — closes a trial that must produce NO
+                // artifact: the compiler declines (codelessly). The optional message pins a substring of
+                // the decline's diagnostic prose (so it must NAME the actionable reason, not just refuse).
+                let message = a
+                    .as_form(clause, "declines")
+                    .and_then(|tail| message_clause(a, tail));
                 trials.push(Trial {
                     call: pending_call.take(),
-                    expect: Expect::Declines,
+                    expect: Expect::Declines(message),
                 });
             }
             Some("compiler") => {
@@ -342,17 +379,19 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
                     .as_form(clause, "compiler")
                     .and_then(|t| t.first().copied())
                     && a.head_name(inner) == Some("error")
-                    && let Some(code) = a
-                        .as_form(inner, "error")
-                        .and_then(|t| t.first().copied())
+                    && let Some(inner_tail) = a.as_form(inner, "error")
+                    && let Some(code) = inner_tail
+                        .first()
+                        .copied()
                         .and_then(|id| a.as_name(id).map(str::to_string))
                 {
+                    let message = message_clause(a, inner_tail);
                     if let Some(last) = trials.last_mut() {
-                        last.expect = Expect::Error(code);
+                        last.expect = Expect::Error(code, message);
                     } else {
                         trials.push(Trial {
                             call: pending_call.take(),
-                            expect: Expect::Error(code),
+                            expect: Expect::Error(code, message),
                         });
                     }
                 }
@@ -602,7 +641,7 @@ mod tests {
         assert_eq!(recs.len(), 1);
         assert_eq!(recs[0].trials.len(), 1);
         assert!(recs[0].trials[0].call.is_none());
-        assert!(matches!(&recs[0].trials[0].expect, Expect::Declines));
+        assert!(matches!(&recs[0].trials[0].expect, Expect::Declines(_)));
     }
 
     /// A `(declines)` renders to a bare `expect\tdeclines` line (no payload after the keyword).
@@ -633,7 +672,7 @@ mod tests {
         .unwrap();
         assert_eq!(recs[0].trials.len(), 1);
         assert_eq!(recs[0].trials[0].call.as_ref().unwrap().export, "mk");
-        assert!(matches!(&recs[0].trials[0].expect, Expect::Declines));
+        assert!(matches!(&recs[0].trials[0].expect, Expect::Declines(_)));
     }
 
     /// The flat record stream emits one `call?`/`arg*`/`expect` group per trial (round-trips the shape).

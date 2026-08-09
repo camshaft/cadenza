@@ -747,7 +747,10 @@
             (def (main (: a Float64) (: b Float64))
               (match (compare a b) ((Ordering.Less _) 1) ((Ordering.Equal _) 2) ((Ordering.Greater _) 3)))
             (export main)))
-  (declines))
+  ; Pin the ACTIONABLE message, not just the decline: the diagnostic must NAME the IEEE-partial-order
+  ; reason so a reader reaches for the relational operators. A future wording degrade to a terse decline
+  ; flips this case (portable-diagnostic-test capability, the first real (message ..) use).
+  (declines (message "IEEE partial order")))
 
 ; A runtime COMPOUND `compare` is orderable (all-orderable leaves) but the descriptor-guided `value-cmp`
 ; three-way heap walk is not wired yet — a genuine NOT-YET (distinct from the float permanent carve-out). The
