@@ -7,6 +7,7 @@
 
 use std::process::Command;
 
+#[path = "../common/mod.rs"]
 mod common;
 use common::write_stdin_tolerating_broken_pipe;
 
