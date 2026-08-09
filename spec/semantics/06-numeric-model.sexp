@@ -4075,16 +4075,17 @@
 (case "division by zero traps"
   (doc    "`(/ 5 0)` has no quotient — division by zero has no result. The compiler can prove the
            divisor is zero via constant folding, so it rejects at compile time (CDZ0304) rather than
-           emitting a runtime trap. Static safety: catch provable errors early.")
+           emitting a runtime trap. Static safety: catch provable errors early. The (message ..) pins the
+           actionable repair lead ('nonzero divisor') so a wording degrade to a bare cause flips this.")
   (input  (/ 5 0))
-  (error  CDZ0304))
+  (error  CDZ0304 (message "nonzero divisor")))
 
 (case "modulo by zero traps"
   (doc    "`(% 5 0)` likewise has no remainder when the divisor is zero. The compiler can prove the
            divisor is zero via constant folding, so it rejects at compile time (CDZ0304) rather than
-           emitting a runtime trap. The modulo companion of division by zero.")
+           emitting a runtime trap. The modulo companion of division by zero; same actionable repair pin.")
   (input  (% 5 0))
-  (error  CDZ0304))
+  (error  CDZ0304 (message "nonzero divisor")))
 
 (case "a runtime division by zero traps"
   (doc    "The 'runtime' companion: with a zero divisor supplied as a parameter, the compiler β-reduces
