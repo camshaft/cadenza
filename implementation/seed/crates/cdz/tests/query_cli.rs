@@ -712,10 +712,22 @@ fn lint_from_a_rules_file_over_a_directory() {
 }
 
 #[test]
-fn lint_with_no_rules_is_an_error() {
-    let (ok, _, stderr) = run(&["lint", "--from", "sexpr"], "(f a)");
-    assert!(!ok);
-    assert!(stderr.contains("no lint rules"), "reason: {stderr}");
+fn lint_with_no_rules_runs_the_builtin_catalog() {
+    // `cdz lint` with no explicit `--rule`/`--rules` runs the built-in `idiomatic` catalog (Tier-A
+    // pack) — useful out of the box, not a usage error (DESIGN-cadenza-lint §2). `(f a)` has no
+    // idiomatic issue, so it exits 0 cleanly.
+    let (ok, _out, _stderr) = run(&["lint", "--from", "sexpr"], "(f a)");
+    assert!(
+        ok,
+        "no explicit rules runs the built-in catalog and a clean program passes"
+    );
+    // A program matching a built-in lint (`if b true false` → idiomatic/if-bool) is flagged.
+    let (ok2, out2, _e2) = run(&["lint", "--from", "sexpr"], "(if b true false)");
+    assert!(ok2, "a warning-level built-in lint does not fail the run");
+    assert!(
+        out2.contains("idiomatic") || out2.contains("if"),
+        "the built-in if-bool lint fires by default: {out2}"
+    );
 }
 
 // ---- clone detection (the `clones` subcommand) ----

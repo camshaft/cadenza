@@ -3269,6 +3269,38 @@ pub mod lint {
                 .collect::<Result<_, _>>()?;
             Ok(LintSet::new(rules))
         }
+
+        /// The BUILT-IN `idiomatic` lint catalog (DESIGN-cadenza-lint §2, Tier A — the first shipped
+        /// pack) — the curated `LintSet` `cdz lint` uses by default so `cdz lint FILE` works out of the
+        /// box. Each rule is a named, level-controllable idiomatic lint carrying a `Verified` structural
+        /// fix where a canonical rewrite exists:
+        ///
+        /// - `idiomatic/if-bool` — `(if c true false)` → `c`; `(if c false true)` → `(not c)`. Two rules
+        ///   (the arena distinguishes the arms), both Verified.
+        /// - `idiomatic/redundant-let` — `(let ((x e)) x)` → `e` (bind then immediately return it),
+        ///   Verified. NB the arena let-shape is the binding-LIST `(let ((x e)) x)`, not `(let x e x)`.
+        ///
+        /// `idiomatic/single-arm-match` (`(match x (p e))` → `(let p x e)`) is NOT here yet: its fix must
+        /// DELEGATE to `match_to_let`'s irrefutable+unguarded precondition (a refutable single arm is not
+        /// safe to convert), which a pure `=> TEMPLATE` cannot express — it needs the codemod path, a
+        /// follow-on brick. The catalog grows increment-by-increment (§2 open catalog).
+        ///
+        /// `compile` of this text is infallible (a unit test pins it), so `expect` is sound.
+        pub fn builtin() -> LintSet {
+            // A sequence of `(lint …)` forms — `LintSet::compile` reads them via `sexpr::read_all`,
+            // which synthesizes the `(do …)` wrapper itself (so we must NOT write our own `(do …)`, or
+            // it double-wraps and the inner `(do …)` fails the `(lint …)` head check).
+            Self::compile(concat!(
+                "(lint idiomatic/if-bool (if ,c true false) ",
+                "\"redundant `if` on a Bool — use the condition directly\" => ,c verified)\n",
+                "(lint idiomatic/if-bool (if ,c false true) ",
+                "\"redundant `if` on a Bool — use `not(condition)`\" => (not ,c) verified)\n",
+                "(lint idiomatic/redundant-let (let ((,x ,e)) ,x) ",
+                "\"redundant `let` — binds a value then immediately returns it; use the value directly\" ",
+                "=> ,e verified)\n",
+            ))
+            .expect("the built-in idiomatic lint catalog compiles")
+        }
     }
 
     /// The per-lint control level (DESIGN-cadenza-lint §3, the one net-new mechanism). Distinct from
@@ -6139,6 +6171,84 @@ mod tests {
                 levels.effective("idiomatic/if-bool"),
                 Some(LintLevel::Allow)
             );
+        }
+
+        // --- cadenza-lint I1 (Tier-A pack): the built-in `idiomatic` catalog. ---
+
+        #[test]
+        fn builtin_catalog_compiles_and_names_its_lints() {
+            let set = LintSet::builtin();
+            // if-bool (×2, the true/false + false/true arms) + redundant-let.
+            assert_eq!(set.rules.len(), 3, "3 Tier-A rules");
+            let names: Vec<&str> = set.rules.iter().filter_map(|r| r.name.as_deref()).collect();
+            assert_eq!(
+                names,
+                [
+                    "idiomatic/if-bool",
+                    "idiomatic/if-bool",
+                    "idiomatic/redundant-let"
+                ]
+            );
+            // Every catalog rule carries a Verified fix.
+            for r in &set.rules {
+                let (_, app) = r.fix.as_ref().expect("a catalog lint carries a fix");
+                assert_eq!(*app, Applicability::Verified, "catalog fixes are Verified");
+            }
+        }
+
+        #[test]
+        fn builtin_catalog_fires_on_the_idiomatic_shapes() {
+            let set = LintSet::builtin();
+            // `(if b true false)` → if-bool fires; `(let ((x e)) x)` → redundant-let fires.
+            let s = subj("(do (if b true false) (let ((x (h))) x) (g 1))");
+            let diags = lint::run(&set, &s, None);
+            assert_eq!(
+                diags.len(),
+                2,
+                "both if-bool and redundant-let fire: {diags:?}"
+            );
+            assert!(diags.iter().all(|d| d.severity == Severity::Warning));
+            // A clean program (no idiomatic issue) fires nothing.
+            let clean = subj("(do (if b (f 1) (g 2)) (let ((x (h))) (k x)))");
+            assert!(
+                lint::run(&set, &clean, None).is_empty(),
+                "no false positives"
+            );
+        }
+
+        #[test]
+        fn builtin_if_bool_negated_arm_fires_separately() {
+            let set = LintSet::builtin();
+            // `(if b false true)` → the negated if-bool rule (fix `(not b)`), distinct from the `true false` rule.
+            let s = subj("(do (if b false true))");
+            let diags = lint::run(&set, &s, None);
+            assert_eq!(diags.len(), 1, "the false/true arm fires: {diags:?}");
+            assert!(diags[0].message.contains("not(condition)"));
+        }
+
+        #[test]
+        fn builtin_verified_fixes_rewrite_to_the_equivalent_form() {
+            // The §6 Verified witness: applying each catalog fix's pattern→template yields the intended
+            // equivalent form. `(if c true false)` → `c`; `(if c false true)` → `(not c)`;
+            // `(let ((x e)) x)` → `e`. (Applying is a separate `--fix`/code-action; this pins the fix
+            // TEMPLATE is correct — the equivalence-preserving rewrite the applier would perform.)
+            let set = LintSet::builtin();
+            let cases = [
+                (0usize, "(if a true false)", "a"),
+                (1, "(if a false true)", "(not a)"),
+                (2, "(let ((y (m))) y)", "(m)"),
+            ];
+            for (i, src, want) in cases {
+                let (tmpl, _) = set.rules[i].fix.as_ref().expect("fix present");
+                let subject = subj(src);
+                let out = crate::query::rewrite(&set.rules[i].pattern, tmpl, &subject);
+                assert_eq!(
+                    out.tree.to_sexpr(),
+                    want,
+                    "rule {i} fix on {src} should rewrite to {want}"
+                );
+                assert_eq!(out.count, 1, "exactly one rewrite site");
+            }
         }
     }
 

@@ -1238,8 +1238,11 @@ fn run_lint(args: &LintArgs) -> Result<bool, String> {
         set.rules
             .extend(LintSet::compile(r).map_err(|e| e.to_string())?.rules);
     }
+    // With NO explicit rules, `cdz lint FILE` runs the BUILT-IN `idiomatic` catalog (the Tier-A pack) —
+    // so the command is useful out of the box, not an error. Explicit --rules/--rule still fully replace
+    // it (they populate `set` above); a level flag/directive then tunes whichever set is active.
     if set.rules.is_empty() {
-        return Err("no lint rules — pass --rules FILE and/or --rule '(lint …)'".into());
+        set = LintSet::builtin();
     }
 
     // Build the CLI level overrides (allow/warn/deny NAME). Later flags win on the same key; a CLI
