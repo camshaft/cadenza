@@ -6610,6 +6610,7 @@ pass	a TUPLE-literal scrutinee with performing fields — draws fire once, bind 
 pass	a USER-SUM-literal scrutinee with a performing payload — the ctor pattern binds once
 pass	a STD-SUM (Option) literal scrutinee — single eval, payload binds by position
 pass	a LIST-literal scrutinee with performing elements — draws fire once, bind by position
+pass	a SUM-payload shrinker descends a tagged variant's payload to its minimal failing value, preserving the variant
 pass	a performing record nested in a TUPLE scrutinee — bound by position, record-matched after
 pass	a performing guard with a WILDCARD fallback is ALSO a COMPILE ERROR (finding #9 sibling, CDZ0407)
 pass	za1 literal-arm dispatch on a draw — the MATCHED arm performs again, both calls exercised

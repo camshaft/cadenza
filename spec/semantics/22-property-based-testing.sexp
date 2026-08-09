@@ -1046,3 +1046,36 @@
             (export main)))
   (call   main (: 10 Int64) (: 8 Int64))
   (output (: 206 Int64)))
+
+; --- The SUM-payload shrinker (re-homed from the deleted CLI e2e: shrink a tagged variant's payload). ---
+
+(case "a SUM-payload shrinker descends a tagged variant's payload to its minimal failing value, preserving the variant"
+  (doc    "The existing shrink pins descend a BARE scalar, a LIST spine, a STRING's scalars, or a 2-D pair —
+           none shrinks the PAYLOAD of a sum VARIANT while keeping the tag. This re-homes the deleted
+           `a_failing_sum_payload_guard_property_shrinks_to_an_in_domain_payload` e2e as a seed-path corpus
+           case: the failing predicate is `fails g = (match g ((Small n) (>= n 5)) ((Big n) (>= n 5)))`, and
+           the shrinker decrement-while-fails descends the payload, RECONSTRUCTING the same variant each step
+           (`(Small (- n 1))` / `(Big (- n 1))`) so it genuinely walks the tag and rebuilds the payload, not
+           just an untagged int. From payload 40 it converges to the 1-minimal failing payload 5 (payload 4
+           passes), and the variant is UNCHANGED. DISCRIMINATING across the two calls: a Small start returns
+           `(* 10 5)` = 50 and a Big start `(+ (* 10 5) 1)` = 51 — proving BOTH that the payload reached
+           exactly the minimal failing 5 AND that the shrink preserved the variant tag (50 vs 51 separate).
+           Fuel-bounded so a mis-shrink cannot loop.")
+  (input  (do
+            (type Guess (Small Int64) (Big Int64))
+            (def (fails (: g Guess)) (match g ((Small n) (>= n 5)) ((Big n) (>= n 5))))
+            (def (shrink (: g Guess) (: fuel Int64))
+              (if (= fuel 0)
+                  g
+                  (match g
+                    ((Small n) (if (fails (Small (- n 1))) (shrink (Small (- n 1)) (- fuel 1)) g))
+                    ((Big n)   (if (fails (Big (- n 1)))   (shrink (Big (- n 1)) (- fuel 1)) g)))))
+            (def (main (: which Bool))
+              (let ((start (if which (Small 40) (Big 40))))
+                (let ((m (shrink start 100)))
+                  (match m
+                    ((Small n) (* 10 n))
+                    ((Big n)   (+ (* 10 n) 1))))))
+            (export main)))
+  (call   main (: true Bool)) (output (: 50 Int64))
+  (call   main (: false Bool)) (output (: 51 Int64)))
