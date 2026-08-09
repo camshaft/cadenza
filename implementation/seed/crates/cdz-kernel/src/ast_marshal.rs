@@ -759,6 +759,186 @@ fn unmarshallable(kind: &str) -> MarshalError {
     }
 }
 
+// --- binary-AST fold boundary (DESIGN-binary-ast-abi B1) -----------------------------------------------
+//
+// The fold boundary becomes `apply(list<u8>) -> list<u8>` where both sides are cadenza-ast value-form
+// documents (B2 flips reducer.wit + deletes HeapHandle; B1 is the kernel-side builder/parser here). The
+// kernel folds its three `apply` inputs (content-type, optional payload, optional resume token) into ONE
+// event document, and parses the returned effect-list document back into `Vec<Effect>` — the marshalling
+// that used to live in `HeapHandle`, now pure `cadenza-ast` byte work (no wasmtime `Func` binding, no heap).
+//
+// Schemas (value-form s-exprs, the small agreed shape the guest + kernel share):
+//   event         = (event (content-type (family <str>) (version <int>)) (payload <opt>) (resumes <opt>))
+//   effect-list   = (effects <effect-request>…)
+//   effect-request= (effect-request (kind <name>) (target <bytes>) (payload <opt>) (correlation <opt>))
+//   <opt>         = (some <bytes>) | (none)      — absent vs empty distinguished (matches Option<Payload>)
+// `kind` is a NAME-head leaf of the effect family string (shell/http/model/now/timer/emit or an
+// extension family); `target` is opaque bytes (Target=Bytes ruling). This mirrors reducer.wit's
+// content-type/effect-kind/effect-request records as value-form AST rather than WIT records.
+
+use crate::effect::{EffectRequest, Payload, Timeliness};
+use crate::reducer::Effect;
+
+/// A borrowed content-type view for [`build_event_document`] — `(family, version)` — so the caller passes
+/// the event's content-type without this module depending on the `event::ContentType` layout beyond it.
+pub struct ContentTypeRef<'a> {
+    pub family: &'a str,
+    pub version: u32,
+}
+
+/// Encode an optional byte payload as the `<opt>` shape: `(some <bytes>)` for present (incl. empty), or
+/// `(none)` for absent — so a zero-length payload is distinct from no payload (matches `Option<Payload>`).
+fn opt_bytes_form(b: &mut Builder, v: Option<&[u8]>) -> StructId {
+    match v {
+        Some(bytes) => {
+            let head = b.name("some");
+            let val = b.atom_leaf(Leaf::Bytes(bytes.to_vec()));
+            b.list(vec![head, val])
+        }
+        None => {
+            let head = b.name("none");
+            b.list(vec![head])
+        }
+    }
+}
+
+/// Read an `<opt>` node — `(some <bytes>)` → `Some(bytes)`, `(none)` → `None`; anything else is malformed.
+fn read_opt_bytes(a: &Arenas, id: StructId) -> Result<Option<Vec<u8>>, MarshalError> {
+    match head_name(a, id) {
+        Some("some") => {
+            let kids = form(a, id, "some")?;
+            match kids {
+                [v] => Ok(Some(read_bytes(a, *v)?)),
+                _ => Err(type_mismatch("some", "expected (some <bytes>)")),
+            }
+        }
+        Some("none") => Ok(None),
+        _ => Err(type_mismatch("opt", "expected (some <bytes>) or (none)")),
+    }
+}
+
+/// The head NAME of a name-headed form, or `None` if `id` isn't a headed list. A thin helper over the
+/// arena so the boundary readers can dispatch on `(head …)`.
+fn head_name(a: &Arenas, id: StructId) -> Option<&str> {
+    a.head_name(id)
+}
+
+/// Build the ONE event document the fold boundary passes IN (B1): fold the content-type, the optional
+/// payload, and the optional resume token into a single value-form AST, returning its canonical bytes. The
+/// guest `value-decode`s these bytes against the event descriptor. Reuses the shared `cadenza-ast` codec.
+pub fn build_event_document(
+    content_type: ContentTypeRef,
+    payload: Option<&[u8]>,
+    resumes: Option<&[u8]>,
+) -> Vec<u8> {
+    let mut b = Builder::new();
+    // (content-type (family <str>) (version <int>))
+    let ct = {
+        let head = b.name("content-type");
+        let fam = {
+            let h = b.name("family");
+            let v = b.atom_leaf(Leaf::Str(content_type.family.to_string()));
+            b.list(vec![h, v])
+        };
+        let ver = {
+            let h = b.name("version");
+            let v = b.atom_leaf(Leaf::Int {
+                value: BigInt::from(content_type.version),
+                radix: Radix::Dec,
+            });
+            b.list(vec![h, v])
+        };
+        b.list(vec![head, fam, ver])
+    };
+    let payload_node = {
+        let h = b.name("payload");
+        let v = opt_bytes_form(&mut b, payload);
+        b.list(vec![h, v])
+    };
+    let resumes_node = {
+        let h = b.name("resumes");
+        let v = opt_bytes_form(&mut b, resumes);
+        b.list(vec![h, v])
+    };
+    let head = b.name("event");
+    let root = b.list(vec![head, ct, payload_node, resumes_node]);
+    codec::encode(&b.finish(root))
+}
+
+/// Parse the effect-list document the fold boundary returns (B1) into `Vec<Effect>` — the dual of
+/// [`build_event_document`], replacing the old `HeapHandle` walk of the returned effect-list handle. The
+/// guest `value-encode`d its requested effects as `(effects <effect-request>…)`; this decodes them back
+/// into the kernel's `Effect` handoff type (an `EffectRequest` + the reducer's optional continuation token).
+/// TOTAL over arbitrary bytes: undecodable bytes → `Undecodable`; a well-formed-but-wrong shape →
+/// `TypeMismatch` — never a panic (untrusted guest output, same discipline as `ast_to_val`).
+pub fn parse_effect_list(bytes: &[u8]) -> Result<Vec<Effect>, MarshalError> {
+    let a = codec::decode(bytes).ok_or(MarshalError::Undecodable)?;
+    let reqs = form(&a, a.root, "effects")?;
+    let mut out = Vec::with_capacity(reqs.len());
+    for &r in reqs {
+        out.push(parse_effect_request(&a, r)?);
+    }
+    Ok(out)
+}
+
+/// Parse one `(effect-request (kind <name>) (target <bytes>) (payload <opt>) (correlation <opt>))` into an
+/// [`Effect`]. `kind` is the effect FAMILY name (seq-39 identity): a well-known family maps to its
+/// `EffectKind`, an extension family takes the `Emit` placeholder (kernel dispatch/idempotency key on the
+/// family, so the placeholder is inert) — via [`EffectRequest::new_with_family`], the same
+/// register-by-string constructor the rest of the kernel uses. Timeliness defaults to `Interactive` (the
+/// value-form event schema doesn't carry it yet — a follow-up envelope field if a batchable guest effect
+/// needs it).
+fn parse_effect_request(a: &Arenas, id: StructId) -> Result<Effect, MarshalError> {
+    let fields = form(a, id, "effect-request")?;
+    let mut kind_family: Option<String> = None;
+    let mut target: Option<Vec<u8>> = None;
+    let mut payload: Option<Option<Vec<u8>>> = None;
+    let mut correlation: Option<Option<Vec<u8>>> = None;
+    for &f in fields {
+        match head_name(a, f) {
+            Some("kind") => {
+                let kids = form(a, f, "kind")?;
+                let [n] = kids else {
+                    return Err(type_mismatch("kind", "expected (kind <name>)"));
+                };
+                let name = a
+                    .as_name(*n)
+                    .ok_or_else(|| type_mismatch("kind", "kind is not a name"))?;
+                kind_family = Some(name.to_string());
+            }
+            Some("target") => {
+                let kids = form(a, f, "target")?;
+                let [v] = kids else {
+                    return Err(type_mismatch("target", "expected (target <bytes>)"));
+                };
+                target = Some(read_bytes(a, *v)?);
+            }
+            Some("payload") => {
+                let kids = form(a, f, "payload")?;
+                let [v] = kids else {
+                    return Err(type_mismatch("payload", "expected (payload <opt>)"));
+                };
+                payload = Some(read_opt_bytes(a, *v)?);
+            }
+            Some("correlation") => {
+                let kids = form(a, f, "correlation")?;
+                let [v] = kids else {
+                    return Err(type_mismatch("correlation", "expected (correlation <opt>)"));
+                };
+                correlation = Some(read_opt_bytes(a, *v)?);
+            }
+            _ => return Err(type_mismatch("effect-request", "unknown field")),
+        }
+    }
+    let family = kind_family.ok_or_else(|| type_mismatch("effect-request", "missing kind"))?;
+    let target = target.ok_or_else(|| type_mismatch("effect-request", "missing target"))?;
+    // payload/correlation default to absent if the field is omitted (a fire-and-forget, payload-free effect).
+    let payload = payload.flatten().map(|b| Payload::Inline(b.into()));
+    let token = correlation.flatten();
+    let request = EffectRequest::new_with_family(family, target, payload, Timeliness::Interactive);
+    Ok(Effect { request, token })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1579,5 +1759,143 @@ mod tests {
             bytes,
             "descriptor re-encodes byte-identical"
         );
+    }
+
+    // --- binary-AST fold boundary (B1) tests ---
+
+    #[test]
+    fn event_document_builds_the_content_type_payload_resumes_shape() {
+        // B1: build_event_document folds (content-type, optional payload, optional resumes) into ONE
+        // value-form doc. Decode it back + assert the (event (content-type (family)(version)) (payload)
+        // (resumes)) shape, with (some <bytes>) vs (none) distinguishing an empty payload from absent.
+        let bytes = build_event_document(
+            ContentTypeRef {
+                family: "message",
+                version: 1,
+            },
+            Some(b"hi"),
+            None,
+        );
+        let a = codec::decode(&bytes).expect("event doc decodes");
+        // Head is `event` with 3 children.
+        let ev = form(&a, a.root, "event").expect("event form");
+        assert_eq!(ev.len(), 3);
+        // content-type carries family + version.
+        let ct = form(&a, ev[0], "content-type").expect("content-type");
+        assert_eq!(
+            read_str(&a, form(&a, ct[0], "family").unwrap()[0]).unwrap(),
+            "message"
+        );
+        // payload = (some b"hi"); resumes = (none).
+        assert_eq!(
+            read_opt_bytes(&a, form(&a, ev[1], "payload").unwrap()[0]).unwrap(),
+            Some(b"hi".to_vec())
+        );
+        assert_eq!(
+            read_opt_bytes(&a, form(&a, ev[2], "resumes").unwrap()[0]).unwrap(),
+            None
+        );
+        // An EMPTY payload is (some []), distinct from absent (none).
+        let empty = build_event_document(
+            ContentTypeRef {
+                family: "m",
+                version: 1,
+            },
+            Some(b""),
+            None,
+        );
+        let ae = codec::decode(&empty).unwrap();
+        let eve = form(&ae, ae.root, "event").unwrap();
+        assert_eq!(
+            read_opt_bytes(&ae, form(&ae, eve[1], "payload").unwrap()[0]).unwrap(),
+            Some(vec![]),
+            "an intentionally-empty payload is (some []), not (none)"
+        );
+    }
+
+    #[test]
+    fn effect_list_parses_back_into_effects_with_kind_target_payload_token() {
+        // B1: parse_effect_list is the dual — a value-form (effects <effect-request>…) doc → Vec<Effect>.
+        // Build a two-effect list by hand (as a guest's value-encode would emit it) + parse it back,
+        // asserting kind/target/payload/token per effect (a payload-and-token http effect + a bare now).
+        let mut b = Builder::new();
+        let mk_opt = |b: &mut Builder, v: Option<&[u8]>| match v {
+            Some(x) => {
+                let h = b.name("some");
+                let val = b.atom_leaf(Leaf::Bytes(x.to_vec()));
+                b.list(vec![h, val])
+            }
+            None => {
+                let h = b.name("none");
+                b.list(vec![h])
+            }
+        };
+        let mk_req =
+            |b: &mut Builder, kind: &str, target: &[u8], pl: Option<&[u8]>, corr: Option<&[u8]>| {
+                let head = b.name("effect-request");
+                let kind_n = {
+                    let h = b.name("kind");
+                    let n = b.name(kind);
+                    b.list(vec![h, n])
+                };
+                let tgt = {
+                    let h = b.name("target");
+                    let v = b.atom_leaf(Leaf::Bytes(target.to_vec()));
+                    b.list(vec![h, v])
+                };
+                let payload = {
+                    let h = b.name("payload");
+                    let v = mk_opt(b, pl);
+                    b.list(vec![h, v])
+                };
+                let correlation = {
+                    let h = b.name("correlation");
+                    let v = mk_opt(b, corr);
+                    b.list(vec![h, v])
+                };
+                b.list(vec![head, kind_n, tgt, payload, correlation])
+            };
+        let r1 = mk_req(
+            &mut b,
+            "http",
+            b"https://ok/x",
+            Some(b"body"),
+            Some(b"cont-1"),
+        );
+        let r2 = mk_req(&mut b, "now", b"", None, None);
+        let head = b.name("effects");
+        let root = b.list(vec![head, r1, r2]);
+        let bytes = codec::encode(&b.finish(root));
+
+        let effects = parse_effect_list(&bytes).expect("parses");
+        assert_eq!(effects.len(), 2);
+        // Effect 0: http with a body payload + a continuation token.
+        assert_eq!(effects[0].request.content_type.family, "http");
+        assert_eq!(effects[0].request.target_str().unwrap(), "https://ok/x");
+        assert!(
+            matches!(&effects[0].request.payload, Some(Payload::Inline(p)) if p.as_ref() == b"body")
+        );
+        assert_eq!(effects[0].token.as_deref(), Some(&b"cont-1"[..]));
+        // Effect 1: bare now — no payload, no token (fire-and-forget).
+        assert_eq!(effects[1].request.content_type.family, "now");
+        assert!(effects[1].request.payload.is_none());
+        assert!(effects[1].token.is_none());
+
+        // TOTAL over garbage: undecodable bytes → Undecodable, not a panic.
+        assert_eq!(
+            parse_effect_list(b"\xff\xff not ast"),
+            Err(MarshalError::Undecodable)
+        );
+        // Well-formed but wrong head → TypeMismatch.
+        let mut bw = Builder::new();
+        let wrong = {
+            let h = bw.name("nope");
+            bw.list(vec![h])
+        };
+        let wb = codec::encode(&bw.finish(wrong));
+        assert!(matches!(
+            parse_effect_list(&wb),
+            Err(MarshalError::TypeMismatch { .. })
+        ));
     }
 }
