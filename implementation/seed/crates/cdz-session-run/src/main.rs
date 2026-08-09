@@ -7,13 +7,22 @@
 //! FIFO fixpoint here). So I1 drives `Session` directly, exactly like the reference
 //! `cdz-kernel/src/kernel_e2e_tests/loop_and_recovery.rs`.
 //!
+//! The reducer is driven as an [`AsyncComponentReducer`], NOT the sync `ComponentReducer`: a REAL rcdzc
+//! reducer lowers its `fold.apply` to the handle-ABI `apply(u32,u32,u32)->u32` and imports
+//! `cadenza:runtime/heap`, and only the async path DISPATCHES a heap-dep-bearing reducer to
+//! `apply_handle_lowered` — which drives the handle boundary AND serves the bound handle-ABI `kv` the
+//! reducer imports, so the guest's `Kv.put` writes actually land in the session KV. The sync path always
+//! takes the WIT-structural `call_apply`, which neither drives the handle boundary nor serves the
+//! handle-ABI kv (the guest's `Kv.put` no-op'd + the kv import failed to link) — a wrong fit here.
+//!
 //! ## Invocation (called by xtask, one process per case)
 //! ```text
 //! cdz-session-run --reducer <component.wasm> --store <dir> \
 //!     --alias worker --kickoff-family start --kickoff-value ""
 //! ```
-//! `--reducer` is the ALREADY-COMPILED component bytes (xtask compiled the `(reducer <prog>)` via the
-//! cdz-syntax|rcdzc pipeline). `--store` is the content-addressed store (`<hash>.wasm`) the reducer's
+//! `--reducer` is the ALREADY-COMPILED reducer component (xtask compiled the `(reducer <prog>)` via
+//! `cdz compile --target wasm --component-name cadenza:agent-kernel/fold`, the fold-world recipe the
+//! kernel loads). `--store` is the content-addressed store (`<hash>.wasm`) the reducer's
 //! `cadenza:runtime/heap` dep resolves from — the same `target/cadenza-store` `cargo xtask build`
 //! populates. The kick-off is one inbound event of the given family carrying the given payload bytes.
 //!
@@ -38,7 +47,7 @@ use cdz_kernel::event::{ContentType, EventBody};
 use cdz_kernel::executor::RecordingExecutor;
 use cdz_kernel::hash::Hash;
 use cdz_kernel::kernel::{Session, SessionState};
-use cdz_kernel::wasm_host::ComponentReducer;
+use cdz_kernel::wasm_host::AsyncComponentReducer;
 
 #[derive(Parser)]
 #[command(
@@ -80,7 +89,7 @@ async fn main() -> Result<()> {
     // Load + parse the already-compiled reducer component.
     let component = std::fs::read(&args.reducer)
         .with_context(|| format!("reading reducer component {}", args.reducer.display()))?;
-    let reducer = ComponentReducer::from_component_bytes(&component)
+    let reducer = AsyncComponentReducer::from_component_bytes(&component)
         .map_err(|e| anyhow::anyhow!("reducer is not a valid component: {e:?}"))?;
 
     // Resolve every declared dep (the `cadenza:runtime/heap` a real Cadenza reducer imports) from the
@@ -128,6 +137,16 @@ async fn main() -> Result<()> {
         .deliver(body, None, &mut reducer, &authz, &mut exec)
         .await
         .map_err(|e| anyhow::anyhow!("kernel deliver failed: {e:?}"))?;
+
+    if std::env::var("CDZ_SESSION_RUN_DEBUG").is_ok() {
+        eprintln!(
+            "DEBUG deps={} tip_fault={:?} kv_len={} exec_seen={}",
+            deps.len(),
+            session.last_fault_reason(),
+            session.kv().len(),
+            exec.seen.len()
+        );
+    }
 
     // Report the terminal end-state as tab lines for xtask to grade.
     let mut out = String::new();
