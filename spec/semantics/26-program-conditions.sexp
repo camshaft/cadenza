@@ -3625,6 +3625,24 @@
   (call   main (: 1 Int64)) (output (: 3 Int64))
   (call   main (: 0 Int64)) (trap "unreachable"))
 
+(case "@requires over a BYTES parameter reads Bytes.len at body entry — completes the heap-param domain (List/Map/String/Bytes)"
+  (doc    "The Bytes face of a heap-param precondition. Bytes is a distinct heap type from String with its own
+           `Bytes.len` op, so this pins the enforcement path borrows a BYTE SEQUENCE (not a rope) at body entry.
+           `@requires(> (Bytes.len b) 0)` on `(size b) = (Bytes.len b)` demands a non-empty byte sequence; the
+           injected `(if (> (Bytes.len b) 0) BODY (trap …))` reads the length before the body runs. Runtime
+           selection via main's param so the Bytes value isn't const-folded away. main(1) builds `(Bytes.of (list
+           0 255 128))` — length 3 > 0 → pass → 3. main(0) builds `(Bytes.of (list))` — the empty byte sequence,
+           length 0, so `(> 0 0)` is FALSE → the precondition fails → trap before the body's own `Bytes.len`
+           could answer. Pins that verify_enforce's heap-predicate composition extends from the RRB (List) and
+           CHAMP (Map) and rope (String) len reads to the Bytes len read — the whole heap-param domain enforces.")
+  (input  (do
+            (@ (requires (> (Bytes.len b) 0)) (def (size (: b Bytes)) (Bytes.len b)))
+            (def (main (: k Int64))
+              (size (if (= k 1) (Bytes.of (list 0 255 128)) (Bytes.of (list)))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 3 Int64))
+  (call   main (: 0 Int64)) (trap "unreachable"))
+
 ; --- A @requires walking a MAP argument at body entry. ---
 
 (case "@requires over a MAP argument walks the CHAMP at body entry"
