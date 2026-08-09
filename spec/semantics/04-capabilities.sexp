@@ -170,7 +170,7 @@
             (effect log (op emit (-> String Unit)))
             (def (main)
               (log.emit "ready")) (export main)))
-  (error  CDZ0401))
+  (error  CDZ0401 (message "add a handler or delegate")))
 
 (case "a delegation naming an effect that is never reached is rejected as latent authority"
   (doc    "Witnesses capabilities-and-effects.md #Host Delegation Is An Entrypoint's Prerogative: main
