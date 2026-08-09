@@ -9,9 +9,10 @@
 //! `blob/*` effect on its resolved target before dispatch, SEC-F1), NOT baked into this inevolvable host code.
 //!
 //! **Wire shape (reconciled with v-agent-harness, the kernel-family owner).** The hash is carried as a HEX
-//! string, not raw bytes, because a reducer threads `blob/put`'s result-hash into `blob/get`'s TARGET — and a
-//! target is a string ([`EffectRequest::target`] is `Arc<str>`), so a text handle is required (hex is
-//! self-evidently the hash; reuses [`Hash::to_hex`]/[`Hash::from_hex`]). NO event_ast codec — the hex string +
+//! string, because a reducer threads `blob/put`'s result-hash into `blob/get`'s TARGET — and a target is now
+//! opaque bytes ([`EffectRequest::target`] is `Arc<[u8]>`), read as UTF-8 via [`EffectRequest::target_str`], so
+//! a text handle is used (hex is self-evidently the hash; reuses [`Hash::to_hex`]/[`Hash::from_hex`]). A
+//! non-UTF-8 target is a clean fail-closed `Err`. NO event_ast codec — the hex string +
 //! `EffectOutcome`'s `Option<Payload>` cover it:
 //! - `blob/put`: payload = the content bytes (`Payload::Inline`); `Ok` result = `Inline(hash.to_hex())`.
 //! - `blob/get`: target = the hex hash → `Hash::from_hex` it (a bad/non-hex target = a clean `Err`); a HIT =
@@ -73,11 +74,16 @@ impl<B: BlobStore> Executor for BlobExecutor<B> {
                 Err(e) => EffectOutcome::err(format!("blob/put failed: {e}")),
             }
         } else if family == effect_ct::BLOB_GET {
-            // Target = the hex hash. A bad/non-hex/wrong-length target is a structural error → PERMANENT.
-            let Some(hash) = Hash::from_hex(req.target.as_ref()) else {
+            // Target = the hex hash. A non-UTF-8 target (target is now opaque Arc<[u8]>) OR a
+            // bad/non-hex/wrong-length one is a structural error → PERMANENT (fail-closed).
+            let Ok(target) = req.target_str() else {
+                return EffectOutcome::err(
+                    "blob/get: target is not valid UTF-8 (expected a hex content hash)",
+                );
+            };
+            let Some(hash) = Hash::from_hex(target) else {
                 return EffectOutcome::err(format!(
-                    "blob/get: target {:?} is not a valid hex content hash",
-                    req.target.as_ref()
+                    "blob/get: target {target:?} is not a valid hex content hash"
                 ));
             };
             match self.store.get(&hash).await {
@@ -120,12 +126,7 @@ mod tests {
     }
 
     fn get_req(hex: &str) -> EffectRequest {
-        EffectRequest::new_with_family(
-            effect_ct::BLOB_GET,
-            hex.to_string(),
-            None,
-            Timeliness::Interactive,
-        )
+        EffectRequest::new_with_family(effect_ct::BLOB_GET, hex, None, Timeliness::Interactive)
     }
 
     #[tokio::test]

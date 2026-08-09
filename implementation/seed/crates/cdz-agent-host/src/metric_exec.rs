@@ -313,7 +313,7 @@ mod tests {
     fn batch_req(samples: &[MetricSample]) -> EffectRequest {
         EffectRequest::new_with_family(
             effect_ct::METRIC_PUBLISH,
-            "batch".to_string(),
+            "batch",
             Some(Payload::Inline(encode_metrics_publish(samples).into())),
             Timeliness::Interactive,
         )
@@ -530,7 +530,7 @@ mod tests {
         // Wrong family.
         let wrong = EffectRequest::new_with_family(
             effect_ct::EMIT,
-            "x".to_string(),
+            "x",
             Some(Payload::Inline(bytes::Bytes::new())),
             Timeliness::Interactive,
         );
@@ -543,7 +543,7 @@ mod tests {
         // Missing payload.
         let no_payload = EffectRequest::new_with_family(
             effect_ct::METRIC_PUBLISH,
-            "m".to_string(),
+            "m",
             None,
             Timeliness::Interactive,
         );
@@ -553,7 +553,7 @@ mod tests {
         // Undecodable payload.
         let garbage = EffectRequest::new_with_family(
             effect_ct::METRIC_PUBLISH,
-            "m".to_string(),
+            "m",
             Some(Payload::Inline(b"not a metric sample".to_vec().into())),
             Timeliness::Interactive,
         );

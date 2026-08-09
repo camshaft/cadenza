@@ -11,8 +11,9 @@
 //! `ws/connect`/`ws/disconnect` Inbound events (emitted by the listener slice) — this executor just delivers.
 //!
 //! **Wire shape (reconciled with v-agent-harness, the `ws/*` kernel-family owner, #2807).** The conn-id rides
-//! `req.target` as an opaque `Arc<str>` (exactly like `shell` target=program / `blob/get` target=hex-hash) — the
-//! kernel never interprets it; the host mints it and both sides pass it verbatim. `req.payload` = the outbound
+//! `req.target` (opaque `Arc<[u8]>`, read as UTF-8 hex via [`EffectRequest::target_str`] — exactly like `shell`
+//! target=program / `blob/get` target=hex-hash) — the kernel never interprets it; the host mints it and both
+//! sides pass it verbatim; a non-UTF-8 target is a fail-closed PERMANENT error. `req.payload` = the outbound
 //! frame bytes (`Payload::Inline`). Result:
 //! - delivered -> `Ok(None)` ("sent, nothing to fold back" — like a fire-and-forget write).
 //! - unknown / gone conn-id -> `Err` PERMANENT (the peer is no longer connected; a blind retry to the same dead
@@ -86,8 +87,14 @@ impl<R: WsConnRegistry> Executor for WsSendExecutor<R> {
                 effect_ct::WS_SEND
             ));
         }
-        // target = the opaque conn-id the host minted + surfaced in ws/connect. Empty target is structural.
-        let conn_id = req.target.as_ref();
+        // target = the opaque conn-id (hex) the host minted + surfaced in ws/connect. The target is now
+        // opaque Arc<[u8]>; the conn-id hex is UTF-8, so a non-UTF-8 target is malformed → structural
+        // PERMANENT (fail-closed). Empty target is also structural.
+        let Ok(conn_id) = req.target_str() else {
+            return EffectOutcome::err(
+                "ws/send: target is not valid UTF-8 (expected the peer conn-id)",
+            );
+        };
         if conn_id.is_empty() {
             return EffectOutcome::err("ws/send: empty target (expected the peer conn-id)");
         }
@@ -176,7 +183,7 @@ mod tests {
     fn send_req(conn_id: &str, frame: &[u8]) -> EffectRequest {
         EffectRequest::new_with_family(
             effect_ct::WS_SEND,
-            conn_id.to_string(),
+            conn_id,
             Some(Payload::Inline(frame.to_vec().into())),
             Timeliness::Interactive,
         )
@@ -249,7 +256,7 @@ mod tests {
         // no payload
         let no_payload = EffectRequest::new_with_family(
             effect_ct::WS_SEND,
-            "conn-1".to_string(),
+            "conn-1",
             None,
             Timeliness::Interactive,
         );
@@ -275,7 +282,7 @@ mod tests {
         // ws/connect must never be dispatched as an effect; if it reaches perform, that's a mis-route.
         let misrouted = EffectRequest::new_with_family(
             effect_ct::WS_CONNECT,
-            "conn-1".to_string(),
+            "conn-1",
             Some(Payload::Inline(b"x".to_vec().into())),
             Timeliness::Interactive,
         );

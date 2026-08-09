@@ -196,13 +196,19 @@ impl Executor for LifecycleExecutor {
                 "LifecycleExecutor handles only lifecycle/spawn|terminate|suspend|resume, got {family}"
             ));
         }
-        // `target` is the peer session id (raw SessionId string). Empty = structural PERMANENT.
-        if req.target.is_empty() {
+        // `target` is the peer session id. The target is now opaque Arc<[u8]>; a session id is UTF-8, so a
+        // non-UTF-8 target is malformed → structural PERMANENT (fail-closed). Empty = also PERMANENT.
+        let Ok(target_str) = req.target_str() else {
+            return EffectOutcome::err(format!(
+                "LifecycleExecutor: {family} target must be a valid UTF-8 peer session id"
+            ));
+        };
+        if target_str.is_empty() {
             return EffectOutcome::err(format!(
                 "LifecycleExecutor: {family} requires a non-empty target (the peer session id)"
             ));
         }
-        let target = SessionId::new(req.target.clone());
+        let target = SessionId::new(target_str);
         // A session controlling ITSELF via lifecycle/* is rejected — self-lifecycle is the `close`/own-loop
         // path, not the controller-controls-a-peer path this family is for (and it avoids the loop mutating
         // the very session it's mid-deliver on).
@@ -277,7 +283,7 @@ mod tests {
     fn terminate_req(target: &str, reason: Option<&[u8]>) -> EffectRequest {
         EffectRequest::new_with_family(
             effect_ct::LIFECYCLE_TERMINATE,
-            target.to_string(),
+            target,
             reason.map(|b| Payload::Inline(b.to_vec().into())),
             Timeliness::Interactive,
         )
@@ -465,7 +471,7 @@ mod tests {
 
         let suspend = EffectRequest::new_with_family(
             effect_ct::LIFECYCLE_SUSPEND,
-            "victim".to_string(),
+            "victim",
             None,
             Timeliness::Interactive,
         );
@@ -481,7 +487,7 @@ mod tests {
 
         let resume = EffectRequest::new_with_family(
             effect_ct::LIFECYCLE_RESUME,
-            "victim".to_string(),
+            "victim",
             None,
             Timeliness::Interactive,
         );
@@ -506,7 +512,7 @@ mod tests {
             // Inline payload → PERMANENT.
             let inline = EffectRequest::new_with_family(
                 family,
-                "victim".to_string(),
+                "victim",
                 Some(Payload::Inline(b"unexpected".to_vec().into())),
                 Timeliness::Interactive,
             );
@@ -518,7 +524,7 @@ mod tests {
             // Blob-ref payload → PERMANENT (the specific silent-drop the finding called out).
             let blob = EffectRequest::new_with_family(
                 family,
-                "victim".to_string(),
+                "victim",
                 Some(Payload::Blob(Hash::of(b"some-blob"))),
                 Timeliness::Interactive,
             );
@@ -536,7 +542,7 @@ mod tests {
         let mut exec = LifecycleExecutor::new(tx, SessionId::new("me"), Hash::of(b"me"));
         let req = EffectRequest::new_with_family(
             effect_ct::LIFECYCLE_SUSPEND,
-            "me".to_string(),
+            "me",
             None,
             Timeliness::Interactive,
         );
@@ -555,7 +561,7 @@ mod tests {
         let mut exec = LifecycleExecutor::new(tx, SessionId::new("ctl"), Hash::of(b"ctl"));
         let req = EffectRequest::new_with_family(
             effect_ct::LIFECYCLE_TERMINATE,
-            "victim".to_string(),
+            "victim",
             Some(Payload::Blob(Hash::of(b"some-blob"))),
             Timeliness::Interactive,
         );
@@ -610,12 +616,8 @@ mod tests {
     async fn a_non_lifecycle_family_is_a_permanent_error() {
         let (tx, _rx) = mpsc::unbounded_channel();
         let mut exec = LifecycleExecutor::new(tx, SessionId::new("ctl"), Hash::of(b"ctl"));
-        let req = EffectRequest::new_with_family(
-            effect_ct::HTTP,
-            "b".to_string(),
-            None,
-            Timeliness::Interactive,
-        );
+        let req =
+            EffectRequest::new_with_family(effect_ct::HTTP, "b", None, Timeliness::Interactive);
         let out = exec.perform(EffectId(0), &req, Hash::of(b"k")).await;
         assert!(
             matches!(&out, EffectOutcome::Err { retryability, .. } if *retryability == Retryability::Permanent)

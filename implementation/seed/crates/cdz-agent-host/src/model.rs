@@ -104,11 +104,17 @@ impl<T: ModelTransport> Executor for ModelExecutor<T> {
                 );
             }
         };
-        match self
-            .transport
-            .invoke(&req.target, body, idempotency_key)
-            .await
-        {
+        // target = the model id. The target is now opaque Arc<[u8]>; a model id is UTF-8, so a non-UTF-8
+        // target is malformed → PERMANENT (fail-closed).
+        let model_id = match req.target_str() {
+            Ok(m) => m,
+            Err(_) => {
+                return EffectOutcome::err(
+                    "ModelExecutor: the Model target (model id) is not valid UTF-8",
+                );
+            }
+        };
+        match self.transport.invoke(model_id, body, idempotency_key).await {
             // The transport's `Bytes` completion moves straight into `Payload::Inline` (ref-counted
             // `Bytes`) — no copy. The transport's Err is already a classified `EffectOutcome::Err` carrying
             // its typed retryability (per the trait contract), so pass it through unchanged.
@@ -460,7 +466,7 @@ mod tests {
     fn model_req(payload: Option<Payload>) -> EffectRequest {
         EffectRequest::new_with_family(
             effect_ct::MODEL,
-            "test-model".to_string(),
+            "test-model",
             payload,
             Timeliness::Interactive,
         )
@@ -577,7 +583,7 @@ mod tests {
         // rejected as PERMANENT and the transport is never touched.
         let req = EffectRequest::new_with_family(
             effect_ct::HTTP,
-            "https://x/".to_string(),
+            "https://x/",
             Some(Payload::Inline(b"x".to_vec().into())),
             Timeliness::Interactive,
         );

@@ -84,7 +84,12 @@ impl Executor for ShellExecutor {
         // Split the target into program + args on whitespace and exec DIRECTLY — no shell, so metacharacters
         // are literal args, not interpreted (CWE-78 / kernel PR#992 parity). This is the irreducible spawn
         // mechanism; the command itself was already authorized by the Cedar policy (SEC-F1) before dispatch.
-        let mut parts = req.target.split_whitespace();
+        // The target is now opaque Arc<[u8]>; a command is UTF-8, so a non-UTF-8 target is malformed →
+        // PERMANENT (fail-closed).
+        let Ok(command) = req.target_str() else {
+            return EffectOutcome::err("shell: target is not valid UTF-8 (expected a command)");
+        };
+        let mut parts = command.split_whitespace();
         let Some(program) = parts.next() else {
             return EffectOutcome::err("empty command");
         };
@@ -269,12 +274,7 @@ mod tests {
     use cdz_kernel::event::Retryability;
 
     fn shell_req(target: &str) -> EffectRequest {
-        EffectRequest::new(
-            EffectKind::Shell,
-            target.to_string(),
-            None,
-            Timeliness::Interactive,
-        )
+        EffectRequest::new(EffectKind::Shell, target, None, Timeliness::Interactive)
     }
 
     #[tokio::test]
@@ -505,12 +505,7 @@ mod tests {
     #[tokio::test]
     async fn a_wrong_family_is_a_permanent_error() {
         let mut exec = ShellExecutor::new();
-        let req = EffectRequest::new(
-            EffectKind::Http,
-            "echo hi".to_string(),
-            None,
-            Timeliness::Interactive,
-        );
+        let req = EffectRequest::new(EffectKind::Http, "echo hi", None, Timeliness::Interactive);
         let out = exec.perform(EffectId(0), &req, Hash::of(b"k")).await;
         assert!(
             matches!(&out, EffectOutcome::Err { message, retryability } if *retryability == Retryability::Permanent && message.contains("only handles")),
