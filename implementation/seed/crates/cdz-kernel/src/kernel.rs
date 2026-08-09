@@ -47,6 +47,36 @@ pub enum KernelError {
     FoldRefused,
 }
 
+/// One entry of the resident open-obligation table (log/state-decouple I2, design D2): everything an OPEN
+/// (dispatched-but-unsettled) effect id carries that the kernel used to re-derive by scanning the log for
+/// its `Dispatched`/`TimerArmed` frame. Holding it resident lets `dispatch_hash_of` / `dispatch_token_of`
+/// / `dispatch_family_of` / `time_out_effect` / the `status_snapshot` in-flight scan be O(1) map lookups
+/// with ZERO log access — the seam that lets I5 drop the resident log. Cheaply-clonable fields (an
+/// `Arc<str>` family, `Arc<[u8]>` target, a `Hash`), so the table is cheap to snapshot for a checkpoint (I6).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct OpenObligation {
+    /// The effect kind (from the `Dispatched` frame). `Emit` for a `TimerArmed` obligation (timers carry
+    /// no world-effect kind — `is_timer` is the real discriminant).
+    pub kind: EffectKind,
+    /// The resolved target the frame recorded (opaque bytes — Target=Bytes). Empty for a timer.
+    pub target: std::sync::Arc<[u8]>,
+    /// The effect family the frame recorded (seq-39 authoritative identity) — what `dispatch_family_of`
+    /// returns. `timer` for a timer obligation.
+    pub family: std::sync::Arc<str>,
+    /// The reducer continuation token the frame carried (§19e) — what `dispatch_token_of` returns.
+    /// `None` = a token-free effect/timer.
+    pub token: Option<Vec<u8>>,
+    /// For a TIMER obligation, its ABSOLUTE deadline in wall-clock ms (the old `armed_timers` value);
+    /// `None` for a non-timer effect. Drives `fire_due_timers` + the stall-oldest computation.
+    pub deadline_ms: Option<u64>,
+    /// The hash of the `Dispatched` frame that opened this obligation — what `dispatch_hash_of` returns
+    /// (the §16c-S1 record-result correlation). `None` for a timer (opened by `TimerArmed`, not `Dispatched`).
+    pub dispatch_hash: Option<Hash>,
+    /// Is this a TIMER obligation (opened by `TimerArmed`) rather than a dispatched effect? The discriminant
+    /// folding the old `armed_timers` map in: `is_timer` obligations are the armed-timer set.
+    pub is_timer: bool,
+}
+
 /// A single-session kernel instance: the authoritative log plus the derived KV and the id counter.
 /// The reducer/executor/authorizer are supplied per operation so the same log can be replayed under a
 /// pinned reducer (the §16c-S3 "replay under the version that wrote it" discipline).
@@ -71,14 +101,17 @@ pub struct Session {
     /// Effect ids that have a *terminal* outcome recorded (Ok/Err/TimedOut). Used to enforce
     /// timeout-cancels: a late result for a settled id is dropped (§16c-S4).
     settled: BTreeSet<u64>,
-    /// Effect ids that have been dispatched but not yet settled — the crash-recovery obligation set
-    /// (§16c-S1). Populated during replay; drained as results/timeouts fold in.
-    open: BTreeSet<u64>,
-    /// Armed-but-unfired timers: effect id → ABSOLUTE deadline in wall-clock ms (§9c/§16c-S5). The
-    /// absolute anchor (not a duration) is what lets a recovered/migrated session compute remaining
-    /// time. Rebuilt from `TimerArmed` events on replay; drained when the timer fires. The kernel — not
-    /// an executor — injects `TimerFired` once `now_ms` reaches the deadline (see `fire_due_timers`).
-    armed_timers: BTreeMap<u64, u64>,
+    /// The resident OPEN-OBLIGATION TABLE (log/state-decouple I2, design D2): effect id → the frame data
+    /// an open (dispatched-but-unsettled) effect needs, so the kernel answers `dispatch_hash_of` /
+    /// `dispatch_token_of` / `dispatch_family_of` / `time_out_effect` / the `status_snapshot` in-flight
+    /// scan with a MAP LOOKUP, never a log walk — the decoupling that lets a later increment (I5) drop the
+    /// resident log entirely. Replaces the old `open: BTreeSet<u64>` (an id-only set that forced those
+    /// accessors to scan the log for the frame) AND folds in the old `armed_timers` map (a timer is an
+    /// open obligation with `is_timer` + a `deadline_ms`). Populated on `Dispatched`/`TimerArmed`; drained
+    /// on `EffectResult`/`TimerFired`/`AuthzDenied`. Rebuilt from the log on replay (recovery-equivalent:
+    /// `replay(full) ≡ recover(checkpoint@N + tail)` — I6's gate). `BTreeMap` for a canonical (id-ordered)
+    /// iteration so the in-flight scan / delta order are replay-stable.
+    open: BTreeMap<u64, OpenObligation>,
     /// The last `Now`-effect timestamp this session HANDED BACK, in binary nanoseconds since epoch —
     /// the monotonicity high-water mark (operator ruling). The `Now` clock effect must be strictly
     /// increasing: a raw wall-clock reading `<= last_now` is clamped up to `last_now + 1` before it's
@@ -160,8 +193,7 @@ impl Session {
             kv: Kv::new(),
             next_effect_id: 0,
             settled: BTreeSet::new(),
-            open: BTreeSet::new(),
-            armed_timers: BTreeMap::new(),
+            open: BTreeMap::new(),
             last_now: 0,
             store: None,
             persist_error: None,
@@ -430,7 +462,7 @@ impl Session {
                 ..
             } = &e.body
             {
-                if self.open.contains(&id.0) {
+                if self.open.contains_key(&id.0) {
                     in_flight.push(InFlight {
                         kind: effect_kind_name(kind),
                         // Observability only: a lossy UTF-8 view of the opaque byte target (non-UTF-8 bytes
@@ -452,7 +484,7 @@ impl Session {
             .log
             .iter()
             .any(|e| matches!(e.body, EventBody::Closed { .. }));
-        let has_work = !self.open.is_empty() || !self.armed_timers.is_empty();
+        let has_work = !self.open.is_empty();
         // Stall: an in-flight effect outstanding longer than the threshold (only derivable with a clock).
         let stalled = match (now_ms, oldest_dispatch_ms) {
             (Some(now), Some(oldest)) if !self.open.is_empty() => {
@@ -488,7 +520,7 @@ impl Session {
                 .map(|e| event_body_name(&e.body))
                 .unwrap_or("(empty)"),
             in_flight,
-            armed_timers: self.armed_timers.len() as u32,
+            armed_timers: self.open.values().filter(|ob| ob.is_timer).count() as u32,
             published,
         }
     }
@@ -814,11 +846,15 @@ impl Session {
         if self.is_terminated() {
             return 0;
         }
+        // The armed timers are the `is_timer` obligations in the open table (log-decouple I2 folded the old
+        // armed_timers map in); a fired-or-not timer carries its absolute deadline_ms.
         let mut due: Vec<(u64, u64)> = self
-            .armed_timers
+            .open
             .iter()
-            .filter(|(_, &deadline)| deadline <= now_ms)
-            .map(|(&id, &deadline)| (deadline, id))
+            .filter_map(|(&id, ob)| match ob.deadline_ms {
+                Some(deadline) if ob.is_timer && deadline <= now_ms => Some((deadline, id)),
+                _ => None,
+            })
             .collect();
         due.sort_unstable();
         for (deadline, id) in &due {
@@ -840,7 +876,12 @@ impl Session {
     /// Absolute deadlines of the currently armed-but-unfired timers (§16c-S5), for the driver's
     /// scheduler (it sleeps until the earliest) and for tests.
     pub fn next_timer_deadline(&self) -> Option<u64> {
-        self.armed_timers.values().copied().min()
+        // The armed timers are the `is_timer` obligations (log-decouple I2); their earliest deadline.
+        self.open
+            .values()
+            .filter(|ob| ob.is_timer)
+            .filter_map(|ob| ob.deadline_ms)
+            .min()
     }
 
     /// Append one event to the authoritative log at the next sequence, folding it into KV. Does NOT
@@ -856,17 +897,53 @@ impl Session {
     /// the driver observes the failure via [`Session::take_persist_error`]. (Strict abort-on-persist-fail
     /// — tier A — is a raised design decision; this is the tier-B baseline.)
     async fn append(&mut self, body: EventBody, cause: Option<Hash>) -> Hash {
-        // Maintain the open/settled sets and the armed-timer table as obligations are created and
-        // discharged (§16c-S1/S4/S5).
-        match &body {
-            EventBody::Dispatched { id, .. } => {
-                self.open.insert(id.0);
+        let seq = self.log.len() as u64;
+        let event = Event { seq, cause, body };
+        let hash = event.hash();
+        // Maintain the open-obligation table + settled set as obligations are created and discharged
+        // (§16c-S1/S4/S5, log-decouple I2). Done AFTER the hash is known: a `Dispatched` obligation records
+        // its frame hash (for `dispatch_hash_of`/`record_result` correlation). `open` is now the resident
+        // OpenObligation table (folds in the old armed-timer map), so these arms carry the full frame data.
+        match &event.body {
+            EventBody::Dispatched {
+                id,
+                kind,
+                family,
+                target,
+                token,
+                ..
+            } => {
+                self.open.insert(
+                    id.0,
+                    OpenObligation {
+                        kind: kind.clone(),
+                        target: target.clone(),
+                        family: family.clone(),
+                        token: token.clone(),
+                        deadline_ms: None,
+                        dispatch_hash: Some(hash),
+                        is_timer: false,
+                    },
+                );
             }
             EventBody::TimerArmed {
-                id, deadline_ms, ..
+                id,
+                deadline_ms,
+                token,
+                ..
             } => {
-                self.open.insert(id.0);
-                self.armed_timers.insert(id.0, *deadline_ms);
+                self.open.insert(
+                    id.0,
+                    OpenObligation {
+                        kind: EffectKind::Emit, // a timer carries no world-effect kind; is_timer is the discriminant
+                        target: std::sync::Arc::from(&b""[..]),
+                        family: std::sync::Arc::from(crate::effect::effect_ct::TIMER),
+                        token: token.clone(),
+                        deadline_ms: Some(*deadline_ms),
+                        dispatch_hash: None, // opened by TimerArmed, not Dispatched
+                        is_timer: true,
+                    },
+                );
             }
             EventBody::EffectResult { id, .. } => {
                 self.open.remove(&id.0);
@@ -874,14 +951,10 @@ impl Session {
             }
             EventBody::TimerFired { id, .. } => {
                 self.open.remove(&id.0);
-                self.armed_timers.remove(&id.0);
                 self.settled.insert(id.0);
             }
             _ => {}
         }
-        let seq = self.log.len() as u64;
-        let event = Event { seq, cause, body };
-        let hash = event.hash();
         // Durable write-through BEFORE returning the hash (so the caller routes only after the event is
         // on disk — S1). Skip once an error is latched (the on-disk log stopped at the last good frame;
         // recovery heals the tail). First error wins; recorded, never swallowed or panicked.
@@ -1360,7 +1433,7 @@ impl Session {
         }
         // Idempotent: only an OPEN id can be timed out. Settled (or never-dispatched) → no-op, so a late
         // real result and a timeout can't both settle one id (§16c-S4 at-most-once).
-        if !self.open.contains(&id.0) {
+        if !self.open.contains_key(&id.0) {
             return false;
         }
         // `open` holds BOTH dispatched-effect ids AND armed-timer ids — but only a DISPATCHED effect can
@@ -1422,7 +1495,7 @@ impl Session {
         }
         // Idempotent: only an OPEN id can be settled. Settled/never-dispatched → no-op, so a late or duplicate
         // settle and any other settler (a timeout) can't both settle one id (at-most-once, §16c-S4).
-        if !self.open.contains(&id.0) {
+        if !self.open.contains_key(&id.0) {
             return false;
         }
         // A deferred effect was opened by a `Dispatched` frame (like a routed effect), so it HAS a dispatch
@@ -1462,10 +1535,11 @@ impl Session {
     /// `Dispatched`). Callers that only mean dispatched effects (e.g. `time_out_effect`) treat `None` as
     /// "not a dispatched effect" rather than an error (PR#1016 — `open` is a mixed obligation set).
     fn dispatch_hash_of(&self, id: EffectId) -> Option<Hash> {
-        self.log
-            .iter()
-            .find(|e| matches!(&e.body, EventBody::Dispatched { id: d, .. } if *d == id))
-            .map(|e| e.hash())
+        // O(1) lookup in the resident open-obligation table (log-decouple I2), not a log scan. The frame
+        // hash is held only while the effect is OPEN (an obligation carries its `Dispatched` frame hash);
+        // this is called on the open effect at record-result time, so the obligation is present. A timer
+        // obligation has no dispatch_hash (opened by `TimerArmed`), so it returns None — correct.
+        self.open.get(&id.0).and_then(|ob| ob.dispatch_hash)
     }
 
     /// Apply a `store/*` effect to the attached mutable-name store and map the result to the
@@ -1653,13 +1727,12 @@ impl Session {
     /// the EffectResult" — [`record_result`] copies it onto the result event so a wasm reducer's fold can
     /// read it back as the guest's `resumes` without fold ever touching the log/map (fold stays pure).
     fn dispatch_token_of(&self, id: EffectId) -> Option<Option<Vec<u8>>> {
-        // Scan from the END (rev): at most ONE matching frame per id, and a result/fire event is
-        // near its dispatch/arm, so the reverse scan finds it fast — avoids an O(log^2) replay hot
-        // path where a front scan re-walks the whole prefix for every EffectResult (PR#1253 review).
-        self.log.iter().rev().find_map(|e| match &e.body {
-            EventBody::Dispatched { id: d, token, .. } if *d == id => Some(token.clone()),
-            _ => None,
-        })
+        // O(1) lookup in the resident open-obligation table (log-decouple I2), not a log scan — the token
+        // is held on the (non-timer) obligation while it's OPEN, which is when record-result reads it.
+        self.open
+            .get(&id.0)
+            .filter(|ob| !ob.is_timer)
+            .map(|ob| ob.token.clone())
     }
 
     /// The effect FAMILY that dispatch `id`'s `Dispatched` frame recorded, or `None` if `id` has no
@@ -1668,13 +1741,14 @@ impl Session {
     /// the authoritative identity) rather than the legacy `kind` enum, so it stays correct for a
     /// register-by-string family with no `EffectKind` variant. Reads the durable frame → replay-deterministic.
     fn dispatch_family_of(&self, id: EffectId) -> Option<std::sync::Arc<str>> {
-        // Scan from the END (rev): at most ONE matching frame per id, and a result/fire event is
-        // near its dispatch/arm, so the reverse scan finds it fast — avoids an O(log^2) replay hot
-        // path where a front scan re-walks the whole prefix for every EffectResult (PR#1253 review).
-        self.log.iter().rev().find_map(|e| match &e.body {
-            EventBody::Dispatched { id: d, family, .. } if *d == id => Some(family.clone()),
-            _ => None,
-        })
+        // O(1) lookup in the resident open-obligation table (log-decouple I2), not a log scan. Called when
+        // an `EffectResult` folds (live + on replay) — the matching `Dispatched` obligation is still OPEN
+        // at that point (the result REMOVES it), so the family is present. A timer obligation is excluded
+        // (it has no `Dispatched` frame — matches the old "None if opened by TimerArmed" behavior).
+        self.open
+            .get(&id.0)
+            .filter(|ob| !ob.is_timer)
+            .map(|ob| ob.family.clone())
     }
 
     /// The reducer continuation token that timer `id`'s `TimerArmed` frame carried (§19e slice 2b-iii),
@@ -1684,13 +1758,14 @@ impl Session {
     /// is how the token "rides the TimerFired": [`fire_due_timers`] copies it onto the fire event so a
     /// wasm reducer's fold reads it back as the guest's `resumes` without fold ever touching the log/map.
     fn timer_armed_token_of(&self, id: EffectId) -> Option<Option<Vec<u8>>> {
-        // Scan from the END (rev): at most ONE matching frame per id, and a result/fire event is
-        // near its dispatch/arm, so the reverse scan finds it fast — avoids an O(log^2) replay hot
-        // path where a front scan re-walks the whole prefix for every EffectResult (PR#1253 review).
-        self.log.iter().rev().find_map(|e| match &e.body {
-            EventBody::TimerArmed { id: a, token, .. } if *a == id => Some(token.clone()),
-            _ => None,
-        })
+        // O(1) lookup in the resident open-obligation table (log-decouple I2), not a log scan. A timer's
+        // token is held on its `is_timer` obligation while armed; `fire_due_timers` reads it before the
+        // fire removes it. `Some(Some(tok))`/`Some(None)` = armed with/without a token; `None` = not an
+        // armed timer.
+        self.open
+            .get(&id.0)
+            .filter(|ob| ob.is_timer)
+            .map(|ob| ob.token.clone())
     }
 
     /// Hash of the current tip (last log event) — the `cause` for effects its fold emits.
@@ -1727,8 +1802,7 @@ impl Session {
             kv: Kv::new(),
             next_effect_id: 0,
             settled: BTreeSet::new(),
-            open: BTreeSet::new(),
-            armed_timers: BTreeMap::new(),
+            open: BTreeMap::new(),
             last_now: 0,
             store: None,
             persist_error: None,
@@ -1742,24 +1816,60 @@ impl Session {
                     got: event.seq,
                 });
             }
-            // Reconstruct the obligation sets + armed-timer table + id counter from the log (§16c-S1/S5).
+            // Reconstruct the open-obligation table + settled set + id counter from the log (§16c-S1/S5,
+            // log-decouple I2). Rebuild the SAME OpenObligation the live `append` builds — recovery-
+            // equivalent: replay(full) yields the identical table a live run + I6 checkpoint+tail produce.
             match &event.body {
-                EventBody::Dispatched { id, .. } => {
-                    s.open.insert(id.0);
+                EventBody::Dispatched {
+                    id,
+                    kind,
+                    family,
+                    target,
+                    token,
+                    ..
+                } => {
+                    s.open.insert(
+                        id.0,
+                        OpenObligation {
+                            kind: kind.clone(),
+                            target: target.clone(),
+                            family: family.clone(),
+                            token: token.clone(),
+                            deadline_ms: None,
+                            dispatch_hash: Some(event.hash()),
+                            is_timer: false,
+                        },
+                    );
                     s.next_effect_id = s.next_effect_id.max(id.0 + 1);
                 }
                 EventBody::TimerArmed {
-                    id, deadline_ms, ..
+                    id,
+                    deadline_ms,
+                    token,
+                    ..
                 } => {
-                    s.open.insert(id.0);
-                    s.armed_timers.insert(id.0, *deadline_ms);
+                    s.open.insert(
+                        id.0,
+                        OpenObligation {
+                            kind: EffectKind::Emit,
+                            target: std::sync::Arc::from(&b""[..]),
+                            family: std::sync::Arc::from(crate::effect::effect_ct::TIMER),
+                            token: token.clone(),
+                            deadline_ms: Some(*deadline_ms),
+                            dispatch_hash: None,
+                            is_timer: true,
+                        },
+                    );
                     s.next_effect_id = s.next_effect_id.max(id.0 + 1);
                 }
                 EventBody::EffectResult { id, result, .. } => {
+                    // Read the family BEFORE removing the obligation (dispatch_family_of reads the open table).
+                    let is_now =
+                        s.dispatch_family_of(*id).as_deref() == Some(crate::effect::effect_ct::NOW);
                     s.open.remove(&id.0);
                     s.settled.insert(id.0);
                     s.next_effect_id = s.next_effect_id.max(id.0 + 1);
-                    if s.dispatch_family_of(*id).as_deref() == Some(crate::effect::effect_ct::NOW) {
+                    if is_now {
                         if let EffectOutcome::Ok(Some(crate::effect::Payload::Inline(bytes))) =
                             result
                         {
@@ -1771,7 +1881,6 @@ impl Session {
                 }
                 EventBody::TimerFired { id, .. } => {
                     s.open.remove(&id.0);
-                    s.armed_timers.remove(&id.0);
                     s.settled.insert(id.0);
                     s.next_effect_id = s.next_effect_id.max(id.0 + 1);
                 }
@@ -1794,7 +1903,7 @@ impl Session {
     /// The set of open (dispatched-but-unsettled) effect ids after recovery — what a driver must
     /// re-drive or time out (§16c-S1). Exposed for the recovery driver + tests.
     pub fn open_effect_ids(&self) -> Vec<EffectId> {
-        self.open.iter().map(|n| EffectId(*n)).collect()
+        self.open.keys().map(|n| EffectId(*n)).collect()
     }
 
     /// Boot a session from an ALREADY-READ recovery result — the backend-AGNOSTIC recovery core (§16c-S1).
@@ -2999,6 +3108,93 @@ mod monotonic_now_tests {
             .await
             .expect("replay 2");
         assert_eq!(replayed2.snapshot().kv_root, replayed.snapshot().kv_root);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn open_obligation_table_serves_accessors_and_replay_rebuilds_it_identically() {
+        // log-decouple I2: the resident open-obligation table serves dispatch_hash_of / dispatch_token_of /
+        // dispatch_family_of with ZERO log access, folds armed timers in (is_timer + deadline), and replay
+        // rebuilds the IDENTICAL table (recovery-equivalence for the open set). Drive a reducer that emits a
+        // tokened Http effect on inbound; the effect is OPEN until its result folds.
+        struct EmitTokenedHttp;
+        #[async_trait::async_trait(?Send)]
+        impl Reducer for EmitTokenedHttp {
+            async fn fold(&mut self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+                match &event.body {
+                    EventBody::Inbound { .. } => FoldOutput::with_effects(vec![Effect {
+                        request: EffectRequest::new(
+                            EffectKind::Http,
+                            "https://ok.host/x",
+                            None,
+                            Timeliness::Interactive,
+                        ),
+                        token: Some(b"cont-1".to_vec()),
+                    }]),
+                    _ => FoldOutput::none(),
+                }
+            }
+        }
+        // A never-answering executor so the Http effect stays OPEN after drive (obligation retained).
+        struct NeverExec;
+        #[async_trait::async_trait(?Send)]
+        impl Executor for NeverExec {
+            async fn perform(
+                &mut self,
+                _id: EffectId,
+                _req: &EffectRequest,
+                _key: Hash,
+            ) -> EffectOutcome {
+                EffectOutcome::Deferred
+            }
+        }
+        let authz = Authorizer::new(vec![Capability {
+            kind: EffectKind::Http,
+            predicate: crate::effect::ResourcePredicate::HostIn(vec!["ok.host".into()]),
+        }]);
+        let mut s = Session::genesis(Hash::of(b"i2-obl"), Hash::of(b"test-spawn-nonce"));
+        s.deliver(
+            inbound(),
+            None,
+            &mut EmitTokenedHttp,
+            &authz,
+            &mut NeverExec,
+        )
+        .await
+        .unwrap();
+
+        // Exactly one open obligation (the deferred Http), id 0.
+        let ids = s.open_effect_ids();
+        assert_eq!(ids, vec![EffectId(0)]);
+        // The table serves all three accessors with no log scan.
+        assert_eq!(
+            s.dispatch_family_of(EffectId(0)).as_deref(),
+            Some(EffectKind::Http.family())
+        );
+        assert_eq!(
+            s.dispatch_token_of(EffectId(0)),
+            Some(Some(b"cont-1".to_vec()))
+        );
+        assert!(s.dispatch_hash_of(EffectId(0)).is_some());
+
+        // Replay rebuilds the IDENTICAL open table (recovery-equivalence): same open ids + same
+        // per-obligation family/token/hash.
+        let log = s.log().to_vec();
+        let replayed = Session::replay(log, &mut EmitTokenedHttp)
+            .await
+            .expect("replay");
+        assert_eq!(replayed.open_effect_ids(), s.open_effect_ids());
+        assert_eq!(
+            replayed.dispatch_family_of(EffectId(0)).as_deref(),
+            s.dispatch_family_of(EffectId(0)).as_deref()
+        );
+        assert_eq!(
+            replayed.dispatch_token_of(EffectId(0)),
+            s.dispatch_token_of(EffectId(0))
+        );
+        assert_eq!(
+            replayed.dispatch_hash_of(EffectId(0)),
+            s.dispatch_hash_of(EffectId(0))
+        );
     }
 
     // A reducer that, on an inbound message, emits a `control/summary` effect carrying summary bytes in
