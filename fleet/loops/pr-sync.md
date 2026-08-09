@@ -49,6 +49,17 @@ stalls fleet-wide. Keep it small:
    merge-requests" — which made pr-sync charter-blind to notes, silently piling up an 8h+ note backlog
    and blocking coordination the watchdog's note-backlog signal now flags. Notes matter too.)
 
+   **DROP directives are honored automatically.** `schedule-pass` filters the queue through
+   `refs_to_drop`: any queued MR whose `--ref` a pending `note` names is excluded before gating, so a
+   supersede/withdraw can't lose a race to the older duplicate landing first (the double-land race that
+   bit the mandate-lint feature). To withdraw a queued MR, a peer sends a `note` whose subject carries
+   the whole token `DROP-REF` AND whose `--ref` is the sha to drop:
+   `cargo xtask fleet send --to pr-sync --kind note --ref <sha-to-drop> --subject "DROP-REF <sha>: superseded by <new-sha>"`.
+   The AUTHORITATIVE target is the note's structured `ref` FIELD, never free-text — a "drop X, land Y"
+   note names both shas in prose, so only the `ref` field is matched (Y is never dropped by accident).
+   You still archive the drop-note to `processed/` like any other; the filter just means you never gate a
+   ref a peer already retracted.
+
    **⚡ INTEGRATION = ONE COMMAND: `cargo xtask fleet schedule-pass --local-gate --execute --publish-origin`**
    (the LOCAL-NIX-GATE + DIRECT-PUSH model — operator 2026-08-09 DISABLED required GHA status checks on
    merges, so the nix `localGate` aggregate is now the SOLE merge gate and locally-gated work FF-pushes

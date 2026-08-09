@@ -11174,8 +11174,67 @@ fn gate_batch(fleet: &Fleet, dry_run: bool, limit: usize) {
     );
 }
 
-/// List pr-sync's queued merge-requests as `BatchMr`, oldest-first (by the durable `<seq>-` filename).
+/// The subject token that marks a `note` to pr-sync as a machine-readable DROP directive: "do not
+/// integrate the merge-request whose `--ref` equals THIS note's `ref` field; drop it from the queue".
+/// A dot/space-delimited token (not a substring) so ordinary prose mentioning the word can't false-match.
+/// The AUTHORITATIVE ref is the note's structured `ref` FIELD, never the free-text subject — a
+/// "DROP X, land Y instead" note names BOTH shas in prose, so parsing the subject would wrongly drop the
+/// REPLACEMENT too (the exact ambiguity that made this a coordination hole). See `refs_to_drop`.
+const DROP_REF_TOKEN: &str = "DROP-REF";
+
+/// Whether a note subject carries the [`DROP_REF_TOKEN`] as a whole delimited token (not a substring of a
+/// larger word). Pure so the match rule is unit-tested.
+fn subject_is_drop_directive(subject: &str) -> bool {
+    subject
+        .split([' ', '.', ':', ','])
+        .any(|tok| tok == DROP_REF_TOKEN)
+}
+
+/// Do two git refs denote the same commit for drop-matching? A drop note may carry a SHORT sha and the
+/// queued MR a full one (or vice-versa), so match when either is a nonempty prefix of the other — the
+/// same sha-prefix rule git itself uses. Empty refs never match (guarded by the callers). Pure.
+fn refs_match_for_drop(a: &str, b: &str) -> bool {
+    !a.is_empty() && !b.is_empty() && (a.starts_with(b) || b.starts_with(a))
+}
+
+/// Scan pr-sync's inbox for DROP directives: `note`s whose subject carries [`DROP_REF_TOKEN`] AND whose
+/// structured `ref` field names the merge-request ref to drop. Returns the set of refs to drop. This is
+/// how pr-sync honors a "supersede/withdraw" BEFORE it processes the queued MR — closing the double-land
+/// race where an older duplicate landed before its drop note was read (bit the mandate-lint feature
+/// 2026-08-09). Reads only the structured `ref` field, never free-text, so it can never drop the wrong MR.
+fn refs_to_drop(fleet: &Fleet) -> Vec<String> {
+    let dir = fleet.inbox("pr-sync");
+    let mut refs: Vec<String> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(&dir) {
+        for p in rd.filter_map(|e| e.ok().map(|e| e.path())) {
+            let is_note = p
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.ends_with("-note.json"));
+            if !is_note {
+                continue;
+            }
+            let Some(v) = std::fs::read_to_string(&p)
+                .ok()
+                .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+            else {
+                continue;
+            };
+            let subject = v.get("subject").and_then(|x| x.as_str()).unwrap_or("");
+            let dref = v.get("ref").and_then(|x| x.as_str()).unwrap_or("");
+            if subject_is_drop_directive(subject) && !dref.is_empty() {
+                refs.push(dref.to_string());
+            }
+        }
+    }
+    refs
+}
+
+/// List pr-sync's queued merge-requests as `BatchMr`, oldest-first (by the durable `<seq>-` filename),
+/// with any MR named by a DROP directive ([`refs_to_drop`]) FILTERED OUT — pr-sync honors a
+/// supersede/withdraw note before it processes the queued ref, closing the double-land race.
 fn queued_merge_requests(fleet: &Fleet) -> Vec<BatchMr> {
+    let drop_refs = refs_to_drop(fleet);
     let dir = fleet.inbox("pr-sync");
     let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
         .map(|rd| {
@@ -11214,6 +11273,8 @@ fn queued_merge_requests(fleet: &Fleet) -> Vec<BatchMr> {
             })
         })
         .filter(|m| !m.r#ref.is_empty())
+        // Honor DROP directives: exclude any MR whose ref a pending drop-note names (double-land-race fix).
+        .filter(|m| !drop_refs.iter().any(|d| refs_match_for_drop(&m.r#ref, d)))
         .collect()
 }
 
@@ -15556,6 +15617,30 @@ mod tests {
         // spawn-fail dominates even if build_ok were somehow true (defensive — a not-run gate is unknown).
         assert_eq!(local_gate_verdict(false, true), NoChecks);
         // local_gate_verdict NEVER returns Pending (nix build blocks to completion) — only the 3 above.
+    }
+
+    #[test]
+    fn drop_directive_subject_matches_only_a_whole_token_and_ref_match_is_prefix_symmetric() {
+        // The DROP-REF token must be a whole delimited token, not a substring of prose.
+        assert!(subject_is_drop_directive(
+            "DROP-REF stale c70fb0907 superseded by 61a41699f"
+        ));
+        assert!(subject_is_drop_directive("please DROP-REF: 0ed048c0c"));
+        assert!(subject_is_drop_directive("withdraw.DROP-REF.0ed048c0c"));
+        // Ordinary prose mentioning "drop" or a hyphenated word must NOT trip it.
+        assert!(!subject_is_drop_directive(
+            "WITHDRAW my MR — please drop it from the queue"
+        ));
+        assert!(!subject_is_drop_directive("DROP-REFERENCE is unrelated"));
+        assert!(!subject_is_drop_directive("NODROP-REF marker"));
+
+        // ref match is prefix-symmetric (short vs full sha) but never matches on empty.
+        assert!(refs_match_for_drop("c70fb0907", "c70fb0907abc123"));
+        assert!(refs_match_for_drop("c70fb0907abc123", "c70fb0907"));
+        assert!(refs_match_for_drop("c70fb0907", "c70fb0907"));
+        assert!(!refs_match_for_drop("c70fb0907", "61a41699f"));
+        assert!(!refs_match_for_drop("", "c70fb0907"));
+        assert!(!refs_match_for_drop("c70fb0907", ""));
     }
 
     #[test]
