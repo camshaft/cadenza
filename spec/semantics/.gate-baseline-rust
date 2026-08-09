@@ -33,6 +33,7 @@ pass	@requires is enforced when the guarded def is applied through a first-class
 pass	@requires over a HANDLE-bodied def, and @ensures over a handle arm that uses state 3x — both enforce (effects-fold robustness)
 pass	@requires over a HEAP argument reads the list's content at body entry
 pass	@requires over a MAP argument walks the CHAMP at body entry
+pass	@requires over an @invariant-typed PARAMETER: the type establish (at construction) and the precondition (at body entry) are independent obligations at distinct sites
 pass	@requires stacked OVER @ensures: the precondition is still enforced when an @ensures wrapper sits between it and the def
 pass	ACKERMANN evaluates — a recursive call in the ARGUMENT of a recursive call (not primitive-recursive)
 pass	Ast nodes as Map keys: equal nodes collide to an overwrite, different node KINDS stay distinct

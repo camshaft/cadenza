@@ -2961,6 +2961,31 @@
   (call run (: 30 Int64))  (trap "unreachable")
   (call run (: 150 Int64)) (trap "unreachable"))
 
+(case "@requires over an @invariant-typed PARAMETER: the type establish (at construction) and the precondition (at body entry) are independent obligations at distinct sites"
+  (doc    "The precondition mirror of the `@ensures returning an @invariant type` case above. There the two (D)
+           obligations were establish-on-construction + postcondition-on-result; here they are
+           establish-on-construction + PRECONDITION-on-parameter, and the pin is that they fire at DISTINCT sites
+           on a single invariant-typed value — the establish at the caller's construction, the @requires at the
+           callee's body ENTRY, neither subsuming the other. `Pct = P Int64` has `@invariant(0 <= self <= 100)`;
+           `hi` takes a `Pct` param and carries `@requires(payload >= 50)`. `run(v)` constructs `(Pct.P v)` and
+           passes it to `hi`. run(70): the establish (0..100) holds at the `(Pct.P 70)` construction AND the
+           precondition (70 >= 50) holds at hi's body entry → 70 flows. run(30): the establish holds (30 in
+           0..100) at construction, but the @requires (30 >= 50) FAILS at hi's body-entry → trap AFTER a valid
+           Pct was built. run(150): the establish (<=100) FAILS at the `(Pct.P 150)` construction INSIDE run,
+           BEFORE `hi` is ever entered → trap there, so the precondition is never reached. That the 30 case and
+           the 150 case trap at DIFFERENT sites (body-entry vs construction) on the same invariant-typed value
+           proves the two obligations are independent. (`self` is the invariant binder; `@requires` binds no
+           result, so it deconstructs the param by name.)")
+  (input  (do
+            (@ (invariant (and (>= self 0) (<= self 100))) (type Pct (P Int64)))
+            (@ (requires (match p (((. Pct P) n) (>= n 50))))
+               (def (hi (: p Pct)) (match p (((. Pct P) n) n))))
+            (def (run (: v Int64)) (hi (Pct.P v)))
+            (export run)))
+  (call run (: 70 Int64))  (output (: 70 Int64))
+  (call run (: 30 Int64))  (trap "unreachable")
+  (call run (: 150 Int64)) (trap "unreachable"))
+
 ; ── @invariant ESTABLISH divert: NO escape through indirect construction sites ──────────────────────────────
 ; The divert is a construction-SITE rewrite (`lower_sum_new` routes `(Percent.Pct v)` through the checked
 ; constructor), so its soundness rests on the rewrite reaching EVERY site the lowering walks — a site the
