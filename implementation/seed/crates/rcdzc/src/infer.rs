@@ -14398,6 +14398,35 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                             } else {
                                 None
                             };
+                            // A FLOAT value annotated an INTEGER type with NO clean literal retype — a
+                            // NON-integer float literal (`(: 3.5 Int64)`) or a non-literal float expression
+                            // (`(: (Float64.of-int n) Int64)`). The integer-valued literal case (`(: 3.0
+                            // Int64)`) already took the `literal_retype` fix above (drop the `.0`); this is
+                            // the fallthrough where truncation would LOSE the fractional part, so there is no
+                            // one-shot fix — but the bare "Int64 does not match Float64" dead-ends. Name WHY
+                            // (a float carries a fraction an integer cannot hold) + the two real paths:
+                            // annotate a float type, or explicitly round/truncate to an integer. Tail only
+                            // (no mechanical fix — rounding-vs-truncating is the author's choice), last in the
+                            // chain after every structural hint (the int-coercion WRAP cases already returned
+                            // a wrap tail above, so reaching here means no wrap applied).
+                            let float_int_tail = if wrap.is_none()
+                                && option_tail.is_none()
+                                && record_tail.is_none()
+                                && fn_tail.is_none()
+                                && collection_tail.is_none()
+                                && sum_tail.is_none()
+                                && matches!(&annot_ty, Ty::Int(_))
+                                && matches!(&expr_ty, Ty::Float(_))
+                            {
+                                Some(format!(
+                                    " — a floating-point value has a fractional part {} cannot hold; \
+                                     annotate a float type (e.g. `{}`), or round/truncate it to an integer first",
+                                    annot_ty.render_name(),
+                                    expr_ty.render_name(),
+                                ))
+                            } else {
+                                None
+                            };
                             let tail = wrap
                                 .as_ref()
                                 .map(|w| w.3.clone())
@@ -14407,6 +14436,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                                 .or(collection_tail.clone())
                                 .or(sum_tail.clone())
                                 .or(fn_sig_tail)
+                                .or(float_int_tail)
                                 .or((!qty_tail.is_empty()).then(|| qty_tail.clone()))
                                 .or(same_name_tail)
                                 .unwrap_or_default();
