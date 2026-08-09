@@ -43,9 +43,9 @@ pub struct ReplyTarget {
 /// single-threaded host loop (`RefCell`, not a `Mutex` — mint on I3 forward + consume on I4 reply are both on
 /// the one loop thread). One-shot: a token is REMOVED on the first valid consume. Keyed by the BINARY `Hash`
 /// (a `Copy` [u8;32], cheaply clonable — the operator's binary-everywhere/cheaply-clonable rule: NO hex string
-/// on the identity/routing/storage path; hex is for LOGGING only). The hex form appears solely at the kernel
-/// effect-target boundary (`effect/reply`'s `req.target` is `Arc<str>` — the guest echoes the token there),
-/// where `validate_and_consume` parses it back to the `Hash`.
+/// on the identity/routing/storage path; hex is for LOGGING only). The token rides the `effect/reply`
+/// `req.target` (`Arc<[u8]>`) as its RAW 32 bytes — the guest echoes the bytes verbatim, `validate_and_consume`
+/// reconstitutes the `Hash` from them; zero hex anywhere (operator zero-hex directive).
 #[derive(Default)]
 pub struct ReplyTokenRegistry {
     tokens: RefCell<HashMap<Hash, ReplyTarget>>,
@@ -60,8 +60,8 @@ impl ReplyTokenRegistry {
     }
 
     /// Mint a fresh reply-token for a forwarded effect-request, bound to `(caller, effect_id)`. Returns the
-    /// token as a [`Hash`] (its hex is what the I3 forward threads into the handler's Inbound framing + the
-    /// handler echoes as the `effect/reply` target). The token is UNGUESSABLE: 32 OS-random bytes hashed into
+    /// token as a [`Hash`] (its RAW bytes are what the I3 forward threads into the handler's Inbound framing +
+    /// the handler echoes as the `effect/reply` target). The token is UNGUESSABLE: 32 OS-random bytes hashed into
     /// a `Hash` (mirrors `mint_spawn_nonce` / `mint_conn_id` — one identity scheme for every host handle), so
     /// a handler can't fabricate a token for a binding it was never given. `getrandom` failing is unsurvivable
     /// (no entropy = can't mint an unforgeable token), so it is a hard error, not a weak-token fallback.
@@ -75,16 +75,17 @@ impl ReplyTokenRegistry {
         token
     }
 
-    /// Validate a reply-token (the token hex a handler echoed on its `effect/reply` `req.target`, which is
-    /// `Arc<str>`) and CONSUME it one-shot: parse the hex back to the token [`Hash`], return the bound
-    /// [`ReplyTarget`] and remove the token so a second reply with the same token finds nothing. `None` = the
-    /// token is malformed/non-hex, unknown (never minted / forged), OR already consumed (a duplicate/replayed
-    /// reply) — either way the reply is refused (the host does NOT settle anything). This is the reply-forgery
-    /// and double-settle defense, enforced BEFORE the kernel `settle_effect_result`. The hex is parsed here
-    /// ONLY because it arrives on the kernel effect-target boundary; the table stores the binary `Hash`.
-    pub fn validate_and_consume(&self, token_hex: &str) -> Option<ReplyTarget> {
-        let token = Hash::from_hex(token_hex)?;
-        self.tokens.borrow_mut().remove(&token)
+    /// Validate a reply-token (the RAW 32 token bytes a handler echoed on its `effect/reply` `req.target`,
+    /// which is `Arc<[u8]>`) and CONSUME it one-shot: reconstitute the token [`Hash`] from the bytes, return
+    /// the bound [`ReplyTarget`], and remove the token so a second reply with the same token finds nothing.
+    /// `None` = the bytes aren't a 32-byte token, unknown (never minted / forged), OR already consumed (a
+    /// duplicate/replayed reply) — either way the reply is refused (the host does NOT settle anything). This
+    /// is the reply-forgery and double-settle defense, enforced BEFORE the kernel `settle_effect_result`.
+    /// Takes RAW bytes (no hex): the token rides the effect-target as opaque `Arc<[u8]>` end to end (operator
+    /// zero-hex directive — the token was always a binary `Hash`, the hex round-trip was gratuitous).
+    pub fn validate_and_consume(&self, token_bytes: &[u8]) -> Option<ReplyTarget> {
+        let raw = <[u8; 32]>::try_from(token_bytes).ok()?;
+        self.tokens.borrow_mut().remove(&Hash::from_bytes(raw))
     }
 
     /// Drop all tokens bound to `caller` (their pending effects can no longer be replied to) — the I6
@@ -125,14 +126,14 @@ mod tests {
         assert_eq!(reg.len(), 1);
         // First reply with the token recovers the exact (caller, effect-id) binding.
         let target = reg
-            .validate_and_consume(&token.to_hex())
+            .validate_and_consume(token.as_bytes())
             .expect("a freshly-minted token validates");
         assert_eq!(target.caller, caller("outpost"));
         assert_eq!(target.effect_id, EffectId(7));
         // One-shot: the token is now consumed, so a SECOND reply with it is refused (double-settle defense).
         assert!(reg.is_empty());
         assert!(
-            reg.validate_and_consume(&token.to_hex()).is_none(),
+            reg.validate_and_consume(token.as_bytes()).is_none(),
             "a consumed reply-token cannot settle a second time"
         );
     }
@@ -142,16 +143,16 @@ mod tests {
         let reg = ReplyTokenRegistry::new();
         reg.mint(caller("a"), EffectId(1));
         // A token that was never minted (a handler fabricating a reply) recovers nothing → refused.
-        let forged = Hash::of(b"not-a-real-token").to_hex();
+        let forged = Hash::of(b"not-a-real-token");
         assert!(
-            reg.validate_and_consume(&forged).is_none(),
+            reg.validate_and_consume(forged.as_bytes()).is_none(),
             "a forged/never-minted token cannot settle any effect (reply-forgery defense)"
         );
         // The real token is untouched by the forged attempt.
         assert_eq!(reg.len(), 1);
         // A non-hex / malformed token (a handler echoed garbage on effect/reply's target) is refused too —
         // it parses to no Hash, so no settle (never panics on a bad boundary string).
-        assert!(reg.validate_and_consume("not-a-hash").is_none());
+        assert!(reg.validate_and_consume(b"not-32-bytes").is_none());
         assert_eq!(reg.len(), 1);
     }
 
@@ -163,9 +164,9 @@ mod tests {
         // Two forwards (even same caller) get different unguessable tokens.
         assert_ne!(t1, t2, "each forward mints a fresh unguessable reply-token");
         // Consuming one leaves the other valid (independent bindings).
-        assert!(reg.validate_and_consume(&t1.to_hex()).is_some());
+        assert!(reg.validate_and_consume(t1.as_bytes()).is_some());
         let left = reg
-            .validate_and_consume(&t2.to_hex())
+            .validate_and_consume(t2.as_bytes())
             .expect("the other token still validates");
         assert_eq!(left.effect_id, EffectId(2));
     }
@@ -180,7 +181,7 @@ mod tests {
         assert_eq!(reg.drop_caller(&caller("gone")), 2);
         assert_eq!(reg.len(), 1);
         assert!(
-            reg.validate_and_consume(&keep.to_hex()).is_some(),
+            reg.validate_and_consume(keep.as_bytes()).is_some(),
             "an unrelated caller's token survives the prune"
         );
     }

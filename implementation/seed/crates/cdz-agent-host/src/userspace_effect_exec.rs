@@ -58,11 +58,11 @@ pub trait HandlerResolver {
 /// [`ws_frame_inbound`](crate::ws_socket::ws_frame_inbound) uses (the host has no side-band metadata slot on
 /// [`EventBody::Inbound`]):
 ///
-/// `[caller_len: u32-le][caller-id bytes][token_len: u32-le][reply-token hex bytes][effect_id: u64-le][payload bytes]`
+/// `[caller_len: u32-le][caller-id bytes][token_len: u32-le][reply-token RAW 32 bytes][effect_id: u64-le][payload bytes]`
 ///
 /// - `caller-id` — provenance: the session that performed the effect (a handler that wants to prove who asked
 ///   reads it; the host stays oblivious to request semantics).
-/// - `reply-token` (hex) — the CAPABILITY the handler echoes on its `effect/reply` `target` to settle exactly
+/// - `reply-token` (raw 32 bytes) — the CAPABILITY the handler echoes on its `effect/reply` `target` to settle exactly
 ///   this `(caller, effect-id)` (unforgeable + one-shot, [`ReplyTokenRegistry`]).
 /// - `effect_id` — the caller's open [`EffectId`] (provenance in the handler's log; the settle keys on it via
 ///   the token, so the handler need not parse it, but it is surfaced for symmetry with the durable frame).
@@ -76,8 +76,9 @@ pub fn effect_request_inbound(
     payload: &[u8],
 ) -> Inbound {
     let caller_bytes = caller.as_str().as_bytes();
-    let token_hex = reply_token.to_hex();
-    let token_bytes = token_hex.as_bytes();
+    // The reply-token rides the framing as its RAW 32 bytes (no hex) — the handler echoes them verbatim on
+    // effect/reply's Arc<[u8]> target; the I4 ReplyExecutor validates them as bytes (operator zero-hex).
+    let token_bytes = reply_token.as_bytes();
     let mut buf =
         Vec::with_capacity(4 + caller_bytes.len() + 4 + token_bytes.len() + 8 + payload.len());
     buf.extend_from_slice(&(caller_bytes.len() as u32).to_le_bytes());
@@ -197,7 +198,7 @@ impl<R: HandlerResolver> Executor for UserspaceEffectExecutor<R> {
             // token we just minted (it can never be replied to) so it doesn't leak, then classify RETRYABLE
             // (transient — a supervisor may re-drive once the loop is back).
             Err(_) => {
-                self.reply_tokens.validate_and_consume(&token.to_hex());
+                self.reply_tokens.validate_and_consume(token.as_bytes());
                 EffectOutcome::err_retryable(
                     "UserspaceEffectExecutor: the host loop inbox is closed — cannot forward the request (host shutting down?)",
                 )
@@ -250,8 +251,8 @@ mod tests {
         )
     }
 
-    /// Parse the forwarded framing back out: (caller, reply-token hex, effect-id, payload).
-    fn parse_framing(bytes: &[u8]) -> (String, String, u64, Vec<u8>) {
+    /// Parse the forwarded framing back out: (caller, reply-token RAW bytes, effect-id, payload).
+    fn parse_framing(bytes: &[u8]) -> (String, Vec<u8>, u64, Vec<u8>) {
         let clen = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
         let mut o = 4;
         let caller = String::from_utf8(bytes[o..o + clen].to_vec()).unwrap();
@@ -259,7 +260,7 @@ mod tests {
         let tlen =
             u32::from_le_bytes([bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]]) as usize;
         o += 4;
-        let token = String::from_utf8(bytes[o..o + tlen].to_vec()).unwrap();
+        let token = bytes[o..o + tlen].to_vec();
         o += tlen;
         let eid = u64::from_le_bytes([
             bytes[o],
@@ -327,7 +328,7 @@ mod tests {
                     "family is effect-request/<family>"
                 );
                 assert_eq!(content_type.version, EFFECT_REQUEST_VERSION);
-                let (caller, token_hex, eid, req_payload) = parse_framing(&bytes);
+                let (caller, token_bytes, eid, req_payload) = parse_framing(&bytes);
                 assert_eq!(caller, "caller-a", "framing carries the caller id");
                 assert_eq!(eid, 42, "framing carries the open effect id");
                 assert_eq!(
@@ -337,7 +338,7 @@ mod tests {
                 // The framed token is exactly the minted one — the handler echoes it on effect/reply, and it
                 // validates + consumes to (caller-a, 42).
                 let target = tokens
-                    .validate_and_consume(&token_hex)
+                    .validate_and_consume(&token_bytes)
                     .expect("the framed reply-token validates");
                 assert_eq!(target.caller, SessionId::new("caller-a"));
                 assert_eq!(target.effect_id, EffectId(42));

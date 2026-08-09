@@ -34,16 +34,16 @@ impl HandlerResolver for MapResolver {
     }
 }
 
-/// Parse the I3 forward framing `[caller_len|caller|token_len|token-hex|effect_id-u64le|payload]` back into
-/// its parts (mirrors the wire the handler reducer would decode).
-fn parse_framing(bytes: &[u8]) -> (String, String, u64, Vec<u8>) {
+/// Parse the I3 forward framing `[caller_len|caller|token_len|token-RAW-32B|effect_id-u64le|payload]` back
+/// into its parts (mirrors the wire the handler reducer would decode).
+fn parse_framing(bytes: &[u8]) -> (String, Vec<u8>, u64, Vec<u8>) {
     let clen = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
     let mut o = 4;
     let caller = String::from_utf8(bytes[o..o + clen].to_vec()).unwrap();
     o += clen;
     let tlen = u32::from_le_bytes([bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]]) as usize;
     o += 4;
-    let token = String::from_utf8(bytes[o..o + tlen].to_vec()).unwrap();
+    let token = bytes[o..o + tlen].to_vec();
     o += tlen;
     let eid = u64::from_le_bytes([
         bytes[o],
@@ -109,7 +109,7 @@ async fn request_forwards_and_a_handler_reply_settles_the_original_caller_effect
         "weather-handler",
         "forwarded to the resolved handler"
     );
-    let (fwd_caller, token_hex, fwd_eid, req_payload) = match fwd.body {
+    let (fwd_caller, token_bytes, fwd_eid, req_payload) = match fwd.body {
         EventBody::Inbound {
             content_type,
             payload: Payload::Inline(bytes),
@@ -137,7 +137,7 @@ async fn request_forwards_and_a_handler_reply_settles_the_original_caller_effect
             EffectId(1), // the handler's own effect-id for this reply — irrelevant to the settle
             &EffectRequest::new_with_family(
                 effect_ct::EFFECT_REPLY,
-                token_hex.clone(),
+                token_bytes.clone(),
                 Some(Payload::Inline(b"sunny-and-72".to_vec().into())),
                 Timeliness::Interactive,
             ),
@@ -196,7 +196,7 @@ async fn a_second_reply_with_the_same_token_is_refused_no_double_settle() {
     )
     .await;
     let fwd = inbox_rx.try_recv().expect("forwarded");
-    let token_hex = match fwd.body {
+    let token_bytes = match fwd.body {
         EventBody::Inbound {
             payload: Payload::Inline(bytes),
             ..
@@ -205,19 +205,19 @@ async fn a_second_reply_with_the_same_token_is_refused_no_double_settle() {
     };
 
     let mut i4 = ReplyExecutor::new(reply_tokens, settle_tx);
-    let reply = |t: String| {
+    let reply = |t: Vec<u8>| {
         EffectRequest::new_with_family(effect_ct::EFFECT_REPLY, t, None, Timeliness::Interactive)
     };
     // First reply settles.
     assert!(matches!(
-        i4.perform(EffectId(0), &reply(token_hex.clone()), Hash::of(b"k"))
+        i4.perform(EffectId(0), &reply(token_bytes.clone()), Hash::of(b"k"))
             .await,
         EffectOutcome::Ok(None)
     ));
     settle_rx.try_recv().expect("first reply enqueued a settle");
     // Second reply with the same (consumed) token is refused, enqueues nothing.
     let dup = i4
-        .perform(EffectId(0), &reply(token_hex), Hash::of(b"k"))
+        .perform(EffectId(0), &reply(token_bytes), Hash::of(b"k"))
         .await;
     assert!(
         matches!(&dup, EffectOutcome::Err { .. }),

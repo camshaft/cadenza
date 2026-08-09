@@ -1,8 +1,8 @@
 //! [`ReplyExecutor`] — the executor for the `effect/reply` family (design DESIGN-userspace-effects I4). A
 //! userspace-effect HANDLER, having been forwarded a request by the I3 `UserspaceEffectExecutor` (which minted
-//! a one-shot reply-token bound to the original `(caller, effect-id)` and threaded its hex into the forwarded
-//! framing), answers by performing an
-//! `effect/reply` effect whose `target` is that reply-token hex and whose `payload` is the response. This
+//! a one-shot reply-token bound to the original `(caller, effect-id)` and threaded its RAW bytes into the
+//! forwarded framing), answers by performing an
+//! `effect/reply` effect whose `target` is those raw reply-token bytes and whose `payload` is the response. This
 //! executor validates + CONSUMES the token (reply-forgery + double-settle defense, [`ReplyTokenRegistry`]),
 //! recovers the bound `(caller, effect-id)`, and hands the loop a [`ReplySettle`] command so the loop
 //! `settle_effect_result`s the caller's OPEN (Deferred) effect — closing the request→forward→reply→settle loop.
@@ -104,25 +104,21 @@ impl Executor for ReplyExecutor {
             ));
         }
 
-        // The reply-token hex rides on `req.target` (the handler echoes what the I3 forward framed). The
-        // target is opaque Arc<[u8]>; the token hex is UTF-8, so a non-UTF-8 target is malformed → PERMANENT
-        // (fail-closed). An empty target carries no token → also PERMANENT.
-        let Ok(token_hex) = req.target_str() else {
+        // The reply-token rides on `req.target` as its RAW 32 bytes (the handler echoes what the I3 forward
+        // framed; target is opaque Arc<[u8]>). An empty target carries no token → PERMANENT (fail-closed);
+        // no hex parse (operator zero-hex — the token is binary end to end).
+        let token_bytes = req.target.as_ref();
+        if token_bytes.is_empty() {
             return EffectOutcome::err(
-                "ReplyExecutor: the effect/reply target is not valid UTF-8 (expected the reply-token hex)",
-            );
-        };
-        if token_hex.is_empty() {
-            return EffectOutcome::err(
-                "ReplyExecutor: an effect/reply requires the reply-token (hex) as its target",
+                "ReplyExecutor: an effect/reply requires the reply-token (raw bytes) as its target",
             );
         }
 
-        // Validate + CONSUME the token one-shot. `None` = the token is malformed/non-hex, never-minted
+        // Validate + CONSUME the token one-shot. `None` = the bytes aren't a 32-byte token, never-minted
         // (forged), or already consumed (a duplicate/replayed reply) — REFUSE it PERMANENT (retrying won't
         // make a forged/consumed token valid; this is the reply-forgery + double-settle defense, enforced
         // BEFORE any settle reaches the kernel). The host settles NOTHING on a refused reply.
-        let target = match self.reply_tokens.validate_and_consume(token_hex) {
+        let target = match self.reply_tokens.validate_and_consume(token_bytes) {
             Some(t) => t,
             None => {
                 return EffectOutcome::err(
@@ -167,11 +163,11 @@ mod tests {
     use cdz_kernel::effect::{Payload, Timeliness};
     use cdz_kernel::event::Retryability;
 
-    /// An effect/reply request echoing `token_hex` as its target with an inline `payload` (or none).
-    fn reply_req(token_hex: &str, payload: Option<&[u8]>) -> EffectRequest {
+    /// An effect/reply request echoing the raw `token_bytes` as its target with an inline `payload` (or none).
+    fn reply_req(token_bytes: &[u8], payload: Option<&[u8]>) -> EffectRequest {
         EffectRequest::new_with_family(
             effect_ct::EFFECT_REPLY,
-            token_hex,
+            token_bytes,
             payload.map(|b| Payload::Inline(b.to_vec().into())),
             Timeliness::Interactive,
         )
@@ -189,7 +185,7 @@ mod tests {
         let out = exec
             .perform(
                 EffectId(7), // the handler's own effect-id — irrelevant to the settle
-                &reply_req(&token.to_hex(), Some(b"the-answer")),
+                &reply_req(token.as_bytes(), Some(b"the-answer")),
                 Hash::of(b"k"),
             )
             .await;
@@ -227,7 +223,7 @@ mod tests {
         let out = exec
             .perform(
                 EffectId(0),
-                &reply_req(&token.to_hex(), None),
+                &reply_req(token.as_bytes(), None),
                 Hash::of(b"k"),
             )
             .await;
@@ -250,7 +246,7 @@ mod tests {
         let blob = Hash::of(b"a-big-response-blob");
         let req = EffectRequest::new_with_family(
             effect_ct::EFFECT_REPLY,
-            token.to_hex(),
+            token.as_bytes(),
             Some(Payload::Blob(blob)),
             Timeliness::Interactive,
         );
@@ -272,9 +268,13 @@ mod tests {
         let mut exec = ReplyExecutor::new(tokens.clone(), settle_tx);
 
         // A never-minted (forged) token is refused PERMANENT + settles nothing.
-        let forged = Hash::of(b"never-minted").to_hex();
+        let forged = Hash::of(b"never-minted");
         let out = exec
-            .perform(EffectId(0), &reply_req(&forged, Some(b"x")), Hash::of(b"k"))
+            .perform(
+                EffectId(0),
+                &reply_req(forged.as_bytes(), Some(b"x")),
+                Hash::of(b"k"),
+            )
             .await;
         assert!(
             matches!(&out, EffectOutcome::Err { message, retryability } if *retryability == Retryability::Permanent && message.contains("refused")),
@@ -294,7 +294,7 @@ mod tests {
         assert!(matches!(
             exec.perform(
                 EffectId(0),
-                &reply_req(&token.to_hex(), Some(b"ok")),
+                &reply_req(token.as_bytes(), Some(b"ok")),
                 Hash::of(b"k")
             )
             .await,
@@ -307,7 +307,7 @@ mod tests {
         let dup = exec
             .perform(
                 EffectId(0),
-                &reply_req(&token.to_hex(), Some(b"again")),
+                &reply_req(token.as_bytes(), Some(b"again")),
                 Hash::of(b"k"),
             )
             .await;
@@ -327,7 +327,7 @@ mod tests {
         let (settle_tx, _rx) = reply_settle_channel();
         let mut exec = ReplyExecutor::new(tokens, settle_tx);
         let out = exec
-            .perform(EffectId(0), &reply_req("", Some(b"x")), Hash::of(b"k"))
+            .perform(EffectId(0), &reply_req(b"", Some(b"x")), Hash::of(b"k"))
             .await;
         assert!(
             matches!(&out, EffectOutcome::Err { message, retryability } if *retryability == Retryability::Permanent && message.contains("requires the reply-token")),
@@ -364,7 +364,7 @@ mod tests {
         let out = exec
             .perform(
                 EffectId(0),
-                &reply_req(&token.to_hex(), Some(b"x")),
+                &reply_req(token.as_bytes(), Some(b"x")),
                 Hash::of(b"k"),
             )
             .await;
