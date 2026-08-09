@@ -4361,4 +4361,325 @@ mod tests {
             "a second share-less session also resolves nothing — no store handed down, no cross-session leak"
         );
     }
+
+    // ---- §4c publish→consume through a hosted agent (converted from the deleted name_store_publish_consume_e2e
+    // + name_store_two_agent_e2e integration tests, operator no-integration-tests mandate). ENV-GATED on
+    // CDZ_LIVE_REDUCER_COMPONENT (a real lifted wasm reducer the nix build produces): unset → SKIP cleanly (a
+    // plain cargo test has no such artifact), so the hermetic default gate is unaffected; set (the nix job) →
+    // exercise the real publish→resolve→load→RUN arc. These prove a resolved pointer names a RUNNABLE artifact
+    // — the one thing the in-session store round-trips above can't cover. ----
+    use crate::test_support::reducer_component_bytes;
+    use cdz_kernel::blob::{BlobStore, MemBlobStore};
+    use cdz_kernel::event_ast::{decode_name_set, encode_name_set};
+    use cdz_kernel::name_store::NameStore;
+    use cdz_kernel::wasm_host::AsyncComponentReducer;
+    use std::time::Duration;
+
+    /// The well-known pointer both arcs use (the kernel-side source of truth).
+    const PUBLISH_POINTER: &str = NameStore::COMPILER_LATEST;
+
+    /// A hard ceiling on running a RESOLVED (real, externally-supplied) wasm artifact's fold turn.
+    /// `HostedSession::deliver` drives the reducer→effect loop to quiescence with no step bound, so a
+    /// misbehaving/looping live reducer could hang the suite — bounding it surfaces a runaway as a clear error.
+    const FOLD_RUN_TIMEOUT: Duration = Duration::from_secs(30);
+
+    fn publish_go() -> EventBody {
+        EventBody::Inbound {
+            content_type: ContentType {
+                family: "message".into(),
+                version: 1,
+            },
+            payload: Payload::Inline(b"go".to_vec().into()),
+        }
+    }
+
+    /// A publisher/consumer reducer: on inbound `store/set`s the pointer → `artifact_hash`; when that settles
+    /// `store/resolve`s it; when THAT settles records the resolved hash's hex in KV (so the test blob-gets +
+    /// runs the artifact).
+    struct PublishThenResolve {
+        artifact_hash: Hash,
+    }
+    #[async_trait::async_trait(?Send)]
+    impl Reducer for PublishThenResolve {
+        async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
+            match &event.body {
+                EventBody::Inbound { .. } => {
+                    let payload = encode_name_set(PUBLISH_POINTER, &self.artifact_hash);
+                    FoldOutput::with(vec![EffectRequest::new_with_family(
+                        effect_ct::STORE_SET,
+                        PUBLISH_POINTER,
+                        Some(Payload::Inline(payload.into())),
+                        Timeliness::Interactive,
+                    )])
+                }
+                EventBody::EffectResult {
+                    result: EffectOutcome::Ok(body),
+                    ..
+                } => match kv.get(b"phase") {
+                    None => {
+                        kv.put(b"phase".to_vec(), b"resolving".to_vec());
+                        FoldOutput::with(vec![EffectRequest::new_with_family(
+                            effect_ct::STORE_RESOLVE,
+                            PUBLISH_POINTER,
+                            None,
+                            Timeliness::Interactive,
+                        )])
+                    }
+                    Some(_) => {
+                        if let Some(Payload::Inline(bytes)) = body {
+                            if let Ok((_n, h)) = decode_name_set(bytes) {
+                                kv.put(b"resolved".to_vec(), h.to_hex().into_bytes());
+                            }
+                        }
+                        FoldOutput::none()
+                    }
+                },
+                _ => FoldOutput::none(),
+            }
+        }
+    }
+
+    /// A publisher that may set + resolve the well-known (`system/…`) pointer.
+    fn publisher_authz() -> Authorizer {
+        Authorizer::new(vec![]).with_family_grants(vec![
+            Capability::for_family(
+                effect_ct::STORE_SET,
+                ResourcePredicate::Prefix("system/".into()),
+            ),
+            Capability::for_family(
+                effect_ct::STORE_RESOLVE,
+                ResourcePredicate::Prefix("system/".into()),
+            ),
+        ])
+    }
+
+    #[tokio::test]
+    async fn a_published_compiler_pointer_resolves_to_a_runnable_artifact() {
+        let Some(component) = reducer_component_bytes() else {
+            eprintln!(
+                "SKIP a_published_compiler_pointer_resolves_to_a_runnable_artifact: \
+                 CDZ_LIVE_REDUCER_COMPONENT unset — set it to a real wasm reducer component (the nix build \
+                 produces one) to exercise the publish→resolve→load→run arc."
+            );
+            return;
+        };
+
+        // The blob store holding compiled artifacts. `put` is content-addressed → the hash we publish is the
+        // hash the resolve hands back, and blob-get at it returns these exact bytes.
+        let mut blobs = MemBlobStore::new();
+        let artifact_hash = blobs
+            .put(&component)
+            .await
+            .expect("put the compiled wasm component into the blob store");
+
+        // PUBLISH + RESOLVE (one session, two phases) over its own per-session NameStore; a system/-prefix
+        // grant authorizes.
+        let mut session = HostedSession::genesis(
+            Hash::of(b"compiler-publisher-v1"),
+            Box::new(PublishThenResolve { artifact_hash }),
+            Box::new(publisher_authz()),
+            CompositeExecutor::new(),
+        )
+        .with_name_store(NameStore::new());
+
+        session.deliver(publish_go(), None).await.unwrap();
+        assert_eq!(session.open_effects(), 0, "both store effects settled");
+
+        let resolved_hex = session
+            .session()
+            .kv()
+            .get(b"resolved")
+            .expect("the agent recorded the resolved hash");
+        assert_eq!(
+            resolved_hex,
+            artifact_hash.to_hex().as_bytes(),
+            "COMPILER_LATEST resolved to the published artifact's hash"
+        );
+
+        // CONSUME: blob-get the bytes at the resolved hash + prove they're RUNNABLE — load as an
+        // AsyncComponentReducer (loading validates the component + binds fold.apply), then RUN one fold turn.
+        let fetched = blobs
+            .get(&artifact_hash)
+            .await
+            .expect("blob-get succeeds")
+            .expect("the resolved hash is present in the blob store");
+        assert_eq!(
+            fetched, component,
+            "blob-get returned the exact published bytes"
+        );
+
+        let resolved_reducer = AsyncComponentReducer::from_component_bytes(&fetched).expect(
+            "the resolved artifact loads as a runnable reducer component (fold.apply bound)",
+        );
+        let mut running = HostedSession::genesis(
+            artifact_hash,
+            Box::new(resolved_reducer),
+            Box::new(Authorizer::new(vec![])),
+            CompositeExecutor::new(),
+        );
+        // Bounded (FOLD_RUN_TIMEOUT): a runaway live reducer surfaces as a timeout, not a hung suite.
+        tokio::time::timeout(FOLD_RUN_TIMEOUT, running.deliver(publish_go(), None))
+            .await
+            .expect("the resolved artifact's fold turn completes within FOLD_RUN_TIMEOUT (not a runaway loop)")
+            .expect("the resolved artifact runs one fold turn to quiescence (no panic, §17)");
+        assert_eq!(
+            running.open_effects(),
+            0,
+            "the resolved artifact's turn settled (any emitted effects resolved/denied — it ran)"
+        );
+    }
+
+    /// PUBLISHER: on inbound, `store/set`s the pointer → the artifact hash it was built with. One hop.
+    struct Publisher {
+        artifact_hash: Hash,
+    }
+    #[async_trait::async_trait(?Send)]
+    impl Reducer for Publisher {
+        async fn fold(&mut self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+            if matches!(event.body, EventBody::Inbound { .. }) {
+                let payload = encode_name_set(PUBLISH_POINTER, &self.artifact_hash);
+                FoldOutput::with(vec![EffectRequest::new_with_family(
+                    effect_ct::STORE_SET,
+                    PUBLISH_POINTER,
+                    Some(Payload::Inline(payload.into())),
+                    Timeliness::Interactive,
+                )])
+            } else {
+                FoldOutput::none()
+            }
+        }
+    }
+
+    /// CONSUMER: on inbound, `store/resolve`s the pointer; on the result records the resolved hash's hex in KV.
+    struct Consumer;
+    #[async_trait::async_trait(?Send)]
+    impl Reducer for Consumer {
+        async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
+            match &event.body {
+                EventBody::Inbound { .. } => {
+                    FoldOutput::with(vec![EffectRequest::new_with_family(
+                        effect_ct::STORE_RESOLVE,
+                        PUBLISH_POINTER,
+                        None,
+                        Timeliness::Interactive,
+                    )])
+                }
+                EventBody::EffectResult {
+                    result: EffectOutcome::Ok(Some(Payload::Inline(bytes))),
+                    ..
+                } => {
+                    if let Ok((_n, h)) = decode_name_set(bytes) {
+                        kv.put(b"resolved".to_vec(), h.to_hex().into_bytes());
+                    }
+                    FoldOutput::none()
+                }
+                _ => FoldOutput::none(),
+            }
+        }
+    }
+
+    fn set_system() -> Authorizer {
+        Authorizer::new(vec![]).with_family_grants(vec![Capability::for_family(
+            effect_ct::STORE_SET,
+            ResourcePredicate::Prefix("system/".into()),
+        )])
+    }
+    fn resolve_system() -> Authorizer {
+        Authorizer::new(vec![]).with_family_grants(vec![Capability::for_family(
+            effect_ct::STORE_RESOLVE,
+            ResourcePredicate::Prefix("system/".into()),
+        )])
+    }
+
+    #[tokio::test]
+    async fn a_consumer_agent_resolves_and_runs_what_a_separate_publisher_agent_published() {
+        let Some(component) = reducer_component_bytes() else {
+            eprintln!(
+                "SKIP a_consumer_agent_resolves_and_runs_what_a_separate_publisher_agent_published: \
+                 CDZ_LIVE_REDUCER_COMPONENT unset — set it to a real wasm reducer component to exercise the \
+                 true 2-agent publish→consume loop."
+            );
+            return;
+        };
+
+        // The shared artifact store (host-owned). `put` is content-addressed → the hash the publisher writes
+        // is the hash the consumer resolves, and blob-get at it returns these exact bytes.
+        let mut blobs = MemBlobStore::new();
+        let artifact_hash = blobs.put(&component).await.expect("put the wasm artifact");
+
+        // (1) PUBLISHER: session A sets COMPILER_LATEST → artifact_hash into its OWN per-session store.
+        let mut publisher = HostedSession::genesis(
+            Hash::of(b"publisher-agent-v1"),
+            Box::new(Publisher { artifact_hash }),
+            Box::new(set_system()),
+            CompositeExecutor::new(),
+        )
+        .with_name_store(NameStore::new());
+        publisher.deliver(publish_go(), None).await.unwrap();
+        assert_eq!(publisher.open_effects(), 0, "the publish set settled");
+
+        // (2)+(3) HOST BRIDGE: read A's store back out, export its set-event stream, replay it into a fresh
+        // store for the consumer — the explicit host-owned sharing policy (no shared handle; kernel stays
+        // share-free).
+        let published = publisher
+            .session()
+            .name_store()
+            .expect("the publisher has a name store attached")
+            .to_set_entries();
+        assert!(
+            published
+                .iter()
+                .any(|(n, h)| n == PUBLISH_POINTER && *h == artifact_hash),
+            "the publisher's store carries COMPILER_LATEST → artifact_hash"
+        );
+        let consumer_store =
+            NameStore::replay_set_entries(published.iter().map(|(n, h)| (n.as_str(), *h)))
+                .expect("replay the published set-stream into the consumer's store");
+
+        // (4) CONSUMER: session B (a DIFFERENT agent, resolve-only grant) resolves the pointer A published.
+        let mut consumer = HostedSession::genesis(
+            Hash::of(b"consumer-agent-v1"),
+            Box::new(Consumer),
+            Box::new(resolve_system()),
+            CompositeExecutor::new(),
+        )
+        .with_name_store(consumer_store);
+        consumer.deliver(publish_go(), None).await.unwrap();
+        assert_eq!(consumer.open_effects(), 0, "the resolve settled");
+
+        let resolved_hex = consumer
+            .session()
+            .kv()
+            .get(b"resolved")
+            .expect("the consumer recorded the resolved hash");
+        assert_eq!(
+            resolved_hex,
+            artifact_hash.to_hex().as_bytes(),
+            "the consumer resolved COMPILER_LATEST to the exact hash the publisher set (cross-agent)"
+        );
+
+        // ...and the resolved artifact RUNS: blob-get the bytes at that hash, load as a reducer, fold a turn.
+        let fetched = blobs
+            .get(&artifact_hash)
+            .await
+            .expect("blob-get succeeds")
+            .expect("the resolved hash is present in the shared blob store");
+        let resolved_reducer = AsyncComponentReducer::from_component_bytes(&fetched)
+            .expect("the artifact the consumer resolved loads as a runnable reducer");
+        let mut running = HostedSession::genesis(
+            artifact_hash,
+            Box::new(resolved_reducer),
+            Box::new(Authorizer::new(vec![])),
+            CompositeExecutor::new(),
+        );
+        tokio::time::timeout(FOLD_RUN_TIMEOUT, running.deliver(publish_go(), None))
+            .await
+            .expect("the resolved artifact's fold turn completes within FOLD_RUN_TIMEOUT (not a runaway)")
+            .expect("the artifact the consumer resolved runs one fold turn to quiescence (no panic, §17)");
+        assert_eq!(
+            running.open_effects(),
+            0,
+            "the resolved artifact's turn settled — publisher published, a separate consumer resolved + RAN it"
+        );
+    }
 }

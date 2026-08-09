@@ -91,6 +91,8 @@ pub mod session_registry;
 #[cfg(feature = "live-exec")]
 pub mod shell;
 pub mod status;
+#[cfg(test)]
+mod test_support;
 pub mod userspace_effect_exec;
 pub mod ws_exec;
 #[cfg(feature = "live-ws")]
