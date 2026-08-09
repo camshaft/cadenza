@@ -7014,3 +7014,8 @@ pass	pr1 List.prepend onto a MERGED vector grows the front without disturbing th
 pass	bf1 a growing BYTES FRAME as handler state — each op appends a u8 record, the final op bin-decodes head + rest length
 pass	bf2 the frame grows by u16 BE records — dump decodes the SECOND record through a fixed-width first segment
 pass	bf3 tagged-record round-trip — arms ENCODE (tag,val) u8 pairs into the frame state, the body decodes the REPLAYED frame
+pass	a payload op arg feeds BOTH the resume value and the next-state through DIFFERENT operators, dispatched twice
+pass	a resuming arm whose resume VALUE is a transform of state and next-state is a distinct advance, observed twice
+pass	a single handler with three ops each mutating the state by a DIFFERENT function, composed in sequence
+todo	a mutually-recursive performer pair whose out-state a trailing caller draw observes declines cleanly (completeness gap)
+pass	a mutual-group demand-perform-demand arm in a let-wrapped dispatch folds down a runtime-opaque spine

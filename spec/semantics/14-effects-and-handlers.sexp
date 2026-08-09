@@ -20912,3 +20912,96 @@
   (call   main (: 1 Int64)) (output (: 111221 Int64))
   (call   main (: 4 Int64)) (output (: 114224 Int64))
   (call   main (: 0 Int64)) (output (: 110220 Int64)))
+
+(case "a resuming arm whose resume VALUE is a transform of state and next-state is a distinct advance, observed twice"
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next () s (resume (* s 2) (+ s 1))))
+                (+ (St.next) (St.next))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 22 Int64))
+  (call   main (: 0 Int64)) (output (: 2 Int64)))
+
+(case "a payload op arg feeds BOTH the resume value and the next-state through DIFFERENT operators, dispatched twice"
+  (input  (do
+            (effect St (op step (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((step (d) s (resume (* s d) (+ s d))))
+                (+ (St.step 2) (St.step 3))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 31 Int64))
+  (call   main (: 0 Int64)) (output (: 6 Int64)))
+
+(case "a mutually-recursive performer pair whose out-state a trailing caller draw observes declines cleanly (completeness gap)"
+  (doc    "The completeness boundary where the #12 post-recursion-state fold (which threads a SELF-recursive
+           callee's out-state to a trailing observer) meets a MUTUAL-recursive SCC (breaker row-mr). `ev`/`od`
+           mutually recurse, each performing `E.next`; the caller reads the SCC's final out-state via a trailing
+           `(E.next)` after `(ev 2)`. The self-recursive face folds (the #12 fix, f60b44c42), but threading a
+           MUTUAL SCC's out-state across the whole group to a caller observer needs group-wide multi-value
+           specialization tying the partners together — a later increment. Single-return would drop the
+           partners' advances (a silent wrong value), so the fold DECLINES cleanly (an honest not-yet-reducible
+           todo) rather than miscompile. When the group multi-value + caller-observed-outstate arc lands, this
+           FOLDS to 3405: main(3) draws 3 (ev), 4 (od) → ev 2 = 10·3 + 4 = 34; the trailing (E.next) reads the
+           post-SCC state 5 → 100·34 + 5 = 3405 (verified via the linear-equivalent draw sequence). The output
+           is pinned (3405); when the arc lands, flip this case's baseline entry todo→pass.")
+  (input  (do
+            (effect E (op next (-> Int64)))
+            (def (ev (: k Int64)) (if (<= k 0) 0 (+ (* 10 (E.next)) (od (- k 1)))))
+            (def (od (: k Int64)) (if (<= k 0) 0 (+ (E.next) (ev (- k 1)))))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 1))))
+                (+ (* 100 (ev 2)) (E.next))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 3405 Int64)))
+
+(case "a single handler with three ops each mutating the state by a DIFFERENT function, composed in sequence"
+  (input  (do
+            (effect R (op inc (-> Int64)) (op dbl (-> Int64)) (op cur (-> Int64)))
+            (def (main (: n Int64))
+              (handle R n
+                ((inc () s (resume s (+ s 1)))
+                 (dbl () s (resume s (* s 2)))
+                 (cur () s (resume s s)))
+                (do (R.inc) (R.dbl) (R.cur))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 12 Int64))
+  (call   main (: 0 Int64)) (output (: 2 Int64)))
+
+(case "a mutual-group demand-perform-demand arm in a let-wrapped dispatch folds down a runtime-opaque spine"
+  (doc    "The mutual-SCC group-fold's let-wrapped-dispatch pre-check arm (the group analogue of the #12
+           single-performer arm). `demand`/`cache`/`compute` are a mutual SCC over a per-node state effect;
+           `compute`'s arm is a `(let ((a (demand child))) (match (St.put …) (_ (demand child))))` — a demand-
+           perform-demand whose let-INIT is a mutual-partner call and whose body dispatch performs then calls
+           a partner AGAIN. The group pre-check `group_multivalue_leaves_threadable` had only if/match/leaf
+           arms, so this `(let inits dispatch)` fell to the LEAF case and the partner call under the match arm
+           declined the whole SCC up front (not-yet-reducible), even though `thread_returning_tuple` already
+           descends a let-wrapped dispatch. Fixed by mirroring the twin's `(let inits dispatch)` arm into the
+           group pre-check. `get` always misses (forces compute), `kids` returns a smaller id until 0 (a finite
+           runtime-opaque spine the partial evaluator cannot pre-reduce), `put` is a no-op resume. `demand 3`
+           folds down the spine to the leaf id 0 (compute's None arm returns the id when kids runs out).")
+  (input  (do
+            (effect St (op get (-> Int64 (Option Int64))) (op put (-> (Tuple Int64 Int64) Unit))
+                       (op kids (-> Int64 (Option Int64))))
+            (def (demand (: id Int64))
+              (match (St.get id)
+                (((. Option Some) v) v)
+                (((. Option None) u) (cache id (compute id)))))
+            (def (cache (: id Int64) (: v Int64)) (match (St.put (tuple id v)) (_ v)))
+            (def (compute (: id Int64))
+              (match (St.kids id)
+                (((. Option Some) childId)
+                  (let ((a (demand childId)))
+                    (match (St.put (tuple id a)) (_ (demand childId)))))
+                (((. Option None) u) id)))
+            (def (run (: root Int64))
+              (handle St root
+                ((get (id) s (resume (. Option None) s))
+                 (put (pair) s (match pair ((tuple x y) (resume unit s))))
+                 (kids (id) s (resume (if (<= id 0) (. Option None) (Some (- id 1))) s)))
+                (demand root)))
+            (export run)))
+  (call   run (: 3 Int64)) (output (: 0 Int64)))
