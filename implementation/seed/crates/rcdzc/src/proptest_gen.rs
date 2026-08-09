@@ -1596,15 +1596,21 @@ fn build_gen(ast: &mut Arenas, ty: &GenTy, binds: &mut Vec<(StructId, StructId)>
             }
             push_list(ast, children)
         }
-        // `(record (f <gen:T>) …)` — one generated value per named field, each a `(field-name value)` pair.
+        // `(record (= f <gen:T>) …)` — one generated value per named field, each a canonical `(= name value)`
+        // ascription triple (record-type-syntax Phase B, trunk ab42bfb83: record fields spell `(= name value)`
+        // in EVERY position — literal, pattern, value-output — for read==print symmetry). The readers still
+        // TOLERATE the legacy `(name value)` pair, but the generator emits the canonical triple so a synthesized
+        // record value prints back byte-identically AND stays valid if a later phase drops legacy-pair tolerance
+        // (mirrors the RT3 type-field widen this vertical landed ahead of its encode flip).
         GenTy::Record(fields) => {
             let head = name(ast, "record");
             let mut children = vec![head];
             for (fname, fty) in fields {
                 let fval = build_gen(ast, fty, binds);
                 let fnm = name(ast, fname);
-                let pair = push_list(ast, vec![fnm, fval]);
-                children.push(pair);
+                let eq = name(ast, "=");
+                let triple = push_list(ast, vec![eq, fnm, fval]);
+                children.push(triple);
             }
             push_list(ast, children)
         }
@@ -2612,6 +2618,50 @@ mod tests {
                  discriminates the classify_sum bare-name-nullary fix from the declining fallback"
             );
         }
+    }
+
+    /// The synthesized RECORD generator emits each field as the CANONICAL `(= name value)` ascription triple
+    /// (record-type-syntax Phase B, trunk ab42bfb83 — record fields spell `(= name value)` in every position
+    /// for read==print symmetry), NOT the legacy `(name value)` pair. Readers still TOLERATE the pair, so a
+    /// gate/roundtrip would pass either way — this DISCRIMINATES the emit form directly by walking the wrapper
+    /// body for a `(record …)` and asserting EVERY field child is an `(= …)` form (head `=`), none a bare pair.
+    /// Guards against my generator drifting behind the canonical spelling (the same stay-ahead-of-the-flip
+    /// discipline as the RT3 record-TYPE-field widen).
+    #[test]
+    fn the_synthesized_record_generator_emits_the_ascription_triple_per_field() {
+        // Record-TYPE fields use the pair/`:` spelling (RT3); the check below is on the emitted VALUE literal,
+        // which Phase B canonicalizes to `(= name value)`.
+        let src = "(do (@ test (def (r (: v (Record (x Int64) (y Bool)))) 0)) (def (o) 1))";
+        let db = Db::load(crate::testkit::parse(src));
+        let w = db
+            .defs
+            .iter()
+            .find(|d| d.name == "r-gen")
+            .expect("the record test synthesizes an r-gen wrapper");
+        let body = w.body.expect("the generator wrapper has a body");
+        // Find the `(record …)` literal the generator builds, then assert each field child is `(= name value)`.
+        let mut stack = vec![body];
+        let mut checked_a_record = false;
+        while let Some(id) = stack.pop() {
+            if let Some(rec_tail) = db.ast.as_form(id, "record") {
+                checked_a_record = true;
+                for &field in rec_tail {
+                    let asc = db.ast.as_form(field, "=");
+                    assert!(
+                        asc.map(|a| a.len() == 2).unwrap_or(false),
+                        "each synthesized record field must be the canonical `(= name value)` triple, \
+                         not a legacy `(name value)` pair; offending field is not `(= _ _)`"
+                    );
+                }
+            }
+            if let crate::ast::Struct::List(kids) = db.ast.get(id) {
+                stack.extend(kids.iter().copied());
+            }
+        }
+        assert!(
+            checked_a_record,
+            "the r-gen wrapper body must build at least one `(record …)` literal to check"
+        );
     }
 
     /// G6: `(Set ELEM)` and `(Map K V)` params are generatable (`(Set.of (list …))` / a `Map.insert`
