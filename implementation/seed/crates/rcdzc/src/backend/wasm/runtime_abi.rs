@@ -92,14 +92,14 @@ pub const RUNTIME_IFACE: &str = "cadenza:runtime/heap";
 /// against — the runtime a program built with this compiler requires. Regenerated from the
 /// built runtime bytes, so it tracks a runtime-code change automatically.
 pub const REQUIRED_RUNTIME_HASH: &str =
-    "0652838621bb88fcdc0a348bd81a5c8cc84eefa960af78c5cf7885b2811b2614";
+    "8417716f2b0d85838d2e279ba76f1889e9bd1bad923aa84c8939d8416187d34d";
 /// The BLAKE3 content address of the DEBUG-COUNTERS runtime build — the same runtime code
 /// with the `live-objects` leak counter compiled in (`--features debug-counters`). A shipped
 /// program pins `REQUIRED_RUNTIME_HASH` (the release build); a Perceus leak-check harness
 /// composes THIS build to assert `live-objects == 0` after a run. Recorded here so the harness
 /// locates the debug runtime by content address (from the store), never by rebuilding it.
 pub const DEBUG_RUNTIME_HASH: &str =
-    "df8189350efbd654464fcdd6405ceaabb9d8d0d7955fcad38980c53096cfd3a2";
+    "2af8a0bde44476dbe69be8a61995ea3e3caea2b08f00cb311da4e2b765f90044";
 /// The NFC-normalization interface — the plain WIT name the value-heap RUNTIME imports for
 /// Unicode Normalization Form C. FINDING#23 (operator ruling d): NFC lives in a SEPARATE
 /// component (the heavy `unicode-normalization` tables); the runtime's WIT `world` declares
@@ -598,6 +598,12 @@ pub const RUNTIME_OPS: &[RtOp] = &[
         lowerable: true,
     },
     RtOp {
+        name: "value-decode",
+        params: &[AbiValType::U32, AbiValType::U32],
+        result: Some(AbiValType::U32),
+        lowerable: true,
+    },
+    RtOp {
         name: "value-encode",
         params: &[AbiValType::U32, AbiValType::U32],
         result: Some(AbiValType::U32),
@@ -752,6 +758,7 @@ pub struct RuntimeOps {
     pub sum_payload: &'static RtOp,
     pub value_canonicalize: &'static RtOp,
     pub value_cmp: &'static RtOp,
+    pub value_decode: &'static RtOp,
     pub value_encode: &'static RtOp,
     pub value_eq: &'static RtOp,
     pub value_eq_shaped: &'static RtOp,
@@ -845,16 +852,17 @@ pub const OPS: RuntimeOps = RuntimeOps {
     sum_payload: &RUNTIME_OPS[75],
     value_canonicalize: &RUNTIME_OPS[76],
     value_cmp: &RUNTIME_OPS[77],
-    value_encode: &RUNTIME_OPS[78],
-    value_eq: &RUNTIME_OPS[79],
-    value_eq_shaped: &RUNTIME_OPS[80],
-    vec_concat: &RUNTIME_OPS[81],
-    vec_drop: &RUNTIME_OPS[82],
-    vec_empty: &RUNTIME_OPS[83],
-    vec_get: &RUNTIME_OPS[84],
-    vec_len: &RUNTIME_OPS[85],
-    vec_of_arr: &RUNTIME_OPS[86],
-    vec_push: &RUNTIME_OPS[87],
-    vec_split: &RUNTIME_OPS[88],
-    vec_update: &RUNTIME_OPS[89],
+    value_decode: &RUNTIME_OPS[78],
+    value_encode: &RUNTIME_OPS[79],
+    value_eq: &RUNTIME_OPS[80],
+    value_eq_shaped: &RUNTIME_OPS[81],
+    vec_concat: &RUNTIME_OPS[82],
+    vec_drop: &RUNTIME_OPS[83],
+    vec_empty: &RUNTIME_OPS[84],
+    vec_get: &RUNTIME_OPS[85],
+    vec_len: &RUNTIME_OPS[86],
+    vec_of_arr: &RUNTIME_OPS[87],
+    vec_push: &RUNTIME_OPS[88],
+    vec_split: &RUNTIME_OPS[89],
+    vec_update: &RUNTIME_OPS[90],
 };

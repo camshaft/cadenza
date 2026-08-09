@@ -458,6 +458,20 @@ interface heap {
   //    Ownership: CONSUMES `s` (returns a fresh owned normalized leaf; the caller's `s` handle is spent, like
   //    `bytes-compact`/`str-to-bytes`). Idempotent. APPENDED last (frozen-contract rule). See `op_str_nfc`.
   str-nfc-normalize: func(s: u32) -> u32;              // 89 — NFC-normalize a String leaf via the imported NFC dep
+
+  //  value-decode(bytes, desc) -> handle
+  //    The exact INVERSE of `value-encode` (idx 62): given a canonical `cadenza-ast` value-form `Bytes`
+  //    handle + the SAME compiler-baked shape descriptor `value-encode` reads (a `Bytes` handle naming the
+  //    tuple/record/sum/list element+field shapes), DECODE the document guided by the descriptor and BUILD a
+  //    fresh OWNED heap value — the reverse of `value-encode`'s walk. Descriptor-guided + name/tag-FREE: field
+  //    names and variant tags are READ from the descriptor and matched against the document, never invented
+  //    (same discipline as `value-encode`). TOTAL: a document that does not match the descriptor's shape
+  //    returns `NULL` (handle 0) — never traps (the decode analogue of `value-encode`'s malformed-descriptor →
+  //    empty-`Bytes` decline). Ownership: BORROWS `bytes` + `desc` (a constant); returns a fresh owned handle
+  //    the caller drops (or `NULL`, which is not a heap node). Together `value-decode`/`value-encode` are the
+  //    runtime's own bytes↔handle bridge — a reducer's `apply` becomes `value-decode(event_bytes, event_desc)`
+  //    → fold → `value-encode(result, result_desc)`. APPENDED last (frozen-contract rule). See `op_value_decode`.
+  value-decode: func(bytes: u32, desc: u32) -> u32;    // 90 — canonical value-form Bytes + shape desc → fresh owned heap value (borrows both; NULL on mismatch)
 }
 
 world runtime {

@@ -900,6 +900,16 @@ pub mod exports {
                     let result0 = T::str_nfc_normalize(arg0 as u32);
                     _rt::as_i32(result0)
                 }
+                #[doc(hidden)]
+                #[allow(non_snake_case)]
+                pub unsafe fn _export_value_decode_cabi<T: Guest>(
+                    arg0: i32,
+                    arg1: i32,
+                ) -> i32 {
+                    #[cfg(target_arch = "wasm32")] _rt::run_ctors_once();
+                    let result0 = T::value_decode(arg0 as u32, arg1 as u32);
+                    _rt::as_i32(result0)
+                }
                 pub trait Guest {
                     /// ── Scalar leaves (indices 0–5). Box a primitive, read it back. No type tag: `get-*` is only
                     ///    ever called where the compiler's static type already says which primitive this handle
@@ -1385,6 +1395,20 @@ pub mod exports {
                     ///    Ownership: CONSUMES `s` (returns a fresh owned normalized leaf; the caller's `s` handle is spent, like
                     ///    `bytes-compact`/`str-to-bytes`). Idempotent. APPENDED last (frozen-contract rule). See `op_str_nfc`.
                     fn str_nfc_normalize(s: u32) -> u32;
+                    /// 89 — NFC-normalize a String leaf via the imported NFC dep
+                    ///  value-decode(bytes, desc) -> handle
+                    ///    The exact INVERSE of `value-encode` (idx 62): given a canonical `cadenza-ast` value-form `Bytes`
+                    ///    handle + the SAME compiler-baked shape descriptor `value-encode` reads (a `Bytes` handle naming the
+                    ///    tuple/record/sum/list element+field shapes), DECODE the document guided by the descriptor and BUILD a
+                    ///    fresh OWNED heap value — the reverse of `value-encode`'s walk. Descriptor-guided + name/tag-FREE: field
+                    ///    names and variant tags are READ from the descriptor and matched against the document, never invented
+                    ///    (same discipline as `value-encode`). TOTAL: a document that does not match the descriptor's shape
+                    ///    returns `NULL` (handle 0) — never traps (the decode analogue of `value-encode`'s malformed-descriptor →
+                    ///    empty-`Bytes` decline). Ownership: BORROWS `bytes` + `desc` (a constant); returns a fresh owned handle
+                    ///    the caller drops (or `NULL`, which is not a heap node). Together `value-decode`/`value-encode` are the
+                    ///    runtime's own bytes↔handle bridge — a reducer's `apply` becomes `value-decode(event_bytes, event_desc)`
+                    ///    → fold → `value-encode(result, result_desc)`. APPENDED last (frozen-contract rule). See `op_value_decode`.
+                    fn value_decode(bytes: u32, desc: u32) -> u32;
                 }
                 #[doc(hidden)]
                 macro_rules! __export_cadenza_runtime_heap_cabi {
@@ -1712,7 +1736,11 @@ pub mod exports {
                         "cadenza:runtime/heap#str-nfc-normalize")] unsafe extern "C" fn
                         export_str_nfc_normalize(arg0 : i32,) -> i32 { unsafe {
                         $($path_to_types)*:: _export_str_nfc_normalize_cabi::<$ty >
-                        (arg0) } } };
+                        (arg0) } } #[unsafe (export_name =
+                        "cadenza:runtime/heap#value-decode")] unsafe extern "C" fn
+                        export_value_decode(arg0 : i32, arg1 : i32,) -> i32 { unsafe {
+                        $($path_to_types)*:: _export_value_decode_cabi::<$ty > (arg0,
+                        arg1) } } };
                     };
                 }
                 #[doc(hidden)]
@@ -1921,10 +1949,10 @@ pub(crate) use __export_runtime_impl as export;
 )]
 #[doc(hidden)]
 #[allow(clippy::octal_escapes)]
-pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 2299] = *b"\
-\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xfd\x10\x01A\x02\x01\
+pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 2334] = *b"\
+\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xa0\x11\x01A\x02\x01\
 A\x04\x01B\x03\x01p}\x01@\x01\x04utf8\0\0\0\x04\0\x03nfc\x01\x01\x03\0\x15cadenz\
-a:nfc/normalize\x05\0\x01B\x8d\x01\x01@\x01\x01vx\0y\x04\0\x07box-int\x01\0\x01@\
+a:nfc/normalize\x05\0\x01B\x8f\x01\x01@\x01\x01vx\0y\x04\0\x07box-int\x01\0\x01@\
 \x01\x06handley\0x\x04\0\x07get-int\x01\x01\x01@\x01\x01v\x7f\0y\x04\0\x08box-bo\
 ol\x01\x02\x01@\x01\x06handley\0\x7f\x04\0\x08get-bool\x01\x03\x01@\x01\x01vu\0y\
 \x04\0\x09box-float\x01\x04\x01@\x01\x06handley\0u\x04\0\x09get-float\x01\x05\x01\
@@ -1971,9 +1999,10 @@ al-div\x01\x1d\x04\0\x0crational-cmp\x01+\x04\0\x0fbigint-of-bytes\x01\x0e\x01@\
 map-to-list\x01/\x04\0\x0estr-from-bytes\x01\x0e\x01@\x03\x01ay\x01by\x04descy\0\
 z\x04\0\x09value-cmp\x010\x01@\x02\x01ay\x04descy\0y\x04\0\x12value-canonicalize\
 \x011\x01@\x03\x01ay\x01by\x04descy\0\x7f\x04\0\x0fvalue-eq-shaped\x012\x04\0\x11\
-str-nfc-normalize\x01$\x04\0\x14cadenza:runtime/heap\x05\x01\x04\0\x17cadenza:ru\
-ntime/runtime\x04\0\x0b\x0d\x01\0\x07runtime\x03\0\0\0G\x09producers\x01\x0cproc\
-essed-by\x02\x0dwit-component\x070.227.1\x10wit-bindgen-rust\x060.41.0";
+str-nfc-normalize\x01$\x01@\x02\x05bytesy\x04descy\0y\x04\0\x0cvalue-decode\x013\
+\x04\0\x14cadenza:runtime/heap\x05\x01\x04\0\x17cadenza:runtime/runtime\x04\0\x0b\
+\x0d\x01\0\x07runtime\x03\0\0\0G\x09producers\x01\x0cprocessed-by\x02\x0dwit-com\
+ponent\x070.227.1\x10wit-bindgen-rust\x060.41.0";
 #[inline(never)]
 #[doc(hidden)]
 pub fn __link_custom_section_describing_imports() {

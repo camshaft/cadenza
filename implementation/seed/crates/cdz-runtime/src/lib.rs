@@ -2899,6 +2899,598 @@ fn op_value_encode_form(h: Handle, desc: &[u8]) -> Option<Vec<u8>> {
     })
 }
 
+// ─── value-decode (heap idx 90): the inverse of value-encode ──────────────────────────────
+// Parse a canonical `cadenza-ast` value-form document (the exact bytes `op_value_encode_form` /
+// `DocBuilder::finish` produces) and, guided by the SAME shape descriptor `value-encode` reads,
+// CONSTRUCT a fresh owned heap value. Descriptor-guided + name/tag-free (field names / variant tags come
+// from the descriptor, matched against the document, never invented). TOTAL: any shape/format mismatch
+// returns `Handle::NULL` (0) — NEVER traps (the decode analogue of `op_value_encode_form`'s
+// malformed-descriptor → empty-Bytes decline). See runtime.wit idx 90.
+
+/// A parsed document leaf — the read-side mirror of `DocLeaf` (see `DocBuilder`). Owns its bytes so the
+/// walk can build heap values without holding a borrow on the source Vec.
+enum ParsedLeaf {
+    /// (negative, big-endian magnitude, leading-zeros-stripped) — covers both `IntScalar` and `Int` on the
+    /// wire (they encode to the identical `KIND_INT` framing); the walk picks i64 vs BigInt by SHAPE.
+    Int(bool, Vec<u8>),
+    Bool(bool),
+    Name(Vec<u8>),
+    Str(Vec<u8>),
+    Bytes(Vec<u8>),
+    /// (negative, exponent, big-endian base-256 significand) — the `KIND_FLOAT` exact-decimal parts.
+    Float(bool, i64, Vec<u8>),
+}
+
+/// A parsed document struct — the read-side mirror of `DocStruct`. A `List`'s children are struct indices
+/// (owned Vec here rather than a pooled range, since the reader has no shared child pool).
+enum ParsedStruct {
+    Atom(u32),        // → leaves[leaf_id]
+    List(Vec<u32>),   // → child struct indices
+}
+
+/// The parsed document: leaves + structs + the root struct index. `decode_value` walks it from `root`.
+struct ParsedDoc {
+    leaves: Vec<ParsedLeaf>,
+    structs: Vec<ParsedStruct>,
+    root: u32,
+}
+
+/// Read an unsigned LEB128 from `d` at `*pos`, advancing `*pos`. `None` on truncation or a >10-byte
+/// (u64-overflowing) encoding — a malformed document declines, never panics.
+fn doc_read_leb(d: &[u8], pos: &mut usize) -> Option<u64> {
+    let mut value: u64 = 0;
+    let mut shift: u32 = 0;
+    loop {
+        let byte = *d.get(*pos)?;
+        *pos += 1;
+        if shift >= 64 {
+            return None; // overflow — malformed
+        }
+        value |= ((byte & 0x7f) as u64) << shift;
+        if byte & 0x80 == 0 {
+            break;
+        }
+        shift += 7;
+    }
+    Some(value)
+}
+
+/// Read `len` bytes from `d` at `*pos`, advancing `*pos`. `None` on truncation.
+fn doc_read_bytes<'a>(d: &'a [u8], pos: &mut usize, len: usize) -> Option<&'a [u8]> {
+    let end = pos.checked_add(len)?;
+    let slice = d.get(*pos..end)?;
+    *pos = end;
+    Some(slice)
+}
+
+/// Parse a value-form document (the inverse of `DocBuilder::finish`) into a `ParsedDoc`. Total: any
+/// malformed framing (bad header, truncation, unknown kind/tag, out-of-range index) returns `None`.
+fn parse_doc(d: &[u8]) -> Option<ParsedDoc> {
+    let mut pos = 0usize;
+    // Header.
+    let header = doc_read_bytes(d, &mut pos, doc::SCHEMA_HEADER.len())?;
+    if header != doc::SCHEMA_HEADER {
+        return None;
+    }
+    // Leaves.
+    let leaf_count = doc_read_leb(d, &mut pos)? as usize;
+    let mut leaves = Vec::with_capacity(leaf_count.min(1 << 16));
+    for _ in 0..leaf_count {
+        let kind = *d.get(pos)?;
+        pos += 1;
+        let leaf = match kind {
+            // KIND_INT_POS_DEC (0) / neg (0+3=3): [maglen LEB][BE mag].
+            doc::KIND_INT_POS_DEC | 3 => {
+                let neg = kind == doc::KIND_INT_POS_DEC + 3;
+                let maglen = doc_read_leb(d, &mut pos)? as usize;
+                let mag = doc_read_bytes(d, &mut pos, maglen)?.to_vec();
+                ParsedLeaf::Int(neg, mag)
+            }
+            doc::KIND_FLOAT => {
+                let neg = *d.get(pos)? != 0;
+                pos += 1;
+                let eb = doc_read_bytes(d, &mut pos, 8)?;
+                let mut ebuf = [0u8; 8];
+                ebuf.copy_from_slice(eb);
+                let exp = i64::from_be_bytes(ebuf);
+                let siglen = doc_read_leb(d, &mut pos)? as usize;
+                let sig = doc_read_bytes(d, &mut pos, siglen)?.to_vec();
+                ParsedLeaf::Float(neg, exp, sig)
+            }
+            doc::KIND_STR => {
+                let len = doc_read_leb(d, &mut pos)? as usize;
+                ParsedLeaf::Str(doc_read_bytes(d, &mut pos, len)?.to_vec())
+            }
+            doc::KIND_BOOL_FALSE => ParsedLeaf::Bool(false),
+            doc::KIND_BOOL_TRUE => ParsedLeaf::Bool(true),
+            doc::KIND_NAME => {
+                let len = doc_read_leb(d, &mut pos)? as usize;
+                ParsedLeaf::Name(doc_read_bytes(d, &mut pos, len)?.to_vec())
+            }
+            doc::KIND_BYTES => {
+                let len = doc_read_leb(d, &mut pos)? as usize;
+                ParsedLeaf::Bytes(doc_read_bytes(d, &mut pos, len)?.to_vec())
+            }
+            _ => return None, // unknown kind — malformed
+        };
+        leaves.push(leaf);
+    }
+    // Structs.
+    let struct_count = doc_read_leb(d, &mut pos)? as usize;
+    let mut structs = Vec::with_capacity(struct_count.min(1 << 16));
+    for _ in 0..struct_count {
+        let tag = *d.get(pos)?;
+        pos += 1;
+        let s = match tag {
+            doc::TAG_ATOM => {
+                let id = doc_read_leb(d, &mut pos)? as u32;
+                if id as usize >= leaves.len() {
+                    return None; // dangling leaf index
+                }
+                ParsedStruct::Atom(id)
+            }
+            doc::TAG_LIST => {
+                let len = doc_read_leb(d, &mut pos)? as usize;
+                let mut kids = Vec::with_capacity(len.min(1 << 16));
+                for _ in 0..len {
+                    kids.push(doc_read_leb(d, &mut pos)? as u32);
+                }
+                ParsedStruct::List(kids)
+            }
+            _ => return None, // unknown tag — malformed
+        };
+        structs.push(s);
+    }
+    let root = doc_read_leb(d, &mut pos)? as u32;
+    if root as usize >= structs.len() {
+        return None; // dangling root
+    }
+    Some(ParsedDoc { leaves, structs, root })
+}
+
+/// The single Atom leaf of a struct index, or `None` if that struct is a List (a shape/document mismatch
+/// where a leaf was expected). Also range-checks the struct index.
+fn doc_atom_leaf<'a>(doc: &'a ParsedDoc, struct_ix: u32) -> Option<&'a ParsedLeaf> {
+    match doc.structs.get(struct_ix as usize)? {
+        ParsedStruct::Atom(leaf_id) => doc.leaves.get(*leaf_id as usize),
+        ParsedStruct::List(_) => None,
+    }
+}
+
+/// The child struct indices of a List struct, or `None` if it is an Atom (mismatch). Range-checked.
+fn doc_list_kids<'a>(doc: &'a ParsedDoc, struct_ix: u32) -> Option<&'a [u32]> {
+    match doc.structs.get(struct_ix as usize)? {
+        ParsedStruct::List(kids) => Some(kids),
+        ParsedStruct::Atom(_) => None,
+    }
+}
+
+/// The NAME-leaf text of an atom struct (a head/tag/name position), as `&str`. `None` if not a Name leaf
+/// or not valid UTF-8.
+fn doc_atom_name<'a>(doc: &'a ParsedDoc, struct_ix: u32) -> Option<&'a str> {
+    match doc_atom_leaf(doc, struct_ix)? {
+        ParsedLeaf::Name(bytes) => core::str::from_utf8(bytes).ok(),
+        _ => None,
+    }
+}
+
+/// Max decode recursion depth — the same backstop class as `TYPE_NODE_DEPTH_CAP`/`ENCODE_REF_CYCLE_CAP`:
+/// a compiler-baked value is shallow, but a malformed document/descriptor must DECLINE (return NULL), not
+/// overflow the guest stack. Well above any real value nesting.
+const DECODE_DEPTH_CAP: u32 = 512;
+
+/// Reconstruct an `f64` from a `ParsedLeaf::Float`'s (neg, exp, big-endian base-256 significand) via the
+/// exact decimal `[-]<sig>e<exp>` (base-256 → base-10 by repeated ÷10) parsed with Rust's correctly-rounded
+/// `str::parse::<f64>` — the inverse of `float_leaf`. `None` if the decimal fails to parse or is non-finite.
+fn float_from_parts(neg: bool, exp: i64, mag: &[u8]) -> Option<f64> {
+    let s = float_decimal_string(neg, exp, mag);
+    let f: f64 = s.parse().ok()?;
+    if f.is_finite() { Some(f) } else { None }
+}
+
+/// The f32 twin of `float_from_parts` (parses the same decimal as `f32`).
+fn float32_from_parts(neg: bool, exp: i64, mag: &[u8]) -> Option<f32> {
+    let s = float_decimal_string(neg, exp, mag);
+    let f: f32 = s.parse().ok()?;
+    if f.is_finite() { Some(f) } else { None }
+}
+
+/// Build the `[-]<significand>e<exponent>` decimal string from a `KIND_FLOAT`'s parts: the significand is
+/// the big-endian base-256 magnitude read as a base-10 integer (repeated ÷10, no width assumption).
+fn float_decimal_string(neg: bool, exp: i64, mag: &[u8]) -> String {
+    let mut limbs: Vec<u32> = mag.iter().map(|&b| b as u32).collect(); // most-significant first
+    let mut digits_rev: Vec<u8> = Vec::new();
+    while limbs.iter().any(|&l| l != 0) {
+        let mut rem = 0u32;
+        for l in limbs.iter_mut() {
+            let cur = rem * 256 + *l;
+            *l = cur / 10;
+            rem = cur % 10;
+        }
+        digits_rev.push(b'0' + rem as u8);
+        while limbs.first() == Some(&0) && limbs.len() > 1 {
+            limbs.remove(0);
+        }
+    }
+    let sig: String = if digits_rev.is_empty() {
+        "0".into()
+    } else {
+        digits_rev.iter().rev().map(|&b| b as char).collect()
+    };
+    let mut s = String::new();
+    if neg {
+        s.push('-');
+    }
+    s.push_str(&sig);
+    s.push('e');
+    // i64 exponent as decimal (no_std-safe via itoa-free format through a small helper).
+    s.push_str(&exp_to_string(exp));
+    s
+}
+
+/// `i64` → decimal string without `format!`'s float machinery (kept explicit for the `no_std` wasm build).
+fn exp_to_string(mut v: i64) -> String {
+    if v == 0 {
+        return "0".into();
+    }
+    let neg = v < 0;
+    let mut digits: Vec<u8> = Vec::new();
+    // Work in i128 to hold i64::MIN's magnitude without overflow.
+    let mut n = (v as i128).unsigned_abs();
+    let _ = &mut v;
+    while n > 0 {
+        digits.push(b'0' + (n % 10) as u8);
+        n /= 10;
+    }
+    let mut s = String::new();
+    if neg {
+        s.push('-');
+    }
+    s.extend(digits.iter().rev().map(|&b| b as char));
+    s
+}
+
+/// Build a big-endian magnitude + sign into the `[sign][little-endian magnitude]` form
+/// `bigint::Big::from_sign_magnitude_bytes` expects: reverse the BE magnitude to LE and prepend the sign.
+fn big_from_be_mag(neg: bool, be_mag: &[u8]) -> bigint::Big {
+    let mut sm = Vec::with_capacity(be_mag.len() + 1);
+    sm.push(neg as u8);
+    sm.extend(be_mag.iter().rev().copied());
+    bigint::Big::from_sign_magnitude_bytes(&sm)
+}
+
+/// The descriptor-guided construction walk: read the doc node at `struct_ix` as a value of shape
+/// `shape_ix`, building a fresh OWNED heap handle. `Handle::NULL` on ANY mismatch (never traps). `depth`
+/// bounds recursion (malformed-cycle backstop).
+fn decode_value(desc: &Descriptor, doc: &ParsedDoc, struct_ix: u32, shape_ix: u32, depth: u32) -> Handle {
+    decode_value_opt(desc, doc, struct_ix, shape_ix, depth).unwrap_or(Handle::NULL)
+}
+
+/// `decode_value`'s `Option` core (so `?` short-circuits a mismatch to `None` → `NULL`). Every arm that
+/// builds a heap value on success returns `Some(handle)`; a shape/document mismatch returns `None`.
+fn decode_value_opt(
+    desc: &Descriptor,
+    doc: &ParsedDoc,
+    struct_ix: u32,
+    shape_ix: u32,
+    depth: u32,
+) -> Option<Handle> {
+    if depth > DECODE_DEPTH_CAP {
+        return None;
+    }
+    match desc.table.get(shape_ix as usize)? {
+        // Transparent wrappers: the value handle passes through unchanged. On the wire a Named/Ref adds no
+        // struct level (encode reuses the same `h`), EXCEPT Named/Framed which wrap `(: value Type)`.
+        Shape::Ref(target) => decode_value_opt(desc, doc, struct_ix, *target, depth + 1),
+        Shape::Named(_, inner) | Shape::Framed(_, inner) => {
+            // `(: <value> <Type>)` — a 3-element list; the value is element [1], decoded against `inner`.
+            let kids = doc_list_kids(doc, struct_ix)?;
+            if kids.len() != 3 || doc_atom_name(doc, kids[0])? != ":" {
+                return None;
+            }
+            decode_value_opt(desc, doc, kids[1], *inner, depth + 1)
+        }
+        Shape::Int => {
+            let ParsedLeaf::Int(neg, mag) = doc_atom_leaf(doc, struct_ix)? else {
+                return None;
+            };
+            // i64-bounded: rebuild via the BigInt magnitude then read as i64 (an >i64 magnitude here is a
+            // malformed doc for an `Int` shape — decline).
+            let big = big_from_be_mag(*neg, mag);
+            let v = big.to_i64_checked()?;
+            Some(op_box_int(v))
+        }
+        Shape::BigInt => {
+            let ParsedLeaf::Int(neg, mag) = doc_atom_leaf(doc, struct_ix)? else {
+                return None;
+            };
+            Some(box_bigint(&big_from_be_mag(*neg, mag)))
+        }
+        Shape::Bool => {
+            let ParsedLeaf::Bool(b) = doc_atom_leaf(doc, struct_ix)? else {
+                return None;
+            };
+            Some(op_box_bool(*b))
+        }
+        Shape::Float => {
+            let ParsedLeaf::Float(neg, exp, mag) = doc_atom_leaf(doc, struct_ix)? else {
+                return None;
+            };
+            Some(op_box_float(float_from_parts(*neg, *exp, mag)?))
+        }
+        Shape::Float32 => {
+            let ParsedLeaf::Float(neg, exp, mag) = doc_atom_leaf(doc, struct_ix)? else {
+                return None;
+            };
+            Some(op_box_float32(float32_from_parts(*neg, *exp, mag)?))
+        }
+        Shape::Str => {
+            let ParsedLeaf::Str(bytes) = doc_atom_leaf(doc, struct_ix)? else {
+                return None;
+            };
+            let s = String::from_utf8(bytes.clone()).ok()?;
+            Some(op_str_new(s))
+        }
+        Shape::Bytes => {
+            let ParsedLeaf::Bytes(bytes) = doc_atom_leaf(doc, struct_ix)? else {
+                return None;
+            };
+            let buf = op_bytes_alloc(bytes.len() as u32);
+            for (i, &b) in bytes.iter().enumerate() {
+                op_bytes_set(buf, i as u32, b as u32);
+            }
+            Some(buf)
+        }
+        Shape::Unit => {
+            // Encodes as the `unit` NAME atom.
+            if doc_atom_name(doc, struct_ix)? != "unit" {
+                return None;
+            }
+            Some(imm_unit())
+        }
+        Shape::Rational => {
+            // A single `num/den` NAME leaf.
+            let name = doc_atom_name(doc, struct_ix)?;
+            let (num_s, den_s) = name.split_once('/')?;
+            let num = big_from_decimal(num_s)?;
+            let den = big_from_decimal(den_s)?;
+            Some(box_rational_normalized(&num, &den))
+        }
+        Shape::Tuple(elems) => {
+            let elems = elems.clone();
+            let kids = doc_list_kids(doc, struct_ix)?;
+            // `(tuple e0 e1 …)` — head atom + one child per element.
+            if kids.is_empty() || doc_atom_name(doc, kids[0])? != "tuple" || kids.len() - 1 != elems.len()
+            {
+                return None;
+            }
+            build_arr(desc, doc, &kids[1..], &elems, depth)
+        }
+        Shape::Spread(elems) => {
+            // A Spread is only reached as a Sum variant's payload; the Sum arm splices its children, so a
+            // direct decode of a Spread shape reads the same as a Tuple's element list WITHOUT a head (the
+            // caller passed exactly the element child indices). Guard arity and build the arr.
+            let elems = elems.clone();
+            let kids = doc_list_kids(doc, struct_ix)?;
+            if kids.len() != elems.len() {
+                return None;
+            }
+            build_arr(desc, doc, kids, &elems, depth)
+        }
+        Shape::Record(fields) => {
+            let fields = fields.clone();
+            let kids = doc_list_kids(doc, struct_ix)?;
+            // `(record (= name value) …)` — head atom + one `(= name value)` triple per field (post
+            // record-type Phase B migration). Fields are in descriptor (sorted) order.
+            if kids.is_empty() || doc_atom_name(doc, kids[0])? != "record" || kids.len() - 1 != fields.len()
+            {
+                return None;
+            }
+            let arr = op_arr_alloc(fields.len() as u32);
+            for (i, (fname, fshape)) in fields.iter().enumerate() {
+                let field = doc_list_kids(doc, kids[1 + i])?;
+                // Accept BOTH record field forms so value-decode round-trips regardless of whether the
+                // record-type Phase B render migration has landed on this build: the NEW `(= name value)`
+                // ascription triple (head `=`, name, value) OR the legacy `(name value)` pair (name, value).
+                // The value child is the last element; the name is matched against the descriptor's field.
+                let (name_ix, value_ix) = match field.len() {
+                    3 if doc_atom_name(doc, field[0])? == "=" => (field[1], field[2]), // (= name value)
+                    2 => (field[0], field[1]),                                          // (name value)
+                    _ => {
+                        op_drop(arr);
+                        return None;
+                    }
+                };
+                if doc_atom_name(doc, name_ix)? != fname.as_str() {
+                    op_drop(arr);
+                    return None;
+                }
+                let fval = decode_value_opt(desc, doc, value_ix, *fshape, depth + 1);
+                match fval {
+                    Some(h) => {
+                        op_arr_set(arr, i as u32, h);
+                    }
+                    None => {
+                        op_drop(arr);
+                        return None;
+                    }
+                }
+            }
+            Some(arr)
+        }
+        Shape::List(elem) => {
+            let elem = *elem;
+            let kids = doc_list_kids(doc, struct_ix)?;
+            if kids.is_empty() || doc_atom_name(doc, kids[0])? != "list" {
+                return None;
+            }
+            let mut v = op_vec_empty();
+            for &ck in &kids[1..] {
+                match decode_value_opt(desc, doc, ck, elem, depth + 1) {
+                    Some(h) => {
+                        v = op_vec_push(v, h);
+                    }
+                    None => {
+                        op_drop(v);
+                        return None;
+                    }
+                }
+            }
+            Some(v)
+        }
+        Shape::Sum(variants) => {
+            let variants = variants.clone();
+            let kids = doc_list_kids(doc, struct_ix)?;
+            // `(VariantName payload…)` — head atom is the variant name; match to its discriminant.
+            if kids.is_empty() {
+                return None;
+            }
+            let head = doc_atom_name(doc, kids[0])?;
+            let (disc, (_, payload_shape)) =
+                variants.iter().enumerate().find(|(_, (name, _))| name.as_str() == head)?;
+            let payload_shape = *payload_shape;
+            // A MULTI-payload variant's payload is a `Spread`: its elements are the variant's children
+            // (flattened) — build the payload arr from `kids[1..]` directly. A single/nullary payload
+            // decodes the ONE payload node.
+            match desc.table.get(payload_shape as usize) {
+                Some(Shape::Spread(elems)) => {
+                    let elems = elems.clone();
+                    if kids.len() - 1 != elems.len() {
+                        return None;
+                    }
+                    let payload = build_arr(desc, doc, &kids[1..], &elems, depth)?;
+                    Some(op_sum_new(disc as u32, payload))
+                }
+                _ => {
+                    // Single payload: exactly one child (a nullary variant's payload is `unit`).
+                    if kids.len() != 2 {
+                        return None;
+                    }
+                    let payload = decode_value_opt(desc, doc, kids[1], payload_shape, depth + 1)?;
+                    Some(op_sum_new(disc as u32, payload))
+                }
+            }
+        }
+        Shape::Set(elem) => {
+            let elem = *elem;
+            let kids = doc_list_kids(doc, struct_ix)?;
+            // `((. Set of) (list e…))` — 2 elements: the `(. Set of)` head application + the inner list.
+            if kids.len() != 2 {
+                return None;
+            }
+            let inner = doc_list_kids(doc, kids[1])?;
+            if inner.is_empty() || doc_atom_name(doc, inner[0])? != "list" {
+                return None;
+            }
+            let mut s = op_set_empty();
+            for &ck in &inner[1..] {
+                match decode_value_opt(desc, doc, ck, elem, depth + 1) {
+                    Some(h) => {
+                        s = op_set_insert(s, h);
+                    }
+                    None => {
+                        op_drop(s);
+                        return None;
+                    }
+                }
+            }
+            Some(s)
+        }
+        Shape::Map(key, val) => {
+            let (key, val) = (*key, *val);
+            let kids = doc_list_kids(doc, struct_ix)?;
+            // `(map (k v) …)` — head atom + one `(key value)` pair per entry.
+            if kids.is_empty() || doc_atom_name(doc, kids[0])? != "map" {
+                return None;
+            }
+            let mut m = op_map_empty();
+            for &pair_ix in &kids[1..] {
+                let pair = doc_list_kids(doc, pair_ix)?;
+                if pair.len() != 2 {
+                    op_drop(m);
+                    return None;
+                }
+                let kh = match decode_value_opt(desc, doc, pair[0], key, depth + 1) {
+                    Some(h) => h,
+                    None => {
+                        op_drop(m);
+                        return None;
+                    }
+                };
+                let vh = match decode_value_opt(desc, doc, pair[1], val, depth + 1) {
+                    Some(h) => h,
+                    None => {
+                        op_drop(kh);
+                        op_drop(m);
+                        return None;
+                    }
+                };
+                m = op_map_insert(m, kh, vh);
+            }
+            Some(m)
+        }
+    }
+}
+
+/// Build a fresh `arr` (the runtime rep of a tuple/record/spread) from `kids` (one doc child per element)
+/// decoded against `shapes` (parallel element shape indices). On any element mismatch, drops the
+/// partially-built arr and returns `None`. Caller guarantees `kids.len() == shapes.len()`.
+fn build_arr(
+    desc: &Descriptor,
+    doc: &ParsedDoc,
+    kids: &[u32],
+    shapes: &[u32],
+    depth: u32,
+) -> Option<Handle> {
+    let arr = op_arr_alloc(shapes.len() as u32);
+    for (i, (&ck, &sh)) in kids.iter().zip(shapes.iter()).enumerate() {
+        match decode_value_opt(desc, doc, ck, sh, depth + 1) {
+            Some(h) => {
+                op_arr_set(arr, i as u32, h);
+            }
+            None => {
+                op_drop(arr);
+                return None;
+            }
+        }
+    }
+    Some(arr)
+}
+
+/// Parse a base-10 decimal string (optional leading `-`) into a `bigint::Big`. `None` on a non-digit
+/// character. Used for the Rational `num/den` name-leaf components.
+fn big_from_decimal(s: &str) -> Option<bigint::Big> {
+    let (neg, digits) = match s.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, s),
+    };
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let ten = bigint::Big::from_i64(10);
+    let mut acc = bigint::Big::zero();
+    for b in digits.bytes() {
+        acc = acc.mul(&ten);
+        acc = acc.add(&bigint::Big::from_i64((b - b'0') as i64));
+    }
+    if neg {
+        acc = acc.neg();
+    }
+    Some(acc)
+}
+
+/// value-decode (heap idx 90): parse the value-form `doc_bytes` and, guided by `desc`, construct a fresh
+/// owned heap value. `Handle::NULL` on a malformed document / descriptor mismatch (never traps).
+fn op_value_decode(doc_bytes: &[u8], desc: &[u8]) -> Handle {
+    let Some(descriptor) = decode_descriptor(desc) else {
+        return Handle::NULL;
+    };
+    let Some(parsed) = parse_doc(doc_bytes) else {
+        return Handle::NULL;
+    };
+    decode_value(&descriptor, &parsed, parsed.root, descriptor.root, 0)
+}
+
 // ─── Bytes: a packed immutable byte buffer (in `raw`) ───────────────────────────────────
 // OOB into a valid buffer traps; null is benign.
 
@@ -5293,6 +5885,26 @@ impl Guest for Component {
         }
         let doc = op_value_encode_form(Handle::from_u32(v), &bytes).unwrap_or_default();
         alloc(Vec::new(), doc).to_u32()
+    }
+    // Value-form DECODE (index 90) — the exact inverse of value-encode: read the canonical value-form
+    // `bytes` document + the SAME shape `desc` value-encode reads, and CONSTRUCT a fresh owned heap value.
+    // BORROWS `bytes` + `desc` (both constants/inputs the caller owns); returns a fresh owned handle (or the
+    // NULL handle `0` on a shape/format mismatch — never traps, mirroring value-encode's malformed-desc
+    // decline). See `op_value_decode`.
+    fn value_decode(bytes: u32, desc: u32) -> u32 {
+        let desc_h = Handle::from_u32(desc);
+        let dn = op_bytes_len(desc_h);
+        let mut desc_bytes = Vec::with_capacity(dn as usize);
+        for i in 0..dn {
+            desc_bytes.push(op_bytes_get(desc_h, i) as u8);
+        }
+        let doc_h = Handle::from_u32(bytes);
+        let bn = op_bytes_len(doc_h);
+        let mut doc_bytes = Vec::with_capacity(bn as usize);
+        for i in 0..bn {
+            doc_bytes.push(op_bytes_get(doc_h, i) as u8);
+        }
+        op_value_decode(&doc_bytes, &desc_bytes).to_u32()
     }
     // Value-form COMPARE (index 86) — the blessed three-way order over two runtime compound values of the
     // same type, guided by the compiler-baked shape `desc` (read exactly as `value-encode` reads it). BORROWS
@@ -9317,6 +9929,158 @@ mod tests {
         op_drop(small);
         op_drop(big);
         assert_eq!(live_nodes(), before, "no leak: the reused builder retains capacity, not owned nodes");
+    }
+
+    // ─── value-decode (idx 90) round-trip: value-decode ∘ value-encode ≅ id ────────────────────
+    // The acceptance bar (DESIGN-binary-ast-abi B0): for a value `v` of shape `desc`, decoding the
+    // canonical value-form document `value-encode` produces must reconstruct a value structurally equal to
+    // `v` (`value_eq_shaped`). Covers the shape spectrum the encode corpus exercises, run BACKWARDS.
+
+    /// Round-trip `v` (shape `desc`): `value-decode(value-encode(v)) ≅ v` via `value_eq_shaped`, and assert
+    /// no leak once both are dropped. `desc` is the descriptor byte-slice (`[table_len][shapes…][root]`).
+    fn assert_value_roundtrips(v: Handle, desc: &[u8]) {
+        let doc = op_value_encode_form(v, desc).expect("encode");
+        let decoded = op_value_decode(&doc, desc);
+        assert_ne!(decoded, Handle::NULL, "value-decode returned NULL (mismatch)");
+        let descriptor = decode_descriptor(desc).expect("descriptor");
+        let eq = value_eq_shaped(&descriptor, decoded, v, descriptor.root);
+        assert_eq!(eq, Some(true), "decoded value must be structurally equal to the original");
+        op_drop(decoded);
+    }
+
+    #[test]
+    fn value_decode_round_trips_scalar_leaves() {
+        reset();
+        let before = live_nodes();
+        // Each original is dropped after its round-trip so the leak assertion is exact (an immediate like a
+        // small int/bool is not a heap node; a boxed float / string leaf is, so drop them all uniformly).
+        let cases: &[(Handle, &[u8])] = &[
+            (op_box_int(42), &[0x01, 0x00, 0x00]),   // Int (tag 0)
+            (op_box_int(-7), &[0x01, 0x00, 0x00]),
+            (op_box_int(0), &[0x01, 0x00, 0x00]),
+            (op_box_bool(true), &[0x01, 0x01, 0x00]), // Bool (tag 1)
+            (op_box_bool(false), &[0x01, 0x01, 0x00]),
+            (op_box_float(1.5), &[0x01, 0x02, 0x00]), // Float (tag 2)
+            (op_box_float(-2.0), &[0x01, 0x02, 0x00]),
+            (op_box_float(3.14159), &[0x01, 0x02, 0x00]),
+            (op_str_new(String::from("hello")), &[0x01, 0x03, 0x00]), // Str (tag 3)
+            (op_str_new(String::new()), &[0x01, 0x03, 0x00]),
+            (op_box_float32(0.1f32), &[0x01, 0x0e, 0x00]), // Float32 (tag 14)
+        ];
+        for &(v, desc) in cases {
+            assert_value_roundtrips(v, desc);
+            op_drop(v);
+        }
+        assert_eq!(live_nodes(), before, "no leak across scalar round-trips");
+    }
+
+    #[test]
+    fn value_decode_round_trips_bytes_leaf() {
+        reset();
+        let before = live_nodes();
+        let buf = op_bytes_alloc(3);
+        op_bytes_set(buf, 0, 7);
+        op_bytes_set(buf, 1, 0);
+        op_bytes_set(buf, 2, 255);
+        assert_value_roundtrips(buf, &[0x01, 0x04, 0x00]); // Bytes (tag 4)
+        op_drop(buf);
+        assert_eq!(live_nodes(), before, "no leak");
+    }
+
+    #[test]
+    fn value_decode_round_trips_flat_tuple() {
+        reset();
+        let before = live_nodes();
+        // desc: table [0]=Int, [1]=Tuple[0,0], root=1.
+        // [table_len=2][0:Int][6:Tuple][n=2][0][0][root=1]
+        let desc: &[u8] = &[0x02, 0x00, 0x06, 0x02, 0x00, 0x00, 0x01];
+        let t = op_arr_alloc(2);
+        op_arr_set(t, 0, op_box_int(3));
+        op_arr_set(t, 1, op_box_int(-5));
+        assert_value_roundtrips(t, desc);
+        op_drop(t);
+        assert_eq!(live_nodes(), before, "no leak");
+    }
+
+    #[test]
+    fn value_decode_round_trips_record_eq_form() {
+        reset();
+        let before = live_nodes();
+        // desc: table [0]=Int, [1]=Record{a:0,b:0}, root=1. Record tag 8: [8][n=2][len 'a'][0][len 'b'][0].
+        let desc: &[u8] = &[
+            0x02, // table_len
+            0x00, // [0] Int
+            0x08, 0x02, 0x01, b'a', 0x00, 0x01, b'b', 0x00, // [1] Record{a→0,b→0}
+            0x01, // root = 1
+        ];
+        // Fields in canonical (sorted) order a,b → positional [a,b]. (Value renders `(record (= a 1) (= b 9))`.)
+        let r = op_arr_alloc(2);
+        op_arr_set(r, 0, op_box_int(1));
+        op_arr_set(r, 1, op_box_int(9));
+        assert_value_roundtrips(r, desc);
+        op_drop(r);
+        assert_eq!(live_nodes(), before, "no leak");
+    }
+
+    #[test]
+    fn value_decode_round_trips_recursive_list() {
+        reset();
+        let before = live_nodes();
+        // desc: table [0]=Int, [1]=List(0), root=1. List tag 7: [7][elem=0].
+        let desc: &[u8] = &[0x02, 0x00, 0x07, 0x00, 0x01];
+        let mut v = op_vec_empty();
+        for i in 0..5 {
+            v = op_vec_push(v, op_box_int(i * 10 - 20));
+        }
+        assert_value_roundtrips(v, desc);
+        op_drop(v);
+        // An EMPTY list too.
+        let e = op_vec_empty();
+        assert_value_roundtrips(e, desc);
+        op_drop(e);
+        assert_eq!(live_nodes(), before, "no leak");
+    }
+
+    #[test]
+    fn value_decode_round_trips_sum_variants() {
+        reset();
+        let before = live_nodes();
+        // desc: table [0]=Int, [1]=Unit, [2]=Sum{None→1, Some→0}, root=2.
+        // Sum tag 9: [9][n=2][len 'None'][1][len 'Some'][0].
+        let desc: &[u8] = &[
+            0x03, // table_len
+            0x00, // [0] Int
+            0x05, // [1] Unit
+            0x09, 0x02, 0x04, b'N', b'o', b'n', b'e', 0x01, 0x04, b'S', b'o', b'm', b'e', 0x00, // [2] Sum
+            0x02, // root = 2
+        ];
+        // Some(9): disc 1, payload Int.
+        let some = op_sum_new(1, op_box_int(9));
+        assert_value_roundtrips(some, desc);
+        op_drop(some);
+        // None: disc 0, payload unit.
+        let none = op_sum_new(0, imm_unit());
+        assert_value_roundtrips(none, desc);
+        op_drop(none);
+        assert_eq!(live_nodes(), before, "no leak");
+    }
+
+    #[test]
+    fn value_decode_returns_null_on_shape_mismatch_never_traps() {
+        reset();
+        let before = live_nodes();
+        // Encode an Int, decode it against a Str descriptor → NULL (mismatch), no trap, no leak.
+        let v = op_box_int(5);
+        let int_desc: &[u8] = &[0x01, 0x00, 0x00];
+        let str_desc: &[u8] = &[0x01, 0x03, 0x00];
+        let doc = op_value_encode_form(v, int_desc).expect("encode");
+        assert_eq!(op_value_decode(&doc, str_desc), Handle::NULL, "shape mismatch → NULL");
+        // A garbage document → NULL (bad header).
+        assert_eq!(op_value_decode(&[0, 1, 2, 3], int_desc), Handle::NULL, "bad header → NULL");
+        // A malformed descriptor → NULL.
+        assert_eq!(op_value_decode(&doc, &[0xff]), Handle::NULL, "bad descriptor → NULL");
+        op_drop(v);
+        assert_eq!(live_nodes(), before, "no leak (NULL is not a heap node)");
     }
 
     /// A malformed descriptor whose Framed TYPE NODE nests absurdly deep DECLINES (`None`), it does not
