@@ -6332,6 +6332,26 @@ fn freshen_walk(
     if matches!(resolved_of(db, node), Resolved::Handle { .. })
         || db.ast.head_name(node) == Some(HANDLE_INTERNAL)
     {
+        // The arms + body ARE the inner handle's concern (freshened when IT reduces) — leave them opaque.
+        // BUT the nested handle's SEED (its init) is evaluated in THIS (enclosing) scope, so a reference in
+        // it to an enclosing binder an outer `let` just renamed MUST be rewritten here — else the inner fold
+        // reduces with a stale seed reference (`init=cfg`) that no longer resolves after the outer let-binder
+        // was freshened (`cfg`→`#cfg{n}`), baking a dangling name into the inner fold's `#seed` init →
+        // spurious CDZ0101 unbound (the let-bound-seed × nested-handle orphan, sh2d family). Rewrite ONLY the
+        // seed under the current renames; if it changed, rebuild the handle node with the fresh seed and the
+        // ORIGINAL arms/body (still the inner fold's to freshen). The desugared `(handle-internal SEED arms
+        // body)` carries the seed at CHILD INDEX 1 (index 0 = the `handle-internal` head). Only the internal
+        // form reaches this fold stage; a raw `(handle E seed …)` (Resolved::Handle) is left fully opaque
+        // (its seed index differs; not seen post-desugar). Nothing changed → share whole (return None).
+        if db.ast.head_name(node) == Some(HANDLE_INTERNAL)
+            && let Struct::List(children) = db.ast.get(node).clone()
+            && children.len() >= 4
+            && let Some(new_seed) = freshen_walk(db, children[1], renames)
+        {
+            let mut new_children = children.clone();
+            new_children[1] = new_seed;
+            return Some(db.push_list(new_children));
+        }
         return None;
     }
     // A `let` — rename each binding-pair's binder to a fresh name, scoping the rename over the inits (later

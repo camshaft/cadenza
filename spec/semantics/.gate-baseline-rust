@@ -5750,8 +5750,8 @@ pass	sg5 the GROWING string state is a MAP KEY per dispatch — each draw looks 
 pass	sg6 the rope's LENGTH PARITY routes its own growth — odd appends two, even appends one; four draws read 1,3,4,5
 pass	sg7 byte-len vs scalar-len DIVERGE on a growing multi-byte rope — each dispatch reads the difference (one per accent)
 pass	sh1 a NESTED handler for the SAME effect shadows the outer — inner draws hit the inner state, the draw after hits the outer
-pass	sh2d a let bound in a handle body, read by a NESTED handle's seed — declines (let-crossing scope gap)
-pass	sh2n the config-fetch idiom with its perform LET-LIFTED — declines (let-crossing scope gap)
+pass	sh2d a let bound in a handle body, read by a NESTED handle's seed — folds (let-crossing seed freshened)
+pass	sh2n the config-fetch idiom with its perform LET-LIFTED — folds (let-crossing seed freshened)
 pass	shift-by-zero is a no-op on a runtime operand for both directions
 pass	shrinking an @invariant newtype to EMPTY traps at the rebuild — the invariant catches the crossing
 pass	shrinking reports the minimal failing input
@@ -6613,8 +6613,8 @@ pass	za1 literal-arm dispatch on a draw — the MATCHED arm performs again, both
 pass	za2 a COMPUTED scrutinee (difference of two draws) selects the performing arm at one input only
 pass	za3 NESTED literal-arm dispatch — each level matches a let-bound draw, the innermost arm reads a third
 pass	sh1 a NESTED handler for the SAME effect shadows the outer — inner draws hit the inner state, the draw after hits the outer
-pass	sh2d a let bound in a handle body, read by a NESTED handle's seed — declines (let-crossing scope gap)
-pass	sh2n the config-fetch idiom with its perform LET-LIFTED — declines (let-crossing scope gap)
+pass	sh2d a let bound in a handle body, read by a NESTED handle's seed — folds (let-crossing seed freshened)
+pass	sh2n the config-fetch idiom with its perform LET-LIFTED — folds (let-crossing seed freshened)
 pass	mo1 a TWO-op effect fully shadowed — the inner handler re-interprets BOTH ops with different arms
 pass	mo2 THREE-deep same-effect shadowing — each depth's draws thread its own state, interleaved before/inside/after
 pass	mo4 a SAME-effect draw in the inner handle's SEED homes to the OUTER handler — the shadow starts at the body, not the seed

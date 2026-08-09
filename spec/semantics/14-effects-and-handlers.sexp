@@ -14059,15 +14059,14 @@
 ;; ── same-effect shadowing + the let-crossing-nested-handle scope gap (breaker sh) ────────────────
 ;; sh1 pins nested SAME-effect handler shadowing: inner draws hit the inner state/arm, the first
 ;; draw after the inner region hits the outer — two independent state threads, innermost-wins
-;; dispatch. sh2d/sh2n pin the DECLINE face v-effects confirmed live (locus
-;; reparent_under_handle_site, effects.rs): a let bound INSIDE a handle body, referenced anywhere
-;; under a NESTED handle node (seed/body/arm, same or different effect), re-resolves against an
-;; orphan → false CDZ0101. Params cross fine; lets bound OUTSIDE the outer handle cross fine;
-;; inline perform seeds (the un-lifted corpus config-fetch pin) are fine — ONLY handle-body lets
-;; orphan. sh2n is the sharpest face: the config-fetch idiom with its perform LET-LIFTED, i.e. the
-;; standard let-lift workaround itself. Both flip decline→pass when the let-reparenting
-;; (bind-once/let-threading) arc lands: sh2d main(10)=32 (seed=11 pure, inner seed 22, one inner
-;; draw 22, trailing outer draw 10), sh2n main(5)=11 (same values as the inline pin above).
+;; dispatch. sh2d/sh2n pinned the DECLINE face and now FOLD (the SEED sub-face is fixed): a let
+;; bound inside a handle body read by a nested handle's SEED orphaned (freshen_walk left the nested
+;; handle opaque, so the freshened outer binder cfg→#cfgN was not rewritten in the seed reference).
+;; FIX: freshen the nested handle-internal's SEED child under the enclosing renames (effects.rs
+;; freshen_walk). sh2d main(10)=32 (seed=11, inner seed 22, one inner draw 22, trailing outer draw
+;; 10), sh2n main(5)=11. The remaining sub-face — the outer binder read in the inner handle's ARM or
+;; BODY (sh2g/sh2m) — still declines CDZ0101 (freshening the arm/body risks the fn-local-ref orphan;
+;; a separate careful increment). Params cross fine; lets bound OUTSIDE the outer handle cross fine.
 
 (case "sh1 a NESTED handler for the SAME effect shadows the outer — inner draws hit the inner state, the draw after hits the outer"
   (input  (do
@@ -14085,7 +14084,7 @@
   (call   main (: 100 Int64)) (output (: 155 Int64))
   (call   main (: 7 Int64)) (output (: 62 Int64)))
 
-(case "sh2d a let bound in a handle body, read by a NESTED handle's seed — declines (let-crossing scope gap)"
+(case "sh2d a let bound in a handle body, read by a NESTED handle's seed — folds (let-crossing seed freshened)"
   (input  (do
             (effect St (op next (-> Int64)))
             (def (main (: n Int64))
@@ -14097,9 +14096,9 @@
                        (St.next))
                      (St.next)))))
             (export main)))
-  (error  CDZ0101))
+  (call   main (: 10 Int64)) (output (: 32 Int64)))
 
-(case "sh2n the config-fetch idiom with its perform LET-LIFTED — declines (let-crossing scope gap)"
+(case "sh2n the config-fetch idiom with its perform LET-LIFTED — folds (let-crossing seed freshened)"
   (input  (do
             (effect A (op base (-> Int64)))
             (effect B (op step (-> Int64)))
@@ -14111,7 +14110,7 @@
                     ((step () t (resume t (+ t 1))))
                     (+ (B.step) (B.step))))))
             (export main)))
-  (error  CDZ0101))
+  (call   main (: 5 Int64)) (output (: 11 Int64)))
 
 ;; ── multi-op, deep, and heap-state same-effect shadowing (breaker mo) ────────────────────────────
 ;; Escalations of the sh1 shadowing pin: mo1 shadows a TWO-op effect (the inner handler
