@@ -11479,6 +11479,43 @@ fn a_recursive_performer_feeding_its_result_to_a_helper_call_folds() {
     );
 }
 
+/// The DIRECT-WRAP variant of the helper-fed-recursion-result shape (v-compiler-ml hub reproducer): the
+/// recursion result is fed to the helper DIRECTLY as an argument inside a match arm — `(match (St.put n) (_
+/// (double (loop (- n 1)))))` — with NO intermediate `let` binding the result (the pinned `walk`/`combine`
+/// case above let-binds `lt` first). Same slot-fix root (the deep-fresh-copy of the threaded spec body keeps
+/// the recursion-result arg from sharing a slot-less original param node), but exercises the recursion result
+/// as a bare helper ARG rather than a let-init. Runs correct: `loop 0 = St.get`; each level performs `St.put`
+/// then doubles the recursion result. main(3): put 3,2,1 threads state 0->6, loop0=get=6, then double×3:
+/// 6->12->24->48. Reproducer verified fixed + correct on all 3 backends; this pins the wasm run.
+#[test]
+fn a_recursive_performer_result_fed_directly_to_a_helper_in_a_match_arm_folds() {
+    use crate::testkit::parse;
+    let src = "(do \
+        (effect St (op get (-> Unit Int64)) (op put (-> Int64 Unit))) \
+        (def (loop (: n Int64)) \
+          (if (= n 0) (St.get) (match (St.put n) (_ (double (loop (- n 1))))))) \
+        (def (double (: a Int64)) (+ a a)) \
+        (def (main (: k Int64)) \
+          (handle St 0 \
+            ((get (u) s (resume s s)) \
+             (put (v) s (resume unit (+ s v)))) \
+            (loop k))) \
+        (export main))";
+    let comp = compile_component(&crate::codec::encode(&parse(src))).expect(
+        "the recursion result fed directly to a helper arg in a match arm must fold (no slot-less spec param)",
+    );
+    assert_eq!(
+        run_returns_with::<i64>(&comp, "main", &[wasmtime::component::Val::S64(3)]),
+        48,
+        "put 3,2,1 threads state 0->6; loop0=get=6; double x3 → 48",
+    );
+    assert_eq!(
+        run_returns_with::<i64>(&comp, "main", &[wasmtime::component::Val::S64(1)]),
+        2,
+        "put 1 → state 1; loop0=get=1; double → 2",
+    );
+}
+
 /// A handler ARM that RESUMES PER `if`-BRANCH now folds. `get-ty(nid) s => (if (= nid 0) (resume (Some t) s)
 /// (resume (None) s))` selects the resume value by a condition over the op arg. `peel_resume_from_arm_body`
 /// handled `do`/`let`/`match` resume-wrappers but NOT `if`, so the whole handler declined before reaching
