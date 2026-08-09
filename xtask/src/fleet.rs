@@ -1166,7 +1166,10 @@ fn maxfloor_driver_command() -> &'static str {
 /// Purpose (concierge-approved, log-only): give exact TIMING + confirmation of the recurring
 /// trunk-clobber — an out-of-band job resetting `trunk` backward to `origin/main` (single-writer
 /// invariant violation, latent data-loss). It only records; the `fleet status` alarm reports the
-/// reflog count, and an operator kills the source. Deliberately NOT a blocking guard.
+/// reflog count, and an operator kills the source. Deliberately NOT a blocking guard. SKIPS pr-sync's
+/// OWN base-resets (cwd under `/worktrees/pr-sync`): under the `--publish-origin` model pr-sync resets
+/// trunk to origin/main every drain pass, which is an EXPECTED NON-FF move, not a clobber — logging it
+/// filled the log with 50+ benign entries/session and made `fleet status`'s "worth a look" note false.
 const REF_TXN_HOOK_MARKER: &str = "# fleet:reference-transaction-clobber-logger";
 fn reference_transaction_hook_body(log_path: &str) -> String {
     // Quote the log path in the shell redirect so a path with spaces/metachars is safe (PR #458).
@@ -1192,6 +1195,13 @@ fn reference_transaction_hook_body(log_path: &str) -> String {
          \t# So require new == origin/main (resolve it fresh; skip if it can't be resolved).\n\
          \tom=$(git rev-parse --verify -q origin/main 2>/dev/null) || continue\n\
          \t[ \"$new\" = \"$om\" ] || continue\n\
+         \t# SKIP pr-sync's OWN base-reset. Under the --publish-origin model pr-sync resets trunk to\n\
+         \t# origin/main EVERY drain pass (reset→origin/main, cherry-pick, FF-push) — a NON-FF move to\n\
+         \t# origin/main that is EXPECTED, not a clobber. Those all run from pr-sync's worktree, so the\n\
+         \t# reset's cwd ends in /worktrees/pr-sync; skip it (else the log fills with 50+ benign reconciles\n\
+         \t# per session — the exact false-positive that made `fleet status` claim entries were worth a\n\
+         \t# look when they weren't). A genuine out-of-band clobber runs from ELSEWHERE and still logs.\n\
+         \tcase \"$PWD\" in */worktrees/pr-sync|*/worktrees/pr-sync/*) continue ;; esac\n\
          \tts=\"$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)\"\n\
          \t# (Target is always trunk since we scoped to it — don't resolve $new, it is a SHA — PR #459.)\n\
          \techo \"$ts trunk NON-FF move ${{old:0:12}} -> ${{new:0:12}} (-> origin/main) pid=$$ ppid=$PPID\" >> {q} 2>/dev/null || true\n\
@@ -15646,6 +15656,22 @@ mod tests {
         assert!(!refs_match_for_drop("c70fb0907", "61a41699f"));
         assert!(!refs_match_for_drop("", "c70fb0907"));
         assert!(!refs_match_for_drop("c70fb0907", ""));
+    }
+
+    #[test]
+    fn ref_txn_hook_skips_pr_syncs_own_base_reset_but_still_logs_a_foreign_clobber() {
+        let body = reference_transaction_hook_body("/hub/.claude/fleet/trunk-clobber.log");
+        // The hook must carry the pr-sync-worktree skip (the whole-segment case pattern), else it
+        // regresses to logging pr-sync's ~50 benign per-session base-resets under --publish-origin.
+        assert!(
+            body.contains("*/worktrees/pr-sync|*/worktrees/pr-sync/*"),
+            "hook lost the pr-sync own-reset skip guard"
+        );
+        // And it still only logs the clobber signature (a NON-FF move whose new == origin/main).
+        assert!(body.contains("[ \"$new\" = \"$om\" ] || continue"));
+        // The skip is a `continue` (skip THIS ref), never an `exit` (which would abort the whole hook
+        // and could suppress a genuine clobber logged later in the same transaction batch).
+        assert!(body.contains("*/worktrees/pr-sync/*) continue ;;"));
     }
 
     #[test]
