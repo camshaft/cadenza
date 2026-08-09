@@ -27,6 +27,13 @@ publish = false
 name = "cdz-session-run"
 path = "src/main.rs"
 
+# Mirror the seed workspace's `release-debug` profile (dev + opt-level 2) so `cargo xtask gate` — which
+# builds its pipeline tools under `release-debug` and builds this binary the same way — resolves the
+# profile here too (an isolated workspace does NOT inherit the root's profile table).
+[profile.release-debug]
+inherits = "dev"
+opt-level = 2
+
 [dependencies]
 # The real kernel — Session/deliver/Kv/ComponentReducer/Authorizer/RecordingExecutor + ComponentStore.
 # The whole point is to drive the SAME machinery production runs, not a stand-in.

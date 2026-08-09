@@ -261,6 +261,7 @@ fn main() {
                     GateTargetArg::Wasm => GateTarget::Wasm,
                     GateTargetArg::Rust => GateTarget::Rust,
                     GateTargetArg::RustAsync => GateTarget::RustAsync,
+                    GateTargetArg::Platform => GateTarget::Platform,
                 },
             };
             if opt_sweep {
@@ -1067,6 +1068,13 @@ enum GateTarget {
     /// `ml-conformance` reported step): a decline is coverage-not-yet, an agreeing value is progress, a
     /// disagreeing value is the only real failure. It never drives the baseline gate.
     CadenzaMl,
+    /// The PLATFORM-conformance suite (`spec/platform/*.sexp`, the `(platform-case …)` genre) — NOT a
+    /// compiler backend. A case defines Cadenza reducer SESSIONS + one kick-off event; the gate compiles
+    /// each reducer to the `cadenza:agent-kernel/fold` world, drives it through the real kernel via
+    /// `cdz-session-run`, and grades the observed end-state against the case's `(end-state …)` /
+    /// `(events-processed …)` clauses. Its own baseline (`spec/platform/.gate-baseline`). Branches to
+    /// `gate_platform` — it does NOT drive `run_program`/`grade` (which are compiler-program paths).
+    Platform,
 }
 
 /// The `--target` value clap parses for the `gate` command (its own enum so clap validates the
@@ -1076,6 +1084,7 @@ enum GateTargetArg {
     Wasm,
     Rust,
     RustAsync,
+    Platform,
 }
 
 /// Drive one program's s-expression `text` through cdz-syntax → rcdzc → cdz-run, returning the
@@ -1138,6 +1147,11 @@ fn run_program(
             }
         }
         GateTarget::CadenzaMl => run_program_ml(tools, program, call),
+        // Platform is a session-conformance suite, not a compiler-program target; it never reaches
+        // run_program (gate() branches to gate_platform first).
+        GateTarget::Platform => {
+            unreachable!("platform target is driven by gate_platform, not run_program")
+        }
     }
 }
 
@@ -3139,6 +3153,13 @@ struct GateOpts {
 /// Run one or more corpus files through the pipeline and grade each case against its recorded
 /// outcome. Delegates case parsing + normalization to `cdz-syntax corpus`, then drives each program.
 fn gate(paths: &Paths, profile: &str, opts: GateOpts) {
+    // The PLATFORM suite is a separate genre (Cadenza reducer SESSIONS driven through the kernel, NOT a
+    // compiler program run through cdz-syntax→rcdzc→cdz-run). Branch to its own runner+grader BEFORE the
+    // compiler-program machinery below, which does not apply to a `(platform-case …)`.
+    if matches!(opts.target, GateTarget::Platform) {
+        gate_platform(paths, profile, opts);
+        return;
+    }
     let tools = build_tools(paths, profile);
     let files = if opts.files.is_empty() {
         default_corpus_files(paths)
@@ -3434,6 +3455,11 @@ fn sweep_one_case(
                 code: None,
                 message: String::new(),
             },
+            GateTarget::Platform => {
+                unreachable!(
+                    "platform target is not opt-swept; gate() branches to gate_platform first"
+                )
+            }
         }
     };
     let mut diffs = Vec::new();
@@ -4145,6 +4171,430 @@ fn default_corpus_files(paths: &Paths) -> Vec<PathBuf> {
 }
 
 // ============================================================================================
+// PLATFORM-conformance gate (`spec/platform/*.sexp`, the `(platform-case …)` genre) — the runtime/
+// platform analog of the compiler corpus. A case declares Cadenza reducer SESSIONS + one kick-off
+// event; the gate compiles each reducer to the `cadenza:agent-kernel/fold` world, drives it through
+// the REAL kernel via the `cdz-session-run` edge binary, and grades the observed end-state against the
+// case's `(end-state …)` / `(events-processed …)` clauses. Its own baseline (spec/platform/.gate-baseline),
+// same Verdict/save/check machinery as the compiler corpus. I1 = a single no-effect session per case.
+// ============================================================================================
+
+/// Every `spec/platform/NN-*.sexp` (the platform-conformance suite), sorted for a stable order. Mirrors
+/// `default_corpus_files` but over the platform tree. `.md` literate twins are an I-later increment, so
+/// only `.sexp` for now (still digit-led-stem, so a README stays out).
+fn default_platform_files(paths: &Paths) -> Vec<PathBuf> {
+    let dir = paths.repo.join("spec/platform");
+    let mut files: Vec<PathBuf> = match std::fs::read_dir(&dir) {
+        Ok(rd) => rd
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "sexp"))
+            .filter(|p| {
+                p.file_stem()
+                    .and_then(|s| s.to_str())
+                    .is_some_and(|s| s.starts_with(|c: char| c.is_ascii_digit()))
+            })
+            .collect(),
+        // No spec/platform dir yet (before the first fixture lands) → no cases, an empty green gate.
+        Err(_) => Vec::new(),
+    };
+    files.sort();
+    files
+}
+
+/// Build the `cdz-session-run` edge binary and return its path. It is an ISOLATED workspace (path-deps
+/// cdz-kernel → carries the wasmtime+tokio tree, excluded from the seed workspace), so `build_tools`
+/// does NOT build it — build it here against its own manifest, once per platform-gate invocation.
+fn build_session_run(paths: &Paths, profile: &str) -> PathBuf {
+    let crate_dir = paths.seed.join("crates/cdz-session-run");
+    let sh = Shell::new().expect("open a shell");
+    sh.change_dir(&crate_dir);
+    if let Err(e) = cmd!(sh, "cargo build --quiet --profile {profile}")
+        .quiet()
+        .run()
+    {
+        eprintln!("xtask gate --target platform: building cdz-session-run failed: {e}");
+        std::process::exit(1);
+    }
+    let subdir = if profile == "dev" { "debug" } else { profile };
+    crate_dir
+        .join("target")
+        .join(subdir)
+        .join("cdz-session-run")
+}
+
+/// One `(session <alias> (reducer <prog>) (serves <family>…)?)` block of a platform case.
+struct PlatformSession {
+    alias: String,
+    program: String,
+    #[allow(dead_code)] // consumed at I2 (handler sessions); parsed now so the record is complete
+    serves: Vec<String>,
+}
+
+/// A parsed `(platform-case …)` record (the flat stream `cdz corpus records` emits for the platform
+/// genre — see `cdz-corpus::render_platform`). I1 grades end-state; the expect-effect/message fields are
+/// parsed (for a complete record) but consumed at I2/I3.
+struct PlatformCaseRecord {
+    title: String,
+    sessions: Vec<PlatformSession>,
+    /// `(kickoff <alias> <inbound-family> <value-form>)` — the single stimulus.
+    kickoff: (String, String, String),
+    /// `(end-state <alias> (kv <key> <value-form>)…)` → `(alias, key, value-form)`.
+    end_kv: Vec<(String, String, String)>,
+    /// `(end-state <alias> (status <state>))` → `(alias, status)`.
+    end_status: Vec<(String, String)>,
+    /// `(events-processed <alias> <n>)` → `(alias, n)`.
+    events_processed: Vec<(String, String)>,
+}
+
+/// Parse the platform record stream (`cdz corpus records` on a `spec/platform/*.sexp`) — the fixed-arity
+/// tab lines `cdz-corpus::render_platform` emits, one `---`-terminated record per case. Split-on-tab, no
+/// s-expr parser (the corpus reader's founding constraint), mirroring `parse_records` for the compiler genre.
+fn parse_platform_records(text: &str) -> Vec<PlatformCaseRecord> {
+    let mut records = Vec::new();
+    let mut title = String::new();
+    let mut sessions: Vec<PlatformSession> = Vec::new();
+    let mut kickoff = (String::new(), String::new(), String::new());
+    let mut end_kv: Vec<(String, String, String)> = Vec::new();
+    let mut end_status: Vec<(String, String)> = Vec::new();
+    let mut events_processed: Vec<(String, String)> = Vec::new();
+    for line in text.lines() {
+        if line == "---" {
+            records.push(PlatformCaseRecord {
+                title: std::mem::take(&mut title),
+                sessions: std::mem::take(&mut sessions),
+                kickoff: std::mem::take(&mut kickoff),
+                end_kv: std::mem::take(&mut end_kv),
+                end_status: std::mem::take(&mut end_status),
+                events_processed: std::mem::take(&mut events_processed),
+            });
+            continue;
+        }
+        let Some((key, val)) = line.split_once('\t') else {
+            continue;
+        };
+        match key {
+            "platform-case" => title = val.to_string(),
+            "doc" => {} // documentation only
+            // `session\t<alias>\t<program>` — a new session (its `serves` lines follow).
+            "session" => {
+                if let Some((alias, program)) = val.split_once('\t') {
+                    sessions.push(PlatformSession {
+                        alias: alias.to_string(),
+                        program: program.to_string(),
+                        serves: Vec::new(),
+                    });
+                }
+            }
+            // `serves\t<alias>\t<family>` — attach a served family to its session.
+            "serves" => {
+                if let Some((alias, family)) = val.split_once('\t')
+                    && let Some(s) = sessions.iter_mut().find(|s| s.alias == alias)
+                {
+                    s.serves.push(family.to_string());
+                }
+            }
+            // `kickoff\t<alias>\t<inbound>\t<value-form>` — the single stimulus.
+            "kickoff" => {
+                let mut it = val.splitn(3, '\t');
+                if let (Some(a), Some(inb), Some(v)) = (it.next(), it.next(), it.next()) {
+                    kickoff = (a.to_string(), inb.to_string(), v.to_string());
+                }
+            }
+            // `end-kv\t<alias>\t<key>\t<value-form>`.
+            "end-kv" => {
+                let mut it = val.splitn(3, '\t');
+                if let (Some(a), Some(k), Some(v)) = (it.next(), it.next(), it.next()) {
+                    end_kv.push((a.to_string(), k.to_string(), v.to_string()));
+                }
+            }
+            // `end-status\t<alias>\t<status>`.
+            "end-status" => {
+                if let Some((a, s)) = val.split_once('\t') {
+                    end_status.push((a.to_string(), s.to_string()));
+                }
+            }
+            // `events-processed\t<alias>\t<n>`.
+            "events-processed" => {
+                if let Some((a, n)) = val.split_once('\t') {
+                    events_processed.push((a.to_string(), n.to_string()));
+                }
+            }
+            // expect-effect/expect-message/expect-delivery-failure are parsed at I2/I3 (effects/messaging).
+            _ => {}
+        }
+    }
+    records
+}
+
+/// The parsed observed end-state of a driven session (one `cdz-session-run` invocation's stdout lines).
+#[derive(Default)]
+struct ObservedEndState {
+    /// A `end-fault\t<alias>\t<reason>` line — set iff the fold trapped/failed (grades the case Fail).
+    fault: Option<String>,
+    status: Option<String>,
+    events_processed: Option<String>,
+    /// `end-kv` lines: `key → value-render` (value is `hex:<hex>` per cdz-session-run's wire).
+    kv: std::collections::BTreeMap<String, String>,
+}
+
+/// Parse one `cdz-session-run` invocation's stdout (the `end-fault`/`end-status`/`events-processed`/
+/// `end-kv` tab lines for a single alias) into an [`ObservedEndState`].
+fn parse_observed_end_state(stdout: &str) -> ObservedEndState {
+    let mut obs = ObservedEndState::default();
+    for line in stdout.lines() {
+        let parts: Vec<&str> = line.split('\t').collect();
+        match parts.as_slice() {
+            ["end-fault", _alias, reason] => obs.fault = Some((*reason).to_string()),
+            ["end-status", _alias, state] => obs.status = Some((*state).to_string()),
+            ["events-processed", _alias, n] => obs.events_processed = Some((*n).to_string()),
+            ["end-kv", _alias, key, value] => {
+                obs.kv.insert((*key).to_string(), (*value).to_string());
+            }
+            _ => {}
+        }
+    }
+    obs
+}
+
+/// Decode a KV value-form the case pins (the corpus `(: <value> <Type>)` text) to the raw BYTES a
+/// reducer stores, so it can be compared to cdz-session-run's `hex:<hex>` observation. I1 supports the
+/// single shape a counter needs: `(: <n> Int64)` / `Int32` / `UInt8` … → the reducer's ONE-byte counter
+/// encoding (`Bytes.of([UInt8.wrap(n)])`, matching reducer_b3), i.e. the low byte of `n`. A value-form the
+/// decoder doesn't understand yet returns `None` → the case grades Todo (not Fail), so an un-modeled
+/// value shape is coverage-not-yet, never a false regression.
+fn decode_value_form_to_hex(value_form: &str) -> Option<String> {
+    // `(: <value> <Type>)` — pull the value token (second whitespace field, tolerating the leading `(:`).
+    let inner = value_form
+        .trim()
+        .strip_prefix("(:")?
+        .trim()
+        .strip_suffix(')')?;
+    let mut it = inner.split_whitespace();
+    let value = it.next()?;
+    let ty = it.next()?;
+    // I1: an integer counter stored as ONE byte (b3's `Bytes.of([UInt8.wrap(n)])`). Match the small
+    // integer types; take the low byte. (Widen this as later increments store wider/other-typed values.)
+    match ty {
+        "Int64" | "Int32" | "Int16" | "Int8" | "UInt64" | "UInt32" | "UInt16" | "UInt8" => {
+            let n: i64 = value.parse().ok()?;
+            Some(format!("hex:{:02x}", (n as u8)))
+        }
+        _ => None,
+    }
+}
+
+/// Grade ONE platform case (I1: a single no-effect session). Compile the session's reducer to the
+/// `cadenza:agent-kernel/fold` world, drive it through `cdz-session-run` with the kick-off, and compare
+/// the observed end-state to the case's `(end-state …)` / `(events-processed …)` clauses.
+fn grade_platform_case(
+    cdz: &Path,
+    session_run: &Path,
+    store: &Path,
+    rec: &PlatformCaseRecord,
+) -> Grade {
+    // I1 is single-session; a multi-session case is I3 (needs the FIFO fixpoint drive) → Todo for now.
+    if rec.sessions.len() != 1 {
+        return Grade::Todo;
+    }
+    let session = &rec.sessions[0];
+    // Compile the reducer SEXPR to a fold-world component. Write the program to a temp `.sexp` (cdz
+    // compile reads a source path, dispatching on extension) and emit the component beside it.
+    let tmp = std::env::temp_dir().join(format!("cdz-platform-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&tmp);
+    let src = tmp.join("reducer.sexp");
+    let out = tmp.join("reducer.wasm");
+    if std::fs::write(&src, &session.program).is_err() {
+        return Grade::Fail("could not write the reducer program to a temp file".into());
+    }
+    let compile = std::process::Command::new(cdz)
+        .arg("compile")
+        .arg(&src)
+        .args([
+            "--target",
+            "wasm",
+            "--component-name",
+            "cadenza:agent-kernel/fold",
+        ])
+        .arg("-o")
+        .arg(&out)
+        .output();
+    match compile {
+        Ok(o) if o.status.success() => {}
+        Ok(_) => {
+            // A reducer the compiler can't yet emit is coverage-not-yet (Todo), not a disagreement —
+            // mirrors the corpus's "declines → Todo". A genuine miscompile surfaces as a drive fault below.
+            return Grade::Todo;
+        }
+        Err(e) => return Grade::Fail(format!("cdz compile failed to launch: {e}")),
+    }
+    // Drive it through the kernel via cdz-session-run.
+    let run = std::process::Command::new(session_run)
+        .arg("--reducer")
+        .arg(&out)
+        .arg("--store")
+        .arg(store)
+        .args(["--alias", &session.alias])
+        .args(["--kickoff-family", &rec.kickoff.1])
+        // The kick-off value-form is the corpus `(: v T)` text; I1 kick-offs are payload-less (unit), so
+        // pass an empty payload. (A later increment threads a typed kick-off payload.)
+        .args(["--kickoff-value", ""])
+        .output();
+    let run = match run {
+        Ok(o) if o.status.success() => o,
+        Ok(o) => {
+            return Grade::Fail(format!(
+                "cdz-session-run exited {}: {}",
+                o.status.code().unwrap_or(-1),
+                first_line(&o.stderr)
+            ));
+        }
+        Err(e) => return Grade::Fail(format!("cdz-session-run failed to launch: {e}")),
+    };
+    let obs = parse_observed_end_state(&String::from_utf8_lossy(&run.stdout));
+
+    // A fold fault is always a Fail — a conformance case asserts a SUCCESSFUL run.
+    if let Some(reason) = &obs.fault {
+        return Grade::Fail(format!("reducer fold faulted: {reason}"));
+    }
+    // Grade the case's assertions against the observed end-state (all keyed to the single session's alias).
+    for (alias, status) in &rec.end_status {
+        if alias != &session.alias {
+            return Grade::Todo; // multi-alias assertion is I3
+        }
+        match &obs.status {
+            Some(s) if s == status => {}
+            Some(s) => return Grade::Fail(format!("status: expected {status}, observed {s}")),
+            None => return Grade::Fail("no end-status observed".into()),
+        }
+    }
+    for (alias, n) in &rec.events_processed {
+        if alias != &session.alias {
+            return Grade::Todo;
+        }
+        match &obs.events_processed {
+            Some(observed) if observed == n => {}
+            Some(observed) => {
+                return Grade::Fail(format!(
+                    "events-processed: expected {n}, observed {observed}"
+                ));
+            }
+            None => return Grade::Fail("no events-processed observed".into()),
+        }
+    }
+    for (alias, key, value_form) in &rec.end_kv {
+        if alias != &session.alias {
+            return Grade::Todo;
+        }
+        let Some(expected_hex) = decode_value_form_to_hex(value_form) else {
+            // A value shape the I1 decoder doesn't model yet → coverage-not-yet, not a false Fail.
+            return Grade::Todo;
+        };
+        match obs.kv.get(key) {
+            Some(observed) if observed == &expected_hex => {}
+            Some(observed) => {
+                return Grade::Fail(format!(
+                    "kv[{key}]: expected {expected_hex} (from {value_form}), observed {observed}"
+                ));
+            }
+            None => {
+                return Grade::Fail(format!(
+                    "kv[{key}]: expected {expected_hex}, but key absent"
+                ));
+            }
+        }
+    }
+    Grade::Pass
+}
+
+/// The platform-conformance gate: discover `spec/platform/*.sexp`, parse each `(platform-case …)`, grade
+/// it (compile→drive→compare), and roll the verdicts into `spec/platform/.gate-baseline` with the same
+/// save/check discipline as the compiler corpus (a `pass → not-pass` flip or a vanished case fails --check).
+fn gate_platform(paths: &Paths, profile: &str, opts: GateOpts) {
+    let tools = build_tools(paths, profile);
+    let session_run = build_session_run(paths, profile);
+    // The kernel resolves the reducer's `cadenza:runtime/heap` dep from the content-addressed store; the
+    // default is the one `cargo xtask build` populates.
+    let store = opts
+        .store
+        .clone()
+        .unwrap_or_else(|| paths.repo.join("target/cadenza-store"));
+    let files = if opts.files.is_empty() {
+        default_platform_files(paths)
+    } else {
+        opts.files.clone()
+    };
+    let records: Vec<PlatformCaseRecord> = files
+        .iter()
+        .flat_map(|f| parse_platform_records(&read_platform_records_text(&tools, f)))
+        .collect();
+
+    let (mut pass, mut todo, mut fail) = (0u32, 0u32, 0u32);
+    let mut failures: Vec<String> = Vec::new();
+    let mut verdicts: Vec<(String, Verdict)> = Vec::new();
+    for rec in &records {
+        let v = match grade_platform_case(&tools.rcdzc, &session_run, &store, rec) {
+            Grade::Pass => {
+                pass += 1;
+                Verdict::Pass
+            }
+            Grade::Todo => {
+                todo += 1;
+                Verdict::Todo
+            }
+            Grade::Fail(why) => {
+                fail += 1;
+                failures.push(format!("{}: {why}", rec.title));
+                Verdict::Fail
+            }
+        };
+        verdicts.push((rec.title.clone(), v));
+    }
+
+    println!("\ngate (platform): {pass} pass, {todo} todo, {fail} fail");
+    if !failures.is_empty() {
+        println!("\nfailures:");
+        for f in &failures {
+            println!("  FAIL  {f}");
+        }
+    }
+    if opts.save {
+        save_baseline(paths, &verdicts, GateTarget::Platform);
+        println!(
+            "\nbaseline saved: {} cases → {}",
+            verdicts.len(),
+            baseline_path(paths, GateTarget::Platform).display()
+        );
+        return;
+    }
+    if opts.check {
+        std::process::exit(check_baseline(paths, &verdicts, GateTarget::Platform));
+    }
+    if fail > 0 {
+        std::process::exit(1);
+    }
+}
+
+/// Shell `cdz corpus records <file>` and return its stdout (the platform record stream). Same shape as
+/// `read_corpus` but returns the raw text (the platform genre has its own parser).
+fn read_platform_records_text(tools: &Tools, file: &Path) -> String {
+    let out = std::process::Command::new(&tools.corpus)
+        .arg("records")
+        .arg(file)
+        .output()
+        .unwrap_or_else(|e| launch_fail("cdz-corpus records", e));
+    if !out.status.success() {
+        eprintln!(
+            "xtask gate --target platform: reading {}: {}",
+            file.display(),
+            first_line(&out.stderr)
+        );
+        std::process::exit(1);
+    }
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+// ============================================================================================
 // gate baseline — a committed per-case verdict snapshot, so a REGRESSION (a case that used to pass
 // and now doesn't) fails `gate --check` even while the pass/todo/fail totals drift.
 // ============================================================================================
@@ -4178,6 +4628,11 @@ impl Verdict {
 /// wasm gate, and a target-suffixed sibling (`.gate-baseline-rust`) for another backend — so each
 /// backend has its OWN regression baseline and one does not clobber the other's.
 fn baseline_path(paths: &Paths, target: GateTarget) -> PathBuf {
+    // The PLATFORM suite has its OWN spec tree + baseline (spec/platform/.gate-baseline), NOT under
+    // spec/semantics. Return early so it doesn't get the semantics dir the compiler targets share.
+    if matches!(target, GateTarget::Platform) {
+        return paths.repo.join("spec/platform").join(".gate-baseline");
+    }
     let name = match target {
         GateTarget::Wasm => ".gate-baseline".to_string(),
         GateTarget::Rust => ".gate-baseline-rust".to_string(),
@@ -4187,6 +4642,7 @@ fn baseline_path(paths: &Paths, target: GateTarget) -> PathBuf {
         GateTarget::CadenzaMl => {
             unreachable!("cadenza-ml is differential-only; it has no gate baseline")
         }
+        GateTarget::Platform => unreachable!("handled by the early return above"),
     };
     paths.repo.join("spec/semantics").join(name)
 }
@@ -4502,6 +4958,18 @@ fn check(paths: &Paths, profile: &str) {
         format!("{xtask} --profile {profile} gate")
     };
     log.step_show("gate", &gate_cmd, repo);
+
+    // The PLATFORM-conformance gate (spec/platform/*.sexp) — the runtime/platform analog of the corpus.
+    // Blocking here, so a peer's change that breaks a platform case (compile-to-fold, kernel drive, or the
+    // graded end-state) REDS `check` and is rejected on merge, exactly as a corpus regression is. Runs
+    // `--check` against spec/platform/.gate-baseline when one exists (else a plain grade at 0 cases green).
+    // Guarded so this only fires once fixtures exist: with no spec/platform/ dir the gate is an empty pass.
+    let platform_cmd = if baseline_path(paths, GateTarget::Platform).exists() {
+        format!("{xtask} --profile {profile} gate --target platform --check")
+    } else {
+        format!("{xtask} --profile {profile} gate --target platform")
+    };
+    log.step_show("gate-platform", &platform_cmd, repo);
 
     // OPTIMIZATION-LEVEL-EQUIVALENCE gate — a HARD BLOCKING merge gate (operator directive 2026-07-17): a
     // program that produces a DIFFERENT observable outcome across optimization levels (O0..O3) is an

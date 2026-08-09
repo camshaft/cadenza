@@ -1,0 +1,2 @@
+# gate baseline — per-case verdicts (verdict\tdescription). Regenerate with `cargo xtask gate --save`.
+pass	a counter session bumps kv count on its kick-off message
