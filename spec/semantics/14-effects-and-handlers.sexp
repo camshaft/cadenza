@@ -21809,3 +21809,183 @@
   (call   main (: 0 Int64)) (output (: 8 Int64))
   (call   main (: 1 Int64)) (output (: 10 Int64))
   (call   main (: -2 Int64)) (output (: 10 Int64)))
+
+
+; ── Sliding windows over the payload stream + the slot-clobber extended witnesses (breaker) ───
+; Sliding windows: sw2 keeps the last TWO payloads in a bounded list state and resumes the window
+; sum via a recursive helper over its own list; sw3 makes the window CAPACITY itself state — a
+; grow op resizes mid-stream with the windowed MAX tracked across the resize; sw4 is the windowed
+; AVERAGE with the truncating divide over the live length (a negative window exercises
+; toward-zero); sw5 counts DISTINCT values via a Set built per dispatch from the last-3 window.
+; Slot-clobber extended witnesses (the Bytes.concat rhs base-floor reuse fixed by the
+; emit-above-high-water change; the minimal slmin11/by5 pins landed with the fix): sl1 composes
+; the branch-picked rope growth with a byte-len-seeded nested handle; tr2 pins that an untouched
+; SIBLING rope field neither masks nor causes the clobber. All rows hand-computed; all pass on
+; wasm, rust, and rust-async.
+
+(case "sw2 a SLIDING WINDOW of the last two payloads — the arm keeps a bounded list state and resumes the window sum"
+  (input  (do
+            (effect E (op feed (-> Int64 Int64)))
+            (def (sum-at (: xs (List Int64)) (: i Int64) (: acc Int64))
+              (match (List.at xs i)
+                ((Some v) (sum-at xs (+ i 1) (+ acc v)))
+                ((None) acc)))
+            (def (sum2 (: xs (List Int64))) (sum-at xs 0 0))
+            (def (main (: n Int64))
+              (handle E (list)
+                ((feed (v) win
+                  (let ((grown (List.push win v)))
+                    (let ((kept (if (> (List.len grown) 2)
+                                    (match (List.at grown 1)
+                                      ((Some a) (match (List.at grown 2)
+                                                  ((Some b) (list a b))
+                                                  ((None) grown)))
+                                      ((None) grown))
+                                    grown)))
+                      (resume (sum2 kept) kept)))))
+                (+ (* 100 (E.feed n)) (+ (* 10 (E.feed 7)) (E.feed (+ n 1))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 633 Int64))
+  (call   main (: 0 Int64)) (output (: 78 Int64))
+  (call   main (: -3 Int64)) (output (: -255 Int64)))
+
+(case "sw3 the window CAPACITY is itself state — a grow op resizes the window mid-stream, windowed MAX tracked across the resize"
+  (input  (do
+            (effect E (op feed (-> Int64 Int64)) (op grow (-> Int64)))
+            (def (max-at (: xs (List Int64)) (: i Int64) (: best Int64))
+              (match (List.at xs i)
+                ((Some v) (max-at xs (+ i 1) (if (> v best) v best)))
+                ((None) best)))
+            (def (drop-to (: xs (List Int64)) (: cap Int64))
+              (if (> (List.len xs) cap)
+                  (match (List.at xs (- (List.len xs) cap))
+                    ((Some h)
+                     (match (List.at xs (- (List.len xs) 1))
+                       ((Some t) (if (= cap 2) (list h t)
+                                     (match (List.at xs (- (List.len xs) 2))
+                                       ((Some m) (list h m t))
+                                       ((None) xs))))
+                       ((None) xs)))
+                    ((None) xs))
+                  xs))
+            (def (main (: n Int64))
+              (handle E (tuple (list) 2)
+                ((feed (v) st (match st
+                                ((tuple win cap)
+                                 (let ((kept (drop-to (List.push win v) cap)))
+                                   (resume (max-at kept 0 -1000000) (tuple kept cap))))))
+                 (grow () st (match st
+                               ((tuple win cap) (resume cap (tuple win 3))))))
+                (let ((r1 (E.feed n)))
+                  (let ((r2 (E.feed 7)))
+                    (do (E.grow)
+                        (let ((r3 (E.feed (+ n 9))))
+                          (let ((r4 (E.feed 1)))
+                            (+ r1 (+ (* 2 r2) (+ (* 3 r3) (* 4 r4)))))))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 117 Int64))
+  (call   main (: 0 Int64)) (output (: 77 Int64))
+  (call   main (: -8 Int64)) (output (: 55 Int64)))
+
+(case "sw4 windowed AVERAGE with the truncating divide — window sum over live length, a negative window exercises toward-zero"
+  (input  (do
+            (effect E (op feed (-> Int64 Int64)))
+            (def (sum-at (: xs (List Int64)) (: i Int64) (: acc Int64))
+              (match (List.at xs i)
+                ((Some v) (sum-at xs (+ i 1) (+ acc v)))
+                ((None) acc)))
+            (def (tail3 (: xs (List Int64)))
+              (if (> (List.len xs) 3)
+                  (match (List.at xs (- (List.len xs) 3))
+                    ((Some a) (match (List.at xs (- (List.len xs) 2))
+                                ((Some b) (match (List.at xs (- (List.len xs) 1))
+                                            ((Some c) (list a b c))
+                                            ((None) xs)))
+                                ((None) xs)))
+                    ((None) xs))
+                  xs))
+            (def (main (: n Int64))
+              (handle E (list)
+                ((feed (v) win
+                  (let ((kept (tail3 (List.push win v))))
+                    (resume (/ (sum-at kept 0 0) (List.len kept)) kept))))
+                (let ((r1 (E.feed n)))
+                  (let ((r2 (E.feed 7)))
+                    (let ((r3 (E.feed (+ n 2))))
+                      (let ((r4 (E.feed -5)))
+                        (+ r1 (+ (* 2 r2) (+ (* 3 r3) (* 4 r4))))))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 47 Int64))
+  (call   main (: 0 Int64)) (output (: 19 Int64))
+  (call   main (: -6 Int64)) (output (: -9 Int64)))
+
+(case "sw5 DISTINCT-count over the window — a Set built per dispatch from the last-3 list measures dedupe, n=7 collides with the constant feed"
+  (input  (do
+            (effect E (op feed (-> Int64 Int64)))
+            (def (tail3 (: xs (List Int64)))
+              (if (> (List.len xs) 3)
+                  (match (List.at xs (- (List.len xs) 3))
+                    ((Some a) (match (List.at xs (- (List.len xs) 2))
+                                ((Some b) (match (List.at xs (- (List.len xs) 1))
+                                            ((Some c) (list a b c))
+                                            ((None) xs)))
+                                ((None) xs)))
+                    ((None) xs))
+                  xs))
+            (def (distinct-at (: xs (List Int64)) (: i Int64) (: seen (Set Int64)))
+              (match (List.at xs i)
+                ((Some v) (distinct-at xs (+ i 1) (Set.insert seen v)))
+                ((None) (Set.len seen))))
+            (def (main (: n Int64))
+              (handle E (list)
+                ((feed (v) win
+                  (let ((kept (tail3 (List.push win v))))
+                    (resume (distinct-at kept 0 (Set.of (list))) kept))))
+                (let ((r1 (E.feed n)))
+                  (let ((r2 (E.feed n)))
+                    (let ((r3 (E.feed 7)))
+                      (let ((r4 (E.feed n)))
+                        (+ (* 1000 r1) (+ (* 100 r2) (+ (* 10 r3) r4)))))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 1122 Int64))
+  (call   main (: 7 Int64)) (output (: 1111 Int64))
+  (call   main (: 0 Int64)) (output (: 1122 Int64)))
+
+(case "sl1 a STRING slot grows by a mod-picked suffix and its BYTE-LEN seeds a nested handle — the composed face of the slot-clobber fix"
+  (input  (do
+            (effect E (op put (-> Int64)) (op size (-> Int64)))
+            (effect B (op g (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle E (tuple n "ab")
+                ((put () st (match st
+                              ((tuple s r)
+                               (resume s (tuple (+ s 1)
+                                                (String.concat r (if (= (% s 3) 0) "x" "yz")))))))
+                 (size () st (match st ((tuple s r) (resume (String.byte-len r) st)))))
+                (do (E.put) (E.put)
+                    (+ (handle B (E.size)
+                         ((g (u) t (resume t (+ t 10))))
+                         (+ (B.g) (B.g)))
+                       (E.size)))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 25 Int64))
+  (call   main (: 1 Int64)) (output (: 28 Int64))
+  (call   main (: -2 Int64)) (output (: 28 Int64)))
+
+(case "tr2 TWO string fields in the tuple with only one phi-grown — the sibling rope field is undisturbed (slot-clobber extended witness)"
+  (input  (do
+            (effect E (op put (-> Int64)) (op size (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (tuple n "ab" "cd")
+                ((put () st (match st
+                              ((tuple s a b)
+                               (resume s (tuple (+ s 1) a
+                                                (String.concat b (if (= (% s 3) 0) "x" "yz")))))))
+                 (size () st (match st
+                               ((tuple s a b)
+                                (resume (+ (* 100 (String.byte-len a)) (String.byte-len b)) st)))))
+                (do (E.put) (E.put) (+ (E.size) (E.size)))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 410 Int64))
+  (call   main (: 1 Int64)) (output (: 412 Int64))
+  (call   main (: -2 Int64)) (output (: 412 Int64)))

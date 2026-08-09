@@ -7114,3 +7114,9 @@ pass	lk3 LOCKOUT after two failures — the fail counter flips a dead flag that 
 pass	an unused let binding compiles and runs but the build surfaces a CDZ0306 unused-binding warning
 pass	slmin11 tuple(scalar,string) state, put rebuilds the tuple with a branch-picked String.concat suffix, 2 puts + 2 reads (invalid-wasm slot-clobber: the rope-retain dup and the counter step must not share a scratch slot at two widths)
 pass	by5 the slmin11 slot-clobber shape on a BYTES slot, phi-merged Bytes.concat growth in a tuple state, 2 puts + 2 reads
+pass	sw2 a SLIDING WINDOW of the last two payloads — the arm keeps a bounded list state and resumes the window sum
+pass	sw3 the window CAPACITY is itself state — a grow op resizes the window mid-stream, windowed MAX tracked across the resize
+pass	sw4 windowed AVERAGE with the truncating divide — window sum over live length, a negative window exercises toward-zero
+pass	sw5 DISTINCT-count over the window — a Set built per dispatch from the last-3 list measures dedupe, n=7 collides with the constant feed
+pass	sl1 a STRING slot grows by a mod-picked suffix and its BYTE-LEN seeds a nested handle — the composed face of the slot-clobber fix
+pass	tr2 TWO string fields in the tuple with only one phi-grown — the sibling rope field is undisturbed (slot-clobber extended witness)
