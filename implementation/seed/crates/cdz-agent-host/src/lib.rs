@@ -90,6 +90,7 @@ pub mod session_registry;
 #[cfg(feature = "live-exec")]
 pub mod shell;
 pub mod status;
+pub mod userspace_effect_exec;
 pub mod ws_exec;
 #[cfg(feature = "live-ws")]
 pub mod ws_listen;
@@ -158,6 +159,10 @@ pub use session_registry::{SessionRecord, SessionStatus};
 #[cfg(feature = "live-exec")]
 pub use shell::ShellExecutor;
 pub use status::{host_session_status_json, session_status_json, DEFAULT_STALL_AFTER_MS};
+pub use userspace_effect_exec::{
+    effect_request_inbound, HandlerResolver, UserspaceEffectExecutor, EFFECT_REQUEST_FAMILY_PREFIX,
+    EFFECT_REQUEST_VERSION,
+};
 pub use ws_exec::{WsConnRegistry, WsSendExecutor, WsSendResult};
 #[cfg(feature = "live-ws")]
 pub use ws_listen::WsListener;
