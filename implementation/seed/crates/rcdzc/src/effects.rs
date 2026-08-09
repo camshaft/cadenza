@@ -3521,6 +3521,50 @@ fn hoist_once(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> Option<StructId>
             }
         }
     }
+    // A strict application `(op … operand …)` whose OPERAND is a `(let (binds) body)` — pure bindings — whose
+    // BODY carries an abortive perform (typically `(let ((d n)) (if c (A.out n) n))`, the LET-WRAPPED-PREDICATE
+    // face of finding #11: the conditional abort sits under a `let`, so the `if`-operand hoist above does not
+    // see it). LIFT the `let` OUT to wrap the whole application: `(op … (let (b) body) …)` ≡ `(let (b) (op …
+    // body …))`. The next hoist pass then sees `(op … body …)` with the `if`-abort DIRECT in the operand and
+    // distributes it. Sound when the `let`'s binding inits AND every OTHER operand (and the head) are pure —
+    // then the lifted bindings run in the same observable order (nothing effectful is reordered), and the
+    // bindings scope over the rebuilt application (they were only used inside `body`). Only fires when the let
+    // body carries an abort (a plain value-let operand threads normally). Distinct from the let-INIT-carries-if
+    // case below (there the `if` is a binding init; here it is the let BODY, one level out).
+    if let Resolved::Apply { head, args } = resolved_of(db, node)
+        && is_perform(db, head, ctx).is_none()
+        && !subtree_performs(db, head, ctx)
+    {
+        for (i, &a) in args.iter().enumerate() {
+            if let Some(letform) = db.ast.as_form(a, "let").map(|t| t.to_vec())
+                && letform.len() == 2
+                && subtree_has_abortive_perform(db, letform[1], ctx)
+                && let Struct::List(pairs) = db.ast.get(letform[0]).clone()
+            {
+                let binds_pure = pairs.iter().all(|&p| match db.ast.get(p).clone() {
+                    Struct::List(pkv) if pkv.len() == 2 => !subtree_performs(db, pkv[1], ctx),
+                    _ => true,
+                });
+                let others_pure = args
+                    .iter()
+                    .enumerate()
+                    .all(|(j, &b)| j == i || !subtree_performs(db, b, ctx));
+                if binds_pure && others_pure {
+                    // `(op a0 … (let (b) body) … ak)` → `(let (b) (op a0 … body … ak))`.
+                    let inner_app: Vec<StructId> = std::iter::once(head)
+                        .chain(
+                            args.iter()
+                                .enumerate()
+                                .map(|(j, &b)| if j == i { letform[1] } else { b }),
+                        )
+                        .collect();
+                    let app = db.push_list(inner_app);
+                    let let_head = db.push_atom(Leaf::Name("let".to_string()));
+                    return Some(db.push_list(vec![let_head, letform[0], app]));
+                }
+            }
+        }
+    }
     // A SHORT-CIRCUIT connective `(and lhs rhs)` / `(or lhs rhs)` whose RIGHT operand carries an abort is
     // itself a conditional in disguise — `rhs` runs on only one value of `lhs`. Desugar it to the
     // equivalent `if` so the abort lands in a branch tail the per-branch capture folds: `(and lhs rhs)` ≡

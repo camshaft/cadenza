@@ -66329,6 +66329,36 @@ mod stage1 {
     }
 
     #[test]
+    fn a_let_wrapped_conditional_foreign_abort_under_an_inner_handle_homes_correctly() {
+        // FINDING #11, LET-WRAPPED-PREDICATE face: the conditional foreign abort sits under a `let` inside the
+        // inner handle body — `(let ((d n)) (if (= (% d 3) 0) (A.out n) n))`. After the inner-handle
+        // pre-reduction surfaces it, the abort is under `let`+`if`, one level deeper than the direct-`if` the
+        // operand hoist matches. `hoist_conditional_abort` now LIFTS a pure-binding `let` operand out of the
+        // enclosing application (`(* 100 (let (b) if))` ≡ `(let (b) (* 100 if))`), so the next pass sees the
+        // `if`-abort direct and homes `A.out` to A. main(3): A.out 3 → 9003 (was 900307, the let-wrapped face
+        // breaker's abmin3 pinned).
+        let src = "(do (effect A (op out (-> Int64 Int64))) (effect B (op bout (-> Int64 Int64))) \
+                   (def (main (: n Int64)) \
+                     (handle A 0 ((out (v) t (+ 9000 v))) \
+                       (+ (* 100 (handle B 0 ((bout (v) t (+ 500 v))) \
+                                   (let ((d n)) (if (= (% d 3) 0) (A.out n) n)))) 7))) \
+                   (export main))";
+        let comp = compile_component(&crate::codec::encode(&parse(src))).expect(
+            "a let-wrapped conditional foreign abort under an inner handle must fold + home to A",
+        );
+        assert_eq!(
+            run_returns_with::<i64>(&comp, "main", &[wasmtime::component::Val::S64(3)]),
+            9003,
+            "A.out 3 homes to A through the let+if wrapper — not 900307"
+        );
+        assert_eq!(
+            run_returns_with::<i64>(&comp, "main", &[wasmtime::component::Val::S64(4)]),
+            407,
+            "else branch: n=4 → 100*4 + 7"
+        );
+    }
+
+    #[test]
     fn a_non_tail_cross_function_conditional_abort_declines() {
         // E4 cross-fn soundness guard (a MISCOMPILE regression): a helper that CONDITIONALLY aborts, called
         // in a non-tail position — `(+ 10 (check -1))` where `check n = (if (< n 0) (Bail.bail 99) n)`. The
