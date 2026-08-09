@@ -5,8 +5,9 @@
 //! message` (or, under `--json`, a structured diagnostic array). The pattern-matching engine lives in
 //! cadenza-syntax; what is pinned HERE is the CLI contract only `cdz` owns: a rule match renders the
 //! diagnostic + the severity→exit-code discipline (an `error` match fails with exit 1; a `warning`-only
-//! match still exits 0; a clean file exits 0), the `--json` diagnostic shape, and the guard that a run
-//! with NO rule is a usage error (exit 1) rather than a silent no-op. Drives the built binary.
+//! match still exits 0; a clean file exits 0), the `--json` diagnostic shape, and that a run with NO
+//! explicit rule uses the built-in `idiomatic` catalog (the Tier-A pack) rather than erroring or being a
+//! silent no-op. Drives the built binary.
 
 use std::process::Command;
 
@@ -123,16 +124,31 @@ fn lint_json_emits_a_structured_diagnostic_array() {
 }
 
 #[test]
-fn lint_with_no_rule_is_a_usage_error() {
-    // A `cdz lint` with NO `--rule`/`--rules` has nothing to check — a clear error (exit non-zero)
-    // naming the tool + how to supply a rule, NOT a silent exit-0 no-op.
+fn lint_with_no_rule_runs_the_builtin_idiomatic_catalog() {
+    // `cdz lint FILE` with NO `--rule`/`--rules` runs the BUILT-IN `idiomatic` catalog (the Tier-A
+    // pack) — the tool is useful out of the box (DESIGN-cadenza-lint §2), not a usage error. On a
+    // program with no idiomatic issue (PROG uses `deprecated-op`, which no built-in lint targets) it
+    // exits 0 with no diagnostics; a program WITH an idiomatic shape flags it (checked below).
     let file = temp_src("norule", PROG);
-    let (code, _out, err) = run(&["lint", &file]);
-    assert_ne!(code, 0, "no rules is an error, not a silent pass");
-    assert!(
-        err.contains("cdz:") && err.contains("no lint rules"),
-        "the error names the tool + explains --rule/--rules: {err}"
+    let (code, out, _err) = run(&["lint", &file]);
+    assert_eq!(
+        code, 0,
+        "no explicit rules runs the built-in catalog, not an error: {out}"
     );
+    // A program with a built-in-lint shape (`if b true false` → idiomatic/if-bool) is flagged.
+    let idiomatic = temp_src(
+        "idiom",
+        "(module m (def (f (: b Bool)) (if b true false)) (export f))",
+    );
+    let (icode, iout, _ierr) = run(&["lint", &idiomatic]);
+    assert_eq!(icode, 0, "a warning-level lint does not fail the run");
+    assert!(
+        iout.contains("idiomatic") || iout.contains("if"),
+        "the built-in if-bool lint fires by default: {iout}"
+    );
+    // `--deny` on the built-in lint promotes it to an error (exit non-zero).
+    let (dcode, _dout, _derr) = run(&["lint", &idiomatic, "--deny", "idiomatic/if-bool"]);
+    assert_ne!(dcode, 0, "--deny on a built-in lint fails the run");
 }
 
 #[test]
