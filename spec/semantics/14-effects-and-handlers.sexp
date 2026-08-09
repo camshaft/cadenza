@@ -20647,3 +20647,146 @@
   (call   main (: 3 Int64)) (output (: 310 Int64))
   (call   main (: 0 Int64)) (output (: 10 Int64))
   (call   main (: -2 Int64)) (output (: -190 Int64)))
+
+
+; ── Two-site-arm radius, float/quantity threads, and record cross-arm state (breaker riders) ──
+; Pooled pins. Two-site-arm boundary faces: a guarded match on a perform result inside a two-site
+; arm's served branch (gr2); a two-site arm beside a state-REPLACING second op over scalar state
+; (rp1); a perform under NOT in a condition — the negated dispatch gate (nb1). Recursion/handled-
+; region shapes: mutual recursion carrying a (List Int64) accumulator, the scalar-element control
+; for the mutual floor (mx1); an outer handle of an effect the inner region fully discharges —
+; idempotent double-handling, the outer never fires (id1). Non-integer threads: a Float64 handler
+; state through a two-site arm with a magnitude threshold (fl1); a TRIPLING Float64 thread crossing
+; a fixed threshold at input-dependent depth (fr1); two perform-drawn quantities of one dimension
+; adding — same-unit combine over two dispatches (qs1). Shared-state protocols: readers and a SPIN
+; writer over one tuple state (tp4). And the record twin of the collection cross-arm shape: a
+; RECORD state updated by one arm and field-read by siblings — full field types at the seed, so
+; the empty-collection element-var gap does not apply (rr1, green control for that filed issue).
+; All rows hand-computed; all pass on wasm, rust, and rust-async.
+
+(case "gr2 guarded match on a perform result INSIDE a two-site arm's served branch"
+  (input  (do
+            (effect St (op sift (-> Int64 Int64)) (op roll (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((sift (v) s (if (> v 10) (resume v (+ s 1)) (resume 0 s)))
+                 (roll (u) s (resume s (+ s 3))))
+                (match (St.roll)
+                  ((guard v (> v 6)) (* v 100))
+                  (v (+ (St.sift 20) (+ (St.sift 3) v))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 25 Int64)))
+
+(case "rp1 two-site arm + a state-REPLACING second op over a SCALAR state"
+  (input  (do
+            (effect St (op sift (-> Int64 Int64)) (op reset (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St 0
+                ((sift (v) s (if (> v 10) (resume v (+ s 1)) (resume 0 s)))
+                 (reset (u) s (resume s 100)))
+                (+ (St.sift 20) (+ (St.reset) (St.sift 30)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 51 Int64)))
+
+(case "nb1 a perform under NOT in a condition (the negated dispatch gate)"
+  (input  (do
+            (effect St (op check (-> Unit Int64)) (op count (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((check (u) s (resume s (+ s 1)))
+                 (count (u) s (resume s s)))
+                (if (not (> (St.check) 3))
+                  (* 100 (St.count))
+                  (St.count))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 200 Int64)))
+
+(case "mx1 mutual recursion with a (List Int64) accumulator (scalar element control)"
+  (input  (do
+            (def (evens (: n Int64) (: acc (List Int64)))
+              (if (= n 0) acc (odds (- n 1) (List.push acc n))))
+            (def (odds (: n Int64) (: acc (List Int64)))
+              (if (= n 0) acc (evens (- n 1) acc)))
+            (def (main (: k Int64))
+              (List.len (evens k (list))))
+            (export main)))
+  (call   main (: 6 Int64)) (output (: 3 Int64)))
+
+(case "id1 handling an ALREADY-DISCHARGED effect: outer handle of an effect the inner fully consumed"
+  (input  (do
+            (effect St (op a (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St 999
+                ((a (u) s (resume (- 0 s) s)))
+                (handle St n
+                  ((a (u) s (resume s (+ s 1))))
+                  (+ (St.a) (St.a)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 11 Int64)))
+
+(case "fl1 a Float64 handler state through a two-site arm (threshold on the magnitude)"
+  (input  (do
+            (effect St (op feed (-> Int64 Int64)))
+            (def (main (: a Int64))
+              (handle St 0.5
+                ((feed (v) s (if (> v 10) (resume v (+ s 0.25)) (resume 0 s))))
+                (+ (* 100 (St.feed 20)) (+ (* 10 (St.feed a)) (St.feed 30)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 2030 Int64)))
+
+(case "fr1 a TRIPLING Float64 thread crosses a fixed threshold — three compares catch the crossing depth, exact integer-valued floats"
+  (input  (do
+            (effect E (op over (-> Float64)))
+            (def (main (: seed Float64))
+              (handle E seed
+                ((over () s (resume (if (> s 4.0) 1.0 0.0) (* s 3.0))))
+                (+ (* 100.0 (E.over)) (+ (* 10.0 (E.over)) (E.over)))))
+            (export main)))
+  (call   main (: 1.0 Float64)) (output (: 1.0 Float64))
+  (call   main (: 2.0 Float64)) (output (: 11.0 Float64))
+  (call   main (: 8.0 Float64)) (output (: 111.0 Float64)))
+
+(case "qs1 two perform-drawn quantities of one dimension ADD — same-unit combine over two crossings"
+  (input  (do
+            (effect St (op next (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle St n
+                ((next (u) s (resume s (+ s 1))))
+                (let ((q1 (Qty.of (St.next) (Unit.base #"meter"))))
+                  (let ((q2 (Qty.of (St.next) (Unit.base #"meter"))))
+                    (Qty.value (+ q1 q2))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 11 Int64)))
+
+(case "tp4 readers and a SPIN writer share one tuple state — sum flows into slot a while old a shifts to b"
+  (input  (do
+            (effect E (op geta (-> Int64)) (op getb (-> Int64)) (op spin (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (tuple n 100)
+                ((geta () s (match s ((tuple a b) (resume a s))))
+                 (getb () s (match s ((tuple a b) (resume b s))))
+                 (spin () s (match s ((tuple a b) (resume (+ a b) (tuple (+ a b) a))))))
+                (let ((r1 (E.geta)))
+                  (let ((r2 (E.getb)))
+                    (do (E.spin)
+                        (+ r1 (+ (* 10 r2) (+ (* 100 (E.geta)) (* 1000 (E.getb))))))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 14303 Int64))
+  (call   main (: 0 Int64)) (output (: 11000 Int64))
+  (call   main (: -5 Int64)) (output (: 5495 Int64)))
+
+(case "rr1 RECORD handler state updated by one arm, field-read by a SIBLING arm plus a third counter arm — the record twin of the collection cross-arm shape"
+  (input  (do
+            (effect E (op tick (-> Int64)) (op rd (-> Int64)) (op cur (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (record (cnt n) (tot 0))
+                ((tick () st (resume (. st cnt)
+                                     (record (cnt (+ (. st cnt) 1))
+                                             (tot (+ (. st tot) (* 10 (. st cnt)))))))
+                 (rd () st (resume (. st tot) st))
+                 (cur () st (resume (. st cnt) st)))
+                (+ (E.tick) (+ (E.tick) (+ (E.rd) (E.cur))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 128 Int64))
+  (call   main (: 0 Int64)) (output (: 13 Int64))
+  (call   main (: -3 Int64)) (output (: -56 Int64)))

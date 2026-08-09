@@ -6995,3 +6995,13 @@ pass	dd5 a do-def BINDS a whole cross-effect handle region — the region's seed
 pass	tb1 a def RETURNS a tuple of two draws — the caller destructures the multi-value result of a performing helper
 pass	nt1 a NESTED tuple state (a (b c)) — the arm destructures two levels and rebuilds with three different strides
 pass	ex1 a draw SEEDS a mid-body handler install for a different effect — the install expression itself performs
+pass	gr2 guarded match on a perform result INSIDE a two-site arm's served branch
+pass	rp1 two-site arm + a state-REPLACING second op over a SCALAR state
+pass	nb1 a perform under NOT in a condition (the negated dispatch gate)
+pass	mx1 mutual recursion with a (List Int64) accumulator (scalar element control)
+pass	id1 handling an ALREADY-DISCHARGED effect: outer handle of an effect the inner fully consumed
+pass	fl1 a Float64 handler state through a two-site arm (threshold on the magnitude)
+pass	fr1 a TRIPLING Float64 thread crosses a fixed threshold — three compares catch the crossing depth, exact integer-valued floats
+pass	qs1 two perform-drawn quantities of one dimension ADD — same-unit combine over two crossings
+pass	tp4 readers and a SPIN writer share one tuple state — sum flows into slot a while old a shifts to b
+pass	rr1 RECORD handler state updated by one arm, field-read by a SIBLING arm plus a third counter arm — the record twin of the collection cross-arm shape
