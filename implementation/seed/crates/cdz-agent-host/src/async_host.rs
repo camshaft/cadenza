@@ -924,8 +924,8 @@ async fn handle_admin(
     // I4b: capture the install's reducer hash BEFORE `apply_admin_authorized` consumes the command, so a
     // successful install can REGISTER the session in the durable registry (the index boot-recovery reads).
     #[cfg(feature = "live-aws-storage")]
-    let install_reducer_hex = match &req.command {
-        AdminCommand::InstallSession(spec) => Some(spec.reducer_hash.to_hex()),
+    let install_reducer_hash = match &req.command {
+        AdminCommand::InstallSession(spec) => Some(spec.reducer_hash),
         _ => None,
     };
     let resp = host
@@ -935,10 +935,10 @@ async fn handle_admin(
     // write failure is logged, NEVER fails the install (the durable log is the source of truth; the registry
     // is an index over it, rebuilt-able). The reducer hash is what boot-recovery reloads the reducer by.
     #[cfg(feature = "live-aws-storage")]
-    if let (Some(registry), AdminResponse::Installed { id }, Some(reducer_hex)) =
-        (session_registry, &resp, &install_reducer_hex)
+    if let (Some(registry), AdminResponse::Installed { id }, Some(reducer_hash)) =
+        (session_registry, &resp, &install_reducer_hash)
     {
-        if let Err(e) = registry.register(id.as_str(), reducer_hex, now_ms).await {
+        if let Err(e) = registry.register(id.as_str(), *reducer_hash, now_ms).await {
             // Non-sensitive: the session id + a registry-write error. Never a guest-controlled string.
             tracing::warn!(
                 target: "cdz_agent_host::session_registry",

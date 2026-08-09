@@ -57,9 +57,11 @@ impl SessionStatus {
 pub struct SessionRecord {
     pub session_id: String,
     pub status: SessionStatus,
-    /// Hex of the reducer's content hash (the genesis reducer — boot-recovery loads it by this to rebuild the
-    /// session's reducer). Hex (not raw bytes) so it round-trips as a Dynamo string attribute.
-    pub reducer_hash_hex: String,
+    /// The reducer's content hash (the genesis reducer — boot-recovery loads it by this to rebuild the
+    /// session's reducer). Stored RAW ([`Hash`] = 32 bytes), round-tripped through Dynamo as a BINARY (`B`)
+    /// attribute — NO hex (operator directive: zero to_hex conversions except tracing; Dynamo stores binary
+    /// natively, no string coercion).
+    pub reducer_hash: cdz_kernel::hash::Hash,
     /// Millis since epoch when this record was last written (host-supplied; the kernel stays entropy/clock
     /// free). Informational — orders records for an operator view, not load-bearing for recovery.
     pub updated_ms: u64,
@@ -107,15 +109,16 @@ mod live {
         }
 
         /// REGISTER a session as active (install/genesis). Idempotent: a re-driven install re-puts the same
-        /// item (status=active), so a crash-redriven register overwrites byte-identically. `reducer_hash_hex`
-        /// is how boot-recovery reloads the reducer. `now_ms` is host-supplied (the kernel is clock-free).
+        /// item (status=active), so a crash-redriven register overwrites byte-identically. `reducer_hash` is
+        /// how boot-recovery reloads the reducer — passed + stored as raw [`Hash`], no hex. `now_ms` is
+        /// host-supplied (the kernel is clock-free).
         pub async fn register(
             &self,
             session_id: &str,
-            reducer_hash_hex: &str,
+            reducer_hash: cdz_kernel::hash::Hash,
             now_ms: u64,
         ) -> io::Result<()> {
-            self.put(session_id, SessionStatus::Active, reducer_hash_hex, now_ms)
+            self.put(session_id, SessionStatus::Active, reducer_hash, now_ms)
                 .await
         }
 
@@ -125,8 +128,14 @@ mod live {
         /// terminated record with an empty reducer hash (a terminate for an unknown session shouldn't fail the
         /// caller — the session is gone either way).
         pub async fn mark_terminated(&self, session_id: &str, now_ms: u64) -> io::Result<()> {
-            let reducer = self.get_reducer_hex(session_id).await?.unwrap_or_default();
-            self.put(session_id, SessionStatus::Terminated, &reducer, now_ms)
+            // Preserve the recorded reducer hash if present; a terminate for an unknown session (no item)
+            // writes a terminated record with a zero hash (a terminate shouldn't fail — the session is gone
+            // either way, and a terminated record is never recovered so its reducer hash is unread).
+            let reducer = self
+                .get_reducer_hash(session_id)
+                .await?
+                .unwrap_or_else(|| cdz_kernel::hash::Hash::from_bytes([0u8; 32]));
+            self.put(session_id, SessionStatus::Terminated, reducer, now_ms)
                 .await
         }
 
@@ -198,8 +207,12 @@ mod live {
             Ok(records)
         }
 
-        /// Read just the stored `reducer_hash` hex for a session (for `mark_terminated` to preserve it).
-        async fn get_reducer_hex(&self, session_id: &str) -> io::Result<Option<String>> {
+        /// Read just the stored `reducer_hash` (raw, from the binary `B` attribute) for a session — for
+        /// `mark_terminated` to preserve it. `None` if the item or attribute is absent / not 32 bytes.
+        async fn get_reducer_hash(
+            &self,
+            session_id: &str,
+        ) -> io::Result<Option<cdz_kernel::hash::Hash>> {
             let resp = self
                 .client
                 .get_item()
@@ -214,7 +227,9 @@ mod live {
                     ))
                 })?;
             Ok(resp.item().and_then(|item| match item.get(ATTR_REDUCER) {
-                Some(AttributeValue::S(s)) => Some(s.clone()),
+                Some(AttributeValue::B(b)) => <[u8; 32]>::try_from(b.as_ref())
+                    .ok()
+                    .map(cdz_kernel::hash::Hash::from_bytes),
                 _ => None,
             }))
         }
@@ -224,7 +239,7 @@ mod live {
             &self,
             session_id: &str,
             status: SessionStatus,
-            reducer_hash_hex: &str,
+            reducer_hash: cdz_kernel::hash::Hash,
             now_ms: u64,
         ) -> io::Result<()> {
             self.client
@@ -233,8 +248,11 @@ mod live {
                 .item(ATTR_SESSION, AttributeValue::S(session_id.to_string()))
                 .item(ATTR_STATUS, AttributeValue::S(status.as_str().to_string()))
                 .item(
+                    // Raw 32 bytes as a Dynamo BINARY attribute — no hex (operator: Dynamo stores binary).
                     ATTR_REDUCER,
-                    AttributeValue::S(reducer_hash_hex.to_string()),
+                    AttributeValue::B(aws_sdk_dynamodb::primitives::Blob::new(
+                        reducer_hash.as_bytes().to_vec(),
+                    )),
                 )
                 .item(ATTR_UPDATED_MS, AttributeValue::N(now_ms.to_string()))
                 .send()
@@ -265,8 +283,10 @@ mod live {
             }
             _ => return Err(corrupt("missing status")),
         };
-        let reducer_hash_hex = match item.get(ATTR_REDUCER) {
-            Some(AttributeValue::S(s)) => s.clone(),
+        let reducer_hash = match item.get(ATTR_REDUCER) {
+            Some(AttributeValue::B(b)) => <[u8; 32]>::try_from(b.as_ref())
+                .map(cdz_kernel::hash::Hash::from_bytes)
+                .map_err(|_| corrupt("reducer_hash is not 32 bytes"))?,
             _ => return Err(corrupt("missing reducer_hash")),
         };
         let updated_ms = match item.get(ATTR_UPDATED_MS) {
@@ -278,7 +298,7 @@ mod live {
         Ok(SessionRecord {
             session_id,
             status,
-            reducer_hash_hex,
+            reducer_hash,
             updated_ms,
         })
     }
