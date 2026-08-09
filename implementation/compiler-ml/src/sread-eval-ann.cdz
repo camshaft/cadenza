@@ -125,6 +125,32 @@ def se-ann-int32-max-and-just-over() =
     | Option.None(_) => trap("Int32 max 2147483647 fits")
 
 @test
+def se-ann-int32-min-and-just-under() =
+  // Int32 min -2^31 = -2147483648 fits (signed lower bound); -2147483649 = min-1 declines. The signed-min twin
+  // of the max pin above — pins the lower boundary of the 32-bit signed range.
+  match run-src("(: -2147483648 Int32)") with
+    | Option.Some(v) => (if v == -2147483648 then
+      match run-src("(: -2147483649 Int32)") with
+        | Option.None(_) => unit
+        | Option.Some(_) => trap("(: -2147483649 Int32) declines")
+    else
+      trap("(: -2147483648 Int32) → -2147483648"))
+    | Option.None(_) => trap("Int32 min -2147483648 fits")
+
+@test
+def se-ann-uint32-max-and-just-over() =
+  // UInt32 max 2^32-1 = 4294967295 fits; 4294967296 = max+1 declines. The 32-bit unsigned boundary (was
+  // unpinned — UInt8/16 had boundary pins, UInt32 did not).
+  match run-src("(: 4294967295 UInt32)") with
+    | Option.Some(v) => (if v == 4294967295 then
+      match run-src("(: 4294967296 UInt32)") with
+        | Option.None(_) => unit
+        | Option.Some(_) => trap("(: 4294967296 UInt32) declines")
+    else
+      trap("(: 4294967295 UInt32) → 4294967295"))
+    | Option.None(_) => trap("UInt32 max 4294967295 fits")
+
+@test
 def se-ann-narrow-plus-bare-literal-adapts() =
   // `(+ (: 100 Int8) 20)` — the annotated operand is Int8 and the bare `20` is a plain literal (infer's
   // default Int64) that FITS Int8, so it ADAPTS to the narrow sibling's width (corpus 09-functions:3577 "the
