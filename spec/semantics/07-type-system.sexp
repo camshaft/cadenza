@@ -124,9 +124,11 @@
            lowercase name gets an actionable 'generic route' hint (Cadenza's polymorphism comes from an
            UNANNOTATED parameter, not a `∀`-binder in an annotation), while an uppercase name — read as a
            concrete type that does not exist — keeps the plain 'unbound name' message. Pins the uppercase
-           branch (a missing concrete type), the case-distinct companion of the lowercase-`foo` case.")
+           branch (a missing concrete type), the case-distinct companion of the lowercase-`foo` case. The
+           (message ..) pins the actionable lead — the diagnostic names the repair ('declare it with `(type
+           Foo …)`'), not a dead-end 'unbound name' — so a wording degrade flips this case.")
   (input  (do (def (main) (: 5 Foo)) (export main)))
-  (error  CDZ0101))
+  (error  CDZ0101 (message "declare it with")))
 
 (case "a lowercase type variable in a USER-GENERIC parameter annotation is rejected"
   (doc    "`(def (next (: it (Iter a))) …)` annotates a parameter with a USER-GENERIC type applied to a
