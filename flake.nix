@@ -1031,6 +1031,15 @@
             cargo clippy --all-targets --locked --features admin -- -D warnings
             cargo clippy --all-targets --locked --features live-net -- -D warnings
             cargo clippy --all-targets --locked --features admin,live-net -- -D warnings
+            # live-net TEST coverage (v-nix 2026-08-09, v-ft/concierge GAP-2): the matrix above catches a
+            # live-net COMPILE break at CLIPPY, but the TEST run was admin-only, so a live-net RUNTIME/test
+            # break (a test that only fails with the real transports wired) could pass localGate + land
+            # (v-ah-host hit exactly this — a factory registration landed without its CanonicalResolver dep,
+            # E0433 only under live-net, invisible to the admin-only gate). SAFE in the hermetic sandbox: the
+            # live-net tests (tests/live_transport_e2e.rs) are ENV-GATED — they SKIP cleanly unless
+            # CDZ_LIVE_HTTP_URL / AWS creds are set (which the sandbox has NOT), so this COMPILES the live-net
+            # test targets (the real coverage) + the network tests skip without egress. No net dep, no flake.
+            cargo test --locked --features live-net
             runHook postBuild
           '';
           installPhase = ''
