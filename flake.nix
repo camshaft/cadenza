@@ -2104,6 +2104,19 @@
               cargoCmd = "cargo run --locked --package xtask --profile release -- roundtrip";
               src = seedRoundtripSrc;
             };
+            # emoji-lint (v-nix 2026-08-09): the GHA `emoji-lint` job (checks.yml — `cargo xtask lint-emoji`,
+            # #2579) had NO nix equivalent, so under the GHA-off cutover (localGate is the sole merge gate)
+            # the operator's standing NO-emoji-in-source-comments directive stopped being enforced at merge.
+            # This folds it in. `emoji_free_lint` (xtask/src/main.rs) walks `implementation/**/*.rs` comments;
+            # seedSrc's `implementation/seed/crates` is EXACT coverage parity (verified: all 326 .rs under
+            # implementation/ live under seed/crates, 0 outside). Advisory (like the other native checks) — a
+            # comment-emoji red must not be a merge-blocker beyond what the operator directive implies, but it
+            # surfaces the violation. Cached xtask compile via the shared vendor, same as roundtrip.
+            emojiLintCheck = cargoWorkspaceCheck {
+              name = "cargo-xtask-lint-emoji";
+              cargoCmd = "cargo run --locked --package xtask --profile release -- lint-emoji";
+              # src = seedSrc (default): implementation/seed/crates + xtask — matches the lint's walk exactly.
+            };
 
             # LOCAL GATE — the GHA-outage fallback (operator-greenlit, concierge-assigned, v-ft leads the
             # pr-sync wiring). One `nix build .#checks.aarch64-linux.local-gate` = a single green/red over
@@ -2259,6 +2272,9 @@
             # `cargo xtask` alias, which omits --locked) so a lockfile drift hard-fails, matching the
             # workspace test/clippy checks (#2032).
             roundtrip = roundtripCheck;
+            # emoji-lint: the GHA emoji-lint job's nix equivalent (cargo xtask lint-emoji, comment-scoped
+            # NO-emoji ban over implementation/**/*.rs). Folded in since GHA-off made localGate the sole gate.
+            emoji-lint = emojiLintCheck;
             # LOCAL GATE aggregate — the GHA-outage fallback (see the `localGate` binding above). pr-sync
             # invokes `nix build .#checks.aarch64-linux.local-gate` for a single green/red over the 9
             # merge-required contexts (ruleset-10 minus test-macos) without any GH runner.
