@@ -9732,12 +9732,23 @@ fn pattern_constraints(
                     {
                         Some(hit) => hit,
                         None => {
+                            // A near-miss field name is a TYPO — suggest the nearest actual field, the
+                            // record-PATTERN twin of the member-access `(. r fooo)` did-you-mean (CDZ0212).
+                            // Same typo class; without this the pattern path dead-ended at "does not have"
+                            // while the access path named the fix. `suggest::nearest` returns a confident
+                            // single candidate (its cutoff) or None (a far miss keeps the plain message).
+                            let field_name = key.map(|k| k.name).unwrap_or_default();
+                            let suggestion = crate::diag::suggest::nearest(
+                                &field_name,
+                                fs.keys().map(|k| k.name.as_str()),
+                            )
+                            .map(|near| format!(" — did you mean `{near}`?"))
+                            .unwrap_or_default();
                             return Err(Reject::coded(
                                 Code::Malformed,
                                 format!(
-                                    "a record pattern names field `{}`, which the matched value of type \
-                                     {} does not have",
-                                    key.map(|k| k.name).unwrap_or_default(),
+                                    "a record pattern names field `{field_name}`, which the matched value \
+                                     of type {} does not have{suggestion}",
                                     ty.render_name()
                                 ),
                             )

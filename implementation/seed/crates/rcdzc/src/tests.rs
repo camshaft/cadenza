@@ -4002,6 +4002,45 @@ fn a_record_match_pattern_faults_are_actionable_and_lockstep() {
     );
 }
 
+#[test]
+fn a_record_match_pattern_typo_field_suggests_the_nearest_field() {
+    use crate::testkit::parse;
+    // A record PATTERN naming a near-miss field is a TYPO — suggest the nearest actual field, the
+    // record-pattern twin of the member-access `(. r fooo)` did-you-mean (CDZ0212). Same typo class;
+    // before this the pattern path dead-ended at "does not have" while the access path named the fix.
+    let typo = compile_component(&crate::codec::encode(&parse(
+        "(module m (def (f (: r (Record (helper Int64)))) (match r ((record (helpr y)) y))) \
+         (def (main) (f (record (helper 1)))) (export main))",
+    )))
+    .expect_err("a record-pattern typo field rejects");
+    assert_eq!(
+        typo.code.as_deref(),
+        Some("CDZ0201"),
+        "got: {}",
+        typo.message
+    );
+    assert!(
+        typo.message.contains("field `helpr`")
+            && typo.message.contains("does not have")
+            && typo.message.contains("did you mean `helper`?"),
+        "a confident near-miss names the fault AND suggests the nearest field: {}",
+        typo.message
+    );
+    // A FAR-MISS field (beyond `nearest`'s cutoff) must NOT get a baseless suggestion — the plain
+    // message stands (no "did you mean").
+    let far = compile_component(&crate::codec::encode(&parse(
+        "(module m (def (f (: r (Record (helper Int64)))) (match r ((record (zzz y)) y))) \
+         (def (main) (f (record (helper 1)))) (export main))",
+    )))
+    .expect_err("a far-miss record-pattern field still rejects");
+    assert_eq!(far.code.as_deref(), Some("CDZ0201"), "got: {}", far.message);
+    assert!(
+        far.message.contains("field `zzz`") && !far.message.contains("did you mean"),
+        "a far-miss field carries no baseless suggestion: {}",
+        far.message
+    );
+}
+
 /// The atom-copy fix must NOT substitute a BINDER occurrence that shadows the parameter. `(def (f x)
 /// (let ((x true)) x))` binds the inner `x = true` shadowing the Int64 param `x`; `(f 99)` must return
 /// `true`. The atom-copy pass resolved the let's BINDER-name occurrence `x` (a `Ref` up to the param,
