@@ -65544,6 +65544,36 @@ mod stage1 {
     }
 
     #[test]
+    fn a_mixed_handler_abortive_arm_value_reads_both_the_op_arg_and_the_state() {
+        // The mixed resuming+abortive handler, but the ABORTIVE arm's value is a function of BOTH the op
+        // ARGUMENT and the handler STATE binder — `(stop (code) s (* code s))` — reached after a resuming
+        // sibling `get` has run. Body `(+ (E.get) (E.stop 7))` seeded n via a RUNTIME param: `E.get` resumes
+        // the seed s=n (identity resume), then `E.stop 7` ABANDONS the pending `(+ n …)` and the arm value
+        // `(* 7 n)` becomes the handle's value. Exercises the abort-value path reading its op arg AND the
+        // live state binder together (distinct from the arg-only `(bail (n) s n)` and state-only cases): the
+        // abort value must ground both the payload `code` and the state `s` with a machine representation on
+        // all backends. n=5 → 7*5 = 35 (the `+ n` is abandoned); n=3 → 21.
+        let src = "(do (effect E (op get (-> Int64)) (op stop (-> Int64 Int64))) \
+                   (def (main (: n Int64)) \
+                     (handle E n ((get () s (resume s s)) (stop (code) s (* code s))) \
+                       (+ (E.get) (E.stop 7)))) \
+                   (export main))";
+        let comp = compile_component(&crate::codec::encode(&parse(src))).expect(
+            "a mixed handler whose abortive arm reads both the op arg and the state must fold",
+        );
+        assert_eq!(
+            run_returns_with::<i64>(&comp, "main", &[wasmtime::component::Val::S64(5)]),
+            35,
+            "stop 7 aborts with (* 7 5) = 35, abandoning the pending (+ (E.get) ..)",
+        );
+        assert_eq!(
+            run_returns_with::<i64>(&comp, "main", &[wasmtime::component::Val::S64(3)]),
+            21,
+            "(* 7 3) = 21",
+        );
+    }
+
+    #[test]
     fn a_cross_function_perform_is_discharged_by_the_callers_handler() {
         // E1c-3 (the inline trigger): a perform in a CALLEE `gen` is discharged by the handler enclosing
         // `gen`'s CALL — `(handle … (gen))`. The fold inlines `gen` into the handled region (β-reduces
