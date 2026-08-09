@@ -613,4 +613,252 @@ mod tests {
         assert!(!exec.handles_family(effect_ct::HTTP));
         assert!(!exec.handles_family("embedding"));
     }
+
+    // ---- an agent RUNS a model-invocation loop end-to-end through the ModelExecutor (converted from the
+    // deleted model_agent_e2e integration test, operator no-integration-tests mandate — hermetic: a Session
+    // + Rust reducers + the real ModelExecutor/ClockExecutor over STUB transports, no network). Beyond the
+    // isolated effect-mapping units above: the completion drives the agent loop + replays, a CompositeExecutor
+    // routes Now+Model for one agent, and a SEC-F1 model-id grant denies an off-id call before the transport. ----
+    use crate::clock::ClockExecutor;
+    use cdz_kernel::authz::Authorizer;
+    use cdz_kernel::effect::{Capability, EffectKind, ResourcePredicate};
+    use cdz_kernel::event::{ContentType, Event, EventBody};
+    use cdz_kernel::executor::CompositeExecutor;
+    use cdz_kernel::kernel::Session;
+    use cdz_kernel::kv::Kv;
+    use cdz_kernel::reducer::{FoldOutput, Reducer};
+
+    /// A canned-completion transport for the agent loop (distinct from the effect-mapping `StubTransport`
+    /// above): echoes `<model_id> says: <prompt>` so the agent can prove the executor threaded id + body.
+    struct CannedModel;
+    #[async_trait::async_trait(?Send)]
+    impl ModelTransport for CannedModel {
+        async fn invoke(
+            &self,
+            model_id: &str,
+            body: &[u8],
+            _key: Hash,
+        ) -> Result<Bytes, EffectOutcome> {
+            Ok(
+                format!("{model_id} says: {}", String::from_utf8_lossy(body))
+                    .into_bytes()
+                    .into(),
+            )
+        }
+    }
+
+    /// A minimal agent that calls a model: on "go" it emits a `Model` effect (a prompt); when the completion
+    /// comes back it records it and marks itself `answered`.
+    struct ModelAgent;
+    #[async_trait::async_trait(?Send)]
+    impl Reducer for ModelAgent {
+        async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
+            match &event.body {
+                EventBody::Inbound { .. } => {
+                    kv.put(b"phase".to_vec(), b"prompting".to_vec());
+                    FoldOutput::with(vec![EffectRequest::new_with_family(
+                        effect_ct::MODEL,
+                        "claude-test",
+                        Some(Payload::Inline(b"hello".to_vec().into())),
+                        Timeliness::Interactive,
+                    )])
+                }
+                EventBody::EffectResult {
+                    result: EffectOutcome::Ok(Some(Payload::Inline(completion))),
+                    ..
+                } => {
+                    kv.put(b"completion".to_vec(), completion.to_vec());
+                    kv.put(b"phase".to_vec(), b"answered".to_vec());
+                    FoldOutput::none()
+                }
+                _ => FoldOutput::none(),
+            }
+        }
+    }
+
+    fn model_go() -> EventBody {
+        EventBody::Inbound {
+            content_type: ContentType {
+                family: "message".into(),
+                version: 1,
+            },
+            payload: Payload::Inline(b"go".to_vec().into()),
+        }
+    }
+
+    /// Grant exactly `Model` to the specific model id (deny-by-default; SEC-F1 scopes the target).
+    fn model_cap() -> Authorizer {
+        Authorizer::new(vec![Capability {
+            kind: EffectKind::Model,
+            predicate: ResourcePredicate::Exact("claude-test".into()),
+        }])
+    }
+
+    #[tokio::test]
+    async fn agent_loop_runs_end_to_end_through_the_model_executor() {
+        let mut reducer = ModelAgent;
+        let mut exec = CompositeExecutor::new()
+            .with_effect(effect_ct::MODEL, Box::new(ModelExecutor::new(CannedModel)));
+        let mut session = Session::genesis(
+            Hash::of(b"model-agent-v1"),
+            Hash::of(b"model-agent-v1-nonce"),
+        );
+
+        session
+            .deliver(model_go(), None, &mut ModelAgent, &model_cap(), &mut exec)
+            .await
+            .unwrap();
+
+        // The loop closed: the agent prompted the model, the executor invoked the transport, and the
+        // completion folded back and advanced the agent to `answered`.
+        assert_eq!(session.kv().get(b"phase"), Some(&b"answered"[..]));
+        let completion = session
+            .kv()
+            .get(b"completion")
+            .expect("completion recorded");
+        assert_eq!(
+            String::from_utf8_lossy(completion),
+            "claude-test says: hello",
+            "the executor threaded model id + prompt through the transport and folded the completion back"
+        );
+        assert_eq!(session.open_effects(), 0);
+
+        // Replay-equivalence: the completion is recorded, so replay reconstructs the identical KV without
+        // ever calling the transport again (a paid model call happens once; replay is free).
+        let replayed = Session::replay(session.log().to_vec(), &mut reducer)
+            .await
+            .unwrap();
+        assert_eq!(replayed.kv().get(b"phase"), Some(&b"answered"[..]));
+        assert_eq!(replayed.snapshot().kv_root, session.snapshot().kv_root);
+    }
+
+    #[tokio::test]
+    async fn one_composite_routes_both_now_and_model_for_one_agent() {
+        // A real agent both reads the clock AND calls a model — the CompositeExecutor routes each kind to its
+        // own real executor.
+        struct ClockThenModel;
+        #[async_trait::async_trait(?Send)]
+        impl Reducer for ClockThenModel {
+            async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
+                match &event.body {
+                    EventBody::Inbound { .. } => {
+                        kv.put(b"phase".to_vec(), b"timing".to_vec());
+                        FoldOutput::with(vec![EffectRequest::new_with_family(
+                            effect_ct::NOW,
+                            String::new(),
+                            None,
+                            Timeliness::Interactive,
+                        )])
+                    }
+                    EventBody::EffectResult {
+                        result: EffectOutcome::Ok(Some(Payload::Inline(bytes))),
+                        ..
+                    } => match kv.get(b"phase") {
+                        Some(b"timing") => {
+                            kv.put(b"at".to_vec(), bytes.to_vec());
+                            kv.put(b"phase".to_vec(), b"prompting".to_vec());
+                            FoldOutput::with(vec![EffectRequest::new_with_family(
+                                effect_ct::MODEL,
+                                "claude-test",
+                                Some(Payload::Inline(b"hi".to_vec().into())),
+                                Timeliness::Interactive,
+                            )])
+                        }
+                        Some(b"prompting") => {
+                            kv.put(b"completion".to_vec(), bytes.to_vec());
+                            kv.put(b"phase".to_vec(), b"done".to_vec());
+                            FoldOutput::none()
+                        }
+                        _ => FoldOutput::none(),
+                    },
+                    _ => FoldOutput::none(),
+                }
+            }
+        }
+
+        let authz = Authorizer::new(vec![
+            Capability {
+                kind: EffectKind::Now,
+                predicate: ResourcePredicate::Any,
+            },
+            Capability {
+                kind: EffectKind::Model,
+                predicate: ResourcePredicate::Exact("claude-test".into()),
+            },
+        ]);
+        let mut exec = CompositeExecutor::new()
+            .with_effect(effect_ct::NOW, Box::new(ClockExecutor::new()))
+            .with_effect(effect_ct::MODEL, Box::new(ModelExecutor::new(CannedModel)));
+        let mut session = Session::genesis(
+            Hash::of(b"clock-then-model-v1"),
+            Hash::of(b"clock-then-model-v1-nonce"),
+        );
+
+        session
+            .deliver(model_go(), None, &mut ClockThenModel, &authz, &mut exec)
+            .await
+            .unwrap();
+
+        // Both kinds routed to their own real executor across the multi-step loop.
+        assert_eq!(session.kv().get(b"phase"), Some(&b"done"[..]));
+        assert!(session.kv().get(b"at").is_some(), "the clock leg ran");
+        assert_eq!(
+            String::from_utf8_lossy(session.kv().get(b"completion").unwrap()),
+            "claude-test says: hi"
+        );
+        assert_eq!(session.open_effects(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_model_call_to_an_unpermitted_id_is_denied_before_the_transport() {
+        // Deny-by-default (SEC-F1): the grant is for `claude-test`; an agent prompting a DIFFERENT model id is
+        // denied at the gate — the transport (a paid call) is never reached. A panic-if-called transport
+        // proves the executor was never consulted.
+        struct RefusedModel;
+        #[async_trait::async_trait(?Send)]
+        impl ModelTransport for RefusedModel {
+            async fn invoke(&self, _m: &str, _b: &[u8], _k: Hash) -> Result<Bytes, EffectOutcome> {
+                panic!("a denied Model effect must never reach the transport");
+            }
+        }
+        struct WrongModelAgent;
+        #[async_trait::async_trait(?Send)]
+        impl Reducer for WrongModelAgent {
+            async fn fold(&mut self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+                if matches!(event.body, EventBody::Inbound { .. }) {
+                    FoldOutput::with(vec![EffectRequest::new_with_family(
+                        effect_ct::MODEL,
+                        "expensive-other-model",
+                        Some(Payload::Inline(b"hi".to_vec().into())),
+                        Timeliness::Interactive,
+                    )])
+                } else {
+                    FoldOutput::none()
+                }
+            }
+        }
+        let mut exec = CompositeExecutor::new()
+            .with_effect(effect_ct::MODEL, Box::new(ModelExecutor::new(RefusedModel)));
+        let mut session = Session::genesis(
+            Hash::of(b"wrong-model-v1"),
+            Hash::of(b"wrong-model-v1-nonce"),
+        );
+        session
+            .deliver(
+                model_go(),
+                None,
+                &mut WrongModelAgent,
+                &model_cap(),
+                &mut exec,
+            )
+            .await
+            .unwrap();
+
+        // Denied at the gate → a denial is on the log and nothing left open.
+        assert!(session
+            .log()
+            .iter()
+            .any(|e| matches!(e.body, EventBody::AuthzDenied { .. })));
+        assert_eq!(session.open_effects(), 0);
+    }
 }
