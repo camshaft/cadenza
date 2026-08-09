@@ -8505,6 +8505,21 @@ fn peel_resume_from_arm_body(db: &mut Db, arm_body: StructId) -> Option<(StructI
     // scrutinee is the pure op arg, so evaluating it in both matches duplicates no effect; the match-distrib
     // path likewise requires a pure scrutinee). A subsequent perform reading the state sees a well-formed
     // `(match arg (pat …))` that evaluates to the new state. Each branch must itself peel to a resume.
+    // A match whose scrutinee is a VISIBLE CONSTRUCTOR — the op-arg destructure `(match c ((Cmd.Go k) …))`
+    // where `c` was β-substituted to the perform's arg `(Cmd.Go 7)`. This match is CONSUMED at THIS dispatch
+    // (the op arg is not threaded state), so FOLD it: select the matching arm and substitute its payload
+    // binder with the ctor's payload (`fold_ctor_match`), then recurse to peel the arm's own body. Without
+    // this, the match-peel below rebuilds the NEXT-STATE as `(match c ((Cmd.Go k) <inner-next-state>))`,
+    // RE-WRAPPING the op-arg match — so the op-arg payload `k` is threaded through STATE and a LATER dispatch
+    // conflates its own `k` with the state-threaded one (breaker #13 cmmin5: `(+ (M.step (Cmd.Go 15)) (M.step
+    // (Cmd.Go 7)))` computed 45 not 37 — dispatch-2's `k`=7 read dispatch-1's k1=15). Folding the op-arg match
+    // consumes it here so only the INNER (state-scrutinee) match threads. A match over the STATE binder (or any
+    // non-visible-ctor scrutinee) is untouched — it falls to the general match-peel below and threads correctly.
+    if matches!(resolved_of(db, arm_body), Resolved::Match { .. })
+        && let Some(folded) = crate::eval::fold_ctor_match(db, arm_body)
+    {
+        return peel_resume_from_arm_body(db, folded);
+    }
     if let Resolved::Match { scrutinee, arms } = resolved_of(db, arm_body) {
         if arms.is_empty() {
             return None;

@@ -11577,6 +11577,47 @@ fn a_mutual_group_demand_perform_demand_in_a_let_wrapped_dispatch_folds() {
     );
 }
 
+/// A handler arm that destructures its OP ARG with an OUTER match and its STATE with an INNER match, whose
+/// inner branches read the outer op-arg payload binder DIRECTLY, now computes the RIGHT value across
+/// multiple dispatches (breaker #13 stale-sum-payload). `peel_resume_from_arm_body`'s match-peel rebuilt the
+/// next-state by re-wrapping the WHOLE matched expression — sound for a STATE-scrutinee match, but WRONG for
+/// the OUTER OP-ARG match: it threaded the op-arg payload binder `k` through STATE, so dispatch-2's own `k`
+/// (=7) was conflated with dispatch-1's state-threaded k1 (=15) → `(+ (M.step (Cmd.Go 15)) (M.step (Cmd.Go
+/// 7)))` computed 45 (15 + 15+15) instead of 37 (15 + 15+7). Fixed by folding the op-arg match (`fold_ctor_
+/// match`) BEFORE the peel — the op arg is consumed at this dispatch, not threaded. Pins the correct run
+/// value across two dispatches (the freeze would give 45).
+#[test]
+fn an_op_arg_match_outer_with_a_state_match_inner_reading_the_payload_computes_per_dispatch() {
+    use crate::testkit::parse;
+    let src = "(do \
+        (type Mode (Idle) (Run Int64)) \
+        (type Cmd (Go Int64)) \
+        (effect M (op step (-> Cmd Int64))) \
+        (def (main (: n Int64)) \
+          (handle M (Mode.Idle) \
+            ((step (c) s \
+              (match c \
+                ((Cmd.Go k) (match s \
+                              ((Mode.Idle) (resume k (Mode.Run k))) \
+                              ((Mode.Run j) (resume (+ j k) (Mode.Run (+ j k))))))))) \
+            (+ (M.step (Cmd.Go (+ 10 n))) (M.step (Cmd.Go 7))))) \
+        (export main))";
+    let comp = compile_component(&crate::codec::encode(&parse(src)))
+        .expect("an outer op-arg match with an inner state match reading the payload must fold");
+    // main(5): dispatch1 Go 15, state Idle -> resume 15, state Run 15; dispatch2 Go 7, state Run(15) ->
+    // resume 15+7=22. Sum 15+22 = 37. The stale-payload freeze gave 45 (dispatch2's k read dispatch1's 15).
+    assert_eq!(
+        run_returns_with::<i64>(&comp, "main", &[wasmtime::component::Val::S64(5)]),
+        37,
+        "dispatch-2's payload k must be its own arg (7), not dispatch-1's state-threaded k1 (15)",
+    );
+    assert_eq!(
+        run_returns_with::<i64>(&comp, "main", &[wasmtime::component::Val::S64(0)]),
+        27,
+        "main(0): Go 10 state Idle -> 10 (state Run 10); Go 7 state Run(10) -> 10+7=17; sum 10+17 = 27",
+    );
+}
+
 /// A handler ARM that RESUMES PER `if`-BRANCH now folds. `get-ty(nid) s => (if (= nid 0) (resume (Some t) s)
 /// (resume (None) s))` selects the resume value by a condition over the op arg. `peel_resume_from_arm_body`
 /// handled `do`/`let`/`match` resume-wrappers but NOT `if`, so the whole handler declined before reaching
