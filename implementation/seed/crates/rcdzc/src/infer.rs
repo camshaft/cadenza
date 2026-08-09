@@ -6690,7 +6690,7 @@ fn record_field_key_occ(db: &Db, expr: StructId, field: &str) -> Option<StructId
 /// literal `expr` — both the `Resolved::Tuple`/`List` primitive form and the `tuple`/`list` NAME-alias
 /// application (`Resolved::Apply` of the matching `(meta apply)` prim, whose `args` ARE the elements).
 /// `None` when `expr` is not the requested written literal kind.
-fn positional_value_nodes(
+pub(crate) fn positional_value_nodes(
     db: &mut Db,
     expr: StructId,
     prim: crate::resolved::Prim,

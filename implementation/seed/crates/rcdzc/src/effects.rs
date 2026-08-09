@@ -1948,6 +1948,18 @@ pub fn reduce_handle(
         .and_then(|a| crate::eval::effect_op_of(db, a.op))
         .map(|(d, _)| d.0)?;
     let state_ty = state_ty_of_arms(db, init, arms);
+    // CROSS-ARM COLLECTION-KEY PROPAGATION (v-inference, breaker tuple-key-map-rust-e0308 2026-08-09). The
+    // initial-state seed's `type_of` bottoms an empty collection at OPEN vars — `Map.empty` is `Map(Var,Var)`,
+    // the enclosing `(tuple n Map.empty)` `Tuple([Int64, Map(Var,Var)])`. A handler arm fixes the collection's
+    // key/value/element (the `rec` arm's `(Map.insert m (tuple s …) …)` pins the key to `(Int64,Int64)`), and
+    // `state_ty_of_arms` above JOINS that onto the slot type — but the join result is never written back onto
+    // the INIT node's own type memo, and `beta_reduce` substitutes the init node (its id, reused not copied)
+    // into the arm bodies, so emit reads `type_of(init map node) = Map(Var,Var)` and grounds it to the default
+    // `BTreeMap<i64,i64>`. When the real key is a `(i64,i64)` tuple that is rust/rust-async E0308 (`__m.insert`
+    // of a tuple key into an `<i64,i64>` map); wasm's tagless heap needs no spelled key type, so it is a
+    // wasm-masked backend divergence, not a decline. Propagate the SOLVED collection type from the joined slot
+    // back onto the init subtree's open-var collection nodes so `type_of(init)` reflects the real key/value.
+    refine_init_collection_ty(db, init, arms);
     // WIDTH-CONSISTENCY GUARD (F1, corpus-bugfix/breaker 2026-07-28). The state slot's fixed int width must
     // match the op's declared RESULT width for any arm whose resume VALUE reads the state (a bare `(resume s
     // …)`, whose value types `Any` = "the state"). A `(next (u) s (resume s (+ s x)))` arm with a UInt8 `x`
@@ -4463,6 +4475,116 @@ fn state_ty_of_arms(db: &mut Db, init: StructId, arms: &[HandleArm]) -> Option<c
     } else {
         Some(t)
     }
+}
+
+/// Propagate a handler's SOLVED state collection type back onto the initial-state seed subtree, so an empty
+/// collection built at the seed (`Map.empty`, an empty `(set)`/`(list)`) whose key/value/element is fixed
+/// only in a LATER handler arm reflects that solved type at its OWN construction node — the cross-arm
+/// key-propagation the per-node `type_of` cannot reach (an empty collection bottoms at open vars; the arm
+/// that inserts a tuple key is a different subtree).
+///
+/// The slot type [`state_ty_of_arms`] computes is NOT reused here: its `tail_resume_next_state_of` only sees
+/// a DIRECT `(resume v next)` arm body, but the common arm wraps the resume in a `(match st ((tuple s m)
+/// (resume … next)))`, so the joined slot leaves the map key/value OPEN. We derive the solved type
+/// independently: join the seed's own `type_of` with the `type_of` of EVERY resume next-state reached by
+/// walking each arm body (stopping at a nested `handle`, whose resumes belong to the inner handler). The
+/// `rec` arm's `(Map.insert m (tuple s …) …)` next-state then reflects `Map((Int64,Int64), Int64)`, fixing
+/// the seed's open key. Then walk the seed in parallel with the joined type, filling the memo of an open-var
+/// collection node with the solved collection type; recurses through a tuple position-wise (the common
+/// `(tuple counter Map.empty)` state).
+///
+/// GENERIC over the collection's element vars (Map key AND value, Set element, List element) — one walk
+/// clears all four (breaker's tk/tv/sk/lv family), not a Map-key special case.
+///
+/// NARROW + SAFE, mirroring [`crate::infer::ground_open_var_arms_to_collection`]:
+/// - only writes when the joined type at that position is a collection with NO free var in its
+///   key/value/element (a genuinely-solved type, never one guess feeding another), AND the node's current
+///   `type_of` is that same collection KIND but OPEN (`is_open` — a free var like `Map.empty`'s `Map(Var,Var)`,
+///   OR `Ty::Any` like an empty `(list)`/`(set)` literal's element). A node already solved, or a solved slot
+///   still open on both sides, is left untouched (a no-op — byte-identical emit).
+/// - never runs mid-scheme-solve (`solving_schemes` non-empty): a provisional fixpoint var must stay unfrozen.
+///
+/// The container kind and arity are unchanged, so the machine slot (an i32 heap handle) is identical; only the
+/// spelled key/value/element type the rust/rust-async backend annotates is refined from open to solved.
+fn refine_init_collection_ty(db: &mut Db, init: StructId, arms: &[HandleArm]) {
+    if !db.solving_schemes.is_empty() {
+        return;
+    }
+    // The solved state type: the seed joined with every resume next-state reached in the arm bodies.
+    let mut solved = crate::infer::type_of(db, init);
+    let mut next_states: Vec<StructId> = Vec::new();
+    for arm in arms {
+        collect_resume_next_states(db, arm.body, &mut next_states);
+    }
+    for next in next_states {
+        let nt = crate::infer::type_of(db, next);
+        solved = solved.join(&nt);
+    }
+    fill_open_collection_from_solved(db, init, &solved);
+}
+
+/// Collect the NEXT-STATE occurrence of every `(resume value next)` reachable in `node`, descending the
+/// arena structure but NOT into a nested `handle` (its resumes target the inner handler's state). Used by
+/// [`refine_init_collection_ty`] to see resumes buried under a `(match st …)` arm wrapper.
+fn collect_resume_next_states(db: &mut Db, node: StructId, out: &mut Vec<StructId>) {
+    if let Resolved::Resume { next_state, .. } = resolved_of(db, node) {
+        out.push(next_state);
+    }
+    if matches!(resolved_of(db, node), Resolved::Handle { .. }) {
+        return;
+    }
+    if let Struct::List(children) = db.ast.get(node).clone() {
+        for c in children.iter() {
+            collect_resume_next_states(db, *c, out);
+        }
+    }
+}
+
+/// Fill the type memo of an open-var collection node under `node` with the corresponding fully-determined
+/// collection type from `solved`, recursing through a tuple position-wise. See [`refine_init_collection_ty`]
+/// for the safety contract (only refines an open node whose kind matches a free-var-free solved collection).
+fn fill_open_collection_from_solved(db: &mut Db, node: StructId, solved: &crate::ty::Ty) {
+    use crate::ty::Ty;
+    match solved {
+        // Recurse through a tuple state position-wise. `positional_value_nodes` reads the element occurrences
+        // from BOTH the `Resolved::Tuple` literal and the `tuple`-headed `Apply` spelling (the init seed
+        // `(tuple n Map.empty)` resolves as the latter), so a non-tuple node or arity mismatch is skipped.
+        Ty::Tuple(solved_elems) => {
+            if let Some(elems) =
+                crate::infer::positional_value_nodes(db, node, crate::resolved::Prim::TupleNew)
+                && elems.len() == solved_elems.len()
+            {
+                for (child, sub) in elems.into_iter().zip(solved_elems.iter()) {
+                    fill_open_collection_from_solved(db, child, sub);
+                }
+            }
+        }
+        Ty::Map(k, v) if !k.has_free_var() && !v.has_free_var() => {
+            if matches!(crate::infer::type_of(db, node), Ty::Map(nk, nv) if is_open(&nk) || is_open(&nv))
+            {
+                db.types.fill(node, solved.clone());
+            }
+        }
+        Ty::Set(e) if !e.has_free_var() => {
+            if matches!(crate::infer::type_of(db, node), Ty::Set(ne) if is_open(&ne)) {
+                db.types.fill(node, solved.clone());
+            }
+        }
+        Ty::List(e) if !e.has_free_var() => {
+            if matches!(crate::infer::type_of(db, node), Ty::List(ne) if is_open(&ne)) {
+                db.types.fill(node, solved.clone());
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Whether a collection element/key/value type is UNSOLVED for emit purposes — a free `Ty::Var` (an
+/// unconstrained empty `Map.empty` → `Map(Var,Var)`) OR `Ty::Any` (an empty `(list)`/`(set)` literal bottoms
+/// its element at `Any`, not a var). Both leave the rust/rust-async backend nothing concrete to annotate, so
+/// both are candidates for refinement from a solved sibling-arm type.
+fn is_open(t: &crate::ty::Ty) -> bool {
+    matches!(t, crate::ty::Ty::Any) || t.has_free_var()
 }
 
 /// Whether the arm's tail resume VALUE agrees with the operation's declared RESULT type, AND that result

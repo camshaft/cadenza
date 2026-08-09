@@ -208,6 +208,138 @@ fn a_set_or_map_over_bytes_orders_by_the_blessed_unsigned_byte_order() {
 }
 
 #[test]
+fn a_tuple_keyed_map_handler_state_annotates_the_solved_key_across_arms() {
+    // REGRESSION (breaker tuple-key-map-rust-e0308, 2026-08-09, root-caused by v-rust-backend, fixed by
+    // v-inference). A handler whose state is `(tuple counter Map.empty)` fixes the map's KEY only in a
+    // LATER arm (`rec`'s `Map.insert m (tuple s …) …` → a `(Int64,Int64)` key), a DIFFERENT subtree from
+    // the seed `Map.empty` (whose own `type_of` bottoms at `Map(Var,Var)`). Inference never wrote the
+    // solved key back onto the seed node, so the rust/rust-async emit grounded it to the default
+    // `BTreeMap<i64,i64>` and then `__m.insert((i64,i64), _)` was E0308 — a wasm-masked backend divergence
+    // (wasm's tagless heap needs no spelled key). `reduce_handle`'s cross-arm collection-key propagation
+    // (`refine_init_collection_ty`) now joins every arm's resume next-state onto the seed and annotates
+    // `BTreeMap<(i64,i64), i64>`. Trigger = [tuple map key] x [tuple-key lookup arm] x [a third arm].
+    let tk = "(module m \
+        (effect E (op rec (-> Int64)) (op qry (-> Int64 Int64 Int64)) (op cnt (-> Int64))) \
+        (def (run (: n Int64)) \
+          (handle E (tuple n Map.empty) \
+            ((rec () st (match st \
+                          ((tuple s m) \
+                           (resume s (tuple (+ s 2) \
+                                            (Map.insert m (tuple s (+ s 1)) (* 10 s))))))) \
+             (qry (a b) st (match st \
+                             ((tuple s m) \
+                              (resume (match (Map.lookup m (tuple a b)) \
+                                        ((Some v) v) \
+                                        ((None) -1)) \
+                                      st)))) \
+             (cnt () st (match st ((tuple s m) (resume s st))))) \
+            (do (E.rec) (+ (E.qry n (+ n 1)) (E.cnt))))) \
+        (export run))";
+    let rs = compile_rust(tk);
+    assert!(
+        rs.contains("BTreeMap<(i64, i64), i64>"),
+        "the seed Map.empty must annotate the tuple key solved in the `rec` arm, not the default \
+         BTreeMap<i64,i64>:\n{rs}"
+    );
+    // The emitted Rust must COMPILE (the E0308 is a build failure) and compute the same value wasm does.
+    if let Some(out) = rustc_run(&rs, "run(5)") {
+        assert_eq!(
+            out, "57",
+            "the tuple-keyed-map handler-state program must compile and compute 57 on the Rust backend"
+        );
+    }
+
+    // SIBLING (same root, breaker tuple-elem-set-state-scope): a `Set` of tuples in a tuple handler state,
+    // its element fixed only in the `add` arm — the Set analogue of the Map case, same propagation fix.
+    let sk = "(module m \
+        (effect E (op add (-> Int64)) (op has (-> Int64 Int64 Int64)) (op cnt (-> Int64))) \
+        (def (run (: n Int64)) \
+          (handle E (tuple n (Set.of (list))) \
+            ((add () st (match st \
+                          ((tuple s ss) \
+                           (resume s (tuple (+ s 2) \
+                                            (Set.insert ss (tuple s (+ s 1)))))))) \
+             (has (a b) st (match st \
+                             ((tuple s ss) \
+                              (resume (if (Set.contains ss (tuple a b)) 1 0) st)))) \
+             (cnt () st (match st ((tuple s ss) (resume s st))))) \
+            (do (E.add) (E.add) \
+                (+ (E.has n (+ n 1)) \
+                   (+ (* 1000 (E.has (+ n 9) (+ n 10))) \
+                      (E.cnt)))))) \
+        (export run))";
+    let rs_set = compile_rust(sk);
+    assert!(
+        rs_set.contains("BTreeSet<(i64, i64)>"),
+        "the seed empty Set must annotate the tuple element solved in the `add` arm:\n{rs_set}"
+    );
+    if let Some(out) = rustc_run(&rs_set, "run(5)") {
+        assert_eq!(
+            out, "10",
+            "the tuple-element-set handler-state program must compile and compute 10 on the Rust backend"
+        );
+    }
+
+    // SIBLING (breaker tv1): the gap is element-GENERIC, not key-specific — a Map whose tuple lives in the
+    // VALUE position (scalar key) reproduces it. The propagation fills the Map value type the same way.
+    let tv = "(module m \
+        (effect E (op rec (-> Int64)) (op qry (-> Int64 Int64)) (op cnt (-> Int64))) \
+        (def (run (: n Int64)) \
+          (handle E (tuple n Map.empty) \
+            ((rec () st (match st \
+                          ((tuple s m) \
+                           (resume s (tuple (+ s 2) (Map.insert m s (tuple s (* 10 s)))))))) \
+             (qry (k) st (match st \
+                           ((tuple s m) \
+                            (resume (match (Map.lookup m k) \
+                                      ((Some p) (match p ((tuple a b) (+ a b)))) \
+                                      ((None) -1)) st)))) \
+             (cnt () st (match st ((tuple s m) (resume s st))))) \
+            (do (E.rec) (+ (E.qry n) (E.cnt))))) \
+        (export run))";
+    let rs_tv = compile_rust(tv);
+    assert!(
+        rs_tv.contains("BTreeMap<i64, (i64, i64)>"),
+        "a Map whose tuple is in the VALUE position must annotate the solved value type:\n{rs_tv}"
+    );
+    if let Some(out) = rustc_run(&rs_tv, "run(5)") {
+        assert_eq!(
+            out, "62",
+            "the tuple-VALUE-map handler-state program must compile and compute 62"
+        );
+    }
+
+    // SIBLING (breaker lv1): a `List` of tuples seeded by the empty `(list)` literal (whose element bottoms
+    // at `Ty::Any`, not a var — `is_open` covers both). Element fixed only in the `push` arm.
+    let lv = "(module m \
+        (effect E (op push (-> Int64)) (op rd (-> Int64)) (op cnt (-> Int64))) \
+        (def (run (: n Int64)) \
+          (handle E (tuple n (list)) \
+            ((push () st (match st \
+                           ((tuple s xs) \
+                            (resume s (tuple (+ s 2) (List.push xs (tuple s (* 2 s)))))))) \
+             (rd () st (match st \
+                         ((tuple s xs) \
+                          (resume (match (List.at xs 0) \
+                                    ((Some p) (match p ((tuple a b) (+ a b)))) \
+                                    ((None) -1)) st)))) \
+             (cnt () st (match st ((tuple s xs) (resume s st))))) \
+            (do (E.push) (E.push) (+ (E.rd) (E.cnt))))) \
+        (export run))";
+    let rs_lv = compile_rust(lv);
+    assert!(
+        rs_lv.contains("Vec::<(i64, i64)>::new()"),
+        "the empty-(list) seed (element Any) must annotate the tuple element solved in the `push` arm:\n{rs_lv}"
+    );
+    if let Some(out) = rustc_run(&rs_lv, "run(5)") {
+        assert_eq!(
+            out, "24",
+            "the tuple-element-list handler-state program must compile and compute 24"
+        );
+    }
+}
+
+#[test]
 fn bigint_of_a_genuine_uint64_widens_unsigned_not_sign_extended() {
     // REGRESSION (corpus-bugfix finding #4, wasm oracle 817): `(BigInt.of n)` on a genuine UInt64 whose
     // TOP BIT is set must widen UNSIGNED, not sign-extend the i64 carrier. BigIntOfI64 emitted a bare
