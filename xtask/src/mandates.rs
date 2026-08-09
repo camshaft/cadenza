@@ -10,19 +10,24 @@
 //!
 //! DENY rules (a hit fails the gate), each with a scoped `mandate:allow` escape hatch for a justified
 //! exception (a hex-parse at a wire boundary, a component E2E that cannot be an in-crate test):
-//!  - **no-integration-tests** — a NEW `tests/*.rs` cargo integration test (operator prefer-unit-tests:
-//!    a `tests/*.rs` is a separate binary + linkage + slow compile + separate nix derivation). The 97
-//!    pre-existing files are grandfathered via `mandate-integration-test-allowlist.txt`; a NEW one not on
-//!    the allowlist is denied. Going-forward, not a fleet-reddening full-tree ban.
+//!  - **no-integration-tests** — ANY `tests/*.rs` cargo integration test (operator prefer-unit-tests:
+//!    a `tests/*.rs` is a separate binary + linkage + slow compile + separate nix derivation). A
+//!    ZERO-TOLERANCE full-tree deny (operator ruling: no exceptions — even a component/binary E2E
+//!    converts to an env-gated in-crate `#[cfg(test)]` test). The transitional grandfather allowlist is
+//!    GONE (the fleet reached zero non-fixture `tests/*.rs`); no per-file escape. The only excluded
+//!    trees are vendored `reference/` and `tests/fixtures/**` guest wasm-component crates (not test
+//!    binaries).
 //!  - **no-hard-coded-runtime-hash** — a bare 64-hex string literal in NON-test source is a hard-coded
 //!    content address (operator no-hard-coded-runtime-names). Excludes the codegen'd `runtime_abi.rs`
 //!    hash-constant home, `#[cfg(test)]` golden-hash assertions, and a `mandate:allow` line. syn-based:
 //!    parses only files whose lines contain a 64-hex literal (a tiny population), skips test-gated items.
 //!
-//! Further syn-based DENY rules (no-hex-except-tracing, no-thin-wrapper-fns) and the WARN-level
-//! owned-String-where-Arc heuristic are follow-on increments behind this same `lint_mandates` entrypoint.
+//! no-hex-except-tracing and no-thin-wrapper-fns are DELIBERATELY NOT gate-lint rules (concierge ruling
+//! 2026-08-09): both need DATA-FLOW / judgment a source-scan cannot do — no-hex would flood on all ~127
+//! legit `Hash::to_hex` (the intent, no hex to STORE/TRANSMIT, is semantic not syntactic) and
+//! no-thin-wrapper (fn that only delegates) is inherently fuzzy. They stay enforced by the comprehensive
+//! audits + reviewer judgment, not an automated flood. Only CLEANLY-mechanizable mandates belong here.
 
-use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 /// A mandate violation: the file it is in and a human-readable reason. Rendered `path: reason`.
@@ -42,13 +47,17 @@ pub fn lint_mandates(repo: &Path) -> Result<Vec<Violation>, String> {
     Ok(out)
 }
 
-/// The `no-integration-tests` mandate: a `tests/*.rs` cargo integration test not on the grandfather
-/// allowlist is a violation. `tests/*.rs` = a separate test binary (extra linkage, slow compile,
-/// separate nix derivation) — the operator prefers in-crate `#[cfg(test)]` unit tests. Pre-existing
-/// files are allowlisted (`mandate-integration-test-allowlist.txt`); a genuinely-integration test (a
-/// built-component / binary E2E that cannot be in-crate) is added to the allowlist with a justification.
+/// The `no-integration-tests` mandate: ANY `tests/*.rs` cargo integration test is a violation — a
+/// ZERO-TOLERANCE full-tree deny (operator ruling 2026-08-09: no integration-test exceptions AT ALL,
+/// even a component/binary E2E converts to an env-gated in-crate `#[cfg(test)]` test — a `cfg(test)` mod
+/// reads the same `CDZ_LIVE_*` artifact-path env and skips identically). A `tests/*.rs` is a separate
+/// test binary (extra linkage, slow compile, separate nix derivation); the operator prefers in-crate
+/// `#[cfg(test)]` unit tests. The transitional grandfather allowlist is GONE (the fleet reached zero
+/// non-fixture `tests/*.rs`); there is no per-file escape for this mandate. The ONLY excluded trees are
+/// (a) vendored `reference/` (not ours to police) and (b) `tests/fixtures/**` guest wasm-component
+/// CRATES (own `Cargo.toml`/`src` — NOT cargo test binaries), both handled by [`is_integration_test_path`]
+/// / [`is_vendored_path`].
 fn no_new_integration_tests(repo: &Path) -> Result<Vec<Violation>, String> {
-    let allow = load_allowlist(repo)?;
     let impl_root = repo.join("implementation");
     let mut rs = Vec::new();
     collect_rs_files(&impl_root, &mut rs).map_err(|e| {
@@ -62,32 +71,22 @@ fn no_new_integration_tests(repo: &Path) -> Result<Vec<Violation>, String> {
         if !is_integration_test_path(&f) {
             continue;
         }
-        // Compare by the repo-relative path (the allowlist's form).
         let rel = f.strip_prefix(repo).unwrap_or(&f);
         let rel_str = rel.to_string_lossy().replace('\\', "/");
-        // EXCLUDE VENDORED / third-party trees (v-ft 2026-08-09, caught by the pre-wire standalone
-        // validation): a `reference/` path segment marks vendored code we do NOT author (e.g.
-        // implementation/music/reference/euphony-rs/…/tests/api.rs) — the operator prefer-unit-tests
-        // mandate is OUR discipline, not applicable to a third-party crate's own test layout, and
-        // enumerating every vendored tests/*.rs into the allowlist is churn (new vendored files would
-        // re-red). Skipping the vendored tree is the correct scope + is future-proof. Without this the
-        // lint reds on a PRE-EXISTING vendored file every MR → blocks the whole fleet (localGate is the
-        // sole gate) — the exact fleet-block failure mode the pre-wire validation exists to catch.
+        // EXCLUDE VENDORED / third-party trees (`reference/`) — not ours to police. (The fixtures-tree
+        // guest crates are excluded inside `is_integration_test_path` — they aren't test binaries.)
         if is_vendored_path(&rel_str) {
             continue;
         }
-        if !allow.contains(&rel_str) {
-            out.push(Violation {
-                file: f.clone(),
-                reason:
-                    "new cargo integration test (tests/*.rs) — the operator mandate prefers in-crate \
-                     #[cfg(test)] unit tests (a tests/*.rs is a separate binary + linkage + slow compile \
-                     + separate nix derivation). Move the coverage into a #[cfg(test)] mod in the crate; \
-                     if this is a genuine component/binary E2E that cannot be in-crate, add its path to \
-                     xtask/mandate-integration-test-allowlist.txt with a one-line justification"
-                        .to_string(),
-            });
-        }
+        out.push(Violation {
+            file: f.clone(),
+            reason:
+                "cargo integration test (tests/*.rs) — the operator mandate is ZERO-TOLERANCE: NO \
+                 integration tests, no exceptions. Move the coverage into a #[cfg(test)] mod in the \
+                 crate (an env-gated component/binary E2E converts too — a cfg(test) mod reads the same \
+                 CDZ_LIVE_* artifact-path env and skips identically). There is no allowlist"
+                    .to_string(),
+        });
     }
     Ok(out)
 }
@@ -267,16 +266,20 @@ fn is_vendored_path(rel_slash: &str) -> bool {
     rel_slash.split('/').any(|seg| seg == "reference")
 }
 
-/// Is `path` a cargo INTEGRATION-test source — a `.rs` file under a crate's top-level `tests/` directory?
-/// A `tests/` dir directly under a crate root (`…/<crate>/tests/**/*.rs`) is the cargo integration-test
-/// surface. (A `tests` MODULE inside `src/` is `src/…/tests.rs` or an inline `mod tests`, NOT this —
-/// those are the in-crate unit tests we WANT, so only a `/tests/` path segment counts.)
+/// Is `path` a cargo INTEGRATION-test binary source — a `.rs` under a crate's top-level `tests/` dir,
+/// EXCLUDING the two things a `tests/` subtree can hold that are NOT test binaries:
+///  - `tests/fixtures/**` — a guest wasm-component CRATE (its own `Cargo.toml`/`src/lib.rs`), a build
+///    fixture, not a cargo test target. Its `src/lib.rs` must stay.
+///  - a nested crate anywhere under `tests/` (a `src/` segment AFTER `tests/`) — likewise a sub-crate's
+///    own source, not the enclosing crate's integration surface.
+///
+/// A `tests` MODULE inside `src/` (`src/…/tests.rs`, `src/…/tests/mod.rs`) is an in-crate unit test we
+/// WANT, so a `src/` segment BEFORE `tests` disqualifies too. Everything else under a crate-root `tests/`
+/// (`<crate>/tests/foo.rs`, `<crate>/tests/common/mod.rs`) IS a cargo integration-test source.
 fn is_integration_test_path(path: &Path) -> bool {
     if path.extension().is_none_or(|x| x != "rs") {
         return false;
     }
-    // A `tests` component that is NOT inside `src/` — i.e. a crate-root `tests/` dir. Cargo only treats
-    // `<crate>/tests/*.rs` as integration tests; a `src/**/tests/` would be an ordinary module path.
     let comps: Vec<&str> = path
         .components()
         .filter_map(|c| c.as_os_str().to_str())
@@ -284,23 +287,21 @@ fn is_integration_test_path(path: &Path) -> bool {
     let Some(tests_ix) = comps.iter().position(|&c| c == "tests") else {
         return false;
     };
-    // Must not be under a `src/` before the `tests` segment (that would be a module named tests).
-    !comps[..tests_ix].contains(&"src")
-}
-
-/// Load the grandfather allowlist (`xtask/mandate-integration-test-allowlist.txt`): one repo-relative
-/// path per line, `#` comments + blank lines ignored. Missing file = an empty allowlist (every
-/// integration test would then be flagged — the file is expected to exist).
-fn load_allowlist(repo: &Path) -> Result<BTreeSet<String>, String> {
-    let p = repo.join("xtask/mandate-integration-test-allowlist.txt");
-    let text = std::fs::read_to_string(&p)
-        .map_err(|e| format!("cannot read the mandate allowlist {}: {e}", p.display()))?;
-    Ok(text
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .map(|l| l.replace('\\', "/"))
-        .collect())
+    // A `src/` BEFORE `tests` = an in-crate module named tests, not the cargo integration surface.
+    if comps[..tests_ix].contains(&"src") {
+        return false;
+    }
+    let after = &comps[tests_ix + 1..];
+    // A guest wasm-component crate under `tests/fixtures/**` is a build fixture, not a test binary.
+    if after.first() == Some(&"fixtures") {
+        return false;
+    }
+    // A nested crate under `tests/` (a `src/` after `tests/`) is a sub-crate's own source, not the
+    // enclosing crate's integration test.
+    if after.contains(&"src") {
+        return false;
+    }
+    true
 }
 
 /// Recursively collect `.rs` files under `dir` (skipping `target/`). Mirrors the emoji lint's walker.
@@ -328,12 +329,16 @@ mod tests {
 
     #[test]
     fn integration_test_path_detection() {
-        // A crate-root `tests/` .rs is an integration test.
+        // A crate-root `tests/` .rs is an integration test — INCLUDING a shared helper (under the
+        // zero-tolerance flip, `tests/common/mod.rs` must move in-crate too).
         assert!(is_integration_test_path(Path::new(
             "implementation/seed/crates/cdz/tests/lint_cli.rs"
         )));
         assert!(is_integration_test_path(Path::new(
             "implementation/seed/crates/cadenza-syntax/tests/suite/corpus_roundtrip.rs"
+        )));
+        assert!(is_integration_test_path(Path::new(
+            "implementation/seed/crates/cdz-agent-host/tests/common/mod.rs"
         )));
         // A `src/**` file — even one named tests.rs or under a `tests` MODULE dir under src — is NOT a
         // cargo integration test (it's an in-crate unit test, which the mandate WANTS).
@@ -349,6 +354,18 @@ mod tests {
         // A non-.rs file under tests/ (a fixture) is not flagged.
         assert!(!is_integration_test_path(Path::new(
             "implementation/seed/crates/cdz-kernel/tests/fixtures/reducer.cdz"
+        )));
+        // A guest wasm-component CRATE under `tests/fixtures/**/src` is a build fixture, NOT a test
+        // binary — it must survive the flip (its own Cargo.toml/src).
+        assert!(!is_integration_test_path(Path::new(
+            "implementation/seed/crates/cdz-agent-host/tests/fixtures/cedar-policy-guest/src/lib.rs"
+        )));
+        assert!(!is_integration_test_path(Path::new(
+            "implementation/seed/crates/cdz-kernel/tests/fixtures/reducer-guest/src/lib.rs"
+        )));
+        // A nested crate anywhere under `tests/` (a `src/` after `tests/`) is a sub-crate's own source.
+        assert!(!is_integration_test_path(Path::new(
+            "implementation/seed/crates/foo/tests/helper-crate/src/lib.rs"
         )));
     }
 
@@ -436,21 +453,5 @@ mod tests {
         assert!(!is_runtime_abi_hash_home(
             "implementation/seed/crates/cdz-kernel/src/event.rs"
         ));
-    }
-
-    #[test]
-    fn allowlist_parse_ignores_comments_and_blanks() {
-        // (Parsing is exercised via `load_allowlist` over the real file in the gate; here pin the
-        // filter semantics on a synthetic set the same way.)
-        let sample = "# header\n\nfoo/tests/a.rs\n  # indented comment\nbar/tests/b.rs\n";
-        let set: BTreeSet<String> = sample
-            .lines()
-            .map(str::trim)
-            .filter(|l| !l.is_empty() && !l.starts_with('#'))
-            .map(|l| l.replace('\\', "/"))
-            .collect();
-        assert!(set.contains("foo/tests/a.rs"));
-        assert!(set.contains("bar/tests/b.rs"));
-        assert_eq!(set.len(), 2, "comments + blanks ignored");
     }
 }
