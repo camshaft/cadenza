@@ -273,5 +273,23 @@ pub(crate) mod testutil {
                 captured,
             )
         }
+
+        /// Like [`recording_sink`] but PRE-SEEDED with `genesis`, so the captured buffer is the COMPLETE
+        /// durable log (genesis + subsequent appends) — a full [`Session::replay`] input. The
+        /// `HostedSession::with_sink` builder attaches post-genesis, so a production durable sink misses the
+        /// genesis event; a recovery-EQUIVALENCE test needs the whole log including genesis (replay requires a
+        /// `Genesis` at `events[0]`), so it seeds it here from the session's [`genesis_ref`]. Returns
+        /// `(sink_to_attach, captured_buffer)`.
+        pub(crate) fn recording_sink_seeded(
+            genesis: Event,
+        ) -> (Box<dyn cdz_kernel::log_store::LogSink>, CapturedLog) {
+            let captured: CapturedLog = Rc::new(RefCell::new(vec![genesis]));
+            (
+                Box::new(MemLogSink {
+                    captured: Rc::clone(&captured),
+                }),
+                captured,
+            )
+        }
     }
 }

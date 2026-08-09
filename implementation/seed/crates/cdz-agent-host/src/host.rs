@@ -2108,6 +2108,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn recovery_from_the_durable_log_reconstructs_the_identical_kv_state() {
+        // THE load-bearing log-decouple invariant (I5): with the resident log Vec GONE, a session's state is
+        // reconstructed SOLELY from its durable log SOURCE on recovery — so replaying the durable log through
+        // the same reducer must yield byte-identical state to the live session. This is recovery-equivalence:
+        // the property the whole "log is host-cold, kernel keeps only derived state" close rests on. Drive a
+        // real Now turn under a recording sink (the durable SOURCE, genesis-seeded), then replay from it.
+        use cdz_kernel::kernel::Session;
+
+        // Build the session, then attach a recording sink via the with_sink builder — SEEDED with the
+        // session's genesis so the captured buffer is the COMPLETE durable log (with_sink attaches
+        // post-genesis, like a production durable sink; replay needs the genesis at events[0]). The recording
+        // sink IS the durable log source, exactly what LogStore::recover reads back in production, but hermetic.
+        let base = now_host();
+        let genesis = base.session().genesis_ref().clone();
+        let (sink, captured) = crate::testutil::log_capture::recording_sink_seeded(genesis);
+        let mut hosted = base.with_sink(sink);
+        hosted.deliver(inbound_go(), None).await.unwrap();
+
+        // The live session ran its turn (ClockAgent: inbound → Now → records "ran").
+        let live_kv_root = hosted.session().snapshot().kv_root;
+        assert_eq!(
+            hosted.session().kv().get(b"status"),
+            Some(&b"ran"[..]),
+            "the live session folded its turn to completion"
+        );
+
+        // RECOVER: replay the durable log source through a fresh reducer — no executor consulted (the recorded
+        // Now EffectResult supplies the instant), no resident Vec read. The reconstructed state must match.
+        let recovered = Session::replay(
+            crate::testutil::log_capture::replay_input(&captured),
+            &mut ClockAgent,
+        )
+        .await
+        .expect("the durable log replays cleanly");
+        assert_eq!(
+            recovered.kv().get(b"status"),
+            Some(&b"ran"[..]),
+            "recovery from the durable log reconstructs the KV the live turn produced"
+        );
+        assert_eq!(
+            recovered.snapshot().kv_root,
+            live_kv_root,
+            "recovery-equivalence: durable-log replay yields byte-identical KV (kv_root) to the live session"
+        );
+        assert_eq!(
+            recovered.genesis_hash(),
+            hosted.genesis_hash(),
+            "recovery keeps the same id (the nonce is read from the log's genesis, never re-minted)"
+        );
+    }
+
+    #[tokio::test]
     async fn delivering_to_an_unknown_session_is_none_not_a_panic() {
         let mut host = AgentHost::new();
         // No session registered → None (an unknown id is distinct from a loop error).
