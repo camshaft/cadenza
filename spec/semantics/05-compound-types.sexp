@@ -9611,7 +9611,7 @@
                 (def (f v) (match v ((V.A n) n) ((V.Q) 0)))
                 (def (main) (f (V.B)))
                 (export main)))
-  (error    CDZ0201))
+  (error    CDZ0201 (message "closest matches")))
 
 ; --- A redundant match arm — the DUAL of non-exhaustiveness -----------------------------------
 ; core-semantics.md #Matching Is Exhaustive Or Rejected has a dual: where a NON-exhaustive match leaves a
