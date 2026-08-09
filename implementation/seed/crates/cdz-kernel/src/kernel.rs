@@ -52,6 +52,18 @@ pub enum KernelError {
 /// pinned reducer (the §16c-S3 "replay under the version that wrote it" discipline).
 pub struct Session {
     log: Vec<Event>,
+    /// The GENESIS event (seq 0), held resident (log/state-decouple I1). The genesis is immutable after
+    /// construction and is what [`genesis_hash`](Self::genesis_hash)/[`reducer_hash`](Self::reducer_hash)/
+    /// [`genesis_provenance`](Self::genesis_provenance) read — so they read THIS field, not `self.log.first()`.
+    /// This is the first step of decoupling the derived head/tip identity from the resident `log` Vec: I1
+    /// keeps `log` resident (Vec still here) but routes the head/tip accessors off these fields, so a later
+    /// increment (I5) can drop the Vec without touching those accessors. `genesis == log[0]` invariant.
+    genesis: Event,
+    /// The current TIP event (last appended), held resident (log/state-decouple I1). What
+    /// [`tip_hash`](Self::tip_hash) + the next-seq/snapshot reads use — off THIS field, not `self.log.last()`.
+    /// Updated on every [`append`](Self::append) and rebuilt on [`replay`](Self::replay)/recovery.
+    /// `tip == log[log.len()-1]` invariant (== genesis for a fresh session).
+    tip: Event,
     kv: Kv,
     /// Next effect id to assign. Monotonic within the session (§16c-S4). Derived from the log on
     /// replay so it never collides after recovery.
@@ -136,8 +148,15 @@ impl Session {
     /// session (equivalent to [`genesis`](Self::genesis)). The durable `Spawned{child_hash}` edge in the
     /// PARENT's log is the other half of the relation.
     pub fn genesis_spawned(reducer: Hash, spawn_nonce: Hash, parent: Option<Hash>) -> Self {
-        let mut s = Session {
-            log: Vec::new(),
+        // Build the genesis event ONCE — the SAME construction `derive_genesis_hash` hashes, so a host
+        // pre-computing the child's SessionId and this kernel registering it can never disagree (single
+        // source of truth). It seeds the resident `genesis`/`tip` (log/state-decouple I1: head/tip identity
+        // lives in fields, not read off the Vec) AND the resident log.
+        let genesis_event = Self::genesis_event(reducer, spawn_nonce, parent);
+        Session {
+            log: vec![genesis_event.clone()],
+            genesis: genesis_event.clone(),
+            tip: genesis_event,
             kv: Kv::new(),
             next_effect_id: 0,
             settled: BTreeSet::new(),
@@ -148,12 +167,7 @@ impl Session {
             persist_error: None,
             name_store: None,
             last_manifest: None,
-        };
-        // The SAME genesis-event construction `derive_genesis_hash` hashes — so a host pre-computing the
-        // child's SessionId and this kernel registering it can never disagree (single source of truth).
-        s.log
-            .push(Self::genesis_event(reducer, spawn_nonce, parent));
-        s
+        }
     }
 
     /// Attach a durable [`crate::log_store::LogStore`] so this session WRITES THROUGH it on every append
@@ -225,7 +239,8 @@ impl Session {
     /// The current snapshot descriptor (§4): the free per-event checkpoint.
     pub fn snapshot(&self) -> Snapshot {
         Snapshot {
-            seq: self.log.last().map(|e| e.seq).unwrap_or(0),
+            // The tip seq — read the resident `tip` (log/state-decouple I1), not `self.log.last()`.
+            seq: self.tip.seq,
             kv_root: self.kv.root_hash(),
             reducer: self.reducer_hash(),
         }
@@ -278,14 +293,15 @@ impl Session {
     /// — the same internal invariant [`reducer_hash`](Self::reducer_hash)/[`genesis_hash`](Self::genesis_hash)
     /// guard (a `Session` only exists via a genesis constructor / `replay`, both of which guarantee it).
     fn genesis_provenance(&self) -> (Hash, Option<Hash>) {
-        match self.log.first().map(|e| &e.body) {
-            Some(EventBody::Genesis {
+        // Read the resident `genesis` (log/state-decouple I1), not `self.log.first()`.
+        match &self.genesis.body {
+            EventBody::Genesis {
                 spawn_nonce,
                 parent,
                 ..
-            }) => (*spawn_nonce, *parent),
+            } => (*spawn_nonce, *parent),
             _ => panic!(
-                "cdz-kernel invariant violated: session log's first event is not Genesis \
+                "cdz-kernel invariant violated: session's genesis event is not Genesis \
                  (a Session is only constructed via a genesis constructor/replay, which guarantee it)"
             ),
         }
@@ -298,10 +314,11 @@ impl Session {
     /// the right failure (a corrupt in-memory session is a bug, not a recoverable input — untrusted log
     /// bytes are already rejected by `replay`/`decode` before a Session exists).
     fn reducer_hash(&self) -> Hash {
-        match self.log.first().map(|e| &e.body) {
-            Some(EventBody::Genesis { reducer, .. }) => *reducer,
+        // Read the resident `genesis` (log/state-decouple I1), not `self.log.first()`.
+        match &self.genesis.body {
+            EventBody::Genesis { reducer, .. } => *reducer,
             _ => panic!(
-                "cdz-kernel invariant violated: session log's first event is not Genesis \
+                "cdz-kernel invariant violated: session's genesis event is not Genesis \
                  (a Session is only constructed via genesis()/replay(), both of which guarantee it)"
             ),
         }
@@ -326,13 +343,12 @@ impl Session {
     /// Panics on a log whose first event isn't Genesis — the same internal invariant `reducer_hash`
     /// guards (a `Session` only exists via `genesis()`/`replay()`, both of which guarantee it).
     pub fn genesis_hash(&self) -> Hash {
-        match self.log.first() {
-            Some(
-                e @ Event {
-                    body: EventBody::Genesis { .. },
-                    ..
-                },
-            ) => e.hash(),
+        // Read the resident `genesis` (log/state-decouple I1), not `self.log.first()`.
+        match &self.genesis {
+            e @ Event {
+                body: EventBody::Genesis { .. },
+                ..
+            } => e.hash(),
             _ => panic!(
                 "cdz-kernel invariant violated: session log's first event is not Genesis \
                  (a Session is only constructed via genesis()/replay(), both of which guarantee it)"
@@ -575,10 +591,7 @@ impl Session {
     /// marker installs as the tail, and nothing can be appended after it (the fold guard rejects), so the
     /// tail is the authoritative signal — and it's replay-stable (the durable log rebuilds the same tail).
     pub fn is_terminated(&self) -> bool {
-        matches!(
-            self.log.last().map(|e| &e.body),
-            Some(EventBody::Terminated { .. })
-        )
+        matches!(Some(&self.tip.body), Some(EventBody::Terminated { .. }))
     }
 
     /// TERMINATE this session (§lifecycle I1): append the durable [`EventBody::Terminated`] marker as the
@@ -879,6 +892,9 @@ impl Session {
                 }
             }
         }
+        // The just-appended event is the new TIP (log/state-decouple I1: `tip` is resident, so `tip_hash`
+        // + next-seq read this, not `self.log.last()`). Keep the `tip == log.last()` invariant here.
+        self.tip = event.clone();
         self.log.push(event);
         hash
     }
@@ -1258,7 +1274,8 @@ impl Session {
     /// Fold the tip through a [`Reducer`] (`.await`), with FoldFailed capture + effect-reversal. This is
     /// the ONE place the reducer actually awaits.
     async fn fold_tip(&mut self, reducer: &mut dyn Reducer, cause: Hash) -> Vec<(Effect, Hash)> {
-        let tip = self.log.last().expect("log always has genesis").clone();
+        // The tip to fold — the resident `tip` (log/state-decouple I1), not `self.log.last()`.
+        let tip = self.tip.clone();
         let out = reducer.fold(&tip, &mut self.kv).await;
         // Error-resilience (§17): a failed fold is captured as a FoldFailed log event, not folded further.
         if let Some(reason) = out.failure {
@@ -1678,7 +1695,8 @@ impl Session {
 
     /// Hash of the current tip (last log event) — the `cause` for effects its fold emits.
     fn tip_hash(&self) -> Hash {
-        self.log.last().expect("log always has genesis").hash()
+        // Read the resident `tip` (log/state-decouple I1), not `self.log.last()`.
+        self.tip.hash()
     }
 
     /// Reconstruct a session from a persisted log, folding each observable event through a [`Reducer`]
@@ -1691,12 +1709,21 @@ impl Session {
         log: Vec<Event>,
         reducer: &mut dyn Reducer,
     ) -> Result<Session, KernelError> {
-        match log.first().map(|e| &e.body) {
-            Some(EventBody::Genesis { .. }) => {}
+        let genesis_event = match log.first() {
+            Some(
+                e @ Event {
+                    body: EventBody::Genesis { .. },
+                    ..
+                },
+            ) => e.clone(),
             _ => return Err(KernelError::MissingGenesis),
-        }
+        };
         let mut s = Session {
             log: Vec::new(),
+            // Seed the resident genesis/tip (log/state-decouple I1) from the validated first event; `tip`
+            // advances to the last event as the replay loop pushes (kept == log.last() throughout).
+            genesis: genesis_event.clone(),
+            tip: genesis_event,
             kv: Kv::new(),
             next_effect_id: 0,
             settled: BTreeSet::new(),
@@ -1756,6 +1783,9 @@ impl Session {
             if observable(&event.body) {
                 let _ = reducer.fold(&event, &mut s.kv).await;
             }
+            // Advance the resident tip to the event being appended (log/state-decouple I1 invariant
+            // tip == log.last()); after the loop, tip is the last replayed event.
+            s.tip = event.clone();
             s.log.push(event);
         }
         Ok(s)
