@@ -94,6 +94,21 @@ pub struct Session {
     /// Updated on every [`append`](Self::append) and rebuilt on [`replay`](Self::replay)/recovery.
     /// `tip == log[log.len()-1]` invariant (== genesis for a fresh session).
     tip: Event,
+    /// The parent→child `Spawned` edges (§6/§lifecycle I2), held resident (log/state-decouple I3): the
+    /// child genesis hashes this session spawned, in spawn order. What [`spawned_children`](Self::spawned_children)
+    /// returns — off THIS field, not a `self.log` scan. Pushed on every `Spawned` append; rebuilt on replay.
+    spawned: Vec<Hash>,
+    /// Whether this session has already been seeded its capability manifest (host-capability-discovery),
+    /// held resident (log/state-decouple I3). The seed is a `CAPABILITIES` control effect cause-linked to
+    /// genesis (distinct from a later reactive push cause-linked to an Inbound). Set true when that seed
+    /// `Dispatched` frame appends; what [`already_seeded_capabilities`](Self::already_seeded_capabilities)
+    /// returns — off THIS bit, not a `self.log` scan. Rebuilt on replay.
+    seeded_capabilities: bool,
+    /// Whether this session has appended a `Closed` event (its normal-completion lifecycle flag), held
+    /// resident (log/state-decouple I3). Distinct from `Terminated` (the tip-body check `is_terminated`
+    /// serves). Set true when a `Closed` appends; what the `status_snapshot` `Closed` read uses — off THIS
+    /// bit, not a `self.log` scan. Rebuilt on replay.
+    closed: bool,
     kv: Kv,
     /// Next effect id to assign. Monotonic within the session (§16c-S4). Derived from the log on
     /// replay so it never collides after recovery.
@@ -190,6 +205,9 @@ impl Session {
             log: vec![genesis_event.clone()],
             genesis: genesis_event.clone(),
             tip: genesis_event,
+            spawned: Vec::new(),
+            seeded_capabilities: false,
+            closed: false,
             kv: Kv::new(),
             next_effect_id: 0,
             settled: BTreeSet::new(),
@@ -480,10 +498,8 @@ impl Session {
             }
         }
 
-        let closed = self
-            .log
-            .iter()
-            .any(|e| matches!(e.body, EventBody::Closed { .. }));
+        // Resident `closed` flag (log-decouple I3), not a `self.log` scan.
+        let closed = self.closed;
         let has_work = !self.open.is_empty();
         // Stall: an in-flight effect outstanding longer than the threshold (only derivable with a clock).
         let stalled = match (now_ms, oldest_dispatch_ms) {
@@ -671,13 +687,8 @@ impl Session {
     /// sessions' own logs (each session records only its OWN direct spawns; the tree is assembled by the
     /// host walking session logs). Reads the durable log, so it's replay-stable.
     pub fn spawned_children(&self) -> Vec<Hash> {
-        self.log
-            .iter()
-            .filter_map(|e| match &e.body {
-                EventBody::Spawned { child_hash } => Some(*child_hash),
-                _ => None,
-            })
-            .collect()
+        // Resident `spawned` edge list (log-decouple I3), not a `self.log` scan.
+        self.spawned.clone()
     }
 
     /// Genesis-seed the capability manifest (host-capability-discovery I5): fold a synthetic
@@ -744,20 +755,10 @@ impl Session {
     /// pre-seed guest query suppress the real seed, and (b) misstate the invariant. Cause-linked to genesis
     /// is the seed's true identity and is replay-stable (the durable cause edge survives recovery).
     fn already_seeded_capabilities(&self) -> bool {
-        // A fresh/empty log has no genesis to cause-link against (can't be seeded yet). Guard the empty
-        // case here rather than calling `genesis_hash()` (which panics on a non-Genesis head) — a
-        // never-constructed session shouldn't panic this read.
-        if self.log.is_empty() {
-            return false;
-        }
-        let genesis_hash = self.genesis_hash();
-        self.log.iter().any(|e| {
-            matches!(
-                &e.body,
-                EventBody::Dispatched { family, .. }
-                    if family.as_ref() == crate::effect::effect_ct::CAPABILITIES
-            ) && e.cause == Some(genesis_hash)
-        })
+        // Resident `seeded_capabilities` bit (log-decouple I3), not a `self.log` scan. Set at append when
+        // the genesis-caused CAPABILITIES seed frame is written (the same cause==genesis discriminant, now
+        // evaluated once at append rather than re-scanned per call).
+        self.seeded_capabilities
     }
 
     /// Push a `capabilities-changed` to the guest IFF this session's projected capability manifest actually
@@ -925,6 +926,15 @@ impl Session {
                         is_timer: false,
                     },
                 );
+                // Resident seed flag (log-decouple I3): the capability SEED is a CAPABILITIES control
+                // effect cause-linked to GENESIS (a later reactive push is cause-linked to an Inbound, so
+                // the cause==genesis discriminant distinguishes them). Set the bit here so
+                // `already_seeded_capabilities` is a field read, not a log scan.
+                if family.as_ref() == crate::effect::effect_ct::CAPABILITIES
+                    && event.cause == Some(self.genesis.hash())
+                {
+                    self.seeded_capabilities = true;
+                }
             }
             EventBody::TimerArmed {
                 id,
@@ -952,6 +962,14 @@ impl Session {
             EventBody::TimerFired { id, .. } => {
                 self.open.remove(&id.0);
                 self.settled.insert(id.0);
+            }
+            // Resident lifecycle flags (log-decouple I3): the Spawned edge list + the Closed flag, so
+            // `spawned_children`/the `Closed` status read are field reads, not log scans.
+            EventBody::Spawned { child_hash } => {
+                self.spawned.push(*child_hash);
+            }
+            EventBody::Closed { .. } => {
+                self.closed = true;
             }
             _ => {}
         }
@@ -1799,6 +1817,9 @@ impl Session {
             // advances to the last event as the replay loop pushes (kept == log.last() throughout).
             genesis: genesis_event.clone(),
             tip: genesis_event,
+            spawned: Vec::new(),
+            seeded_capabilities: false,
+            closed: false,
             kv: Kv::new(),
             next_effect_id: 0,
             settled: BTreeSet::new(),
@@ -1840,6 +1861,12 @@ impl Session {
                             is_timer: false,
                         },
                     );
+                    // Rebuild the resident seed flag (I3): same cause==genesis CAPABILITIES discriminant.
+                    if family.as_ref() == crate::effect::effect_ct::CAPABILITIES
+                        && event.cause == Some(s.genesis.hash())
+                    {
+                        s.seeded_capabilities = true;
+                    }
                     s.next_effect_id = s.next_effect_id.max(id.0 + 1);
                 }
                 EventBody::TimerArmed {
@@ -1886,6 +1913,13 @@ impl Session {
                 }
                 EventBody::AuthzDenied { id, .. } => {
                     s.next_effect_id = s.next_effect_id.max(id.0 + 1);
+                }
+                // Rebuild the resident lifecycle flags (I3) — same as live append.
+                EventBody::Spawned { child_hash } => {
+                    s.spawned.push(*child_hash);
+                }
+                EventBody::Closed { .. } => {
+                    s.closed = true;
                 }
                 _ => {}
             }
