@@ -213,6 +213,42 @@ def su-b2-tyvar-chain-follows() =
     | Ty.TyBool => unit
     | _ => trap("TyVar 0 → TyVar 1 → TyBool chain-follows")
 
+@test
+def su-sum-passes-through() =
+  // apply over a TySum is identity on the decl id — a TySum(n) has no inner Ty to substitute (decl-identity),
+  // so any Subst leaves it unchanged. Pins the TySum arm of apply-go (was untested).
+  let su = subst-bind-ty(subst-empty(), 0, Ty.TyBool) in
+  match apply(su, Ty.TySum(5)) with
+    | Ty.TySum(n) => (if n == 5 then unit else trap("TySum keeps its decl id under apply"))
+    | _ => trap("apply over a TySum stays a TySum")
+
+@test
+def su-cyclic-tyvar-fuel-terminates() =
+  // SAFETY: a cyclic TyVar binding (TyVar 0 := TyVar 0 — an occurs-check bypass a well-formed Subst never has,
+  // but apply must not loop on) TERMINATES via the fuel guard and returns a TyVar rather than looping forever.
+  // Pins the fuel==0 arm of apply-go's TyVar case.
+  let su = subst-bind-ty(subst-empty(), 0, Ty.TyVar(0)) in
+  match apply(su, Ty.TyVar(0)) with
+    | Ty.TyVar(_) => unit
+    | _ => trap("cyclic TyVar binding must terminate (fuel guard) and stay a var")
+
+@test
+def su-applies-under-multi-param-tyfn() =
+  // apply-list order-preservation over a 2-PARAM arrow: (TyVar0, Bool) -> TyVar1 with TyVar0:=Int64, TyVar1:=Bool
+  // → (Int64, Bool) -> Bool. Pins apply-list recurses every param IN ORDER (prior TyFn test used 1 param).
+  let su0 = subst-bind-ty(subst-empty(), 0, ty-int64()) in
+  let su = subst-bind-ty(su0, 1, Ty.TyBool) in
+  let arrow = Ty.TyFn(List.push(List.push([], Ty.TyVar(0)), Ty.TyBool), Ty.TyVar(1)) in
+  match apply(su, arrow) with
+    | Ty.TyFn(ps, r) => (match r with
+        | Ty.TyBool => (match List.at(ps, 0) with
+            | Option.Some(Ty.TyInt(_)) => (match List.at(ps, 1) with
+                | Option.Some(Ty.TyBool) => unit
+                | _ => trap("2nd param stays Bool"))
+            | _ => trap("1st param resolves to Int64"))
+        | _ => trap("result resolves to Bool"))
+    | _ => trap("apply over a 2-param arrow stays a TyFn")
+
 export {
   Subst.*,
   subst-empty,
