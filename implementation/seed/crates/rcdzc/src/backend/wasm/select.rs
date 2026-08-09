@@ -9094,7 +9094,16 @@ fn emit(
         // `Bytes.concat(a, b)` — emit both handles, `bytes-concat` (consumes both, returns the new one).
         Core::BytesConcat { lhs, rhs } => {
             emit(db, lhs, slots, base, high, scratch_ty, layout, out)?; // [a]
-            emit(db, rhs, slots, base, high, scratch_ty, layout, out)?; // [a, b]
+            // `rhs` emits ABOVE the running high-water, NOT at the same `base` as `lhs` — the disjoint-slot
+            // discipline the sibling `Core::ListConcat` already follows. When `lhs` reserves a PERSISTENT
+            // scratch slot at `base` (a `SumPayload` rope-child Perceus RETAIN tees the borrowed handle into
+            // `base` as an i32 and raises `*high`), `rhs` emitted at the stale `base` would reuse that slot at
+            // a DIFFERENT width — a checked `(+ s 1)` counter step in the branch-picked suffix claims `base`
+            // as an i64 guard temp — so the one wasm local is declared at two widths and the module fails to
+            // validate ("expected i64, found i32"). This is the `(String.concat r (if … "x" "yz"))` next-state
+            // rebuild in a tuple-(scalar,string)-state tail-resumptive fold (breaker slmin11). Floating `rhs`
+            // past `lhs`'s high-water keeps the two operands on disjoint slots.
+            emit(db, rhs, slots, *high, high, scratch_ty, layout, out)?; // [a, b]
             out.push(Lir::CallImport(OP_BYTES_CONCAT)); // → [a++b]
             Ok(())
         }

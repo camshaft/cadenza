@@ -21776,3 +21776,36 @@
   (call   main (: 1 Int64)) (output (: 9 Int64))
   (call   main (: 0 Int64)) (output (: 11 Int64))
   (call   main (: -2 Int64)) (output (: 11 Int64)))
+
+(case "slmin11 tuple(scalar,string) state, put rebuilds the tuple with a branch-picked String.concat suffix, 2 puts + 2 reads (invalid-wasm slot-clobber: the rope-retain dup and the counter step must not share a scratch slot at two widths)"
+  (input  (do
+            (effect E (op put (-> Int64)) (op size (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (tuple n "ab")
+                ((put () st (match st
+                              ((tuple s r)
+                               (resume s (tuple (+ s 1)
+                                                (String.concat r (if (= (% s 3) 0) "x" "yz")))))))
+                 (size () st (match st ((tuple s r) (resume (String.byte-len r) st)))))
+                (do (E.put) (E.put) (+ (E.size) (E.size)))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 10 Int64))
+  (call   main (: 1 Int64)) (output (: 12 Int64)))
+
+(case "by5 the slmin11 slot-clobber shape on a BYTES slot, phi-merged Bytes.concat growth in a tuple state, 2 puts + 2 reads"
+  (input  (do
+            (effect E (op put (-> Int64)) (op size (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (tuple n (Bytes.of (list (UInt8.wrap 9))))
+                ((put () st (match st
+                              ((tuple s b)
+                               (resume s (tuple (+ s 1)
+                                                (Bytes.concat b (if (= (% s 3) 0)
+                                                                    (Bytes.of (list (UInt8.wrap 1)))
+                                                                    (Bytes.of (list (UInt8.wrap 2) (UInt8.wrap 3))))))))))
+                 (size () st (match st ((tuple s b) (resume (Bytes.len b) st)))))
+                (do (E.put) (E.put) (+ (E.size) (E.size)))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 8 Int64))
+  (call   main (: 1 Int64)) (output (: 10 Int64))
+  (call   main (: -2 Int64)) (output (: 10 Int64)))
