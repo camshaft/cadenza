@@ -244,7 +244,7 @@ mod tests {
         EffectRequest::new_with_family(
             family.to_string(),
             // target is opaque to this executor (the handler interprets it) — any value works.
-            "target".to_string(),
+            "target",
             payload.map(|b| Payload::Inline(b.to_vec().into())),
             Timeliness::Interactive,
         )
@@ -423,7 +423,7 @@ mod tests {
         );
         let req = EffectRequest::new_with_family(
             "weather",
-            "t".to_string(),
+            "t",
             Some(Payload::Blob(Hash::of(b"blob"))),
             Timeliness::Interactive,
         );

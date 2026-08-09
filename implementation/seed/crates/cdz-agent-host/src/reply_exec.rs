@@ -104,9 +104,14 @@ impl Executor for ReplyExecutor {
             ));
         }
 
-        // The reply-token hex rides on `req.target` (the handler echoes what the I3 forward framed). An empty
-        // target carries no token → PERMANENT.
-        let token_hex = req.target.as_ref();
+        // The reply-token hex rides on `req.target` (the handler echoes what the I3 forward framed). The
+        // target is opaque Arc<[u8]>; the token hex is UTF-8, so a non-UTF-8 target is malformed → PERMANENT
+        // (fail-closed). An empty target carries no token → also PERMANENT.
+        let Ok(token_hex) = req.target_str() else {
+            return EffectOutcome::err(
+                "ReplyExecutor: the effect/reply target is not valid UTF-8 (expected the reply-token hex)",
+            );
+        };
         if token_hex.is_empty() {
             return EffectOutcome::err(
                 "ReplyExecutor: an effect/reply requires the reply-token (hex) as its target",
@@ -166,7 +171,7 @@ mod tests {
     fn reply_req(token_hex: &str, payload: Option<&[u8]>) -> EffectRequest {
         EffectRequest::new_with_family(
             effect_ct::EFFECT_REPLY,
-            token_hex.to_string(),
+            token_hex,
             payload.map(|b| Payload::Inline(b.to_vec().into())),
             Timeliness::Interactive,
         )
@@ -335,12 +340,8 @@ mod tests {
         let tokens = Rc::new(ReplyTokenRegistry::new());
         let (settle_tx, _rx) = reply_settle_channel();
         let mut exec = ReplyExecutor::new(tokens, settle_tx);
-        let req = EffectRequest::new_with_family(
-            effect_ct::HTTP,
-            "t".to_string(),
-            None,
-            Timeliness::Interactive,
-        );
+        let req =
+            EffectRequest::new_with_family(effect_ct::HTTP, "t", None, Timeliness::Interactive);
         let out = exec.perform(EffectId(0), &req, Hash::of(b"k")).await;
         assert!(
             matches!(&out, EffectOutcome::Err { message, retryability } if *retryability == Retryability::Permanent && message.contains("only handles")),
