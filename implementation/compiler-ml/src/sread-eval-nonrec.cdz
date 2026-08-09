@@ -36,3 +36,12 @@ def se-nonrec-multi-binding-let() =
   (match run-src("(do (def (main) (let ((x 2) (y 3)) (+ x y))) (export main))") with
     | Option.Some(v) => (if v == 5 then unit else trap("B: multi-binding let expected 5"))
     | Option.None(_) => trap("B: declined, expected 5"))
+
+/// NESTED LET — an OUTER let-binding is in scope inside an INNER let's binding VALUE:
+/// `(let ((x 2)) (let ((y (+ x 3))) (+ x y)))` → x=2, y=2+3=5, x+y = 7. Pins lexical scope across nested lets
+/// (the outer binder resolves inside the inner binding expression); prior let tests were single-level.
+@test
+def se-nonrec-nested-let-inner-uses-outer() =
+  (match run-src("(do (def (main) (let ((x 2)) (let ((y (+ x 3))) (+ x y)))) (export main))") with
+    | Option.Some(v) => (if v == 7 then unit else trap("nested let inner-uses-outer expected 7"))
+    | Option.None(_) => trap("nested let declined, expected 7"))
