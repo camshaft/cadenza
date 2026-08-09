@@ -660,43 +660,56 @@
         # pure-Cadenza (Project.cdz + src/*.cdz), NOT the excluded Rust cdz-cad crate — so no cmake/C++,
         # just the S3 testCadenzaProject pattern applied to real project dirs: the nix-built seedCompiler
         # runs each project's @test suite, resolving the value-heap runtime from my componentStore
-        # (CDZ_STORE) — skipping the CI job's `xtask build` + native cdz rebuild. Each project is
-        # self-contained (`modules = ["src/*.cdz"]`, no cross-dir imports). Advisory-by-omission →
-        # unilateral cargo-twin retire once green.
-        cdzCadProjectsSrc = pkgs.lib.fileset.toSource {
-          root = ./.;
-          fileset = pkgs.lib.fileset.unions [
-            ./implementation/cad
-            ./implementation/compiler-ml
-            ./implementation/choreography
-            ./implementation/iterators
-          ];
-        };
-        cdzCadTestsCheck = pkgs.stdenvNoCC.mkDerivation {
-          pname = "cdz-cad-tests";
+        # (CDZ_STORE) — skipping the CI job's `xtask build` + native cdz rebuild.
+        #
+        # PER-PROJECT SPLIT (v-nix, operator+concierge test-throughput arc 2026-08-08, approved as slice
+        # (b)): the old form gave ALL 4 projects ONE union `src`, so a one-line edit to ANY project busted
+        # the whole derivation and reran all 4 (~35m). Each project is self-contained (`modules =
+        # ["src/*.cdz"]`, no cross-dir imports), so this splits into one `cdz test` derivation PER project,
+        # each with a NARROW fileset (just its own dir). A change to one project now only busts that one
+        # derivation — the other 3 cache-hit — for a ~4x win on the common single-project-change case.
+        # Mirrors the per-crate clippy shard pattern (each shard its own narrow closure, an aggregate over
+        # all). The `cad-tests` check below is now an AGGREGATE that depends on all 4 (required-context name
+        # unchanged → no ruleset edit); the 4 per-project derivations are ALSO exposed individually as
+        # checks.<sys>.cad-test-{cad,compiler-ml,choreography,iterators} so a candidate touching one project
+        # can build just that one, and cache-warm roots them the same way.
+        mkCadProjectTest = { name, dir }: pkgs.stdenvNoCC.mkDerivation {
+          pname = "cdz-cad-test-${name}";
           version = "0.0.0";
-          src = cdzCadProjectsSrc;
+          src = pkgs.lib.fileset.toSource {
+            root = ./.;
+            fileset = dir;
+          };
           nativeBuildInputs = [ seedCompiler ];
           buildPhase = ''
             runHook preBuild
             set -o pipefail
             export HOME="$TMPDIR/home"; mkdir -p "$HOME"
             export CDZ_STORE="${componentStore}"
-            # Run each project's @test suite explicitly (its dir), resolving the runtime from the nix
-            # store. A non-zero `cdz test` propagates (pipefail) and fails the build.
-            for p in implementation/cad implementation/compiler-ml \
-                     implementation/choreography implementation/iterators; do
-              echo "== cdz test $p =="
-              cdz test "$p" | tee -a "$TMPDIR/cad-tests.out"
-            done
+            # Run this project's @test suite, resolving the runtime from the nix store. A non-zero
+            # `cdz test` propagates (pipefail) and fails the build.
+            echo "== cdz test ${name} =="
+            cdz test "implementation/${name}" | tee "$TMPDIR/cad-test.out"
             runHook postBuild
           '';
           installPhase = ''
             runHook preInstall
-            cp "$TMPDIR/cad-tests.out" "$out"
+            cp "$TMPDIR/cad-test.out" "$out"
             runHook postInstall
           '';
         };
+        cdzCadProjectTests = {
+          cad-test-cad = mkCadProjectTest { name = "cad"; dir = ./implementation/cad; };
+          cad-test-compiler-ml = mkCadProjectTest { name = "compiler-ml"; dir = ./implementation/compiler-ml; };
+          cad-test-choreography = mkCadProjectTest { name = "choreography"; dir = ./implementation/choreography; };
+          cad-test-iterators = mkCadProjectTest { name = "iterators"; dir = ./implementation/iterators; };
+        };
+        # AGGREGATE over the 4 per-project tests — the required `cad-tests` context. A change to one project
+        # rebuilds only that project's derivation; the aggregate re-links (cheap runCommand) and the other 3
+        # cache-hit. Advisory-by-omission → unilateral cargo-twin retire once green.
+        cdzCadTestsCheck = pkgs.runCommand "cdz-cad-tests" cdzCadProjectTests ''
+          echo "ok: cad-tests aggregate — cdz test on cad + compiler-ml + choreography + iterators (per-project split)" > "$out"
+        '';
 
         # ── rcdzc→WASM: the Cadenza COMPILER as a wasm artifact (agent-harness v0.2, operator 2026-08-03) ─
         #
@@ -2010,6 +2023,9 @@
             # Full-CI-in-nix increment 6d: the GHA bench job (cargo xtask bench — runtime alloc ceilings).
             bench-check = benchCheck;
             # Full-CI-in-nix increment 6e: the GHA cad-tests job (cdz test on the 4 in-tree Cadenza projects).
+            # PER-PROJECT SPLIT (2026-08-08): `cad-tests` is now an aggregate over the 4 per-project
+            # derivations (each with its own narrow fileset — a one-project change reruns only that one).
+            # The 4 are ALSO exposed individually so a candidate touching one project builds just it.
             cad-tests = cdzCadTestsCheck;
             # Full-CI-in-nix increment 6f: the GHA guide-examples job (the guide's runnable-content gate —
             # hermetic wasm-pack + npm ci + the check:* battery + build + bundle). The LAST required job.
@@ -2030,7 +2046,12 @@
           # granularity + a precise red when one crate fails. These are cargoArtifacts-cached. (No per-crate
           # TEST checks — checks.test is a whole-workspace `cargo test --workspace`, option-b; the crane
           # cargoTest per-crate set was retired when test reverted to cargo.)
-          // perCrateClippyCrane;
+          // perCrateClippyCrane
+          # PER-PROJECT cad-tests split (2026-08-08): expose the 4 per-project `cdz test` derivations
+          # individually (checks.<sys>.cad-test-{cad,compiler-ml,choreography,iterators}) alongside the
+          # `cad-tests` aggregate. A candidate touching ONE project builds just that project's check; the
+          # aggregate (required context) still forces all 4. cache-warm roots these the same as the aggregate.
+          // cdzCadProjectTests;
 
         devShells.default = pkgs.mkShell {
           # TIGHTLY SCOPED: only what the seed workspace's build/gate actually needs —
