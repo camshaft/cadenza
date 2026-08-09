@@ -79,3 +79,8 @@ pub mod reducer;
 pub mod schema_resolver;
 pub mod selector;
 pub mod wasm_host;
+
+// In-crate reducer / kernel E2E test suites (relocated from `tests/*.rs` integration binaries per the
+// no-integration-tests directive — same coverage, compiled with the lib, no separate binary).
+#[cfg(test)]
+mod kernel_e2e_tests;

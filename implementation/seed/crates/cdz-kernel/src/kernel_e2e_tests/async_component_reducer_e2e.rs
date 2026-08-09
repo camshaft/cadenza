@@ -6,9 +6,9 @@
 //! effect-request + the `kv` host import + the mutated KV across the component boundary, on a real
 //! single-threaded (current-thread) executor (the runtime the kernel is designed for — no Send).
 
-use cdz_kernel::kv::Kv;
-use cdz_kernel::reducer::Reducer;
-use cdz_kernel::wasm_host::{AsyncComponentReducer, ComponentError, ContentType, EffectKind};
+use crate::kv::Kv;
+use crate::reducer::Reducer;
+use crate::wasm_host::{AsyncComponentReducer, ComponentError, ContentType, EffectKind};
 
 // The SAME guest the sync e2e uses (via REDUCER_GUEST_COMPONENT) — a dependency-free wit-bindgen reducer
 // that, on an inbound "message", requests one Http effect + increments a KV counter.
@@ -72,15 +72,15 @@ async fn async_reducer_drives_via_the_async_reducer_trait() {
         AsyncComponentReducer::from_component_bytes(&guest).expect("valid async reducer component");
     let dyn_reducer: &mut dyn Reducer = &mut reducer;
 
-    let event = cdz_kernel::event::Event {
+    let event = crate::event::Event {
         seq: 0,
         cause: None,
-        body: cdz_kernel::event::EventBody::Inbound {
-            content_type: cdz_kernel::event::ContentType {
+        body: crate::event::EventBody::Inbound {
+            content_type: crate::event::ContentType {
                 family: "message".into(),
                 version: 1,
             },
-            payload: cdz_kernel::effect::Payload::Inline(b"hello".to_vec().into()),
+            payload: crate::effect::Payload::Inline(b"hello".to_vec().into()),
         },
     };
     let mut kv = Kv::new();
@@ -94,10 +94,7 @@ async fn async_reducer_drives_via_the_async_reducer_trait() {
         out.failure
     );
     assert_eq!(out.effects.len(), 1);
-    assert_eq!(
-        out.effects[0].request.kind,
-        cdz_kernel::effect::EffectKind::Http
-    );
+    assert_eq!(out.effects[0].request.kind, crate::effect::EffectKind::Http);
     assert_eq!(kv.get(b"count"), Some(&[1u8][..]));
 }
 

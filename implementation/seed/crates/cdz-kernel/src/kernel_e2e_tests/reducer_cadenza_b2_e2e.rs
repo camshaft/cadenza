@@ -15,7 +15,7 @@
 //!   to resolve the runtime's own bare `cadenza:nfc/normalize`. UNSET → SKIP (else an opaque mid-run
 //!   linker error — same rationale as the b1 e2e).
 
-use cdz_kernel::wasm_host::{ComponentDep, ComponentReducer, ContentType, EffectKind};
+use crate::wasm_host::{ComponentDep, ComponentReducer, ContentType, EffectKind};
 
 /// The compiled b2 component bytes from `REDUCER_CADENZA_B2_COMPONENT`; `None` (clean SKIP) when unset. A
 /// set path that's unreadable PANICS (a broken CI path must fail loud, not skip).
@@ -69,9 +69,8 @@ async fn reducer_cadenza_b2_folds_one_http_effect_through_apply_handle_lowered()
     let resolved = resolve_runtime_deps(&deps).await;
     let mut reducer = reducer.with_resolved_deps(resolved);
     if let Ok(store_dir) = std::env::var("CDZ_STORE") {
-        reducer = reducer.with_component_store(cdz_kernel::component_store::ComponentStore::open(
-            &store_dir,
-        ));
+        reducer =
+            reducer.with_component_store(crate::component_store::ComponentStore::open(&store_dir));
     }
 
     // Fold an inbound "message" event. b2 emits exactly ONE Http effect to https://ok.host/x with
@@ -80,7 +79,7 @@ async fn reducer_cadenza_b2_folds_one_http_effect_through_apply_handle_lowered()
         family: "message".into(),
         version: 1,
     };
-    match reducer.apply_handle_lowered(cdz_kernel::kv::Kv::new(), ct, None, None) {
+    match reducer.apply_handle_lowered(crate::kv::Kv::new(), ct, None, None) {
         Ok((effects, _kv)) => {
             assert_eq!(
                 effects.len(),
@@ -137,7 +136,7 @@ async fn resolve_runtime_deps(deps: &[ComponentDep]) -> Vec<(ComponentDep, Vec<u
     // fold uses — NOT a manual `std::fs::read`. This exercises the #2210 SHA-256 content-address verify, so a
     // corrupted/substituted store blob surfaces as `ContentAddressMismatch` here instead of composing
     // silently (reviewer + github-liaison note; mirrors #2269's genesis-e2e fix). Open the store ONCE + reuse.
-    let store = cdz_kernel::component_store::ComponentStore::open(&store_dir);
+    let store = crate::component_store::ComponentStore::open(&store_dir);
     let mut out = Vec::with_capacity(deps.len());
     for dep in deps {
         let bytes = store.get_by_hash(&dep.hash).unwrap_or_else(|e| {

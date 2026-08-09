@@ -11,16 +11,16 @@
 //! Deterministic generation (a tiny seeded LCG) keeps the test reproducible — no external rng dep, no
 //! wall-clock/entropy (which would themselves violate the determinism the test checks).
 
-use cdz_kernel::authz::Authorizer;
-use cdz_kernel::effect::{
+use crate::authz::Authorizer;
+use crate::effect::{
     Capability, EffectKind, EffectRequest, Payload, ResourcePredicate, Timeliness,
 };
-use cdz_kernel::event::{ContentType, Event, EventBody};
-use cdz_kernel::executor::RecordingExecutor;
-use cdz_kernel::hash::Hash;
-use cdz_kernel::kernel::Session;
-use cdz_kernel::kv::Kv;
-use cdz_kernel::reducer::{FoldOutput, Reducer};
+use crate::event::{ContentType, Event, EventBody};
+use crate::executor::RecordingExecutor;
+use crate::hash::Hash;
+use crate::kernel::Session;
+use crate::kv::Kv;
+use crate::reducer::{FoldOutput, Reducer};
 
 /// A reducer that exercises varied KV shapes and the effect chain. On an inbound message it writes a
 /// per-key counter, appends to a running list under a scanned prefix, and (for some inputs) emits an

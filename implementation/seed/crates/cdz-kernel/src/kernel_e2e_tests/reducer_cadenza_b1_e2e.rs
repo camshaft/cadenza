@@ -25,7 +25,7 @@
 //! runtime dep but NEITHER is provided, the test FAILS LOUD (a real b1 needs its heap — a silent skip there
 //! would hide a broken wiring), distinct from the reducer-env-unset clean skip.
 
-use cdz_kernel::wasm_host::{ComponentDep, ComponentReducer, ContentType};
+use crate::wasm_host::{ComponentDep, ComponentReducer, ContentType};
 
 /// The compiled b1 component bytes from `REDUCER_CADENZA_COMPONENT`; `None` (clean SKIP) when unset. A set
 /// path that's unreadable PANICS (a broken CI path must fail loud, not skip).
@@ -91,9 +91,8 @@ async fn reducer_cadenza_b1_folds_empty_effects_through_apply_handle_lowered() {
     // the RUNTIME_HEAP_COMPONENT direct-path override has no store, so a runtime that imports nfc needs
     // CDZ_STORE. (See `ComponentReducer::with_component_store` + `compose_transitive_bare_deps`.)
     if let Ok(store_dir) = std::env::var("CDZ_STORE") {
-        reducer = reducer.with_component_store(cdz_kernel::component_store::ComponentStore::open(
-            &store_dir,
-        ));
+        reducer =
+            reducer.with_component_store(crate::component_store::ComponentStore::open(&store_dir));
     }
 
     // Fold an inbound "message" event. b1 emits ZERO effects → the returned effect-list handle unmarshals
@@ -102,7 +101,7 @@ async fn reducer_cadenza_b1_folds_empty_effects_through_apply_handle_lowered() {
         family: "message".into(),
         version: 1,
     };
-    match reducer.apply_handle_lowered(cdz_kernel::kv::Kv::new(), ct, None, None) {
+    match reducer.apply_handle_lowered(crate::kv::Kv::new(), ct, None, None) {
         Ok((effects, _kv)) => assert!(
             effects.is_empty(),
             "reducer_b1 is an empty-effects reducer; expected 0 effects, got {}",
@@ -149,7 +148,7 @@ async fn resolve_runtime_deps(deps: &[ComponentDep]) -> Vec<(ComponentDep, Vec<u
              — the e2e can't supply the value-heap runtime to compose"
         )
     });
-    let store = cdz_kernel::component_store::ComponentStore::open(&store_dir);
+    let store = crate::component_store::ComponentStore::open(&store_dir);
     let mut out = Vec::with_capacity(deps.len());
     for dep in deps {
         let bytes = store.get_by_hash(&dep.hash).unwrap_or_else(|e| {

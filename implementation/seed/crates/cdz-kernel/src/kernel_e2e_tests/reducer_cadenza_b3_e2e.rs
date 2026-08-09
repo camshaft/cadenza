@@ -26,7 +26,7 @@
 //!   to resolve the runtime's own bare `cadenza:nfc/normalize`. UNSET → SKIP (else an opaque mid-run
 //!   linker error — same rationale as the b1/b2 e2e).
 
-use cdz_kernel::wasm_host::{AsyncComponentReducer, ComponentDep, ContentType, EffectKind};
+use crate::wasm_host::{AsyncComponentReducer, ComponentDep, ContentType, EffectKind};
 
 /// The compiled b3 component bytes from `REDUCER_CADENZA_B3_COMPONENT`; `None` (clean SKIP) when unset. A
 /// set path that's unreadable PANICS (a broken CI path must fail loud, not skip).
@@ -79,9 +79,8 @@ async fn reducer_cadenza_b3_bumps_kv_count_and_emits_one_http_effect() {
     let resolved = resolve_runtime_deps(&deps).await;
     let mut reducer = reducer.with_resolved_deps(resolved);
     if let Ok(store_dir) = std::env::var("CDZ_STORE") {
-        reducer = reducer.with_component_store(cdz_kernel::component_store::ComponentStore::open(
-            &store_dir,
-        ));
+        reducer =
+            reducer.with_component_store(crate::component_store::ComponentStore::open(&store_dir));
     }
 
     // Fold an inbound "message" event on an EMPTY KV. b3 bumps the "count" counter (get→None→0, +1, put)
@@ -92,7 +91,7 @@ async fn reducer_cadenza_b3_bumps_kv_count_and_emits_one_http_effect() {
         version: 1,
     };
     match reducer
-        .apply_handle_lowered(cdz_kernel::kv::Kv::new(), ct, None, None)
+        .apply_handle_lowered(crate::kv::Kv::new(), ct, None, None)
         .await
     {
         Ok((effects, kv)) => {
@@ -159,7 +158,7 @@ async fn resolve_runtime_deps(deps: &[ComponentDep]) -> Vec<(ComponentDep, Vec<u
     // fold uses — NOT a manual `std::fs::read`. This exercises the #2210 SHA-256 content-address verify, so a
     // corrupted/substituted store blob surfaces as `ContentAddressMismatch` here instead of composing
     // silently (mirrors the b1/b2 resolvers). Open the store ONCE + reuse.
-    let store = cdz_kernel::component_store::ComponentStore::open(&store_dir);
+    let store = crate::component_store::ComponentStore::open(&store_dir);
     let mut out = Vec::with_capacity(deps.len());
     for dep in deps {
         let bytes = store.get_by_hash(&dep.hash).unwrap_or_else(|e| {

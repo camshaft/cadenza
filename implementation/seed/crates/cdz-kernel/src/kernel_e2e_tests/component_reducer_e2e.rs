@@ -15,8 +15,8 @@
 //!   wasm-tools component new target/wasm32-unknown-unknown/release/reducer_guest.wasm -o /tmp/rg.wasm
 //!   REDUCER_GUEST_COMPONENT=/tmp/rg.wasm cargo test  (or `nix build .#reducer-guest`)
 
-use cdz_kernel::kv::Kv;
-use cdz_kernel::wasm_host::{ComponentError, ComponentReducer, ContentType, EffectKind};
+use crate::kv::Kv;
+use crate::wasm_host::{ComponentError, ComponentReducer, ContentType, EffectKind};
 
 /// The reducer-guest component bytes, read from the `REDUCER_GUEST_COMPONENT` env path (the nix-built
 /// `packages.reducer-guest`; the cdz-kernel CI job exports it). Returns `None` when the env is UNSET so a
@@ -177,12 +177,12 @@ async fn a_normal_fold_completes_within_the_default_fuel_budget() {
 /// folding on the same loop as a Rust one — proven end to end through the kernel.
 #[tokio::test(flavor = "current_thread")]
 async fn the_wasm_guest_drives_the_kernel_loop_and_its_token_reaches_the_dispatched_frame() {
-    use cdz_kernel::authz::Authorizer;
-    use cdz_kernel::effect::{Capability, EffectKind as KKind, Payload, ResourcePredicate};
-    use cdz_kernel::event::{ContentType as KContentType, EventBody};
-    use cdz_kernel::executor::RecordingExecutor;
-    use cdz_kernel::hash::Hash;
-    use cdz_kernel::kernel::Session;
+    use crate::authz::Authorizer;
+    use crate::effect::{Capability, EffectKind as KKind, Payload, ResourcePredicate};
+    use crate::event::{ContentType as KContentType, EventBody};
+    use crate::executor::RecordingExecutor;
+    use crate::hash::Hash;
+    use crate::kernel::Session;
 
     let Some(guest) = guest_bytes() else {
         eprintln!("SKIP the_wasm_guest_drives_the_kernel_loop_and_its_token_reaches_the_dispatched_frame: REDUCER_GUEST_COMPONENT unset");
@@ -247,18 +247,15 @@ async fn the_wasm_guest_drives_the_kernel_loop_and_its_token_reaches_the_dispatc
 ///   the fuel path can't reliably write-then-trap without brittle budget calibration.)
 #[tokio::test(flavor = "current_thread")]
 async fn fold_commits_on_success_and_leaves_the_kv_intact_on_failure() {
-    use cdz_kernel::event::{ContentType as KContentType, EventBody};
-    use cdz_kernel::reducer::Reducer;
+    use crate::event::{ContentType as KContentType, EventBody};
+    use crate::reducer::Reducer;
 
     // An inner async fn (not a closure — a closure returning a future that borrows its `&reducer` arg
     // trips the borrow checker; an `async fn` scopes the borrow to its own await cleanly).
-    async fn inbound(
-        kv: &mut Kv,
-        reducer: &mut ComponentReducer,
-    ) -> cdz_kernel::reducer::FoldOutput {
+    async fn inbound(kv: &mut Kv, reducer: &mut ComponentReducer) -> crate::reducer::FoldOutput {
         reducer
             .fold(
-                &cdz_kernel::event::Event {
+                &crate::event::Event {
                     seq: 1,
                     cause: None,
                     body: EventBody::Inbound {
@@ -266,7 +263,7 @@ async fn fold_commits_on_success_and_leaves_the_kv_intact_on_failure() {
                             family: "message".into(),
                             version: 1,
                         },
-                        payload: cdz_kernel::effect::Payload::Inline(b"hello".to_vec().into()),
+                        payload: crate::effect::Payload::Inline(b"hello".to_vec().into()),
                     },
                 },
                 kv,
@@ -319,12 +316,12 @@ async fn fold_commits_on_success_and_leaves_the_kv_intact_on_failure() {
 /// failure + which event caused it. The session doesn't die: the loop continues (§17 can't-brick).
 #[tokio::test(flavor = "current_thread")]
 async fn a_failed_wasm_fold_records_a_foldfailed_event_on_the_log() {
-    use cdz_kernel::authz::Authorizer;
-    use cdz_kernel::effect::{Capability, EffectKind as KKind, Payload, ResourcePredicate};
-    use cdz_kernel::event::{ContentType as KContentType, EventBody};
-    use cdz_kernel::executor::RecordingExecutor;
-    use cdz_kernel::hash::Hash;
-    use cdz_kernel::kernel::Session;
+    use crate::authz::Authorizer;
+    use crate::effect::{Capability, EffectKind as KKind, Payload, ResourcePredicate};
+    use crate::event::{ContentType as KContentType, EventBody};
+    use crate::executor::RecordingExecutor;
+    use crate::hash::Hash;
+    use crate::kernel::Session;
 
     let Some(guest) = guest_bytes() else {
         eprintln!("SKIP a_failed_wasm_fold_records_a_foldfailed_event_on_the_log: REDUCER_GUEST_COMPONENT unset");

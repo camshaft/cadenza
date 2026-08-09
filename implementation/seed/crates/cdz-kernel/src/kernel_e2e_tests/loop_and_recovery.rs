@@ -6,16 +6,16 @@
 //! effect-id-keyed continuations with timeout-cancels (S4), resource-scoped authz (SEC-F1), and
 //! deterministic replay recovery.
 
-use cdz_kernel::authz::Authorizer;
-use cdz_kernel::effect::{
+use crate::authz::Authorizer;
+use crate::effect::{
     Capability, EffectKind, EffectRequest, Payload, ResourcePredicate, Timeliness,
 };
-use cdz_kernel::event::{ContentType, EffectOutcome, Event, EventBody};
-use cdz_kernel::executor::{Executor, RecordingExecutor};
-use cdz_kernel::hash::Hash;
-use cdz_kernel::kernel::Session;
-use cdz_kernel::kv::Kv;
-use cdz_kernel::reducer::{Effect, FoldOutput, Reducer};
+use crate::event::{ContentType, EffectOutcome, Event, EventBody};
+use crate::executor::{Executor, RecordingExecutor};
+use crate::hash::Hash;
+use crate::kernel::Session;
+use crate::kv::Kv;
+use crate::reducer::{Effect, FoldOutput, Reducer};
 
 /// A small but realistic reducer: on an inbound "go" message it performs an Http fetch; when the
 /// fetch RESULT arrives it records "done" in KV and performs a second Http call (a step-2). This is
@@ -115,7 +115,7 @@ async fn effect_chain_populates_the_causal_dag() {
     // the two-step run and verify the chain threads inbound → dispatch → result → dispatch → result,
     // each `cause` pointing at its parent's hash. (Before this fix, effect-chain events were written
     // with cause: None — a silent hole in the provenance graph.)
-    use cdz_kernel::hash::Hash as H;
+    use crate::hash::Hash as H;
     use std::collections::HashMap;
 
     let mut reducer = TwoStepReducer;
@@ -299,7 +299,7 @@ async fn timeout_cancels_so_a_late_result_is_dropped() {
     impl Executor for TimeoutExecutor {
         async fn perform(
             &mut self,
-            _id: cdz_kernel::effect::EffectId,
+            _id: crate::effect::EffectId,
             _req: &EffectRequest,
             _key: Hash,
         ) -> EffectOutcome {
@@ -399,7 +399,7 @@ async fn time_out_effect_settles_an_open_dispatch_and_resumes_the_reducer() {
     assert!(
         !restored
             .time_out_effect(
-                cdz_kernel::effect::EffectId(9999),
+                crate::effect::EffectId(9999),
                 &mut reducer,
                 &http_cap(),
                 &mut exec2
@@ -466,7 +466,7 @@ async fn attached_log_persists_through_on_append_no_manual_mirroring() {
     // AS IT APPENDS — the driver does NOT mirror events by hand. Deliver a two-step run against an
     // attached store, then recover PURELY from that store's file in a fresh session and confirm the
     // whole run reconstructs (KV + no open obligations) — proving the session wrote through itself.
-    use cdz_kernel::log_store::LogStore;
+    use crate::log_store::LogStore;
 
     let mut path = std::env::temp_dir();
     path.push(format!(
@@ -502,7 +502,7 @@ async fn attached_log_persists_through_on_append_no_manual_mirroring() {
     let (restored, report) = Session::recover(&path, &mut reducer)
         .await
         .expect("recover from written-through log");
-    assert_eq!(report.kind, cdz_kernel::log_store::RecoveryKind::Clean);
+    assert_eq!(report.kind, crate::log_store::RecoveryKind::Clean);
     assert_eq!(restored.kv().get(b"phase"), Some(&b"done"[..]));
     // Both effects settled during the run, so recovery sees no open obligations.
     assert_eq!(restored.open_effects(), 0);
@@ -725,12 +725,12 @@ async fn s1_route_guard_does_not_perform_an_effect_whose_dispatch_failed_to_pers
     // real S1 danger). A LogSink that always Errs deterministically triggers the persist failure — the
     // fault-injection seam the S1 latch-check was previously untestable without (a real LogStore over a
     // file can't be made to fail its append: a read-only file fails at OPEN, not append).
-    use cdz_kernel::log_store::LogSink;
+    use crate::log_store::LogSink;
 
     struct FailingSink;
     #[async_trait::async_trait(?Send)]
     impl LogSink for FailingSink {
-        async fn append(&mut self, _event: &cdz_kernel::event::Event) -> std::io::Result<()> {
+        async fn append(&mut self, _event: &crate::event::Event) -> std::io::Result<()> {
             Err(std::io::Error::other("disk full (injected)"))
         }
     }
@@ -788,7 +788,7 @@ async fn persist_crash_recover_reconstructs_kv_and_open_obligations() {
     // End-to-end durability (§16c-S1): run a session while PERSISTING every appended event to a
     // LogStore, simulate a crash right after a Dispatched is durable but before its result, then
     // recover PURELY from disk and confirm the KV and the open-obligation set are reconstructed.
-    use cdz_kernel::log_store::LogStore;
+    use crate::log_store::LogStore;
 
     let mut path = std::env::temp_dir();
     path.push(format!("cdz-kernel-e2e-{}.log", std::process::id()));
@@ -821,7 +821,7 @@ async fn persist_crash_recover_reconstructs_kv_and_open_obligations() {
 
     // Phase 2: recover from disk ONLY, then replay into a fresh Session.
     let recovered = LogStore::recover(&path).unwrap();
-    assert_eq!(recovered.kind, cdz_kernel::log_store::RecoveryKind::Clean);
+    assert_eq!(recovered.kind, crate::log_store::RecoveryKind::Clean);
     let restored = Session::replay(recovered.events, &mut reducer)
         .await
         .unwrap();
@@ -840,8 +840,8 @@ async fn session_recover_is_the_one_call_recovery_entry_point() {
     // The composed entry point (§16c-S1): Session::recover(path) does LogStore::recover + replay in
     // one call and hands the driver a RecoveryReport (kind + open_effects to re-drive). This is
     // what an operator actually calls to boot a persisted session.
-    use cdz_kernel::kernel::{RecoverError, RecoveryReport};
-    use cdz_kernel::log_store::{LogStore, RecoveryKind};
+    use crate::kernel::{RecoverError, RecoveryReport};
+    use crate::log_store::{LogStore, RecoveryKind};
 
     let mut path = std::env::temp_dir();
     path.push(format!("cdz-kernel-recover-{}.log", std::process::id()));
@@ -893,8 +893,8 @@ async fn session_recover_from_is_backend_agnostic_no_file_needed() {
     // takes an already-read `Recovered` from ANY backend — here a hand-built one, NO file involved — and
     // reconstructs the session + report identically to the file path. This is what a network/replicated
     // log backend calls after reading its own bytes; the kernel core carries no file assumption.
-    use cdz_kernel::kernel::{RecoverError, RecoveryReport};
-    use cdz_kernel::log_store::{Recovered, RecoveryKind};
+    use crate::kernel::{RecoverError, RecoveryReport};
+    use crate::log_store::{Recovered, RecoveryKind};
 
     let mut reducer = TwoStepReducer;
 
@@ -944,8 +944,8 @@ async fn session_recover_surfaces_corruption_to_the_caller() {
     // PR#993 #1 (substantive): the corrupt state must reach the PUBLIC Session::recover caller — the
     // whole point of detecting it. Persist a good genesis then a complete-but-invalid frame; recover
     // must return a report whose kind is Corrupt (with the good prefix still recovered).
-    use cdz_kernel::kernel::RecoveryReport;
-    use cdz_kernel::log_store::{LogStore, RecoveryKind};
+    use crate::kernel::RecoveryReport;
+    use crate::log_store::{LogStore, RecoveryKind};
     use std::io::Write;
 
     let mut path = std::env::temp_dir();
@@ -1166,7 +1166,7 @@ async fn malformed_timer_deadline_is_rejected_not_panicked() {
 #[cfg(all(feature = "live-exec", unix))]
 #[tokio::test(flavor = "current_thread")]
 async fn live_shell_executor_runs_a_real_command_end_to_end() {
-    use cdz_kernel::executor::ShellExecutor;
+    use crate::executor::ShellExecutor;
 
     // Reducer: on "go", run `echo hi`; on the result, stash whether it succeeded + the stdout.
     struct ShellReducer;
@@ -1219,7 +1219,7 @@ async fn live_shell_executor_runs_a_real_command_end_to_end() {
 #[cfg(all(feature = "live-exec", unix))]
 #[tokio::test(flavor = "current_thread")]
 async fn live_shell_denied_command_never_executes() {
-    use cdz_kernel::executor::ShellExecutor;
+    use crate::executor::ShellExecutor;
 
     // Unique per-pid marker (PR#996: parallel-safe + no false-fail from a pre-existing file). Bind the
     // path once, remove any stale copy at START, and reuse the SAME var in both the touch target and
@@ -1281,7 +1281,7 @@ async fn live_shell_denied_command_never_executes() {
 #[cfg(all(feature = "live-exec", unix))]
 #[tokio::test(flavor = "current_thread")]
 async fn live_shell_no_injection_via_metacharacters() {
-    use cdz_kernel::executor::ShellExecutor;
+    use crate::executor::ShellExecutor;
 
     // Per-pid marker (parallel-safe; consistent with the denied-command test, PR#996).
     let marker = format!("/tmp/cdz-kernel-injection-marker-{}", std::process::id());
