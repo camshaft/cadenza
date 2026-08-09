@@ -21073,3 +21073,93 @@
   (call   main (: 3 Int64)) (output (: 34.0 Float64))
   (call   main (: 0 Int64)) (output (: 100.0 Float64))
   (call   main (: -2 Int64)) (output (: 1.0 Float64)))
+
+(case "an outer op-arg match with an inner state match reading the op-arg payload threads per dispatch"
+  (doc    "The stale-sum-payload-across-dispatches fix (breaker #13). The arm destructures its op ARG with an
+           OUTER match `(match c ((Cmd.Go k) …))` and the handler STATE with an INNER match `(match s …)`
+           whose branches read the outer payload binder `k` DIRECTLY. `peel_resume_from_arm_body` used to
+           rebuild the next-state by re-wrapping the WHOLE matched expression — sound for a state-scrutinee
+           match, but for the OUTER OP-ARG match it threaded the op-arg payload `k` through STATE, so a later
+           dispatch's own `k` was conflated with the state-threaded one (a silent wrong value, all backends:
+           `(+ (M.step (Cmd.Go 15)) (M.step (Cmd.Go 7)))` gave 45 not 37). Fixed by folding the op-arg
+           constructor match at dispatch time (`fold_ctor_match`) so only the inner state match threads.
+           main(5): dispatch1 Go 15 state Idle -> 15 (state Run 15); dispatch2 Go 7 state Run(15) -> 15+7=22;
+           sum 37.")
+  (input  (do
+            (type Mode (Idle) (Run Int64))
+            (type Cmd (Go Int64))
+            (effect M (op step (-> Cmd Int64)))
+            (def (main (: n Int64))
+              (handle M (Mode.Idle)
+                ((step (c) s
+                  (match c
+                    ((Cmd.Go k) (match s
+                                  ((Mode.Idle) (resume k (Mode.Run k)))
+                                  ((Mode.Run j) (resume (+ j k) (Mode.Run (+ j k)))))))))
+                (+ (M.step (Cmd.Go (+ 10 n)))
+                   (M.step (Cmd.Go 7)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 37 Int64)))
+
+(case "two DIFFERENT ops sharing the outer-arg-match inner-state-match arm shape each thread their own payload"
+  (input  (do
+            (type Mode (Idle) (Run Int64))
+            (type Cmd (Go Int64))
+            (effect M (op step (-> Cmd Int64)) (op step2 (-> Cmd Int64)))
+            (def (main (: n Int64))
+              (handle M (Mode.Idle)
+                ((step (c) s
+                  (match c
+                    ((Cmd.Go k) (match s
+                                  ((Mode.Idle) (resume k (Mode.Run k)))
+                                  ((Mode.Run j) (resume (+ j k) (Mode.Run (+ j k))))))))
+                 (step2 (c) s
+                  (match c
+                    ((Cmd.Go k) (match s
+                                  ((Mode.Idle) (resume k (Mode.Run k)))
+                                  ((Mode.Run j) (resume (+ j k) (Mode.Run (+ j k)))))))))
+                (+ (M.step (Cmd.Go (+ 10 n)))
+                   (M.step2 (Cmd.Go 7)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 37 Int64))
+  (call   main (: 0 Int64)) (output (: 27 Int64)))
+
+(case "three dispatches of an outer-arg-match inner-state-match arm each read their own payload not dispatch one's"
+  (input  (do
+            (type Mode (Idle) (Run Int64))
+            (type Cmd (Go Int64))
+            (effect M (op step (-> Cmd Int64)))
+            (def (main (: n Int64))
+              (handle M (Mode.Idle)
+                ((step (c) s
+                  (match c
+                    ((Cmd.Go k) (match s
+                                  ((Mode.Idle) (resume k (Mode.Run k)))
+                                  ((Mode.Run j) (resume (+ j k) (Mode.Run (+ j k)))))))))
+                (+ (M.step (Cmd.Go (+ 10 n)))
+                   (+ (M.step (Cmd.Go 7))
+                      (M.step (Cmd.Go 1))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 60 Int64)))
+
+(case "a multi-variant op arg matched against a sum state with an abortive-and-resumptive arm mix threads per dispatch"
+  (input  (do
+            (type Mode (Idle) (Run Int64))
+            (type Cmd (Go Int64) (Halt))
+            (effect M (op step (-> Cmd Int64)))
+            (def (main (: n Int64))
+              (handle M (Mode.Idle)
+                ((step (c) s
+                  (match c
+                    ((Cmd.Go k) (match s
+                                  ((Mode.Idle) (resume k (Mode.Run k)))
+                                  ((Mode.Run j) (resume (+ j k) (Mode.Run (+ j k))))))
+                    ((Cmd.Halt) (resume -5 (Mode.Idle))))))
+                (+ (M.step (Cmd.Go (+ 10 n)))
+                   (+ (M.step (Cmd.Go 7))
+                      (+ (M.step (Cmd.Halt))
+                         (M.step (Cmd.Go 1)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 33 Int64))
+  (call   main (: 0 Int64)) (output (: 23 Int64))
+  (call   main (: -3 Int64)) (output (: 17 Int64)))

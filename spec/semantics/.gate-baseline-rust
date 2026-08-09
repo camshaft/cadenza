@@ -7023,3 +7023,7 @@ pass	fx1 a Float64 state with a REGIME SWITCH in the arm — doubling below the 
 pass	fx2 float COMPARISON of two consecutive draws routes the branch — a negative seed FLIPS the order, a tail draw pins the doubling thread
 pass	fx3 a FLOAT slot with a regime-switch beside an INT counter in one tuple state — mixed-width slots thread independently
 pass	fx4 float sign TRICHOTOMY of a draw — positive scales, negative negates, exact 0.0 routes to the constant arm
+pass	an outer op-arg match with an inner state match reading the op-arg payload threads per dispatch
+pass	two DIFFERENT ops sharing the outer-arg-match inner-state-match arm shape each thread their own payload
+pass	three dispatches of an outer-arg-match inner-state-match arm each read their own payload not dispatch one's
+pass	a multi-variant op arg matched against a sum state with an abortive-and-resumptive arm mix threads per dispatch
