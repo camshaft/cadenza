@@ -47,7 +47,7 @@
 //! the channel, and writes response frames back — the default build binds no socket. The Cedar `admin/*`
 //! authorization of each command is the following slice.
 //!
-//! All executor errors are RECOVERABLE + classified for the kernel's supervision tree (see [`retry`]):
+//! All executor errors are RECOVERABLE + classified for the kernel's supervision tree:
 //! an `EffectOutcome::Err` carries a typed [`Retryability`](cdz_kernel::event::Retryability) field so a
 //! supervisor decides backoff-retry vs give-up — never a panic, never a silent drop (the operator's
 //! error-resilience floor).
@@ -85,7 +85,6 @@ pub mod metrics;
 pub mod model;
 pub mod name_snapshot;
 pub mod reply_exec;
-pub mod retry;
 #[cfg(feature = "live-aws-storage")]
 pub mod s3_blob;
 pub mod session_registry;
@@ -154,7 +153,9 @@ pub use model::{ModelExecutor, ModelTransport};
 pub use name_snapshot::S3NameStoreSnapshot;
 pub use name_snapshot::{MemNameStoreSnapshot, NameStoreSnapshotStore};
 pub use reply_exec::{reply_settle_channel, ReplyExecutor, ReplySettle, ReplySettleSink};
-pub use retry::Retryability;
+// Retryability is the kernel's typed field on `EffectOutcome::Err` (operator Q2); re-export it directly
+// from the kernel — the old crate-local `retry` module was a pure re-export shim (no logic), now deleted.
+pub use cdz_kernel::event::Retryability;
 #[cfg(feature = "live-aws-storage")]
 pub use s3_blob::S3BlobStore;
 #[cfg(feature = "live-aws-storage")]

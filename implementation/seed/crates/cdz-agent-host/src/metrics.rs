@@ -15,7 +15,7 @@
 //!   [`Summary`].
 //! - [`EffectMetrics`] — PER-EFFECT dispatch outcomes captured by the
 //!   [`MeteredExecutor`](crate::factory::MeteredExecutor) decorator: ok / retryable-err / permanent-err /
-//!   timed-out (read off the outcome's typed [`Retryability`](crate::retry::Retryability)), + an
+//!   timed-out (read off the outcome's typed [`Retryability`](cdz_kernel::event::Retryability)), + an
 //!   effect-latency [`Summary`]. `Arc`-shared so
 //!   all of a session's per-family decorators tally into one set.
 
@@ -112,7 +112,7 @@ impl HostMetrics {
     }
 }
 
-/// Per-EFFECT dispatch counters — how the daemon's effects RESOLVED, split by the [`retry`](crate::retry)
+/// Per-EFFECT dispatch counters — how the daemon's effects RESOLVED, split by the typed [`Retryability`](cdz_kernel::event::Retryability)
 /// classification of a failure, plus a dispatch-latency [`Summary`]. `Arc`-shared (all of a session's
 /// per-family [`MeteredExecutor`](crate::factory::MeteredExecutor)s tally into ONE set), so its methods take
 /// `&self`. (Not `Debug` — the registry's `Summary` isn't `Debug`.)
@@ -150,13 +150,13 @@ impl EffectMetrics {
         self.effects_ok.increment(1);
     }
 
-    /// Record one FAILED effect dispatch, split by its typed [`Retryability`](crate::retry::Retryability)
+    /// Record one FAILED effect dispatch, split by its typed [`Retryability`](cdz_kernel::event::Retryability)
     /// (the metering decorator reads it straight off `EffectOutcome::Err { retryability, .. }`; the
     /// fail-closed default an un-annotated error carries is `Permanent`).
-    pub(crate) fn record_err(&self, retryability: crate::retry::Retryability) {
+    pub(crate) fn record_err(&self, retryability: cdz_kernel::event::Retryability) {
         match retryability {
-            crate::retry::Retryability::Retryable => self.effects_retryable_err.increment(1),
-            crate::retry::Retryability::Permanent => self.effects_permanent_err.increment(1),
+            cdz_kernel::event::Retryability::Retryable => self.effects_retryable_err.increment(1),
+            cdz_kernel::event::Retryability::Permanent => self.effects_permanent_err.increment(1),
         }
     }
 
@@ -193,8 +193,8 @@ mod tests {
         host.record_turn_latency_us(12);
 
         effects.record_ok();
-        effects.record_err(crate::retry::Retryability::Retryable);
-        effects.record_err(crate::retry::Retryability::Permanent);
+        effects.record_err(cdz_kernel::event::Retryability::Retryable);
+        effects.record_err(cdz_kernel::event::Retryability::Permanent);
         effects.record_timed_out();
         effects.record_latency_us(3);
 

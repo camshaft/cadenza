@@ -66,8 +66,9 @@ impl<F: Fn() -> CompositeExecutor> ExecutorSetBuilder for F {
 /// A metering DECORATOR over an [`Executor`] — the executor-level seam for the PER-EFFECT half of the
 /// metric surface (see [`crate::metrics::EffectMetrics`]). It wraps a real executor and, on every
 /// `perform`, dispatches to the inner one and then tallies the outcome into a shared [`EffectMetrics`]:
-/// `Ok` → `record_ok`, `Err(reason)` → `record_err(classify(reason))` (the same [`crate::retry`]
-/// classification a supervisor branches on). Transparent otherwise — the outcome is returned unchanged and
+/// `Ok` → `record_ok`, `Err` → `record_err` split by the outcome's typed
+/// [`Retryability`](cdz_kernel::event::Retryability) (the same field a supervisor branches on). Transparent
+/// otherwise — the outcome is returned unchanged and
 /// `handles_family` forwards, so wrapping is invisible to the kernel.
 ///
 /// This is why the per-effect counts need no kernel change: every dispatch already flows through
