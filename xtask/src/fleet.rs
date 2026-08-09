@@ -675,10 +675,14 @@ pub enum FleetCmd {
     },
     /// Run the LOCAL nix gate — `nix build .#checks.<arch>-linux.local-gate` — and print the verdict
     /// (GREEN | RED | NO-CHECKS), exiting non-zero on not-landable so pr-sync can branch like `ci-status`.
-    /// The GHA-OUTAGE FALLBACK (operator idea 2026-08-06, GHA runners down): the `local-gate` aggregate
-    /// depends on the 9 merge-required aarch64 checks (ruleset-10 minus test-macos — nothing arch-specific,
-    /// so aarch64 coverage is the accepted fallback), so ONE build = a single green/red over the required
-    /// set with no GH runner. Exit: 0=green(land), 1=red, 2=no-checks(couldn't run nix — never false-green).
+    /// This is now the PRIMARY (sole) merge gate: the operator DISABLED the required GHA status checks
+    /// 2026-08-09, so pr-sync integrates via `schedule-pass --local-gate --publish-origin` (nix gate GREEN
+    /// → direct FF-push to origin/main; no candidate PRs, no CI polling). (It began 2026-08-06 as a
+    /// GHA-outage fallback while runners were down, then the operator made local-gate the standing model.)
+    /// The `local-gate` aggregate depends on the 9 merge-required aarch64 checks (ruleset-10 minus
+    /// test-macos — nothing arch-specific, so aarch64 coverage is the accepted gap), so ONE build = a
+    /// single green/red over the required set with no GH runner. Exit: 0=green(land), 1=red,
+    /// 2=no-checks(couldn't run nix — never false-green).
     GateLocal {
         /// The arch leg to gate on. Only `aarch64` is supported (x86/macos legs skipped per operator scope);
         /// the fleet host is aarch64. Defaults to aarch64.
@@ -7855,8 +7859,9 @@ fn local_gate_verdict(spawned_ok: bool, build_ok: bool) -> CiVerdict {
 
 /// `fleet gate-local`: run the LOCAL nix gate (`nix build .#checks.<arch>-linux.local-gate`) + print the
 /// verdict (GREEN | RED | NO-CHECKS) the same way `ci-status` does, exiting non-zero on not-landable so
-/// pr-sync can branch identically to the CI-verdict path. This is the GHA-OUTAGE FALLBACK (operator idea
-/// 2026-08-06, GHA runners down): the aggregate (v-nix's flake `localGate`) depends on the 9 merge-required
+/// pr-sync can branch identically to the CI-verdict path. This is the PRIMARY merge gate now (operator
+/// disabled required GHA checks 2026-08-09; it began 2026-08-06 as a GHA-outage fallback, then became the
+/// standing model): the aggregate (v-nix's flake `localGate`) depends on the 9 merge-required
 /// aarch64 checks (ruleset-10 minus test-macos — nothing arch-specific, so aarch64 coverage is the accepted
 /// fallback), so one build = a single green/red over the required set, no GH runner needed. Runs on the
 /// aarch64 fleet host; the warm c2 cache makes it fast. `arch` defaults to aarch64 (the only supported
