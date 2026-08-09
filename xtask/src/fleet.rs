@@ -787,21 +787,25 @@ pub enum FleetCmd {
         /// advances the LOCAL trunk ref (the prior behaviour, which forked local trunk from origin/main).
         #[arg(long)]
         publish_origin: bool,
-        /// BATCH-PR dispatch (operator 2026-08-08: branch protection blocks direct FF-push, so amortize
-        /// the GHA gate by combining MRs into ONE candidate PR instead). In the top-up phase, combine a
-        /// file-DISJOINT subset of the queue (up to ~6, `BATCH_PR_CAP`) into one candidate: re-parent each
-        /// member onto origin/main in a scratch worktree, run the local-nix `local-gate` PRE-FILTER on the
-        /// combined tree (reject culprits cheaply before spending a GHA cycle), then push ONE PR whose reap
-        /// acks every member on the single merge. A pre-filter RED bisects + rejects the culprit(s) and
-        /// falls the survivors back to single-MR dispatch; a setup failure falls the whole selection back.
-        /// Only meaningful with `--execute` (the CI-gated candidate-PR path, not `--local-gate`). Without
-        /// it, dispatch is one-candidate-per-MR (the proven default).
+        /// BATCH mode — combine a file-DISJOINT subset of the queue (up to `--batch-cap`) into ONE gate,
+        /// the operator under-10-min throughput lever (a ~cold gate is the same wall-time for 1 or N MRs,
+        /// so batching N features divides the effective per-feature gate time by N). Behaviour depends on
+        /// the integration model:
+        ///   - with `--local-gate --publish-origin` (the current GHA-off model): cherry-pick all members
+        ///     onto fresh origin/main, gate the COMBINED tree ONCE (bounded), GREEN → FF-push the whole
+        ///     tree + ack every member; RED/non-FF → land nothing from the batch, fall back to the per-MR
+        ///     loop (which isolates the culprit — it reds alone, the innocents land individually).
+        ///   - with `--execute` (the CI-gated candidate-PR path, GHA-on): combine into one candidate PR
+        ///     with a local-nix pre-filter, push, reap acks every member; pre-filter RED bisects + rejects
+        ///     culprits, survivors fall back to single-MR.
+        /// Either way a batch never strands an MR (fallback covers every failure). Without `--batch`,
+        /// integration is one-MR-at-a-time (the proven default).
         #[arg(long)]
         batch: bool,
-        /// Max MERGE-REQUESTS combined into ONE batch candidate PR (the batch's blast-radius bound).
-        /// INDEPENDENT of `--cap` (which bounds in-flight PRs): a batch is ONE PR = one in-flight slot,
-        /// carrying up to this many file-disjoint members. Default [`BATCH_PR_CAP`]; set lower (e.g. 2-3)
-        /// for a tiny first-batch blast radius during validation. Only meaningful with `--batch`.
+        /// Max MERGE-REQUESTS combined into ONE batch (the batch's blast-radius bound). Default
+        /// [`BATCH_PR_CAP`]; set lower (e.g. 2-3) for a tiny first-batch blast radius during validation.
+        /// Only meaningful with `--batch`. (A batch is ONE unit — one gate + one push/PR — regardless of
+        /// member count; this bounds only how many features share that one gate.)
         #[arg(long, default_value_t = BATCH_PR_CAP)]
         batch_cap: usize,
     },
@@ -1057,7 +1061,7 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
             batch_cap,
         } => {
             if local_gate {
-                schedule_pass_local_gate(&fleet, execute, json, publish_origin)
+                schedule_pass_local_gate(&fleet, execute, json, publish_origin, batch, batch_cap)
             } else if execute {
                 schedule_pass_execute(&fleet, cap, batch, batch_cap)
             } else {
@@ -8762,6 +8766,34 @@ fn select_batch(
     chosen
 }
 
+/// Select a file-DISJOINT subset of queued merge-requests (oldest-first, up to `cap`) to combine into
+/// ONE local-gate + FF-push batch — the throughput lever for the GHA-off model (one ~cold gate amortized
+/// over N features). Same disjointness rule as [`select_batch`] but operates directly on [`BatchMr`]s
+/// (what `schedule_pass_local_gate` holds) and reads each ref's changed files via `changed_files_of`. An
+/// UNRESOLVABLE ref (files unknown) is conservatively EXCLUDED from a batch (it can't be proven disjoint,
+/// so it drops to the per-MR loop). No in-flight set here: the local-gate model has no in-flight
+/// candidates — the base is fresh origin/main each pass, so the only collisions to avoid are WITHIN the
+/// batch. Returns the chosen members in queue order (empty / single → caller just uses the per-MR loop).
+fn select_batch_members(queued: &[BatchMr], cap: usize) -> Vec<BatchMr> {
+    let mut chosen: Vec<BatchMr> = Vec::new();
+    let mut claimed: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for mr in queued {
+        if chosen.len() >= cap {
+            break;
+        }
+        // Unknown file set (unresolvable ref) → cannot prove disjoint → exclude from the batch.
+        let Some(files) = changed_files_of(&mr.r#ref) else {
+            continue;
+        };
+        if files.is_empty() || files.iter().any(|f| claimed.contains(f)) {
+            continue; // no-file commit (nothing to disjoint-reason about) or collides with a chosen member
+        }
+        claimed.extend(files);
+        chosen.push(mr.clone());
+    }
+    chosen
+}
+
 /// What the scheduler should DO with one in-flight candidate PR, given whether GitHub has already
 /// auto-merged it and its current CI [`CiVerdict`]. The other half of the executor's decision layer
 /// (the reap, complementing [`schedule_dispatch`]'s dispatch). Pure so the land/reject/wait policy is
@@ -10256,7 +10288,14 @@ fn local_gate_summary_json(
     })
 }
 
-fn schedule_pass_local_gate(fleet: &Fleet, execute: bool, json: bool, publish_origin: bool) {
+fn schedule_pass_local_gate(
+    fleet: &Fleet,
+    execute: bool,
+    json: bool,
+    publish_origin: bool,
+    batch: bool,
+    batch_member_cap: usize,
+) {
     // Accumulates one record per gated MR so `--json` can emit a machine-parseable summary. Verdict is
     // one of merged/reject/left/dry; `sha` is set only on a merge (empty otherwise).
     let mut records: Vec<serde_json::Value> = Vec::new();
@@ -10326,7 +10365,100 @@ fn schedule_pass_local_gate(fleet: &Fleet, execute: bool, json: bool, publish_or
     // MOVES the `trunk` pointer, so `reset --hard TRUNK` would NOT undo a red pick — reset to this instead.
     let base = if publish_origin { "origin/main" } else { TRUNK };
     let (mut merged, mut rejected, mut left) = (0usize, 0usize, 0usize);
+
+    // ── BATCH PRELUDE (operator under-10-min throughput directive 2026-08-09) ──
+    // A COLD gate-local is ~25min whether it gates 1 or N MRs (the cargo-artifacts deps-layer rebuild
+    // dominates), so combining N file-DISJOINT MRs into ONE combined-tree gate divides the effective
+    // per-feature gate time by N (a 5-batch cold ≈ 5min/feature — under 10 even before v-nix's warm
+    // store lands; the two compose multiplicatively). Only in --batch --publish-origin mode. On GREEN we
+    // FF-push the WHOLE combined tree to origin/main once + ack EVERY member; the members are then
+    // removed from `queued` so the per-MR loop below handles only the remainder (non-batched / collided).
+    // On a batch RED (or NoChecks / non-FF push), we land NOTHING from the batch and let the per-MR loop
+    // gate each individually — the per-MR loop IS the bisect (the one culprit reds alone, the greens
+    // land), simpler than an in-batch bisect and it never mis-rejects an innocent member.
+    let mut landed_by_batch: std::collections::HashSet<String> = std::collections::HashSet::new();
+    if batch && publish_origin && queued.len() >= 2 {
+        let members = select_batch_members(&queued, batch_member_cap);
+        if members.len() >= 2 {
+            // Re-form the combined tree = origin/main + each member's ref, cherry-picked in order.
+            let mut applied: Vec<&BatchMr> = Vec::new();
+            let batch_base = head_sha(); // == origin/main tip (we reset to it just above)
+            for m in &members {
+                let _ = git_wt(&["fetch", "origin", &m.r#ref, "--quiet"]);
+                if git_wt_ok(&["cherry-pick", "--allow-empty", &m.r#ref]) {
+                    applied.push(m);
+                } else {
+                    let _ = git_wt(&["cherry-pick", "--abort"]);
+                    // A member that won't cherry-pick onto the combined tip drops out of the batch (the
+                    // per-MR loop will reject it stale-base). Keep the clean tip; continue building.
+                }
+            }
+            if applied.len() >= 2 {
+                let combined_sha = head_sha();
+                println!(
+                    "  ⊞ batch: gating a combined tree of {} file-disjoint MRs ONCE (amortized gate)…",
+                    applied.len()
+                );
+                match run_gate_local_bounded("aarch64", &wt) {
+                    CiVerdict::Green => {
+                        let pushed = git_wt(&["push", "origin", "HEAD:main"])
+                            .map(|o| o.status.success())
+                            .unwrap_or(false);
+                        if pushed {
+                            let _ = git_wt(&["reset", "--hard", "HEAD"]);
+                            for m in &applied {
+                                ack(
+                                    fleet,
+                                    &m.file,
+                                    "merged",
+                                    &combined_sha,
+                                    &format!(
+                                        "landed in a BATCH of {} (combined-tree gate-local GREEN) + PUBLISHED to origin/main @ {combined_sha}",
+                                        applied.len()
+                                    ),
+                                );
+                                landed_by_batch.insert(m.file.clone());
+                                merged += 1;
+                                if json {
+                                    records.push(serde_json::json!({
+                                        "file": m.file, "from": m.from, "ref": m.r#ref, "verdict": "merged", "sha": combined_sha, "batch": applied.len()
+                                    }));
+                                }
+                            }
+                            println!(
+                                "  ⊞ batch MERGED {} MRs in one gate @ {combined_sha}",
+                                applied.len()
+                            );
+                        } else {
+                            // Non-FF (origin advanced mid-gate) → land nothing from the batch; reset +
+                            // let the per-MR loop retry each onto fresh origin/main.
+                            let _ = git_wt(&["reset", "--hard", &batch_base]);
+                            println!(
+                                "  ⊞ batch gate GREEN but push non-FF (origin advanced) — falling back to per-MR this pass."
+                            );
+                        }
+                    }
+                    _ => {
+                        // RED / NoChecks → land nothing from the batch; reset + fall back to per-MR (which
+                        // isolates the culprit: it reds alone, the innocents land individually).
+                        let _ = git_wt(&["reset", "--hard", &batch_base]);
+                        println!(
+                            "  ⊞ batch combined-tree gate not-GREEN — falling back to per-MR (isolates the culprit)."
+                        );
+                    }
+                }
+            } else {
+                // <2 members cherry-picked clean → not a batch; reset and let the per-MR loop handle all.
+                let _ = git_wt(&["reset", "--hard", &batch_base]);
+            }
+        }
+    }
+
     for mr in &queued {
+        // Skip MRs already landed by the batch prelude above (acked + pushed).
+        if landed_by_batch.contains(&mr.file) {
+            continue;
+        }
         // The base this MR is picked onto, captured as a sha BEFORE the pick. Undo resets to THIS (an
         // on-branch cherry-pick moves the `trunk` pointer, so `reset --hard TRUNK` would not undo a red).
         let base_sha = head_sha();
