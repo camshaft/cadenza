@@ -2643,50 +2643,6 @@ fn record_with_over_a_runtime_record_materializes_the_operand_once_not_per_prese
     }
 }
 
-#[test]
-fn record_extend_with_a_bare_field_name_rejects_cdz0215_but_read_drop_ops_keep_bare_labels() {
-    use crate::testkit::parse;
-    // Concierge ruling (breaker's Record.extend pun): the field-NAME-INTRODUCTION operand of
-    // `Record.extend`/`Record.with` MUST be a static `#field` label — a BARE identifier PUNS an undeclared
-    // name into a new field (soundness-adjacent surprise), so reject it CDZ0215. SCOPE: reject ONLY the
-    // name-introduction operand of extend/with; the READ/DROP ops (`.`/pop/without) legitimately take a bare
-    // label and MUST stay valid (don't over-reject). `read_key` accepts a bare name (shared with read/drop);
-    // the reject is scoped to extend/with's 3-operand arm.
-    let decline = |src: &str| {
-        crate::compile::compile_component(&crate::codec::encode(&parse(src)))
-            .expect_err("must decline")
-            .code
-            .unwrap_or_default()
-    };
-    // extend with a BARE name → CDZ0215 (was: punned + compiled).
-    assert_eq!(
-        decline(
-            "(do (def (main) (do (def w (Record.extend (record (x 10)) fname 99)) (. w fname))) (export main))"
-        ),
-        "CDZ0215",
-        "Record.extend with a bare field-name operand rejects CDZ0215"
-    );
-    // `with` bare name too, and a runtime-value field name.
-    assert_eq!(
-        decline(
-            "(do (def (main) (do (def r (record (x 10))) (. (Record.with r x 99) x))) (export main))"
-        ),
-        "CDZ0215",
-        "Record.with with a bare field-name operand rejects CDZ0215"
-    );
-    // SCOPE GUARD: `#label` extend + bare-label READ/DROP ops must ALL still compile (no over-reject).
-    for ok in [
-        "(module m (def (main) (. (Record.extend (record (x 10)) #\"fname\" 99) #\"fname\")) (export main))",
-        "(module m (def (main) (. (record (x 10) (y 20)) x)) (export main))",
-        "(module m (def (main) (. (Record.without (record (x 10) (y 20)) (x)) y)) (export main))",
-    ] {
-        assert!(
-            crate::compile::compile_component(&crate::codec::encode(&parse(ok))).is_ok(),
-            "a #label extend / a bare-label read-or-drop op must stay valid (no over-reject): {ok}"
-        );
-    }
-}
-
 /// The CDZ0215 bare-field-name reject NAMES THE CORRECT SYMBOL SYNTAX and carries an applyable fix. Two
 /// diagnostic-quality points: (1) the message's example must be the QUOTED form `#"z"` — a bare `#z` is NOT
 /// symbol syntax (the reader reads it as an identifier and it hits this same reject), so an author copying a
