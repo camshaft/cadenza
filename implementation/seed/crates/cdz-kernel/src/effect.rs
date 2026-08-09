@@ -341,8 +341,8 @@ pub mod effect_ct {
 
     /// Is `family` a candidate USERSPACE-EFFECT family — i.e. NOT one of the built-in well-known partitions
     /// (so it would route to a registered handler, if one is registered)? A SYNTACTIC check: an emitted
-    /// effect whose family is not a kernel built-in (EffectKind / control/store/fs/metric/blob/ws / the
-    /// `effect/reply` routed family) is a candidate for `effect/<family>` handler resolution. Whether a
+    /// effect whose family is not a kernel built-in (EffectKind / control/store/lifecycle/fs/metric/blob/ws
+    /// / the `effect/reply` routed family) is a candidate for `effect/<family>` handler resolution. Whether a
     /// handler is ACTUALLY registered is the runtime lookup
     /// [`crate::name_store::NameStore::resolve_effect_handler`] (mechanism = "resolves in the registry"); this
     /// predicate is the partition boundary the drive loop / delegating executor uses to decide "try the
@@ -355,6 +355,7 @@ pub mod effect_ct {
         let is_builtin = super::EffectKind::from_family(family).is_some()
             || is_control_family(family)
             || is_store_family(family)
+            || is_lifecycle_family(family)
             || is_fs_family(family)
             || is_metric_family(family)
             || is_blob_family(family)

@@ -1629,6 +1629,16 @@ mod tests {
         assert!(!effect_ct::is_registered_effect_family(
             effect_ct::CAPABILITIES
         ));
+        // The lifecycle partition (lifecycle/spawn|suspend|resume|terminate) is a built-in executor-routed
+        // family, NOT a userspace-effect candidate — else a session Cedar-granted `store/set effect/lifecycle/
+        // spawn` could register a handler that SHADOWS the real lifecycle executor once I3 routes on this
+        // predicate (a lifecycle hijack). This arm is the missed witness that let the omission slip in.
+        assert!(!effect_ct::is_registered_effect_family(
+            effect_ct::LIFECYCLE_SPAWN
+        ));
+        assert!(!effect_ct::is_registered_effect_family(
+            effect_ct::LIFECYCLE_TERMINATE
+        ));
         // Empty family is not a candidate.
         assert!(!effect_ct::is_registered_effect_family(""));
     }
