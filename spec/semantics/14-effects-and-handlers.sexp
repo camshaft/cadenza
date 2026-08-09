@@ -2405,6 +2405,33 @@
             (export main)))
   (call   main (: 2 Int64)) (output (: 4 Int64)))
 
+(case "a recursive performer whose recursion result feeds a HELPER call folds — no slot-less spec-body param"
+  (doc    "The specializer's spec-body must not SHARE an original-def param occurrence into the synthesized
+           body. `walk` recurses, then a match arm feeds the recursion result AND a fresh `St.get` to a
+           separate helper `combine`. Threading returns unchanged subtrees as-is, so the spec body could
+           SHARE the original `n` occurrence (reached through the perform-arm-threaded `(St.get)` state
+           `(+ (. t 1) n)`); `core_of` memoizes by node, so a shared original node carries a
+           `Core::Param{ORIGINAL binder}` with no slot in the specialized function → 'parameter reference
+           has no local slot' at emit when `combine` inlines + lowers it. Fixed by deep-fresh-copying the
+           threaded spec body so every node is a fresh id that re-resolves against the spec signature. This
+           is the shape EVERY real demand-query compiler takes (a node's children demanded, then combined by
+           a pure helper), so it must fold. `main(3)`: walk(0)=get=0; then put(1) state 0->1, walk(1)=0+get(1)
+           =1; put(2) state 1->3, walk(2)=1+get(3)=4; put(3) state 3->6, walk(3)=4+get(6)=10.")
+  (input  (do
+            (effect St (op get (-> Unit Int64)) (op put (-> Int64 Unit)))
+            (def (walk (: n Int64))
+              (if (= n 0) (St.get)
+                (let ((lt (walk (- n 1))))
+                  (match (St.put n) (_ (combine lt (St.get)))))))
+            (def (combine (: a Int64) (: b Int64)) (+ a b))
+            (def (main (: k Int64))
+              (handle St 0
+                ((get (u) s (resume s s))
+                 (put (v) s (resume unit (+ s v))))
+                (walk k)))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 10 Int64)))
+
 ; A do-local value def in a handle body must stay in scope for a perform's ARGUMENT (breaker FINDING;
 ; v-effects e49c698a1). The handle-body folds dropped non-final do-items and re-spliced only a survivor,
 ; orphaning a `(def v e)` that a later perform arg referenced → a false CDZ0101 'unbound name'; the

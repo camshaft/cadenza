@@ -2963,6 +2963,7 @@ pass	a recursive nested-op performer whose per-iteration outer advance is read b
 pass	a recursive parameter used only as a call argument infers from the callee's parameter type
 pass	a recursive parser drains a STREAM of length-prefixed frames to the empty base case
 pass	a recursive performer of a nested-handler op whose resume performs the outer effect threads the advance
+pass	a recursive performer whose recursion result feeds a HELPER call folds — no slot-less spec-body param
 pass	a recursive predicate with the self-call in the else branch is a Bool condition
 pass	a recursive predicate with the self-call in the then branch is a Bool condition
 pass	a recursive reader decodes a CBOR application tree and evaluates it by head index
@@ -4653,6 +4654,7 @@ pass	breaker holsubst: the naive subst's documented capture hazard
 pass	breaker specsubst: GEN of refl then SPEC substitutes the bound var throughout the body
 pass	bs1 a BOOL toggle state — four draws alternate true/false from an input-dependent seed
 pass	bs2 a LATCH — once an op arg is false, the state stays false and every later check answers false
+pass	bt1 a BOOL handler state TOGGLES per dispatch — three draws read the alternating flag, seeded by input parity
 pass	by1 a BYTES handler state grows two bytes per dispatch — each arm returns the pre-growth length
 pass	by1 bytes built from THREE draws then read at a draw-picked index — Bytes.at follows the thread into the buffer
 pass	by2 a SLICE view (start,LEN) of the Bytes state read per dispatch — in-range bytes returned, out-of-range answers -1
@@ -5367,10 +5369,16 @@ pass	nested quasiquote: a level-2 deferred unquote is INDEPENDENT of the enclosi
 pass	nested quasiquote: an inner unquote at level 2 is deferred, not spliced (exact structure)
 pass	nested same-direction shifts by constants combine into one shift by the sum, keeping the left-shift overflow trap
 pass	nested-Option equality observes the OUTER variant and matches identical nesting
+pass	ng1 the arm NEGATES alternate draws — a Bool flip in a tuple state signs the rising thread (+,-,+)
 pass	nm1 NEGATIVE remainder is TRUNCATED (sign of the dividend) uniformly — bare and through a handler arm
 pass	nm2 NEGATIVE division TRUNCATES toward zero uniformly — bare and through a handler arm
 pass	nm3 the only overflowing DIVISION (Int64.min / -1) is a CONSTANT-fold reject — the runtime-divisor form runs for every other divisor
 pass	nm4 Int64.min divided by RUNTIME divisors — every non-(-1) divisor has an exact Int64 quotient
+pass	ns1 a RECORD rides inside a sum payload through dispatch — the arm builds it from two draws, the body matches then projects
+pass	ns2 the sum-wrapped record round-trips FLATTENED — matched, field-updated with a draw, re-wrapped, echoed, re-matched at top level
+pass	ns3 TWO record-payload variants selected by state parity — each arm projects its own record shape
+pass	ns4 a record payload whose FIELD is itself a sum-wrapped record — helper unboxers traverse two wrap layers built from one dispatch
+pass	ns5 the nested two-layer match FOLDS when the scrutinee is a pure literal — only op-built scrutinees push it off the fold
 pass	nullary constructor patterns are uniform with unary
 pass	nullary variants of a payload-carrying sum order by discriminant
 pass	nx1 a SUBTRACTING stride crosses zero — negative states thread and sum correctly
@@ -5531,6 +5539,9 @@ pass	raising a BigInt-magnitude quantity to a power runs the unbounded multiply
 pass	raising a COMPUTED (derived) quantity to a power squares its magnitude and dimension
 pass	raising a quantity to a compile-time power composes the unit and the magnitude
 pass	raising a runtime computed quantity to a power squares the runtime magnitude
+pass	rc1 a RECORD handler state — the arm projects both fields and rebuilds with different advances, sums pin two dispatches
+pass	rc2 the arm updates ONE record-state field chosen by the fields' own parity — three snapshots pin the alternating writes
+pass	rc3 a record state whose FIELD is a tuple — the counter ticks while the pair walks a Fibonacci step per dispatch
 pass	re-inserting a LIST row into a map replaces that row and leaves the original map's row intact
 pass	re-interning a symbol's recovered string yields an equal symbol, and the string content-matches
 pass	re-wrapping the intermediate with Qty.of makes a two-step conversion well-formed
@@ -5811,6 +5822,7 @@ pass	subtraction of an integer and a float does not silently promote
 pass	subtraction of two strings is rejected
 pass	subtraction of two symbols is rejected
 pass	sum type constructors are in scope after declaration
+pass	sw1 a three-slot state SWAPS its pair while a counter ticks — the encoding exposes position, order, and dispatch count at once
 pass	swapped-operand complements do not fold — less-than or flipped greater-equal is not a tautology
 pass	sy2 a SYMBOL toggle state — equality routes the resume value while the arm flips fast/slow per dispatch
 pass	sy3 the SYMBOL state is a MAP KEY per dispatch — the a→b→c walk ends at a missing key
