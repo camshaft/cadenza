@@ -1071,6 +1071,20 @@ def id-match-type-arms-dont-join-declines() =
      | _ => trap("then Int / else Bool arms must not join (TErr)")))
 
 @test
+def id-match-type-deferred-scrut-vs-bool-lit-declines() =
+  // scrut is a DEFERRED int (t-int-deferred, what a bare NLit produces before grounding) and the literal
+  // pattern is Bool → join-branch-types(deferred-int, Bool) must be TErr (a deferred int does NOT unify with a
+  // Bool pattern). Pins that match-type's scrut~lit reject holds even when the scrut is still DEFERRED (not yet
+  // grounded to a fixed Int) — the ungrounded-operand cross-type case the earlier fixed-Int64 tests did not
+  // cover. (This is the combiner-level evidence that the demand-spine's failure to decline the same
+  // cross-type NMatch is NOT a match-type bug but a spine tcol-population issue — tracked separately.)
+  (let tc = Map.insert(Map.insert(Map.insert(Map.insert((Map.empty : Map(Int64, Ty)),
+              1, t-int-deferred()), 2, Ty.TyBool), 3, mk-int(true, 64)), 4, mk-int(true, 64)) in
+   (match match-type(tc, 1, 2, 3, 4) with
+     | Ty.TyErr => unit
+     | _ => trap("deferred-int scrut vs Bool pattern must decline TErr")))
+
+@test
 def id-milestone-is-int() =
   // THE MILESTONE `let x = 2 in x * 3 + 1`: fully well-typed — every node TInt, program TInt. This is the
   // green light that Inc4 (lower) + Inc5 (run→7) can proceed on a type-clean tree.
