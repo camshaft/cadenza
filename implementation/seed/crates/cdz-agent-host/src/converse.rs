@@ -57,11 +57,13 @@ pub enum ConverseRole {
 }
 
 /// A tool offered to the model — name + opaque JSON-schema bytes (the transport parses the bytes as the
-/// tool's `inputSchema.json` at the Bedrock boundary).
+/// tool's `inputSchema.json` at the Bedrock boundary). The schema rides as ref-counted [`bytes::Bytes`]
+/// (operator cheaply-clonable directive: a byte buffer is `Bytes`, not `Vec<u8>`), so a `ConverseTool` /
+/// `ConverseRequest` clone is an O(1) ref-count bump, not a deep schema copy.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ConverseTool {
     pub name: String,
-    pub schema: Vec<u8>,
+    pub schema: bytes::Bytes,
 }
 
 /// Errors mapping an M1 `ModelRequest` into a [`ConverseRequest`] — a request that decoded fine but can't be
@@ -125,7 +127,9 @@ pub fn from_model_request(req: &ModelRequest) -> Result<ConverseRequest, Convers
             .iter()
             .map(|t| ConverseTool {
                 name: t.name.clone(),
-                schema: t.schema.clone(),
+                // `ToolDef.schema` is the kernel's owned `Vec<u8>`; freeze it into `Bytes` once here (the
+                // last deep copy — every downstream clone of the request is then O(1)).
+                schema: bytes::Bytes::from(t.schema.clone()),
             })
             .collect(),
         max_tokens: req.max_tokens,
