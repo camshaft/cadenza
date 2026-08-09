@@ -1519,41 +1519,31 @@ fn status(fleet: &Fleet) {
         println!("  trunk: {ahead} ahead / {behind} behind origin/main");
     }
 
-    // Trunk-ref-regression watch. `trunk` should only ever move FORWARD (pr-sync cherry-picks). A
-    // `reset: moving to origin/main` in its reflog is a backward move — root-caused to pr-sync's own
-    // PUBLISH re-parent when done in-place (`git reset --hard origin/main` in its trunk worktree)
-    // rather than in a scratch worktree; the fix is the scratch-worktree publish (pr-sync.md step 3).
-    // A past reset that trunk has since ADVANCED PAST is benign history (pr-sync stashed + replayed),
-    // so only WARN LOUDLY when trunk is currently AT/BEHIND origin/main (a regression still in effect);
-    // otherwise note it quietly as self-recovered. Read-only.
-    if let Some(n) = trunk_clobber_count(&fleet.repo, 40)
-        && n > 0
+    // Trunk-ref-regression watch — OBSOLETE under the --publish-origin model, kept only as a genuine-
+    // clobber surface. HISTORY: this reflog heuristic was written for the candidate-PR model, where
+    // `trunk` only ever CHERRY-PICKED forward, so ANY `reset: moving to origin/main` was a second-writer
+    // clobber. Under the GHA-off `--publish-origin` model (operator 2026-08-09), pr-sync's OWN loop
+    // resets trunk to origin/main EVERY pass as its designed base-reset (reset→origin/main, cherry-pick,
+    // FF-push; see pr-sync.md), and `trunk == origin/main` (0 ahead / 0 behind) is the CORRECT steady
+    // state — so `reset: moving to origin/main` + not-ahead is now EXPECTED, not a regression. The old
+    // heuristic fired a false "trunk REGRESSED" alarm on every healthy publish-origin steady state,
+    // causing recurring peer panic (v-test-hygiene 2026-08-09, + it fed the "pr-sync stalled" false
+    // flags). A reflog subject can NO LONGER distinguish a legit publish-reset from a real clobber (both
+    // read `reset: moving to origin/main`), so this display heuristic is retired. The AUTHORITATIVE
+    // clobber detector is the `reference-transaction` git hook → `.claude/fleet/trunk-clobber.log`, which
+    // checks the actual ref MOVE (a genuine NON-FF/backward move to origin/main WITH the parent-process
+    // argv), not the ambiguous reflog subject. Surface THAT log instead: only if it has entries is there
+    // a real clobber to investigate. Read-only.
+    let clobber_log = fleet.root.join("trunk-clobber.log");
+    if let Ok(meta) = std::fs::metadata(&clobber_log)
+        && meta.len() > 0
     {
-        // Only trunk being DEMONSTRABLY ahead (Some(ahead > 0)) proves the reset self-recovered and
-        // downgrades to the quiet note. `None` (couldn't compare — origin/main unresolved) must NOT be
-        // read as "ahead" (PR #463): that would suppress the warning on the very state we can't verify.
-        // So warn LOUDLY unless we can prove trunk is ahead: Some(0) = regression in effect;
-        // None = can't tell, still surface it.
-        match trunk_om {
-            Some((ahead, _)) if ahead > 0 => println!(
-                "  · trunk: {n} `reset: moving to origin/main` in the recent reflog, but trunk is ahead \
-                 again (self-recovered — pr-sync's in-place publish re-parent; prefer the scratch-worktree \
-                 form so the ref never regresses)."
-            ),
-            Some(_) => println!(
-                "  ⚠ trunk REGRESSED: {n} `reset: moving to origin/main` in the last 40 reflog entries \
-                 AND trunk is not ahead of origin/main — a backward reset is currently IN EFFECT. This \
-                 is pr-sync's publish re-parent resetting the trunk ref in-place; it should re-parent \
-                 in a SCRATCH worktree (pr-sync.md step 3) so trunk only moves forward."
-            ),
-            None => println!(
-                "  ⚠ trunk: {n} `reset: moving to origin/main` in the last 40 reflog entries, and \
-                 trunk-vs-origin/main could NOT be compared (origin/main unresolved) — can't confirm \
-                 it self-recovered. Check `git rev-list --left-right --count origin/main...trunk`; if \
-                 trunk is behind, it's a live regression (pr-sync's in-place publish re-parent — should \
-                 use the scratch-worktree form, pr-sync.md step 3)."
-            ),
-        }
+        println!(
+            "  · trunk-clobber.log has entries — the reference-transaction hook logged ≥1 genuine \
+             backward/non-FF trunk move to origin/main (with the culprit's process argv). Under the \
+             --publish-origin model pr-sync's own base-resets are EXPECTED + NOT logged (the hook only \
+             records real NON-FF clobbers), so any entry is worth a look: `tail .claude/fleet/trunk-clobber.log`."
+        );
     }
 }
 
@@ -7127,43 +7117,6 @@ fn count_dir(dir: &Path, keep: impl Fn(&str) -> bool) -> usize {
 /// silently drop a whole batch. This is a pure READ of the reflog (never blocks anything) so `status`
 /// can SURFACE the violation instead of it being silently self-healed. `None` if the reflog is
 /// unreadable; `Some(n)` with the count of clobbers seen in the window (0 = clean).
-fn trunk_clobber_count(repo: &Path, window: usize) -> Option<usize> {
-    // Bound the read at the source with `-n <window>` (PR #456): `git reflog show` is otherwise
-    // unbounded, so a large trunk reflog would be read + parsed in full each call just to look at the
-    // most recent `window` entries. The in-process `.take(window)` stays as a belt-and-suspenders cap.
-    let out = Command::new("git")
-        .current_dir(repo)
-        .args([
-            "reflog",
-            "show",
-            "-n",
-            &window.to_string(),
-            "trunk",
-            "--format=%gs",
-        ])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let s = String::from_utf8(out.stdout).ok()?;
-    Some(
-        s.lines()
-            .take(window)
-            .filter(|line| trunk_reflog_entry_is_clobber(line))
-            .count(),
-    )
-}
-
-/// Whether a `trunk` reflog subject line is a backward-clobber to `origin/main` (a non-pr-sync writer
-/// resetting the branch), vs a legit pr-sync `cherry-pick`/`commit` or a self-recovery reset to a
-/// `trunk@{…}` reflog point. Pure so it's unit-testable.
-fn trunk_reflog_entry_is_clobber(subject: &str) -> bool {
-    // git writes `reset: moving to <target>`; the clobber targets origin/main. pr-sync's own recovery
-    // resets to a `trunk@{N}` reflog spec, not `origin/main`, so it's correctly NOT flagged.
-    subject.trim() == "reset: moving to origin/main"
-}
-
 /// Parse `git cherry <upstream> <head>` output into the list of local commits (oldest-first) that
 /// are NOT yet upstream and so must be replayed after a reset onto `<upstream>`. `git cherry` marks
 /// each commit reachable from `<head>` but not `<upstream>` with a leading `+` (no equivalent patch
@@ -13150,32 +13103,6 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn trunk_reflog_clobber_flags_only_the_origin_main_reset() {
-        // The clobber signature: a reset moving trunk backward to origin/main (a non-pr-sync writer).
-        assert!(trunk_reflog_entry_is_clobber(
-            "reset: moving to origin/main"
-        ));
-        assert!(trunk_reflog_entry_is_clobber(
-            "  reset: moving to origin/main  "
-        )); // trimmed
-        // pr-sync's legit ops must NOT be flagged: cherry-picks (forward) and its OWN recovery reset
-        // to a trunk@{N} reflog point (not origin/main).
-        assert!(!trunk_reflog_entry_is_clobber(
-            "cherry-pick: rcdzc: some fix"
-        ));
-        assert!(!trunk_reflog_entry_is_clobber(
-            "commit: fleet: mirror the queue"
-        ));
-        assert!(!trunk_reflog_entry_is_clobber("reset: moving to trunk@{1}"));
-        assert!(!trunk_reflog_entry_is_clobber("reset: moving to HEAD~1"));
-        // A reset to some other branch/main-ish string isn't THIS clobber (be precise, avoid false +).
-        assert!(!trunk_reflog_entry_is_clobber(
-            "reset: moving to origin/main-backup"
-        ));
-        assert!(!trunk_reflog_entry_is_clobber(""));
     }
 
     #[test]
