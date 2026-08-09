@@ -2617,4 +2617,254 @@ mod tests {
             "the role reached its stop condition + stopped re-arming (the loop then drained)"
         );
     }
+
+    // ---- real-daemon BOOT + admin-INSTALL + live-TICK smoke (converted from the deleted
+    // daemon_boot_install_tick_smoke integration test, operator no-integration-tests mandate — hermetic:
+    // native TickRole, no wasm/network). Beyond the direct-loop tick test above: exercises the DEPLOYED chain
+    // — boot AsyncAgentHost as a control plane + a SessionFactory install seam + admin channel, INSTALL a
+    // session at runtime through the admin channel (exactly what the socket listener does per frame), and let
+    // the running loop drive it live to its tick budget. ----
+    const BOOT_TICK_BUDGET: u64 = 3;
+
+    /// The installed agent: a self-re-arming tick-loop role (the fleet.rs re-issue shape). Timer-only →
+    /// hermetic. (Distinct from `TickLoopRole` above — this one is installed via the factory + admin path.)
+    struct TickRole;
+    impl TickRole {
+        fn arm() -> EffectRequest {
+            EffectRequest::new_with_family(effect_ct::TIMER, "1000", None, Timeliness::Interactive)
+        }
+        fn ticks(kv: &Kv) -> u64 {
+            kv.get(b"ticks")
+                .and_then(|b| std::str::from_utf8(b).ok())
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0)
+        }
+    }
+    #[async_trait::async_trait(?Send)]
+    impl Reducer for TickRole {
+        async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
+            match &event.body {
+                EventBody::Inbound { .. } => FoldOutput::with(vec![Self::arm()]),
+                EventBody::TimerFired { .. } => {
+                    let n = Self::ticks(kv) + 1;
+                    kv.put(b"ticks".to_vec(), n.to_string().into_bytes());
+                    if n < BOOT_TICK_BUDGET {
+                        FoldOutput::with(vec![Self::arm()])
+                    } else {
+                        kv.put(b"done".to_vec(), b"1".to_vec());
+                        FoldOutput::none()
+                    }
+                }
+                _ => FoldOutput::none(),
+            }
+        }
+    }
+
+    /// A minimal [`SessionFactory`] that installs the [`TickRole`] with a `timer` grant — standing in for the
+    /// deployed [`ComponentSessionFactory`](crate::ComponentSessionFactory) (which loads a wasm reducer from a
+    /// blob store). The boot→admin-install→run chain is identical; only the reducer SOURCE differs.
+    struct TickRoleFactory;
+    #[async_trait::async_trait(?Send)]
+    impl SessionFactory for TickRoleFactory {
+        async fn build(&mut self, spec: &InstallSpec) -> Result<HostedSession, String> {
+            let authz = Authorizer::new(vec![Capability {
+                kind: EffectKind::Timer,
+                predicate: ResourcePredicate::Any,
+            }]);
+            Ok(HostedSession::genesis(
+                spec.reducer_hash,
+                Box::new(TickRole),
+                Box::new(authz),
+                CompositeExecutor::new(),
+            ))
+        }
+        async fn build_spawned(
+            &mut self,
+            _reducer_hash: Hash,
+            _parent_genesis: Hash,
+            _spawn_nonce: Hash,
+        ) -> Result<HostedSession, String> {
+            Err("TickRoleFactory does not spawn children".to_string())
+        }
+    }
+
+    #[tokio::test]
+    async fn daemon_boots_admin_installs_a_role_and_it_ticks_live_through_the_loop() {
+        // The host loop + its sessions are `!Send` (single-threaded, §15b), so drive inside a LocalSet where
+        // `spawn_local` is valid — the same shape the deployed daemon's current_thread runtime + LocalSet give.
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                // BOOT: control-plane shape — empty registry + a factory (install seam) + admin authorizer
+                // granting the local admin.
+                let async_host =
+                    AsyncAgentHost::with_factory(AgentHost::new(), Box::new(TickRoleFactory))
+                        .with_admin_authz(Box::new(AllowList::allow_all_for_local_admin()));
+                let admin = async_host.admin_channel();
+                let inbox = async_host.inbox();
+
+                // Spawn the loop, clock pinned past every deadline so live ticks fire promptly.
+                let (_sd_tx, sd_rx) = oneshot::channel();
+                let loop_task =
+                    tokio::task::spawn_local(async move { async_host.run(sd_rx, || u64::MAX).await });
+
+                // INSTALL a session at runtime through the admin channel (what the socket listener does per frame).
+                let id = "worker-1";
+                let resp = admin_call(
+                    &admin,
+                    AdminCommand::InstallSession(InstallSpec {
+                        id: SessionId::new(id),
+                        reducer_hash: Hash::of(b"tick-role-v1"),
+                        goal: Some("run your tick loop".to_string()),
+                    }),
+                )
+                .await;
+                assert!(
+                    matches!(&resp, AdminResponse::Installed { id: got } if got.as_str() == id),
+                    "the daemon installed the session, got {resp:?}"
+                );
+
+                // KICK the installed agent's loop via the inbox; the timer wheel then fires it to its budget.
+                inbox
+                    .send(Inbound {
+                        session: SessionId::new(id),
+                        body: EventBody::Inbound {
+                            content_type: ContentType {
+                                family: "message".into(),
+                                version: 1,
+                            },
+                            payload: Payload::Inline(b"go".to_vec().into()),
+                        },
+                        cause: None,
+                        reply_to: None,
+                    })
+                    .expect("inbox accepts the kick");
+
+                // Drop the producer handles so the loop drains once the role stops re-arming (budget reached).
+                drop(admin);
+                drop(inbox);
+
+                let host = loop_task
+                    .await
+                    .expect("loop task joined")
+                    .expect("loop drained cleanly");
+
+                // The installed agent TICKED LIVE through the deployed loop, to its budget.
+                let session = host
+                    .get(&SessionId::new(id))
+                    .expect("worker still registered");
+                let kv = session.session().kv();
+                assert_eq!(
+                    TickRole::ticks(kv),
+                    BOOT_TICK_BUDGET,
+                    "the admin-installed agent ran its full tick budget live through the daemon loop"
+                );
+                assert_eq!(
+                    kv.get(b"done").map(|v| v.to_vec()),
+                    Some(b"1".to_vec()),
+                    "the live agent reached its stop condition"
+                );
+            })
+            .await;
+    }
+
+    // ---- real-daemon BOOT + admin-install-a-WASM-REDUCER-by-hash + live-run smoke (converted from the
+    // deleted daemon_boot_wasm_reducer_smoke, operator no-integration-tests mandate). ENV-GATED on
+    // CDZ_LIVE_REDUCER_COMPONENT (a real lifted wasm reducer the nix build produces): unset → SKIP cleanly.
+    // Closes the last gap over the native-factory smoke above: the REAL ComponentSessionFactory blob-fetches
+    // the bytes by content hash + LIFTS them into an AsyncComponentReducer, and the loop drives that wasm
+    // program live to quiescence — the deployed reducer-load path end to end. ----
+    #[tokio::test]
+    async fn daemon_boots_admin_installs_a_wasm_reducer_by_hash_and_it_runs_live() {
+        let Some(component) = crate::test_support::reducer_component_bytes() else {
+            eprintln!(
+                "SKIP daemon_boots_admin_installs_a_wasm_reducer_by_hash_and_it_runs_live: \
+                 CDZ_LIVE_REDUCER_COMPONENT unset — set it to a real wasm reducer component (the nix build \
+                 produces one) to exercise the boot→admin-install→blob-lift→run path."
+            );
+            return;
+        };
+        tokio::task::LocalSet::new()
+            .run_until(wasm_reducer_smoke(component))
+            .await;
+    }
+
+    async fn wasm_reducer_smoke(component: Vec<u8>) {
+        use crate::ComponentSessionFactory;
+        use cdz_kernel::blob::BlobStore;
+        use std::time::Duration;
+
+        // A hard ceiling on the whole boot→install→run→drain arc: a misbehaving/looping wasm reducer could
+        // otherwise hang the suite — bounding the join surfaces a runaway as a clear timeout, not a wedge.
+        const RUN_TIMEOUT: Duration = Duration::from_secs(30);
+
+        // The reducer blob store the deployed daemon's install factory loads from. Put the real wasm component
+        // in it → content-addressed. Compute the hash ONCE + supply it to put (the post-blob-dual-land sig).
+        let mut blob = cdz_kernel::blob::MemBlobStore::new();
+        let reducer_hash = Hash::of(&component);
+        blob.put(reducer_hash, bytes::Bytes::from(component.clone()))
+            .await
+            .expect("put the wasm reducer component into the blob store");
+
+        // BOOT the REAL ComponentSessionFactory (the deployed reducer-load seam) — network-free: an empty
+        // per-session executor set + a deny-all per-session authorizer.
+        let factory = ComponentSessionFactory::new(
+            blob,
+            CompositeExecutor::new,
+            || -> Box<dyn cdz_kernel::authz::Authorize> { Box::new(Authorizer::deny_all()) },
+        );
+
+        let async_host = AsyncAgentHost::with_factory(AgentHost::new(), Box::new(factory))
+            .with_admin_authz(Box::new(AllowList::allow_all_for_local_admin()));
+        let admin = async_host.admin_channel();
+        let inbox = async_host.inbox();
+
+        let (sd_tx, sd_rx) = oneshot::channel();
+        let loop_task =
+            tokio::task::spawn_local(async move { async_host.run(sd_rx, || u64::MAX).await });
+
+        // INSTALL a session BY CONTENT HASH through the admin channel — the factory blob-fetches + LIFTS the
+        // bytes into a runnable AsyncComponentReducer (a missing blob or a non-lifting component fails loud).
+        let id = "wasm-worker-1";
+        let resp = admin_call(
+            &admin,
+            AdminCommand::InstallSession(InstallSpec {
+                id: SessionId::new(id),
+                reducer_hash,
+                goal: Some("run the compiled reducer".to_string()),
+            }),
+        )
+        .await;
+        assert!(
+            matches!(&resp, AdminResponse::Installed { id: got } if got.as_str() == id),
+            "the daemon lifted the wasm reducer from the blob store + installed the session, got {resp:?}"
+        );
+
+        // KICK it: the lifted wasm reducer folds one live turn — whatever it emits is denied/declined by the
+        // deny-all authorizer + empty executor set; the point is the LIFTED program RUNS through the loop (§17).
+        inbox
+            .send(Inbound {
+                session: SessionId::new(id),
+                body: EventBody::Inbound {
+                    content_type: ContentType {
+                        family: "message".into(),
+                        version: 1,
+                    },
+                    payload: Payload::Inline(b"go".to_vec().into()),
+                },
+                cause: None,
+                reply_to: None,
+            })
+            .expect("inbox accepts the kick");
+
+        // Signal shutdown + drop the producers so the loop drains after the kick's turn settles.
+        let _ = sd_tx.send(());
+        drop(admin);
+        drop(inbox);
+
+        tokio::time::timeout(RUN_TIMEOUT, loop_task)
+            .await
+            .expect("the boot→install→run→drain arc completes within RUN_TIMEOUT (not a runaway)")
+            .expect("loop task joined")
+            .expect("loop drained cleanly (the wasm reducer's kick turn ran to quiescence)");
+    }
 }
