@@ -21005,3 +21005,71 @@
                 (demand root)))
             (export run)))
   (call   run (: 3 Int64)) (output (: 0 Int64)))
+
+
+; ── Float64 threads: regime switches, cross-draw compares, and the trichotomy (breaker fx) ────
+; The float state thread under BRANCHED evolution — all rows exact dyadics so equality is exact.
+; fx1 puts a REGIME SWITCH in the next-state expression (doubling below a threshold, halving
+; above); three draws sum the trajectory across the crossing. fx2 COMPARES two consecutive draws
+; — a negative seed flips the order (doubling a negative moves DOWN), a tail draw pins the
+; thread. fx3 threads a float slot with the regime switch BESIDE an int counter in one tuple —
+; mixed-width slots advance independently. fx4 is the float sign TRICHOTOMY: positive scales,
+; negative negates, and an exact 0.0 draw routes to the constant arm — the equality face of
+; float branching. All hand-computed; all pass on wasm, rust, and rust-async.
+
+(case "fx1 a Float64 state with a REGIME SWITCH in the arm — doubling below the threshold, halving above, three draws sum the trajectory"
+  (input  (do
+            (effect E (op draw (-> Float64)))
+            (def (main (: n Int64))
+              (handle E (+ 1.0 (Float64.of-int n))
+                ((draw () s (resume s (if (< s 10.0) (* s 2.0) (* s 0.5)))))
+                (+ (E.draw) (+ (E.draw) (E.draw)))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 21.0 Float64))
+  (call   main (: 0 Int64)) (output (: 7.0 Float64))
+  (call   main (: 5 Int64)) (output (: 24.0 Float64)))
+
+(case "fx2 float COMPARISON of two consecutive draws routes the branch — a negative seed FLIPS the order, a tail draw pins the doubling thread"
+  (input  (do
+            (effect E (op draw (-> Float64)))
+            (def (main (: n Int64))
+              (handle E (+ 1.0 (Float64.of-int n))
+                ((draw () s (resume s (* s 2.0))))
+                (let ((d1 (E.draw)))
+                  (let ((d2 (E.draw)))
+                    (+ (if (> d2 d1) (- d2 d1) (- d1 d2))
+                       (E.draw))))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 15.0 Float64))
+  (call   main (: -5 Int64)) (output (: -12.0 Float64))
+  (call   main (: 0 Int64)) (output (: 5.0 Float64)))
+
+(case "fx3 a FLOAT slot with a regime-switch beside an INT counter in one tuple state — mixed-width slots thread independently"
+  (input  (do
+            (effect E (op draw (-> Float64)) (op count (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (tuple (+ 1.0 (Float64.of-int n)) 0)
+                ((draw () st (match st
+                               ((tuple s c)
+                                (resume s (tuple (if (< s 10.0) (* s 2.0) (* s 0.5)) (+ c 1))))))
+                 (count () st (match st ((tuple s c) (resume c st)))))
+                (+ (E.draw) (+ (E.draw) (+ (E.draw) (Float64.of-int (E.count)))))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 24.0 Float64))
+  (call   main (: 0 Int64)) (output (: 10.0 Float64))
+  (call   main (: 5 Int64)) (output (: 27.0 Float64)))
+
+(case "fx4 float sign TRICHOTOMY of a draw — positive scales, negative negates, exact 0.0 routes to the constant arm"
+  (input  (do
+            (effect E (op draw (-> Float64)))
+            (def (main (: n Int64))
+              (handle E (Float64.of-int n)
+                ((draw () s (resume s (+ s 1.0))))
+                (let ((d (E.draw)))
+                  (+ (if (> d 0.0) (* d 10.0)
+                         (if (< d 0.0) (- 0.0 d) 99.0))
+                     (E.draw)))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 34.0 Float64))
+  (call   main (: 0 Int64)) (output (: 100.0 Float64))
+  (call   main (: -2 Int64)) (output (: 1.0 Float64)))

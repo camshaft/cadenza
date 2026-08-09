@@ -7022,3 +7022,7 @@ pass	a resuming arm whose resume VALUE is a transform of state and next-state is
 pass	a single handler with three ops each mutating the state by a DIFFERENT function, composed in sequence
 todo	a mutually-recursive performer pair whose out-state a trailing caller draw observes declines cleanly (completeness gap)
 pass	a mutual-group demand-perform-demand arm in a let-wrapped dispatch folds down a runtime-opaque spine
+pass	fx1 a Float64 state with a REGIME SWITCH in the arm — doubling below the threshold, halving above, three draws sum the trajectory
+pass	fx2 float COMPARISON of two consecutive draws routes the branch — a negative seed FLIPS the order, a tail draw pins the doubling thread
+pass	fx3 a FLOAT slot with a regime-switch beside an INT counter in one tuple state — mixed-width slots thread independently
+pass	fx4 float sign TRICHOTOMY of a draw — positive scales, negative negates, exact 0.0 routes to the constant arm
