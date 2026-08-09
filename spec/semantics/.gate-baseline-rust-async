@@ -6934,3 +6934,11 @@ pass	pf1 an AGGREGATOR arm — the op returns the running sum of every value fed
 pass	mm1 a MIN/MAX tracking arm — three feeds tighten the (lo,hi) tuple state, readers project the final spread
 pass	cl1 a NARROWING clamp arm — the [lo,hi] window shrinks by one each side per dispatch, three args meet three windows
 pass	cx1 a COUNTDOWN arm exhausts mid-sequence — positive states pass through, the floor returns a sentinel-free constant
+pass	md1 a MODULAR ring state — the thread walks a size-7 ring with stride 3, entry point reduced mod 7 at the seed
+pass	gc1 a EUCLID-step arm — each dispatch advances (a,b) one gcd step, low digits of the descent spell the trace
+pass	pw1 a TRIPLING state crosses fixed thresholds — three compares catch the crossing at input-dependent depth
+pass	dg1 a DIGIT-extractor arm — each dispatch peels the low digit and floors the state by ten, three peels reverse the tail
+pass	cs1 a COLLATZ-step arm — even states halve, odd states triple-plus-one, low digits of four reads trace the orbit
+pass	ne1 an OPTION built from a draw crosses dispatch as an op ARGUMENT — the arm matches it against the live state
+pass	rs1 a RESULT built from draw parity crosses dispatch as an op ARGUMENT — Ok scales with state, Err folds in negated
+pass	abf1 one handler mixes a RESUMPTIVE op and an ABORTIVE op — two marks advance the state, the abort carries their mix out
