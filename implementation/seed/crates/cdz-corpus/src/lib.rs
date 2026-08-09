@@ -58,6 +58,12 @@ pub struct Record {
     /// a dropped/extra/reordered call is a Fail (not a false Pass on a matching return value). Empty for a
     /// case with no `(host-calls …)`.
     pub host_calls: Vec<String>,
+    /// The WARNING diagnostics a case pins on a compiles-clean program (`(warns <CODE> (message "…")?)`
+    /// clauses, zero or more) — each a `(code, optional message-substring)`. ORTHOGONAL to the primary
+    /// outcome: a case asserts its `(output …)`/`(trap …)` AND that the compile emitted these warnings
+    /// (a PRESENCE check, not exclusive). The portable-diagnostic-test capability (operator seq353 inc2);
+    /// empty for a case with no `(warns …)`.
+    pub warns: Vec<(String, Option<String>)>,
 }
 
 /// One sibling LIBRARY module of a multi-file package case — its file name (the string an `(import
@@ -243,6 +249,18 @@ pub fn render(records: &[Record]) -> String {
             out.push_str(op);
             out.push('\n');
         }
+        // WARNING pins (operator seq353 inc2): one `warns\t<CODE>` or `warns\t<CODE> (message "phrase")`
+        // line each — the compile warnings the case asserts (a presence check, orthogonal to the outcome).
+        for (code, message) in &r.warns {
+            out.push_str("warns\t");
+            out.push_str(code);
+            if let Some(m) = message {
+                out.push_str(" (message \"");
+                out.push_str(m);
+                out.push_str("\")");
+            }
+            out.push('\n');
+        }
         out.push_str("---\n");
     }
     out
@@ -269,6 +287,7 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
     let mut modules: Vec<Module> = Vec::new();
     let mut host_responses: Vec<(String, String)> = Vec::new();
     let mut host_calls: Vec<String> = Vec::new();
+    let mut warns: Vec<(String, Option<String>)> = Vec::new();
     // Trials accumulate as the clauses are walked: a `(call …)` sets the PENDING call, and the next
     // result clause (`output`/`error`/`trap`) CLOSES a trial pairing that pending call with the result.
     // A result with no preceding `(call …)` is a no-call trial. This lets a case INTERLEAVE several
@@ -428,6 +447,19 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
                     }
                 }
             }
+            // `(warns <CODE> (message "phrase")?)` — a compile WARNING the case pins (compiles clean but
+            // must emit this warning). Zero or more per case, ORTHOGONAL to the primary outcome. The
+            // optional message pins a substring of the warning's diagnostic prose (operator seq353 inc2).
+            Some("warns") => {
+                if let Some(tail) = a.as_form(clause, "warns")
+                    && let Some(code) = tail
+                        .first()
+                        .copied()
+                        .and_then(|id| a.as_name(id).map(str::to_string))
+                {
+                    warns.push((code, message_clause(a, tail)));
+                }
+            }
             // `doc` — not needed to run + compare a case.
             _ => {}
         }
@@ -447,6 +479,7 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
         trials,
         host_responses,
         host_calls,
+        warns,
     })
 }
 
