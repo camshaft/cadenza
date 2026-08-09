@@ -72,3 +72,23 @@ def sm-fib-via-match() =
   (match run-src("(do (def (fib n) (match n (0 0) (_ (if (< n 2) 1 (+ (fib (- n 1)) (fib (- n 2))))))) (def (main) (fib 6)) (export main))") with
     | Option.Some(v) => (if v == 8 then unit else trap("fib 6 via match → 8"))
     | Option.None(_) => trap("fib-via-match runs (match+recursion)"))
+
+@test
+def sm-first-matching-arm-wins() =
+  // ARM ORDER (first-match-wins): two arms share the literal 1 — `match 1 (1 111) (1 222) (_ 333)`. The FIRST
+  // arm matching the scrutinee wins → 111, NOT the second arm's 222 (and not the wildcard). Pins that arm
+  // dispatch is top-to-bottom first-match, the reference semantics; a reordering or fall-through bug would
+  // return 222/333. (No existing test had two arms sharing a literal, so first-match-wins was unpinned.)
+  (match run-src("(do (def (main) (match 1 (1 111) (1 222) (_ 333))) (export main))") with
+    | Option.Some(v) => (if v == 111 then unit else trap("first matching arm wins → 111"))
+    | Option.None(_) => trap("first-matching-arm-wins runs"))
+
+@test
+def sm-negative-literal-pattern() =
+  // NEGATIVE literal pattern: `match -5 (-5 111) (_ 222)` → 111. The scrutinee is computed as (- 0 5) and the
+  // pattern literal is -5; the match compares the negative scrutinee against the negative pattern literal and
+  // takes the arm. Pins that a negative integer literal is a valid, correctly-compared pattern (all prior
+  // match tests used non-negative pattern literals, so the negative-pattern path was unpinned).
+  (match run-src("(do (def (main) (match (- 0 5) (-5 111) (_ 222))) (export main))") with
+    | Option.Some(v) => (if v == 111 then unit else trap("negative literal pattern matches → 111"))
+    | Option.None(_) => trap("negative-literal-pattern runs"))
