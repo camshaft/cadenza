@@ -39,6 +39,12 @@ pub mod gltf;
 pub mod mesh;
 pub mod stl;
 pub mod threemf;
+
+// In-crate pipeline tests over the real CAD library examples (relocated from `tests/examples_pipeline.rs`
+// per the no-integration-tests directive — same coverage, compiled with the lib, no separate binary).
+#[cfg(test)]
+mod examples_pipeline_tests;
+
 pub use bounds::{bounds, bounds_with_segments, Bounds};
 pub use mesh::{
     mesh, mesh_with_segments, to_manifold, to_manifold_with_segments, Mesh, DEFAULT_SEGMENTS,

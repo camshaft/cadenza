@@ -9,7 +9,7 @@
 //! If the library's render form drifts (a constructor changes, the printer changes), these strings go stale
 //! and the parse fails loudly — a signal to re-capture, exactly what an integration pin is for.
 
-use cdz_cad::{bounds, mesh, parse_solid};
+use crate::{bounds, mesh, parse_solid};
 
 fn approx(a: f64, b: f64) -> bool {
     (a - b).abs() < 1e-4
