@@ -6534,18 +6534,27 @@ fn direct_callee_defs(db: &mut Db, body: StructId, out: &mut Vec<usize>) {
 /// directions use a bounded reachability walk over `direct_callee_defs`. Only defs that reach a discharged
 /// op are kept (a pure helper in the cycle needs no state threading — it is inlined, not specialized).
 fn mutual_scc_of(db: &mut Db, callee_def: usize, ctx: &HandlerCtx) -> Vec<usize> {
+    // MEMO (v-compiler-perf advisory on #2877): SCC membership is program-STATIC + the discharged-op filter
+    // is fixed by `ctx.key`, so the result is stable per `(callee_def, ctx.key)`. The group-entry path calls
+    // this TWICE (the `group_entry` predicate + the member-registration loop), and sibling SCC members
+    // re-derive the same set — the memo collapses all of that to ONE forward-BFS + per-def reaches-BFS.
+    let memo_key = (callee_def, ctx.key.clone());
+    if let Some(cached) = db.mutual_scc.get(&memo_key) {
+        return cached.clone();
+    }
     // Forward reachability from `start` over direct-callee edges (def-index graph), bounded by the def table.
+    // `seen` is a HashSet — membership is O(1), so the walk is O(V+E) not O(V*E) (v-compiler-perf: was
+    // `Vec::contains`). Small SCCs are unaffected either way; this keeps a wide call graph off the hot path.
     fn reaches(db: &mut Db, start: usize, target: usize) -> bool {
-        let mut seen: Vec<usize> = Vec::new();
+        let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
         let mut work: Vec<usize> = vec![start];
         while let Some(d) = work.pop() {
             if d == target {
                 return true;
             }
-            if seen.contains(&d) {
+            if !seen.insert(d) {
                 continue;
             }
-            seen.push(d);
             if let Some(body) = db.defs[d].body {
                 let mut callees = Vec::new();
                 direct_callee_defs(db, body, &mut callees);
@@ -6561,11 +6570,14 @@ fn mutual_scc_of(db: &mut Db, callee_def: usize, ctx: &HandlerCtx) -> Vec<usize>
         }
         false
     }
-    // The forward-reachable set from `callee_def` (candidate SCC members before the back-edge filter).
+    // The forward-reachable set from `callee_def` (candidate SCC members before the back-edge filter). The
+    // ORDER is preserved (a `Vec` for a deterministic member sequence) + a `HashSet` mirrors it for O(1)
+    // membership — reproducible output, no O(n) `contains`.
     let mut forward: Vec<usize> = Vec::new();
+    let mut forward_set: std::collections::HashSet<usize> = std::collections::HashSet::new();
     let mut work: Vec<usize> = vec![callee_def];
     while let Some(d) = work.pop() {
-        if forward.contains(&d) {
+        if !forward_set.insert(d) {
             continue;
         }
         forward.push(d);
@@ -6573,7 +6585,7 @@ fn mutual_scc_of(db: &mut Db, callee_def: usize, ctx: &HandlerCtx) -> Vec<usize>
             let mut callees = Vec::new();
             direct_callee_defs(db, body, &mut callees);
             for c in callees {
-                if !forward.contains(&c) {
+                if !forward_set.contains(&c) {
                     work.push(c);
                 }
             }
@@ -6596,6 +6608,7 @@ fn mutual_scc_of(db: &mut Db, callee_def: usize, ctx: &HandlerCtx) -> Vec<usize>
     if !scc.contains(&callee_def) {
         scc.push(callee_def);
     }
+    db.mutual_scc.insert(memo_key, scc.clone());
     scc
 }
 
