@@ -1630,14 +1630,70 @@
             ]
           );
         };
+        # The browser compiler wasm `pkg/` (cdz_wasm_bg.wasm + the wasm-bindgen JS glue) as its OWN
+        # derivation, FIXED-OUTPUT (operator sub-1-min throughput, 2026-08-09). WHY EXTRACT: guideExamplesCheck
+        # built this INLINE, so its src fileset (correctly) includes the compiler crate closure (cdz-wasm →
+        # rcdzc → cadenza-syntax/ast/cdz-run/cdz-rt/cdz-num), and ANY compiler-crate edit — even an unrelated
+        # leaf like cdz-num — rotated the WHOLE guide-examples derivation and re-ran the entire npm check
+        # battery (npm ci + test:unit + check:{prose,diagnostics,examples,calculator,…} + vite build), even
+        # though those content checks depend only on the GUIDE source, not the compiler. Extracting the wasm
+        # build here + FIXED-OUTPUT-pinning it (same lever as reducer-cadenza-genesis) makes nix early-cutoff:
+        # the compiler may rebuild, but if the emitted pkg is byte-identical (verified reproducible — the
+        # sibling rcdzc-wasm build is deterministic), this derivation's OUTPUT PATH is stable → guideExamples
+        # consumes an unchanged input → the npm battery cache-hits on a compiler-only edit. This fileset is
+        # ONLY the compiler crates (NOT ./guide), so a guide-content edit doesn't rebuild the wasm and a
+        # compiler edit doesn't touch the npm battery. Correctness: a genuine compiler change that alters the
+        # emit → bytes != the pinned hash → FOD build fails loud → bump the pin + the guide rebuilds against
+        # the new compiler (the FOD's own hash check is the staleness guard). $out is a DIRECTORY (pkg/), so
+        # outputHashMode = "recursive" (NAR hash of the tree), unlike genesis's flat single-file hash.
+        guideCompilerWasmSrc = pkgs.lib.fileset.toSource {
+          root = ./.;
+          fileset = pkgs.lib.fileset.unions (
+            (map (c: ./implementation/seed/crates + ("/" + c)) [
+              "cdz-wasm" "rcdzc" "cadenza-syntax" "cadenza-ast" "cdz-run" "cdz-rt" "cdz-num"
+            ]) ++ [ ./rust-toolchain.toml ]);
+        };
+        cdzWasmPkg = pkgs.stdenvNoCC.mkDerivation {
+          pname = "cdz-wasm-pkg";
+          version = "0.0.0";
+          src = guideCompilerWasmSrc;
+          nativeBuildInputs = [ rustToolchain wasmBindgenCli pkgs.binaryen ];
+          buildPhase = ''
+            runHook preBuild
+            ${mkCargoVendorEnv { vendor = cdzWasmVendor; }}
+            # REMAP the vendored-crate + toolchain store paths out of the embedded panic/debug location
+            # strings. Without this the release wasm bakes absolute /nix/store/…-cargo-vendor-dir/… and
+            # …-rust-…/… paths into its debug strings, which (a) makes a FIXED-OUTPUT derivation ILLEGAL
+            # ("must not reference store paths") and (b) makes the output non-reproducible (the vendor-dir
+            # hash rotates). Remapping to stable placeholders strips both — the emitted wasm is then
+            # store-path-free + byte-stable across vendor/toolchain rotations, so the FOD output path holds.
+            export RUSTFLAGS="--remap-path-prefix=$(${pkgs.coreutils}/bin/readlink -f ${cdzWasmVendor})=vendor --remap-path-prefix=${rustToolchain}=rust ''${RUSTFLAGS:-}"
+            ( cd implementation/seed/crates/cdz-wasm
+              cargo build --release --target wasm32-unknown-unknown --locked
+              wasm-bindgen --target web --out-dir pkg \
+                target/wasm32-unknown-unknown/release/cdz_wasm.wasm
+              # wasm-pack's --release runs wasm-opt; the crate profile is opt-level="s" → -Os.
+              wasm-opt -Os pkg/cdz_wasm_bg.wasm -o pkg/cdz_wasm_bg.wasm
+            )
+            runHook postBuild
+          '';
+          installPhase = ''
+            runHook preInstall
+            cp -r implementation/seed/crates/cdz-wasm/pkg "$out"
+            runHook postInstall
+          '';
+          # FIXED-OUTPUT (directory): recursive NAR hash. See the note above. Pin is set after the
+          # remap-path-prefix strip makes the output store-path-free + reproducible.
+          outputHashMode = "recursive";
+          outputHashAlgo = "sha256";
+          outputHash = "sha256-VYA+zy4SUmnDO0KexlCqd6j3c9QsjafPmibQ2WKQgog=";
+        };
         guideExamplesCheck = pkgs.stdenvNoCC.mkDerivation {
           pname = "cdz-guide-examples";
           version = "0.0.0";
           src = guideExamplesSrc;
           nativeBuildInputs = [
             rustToolchain
-            wasmBindgenCli
-            pkgs.binaryen # wasm-opt (the -Os shrink wasm-pack's --release applies)
             pkgs.nodejs_22 # node 22 (>=22.6 for --experimental-strip-types in test:unit)
             pkgs.npmHooks.npmConfigHook # wires npmDeps → the offline npm cache (npm ci runs offline)
           ];
@@ -1649,16 +1705,12 @@
           VITE_BASE = "/cadenza/";
           buildPhase = ''
             runHook preBuild
-            ${mkCargoVendorEnv { vendor = cdzWasmVendor; }}
 
-            # ── 1. Build + bindgen the browser compiler wasm (the hermetic `wasm-pack build` equivalent).
-            ( cd implementation/seed/crates/cdz-wasm
-              cargo build --release --target wasm32-unknown-unknown --locked
-              wasm-bindgen --target web --out-dir pkg \
-                target/wasm32-unknown-unknown/release/cdz_wasm.wasm
-              # wasm-pack's --release runs wasm-opt; the crate profile is opt-level="s" → -Os.
-              wasm-opt -Os pkg/cdz_wasm_bg.wasm -o pkg/cdz_wasm_bg.wasm
-            )
+            # ── 1. Consume the pre-built browser compiler wasm pkg/ (cdzWasmPkg, a FIXED-OUTPUT derivation
+            # whose output path is stable across unrelated compiler edits → the npm battery below cache-hits
+            # on a compiler-only edit). Copy it into place where stage-wasm.mjs expects it.
+            cp -r ${cdzWasmPkg} implementation/seed/crates/cdz-wasm/pkg
+            chmod -R u+w implementation/seed/crates/cdz-wasm/pkg
 
             # ── 2. Stage pkg/ + the value-heap runtime + the CAD/music preload libs into guide/src/wasm/.
             # stage-wasm.mjs finds the runtime by the hash embedded in the compiler wasm, in CADENZA_STORE.
@@ -1747,6 +1799,7 @@
         # rcdzc→wasm: the compiler as a wasm artifact for the agent kernel's blob store. `.#rcdzc-wasm`
         # is the wasm module; `.#rcdzc-wasm-hash` its derived content address (for v-agent-harness's
         # compiler-latest store pointer).
+        packages.cdz-wasm-pkg = cdzWasmPkg;
         packages.rcdzc-wasm = rcdzcWasm;
         packages.rcdzc-wasm-hash = hashOf rcdzcWasm "rcdzc-wasm-hash";
 
