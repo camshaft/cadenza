@@ -291,7 +291,12 @@ async fn timeout_cancels_so_a_late_result_is_dropped() {
     struct TimeoutExecutor;
     #[async_trait::async_trait(?Send)]
     impl Executor for TimeoutExecutor {
-        async fn perform(&mut self, _req: &EffectRequest, _key: Hash) -> EffectOutcome {
+        async fn perform(
+            &mut self,
+            _id: cdz_kernel::effect::EffectId,
+            _req: &EffectRequest,
+            _key: Hash,
+        ) -> EffectOutcome {
             EffectOutcome::TimedOut
         }
     }

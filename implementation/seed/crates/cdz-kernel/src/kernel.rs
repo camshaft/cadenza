@@ -1215,7 +1215,7 @@ impl Session {
                 target_len = req.target.len(),
                 "dispatching effect to executor"
             );
-            let outcome = executor.perform(&req, idempotency_key).await;
+            let outcome = executor.perform(id, &req, idempotency_key).await;
 
             // DEFERRED (userspace-effects I2): the executor forwarded this effect for asynchronous
             // fulfillment (e.g. a UserspaceEffectExecutor delegated to a registered handler session) and will
@@ -2835,7 +2835,12 @@ mod monotonic_now_tests {
     struct StuckClock(u64);
     #[async_trait::async_trait(?Send)]
     impl Executor for StuckClock {
-        async fn perform(&mut self, req: &EffectRequest, _key: Hash) -> EffectOutcome {
+        async fn perform(
+            &mut self,
+            _id: EffectId,
+            req: &EffectRequest,
+            _key: Hash,
+        ) -> EffectOutcome {
             assert_eq!(req.kind, EffectKind::Now);
             EffectOutcome::Ok(Some(Payload::Inline(self.0.to_le_bytes().to_vec().into())))
         }
@@ -4113,7 +4118,12 @@ mod monotonic_now_tests {
     struct FailingHttpExecutor;
     #[async_trait::async_trait(?Send)]
     impl Executor for FailingHttpExecutor {
-        async fn perform(&mut self, req: &EffectRequest, _key: Hash) -> EffectOutcome {
+        async fn perform(
+            &mut self,
+            _id: EffectId,
+            req: &EffectRequest,
+            _key: Hash,
+        ) -> EffectOutcome {
             assert_eq!(req.kind, EffectKind::Http);
             EffectOutcome::err("PERMANENT: 400 bad request".to_string())
         }
@@ -4211,7 +4221,12 @@ mod monotonic_now_tests {
     struct DeferringExecutor;
     #[async_trait::async_trait(?Send)]
     impl Executor for DeferringExecutor {
-        async fn perform(&mut self, _req: &EffectRequest, _key: Hash) -> EffectOutcome {
+        async fn perform(
+            &mut self,
+            _id: EffectId,
+            _req: &EffectRequest,
+            _key: Hash,
+        ) -> EffectOutcome {
             EffectOutcome::Deferred
         }
     }
@@ -5303,7 +5318,12 @@ mod store_effect_tests {
     }
     #[async_trait::async_trait(?Send)]
     impl crate::executor::Executor for ScriptedAgentExecutor {
-        async fn perform(&mut self, req: &EffectRequest, _key: Hash) -> EffectOutcome {
+        async fn perform(
+            &mut self,
+            _id: EffectId,
+            req: &EffectRequest,
+            _key: Hash,
+        ) -> EffectOutcome {
             let family = req.content_type.family.as_ref();
             if family == effect_ct::MODEL {
                 self.model_calls += 1;
@@ -6242,7 +6262,12 @@ mod store_effect_tests {
     }
     #[async_trait::async_trait(?Send)]
     impl Executor for StubBlobExecutor {
-        async fn perform(&mut self, req: &EffectRequest, _key: Hash) -> EffectOutcome {
+        async fn perform(
+            &mut self,
+            _id: EffectId,
+            req: &EffectRequest,
+            _key: Hash,
+        ) -> EffectOutcome {
             let family = req.content_type.family.as_ref();
             match family {
                 effect_ct::BLOB_PUT => {
