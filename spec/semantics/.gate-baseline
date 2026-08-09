@@ -534,6 +534,7 @@ pass	a @requires predicate that CALLS a user-defined function resolves and enfor
 pass	a @requires predicate that MATCHES on a sum-typed parameter dispatches and enforces (v-patterns seam)
 pass	a @requires predicate that itself traps keeps its own trap kind
 pass	a @requires predicate that references `ret` is REJECTED CDZ0101 — only @ensures binds the result
+pass	a @requires reads a BOOL parameter DIRECTLY as the predicate — the flag itself is the precondition, false traps
 pass	a @requires relating TWO heap params enforces the zip precondition at runtime
 pass	a @requires whose predicate is a DISJUNCTION (or) enforces: either disjunct satisfies, only the all-false input traps
 pass	a @requires whose predicate is a NEGATION (not) enforces: the wrapped condition must be FALSE, its truth traps

@@ -1867,6 +1867,22 @@
   (call   main (: 0.0 Float64))   (output (: 0.0 Float64))
   (call   main (: -1.5 Float64))  (trap "unreachable"))
 
+(case "a @requires reads a BOOL parameter DIRECTLY as the predicate — the flag itself is the precondition, false traps"
+  (doc    "Completing the scalar value-domain set (Int64, Float64, now Bool). A predicate is any Bool-typed
+           expression, so a BOOL parameter can BE the precondition with no comparison wrapper — `@requires(flag)`
+           reads the param directly. On `(f flag x) = x` the injected `(if flag BODY (trap …))` passes exactly
+           when the flag is true. Runtime args via main's params so nothing folds. main(true, 9): the flag is
+           true → pass → 9. main(false, 9): the flag is false → the precondition is false → trap, even though the
+           body `x` = 9 would compute fine. Pins that a bare Bool param resolves and enforces as a predicate
+           without a comparison op — the guard reads the boolean value itself, the dual of the numeric-comparison
+           preconditions.")
+  (input  (do
+            (@ (requires flag) (def (f (: flag Bool) (: x Int64)) x))
+            (def (main (: b Bool) (: k Int64)) (f b k))
+            (export main)))
+  (call   main (: true Bool) (: 9 Int64))    (output (: 9 Int64))
+  (call   main (: false Bool) (: 9 Int64))   (trap "unreachable"))
+
 (case "a @requires whose predicate is a DISJUNCTION (or) enforces: either disjunct satisfies, only the all-false input traps"
   (doc    "Every runtime predicate so far combines with `and` or a bare comparison; this pins a precondition
            built from `or`, the short-circuiting boolean OR prelude op. `@requires(or (<= x 0) (>= x 100))` on
