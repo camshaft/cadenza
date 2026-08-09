@@ -3999,6 +3999,17 @@
   (input  (do (def (main) (List.length (list 1 2))) (export main)))
   (error CDZ0201 (message "closest matches:")))
 
+(case "an unknown module operation too far for a confident typo lists the module's operations"
+  (doc    "The far-miss companion of the `List.length` near-miss above: `(. List get)` names an operation
+           `List` does not have, and `get` is too far from any real op to be a confident single 'did you
+           mean'. So the CDZ0201 diagnostic names the MODULE category and LISTS the closest real operations
+           ('the `List` module has no member `get` — closest matches: `at`, `len`, `push`') rather than a
+           bare 'unbound' or a baseless guess — the fix route (the real op names) is in the message itself,
+           so the reader need not read the prelude to discover them. The (message ..) pins the module-named
+           closest-matches list; a far miss carries no fix.")
+  (input  (do (def (main) (. List get)) (export main)))
+  (error  CDZ0201 (message "closest matches:")))
+
 (case "a record whose field is a runtime tuple nests across the boundary"
   (doc    "`(record (x n) (y (tuple n 1)))` with n=5 produces `(record (x 5) (y (tuple 5 1)))` — a
            record field that is itself a runtime compound. Pins that the type-directed renderer

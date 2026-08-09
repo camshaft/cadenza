@@ -4539,6 +4539,7 @@ pass	an ungranted effect hidden in a COLLECTION-stored closure is still rejected
 pass	an ungranted effect hidden in a closure passed to a HOF is still rejected
 pass	an unimported sibling definition is not in scope
 pass	an unknown member name is rejected with a did-you-mean (CDZ0201)
+pass	an unknown module operation too far for a confident typo lists the module's operations
 pass	an unproductive self-recursion is declined, not a compiler crash
 pass	an unquote nested inside a plain quote is a syntax error, not an active unquote
 pass	an unquote of an expression with an unbound name is rejected, not quoted
