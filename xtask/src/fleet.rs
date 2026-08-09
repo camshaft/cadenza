@@ -1671,6 +1671,25 @@ fn remove(fleet: &Fleet, name: &str, close: bool) {
     std::fs::create_dir_all(fleet.root.join("stop")).expect("create stop dir");
     std::fs::write(fleet.stopfile(name), "removed by `fleet remove`\n").ok();
     fleet.save(&reg);
+
+    // AUTO-ARCHIVE the removed agent's stranded inbox (task #15). A stopped agent's loop has exited, so
+    // any ACTIONABLE mail queued for it (an `assign`/`issue`/`reject`) is a PERMANENT dead-letter the
+    // watchdog re-flags every tick forever (the standing dead-letter-noise the reap was built to clear).
+    // We just marked it stopped + dropped its stop-file above, so `dead_letter_reap_allowed` holds — reap
+    // now: LOSSLESS (each message is appended to `.claude/fleet/dead-letters.log` BEFORE it is moved to
+    // processed/, so a real work item survives for re-routing; informational notes/acks are left alone).
+    // This turns the reap from opt-in (the watchdog's `--reap-dead-letters`) into automatic-on-removal, so
+    // removing an agent no longer leaves a permanent dead-letter source. Best-effort: count reaped, report.
+    if dead_letter_reap_allowed(fleet.stopfile(name).exists()) {
+        let reaped = reap_stranded_dead_letters(fleet, name, now_unix());
+        if reaped > 0 {
+            println!(
+                "fleet remove: archived {reaped} stranded actionable message(s) from '{name}'s inbox to \
+                 processed/ (logged to dead-letters.log first — recoverable for re-routing). This clears \
+                 the permanent watchdog dead-letter flag for '{name}'."
+            );
+        }
+    }
     if close {
         // Reap the tmux window too (the PM does this after verifying a fix landed). The registry row
         // stays `stopped` — only the panel goes away, so history/archive survive. Report the exact
