@@ -11324,6 +11324,55 @@ fn a_non_tail_mutual_group_observing_a_partners_out_state_folds_via_group_multiv
     );
 }
 
+/// A recursive performer whose recursion RESULT feeds a separate HELPER call now COMPILES (was a
+/// "parameter reference has no local slot" decline at emit). `walk` recurses, then a match arm feeds the
+/// recursion result AND a fresh `St.get` to a pure helper `combine`. The specializer threads `walk`'s body
+/// into `walk#eff`, but threading returns unchanged subtrees AS-IS, so the spec body could SHARE an
+/// ORIGINAL-def param occurrence (the `n` reached through the perform-arm-threaded `(St.get)` state
+/// `(+ (. t 1) n)`). `core_of` memoizes by node id, so a shared original node carries a
+/// `Core::Param{ORIGINAL binder}` with no slot in the specialized function → the decline when `combine`
+/// inlines + lowers it. Fixed by deep-fresh-copying the threaded spec body so every node is a fresh id that
+/// re-resolves against the spec signature (its own slots). This is the shape EVERY real demand-query
+/// compiler takes (a node's children demanded, then combined by a pure helper), so it must fold. Pins that
+/// it COMPILES with no slot-less-param leak; the run value (`main(3)` = 10) is verified by the corpus case
+/// `a recursive performer whose recursion result feeds a HELPER call folds…` via cdz-run.
+#[test]
+fn a_recursive_performer_feeding_its_result_to_a_helper_call_folds() {
+    use crate::testkit::parse;
+    let src = "(do \
+        (effect St (op get (-> Unit Int64)) (op put (-> Int64 Unit))) \
+        (def (walk (: n Int64)) \
+          (if (= n 0) (St.get) \
+            (let ((lt (walk (- n 1)))) \
+              (match (St.put n) (_ (combine lt (St.get))))))) \
+        (def (combine (: a Int64) (: b Int64)) (+ a b)) \
+        (def (main (: k Int64)) \
+          (handle St 0 \
+            ((get (u) s (resume s s)) \
+             (put (v) s (resume unit (+ s v)))) \
+            (walk k))) \
+        (export main))";
+    let out = crate::compile::compile(
+        &[crate::abi::Artifact::new(
+            crate::abi::Artifact::KIND_AST,
+            "main",
+            crate::codec::encode(&parse(src)),
+        )],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        out.artifact(crate::backend::Target::Wasm.artifact_kind())
+            .is_some(),
+        "a recursive performer feeding its result to a helper call must compile (no slot-less spec param)"
+    );
+    assert!(
+        !out.diagnostics
+            .iter()
+            .any(|d| d.message.contains("no local slot")),
+        "no 'parameter reference has no local slot' decline"
+    );
+}
+
 /// A handler ARM that RESUMES PER `if`-BRANCH now folds. `get-ty(nid) s => (if (= nid 0) (resume (Some t) s)
 /// (resume (None) s))` selects the resume value by a condition over the op arg. `peel_resume_from_arm_body`
 /// handled `do`/`let`/`match` resume-wrappers but NOT `if`, so the whole handler declined before reaching

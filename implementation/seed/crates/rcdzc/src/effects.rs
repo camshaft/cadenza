@@ -7582,6 +7582,18 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
         b
     };
 
+    // DEEP-FRESH-COPY the threaded body so NO original-body node is shared into the spec. Threading /
+    // `beta_reduce` return an unchanged subtree AS-IS (a node with no substituted param is not rebuilt), so
+    // the spec body can SHARE original param-reference nodes (e.g. the `n` in `(St.put n)` reached through a
+    // perform-arm-threaded state expression). `core_of` MEMOIZES by StructId (`db.core`), so a shared
+    // original node carries its cached `Core::Param{ORIGINAL binder}` — which has no slot in the spec
+    // function (its slots are keyed by the spec sig's param nodes) → "parameter reference has no local slot"
+    // at emit when a later inline copies + lowers it. Re-pushing every node fresh gives the whole body new
+    // StructIds with no `db.core` memo; each ref re-resolves (lazily, post-parent) against the spec `(def sig
+    // …)` form below → binds to the spec sig param → gets a slot. (The self-recursive / multi-value temps
+    // `$s{k}`/`$t{k}` and any `#cv` bindings are name-resolved, so a fresh copy re-binds them identically.)
+    let spec_body = deep_fresh_copy(db, spec_body);
+
     // Wrap in a REAL `(def (spec params… (: s T)) spec_body)` arena node so the parent index links
     // param → sig → def: `is_param_occurrence` walks that chain to classify each param, and `binder_in`
     // Case 4 resolves a body reference against the def signature. Without this the synthesized params
