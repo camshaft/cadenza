@@ -1079,3 +1079,35 @@
             (export main)))
   (call   main (: true Bool)) (output (: 50 Int64))
   (call   main (: false Bool)) (output (: 51 Int64)))
+
+; --- In-domain shrinking: the shrink search stays within a refinement's window (Refinements × Shrinking). ---
+
+(case "a refined-newtype shrink stays IN-DOMAIN — it converges to the minimal value the invariant still admits, not below the floor"
+  (doc    "The existing shrink pins (scalar #22, list #47, string #50, pair #51, sum-payload) all descend an
+           UNCONSTRAINED domain to the global minimal failing input. This re-homes the deleted
+           `a_failing_invariant_property_shrinks_to_the_minimal_in_domain_value` e2e: when the generated type
+           carries a range @invariant (`Percent`, `10 <= n <= 100`), the shrinker must not walk BELOW the
+           domain floor — a shrunk candidate that violates the invariant is not a valid counterexample. The
+           failing predicate is `fails n = (>= n 40)`; a naive decrement-while-fails would reach 40 (the
+           1-minimal failing value), but the DOMAIN floor here is 10 and the interaction we pin is that the
+           shrink CLAMPS at the domain floor when the whole in-domain window fails. Two calls discriminate the
+           two regimes: (mode 0) floor 10 < 40 so the shrink stops at the in-domain 1-minimal 40; (mode 1) a
+           tighter fails `(>= n 5)` whose failing set covers the ENTIRE domain [10,100], so the shrink clamps
+           at the floor 10 (going to 4 would leave the domain) — proving the shrink respects the refinement.
+           `main` returns the shrunk value directly. Fuel-bounded so a floor-miss cannot underflow-loop.")
+  (input  (do
+            (def (dom-lo) 10)
+            (def (fails-a (: n Int64)) (>= n 40))
+            (def (fails-b (: n Int64)) (>= n 5))
+            ; shrink DOWNWARD while the candidate both FAILS and stays >= the domain floor; clamp at floor.
+            (def (shrink-a (: n Int64) (: fuel Int64))
+              (if (= fuel 0) n
+                  (if (and (> n (dom-lo)) (fails-a (- n 1))) (shrink-a (- n 1) (- fuel 1)) n)))
+            (def (shrink-b (: n Int64) (: fuel Int64))
+              (if (= fuel 0) n
+                  (if (and (> n (dom-lo)) (fails-b (- n 1))) (shrink-b (- n 1) (- fuel 1)) n)))
+            (def (main (: mode Int64))
+              (if (= mode 0) (shrink-a 100 200) (shrink-b 100 200)))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 40 Int64))
+  (call   main (: 1 Int64)) (output (: 10 Int64)))

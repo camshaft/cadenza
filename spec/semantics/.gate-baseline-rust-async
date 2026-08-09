@@ -6613,6 +6613,7 @@ pass	a LIST-literal scrutinee with performing elements — draws fire once, bind
 pass	a SUM-payload shrinker descends a tagged variant's payload to its minimal failing value, preserving the variant
 pass	a performing record nested in a TUPLE scrutinee — bound by position, record-matched after
 pass	a performing guard with a WILDCARD fallback is ALSO a COMPILE ERROR (finding #9 sibling, CDZ0407)
+pass	a refined-newtype shrink stays IN-DOMAIN — it converges to the minimal value the invariant still admits, not below the floor
 pass	za1 literal-arm dispatch on a draw — the MATCHED arm performs again, both calls exercised
 pass	za2 a COMPUTED scrutinee (difference of two draws) selects the performing arm at one input only
 pass	za3 NESTED literal-arm dispatch — each level matches a let-bound draw, the innermost arm reads a third
