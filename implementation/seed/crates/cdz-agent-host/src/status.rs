@@ -55,17 +55,15 @@ pub fn session_status_json(
 /// exhausted fuel / failed to instantiate; §17 the kernel CAPTURES it as a first-class log event rather
 /// than a silent stall). The kernel's derived [`SessionState`] has NO "errored" variant (a just-faulted
 /// session with no in-flight work reads `Quiescent`, masking the fault), so the host surfaces it here for
-/// the supervisor/concierge: `Some(reason)` = errored, `None` = not. Only the TIP is checked — a
-/// `FoldFailed` followed by later progress means the session moved on; the freshest signal is what a
-/// "what is X doing?" query wants. Reads the log tip only (cheap, out-of-band).
-fn errored_reason(session: &cdz_kernel::kernel::Session) -> Option<String> {
-    match session.log().last() {
-        Some(e) => match &e.body {
-            cdz_kernel::event::EventBody::FoldFailed { reason, .. } => Some(reason.clone()),
-            _ => None,
-        },
-        None => None,
-    }
+/// the supervisor/concierge: `Some(reason)` = errored, `None` = not.
+///
+/// Delegates to [`Session::last_fault_reason`](cdz_kernel::kernel::Session::last_fault_reason) — the kernel's
+/// derived tip-fault accessor (log/state-decouple I5), which reads the resident `tip` (NOT `log().last()`),
+/// so this host read stands on its own once the resident log Vec is dropped. Tip-only semantics: a
+/// `FoldFailed` the session later progressed past reads `None` (the freshest signal a "what is X doing?"
+/// query wants). Returns the kernel's cheaply-clonable `Arc<str>` reason verbatim.
+fn errored_reason(session: &cdz_kernel::kernel::Session) -> Option<std::sync::Arc<str>> {
+    session.last_fault_reason()
 }
 
 /// Look up `id` in the host and render its status JSON, or `None` if no such session (the caller emits an
@@ -89,7 +87,7 @@ fn state_str(state: SessionState) -> &'static str {
     }
 }
 
-fn render(id: &SessionId, snap: &StatusSnapshot, errored: Option<String>) -> String {
+fn render(id: &SessionId, snap: &StatusSnapshot, errored: Option<std::sync::Arc<str>>) -> String {
     let mut out = String::from("{");
     out.push_str(&format!("\"session_id\":{},", escape(&id.to_hex())));
     out.push_str(&format!("\"state\":{},", escape(state_str(snap.state))));
@@ -100,7 +98,7 @@ fn render(id: &SessionId, snap: &StatusSnapshot, errored: Option<String>) -> Str
     match &errored {
         Some(reason) => {
             out.push_str("\"errored\":true,");
-            out.push_str(&format!("\"error_reason\":{},", escape(reason)));
+            out.push_str(&format!("\"error_reason\":{},", escape(reason.as_ref())));
         }
         None => out.push_str("\"errored\":false,"),
     }
@@ -292,6 +290,59 @@ mod tests {
         assert!(
             json.contains("\"last_event_kind\":\"FoldFailed\""),
             "{json}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_fault_the_session_progressed_past_reads_not_errored() {
+        // TIP-ONLY semantics (the property that distinguishes `errored` from "ever faulted"): a session that
+        // FAULTS and then makes further progress is NOT errored — the fault is no longer the tip. This pins
+        // the host's `errored` derivation onto the kernel's `last_fault_reason()` tip read (log/state-decouple
+        // I5): a regression that reported "ever-faulted" (e.g. scanning the whole log) would flip this to true.
+        struct FaultThenProgress {
+            seen: u32,
+        }
+        #[async_trait::async_trait(?Send)]
+        impl Reducer for FaultThenProgress {
+            async fn fold(&mut self, event: &Event, kv: &mut Kv) -> FoldOutput {
+                if matches!(event.body, EventBody::Inbound { .. }) {
+                    self.seen += 1;
+                    if self.seen == 1 {
+                        // First message FAULTS.
+                        FoldOutput::failed("guest trap: transient")
+                    } else {
+                        // A later message PROGRESSES (writes KV) — the tip is no longer the FoldFailed.
+                        kv.put(b"recovered".to_vec(), b"1".to_vec());
+                        FoldOutput::none()
+                    }
+                } else {
+                    FoldOutput::none()
+                }
+            }
+        }
+        let executor = cdz_kernel::executor::CompositeExecutor::new();
+        let mut host = AgentHost::new();
+        let id = SessionId::new(Hash::of(b"recovers"));
+        host.spawn(
+            id,
+            HostedSession::genesis(
+                Hash::of(b"fault-then-progress"),
+                Box::new(FaultThenProgress { seen: 0 }),
+                Box::new(Authorizer::deny_all()),
+                executor,
+            ),
+        );
+        host.deliver(&id, inbound_go(), None).await; // faults
+        host.deliver(&id, inbound_go(), None).await; // progresses past the fault
+
+        let json = host_session_status_json(&host, &id, Some(0), DEFAULT_STALL_AFTER_MS).unwrap();
+        assert!(
+            json.contains("\"errored\":false"),
+            "a fault the session progressed past is NOT errored (tip-only): {json}"
+        );
+        assert!(
+            !json.contains("error_reason"),
+            "no reason once the fault is no longer the tip: {json}"
         );
     }
 
