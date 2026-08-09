@@ -7816,24 +7816,18 @@ fn local_gate_verdict(spawned_ok: bool, build_ok: bool) -> CiVerdict {
 /// contexts) and maps the outcome via `local_gate_verdict`: spawn-fail→NoChecks, exit0→Green,
 /// nonzero→Red (never Pending — the build blocks to completion). PATH-robust `nix` resolution (the fleet
 /// host has nix off a non-login shell's PATH). Inherits stdio so the build log is visible to the caller.
+/// Run the LOCAL nix gate — `nix build .#checks.<arch>-linux.local-gate` — from the process CWD and map
+/// the outcome to a [`CiVerdict`] (spawn-fail→NoChecks, exit0→Green, nonzero→Red). Inherits stdio so the
+/// build log streams live. UNBOUNDED (blocks to completion) — correct for the manual `gate-local` CLI +
+/// the `--local-gate` drain (the invoking worktree's trunk tip). The batch pre-filter must NOT use this
+/// (an inline unbounded gate can hang pr-sync's tick) — it uses [`run_gate_local_bounded`] instead.
 fn run_gate_local(arch: &str) -> CiVerdict {
-    run_gate_local_in(arch, None)
-}
-
-/// Like [`run_gate_local`] but runs `nix build` from `dir` (when `Some`) so the gate evaluates THAT
-/// worktree's committed HEAD tree — the batch pre-filter gates the combined re-parented tree in the
-/// candidate scratch worktree, not pr-sync's process CWD. `None` runs from the process CWD (the
-/// `gate-local` CLI printer + the `--local-gate` drain, which gate the invoking worktree's trunk tip).
-fn run_gate_local_in(arch: &str, dir: Option<&Path>) -> CiVerdict {
     let target = format!(".#checks.{arch}-linux.local-gate");
     let nix_bin = nix_binary();
     eprintln!("gate-local: running `{nix_bin} build {target}` (local required-set gate; aarch64)…");
-    let mut cmd = Command::new(&nix_bin);
-    cmd.args(["build", &target, "--no-link", "--print-out-paths"]);
-    if let Some(d) = dir {
-        cmd.current_dir(d);
-    }
-    let out = cmd.status();
+    let out = Command::new(&nix_bin)
+        .args(["build", &target, "--no-link", "--print-out-paths"])
+        .status();
     let (spawned_ok, build_ok) = match out {
         Ok(s) => (true, s.success()),
         Err(e) => {
@@ -7844,6 +7838,67 @@ fn run_gate_local_in(arch: &str, dir: Option<&Path>) -> CiVerdict {
         }
     };
     local_gate_verdict(spawned_ok, build_ok)
+}
+
+/// Wall-clock cap for the BATCH pre-filter `local-gate` nix build. A warm gate finishes in a few minutes,
+/// but a cold/locked nix store (dep wait, store lock) can BLOCK indefinitely — and pr-sync runs this
+/// INLINE in its single-threaded tick, so an unbounded hang freezes ALL integration fleet-wide (observed
+/// 2026-08-09: ~10min hang, 0:04 CPU / 9min wall = blocked-not-computing, stalled 2 ticks). Cap it so a
+/// stuck pre-filter is KILLED and the batch falls back to per-MR dispatch instead of stranding the fleet.
+/// 15min is generous for a legit warm gate (~6.5min measured) yet bounds a hang to one tick's worth.
+const BATCH_PREFILTER_TIMEOUT_SECS: u64 = 15 * 60;
+
+/// The batch pre-filter gate, WALL-CLOCK BOUNDED so a hung/locked nix build can never freeze pr-sync's
+/// single-threaded integration tick. Spawns `nix build .#checks.<arch>-linux.local-gate` from `dir` with
+/// PIPED stdio and waits at most [`BATCH_PREFILTER_TIMEOUT_SECS`] via [`crate::wait_with_timeout`] (which
+/// kills + reaps the child on timeout, so no orphaned nix builder survives). Maps: exited-0 → Green,
+/// exited-nonzero → Red, TIMED-OUT or spawn-fail → NoChecks (the caller routes NoChecks to the per-MR
+/// FALLBACK — a bounded-out pre-filter degrades to single-MR dispatch, never a freeze, never a false
+/// green). Unlike [`run_gate_local`] (inherited stdio, streams live, UNBOUNDED — fine for the manual
+/// `gate-local` CLI + the `--local-gate` drain, wrong for an inline batch pre-filter), this captures the
+/// build output (discarded on the verdict; a hang has no verdict to log anyway).
+fn run_gate_local_bounded(arch: &str, dir: &Path) -> CiVerdict {
+    let target = format!(".#checks.{arch}-linux.local-gate");
+    let nix_bin = nix_binary();
+    eprintln!(
+        "batch pre-filter: `{nix_bin} build {target}` (bounded {}s) over the combined tree…",
+        BATCH_PREFILTER_TIMEOUT_SECS
+    );
+    let child = Command::new(&nix_bin)
+        .args(["build", &target, "--no-link", "--print-out-paths"])
+        .current_dir(dir)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn();
+    let child = match child {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!(
+                "batch pre-filter: could not invoke `nix` ({e}) — NO-CHECKS (fall back to per-MR)."
+            );
+            return local_gate_verdict(/*spawned_ok=*/ false, /*build_ok=*/ false);
+        }
+    };
+    match crate::wait_with_timeout(
+        child,
+        std::time::Duration::from_secs(BATCH_PREFILTER_TIMEOUT_SECS),
+    ) {
+        Ok(Some(out)) => local_gate_verdict(true, out.status.success()),
+        Ok(None) => {
+            // Killed for exceeding the deadline — a hang/lock, NOT a verdict. NoChecks → per-MR fallback.
+            eprintln!(
+                "batch pre-filter: local-gate exceeded {}s and was KILLED (nix hung/locked) — NO-CHECKS, falling back to per-MR dispatch.",
+                BATCH_PREFILTER_TIMEOUT_SECS
+            );
+            local_gate_verdict(false, false)
+        }
+        Err(e) => {
+            eprintln!(
+                "batch pre-filter: wait on nix build failed ({e}) — NO-CHECKS (fall back to per-MR)."
+            );
+            local_gate_verdict(false, false)
+        }
+    }
 }
 
 fn gate_local(arch: &str) {
@@ -9305,7 +9360,9 @@ fn publish_batch_candidate(fleet: &Fleet, members: &[BatchMr], execute: bool) ->
     }
 
     // LOCAL-NIX PRE-FILTER over the combined tree (operator: pre-filter cheaply before a GHA cycle).
-    match run_gate_local_in("aarch64", Some(&scratch)) {
+    // WALL-BOUNDED (run_gate_local_bounded) so a hung/locked nix can't freeze pr-sync's single-threaded
+    // tick (2026-08-09 defect): a timeout maps to NoChecks → the per-MR fallback below, never a freeze.
+    match run_gate_local_bounded("aarch64", &scratch) {
         CiVerdict::Green => {} // combined tree passes → push it as one PR below.
         CiVerdict::Red => {
             // Bisect the culprit(s): re-form each subset onto origin/main in the scratch worktree and
@@ -9460,10 +9517,10 @@ fn gate_subset_reparent(scratch: &Path, members: &[BatchMr], subset: &[usize]) -
     if !reform_reparent(scratch, &chosen) {
         return false;
     }
-    matches!(
-        run_gate_local_in("aarch64", Some(scratch)),
-        CiVerdict::Green
-    )
+    // WALL-BOUNDED like the top-level pre-filter — the bisect re-runs the gate on subsets, so an
+    // unbounded hang here would freeze the loop just as badly. A timeout → NoChecks → not-Green → this
+    // subset reads as failing (conservative; the bisect then narrows elsewhere or the caller falls back).
+    matches!(run_gate_local_bounded("aarch64", scratch), CiVerdict::Green)
 }
 
 /// The lane label for a queued merge-request, computed from its `--ref`'s changed paths (same source

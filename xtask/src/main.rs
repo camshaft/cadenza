@@ -863,7 +863,10 @@ fn ml_test_jobs_from(
 /// can't deadlock the wait (the reason we can't just poll `try_wait` on a piped child). On timeout the
 /// child is killed and reaped so no zombie/orphan survives — the exact leak that piled up 100+ spinning
 /// `cdz-run` procs and forced a manual host recovery.
-fn wait_with_timeout(
+///
+/// `pub(crate)` so the `fleet` submodule can bound its batch pre-filter nix build with the same
+/// kill-on-hang guarantee (a hung `local-gate` build must never freeze pr-sync's single-threaded tick).
+pub(crate) fn wait_with_timeout(
     mut child: std::process::Child,
     timeout: std::time::Duration,
 ) -> std::io::Result<Option<std::process::Output>> {
