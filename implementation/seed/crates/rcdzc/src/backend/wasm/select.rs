@@ -3849,11 +3849,22 @@ fn collect_cont_ops_rec(
     out: &mut std::collections::BTreeSet<&'static str>,
 ) {
     match cont {
-        crate::core::SumCont::Leaf(body) => collect_used_ops(db, *body, out),
+        // OP-ONLY recursion into an arm body: use `collect_used_ops_into` (the op-set walk), NOT the full
+        // `collect_used_ops`. The full one ALSO runs the three dup-site collectors (collect_retain_candidate_
+        // binders / collect_shell_reclaim_child_dups / collect_row_op_field_dups), each a FULL-subtree walk —
+        // but those already ran ONCE over the WHOLE body at the enclosing `collect_used_ops` call (their
+        // `core_child_ids` recursion descends into every MatchSum arm, so the arm bodies are already covered),
+        // and the `dup` import decision was made there. Re-running the full `collect_used_ops` per arm re-ran
+        // the trio on each arm's subtree — O(match-nesting-depth × subtree) = the 2.58-BILLION-`core_of`-call
+        // spec-body re-walk that made the arg-NApp demand spine's specialize pass run 300s+ (v-cml profile,
+        // 2026-08-10: the trio tied at ~134M+ climbing). Op collection alone (this walk) recurses arms once;
+        // the dup trio does not repeat. The imported op set is identical (the trio only fills the dup-site set
+        // + the single `OP_DUP` import, both already decided at the top-level body call).
+        crate::core::SumCont::Leaf(body) => collect_used_ops_into(db, *body, out),
         // A guarded arm uses the ops of its guard cond, its body, AND the fall-through continuation.
         crate::core::SumCont::Guarded { cond, body, els } => {
-            collect_used_ops(db, *cond, out);
-            collect_used_ops(db, *body, out);
+            collect_used_ops_into(db, *cond, out);
+            collect_used_ops_into(db, *body, out);
             collect_cont_ops_rec(db, scrutinee, els, recorded, out);
         }
         // A literal test walks its `path` (sum-payload/arr-get|vec-get) then reads the leaf scalar to compare
