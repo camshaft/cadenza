@@ -7757,6 +7757,7 @@ fn resolve_check_targets(target: Option<&str>) -> Result<Vec<String>, String> {
 ///   - PARAMETER compound-ordering `f(x: Float64, y: Float64) = (x,1) < (y,2)` -> a CODELESS
 ///     `Reject::decline` (the float-leaf-no-total-order carve-out) -> check exit=0 while `cdz compile`
 ///     exit=1. [HIDDEN] -- `collect_faults` has no code to collect for a code-less decline.
+///
 /// So the gap is precisely the CODELESS emit-path declines, not "check skips emit" (it doesn't). A prior
 /// framing that called check "front-end only" (and, in the first correction, "≡ compile on rejects") was
 /// wrong on both counts — the accurate split is coded-surfaces / codeless-hides, and a const-foldable
