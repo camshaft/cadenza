@@ -5577,8 +5577,8 @@ pub(crate) fn read_key(db: &Db, node: StructId) -> Option<Symbol> {
         && let Some(name) = tail.first().and_then(|&s| db.ast.as_name(s))
     {
         return Some(Symbol {
-            namespace: Some("meta".to_string()),
-            name: name.to_string(),
+            namespace: Some("meta".into()),
+            name: name.into(),
         });
     }
     None
@@ -6129,7 +6129,7 @@ fn withheld_ctor_reject(db: &Db, id: StructId, ty: &str, key: &Symbol) -> Option
     let synth = db.file_scoped_type(id, ty).and_then(Result::ok)?;
     let decl = db.type_decl_by_synth(synth)?;
     // Only a genuine variant is a withheld CONSTRUCTOR; a non-variant member declines as a later phase.
-    if !decl.variants.iter().any(|v| v.name == key.name) {
+    if !decl.variants.iter().any(|v| *v.name == *key.name) {
         return None;
     }
     // If this constructor IS visible in the file, the access is legitimate — no reject. This is a
@@ -6514,7 +6514,7 @@ mod tests {
         let name = name_node(db, module_name);
         match resolved_of(db, name) {
             Resolved::Ref { value } => match resolved_of(db, value) {
-                Resolved::Record { fields } => fields.keys().map(|s| s.name.clone()).collect(),
+                Resolved::Record { fields } => fields.keys().map(|s| s.name.to_string()).collect(),
                 other => panic!("module `{module_name}` record is not a Record: {other:?}"),
             },
             other => panic!("module `{module_name}` did not resolve to a Ref: {other:?}"),

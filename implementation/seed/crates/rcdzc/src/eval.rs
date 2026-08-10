@@ -1977,7 +1977,7 @@ pub fn project_meta(db: &mut Db, id: StructId, key: &str) -> Option<StructId> {
             }
             match k.namespace.as_deref() {
                 // A matching `meta` field — done.
-                Some("meta") if k.name == key => return Some(v),
+                Some("meta") if &*k.name == key => return Some(v),
                 // A `meta` field with a different name — keep scanning the meta block.
                 Some("meta") => {}
                 // Below the `meta` block (a `None` user field or a namespace < "meta") — no meta field
@@ -2150,14 +2150,14 @@ pub fn record_field_names(db: &mut Db, operand: StructId) -> Vec<String> {
         return fields
             .keys()
             .filter(|k| k.namespace.as_deref() != Some("meta"))
-            .map(|k| k.name.clone())
+            .map(|k| k.name.to_string())
             .collect();
     }
     match crate::infer::type_of(db, operand) {
         crate::ty::Ty::Record(fields) => fields
             .keys()
             .filter(|k| k.namespace.as_deref() != Some("meta"))
-            .map(|k| k.name.clone())
+            .map(|k| k.name.to_string())
             .collect(),
         _ => Vec::new(),
     }
@@ -3037,7 +3037,7 @@ fn type_valued_param_binder(db: &mut Db, id: StructId) -> Option<StructId> {
 
 fn is_type_reflection_module(db: &mut Db, id: StructId) -> bool {
     let of = Symbol {
-        name: "of".to_string(),
+        name: "of".into(),
         namespace: None,
     };
     match member_value(db, id, &of) {

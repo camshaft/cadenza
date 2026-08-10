@@ -9776,7 +9776,7 @@ fn pattern_constraints(
                             let field_name = key.map(|k| k.name).unwrap_or_default();
                             let candidate = crate::diag::suggest::nearest(
                                 &field_name,
-                                fs.keys().map(|k| k.name.as_str()),
+                                fs.keys().map(|k| &*k.name),
                             );
                             let suggestion = candidate
                                 .as_ref()
@@ -14516,7 +14516,7 @@ fn type_node_of(ty: &crate::ty::Ty, ncx: &crate::ty::NameCtx) -> Option<TypeNode
             let mut children = Vec::with_capacity(fields.len());
             for (k, t) in fields.iter() {
                 children.push(TypeNode {
-                    head: k.name.clone(),
+                    head: k.name.to_string(),
                     children: vec![type_node_of(t, ncx)?],
                 });
             }
@@ -14708,7 +14708,7 @@ impl ShapeTableBuilder {
                 let mut out = Vec::with_capacity(fields.len());
                 for (name, t) in fields.iter() {
                     let idx = self.shape_of(db, t)?;
-                    out.push((name.name.clone(), idx));
+                    out.push((name.name.to_string(), idx));
                 }
                 self.push(ShapeNode::Record(out))
             }
@@ -15069,7 +15069,7 @@ fn template_value_ast_flagged(
             // BTreeMap iterates, so the `arr-get` index is the field's position in that order.
             for (i, (name, t)) in fields.iter().enumerate() {
                 let eq = b.name("=");
-                let fname = b.name(&name.name);
+                let fname = b.name(&*name.name);
                 path.push(i as u32);
                 let fval = template_value_ast_flagged(b, t, path, out, via_sum_payload)?;
                 path.pop();
@@ -15386,7 +15386,7 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
             // Canonical (sorted) field order — a `BTreeMap` iterates sorted, matching the type render.
             for (name, &v) in fields.iter() {
                 let eq = b.name("=");
-                let fname = b.name(name.name.clone());
+                let fname = b.name(&*name.name);
                 let fval = const_value_ast(db, b, v)?;
                 // `(= name value)` ascription form (record-type Phase B full-symmetry migration —
                 // literals, patterns, AND value-output all spell `(= name value)`; operator-ruled
@@ -15764,7 +15764,7 @@ fn type_ast(
             let mut children = vec![head];
             for (name, t) in fields.iter() {
                 let colon = b.name(":");
-                let fname = b.name(name.name.clone());
+                let fname = b.name(&*name.name);
                 let fty = type_ast(b, t, ncx)?;
                 children.push(b.list(vec![colon, fname, fty]));
             }

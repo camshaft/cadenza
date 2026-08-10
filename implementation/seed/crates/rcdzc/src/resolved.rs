@@ -34,13 +34,22 @@ pub struct Symbol {
     /// The namespace this label belongs to, or `None` for an unqualified source name. Source names
     /// are unqualified today; the field exists so a macro-introduced label can carry its origin
     /// namespace when hygienic macros are added.
-    pub namespace: Option<String>,
-    pub name: String,
+    ///
+    /// `Arc<str>` (not `String`): a `Symbol` is the KEY of a record-field `BTreeMap<Symbol, _>`, which
+    /// `Subst::apply`/`rename`/`freshen` REBUILD field-by-field on the hot type-checking path — cloning
+    /// every key. As `String` that was a heap alloc per field per pass (~5% of a realistic compile,
+    /// resolve.rs doc); as `Arc<str>` a clone is a refcount bump. `Arc<str>` orders + compares + hashes
+    /// exactly like its `str` contents, so the name-lexicographic CANONICAL field order the record SET
+    /// semantics + codec + value-heap cell layout depend on is preserved with no other change. Mirrors
+    /// the `ConstStr`/`HostCall` `String`→`Rc<str>` cheap-clone slices. (cheap-clone audit, operator-
+    /// greenlit; concierge: outcome>mechanism — kills the measured clone cost, not the literal "intern".)
+    pub namespace: Option<std::sync::Arc<str>>,
+    pub name: std::sync::Arc<str>,
 }
 
 impl Symbol {
     /// An unqualified label from a source spelling (no namespace).
-    pub fn plain(name: impl Into<String>) -> Symbol {
+    pub fn plain(name: impl Into<std::sync::Arc<str>>) -> Symbol {
         Symbol {
             namespace: None,
             name: name.into(),

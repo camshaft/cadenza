@@ -6276,7 +6276,7 @@ fn deep_leaf_delta<'a>(want: &'a Ty, got: &'a Ty) -> Option<(String, &'a Ty, &'a
             let gt = &g[k];
             Some(match deep_leaf_delta(wt, gt) {
                 Some((sub, lw, lg)) => (format!("{}.{sub}", k.name), lw, lg),
-                None => (k.name.clone(), wt, gt),
+                None => (k.name.to_string(), wt, gt),
             })
         }
         (Ty::Tuple(w), Ty::Tuple(g)) => {
@@ -6463,12 +6463,12 @@ fn record_field_typo_fix(db: &mut Db, expected: &Ty, actual: &Ty, arg: StructId)
     let extra: Vec<&str> = got
         .keys()
         .filter(|k| !want.contains_key(*k))
-        .map(|k| k.name.as_str())
+        .map(|k| &*k.name)
         .collect();
     let missing: Vec<&str> = want
         .keys()
         .filter(|k| !got.contains_key(*k))
-        .map(|k| k.name.as_str())
+        .map(|k| &*k.name)
         .collect();
     // A CONFIDENT single pairing at THIS level: exactly one extra field that is the nearest typo of some
     // missing one. (More than one extra/missing is not a single mechanical rename — the field-set-diff
@@ -6527,7 +6527,7 @@ fn record_field_entry_occ(db: &Db, expr: StructId, field: &str) -> Option<Struct
     for &entry in entries {
         if let Some((key_id, _)) = record_field_kv(db, entry)
             && let Some(sym) = crate::resolve::read_key(db, key_id)
-            && sym.name == field
+            && &*sym.name == field
         {
             return Some(entry);
         }
@@ -6593,7 +6593,7 @@ fn record_field_delete_fix(db: &mut Db, expected: &Ty, actual: &Ty, arg: StructI
     let extra: Vec<&str> = got
         .keys()
         .filter(|k| !want.contains_key(*k))
-        .map(|k| k.name.as_str())
+        .map(|k| &*k.name)
         .collect();
     let missing = want.keys().any(|k| !got.contains_key(k));
     if let [surplus] = extra.as_slice()
@@ -6674,7 +6674,7 @@ fn record_field_value_occ(db: &Db, expr: StructId, field: &str) -> Option<Struct
     for &entry in entries {
         if let Some((key_id, val_id)) = record_field_kv(db, entry)
             && let Some(sym) = crate::resolve::read_key(db, key_id)
-            && sym.name == field
+            && &*sym.name == field
         {
             return Some(val_id);
         }
@@ -6697,7 +6697,7 @@ fn record_field_key_occ(db: &Db, expr: StructId, field: &str) -> Option<StructId
     for &entry in entries {
         if let Some((key_id, _)) = record_field_kv(db, entry)
             && let Some(sym) = crate::resolve::read_key(db, key_id)
-            && sym.name == field
+            && &*sym.name == field
         {
             return Some(key_id);
         }
@@ -6745,12 +6745,12 @@ fn record_field_diff_hint(expected: &Ty, actual: &Ty, ncx: &NameCtx) -> Option<S
     let missing: Vec<&str> = want
         .keys()
         .filter(|k| !got.contains_key(*k))
-        .map(|k| k.name.as_str())
+        .map(|k| &*k.name)
         .collect();
     let extra: Vec<&str> = got
         .keys()
         .filter(|k| !want.contains_key(*k))
-        .map(|k| k.name.as_str())
+        .map(|k| &*k.name)
         .collect();
     if missing.is_empty() && extra.is_empty() {
         // Same field-name set — look for the FIRST field (sorted key order) whose type differs and name
@@ -6766,7 +6766,7 @@ fn record_field_diff_hint(expected: &Ty, actual: &Ty, ncx: &NameCtx) -> Option<S
             let gt = &got[k];
             let (path, lw, lg) = match deep_leaf_delta(wt, gt) {
                 Some((sub, lw, lg)) => (format!("{}.{sub}", k.name), lw, lg),
-                None => (k.name.clone(), wt, gt),
+                None => (k.name.to_string(), wt, gt),
             };
             format!(
                 " — field `{path}` should be {}, but this one is {}",
@@ -11527,7 +11527,7 @@ fn nearest_record_field(
     fields: &std::collections::BTreeMap<crate::resolved::Symbol, Ty>,
     name: &str,
 ) -> Option<String> {
-    crate::diag::suggest::nearest(name, fields.keys().map(|k| k.name.as_str()))
+    crate::diag::suggest::nearest(name, fields.keys().map(|k| &*k.name))
 }
 
 fn nominal_or_sum_decl(ty: &Ty) -> Option<StructId> {
@@ -11732,7 +11732,7 @@ fn no_field_reject(
     // hint) pair caches. A type-only operand (no concrete record occ) falls through to a fresh compute — the
     // rare non-repeating case. (The record-field twin of `variant_suggest_winner`, fix-26/45.)
     let cache_key =
-        crate::eval::reduce_to_record_id(db, operand).map(|rec| (rec, key.name.clone()));
+        crate::eval::reduce_to_record_id(db, operand).map(|rec| (rec, key.name.to_string()));
     let (suggestion, hint) = if let Some(k) = &cache_key
         && let Some(hit) = db.no_field_suggestion.get(k)
     {
@@ -13508,8 +13508,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                         // child nodes align positionally with `labels` (both read from `args[1]`), so a
                         // near-miss carries a REPLACE fix on the SPECIFIC label occurrence — the same
                         // fix `no_field_reject` attaches for a member access, not just the message hint.
-                        let field_names: Vec<&str> =
-                            fields.keys().map(|k| k.name.as_str()).collect();
+                        let field_names: Vec<&str> = fields.keys().map(|k| &*k.name).collect();
                         let label_nodes: Vec<StructId> = match db.ast.get(args[1]) {
                             crate::ast::Struct::List(items) => items.clone(),
                             _ => Vec::new(),

@@ -686,7 +686,7 @@ pub fn arm_op_names_undeclared_operation(db: &mut Db, op: StructId) -> bool {
     };
     // Is `key` a declared operation of that effect? Look it up in the effect's declaration.
     match db.effect_decl_by_occ(crate::ast::StructId(decl)) {
-        Some(eff) => !eff.ops.iter().any(|o| o.name == key.name),
+        Some(eff) => !eff.ops.iter().any(|o| *o.name == *key.name),
         None => false, // no such effect declaration (should not happen for a resolved effect record)
     }
 }
@@ -876,7 +876,7 @@ pub fn handler_missing_operations(db: &mut Db, arms: &[HandleArm]) -> Vec<Missin
     let bound: std::collections::HashSet<String> = arms
         .iter()
         .filter_map(|a| match resolved_of(db, a.op) {
-            Resolved::Member { key, .. } => Some(key.name.clone()),
+            Resolved::Member { key, .. } => Some(key.name.to_string()),
             _ => None,
         })
         .collect();
@@ -949,7 +949,7 @@ fn op_arm_arity(db: &Db, ty: StructId) -> usize {
 pub fn arm_param_arity_mismatch(db: &mut Db, arm: &HandleArm) -> Option<(String, String, usize)> {
     let (decl, index) = crate::eval::effect_op_of(db, arm.op)?;
     let op_name = match resolved_of(db, arm.op) {
-        Resolved::Member { key, .. } => key.name.clone(),
+        Resolved::Member { key, .. } => key.name.to_string(),
         _ => return None,
     };
     let eff = db.effect_decl_by_occ(decl)?;
@@ -1026,7 +1026,7 @@ pub fn perform_host_target(
     // The op's declaring effect + its name — the op head is a member access `(. E op)`.
     let (decl, _idx) = crate::eval::effect_op_of(db, head)?;
     let op_name = match resolved_of(db, head) {
-        Resolved::Member { key, .. } => key.name.clone(),
+        Resolved::Member { key, .. } => key.name.to_string(),
         _ => return None,
     };
     let eff = db.effect_decl_by_occ(decl)?;
@@ -6067,7 +6067,7 @@ fn thread_bounded(
         Resolved::Member { operand, key } => {
             let (roperand, cur) = thread_bounded(db, operand, states, ctx, inline_depth)?;
             let dot = db.push_atom(Leaf::Name(".".to_string()));
-            let key_atom = db.push_atom(Leaf::Name(key.name.clone()));
+            let key_atom = db.push_atom(Leaf::Name(key.name.to_string()));
             Some((db.push_list(vec![dot, roperand, key_atom]), cur))
         }
         // An annotation `(: expr T)` — STRICT one-operand (the type is not runtime code). Thread `expr`,
