@@ -27,6 +27,17 @@
 //! | `(host-calls c…)`          | `` ```cdz host-calls `` | one call per line, ML     |
 //! | `(host-responses r…)`      | `` ```cdz host-responses `` | one respond/line, ML  |
 //!
+//! ## The platform-conformance genre (`(platform-case …)`, seq358/seq359)
+//!
+//! A `(platform-case …)` migrates to its own fence set, marked by a leading empty `` ```platform-case ``
+//! fence so reconstruction dispatches to the platform path. Nested clauses flatten to alias-tagged
+//! fences (the alias in the info string reconstructs the nesting), mirroring the flat record-line keys:
+//! `` ```cdz session <alias> `` (reducer program as ML) · `` ```serves <alias> `` (one family/line) ·
+//! `` ```kickoff `` (`<alias> <family> <value-ML>`) · `` ```expect-effect ``/`` ```expect-message ``/
+//! `` ```expect-delivery-failure `` (one per element) · `` ```end-kv <alias> `` (one `<key> <value-ML>`
+//! /line) · `` ```end-status <alias> `` · `` ```events-processed `` (`<alias> <n>`). `check` proves the
+//! twin's PLATFORM record stream (`render_platform(read_platform(…))`) is byte-identical to the source's.
+//!
 //! Every fence body is the ML rendering of the clause's tail; reconstruction parses each body with
 //! `read_ml` and prepends the head named by the tag. Because the surface parser ALSO embeds the parsed
 //! program as a subtree inside a `cdz` code block, reading a migrated corpus with `cdz convert … --to
@@ -72,14 +83,19 @@ pub fn migrate_titled(sexpr_text: &str, title: Option<&str>) -> Result<String, S
             }
             Segment::Form(form) => {
                 let a = sexpr::read(form).map_err(|e| format!("case parse error: {}", e.0))?;
-                if a.head_name(a.root) != Some("case") {
-                    // A non-case top-level form (unusual). Preserve it verbatim in a `cdz` fence so
-                    // nothing is dropped.
-                    let ml = ml_of(&a, a.root);
-                    blocks.push(md_code_block(&mut b, "cdz", &ml));
-                    continue;
+                match a.head_name(a.root) {
+                    Some("case") => render_case_blocks(&a, &mut b, &mut blocks)?,
+                    // The platform-conformance genre (`(platform-case …)`, operator seq358/seq359):
+                    // its own render path — a genre-marker fence + session/kickoff/expect/end-state
+                    // fences (see `render_platform_case_blocks`).
+                    Some("platform-case") => render_platform_case_blocks(&a, &mut b, &mut blocks)?,
+                    _ => {
+                        // A non-case top-level form (unusual). Preserve it verbatim in a `cdz` fence so
+                        // nothing is dropped.
+                        let ml = ml_of(&a, a.root);
+                        blocks.push(md_code_block(&mut b, "cdz", &ml));
+                    }
                 }
-                render_case_blocks(&a, &mut b, &mut blocks)?;
             }
         }
     }
@@ -97,6 +113,27 @@ pub fn migrate(sexpr_text: &str) -> Result<String, String> {
 /// byte-identical to the original's. Returns the offending diff on mismatch. The document title
 /// does not affect the record stream, so `check` uses the untitled form.
 pub fn check(sexpr_text: &str) -> Result<(), String> {
+    // PLATFORM genre (`(platform-case …)`): render/read through the platform record stream, not the
+    // compiler-case one. The invariant is the same — the reconstructed twin's record stream must be
+    // byte-identical to the source's (operator seq358/seq359 O4). Detected by the source's genre.
+    if crate::is_platform_genre(sexpr_text) {
+        let md = migrate(sexpr_text)?;
+        let reconstructed = to_sexpr(&md)?;
+        let original = crate::render_platform(&crate::read_platform(sexpr_text)?);
+        let round_tripped = crate::render_platform(&crate::read_platform(&reconstructed)?);
+        if original == round_tripped {
+            return Ok(());
+        }
+        // ML canonicalization is allowed once → require a fixed point (mirrors the corpus path below).
+        let reconstructed2 = to_sexpr(&migrate(&reconstructed)?)?;
+        let round_tripped2 = crate::render_platform(&crate::read_platform(&reconstructed2)?);
+        return if round_tripped == round_tripped2 {
+            Ok(())
+        } else {
+            Err(first_record_diff(&original, &round_tripped))
+        };
+    }
+
     let md = migrate(sexpr_text)?;
     let reconstructed = to_sexpr(&md)?;
 
@@ -128,7 +165,17 @@ pub fn check(sexpr_text: &str) -> Result<(), String> {
 pub fn to_sexpr(md_text: &str) -> Result<String, String> {
     let mut out = String::new();
     for case in parse_md(md_text)? {
-        out.push_str(&reconstruct_case(&case)?);
+        // A leading `platform-case` marker fence selects the platform-genre reconstruction; otherwise
+        // it is a compiler `(case …)`.
+        let is_platform = case
+            .fences
+            .first()
+            .is_some_and(|f| f.role == "platform-case");
+        if is_platform {
+            out.push_str(&reconstruct_platform_case(&case)?);
+        } else {
+            out.push_str(&reconstruct_case(&case)?);
+        }
         out.push('\n');
     }
     Ok(out)
@@ -174,6 +221,236 @@ fn render_case_blocks(
         }
     }
     Ok(())
+}
+
+/// Append a `(platform-case …)` arena's document blocks to `blocks` — the runtime/platform genre twin
+/// (operator seq358/seq359). A `### title` heading + doc prose, then one fence per clause using the
+/// record-line-key tags (`session`/`serves`/`kickoff`/`expect-effect`/`expect-message`/
+/// `expect-delivery-failure`/`end-kv`/`end-status`/`events-processed`). The genre is marked by a leading
+/// `platform-case` fence (empty body) so the reader dispatches to the platform reconstruction path.
+/// Nested clauses are FLATTENED to alias-tagged fences (`session <alias>`, `serves <alias>`, `end-kv
+/// <alias>`, `end-status <alias>`), so the fence set reconstructs the nesting from the alias in each
+/// info string — mirroring the flat record-line encoding the grader parses.
+fn render_platform_case_blocks(
+    a: &Arenas,
+    b: &mut Builder,
+    blocks: &mut Vec<StructId>,
+) -> Result<(), String> {
+    let items = match a.get(a.root) {
+        Struct::List(items) => items,
+        _ => return Err("platform-case is not a list".into()),
+    };
+    let title = items
+        .get(1)
+        .and_then(|&id| str_leaf(a, id))
+        .ok_or("platform-case has no title string")?;
+    blocks.push(md_heading(b, 3, &title));
+    // Genre marker: an empty `platform-case` fence tells the reader this section is a platform case.
+    blocks.push(md_code_block(b, "platform-case", ""));
+
+    for &clause in &items[2..] {
+        match a.head_name(clause) {
+            Some("doc") => {
+                if let Some(text) = a
+                    .as_form(clause, "doc")
+                    .and_then(|t| t.first().copied())
+                    .and_then(|id| str_leaf(a, id))
+                {
+                    blocks.push(md_paragraph(b, &normalize_prose(&text)));
+                }
+            }
+            // `(session <alias> (reducer <prog>) (serves <fam>…)?)` → a `session <alias>` fence whose
+            // body is the reducer program as ML (readable, highlighted), plus a `serves <alias>` fence
+            // (one family per line) when it serves any.
+            Some("session") => {
+                let tail = clause_tail(a, clause);
+                let alias = tail
+                    .first()
+                    .and_then(|&id| atom_ident(a, id))
+                    .ok_or("session has no alias")?;
+                for &child in tail.get(1..).unwrap_or(&[]) {
+                    match a.head_name(child) {
+                        Some("reducer") => {
+                            if let Some(prog) =
+                                a.as_form(child, "reducer").and_then(|t| t.first().copied())
+                            {
+                                blocks.push(md_code_block(
+                                    b,
+                                    &format!("cdz session {alias}"),
+                                    &ml_of(a, prog),
+                                ));
+                            }
+                        }
+                        Some("serves") => {
+                            let fams: Vec<String> = a
+                                .as_form(child, "serves")
+                                .map(|t| t.iter().filter_map(|&f| atom_ident(a, f)).collect())
+                                .unwrap_or_default();
+                            if !fams.is_empty() {
+                                blocks.push(md_code_block(
+                                    b,
+                                    &format!("serves {alias}"),
+                                    &fams.join("\n"),
+                                ));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            // `(kickoff <alias> (inbound <family> <value>))` → `kickoff` fence, body `<alias> <family>
+            // <value-as-ML>` on one line.
+            Some("kickoff") => {
+                let tail = clause_tail(a, clause);
+                let alias = tail
+                    .first()
+                    .and_then(|&id| atom_ident(a, id))
+                    .ok_or("kickoff has no alias")?;
+                let (family, value) = tail
+                    .get(1)
+                    .and_then(|&inb| a.as_form(inb, "inbound"))
+                    .map(|it| {
+                        let fam = it
+                            .first()
+                            .and_then(|&f| atom_ident(a, f))
+                            .unwrap_or_default();
+                        let val = it.get(1).map(|&v| ml_of(a, v)).unwrap_or_default();
+                        (fam, val)
+                    })
+                    .ok_or("kickoff has no (inbound …)")?;
+                blocks.push(md_code_block(
+                    b,
+                    "kickoff",
+                    &format!("{alias} {family} {value}"),
+                ));
+            }
+            // Ordered expectation lists → one fence per element (each round-trippable), tagged by the
+            // record-line key. Bodies carry the addressing atoms + optional ML value.
+            Some("expect-effects") => {
+                for &e in a.as_form(clause, "expect-effects").unwrap_or(&[]) {
+                    if let Some(et) = a.as_form(e, "effect") {
+                        let from = child_atom(a, et, "from").unwrap_or_default();
+                        let family = child_atom(a, et, "family").unwrap_or_default();
+                        let value = et
+                            .iter()
+                            .find(|&&c| !matches!(a.head_name(c), Some("from") | Some("family")))
+                            .map(|&v| ml_of(a, v));
+                        let body = match value {
+                            Some(v) => format!("{from} {family} {v}"),
+                            None => format!("{from} {family}"),
+                        };
+                        blocks.push(md_code_block(b, "expect-effect", &body));
+                    }
+                }
+            }
+            Some("expect-messages") => {
+                for &m in a.as_form(clause, "expect-messages").unwrap_or(&[]) {
+                    if let Some(mt) = a.as_form(m, "message") {
+                        let from = child_atom(a, mt, "from").unwrap_or_default();
+                        let to = child_atom(a, mt, "to").unwrap_or_default();
+                        let family = child_atom(a, mt, "family").unwrap_or_default();
+                        let value = mt
+                            .iter()
+                            .find(|&&c| {
+                                !matches!(
+                                    a.head_name(c),
+                                    Some("from") | Some("to") | Some("family")
+                                )
+                            })
+                            .map(|&v| ml_of(a, v))
+                            .unwrap_or_default();
+                        blocks.push(md_code_block(
+                            b,
+                            "expect-message",
+                            &format!("{from} {to} {family} {value}"),
+                        ));
+                    }
+                }
+            }
+            Some("expect-delivery-failure") => {
+                let t = a.as_form(clause, "expect-delivery-failure").unwrap_or(&[]);
+                let from = child_atom(a, t, "from").unwrap_or_default();
+                let to = child_atom(a, t, "to").unwrap_or_default();
+                blocks.push(md_code_block(
+                    b,
+                    "expect-delivery-failure",
+                    &format!("{from} {to}"),
+                ));
+            }
+            // `(end-state <alias> (kv <k> <v>)… (status <s>)?)` → per-alias `end-kv <alias>` fence (one
+            // `<key> <value-as-ML>` per line) + `end-status <alias>` fence (body = status).
+            Some("end-state") => {
+                let tail = clause_tail(a, clause);
+                let alias = tail
+                    .first()
+                    .and_then(|&id| atom_ident(a, id))
+                    .ok_or("end-state has no alias")?;
+                let mut kv_lines: Vec<String> = Vec::new();
+                for &child in tail.get(1..).unwrap_or(&[]) {
+                    match a.head_name(child) {
+                        Some("kv") => {
+                            if let Some(kt) = a.as_form(child, "kv")
+                                && let Some(key) = kt.first().and_then(|&k| atom_ident(a, k))
+                                && let Some(&val) = kt.get(1)
+                            {
+                                kv_lines.push(format!("{key} {}", ml_of(a, val)));
+                            }
+                        }
+                        Some("status") => {
+                            if let Some(st) = a
+                                .as_form(child, "status")
+                                .and_then(|t| t.first().copied())
+                                .and_then(|id| atom_ident(a, id))
+                            {
+                                blocks.push(md_code_block(b, &format!("end-status {alias}"), &st));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                if !kv_lines.is_empty() {
+                    blocks.push(md_code_block(
+                        b,
+                        &format!("end-kv {alias}"),
+                        &kv_lines.join("\n"),
+                    ));
+                }
+            }
+            // `(events-processed <alias> <n>)` → `events-processed` fence, body `<alias> <n>`.
+            Some("events-processed") => {
+                let tail = clause_tail(a, clause);
+                let alias = tail
+                    .first()
+                    .and_then(|&id| atom_ident(a, id))
+                    .unwrap_or_default();
+                let n = tail.get(1).map(|&id| ml_of(a, id)).unwrap_or_default();
+                blocks.push(md_code_block(
+                    b,
+                    "events-processed",
+                    &format!("{alias} {n}"),
+                ));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// The identifier an atom carries — a bare NAME or a quoted STRING leaf (platform aliases/families are
+/// spelled as strings in the canonical form). `None` for a non-atom.
+fn atom_ident(a: &Arenas, id: StructId) -> Option<String> {
+    a.as_name(id)
+        .map(str::to_string)
+        .or_else(|| str_leaf(a, id))
+}
+
+/// A `(<head> <atom>)` child clause's identifier argument (e.g. `(from "worker")` → `worker`).
+fn child_atom(a: &Arenas, tail: &[StructId], head: &str) -> Option<String> {
+    tail.iter().find_map(|&child| {
+        a.as_form(child, head)
+            .and_then(|t| t.first().copied())
+            .and_then(|id| atom_ident(a, id))
+    })
 }
 
 /// The `(tag, body)` for a clause: the fence's info string and its ML body.
@@ -309,6 +586,10 @@ struct MdCase {
 struct MdFence {
     /// The clause ROLE — the last token of the fence info string (`input`, `output`, …).
     role: String,
+    /// The FULL info string (e.g. `cdz session worker`, `end-kv worker`) — platform fences carry an
+    /// alias after the tag that `role` (last token) alone loses, so the platform reconstruction reads
+    /// the info directly. Corpus reconstruction uses `role`; both are populated for every fence.
+    info: String,
     /// The fence body text (may be multiple lines).
     body: String,
 }
@@ -351,7 +632,11 @@ fn parse_md(md: &str) -> Result<Vec<MdCase>, String> {
                         .and_then(|&s| str_leaf(&doc, s))
                         .unwrap_or_default();
                     let role = info.split_whitespace().last().unwrap_or("").to_string();
-                    case.fences.push(MdFence { role, body: raw });
+                    case.fences.push(MdFence {
+                        role,
+                        info: info.clone(),
+                        body: raw,
+                    });
                 }
             }
             // Prose paragraphs (doc / narrative) and anything else are ignored.
@@ -431,6 +716,212 @@ fn reconstruct_clause(fence: &MdFence) -> Result<String, String> {
             sexpr_of_ml(body)
         }
     }
+}
+
+/// Rebuild a `(platform-case "title" …)` s-expression from its markdown model (the inverse of
+/// `render_platform_case_blocks`). Flat alias-tagged fences regroup into the nested clause structure:
+/// a `session <alias>` fence + its `serves <alias>` fence → `(session <alias> (reducer …) (serves …))`;
+/// `end-kv <alias>` + `end-status <alias>` → `(end-state <alias> (kv …)… (status …))`. Ordered
+/// expectation fences append in document order. The title is the case's `### desc` heading.
+fn reconstruct_platform_case(case: &MdCase) -> Result<String, String> {
+    // Preserve document order for sessions + expectations; group serves/end-kv/end-status by alias.
+    let mut sessions: Vec<(String, String)> = Vec::new(); // (alias, reducer-sexpr), in order
+    let mut serves: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    let mut kickoff: Option<String> = None;
+    let mut effects: Vec<String> = Vec::new();
+    let mut messages: Vec<String> = Vec::new();
+    let mut delivery_failures: Vec<String> = Vec::new();
+    let mut end_kv: Vec<(String, Vec<String>)> = Vec::new(); // (alias, [(kv k v)…]) in order
+    let mut end_status: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    let mut end_order: Vec<String> = Vec::new(); // alias order for end-state
+    let mut events: Vec<String> = Vec::new();
+
+    // `info` is `[cdz] <tag> [<alias>]`; drop a leading `cdz`, then tag + optional alias.
+    let tag_alias = |info: &str| -> (String, Option<String>) {
+        let toks: Vec<&str> = info.split_whitespace().filter(|t| *t != "cdz").collect();
+        let tag = toks.first().copied().unwrap_or("").to_string();
+        let alias = toks.get(1).map(|s| s.to_string());
+        (tag, alias)
+    };
+    let ensure_end = |alias: &str, end_order: &mut Vec<String>| {
+        if !end_order.iter().any(|a| a == alias) {
+            end_order.push(alias.to_string());
+        }
+    };
+
+    for fence in &case.fences {
+        let (tag, alias) = tag_alias(&fence.info);
+        let body = fence.body.trim();
+        match tag.as_str() {
+            "platform-case" => {} // the genre marker; no payload
+            "session" => {
+                let alias = alias.ok_or("session fence missing alias in info string")?;
+                sessions.push((alias, sexpr_of_ml(body)?));
+            }
+            "serves" => {
+                let alias = alias.ok_or("serves fence missing alias")?;
+                let fams: Vec<String> = body
+                    .lines()
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty())
+                    .map(sexpr_string)
+                    .collect();
+                serves.entry(alias).or_default().extend(fams);
+            }
+            "kickoff" => {
+                // body: `<alias> <family> <value-ml…>` — alias + family are single tokens, value is the rest.
+                let mut it = body.splitn(3, char::is_whitespace);
+                let alias = it.next().unwrap_or("");
+                let family = it.next().unwrap_or("");
+                let value = it.next().unwrap_or("");
+                let value_sexpr = if value.trim().is_empty() {
+                    String::new()
+                } else {
+                    format!(" {}", sexpr_of_ml(value)?)
+                };
+                kickoff = Some(format!(
+                    "(kickoff {} (inbound {}{}))",
+                    sexpr_string(alias),
+                    sexpr_string(family),
+                    value_sexpr
+                ));
+            }
+            "expect-effect" => {
+                // `<from> <family> [<value-ml…>]`
+                let mut it = body.splitn(3, char::is_whitespace);
+                let from = it.next().unwrap_or("");
+                let family = it.next().unwrap_or("");
+                let value = it.next().unwrap_or("");
+                let val = if value.trim().is_empty() {
+                    String::new()
+                } else {
+                    format!(" {}", sexpr_of_ml(value)?)
+                };
+                effects.push(format!(
+                    "(effect (from {}) (family {}){})",
+                    sexpr_string(from),
+                    sexpr_string(family),
+                    val
+                ));
+            }
+            "expect-message" => {
+                // `<from> <to> <family> <value-ml…>`
+                let mut it = body.splitn(4, char::is_whitespace);
+                let from = it.next().unwrap_or("");
+                let to = it.next().unwrap_or("");
+                let family = it.next().unwrap_or("");
+                let value = it.next().unwrap_or("");
+                let val = if value.trim().is_empty() {
+                    String::new()
+                } else {
+                    format!(" {}", sexpr_of_ml(value)?)
+                };
+                messages.push(format!(
+                    "(message (from {}) (to {}) (family {}){})",
+                    sexpr_string(from),
+                    sexpr_string(to),
+                    sexpr_string(family),
+                    val
+                ));
+            }
+            "expect-delivery-failure" => {
+                let mut it = body.split_whitespace();
+                let from = it.next().unwrap_or("");
+                let to = it.next().unwrap_or("");
+                delivery_failures.push(format!(
+                    "(expect-delivery-failure (from {}) (to {}))",
+                    sexpr_string(from),
+                    sexpr_string(to)
+                ));
+            }
+            "end-kv" => {
+                let alias = alias.ok_or("end-kv fence missing alias")?;
+                let mut kvs: Vec<String> = Vec::new();
+                for line in body.lines().map(str::trim).filter(|l| !l.is_empty()) {
+                    // `<key> <value-ml…>`
+                    let mut it = line.splitn(2, char::is_whitespace);
+                    let key = it.next().unwrap_or("");
+                    let value = it.next().unwrap_or("");
+                    kvs.push(format!(
+                        "(kv {} {})",
+                        sexpr_string(key),
+                        sexpr_of_ml(value)?
+                    ));
+                }
+                ensure_end(&alias, &mut end_order);
+                end_kv.push((alias, kvs));
+            }
+            "end-status" => {
+                let alias = alias.ok_or("end-status fence missing alias")?;
+                ensure_end(&alias, &mut end_order);
+                end_status.insert(alias, sexpr_string(body));
+            }
+            "events-processed" => {
+                let mut it = body.split_whitespace();
+                let alias = it.next().unwrap_or("");
+                let n = it.next().unwrap_or("");
+                events.push(format!("(events-processed {} {})", sexpr_string(alias), n));
+            }
+            _ => {}
+        }
+    }
+
+    // Assemble in a canonical clause order (sessions, kickoff, expect-effects, expect-messages,
+    // delivery-failures, end-state per alias, events-processed). This mirrors what the record stream
+    // grades — the reader lowers to order-independent record lines except the ordered expect lists,
+    // whose document order is preserved above.
+    let mut out = String::from("(platform-case ");
+    out.push_str(&sexpr_string(&case.description));
+    for (alias, reducer) in &sessions {
+        out.push_str(&format!(
+            " (session {} (reducer {})",
+            sexpr_string(alias),
+            reducer
+        ));
+        if let Some(fams) = serves.get(alias)
+            && !fams.is_empty()
+        {
+            out.push_str(&format!(" (serves {})", fams.join(" ")));
+        }
+        out.push(')');
+    }
+    if let Some(k) = &kickoff {
+        out.push(' ');
+        out.push_str(k);
+    }
+    if !effects.is_empty() {
+        out.push_str(&format!(" (expect-effects {})", effects.join(" ")));
+    }
+    if !messages.is_empty() {
+        out.push_str(&format!(" (expect-messages {})", messages.join(" ")));
+    }
+    for df in &delivery_failures {
+        out.push(' ');
+        out.push_str(df);
+    }
+    for alias in &end_order {
+        out.push_str(&format!(" (end-state {}", sexpr_string(alias)));
+        for (a2, kvs) in &end_kv {
+            if a2 == alias {
+                for kv in kvs {
+                    out.push(' ');
+                    out.push_str(kv);
+                }
+            }
+        }
+        if let Some(st) = end_status.get(alias) {
+            out.push_str(&format!(" (status {st})"));
+        }
+        out.push(')');
+    }
+    for ev in &events {
+        out.push(' ');
+        out.push_str(ev);
+    }
+    out.push(')');
+    Ok(out)
 }
 
 /// Parse ML text to an arena and render it as a single-line s-expression.
@@ -699,6 +1190,62 @@ mod tests {
         assert!(md.contains("2 + 3"), "md:\n{md}");
         assert!(md.contains("```cdz output"), "md:\n{md}");
         assert!(md.contains("5 : Int64"), "md:\n{md}");
+        assert_preserves(sexpr);
+    }
+
+    /// A `(platform-case …)` migrates to the platform-genre twin (ML reducer body + record-line-key
+    /// fences) and round-trips losslessly through the platform record stream — the O4 twin (seq358/359).
+    #[test]
+    fn platform_case_twin_round_trips() {
+        let sexpr = r#"(platform-case "a counter session bumps its count"
+          (doc "one session, no effects")
+          (session "worker" (reducer (do (def (main) 0) (export main))))
+          (kickoff "worker" (inbound "message" (: unit Unit)))
+          (end-state "worker" (kv "count" (: 1 Int64)) (status "quiescent"))
+          (events-processed "worker" 2))"#;
+        let md = migrate(sexpr).unwrap();
+        assert!(md.contains("```platform-case"), "genre marker fence:\n{md}");
+        assert!(md.contains("```cdz session worker"), "session fence:\n{md}");
+        assert!(md.contains("```kickoff"), "kickoff fence:\n{md}");
+        assert!(md.contains("```end-kv worker"), "end-kv fence:\n{md}");
+        assert!(
+            md.contains("```end-status worker"),
+            "end-status fence:\n{md}"
+        );
+        assert!(md.contains("```events-processed"), "events fence:\n{md}");
+        assert_preserves(sexpr);
+    }
+
+    /// The multi-session + serves + ordered expect-effects/messages/delivery-failure shape (the I2/I3
+    /// grammar) round-trips — the alias-tagged flat fences regroup into the nested clauses correctly.
+    #[test]
+    fn platform_case_multi_session_and_expectations_round_trip() {
+        let sexpr = r#"(platform-case "worker performs an effect then messages a reporter"
+          (session "worker" (reducer (do (def (main) 0) (export main))))
+          (session "sky" (reducer (do (def (main) 0) (export main))) (serves "weather"))
+          (session "reporter" (reducer (do (def (main) 0) (export main))))
+          (kickoff "worker" (inbound "start" (: unit Unit)))
+          (expect-effects
+            (effect (from "worker") (family "weather"))
+            (effect (from "worker") (family "log") (: "t=0" String)))
+          (expect-messages
+            (message (from "worker") (to "reporter") (family "message") (: "done" String)))
+          (expect-delivery-failure (from "worker") (to "closed"))
+          (end-state "sky" (kv "seen" (: 1 Int64)) (status "quiescent")))"#;
+        let md = migrate(sexpr).unwrap();
+        assert!(md.contains("```serves sky"), "serves fence:\n{md}");
+        assert!(
+            md.contains("```expect-effect"),
+            "expect-effect fence:\n{md}"
+        );
+        assert!(
+            md.contains("```expect-message"),
+            "expect-message fence:\n{md}"
+        );
+        assert!(
+            md.contains("```expect-delivery-failure"),
+            "delivery-failure fence:\n{md}"
+        );
         assert_preserves(sexpr);
     }
 

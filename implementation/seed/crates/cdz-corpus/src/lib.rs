@@ -246,6 +246,16 @@ pub fn read_markdown(text: &str) -> Result<Vec<Record>, String> {
 /// dispatches on `(case …)`; a non-`platform-case` top-level form is skipped, so a file may mix (though
 /// in practice platform files are homogeneous). Errors only if the file does not parse as s-expressions;
 /// a malformed individual case is a hard error (fail loud, like `read`).
+/// Parse a MIGRATED markdown PLATFORM file into [`PlatformRecord`]s — the platform-genre analog of
+/// [`read_markdown`]. Reconstructs the `.sexp` from the markdown twin (via [`markdown::to_sexpr`]) and
+/// reads it with [`read_platform`], so a platform `.md` and its source `.sexp` yield an identical
+/// platform record stream (exactly what `markdown::check` verifies for the platform genre). This is the
+/// reader the gate uses for a migrated platform file — without it, a platform `.md` would route through
+/// [`read_markdown`]→[`read`], which only sees `(case …)` and would silently drop the platform case.
+pub fn read_platform_markdown(text: &str) -> Result<Vec<PlatformRecord>, String> {
+    read_platform(&markdown::to_sexpr(text)?)
+}
+
 pub fn read_platform(text: &str) -> Result<Vec<PlatformRecord>, String> {
     let arenas = sexpr::read_all(text).map_err(|e| format!("corpus parse error: {}", e.0))?;
     let top = match arenas.get(arenas.root) {
@@ -382,11 +392,11 @@ pub fn render_platform(records: &[PlatformRecord]) -> String {
         out.push_str("platform-case\t");
         out.push_str(&r.title);
         out.push('\n');
-        if let Some(doc) = &r.doc {
-            out.push_str("doc\t");
-            out.push_str(doc);
-            out.push('\n');
-        }
+        // NOTE: `doc` is documentation-only and is DELIBERATELY NOT part of the record stream — the
+        // grader ignores it (xtask `"doc" => {}`), matching the compiler genre where `(doc …)` is prose
+        // dropped from `render`. Emitting it here made the markdown twin (which carries doc as readable
+        // PROSE, not a record line) fail to round-trip. The parsed `PlatformRecord.doc` field is kept
+        // (harmless, available to any doc-aware tool) but is not rendered into the graded stream.
         for s in &r.sessions {
             out.push_str("session\t");
             out.push_str(&s.alias);

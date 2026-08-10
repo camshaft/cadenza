@@ -69,21 +69,32 @@ fn run_records(files: &[String]) -> Result<(), String> {
     for path in files {
         let text = std::fs::read_to_string(path).map_err(|e| format!("reading {path}: {e}"))?;
         let is_markdown = Path::new(path).extension().is_some_and(|x| x == "md");
-        // PLATFORM genre (operator seq358/seq359): a file of `(platform-case …)` forms emits the platform
-        // record stream instead of the compiler-case stream. Auto-detected by the leading form's head, so
-        // no new flag — a `spec/platform/*.sexp` file just works, and a semantics file is unaffected. The
-        // two genres are disjoint (a file is one or the other), so a single leading-head check suffices.
-        if !is_markdown && crate::is_platform_genre(&text) {
+        // PLATFORM genre (operator seq358/seq359): a `(platform-case …)` file emits the platform record
+        // stream, not the compiler-case one. Detected by genre so no new flag — a spec/platform/* file
+        // just works and a semantics file is unaffected. The two genres are disjoint (a file is one or
+        // the other). Both surfaces route: a .sexp by its leading head; a .md by the reconstructed
+        // sexpr's head (its `platform-case` marker fence), so a migrated platform twin emits the SAME
+        // platform stream as its .sexp source (without this, a .md would fall to read_markdown→read,
+        // which only sees `(case …)`, silently dropping the platform case).
+        if is_markdown {
+            let reconstructed =
+                crate::markdown::to_sexpr(&text).map_err(|e| format!("{path}: {e}"))?;
+            if crate::is_platform_genre(&reconstructed) {
+                let records =
+                    crate::read_platform(&reconstructed).map_err(|e| format!("{path}: {e}"))?;
+                out.push_str(&crate::render_platform(&records));
+            } else {
+                let records = crate::read_markdown(&text).map_err(|e| format!("{path}: {e}"))?;
+                out.push_str(&crate::render(&records));
+            }
+            continue;
+        }
+        if crate::is_platform_genre(&text) {
             let records = crate::read_platform(&text).map_err(|e| format!("{path}: {e}"))?;
             out.push_str(&crate::render_platform(&records));
             continue;
         }
-        let records = if is_markdown {
-            crate::read_markdown(&text)
-        } else {
-            crate::read(&text)
-        }
-        .map_err(|e| format!("{path}: {e}"))?;
+        let records = crate::read(&text).map_err(|e| format!("{path}: {e}"))?;
         out.push_str(&crate::render(&records));
     }
     std::io::stdout()
