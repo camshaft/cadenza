@@ -7853,7 +7853,7 @@ fn ci_verdict_from_buckets<'a>(buckets: impl IntoIterator<Item = &'a str>) -> Ci
 /// spawn while the profile path worked). So: use bare `"nix"` when it's on PATH (honors any custom
 /// install), else fall back to the standard multi-user profile path if that binary exists, else bare
 /// `"nix"` (let the spawn fail → NO-CHECKS, never a false Green). Returns the string to pass to `Command`.
-fn nix_binary() -> String {
+pub(crate) fn nix_binary() -> String {
     // On PATH? (a login shell / CI runner) — prefer it so a custom/newer nix is honored.
     if Command::new("nix")
         .arg("--version")

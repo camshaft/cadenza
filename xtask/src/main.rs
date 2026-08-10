@@ -117,6 +117,22 @@ enum Cmd {
     /// (`target/xtask-logs/`); the console shows one ✓ per step, and the first failing step prints
     /// the whole log + its path.
     Check,
+    /// FAST INNER-LOOP dev gate (operator per-agent-latency priority 2026-08-10): a thin wrapper over
+    /// v-nix's `nix run .#fast-gate` flake app, which builds ONLY the touched crate's test+clippy+fmt
+    /// checks (warm = seconds-to-2min) instead of the full ~8-15min `check`/`gate` battery. For an
+    /// agent's ITERATE-test-iterate inner loop; the full battery + pr-sync's authoritative pass remain
+    /// the pre-merge catch, so a green here is NOT merge-safe (the app prints that caveat). This wrapper
+    /// exists because the agent loop speaks `cargo xtask` (the alias is wired) and a bare `nix run` needs
+    /// nix on PATH + `NIX_REMOTE=daemon` (the scripted-shell gotcha) — the wrapper resolves the nix
+    /// binary + sets the daemon env so `cargo xtask dev-gate` Just Works from any vertical worktree.
+    /// With no args it lets the app auto-detect touched crates (git diff vs origin/main, override via
+    /// `CDZ_FAST_GATE_BASE`); pass crate names to check those explicitly.
+    DevGate {
+        /// Crates to check explicitly (e.g. `rcdzc cdz-runtime`). Empty = the app auto-detects touched
+        /// crates from `git diff` against the base ref.
+        #[arg(trailing_var_arg = true)]
+        crates: Vec<String>,
+    },
     /// Emoji-ban lint, standalone (operator directive): fail if any emoji/pictographic/dingbat char
     /// appears in an `implementation/**/*.rs` source COMMENT. This is the same `emoji_free_lint` the
     /// omnibus `check` runs, exposed as its own fast subcommand so CI can gate it as an isolated
@@ -271,6 +287,7 @@ fn main() {
             }
         }
         Cmd::Check => check(&paths, profile),
+        Cmd::DevGate { crates } => dev_gate(&paths, &crates),
         Cmd::LintEmoji => match emoji_free_lint(&paths) {
             Ok(()) => println!("lint-emoji: ok — no emoji in source comments"),
             Err(msg) => {
@@ -4804,6 +4821,61 @@ fn check_baseline(paths: &Paths, verdicts: &[(String, Verdict)], target: GateTar
             vanished.len()
         );
         1
+    }
+}
+
+// ============================================================================================
+/// FAST inner-loop dev gate (operator per-agent-latency priority 2026-08-10). Thin wrapper over v-nix's
+/// `nix run .#fast-gate` flake app: it builds ONLY the touched crate's test+clippy+fmt (warm = seconds-
+/// to-2min) vs the full ~8-15min `check`/`gate` battery, for an agent's iterate-test loop. NOT
+/// merge-safe (the full battery + pr-sync's pass stay the authoritative pre-merge catch — the app prints
+/// that caveat). Exists because the agent loop speaks `cargo xtask` while a bare `nix run` needs nix on
+/// PATH + `NIX_REMOTE=daemon` (the scripted-shell gotcha) — this resolves the nix binary (via
+/// `fleet::nix_binary`, PATH-or-profile) + sets the daemon env so it Just Works from any worktree.
+/// Passes `crates` through as explicit args; empty lets the app auto-detect touched crates. Inherits
+/// stdio so the agent sees the verdict live. Exits with the app's status. If the app isn't present yet
+/// (its MR not landed), nix errors cleanly and we surface a hint rather than a cryptic failure.
+fn dev_gate(paths: &Paths, crates: &[String]) {
+    let nix_bin = fleet::nix_binary();
+    // `nix run .#fast-gate [-- crate1 crate2]` — the `--` separates flake-app args from nix's own.
+    let mut args: Vec<String> = vec!["run".into(), ".#fast-gate".into()];
+    if !crates.is_empty() {
+        args.push("--".into());
+        args.extend(crates.iter().cloned());
+    }
+    eprintln!(
+        "dev-gate: `{nix_bin} {}` (fast inner-loop gate — touched-crate test+clippy+fmt; NOT merge-safe, \
+         the full gate + pr-sync stay authoritative)…",
+        args.join(" ")
+    );
+    let status = std::process::Command::new(&nix_bin)
+        .args(&args)
+        // The scripted-shell gotcha: a non-login shell needs NIX_REMOTE=daemon to reach the multi-user
+        // daemon (else a local build that needs the caller in `nixbld` fails). Set it if unset.
+        .env(
+            "NIX_REMOTE",
+            std::env::var("NIX_REMOTE").unwrap_or_else(|_| "daemon".into()),
+        )
+        .current_dir(&paths.repo)
+        .status();
+    match status {
+        Ok(s) if s.success() => {} // app printed its own green + not-merge-safe caveat.
+        Ok(s) => {
+            eprintln!(
+                "dev-gate: fast-gate reported failures (exit {}). Fix them, or if `.#fast-gate` is \
+                 unrecognized the app MR (v-nix's b4b57fd80) may not be on trunk yet — fall back to the \
+                 scoped `cargo xtask gate --files <yours> --target wasm` until it lands.",
+                s.code().unwrap_or(-1)
+            );
+            std::process::exit(s.code().unwrap_or(1));
+        }
+        Err(e) => {
+            eprintln!(
+                "dev-gate: could not invoke `{nix_bin} run .#fast-gate` ({e}). Ensure nix is installed; \
+                 until v-nix's fast-gate app lands, use `cargo xtask gate --files <yours> --target wasm`."
+            );
+            std::process::exit(1);
+        }
     }
 }
 
