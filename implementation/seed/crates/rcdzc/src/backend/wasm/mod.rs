@@ -117,6 +117,29 @@ pub(crate) fn is_reducer_fold_apply(component_name: Option<&str>, export_name: &
     component_name == Some(REDUCER_FOLD_IFACE) && export_name == "apply"
 }
 
+/// The EVENT protocol Record type the reducer wrapper value-DECODEs — assembled from the guest `apply`'s
+/// three structured params (`ct`, `payload`, `resumes` in declaration order) into a Record with the
+/// KERNEL-PROTOCOL field names `content_type`/`payload`/`resumes`. This is the source-of-truth event Type
+/// (v-runtime's ruling: the wire is the kernel protocol, NOT the guest signature) whose `sum_shape_descriptor`
+/// drives `value-decode(event_bytes, desc)`. The `Record`'s `BTreeMap` sorts by field name, giving the
+/// canonical sorted-key order `value-decode` reads positionally (`content_type` < `payload` < `resumes`).
+/// The guest's own param TYPES supply the field types (param 0 = the content-type record, params 1/2 = the
+/// `Option(Bytes)` payload/resumes), so a guest whose apply is the reducer shape produces the exact protocol
+/// event Record. Returns `None` if the apply doesn't have the expected 3 params (not a reducer apply shape).
+pub(crate) fn reducer_event_record_ty(
+    params: &[(crate::ast::StructId, crate::ty::Ty)],
+) -> Option<crate::ty::Ty> {
+    use crate::resolved::Symbol;
+    let [ct, payload, resumes] = params else {
+        return None;
+    };
+    let mut fields = std::collections::BTreeMap::new();
+    fields.insert(Symbol::plain("content_type"), ct.1.clone());
+    fields.insert(Symbol::plain("payload"), payload.1.clone());
+    fields.insert(Symbol::plain("resumes"), resumes.1.clone());
+    Some(crate::ty::Ty::Record(std::rc::Rc::new(fields)))
+}
+
 /// Append the lambda-lifted closure bodies to `funcs`, AFTER the `layout.order` defs, in table-slot
 /// order — the shared step both the main emit path and the runtime-resource ESCAPE path need so a
 /// first-class closure's `call_indirect` has a body to dispatch (at func idx `import_base + order.len() +
@@ -8130,6 +8153,37 @@ mod runtime_abi_tests {
         assert!(!is_reducer_fold_apply(Some("cadenza:agent-kernel/other"), "apply"));
         // A NON-component (plain) build — no component name — never triggers.
         assert!(!is_reducer_fold_apply(None, "apply"));
+    }
+
+    /// B3 event-record assembly: the wrapper's event Type is a Record with the KERNEL-PROTOCOL field names
+    /// content_type/payload/resumes (NOT the guest param names ct/payload/resumes), field types taken from
+    /// the guest apply's 3 params, canonically sorted by name (content_type < payload < resumes). A non-3-param
+    /// apply is not the reducer shape → None.
+    #[test]
+    fn reducer_event_record_ty_assembles_the_protocol_record() {
+        use super::reducer_event_record_ty;
+        use crate::ast::StructId;
+        use crate::resolved::Symbol;
+        use crate::ty::{IntTy, Ty};
+        let sid = StructId(0);
+        // Guest apply params: ct: Record{...} (a stand-in scalar here is fine — the field TYPE is passed
+        // through opaquely), payload: Bytes, resumes: Bytes. The wrapper renames to the protocol fields.
+        let params = vec![
+            (sid, Ty::Bool),  // stand-in for the content-type record type (passed through)
+            (sid, Ty::Bytes), // payload
+            (sid, Ty::Int(IntTy::deferred())), // resumes (type passed through opaquely)
+        ];
+        let Some(Ty::Record(fields)) = reducer_event_record_ty(&params) else {
+            panic!("expected a Record");
+        };
+        // Exactly the three protocol field names, in sorted-key order, mapped to the guest param types.
+        let keys: Vec<&str> = fields.keys().map(|s| s.name.as_str()).collect();
+        assert_eq!(keys, vec!["content_type", "payload", "resumes"]);
+        assert_eq!(fields.get(&Symbol::plain("content_type")), Some(&Ty::Bool));
+        assert_eq!(fields.get(&Symbol::plain("payload")), Some(&Ty::Bytes));
+        // Not the reducer 3-param shape → None.
+        assert!(reducer_event_record_ty(&[]).is_none());
+        assert!(reducer_event_record_ty(&params[..2]).is_none());
     }
 }
 
