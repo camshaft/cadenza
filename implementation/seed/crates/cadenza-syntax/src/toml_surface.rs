@@ -42,6 +42,7 @@
 //! than the arena-idempotence the markdown/JSON surfaces hold. After any node rewrite it degrades to
 //! arena-idempotence (`read(print(x))` is a fixed point).
 
+use crate::arena_read::{bool_leaf, child_tail, int_leaf, list_items, str_leaf};
 use crate::ast::{Arenas, Builder, Leaf, Radix, StructId};
 use crate::span::Span;
 use crate::spans::{FileId, SpanTable};
@@ -652,46 +653,6 @@ fn build_inline_table(a: &Arenas, id: StructId) -> Option<Value> {
 /// A `Decor` from prefix/suffix strings.
 fn mk_decor(prefix: &str, suffix: &str) -> toml_edit::Decor {
     toml_edit::Decor::new(prefix, suffix)
-}
-
-// ---- arena read helpers (shared shape with json.rs/markdown.rs) ----
-
-fn list_items(a: &Arenas, id: StructId) -> Vec<StructId> {
-    match a.get(id) {
-        crate::ast::Struct::List(items) => items.clone(),
-        _ => Vec::new(),
-    }
-}
-
-fn child_tail(a: &Arenas, id: StructId) -> Vec<StructId> {
-    match a.get(id) {
-        crate::ast::Struct::List(items) => items[1.min(items.len())..].to_vec(),
-        _ => Vec::new(),
-    }
-}
-
-fn str_leaf(a: &Arenas, id: StructId) -> Option<String> {
-    a.as_str(id).map(str::to_string)
-}
-
-fn int_leaf(a: &Arenas, id: StructId) -> Option<i64> {
-    match a.get(id) {
-        crate::ast::Struct::Atom(l) => match a.leaf(*l) {
-            Leaf::Int { value, .. } => i64::try_from(value).ok(),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-fn bool_leaf(a: &Arenas, id: StructId) -> Option<bool> {
-    match a.get(id) {
-        crate::ast::Struct::Atom(l) => match a.leaf(*l) {
-            Leaf::Bool(b) => Some(*b),
-            _ => None,
-        },
-        _ => None,
-    }
 }
 
 #[cfg(test)]

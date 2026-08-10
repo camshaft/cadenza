@@ -36,6 +36,7 @@
 //! identity of the source. Code-block bodies ARE byte-exact, because the printer emits the stored
 //! `raw` verbatim rather than re-rendering the embedded subtree.
 
+use crate::arena_read::{child_tail, int_leaf, list_items, str_leaf};
 use crate::ast::{Arenas, Builder, Leaf, StructId};
 use crate::span::Span;
 use crate::spans::{FileId, SpanTable};
@@ -935,40 +936,6 @@ fn print_inline(a: &Arenas, id: StructId, out: &mut String) {
         Some("soft-break") => out.push('\n'),
         Some("hard-break") => out.push_str("\\\n"),
         _ => {}
-    }
-}
-
-// ---- arena read helpers ----
-
-/// The children of a `List` (including the head), or empty.
-fn list_items(a: &Arenas, id: StructId) -> Vec<StructId> {
-    match a.get(id) {
-        crate::ast::Struct::List(items) => items.clone(),
-        _ => Vec::new(),
-    }
-}
-
-/// The tail of a `List` (children after the head).
-fn child_tail(a: &Arenas, id: StructId) -> Vec<StructId> {
-    match a.get(id) {
-        crate::ast::Struct::List(items) => items[1.min(items.len())..].to_vec(),
-        _ => Vec::new(),
-    }
-}
-
-/// The string a `Str` leaf carries, if `id` is one.
-fn str_leaf(a: &Arenas, id: StructId) -> Option<String> {
-    a.as_str(id).map(str::to_string)
-}
-
-/// The value of an `Int` leaf as `i64` (heading level / list start — always small), if `id` is one.
-fn int_leaf(a: &Arenas, id: StructId) -> Option<i64> {
-    match a.get(id) {
-        crate::ast::Struct::Atom(l) => match a.leaf(*l) {
-            Leaf::Int { value, .. } => i64::try_from(value).ok(),
-            _ => None,
-        },
-        _ => None,
     }
 }
 

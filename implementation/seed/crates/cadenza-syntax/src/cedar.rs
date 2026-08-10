@@ -45,6 +45,7 @@
 //! identity. A rewrite of any arena node reflects in the printed output (the arena is the
 //! representation), which is the whole point for structural editing.
 
+use crate::arena_read::{bool_leaf, child_tail, int_leaf, list_items, str_leaf};
 use crate::ast::{Arenas, Builder, Leaf, Radix, StructId};
 use crate::span::Span;
 use crate::spans::{FileId, SpanTable};
@@ -947,46 +948,6 @@ fn binary_op_from(name: &str) -> Result<pst::BinaryOp, String> {
         "decimal-ge" => pst::BinaryOp::DecimalGreaterEq,
         other => return Err(format!("bad binary op: {other}")),
     })
-}
-
-// ---- arena read helpers (shared shape with json/toml) ----
-
-fn list_items(a: &Arenas, id: StructId) -> Vec<StructId> {
-    match a.get(id) {
-        crate::ast::Struct::List(items) => items.clone(),
-        _ => Vec::new(),
-    }
-}
-
-fn child_tail(a: &Arenas, id: StructId) -> Vec<StructId> {
-    match a.get(id) {
-        crate::ast::Struct::List(items) => items[1.min(items.len())..].to_vec(),
-        _ => Vec::new(),
-    }
-}
-
-fn str_leaf(a: &Arenas, id: StructId) -> Option<String> {
-    a.as_str(id).map(str::to_string)
-}
-
-fn int_leaf(a: &Arenas, id: StructId) -> Option<i64> {
-    match a.get(id) {
-        crate::ast::Struct::Atom(l) => match a.leaf(*l) {
-            Leaf::Int { value, .. } => i64::try_from(value).ok(),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-fn bool_leaf(a: &Arenas, id: StructId) -> Option<bool> {
-    match a.get(id) {
-        crate::ast::Struct::Atom(l) => match a.leaf(*l) {
-            Leaf::Bool(b) => Some(*b),
-            _ => None,
-        },
-        _ => None,
-    }
 }
 
 #[cfg(test)]

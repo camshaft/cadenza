@@ -35,6 +35,7 @@
 //! `Decimal`), and a document is never type-checked, so `Int64`/`Float64` bounds never apply — a huge
 //! integer or a `1e400` survives as a leaf where it would overflow/reject as a typed value.
 
+use crate::arena_read::{child_tail, list_items};
 use crate::ast::{Arenas, Builder, Leaf, Radix, StructId};
 use crate::span::Span;
 use crate::spans::{FileId, SpanTable};
@@ -734,24 +735,6 @@ fn json_string(s: &str) -> String {
 fn push_indent(n: usize, out: &mut String) {
     for _ in 0..n {
         out.push(' ');
-    }
-}
-
-// ---- arena read helpers ----
-
-/// The children of a `List` (including the head), or empty.
-fn list_items(a: &Arenas, id: StructId) -> Vec<StructId> {
-    match a.get(id) {
-        crate::ast::Struct::List(items) => items.clone(),
-        _ => Vec::new(),
-    }
-}
-
-/// The tail of a `List` (children after the head).
-fn child_tail(a: &Arenas, id: StructId) -> Vec<StructId> {
-    match a.get(id) {
-        crate::ast::Struct::List(items) => items[1.min(items.len())..].to_vec(),
-        _ => Vec::new(),
     }
 }
 
