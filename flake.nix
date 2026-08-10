@@ -156,10 +156,17 @@
           ];
         };
         # The cdz+cdz-run DEP-CLOSURE (seq-126 crateClosure walk) — the only crates whose src the seed
-        # compiler actually compiles. 10 of the 18 seed crates (cadenza-ast/syntax, cdz, cdz-calc, cdz-corpus,
-        # cdz-num, cdz-rt, cdz-run, cdz-rust-render, rcdzc); the 8 OUTSIDE (cdz-agent-host, cdz-cad, cdz-kernel,
-        # cdz-nfc, cdz-runtime, cdz-smith, cdz-wasm, rcdzc-wasm) + xtask are stubbed.
-        seedCompilerClosure = pkgs.lib.unique (crateClosure "cdz" ++ crateClosure "cdz-run");
+        # compiler actually compiles. includeOptional=false (v-nix+v-cml 2026-08-10): the seed cdz is built
+        # `--no-default-features` (below), so the default-on `corpus` feature is OFF → cdz-corpus is NOT
+        # linked → its src must ALSO leave this closure (else a corpus-only MR rotates seedCompilerSrc +
+        # needlessly re-runs the cad-test-compiler-ml spine; pr-sync throughput flag). So now 9 of the 18
+        # seed crates (cadenza-ast/syntax, cdz, cdz-calc, cdz-num, cdz-rt, cdz-run, cdz-rust-render, rcdzc);
+        # cdz-corpus JOINS the OUTSIDE/stubbed set (+ cdz-agent-host, cdz-cad, cdz-kernel, cdz-nfc,
+        # cdz-runtime, cdz-smith, cdz-wasm, rcdzc-wasm, xtask). The corpus subcommand is unavailable in the
+        # test-runner cdz — fine, cdz test never invokes it (v-cml confirmed corpus-independent).
+        seedCompilerClosure = pkgs.lib.unique (
+          crateClosure' { includeOptional = false; } "cdz"
+          ++ crateClosure' { includeOptional = false; } "cdz-run");
         # seedCompilerSrc: SCOPED to the cdz+cdz-run closure so an edit to a NON-closure seed crate (cdz-kernel,
         # cdz-agent-host, cdz-corpus's siblings, etc. — the fleet commits to these every few min) does NOT rotate
         # this derivation's input hash → the /nix/store cache actually WARMS across candidates. Was `seedSrc` (all
@@ -204,7 +211,14 @@
           '';
           # Build only the seed-compiler binaries, not the whole workspace (xtask etc.). crane injects --locked
           # + --release; cargoExtraArgs adds the -p scoping (crane's equivalent of buildRustPackage cargoBuildFlags).
-          cargoExtraArgs = "-p cdz -p cdz-run";
+          # --no-default-features drops cdz's default-on `corpus` feature (v-nix+v-cml 2026-08-10): the test-runner
+          # cdz doesn't need the corpus subcommand (cdz test is corpus-independent, v-cml confirmed), and dropping
+          # it removes cdz-corpus from this build's closure — paired with seedCompilerClosure's includeOptional=false
+          # (which drops cdz-corpus SRC from the fileset), a corpus-only MR no longer rotates seedCompiler → the
+          # cad-test-compiler-ml spine no longer over-triggers on corpus MRs (pr-sync throughput flag). cdz-run has
+          # no default features to drop, so --no-default-features is a no-op for it. The hard-gate STILL fires on
+          # rcdzc/Core/compiler-ml edits (those ARE in the closure) — only the corpus false-trigger is removed.
+          cargoExtraArgs = "-p cdz -p cdz-run --no-default-features";
           # Build only — tests run in the existing gate/CI (S1: reproducible toolchain build). Do NOT re-export
           # the deps layer (we consume the shared cargoArtifacts, not produce a new one).
           doCheck = false;
@@ -320,7 +334,19 @@
         };
         rootCrateNames = builtins.attrNames rootWorkspaceCrates;
         # direct member-edges of one crate across the three rebuild-relevant dep sections (A1 walk).
-        crateDirectDeps = name:
+        # `includeOptional` (default true) keeps the historical behaviour — count every path-dep edge. Pass
+        # false to EXCLUDE `optional = true` deps: used ONLY by seedCompilerClosure, which builds cdz with
+        # `--no-default-features` (v-nix+v-cml 2026-08-10, corpus-over-trigger fix). WHY it matters: an
+        # optional path-dep like cdz-corpus (cdz/Cargo.toml, behind the default-on `corpus` feature) STILL
+        # has a `path` attr, so the unfiltered walk pulls its SOURCE into seedCompilerSrc's fileset → a
+        # corpus-only MR rotates seedCompilerSrc → rebuilds seedCompiler → re-runs the ~28min cad-test-
+        # compiler-ml spine, even though the corpus-off seedCompiler build doesn't link cdz-corpus at all
+        # (pr-sync throughput flag). Dropping the optional edge for the seed closure removes cdz-corpus src
+        # from the fileset AND stubs it → a corpus edit no longer rotates seedCompiler. The DEFAULT-feature
+        # consumers (per-crate crane checks, crateCdzCheck) keep includeOptional=true so their fileset still
+        # carries corpus src (they build WITH default features + genuinely need it). Only the seed closure,
+        # paired with the --no-default-features build below, drops it.
+        crateDirectDeps = { includeOptional ? true }: name:
           let
             manifest = builtins.fromTOML
               (builtins.readFile (./. + "/${rootWorkspaceCrates.${name}}/Cargo.toml"));
@@ -328,18 +354,25 @@
             edgesIn = section:
               builtins.filter (d: builtins.elem d rootCrateNames)
                 (builtins.filter
-                  (d: let v = (depsIn section).${d}; in builtins.isAttrs v && (v ? path))
+                  (d:
+                    let v = (depsIn section).${d}; in
+                    builtins.isAttrs v && (v ? path)
+                    && (includeOptional || !(v.optional or false)))
                   (builtins.attrNames (depsIn section)));
           in
           pkgs.lib.unique (pkgs.lib.concatMap edgesIn
             [ "dependencies" "dev-dependencies" "build-dependencies" ]);
-        # transitive closure (incl. self) via a fixpoint over crateDirectDeps.
-        crateClosure = start:
+        # transitive closure (incl. self) via a fixpoint over crateDirectDeps. `includeOptional` (default
+        # true) is threaded to crateDirectDeps — seedCompilerClosure passes false (corpus-off seed build);
+        # every other caller keeps the default (full closure incl. optional deps).
+        crateClosure' = { includeOptional ? true }: start:
           let
+            deps = crateDirectDeps { inherit includeOptional; };
             step = acc:
-              let next = pkgs.lib.unique (acc ++ pkgs.lib.concatMap crateDirectDeps acc);
+              let next = pkgs.lib.unique (acc ++ pkgs.lib.concatMap deps acc);
               in if builtins.length next == builtins.length acc then acc else step next;
           in pkgs.lib.sort (a: b: a < b) (step [ start ]);
+        crateClosure = crateClosure' { };
         # `cargo -p C` LOADS the whole workspace (target auto-detection needs EVERY member to have a target
         # entry point present, else "no targets specified in the manifest") but only COMPILES C + its
         # dep-closure. So a per-crate check's fileset = FULL src/ for C's dep-CLOSURE (crateClosure — what
