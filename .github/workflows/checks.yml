@@ -487,7 +487,14 @@ jobs:
       # (those jobs still run); this just stops re-doing their work cold. (`nix flake check` locally still runs
       # everything.) Advisory + continue-on-error retained.
       - name: nix reproducibility backstop (scoped from full flake check)
-        run: nix build .#checks.aarch64-linux.flake-repro-backstop --print-build-logs
+        # --extra-experimental-features ca-derivations: the backstop evaluates reducerCadenzaGenesisValid,
+        # which pulls the CONTENT-ADDRESSED reducer-cadenza-genesis (perf: stops corpus-closure rotation from
+        # re-running the genesis E2E). The DeterminateSystems runner ships nix-command+flakes but NOT
+        # ca-derivations, so eval failed "experimental Nix feature 'ca-derivations' is disabled". The flake's
+        # nixConfig.extra-experimental-features also declares it, but a GHA runner does NOT trust flake nixConfig
+        # by default (needs --accept-flake-config), so pass the feature DIRECTLY here — the reliable fix that
+        # doesn't depend on flake-config trust. (v-nix 2026-08-10, github-liaison advisory-RED report.)
+        run: nix build .#checks.aarch64-linux.flake-repro-backstop --print-build-logs --extra-experimental-features ca-derivations
 
   roundtrip:
     # Every corpus program must round-trip through the syntax surfaces — guards cadenza-syntax

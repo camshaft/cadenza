@@ -35,6 +35,16 @@
 
   description = "Cadenza build/test pipeline (Nix flake: N0 devShell + N1 runtime derivation)";
 
+  # ca-derivations is REQUIRED to evaluate/build this flake: reducer-cadenza-genesis is content-addressed
+  # (perf: it stops corpus-closure-rotation from re-running the genesis E2E — see its maker note). Declaring
+  # it here in nixConfig makes it AMBIENT for every flake consumer — GHA runners, a fresh dev machine, a local
+  # `nix flake check` — instead of assuming it's set host-side. Fixes the advisory nix-flake-check RED
+  # (`experimental Nix feature 'ca-derivations' is disabled` while evaluating reducerCadenzaGenesisValid): the
+  # DeterminateSystems GHA runner had nix-command+flakes but NOT ca-derivations, and the earlier
+  # comment's "enabled fleet-wide" only held for the fleet HOST (via nix.custom.conf), not GHA. `extra-`
+  # prefix APPENDS (doesn't clobber the caller's nix-command/flakes). v-nix 2026-08-10, github-liaison report.
+  nixConfig.extra-experimental-features = [ "ca-derivations" ];
+
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     rust-overlay = {
