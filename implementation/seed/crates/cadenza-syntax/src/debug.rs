@@ -206,7 +206,7 @@ mod tests {
                 "Float 1.5",
             ),
             (Leaf::Str("hi\n".into()), "Str \"hi\\n\""),
-            (Leaf::Bytes(vec![0, 255]), "Bytes [0, 255]"),
+            (Leaf::Bytes(vec![0, 255].into()), "Bytes [0, 255]"),
             (Leaf::Bool(true), "Bool true"),
             (Leaf::Sym("meter".into()), "Sym \"meter\""),
             (Leaf::Name("foo".into()), "Name foo"),

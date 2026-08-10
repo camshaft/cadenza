@@ -830,7 +830,7 @@ impl<'a, 'b> Reader<'a, 'b> {
                 Some(b) => bytes.push(b),
             }
         }
-        Ok(self.mk_atom_leaf(Leaf::Bytes(bytes), Span::new(start, self.pos)))
+        Ok(self.mk_atom_leaf(Leaf::Bytes(bytes.into()), Span::new(start, self.pos)))
     }
 
     fn read_atom_or_name(&mut self) -> Result<StructId, ReadError> {
@@ -1225,9 +1225,9 @@ mod tests {
             ("Str-unicode", Leaf::Str("λ中🎉".into())),
             (
                 "Bytes-high",
-                Leaf::Bytes(vec![0x89, b'P', b'N', b'G', 0x00, 0xff]),
+                Leaf::Bytes(vec![0x89, b'P', b'N', b'G', 0x00, 0xff].into()),
             ),
-            ("Bytes-empty", Leaf::Bytes(vec![])),
+            ("Bytes-empty", Leaf::Bytes(vec![].into())),
             ("Bool-true", Leaf::Bool(true)),
             ("Bool-false", Leaf::Bool(false)),
             ("Name", Leaf::Name("foo-bar".into())),
@@ -1314,7 +1314,7 @@ mod tests {
             let a = read(src).unwrap();
             match a.get(a.root) {
                 Struct::Atom(l) => match a.leaf(*l) {
-                    Leaf::Bytes(b) => assert_eq!(b, &want, "bytes for {src:?}"),
+                    Leaf::Bytes(b) => assert_eq!(&b[..], &want[..], "bytes for {src:?}"),
                     other => panic!("{src:?} read as {other:?}, not Leaf::Bytes"),
                 },
                 _ => panic!("{src:?} is not an atom"),

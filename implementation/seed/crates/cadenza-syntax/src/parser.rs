@@ -1174,7 +1174,7 @@ impl<'a> Parser<'a> {
             Kind::ByteStr => {
                 let t = self.bump().unwrap();
                 self.atom(
-                    Leaf::Bytes(literal::unescape_byte_string_token(self.text(t))),
+                    Leaf::Bytes(literal::unescape_byte_string_token(self.text(t)).into()),
                     span,
                 )
             }
@@ -2974,7 +2974,7 @@ impl<'a> Parser<'a> {
             Kind::ByteStr => {
                 let t = self.bump().unwrap();
                 self.atom(
-                    Leaf::Bytes(literal::unescape_byte_string_token(self.text(t))),
+                    Leaf::Bytes(literal::unescape_byte_string_token(self.text(t)).into()),
                     span,
                 )
             }

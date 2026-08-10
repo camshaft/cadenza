@@ -106,7 +106,7 @@ fn build_val(b: &mut Builder, val: &Val) -> Result<StructId, MarshalError> {
         // any other list<T> is a string-head ("list" elem…) form of per-element nodes.
         Val::List(items) => {
             if let Some(bytes) = as_u8_list(items) {
-                b.atom_leaf(Leaf::Bytes(bytes))
+                b.atom_leaf(Leaf::Bytes(bytes.into()))
             } else {
                 let mut children = vec![b.atom_leaf(Leaf::Str("list".into()))];
                 for it in items.iter() {
@@ -618,7 +618,7 @@ fn read_str(a: &Arenas, id: StructId) -> Result<&str, MarshalError> {
 
 fn read_bytes(a: &Arenas, id: StructId) -> Result<Vec<u8>, MarshalError> {
     match leaf_of(a, id) {
-        Some(Leaf::Bytes(b)) => Ok(b.clone()),
+        Some(Leaf::Bytes(b)) => Ok(b.to_vec()),
         _ => Err(type_mismatch("list<u8>", "not a bytes leaf")),
     }
 }
@@ -805,7 +805,7 @@ fn opt_bytes_form(b: &mut Builder, v: Option<&[u8]>) -> StructId {
     match v {
         Some(bytes) => {
             let head = b.name("some");
-            let val = b.atom_leaf(Leaf::Bytes(bytes.to_vec()));
+            let val = b.atom_leaf(Leaf::Bytes(bytes.to_vec().into()));
             b.list(vec![head, val])
         }
         None => {
@@ -1335,10 +1335,13 @@ mod tests {
             Val::U8(0xFF),
         ]);
         let a = decode(&val_to_ast(&v).unwrap());
-        assert_eq!(root_leaf(&a), &Leaf::Bytes(vec![0xDE, 0xAD, 0x00, 0xFF]));
+        assert_eq!(
+            root_leaf(&a),
+            &Leaf::Bytes(vec![0xDE, 0xAD, 0x00, 0xFF].into())
+        );
         // empty list<u8> → empty Bytes
         let empty = decode(&val_to_ast(&Val::List(vec![])).unwrap());
-        assert_eq!(root_leaf(&empty), &Leaf::Bytes(vec![]));
+        assert_eq!(root_leaf(&empty), &Leaf::Bytes(vec![].into()));
     }
 
     #[test]
@@ -1868,7 +1871,7 @@ mod tests {
         let mk_opt = |b: &mut Builder, v: Option<&[u8]>| match v {
             Some(x) => {
                 let h = b.name("some");
-                let val = b.atom_leaf(Leaf::Bytes(x.to_vec()));
+                let val = b.atom_leaf(Leaf::Bytes(x.to_vec().into()));
                 b.list(vec![h, val])
             }
             None => {
@@ -1886,7 +1889,7 @@ mod tests {
                 };
                 let tgt = {
                     let h = b.name("target");
-                    let v = b.atom_leaf(Leaf::Bytes(target.to_vec()));
+                    let v = b.atom_leaf(Leaf::Bytes(target.to_vec().into()));
                     b.list(vec![h, v])
                 };
                 let payload = {

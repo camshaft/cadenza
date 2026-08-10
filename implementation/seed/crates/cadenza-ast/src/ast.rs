@@ -48,7 +48,7 @@ pub enum Leaf {
     /// A BYTE SEQUENCE literal (`b"…"`) — the value form of a `Bytes`. Holds the raw bytes (arbitrary,
     /// NOT necessarily UTF-8, so distinct from `Str`); printed `b"…"` (printable ASCII raw, `\n \r \t \\
     /// \"` named, else `\xNN`). The canonical value-form leaf a byte sequence crosses the boundary as.
-    Bytes(Vec<u8>),
+    Bytes(Arc<[u8]>),
     Bool(bool),
     /// A SYMBOL literal (`#"meter"`) — an interned name value whose identity is its CONTENT, distinct
     /// from a `Str` (a text value) and a `Name` (an identifier reference). Written `#"…"` (reusing string
@@ -913,7 +913,7 @@ mod tests {
             }),
             2 => Leaf::Str(["", "hi", "a\nb", "λ中🎉"][rng.below(4)].into()),
             3 => Leaf::Char(['a', 'é', '\n', '🎉'][rng.below(4)]),
-            4 => Leaf::Bytes(vec![(rng.next() & 0xff) as u8, (rng.next() & 0xff) as u8]),
+            4 => Leaf::Bytes(vec![(rng.next() & 0xff) as u8, (rng.next() & 0xff) as u8].into()),
             5 => Leaf::Bool(rng.next() & 1 == 0),
             6 => Leaf::Sym(["meter", "x", ""][rng.below(3)].into()),
             7 => Leaf::Name(["f", "x", "+", "list", "record"][rng.below(5)].into()),

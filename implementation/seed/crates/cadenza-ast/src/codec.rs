@@ -1132,7 +1132,7 @@ fn read_leaf(r: &mut Reader) -> Result<Leaf, DecodeError> {
             })
         }
         KIND_STR => Leaf::Str(read_string(r)?.into()),
-        KIND_BYTES => Leaf::Bytes(read_raw_bytes(r)?),
+        KIND_BYTES => Leaf::Bytes(read_raw_bytes(r)?.into()),
         KIND_BOOL_FALSE => Leaf::Bool(false),
         KIND_BOOL_TRUE => Leaf::Bool(true),
         KIND_NAME => Leaf::Name(read_string(r)?.into()),
@@ -1355,9 +1355,9 @@ mod tests {
         // path (no new frozen tag — v-metaprogramming's Ast.Bytes maps a bytes value onto a Bytes leaf
         // atom), so a regression here would silently break `Ast.encode`/`decode` of a bytes literal.
         let mut b = Builder::new();
-        let empty = b.atom_leaf(Leaf::Bytes(vec![])); // zero-length: length prefix 0, no payload
-        let high = b.atom_leaf(Leaf::Bytes(vec![0x89, b'P', b'N', b'G', 0x00, 0xff])); // PNG-ish, incl 0x00/0xff
-        let ascii = b.atom_leaf(Leaf::Bytes(b"hi".to_vec()));
+        let empty = b.atom_leaf(Leaf::Bytes(vec![].into())); // zero-length: length prefix 0, no payload
+        let high = b.atom_leaf(Leaf::Bytes(vec![0x89, b'P', b'N', b'G', 0x00, 0xff].into())); // PNG-ish, incl 0x00/0xff
+        let ascii = b.atom_leaf(Leaf::Bytes(b"hi".to_vec().into()));
         let root = b.list(vec![empty, high, ascii]);
         let a = b.finish(root);
         let bytes = encode(&a);
@@ -1391,7 +1391,7 @@ mod tests {
         let str_root = b2.list(vec![as_str]);
         let str_a = b2.finish(str_root);
         let mut b3 = Builder::new();
-        let as_bytes = b3.atom_leaf(Leaf::Bytes(b"hi".to_vec()));
+        let as_bytes = b3.atom_leaf(Leaf::Bytes(b"hi".to_vec().into()));
         let bytes_root = b3.list(vec![as_bytes]);
         let bytes_a = b3.finish(bytes_root);
         assert_ne!(
@@ -1895,7 +1895,7 @@ mod tests {
         let mut b = Builder::new();
         let sym = b.atom_leaf(Leaf::Sym("sym".into()));
         let ch = b.atom_leaf(Leaf::Char('λ'));
-        let by = b.atom_leaf(Leaf::Bytes(vec![0, 1, 2, 255]));
+        let by = b.atom_leaf(Leaf::Bytes(vec![0, 1, 2, 255].into()));
         let bad = b.atom_leaf(Leaf::BadChar("\\q".into()));
         let esc = b.atom_leaf(Leaf::BadEscape('z'));
         let suf = b.atom_leaf(Leaf::Suffixed {

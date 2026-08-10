@@ -1705,7 +1705,7 @@ fn i64_leaf(b: &mut Builder, n: i64) -> StructId {
 }
 
 fn bytes_leaf(b: &mut Builder, bytes: &[u8]) -> StructId {
-    b.atom_leaf(Leaf::Bytes(bytes.to_vec()))
+    b.atom_leaf(Leaf::Bytes(bytes.to_vec().into()))
 }
 
 fn str_leaf(b: &mut Builder, s: &str) -> StructId {
@@ -2016,7 +2016,7 @@ fn read_i64(a: &Arenas, id: StructId) -> Result<i64, EventAstError> {
 fn read_bytes(a: &Arenas, id: StructId) -> Result<Vec<u8>, EventAstError> {
     match a.get(id) {
         Struct::Atom(leaf) => match a.leaf(*leaf) {
-            Leaf::Bytes(bytes) => Ok(bytes.clone()),
+            Leaf::Bytes(bytes) => Ok(bytes.to_vec()),
             _ => Err(shape("expected bytes leaf")),
         },
         _ => Err(shape("expected atom")),
@@ -2031,7 +2031,7 @@ fn read_bytes(a: &Arenas, id: StructId) -> Result<Vec<u8>, EventAstError> {
 fn read_target_bytes(a: &Arenas, id: StructId) -> Result<Vec<u8>, EventAstError> {
     match a.get(id) {
         Struct::Atom(leaf) => match a.leaf(*leaf) {
-            Leaf::Bytes(bytes) => Ok(bytes.clone()),
+            Leaf::Bytes(bytes) => Ok(bytes.to_vec()),
             Leaf::Str(s) => Ok(s.as_bytes().to_vec()),
             _ => Err(shape("expected bytes or str leaf for target")),
         },

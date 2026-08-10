@@ -5658,7 +5658,7 @@ mod tests {
                 ),
                 2 => Leaf::Bool(rng.next().is_multiple_of(2)),
                 3 => Leaf::Char(['a', 'é', '\n'][(rng.next() % 3) as usize]),
-                4 => Leaf::Bytes(vec![(rng.next() & 0xff) as u8]),
+                4 => Leaf::Bytes(vec![(rng.next() & 0xff) as u8].into()),
                 5 => Leaf::Sym(["meter", "x"][(rng.next() % 2) as usize].to_string().into()),
                 _ => Leaf::Name(
                     ["f", "x", "+", "record", "list"][(rng.next() % 5) as usize]
