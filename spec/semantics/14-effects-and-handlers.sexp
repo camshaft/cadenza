@@ -22232,3 +22232,52 @@
   (call   main (: 5 Int64)) (output (: 105 Int64))
   (call   main (: 4 Int64)) (output (: 205 Int64))
   (call   main (: 1 Int64)) (output (: -2 Int64)))
+
+
+; ── Arm-built band SUMS scored by body closures (breaker bd) ──────────────────────────────────
+; The arm CLASSIFIES its own state into a band sum and the body consumes it through a let-bound
+; closure. bd1: a tri-band Lo/Mid/Hi sum built from range tests in the arm, scored by a closure
+; applied three times as the thread climbs — each row crosses a DIFFERENT band boundary. bd2:
+; the scoring closure CAPTURES A DRAW — the weight itself comes from the thread before the
+; classified reads (the sound pure-capture face composed with the band consumer). All rows
+; hand-computed; all pass on wasm, rust, and rust-async.
+
+(case "bd1 the arm CLASSIFIES its state into a tri-band SUM — the body matches Lo/Mid/Hi per dispatch as the thread climbs through the bands"
+  (input  (do
+            (type Band (Lo Int64) (Mid Int64) (Hi Int64))
+            (effect E (op probe (-> Band)))
+            (def (main (: n Int64))
+              (handle E n
+                ((probe () s
+                  (resume (if (< s 0) (Band.Lo s)
+                              (if (< s 10) (Band.Mid s) (Band.Hi s)))
+                          (+ s 6))))
+                (let ((score (fn ((: b Band))
+                               (match b
+                                 ((Band.Lo x) (- 0 x))
+                                 ((Band.Mid x) (* 10 x))
+                                 ((Band.Hi x) (+ x 1000))))))
+                  (+ (score (E.probe)) (+ (score (E.probe)) (score (E.probe)))))))
+            (export main)))
+  (call   main (: -4 Int64)) (output (: 104 Int64))
+  (call   main (: 2 Int64)) (output (: 1114 Int64))
+  (call   main (: 8 Int64)) (output (: 2114 Int64)))
+
+(case "bd2 the scoring CLOSURE captures a DRAW — the weight itself comes from the thread before the classified reads"
+  (input  (do
+            (type Band (Mid Int64) (Hi Int64))
+            (effect E (op next (-> Int64)) (op probe (-> Band)))
+            (def (main (: n Int64))
+              (handle E n
+                ((next () s (resume s (+ s 6)))
+                 (probe () s (resume (if (< s 10) (Band.Mid s) (Band.Hi s)) (+ s 6))))
+                (let ((w (E.next)))
+                  (let ((score (fn ((: b Band))
+                                 (match b
+                                   ((Band.Mid x) (* w x))
+                                   ((Band.Hi x) (+ w x))))))
+                    (+ (score (E.probe)) (score (E.probe)))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 12 Int64))
+  (call   main (: 5 Int64)) (output (: 38 Int64))
+  (call   main (: -7 Int64)) (output (: -28 Int64)))

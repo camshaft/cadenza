@@ -7152,3 +7152,5 @@ pass	il2 the interleave WIDTH is data-driven — parity picks one-or-two O draws
 pass	cr1 catch-and-reseed — a conditionally-aborting region's value (abort payload OR normal result) seeds a SECOND handle
 pass	cr2 RETRY-until-success — a recursive driver re-runs a conditionally-aborting region until the drawn attempt passes, counting tries
 pass	cr3 a BOUNDED retry budget — two attempts then give up, the fallback negating the last failed attempt
+pass	bd1 the arm CLASSIFIES its state into a tri-band SUM — the body matches Lo/Mid/Hi per dispatch as the thread climbs through the bands
+pass	bd2 the scoring CLOSURE captures a DRAW — the weight itself comes from the thread before the classified reads
