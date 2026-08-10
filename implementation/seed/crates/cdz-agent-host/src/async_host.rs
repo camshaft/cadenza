@@ -375,8 +375,8 @@ pub struct AsyncAgentHost {
     reply_settle_tx: crate::reply_exec::ReplySettleSink,
     /// The durable SESSION REGISTRY (I4b), if the daemon configured one — the index the loop keeps current so
     /// boot-recovery can enumerate + re-register sessions after a restart. When present, the loop calls
-    /// `register` after a successful install (below) and `mark_terminated` after a terminate (a following
-    /// slice), so the registry tracks each session's lifecycle status. `None` (the default / a build with no
+    /// `register` after a successful install AND `mark_terminated` after a terminate (both wired below), so
+    /// the registry tracks each session's lifecycle status. `None` (the default / a build with no
     /// durable registry) = the loop keeps no external index (today's lossy-on-restart behavior). Behind
     /// `live-aws-storage` (the registry's feature). Registry writes are BEST-EFFORT — a write failure is
     /// logged, never crashes the loop or fails the install (the durable log remains the source of truth;
@@ -526,8 +526,8 @@ impl AsyncAgentHost {
         }
     }
 
-    /// Wire a durable SESSION REGISTRY (I4b) so the loop keeps it current: `register` on a successful install,
-    /// `mark_terminated` on a terminate (following slice). Called once at daemon boot from
+    /// Wire a durable SESSION REGISTRY (I4b) so the loop keeps it current: `register` on a successful install
+    /// and `mark_terminated` on a terminate (both wired in the loop). Called once at daemon boot from
     /// [`SessionRegistryConfig::Dynamo`](crate::SessionRegistryConfig). Without it, the loop keeps no external
     /// session index (lossy-on-restart). Registry writes are best-effort (logged, never fail the install/loop).
     #[cfg(feature = "live-aws-storage")]

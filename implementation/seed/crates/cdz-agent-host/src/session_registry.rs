@@ -18,9 +18,11 @@
 //!   recover-then-`is_terminated`), then per surviving id → `DynamoLogSink::read_recovered` → `recover_from`.
 //! - LIVE OPS: `list_active()` is the "current active sessions" query (an operator/admin view).
 //!
-//! **Writes (wired by the daemon/host lifecycle — a following slice).** `register(id, reducer_hash)` on
-//! install/genesis (status=active); `mark_terminated(id)` on terminate (§lifecycle I7). Both are idempotent
-//! (a re-driven install re-puts the same active item; a re-driven terminate re-sets terminated).
+//! **Writes (wired in the host loop).** `register(id, reducer_hash)` fires on a successful install
+//! (status=active); `mark_terminated(id)` fires on terminate (§lifecycle I7). Both are idempotent (a
+//! re-driven install re-puts the same active item; a re-driven terminate re-sets terminated), and both are
+//! BEST-EFFORT — a write failure is logged, never fails the install or crashes the loop (the durable log
+//! remains the source of truth; the registry is an index over it).
 
 /// A session's lifecycle status in the registry. `active` = installed + schedulable; `terminated` = the
 /// session hit its durable terminal marker (§lifecycle terminate / I7) and must NOT be recovered/re-registered.
