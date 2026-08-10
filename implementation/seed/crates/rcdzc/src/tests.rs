@@ -83648,6 +83648,21 @@ mod debug_info {
     use crate::spans;
     use crate::testkit::{parse, parse_spanned};
 
+    /// Read an unsigned LEB128 varint from `b` at `*i`, advancing `*i` past it — the section/name
+    /// length encoding these raw wasm-framing scanners walk.
+    fn uleb(b: &[u8], i: &mut usize) -> u64 {
+        let (mut r, mut s) = (0u64, 0u32);
+        loop {
+            let x = b[*i];
+            *i += 1;
+            r |= u64::from(x & 0x7f) << s;
+            s += 7;
+            if x & 0x80 == 0 {
+                return r;
+            }
+        }
+    }
+
     /// The `ast` + `spans` input artifacts for `src` — the pair a debug-enabled driver supplies.
     fn debug_inputs(src: &str) -> Vec<Artifact> {
         let (arenas, span_data) = parse_spanned(src);
@@ -83681,18 +83696,6 @@ mod debug_info {
     /// raw section-framing scan (a component's core-module is section id 1) rather than `wasmparser`,
     /// whose stateful reader chokes when a nested module's own `\0asm` magic follows the section header.
     fn core_modules_of(component: &[u8]) -> Vec<Vec<u8>> {
-        fn uleb(b: &[u8], i: &mut usize) -> u64 {
-            let (mut r, mut s) = (0u64, 0u32);
-            loop {
-                let x = b[*i];
-                *i += 1;
-                r |= u64::from(x & 0x7f) << s;
-                s += 7;
-                if x & 0x80 == 0 {
-                    return r;
-                }
-            }
-        }
         let mut mods = Vec::new();
         if component.get(0..4) != Some(b"\0asm") {
             return mods;
@@ -83714,18 +83717,6 @@ mod debug_info {
     /// The bytes of a named custom section inside a CORE module (`\0asm`…), or `None`. A dev-only
     /// scanner used to byte-compare a sidecar's `.debug_*` against the embedded component's.
     fn custom_section_of(core: &[u8], want: &str) -> Option<Vec<u8>> {
-        fn uleb(b: &[u8], i: &mut usize) -> u64 {
-            let (mut r, mut s) = (0u64, 0u32);
-            loop {
-                let x = b[*i];
-                *i += 1;
-                r |= u64::from(x & 0x7f) << s;
-                s += 7;
-                if x & 0x80 == 0 {
-                    return r;
-                }
-            }
-        }
         if core.get(0..4) != Some(b"\0asm") {
             return None;
         }

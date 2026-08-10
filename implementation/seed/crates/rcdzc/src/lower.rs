@@ -14540,6 +14540,24 @@ fn type_node_of(ty: &crate::ty::Ty) -> Option<TypeNode> {
     })
 }
 
+/// Append `v` to `out` as an unsigned LEB128 varint — the count/length/index encoding the shape-table
+/// descriptor wire format uses throughout (see `ShapeTableBuilder::encode`). Kept local to the shape
+/// descriptor here rather than shared with the wasm backend's `encode::uleb128`, which the backend
+/// deliberately scopes as a wasm-target concern.
+fn leb(out: &mut Vec<u8>, mut v: u64) {
+    loop {
+        let mut b = (v & 0x7f) as u8;
+        v >>= 7;
+        if v != 0 {
+            b |= 0x80;
+        }
+        out.push(b);
+        if v == 0 {
+            break;
+        }
+    }
+}
+
 /// A shape-table entry (indices reference other entries — recursion closes via `Ref`).
 enum ShapeNode {
     Int,
@@ -14759,19 +14777,6 @@ impl ShapeTableBuilder {
 
     /// Serialize the table + root to the descriptor wire format (all counts/lengths unsigned LEB128).
     fn encode(&self, root: u32) -> Vec<u8> {
-        fn leb(out: &mut Vec<u8>, mut v: u64) {
-            loop {
-                let mut b = (v & 0x7f) as u8;
-                v >>= 7;
-                if v != 0 {
-                    b |= 0x80;
-                }
-                out.push(b);
-                if v == 0 {
-                    break;
-                }
-            }
-        }
         fn name(out: &mut Vec<u8>, s: &str) {
             leb(out, s.len() as u64);
             out.extend_from_slice(s.as_bytes());
@@ -14838,19 +14843,6 @@ impl ShapeTableBuilder {
                     // recursive TypeNode wire: [ head ][ n_children ]( TypeNode )*n — the runtime's
                     // `decode_type_node` mirrors this depth-first walk.
                     fn write_type_node(out: &mut Vec<u8>, tn: &TypeNode) {
-                        fn leb(out: &mut Vec<u8>, mut v: u64) {
-                            loop {
-                                let mut b = (v & 0x7f) as u8;
-                                v >>= 7;
-                                if v != 0 {
-                                    b |= 0x80;
-                                }
-                                out.push(b);
-                                if v == 0 {
-                                    break;
-                                }
-                            }
-                        }
                         leb(out, tn.head.len() as u64);
                         out.extend_from_slice(tn.head.as_bytes());
                         leb(out, tn.children.len() as u64);
