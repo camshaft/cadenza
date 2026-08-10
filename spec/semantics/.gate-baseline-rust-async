@@ -3622,6 +3622,7 @@ pass	a string-literal pattern over a symbol scrutinee is a type error
 pass	a string-literal sub-pattern in a Symbol tuple element is a type error
 pass	a structural record with a Float64 field MISSES a Map key with a different float field
 pass	a structural record with a Float64 field is a Map key found by a separately-built equal key
+pass	a structurally-duplicate tuple arm is unreachable and earns a CDZ0213 warning
 pass	a subnormal-range tiny literal under Float32 computes in a runtime branch
 pass	a subtract that can underflow int8 keeps its trap — elision is opt-in on a proof
 pass	a success `?` observes an earlier trapping let-init so the trap is not elided

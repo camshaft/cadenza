@@ -3389,6 +3389,22 @@
   (output (: -1 Int64))
   (warns  CDZ0213 (message "this match arm is unreachable")))
 
+(case "a structurally-duplicate tuple arm is unreachable and earns a CDZ0213 warning"
+  (doc    "The structural-shape-duplicate face — a fourth DISTINCT detector (after duplicate-literal, finite-
+           saturation, and refinement-subsumption): two arms of the same STRUCTURAL SHAPE (binders normalized
+           to `_`, literals compared by value) match the same region, so the later is unreachable.
+           `(match t ((tuple true a) a) ((tuple true b) b) ((tuple false c) c))` — the first two arms are both
+           `(tuple true _)` (the binder name `a`/`b` does not distinguish them), so the second is dead. The
+           program compiles and runs (`(f (tuple true 1))` = 1, the first arm) but the build surfaces the
+           CDZ0213 `unreachable` warning on the duplicate tuple arm. Pins that the redundancy pass compares
+           arm SHAPES, not just variant tags or literals. Wasm-graded (the run paths skip the (warns ..)
+           check, not fail it). Companion of the rcdzc
+           a_structurally_duplicate_tuple_or_nested_ctor_arm_is_redundant test.")
+  (input  (do (def (f (: t (Tuple Bool Int64))) (match t ((tuple true a) a) ((tuple true b) b) ((tuple false c) c))) (def (main) (f (tuple true 1))) (export main)))
+  (call   main)
+  (output (: 1 Int64))
+  (warns  CDZ0213 (message "this match arm is unreachable")))
+
 (case "a match on a computed runtime value dispatches on the result"
   (doc    "The scrutinee is the expression `(% n 2)`, computed at run time. Its value (0 for an
            even n) selects the literal arm 0. Exercises a match whose scrutinee is neither a
