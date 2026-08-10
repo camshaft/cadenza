@@ -644,14 +644,18 @@ pub fn assemble_reducer_apply(
         }
         section(sec::CANON, &wasm_vec(e + k, &items))
     };
-    // sec 2: (0) the PEER core instance exporting the lowered peer ops (core funcs `0..e`) under their op
-    // names; (1) the HEAP core instance exporting the lowered runtime ops (core funcs `e..e+k`); (2) the
-    // program instance instantiated with `"peer"`=inst 0 (when e>0) AND `"heap"`=inst 1.
-    let (peer_core_inst_idx, heap_core_inst_idx, prog_core_inst_idx, n_core_inst) = if e > 0 {
-        (Some(0u32), 1u32, 2u32, 3)
-    } else {
-        (None, 0u32, 1u32, 2)
-    };
+    // sec 2 core-instance layout. With kv (e>0): the SHARED-MEMORY module is core module 0 → its instance
+    // is core instance 0 (emitted in its own section before the lower, below); then the PEER core instance
+    // (1), the HEAP core instance (2), the program instance (3, binding "peer"+"heap"+"mem"). Without kv:
+    // no mem module → peer absent, heap = instance 0, program = instance 1. The program CORE MODULE is
+    // module 1 when e>0 (after the mem module), else module 0.
+    let (mem_core_inst_idx, peer_core_inst_idx, heap_core_inst_idx, prog_core_inst_idx, n_core_inst) =
+        if e > 0 {
+            (Some(0u32), Some(1u32), 2u32, 3u32, 3)
+        } else {
+            (None, None, 0u32, 1u32, 2)
+        };
+    let prog_module_idx: u32 = if e > 0 { 1 } else { 0 };
     let core_instance_sec = {
         let mut items = Vec::new();
         if e > 0 {
@@ -678,9 +682,10 @@ pub fn assemble_reducer_apply(
         }
         heap.extend_from_slice(&wasm_vec(k, &heap_exports));
         items.extend_from_slice(&heap);
-        // program instance: instantiate module 0 binding "peer" (when e>0) + "heap".
+        // program instance: instantiate the PROGRAM module (module `prog_module_idx`) binding "peer" (e>0)
+        // + "heap" + "mem" (e>0, the shared memory the reducer imports as `mem`.`mem`).
         let mut prog = vec![0x00];
-        uleb128(0, &mut prog);
+        uleb128(prog_module_idx as u64, &mut prog);
         let mut args = Vec::new();
         let mut n_args = 0;
         if let Some(pidx) = peer_core_inst_idx {
@@ -695,6 +700,13 @@ pub fn assemble_reducer_apply(
         args.push(0x12);
         uleb128(heap_core_inst_idx as u64, &mut args);
         n_args += 1;
+        if let Some(midx) = mem_core_inst_idx {
+            args.extend_from_slice(&uleb_bytes("mem".len() as u64));
+            args.extend_from_slice(b"mem");
+            args.push(0x12);
+            uleb128(midx as u64, &mut args);
+            n_args += 1;
+        }
         prog.extend_from_slice(&wasm_vec(n_args, &args));
         items.extend_from_slice(&prog);
         section(sec::CORE_INSTANCE, &wasm_vec(n_core_inst, &items))
@@ -738,13 +750,33 @@ pub fn assemble_reducer_apply(
         )
     };
 
+    // The SHARED-MEMORY module (module 0) + its instance (core instance 0) + a `mem`.`mem`→core-memory-0
+    // alias — emitted BEFORE the lower (which binds core memory 0 via the kv ops' Memory option) so the
+    // memory exists at lower time. The exact `assemble_host_runtime_mem` shape. Only when e>0 (kv present);
+    // e=0 → empty (byte-identical to the pre-kv shape). The program module then imports `mem`.`mem`.
+    let (mem_module_sec, mem_instance_sec, mem_alias_sec) = if e > 0 {
+        (
+            core_module_section(&shared_mem_module()),
+            section(
+                sec::CORE_INSTANCE,
+                &wasm_vec(1, &core_instantiate_item(0, &[])),
+            ),
+            section(sec::ALIAS, &wasm_vec(1, &memory_alias_item(0, "mem"))),
+        )
+    } else {
+        (Vec::new(), Vec::new(), Vec::new())
+    };
+
     let mut out = Vec::new();
     out.extend_from_slice(COMPONENT_MAGIC);
     out.extend_from_slice(&type_sec); // 7: peer + runtime instance-types + list u8 + apply functype
     out.extend_from_slice(&import_sec); // 10: import peer ifaces + runtime
     out.extend_from_slice(&op_alias_sec); // 6: alias peer + runtime ops
-    out.extend_from_slice(&lower_sec); // 8: lower ops
-    out.extend_from_slice(&core_module_section(core)); // 1: embedded program
+    out.extend_from_slice(&mem_module_sec); // 1: shared-memory module (module 0) [e>0]
+    out.extend_from_slice(&mem_instance_sec); // 2: instantiate mem module → core instance 0 [e>0]
+    out.extend_from_slice(&mem_alias_sec); // 6: alias mem.mem → core memory 0 [e>0]
+    out.extend_from_slice(&lower_sec); // 8: lower ops (kv ops carry the Memory option → core memory 0)
+    out.extend_from_slice(&core_module_section(core)); // 1: embedded program (module 1 when e>0)
     out.extend_from_slice(&core_instance_sec); // 2: peer + heap + program instances
     out.extend_from_slice(&boundary_alias_sec); // 6: alias apply + memory + cabi_realloc
     out.extend_from_slice(&lift_sec); // 8: lift apply WITH Memory+Realloc
