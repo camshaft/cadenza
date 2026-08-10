@@ -717,6 +717,43 @@ mod tests {
     }
 
     #[test]
+    fn arc_payload_leaves_dedup_by_content_across_distinct_allocations() {
+        // The general `leaf_index` is `FxHashMap<Leaf, LeafId>`, so leaf dedup relies on `Leaf`'s
+        // `Eq`/`Hash` being CONTENT-based. For the Arc payloads (`Str`/`Sym` = Arc<str>, `Bytes` =
+        // Arc<[u8]>) that holds because std's `Arc<T>: Eq/Hash` DELEGATES to `T` (deref to str/[u8]) —
+        // NOT pointer identity. This pins that invariant: two leaves built from SEPARATE allocations of
+        // the same content MUST intern to the SAME id. If a future change ever wrapped the payload in a
+        // pointer-identity Eq/Hash (or reverted the deref-delegation assumption), dedup would silently
+        // break — 500 `b"..."` literals would become 500 leaves instead of one, and the whole
+        // interning/cheap-clone win would regress with no other test noticing (my cheap-clone test uses
+        // Arc::clone = the SAME allocation, so it can't catch a content-vs-pointer dedup regression).
+        let mut b = Builder::new();
+        // Bytes: two DISTINCT Arc<[u8]> allocations with identical bytes.
+        let a1: Arc<[u8]> = Arc::from(&b"\x00\xff payload"[..]);
+        let a2: Arc<[u8]> = Arc::from(&b"\x00\xff payload"[..]);
+        assert!(
+            !Arc::ptr_eq(&a1, &a2),
+            "the test needs two SEPARATE allocations to be meaningful"
+        );
+        let id1 = b.leaf(Leaf::Bytes(a1));
+        let id2 = b.leaf(Leaf::Bytes(a2));
+        assert_eq!(
+            id1, id2,
+            "equal-content Bytes leaves from distinct allocations must dedup to one id"
+        );
+        // A DIFFERENT byte content is a distinct leaf (dedup is by content, not blanket-collapse).
+        assert_ne!(b.leaf(Leaf::Bytes(Arc::from(&b"other"[..]))), id1);
+        // Str: same content-dedup across distinct Arc<str> allocations (String::from avoids any interning
+        // shortcut a shared literal might take).
+        let s1 = b.leaf(Leaf::Str(Arc::from(String::from("hello").as_str())));
+        let s2 = b.leaf(Leaf::Str(Arc::from(String::from("hello").as_str())));
+        assert_eq!(
+            s1, s2,
+            "equal-content Str leaves from distinct allocations must dedup to one id"
+        );
+    }
+
+    #[test]
     fn cheap_clone_leaf_payloads_share_the_allocation_not_deep_copy() {
         // The cheap-clone arc's core invariant: the text/byte-carrying leaves hold a REFCOUNTED payload
         // (`Str`/`Sym`/`Name` = `Arc<str>`, `Bytes` = `Arc<[u8]>`), so cloning a `Leaf` is an O(1)
