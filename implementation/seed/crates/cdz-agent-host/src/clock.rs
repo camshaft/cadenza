@@ -297,13 +297,15 @@ mod tests {
 
         // The loop closed: the reducer asked for the time, the REAL clock served it, the result folded back
         // and advanced the agent to `running` with a real recorded timestamp.
-        assert_eq!(session.kv().get(b"phase"), Some(&b"running"[..]));
+        assert_eq!(session.kv().get(b"phase").as_deref(), Some(&b"running"[..]));
         let started = session
             .kv()
             .get(b"started_at")
             .expect("started_at recorded");
         // The Now payload is a u64 LE 8-byte nanoseconds-since-epoch integer (the ClockExecutor spec).
+        // `get` now returns `Bytes` (KV-Bytes); borrow it as a slice for the length-checked try_into.
         let arr: [u8; 8] = started
+            .as_ref()
             .try_into()
             .expect("started_at is 8 bytes (u64 LE nanos)");
         let ns = u64::from_le_bytes(arr);
@@ -345,7 +347,10 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(replayed.kv().get(b"phase"), Some(&b"running"[..]));
+        assert_eq!(
+            replayed.kv().get(b"phase").as_deref(),
+            Some(&b"running"[..])
+        );
         assert_eq!(
             replayed.kv().get(b"started_at").map(|b| b.to_vec()),
             Some(live_started),
@@ -374,7 +379,7 @@ mod tests {
 
         // Never advanced to running (the time never came back), and the denial is logged (read the durable
         // log from the recording sink — log-decouple I5, no resident Vec).
-        assert_ne!(session.kv().get(b"phase"), Some(&b"running"[..]));
+        assert_ne!(session.kv().get(b"phase").as_deref(), Some(&b"running"[..]));
         assert!(captured
             .borrow()
             .iter()

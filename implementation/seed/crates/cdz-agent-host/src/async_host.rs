@@ -1047,7 +1047,8 @@ mod tests {
                     .unwrap()
                     .session()
                     .kv()
-                    .get(b"ran"),
+                    .get(b"ran")
+                    .as_deref(),
                 Some(&b"1"[..]),
                 "session {id} ran"
             );
@@ -1256,7 +1257,7 @@ mod tests {
 
         // B received A's message end to end: A.Emit → EmitExecutor route → B.Inbound → B folds → KV.
         assert_eq!(
-            b.session().kv().get(b"inbox"),
+            b.session().kv().get(b"inbox").as_deref(),
             Some(&b"hello-from-a"[..]),
             "B's reducer folded the message A emitted (cross-session messaging works end to end)"
         );
@@ -1346,7 +1347,7 @@ mod tests {
                 .unwrap()
                 .session()
                 .kv()
-                .get(b"bounced"),
+                .get(b"bounced").as_deref(),
             Some(&b"undeliverable"[..]),
             "the sender folded a delivery-failure bounce for its undeliverable Emit (not a silent drop)"
         );
@@ -1895,7 +1896,8 @@ mod tests {
                 .unwrap()
                 .session()
                 .kv()
-                .get(b"inbox"),
+                .get(b"inbox")
+                .as_deref(),
             Some(&b"resumed-msg"[..]),
             "the inbound held during suspension replays on resume + is folded (not dropped)"
         );
@@ -1988,7 +1990,8 @@ mod tests {
                 .unwrap()
                 .session()
                 .kv()
-                .get(b"inbox"),
+                .get(b"inbox")
+                .as_deref(),
             Some(&b"msg-a"[..]),
             "resumed target A's held inbound replays + folds (partition RELEASED it)"
         );
@@ -2114,7 +2117,7 @@ mod tests {
                 .unwrap()
                 .session()
                 .kv()
-                .get(b"bounced"),
+                .get(b"bounced").as_deref(),
             Some(&b"held-emit"[..]),
             "a held Emit to a target terminated-while-suspended BOUNCES to the sender (not dropped)"
         );
@@ -2193,7 +2196,8 @@ mod tests {
                 .unwrap()
                 .session()
                 .kv()
-                .get(b"woke"),
+                .get(b"woke")
+                .as_deref(),
             Some(&b"1"[..]),
             "an already-due timer fires up front, not starved by shutdown/inbox"
         );
@@ -2229,7 +2233,8 @@ mod tests {
                 .unwrap()
                 .session()
                 .kv()
-                .get(b"ran"),
+                .get(b"ran")
+                .as_deref(),
             Some(&b"1"[..]),
             "the session ran its turn through the wall-clock loop"
         );
@@ -2524,8 +2529,7 @@ mod tests {
         }
         fn ticks(kv: &Kv) -> u64 {
             kv.get(b"ticks")
-                .and_then(|b| std::str::from_utf8(b).ok())
-                .and_then(|s| s.parse().ok())
+                .and_then(|b| std::str::from_utf8(&b).ok().and_then(|s| s.parse().ok()))
                 .unwrap_or(0)
         }
     }
@@ -2634,8 +2638,7 @@ mod tests {
         }
         fn ticks(kv: &Kv) -> u64 {
             kv.get(b"ticks")
-                .and_then(|b| std::str::from_utf8(b).ok())
-                .and_then(|s| s.parse().ok())
+                .and_then(|b| std::str::from_utf8(&b).ok().and_then(|s| s.parse().ok()))
                 .unwrap_or(0)
         }
     }

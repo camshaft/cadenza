@@ -726,14 +726,14 @@ mod tests {
 
         // The loop ran model→shell→model→end_turn to quiescence and recorded the final answer.
         assert_eq!(
-            session.kv().get(b"answer"),
+            session.kv().get(b"answer").as_deref(),
             Some(&b"done: built-green"[..]),
             "the agent folded through model → shell tool-call → model → end_turn and recorded the answer"
         );
         // The REAL ShellExecutor ran `echo built-green` — its stdout is the tool result the reducer folded.
         let shell_out = session.kv().get(b"shell-out").expect("shell ran");
         assert_eq!(
-            String::from_utf8_lossy(shell_out).trim(),
+            String::from_utf8_lossy(&shell_out).trim(),
             "built-green",
             "the real ShellExecutor executed the tool-call command and its stdout folded back"
         );
@@ -753,7 +753,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(
-            replayed.kv().get(b"answer"),
+            replayed.kv().get(b"answer").as_deref(),
             Some(&b"done: built-green"[..])
         );
         assert_eq!(replayed.snapshot().kv_root, session.snapshot().kv_root);

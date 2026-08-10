@@ -643,7 +643,9 @@ where
         {
             Some(b) => {
                 let len = b.len();
-                let arr: [u8; 32] = b.try_into().map_err(|_| {
+                // `get` now returns `Bytes` (KV-Bytes, operator seq364); a `[u8; 32]` converts from a slice,
+                // so borrow the Bytes as a slice for the length-checked try_into (no leaf .to_vec()).
+                let arr: [u8; 32] = b.as_ref().try_into().map_err(|_| {
                     format!(
                         "genesis authorizer-hash is {len} bytes, expected a raw 32-byte content hash"
                     )
@@ -1073,7 +1075,8 @@ mod tests {
                 .unwrap()
                 .session()
                 .kv()
-                .get(b"count"),
+                .get(b"count")
+                .as_deref(),
             Some(&[1u8][..]),
             "the reducer's fold bumped its count counter — the agent ran"
         );
@@ -1503,7 +1506,11 @@ mod tests {
         assert!(!installed, "no authorizer-hash → nothing installed");
         // The seed step ran: the root identity landed in KV.
         assert_eq!(
-            session.session().kv().get(genesis_ct::KV_ROOT_IDENTITY),
+            session
+                .session()
+                .kv()
+                .get(genesis_ct::KV_ROOT_IDENTITY)
+                .as_deref(),
             Some(&b"root-id"[..])
         );
     }
@@ -1533,9 +1540,12 @@ mod tests {
         // The seed step still ran before the install failed — BOTH the root AND the recorded authorizer-hash
         // are in KV (the half-seeded state the doc warns about: seed is not rolled back on install Err).
         let kv = session.session().kv();
-        assert_eq!(kv.get(genesis_ct::KV_ROOT_IDENTITY), Some(&b"root"[..]));
         assert_eq!(
-            kv.get(genesis_ct::KV_AUTHORIZER_HASH),
+            kv.get(genesis_ct::KV_ROOT_IDENTITY).as_deref(),
+            Some(&b"root"[..])
+        );
+        assert_eq!(
+            kv.get(genesis_ct::KV_AUTHORIZER_HASH).as_deref(),
             Some(missing.as_bytes().as_slice()),
             "the authorizer-hash was seeded before the install step failed (half-booted)"
         );

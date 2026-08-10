@@ -712,13 +712,16 @@ mod tests {
 
         // The loop closed: the agent prompted the model, the executor invoked the transport, and the
         // completion folded back and advanced the agent to `answered`.
-        assert_eq!(session.kv().get(b"phase"), Some(&b"answered"[..]));
+        assert_eq!(
+            session.kv().get(b"phase").as_deref(),
+            Some(&b"answered"[..])
+        );
         let completion = session
             .kv()
             .get(b"completion")
             .expect("completion recorded");
         assert_eq!(
-            String::from_utf8_lossy(completion),
+            String::from_utf8_lossy(&completion),
             "claude-test says: hello",
             "the executor threaded model id + prompt through the transport and folded the completion back"
         );
@@ -733,7 +736,10 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(replayed.kv().get(b"phase"), Some(&b"answered"[..]));
+        assert_eq!(
+            replayed.kv().get(b"phase").as_deref(),
+            Some(&b"answered"[..])
+        );
         assert_eq!(replayed.snapshot().kv_root, session.snapshot().kv_root);
     }
 
@@ -758,7 +764,7 @@ mod tests {
                     EventBody::EffectResult {
                         result: EffectOutcome::Ok(Some(Payload::Inline(bytes))),
                         ..
-                    } => match kv.get(b"phase") {
+                    } => match kv.get(b"phase").as_deref() {
                         Some(b"timing") => {
                             kv.put(b"at".to_vec(), bytes.to_vec());
                             kv.put(b"phase".to_vec(), b"prompting".to_vec());
@@ -805,10 +811,10 @@ mod tests {
             .unwrap();
 
         // Both kinds routed to their own real executor across the multi-step loop.
-        assert_eq!(session.kv().get(b"phase"), Some(&b"done"[..]));
+        assert_eq!(session.kv().get(b"phase").as_deref(), Some(&b"done"[..]));
         assert!(session.kv().get(b"at").is_some(), "the clock leg ran");
         assert_eq!(
-            String::from_utf8_lossy(session.kv().get(b"completion").unwrap()),
+            String::from_utf8_lossy(&session.kv().get(b"completion").unwrap()),
             "claude-test says: hi"
         );
         assert_eq!(session.open_effects(), 0);

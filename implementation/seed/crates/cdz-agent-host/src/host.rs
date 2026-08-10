@@ -1779,7 +1779,10 @@ mod tests {
 
         // The agent ran to completion: it recorded "ran" and left nothing open.
         let hosted = host.get(&id).expect("session registered");
-        assert_eq!(hosted.session().kv().get(b"status"), Some(&b"ran"[..]));
+        assert_eq!(
+            hosted.session().kv().get(b"status").as_deref(),
+            Some(&b"ran"[..])
+        );
         assert_eq!(hosted.open_effects(), 0);
     }
 
@@ -1831,14 +1834,14 @@ mod tests {
 
         let kv = session.session().kv();
         assert_eq!(
-            kv.get(b"bootstrap/root-identity"),
+            kv.get(b"bootstrap/root-identity").as_deref(),
             Some(&b"root-identity-bytes"[..])
         );
         assert_eq!(
-            kv.get(b"bootstrap/authorizer-hash"),
+            kv.get(b"bootstrap/authorizer-hash").as_deref(),
             Some(&b"authz-hash-bytes"[..])
         );
-        assert_eq!(kv.get(b"bootstrap/context"), Some(&b"ctx"[..]));
+        assert_eq!(kv.get(b"bootstrap/context").as_deref(), Some(&b"ctx"[..]));
     }
 
     #[tokio::test]
@@ -1855,7 +1858,10 @@ mod tests {
             .await
             .expect("root-only seed ok");
         let kv = session.session().kv();
-        assert_eq!(kv.get(b"bootstrap/root-identity"), Some(&b"just-root"[..]));
+        assert_eq!(
+            kv.get(b"bootstrap/root-identity").as_deref(),
+            Some(&b"just-root"[..])
+        );
         assert_eq!(kv.get(b"bootstrap/authorizer-hash"), None);
         assert_eq!(kv.get(b"bootstrap/context"), None);
     }
@@ -2041,17 +2047,17 @@ mod tests {
         // family→key routing agrees with the host's genesis_ct literals, end to end.
         let kv = session.session().kv();
         assert_eq!(
-            kv.get(genesis_ct::KV_ROOT_IDENTITY),
+            kv.get(genesis_ct::KV_ROOT_IDENTITY).as_deref(),
             Some(&b"root-identity-bytes"[..]),
             "genesis/root payload folds to bootstrap/root-identity"
         );
         assert_eq!(
-            kv.get(genesis_ct::KV_AUTHORIZER_HASH),
+            kv.get(genesis_ct::KV_AUTHORIZER_HASH).as_deref(),
             Some(&b"authz-hash-bytes"[..]),
             "genesis/authorizer payload folds to bootstrap/authorizer-hash"
         );
         assert_eq!(
-            kv.get(genesis_ct::KV_CONTEXT),
+            kv.get(genesis_ct::KV_CONTEXT).as_deref(),
             Some(&b"ctx-blob"[..]),
             "genesis/context payload folds to bootstrap/context"
         );
@@ -2129,7 +2135,7 @@ mod tests {
         // The live session ran its turn (ClockAgent: inbound → Now → records "ran").
         let live_kv_root = hosted.session().snapshot().kv_root;
         assert_eq!(
-            hosted.session().kv().get(b"status"),
+            hosted.session().kv().get(b"status").as_deref(),
             Some(&b"ran"[..]),
             "the live session folded its turn to completion"
         );
@@ -2143,7 +2149,7 @@ mod tests {
         .await
         .expect("the durable log replays cleanly");
         assert_eq!(
-            recovered.kv().get(b"status"),
+            recovered.kv().get(b"status").as_deref(),
             Some(&b"ran"[..]),
             "recovery from the durable log reconstructs the KV the live turn produced"
         );
@@ -2241,7 +2247,12 @@ mod tests {
         // Drive the first instance to completion → it recorded "ran".
         host.deliver(&id, inbound_go(), None).await;
         assert_eq!(
-            host.get(&id).unwrap().session().kv().get(b"status"),
+            host.get(&id)
+                .unwrap()
+                .session()
+                .kv()
+                .get(b"status")
+                .as_deref(),
             Some(&b"ran"[..])
         );
         assert_eq!(host.len(), 1);
@@ -3057,7 +3068,8 @@ mod tests {
                 .unwrap()
                 .session()
                 .kv()
-                .get(b"status"),
+                .get(b"status")
+                .as_deref(),
             Some(&b"ran"[..])
         );
         // "b" untouched — independent state.
@@ -3091,7 +3103,10 @@ mod tests {
         assert_eq!(host.fire_due_timers(999).await, 0);
         assert_eq!(host.fire_due_timers(1000).await, 1);
         let hosted = host.get(&id).unwrap();
-        assert_eq!(hosted.session().kv().get(b"woke"), Some(&b"1"[..]));
+        assert_eq!(
+            hosted.session().kv().get(b"woke").as_deref(),
+            Some(&b"1"[..])
+        );
         assert_eq!(hosted.open_effects(), 0);
     }
 
@@ -3117,7 +3132,8 @@ mod tests {
                 .unwrap()
                 .session()
                 .kv()
-                .get(b"woke"),
+                .get(b"woke")
+                .as_deref(),
             Some(&b"1"[..])
         );
         assert_eq!(
@@ -3137,7 +3153,8 @@ mod tests {
                 .unwrap()
                 .session()
                 .kv()
-                .get(b"woke"),
+                .get(b"woke")
+                .as_deref(),
             Some(&b"1"[..])
         );
         // A further tick fires nothing (all timers settled).
@@ -3229,7 +3246,10 @@ mod tests {
         // Advance the live session so it has state to summarize (phase=working).
         host.deliver(&id, inbound_go(), None).await;
         let hosted = host.get(&id).unwrap();
-        assert_eq!(hosted.session().kv().get(b"phase"), Some(&b"working"[..]));
+        assert_eq!(
+            hosted.session().kv().get(b"phase").as_deref(),
+            Some(&b"working"[..])
+        );
         // The live session's tip seq is the non-interference witness (log-decouple I5: no resident Vec to
         // length-count; the tip seq advances per appended event, so an unchanged seq == the log didn't grow).
         let live_tip_seq = hosted.session().snapshot().seq;
@@ -3251,7 +3271,10 @@ mod tests {
         // trace on it (no new phase write, no summary), and its log didn't grow (the fork is a separate
         // Session; fork_for_query took &self).
         let hosted = host.get(&id).unwrap();
-        assert_eq!(hosted.session().kv().get(b"phase"), Some(&b"working"[..]));
+        assert_eq!(
+            hosted.session().kv().get(b"phase").as_deref(),
+            Some(&b"working"[..])
+        );
         assert_eq!(hosted.session().snapshot().seq, live_tip_seq);
     }
 
@@ -3479,7 +3502,7 @@ mod tests {
             cdz_kernel::event_ast::encode_capability_manifest(&manifest)
         };
         assert_eq!(
-            hosted.session().kv().get(b"capabilities"),
+            hosted.session().kv().get(b"capabilities").as_deref(),
             Some(&expected[..]),
             "the seed folds THE capabilities manifest (mechanism ∩ policy) — born knowing, not just any payload"
         );
@@ -3674,7 +3697,7 @@ mod tests {
         let now_only =
             CompositeExecutor::new().with_effect(effect_ct::NOW, Box::new(ClockExecutor::new()));
         assert_eq!(
-            hosted.session().kv().get(b"capabilities"),
+            hosted.session().kv().get(b"capabilities").as_deref(),
             Some(&expected_manifest(&now_only, &authz()).await[..]),
             "seeded baseline reflects the Now-only surface"
         );
@@ -3698,7 +3721,7 @@ mod tests {
                 Box::new(crate::HttpExecutor::new(NeverHttp)),
             );
         assert_eq!(
-            hosted.session().kv().get(b"capabilities"),
+            hosted.session().kv().get(b"capabilities").as_deref(),
             Some(&expected_manifest(&now_and_http, &authz()).await[..]),
             "push_capabilities_changed folded the NEW manifest (Http now usable) after add_executor"
         );
@@ -4024,7 +4047,7 @@ mod tests {
         let settled = host.settle_signature_query(&ce, None).await;
         assert!(settled, "an open control/signature id settles");
         assert_eq!(
-            host.session().kv().get(b"sig-err"),
+            host.session().kv().get(b"sig-err").as_deref(),
             Some(&b"1"[..]),
             "the reducer resumed on the Err arm (absent target → settled Err, not hung)"
         );
@@ -4049,7 +4072,7 @@ mod tests {
             .await;
         assert!(settled, "the id settles even on a reflect failure");
         assert_eq!(
-            host.session().kv().get(b"sig-err"),
+            host.session().kv().get(b"sig-err").as_deref(),
             Some(&b"1"[..]),
             "un-reflectable target bytes settle an Err the reducer folds, not a panic"
         );
@@ -4073,7 +4096,7 @@ mod tests {
             .await;
         assert!(matches!(outcome, Some(Ok(()))), "the turn ran");
         assert_eq!(
-            host.sessions.get(&id).unwrap().session().kv().get(b"sig-err"),
+            host.sessions.get(&id).unwrap().session().kv().get(b"sig-err").as_deref(),
             Some(&b"1"[..]),
             "the loop surfaced the signature query + settled the Err arm (no factory → absent target), \
              and the reducer resumed"
@@ -4197,7 +4220,7 @@ mod tests {
 
         // The set applied and the resolve read the latest — through the host's attached store.
         assert_eq!(
-            session.session().kv().get(b"resolved"),
+            session.session().kv().get(b"resolved").as_deref(),
             Some(Hash::of(b"compiler-wasm-v1").to_hex().as_bytes()),
             "store/set → store/resolve round-tripped through the attached NameStore"
         );

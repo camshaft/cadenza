@@ -534,7 +534,7 @@ mod tests {
             .await
             .expect("controller runs add → resolve-all → multicast without a kernel error");
         assert_eq!(
-            controller.session().kv().get(b"member_count"),
+            controller.session().kv().get(b"member_count").as_deref(),
             Some(&[2u8][..]),
             "resolve-all froze a 2-member set"
         );
@@ -572,12 +572,12 @@ mod tests {
                 .expect("a member folds its routed multicast Inbound without a kernel error");
         }
         assert_eq!(
-            member_a.session().kv().get(b"inbox"),
+            member_a.session().kv().get(b"inbox").as_deref(),
             Some(&b"broadcast!"[..]),
             "member A folded the multicast message end to end"
         );
         assert_eq!(
-            member_b.session().kv().get(b"inbox"),
+            member_b.session().kv().get(b"inbox").as_deref(),
             Some(&b"broadcast!"[..]),
             "member B folded the multicast message end to end"
         );

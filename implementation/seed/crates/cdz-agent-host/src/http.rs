@@ -811,9 +811,9 @@ mod tests {
 
         // The loop closed: the agent fetched, the executor performed the request, and the response body
         // folded back and advanced the agent to `fetched`.
-        assert_eq!(session.kv().get(b"phase"), Some(&b"fetched"[..]));
+        assert_eq!(session.kv().get(b"phase").as_deref(), Some(&b"fetched"[..]));
         assert_eq!(
-            String::from_utf8_lossy(session.kv().get(b"body").expect("body recorded")),
+            String::from_utf8_lossy(&session.kv().get(b"body").expect("body recorded")),
             "fetched https://ok.host/data"
         );
         assert_eq!(session.open_effects(), 0);
