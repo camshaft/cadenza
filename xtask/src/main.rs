@@ -6002,13 +6002,20 @@ fn ran_summary(r: &Ran) -> String {
     }
 }
 
-/// The set of case DESCRIPTIONS in a gate-baseline file (the `verdict\tdescription` lines, skipping
-/// the `#` header/blank lines). Pure, so the agreement lint is unit-tested without the filesystem.
-fn baseline_titles(text: &str) -> std::collections::BTreeSet<String> {
+/// The case DESCRIPTIONS in a gate-baseline file, in file order — the `verdict\tdescription` lines,
+/// skipping `#` header/blank lines, taking field 2. The shared parse behind both `baseline_titles` (a
+/// `BTreeSet`, for the cross-file agreement lint) and `baseline_title_lines` (a `Vec`, which preserves a
+/// within-file duplicate for the no-dup lint); each collects this iterator into its own container.
+fn baseline_title_iter(text: &str) -> impl Iterator<Item = String> + '_ {
     text.lines()
         .filter(|l| !l.starts_with('#') && !l.is_empty())
         .filter_map(|l| l.split_once('\t').map(|(_v, d)| d.to_string()))
-        .collect()
+}
+
+/// The set of case DESCRIPTIONS in a gate-baseline file. Pure, so the agreement lint is unit-tested
+/// without the filesystem.
+fn baseline_titles(text: &str) -> std::collections::BTreeSet<String> {
+    baseline_title_iter(text).collect()
 }
 
 /// Assert the three gate baselines (wasm / rust / rust-async) cover the SAME set of case descriptions.
@@ -6074,12 +6081,9 @@ pub(crate) fn baseline_titles_agree_lint(paths: &Paths) -> Result<(), String> {
 
 /// The case-titles in a baseline as they APPEAR (a `Vec`, NOT a set) — so a within-file DUPLICATE title
 /// is visible (the set-based `baseline_titles` silently dedups, which is why the agree-lint can't catch a
-/// dup). Same parse: skip `#`-header/blank lines, take field 2 of `verdict\tdescription`.
+/// dup). Same `baseline_title_iter` parse, collected into a `Vec` to preserve duplicates.
 fn baseline_title_lines(text: &str) -> Vec<String> {
-    text.lines()
-        .filter(|l| !l.starts_with('#') && !l.is_empty())
-        .filter_map(|l| l.split_once('\t').map(|(_v, d)| d.to_string()))
-        .collect()
+    baseline_title_iter(text).collect()
 }
 
 /// Assert no gate baseline has the SAME case-title on 2+ lines. A duplicate title is how a `gate --save`
