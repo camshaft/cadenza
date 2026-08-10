@@ -7126,3 +7126,6 @@ pass	sw4 windowed AVERAGE with the truncating divide — window sum over live le
 pass	sw5 DISTINCT-count over the window — a Set built per dispatch from the last-3 list measures dedupe, n=7 collides with the constant feed
 pass	sl1 a STRING slot grows by a mod-picked suffix and its BYTE-LEN seeds a nested handle — the composed face of the slot-clobber fix
 pass	tr2 TWO string fields in the tuple with only one phi-grown — the sibling rope field is undisturbed (slot-clobber extended witness)
+pass	ac1 a pipeline chain alternating a 1-ary and a 2-ary op — each result feeds the next call's argument while the thread advances
+pass	ac2 the chain's MIDDLE result routes the branch that picks WHICH op finishes the pipeline
+pass	ac3 the pipeline BOUNCES between two effects — inner B's result feeds outer E's op, whose result feeds B again

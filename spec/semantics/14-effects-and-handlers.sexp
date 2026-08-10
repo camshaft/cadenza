@@ -21989,3 +21989,54 @@
   (call   main (: 0 Int64)) (output (: 410 Int64))
   (call   main (: 1 Int64)) (output (: 412 Int64))
   (call   main (: -2 Int64)) (output (: 412 Int64)))
+
+
+; ── Pipeline chains through the dispatch thread (breaker ac) ──────────────────────────────────
+; Each op's RESULT feeds the next call's ARGUMENT while the handler state advances underneath.
+; ac1 alternates a 1-ary and a 2-ary op in one nested call chain. ac2 let-binds the chain's
+; MIDDLE result and routes the branch that picks WHICH op finishes the pipeline. ac3 BOUNCES the
+; chain between two effects — the inner handler's result feeds the outer effect's op, whose
+; result feeds the inner again, each thread advancing independently. All rows hand-computed;
+; all pass on wasm, rust, and rust-async.
+
+(case "ac1 a pipeline chain alternating a 1-ary and a 2-ary op — each result feeds the next call's argument while the thread advances"
+  (input  (do
+            (effect E (op inc (-> Int64 Int64)) (op mix (-> Int64 Int64 Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((inc (x) s (resume (+ x s) (+ s 1)))
+                 (mix (x y) s (resume (+ (* x y) s) (+ s 2))))
+                (E.inc (E.mix (E.inc 3) 10))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 94 Int64))
+  (call   main (: 0 Int64)) (output (: 34 Int64))
+  (call   main (: -3 Int64)) (output (: -2 Int64)))
+
+(case "ac2 the chain's MIDDLE result routes the branch that picks WHICH op finishes the pipeline"
+  (input  (do
+            (effect E (op inc (-> Int64 Int64)) (op dbl (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((inc (x) s (resume (+ x s) (+ s 1)))
+                 (dbl (x) s (resume (+ (* 2 x) s) (+ s 2))))
+                (let ((mid (E.dbl (E.inc 3))))
+                  (if (> mid 10) (E.inc mid) (E.dbl mid)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 30 Int64))
+  (call   main (: 0 Int64)) (output (: 17 Int64))
+  (call   main (: -9 Int64)) (output (: -46 Int64)))
+
+(case "ac3 the pipeline BOUNCES between two effects — inner B's result feeds outer E's op, whose result feeds B again"
+  (input  (do
+            (effect E (op inc (-> Int64 Int64)))
+            (effect B (op g (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle E n
+                ((inc (x) s (resume (+ x s) (+ s 1))))
+                (handle B 100
+                  ((g (x) t (resume (+ x t) (+ t 5))))
+                  (B.g (E.inc (B.g 3))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 213 Int64))
+  (call   main (: 0 Int64)) (output (: 208 Int64))
+  (call   main (: -4 Int64)) (output (: 204 Int64)))
