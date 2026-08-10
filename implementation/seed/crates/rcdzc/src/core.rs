@@ -1176,8 +1176,12 @@ pub enum Core {
     //= spec/capabilities/core-semantics.md#an-expression-evaluated-only-for-its-effect-yields-the-unit-value
     //# An expression evaluated only for the host call it makes MUST yield the value that host call returns, which is the unit value when the call's WIT signature returns unit.
     HostCall {
-        effect: String,
-        op: String,
+        // effect/op are drawn from a tiny fixed vocabulary (the declared effect interfaces + their ops)
+        // and ride every `Core::HostCall` clone (per `core_of` memo read + recursive Core walk). Behind
+        // `Rc<str>` so that clone is a refcount bump, not a String copy; converted to owned `String` only
+        // at the cold `HostImport` construction boundary (built once per distinct import, not per node).
+        effect: std::rc::Rc<str>,
+        op: std::rc::Rc<str>,
         args: Vec<StructId>,
         result: crate::ty::Ty,
     },

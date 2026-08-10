@@ -3556,7 +3556,7 @@ fn collect_used_ops_into(
         // A `Unit` arg carries no value on either boundary. So: skip a String/Unit HOST arg; recurse into a
         // peer arg (and any scalar/compound host arg) as before.
         Core::HostCall { args, effect, .. } => {
-            let peer_bound = db.effect_bindings.contains_key(&effect);
+            let peer_bound = db.effect_bindings.contains_key(&*effect);
             for arg in args {
                 match crate::infer::type_of(db, arg) {
                     Ty::Unit => {}
@@ -11427,7 +11427,7 @@ fn emit(
             // EFFECTS-UNIFICATION (U2): an escaping effect BOUND to a peer contract
             // (`db.effect_bindings`) is a PEER call — resolve it against the extern-import set and emit a
             // `CallExternImport`, exactly as a `Core::ExternCall` did. An unbound effect stays a host call.
-            if let Some(iface) = db.effect_bindings.get(&effect).cloned() {
+            if let Some(iface) = db.effect_bindings.get(&*effect).cloned() {
                 let index = layout.extern_index(&iface, &op).ok_or_else(|| {
                     // The peer op is not in `extern_order` — which the RESOURCE-ESCAPE emit paths
                     // (`emit_runtime_resource`/`emit_recursive_sum_resource`) do not populate: they carry

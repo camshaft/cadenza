@@ -983,8 +983,8 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 {
                     trace!(target: "rcdzc::lower", node = id.0, %effect, %op, "apply: host-delegated perform → Core::HostCall");
                     return Core::HostCall {
-                        effect,
-                        op,
+                        effect: effect.into(),
+                        op: op.into(),
                         args: args.to_vec(),
                         result,
                     };

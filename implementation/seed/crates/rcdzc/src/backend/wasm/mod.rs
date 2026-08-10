@@ -1111,7 +1111,7 @@ fn collect_host_arg_strings_at(db: &mut Db, id: crate::ast::StructId, out: &mut 
             // strings must NOT be laid in the data segment — doing so would trip the spurious `mem` import
             // (`needs_memory = !host_strings.is_empty()`) that the runtime-only peer envelope never supplies,
             // yielding an invalid consumer component.
-            let peer_bound = db.effect_bindings.contains_key(&effect);
+            let peer_bound = db.effect_bindings.contains_key(&*effect);
             if !peer_bound {
                 for a in &args {
                     if let Core::ConstStr(s) = crate::lower::core_of(db, *a) {

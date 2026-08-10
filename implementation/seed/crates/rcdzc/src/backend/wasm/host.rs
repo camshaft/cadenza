@@ -340,7 +340,7 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
             //# A scalar value that crosses between such components MUST cross by its component-model scalar representation and not as a handle, so that only a value the runtime owns is carried by handle and a scalar carries no runtime dependency.
             //= spec/contracts/component-abi.md#the-exchanged-signature-is-monomorphic
             //# A cross-component imported or exported signature by which components exchange values MUST be monomorphic, per §Generics Do Not Cross The Boundary, so that the exchanged interface names concrete types and a component binds a peer's export at a fixed instantiation the peer emitted rather than requesting an instantiation on demand.
-            let peer_bound = db.effect_bindings.contains_key(&effect);
+            let peer_bound = db.effect_bindings.contains_key(&*effect);
             let mut params = Vec::new();
             for &a in &args {
                 let at = crate::infer::type_of(db, a);
@@ -372,8 +372,8 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                 abi_val_type(&result)
             };
             let imp = HostImport {
-                effect,
-                op,
+                effect: effect.to_string(),
+                op: op.to_string(),
                 params,
                 result: result_abi,
             };
@@ -723,7 +723,7 @@ pub fn first_unrepresentable_host_op(
         // runtime-owned compound result/argument is emittable, not a decline. `abi_ok` picks the right
         // predicate for this call's surface: a peer-bound effect widens to the handle transport, a plain
         // host effect keeps the scalar-only boundary this increment emits.
-        let peer_bound = db.effect_bindings.contains_key(&effect);
+        let peer_bound = db.effect_bindings.contains_key(&*effect);
         let abi_ok = |ty: &Ty| {
             if peer_bound {
                 extern_abi_val_type(ty).is_some()
@@ -737,7 +737,7 @@ pub fn first_unrepresentable_host_op(
         // types its result `Ty::Any` (infer.rs), and its real emittability is decided when selection
         // resolves it — flagging `Any` here would falsely reject the working interpose-forward case.
         if !matches!(result, Ty::Unit) && !ty_undetermined(&result) && !abi_ok(&result) {
-            return Some((op, "result", result.render_name()));
+            return Some((op.to_string(), "result", result.render_name()));
         }
         // Each ARGUMENT: emittable iff Unit, String, Bytes, or (peer-bound) a handle-crossable value /
         // (host) a scalar. A `Bytes` arg now crosses as `list<u8>` at the host boundary (the `(ptr,len)`
@@ -749,7 +749,7 @@ pub fn first_unrepresentable_host_op(
                 && !ty_undetermined(&at)
                 && !abi_ok(&at)
             {
-                return Some((op, "argument", at.render_name()));
+                return Some((op.to_string(), "argument", at.render_name()));
             }
         }
         // Descend the args too (a host call may be nested in an arg).
