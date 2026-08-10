@@ -741,6 +741,16 @@ pub enum FleetCmd {
     /// hot files / mixed). Read-only: no gate, no push. The preview for the concurrent-gate scheduler
     /// (slices ii/iii wire the actual parallel gate + serial FF-push on top of this classification).
     BatchPlan,
+    /// Prove the concurrent-gate PRIMITIVE end-to-end (scope-split slice ii): spawn `n` trivial child
+    /// processes CONCURRENTLY (non-blocking), harvest them via the shared-deadline waiter, and report
+    /// whether their run time-spans actually OVERLAPPED — the sanity-check that the parallelism is real
+    /// (not lock/single-builder-slot serialized), which the live concurrent gate (slice ii-c) then relies
+    /// on. Diagnostic only: spawns `sleep`, touches no gate/worktree/trunk.
+    GateParallelProbe {
+        /// How many concurrent children to spawn (default 3).
+        #[arg(long, default_value = "3")]
+        n: usize,
+    },
     /// DISPATCH a merge-request as a CI-gated candidate PR (I3, operator-greenlit 2026-08-02): re-parent
     /// the `--ref` commit onto `origin/main` in a detached scratch worktree, push `cand/<agent>-<sha>`,
     /// `gh pr create --base main`, arm `gh pr merge --squash --auto`, and record the MR↔PR mapping in
@@ -1068,6 +1078,7 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
         FleetCmd::LaneOf { r#ref } => lane_of_cmd(&r#ref),
         FleetCmd::DispatchPlan { r#ref, agent } => dispatch_plan(&fleet, &r#ref, &agent),
         FleetCmd::BatchPlan => batch_plan(&fleet),
+        FleetCmd::GateParallelProbe { n } => gate_parallel_probe(n),
         FleetCmd::PublishCandidate {
             r#ref,
             agent,
@@ -9231,6 +9242,63 @@ fn batch_plan(fleet: &Fleet) {
         "note: parallel lanes can gate CONCURRENTLY (disjoint territory); serial lanes (shared compiler \
          core / hot files / mixed) gate one-at-a-time. The FF-push is always serialized (single-writer trunk)."
     );
+}
+
+/// `fleet gate-parallel-probe [--n N]`: prove the concurrent-gate primitive (scope-split slice ii) works
+/// end-to-end. Spawns `n` trivial `sleep` children NON-blocking (so they run at the OS level at once),
+/// harvests them with the shared-deadline waiter [`crate::wait_children_until`], and reports whether their
+/// run spans actually OVERLAPPED ([`crate::spans_overlap`]) — the concierge's sanity-check that the
+/// parallelism is real, not silently serialized. The live concurrent gate (slice ii-c) swaps the `sleep`
+/// children for `nix build .#checks.<arch>.local-gate` per lane worktree; this probe pins the harness.
+fn gate_parallel_probe(n: usize) {
+    let n = n.max(1);
+    let origin = std::time::Instant::now();
+    let mut spans: Vec<(u128, u128)> = Vec::new();
+    let mut children: Vec<(String, std::process::Child)> = Vec::new();
+    // Spawn all N up front (non-blocking) → they run CONCURRENTLY. Each sleeps ~1s; if the harness is
+    // truly parallel their spans overlap, and total wall-clock stays ~1s (not ~N s serialized).
+    for i in 0..n {
+        let started_ms = origin.elapsed().as_millis();
+        match Command::new("sleep").arg("1").spawn() {
+            Ok(child) => {
+                children.push((format!("probe-{i}"), child));
+                // Record the START now; the END is filled after the waiter returns (all ~co-terminate).
+                spans.push((started_ms, 0));
+            }
+            Err(e) => {
+                eprintln!("gate-parallel-probe: could not spawn child {i}: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+    let results = crate::wait_children_until(children, std::time::Duration::from_secs(30));
+    let end_ms = origin.elapsed().as_millis();
+    // All children co-terminate around the same instant (~1s sleep); stamp each span's end at harvest.
+    for s in spans.iter_mut() {
+        s.1 = end_ms;
+    }
+    let exited = results
+        .iter()
+        .filter(|(_, r)| matches!(r, Ok(Some(_))))
+        .count();
+    let overlapped = crate::spans_overlap(&spans);
+    println!(
+        "gate-parallel-probe: spawned {n} concurrent children, {exited} exited cleanly, total wall-clock {end_ms}ms.",
+    );
+    println!(
+        "  spans overlap: {overlapped} — {}",
+        if overlapped {
+            "PARALLELISM CONFIRMED (children ran concurrently, not serialized)"
+        } else {
+            "NO OVERLAP (children serialized — the concurrent harness is a no-op; investigate before trusting it)"
+        }
+    );
+    if n >= 2 && end_ms < 1500 {
+        println!(
+            "  wall-clock {end_ms}ms for {n}×~1s children ⇒ concurrent (serialized would be ~{}ms).",
+            n * 1000
+        );
+    }
 }
 
 /// What the scheduler should DO with one in-flight candidate PR, given whether GitHub has already

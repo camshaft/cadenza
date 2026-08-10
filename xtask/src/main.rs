@@ -748,6 +748,86 @@ fn wait_stages_with_timeout<const N: usize>(
     Ok(out.try_into().expect("N stages in → N statuses out"))
 }
 
+/// One child's harvested outcome from [`wait_children_until`]: `Ok(Some(status))` = exited (read
+/// success/fail), `Ok(None)` = hit the deadline and was killed (a hang, no verdict), `Err` = a
+/// `try_wait` error. Aliased so the waiter's return type stays legible (clippy type-complexity).
+type ChildOutcome = std::io::Result<Option<std::process::ExitStatus>>;
+
+/// Poll a DYNAMIC set of named children to exit under ONE shared wall-clock deadline, collecting EVERY
+/// child's outcome independently — the concurrent-gate waiter for scope-split parallel batching (model a,
+/// slice ii). Unlike [`wait_stages_with_timeout`] (fixed `[_; N]`, pipeline semantics: returns the first
+/// failure by index, kills all on the first timeout), this is for INDEPENDENT peers: a runtime `Vec` of
+/// lanes, and each lane's result stands alone (a green lane still lands even if a sibling lane reds or
+/// hangs). Returns, per child in input order, `Ok(Some(status))` (exited — caller reads success/fail),
+/// `Ok(None)` (this child hit the deadline and was KILLED — a hang, no verdict), or `Err` (a `try_wait`
+/// error). The children keep their spawned stdio (caller pipes/captures as it likes). Every still-running
+/// child is killed+reaped at the deadline so no nix builder orphans. `pub(crate)` so `fleet.rs`'s
+/// concurrent gate calls it. The children must already be SPAWNED (running concurrently at the OS level)
+/// before this is called — that's where the parallelism comes from; this only harvests them.
+pub(crate) fn wait_children_until(
+    children: Vec<(String, std::process::Child)>,
+    timeout: std::time::Duration,
+) -> Vec<(String, ChildOutcome)> {
+    let deadline = std::time::Instant::now() + timeout;
+    let mut slots: Vec<(String, Option<std::process::Child>, Option<ChildOutcome>)> = children
+        .into_iter()
+        .map(|(n, c)| (n, Some(c), None))
+        .collect();
+    loop {
+        let mut all_done = true;
+        for (_name, child, result) in slots.iter_mut() {
+            if result.is_some() {
+                continue;
+            }
+            match child.as_mut().unwrap().try_wait() {
+                Ok(Some(s)) => *result = Some(Ok(Some(s))),
+                Ok(None) => all_done = false,
+                Err(e) => *result = Some(Err(e)),
+            }
+        }
+        if all_done || std::time::Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    // Deadline (or all-done): any child still running is a hang → kill+reap it and record None (timed out).
+    for (_name, child, result) in slots.iter_mut() {
+        if result.is_none() {
+            if let Some(mut c) = child.take() {
+                let _ = c.kill();
+                let _ = c.wait();
+            }
+            *result = Some(Ok(None));
+        }
+    }
+    slots
+        .into_iter()
+        .map(|(n, _, r)| (n, r.expect("every slot resolved above")))
+        .collect()
+}
+
+/// Do a set of time-SPANS actually OVERLAP — the sanity-check the concurrent gate must pass (concierge
+/// 2026-08-10): lanes gated "in parallel" only WIN wall-clock if their runs truly overlap in time; if a
+/// lock / lease / single nix-builder-slot silently serialized them (span B starts only after span A
+/// ended), the parallelism is a NO-OP and we'd be reporting false throughput. Each span is
+/// `(start_ms, end_ms)` on a shared monotonic clock (elapsed millis from one origin — pure, so the check
+/// is unit-tested without real `Instant`s). Returns true iff SOME two spans overlap. A single span (or
+/// none) → false (nothing to overlap). A degenerate zero-width span never contributes an overlap.
+pub(crate) fn spans_overlap(spans: &[(u128, u128)]) -> bool {
+    let mut xs: Vec<(u128, u128)> = spans.iter().copied().filter(|(s, e)| e > s).collect();
+    xs.sort_by_key(|(s, _)| *s);
+    let mut max_end: Option<u128> = None;
+    for (s, e) in xs {
+        if let Some(m) = max_end
+            && s < m
+        {
+            return true; // this span starts before an earlier one ended → real overlap
+        }
+        max_end = Some(max_end.map_or(e, |m| m.max(e)));
+    }
+    false
+}
+
 /// A stage's binary could not be spawned at all (missing/not-executable) — distinct from it running
 /// and exiting non-zero, which is surfaced by its wait status.
 fn launch_fail(stage: &str, e: std::io::Error) -> ! {
@@ -9264,6 +9344,87 @@ mod trap_grading_tests {
         assert!(
             start.elapsed() < std::time::Duration::from_secs(5),
             "timeout must kill promptly, not wait out the 30s sleeper"
+        );
+    }
+
+    #[test]
+    fn spans_overlap_detects_real_concurrency() {
+        // Two spans that share time → overlap (real parallelism).
+        assert!(spans_overlap(&[(0, 100), (50, 150)]));
+        // Adjacent/serialized spans (B starts exactly when A ends) → NO overlap (the serialized case the
+        // sanity-check must catch — parallelism was a no-op).
+        assert!(!spans_overlap(&[(0, 100), (100, 200)]));
+        assert!(!spans_overlap(&[(0, 100), (200, 300)]));
+        // One span fully inside another → overlap.
+        assert!(spans_overlap(&[(0, 500), (100, 200)]));
+        // Unsorted input, three spans, only the last two overlap → still detected.
+        assert!(spans_overlap(&[(300, 400), (0, 100), (350, 450)]));
+        // A single span (or none) → nothing to overlap.
+        assert!(!spans_overlap(&[(0, 100)]));
+        assert!(!spans_overlap(&[]));
+        // Degenerate zero-width spans never contribute an overlap.
+        assert!(!spans_overlap(&[(50, 50), (50, 50)]));
+    }
+
+    #[test]
+    fn wait_children_until_collects_every_independent_result() {
+        // The concurrent-gate waiter: N children spawned up front run concurrently; each result stands
+        // alone (a fast success + a non-zero exit both reported, in input order). Spawn 3 fast children.
+        let mk = |script: &str| {
+            std::process::Command::new("sh")
+                .args(["-c", script])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .expect("spawn sh")
+        };
+        let results = wait_children_until(
+            vec![
+                ("green".into(), mk("exit 0")),
+                ("red".into(), mk("exit 5")),
+                ("green2".into(), mk("exit 0")),
+            ],
+            std::time::Duration::from_secs(10),
+        );
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0].0, "green");
+        assert!(matches!(&results[0].1, Ok(Some(s)) if s.success()));
+        // The RED sibling stands alone — it doesn't abort the others (unlike the pipeline waiter).
+        assert!(matches!(&results[1].1, Ok(Some(s)) if !s.success()));
+        assert_eq!(results[2].0, "green2");
+        assert!(matches!(&results[2].1, Ok(Some(s)) if s.success()));
+    }
+
+    #[test]
+    fn wait_children_until_kills_a_hanging_child_but_keeps_the_others_results() {
+        // A hung lane is KILLED at the deadline → Ok(None) (timed out, no verdict), while a fast sibling
+        // still reports its real exit. Concurrent (not pipeline): one hang doesn't lose the others.
+        let start = std::time::Instant::now();
+        let fast = std::process::Command::new("sh")
+            .args(["-c", "exit 0"])
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn fast");
+        let hang = std::process::Command::new("sleep")
+            .arg("30")
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn sleep");
+        let results = wait_children_until(
+            vec![("fast".into(), fast), ("hang".into(), hang)],
+            std::time::Duration::from_millis(150),
+        );
+        assert!(
+            matches!(&results[0].1, Ok(Some(s)) if s.success()),
+            "the fast lane's real result survives"
+        );
+        assert!(
+            matches!(&results[1].1, Ok(None)),
+            "the hung lane is killed → Ok(None) (timed out)"
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "must kill promptly at the deadline, not wait out the 30s sleeper"
         );
     }
 
