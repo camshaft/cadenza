@@ -8386,7 +8386,7 @@ mod runtime_abi_tests {
             panic!("expected a Record");
         };
         // Exactly the three protocol field names, in sorted-key order, mapped to the guest param types.
-        let keys: Vec<&str> = fields.keys().map(|s| s.name.as_str()).collect();
+        let keys: Vec<&str> = fields.keys().map(|s| &*s.name).collect();
         assert_eq!(keys, vec!["content_type", "payload", "resumes"]);
         assert_eq!(fields.get(&Symbol::plain("content_type")), Some(&Ty::Bool));
         assert_eq!(fields.get(&Symbol::plain("payload")), Some(&Ty::Bytes));
