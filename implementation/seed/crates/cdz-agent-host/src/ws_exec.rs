@@ -62,6 +62,18 @@ pub trait WsConnRegistry {
     fn send_frame(&self, conn_id: &str, frame: Bytes) -> WsSendResult;
 }
 
+/// An `Rc<R>` is a [`WsConnRegistry`] whenever `R` is — so a `WsSendExecutor<Rc<LiveWsConnRegistry>>` sends
+/// through the SAME shared node registry the [`AsyncAgentHost`](crate::AsyncAgentHost) loop drains
+/// `WsControlOp`s into (federation F0→F1 wiring). The registry uses interior mutability (`&self` methods over a
+/// `RefCell`), so a shared `Rc` handle is the right way to give the loop AND every session's executor the one
+/// node-scoped map without moving ownership. Single-threaded (`Rc`, not `Arc`) — the loop + executors are all
+/// on the one `!Send` task.
+impl<R: WsConnRegistry> WsConnRegistry for std::rc::Rc<R> {
+    fn send_frame(&self, conn_id: &str, frame: Bytes) -> WsSendResult {
+        (**self).send_frame(conn_id, frame)
+    }
+}
+
 /// The `ws/send` executor over a connection registry `R`. Owns no policy — the kernel Cedar-authorized the
 /// effect's `target` (conn-id) before dispatch; this executor only routes the frame to the sink.
 pub struct WsSendExecutor<R: WsConnRegistry> {

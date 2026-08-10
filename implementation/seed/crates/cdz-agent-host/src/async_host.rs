@@ -383,6 +383,27 @@ pub struct AsyncAgentHost {
     /// the registry is an index over it).
     #[cfg(feature = "live-aws-storage")]
     session_registry: Option<crate::session_registry::DynamoSessionRegistry>,
+    /// The ws CONNECTION REGISTRY (THE OUTPOST federation, `live-ws`) — the ONE node-scoped
+    /// [`LiveWsConnRegistry`](crate::ws_socket::LiveWsConnRegistry) that maps a conn-id to its live outbound
+    /// sink. The `!Send` registry lives HERE on the loop task (a conn-id is a node-global capability token —
+    /// design-hub-federation Layer-0 Q4: one shared registry per node, so any session's reducer can `ws/send`
+    /// to any conn-id it holds; Cedar gates the target). The [`WsListener`](crate::ws_listen)/`dial_hub` +
+    /// [`WsSendExecutor`](crate::WsSendExecutor)/[`WsDialExecutor`](crate::WsDialExecutor) all touch it only via
+    /// the [`WsControlOp`](crate::ws_socket::WsControlOp) channel below (they run on `Send` tasks + can't hold
+    /// the `!Send` registry), which the loop DRAINS + APPLIES per turn — the same defer-to-loop shape as
+    /// `lifecycle_rx`.
+    #[cfg(feature = "live-ws")]
+    ws_conns: std::rc::Rc<crate::ws_socket::LiveWsConnRegistry>,
+    /// The [`WsControlOp`](crate::ws_socket::WsControlOp) receiver — the listener/dialer `Register`/`Deregister`
+    /// connection sinks here; the loop drains it after each turn + applies each op against `ws_conns`. Paired
+    /// with `ws_control_tx` (cloned to the listener/dialer + wired executors).
+    #[cfg(feature = "live-ws")]
+    ws_control_rx: crate::ws_socket::WsControlReceiver,
+    /// Retained sender for the ws-control channel — cloned to the [`WsListener`]/`dial_hub` (which Register on
+    /// accept/connect) so they route registry mutations onto the loop. The loop drops its own copy at start so
+    /// the channel closes when the last producer drops.
+    #[cfg(feature = "live-ws")]
+    ws_control_tx: crate::ws_socket::WsControlSender,
 }
 
 impl AsyncAgentHost {
@@ -464,6 +485,8 @@ impl AsyncAgentHost {
         let (tx, rx) = mpsc::unbounded_channel();
         let (admin_tx, admin_rx) = mpsc::unbounded_channel();
         let (reply_settle_tx, reply_settle_rx) = crate::reply_exec::reply_settle_channel();
+        #[cfg(feature = "live-ws")]
+        let (ws_control_tx, ws_control_rx) = crate::ws_socket::ws_control_channel();
         AsyncAgentHost {
             host,
             rx,
@@ -478,6 +501,12 @@ impl AsyncAgentHost {
             reply_settle_tx,
             #[cfg(feature = "live-aws-storage")]
             session_registry: None,
+            #[cfg(feature = "live-ws")]
+            ws_conns: std::rc::Rc::new(crate::ws_socket::LiveWsConnRegistry::new()),
+            #[cfg(feature = "live-ws")]
+            ws_control_rx,
+            #[cfg(feature = "live-ws")]
+            ws_control_tx,
         }
     }
 
@@ -521,6 +550,28 @@ impl AsyncAgentHost {
     /// listener (or a test) feeds. Each [`AdminRequest`] carries a oneshot the loop replies on.
     pub fn admin_channel(&self) -> AdminChannel {
         self.admin_tx.clone()
+    }
+
+    /// A cloneable [`WsControlSender`](crate::ws_socket::WsControlSender) — the seam the ws
+    /// [`WsListener`](crate::ws_listen)/`dial_hub` route connection `Register`/`Deregister` mutations onto, and
+    /// the [`WsSendExecutor`](crate::WsSendExecutor)/[`WsDialExecutor`](crate::WsDialExecutor) reach the shared
+    /// node registry through (THE OUTPOST federation, `live-ws`). The loop drains the paired receiver + applies
+    /// each op against its `!Send` [`LiveWsConnRegistry`](crate::ws_socket::LiveWsConnRegistry) after each turn
+    /// (the defer-to-loop shape, like [`lifecycle_channel`](Self::lifecycle_channel)). Bind a listener with
+    /// this + the [`inbox`](Self::inbox); boot-dial a hub with `dial_hub(url, conn_id, session, inbox, this, …)`.
+    #[cfg(feature = "live-ws")]
+    pub fn ws_control_channel(&self) -> crate::ws_socket::WsControlSender {
+        self.ws_control_tx.clone()
+    }
+
+    /// A shared [`Rc`] handle to the loop's node-scoped ws connection registry — the daemon clones this into
+    /// the [`WsSendExecutor`](crate::WsSendExecutor) (via the executor-set builder) so a session's `ws/send`
+    /// resolves a conn-id against the SAME map the loop drains `WsControlOp`s into. `Rc` (single-threaded loop),
+    /// interior-mutable (`&self` methods), so the clone shares one map — the sole ws actor set + this loop all
+    /// see the same live connections (design-hub-federation Layer-0 Q4: one shared registry per node).
+    #[cfg(feature = "live-ws")]
+    pub fn ws_conn_registry(&self) -> std::rc::Rc<crate::ws_socket::LiveWsConnRegistry> {
+        std::rc::Rc::clone(&self.ws_conns)
     }
 
     /// Mutable access to the registry (to `spawn` sessions before/around running the loop). During the
@@ -574,6 +625,12 @@ impl AsyncAgentHost {
             reply_settle_tx,
             #[cfg(feature = "live-aws-storage")]
             session_registry,
+            #[cfg(feature = "live-ws")]
+            ws_conns,
+            #[cfg(feature = "live-ws")]
+            mut ws_control_rx,
+            #[cfg(feature = "live-ws")]
+            ws_control_tx,
         } = self;
 
         // Drop OUR retained inbox sender so the channel closes once every EXTERNAL producer drops its clone.
@@ -590,6 +647,13 @@ impl AsyncAgentHost {
         // DRAINED synchronously (try_recv) after each deliver like lifecycle_rx — a ReplySettle is only ever
         // produced BY a deliver on this same task (a handler's effect/reply dispatch), so nothing to await.
         drop(reply_settle_tx);
+        // Same for the ws-control channel (THE OUTPOST federation, live-ws): drop our retained sender so the
+        // receiver isn't kept open by the loop itself (the listener/dialer + wired ws executors hold their own
+        // clones from `ws_control_channel()`). DRAINED synchronously (try_recv) after each deliver like
+        // lifecycle_rx — a Register/Deregister is produced by a connection task or a ws/dial dispatch, and the
+        // registry mutation is applied on this task where the `!Send` registry lives.
+        #[cfg(feature = "live-ws")]
+        drop(ws_control_tx);
         // Same for the admin channel: drop our retained sender so `admin_rx.recv()` yields `None` once the
         // last external admin producer (the socket listener) drops its clone. The admin channel closing is
         // NOT a loop-exit condition on its own (an admin-less run still serves inbound + timers) — a closed
@@ -796,6 +860,17 @@ impl AsyncAgentHost {
             // fold each onto the caller's open Deferred effect now that `&mut host` is free. Infallible (a
             // deferred-effect settle can't corrupt the log; an absent/settled id is a benign no-op).
             apply_reply_settles(&mut host, &mut reply_settle_rx).await;
+
+            // Apply any ws connection-registry mutations the listener/dialer or a ws/dial dispatch produced
+            // this iteration (THE OUTPOST federation, live-ws): a Register (new hub/peer conn on accept/connect)
+            // or Deregister (conn closed) was routed here rather than touching the `!Send` registry off-task.
+            // Drain synchronously + apply against the node's shared registry — a subsequent ws/send resolves
+            // the conn-id against it. Like lifecycle_rx, the ops are consumed on THIS task, so there's nothing
+            // to await; unbounded try_recv drains all pending.
+            #[cfg(feature = "live-ws")]
+            while let Ok(op) = ws_control_rx.try_recv() {
+                ws_conns.apply_control(op);
+            }
 
             // A lifecycle op may have RESUMED a session (§lifecycle I4): replay any inbound held for a
             // now-un-suspended target. Deliver each in-place (still-suspended ones stay held). Partition:
@@ -1053,6 +1128,73 @@ mod tests {
                 "session {id} ran"
             );
         }
+    }
+
+    #[cfg(feature = "live-ws")]
+    #[tokio::test]
+    async fn the_loop_drains_ws_control_ops_into_the_shared_registry_reachable_by_ws_send() {
+        // Federation F0→F1 wiring (slice 1+2) e2e: a Register routed onto ws_control_channel() is DRAINED by
+        // the loop per-turn into its node-scoped LiveWsConnRegistry, and a WsSendExecutor built over the SAME
+        // shared registry (ws_conn_registry() Rc clone) then resolves the conn-id + writes to the sink. Proves
+        // the loop drain + the shared-registry seam the daemon wires ws/send/ws/dial through.
+        use crate::ws_socket::{mint_conn_id, WsControlOp};
+        use crate::{WsConnRegistry, WsSendResult};
+
+        let mut host = AgentHost::new();
+        host.spawn(SessionId::new(Hash::of(b"a")), mark_host());
+        let async_host = AsyncAgentHost::new(host);
+        let inbox = async_host.inbox();
+        // Grab the shared-registry clone + the ws-control sender BEFORE run consumes self. The Rc clone shares
+        // the SAME map the loop drains into, so a WsSendExecutor over it sees connections the loop registered.
+        let shared_conns = async_host.ws_conn_registry();
+        let ws_control = async_host.ws_control_channel();
+
+        // A live connection's outbound sink (what the listener/dialer would Register). Route the Register onto
+        // the control channel — the loop applies it on its next per-turn drain.
+        let conn_id = mint_conn_id();
+        let (sink_tx, mut sink_rx) = tokio::sync::mpsc::unbounded_channel::<bytes::Bytes>();
+        ws_control
+            .send(WsControlOp::Register {
+                conn_id,
+                sink: sink_tx,
+            })
+            .unwrap();
+
+        // Feed one inbound so the loop runs a turn (the ws-control drain fires AFTER each deliver), then drop
+        // the producers so the loop drains + returns.
+        let (_sd_tx, sd_rx) = tokio::sync::oneshot::channel();
+        inbox
+            .send(Inbound {
+                session: SessionId::new(Hash::of(b"a")),
+                body: go(),
+                cause: None,
+                reply_to: None,
+            })
+            .unwrap();
+        drop(inbox);
+        drop(ws_control);
+        let _host = async_host
+            .run(sd_rx, || 0)
+            .await
+            .expect("clean shutdown, no kernel error");
+
+        // After the loop drained the Register, the shared registry (our pre-grabbed Rc clone) holds the conn —
+        // routing a frame through it (the WsConnRegistry seam a WsSendExecutor is built over) reaches the sink.
+        assert_eq!(
+            shared_conns.len(),
+            1,
+            "the loop drained the Register into the shared registry"
+        );
+        let sent = shared_conns.send_frame(&conn_id.to_hex(), bytes::Bytes::from_static(b"frame"));
+        assert!(
+            matches!(sent, WsSendResult::Delivered),
+            "ws/send resolves the loop-registered conn-id + delivers, got {sent:?}"
+        );
+        assert_eq!(
+            sink_rx.try_recv().ok().as_deref(),
+            Some(&b"frame"[..]),
+            "the frame reached the connection's outbound sink through the shared registry"
+        );
     }
 
     #[tokio::test]

@@ -201,6 +201,33 @@ pub struct LiveExecutorSet {
     /// wired (an unhandled userspace family falls through to the kernel's unhandled-effect path as before).
     /// The live handler resolver is built per-session from the host's shared canonical store, passed to `build`.
     userspace_effects: Option<UserspaceEffectWiring>,
+    /// THE OUTPOST federation ws wiring (`live-ws`), if the daemon wired it. Set via [`with_ws`](Self::with_ws)
+    /// at boot from the loop's [`AsyncAgentHost::ws_conn_registry`](crate::AsyncAgentHost::ws_conn_registry) +
+    /// [`ws_control_channel`](crate::AsyncAgentHost::ws_control_channel) + [`inbox`](crate::AsyncAgentHost::inbox).
+    /// When present, `build` wires each installed session's `ws/send` ([`WsSendExecutor`](crate::WsSendExecutor)
+    /// over the shared node registry) + `ws/dial` ([`WsDialExecutor`](crate::WsDialExecutor)) so a reducer can
+    /// federate. `None` (a build without `live-ws` wiring) = no ws effects wired. The field exists only when
+    /// BOTH `live-net` (this struct) AND `live-ws` are compiled — same dual-gate as `blob_store`.
+    #[cfg(feature = "live-ws")]
+    ws: Option<WsWiring>,
+}
+
+/// The boot-time ws collaborators for THE OUTPOST federation (`live-ws`), wired ONCE by the daemon + shared
+/// across every session's `build`. The `ws/send` executor sends through `conns` (the ONE node registry the loop
+/// drains); the `ws/dial` executor mints a conn-id + spawns the dial, routing `Register`/frames through
+/// `control_tx`/`inbox`. Grouped because a federation session needs both the send + dial surface over the same
+/// node-scoped connection set.
+#[cfg(all(feature = "live-net", feature = "live-ws"))]
+#[derive(Clone)]
+pub struct WsWiring {
+    /// Shared handle to the loop's node connection registry ([`AsyncAgentHost::ws_conn_registry`]) — the
+    /// `WsSendExecutor` resolves a conn-id against the SAME map the loop drains `WsControlOp`s into.
+    conns: std::rc::Rc<crate::ws_socket::LiveWsConnRegistry>,
+    /// The loop's ws-control sender ([`AsyncAgentHost::ws_control_channel`]) — the `WsDialExecutor`'s spawned
+    /// dial `Register`s its sink here for the loop to apply.
+    control_tx: crate::ws_socket::WsControlSender,
+    /// The host loop's inbox — the `WsDialExecutor`'s dial surfaces `ws/connect`/frame/`ws/disconnect` events here.
+    inbox: crate::Inbox,
 }
 
 /// The boot-time collaborators the userspace-effect executors need, wired ONCE by the daemon and shared across
@@ -247,7 +274,29 @@ impl LiveExecutorSet {
             #[cfg(feature = "live-aws-storage")]
             blob_store: None,
             userspace_effects: None,
+            #[cfg(feature = "live-ws")]
+            ws: None,
         })
+    }
+
+    /// Wire THE OUTPOST federation ws collaborators (`live-ws`) so each built session gets the `ws/send` +
+    /// `ws/dial` effects. Called ONCE at daemon boot with the loop's shared connection registry
+    /// ([`AsyncAgentHost::ws_conn_registry`](crate::AsyncAgentHost::ws_conn_registry)), ws-control sender
+    /// ([`ws_control_channel`](crate::AsyncAgentHost::ws_control_channel)), and [`inbox`](crate::AsyncAgentHost::inbox).
+    /// Without this, a built session serves no ws effects (a non-federating build).
+    #[cfg(feature = "live-ws")]
+    pub fn with_ws(
+        mut self,
+        conns: std::rc::Rc<crate::ws_socket::LiveWsConnRegistry>,
+        control_tx: crate::ws_socket::WsControlSender,
+        inbox: crate::Inbox,
+    ) -> Self {
+        self.ws = Some(WsWiring {
+            conns,
+            control_tx,
+            inbox,
+        });
+        self
     }
 
     /// Wire the userspace-effects loop collaborators (design DESIGN-userspace-effects I3/I4) so each built
@@ -435,6 +484,38 @@ impl ExecutorSetBuilder for LiveExecutorSet {
                         )),
                     );
                 }
+            }
+            c
+        };
+        // THE OUTPOST federation: wire `ws/send` + `ws/dial` when the daemon wired the ws collaborators
+        // (`live-ws`). ws/send routes a frame to a live conn through the SHARED node registry (the SAME map the
+        // loop drains WsControlOps into — an Rc clone, so this session sends over the node's connections);
+        // ws/dial mints a conn-id, spawns dial_hub, returns the id (reducer-emittable federation dial). Cedar
+        // gates WHICH hubs/conns a session may dial/send on the effect target (egress/SSRF guard), so wiring the
+        // mechanism for all is safe — same posture as shell/blob. Both metered.
+        #[cfg(feature = "live-ws")]
+        let composite = {
+            let mut c = composite;
+            if let Some(ws) = &self.ws {
+                c = c
+                    .with_effect(
+                        effect_ct::WS_SEND,
+                        Box::new(MeteredExecutor::new(
+                            Box::new(crate::WsSendExecutor::new(std::rc::Rc::clone(&ws.conns))),
+                            m.clone(),
+                        )),
+                    )
+                    .with_effect(
+                        effect_ct::WS_DIAL,
+                        Box::new(MeteredExecutor::new(
+                            Box::new(crate::WsDialExecutor::new(
+                                ws.inbox.clone(),
+                                ws.control_tx.clone(),
+                                *id,
+                            )),
+                            m.clone(),
+                        )),
+                    );
             }
             c
         };
