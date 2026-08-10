@@ -908,6 +908,7 @@ pass	a RECORD used as a map key hashes and matches by its field SET, independent
 pass	a RECORD with a closure field as a map key is rejected (the record face of the compound descent)
 pass	a RECORD with a nested TUPLE field crosses the direct-call boundary
 pass	a RECURSIVE effectful walk accumulates into a list-state handler
+pass	a RECURSIVE memoizing demand with let-wrapped resumes folds through the group over a state handler
 pass	a RECURSIVE sum as a Map key hits and misses by structural content
 pass	a RECURSIVE sum with a record payload walks an environment chain by depth and tag search
 pass	a RECURSIVE tree evaluator resolves variables through a READER effect with a Map-state handler

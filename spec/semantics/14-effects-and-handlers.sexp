@@ -11300,6 +11300,43 @@
             (export run-then-get)))
   (output (: 50 Int64)))
 
+(case "a RECURSIVE memoizing demand with let-wrapped resumes folds through the group over a state handler"
+  (doc    "The recursive companion of the memoized-DB pins above — a self-hosting compiler's `demand` that
+           RECURSES into a node's child, with the on-miss `compute` binding the recursive result in a
+           `let` (`(let ((a (demand child))) (let ((b (demand child))) (- (+ a b) b)))`). The get/put/kids
+           group threads the state slot through the recursion, and each arm resumes through a `let`-wrapped
+           or bare value. `run 3`: `demand 3` misses → `compute 3` → `kids 3` = Some 2 → `a = demand 2`,
+           `b = demand 2`, value `(+ a b) - b` = `a`; `demand 2` → Some 1 → likewise = `demand 1`; `demand 1`
+           → Some 0 → = `demand 0`; `demand 0` → `kids 0` = None → 0. So the whole chain returns 0 (the
+           `+ b - b` cancels at every level, and the leaf is 0). A drift in the group's state-slot threading
+           or the `let`-wrapped-resume peel across the recursion would shift the leaf/cancellation.
+           STANDALONE (no imports) — exercises the recursive memoize-demand + let-binding fold path the
+           existing non-recursive memoize pins don't, and which slices touching `Core::Let.bindings` stress
+           (breaker dpd-control-A).")
+  (input  (do
+            (effect St
+              (op get (-> Int64 (Option Int64)))
+              (op put (-> (Tuple Int64 Int64) Unit))
+              (op kids (-> Int64 (Option Int64))))
+            (def (demand (: id Int64))
+              (match (St.get id)
+                (((. Option Some) v) v)
+                (((. Option None) _) (cache id (compute id)))))
+            (def (cache (: id Int64) (: v Int64)) (match (St.put (tuple id v)) (_ v)))
+            (def (compute (: id Int64))
+              (match (St.kids id)
+                (((. Option Some) childId)
+                  (let ((a (demand childId))) (let ((b (demand childId))) (- (+ a b) b))))
+                (((. Option None) _) id)))
+            (def (main (: root Int64))
+              (handle St root
+                ((get (id) s (resume ((. Option None) unit) s))
+                 (put (pair) s (match pair ((tuple _ _) (resume unit s))))
+                 (kids (id) s (resume (if (<= id 0) ((. Option None) unit) ((. Option Some) (- id 1))) s)))
+                (demand root)))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 0 Int64)))
+
 (case "a helper called TWICE threads its first write so the second call HITS the memoized value"
   (doc    "The cumulative-loss companion of the single-demand case above — the WIDER witness that a
            state-advancing helper's write survives across MULTIPLE later calls, not just one. `demand`
