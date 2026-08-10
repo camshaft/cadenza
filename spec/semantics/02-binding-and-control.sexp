@@ -5247,6 +5247,18 @@
   (output (: 42 Int64))
   (warns  CDZ0305 (message "always traps but its value is never used")))
 
+(case "an unprojected element whose constant zero-denominator Rational.of traps is elided but earns a CDZ0305 warning"
+  (doc    "The rational face of the dead-trap warning, completing the trap-KIND axis: `(. (tuple 42
+           (Rational.of 1 0)) 0)` yields 42 (element 1's `(Rational.of 1 0)` has a zero denominator, which
+           the fold proves has no rational value and traps, but it is never projected, so it is unobserved
+           and elided). The build surfaces the non-error CDZ0305 dead-trap warning as the ÷0/%0/overflow
+           cases do. Pins that the dead-trap diagnostic covers the zero-denominator rational construction —
+           the fourth provable trap kind of core-semantics.md §285 — so the ruling is about observation, not
+           the trap kind. Wasm-graded (the run paths skip the (warns ..) check, not fail it).")
+  (input  (do (def (main) (. (tuple 42 (Rational.of 1 0)) 0)) (export main)))
+  (output (: 42 Int64))
+  (warns  CDZ0305 (message "always traps but its value is never used")))
+
 ; ── The elision ruling is PURE-only: an unused binding whose init PERFORMS is NOT elidable ───────────
 ; The cases above establish that an unreferenced binding's init MAY be elided — for PURE inits, whose
 ; only observable is the value (and the trap observation would force). An init that PERFORMS an effect
