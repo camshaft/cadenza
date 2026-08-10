@@ -3492,6 +3492,24 @@
   (call   main (: 5 Int64))   (output (: 6 Int64))
   (call   main (: -1 Int64))  (trap "unreachable"))
 
+(case "@ensures on a MODULE export is enforced when the def is called across the module-access boundary"
+  (doc    "The body-EXIT companion of the @requires-across-a-module case above: it pins the POSTCONDITION
+           rewrite half — `(let ((ret BODY)) (if Q ret (trap …)))` — travels with a module export too, not only
+           the precondition `(if PRE …)` half. `m` exports `dec`, guarded by `@ensures(>= ret 0)` over `(dec x)
+           = x - 1`; `main` calls `((. m dec) v)`. main(3): `dec` returns 2, `2 >= 0` holds → 2 flows through the
+           member-access call. main(0): `dec` returns -1, `-1 >= 0` is FALSE → the postcondition traps at
+           body-EXIT, THROUGH the member access. Pins that BOTH verify_enforce rewrite halves (entry-check and
+           exit-check) are properties of the def and survive the module boundary — a postcondition dropped on
+           the module-access path would leak a -1 for main(0). Runtime arg via main's param so nothing folds.")
+  (input  (do
+            (module m
+              (@ (ensures (>= ret 0)) (def (dec (: x Int64)) (- x 1)))
+              (export dec))
+            (def (main (: v Int64)) ((. m dec) v))
+            (export main)))
+  (call   main (: 3 Int64))   (output (: 2 Int64))
+  (call   main (: 0 Int64))   (trap "unreachable"))
+
 (case "@ensures holds when the guarded def arrives through a runtime branch"
   (doc    "The function-valued-conditional composition: `(if b abs1 idf)` selects between the
            @ensures-guarded `abs1` and the unguarded `idf` at run time, then applies the selection.

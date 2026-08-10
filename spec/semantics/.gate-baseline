@@ -2,6 +2,7 @@
 pass	200 recursive dispatches each crossing a heap LIST argument — the marshal at depth
 pass	@ensures / @requires predicate PROJECTS a TUPLE component (`(. ret N)` on the result, `(. p N)` on a param)
 pass	@ensures holds when the guarded def arrives through a runtime branch
+pass	@ensures on a MODULE export is enforced when the def is called across the module-access boundary
 pass	@ensures on a RECURSIVE def whose body is a HANDLE is re-checked at every recursive exit (recursion x effects-fold seam)
 pass	@ensures on a def returning an @invariant type: establish (on construction) AND the postcondition (on ret) both fire (design §10, (D))
 pass	@ensures on a def with a parameter named ret is REJECTED (would silently not enforce — rename the param)
