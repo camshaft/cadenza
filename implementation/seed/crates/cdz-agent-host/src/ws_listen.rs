@@ -125,6 +125,9 @@ async fn serve_connection(
         let _ = control_tx.send(WsControlOp::Deregister { conn_id });
         return Ok(());
     }
+    // Render the conn-id hex ONCE for the pump loop — every inbound frame tags its payload with it, so this
+    // avoids a per-frame Hash re-encode (cheaply-clonable audit HOT-2).
+    let conn_id_hex = conn_id.to_hex();
 
     // Pump both directions until the peer closes or an end fails. The writer half drains the reducer's
     // outbound frames (out_rx, fed by ws/send via the registry sink) onto the wire; the reader half turns each
@@ -152,14 +155,14 @@ async fn serve_connection(
             inbound = read.next() => {
                 match inbound {
                     Some(Ok(Message::Binary(bytes))) => {
-                        if !emit_ws_event(&inbox, ws_frame_inbound(session, conn_id, &bytes)) {
+                        if !emit_ws_event(&inbox, ws_frame_inbound(session, &conn_id_hex, &bytes)) {
                             break; // inbox gone
                         }
                     }
                     Some(Ok(Message::Text(text))) => {
                         if !emit_ws_event(
                             &inbox,
-                            ws_frame_inbound(session, conn_id, text.as_bytes()),
+                            ws_frame_inbound(session, &conn_id_hex, text.as_bytes()),
                         ) {
                             break;
                         }

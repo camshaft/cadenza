@@ -216,9 +216,13 @@ pub fn ws_disconnect_inbound(session: SessionId, conn_id: Hash) -> Inbound {
 /// `[conn_id_len: u32-le][conn_id bytes][frame bytes]`. The host does NOT interpret the frame — it's opaque
 /// application bytes (JSON-RPC/whatever is a userspace concern). Family is a distinct `ws/frame` content-type
 /// so the reducer matches data frames apart from the connect/disconnect lifecycle.
-pub fn ws_frame_inbound(session: SessionId, conn_id: Hash, frame: &[u8]) -> Inbound {
-    let cid = conn_id.to_hex();
-    let cid = cid.as_bytes();
+/// `conn_id_hex` is the connection's conn-id ALREADY rendered to hex — the caller (a per-connection pump loop)
+/// computes it ONCE at accept/connect and reuses it for every inbound frame, rather than re-encoding the Hash
+/// per frame (cheaply-clonable audit HOT-2: `ws_frame_inbound` is the per-frame hot path; a per-frame
+/// `conn_id.to_hex()` allocated a fresh 64-byte String on every frame). The hex bytes are still copied into the
+/// per-frame payload Vec (that alloc is inherent — each frame is its own event), but the hex ENCODE happens once.
+pub fn ws_frame_inbound(session: SessionId, conn_id_hex: &str, frame: &[u8]) -> Inbound {
+    let cid = conn_id_hex.as_bytes();
     let mut payload = Vec::with_capacity(4 + cid.len() + frame.len());
     payload.extend_from_slice(&(cid.len() as u32).to_le_bytes());
     payload.extend_from_slice(cid);
@@ -361,7 +365,11 @@ mod tests {
     #[test]
     fn frame_inbound_length_prefixes_the_conn_id_hex_then_the_opaque_frame() {
         let c = cid(b"cid");
-        let ev = ws_frame_inbound(SessionId::new(Hash::of(b"outpost")), c, b"opaque-bytes");
+        let ev = ws_frame_inbound(
+            SessionId::new(Hash::of(b"outpost")),
+            &c.to_hex(),
+            b"opaque-bytes",
+        );
         let (family, payload) = drain_family(&ev.body);
         assert_eq!(family, WS_FRAME_FAMILY);
         // [len:u32-le][conn-id-hex][frame]
