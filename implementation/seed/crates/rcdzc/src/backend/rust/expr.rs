@@ -6107,6 +6107,14 @@ fn erase_nominal_switch_path(
                 cur = match cur.strip_nominal() {
                     Ty::Tuple(elems) => elems.get(*i).cloned().unwrap_or(Ty::Any),
                     Ty::List(elem) => (**elem).clone(),
+                    // A RECORD sub-value descends by SORTED-SLOT `Elem(i)` (a record erases to a tuple in
+                    // sorted-field order, so field-slot `i` = `fields.values().nth(i)` — the same index
+                    // space `Core::Record`/`Core::Proj` use). DORMANT until `resolve` emits an `Elem` under
+                    // a record head (nested-record match binders, v-inference); today no such `Elem` is
+                    // produced, so this arm cannot fire on current trunk — it fills the `Ty::Any` gap ahead
+                    // of that feature so a narrow-width nested-record field resolves its real type (not the
+                    // default the `_ => Ty::Any` fallback would give). Mirrors the `Ty::Tuple` arm.
+                    Ty::Record(fields) => fields.values().nth(*i).cloned().unwrap_or(Ty::Any),
                     _ => Ty::Any,
                 };
             }
@@ -6141,6 +6149,10 @@ fn lookup_sum_path_type(ctx: &Ctx, path: &[crate::core::PathStep]) -> Option<Ty>
             crate::core::PathStep::Elem(i) => match ty.strip_nominal() {
                 Ty::Tuple(elems) => elems.get(*i).cloned()?,
                 Ty::List(elem) => (**elem).clone(),
+                // Record sub-value at sorted-slot `i` (DORMANT — see the `map_switch_path_to_payload_path`
+                // Elem arm; no `Elem`-under-record is emitted on current trunk, so this can't fire until
+                // v-inference's nested-record-binder resolve change).
+                Ty::Record(fields) => fields.values().nth(*i).cloned()?,
                 _ => return None,
             },
             // A nominal-newtype Payload peels a layer (a no-op); a sum Payload beyond a recorded hint only
@@ -6210,6 +6222,13 @@ fn ty_at_sum_path(db: &mut Db, scrutinee: StructId, sw_path: &[crate::core::Path
                     None => return Ty::Any,
                 },
                 Ty::List(elem) => (**elem).clone(),
+                // Record sub-value at sorted-slot `i` (DORMANT — see the `map_switch_path_to_payload_path`
+                // Elem arm; no `Elem`-under-record is emitted on current trunk, so this can't fire until
+                // v-inference's nested-record-binder resolve change).
+                Ty::Record(fields) => match fields.values().nth(*i) {
+                    Some(t) => t.clone(),
+                    None => return Ty::Any,
+                },
                 _ => return Ty::Any,
             },
             // A rest sublist keeps the list type (the Rust backend declines a runtime list match; total here).
