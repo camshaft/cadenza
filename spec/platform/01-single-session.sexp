@@ -46,3 +46,47 @@
   (kickoff "worker" (inbound "message" (: unit Unit)))
   (end-state "worker" (kv "count" (: 1 Int64)) (status quiescent))
   (events-processed "worker" 2))
+
+(platform-case "the same counter IGNORES a non-message kick-off (else-branch writes no state)"
+  (doc "The negative companion of the counter case: the SAME reducer, but the kick-off family is
+        `tick`, which its `apply` does not match — so the else-branch returns no effects and writes
+        NO kv. This pins that a no-op fold leaves the session quiescent with an EMPTY kv (no spurious
+        `count` key) and still 2 events on the log (genesis + the one inbound). It witnesses the
+        else-branch of the fold, and that the grader's kv assertions are a POSITIVE check (a case that
+        asserts no kv key does not require one to exist).")
+  (session "worker" (reducer
+    (do
+      (type EffectKind (Shell) (Http) (Model) (Now) (Timer) (Emit))
+      (type EffectRequest
+        (Mk (Record
+          (: kind EffectKind)
+          (: target String)
+          (: payload (Option Bytes))
+          (: correlation (Option Bytes)))))
+      (effect Kv (op get (-> Bytes (Option Bytes))) (op put (-> Bytes Bytes Unit)))
+      (bind Kv "cadenza:agent-kernel/kv")
+      (def (bump-count (: prev (Option Bytes)))
+        (: (let ((prev-byte (match prev
+                              ((Some b) (match ((. Bytes at) b 0) ((Some v) v) ((None) 0)))
+                              ((None) 0))))
+             ((. Bytes of) ("list" ((. UInt8 wrap) (+ prev-byte 1)))))
+           Bytes))
+      (def (apply
+             (: ct (Record (: family String) (: version (UInt 32))))
+             (: payload (Option Bytes))
+             (: resumes (Option Bytes)))
+        (: (match resumes
+             ((Some _) ("list"))
+             ((None)
+              (if (= (. ct family) "message")
+                (host (Kv)
+                  (do
+                    ((. Kv put) ((. String to-bytes) "count")
+                                (bump-count ((. Kv get) ((. String to-bytes) "count"))))
+                    ("list")))
+                ("list"))))
+           (List EffectRequest)))
+      (export apply))))
+  (kickoff "worker" (inbound "tick" (: unit Unit)))
+  (end-state "worker" (status quiescent))
+  (events-processed "worker" 2))
