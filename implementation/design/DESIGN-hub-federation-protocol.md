@@ -103,6 +103,45 @@ mirroring the listener:
 
 Everything above Layer 0 is opaque application bytes to the host — it never parses a federation frame.
 
+**The three transport-seam questions `v-agent-harness-host` raised (answered, so the dialer builds to
+the protocol).** They own the ws plumbing and are building the base client dialer (connect + frame pump +
+lifecycle events, NO reconnect) first. Their questions and the resolutions — all of which keep the host
+oblivious to federation, so none add host policy:
+
+1. **Does the client dialer need any transport knob beyond `{hub_url, outpost_session_id, reconnect
+   policy}`?** — No knob beyond `{hub_url, outpost_session_id}`, and reconnect is NOT a transport knob
+   (see Q3). The dialer needs the URL to dial and the session to address inbound events/`ws/dial` result
+   to. Everything else (identity, auth, what to send) is a frame the reducer emits AFTER the connection is
+   up — it is not dialer configuration. So the base dialer they are building is exactly right; no extra
+   knob. (If a TLS/timeout transport detail is later needed it is a dialer config, still not federation
+   policy — but v0 needs none.)
+2. **Is conn-id the right federation-peer handle, or does the protocol need a stable hub identity
+   surfaced at connect?** — **conn-id is the right — and ONLY — transport handle; the transport must NOT
+   surface a stable identity.** conn-id (a per-connection `Hash`) is the EPHEMERAL routing token for one
+   live link (it changes across a reconnect). The STABLE federation identity is the node/hub's genesis
+   `Hash` (D5), which is established IN-FOLD by the `hello`/`welcome` handshake (§2), not by the
+   transport. The reducer maintains the `conn-id ↔ node-Hash` mapping in its fold state (learned at
+   `welcome`); on a `ws/disconnect` it prunes the dead conn-id but keeps the node identity, and on
+   reconnect it re-binds a fresh conn-id to the same node-Hash. Surfacing a "stable hub identity" at the
+   transport layer would put federation identity semantics INTO the host — the exact coupling the
+   host=plumbing constraint forbids. The host mints an opaque conn-id and stays ignorant of who is on the
+   other end; the reducer learns identity from the handshake frame. So: keep the seam as-is (conn-id
+   `Hash` only); the protocol layers stable identity on top.
+3. **Reconnect/resume: transport auto-reconnect vs reducer-driven?** — **Reducer-driven.** On a
+   `ws/disconnect` the reducer decides whether/when to re-`ws/dial` (its reconnect policy is fold logic:
+   backoff, give-up, failover to another hub — all policy). The transport does NOT auto-reconnect: an
+   auto-reconnecting transport would be making a policy decision (when/whether to retry, which is a
+   federation concern) and would hide connection lifecycle from the reducer's log (breaking the
+   durable-fold model — a reconnect must be a logged decision, not an invisible host action). So their
+   "base dialer, no reconnect first" is not just acceptable, it is the CORRECT end state: reconnect never
+   belongs in the transport. Resume semantics (does a reconnected link resume mid-protocol or re-handshake
+   from `hello`?) is a reducer protocol decision (default: re-handshake — a fresh conn-id is a fresh link;
+   the hub folds a new `hello` and re-establishes routing; §2). No transport resume state.
+
+Net for the dialer: build `{hub_url, outpost_session_id}` → connect → mint conn-id → register sink →
+surface `ws/connect`+`ws/frame`+`ws/disconnect` to the session → drain `ws/send`. No reconnect, no stable
+identity, no resume — all three live in the reducer's fold. This is the exact base dialer they described.
+
 ### Layer 1 — the wire codec: every frame is a binary AST (`cadenza-ast` value-form)
 
 Operator directive, verbatim: *"send binary ASTs everywhere."* We do NOT invent a wire format. Every
