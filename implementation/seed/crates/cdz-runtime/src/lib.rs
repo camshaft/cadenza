@@ -23558,6 +23558,39 @@ mod tests {
         });
     }
 
+    /// value-DECODE totality on ARBITRARY bytes — the decode-side sibling of
+    /// `prop_value_encode_is_total_under_arbitrary_descriptor`. Since B2/B3 (`apply(list<u8>)->list<u8>`),
+    /// `op_value_decode` is on the critical path of every reducer call, fed guest-produced (and thus
+    /// potentially malformed or adversarial) doc + descriptor bytes by the kernel. It MUST be TOTAL: for
+    /// ANY two byte strings it returns a Handle or declines to NULL — never traps (which would abort the
+    /// kernel), never leaks, never overflows the stack. The hand test only checks 3 fixed malformed inputs;
+    /// this fuzzes BOTH the document AND the descriptor (the split point derived from the stream, so both
+    /// halves range over arbitrary bytes independently). Content is NOT asserted — only that the op returns.
+    #[test]
+    fn prop_value_decode_is_total_on_arbitrary_bytes() {
+        bolero::check!().with_type::<Vec<u8>>().for_each(|bytes| {
+            reset();
+            let before = live_nodes();
+            // Split the stream into (descriptor, document) at a stream-derived point so both halves are
+            // arbitrary and independently sized. An empty half is a valid degenerate input to exercise.
+            let split = if bytes.is_empty() { 0 } else { (bytes[0] as usize) % (bytes.len() + 1) };
+            let (desc_bytes, doc_bytes) = bytes.split_at(split.min(bytes.len()));
+            // The property: NO panic / trap / overflow. Result (Handle or NULL) is not inspected.
+            let out = op_value_decode(doc_bytes, desc_bytes);
+            core::hint::black_box(out);
+            // A decode that DID build a partial value before declining must not leak it; a returned handle
+            // is dropped so the leak assertion is exact.
+            if out != Handle::NULL {
+                op_drop(out);
+            }
+            assert_eq!(
+                live_nodes(),
+                before,
+                "value-decode leaks nothing on arbitrary bytes (declines cleanly, dropping any partial)"
+            );
+        });
+    }
+
     // ── U6: FBIP rc==1 in-place cursor advance for map-iter-next / set-iter-next ────────────────
     // Load-bearing: (1) a forked/peeked/teed cursor (rc>1) stays INDEPENDENT — advancing one owner
     // must not disturb the other (aliasing catcher); (2) a unique (rc==1) walk allocates ZERO new
