@@ -923,6 +923,27 @@ mod wasm_abi {
                     memory_index: 0,
                 }),
             ),
+            // Memory loads — the reducer byte-ABI `apply(event: list<u8>)` wrapper (B3) reads the incoming
+            // event bytes out of linear memory (the canonical ABI delivers a `list<u8>` param as a
+            // `(ptr, len)` pair with the bytes at `ptr`) to copy them into a heap `Bytes` before
+            // `value-decode`. `I32_LOAD8_U` reads one unsigned byte; `I32_LOAD` reads the 4-byte
+            // `(ptr, len)` fields where needed. Same `MemArg`-irrelevant-to-opcode-byte note as the stores.
+            op(
+                "I32_LOAD",
+                Instruction::I32Load(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 0,
+                    memory_index: 0,
+                }),
+            ),
+            op(
+                "I32_LOAD8_U",
+                Instruction::I32Load8U(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 0,
+                    memory_index: 0,
+                }),
+            ),
         ];
 
         // The named single bytes: core valtypes, the empty block type, the component primitive

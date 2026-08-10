@@ -116,6 +116,8 @@ pub mod op {
     pub const I64_EXTEND_I32_U: u8 = 0xad;
     pub const I32_STORE: u8 = 0x36;
     pub const I32_STORE8: u8 = 0x3a;
+    pub const I32_LOAD: u8 = 0x28;
+    pub const I32_LOAD8_U: u8 = 0x2d;
 }
 /// core valtype `i32` — a ≤32-bit scalar's machine slot.
 pub const CORE_I32: u8 = 0x7f;

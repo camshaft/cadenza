@@ -8254,6 +8254,24 @@ mod wasm_abi_tests {
                 memory_index: 0
             }))
         );
+        // The memory LOADS the B3 reducer `apply(event: list<u8>)` wrapper uses to copy the incoming
+        // event bytes out of linear memory into a heap `Bytes` (the `(ptr,len)` param read).
+        assert_eq!(
+            wasm_abi::op::I32_LOAD,
+            opcode(I::I32Load(wasm_encoder::MemArg {
+                offset: 0,
+                align: 0,
+                memory_index: 0
+            }))
+        );
+        assert_eq!(
+            wasm_abi::op::I32_LOAD8_U,
+            opcode(I::I32Load8U(wasm_encoder::MemArg {
+                offset: 0,
+                align: 0,
+                memory_index: 0
+            }))
+        );
     }
 
     #[test]
