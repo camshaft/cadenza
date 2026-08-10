@@ -56,3 +56,23 @@ def diff-comparison-agrees-bool() =
          (match type-at(tree, root, root) with
            | Option.Some(Ty.TyBool) => (if sBool then unit else trap("eager walk says Bool but the spine does not"))
            | _ => trap("eager walk says the comparison root is not Bool"))))
+
+@test
+def diff-let-agrees-int() =
+  // `let x = 5 in x`: the FAITHFUL NLet arm (let-type over get-tcol) must agree with the eager walk — both int.
+  // Exercises the spine's faithful NLet end-to-end against the reference, not just arith/comparison.
+  match parse-tokens([Tok.TLet, Tok.TName(1), Tok.TEq, Tok.TNum(5), Tok.TIn, Tok.TName(1)]) with
+    | (root, tree) => (let db = resolve-into-db(db-of(tree), root) in
+        (let s = is-int-ty(run-type-of(db, root)) in (match type-at(tree, root, root) with
+          | Option.Some(t) => (if s and is-int-ty(t) then unit else trap("spine and walk disagree on let int-ness"))
+          | Option.None(_) => trap("eager walk gave no type at the let root"))))
+
+@test
+def diff-if-agrees-int() =
+  // `if 1 < 2 then 10 else 20`: the FAITHFUL NIf arm (if-type over get-tcol, Bool cond + width-aware join) must
+  // agree with the eager walk — both int (branches are Int64 literals, cond is Bool). Exercises faithful NIf.
+  match parse-tokens([Tok.TIf, Tok.TNum(1), Tok.TOp(60), Tok.TNum(2), Tok.TThen, Tok.TNum(10), Tok.TElse, Tok.TNum(20)]) with
+    | (root, tree) => (let db = resolve-into-db(db-of(tree), root) in
+        (let s = is-int-ty(run-type-of(db, root)) in (match type-at(tree, root, root) with
+          | Option.Some(t) => (if s and is-int-ty(t) then unit else trap("spine and walk disagree on if int-ness"))
+          | Option.None(_) => trap("eager walk gave no type at the if root"))))
