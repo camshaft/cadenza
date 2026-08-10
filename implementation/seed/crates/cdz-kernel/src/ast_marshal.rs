@@ -230,6 +230,19 @@ pub fn type_to_ast(ty: &Type) -> Result<Vec<u8>, MarshalError> {
     Ok(codec::encode(&b.finish(root)))
 }
 
+/// The stable STRUCTURAL identity of a WIT type — the content-hash of its type-descriptor AST
+/// ([`type_to_ast`]). Two types with the SAME structure hash equal regardless of any name; two
+/// DIFFERENT structures hash differently. This is the foundation of SCHEMA-BASED effect identity
+/// (operator seq367: "identify effects by their SCHEMA, not their string name"): an effect's identity
+/// is the schema-hash of its request/payload type, so a built-in and a userspace effect are identified
+/// UNIFORMLY by shape — no closed enum, no arbitrary family string as the key. Pure over the descriptor
+/// bytes ([`Hash::of`] = blake3, the one content-address algorithm), so the same shape yields the same
+/// id everywhere (kernel, host, on the wire). A type with no value-crossing form (resource/future/
+/// stream/error-context) has no schema-hash — [`MarshalError::UnsupportedType`], same as `type_to_ast`.
+pub fn schema_hash(ty: &Type) -> Result<crate::hash::Hash, MarshalError> {
+    Ok(crate::hash::Hash::of(&type_to_ast(ty)?))
+}
+
 /// Build the type-descriptor for `ty` INTO an existing arena `b`, returning the root node id — the
 /// node-emitting core [`type_to_ast`] wraps. Exposed `pub` so a caller assembling a LARGER AST can emit
 /// type nodes DIRECTLY into its own [`Builder`] (one shared arena, encoded ONCE) rather than nesting
@@ -1570,6 +1583,39 @@ mod tests {
             panic!("expected a list node");
         };
         k.clone()
+    }
+
+    #[test]
+    fn schema_hash_is_structural_same_shape_same_hash_different_shape_different() {
+        // seq367 schema-identity foundation: schema_hash is the content-hash of the type-descriptor AST,
+        // so it's a STABLE STRUCTURAL id — same shape → same hash (deterministic, name-independent),
+        // different shape → different hash (distinguishes effects by structure, not a family string).
+        let u32_a = schema_hash(&param_type(&probe_component("u32"))).expect("u32 schema");
+        let u32_b = schema_hash(&param_type(&probe_component("u32"))).expect("u32 schema again");
+        assert_eq!(
+            u32_a, u32_b,
+            "same shape (u32) → same schema-hash (deterministic)"
+        );
+
+        let string_h = schema_hash(&param_type(&probe_component("string"))).expect("string schema");
+        assert_ne!(
+            u32_a, string_h,
+            "different shapes (u32 vs string) → different schema-hash"
+        );
+
+        // A compound shape hashes distinctly from its element shape (record != u32 != list<u32>).
+        let rec_h = schema_hash(&param_type(&probe_component(r#"(record (field "a" u32))"#)))
+            .expect("record schema");
+        let list_h = schema_hash(&param_type(&probe_component("(list u32)"))).expect("list schema");
+        assert_ne!(rec_h, u32_a, "record (field a u32) is not u32");
+        assert_ne!(rec_h, list_h, "record (field a u32) is not (list u32)");
+        // And it's exactly Hash::of(type_to_ast(ty)) — the schema-hash IS the descriptor's content address.
+        let u32_ty = param_type(&probe_component("u32"));
+        assert_eq!(
+            u32_a,
+            crate::hash::Hash::of(&type_to_ast(&u32_ty).unwrap()),
+            "schema_hash == content-hash of the type-descriptor AST"
+        );
     }
 
     #[test]
