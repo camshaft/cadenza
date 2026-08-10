@@ -4211,6 +4211,7 @@ pass	an all-nullary enum reached through a tuple element inside a boxed sum surv
 pass	an all-nullary user sum orders by discriminant — Lo below Hi
 pass	an all-owned-arms match operand compares correctly through the ownership join
 pass	an all-wildcard tuple arm is a catch-all that shadows a later refining arm
+pass	an all-wildcard tuple arm is an irrefutable catch-all that shadows later arms and earns a CDZ0213 warning
 pass	an and of two runtime negations computes their conjunction
 pass	an annihilator identity folds to zero when its operand is trap-free
 pass	an annotated argument joins a callee-side quantity at its own scale

@@ -3405,6 +3405,21 @@
   (output (: 1 Int64))
   (warns  CDZ0213 (message "this match arm is unreachable")))
 
+(case "an all-wildcard tuple arm is an irrefutable catch-all that shadows later arms and earns a CDZ0213 warning"
+  (doc    "The product-subsumption face — a fifth DISTINCT detector: an ALL-IRREFUTABLE tuple pattern
+           `(tuple _ _)` (every element a wildcard or binder) matches EVERY value of its tuple type, so it is
+           a whole-type catch-all (`is_irrefutable_cover`) and any arm after it is unreachable — even a
+           broader tuple arm, not only a bare `_`. `(match t ((tuple _ _) 0) ((tuple true c) c))`: the first
+           arm covers the whole `(Tuple Bool Int64)`, so the later `(tuple true c)` is dead. The program
+           compiles and runs (`(f (tuple true 1))` = 0, the first arm) but the build surfaces the CDZ0213
+           `unreachable` warning. Pins that irrefutability is detected through a PRODUCT pattern, not only a
+           bare binder. Wasm-graded (the run paths skip the (warns ..) check, not fail it). Companion of the
+           rcdzc an_all_wildcard_tuple_arm_is_a_catch_all_that_shadows_later_arms test.")
+  (input  (do (def (f (: t (Tuple Bool Int64))) (match t ((tuple _ _) 0) ((tuple true c) c))) (def (main) (f (tuple true 1))) (export main)))
+  (call   main)
+  (output (: 0 Int64))
+  (warns  CDZ0213 (message "this match arm is unreachable")))
+
 (case "a match on a computed runtime value dispatches on the result"
   (doc    "The scrutinee is the expression `(% n 2)`, computed at run time. Its value (0 for an
            even n) selects the literal arm 0. Exercises a match whose scrutinee is neither a
