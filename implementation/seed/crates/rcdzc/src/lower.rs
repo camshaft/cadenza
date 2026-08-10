@@ -386,7 +386,10 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 //= spec/capabilities/type-system.md#a-nominal-value-is-convertible-to-its-underlying-structural-value
                 //# The stripped structural value MUST be the same value the nominal value already is at runtime, so that removing the tag is a compile-time reinterpretation and not a copy or conversion of the value.
                 let path = erase_nominal_steps(db, scrutinee, &steps, &heads);
-                Core::SumPayload { scrutinee, path }
+                Core::SumPayload {
+                    scrutinee,
+                    path: path.into(),
+                }
             }
         }
         // A `let` — A-NORMALIZE its bindings: a binding whose value is a runtime computation used more
@@ -10861,9 +10864,9 @@ fn build_tree_ft(
     }
     trace!(target: "rcdzc::lower", scrutinee = scrutinee.0, depth = switch_path.len(), arms = sum_arms.len(), "sum switch (decision-tree node)");
     Ok(std::rc::Rc::new(crate::core::SumCont::Switch {
-        // The emitted `SumCont` carries a plain `Vec<PathStep>` (backends read it); convert the shared
-        // switch path ONCE here at the tree node, not per level.
-        path: switch_path.to_vec(),
+        // The emitted `SumCont` carries the shared `Rc<[PathStep]>` (`MatchPath`) directly — the match
+        // compiler already threads it as an `Rc`, so cloning the node is a refcount bump, not a path copy.
+        path: switch_path,
         arms: sum_arms,
     }))
 }
@@ -10972,8 +10975,8 @@ fn build_lit_test(
         }
     };
     Ok(std::rc::Rc::new(crate::core::SumCont::LitTest {
-        // The emitted node carries a plain `Vec<PathStep>`; convert the shared lit path once here.
-        path: lit_path.to_vec(),
+        // The emitted node carries the shared `Rc<[PathStep]>` (`MatchPath`) directly — a refcount bump.
+        path: lit_path,
         probe,
         then_,
         els,

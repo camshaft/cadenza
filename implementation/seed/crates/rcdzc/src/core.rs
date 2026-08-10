@@ -254,7 +254,7 @@ pub enum SumCont {
     /// the payload's variant is already fixed by an enclosing switch. `then_`/`els` are continuations
     /// (so several literal tests on one arm nest, and the matched body is itself a `Leaf`/`LitTest`).
     LitTest {
-        path: Vec<PathStep>,
+        path: std::rc::Rc<[PathStep]>,
         probe: Probe,
         then_: std::rc::Rc<SumCont>,
         els: std::rc::Rc<SumCont>,
@@ -263,7 +263,7 @@ pub enum SumCont {
     /// the default arm. `path` is the full path from the scrutinee (not relative to the parent switch),
     /// so the backend walks it from the scrutinee handle uniformly at every depth.
     Switch {
-        path: Vec<PathStep>,
+        path: std::rc::Rc<[PathStep]>,
         arms: Vec<SumArm>,
     },
 }
@@ -884,7 +884,7 @@ pub enum Core {
     /// are not needed at run time (control is already in the matched arm).
     SumPayload {
         scrutinee: StructId,
-        path: Vec<PathStep>,
+        path: std::rc::Rc<[PathStep]>,
     },
     /// `Option.expect` / `Result.expect` on a RUNTIME sum — unwrap the PRESENT variant's payload or TRAP
     /// on absence. The present variant is discriminant `disc_present` (Some/Ok = 0); the backend probes

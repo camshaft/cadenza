@@ -3697,7 +3697,7 @@ fn collect_used_ops_into(
         // A sum-payload read walks its `path` (`sum-payload`/`arr-get` per step) then unboxes the leaf
         // by THIS node's solved type (`get-*`).
         Core::SumPayload { scrutinee, path } => {
-            for step in &path {
+            for step in path.iter() {
                 match step {
                     crate::core::PathStep::Payload => {
                         out.insert(OP_SUM_PAYLOAD);
@@ -3875,7 +3875,7 @@ fn collect_cont_ops_rec(
             then_,
             els,
         } => {
-            for step in path {
+            for step in path.iter() {
                 match step {
                     crate::core::PathStep::Payload => out.insert(OP_SUM_PAYLOAD),
                     // An `Elem` may read a tuple `arr` OR a list `vec` — insert both; emit picks by type.
@@ -3954,7 +3954,7 @@ fn collect_cont_ops_rec(
             let root = type_of(db, scrutinee);
             let sub = ty_at_path_recorded(db, scrutinee, &root, path, recorded);
             let sub_is_enum = ty_is_enum_disc(db, &sub);
-            for step in path {
+            for step in path.iter() {
                 match step {
                     crate::core::PathStep::Payload => out.insert(OP_SUM_PAYLOAD),
                     // An `Elem` may read a tuple `arr` OR a list `vec` — insert both; emit picks by type.
@@ -5005,7 +5005,7 @@ fn collect_sum_payload_prefixes(
             return;
         }
         if let Core::SumPayload { scrutinee, path } = core_of(db, id) {
-            payloads.push((scrutinee, path));
+            payloads.push((scrutinee, path.to_vec()));
         }
         for child in licm_children(db, id) {
             walk(db, child, seen, payloads);
