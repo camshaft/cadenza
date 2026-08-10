@@ -136,13 +136,34 @@ arithmetic). Instead:
 - **Payoff**: a STRUCTURAL change (e.g. `Struct::List(Vec<StructId>) → Arc<[StructId]>`, the last
   cheap-clone slice) lands ONCE in cadenza-ast instead of being hand-mirrored into rcdzc's copy.
 
-### Open question for the co-design with v-core-opt
+### The seam — DECIDED (b), with v-core-opt (rcdzc owner), 2026-08-10
 
-Which seam: (a) cadenza-ast's arena generic `Arena<L: LeafValue>` (rcdzc instantiates with its eval-leaf,
-cadenza-syntax with the syntax-leaf) — most sharing, biggest refactor; or (b) cadenza-ast exposes the
-structural arena + codec as-is over its own `Leaf`, and rcdzc keeps a THIN local leaf but reuses the
-`Struct`/codec via a conversion at the decode boundary — less sharing, smaller change. Recommend
-scoping both with v-core-opt and picking by refactor-cost vs sharing-gained.
+Two candidates were weighed: (a) cadenza-ast's arena generic `Arena<L: LeafValue>` (rcdzc instantiates
+with its eval-leaf, cadenza-syntax with the syntax-leaf) — most sharing, biggest refactor; (b) cadenza-ast
+exposes the structural arena + codec as-is over its OWN `Leaf`, and rcdzc keeps a THIN LOCAL leaf but
+reuses the `Struct`/codec via a conversion at the boundary — less sharing, smaller change.
+
+**DECIDED: (b).** v-core-opt (rcdzc owner) strongly prefers it, and it is the correct layering:
+
+1. rcdzc's `Leaf` is EVAL-BEARING — `Leaf::Int` carries an `IntValue` (arbitrary-precision bignum) that
+   the const-fold path does real arithmetic on (`add`/`mul`/`wrap`/`divmod`); cadenza-ast's `Leaf` is a
+   pure syntactic carrier. A generic-leaf merge (a) would drag eval semantics into the syntax crate (or
+   force the trait to abstract over arithmetic) — the wrong layer, coupling the front-end to the
+   compiler's numeric model.
+2. The operator's no-adapter/full-collapse directive applies only where two things are genuinely ONE. A
+   syntactic leaf and an eval-bearing leaf are DISTINCT responsibilities — so (b) shares the STRUCTURAL
+   core (`Struct`/codec/arena) where they truly coincide and keeps each `Leaf` local where they don't =
+   correct layering, not an adapter.
+3. (b) is the smaller, lower-risk refactor and still delivers the win: `Struct::List → Arc<[StructId]>`
+   (the last cheap-clone slice) lands ONCE in the shared structural core; rcdzc inherits it via the
+   boundary conversion instead of re-implementing it in its diverged copy — the "lands once not twice"
+   outcome.
+
+**Ownership split:** the shared structural core (cadenza-ast: `Struct`/`StructId`/`Builder`/arena/codec,
++ the `Struct::List → Arc<[_]>` cheap-clone slice) is v-syntax's; each crate keeps its own `Leaf`
+(rcdzc's eval-bearing, cadenza-ast's syntactic) behind the boundary; v-core-opt owns the rcdzc side of
+the boundary conversion. (v-core-opt is separately mid-flight on rcdzc Core-IR cheap-clone slices —
+compiler-internal, hash-neutral, landing freely; the ast.rs structural-core work is this joint arc.)
 
 ---
 
@@ -154,8 +175,10 @@ scoping both with v-core-opt and picking by refactor-cost vs sharing-gained.
 2. **Increment 2** (decode-takes-`Bytes`; Str→`ByteStr`, Bytes→`bytes::Bytes` zero-copy; `leb128::Reader`
    over `Bytes`) — after increment 1 lands. Adds the `bytes` dep. No wire change. Same cross-lane
    lockstep pattern with cdz-kernel (Str/Bytes use-sites) under the standing delegation.
-3. **Increment 3 / consolidation** (extension-trait; `Struct::List → Arc<[StructId]>` lands once) —
-   co-design with v-core-opt first (§3 open question), then the structural cheap-clone slice.
+3. **Increment 3 / consolidation** (seam (b) DECIDED, §3; `Struct::List → Arc<[StructId]>` lands once in
+   the shared structural core) — v-syntax builds the structural-core share + the `Arc<[_]>` slice;
+   v-core-opt owns rcdzc's boundary conversion. Can proceed in parallel with increments 1/2 (the
+   `Struct::List` cheap-clone slice is independent of the leaf-payload reprs), but is a larger arc.
 
 **Cross-lane rule (learned):** any cadenza-ast leaf/arena TYPE change breaks consumers that hold the type
 by value — cdz-kernel (depends on cadenza-ast) + rcdzc (its own copy, until consolidated). cdz-kernel is
