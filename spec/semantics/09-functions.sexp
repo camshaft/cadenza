@@ -4893,6 +4893,21 @@
   (call   main (: 0 Int64))
   (output (: 7 Int64)))
 
+(case "a function with an unused parameter compiles and runs but the build surfaces a CDZ0306 unused-parameter warning"
+  (doc    "The parameter face of the unused-binding warning (02-binding-and-control.sexp pins the `let`
+           face): `(def (f x y) x)` never references its second parameter `y`, so the program still runs
+           (`(f 7 8)` = 7) but the compiler emits a CDZ0306 `unused parameter` WARNING rather than silently
+           keeping the dead parameter — the same code-quality/dead-code band as the unused let binding. The
+           parameter NAME is in the warning's dynamic tail (`unused parameter `y``), so only the stable lead
+           `unused parameter` is pinned. Wasm-graded (warnings ride the shared compile stage = target-
+           independent; the rust/rust-async run paths cannot observe compile stderr, so the (warns ..) check
+           is skipped there, not failed). Portable companion of the rcdzc unused-parameter warning assertion;
+           the confident `_y` prefix FIX the rust test also pins is a HAS-FIX shape the (warns ..) substring
+           clause cannot express, so that test is kept for the fix.")
+  (input  (do (def (f x y) x) (def (main) (f 7 8)) (export main)))
+  (output (: 7 Int64))
+  (warns  CDZ0306 (message "unused parameter")))
+
 (case "an argument bound to a used parameter IS observed, so its trap occurs (the anchor)"
   (doc    "The control: `(def (f x y) y)` returns its SECOND parameter, so `(f 7 (/ 1 d))` with d = 0
            observes the trapping argument — its value flows out as the result — and must trap. Pins that

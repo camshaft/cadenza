@@ -1843,6 +1843,7 @@ pass	a function stored in a tuple element is called after extraction
 pass	a function takes a boolean parameter and branches on it
 pass	a function whose body always diverges has result type Never
 pass	a function whose name is capitalized is called, not treated as a constructor
+pass	a function with an unused parameter compiles and runs but the build surfaces a CDZ0306 unused-parameter warning
 pass	a function with two SAME-NAMED parameters is a non-linear binding rejection
 pass	a function's reflected CODOMAIN is body-solved, distinguishing an Int64 result from a Bool result
 pass	a function's reflected domain matches an equivalent explicitly-annotated signature
