@@ -354,7 +354,9 @@ pub fn emit(
             // type node is RECURSIVE, so a nested element crosses too (`(List (List Int64))`, `(Map K (Set
             // V))`), and the inner value shape already recurses to render the nested collection values.
             return emit_recursive_sum_resource(db, layout, e.def, &desc, spans);
-        } else if let Some(tpl) = crate::lower::runtime_value_form_template(&e.result) {
+        } else if let Some(tpl) =
+            crate::lower::runtime_value_form_template(&e.result, &db.name_ctx())
+        {
             // A RUNTIME compound (not constant-foldable — a recursive return, a call whose result is
             // built on the heap) crosses through the SAME resource shape, but its `encode()` WALKS the
             // live handle rather than baking constant bytes (R2). Build the value-form TEMPLATE for the
@@ -775,7 +777,7 @@ pub fn emit(
                 let av = host::extern_abi_val_type(ty).ok_or_else(|| {
                     Reject::decline(format!(
                         "a provider parameter `{}` has no cross-component boundary representation",
-                        ty.render_name()
+                        ty.render_name(&db.name_ctx())
                     ))
                 })?;
                 params.push(av.comp_byte());
@@ -809,7 +811,7 @@ pub fn emit(
         // to `Ty::Unit` via the SAME `body_diverges`), and the host observes the trap. Checked BEFORE the
         // escape/valtype declines so a diverging `Any`/`Var` result is not misdiagnosed as an
         // undetermined-type fault.
-        if serialize::export_result_valtype(&e.result).is_err()
+        if serialize::export_result_valtype(&e.result, &db.name_ctx()).is_err()
             && crate::backend::common::diverge::body_diverges(db, e.body)
         {
             boundary.push(BoundaryExport {
@@ -817,12 +819,12 @@ pub fn emit(
                 params: {
                     let mut params = Vec::new();
                     for (_, ty) in &e.params {
-                        let vt = serialize::export_result_valtype(ty)
+                        let vt = serialize::export_result_valtype(ty, &db.name_ctx())
                             .map_err(Reject::decline)?
                             .ok_or_else(|| {
                                 Reject::decline(format!(
                                     "a diverging export's parameter `{}` has no boundary representation",
-                                    ty.render_name()
+                                    ty.render_name(&db.name_ctx())
                                 ))
                             })?;
                         params.push(vt);
@@ -834,7 +836,7 @@ pub fn emit(
             continue;
         }
         if crosses_as_resource_escape(&e.result)
-            && serialize::export_result_valtype(&e.result).is_err()
+            && serialize::export_result_valtype(&e.result, &db.name_ctx()).is_err()
         {
             // AMBIGUOUS TYPE first — a result whose payload/element type is an UNRESOLVED variable (a bare
             // `(None)` : `Option ?0`, an empty `(list)` : `List ?0`) has no defined serialization
@@ -865,7 +867,7 @@ pub fn emit(
                     format!(
                         "the result type `{}` is not fully determined — annotate it \
                          (e.g. `(: <expr> (Option Int64))`) so its value has a defined form",
-                        e.result.render_name()
+                        e.result.render_name(&db.name_ctx())
                     ),
                 ));
             }
@@ -893,17 +895,18 @@ pub fn emit(
             };
             return Err(Reject::decline(format!(
                 "returning a {} from `{}`: {why}",
-                e.result.render_name(),
+                e.result.render_name(&db.name_ctx()),
                 e.name
             )));
         }
-        let result = serialize::export_result(&e.result).map_err(Reject::decline)?;
+        let result =
+            serialize::export_result(&e.result, &db.name_ctx()).map_err(Reject::decline)?;
         // Each parameter's COMPONENT-boundary valtype (distinct from the core valtype — a signed 64
         // integer is `s64` at the boundary, `i64` in the core). A parameter is a scalar (a `list<u8>`
         // INPUT is not yet a surface type), so its faithful primitive byte is required.
         let mut params = Vec::new();
         for (_, ty) in &e.params {
-            let vt = serialize::export_result_valtype(ty)
+            let vt = serialize::export_result_valtype(ty, &db.name_ctx())
                 .map_err(Reject::decline)?
                 .ok_or_else(|| Reject::decline("a parameter type has no component valtype"))?;
             params.push(vt);
@@ -1769,7 +1772,7 @@ fn resource_escape_dwarf(
         return Ok(Some(resource_dwarf_from_core(
             db, &layout, &funcs, &imports, &main_core, span_data,
         )?));
-    } else if let Some(tpl) = crate::lower::runtime_value_form_template(&result) {
+    } else if let Some(tpl) = crate::lower::runtime_value_form_template(&result, &db.name_ctx()) {
         let (imports, funcs, layout) = resource_escape_build(db, layout, |used| {
             if tpl.leaves.iter().any(|l| !l.path.is_empty()) {
                 used.insert("arr-get");
@@ -2300,7 +2303,7 @@ fn emit_runtime_resource(
 /// entrypoint returning `(f 1)` for a two-parameter `f`), whose remaining parameter has no solved type.
 /// Say THAT. A concrete-but-unrepresentable type (a compound, a nested closure) keeps the precise
 /// "no scalar host-boundary representation (only aliased widths cross yet)" message.
-fn closure_boundary_reject(role: &str, ty: &crate::ty::Ty) -> Reject {
+fn closure_boundary_reject(role: &str, ty: &crate::ty::Ty, ncx: &crate::ty::NameCtx) -> Reject {
     if matches!(ty, crate::ty::Ty::Any | crate::ty::Ty::Var(_)) {
         Reject::decline(format!(
             "a closure crossing the host boundary has an unconstrained {role} type — the entrypoint's \
@@ -2312,7 +2315,7 @@ fn closure_boundary_reject(role: &str, ty: &crate::ty::Ty) -> Reject {
         Reject::decline(format!(
             "a closure {role} of type {} has no scalar host-boundary representation (only aliased-width \
              scalars — every s8/u8/…/s64/u64 int, bool, f32/f64 — cross the closure `call` boundary)",
-            ty.render_name()
+            ty.render_name(ncx)
         ))
     }
 }
@@ -3222,7 +3225,10 @@ fn emit_closure_resource(
     } else {
         arg_tys
             .iter()
-            .map(|t| closure_boundary_byte(t).ok_or_else(|| closure_boundary_reject("argument", t)))
+            .map(|t| {
+                closure_boundary_byte(t)
+                    .ok_or_else(|| closure_boundary_reject("argument", t, &db.name_ctx()))
+            })
             .collect::<Result<_, _>>()?
     };
     // The RESULT: either a scalar (crosses by value) OR a BYTE-ROPE (`Bytes` OR `String`) which crosses as
@@ -3245,7 +3251,7 @@ fn emit_closure_resource(
     let ret_template = if ret_is_bytes || closure_boundary_byte(&ret_ty).is_some() {
         None
     } else {
-        crate::lower::runtime_value_form_template(ret_ty.strip_nominal())
+        crate::lower::runtime_value_form_template(ret_ty.strip_nominal(), &db.name_ctx())
     };
     let ret_is_compound = ret_template.is_some();
     // A VARIABLE-LENGTH collection result (`List`/`Map`/`Set`) has no static template — it crosses as
@@ -3273,7 +3279,8 @@ fn emit_closure_resource(
     let result_byte = if ret_is_bytes || ret_is_compound || ret_is_collection {
         0 // unused by the list-returning paths; `call` returns list<u8>, not a scalar byte
     } else {
-        closure_boundary_byte(&ret_ty).ok_or_else(|| closure_boundary_reject("result", &ret_ty))?
+        closure_boundary_byte(&ret_ty)
+            .ok_or_else(|| closure_boundary_reject("result", &ret_ty, &db.name_ctx()))?
     };
     // BRICK (d): a closure export whose build-time `make` code delegates a host effect (`host_imports`
     // non-empty, collected above) composes the host interface into the closure resource. This increment
@@ -3358,7 +3365,8 @@ fn emit_closure_resource(
     let make_param_bytes: Vec<u8> = export_params
         .iter()
         .map(|(_, t)| {
-            closure_boundary_byte(t).ok_or_else(|| closure_boundary_reject("parameter", t))
+            closure_boundary_byte(t)
+                .ok_or_else(|| closure_boundary_reject("parameter", t, &db.name_ctx()))
         })
         .collect::<Result<_, _>>()?;
 
@@ -3891,7 +3899,8 @@ fn emit_closure_host_resource(
     let make_param_bytes: Vec<u8> = export_params
         .iter()
         .map(|(_, t)| {
-            closure_boundary_byte(t).ok_or_else(|| closure_boundary_reject("parameter", t))
+            closure_boundary_byte(t)
+                .ok_or_else(|| closure_boundary_reject("parameter", t, &db.name_ctx()))
         })
         .collect::<Result<_, _>>()?;
     // Lifted closure bodies' ops (a capturing body reads its env), as `emit_closure_resource` does.
@@ -4119,7 +4128,10 @@ fn emit_multi_closure_resource(
     } else {
         arg_tys
             .iter()
-            .map(|t| closure_boundary_byte(t).ok_or_else(|| closure_boundary_reject("argument", t)))
+            .map(|t| {
+                closure_boundary_byte(t)
+                    .ok_or_else(|| closure_boundary_reject("argument", t, &db.name_ctx()))
+            })
             .collect::<Result<_, _>>()?
     };
     // A byte-rope (`Bytes`/`String`) shared closure result crosses as `list<u8>` — the N-makes-one-`call`
@@ -4135,7 +4147,7 @@ fn emit_multi_closure_resource(
     let ret_template = if ret_is_bytes || closure_boundary_byte(&ret_ty).is_some() {
         None
     } else {
-        crate::lower::runtime_value_form_template(ret_ty.strip_nominal())
+        crate::lower::runtime_value_form_template(ret_ty.strip_nominal(), &db.name_ctx())
     };
     let ret_is_compound = ret_template.is_some();
     // A VARIABLE-LENGTH collection (List/Map/Set) shared result → the value-encode core (all exports share
@@ -4161,7 +4173,8 @@ fn emit_multi_closure_resource(
     let result_byte = if ret_is_bytes || ret_is_compound || ret_is_collection {
         0 // unused by the list-returning paths; `call` returns list<u8>
     } else {
-        closure_boundary_byte(&ret_ty).ok_or_else(|| closure_boundary_reject("result", &ret_ty))?
+        closure_boundary_byte(&ret_ty)
+            .ok_or_else(|| closure_boundary_reject("result", &ret_ty, &db.name_ctx()))?
     };
     // Core call-arg valtypes: the FLATTENED tuple fields when a (flat or nested) tuple arg or ≥2 tuple args,
     // else each arg's own valtype.
@@ -4216,7 +4229,8 @@ fn emit_multi_closure_resource(
             .params
             .iter()
             .map(|(_, t)| {
-                closure_boundary_byte(t).ok_or_else(|| closure_boundary_reject("parameter", t))
+                closure_boundary_byte(t)
+                    .ok_or_else(|| closure_boundary_reject("parameter", t, &db.name_ctx()))
             })
             .collect::<Result<_, _>>()?;
         make_specs.push(MakeSpec {
@@ -4813,7 +4827,10 @@ fn emit_mixed_closure_resource(
     } else {
         arg_tys
             .iter()
-            .map(|t| closure_boundary_byte(t).ok_or_else(|| closure_boundary_reject("argument", t)))
+            .map(|t| {
+                closure_boundary_byte(t)
+                    .ok_or_else(|| closure_boundary_reject("argument", t, &db.name_ctx()))
+            })
             .collect::<Result<_, _>>()?
     };
     // A byte-rope (`Bytes`/`String`) shared closure result crosses as `list<u8>` (the mixed bytes envelope);
@@ -4828,7 +4845,7 @@ fn emit_mixed_closure_resource(
     let ret_template = if ret_is_bytes || closure_boundary_byte(&ret_ty).is_some() {
         None
     } else {
-        crate::lower::runtime_value_form_template(ret_ty.strip_nominal())
+        crate::lower::runtime_value_form_template(ret_ty.strip_nominal(), &db.name_ctx())
     };
     let ret_is_compound = ret_template.is_some();
     // A VARIABLE-LENGTH collection (List/Map/Set) shared result → the value-encode core (all closure exports
@@ -4855,7 +4872,8 @@ fn emit_mixed_closure_resource(
     let result_byte = if ret_is_bytes || ret_is_compound || ret_is_collection {
         0 // unused by the list-returning paths; `call` returns list<u8>
     } else {
-        closure_boundary_byte(&ret_ty).ok_or_else(|| closure_boundary_reject("result", &ret_ty))?
+        closure_boundary_byte(&ret_ty)
+            .ok_or_else(|| closure_boundary_reject("result", &ret_ty, &db.name_ctx()))?
     };
     // Core call-arg valtypes: the FULL flattened core param list when a (flat or nested) tuple arg, else each
     // arg's own valtype.
@@ -4909,7 +4927,8 @@ fn emit_mixed_closure_resource(
             .params
             .iter()
             .map(|(_, t)| {
-                closure_boundary_byte(t).ok_or_else(|| closure_boundary_reject("parameter", t))
+                closure_boundary_byte(t)
+                    .ok_or_else(|| closure_boundary_reject("parameter", t, &db.name_ctx()))
             })
             .collect::<Result<_, _>>()?;
         make_specs.push(MakeSpec {
@@ -4935,7 +4954,8 @@ fn emit_mixed_closure_resource(
             .params
             .iter()
             .map(|(_, t)| {
-                closure_boundary_byte(t).ok_or_else(|| closure_boundary_reject("parameter", t))
+                closure_boundary_byte(t)
+                    .ok_or_else(|| closure_boundary_reject("parameter", t, &db.name_ctx()))
             })
             .collect::<Result<_, _>>()?;
         let result_byte = closure_boundary_byte(&e.result).ok_or_else(|| {
@@ -4943,7 +4963,7 @@ fn emit_mixed_closure_resource(
                 "a plain export `{}` returning {} has no scalar host-boundary representation — a \
                  compound result alongside a closure export is a later widening",
                 e.name,
-                e.result.render_name()
+                e.result.render_name(&db.name_ctx())
             ))
         })?;
         plain_specs.push(PlainSpec {
@@ -5567,7 +5587,8 @@ fn emit_distinct_sig_resource(
             arg_tys
                 .iter()
                 .map(|t| {
-                    closure_boundary_byte(t).ok_or_else(|| closure_boundary_reject("argument", t))
+                    closure_boundary_byte(t)
+                        .ok_or_else(|| closure_boundary_reject("argument", t, &db.name_ctx()))
                 })
                 .collect::<Result<_, _>>()?
         };
@@ -5582,7 +5603,7 @@ fn emit_distinct_sig_resource(
         let ret_template = if ret_is_bytes || closure_boundary_byte(&ret_ty).is_some() {
             None
         } else {
-            crate::lower::runtime_value_form_template(ret_ty.strip_nominal())
+            crate::lower::runtime_value_form_template(ret_ty.strip_nominal(), &db.name_ctx())
         };
         // A VARIABLE-LENGTH collection (List/Map/Set) result crosses `call-<g>` as `list<u8>` too, rendered
         // via `value-encode(rep, desc)` against this group's own shape descriptor.
@@ -5600,7 +5621,7 @@ fn emit_distinct_sig_resource(
             0
         } else {
             closure_boundary_byte(&ret_ty)
-                .ok_or_else(|| closure_boundary_reject("result", &ret_ty))?
+                .ok_or_else(|| closure_boundary_reject("result", &ret_ty, &db.name_ctx()))?
         };
         // A SOLE `(Option/Result scalar)` arg for this group (SCALAR result only — the per-group list cores
         // thread tuples, not sums). Classified only when no tuple classifier fired + the result is scalar.
@@ -5737,7 +5758,8 @@ fn emit_distinct_sig_resource(
             .params
             .iter()
             .map(|(_, t)| {
-                closure_boundary_byte(t).ok_or_else(|| closure_boundary_reject("parameter", t))
+                closure_boundary_byte(t)
+                    .ok_or_else(|| closure_boundary_reject("parameter", t, &db.name_ctx()))
             })
             .collect::<Result<_, _>>()?;
         make_specs.push(MakeSpec {
@@ -5761,7 +5783,8 @@ fn emit_distinct_sig_resource(
             .params
             .iter()
             .map(|(_, t)| {
-                closure_boundary_byte(t).ok_or_else(|| closure_boundary_reject("parameter", t))
+                closure_boundary_byte(t)
+                    .ok_or_else(|| closure_boundary_reject("parameter", t, &db.name_ctx()))
             })
             .collect::<Result<_, _>>()?;
         let result_byte = closure_boundary_byte(&e.result).ok_or_else(|| {
@@ -5769,7 +5792,7 @@ fn emit_distinct_sig_resource(
                 "a plain export `{}` returning {} has no scalar host-boundary representation — a \
                  compound result alongside a closure export is a later widening",
                 e.name,
-                e.result.render_name()
+                e.result.render_name(&db.name_ctx())
             ))
         })?;
         plain_specs.push(PlainSpec {
@@ -6209,7 +6232,7 @@ fn emit_roundtrip_resource(
         valtype_of(t).ok_or_else(|| {
             Reject::decline(format!(
                 "a closure argument of type {} has no machine representation",
-                t.render_name()
+                t.render_name(&db.name_ctx())
             ))
         })?;
     }
@@ -6220,7 +6243,7 @@ fn emit_roundtrip_resource(
     valtype_of(&ret_ty).ok_or_else(|| {
         Reject::decline(format!(
             "a closure result of type {} has no machine representation",
-            ret_ty.render_name()
+            ret_ty.render_name(&db.name_ctx())
         ))
     })?;
 
@@ -6260,7 +6283,7 @@ fn emit_roundtrip_resource(
                 closure_boundary_byte(t).ok_or_else(|| {
                     Reject::decline(format!(
                         "a producer parameter of type {} has no scalar host-boundary representation",
-                        t.render_name()
+                        t.render_name(&db.name_ctx())
                     ))
                 })
             })
@@ -6292,7 +6315,7 @@ fn emit_roundtrip_resource(
                 let byte = closure_boundary_byte(t).ok_or_else(|| {
                     Reject::decline(format!(
                         "a consumer scalar parameter of type {} has no scalar host-boundary representation",
-                        t.render_name()
+                        t.render_name(&db.name_ctx())
                     ))
                 })?;
                 params.push(serialize::ConsumeParam::Scalar(vt));
@@ -6313,7 +6336,7 @@ fn emit_roundtrip_resource(
         let ret_template = if ret_is_bytes || closure_boundary_byte(&c.result).is_some() {
             None
         } else {
-            crate::lower::runtime_value_form_template(c.result.strip_nominal())
+            crate::lower::runtime_value_form_template(c.result.strip_nominal(), &db.name_ctx())
         };
         // A VARIABLE-LENGTH collection consumer result crosses as `list<u8>` too, rendered via
         // `value-encode(rep, desc)` against its own shape descriptor. `None` for byte-rope/scalar/template.
@@ -6335,7 +6358,7 @@ fn emit_roundtrip_resource(
                 closure_boundary_byte(&c.result).ok_or_else(|| {
                     Reject::decline(format!(
                         "a consumer result of type {} has no scalar host-boundary representation",
-                        c.result.render_name()
+                        c.result.render_name(&db.name_ctx())
                     ))
                 })?
             };
@@ -6364,7 +6387,8 @@ fn emit_roundtrip_resource(
             .params
             .iter()
             .map(|(_, t)| {
-                closure_boundary_byte(t).ok_or_else(|| closure_boundary_reject("parameter", t))
+                closure_boundary_byte(t)
+                    .ok_or_else(|| closure_boundary_reject("parameter", t, &db.name_ctx()))
             })
             .collect::<Result<_, _>>()?;
         let result_byte = closure_boundary_byte(&e.result).ok_or_else(|| {
@@ -6372,7 +6396,7 @@ fn emit_roundtrip_resource(
                 "a plain export `{}` returning {} has no scalar host-boundary representation — a \
                  compound result alongside a round-trip closure is a later widening",
                 e.name,
-                e.result.render_name()
+                e.result.render_name(&db.name_ctx())
             ))
         })?;
         plain_specs.push(PlainSpec {
@@ -6624,10 +6648,11 @@ fn emit_distinct_sig_roundtrip_resource(
     for s in &sigs {
         let mut cur = s.clone();
         while let crate::ty::Ty::Fn(dom, rng) = cur {
-            valtype_of(&dom).ok_or_else(|| closure_boundary_reject("argument", &dom))?;
+            valtype_of(&dom)
+                .ok_or_else(|| closure_boundary_reject("argument", &dom, &db.name_ctx()))?;
             cur = *rng;
         }
-        valtype_of(&cur).ok_or_else(|| closure_boundary_reject("result", &cur))?;
+        valtype_of(&cur).ok_or_else(|| closure_boundary_reject("result", &cur, &db.name_ctx()))?;
     }
 
     // Per export: its make/consume spec + which group. Collected before the build moves the layout.
@@ -6673,7 +6698,8 @@ fn emit_distinct_sig_roundtrip_resource(
                 .params
                 .iter()
                 .map(|(_, t)| {
-                    closure_boundary_byte(t).ok_or_else(|| closure_boundary_reject("parameter", t))
+                    closure_boundary_byte(t)
+                        .ok_or_else(|| closure_boundary_reject("parameter", t, &db.name_ctx()))
                 })
                 .collect::<Result<_, _>>()?;
             makes.push(MakeS {
@@ -6689,7 +6715,8 @@ fn emit_distinct_sig_roundtrip_resource(
                 .params
                 .iter()
                 .map(|(_, t)| {
-                    closure_boundary_byte(t).ok_or_else(|| closure_boundary_reject("parameter", t))
+                    closure_boundary_byte(t)
+                        .ok_or_else(|| closure_boundary_reject("parameter", t, &db.name_ctx()))
                 })
                 .collect::<Result<_, _>>()?;
             let result_byte = closure_boundary_byte(&e.result).ok_or_else(|| {
@@ -6697,7 +6724,7 @@ fn emit_distinct_sig_roundtrip_resource(
                     "a plain export `{}` returning {} has no scalar host-boundary representation — a \
                      compound result alongside a round-trip closure is a later widening",
                     e.name,
-                    e.result.render_name()
+                    e.result.render_name(&db.name_ctx())
                 ))
             })?;
             plains.push(PlainS {
@@ -6719,7 +6746,7 @@ fn emit_distinct_sig_roundtrip_resource(
                     let vt = valtype_of(t)
                         .ok_or_else(|| Reject::decline("consumer scalar param has no valtype"))?;
                     let byte = closure_boundary_byte(t)
-                        .ok_or_else(|| closure_boundary_reject("parameter", t))?;
+                        .ok_or_else(|| closure_boundary_reject("parameter", t, &db.name_ctx()))?;
                     params.push(serialize::ConsumeParam::Scalar(vt));
                     abi_params.push(envelope::ConsumeParamAbi::Scalar(byte));
                 }
@@ -6736,7 +6763,7 @@ fn emit_distinct_sig_roundtrip_resource(
             let ret_template = if ret_is_bytes || closure_boundary_byte(&e.result).is_some() {
                 None
             } else {
-                crate::lower::runtime_value_form_template(e.result.strip_nominal())
+                crate::lower::runtime_value_form_template(e.result.strip_nominal(), &db.name_ctx())
             };
             let ret_descriptor = if ret_is_bytes
                 || ret_template.is_some()
@@ -6754,7 +6781,7 @@ fn emit_distinct_sig_roundtrip_resource(
                 0 // unused by the list-returning paths; the consumer returns list<u8>
             } else {
                 closure_boundary_byte(&e.result)
-                    .ok_or_else(|| closure_boundary_reject("result", &e.result))?
+                    .ok_or_else(|| closure_boundary_reject("result", &e.result, &db.name_ctx()))?
             };
             cons.push(ConsS {
                 def: e.def,
@@ -7852,7 +7879,7 @@ fn export_make_params(
                         "a parameterized heap-return export's compound parameter `{}` is not a fixed-shape \
                          tuple/record of scalars (a variable-length field — a list/map/set inside the \
                          compound — is not yet supported)",
-                        t.render_name()
+                        t.render_name(&db.name_ctx())
                     )));
                 };
                 leaf_vts.extend(field_vts);
@@ -7873,7 +7900,7 @@ fn export_make_params(
                     return Err(Reject::decline(format!(
                         "a parameterized heap-return export forwards scalar params and fixed-shape scalar \
                          tuple/record params only; parameter of type `{}` has no boundary representation",
-                        t.render_name()
+                        t.render_name(&db.name_ctx())
                     )));
                 }
             },

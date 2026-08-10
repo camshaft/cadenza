@@ -147,7 +147,7 @@ fn variant_payload_renders_generic(
         .iter()
         .filter_map(|&occ| {
             let ty = sentinel_payload_ty(db, decl, occ)?;
-            Some(rewrite_sentinel_vars(&ty, decl).render_name())
+            Some(rewrite_sentinel_vars(&ty, decl).render_name(&db.name_ctx()))
         })
         .collect()
 }
@@ -235,7 +235,7 @@ pub fn emit_newtype_descriptors(db: &mut Db) -> String {
         let ident = types::sum_ident(&decl.name);
         out.push_str(&format!(
             "// cdz-newtype[{ident}]: {}\n",
-            inner.render_name()
+            inner.render_name(&db.name_ctx())
         ));
     }
     out
@@ -253,7 +253,9 @@ fn variant_payload_renders(db: &mut Db, variant: &crate::db::Variant) -> Vec<Str
     variant
         .payloads
         .iter()
-        .filter_map(|&occ| crate::eval::typeval_of(db, occ).map(|ty| ty.render_name()))
+        .filter_map(|&occ| {
+            crate::eval::typeval_of(db, occ).map(|ty| ty.render_name(&db.name_ctx()))
+        })
         .collect()
 }
 
@@ -505,7 +507,7 @@ fn payload_rust_type(
     render_payload_ty(&ty, decl, mode).ok_or_else(|| {
         Reject::decline(format!(
             "a variant payload type {} has no native Rust representation",
-            ty.render_name()
+            ty.render_name(&db.name_ctx())
         ))
     })
 }

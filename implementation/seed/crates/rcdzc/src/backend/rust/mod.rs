@@ -260,7 +260,7 @@ fn collect_qty_scale_paths(
     }
 }
 
-/// The type-name to put in the `// cdz-return[<ident>]` note — normally `result.render_name()`, but for a
+/// The type-name to put in the `// cdz-return[<ident>]` note — normally `result.render_name(&db.name_ctx())`, but for a
 /// GENERIC nominal returned WHOLE it is the ERASED INNER's render_name instead. WHY: a monomorphic nominal
 /// newtype gets a `// cdz-newtype[<Ident>]` descriptor the render uses to resolve `<Ident>` → its structural
 /// inner; but a GENERIC nominal (`(type V3q (V3 a a a))`) is SKIPPED by `emit_newtype_descriptors`
@@ -280,10 +280,10 @@ fn boundary_return_render_name(db: &Db, result: &crate::ty::Ty) -> String {
             .map(|t| !t.params.is_empty())
             .unwrap_or(false);
         if is_generic && matches!(inner.as_ref(), Ty::Tuple(_) | Ty::Record(_)) {
-            return inner.render_name();
+            return inner.render_name(&db.name_ctx());
         }
     }
-    result.render_name()
+    result.render_name(&db.name_ctx())
 }
 
 /// Whether a closure RESULT type is renderable by the gate harness (S1 scalar OR S3 Tuple/List/Option/
@@ -1100,7 +1100,7 @@ fn emit_signature(
             let reason = enums::unrepresentable_reason(db, ty);
             return Err(Reject::decline(format!(
                 "`{name}`: parameter type {} is {reason}",
-                ty.render_name()
+                ty.render_name(&db.name_ctx())
             )));
         }
         // An ILL-FORMED integer width in a parameter type is a REJECT (CDZ0302), not a target decline —
@@ -1114,7 +1114,7 @@ fn emit_signature(
         let rty = async_or_rust_type(ty, mode).ok_or_else(|| {
             Reject::decline(format!(
                 "`{name}`: parameter type {} has no native Rust representation",
-                ty.render_name()
+                ty.render_name(&db.name_ctx())
             ))
         })?;
         // A looped function's params are reassigned per iteration → `mut`.
@@ -1126,7 +1126,7 @@ fn emit_signature(
         let reason = enums::unrepresentable_reason(db, result);
         return Err(Reject::decline(format!(
             "`{name}`: result type {} is {reason}",
-            result.render_name()
+            result.render_name(&db.name_ctx())
         )));
     }
     // A DIVERGING body — one that provably never returns a value (a bare `(trap …)`, a zero-arm match on a
@@ -1156,7 +1156,7 @@ fn emit_signature(
         async_or_rust_type(result, mode).ok_or_else(|| {
             Reject::decline(format!(
                 "`{name}`: result type {} has no native Rust representation",
-                result.render_name()
+                result.render_name(&db.name_ctx())
             ))
         })?
     };
@@ -1246,7 +1246,7 @@ fn emit_signature(
         let shapes: Vec<String> = params
             .iter()
             .filter(|(_, t)| is_fn_ty(t))
-            .map(|(_, t)| t.render_name())
+            .map(|(_, t)| t.render_name(&db.name_ctx()))
             .collect();
         if public && !shapes.is_empty() {
             format!("// cdz-param-shapes[{ident}]: {}\n", shapes.join(" | "))
@@ -1270,8 +1270,8 @@ fn emit_signature(
             let arrow = params
                 .iter()
                 .rev()
-                .fold(result.render_name(), |acc, (_, t)| {
-                    format!("(-> {} {acc})", t.render_name())
+                .fold(result.render_name(&db.name_ctx()), |acc, (_, t)| {
+                    format!("(-> {} {acc})", t.render_name(&db.name_ctx()))
                 });
             format!("// cdz-produces-closure[{ident}]: {arrow}\n")
         } else {

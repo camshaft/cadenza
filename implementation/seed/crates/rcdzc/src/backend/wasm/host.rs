@@ -737,7 +737,7 @@ pub fn first_unrepresentable_host_op(
         // types its result `Ty::Any` (infer.rs), and its real emittability is decided when selection
         // resolves it — flagging `Any` here would falsely reject the working interpose-forward case.
         if !matches!(result, Ty::Unit) && !ty_undetermined(&result) && !abi_ok(&result) {
-            return Some((op.to_string(), "result", result.render_name()));
+            return Some((op.to_string(), "result", result.render_name(&db.name_ctx())));
         }
         // Each ARGUMENT: emittable iff Unit, String, Bytes, or (peer-bound) a handle-crossable value /
         // (host) a scalar. A `Bytes` arg now crosses as `list<u8>` at the host boundary (the `(ptr,len)`
@@ -749,7 +749,7 @@ pub fn first_unrepresentable_host_op(
                 && !ty_undetermined(&at)
                 && !abi_ok(&at)
             {
-                return Some((op.to_string(), "argument", at.render_name()));
+                return Some((op.to_string(), "argument", at.render_name(&db.name_ctx())));
             }
         }
         // Descend the args too (a host call may be nested in an arg).

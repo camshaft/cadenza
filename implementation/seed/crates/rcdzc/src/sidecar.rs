@@ -616,7 +616,7 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
                     // to `render_name`. Diagnostic MESSAGES keep the collapsed `_` (an unknown type there is
                     // just "some type"); only this `cdz type` surface names vars, the tool for diagnosing a
                     // recursive-generic monomorphization tie.
-                    Some(scheme) => scheme.render_scheme(),
+                    Some(scheme) => scheme.render_scheme(&db.name_ctx()),
                     // A def whose type could not be solved (an ambiguous unannotated parameter) — a
                     // DEFINED "unknown", not an error: the query is total.
                     None => "unknown".to_string(),
@@ -766,7 +766,7 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
             let binders = scope_at(db, crate::ast::StructId(*node));
             let mut text = String::new();
             for (name, binder) in binders {
-                let ty = crate::infer::type_of(db, binder).render_name();
+                let ty = crate::infer::type_of(db, binder).render_name(&db.name_ctx());
                 text.push_str(&format!("{name}\t{ty}\t{}\n", binder.0));
             }
             QueryResult {
@@ -790,7 +790,7 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
                 let (ty, name_node) = match def {
                     Some(d) => {
                         let ty = match crate::infer::def_scheme(db, d) {
-                            Some(scheme) => scheme.ty.render_name(),
+                            Some(scheme) => scheme.ty.render_name(&db.name_ctx()),
                             None => "unknown".to_string(),
                         };
                         // The def's NAME occurrence (the sig's first child), for go-to; fall back to the
@@ -1258,8 +1258,8 @@ fn param_manifest_text(db: &mut Db) -> String {
         // KIND, `Type`). A node that does not reduce to a type value falls back to `type_of`'s render so the
         // field stays definite (total).
         let ty = match crate::eval::typeval_of(db, rec.ty) {
-            Some(t) => t.render_name(),
-            None => crate::infer::type_of(db, rec.ty).render_name(),
+            Some(t) => t.render_name(&db.name_ctx()),
+            None => crate::infer::type_of(db, rec.ty).render_name(&db.name_ctx()),
         };
         let (range_lo, range_hi) = match rec.range {
             Some((lo, hi)) => (lo.0.to_string(), hi.0.to_string()),
@@ -2381,7 +2381,7 @@ fn hover_text(db: &mut Db, id: StructId) -> String {
     if let Some(def) = def_identified_by(db, id) {
         let name = db.defs[def].name.clone();
         let sig = match crate::infer::def_scheme(db, def) {
-            Some(scheme) => scheme.ty.render_name(),
+            Some(scheme) => scheme.ty.render_name(&db.name_ctx()),
             None => "unknown".to_string(),
         };
         return format!("{name} : {sig}");
@@ -2391,7 +2391,7 @@ fn hover_text(db: &mut Db, id: StructId) -> String {
         return format!("keyword {kw}");
     }
     // (4) The solved type, cleaned up.
-    let ty = crate::infer::type_of(db, id).render_name();
+    let ty = crate::infer::type_of(db, id).render_name(&db.name_ctx());
     let cleaned = clean_hover_type(&ty);
     // (4b) An UN-ANNOTATED def-parameter binder types as `Any` here — a non-recursive def's param is never
     // solved standalone (it inlines at each call), so `type_of` at the binder reads `Any` → "unknown".
@@ -2406,7 +2406,7 @@ fn hover_text(db: &mut Db, id: StructId) -> String {
     if cleaned == "unknown"
         && let Some(t) = crate::infer::query_param_ty(db, id)
     {
-        return clean_hover_type(&t.render_name());
+        return clean_hover_type(&t.render_name(&db.name_ctx()));
     }
     cleaned
 }

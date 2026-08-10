@@ -85,7 +85,7 @@ fn scheme_of_uncached(db: &mut Db, t: StructId, fresh: &mut Fresh) -> Option<Sch
                 sign_vars.push(s);
             }
             let ty = type_in_env(db, body, &env)?;
-            trace!(target: "rcdzc::eval", node = t.0, scheme = %ty.render_name(), quantified = params.len(), "read (meta t) as a polymorphic scheme");
+            trace!(target: "rcdzc::eval", node = t.0, scheme = %ty.render_name(&db.name_ctx()), quantified = params.len(), "read (meta t) as a polymorphic scheme");
             // Only the vars actually mentioned matter; keep the lists (unused ones are harmless).
             Some(Scheme {
                 ty_vars,
@@ -98,7 +98,7 @@ fn scheme_of_uncached(db: &mut Db, t: StructId, fresh: &mut Fresh) -> Option<Sch
         _ => {
             let scheme = typeval_of(db, t).map(Scheme::mono);
             if let Some(s) = &scheme {
-                trace!(target: "rcdzc::eval", node = t.0, ty = %s.ty.render_name(), "read (meta t) as a monomorphic type");
+                trace!(target: "rcdzc::eval", node = t.0, ty = %s.ty.render_name(&db.name_ctx()), "read (meta t) as a monomorphic type");
             }
             scheme
         }
@@ -2696,7 +2696,7 @@ pub fn reduce_ctor(
                     acc
                 }
             };
-            trace!(target: "rcdzc::eval", ty = %fn_ty.render_name(), "ctor (->): built function type-value");
+            trace!(target: "rcdzc::eval", ty = %fn_ty.render_name(&db.name_ctx()), "ctor (->): built function type-value");
             Ok(encode_typeval(db, &fn_ty))
         }
         // `Qty` — the quantity-TYPE constructor: `(Qty T u)` builds `Ty::Qty { inner: T, unit: u }`, the
@@ -2713,7 +2713,7 @@ pub fn reduce_ctor(
                 inner: Box::new(inner),
                 unit,
             };
-            trace!(target: "rcdzc::eval", ty = %qty.render_name(), "ctor (Qty): built quantity type-value");
+            trace!(target: "rcdzc::eval", ty = %qty.render_name(&db.name_ctx()), "ctor (Qty): built quantity type-value");
             Ok(encode_typeval(db, &qty))
         }
         // `Type.of e` — COMPILE-TIME TYPE REFLECTION. Reduce to the type-VALUE of `e`'s inferred type: run
@@ -2740,7 +2740,7 @@ pub fn reduce_ctor(
             // types it. `type_of` itself is left untouched — layout/emit consume it and erase `Any` param
             // holes rather than comparing them, so only reflection needs the grounded arrow.
             let ty = crate::infer::reflected_ty(db, args[0]);
-            trace!(target: "rcdzc::eval", ty = %ty.render_name(), "ctor (Type.of): reflected value type");
+            trace!(target: "rcdzc::eval", ty = %ty.render_name(&db.name_ctx()), "ctor (Type.of): reflected value type");
             Ok(encode_typeval(db, &ty))
         }
         // `Tuple` — VARIADIC over its element TYPES: reduce each arg to a `Ty`, build `Ty::Tuple`. Its
@@ -2754,7 +2754,7 @@ pub fn reduce_ctor(
                 elems.push(t);
             }
             let tup = crate::ty::Ty::Tuple(elems.into());
-            trace!(target: "rcdzc::eval", ty = %tup.render_name(), "ctor (Tuple): built tuple type-value");
+            trace!(target: "rcdzc::eval", ty = %tup.render_name(&db.name_ctx()), "ctor (Tuple): built tuple type-value");
             Ok(encode_typeval(db, &tup))
         }
         // `List` — ONE element type: `(List Int64)` builds `Ty::List(Int64)`, the type an annotation
@@ -2766,7 +2766,7 @@ pub fn reduce_ctor(
             let elem =
                 typeval_of(db, args[0]).ok_or_else(|| "List element is not a type".to_string())?;
             let list_ty = crate::ty::Ty::List(Box::new(elem));
-            trace!(target: "rcdzc::eval", ty = %list_ty.render_name(), "ctor (List): built list type-value");
+            trace!(target: "rcdzc::eval", ty = %list_ty.render_name(&db.name_ctx()), "ctor (List): built list type-value");
             Ok(encode_typeval(db, &list_ty))
         }
         // `Map` — a KEY type and a VALUE type: `(Map Int64 Int64)` builds `Ty::Map(Int64, Int64)`, the
@@ -2779,7 +2779,7 @@ pub fn reduce_ctor(
             let value =
                 typeval_of(db, args[1]).ok_or_else(|| "Map value is not a type".to_string())?;
             let map_ty = crate::ty::Ty::Map(Box::new(key), Box::new(value));
-            trace!(target: "rcdzc::eval", ty = %map_ty.render_name(), "ctor (Map): built map type-value");
+            trace!(target: "rcdzc::eval", ty = %map_ty.render_name(&db.name_ctx()), "ctor (Map): built map type-value");
             Ok(encode_typeval(db, &map_ty))
         }
         // `Set` — ONE element type: `(Set Int64)` builds `Ty::Set(Int64)`, the type an annotation
@@ -2791,7 +2791,7 @@ pub fn reduce_ctor(
             let elem =
                 typeval_of(db, args[0]).ok_or_else(|| "Set element is not a type".to_string())?;
             let set_ty = crate::ty::Ty::Set(Box::new(elem));
-            trace!(target: "rcdzc::eval", ty = %set_ty.render_name(), "ctor (Set): built set type-value");
+            trace!(target: "rcdzc::eval", ty = %set_ty.render_name(&db.name_ctx()), "ctor (Set): built set type-value");
             Ok(encode_typeval(db, &set_ty))
         }
         // `Record` — VARIADIC over `(name type)` field pairs: each arg is a raw `(name T)` list; read the
@@ -2833,7 +2833,7 @@ pub fn reduce_ctor(
                 fields.insert(crate::resolved::Symbol::plain(name), t);
             }
             let rec = crate::ty::Ty::Record(std::rc::Rc::new(fields));
-            trace!(target: "rcdzc::eval", ty = %rec.render_name(), "ctor (Record): built record type-value");
+            trace!(target: "rcdzc::eval", ty = %rec.render_name(&db.name_ctx()), "ctor (Record): built record type-value");
             Ok(encode_typeval(db, &rec))
         }
         // The compound-VALUE constructors reached via the shadowable `tuple`/`record` alias names.
@@ -3001,7 +3001,7 @@ pub fn reduce_sum_ctor(db: &mut Db, head: StructId, args: &[StructId]) -> Option
     // `Ty::Sum` — the same decision `decode_ty` makes for the wire form. Without this the generic ctor's
     // result typed as `Ty::Sum`, so the erased value's binder read the wrong (boxed) representation.
     let sum = db.normalize_sum(decl, name, arg_tys);
-    trace!(target: "rcdzc::eval", ty = %sum.render_name(), "ctor (Sum): built generic sum type-value");
+    trace!(target: "rcdzc::eval", ty = %sum.render_name(&db.name_ctx()), "ctor (Sum): built generic sum type-value");
     Some(sum)
 }
 

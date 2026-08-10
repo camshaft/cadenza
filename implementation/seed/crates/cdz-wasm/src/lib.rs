@@ -789,10 +789,13 @@ pub fn param_manifest(text: &str, from: &str) -> Result<Vec<ParamManifestEntry>,
     for rec in records {
         // The declared TYPE-EXPRESSION node reduced to its type VALUE (same as the CLI), falling back to the
         // node's inferred type render so the field is always a definite string.
-        let type_name = match rcdzc::eval::typeval_of(&mut db, rec.ty) {
-            Some(t) => t.render_name(),
-            None => rcdzc::infer::type_of(&mut db, rec.ty).render_name(),
+        // Compute the Ty first (releases the `&mut db` borrow), THEN build the render-time `NameCtx`
+        // (an immutable borrow of `db.type_decls`) and render — the two borrows must not overlap.
+        let ty = match rcdzc::eval::typeval_of(&mut db, rec.ty) {
+            Some(t) => t,
+            None => rcdzc::infer::type_of(&mut db, rec.ty),
         };
+        let type_name = ty.render_name(&db.name_ctx());
         // Literal-text fields (always present when the config is) — an immutable borrow of the arena.
         let (range_lo, range_hi) = match rec.range {
             Some((lo, hi)) => (

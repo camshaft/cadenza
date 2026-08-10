@@ -2367,7 +2367,7 @@ fn box_op_ty(db: &Db, ty: &Ty) -> Result<Option<&'static str>, Reject> {
         Ty::Unit => Ok(None),
         other => Err(Reject::decline(format!(
             "a tuple element of type {} needs the value heap (not yet built)",
-            other.render_name()
+            other.render_name(&db.name_ctx())
         ))),
     }
 }
@@ -2432,7 +2432,7 @@ fn get_op_ty(db: &Db, ty: &Ty) -> Result<Option<&'static str>, Reject> {
         Ty::Unit => Ok(None),
         other => Err(Reject::decline(format!(
             "projecting a tuple element of type {} needs the value heap (not yet built)",
-            other.render_name()
+            other.render_name(&db.name_ctx())
         ))),
     }
 }

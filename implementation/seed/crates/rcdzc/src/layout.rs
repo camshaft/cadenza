@@ -397,7 +397,7 @@ pub fn compute(db: &mut Db) -> Result<Layout, Reject> {
         let params = export_params(db, def, &name)?;
         // The result type is the entry body's solved type — a lazy read of the type column.
         let result = type_of(db, body);
-        trace!(target: "rcdzc::layout", %name, def, params = params.len(), result = %result.render_name(), "export plan");
+        trace!(target: "rcdzc::layout", %name, def, params = params.len(), result = %result.render_name(&db.name_ctx()), "export plan");
         exports.push(ExportPlan {
             name,
             def,
@@ -467,7 +467,7 @@ pub fn compute_tests_for(db: &mut Db, defs: &[usize]) -> Result<Layout, Reject> 
         // nullary test yields an empty list, so the plain and property cases share this one path.
         let params = export_params(db, def, &name)?;
         let result = type_of(db, body);
-        trace!(target: "rcdzc::layout", %name, def, params = params.len(), result = %result.render_name(), "test export plan");
+        trace!(target: "rcdzc::layout", %name, def, params = params.len(), result = %result.render_name(&db.name_ctx()), "test export plan");
         exports.push(ExportPlan {
             name,
             def,
@@ -1817,7 +1817,7 @@ pub fn export_params(db: &mut Db, def: usize, name: &str) -> Result<Vec<(StructI
         //     an annotation that is already present). The scalar-`Char` export gap (v-property-testing).
         if crate::backend::wasm::lir::valtype_of(&ty).is_none() {
             let ambiguous = matches!(ty, Ty::Any) || crate::infer::ty_has_free_var(db, &ty);
-            trace!(target: "rcdzc::layout", %name, binder = binder.0, ty = %ty.render_name(), ambiguous, "decline: exported parameter has no boundary machine type");
+            trace!(target: "rcdzc::layout", %name, binder = binder.0, ty = %ty.render_name(&db.name_ctx()), ambiguous, "decline: exported parameter has no boundary machine type");
             let msg = if ambiguous {
                 format!(
                     "export `{name}`: parameter type is ambiguous — annotate it, e.g. `(: p Int64)`"
@@ -1828,7 +1828,7 @@ pub fn export_params(db: &mut Db, def: usize, name: &str) -> Result<Vec<(StructI
                      only the aliased integer widths, `Bool`, and `Float` cross the boundary; it is \
                      already annotated, so an annotation cannot fix this (use a boundary-representable \
                      parameter type)",
-                    ty.render_name()
+                    ty.render_name(&db.name_ctx())
                 )
             };
             return Err(Reject::decline(msg).at(binder));

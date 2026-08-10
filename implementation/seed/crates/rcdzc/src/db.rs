@@ -4116,6 +4116,11 @@ impl Db {
     /// The `(index, TypeDecl)` of the sum whose DECLARATION OCCURRENCE is `occ` — the reverse of the
     /// nominal identity a `Ty::Sum { decl }` carries. Used by the escape renderer to recover a sum's
     /// variant names + payload types from its type-value. `None` if `occ` names no declaration.
+    /// A render-time [`crate::ty::NameCtx`] over this db's declared types.
+    pub fn name_ctx(&self) -> crate::ty::NameCtx<'_> {
+        crate::ty::NameCtx::new(&self.type_decls)
+    }
+
     pub fn type_decl_by_occ(&self, occ: StructId) -> Option<&TypeDecl> {
         // O(1) via the load-time occ→index map; fall back to the scan for an occ minted after load (none
         // today — `type_decls` is not mutated post-construction — but the fallback keeps this total).

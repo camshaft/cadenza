@@ -817,7 +817,7 @@ fn non_integer_default_fault(db: &mut Db, form: StructId, ty_expr: StructId) -> 
             format!(
                 "`default-integer` must name an integer type, but `{}` is not an integer type \
                  (the default fixes the type otherwise-unconstrained integer literals take)",
-                ty.render_name()
+                ty.render_name(&db.name_ctx())
             ),
         )
         .at(form),
@@ -856,7 +856,7 @@ fn non_rational_default_fault(db: &mut Db, form: StructId, ty_expr: StructId) ->
             format!(
                 "`default-fraction` must name an exact rational type (Rational), but `{}` is not \
                  (the default grounds otherwise-unconstrained numeric literals to an exact fraction)",
-                ty.render_name()
+                ty.render_name(&db.name_ctx())
             ),
         )
         .at(form)
@@ -897,7 +897,7 @@ fn non_float_default_fault(db: &mut Db, form: StructId, ty_expr: StructId) -> Op
             format!(
                 "`default-float` must name a floating-point type (Float32 or Float64), but `{}` is not \
                  (the default fixes the type otherwise-unconstrained decimal literals take)",
-                ty.render_name()
+                ty.render_name(&db.name_ctx())
             ),
         )
         .at(form),
@@ -3310,8 +3310,8 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
                         "export `{name}`: a {} is a TYPE, not a runtime value — the {} carries a type, \
                          which is compile-time only and cannot cross the component boundary (a type-value \
                          never flows into runtime data; store a value of the type, not the type itself)",
-                        ty.render_name(),
-                        ty.render_name()
+                        ty.render_name(&db.name_ctx()),
+                        ty.render_name(&db.name_ctx())
                     ),
                 )
                 .at(occ),
@@ -3353,7 +3353,7 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
                          type `{}` has a parameter inference never fixed to a concrete scalar (a partial \
                          application like `(f 1)` for a two-parameter `f`, or an unannotated closure \
                          parameter) — a closure crosses only with concrete aliased-width scalar arguments",
-                        ty.render_name()
+                        ty.render_name(&db.name_ctx())
                     ),
                 )
                 .at(occ),
@@ -3393,7 +3393,7 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
                     format!(
                         "the result type `{}` is not fully determined — annotate it \
                          (e.g. `(: <expr> (Option Int64))`) so its value has a defined form",
-                        ty.render_name()
+                        ty.render_name(&db.name_ctx())
                     ),
                 )
                 .at(occ),
@@ -5781,7 +5781,7 @@ fn collect_discarded_value_warnings(db: &mut Db) -> Vec<Diagnostic> {
                         "this `{}`-typed value is computed but discarded — a non-final form of a \
                          sequencing block is evaluated only for its effect, and this form has none \
                          (bind it with a `let` if you meant to use it, or remove it)",
-                        ty.render_name()
+                        ty.render_name(&db.name_ctx())
                     ),
                     Some(s),
                 )

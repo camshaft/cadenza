@@ -1373,7 +1373,10 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     {
                         String::new()
                     } else {
-                        format!(" — it carries {}", payload.render_with_article())
+                        format!(
+                            " — it carries {}",
+                            payload.render_with_article(&db.name_ctx())
+                        )
                     };
                     let msg = match ctor_head_display_name(db, head) {
                         Some(name) => format!(
@@ -2743,7 +2746,7 @@ fn lower_ast_lift(db: &mut Db, operand: StructId) -> Core {
         other => Core::Poison(Reject::decline(format!(
             "an active unquote of a runtime {} value has no Ast leaf to lift into \
              (only Int64/Float64/Bool/String and an existing Ast value lift)",
-            other.render_name()
+            other.render_name(&db.name_ctx())
         ))),
     }
 }
@@ -4723,7 +4726,7 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
                 Code::TypeMismatch,
                 format!(
                     "a `({pat_head} …)` pattern matches {expects}, but this scrutinee is {}",
-                    scrut_ty.render_name()
+                    scrut_ty.render_name(&db.name_ctx())
                 ),
             )
             .at(bad_pat),
@@ -4878,8 +4881,8 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
                     Code::Malformed,
                     format!(
                         "match pattern type {} does not match scrutinee type {}",
-                        pt.render_name(),
-                        scrut_ty.render_name()
+                        pt.render_name(&db.name_ctx()),
+                        scrut_ty.render_name(&db.name_ctx())
                     ),
                 )
                 .at(probe_pats[i]),
@@ -6963,8 +6966,8 @@ fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructI
                                 Code::Malformed,
                                 format!(
                                     "this list-element pattern is {}, but the list's elements are {}",
-                                    et.render_name(),
-                                    elem.render_name()
+                                    et.render_name(&db.name_ctx()),
+                                    elem.render_name(&db.name_ctx())
                                 ),
                             )
                             .at(e),
@@ -7832,8 +7835,8 @@ fn lower_match_map(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
                                 Code::Malformed,
                                 format!(
                                     "this map-pattern key is {}, but the map's keys are {}",
-                                    kt.render_name(),
-                                    key_ty.render_name()
+                                    kt.render_name(&db.name_ctx()),
+                                    key_ty.render_name(&db.name_ctx())
                                 ),
                             )
                             .at(k),
@@ -8704,14 +8707,14 @@ pub(crate) fn check_binding_pattern(
             // ("missing field `x`; no such field `y`"), the SAME hint the value-annotation / argument /
             // peer-join sites carry (`structural_delta_hint`, shared). The annotation is the expected type
             // (first), the value the actual (other).
-            let delta =
-                crate::infer::structural_delta_hint(&annot_ty, value_ty).unwrap_or_default();
+            let delta = crate::infer::structural_delta_hint(&annot_ty, value_ty, &db.name_ctx())
+                .unwrap_or_default();
             return Err(Reject::coded(
                 Code::TypeMismatch,
                 format!(
                     "a binder annotated {} is bound to a value of type {}{delta}",
-                    annot_ty.render_name(),
-                    value_ty.render_name()
+                    annot_ty.render_name(&db.name_ctx()),
+                    value_ty.render_name(&db.name_ctx())
                 ),
             )
             .at(pat));
@@ -8859,7 +8862,7 @@ pub(crate) fn check_binding_pattern(
                         "a record binding pattern names field `{}`, which the bound value of type {} \
                          does not have",
                         sym.name,
-                        value_ty.render_name()
+                        value_ty.render_name(&db.name_ctx())
                     ),
                 )
                 .at(pair));
@@ -8907,7 +8910,7 @@ pub(crate) fn check_binding_pattern(
                 Code::TypeMismatch,
                 format!(
                     "a record binding pattern destructures a record, but the bound value has type {}",
-                    value_ty.render_name()
+                    value_ty.render_name(&db.name_ctx())
                 ),
             )
             .at(pat));
@@ -9419,8 +9422,8 @@ fn pattern_constraints(
                 Code::Malformed,
                 format!(
                     "{} literal pattern does not match the {} sub-value it is matched against",
-                    lit_ty.render_with_article(),
-                    ty.render_name()
+                    lit_ty.render_with_article(&db.name_ctx()),
+                    ty.render_name(&db.name_ctx())
                 ),
             )
             .at(pat));
@@ -9459,7 +9462,7 @@ fn pattern_constraints(
                     "this match arm names `{name}`, which is not a variant of the matched type \
                      {} — did you mean `{candidate}`? (a bare name here is read as a catch-all \
                      binding, which is almost certainly not intended)",
-                    ty.render_name()
+                    ty.render_name(&db.name_ctx())
                 ),
             )
             .at(pat)
@@ -9540,13 +9543,13 @@ fn pattern_constraints(
                         plural(n),
                         ts.len(),
                         plural(ts.len()),
-                        other.render_name(),
+                        other.render_name(&db.name_ctx()),
                     )
                 } else {
                     format!(
                         "this tuple pattern cannot destructure a value of type {} — a `(tuple …)` pattern \
                          matches only a tuple value",
-                        other.render_name()
+                        other.render_name(&db.name_ctx())
                     )
                 };
                 return Err(Reject::coded(Code::Malformed, message).at(pat));
@@ -9611,7 +9614,7 @@ fn pattern_constraints(
                     format!(
                         "this list pattern cannot destructure a value of type {} — a `(list …)` pattern \
                          matches only a list value",
-                        other.render_name()
+                        other.render_name(&db.name_ctx())
                     ),
                 )
                 .at(pat));
@@ -9666,7 +9669,7 @@ fn pattern_constraints(
                 Code::Malformed,
                 format!(
                     "a map pattern does not match the sub-value type {}",
-                    ty.render_name()
+                    ty.render_name(&db.name_ctx())
                 ),
             )
             .at(pat));
@@ -9723,7 +9726,7 @@ fn pattern_constraints(
                     format!(
                         "this record pattern cannot destructure a value of type {} — a `(record …)` \
                          pattern matches only a record value",
-                        other.render_name()
+                        other.render_name(&db.name_ctx())
                     ),
                 )
                 .at(pat));
@@ -9785,7 +9788,7 @@ fn pattern_constraints(
                                 format!(
                                     "a record pattern names field `{field_name}`, which the matched value \
                                      of type {} does not have{suggestion}",
-                                    ty.render_name()
+                                    ty.render_name(&db.name_ctx())
                                 ),
                             )
                             .at(pair);
@@ -9890,7 +9893,7 @@ fn pattern_constraints(
         && db.is_abstract_type_at(pat, *decl)
         && db.ctor_is_withheld_at(pat, name)
     {
-        let ty_name = ty.render_name();
+        let ty_name = ty.render_name(&db.name_ctx());
         return Err(Reject::coded(
             Code::AbstractCtor,
             format!(
@@ -9942,7 +9945,7 @@ fn pattern_constraints(
                     Code::TypeMismatch,
                     format!(
                         "this variant pattern is not a variant of the matched type {}",
-                        ty.render_name()
+                        ty.render_name(&db.name_ctx())
                     ),
                 )
                 .at(pat),
@@ -10029,7 +10032,7 @@ fn pattern_constraints(
                                 "this pattern binds {} fields for `{ctor}`, but `{ctor}` carries a single \
                                  value of type {} — bind it with one sub-pattern `({ctor} x)`",
                                 args.len(),
-                                inner.render_name()
+                                inner.render_name(&db.name_ctx())
                             ),
                         )
                         .at(pat));
@@ -10095,7 +10098,7 @@ fn pattern_constraints(
                 Code::TypeMismatch,
                 format!(
                     "this variant pattern is not a variant of the matched type {}",
-                    ty.render_name()
+                    ty.render_name(&db.name_ctx())
                 ),
             ),
         ));
@@ -10163,7 +10166,7 @@ fn pattern_constraints(
                             "this pattern binds {} fields for `{ctor}`, but `{ctor}` carries a single \
                              value of type {} — bind it with one sub-pattern `({ctor} x)`",
                             args.len(),
-                            payload_ty.render_name()
+                            payload_ty.render_name(&db.name_ctx())
                         ),
                     )
                     .at(pat));
@@ -13299,8 +13302,8 @@ fn type_specialize(db: &mut Db, callee: usize, args: &[StructId]) -> Option<(usi
     let key: String = kinds
         .iter()
         .map(|k| match k {
-            ArgKind::Value(t) => t.render_name(),
-            ArgKind::TypeArg(tv) => format!("@{}", tv.render_name()), // `@` marks a type ARG slot
+            ArgKind::Value(t) => t.render_name(&db.name_ctx()),
+            ArgKind::TypeArg(tv) => format!("@{}", tv.render_name(&db.name_ctx())), // `@` marks a type ARG slot
             ArgKind::ConstArg(_, fp) => format!("#{fp}"), // `#` marks a const-inlined slot
         })
         .collect::<Vec<_>>()
@@ -13390,8 +13393,8 @@ fn type_specialize(db: &mut Db, callee: usize, args: &[StructId]) -> Option<(usi
         .iter()
         .zip(kinds.iter())
         .map(|(name, kind)| match kind {
-            ArgKind::Value(ty) => format!("{name}: {}", ty.render_name()),
-            ArgKind::TypeArg(tv) => format!("const {name} = {}", tv.render_name()),
+            ArgKind::Value(ty) => format!("{name}: {}", ty.render_name(&db.name_ctx())),
+            ArgKind::TypeArg(tv) => format!("const {name} = {}", tv.render_name(&db.name_ctx())),
             ArgKind::ConstArg(arg_node, _) => {
                 format!("const {name} = {}", render_arg_node(db, *arg_node))
             }
@@ -14105,7 +14108,7 @@ pub fn constant_value_form(db: &mut Db, id: StructId) -> Option<Vec<u8>> {
     let colon = b.name(":");
     let value = const_value_ast(db, &mut b, id)?;
     let ty = crate::infer::type_of(db, id);
-    let type_ast = type_ast(&mut b, &ty)?;
+    let type_ast = type_ast(&mut b, &ty, &db.name_ctx())?;
     let root = b.list(vec![colon, value, type_ast]);
     Some(crate::codec::encode(&b.finish(root)))
 }
@@ -14152,13 +14155,16 @@ pub enum LeafFill {
 /// type has no value-form surface (a function/type-value). Every leaf is treated as a runtime hole
 /// (walked from the handle), so a mixed const/runtime compound needs no special-casing — a constant
 /// element still sits boxed on the heap and reads back the same.
-pub fn runtime_value_form_template(ty: &crate::ty::Ty) -> Option<ValueFormTemplate> {
+pub fn runtime_value_form_template(
+    ty: &crate::ty::Ty,
+    ncx: &crate::ty::NameCtx,
+) -> Option<ValueFormTemplate> {
     let mut b = crate::ast::Builder::new();
     let colon = b.name(":");
     // Build the value AST with PLACEHOLDER leaves, recording each leaf's walk path + kind as we go.
     let mut leaves: Vec<PendingLeaf> = Vec::new();
     let value = template_value_ast(&mut b, ty, &mut Vec::new(), &mut leaves)?;
-    let type_ast = type_ast(&mut b, ty)?;
+    let type_ast = type_ast(&mut b, ty, ncx)?;
     let root = b.list(vec![colon, value, type_ast]);
     let arenas = b.finish(root);
     let bytes = crate::codec::encode(&arenas);
@@ -14404,7 +14410,7 @@ pub fn sum_shape_descriptor(db: &mut Db, ty: &crate::ty::Ty) -> Option<Vec<u8>> 
                 let named = builder.push(ShapeNode::Named(name.clone(), inner));
                 Some(builder.encode(named))
             } else {
-                let type_node = type_node_of(ty)?;
+                let type_node = type_node_of(ty, &db.name_ctx())?;
                 let framed = builder.push(ShapeNode::Framed(type_node, inner));
                 Some(builder.encode(framed))
             }
@@ -14424,7 +14430,7 @@ pub fn sum_shape_descriptor(db: &mut Db, ty: &crate::ty::Ty) -> Option<Vec<u8>> 
         // `(Map Int64 (Set Int64))`, `(Set (Tuple Int64 Int64))`. The inner VALUE shape (`shape_of`) already
         // recurses over nested collections, so the walker renders them; only the type node needed lifting.
         crate::ty::Ty::List(_) | crate::ty::Ty::Set(_) | crate::ty::Ty::Map(_, _) => {
-            let type_node = type_node_of(ty)?;
+            let type_node = type_node_of(ty, &db.name_ctx())?;
             let inner = builder.shape_of(db, ty)?;
             let framed = builder.push(ShapeNode::Framed(type_node, inner));
             Some(builder.encode(framed))
@@ -14436,7 +14442,7 @@ pub fn sum_shape_descriptor(db: &mut Db, ty: &crate::ty::Ty) -> Option<Vec<u8>> 
         // `{num,den}` record. Wrap in a `Framed(<type-node>, …)` frame so the value form is `(: N BigInt)`
         // (the `Named` bare-name frame the constant escape uses), the type node observable.
         crate::ty::Ty::BigInt | crate::ty::Ty::Rational => {
-            let type_node = type_node_of(ty)?;
+            let type_node = type_node_of(ty, &db.name_ctx())?;
             let inner = builder.shape_of(db, ty)?;
             let framed = builder.push(ShapeNode::Framed(type_node, inner));
             Some(builder.encode(framed))
@@ -14451,7 +14457,7 @@ pub fn sum_shape_descriptor(db: &mut Db, ty: &crate::ty::Ty) -> Option<Vec<u8>> 
         // (`runtime_value_form_template`), which the caller tries FIRST — this descriptor path is the fallback
         // for the variable-shape case only.
         crate::ty::Ty::Tuple(_) | crate::ty::Ty::Record(_) => {
-            let type_node = type_node_of(ty)?;
+            let type_node = type_node_of(ty, &db.name_ctx())?;
             let inner = builder.shape_of(db, ty)?;
             let framed = builder.push(ShapeNode::Framed(type_node, inner));
             Some(builder.encode(framed))
@@ -14465,7 +14471,7 @@ pub fn sum_shape_descriptor(db: &mut Db, ty: &crate::ty::Ty) -> Option<Vec<u8>> 
 /// sum) is a bare-name node with no children; a parametric type (`List`/`Set`/`Map`/`Tuple`/`Record`/a
 /// generic sum) is a head plus child type nodes, nested to any depth. `None` for a type that never appears
 /// as an escaping collection element (Fn/Qty/Var/Any/Type) — the escape declines rather than misrender it.
-fn type_node_of(ty: &crate::ty::Ty) -> Option<TypeNode> {
+fn type_node_of(ty: &crate::ty::Ty, ncx: &crate::ty::NameCtx) -> Option<TypeNode> {
     use crate::ty::Ty;
     let leaf = |s: String| TypeNode {
         head: s,
@@ -14481,23 +14487,23 @@ fn type_node_of(ty: &crate::ty::Ty) -> Option<TypeNode> {
         | Ty::BigInt
         | Ty::Rational
         | Ty::Float(_)
-        | Ty::Bytes => leaf(ty.render_name()),
+        | Ty::Bytes => leaf(ty.render_name(ncx)),
         Ty::List(e) => TypeNode {
             head: "List".to_string(),
-            children: vec![type_node_of(e)?],
+            children: vec![type_node_of(e, ncx)?],
         },
         Ty::Set(e) => TypeNode {
             head: "Set".to_string(),
-            children: vec![type_node_of(e)?],
+            children: vec![type_node_of(e, ncx)?],
         },
         Ty::Map(k, v) => TypeNode {
             head: "Map".to_string(),
-            children: vec![type_node_of(k)?, type_node_of(v)?],
+            children: vec![type_node_of(k, ncx)?, type_node_of(v, ncx)?],
         },
         Ty::Tuple(elems) => {
             let mut children = Vec::with_capacity(elems.len());
             for e in elems.iter() {
-                children.push(type_node_of(e)?);
+                children.push(type_node_of(e, ncx)?);
             }
             TypeNode {
                 head: "Tuple".to_string(),
@@ -14511,7 +14517,7 @@ fn type_node_of(ty: &crate::ty::Ty) -> Option<TypeNode> {
             for (k, t) in fields.iter() {
                 children.push(TypeNode {
                     head: k.name.clone(),
-                    children: vec![type_node_of(t)?],
+                    children: vec![type_node_of(t, ncx)?],
                 });
             }
             TypeNode {
@@ -14526,7 +14532,7 @@ fn type_node_of(ty: &crate::ty::Ty) -> Option<TypeNode> {
             } else {
                 let mut children = Vec::with_capacity(args.len());
                 for a in args.iter() {
-                    children.push(type_node_of(a)?);
+                    children.push(type_node_of(a, ncx)?);
                 }
                 TypeNode {
                     head: name.clone(),
@@ -14957,7 +14963,7 @@ fn variant_form_template(
     // The TYPE node — the sum's full type surface: a bare `Sign` for a monomorphic sum, `(Option
     // Int64)` for a generic instantiation (`type_ast`'s `Ty::Sum` arm renders both from the solved
     // type). So `(: (Some 5) (Option Int64))` — the corpus parameterized form.
-    let type_node = type_ast(&mut b, sum_ty)?;
+    let type_node = type_ast(&mut b, sum_ty, &db.name_ctx())?;
     let root = b.list(vec![colon, value, type_node]);
     let arenas = b.finish(root);
     let bytes = crate::codec::encode(&arenas);
@@ -15319,7 +15325,7 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
     if matches!(crate::infer::type_of(db, id), crate::ty::Ty::Type)
         && let Some(concrete) = crate::eval::typeval_of(db, id)
     {
-        return type_ast(b, &concrete);
+        return type_ast(b, &concrete, &db.name_ctx());
     }
     match core_of(db, id) {
         Core::ConstInt(v) => Some(b.atom_leaf(Leaf::Int {
@@ -15706,7 +15712,11 @@ fn member_access(b: &mut crate::ast::Builder, operand: &str, key: &str) -> Struc
 /// prints the recorded type: `Int64`/`UInt8`/… as a name atom, `Bool`/`Unit` likewise, a tuple as
 /// `(Tuple T…)`, a record as `(record (name T)…)`. `None` for a type with no value-form surface (a
 /// function/type-value/unsolved variable can never be a runtime value crossing the boundary).
-fn type_ast(b: &mut crate::ast::Builder, ty: &crate::ty::Ty) -> Option<StructId> {
+fn type_ast(
+    b: &mut crate::ast::Builder,
+    ty: &crate::ty::Ty,
+    ncx: &crate::ty::NameCtx,
+) -> Option<StructId> {
     use crate::ty::Ty;
     match ty {
         // A scalar's type surface is its name atom. `String`/`Char`/`Symbol`/`BigInt`/`Rational` are
@@ -15719,7 +15729,7 @@ fn type_ast(b: &mut crate::ast::Builder, ty: &crate::ty::Ty) -> Option<StructId>
         | Ty::Char
         | Ty::Symbol
         | Ty::BigInt
-        | Ty::Rational => Some(b.name(ty.render_name())),
+        | Ty::Rational => Some(b.name(ty.render_name(ncx))),
         // A sum's type surface: the bare NAME for a monomorphic sum (`(: (Neg unit) Sign)`), or the
         // STRUCTURED application `(Option Int64)` for a generic instantiation — a `(NAME arg…)` list, so
         // the args round-trip as separate nodes (not one spaced-out name atom). Matches `render_name`'s
@@ -15731,7 +15741,7 @@ fn type_ast(b: &mut crate::ast::Builder, ty: &crate::ty::Ty) -> Option<StructId>
                 let head = b.name(name.clone());
                 let mut children = vec![head];
                 for a in args.iter() {
-                    children.push(type_ast(b, a)?);
+                    children.push(type_ast(b, a, ncx)?);
                 }
                 Some(b.list(children))
             }
@@ -15740,7 +15750,7 @@ fn type_ast(b: &mut crate::ast::Builder, ty: &crate::ty::Ty) -> Option<StructId>
             let head = b.name("Tuple");
             let mut children = vec![head];
             for t in elems.iter() {
-                children.push(type_ast(b, t)?);
+                children.push(type_ast(b, t, ncx)?);
             }
             Some(b.list(children))
         }
@@ -15754,7 +15764,7 @@ fn type_ast(b: &mut crate::ast::Builder, ty: &crate::ty::Ty) -> Option<StructId>
             for (name, t) in fields.iter() {
                 let colon = b.name(":");
                 let fname = b.name(name.name.clone());
-                let fty = type_ast(b, t)?;
+                let fty = type_ast(b, t, ncx)?;
                 children.push(b.list(vec![colon, fname, fty]));
             }
             Some(b.list(children))
@@ -15762,20 +15772,20 @@ fn type_ast(b: &mut crate::ast::Builder, ty: &crate::ty::Ty) -> Option<StructId>
         // A list's type surface is `(List Elem)` — matches `render_name`.
         Ty::List(elem) => {
             let head = b.name("List");
-            let ety = type_ast(b, elem)?;
+            let ety = type_ast(b, elem, ncx)?;
             Some(b.list(vec![head, ety]))
         }
         // A map's type surface is `(Map Key Value)` — matches `render_name` (key first).
         Ty::Map(k, v) => {
             let head = b.name("Map");
-            let kty = type_ast(b, k)?;
-            let vty = type_ast(b, v)?;
+            let kty = type_ast(b, k, ncx)?;
+            let vty = type_ast(b, v, ncx)?;
             Some(b.list(vec![head, kty, vty]))
         }
         // A set's type surface is `(Set Elem)` — one element type parameter (matches `render_name`).
         Ty::Set(elem) => {
             let head = b.name("Set");
-            let ety = type_ast(b, elem)?;
+            let ety = type_ast(b, elem, ncx)?;
             Some(b.list(vec![head, ety]))
         }
         // A bytes value's type surface is the bare name `Bytes` (a leaf, like a scalar) — matches
@@ -15799,7 +15809,7 @@ fn type_ast(b: &mut crate::ast::Builder, ty: &crate::ty::Ty) -> Option<StructId>
         // surface `(Qty Float64 (Unit.base #"meter"))`.
         Ty::Qty { inner, unit } => {
             let head = b.name("Qty");
-            let ity = type_ast(b, inner)?;
+            let ity = type_ast(b, inner, ncx)?;
             let uty = unit_value_ast(b, unit);
             Some(b.list(vec![head, ity, uty]))
         }
@@ -26716,7 +26726,7 @@ mod tests {
     /// Build a template for `ty`, fill it from `root`, decode + print — the value-form text the host
     /// would render.
     fn render(ty: &crate::ty::Ty, root: &V) -> String {
-        let tpl = runtime_value_form_template(ty).expect("template");
+        let tpl = runtime_value_form_template(ty, &crate::ty::NameCtx::new(&[])).expect("template");
         let bytes = fill(&tpl, root);
         let arenas = cadenza_syntax::codec::decode(&bytes).expect("decode filled template");
         cadenza_syntax::sexpr::print(&arenas).trim().to_string()

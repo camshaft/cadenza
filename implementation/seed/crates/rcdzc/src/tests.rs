@@ -39587,12 +39587,12 @@ mod match_engine {
                     is_receiver(arg0),
                     "prelude arg-order drift: `{module}.{op}` arg-0 is {} — expected the {kind} receiver \
                      (operator's consistent receiver-first directive, concierge 9699)",
-                    arg0.render_name()
+                    arg0.render_name(&db.name_ctx())
                 ),
                 other => panic!(
                     "`{module}.{op}` did not infer to an arrow (got {}); the drift guard needs a \
                      receiver-op with an arrow scheme",
-                    other.render_name()
+                    other.render_name(&db.name_ctx())
                 ),
             }
         }
@@ -49101,13 +49101,17 @@ mod match_engine {
         ];
         for ty in cases {
             let node = encode_typeval(&mut db, &ty);
-            let decoded = typeval_of(&mut db, node)
-                .unwrap_or_else(|| panic!("a {} type-value must decode", ty.render_name()));
+            let decoded = typeval_of(&mut db, node).unwrap_or_else(|| {
+                panic!(
+                    "a {} type-value must decode",
+                    ty.render_name(&db.name_ctx())
+                )
+            });
             assert_eq!(
                 decoded,
                 ty,
                 "a {} type MUST survive the encode/decode round-trip (a missing arm would encode it as Unit)",
-                ty.render_name()
+                ty.render_name(&db.name_ctx())
             );
         }
     }
@@ -49136,13 +49140,17 @@ mod match_engine {
         ];
         for ty in cases {
             let node = encode_typeval(&mut db, &ty);
-            let decoded = typeval_of(&mut db, node)
-                .unwrap_or_else(|| panic!("a {} type-value must decode", ty.render_name()));
+            let decoded = typeval_of(&mut db, node).unwrap_or_else(|| {
+                panic!(
+                    "a {} type-value must decode",
+                    ty.render_name(&db.name_ctx())
+                )
+            });
             assert_eq!(
                 decoded,
                 ty,
                 "a {} type MUST survive the encode/decode round-trip (a missing arm would encode BigInt as Unit)",
-                ty.render_name()
+                ty.render_name(&db.name_ctx())
             );
         }
     }
@@ -49166,13 +49174,17 @@ mod match_engine {
         ];
         for ty in cases {
             let node = encode_typeval(&mut db, &ty);
-            let decoded = typeval_of(&mut db, node)
-                .unwrap_or_else(|| panic!("a {} type-value must decode", ty.render_name()));
+            let decoded = typeval_of(&mut db, node).unwrap_or_else(|| {
+                panic!(
+                    "a {} type-value must decode",
+                    ty.render_name(&db.name_ctx())
+                )
+            });
             assert_eq!(
                 decoded,
                 ty,
                 "a {} type MUST survive the encode/decode round-trip (a missing arm would encode it as Unit)",
-                ty.render_name()
+                ty.render_name(&db.name_ctx())
             );
         }
     }
@@ -53597,24 +53609,39 @@ mod diagnostics {
         // integers (`Int…`, "eye-nt") take `an`; `UInt…` ("yoo") and every other name take `a`. A naive
         // first-letter rule would wrongly say "an UInt8", so this must be sound-based.
         assert_eq!(
-            Ty::Int(IntTy::fixed(true, 64)).render_with_article(),
+            Ty::Int(IntTy::fixed(true, 64)).render_with_article(&crate::ty::NameCtx::new(&[])),
             "an Int64"
         );
         assert_eq!(
-            Ty::Int(IntTy::fixed(true, 32)).render_with_article(),
+            Ty::Int(IntTy::fixed(true, 32)).render_with_article(&crate::ty::NameCtx::new(&[])),
             "an Int32"
         );
         assert_eq!(
-            Ty::Int(IntTy::fixed(false, 8)).render_with_article(),
+            Ty::Int(IntTy::fixed(false, 8)).render_with_article(&crate::ty::NameCtx::new(&[])),
             "a UInt8"
         );
-        assert_eq!(Ty::Float(FloatTy::f64()).render_with_article(), "a Float64");
-        assert_eq!(Ty::Bool.render_with_article(), "a Bool");
-        assert_eq!(Ty::String.render_with_article(), "a String");
+        assert_eq!(
+            Ty::Float(FloatTy::f64()).render_with_article(&crate::ty::NameCtx::new(&[])),
+            "a Float64"
+        );
+        assert_eq!(
+            Ty::Bool.render_with_article(&crate::ty::NameCtx::new(&[])),
+            "a Bool"
+        );
+        assert_eq!(
+            Ty::String.render_with_article(&crate::ty::NameCtx::new(&[])),
+            "a String"
+        );
         // Other VOWEL-initial names also take `an` (was the bug: only `Int…` did, so `Ast`/`Any`/`Option`
         // wrongly read "a Ast"). `Bytes`/`Char` stay `a`; `Unit`/`UInt…` keep `a` (the "yoo" exception).
-        assert_eq!(Ty::Bytes.render_with_article(), "a Bytes");
-        assert_eq!(Ty::Unit.render_with_article(), "a Unit");
+        assert_eq!(
+            Ty::Bytes.render_with_article(&crate::ty::NameCtx::new(&[])),
+            "a Bytes"
+        );
+        assert_eq!(
+            Ty::Unit.render_with_article(&crate::ty::NameCtx::new(&[])),
+            "a Unit"
+        );
 
         // The cross-kind operator clash message uses it — `(< 1 "x")` reads "an Int64 and a String …",
         // NOT the old ungrammatical "a Int64 and a String …".
@@ -70284,7 +70311,10 @@ mod stage1 {
             ground.is_ground(),
             "a Cont over ground components is ground"
         );
-        assert_eq!(ground.render_name(), "(Cont Unit Int64)");
+        assert_eq!(
+            ground.render_name(&crate::ty::NameCtx::new(&[])),
+            "(Cont Unit Int64)"
+        );
         // A Cont has NO boundary form (host-composition invariant) but IS an i32 machine slot when built.
         assert_eq!(crate::backend::wasm::lir::comp_valtype_of(&ground), None);
     }
@@ -70617,7 +70647,10 @@ mod stage1 {
                     .occ;
                 assert_eq!(decl, decl_occ);
             }
-            other => panic!("expected Ty::Sum, got {}", other.render_name()),
+            other => panic!(
+                "expected Ty::Sum, got {}",
+                other.render_name(&db.name_ctx())
+            ),
         }
     }
 
@@ -70840,7 +70873,7 @@ mod stage1 {
                 .position(|d| d.name == name)
                 .expect("def present");
             crate::infer::def_scheme(&mut db, idx)
-                .map(|s| s.ty.render_name())
+                .map(|s| s.ty.render_name(&db.name_ctx()))
                 .unwrap_or_else(|| "<none>".to_string())
         };
         // Arrow DOMAIN: `(: g (-> Type Int64))` — g's type must stay `(-> Type Int64)`, not `(-> Unit Int64)`.
@@ -72922,8 +72955,8 @@ mod stage1 {
             "Option Int64 ≠ Option Bool"
         );
         assert!(opt_int.agrees_with(&opt_int));
-        assert_eq!(opt_int.render_name(), "(Option Int64)");
-        assert_eq!(opt_bool.render_name(), "(Option Bool)");
+        assert_eq!(opt_int.render_name(&db.name_ctx()), "(Option Int64)");
+        assert_eq!(opt_bool.render_name(&db.name_ctx()), "(Option Bool)");
         // The generic sum record IS applyable in type position (has `(meta apply)` = sum-ctor), so
         // `typeval_of` of a `(Option Int64)` application reduces to the monomorphized `Ty::Sum`.
         let option_rec = db.type_decl_by_name("Option").expect("Option bound");
@@ -72932,11 +72965,15 @@ mod stage1 {
         match typeval_of(&mut db, app) {
             Some(Ty::Sum { args, .. }) => {
                 assert_eq!(args.len(), 1);
-                assert_eq!(args[0].render_name(), "Int64", "Option applied to Int64");
+                assert_eq!(
+                    args[0].render_name(&db.name_ctx()),
+                    "Int64",
+                    "Option applied to Int64"
+                );
             }
             other => panic!(
                 "expected (Option Int64) to reduce to Ty::Sum, got {:?}",
-                other.map(|t| t.render_name())
+                other.map(|t| t.render_name(&db.name_ctx()))
             ),
         }
         // NESTED: `(Option (Option Int64))` reduces to a `Ty::Sum` whose arg is ITSELF a `Ty::Sum`.
@@ -72950,7 +72987,7 @@ mod stage1 {
         match typeval_of(&mut db, outer) {
             Some(t @ Ty::Sum { .. }) => {
                 assert_eq!(
-                    t.render_name(),
+                    t.render_name(&db.name_ctx()),
                     "(Option (Option Int64))",
                     "nested generic sum resolves through the direct (round-trip-free) path"
                 );
@@ -72964,7 +73001,7 @@ mod stage1 {
             }
             other => panic!(
                 "expected (Option (Option Int64)) to reduce to a nested Ty::Sum, got {:?}",
-                other.map(|t| t.render_name())
+                other.map(|t| t.render_name(&db.name_ctx()))
             ),
         }
     }
@@ -72997,12 +73034,15 @@ mod stage1 {
                 assert_eq!(name, "Option");
                 assert_eq!(args.len(), 1);
                 assert_eq!(
-                    args[0].render_name(),
+                    args[0].render_name(&db.name_ctx()),
                     "Int64",
                     "(Some 5) infers Option Int64"
                 );
             }
-            other => panic!("expected Ty::Sum, got {}", other.render_name()),
+            other => panic!(
+                "expected Ty::Sum, got {}",
+                other.render_name(&db.name_ctx())
+            ),
         }
         let b_body = db
             .defs
@@ -73012,11 +73052,14 @@ mod stage1 {
             .expect("b");
         match type_of(&mut db, b_body) {
             Ty::Sum { args, .. } => assert_eq!(
-                args[0].render_name(),
+                args[0].render_name(&db.name_ctx()),
                 "Bool",
                 "(Some true) infers Option Bool"
             ),
-            other => panic!("expected Ty::Sum, got {}", other.render_name()),
+            other => panic!(
+                "expected Ty::Sum, got {}",
+                other.render_name(&db.name_ctx())
+            ),
         }
     }
 
@@ -73172,12 +73215,15 @@ mod stage1 {
             Ty::Sum { name, args, .. } => {
                 assert_eq!(name, "Option", "bare Some builds the prelude Option");
                 assert_eq!(
-                    args[0].render_name(),
+                    args[0].render_name(&db.name_ctx()),
                     "Int64",
                     "(Some 5) infers Option Int64"
                 );
             }
-            other => panic!("expected Ty::Sum Option, got {}", other.render_name()),
+            other => panic!(
+                "expected Ty::Sum Option, got {}",
+                other.render_name(&db.name_ctx())
+            ),
         }
     }
 
@@ -73317,7 +73363,10 @@ mod stage1 {
             Ty::Sum { decl, .. } => {
                 assert_eq!(decl, user_occ, "the user Option shadows the prelude one")
             }
-            other => panic!("expected Ty::Sum, got {}", other.render_name()),
+            other => panic!(
+                "expected Ty::Sum, got {}",
+                other.render_name(&db.name_ctx())
+            ),
         }
     }
 
@@ -73344,17 +73393,20 @@ mod stage1 {
         let scheme = scheme_of(&mut db, some, &mut fresh).expect("Some has a type");
         match scheme.ty {
             Ty::Fn(param, result) => {
-                assert_eq!(param.render_name(), "Int64");
-                assert_eq!(result.render_name(), "Option");
+                assert_eq!(param.render_name(&db.name_ctx()), "Int64");
+                assert_eq!(result.render_name(&db.name_ctx()), "Option");
                 assert!(matches!(*result, Ty::Sum { .. }));
             }
-            other => panic!("expected (-> Int64 Option), got {}", other.render_name()),
+            other => panic!(
+                "expected (-> Int64 Option), got {}",
+                other.render_name(&db.name_ctx())
+            ),
         }
         // A NULLARY variant `None` types as the sum directly (no arrow).
         let none = project_field(&mut db, option, &Symbol::plain("None")).expect("None field");
         let none_scheme = scheme_of(&mut db, none, &mut fresh).expect("None has a type");
         assert!(matches!(none_scheme.ty, Ty::Sum { .. }));
-        assert_eq!(none_scheme.ty.render_name(), "Option");
+        assert_eq!(none_scheme.ty.render_name(&db.name_ctx()), "Option");
     }
 
     #[test]
@@ -77156,10 +77208,10 @@ mod stage1 {
         // TYPE half.)
         let ty = try_body_ty("(try (Int64.checked-add 20 22))");
         assert_eq!(
-            ty.render_name(),
+            ty.render_name(&crate::ty::NameCtx::new(&[])),
             "Int64",
             "`(try (Option Int64))` yields the Some payload Int64, got {}",
-            ty.render_name()
+            ty.render_name(&crate::ty::NameCtx::new(&[]))
         );
     }
 
@@ -77169,10 +77221,10 @@ mod stage1 {
         // (the `Err` type is a still-unsolved phantom here, which does not affect the success payload).
         let ty = try_body_ty("(try (Ok 1))");
         assert_eq!(
-            ty.render_name(),
+            ty.render_name(&crate::ty::NameCtx::new(&[])),
             "Int64",
             "`(try (Result Int64 _))` yields the Ok payload Int64, got {}",
-            ty.render_name()
+            ty.render_name(&crate::ty::NameCtx::new(&[]))
         );
     }
 
@@ -79114,7 +79166,8 @@ mod r2_runtime_resource {
         // the exact corpus value form. The FIRST genuine heap-alloc→escape→walk round-trip. `run_composed`
         // wraps the BORROW envelope now, so the core must be the borrow walker (rep = param, no drop).
         let ty = Ty::Tuple(vec![Ty::int64(), Ty::int64()].into());
-        let tpl = runtime_value_form_template(&ty).expect("template");
+        let tpl =
+            runtime_value_form_template(&ty, &crate::ty::NameCtx::new(&[])).expect("template");
         let core = walker_core_borrow(&tpl, &[3, 1]);
         if let Some(text) = run_composed(&core) {
             assert_eq!(text, "(: (tuple 3 1) (Tuple Int64 Int64))");
@@ -79127,7 +79180,8 @@ mod r2_runtime_resource {
     fn a_runtime_tuple_with_a_negative_element_walks() {
         // A negative element exercises the NEG kind-byte flip + absolute-magnitude write in the walker.
         let ty = Ty::Tuple(vec![Ty::int64(), Ty::int64()].into());
-        let tpl = runtime_value_form_template(&ty).expect("template");
+        let tpl =
+            runtime_value_form_template(&ty, &crate::ty::NameCtx::new(&[])).expect("template");
         let core = walker_core_borrow(&tpl, &[-5, 7]);
         if let Some(text) = run_composed(&core) {
             assert_eq!(text, "(: (tuple -5 7) (Tuple Int64 Int64))");
@@ -79148,8 +79202,8 @@ mod r2_runtime_resource {
             inner: Box::new(Ty::int64()),
             unit: Unit::base("meter"),
         };
-        let tpl =
-            runtime_value_form_template(&ty).expect("Int-inner reference-unit Qty has a template");
+        let tpl = runtime_value_form_template(&ty, &crate::ty::NameCtx::new(&[]))
+            .expect("Int-inner reference-unit Qty has a template");
         // Exactly one runtime hole: the inner magnitude, an Int at the ROOT (empty path, not via a sum
         // payload) — the scalar the `make` body boxes into the root cell.
         assert_eq!(tpl.leaves.len(), 1, "one hole (the erased inner scalar)");
@@ -79197,7 +79251,7 @@ mod r2_runtime_resource {
                     inner: Box::new(Ty::Int(IntTy::fixed(signed, w))),
                     unit: Unit::base("meter"),
                 };
-                let tpl = runtime_value_form_template(&ty)
+                let tpl = runtime_value_form_template(&ty, &crate::ty::NameCtx::new(&[]))
                     .unwrap_or_else(|| panic!("Int width={w} signed={signed} Qty has a template"));
                 assert_eq!(tpl.leaves.len(), 1, "one hole (width={w})");
                 assert_eq!(tpl.leaves[0].kind, LeafFill::Int);
@@ -79220,7 +79274,7 @@ mod r2_runtime_resource {
             unit: Unit::base("meter").scaled(1000, 1).expect("scaled unit"),
         };
         assert!(
-            runtime_value_form_template(&scaled).is_none(),
+            runtime_value_form_template(&scaled, &crate::ty::NameCtx::new(&[])).is_none(),
             "a scaled-unit Qty declines the runtime template (falls back)"
         );
         let float_inner = Ty::Qty {
@@ -79228,7 +79282,7 @@ mod r2_runtime_resource {
             unit: Unit::base("meter"),
         };
         assert!(
-            runtime_value_form_template(&float_inner).is_none(),
+            runtime_value_form_template(&float_inner, &crate::ty::NameCtx::new(&[])).is_none(),
             "a Float-inner Qty declines the runtime template (falls back)"
         );
     }
@@ -79571,7 +79625,8 @@ mod r2_runtime_resource {
         // end-to-end and the own-consume-and-drop hack can be retired. Build `(tuple 3 1)`, escape it as a
         // borrow-self resource, walk it in encode(borrow), decode.
         let ty = Ty::Tuple(vec![Ty::int64(), Ty::int64()].into());
-        let tpl = runtime_value_form_template(&ty).expect("template");
+        let tpl =
+            runtime_value_form_template(&ty, &crate::ty::NameCtx::new(&[])).expect("template");
         let core = walker_core_borrow(&tpl, &[3, 1]);
         use crate::backend::wasm::runtime_abi::{REQUIRED_RUNTIME_HASH, RUNTIME_IFACE};
         let import_name = format!("{RUNTIME_IFACE}@0.0.0+{REQUIRED_RUNTIME_HASH}");
@@ -79612,7 +79667,8 @@ mod r2_runtime_resource {
     fn combined_envelope_matches_component_builder_oracle() {
         use crate::backend::wasm::envelope::assemble_runtime_resource;
         let ty = Ty::Tuple(vec![Ty::int64(), Ty::int64()].into());
-        let tpl = runtime_value_form_template(&ty).expect("template");
+        let tpl =
+            runtime_value_form_template(&ty, &crate::ty::NameCtx::new(&[])).expect("template");
         let core = walker_core(&tpl, &[3, 1]);
         let dtor = dtor_module();
         let import_name = "cadenza:runtime/heap@0.0.0+deadbeef";
@@ -79634,7 +79690,8 @@ mod r2_runtime_resource {
     fn len_method_envelope_matches_component_builder_oracle() {
         use crate::backend::wasm::envelope::assemble_runtime_resource_with_len;
         let ty = Ty::Tuple(vec![Ty::int64(), Ty::int64()].into());
-        let tpl = runtime_value_form_template(&ty).expect("template");
+        let tpl =
+            runtime_value_form_template(&ty, &crate::ty::NameCtx::new(&[])).expect("template");
         let core = tuple_methods_core(&tpl, &[7, 9]);
         let dtor = dtor_module();
         let import_name = "cadenza:runtime/heap@0.0.0+deadbeef";
@@ -80026,7 +80083,8 @@ mod r2_runtime_resource {
         // repeatable borrow method (arr-len) coexisting with encode. If len returns 2 BOTH times and encode
         // still decodes correctly AFTER the len calls, the multi-method value resource is sound end-to-end.
         let ty = Ty::Tuple(vec![Ty::int64(), Ty::int64()].into());
-        let tpl = runtime_value_form_template(&ty).expect("template");
+        let tpl =
+            runtime_value_form_template(&ty, &crate::ty::NameCtx::new(&[])).expect("template");
         let core = tuple_methods_core(&tpl, &[7, 9]);
         use crate::backend::wasm::runtime_abi::{REQUIRED_RUNTIME_HASH, RUNTIME_IFACE};
         let import_name = format!("{RUNTIME_IFACE}@0.0.0+{REQUIRED_RUNTIME_HASH}");

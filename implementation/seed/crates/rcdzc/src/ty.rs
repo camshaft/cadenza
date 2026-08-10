@@ -1030,6 +1030,32 @@ impl PartialEq for Ty {
 
 impl Eq for Ty {}
 
+/// A render-time NAME resolver for `Ty::render_name` and the diagnostic/encode render paths. A
+/// `Ty::Sum`/`Ty::Nominal` carries only its declaration occurrence `decl` (identity = `decl + args`; the
+/// spelled name is redundant render-only state). `NameCtx` maps `decl → name`, built ONCE from
+/// `db.type_decls` at a render entry point and threaded by shared reference down `render_name`'s
+/// recursion — so `Ty`/`unify`/`Subst::apply` stay db-free (the cheap-clone audit's point). Introduced
+/// ahead of dropping the redundant `name` field; this sub-increment threads it but the render still reads
+/// the existing field (a green no-op).
+#[derive(Clone, Copy)]
+pub struct NameCtx<'a> {
+    decls: &'a [crate::db::TypeDecl],
+}
+
+impl<'a> NameCtx<'a> {
+    pub fn new(decls: &'a [crate::db::TypeDecl]) -> NameCtx<'a> {
+        NameCtx { decls }
+    }
+    /// The declared name of the type whose declaration occurrence is `decl`, or `None` for a
+    /// synthesized/unresolved occurrence.
+    pub fn name_of(&self, decl: crate::ast::StructId) -> Option<&'a str> {
+        self.decls
+            .iter()
+            .find(|d| d.occ == decl)
+            .map(|d| d.name.as_str())
+    }
+}
+
 impl Ty {
     /// A fresh integer-literal type: signed, width deferred. Inference or the backend fixes the width.
     pub fn int() -> Ty {
@@ -1698,7 +1724,12 @@ impl Ty {
     /// such name. An integer's name is composed from its signedness and its GROUND width — a deferred
     /// width renders as its default — so an observed value's type is always concrete (`Int64`,
     /// `UInt32`, …). A language-level fact, target-neutral.
-    pub fn render_name(&self) -> String {
+    // `ncx` is threaded through the recursion but not yet CONSULTED this increment (the Sum/Nominal arms
+    // still read the redundant `name` field); the follow-up increment flips those reads onto
+    // `ncx.name_of(decl)` and drops the field. Until then `only_used_in_recursion` is a false positive —
+    // the param is intentionally present ahead of its use so this step stays a green no-op.
+    #[allow(clippy::only_used_in_recursion)]
+    pub fn render_name(&self, ncx: &NameCtx) -> String {
         match self {
             Ty::Int(it) => {
                 let stem = if it.ground_signed() { "Int" } else { "UInt" };
@@ -1730,7 +1761,7 @@ impl Ty {
             Ty::Record(fields) => {
                 let mut s = String::from("(Record");
                 for (k, t) in fields.iter() {
-                    s.push_str(&format!(" (: {} {})", k.name, t.render_name()));
+                    s.push_str(&format!(" (: {} {})", k.name, t.render_name(ncx)));
                 }
                 s.push(')');
                 s
@@ -1741,19 +1772,19 @@ impl Ty {
                 let mut s = String::from("(Tuple");
                 for t in elems.iter() {
                     s.push(' ');
-                    s.push_str(&t.render_name());
+                    s.push_str(&t.render_name(ncx));
                 }
                 s.push(')');
                 s
             }
             // A list renders as `(List Elem)` — the element type is its only type parameter.
-            Ty::List(elem) => format!("(List {})", elem.render_name()),
+            Ty::List(elem) => format!("(List {})", elem.render_name(ncx)),
             // A map renders as `(Map Key Value)` — its two type parameters, key first (the corpus `(:
             // (map (1 10) (2 20)) (Map Int64 Int64))` form). The key SET is runtime data, not the type.
-            Ty::Map(k, v) => format!("(Map {} {})", k.render_name(), v.render_name()),
+            Ty::Map(k, v) => format!("(Map {} {})", k.render_name(ncx), v.render_name(ncx)),
             // A set renders as `(Set Elem)` — its one element type parameter (the corpus `(: (Set.of …)
             // (Set Int64))` form).
-            Ty::Set(elem) => format!("(Set {})", elem.render_name()),
+            Ty::Set(elem) => format!("(Set {})", elem.render_name(ncx)),
             // Bytes renders as the bare type name `Bytes` (its VALUES render `b"…"`, but the type
             // annotation is the name — the corpus `(: b"…" Bytes)` form).
             Ty::Bytes => "Bytes".to_string(),
@@ -1768,7 +1799,7 @@ impl Ty {
                     let mut s = format!("({name}");
                     for a in args.iter() {
                         s.push(' ');
-                        s.push_str(&a.render_name());
+                        s.push_str(&a.render_name(ncx));
                     }
                     s.push(')');
                     s
@@ -1779,17 +1810,23 @@ impl Ty {
             // Fully-Qualified Name`). The underlying type is not part of the rendered annotation, just
             // as a sum's variant set is not.
             Ty::Nominal { name, .. } => name.clone(),
-            Ty::Fn(p, r) => format!("(-> {} {})", p.render_name(), r.render_name()),
+            Ty::Fn(p, r) => format!("(-> {} {})", p.render_name(ncx), r.render_name(ncx)),
             // A reified continuation renders as `(Cont resume answer)` — the type a stored/escaping `k`
             // would be named. Compile-time-only until the step-3 heap rep lands; a name for diagnostics.
             Ty::Cont { resume, answer } => {
-                format!("(Cont {} {})", resume.render_name(), answer.render_name())
+                format!(
+                    "(Cont {} {})",
+                    resume.render_name(ncx),
+                    answer.render_name(ncx)
+                )
             }
             // A quantity renders as `(Qty <inner> <unit>)` — the corpus form `(: (Qty.of 5.0 meter) (Qty
             // Float64 (Unit.base #"meter")))`. The inner type renders as its ordinary name; the unit
             // renders via `Unit::render` (the canonical written form so the type re-reads to the same
             // unit).
-            Ty::Qty { inner, unit } => format!("(Qty {} {})", inner.render_name(), unit.render()),
+            Ty::Qty { inner, unit } => {
+                format!("(Qty {} {})", inner.render_name(ncx), unit.render())
+            }
             Ty::Type => "Type".to_string(),
             // An UNSOLVED type variable — a payload/element type inference has not pinned (`(Result Int64
             // _)`, the error type of a bare `(Ok 1)`). Render it as `_`, the placeholder rustc uses for an
@@ -1814,6 +1851,7 @@ impl Ty {
     pub(crate) fn render_named_vars(
         &self,
         names: &std::collections::BTreeMap<u32, String>,
+        ncx: &NameCtx,
     ) -> String {
         match self {
             Ty::Var(n) => names.get(n).cloned().unwrap_or_else(|| "_".to_string()),
@@ -1821,7 +1859,11 @@ impl Ty {
                 let mut s = String::from("(Record");
                 for (k, t) in fields.iter() {
                     // Canonical `(: name T)` ascription field (RT3), matching `render_name`.
-                    s.push_str(&format!(" (: {} {})", k.name, t.render_named_vars(names)));
+                    s.push_str(&format!(
+                        " (: {} {})",
+                        k.name,
+                        t.render_named_vars(names, ncx)
+                    ));
                 }
                 s.push(')');
                 s
@@ -1830,18 +1872,18 @@ impl Ty {
                 let mut s = String::from("(Tuple");
                 for t in elems.iter() {
                     s.push(' ');
-                    s.push_str(&t.render_named_vars(names));
+                    s.push_str(&t.render_named_vars(names, ncx));
                 }
                 s.push(')');
                 s
             }
-            Ty::List(elem) => format!("(List {})", elem.render_named_vars(names)),
+            Ty::List(elem) => format!("(List {})", elem.render_named_vars(names, ncx)),
             Ty::Map(k, v) => format!(
                 "(Map {} {})",
-                k.render_named_vars(names),
-                v.render_named_vars(names)
+                k.render_named_vars(names, ncx),
+                v.render_named_vars(names, ncx)
             ),
-            Ty::Set(elem) => format!("(Set {})", elem.render_named_vars(names)),
+            Ty::Set(elem) => format!("(Set {})", elem.render_named_vars(names, ncx)),
             Ty::Sum { name, args, .. } => {
                 if args.is_empty() {
                     name.clone()
@@ -1849,7 +1891,7 @@ impl Ty {
                     let mut s = format!("({name}");
                     for a in args.iter() {
                         s.push(' ');
-                        s.push_str(&a.render_named_vars(names));
+                        s.push_str(&a.render_named_vars(names, ncx));
                     }
                     s.push(')');
                     s
@@ -1857,14 +1899,18 @@ impl Ty {
             }
             Ty::Fn(p, r) => format!(
                 "(-> {} {})",
-                p.render_named_vars(names),
-                r.render_named_vars(names)
+                p.render_named_vars(names, ncx),
+                r.render_named_vars(names, ncx)
             ),
             Ty::Qty { inner, unit } => {
-                format!("(Qty {} {})", inner.render_named_vars(names), unit.render())
+                format!(
+                    "(Qty {} {})",
+                    inner.render_named_vars(names, ncx),
+                    unit.render()
+                )
             }
             // Every scalar / nominal / non-var-bearing arm renders identically to `render_name`.
-            _ => self.render_name(),
+            _ => self.render_name(ncx),
         }
     }
 
@@ -1879,8 +1925,8 @@ impl Ty {
     /// is why this keys on the rendered stem rather than the letter. Vowel-initial USER sum names are rare
     /// enough that defaulting them to `a` is acceptable — this helper serves the scalar/text mismatch
     /// messages where only the built-in scalar names reach it.
-    pub fn render_with_article(&self) -> String {
-        let name = self.render_name();
+    pub fn render_with_article(&self, ncx: &NameCtx) -> String {
+        let name = self.render_name(ncx);
         // "an" before a vowel SOUND. The signed ints (`Int…`) and other vowel-initial type names (`Ast`,
         // `Any`, `Option`, `Iter`, `Error`, a user `(type Elephant …)`) take "an"; the EXCEPTIONS are the
         // `U…` names whose leading `u` is the consonant "yoo" sound — `UInt…`, `Unit` — which take "a".
@@ -1926,7 +1972,7 @@ impl Scheme {
     /// diagnostic MESSAGES keep the stable `_`. Vars are named in FIRST-OCCURRENCE order over the type
     /// (left-to-right), so the naming is deterministic and reads like a written `∀a b. …` signature. A
     /// monomorphic scheme (no free vars) renders byte-identically to `render_name`.
-    pub fn render_scheme(&self) -> String {
+    pub fn render_scheme(&self, ncx: &NameCtx) -> String {
         let mut order = Vec::new();
         self.ty.collect_free_vars(&mut order);
         let mut names = std::collections::BTreeMap::new();
@@ -1941,7 +1987,7 @@ impl Scheme {
             };
             names.insert(v, name);
         }
-        self.ty.render_named_vars(&names)
+        self.ty.render_named_vars(&names, ncx)
     }
 }
 

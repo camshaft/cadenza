@@ -46,7 +46,7 @@
 
 use crate::diag::{Code, Reject};
 use crate::fxhash::FxHashMap;
-use crate::ty::{IntTy, Scheme, Sign, Ty, Width};
+use crate::ty::{IntTy, NameCtx, Scheme, Sign, Ty, Width};
 use tracing::trace;
 
 /// The depth cap on `Subst::apply`'s combined var-chain + structural descent. A cyclic substitution
@@ -233,7 +233,7 @@ impl Subst {
 /// Unify two types, extending `subst` so both become equal, or return the conflicting-use type error.
 /// Order-independent: `unify(a, b)` and `unify(b, a)` reach the same solution. `Ty::Any` (a poison's
 /// type) unifies with anything so a "no" never induces a spurious conflict.
-pub fn unify(subst: &mut Subst, a: &Ty, b: &Ty) -> Result<(), Reject> {
+pub fn unify(subst: &mut Subst, a: &Ty, b: &Ty, ncx: &NameCtx) -> Result<(), Reject> {
     let a = subst.apply(a);
     let b = subst.apply(b);
     match (&a, &b) {
@@ -243,13 +243,13 @@ pub fn unify(subst: &mut Subst, a: &Ty, b: &Ty) -> Result<(), Reject> {
         (Ty::Var(v), Ty::Var(w)) if v == w => Ok(()),
         (Ty::Var(v), t) | (t, Ty::Var(v)) => {
             if occurs(subst, *v, t) {
-                trace!(target: "rcdzc::unify", var = *v, ty = %t.render_name(), "occurs-check failed (infinite type)");
+                trace!(target: "rcdzc::unify", var = *v, ty = %t.render_name(ncx), "occurs-check failed (infinite type)");
                 return Err(Reject::coded(
                     Code::TypeMismatch,
                     "a type would contain itself (infinite type)",
                 ));
             }
-            trace!(target: "rcdzc::unify", var = *v, solved = %t.render_name(), "bind type variable");
+            trace!(target: "rcdzc::unify", var = *v, solved = %t.render_name(ncx), "bind type variable");
             subst.tys.insert(*v, t.clone());
             Ok(())
         }
@@ -261,12 +261,12 @@ pub fn unify(subst: &mut Subst, a: &Ty, b: &Ty) -> Result<(), Reject> {
         // width nor a signedness silently changes). Unifying the sign first lets a `mismatch` name the
         // conflict; a deferred literal (`Deferred` on both axes) grounds to whatever it meets.
         (Ty::Int(ia), Ty::Int(ib)) => {
-            unify_sign(subst, ia.sign, ib.sign, &a, &b)?;
+            unify_sign(subst, ia.sign, ib.sign, &a, &b, ncx)?;
             unify_width(subst, ia.width, ib.width, NumericKind::Int)
         }
         (Ty::Fn(pa, ra), Ty::Fn(pb, rb)) => {
-            unify(subst, pa, pb)?;
-            unify(subst, ra, rb)
+            unify(subst, pa, pb, ncx)?;
+            unify(subst, ra, rb, ncx)
         }
         // Two records unify (hence compare) only at an IDENTICAL field-name set, two tuples only at equal
         // arity, two sums only at the same decl (variant set) — a shape mismatch is a `mismatch` (CDZ0203),
@@ -278,12 +278,12 @@ pub fn unify(subst: &mut Subst, a: &Ty, b: &Ty) -> Result<(), Reject> {
         //# A comparison of two structural values whose shapes differ MUST be rejected by a type-tracking generation as a type error rather than reported as unequal, so that a shape mismatch is caught rather than answered.
         (Ty::Record(fa), Ty::Record(fb)) => {
             if fa.len() != fb.len() {
-                return Err(mismatch(&a, &b));
+                return Err(mismatch(&a, &b, ncx));
             }
             for (k, ta) in fa.iter() {
                 match fb.get(k) {
-                    Some(tb) => unify(subst, ta, tb)?,
-                    None => return Err(mismatch(&a, &b)),
+                    Some(tb) => unify(subst, ta, tb, ncx)?,
+                    None => return Err(mismatch(&a, &b, ncx)),
                 }
             }
             Ok(())
@@ -292,30 +292,30 @@ pub fn unify(subst: &mut Subst, a: &Ty, b: &Ty) -> Result<(), Reject> {
         // type (no structural subtyping), so it is the conflicting-use error.
         (Ty::Tuple(ea), Ty::Tuple(eb)) => {
             if ea.len() != eb.len() {
-                return Err(mismatch(&a, &b));
+                return Err(mismatch(&a, &b, ncx));
             }
             for (ta, tb) in ea.iter().zip(eb.iter()) {
-                unify(subst, ta, tb)?;
+                unify(subst, ta, tb, ncx)?;
             }
             Ok(())
         }
         // Two lists unify iff their ELEMENT types unify — this is what makes every element of `(list …)`
         // share one type (a mixed list fails here) and solves a deferred element (an empty `(list)` : List
         // ?0 unified against a `List Int64`).
-        (Ty::List(ea), Ty::List(eb)) => unify(subst, ea, eb),
+        (Ty::List(ea), Ty::List(eb)) => unify(subst, ea, eb, ncx),
         // Two maps unify iff their KEY types unify AND their VALUE types unify — a map's identity is
         // `Map<K,V>`, parametric in the key and value types (its key SET is runtime data, not part of the
         // type). This solves a deferred key/value (an empty `Map.empty` : `Map ?0 ?1` unified against a
         // `Map Int64 Int64`) and makes `Map Int64 Int64` conflict with `Map Int64 Bool`. Crucially it does
         // NOT compare key sets, so two maps with different keys unify (well-typed comparison → `false`).
         (Ty::Map(ka, va), Ty::Map(kb, vb)) => {
-            unify(subst, ka, kb)?;
-            unify(subst, va, vb)
+            unify(subst, ka, kb, ncx)?;
+            unify(subst, va, vb, ncx)
         }
         // Two sets unify iff their ELEMENT types unify — `Set Int64` conflicts with `Set Bool`; solves a
         // deferred element (an empty set `Set ?0` unified against `Set Int64`). Does NOT compare element
         // sets (runtime data), so two sets with different elements unify (well-typed comparison → `false`).
-        (Ty::Set(a), Ty::Set(b)) => unify(subst, a, b),
+        (Ty::Set(a), Ty::Set(b)) => unify(subst, a, b, ncx),
         // Two sums unify iff they are the SAME declaration AND their type ARGS unify pairwise — a sum's
         // identity is its declaration OCCURRENCE (`type-system.md` §158/§160), NOT its name (two `(type
         // Foo …)` declared separately are DISTINCT types even with the same name), together with its
@@ -333,10 +333,10 @@ pub fn unify(subst: &mut Subst, a: &Ty, b: &Ty) -> Result<(), Reject> {
             },
         ) => {
             if da != db || aa.len() != ab.len() {
-                return Err(mismatch(&a, &b));
+                return Err(mismatch(&a, &b, ncx));
             }
             for (x, y) in aa.iter().zip(ab.iter()) {
-                unify(subst, x, y)?;
+                unify(subst, x, y, ncx)?;
             }
             Ok(())
         }
@@ -358,10 +358,10 @@ pub fn unify(subst: &mut Subst, a: &Ty, b: &Ty) -> Result<(), Reject> {
             },
         ) => {
             if da != db || aa.len() != ab.len() {
-                return Err(mismatch(&a, &b));
+                return Err(mismatch(&a, &b, ncx));
             }
             for (x, y) in aa.iter().zip(ab.iter()) {
-                unify(subst, x, y)?;
+                unify(subst, x, y, ncx)?;
             }
             Ok(())
         }
@@ -392,7 +392,7 @@ pub fn unify(subst: &mut Subst, a: &Ty, b: &Ty) -> Result<(), Reject> {
             },
         ) if da == db && aa.len() == ab.len() => {
             for (x, y) in aa.iter().zip(ab.iter()) {
-                unify(subst, x, y)?;
+                unify(subst, x, y, ncx)?;
             }
             Ok(())
         }
@@ -436,18 +436,25 @@ pub fn unify(subst: &mut Subst, a: &Ty, b: &Ty) -> Result<(), Reject> {
             },
         ) => {
             if ua != ub {
-                return Err(mismatch(&a, &b));
+                return Err(mismatch(&a, &b, ncx));
             }
-            unify(subst, ia, ib)
+            unify(subst, ia, ib, ncx)
         }
-        _ => Err(mismatch(&a, &b)),
+        _ => Err(mismatch(&a, &b, ncx)),
     }
 }
 
 /// Unify two signednesses — a variable takes the other; a deferred sign is compatible with anything
 /// (it grounds later); two DIFFERENT fixed signs conflict (a signed and an unsigned integer are
 /// distinct types — no silent promotion). `a`/`b` are the enclosing integer types, for the error.
-fn unify_sign(subst: &mut Subst, sa: Sign, sb: Sign, a: &Ty, b: &Ty) -> Result<(), Reject> {
+fn unify_sign(
+    subst: &mut Subst,
+    sa: Sign,
+    sb: Sign,
+    a: &Ty,
+    b: &Ty,
+    ncx: &NameCtx,
+) -> Result<(), Reject> {
     let sa = resolve_sign(subst, sa);
     let sb = resolve_sign(subst, sb);
     match (sa, sb) {
@@ -467,7 +474,7 @@ fn unify_sign(subst: &mut Subst, sa: Sign, sb: Sign, a: &Ty, b: &Ty) -> Result<(
         (Sign::Fixed(x), Sign::Fixed(y)) if x == y => Ok(()),
         (Sign::Fixed(x), Sign::Fixed(y)) => {
             trace!(target: "rcdzc::unify", lhs = x, rhs = y, "sign conflict (CDZ0301, no silent promotion)");
-            Err(mismatch(a, b))
+            Err(mismatch(a, b, ncx))
         }
     }
 }
@@ -604,8 +611,8 @@ fn occurs(subst: &Subst, v: u32, t: &Ty) -> bool {
 /// non-numeric type where another is required — `Bool` vs `Int64`) is the general type mismatch
 /// (CDZ0203). This matches the corpus: CDZ0301 is reserved for two-different-numeric, everything else
 /// is CDZ0203.
-fn mismatch(a: &Ty, b: &Ty) -> Reject {
-    trace!(target: "rcdzc::unify", lhs = %a.render_name(), rhs = %b.render_name(), "unify FAILED (conflicting use)");
+fn mismatch(a: &Ty, b: &Ty, ncx: &NameCtx) -> Reject {
+    trace!(target: "rcdzc::unify", lhs = %a.render_name(ncx), rhs = %b.render_name(ncx), "unify FAILED (conflicting use)");
     // Both sides NUMERIC (an integer of any width/sign, a float, or a BigInt) but DIFFERENT — the
     // no-silent-promotion rule (CDZ0301, `numeric-model.md` §Numeric Types Do Not Silently Promote).
     // Covers a width/sign mismatch (`Int32` vs `Int64`), an integer↔float mix (`Int64` vs `Float64`,
@@ -626,8 +633,8 @@ fn mismatch(a: &Ty, b: &Ty) -> Reject {
             format!(
                 "no implicit conversion between numeric types {} and {} — convert explicitly (Cadenza \
                  never silently promotes a numeric type)",
-                a.render_name(),
-                b.render_name(),
+                a.render_name(ncx),
+                b.render_name(ncx),
             ),
         );
     }
@@ -643,8 +650,8 @@ fn mismatch(a: &Ty, b: &Ty) -> Reject {
         Code::TypeMismatch,
         format!(
             "type mismatch: {} and {} must be the same type here, but differ",
-            a.render_name(),
-            b.render_name(),
+            a.render_name(ncx),
+            b.render_name(ncx),
         ),
     )
 }
@@ -971,6 +978,12 @@ fn freshen_free_go(
 mod tests {
     use super::*;
     use crate::ty::{IntTy, Sign, Ty, Width};
+
+    /// Test-local `unify` over an empty [`NameCtx`] — these unit tests exercise the solve, not the
+    /// name-rendering of a diagnostic, so no declared types are needed.
+    fn unify(s: &mut Subst, a: &Ty, b: &Ty) -> Result<(), Reject> {
+        super::unify(s, a, b, &NameCtx::new(&[]))
+    }
 
     #[test]
     fn unifies_a_var_with_a_concrete_type() {

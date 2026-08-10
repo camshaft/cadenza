@@ -397,7 +397,7 @@ pub(super) fn emit_closure_struct(
         let rty = types::async_closure_type(&cty).ok_or_else(|| {
             Reject::decline(format!(
                 "async closure capture {j} type {} has no native Rust representation",
-                cty.render_name()
+                cty.render_name(&db.name_ctx())
             ))
         })?;
         fields.push(format!("    __c{j}: {rty},"));
@@ -499,7 +499,7 @@ pub(super) fn emit_lifted_lambda(
         let rty = super::async_or_rust_type(&cty, mode).ok_or_else(|| {
             Reject::decline(format!(
                 "lifted lambda capture {j} type {} has no native Rust representation",
-                cty.render_name()
+                cty.render_name(&db.name_ctx())
             ))
         })?;
         let cname = format!("__cap{j}");
@@ -516,7 +516,7 @@ pub(super) fn emit_lifted_lambda(
         let rty = super::async_or_rust_type(ty, mode).ok_or_else(|| {
             Reject::decline(format!(
                 "lifted lambda parameter {i} type {} has no native Rust representation",
-                ty.render_name()
+                ty.render_name(&db.name_ctx())
             ))
         })?;
         let pname = super::param_name(db, *binder, i);
@@ -531,7 +531,7 @@ pub(super) fn emit_lifted_lambda(
     let ret = super::async_or_rust_type(&lam.ret_ty, mode).ok_or_else(|| {
         Reject::decline(format!(
             "lifted lambda result type {} has no native Rust representation",
-            lam.ret_ty.render_name()
+            lam.ret_ty.render_name(&db.name_ctx())
         ))
     })?;
     let ctx = Ctx {

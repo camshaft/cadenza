@@ -34,7 +34,7 @@ use crate::db::Db;
 use crate::diag::{Code, Fix, Reject};
 use crate::resolve::{resolved_of, resolved_ref};
 use crate::resolved::Resolved;
-use crate::ty::{Scheme, Ty};
+use crate::ty::{NameCtx, Scheme, Ty};
 use crate::unify::{Fresh, Subst};
 use tracing::trace;
 
@@ -58,7 +58,7 @@ pub fn type_of(db: &mut Db, id: StructId) -> Ty {
     db.descent_depth += 1;
     let t = compute(db, id);
     db.descent_depth -= 1;
-    trace!(target: "rcdzc::infer", node = id.0, ty = %t.render_name(), "solved type");
+    trace!(target: "rcdzc::infer", node = id.0, ty = %t.render_name(&db.name_ctx()), "solved type");
     // Do NOT memoize a provisional `Any`, OR a type that still CONTAINS A FREE VARIABLE: a node typed
     // here may depend on a recursive-def parameter (or a reference to one) whose CONNECTED solve (A2) has
     // not run yet — caching the stale answer would freeze it even after the solve fills the real type. For
@@ -643,7 +643,7 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
                     // annotation's); on a genuine inner clash keep the annotation's inner (the CDZ0203 is
                     // reported by `check_application`), and always keep the EXPRESSION's unit `eu`.
                     let mut subst = Subst::new();
-                    let inner = if crate::unify::unify(&mut subst, ai, ei).is_ok() {
+                    let inner = if crate::unify::unify(&mut subst, ai, ei, &db.name_ctx()).is_ok() {
                         subst.apply(ai)
                     } else {
                         (**ai).clone()
@@ -654,7 +654,7 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
                     };
                 }
                 let mut subst = Subst::new();
-                let _ = crate::unify::unify(&mut subst, &annot_ty, &expr_ty);
+                let _ = crate::unify::unify(&mut subst, &annot_ty, &expr_ty, &db.name_ctx());
                 subst.apply(&annot_ty)
             }
             None => type_of(db, expr),
@@ -975,6 +975,7 @@ fn literal_width_fault(db: &mut Db, value: StructId, ty_expr: StructId) -> Optio
             w,
             &v,
             ty_expr,
+            &db.name_ctx(),
         ));
     }
     None
@@ -1511,7 +1512,7 @@ fn width_fault_against_ty(db: &mut Db, value: StructId, want: &Ty) -> Option<Rej
             return Some(
                 Reject::coded(
                     Code::IntOutOfRange,
-                    int_out_of_range_message(want, it.ground_signed(), w),
+                    int_out_of_range_message(want, it.ground_signed(), w, &db.name_ctx()),
                 )
                 .at(value),
             );
@@ -1640,10 +1641,11 @@ fn int_out_of_range_reject(
     w: u32,
     v: &crate::ast::IntValue,
     ty_expr: StructId,
+    ncx: &NameCtx,
 ) -> Reject {
     let reject = Reject::coded(
         Code::IntOutOfRange,
-        int_out_of_range_message(annot_ty, signed, w),
+        int_out_of_range_message(annot_ty, signed, w, ncx),
     );
     // A NEGATIVE literal annotated with an UNSIGNED type cannot fit ANY unsigned width — the value is
     // negative, so only a SIGNED type reads it. Offer the smallest signed width that holds it (forced, not
@@ -1675,15 +1677,15 @@ fn int_out_of_range_reject(
 /// The CDZ0302 message for an integer literal that overflows the annotated type: names the type and,
 /// when the width is a well-formed one whose range renders exactly, appends `(the valid range is
 /// min..=max)`. A malformed width (no exact range) falls back to the type-name-only message.
-fn int_out_of_range_message(annot_ty: &Ty, signed: bool, w: u32) -> String {
+fn int_out_of_range_message(annot_ty: &Ty, signed: bool, w: u32, ncx: &NameCtx) -> String {
     match int_width_range(signed, w) {
         Some(range) => format!(
             "integer literal does not fit the annotated type {} (the valid range is {range})",
-            annot_ty.render_name(),
+            annot_ty.render_name(ncx),
         ),
         None => format!(
             "integer literal does not fit the annotated type {}",
-            annot_ty.render_name()
+            annot_ty.render_name(ncx)
         ),
     }
 }
@@ -2973,7 +2975,12 @@ pub fn reflected_ty(db: &mut Db, id: StructId) -> Ty {
                                     // `apply_type` applies to a bare-nullary payload sharing from-0 vars.
                                     let arg_ty = reflected_ty(db, arg);
                                     let at = freshen_arg(db, &arg_ty, &mut fresh);
-                                    let _ = crate::unify::unify(&mut subst, &param, &at);
+                                    let _ = crate::unify::unify(
+                                        &mut subst,
+                                        &param,
+                                        &at,
+                                        &db.name_ctx(),
+                                    );
                                     cur = *result;
                                 }
                                 // Over-applied / non-arrow tail — fall back to the bottom-up type (a fault
@@ -3381,7 +3388,7 @@ fn solve_recursive_params(db: &mut Db, def: usize) {
             && !matches!(at, Ty::Any | Ty::Var(_))
         {
             let mut trial = subst.clone();
-            if crate::unify::unify(&mut trial, &cur, at).is_ok() {
+            if crate::unify::unify(&mut trial, &cur, at, &db.name_ctx()).is_ok() {
                 subst = trial;
             }
         }
@@ -3409,7 +3416,7 @@ fn solve_recursive_params(db: &mut Db, def: usize) {
             } else {
                 solved
             };
-            trace!(target: "rcdzc::infer", def, binder = binder.0, ty = %generic.render_name(), "A2: recursive param is GENERIC (monomorphized per call site)");
+            trace!(target: "rcdzc::infer", def, binder = binder.0, ty = %generic.render_name(&db.name_ctx()), "A2: recursive param is GENERIC (monomorphized per call site)");
             db.param_types.insert(binder, generic);
             continue;
         }
@@ -3421,7 +3428,7 @@ fn solve_recursive_params(db: &mut Db, def: usize) {
             solved = solved.fill_holes(at);
         }
         let grounded = ground_param(solved);
-        trace!(target: "rcdzc::infer", def, binder = binder.0, ty = %grounded.render_name(), "A2: solved recursive param");
+        trace!(target: "rcdzc::infer", def, binder = binder.0, ty = %grounded.render_name(&db.name_ctx()), "A2: solved recursive param");
         db.param_types.insert(binder, grounded);
     }
 
@@ -3674,7 +3681,7 @@ fn shape_fn_typed_params(
         for _ in 0..args.len() {
             arrow = Ty::Fn(Box::new(Ty::Var(fresh.var())), Box::new(arrow));
         }
-        let _ = crate::unify::unify(subst, &hvar, &arrow);
+        let _ = crate::unify::unify(subst, &hvar, &arrow, &db.name_ctx());
     }
     // Descend into every child (the head and args of an apply, and all structural children of any form)
     // so a fn-typed-param application nested anywhere in the body is shaped.
@@ -3863,7 +3870,7 @@ fn collect_param_constraints(
                     let applied = subst.apply(&cur);
                     if let Ty::Fn(param, result) = applied {
                         let at = arg_ty_in_env(db, arg, env, subst, fresh);
-                        let _ = crate::unify::unify(subst, &param, &at);
+                        let _ = crate::unify::unify(subst, &param, &at, &db.name_ctx());
                         cur = *result;
                     } else {
                         break;
@@ -3880,7 +3887,7 @@ fn collect_param_constraints(
                             && let Some(pvar) = env.get(&binder)
                         {
                             let at = arg_ty_in_env(db, arg, env, subst, fresh);
-                            let _ = crate::unify::unify(subst, pvar, &at);
+                            let _ = crate::unify::unify(subst, pvar, &at, &db.name_ctx());
                         }
                     }
                 } else {
@@ -3933,7 +3940,7 @@ fn collect_param_constraints(
                             && !matches!(pt, Ty::Any | Ty::Var(_))
                         {
                             let at = arg_ty_in_env(db, arg, env, subst, fresh);
-                            let _ = crate::unify::unify(subst, &at, &pt);
+                            let _ = crate::unify::unify(subst, &at, &pt, &db.name_ctx());
                         }
                     }
                 }
@@ -3959,7 +3966,7 @@ fn collect_param_constraints(
                     let at = arg_ty_in_env(db, arg, env, subst, fresh);
                     arrow = Ty::Fn(Box::new(at), Box::new(arrow));
                 }
-                let _ = crate::unify::unify(subst, &hvar, &arrow);
+                let _ = crate::unify::unify(subst, &hvar, &arrow, &db.name_ctx());
             }
             // Descend into the head (a computed head) and every argument for THEIR own constraints.
             if matches!(resolved_of(db, head), Resolved::Apply { .. }) {
@@ -3972,7 +3979,7 @@ fn collect_param_constraints(
         Resolved::If { cond, then_, else_ } => {
             // The condition must be Bool — constrain it (a bare-param condition `(if n …)` pins n Bool).
             let ct = arg_ty_in_env(db, cond, env, subst, fresh);
-            let _ = crate::unify::unify(subst, &ct, &Ty::Bool);
+            let _ = crate::unify::unify(subst, &ct, &Ty::Bool, &db.name_ctx());
             collect_param_constraints(db, cond, env, def, subst, fresh);
             collect_param_constraints(db, then_, env, def, subst, fresh);
             collect_param_constraints(db, else_, env, def, subst, fresh);
@@ -3982,13 +3989,13 @@ fn collect_param_constraints(
         Resolved::And { lhs, rhs, .. } => {
             for &op in &[lhs, rhs] {
                 let t = arg_ty_in_env(db, op, env, subst, fresh);
-                let _ = crate::unify::unify(subst, &t, &Ty::Bool);
+                let _ = crate::unify::unify(subst, &t, &Ty::Bool, &db.name_ctx());
                 collect_param_constraints(db, op, env, def, subst, fresh);
             }
         }
         Resolved::Not { operand } => {
             let t = arg_ty_in_env(db, operand, env, subst, fresh);
-            let _ = crate::unify::unify(subst, &t, &Ty::Bool);
+            let _ = crate::unify::unify(subst, &t, &Ty::Bool, &db.name_ctx());
             collect_param_constraints(db, operand, env, def, subst, fresh);
         }
         Resolved::Match { scrutinee, arms } => {
@@ -4039,11 +4046,11 @@ fn collect_param_constraints(
             );
             for (pat, _) in &arms {
                 if let Some(pt) = literal_pattern_ty(db, *pat) {
-                    let _ = crate::unify::unify(subst, &st, &pt);
+                    let _ = crate::unify::unify(subst, &st, &pt, &db.name_ctx());
                 } else if (scrut_is_param || scrut_is_fn_param_app || scrut_is_scheme_call)
                     && let Some(pt) = pattern_implied_ty(db, *pat, fresh)
                 {
-                    let _ = crate::unify::unify(subst, &st, &pt);
+                    let _ = crate::unify::unify(subst, &st, &pt, &db.name_ctx());
                 }
             }
             // A parameter RETURNED DIRECTLY by one arm is constrained by the OTHER arms' result type (the
@@ -4113,7 +4120,7 @@ fn collect_param_constraints(
                     let ot = arg_ty_in_env(db, other, env, subst, fresh);
                     let applied = subst.apply(&ot);
                     if !matches!(applied, Ty::Any | Ty::Var(_)) {
-                        let _ = crate::unify::unify(subst, &pvar, &applied);
+                        let _ = crate::unify::unify(subst, &pvar, &applied, &db.name_ctx());
                     }
                 }
             }
@@ -4156,7 +4163,7 @@ fn collect_param_constraints(
             for seg in segs.iter() {
                 if let Some(want) = seg_value_ty(&seg.kind) {
                     let at = arg_ty_in_env(db, seg.slot, env, subst, fresh);
-                    let _ = crate::unify::unify(subst, &want, &at);
+                    let _ = crate::unify::unify(subst, &want, &at, &db.name_ctx());
                 }
                 collect_param_constraints(db, seg.slot, env, def, subst, fresh);
                 // A dependent-size occurrence `(bytes b n)` / `(utf8 s n)` is an ordinary integer index.
@@ -4302,7 +4309,7 @@ fn pattern_implied_ty(db: &mut Db, pat: StructId, fresh: &mut Fresh) -> Option<T
         } else {
             Ty::Tuple(payloads.clone().into())
         };
-        let _ = crate::unify::unify(&mut subst, &payload_ty, &implied);
+        let _ = crate::unify::unify(&mut subst, &payload_ty, &implied, &db.name_ctx());
     }
     Some(subst.apply(&result))
 }
@@ -4410,7 +4417,7 @@ fn arg_ty_in_env(
                     let applied = local.apply(&cur);
                     if let Ty::Fn(param, result) = applied {
                         let at = arg_ty_in_env(db, arg, env, &local, fresh);
-                        let _ = crate::unify::unify(&mut local, &param, &at);
+                        let _ = crate::unify::unify(&mut local, &param, &at, &db.name_ctx());
                         cur = *result;
                     } else {
                         break;
@@ -4507,7 +4514,7 @@ fn type_scheme_apply_into(
             return None; // under-applied / not a function chain
         };
         let at = arg_ty_in_env(db, arg, env, subst, fresh);
-        let _ = crate::unify::unify(subst, &param, &at);
+        let _ = crate::unify::unify(subst, &param, &at, &db.name_ctx());
         cur = *result;
     }
     Some(subst.apply(&cur))
@@ -4759,7 +4766,7 @@ fn compute_def_scheme(db: &mut Db, def: usize) -> Option<Scheme> {
     // `across_def_flavors`).
     let sibling_in_flight = db.solving_schemes.iter().any(|&d| d != def);
     if sibling_in_flight && result.has_any_in_data_element() {
-        trace!(target: "rcdzc::infer", def, result = %result.render_name(), "def_scheme: result has a data-Any from an in-flight sibling → defer (re-grounds after the SCC settles)");
+        trace!(target: "rcdzc::infer", def, result = %result.render_name(&db.name_ctx()), "def_scheme: result has a data-Any from an in-flight sibling → defer (re-grounds after the SCC settles)");
         return None;
     }
     // Curry: `p_0 -> p_1 -> … -> result`. A nullary def is just `result`.
@@ -4776,10 +4783,10 @@ fn compute_def_scheme(db: &mut Db, def: usize) -> Option<Scheme> {
     let mut ty_vars = Vec::new();
     ty.collect_free_vars(&mut ty_vars);
     if ty_vars.is_empty() {
-        trace!(target: "rcdzc::infer", def, scheme = %ty.render_name(), "def_scheme: determined monomorphic signature");
+        trace!(target: "rcdzc::infer", def, scheme = %ty.render_name(&db.name_ctx()), "def_scheme: determined monomorphic signature");
         return Some(Scheme::mono(ty));
     }
-    trace!(target: "rcdzc::infer", def, scheme = %ty.render_name(), quantified = ty_vars.len(), "def_scheme: generalized polymorphic signature (recursive-generic)");
+    trace!(target: "rcdzc::infer", def, scheme = %ty.render_name(&db.name_ctx()), quantified = ty_vars.len(), "def_scheme: generalized polymorphic signature (recursive-generic)");
     Some(Scheme {
         ty_vars,
         width_vars: Vec::new(),
@@ -5570,7 +5577,7 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
             return Ty::Any;
         }
     };
-    trace!(target: "rcdzc::infer", head = head.0, scheme = %scheme.ty.render_name(), args = args.len(), "apply: instantiate head scheme");
+    trace!(target: "rcdzc::infer", head = head.0, scheme = %scheme.ty.render_name(&db.name_ctx()), args = args.len(), "apply: instantiate head scheme");
     let mut cur = crate::unify::instantiate(&scheme, &mut fresh);
     let mut subst = Subst::new();
     for &arg in args {
@@ -5588,7 +5595,7 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
                 let at = freshen_arg(db, &arg_ty, &mut fresh);
                 // A unify failure here is a real type fault; ignore it for the VALUE (reported by
                 // `type_errors`) and continue with the declared result so the shape stays sane.
-                let _ = crate::unify::unify(&mut subst, &param, &at);
+                let _ = crate::unify::unify(&mut subst, &param, &at, &db.name_ctx());
                 cur = *result;
             }
             // Applied to more args than it takes — not a function; the fault is reported elsewhere.
@@ -5657,7 +5664,7 @@ fn apply_scheme_to_args(db: &mut Db, scheme: &Scheme, args: &[StructId]) -> Ty {
                 } else {
                     crate::unify::freshen_free(&at_raw, &mut fresh)
                 };
-                let _ = crate::unify::unify(&mut subst, &param, &at);
+                let _ = crate::unify::unify(&mut subst, &param, &at, &db.name_ctx());
                 // A PASS-THROUGH CLOSURE argument — `(fn (s) s)` identity — types `(-> Any Any)` bottom-up,
                 // so unifying it into the param arrow pins the DOMAIN (from a sibling arg, e.g. `it`'s
                 // element) but leaves the RESULT a free var (the body cannot type `s` bottom-up). Once the
@@ -5684,7 +5691,7 @@ fn apply_scheme_to_args(db: &mut Db, scheme: &Scheme, args: &[StructId]) -> Ty {
                             solved_lambda_arrow_under(db, &lam_params, lam_body, &pinned)
                         && !solved.has_any()
                     {
-                        let _ = crate::unify::unify(&mut subst, &param, &solved);
+                        let _ = crate::unify::unify(&mut subst, &param, &solved, &db.name_ctx());
                     }
                 }
                 cur = *result;
@@ -5745,7 +5752,7 @@ pub(crate) fn instantiated_param_arrow(
             };
             // Only a DETERMINED sibling pins the scheme's shared vars; an undetermined one adds nothing.
             if !matches!(at, Ty::Any) && !at.has_free_var() {
-                let _ = crate::unify::unify(&mut subst, &param, &at);
+                let _ = crate::unify::unify(&mut subst, &param, &at, &db.name_ctx());
             }
         }
         cur = *result;
@@ -5802,7 +5809,7 @@ pub fn solved_lambda_arrow_under(
             let pv = type_of(db, occ);
             // Unify the param's own (var/Any) type with the expected domain, so a body reference to it
             // reads the concrete domain through the subst.
-            let _ = crate::unify::unify(&mut subst, &pv, dom);
+            let _ = crate::unify::unify(&mut subst, &pv, dom, &db.name_ctx());
             // Seed the concrete domain so an aggregate body reads the param's type directly (not `Any`).
             // Only when the param is currently a HOLE (`Any`/var) — an already-concrete param is untouched.
             if matches!(pv, Ty::Any) || pv.has_free_var() {
@@ -5963,7 +5970,7 @@ pub(crate) fn payload_ty_at_instantiation(
     // Solve the scheme's params from the scrutinee's concrete instantiation: unify the ctor's RESULT
     // (`Sum ?a`) against the scrutinee type (`Sum Int64`).
     let mut subst = Subst::new();
-    let _ = crate::unify::unify(&mut subst, &result, scrut_ty);
+    let _ = crate::unify::unify(&mut subst, &result, scrut_ty, &db.name_ctx());
     let payload = if payloads.len() == 1 {
         payloads.pop().unwrap()
     } else {
@@ -6217,6 +6224,7 @@ fn call_argument_mismatch_message(
     expected: &Ty,
     actual: &Ty,
     tail: &str,
+    ncx: &NameCtx,
 ) -> String {
     let subject = match (callee, param) {
         (Some(f), Some(p)) => format!("the argument for `{f}`'s parameter `{p}`"),
@@ -6225,8 +6233,8 @@ fn call_argument_mismatch_message(
     };
     format!(
         "{subject} is {}, but a value of type {} is expected here{tail}",
-        actual.render_with_article(),
-        expected.render_name(),
+        actual.render_with_article(ncx),
+        expected.render_name(ncx),
     )
 }
 
@@ -6732,7 +6740,7 @@ pub(crate) fn positional_value_nodes(
 /// `BTreeMap` keys) and the differing-type fields are visited in sorted key order, so the hint is
 /// deterministic and order-independent. A field-set difference takes precedence (a record with both a
 /// wrong field-set AND a type mismatch on a shared field is first told which fields to add/remove).
-fn record_field_diff_hint(expected: &Ty, actual: &Ty) -> Option<String> {
+fn record_field_diff_hint(expected: &Ty, actual: &Ty, ncx: &NameCtx) -> Option<String> {
     let (Ty::Record(want), Ty::Record(got)) = (expected, actual) else {
         return None;
     };
@@ -6764,8 +6772,8 @@ fn record_field_diff_hint(expected: &Ty, actual: &Ty) -> Option<String> {
             };
             format!(
                 " — field `{path}` should be {}, but this one is {}",
-                lw.render_name(),
-                lg.render_name()
+                lw.render_name(ncx),
+                lg.render_name(ncx)
             )
         });
     }
@@ -6802,7 +6810,7 @@ fn record_field_diff_hint(expected: &Ty, actual: &Ty) -> Option<String> {
 /// `None` unless both are tuples AND some difference is found. Positions are visited left-to-right, so the
 /// hint is deterministic (the first differing position). `agrees_with` (the relation `unify` uses) gates
 /// the per-position check, so a deferred `Var`/`Any` position is skipped.
-fn tuple_arity_mismatch_hint(expected: &Ty, actual: &Ty) -> Option<String> {
+fn tuple_arity_mismatch_hint(expected: &Ty, actual: &Ty, ncx: &NameCtx) -> Option<String> {
     let (Ty::Tuple(want), Ty::Tuple(got)) = (expected, actual) else {
         return None;
     };
@@ -6829,8 +6837,8 @@ fn tuple_arity_mismatch_hint(expected: &Ty, actual: &Ty) -> Option<String> {
             };
             format!(
                 " — element {path} should be {}, but this one is {}",
-                lw.render_name(),
-                lg.render_name()
+                lw.render_name(ncx),
+                lg.render_name(ncx)
             )
         })
 }
@@ -6845,13 +6853,13 @@ fn tuple_arity_mismatch_hint(expected: &Ty, actual: &Ty) -> Option<String> {
 /// both are the same collection kind AND some axis genuinely differs. Tail only — the repair is retyping
 /// the offending element(s), which the author must supply, so no mechanical fix (like the record/tuple
 /// per-member hints).
-fn collection_element_mismatch_hint(expected: &Ty, actual: &Ty) -> Option<String> {
+fn collection_element_mismatch_hint(expected: &Ty, actual: &Ty, ncx: &NameCtx) -> Option<String> {
     let axis = |role: &str, want: &Ty, got: &Ty, plural: &str| {
         (!want.agrees_with(got)).then(|| {
             format!(
                 " — its {role} should be {}, but {plural} {}",
-                want.render_name(),
-                got.render_name()
+                want.render_name(ncx),
+                got.render_name(ncx)
             )
         })
     };
@@ -6873,7 +6881,7 @@ fn collection_element_mismatch_hint(expected: &Ty, actual: &Ty) -> Option<String
 /// of the collection-axis hint. `None` unless both are the same sum with the same arg count and a genuine
 /// arg difference (a DIFFERENT sum — `Option` vs `Result` — is unrelated, the generic path). `agrees_with`
 /// gates each arg. Reports the first (leftmost) differing type argument.
-fn sum_payload_mismatch_hint(expected: &Ty, actual: &Ty) -> Option<String> {
+fn sum_payload_mismatch_hint(expected: &Ty, actual: &Ty, ncx: &NameCtx) -> Option<String> {
     let (
         Ty::Sum {
             decl: wd, args: wa, ..
@@ -6892,8 +6900,8 @@ fn sum_payload_mismatch_hint(expected: &Ty, actual: &Ty) -> Option<String> {
         (!w.agrees_with(g)).then(|| {
             format!(
                 " — its payload should be {}, but this one is {}",
-                w.render_name(),
-                g.render_name()
+                w.render_name(ncx),
+                g.render_name(ncx)
             )
         })
     })
@@ -6914,7 +6922,7 @@ fn sum_payload_mismatch_hint(expected: &Ty, actual: &Ty) -> Option<String> {
 /// it. `None` unless both are functions AND they differ in arity or result. `agrees_with` (the relation
 /// `unify` uses) gates the result check. Tail only — the repair (add/drop a parameter, or change the return
 /// expression) is the author's, so no mechanical fix, like the sibling per-member hints.
-fn fn_signature_delta_hint(expected: &Ty, actual: &Ty) -> Option<String> {
+fn fn_signature_delta_hint(expected: &Ty, actual: &Ty, ncx: &NameCtx) -> Option<String> {
     if !matches!(expected, Ty::Fn(..)) || !matches!(actual, Ty::Fn(..)) {
         return None;
     }
@@ -6940,8 +6948,8 @@ fn fn_signature_delta_hint(expected: &Ty, actual: &Ty) -> Option<String> {
     (!want_result.agrees_with(&got_result)).then(|| {
         format!(
             " — its result should be {}, but this one returns {}",
-            want_result.render_name(),
-            got_result.render_name()
+            want_result.render_name(ncx),
+            got_result.render_name(ncx)
         )
     })
 }
@@ -6964,14 +6972,14 @@ fn fn_signature_delta_hint(expected: &Ty, actual: &Ty) -> Option<String> {
 /// most of their structure.
 //= spec/capabilities/type-system.md#a-type-rejection-reports-the-minimal-conflict-at-both-sites
 //# A rejection for a failed unification MUST report the minimal unsatisfiable set of constraints rather than the first constraint that failed, so that the diagnostic names the actual conflict and not an arbitrary casualty of it.
-pub(crate) fn structural_delta_hint(first: &Ty, other: &Ty) -> Option<String> {
-    record_field_diff_hint(first, other)
-        .or_else(|| tuple_arity_mismatch_hint(first, other))
-        .or_else(|| collection_element_mismatch_hint(first, other))
-        .or_else(|| sum_payload_mismatch_hint(first, other))
-        .or_else(|| fn_signature_delta_hint(first, other))
+pub(crate) fn structural_delta_hint(first: &Ty, other: &Ty, ncx: &NameCtx) -> Option<String> {
+    record_field_diff_hint(first, other, ncx)
+        .or_else(|| tuple_arity_mismatch_hint(first, other, ncx))
+        .or_else(|| collection_element_mismatch_hint(first, other, ncx))
+        .or_else(|| sum_payload_mismatch_hint(first, other, ncx))
+        .or_else(|| fn_signature_delta_hint(first, other, ncx))
         .or_else(|| qty_scale_mismatch_hint(first, other))
-        .or_else(|| same_name_distinct_type_hint(first, other))
+        .or_else(|| same_name_distinct_type_hint(first, other, ncx))
 }
 
 /// A message TAIL for two `(Qty T u)` types that are the SAME DIMENSION but at DIFFERENT SCALES — the
@@ -7012,11 +7020,11 @@ fn qty_scale_mismatch_hint(first: &Ty, other: &Ty) -> Option<String> {
 /// different names) renders unambiguously and needs no tail. No mechanical fix — the repair (rename the
 /// shadowing declaration, or the reference) is the author's choice. Guards against a Var/Any side (which can
 /// still unify — not a settled clash) so this only speaks for two CONCRETE same-named-but-distinct types.
-fn same_name_distinct_type_hint(first: &Ty, other: &Ty) -> Option<String> {
+fn same_name_distinct_type_hint(first: &Ty, other: &Ty, ncx: &NameCtx) -> Option<String> {
     if matches!(first, Ty::Var(_) | Ty::Any) || matches!(other, Ty::Var(_) | Ty::Any) {
         return None;
     }
-    if first == other || first.render_name() != other.render_name() {
+    if first == other || first.render_name(ncx) != other.render_name(ncx) {
         return None;
     }
     Some(
@@ -7038,8 +7046,8 @@ fn same_name_distinct_type_hint(first: &Ty, other: &Ty) -> Option<String> {
 /// to fix-parity with the annotation site's hint chain. Tail only, no mechanical `Fix`: a peer clash's
 /// repair (match the Option, finish the call, or retype a branch) is the author's choice, and the join
 /// sites keep their own one-shot INT-LITERAL→FLOAT retype fix for the numeric case.
-fn peer_type_delta_hint(first: &Ty, other: &Ty) -> Option<String> {
-    structural_delta_hint(first, other)
+fn peer_type_delta_hint(first: &Ty, other: &Ty, ncx: &NameCtx) -> Option<String> {
+    structural_delta_hint(first, other, ncx)
         // Two same-dimension DIFFERENT-scale quantities (`(list (Qty … km) (Qty … m))`) render to the SAME
         // name (`render_name` drops the scale), so the generic "must share one type: (Qty … meter) and
         // (Qty … meter)" reads as a contradiction. Route the peer join through the scale-mismatch hint (as
@@ -7049,8 +7057,8 @@ fn peer_type_delta_hint(first: &Ty, other: &Ty) -> Option<String> {
         .or_else(|| qty_scale_mismatch_hint(first, other))
         .or_else(|| option_payload_mismatch_hint(first, other))
         .or_else(|| option_payload_mismatch_hint(other, first))
-        .or_else(|| fn_not_applied_hint(first, other))
-        .or_else(|| fn_not_applied_hint(other, first))
+        .or_else(|| fn_not_applied_hint(first, other, ncx))
+        .or_else(|| fn_not_applied_hint(other, first, ncx))
 }
 
 /// An actionable message TAIL when `actual` is a FUNCTION value used where a NON-function `expected` is
@@ -7065,7 +7073,7 @@ fn peer_type_delta_hint(first: &Ty, other: &Ty) -> Option<String> {
 /// author meant — so this is a tail only, like `option_payload_mismatch_hint`. `expected` must be a
 /// DEFINITE non-function (not a `Var`/`Any` that could still unify with the arrow, and not a `Fn` — a
 /// fn-vs-fn signature mismatch is a real clash reported on its own terms, not a missing application).
-fn fn_not_applied_hint(expected: &Ty, actual: &Ty) -> Option<String> {
+fn fn_not_applied_hint(expected: &Ty, actual: &Ty, ncx: &NameCtx) -> Option<String> {
     if !matches!(actual, Ty::Fn(..)) || matches!(expected, Ty::Fn(..) | Ty::Var(_) | Ty::Any) {
         return None;
     }
@@ -7083,7 +7091,7 @@ fn fn_not_applied_hint(expected: &Ty, actual: &Ty) -> Option<String> {
     Some(format!(
         " — the value is a function that hasn't been fully applied; apply it to {remaining} more \
          argument{plural} to get {}",
-        expected.render_with_article()
+        expected.render_with_article(ncx)
     ))
 }
 
@@ -7216,7 +7224,11 @@ fn width_conversion_spelling(module: &str, op: &str) -> String {
     }
 }
 
-fn int_coercion_wrap(expected: &Ty, actual: &Ty) -> Option<(String, String, String)> {
+fn int_coercion_wrap(
+    expected: &Ty,
+    actual: &Ty,
+    ncx: &NameCtx,
+) -> Option<(String, String, String)> {
     let (kind_matches, aliased, checked) = match (expected, actual) {
         (Ty::Int(exp), Ty::Int(_)) => (
             true,
@@ -7231,7 +7243,7 @@ fn int_coercion_wrap(expected: &Ty, actual: &Ty) -> Option<(String, String, Stri
         _ => (false, false, false),
     };
     if kind_matches && aliased {
-        let n = expected.render_name();
+        let n = expected.render_name(ncx);
         let verb = if checked {
             format!("convert to {n} with `{n}.of` (checked)")
         } else {
@@ -7270,7 +7282,7 @@ fn numeric_text_coercion_fix(
     }
     // int → float: `(<Float>.of-int …)`, widening a narrower int to Int64 first (`of-int : Int64 → Float`).
     if let (Ty::Float(_), Ty::Int(actual_int)) = (expected, actual) {
-        let float_name = expected.render_name();
+        let float_name = expected.render_name(&db.name_ctx());
         let (prefix, suffix, verb) =
             if actual_int.ground_width() == 64 && actual_int.ground_signed() {
                 (
@@ -7288,7 +7300,7 @@ fn numeric_text_coercion_fix(
         return Some(Fix::wrap_heuristic(arg, prefix, suffix, verb));
     }
     // two integers / two floats of different width → `(<Expected>.of …)`.
-    if let Some((prefix, suffix, verb)) = int_coercion_wrap(expected, actual) {
+    if let Some((prefix, suffix, verb)) = int_coercion_wrap(expected, actual, &db.name_ctx()) {
         return Some(Fix::wrap_heuristic(arg, prefix, suffix, verb));
     }
     // integer-valued float LITERAL where an int is expected → drop the `.0`.
@@ -7596,8 +7608,8 @@ fn check_resume_result_type(db: &mut Db, arm: &crate::resolved::HandleArm, out: 
             Code::Malformed,
             format!(
                 "a handler resumes with a value of type {} but the operation's result type is {}",
-                value_ty.render_name(),
-                result.render_name()
+                value_ty.render_name(&db.name_ctx()),
+                result.render_name(&db.name_ctx())
             ),
         )
         .at(value);
@@ -7662,8 +7674,8 @@ fn check_resume_next_state_type(
             format!(
                 "a handler resumes with a next-state of type {} but the handler's state type is {} \
                  (the seed fixes the state type; each resume threads a state of that type)",
-                next_ty.render_name(),
-                seed_ty.render_name()
+                next_ty.render_name(&db.name_ctx()),
+                seed_ty.render_name(&db.name_ctx())
             ),
         )
         .at(next_state);
@@ -8198,7 +8210,7 @@ fn check_unit_composition(db: &mut Db, id: crate::ast::StructId, out: &mut Vec<R
                             format!(
                                 "`{op}` composes two UNITS, but this operand is not a unit — write a \
                                  unit expression (e.g. `(Unit.base #\"meter\")`), not a {} value",
-                                t.render_name()
+                                t.render_name(&db.name_ctx())
                             ),
                         )
                         .at(operand),
@@ -8219,7 +8231,7 @@ fn check_unit_composition(db: &mut Db, id: crate::ast::StructId, out: &mut Vec<R
                         format!(
                             "`Unit.^` raises a UNIT to a power, but this base is not a unit — write a \
                              unit expression (e.g. `(Unit.base #\"meter\")`), not a {} value",
-                            t.render_name()
+                            t.render_name(&db.name_ctx())
                         ),
                     )
                     .at(base),
@@ -8234,7 +8246,7 @@ fn check_unit_composition(db: &mut Db, id: crate::ast::StructId, out: &mut Vec<R
                         format!(
                             "`Unit.^`'s exponent must be a compile-time integer (e.g. `2` for a square), \
                              but this is a {} value",
-                            t.render_name()
+                            t.render_name(&db.name_ctx())
                         ),
                     )
                     .at(args[1]),
@@ -8296,7 +8308,7 @@ fn check_unit_composition(db: &mut Db, id: crate::ast::StructId, out: &mut Vec<R
                 "Unit.of"
             };
             let arg_desc = match args.first() {
-                Some(&a) => type_of(db, a).render_name(),
+                Some(&a) => type_of(db, a).render_name(&db.name_ctx()),
                 None => "nothing".to_string(),
             };
             out.push(
@@ -8467,7 +8479,7 @@ fn check_application(
                     format!(
                         "unquote-splicing (,@) splices the elements of a list, but its operand is {} \
                          — a value with no elements to splice",
-                        ty.render_name()
+                        ty.render_name(&db.name_ctx())
                     ),
                 )
                 .at(args[0]),
@@ -8554,7 +8566,7 @@ fn check_application(
                              file), so it cannot be a map/set key — key insertion, lookup, and membership \
                              observe its representation through a built-in comparison; compare it through \
                              a function exported by the module that declares it",
-                            abstract_ty.render_name()
+                            abstract_ty.render_name(&db.name_ctx())
                         ),
                     )
                     .at(head),
@@ -8575,7 +8587,7 @@ fn check_application(
                             "a value of function type `{}` cannot be a map/set key — a function has no \
                              canonical identity, so it is neither equatable nor orderable; key the \
                              collection by a value type (or by a field the closure captures)",
-                            fn_ty.render_name()
+                            fn_ty.render_name(&db.name_ctx())
                         ),
                     )
                     .at(head),
@@ -8597,14 +8609,14 @@ fn check_application(
     {
         let msg_ty = type_of(db, args[0]);
         if !matches!(msg_ty, Ty::String | Ty::Any | Ty::Var(_)) {
-            trace!(target: "rcdzc::infer", head = head.0, ty = %msg_ty.render_name(), "fault: trap message is not a String (CDZ0203)");
+            trace!(target: "rcdzc::infer", head = head.0, ty = %msg_ty.render_name(&db.name_ctx()), "fault: trap message is not a String (CDZ0203)");
             out.push(
                 Reject::coded(
                     Code::TypeMismatch,
                     format!(
                         "`trap`'s message must be a String, but a value of type {} was given — \
                          `trap` aborts with a text message, e.g. `(trap \"reason\")`",
-                        msg_ty.render_name()
+                        msg_ty.render_name(&db.name_ctx())
                     ),
                 )
                 .at(args[0]),
@@ -8626,14 +8638,14 @@ fn check_application(
     {
         let arg_ty = type_of(db, args[0]);
         if !matches!(arg_ty, Ty::String | Ty::Any | Ty::Var(_)) {
-            trace!(target: "rcdzc::infer", head = head.0, ty = %arg_ty.render_name(), "fault: read operand is not a String (CDZ0203)");
+            trace!(target: "rcdzc::infer", head = head.0, ty = %arg_ty.render_name(&db.name_ctx()), "fault: read operand is not a String (CDZ0203)");
             out.push(
                 Reject::coded(
                     Code::TypeMismatch,
                     format!(
                         "`read`'s argument must be a String, but a value of type {} was given — \
                          `read` parses text back into an `Ast`, e.g. `(read \"(+ 1 2)\")`",
-                        arg_ty.render_name()
+                        arg_ty.render_name(&db.name_ctx())
                     ),
                 )
                 .at(args[0]),
@@ -8753,12 +8765,12 @@ fn check_application(
             t,
             Ty::Int(_) | Ty::Float(_) | Ty::Rational | Ty::BigInt | Ty::Qty { .. } | Ty::Any
         ) {
-            trace!(target: "rcdzc::infer", head = head.0, ty = %t.render_name(), "fault: negation of a non-numeric operand (CDZ0201)");
+            trace!(target: "rcdzc::infer", head = head.0, ty = %t.render_name(&db.name_ctx()), "fault: negation of a non-numeric operand (CDZ0201)");
             out.push(Reject::coded(
                 Code::Malformed,
                 format!(
                     "negation is not defined on {} — Cadenza never coerces this to a number",
-                    t.render_name()
+                    t.render_name(&db.name_ctx())
                 ),
             ));
         }
@@ -8830,7 +8842,7 @@ fn check_application(
                 format!(
                     "`Qty.value` recovers a quantity's number, but this operand is {}, which is not a \
                      quantity{hint}",
-                    operand_ty.render_with_article(),
+                    operand_ty.render_with_article(&db.name_ctx()),
                 ),
             ));
         }
@@ -8887,7 +8899,7 @@ fn check_application(
                 Code::DimensionMismatch,
                 format!(
                     "`Unit.in`/`as` converts a QUANTITY, but this operand is {}, which is not a quantity{hint}",
-                    operand_ty.render_with_article(),
+                    operand_ty.render_with_article(&db.name_ctx()),
                 ),
             ));
         }
@@ -8978,7 +8990,7 @@ fn check_application(
                         "`{}` is an abstract type here (its constructors are not exported to this \
                          file), so its representation cannot be observed through a built-in comparison \
                          — compare it through a function exported by the module that declares it",
-                        ty.render_name()
+                        ty.render_name(&db.name_ctx())
                     ),
                 )
                 .at(head),
@@ -9060,8 +9072,8 @@ fn check_application(
                 format!(
                     "{} and {} are not comparable across the nominal boundary (unwrap the nominal to \
                      compare the underlying value)",
-                    a.render_name(),
-                    b.render_name()
+                    a.render_name(&db.name_ctx()),
+                    b.render_name(&db.name_ctx())
                 ),
             );
             // The MECHANICAL unwrap: the newtype operand is `(match <it> ((<Variant> n) n))`, which strips
@@ -9159,13 +9171,13 @@ fn check_application(
                 } else {
                     ""
                 };
-                trace!(target: "rcdzc::infer", head = head.0, ty = %bad_ty.render_name(), "fault: bitwise/shift op on a non-integer operand (CDZ0203)");
+                trace!(target: "rcdzc::infer", head = head.0, ty = %bad_ty.render_name(&db.name_ctx()), "fault: bitwise/shift op on a non-integer operand (CDZ0203)");
                 let mut reject = Reject::coded(
                     Code::TypeMismatch,
                     format!(
                         "a bitwise/shift operator needs integer operands, but a value of type {} \
                          was given{hint}",
-                        bad_ty.render_name()
+                        bad_ty.render_name(&db.name_ctx())
                     ),
                 )
                 .at(bad_arg);
@@ -9217,8 +9229,8 @@ fn check_application(
         // never a number), the base message stands alone (honest — "just call it" is not the fix).
         if matches!(a, Ty::Fn(_, _)) || matches!(b, Ty::Fn(_, _)) {
             trace!(target: "rcdzc::infer", head = head.0, "fault: an operand is a function value — not operable/comparable (CDZ0203)");
-            let hint = fn_not_applied_hint(&b, &a)
-                .or_else(|| fn_not_applied_hint(&a, &b))
+            let hint = fn_not_applied_hint(&b, &a, &db.name_ctx())
+                .or_else(|| fn_not_applied_hint(&a, &b, &db.name_ctx()))
                 .unwrap_or_default();
             out.push(Reject::coded(
                 Code::TypeMismatch,
@@ -9389,13 +9401,13 @@ fn check_application(
             let subject = if a == b {
                 format!(
                     "{} — Cadenza never coerces this to a number",
-                    a.render_name()
+                    a.render_name(&db.name_ctx())
                 )
             } else {
                 format!(
                     "{} and {} — Cadenza never coerces these to numbers",
-                    a.render_name(),
-                    b.render_name()
+                    a.render_name(&db.name_ctx()),
+                    b.render_name(&db.name_ctx())
                 )
             };
             let mut reject = Reject::coded(
@@ -9440,7 +9452,8 @@ fn check_application(
             // reconstructs source statically and cannot see through a runtime-spliced Ast subtree). Name
             // that — the message the breaker probe asked for (corpus-bugfix issue). A NON-`Ast` cross-kind
             // pair keeps the generic boundary message.
-            let ast_operand = a.render_name() == "Ast" || b.render_name() == "Ast";
+            let ast_operand =
+                a.render_name(&db.name_ctx()) == "Ast" || b.render_name(&db.name_ctx()) == "Ast";
             let message = if ast_operand {
                 "an `Ast` value is compile-time metadata (a quoted or reified syntax tree), not a runtime \
                  value, so this operation is not defined on it — this often arises from `eval` of a \
@@ -9451,8 +9464,8 @@ fn check_application(
             } else {
                 format!(
                     "{} and {} are different types (this operation is not defined across that kind boundary)",
-                    a.render_with_article(),
-                    b.render_with_article()
+                    a.render_with_article(&db.name_ctx()),
+                    b.render_with_article(&db.name_ctx())
                 )
             };
             out.push(Reject::coded(Code::Malformed, message));
@@ -9488,8 +9501,8 @@ fn check_application(
                 Code::TypeMismatch,
                 format!(
                     "{} and {} are different types — this operation is not defined between {ka} and {kb}",
-                    a.render_with_article(),
-                    b.render_with_article(),
+                    a.render_with_article(&db.name_ctx()),
+                    b.render_with_article(&db.name_ctx()),
                 ),
             ));
             for &arg in args {
@@ -9647,7 +9660,7 @@ fn check_application(
             let ia = inner_ty(&a0);
             let ib = inner_ty(&b0);
             let mut subst = Subst::new();
-            if let Err(mut reject) = crate::unify::unify(&mut subst, &ia, &ib) {
+            if let Err(mut reject) = crate::unify::unify(&mut subst, &ia, &ib, &db.name_ctx()) {
                 // Retype whichever operand's inner value the coercion bridges — a quantity operand's inner
                 // value is its `Qty.of`'s first arg (`qty_of_value_arg`); a bare operand's inner value is
                 // the operand node itself. Mirrors the additive arm's numeric-coercion repair.
@@ -9703,8 +9716,8 @@ fn check_application(
                     format!(
                         "no implicit conversion between numeric types {} and {} — convert explicitly \
                          (Cadenza never silently promotes a numeric type)",
-                        a0.render_name(),
-                        b0.render_name()
+                        a0.render_name(&db.name_ctx()),
+                        b0.render_name(&db.name_ctx())
                     ),
                 );
                 // Offer the total `(BigInt.of …)` wrap on the FIXED-int operand — the one operand that is
@@ -9759,8 +9772,8 @@ fn check_application(
                     format!(
                         "no implicit conversion between numeric types {} and {} — convert explicitly \
                          (Cadenza never silently promotes a numeric type)",
-                        a0.render_name(),
-                        b0.render_name()
+                        a0.render_name(&db.name_ctx()),
+                        b0.render_name(&db.name_ctx())
                     ),
                 );
                 // The Rational twin of the BigInt wrap above: offer `(Rational.of-int …)` on the fixed-int
@@ -9854,8 +9867,8 @@ fn check_application(
                     format!(
                         "no implicit conversion between numeric types {} and {} — convert explicitly \
                          (Cadenza never silently promotes a numeric type)",
-                        a0.render_name(),
-                        b0.render_name()
+                        a0.render_name(&db.name_ctx()),
+                        b0.render_name(&db.name_ctx())
                     )
                 };
                 let mut reject = Reject::coded(Code::NumericMismatch, msg).at(app);
@@ -9935,8 +9948,8 @@ fn check_application(
                 format!(
                     "no implicit conversion between numeric types {} and {} — convert explicitly \
                      (Cadenza never silently promotes a numeric type)",
-                    a0.render_name(),
-                    b0.render_name()
+                    a0.render_name(&db.name_ctx()),
+                    b0.render_name(&db.name_ctx())
                 )
             };
             let mut reject = Reject::coded(Code::NumericMismatch, msg).at(app);
@@ -9998,7 +10011,9 @@ fn check_application(
                             // Same dimension — the INNER numeric types must still agree (no promotion
                             // under a unit): unify them and report a numeric mismatch as CDZ0301.
                             let mut subst = Subst::new();
-                            if let Err(mut reject) = crate::unify::unify(&mut subst, ia, ib) {
+                            if let Err(mut reject) =
+                                crate::unify::unify(&mut subst, ia, ib, &db.name_ctx())
+                            {
                                 // The SAME numeric mismatch a bare `(+ 5 3.0)` gets — so it should offer the
                                 // SAME coercion fix (drop the `.0`, or `<Float>.of-int …`), just applied to
                                 // the INNER value of the offending quantity rather than the whole `(Qty.of
@@ -10055,8 +10070,8 @@ fn check_application(
                                  dimension a bare number lacks, and there is no implicit \
                                  dimensionless coercion",
                                 additive_op_gerund(prim),
-                                a.render_name(),
-                                b.render_name(),
+                                a.render_name(&db.name_ctx()),
+                                b.render_name(&db.name_ctx()),
                             ),
                         );
                         // The mechanical repair: give the BARE number the SAME unit as the quantity operand,
@@ -10120,7 +10135,7 @@ fn check_application(
             // minimal-conflict delta the map-LITERAL arm already carries — the map's key type is the
             // EXPECTED side, the inserted key the ACTUAL, so this is the directional `structural_delta_hint`
             // (M184 audit: the Map.insert op arm missed the delta its peer-join twin carries).
-            let delta = structural_delta_hint(&kt, &key_ty).unwrap_or_default();
+            let delta = structural_delta_hint(&kt, &key_ty, &db.name_ctx()).unwrap_or_default();
             // Anchor at the inserted KEY (`args[1]`), the actionable locus, not the whole `(Map.insert …)`
             // application node — the squiggle points at the mismatching key (matches the file's "anchor the
             // specific offending element" pattern; the Map twin of the list-op anchoring, PR #399).
@@ -10129,8 +10144,8 @@ fn check_application(
                 format!(
                     "a map associates keys of one type, but this key's type differs: the map's keys are \
                      {}, this key is {}{delta}",
-                    kt.render_name(),
-                    key_ty.render_name()
+                    kt.render_name(&db.name_ctx()),
+                    key_ty.render_name(&db.name_ctx())
                 ),
             )
             .at(args[1]);
@@ -10144,7 +10159,7 @@ fn check_application(
             // Append the same directional structural-delta the key arm now carries — the map's value type
             // is EXPECTED, the inserted value ACTUAL — so a same-kind compound value mismatch names the
             // field/element/payload conflict rather than leaving the reader to diff two rendered types.
-            let delta = structural_delta_hint(&vt, &val_ty).unwrap_or_default();
+            let delta = structural_delta_hint(&vt, &val_ty, &db.name_ctx()).unwrap_or_default();
             // Anchor at the inserted VALUE (`args[2]`), not the whole application — same locus fix as the
             // key arm above.
             let mut reject = Reject::coded(
@@ -10152,8 +10167,8 @@ fn check_application(
                 format!(
                     "a map associates values of one type, but this value's type differs: the map's \
                      values are {}, this value is {}{delta}",
-                    vt.render_name(),
-                    val_ty.render_name()
+                    vt.render_name(&db.name_ctx()),
+                    val_ty.render_name(&db.name_ctx())
                 ),
             )
             .at(args[2]);
@@ -10212,7 +10227,7 @@ fn check_application(
         if let Some((_, first_ty)) = &first_pair {
             for &e in elems.iter().skip(1) {
                 let et = type_of(db, e);
-                if crate::unify::unify(&mut subst, first_ty, &et).is_err() {
+                if crate::unify::unify(&mut subst, first_ty, &et, &db.name_ctx()).is_err() {
                     clash = Some((e, et));
                     break;
                 }
@@ -10220,7 +10235,7 @@ fn check_application(
         }
         if let (Some((first, first_ty)), Some((e, et))) = (&first_pair, &clash) {
             trace!(target: "rcdzc::infer", head = head.0, "fault: Set.of elements do not share one type (CDZ0201)");
-            let delta = peer_type_delta_hint(first_ty, et).unwrap_or_default();
+            let delta = peer_type_delta_hint(first_ty, et, &db.name_ctx()).unwrap_or_default();
             // Anchor at the OUTLIER element `e` (the one that broke homogeneity against the first
             // element's type), not the whole `(Set.of …)` application — the squiggle lands on the off
             // element, not the entire set construction (the Set twin of the list/map-literal outlier
@@ -10229,8 +10244,8 @@ fn check_application(
                 Code::Malformed,
                 format!(
                     "a set contains elements of one type, but the elements differ: {} and {}{delta}",
-                    first_ty.render_name(),
-                    et.render_name()
+                    first_ty.render_name(&db.name_ctx()),
+                    et.render_name(&db.name_ctx())
                 ),
             )
             .at(*e);
@@ -10280,7 +10295,7 @@ fn check_application(
             let mut homogeneity_fault = false;
             for &e in args.iter().skip(1) {
                 let et = type_of(db, e);
-                if crate::unify::unify(&mut subst, &first_ty, &et).is_err() {
+                if crate::unify::unify(&mut subst, &first_ty, &et, &db.name_ctx()).is_err() {
                     homogeneity_fault = true;
                     // The unify reports the generic CDZ0203. But list homogeneity draws the SAME taxonomy
                     // line the numeric operators and `if`-branches do (05-compound-types): a HOMOGENEITY
@@ -10302,7 +10317,8 @@ fn check_application(
                     // one field's type, tuples of one position, a nested collection axis), name the specific
                     // differing sub-part instead of rendering two whole compounds — the join-site reuse of
                     // the annotation-mismatch per-member hints.
-                    let delta = peer_type_delta_hint(&first_ty, &et).unwrap_or_default();
+                    let delta =
+                        peer_type_delta_hint(&first_ty, &et, &db.name_ctx()).unwrap_or_default();
                     // Anchor at the OUTLIER element `e` (the one that broke homogeneity against the
                     // established first-element type), not the whole `(list …)` — the squiggle lands on
                     // `"three"` in `(list 1 2 "three" 4 5)` rather than the entire list, so the reader sees
@@ -10311,8 +10327,8 @@ fn check_application(
                         code,
                         format!(
                             "list elements must share one type: {} and {}{delta}",
-                            first_ty.render_name(),
-                            et.render_name()
+                            first_ty.render_name(&db.name_ctx()),
+                            et.render_name(&db.name_ctx())
                         ),
                     )
                     .at(e);
@@ -10434,11 +10450,11 @@ fn check_application(
             // (`field `x` is missing (found `y`)`) instead of leaving the reader to diff two rendered types.
             let message = match member_op_head_name(db, head) {
                 Some((module, member)) => {
-                    let delta = structural_delta_hint(&expected, &given).unwrap_or_default();
+                    let delta = structural_delta_hint(&expected, &given, &db.name_ctx()).unwrap_or_default();
                     format!(
                         "`{module}.{member}` expects an argument of type {}, but a value of type {} was given{delta}",
-                        expected.render_name(),
-                        given.render_name()
+                        expected.render_name(&db.name_ctx()),
+                        given.render_name(&db.name_ctx())
                     )
                 }
                 None => "list elements must share one type (the operation's element type differs from the list's)"
@@ -10476,14 +10492,14 @@ fn check_application(
             let (fkt, fvt) = (type_of(db, fk), type_of(db, fv));
             for &(k, v) in entries.iter().skip(1) {
                 let kt = type_of(db, k);
-                if crate::unify::unify(&mut ksubst, &fkt, &kt).is_err() {
+                if crate::unify::unify(&mut ksubst, &fkt, &kt, &db.name_ctx()).is_err() {
                     // Name the two clashing key types (like the list-homogeneity message) and, for an
                     // int-literal-vs-float clash, offer the same `3.0` retype fix — the map-key twin of the
                     // list/if/match "same repair wherever the same mismatch surfaces" (M57). The
                     // structural-delta hint names the SPECIFIC differing sub-part when the two key types are
                     // same-kind compounds (a record field / tuple position / sum payload) — the peer-join
                     // hint the list/if/match/set sites carry.
-                    let delta = peer_type_delta_hint(&fkt, &kt).unwrap_or_default();
+                    let delta = peer_type_delta_hint(&fkt, &kt, &db.name_ctx()).unwrap_or_default();
                     // Anchor at the OUTLIER key `k` (the one that broke homogeneity against the first
                     // entry's key type), not the whole `(map …)` literal — the squiggle lands on the off
                     // entry's key, not the entire map (the map-literal twin of the list-outlier anchoring).
@@ -10491,8 +10507,8 @@ fn check_application(
                         Code::Malformed,
                         format!(
                             "a map associates keys of one type, but the keys differ: {} and {}{delta}",
-                            fkt.render_name(),
-                            kt.render_name()
+                            fkt.render_name(&db.name_ctx()),
+                            kt.render_name(&db.name_ctx())
                         ),
                     )
                     .at(k);
@@ -10504,16 +10520,16 @@ fn check_application(
                     out.push(reject);
                 }
                 let vt = type_of(db, v);
-                if crate::unify::unify(&mut vsubst, &fvt, &vt).is_err() {
-                    let delta = peer_type_delta_hint(&fvt, &vt).unwrap_or_default();
+                if crate::unify::unify(&mut vsubst, &fvt, &vt, &db.name_ctx()).is_err() {
+                    let delta = peer_type_delta_hint(&fvt, &vt, &db.name_ctx()).unwrap_or_default();
                     // Anchor at the OUTLIER value `v`, not the whole `(map …)` literal — same locus fix as
                     // the key arm above.
                     let mut reject = Reject::coded(
                         Code::Malformed,
                         format!(
                             "a map associates values of one type, but the values differ: {} and {}{delta}",
-                            fvt.render_name(),
-                            vt.render_name()
+                            fvt.render_name(&db.name_ctx()),
+                            vt.render_name(&db.name_ctx())
                         ),
                     )
                     .at(v);
@@ -10562,7 +10578,7 @@ fn check_application(
         for &arg in args {
             let at = type_of(db, arg);
             if !at.agrees_with(&Ty::Unit) {
-                trace!(target: "rcdzc::infer", head = head.0, arg = arg.0, at = %at.render_name(), "fault: nullary variant applied to a non-unit payload (CDZ0201)");
+                trace!(target: "rcdzc::infer", head = head.0, arg = arg.0, at = %at.render_name(&db.name_ctx()), "fault: nullary variant applied to a non-unit payload (CDZ0201)");
                 out.push(
                     Reject::coded(
                         Code::Malformed,
@@ -10570,7 +10586,7 @@ fn check_application(
                             "the variant `{vname}` is nullary — it carries no payload, so it cannot be \
                              applied to a value of type {}; construct it as `{vname}` alone (or `({vname} \
                              unit)`)",
-                            at.render_name()
+                            at.render_name(&db.name_ctx())
                         ),
                     )
                     .at(arg),
@@ -10643,9 +10659,10 @@ fn check_application(
                     // binder id (`type_valued_param_binder`). Bind that var to the passed type value, and
                     // record it as a boundary var so a downstream sibling-value mismatch always flushes.
                     boundary_vars.insert(param_occ.0);
-                    let _ = crate::unify::unify(&mut subst, &Ty::Var(param_occ.0), &tv);
+                    let _ =
+                        crate::unify::unify(&mut subst, &Ty::Var(param_occ.0), &tv, &db.name_ctx());
                 }
-                if let Err(reject) = crate::unify::unify(&mut subst, &pt, &at) {
+                if let Err(reject) = crate::unify::unify(&mut subst, &pt, &at, &db.name_ctx()) {
                     trace!(target: "rcdzc::infer", head = head.0, arg = arg.0, "apply: argument conflicts with parameter annotation (type fault)");
                     // REWORD to the call-ARGUMENT phrasing (M106): this fault is a wrong-typed call
                     // argument, but the raw unify gave "type mismatch: Int64 and Bool must be the same type
@@ -10671,7 +10688,8 @@ fn check_application(
                     // `subst` first renders the real "Int64", the type the sibling argument already pinned.
                     let spt = subst.apply(&pt);
                     let sat = subst.apply(&at);
-                    let tail = structural_delta_hint(&spt, &sat).unwrap_or_default();
+                    let tail =
+                        structural_delta_hint(&spt, &sat, &db.name_ctx()).unwrap_or_default();
                     let reject = Reject {
                         message: call_argument_mismatch_message(
                             callee.as_deref(),
@@ -10679,6 +10697,7 @@ fn check_application(
                             &spt,
                             &sat,
                             &tail,
+                            &db.name_ctx(),
                         ),
                         ..reject
                     };
@@ -10946,7 +10965,7 @@ fn check_application(
                 let ht = type_of(db, head);
                 if is_definite_non_function(&ht) {
                     // When the head is a bare name that DECLARES a type or effect, name the CATEGORY —
-                    // `(E 5)` for an effect `E`, `(Color 5)` for a type `Color`. Rendering `ht.render_name()`
+                    // `(E 5)` for an effect `E`, `(Color 5)` for a type `Color`. Rendering `ht.render_name(&db.name_ctx())`
                     // for an effect leaks its SYNTHESIZED record type verbatim (`(Record (foo (Record (apply
                     // Any) …)) …)`) — an internal representation dumped at the user, the leaky-message
                     // anti-pattern. Say "`E` is an effect, not a function" (the apply-position analogue of
@@ -10980,7 +10999,7 @@ fn check_application(
                             matches!(db.ast.get(sig), crate::ast::Struct::List(_))
                                 .then(|| n.to_string())
                         });
-                    trace!(target: "rcdzc::infer", head = head.0, ty = %ht.render_name(), "fault: applying a non-function value (CDZ0201)");
+                    trace!(target: "rcdzc::infer", head = head.0, ty = %ht.render_name(&db.name_ctx()), "fault: applying a non-function value (CDZ0201)");
                     // A MISSING-COLON VALUE ANNOTATION — `(5 Int64)` written where `(: 5 Int64)` was
                     // meant. When a plain value head is applied to EXACTLY ONE argument that resolves as a
                     // TYPE (`typeval_of`), the author juxtaposed a value with its type instead of heading
@@ -11041,7 +11060,7 @@ fn check_application(
                         (None, None) => format!(
                             "{} {} — it is not a function",
                             crate::diag::NOT_A_FUNCTION_PREFIX,
-                            ht.render_name()
+                            ht.render_name(&db.name_ctx())
                         ),
                     };
                     out.push(Reject::coded(Code::Malformed, message));
@@ -11062,7 +11081,7 @@ fn check_application(
                 // occurs-check spuriously FAULTS a well-typed `(Some (None))` (CDZ0203 "infinite type").
                 let arg_ty = type_of(db, arg);
                 let at = freshen_arg(db, &arg_ty, &mut fresh);
-                if let Err(reject) = crate::unify::unify(&mut subst, &param, &at) {
+                if let Err(reject) = crate::unify::unify(&mut subst, &param, &at, &db.name_ctx()) {
                     trace!(target: "rcdzc::infer", head = head.0, arg = arg.0, "apply: argument conflicts with parameter (type fault)");
                     // A wrong-type payload to a VARIANT CONSTRUCTOR — `(T.Mk "x")` for `(Mk Int64)` — is a
                     // MALFORMED construction (`CDZ0201`), the code the corpus assigns a constructor applied
@@ -11086,14 +11105,15 @@ fn check_application(
                         // is a RECORD whose field-set differs, add the structural field-diff tail (which
                         // fields are missing/extra, or which field's type clashes) so the reader is not left
                         // to diff two whole record renders.
-                        let delta = structural_delta_hint(&sparam, &sat).unwrap_or_default();
+                        let delta = structural_delta_hint(&sparam, &sat, &db.name_ctx())
+                            .unwrap_or_default();
                         let mut reject = Reject::coded(
                             Code::Malformed,
                             format!(
                                 "a variant constructor's payload has declared type {}, but a value of \
                                  type {} was applied{delta}",
-                                sparam.render_name(),
-                                sat.render_name()
+                                sparam.render_name(&db.name_ctx()),
+                                sat.render_name(&db.name_ctx())
                             ),
                         )
                         .at(arg);
@@ -11125,8 +11145,8 @@ fn check_application(
                             Code::NominalMismatch,
                             format!(
                                 "comparing distinct nominal types {} and {} across the nominal boundary",
-                                sparam.render_name(),
-                                sat.render_name()
+                                sparam.render_name(&db.name_ctx()),
+                                sat.render_name(&db.name_ctx())
                             ),
                         ));
                     } else if let Some(fix) = numeric_text_coercion_fix(db, &sparam, &sat, arg) {
@@ -11144,8 +11164,8 @@ fn check_application(
                             Reject {
                                 message: format!(
                                     "this argument is {}, but a value of type {} is expected here",
-                                    sat.render_with_article(),
-                                    sparam.render_name()
+                                    sat.render_with_article(&db.name_ctx()),
+                                    sparam.render_name(&db.name_ctx())
                                 ),
                                 ..reject
                             }
@@ -11170,8 +11190,8 @@ fn check_application(
                             Reject {
                                 message: format!(
                                     "this argument is {}, but a value of type {} is expected here",
-                                    sat.render_with_article(),
-                                    sparam.render_name()
+                                    sat.render_with_article(&db.name_ctx()),
+                                    sparam.render_name(&db.name_ctx())
                                 ),
                                 ..reject
                             }
@@ -11214,14 +11234,15 @@ fn check_application(
                         // `(Log.put (record (y 2)))` for a `(Record (x Int64))` op then reads "… but field
                         // `x` is missing (found `y`)" instead of leaving the reader to compare two rendered
                         // record types. The M180/M181 structural-delta audit applied to the effect-op arm.
-                        let delta = structural_delta_hint(&sparam, &sat).unwrap_or_default();
+                        let delta = structural_delta_hint(&sparam, &sat, &db.name_ctx())
+                            .unwrap_or_default();
                         let mut reject = Reject::coded(
                             Code::TypeMismatch,
                             format!(
                                 "operation {op} expects an argument of type {}, but a value of type {} \
                                  was performed{delta}",
-                                sparam.render_name(),
-                                sat.render_name()
+                                sparam.render_name(&db.name_ctx()),
+                                sat.render_name(&db.name_ctx())
                             ),
                         );
                         if let Some(fix) = numeric_text_coercion_fix(db, &sparam, &sat, arg) {
@@ -11244,7 +11265,8 @@ fn check_application(
                         // for a `List (Record (x Int64))`, a tuple-arity diff — names the minimal conflict
                         // (`field `x` is missing (found `y`)`) instead of leaving the reader to diff two
                         // rendered compound types. The M180/M181 audit applied to the prelude-member-op arm.
-                        let delta = structural_delta_hint(&sparam, &sat).unwrap_or_default();
+                        let delta = structural_delta_hint(&sparam, &sat, &db.name_ctx())
+                            .unwrap_or_default();
                         // Anchor at the offending ARGUMENT `arg`, not the whole `(Module.member …)`
                         // application node — the squiggle points at the wrong-typed argument, the actionable
                         // locus (`(List.at xs true)` lands on `true`, not the `List.at` head), matching the
@@ -11254,8 +11276,8 @@ fn check_application(
                             format!(
                                 "`{module}.{member}` expects an argument of type {}, but a value of \
                                  type {} was given{delta}",
-                                sparam.render_name(),
-                                sat.render_name()
+                                sparam.render_name(&db.name_ctx()),
+                                sat.render_name(&db.name_ctx())
                             ),
                         )
                         .at(arg);
@@ -11263,7 +11285,7 @@ fn check_application(
                             reject = reject.with_fix(fix);
                         }
                         out.push(reject);
-                    } else if let Some(hint) = fn_not_applied_hint(&sparam, &sat) {
+                    } else if let Some(hint) = fn_not_applied_hint(&sparam, &sat, &db.name_ctx()) {
                         // The ARGUMENT is an UNAPPLIED function where a non-function param is wanted — a
                         // partial application `(+ (h 1) 2)` (h takes 2, applied to 1) passed to `+`, which
                         // wants an Int64. This falls through the bare-operator path to the generic unify
@@ -11278,11 +11300,12 @@ fn check_application(
                             message: format!(
                                 "this argument is a function value, but a value of type {} is expected \
                                  here{hint}",
-                                sparam.render_name()
+                                sparam.render_name(&db.name_ctx())
                             ),
                             ..reject
                         });
-                    } else if let Some(delta) = structural_delta_hint(&sparam, &sat) {
+                    } else if let Some(delta) = structural_delta_hint(&sparam, &sat, &db.name_ctx())
+                    {
                         // Two SAME-KIND compounds that differ structurally — two records of different field
                         // sets (`(= (record (x 1)) (record (y 2)))`), two tuples of different arity, two
                         // collections of a differing element/key/value type, two same-sum-type payloads.
@@ -11297,8 +11320,8 @@ fn check_application(
                         out.push(Reject {
                             message: format!(
                                 "this argument is {}, but a value of type {} is expected here{delta}",
-                                sat.render_with_article(),
-                                sparam.render_name()
+                                sat.render_with_article(&db.name_ctx()),
+                                sparam.render_name(&db.name_ctx())
                             ),
                             ..reject
                         });
@@ -11385,7 +11408,7 @@ fn check_application(
                     }
                     out.push(reject);
                 } else {
-                    trace!(target: "rcdzc::infer", head = head.0, ty = %other.render_name(), "apply: applied a non-function (type fault)");
+                    trace!(target: "rcdzc::infer", head = head.0, ty = %other.render_name(&db.name_ctx()), "apply: applied a non-function (type fault)");
                     // A head that DENOTES A TYPE applied in call position (`(Color 5)`, `(Option 5)`,
                     // `(Int64 5)`) — name the CATEGORY, mirroring the M75 effect/type message (and the M74
                     // export-a-type message): "`Color` is a type, not a function". A type belongs in an
@@ -11466,7 +11489,7 @@ fn check_application(
                             format!(
                                 "{} {}",
                                 crate::diag::NOT_A_FUNCTION_PREFIX,
-                                other.render_name()
+                                other.render_name(&db.name_ctx())
                             ),
                             None,
                         ),
@@ -12152,7 +12175,7 @@ fn collect_quote_body_syntax(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                                     format!(
                                         "unquote-splicing (,@) splices the elements of a list, but its \
                                          operand is {} — a value with no elements to splice",
-                                        ty.render_name()
+                                        ty.render_name(&db.name_ctx())
                                     ),
                                 )
                                 .at(operand),
@@ -12261,7 +12284,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         Resolved::If { cond, then_, else_ } => {
             let cond_ty = type_of(db, cond);
             if !cond_ty.agrees_with(&Ty::Bool) {
-                trace!(target: "rcdzc::infer", node = id.0, cond_ty = %cond_ty.render_name(), "fault: if condition not Bool (CDZ0203)");
+                trace!(target: "rcdzc::infer", node = id.0, cond_ty = %cond_ty.render_name(&db.name_ctx()), "fault: if condition not Bool (CDZ0203)");
                 // Anchor at the CONDITION expression, not the whole `(if …)` — the squiggle then lands on
                 // the non-Bool value (`5` in `(if 5 …)`), the actual culprit. (Without `.at`, `collect`
                 // stamps the coarse `if`-node default.) The branch-mismatch reject below stays at the `if`
@@ -12269,7 +12292,10 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 out.push(
                     Reject::coded(
                         Code::TypeMismatch,
-                        format!("if condition must be Bool, found {}", cond_ty.render_name()),
+                        format!(
+                            "if condition must be Bool, found {}",
+                            cond_ty.render_name(&db.name_ctx())
+                        ),
                     )
                     .at(cond),
                 );
@@ -12296,14 +12322,15 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 } else {
                     Code::TypeMismatch
                 };
-                trace!(target: "rcdzc::infer", node = id.0, then_ty = %then_ty.render_name(), else_ty = %else_ty.render_name(), ?code, "fault: if branches differ");
-                let delta = peer_type_delta_hint(&then_ty, &else_ty).unwrap_or_default();
+                trace!(target: "rcdzc::infer", node = id.0, then_ty = %then_ty.render_name(&db.name_ctx()), else_ty = %else_ty.render_name(&db.name_ctx()), ?code, "fault: if branches differ");
+                let delta =
+                    peer_type_delta_hint(&then_ty, &else_ty, &db.name_ctx()).unwrap_or_default();
                 let mut reject = Reject::coded(
                     code,
                     format!(
                         "if branches differ: {} vs {}{delta}",
-                        then_ty.render_name(),
-                        else_ty.render_name()
+                        then_ty.render_name(&db.name_ctx()),
+                        else_ty.render_name(&db.name_ctx())
                     ),
                 );
                 // An INT-LITERAL-vs-FLOAT branch clash has the same one-shot repair the list-element and
@@ -12341,12 +12368,15 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             for &operand in &[lhs, rhs] {
                 let t = type_of(db, operand);
                 if !t.agrees_with(&Ty::Bool) {
-                    trace!(target: "rcdzc::infer", node = id.0, ty = %t.render_name(), "fault: connective operand not Bool (CDZ0201)");
+                    trace!(target: "rcdzc::infer", node = id.0, ty = %t.render_name(&db.name_ctx()), "fault: connective operand not Bool (CDZ0201)");
                     // Anchor at the offending OPERAND, not the whole `(and …)`/`(or …)`.
                     out.push(
                         Reject::coded(
                             Code::Malformed,
-                            format!("`{op}` operand must be Bool, found {}", t.render_name()),
+                            format!(
+                                "`{op}` operand must be Bool, found {}",
+                                t.render_name(&db.name_ctx())
+                            ),
                         )
                         .at(operand),
                     );
@@ -12357,12 +12387,15 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         Resolved::Not { operand } => {
             let t = type_of(db, operand);
             if !t.agrees_with(&Ty::Bool) {
-                trace!(target: "rcdzc::infer", node = id.0, ty = %t.render_name(), "fault: not operand not Bool (CDZ0201)");
+                trace!(target: "rcdzc::infer", node = id.0, ty = %t.render_name(&db.name_ctx()), "fault: not operand not Bool (CDZ0201)");
                 // Anchor at the offending OPERAND, not the whole `(not …)`.
                 out.push(
                     Reject::coded(
                         Code::Malformed,
-                        format!("`not` operand must be Bool, found {}", t.render_name()),
+                        format!(
+                            "`not` operand must be Bool, found {}",
+                            t.render_name(&db.name_ctx())
+                        ),
                     )
                     .at(operand),
                 );
@@ -12396,13 +12429,13 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             if operand_has_own_fault {
                 // The operand's own fault is the primary "no"; add nothing `?`-specific on top.
             } else if operand_definite && operand_fallible.is_none() {
-                trace!(target: "rcdzc::infer", node = id.0, ty = %t.render_name(), "fault: try operand not Option/Result (CDZ0203)");
+                trace!(target: "rcdzc::infer", node = id.0, ty = %t.render_name(&db.name_ctx()), "fault: try operand not Option/Result (CDZ0203)");
                 out.push(
                     Reject::coded(
                         Code::TypeMismatch,
                         format!(
                             "`?` operand must be a fallible `Result`/`Option`, found {}",
-                            t.render_name()
+                            t.render_name(&db.name_ctx())
                         ),
                     )
                     .at(operand),
@@ -12432,7 +12465,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                         let boundary_definite = !matches!(bt, Ty::Any | Ty::Var(_));
                         match boundary_fallible {
                             None if boundary_definite => {
-                                trace!(target: "rcdzc::infer", node = id.0, ty = %bt.render_name(), "fault: `?` boundary not fallible (CDZ0230)");
+                                trace!(target: "rcdzc::infer", node = id.0, ty = %bt.render_name(&db.name_ctx()), "fault: `?` boundary not fallible (CDZ0230)");
                                 // Name the CONCRETE fallible result the operand's kind implies, so the
                                 // "annotate it as …" hint gives the exact type to write, not a generic
                                 // `_`. An `Option` operand → `(Option <payload>)`; a `Result` operand →
@@ -12448,12 +12481,16 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                                 // self-contained.)
                                 let suggested = match &operand_fallible {
                                     Some((FallibleKind::Option, payload, _)) => {
-                                        format!("`(Option {})`", payload.render_name())
+                                        format!(
+                                            "`(Option {})`",
+                                            payload.render_name(&db.name_ctx())
+                                        )
                                     }
                                     Some((FallibleKind::Result, payload, err)) => format!(
                                         "`(Result {} {})`",
-                                        payload.render_name(),
-                                        err.as_ref().map_or("e".to_string(), |e| e.render_name())
+                                        payload.render_name(&db.name_ctx()),
+                                        err.as_ref().map_or("e".to_string(), |e| e
+                                            .render_name(&db.name_ctx()))
                                     ),
                                     None => "`(Result _ e)` or `(Option _)`".to_string(),
                                 };
@@ -12465,7 +12502,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                                              result type is `{}`, neither `Result` nor `Option`. \
                                              Annotate it as {suggested} (the kind the `?`'d value \
                                              requires), or wrap the expression in a `try {{ … }}` block.",
-                                            bt.render_name()
+                                            bt.render_name(&db.name_ctx())
                                         ),
                                     )
                                     .at(id),
@@ -12505,7 +12542,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                                                      boundary — the enclosing function returns `{}`. \
                                                      Either change the boundary's result type, or \
                                                      {convert} before the `?`.",
-                                                    bt.render_name()
+                                                    bt.render_name(&db.name_ctx())
                                                 ),
                                             )
                                             .at(operand),
@@ -12536,9 +12573,9 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                                                      the error types must agree (Cadenza has no automatic \
                                                      error conversion). `match` the `Result` and re-wrap \
                                                      its error to `{}`, or change the boundary's error type.",
-                                                    oe.render_name(),
-                                                    be.render_name(),
-                                                    be.render_name(),
+                                                    oe.render_name(&db.name_ctx()),
+                                                    be.render_name(&db.name_ctx()),
+                                                    be.render_name(&db.name_ctx()),
                                                 ),
                                             )
                                             .at(operand),
@@ -12675,7 +12712,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                             } else {
                                 None
                             };
-                            let ty_name = other.render_name();
+                            let ty_name = other.render_name(&db.name_ctx());
                             let reject = if let Some(module) = module {
                                 trace!(target: "rcdzc::infer", node = id.0, operand = operand.0, "fault: named member access on a collection/text value (CDZ0201)");
                                 Reject::coded(
@@ -12751,7 +12788,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                         Code::Malformed,
                         format!(
                             "tuple projection requires a tuple, found {}",
-                            type_of(db, operand).render_name()
+                            type_of(db, operand).render_name(&db.name_ctx())
                         ),
                     ));
                 }
@@ -12779,7 +12816,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 let mut homogeneity_fault = false;
                 for &e in elems.iter().skip(1) {
                     let et = type_of(db, e);
-                    if crate::unify::unify(&mut subst, &first_ty, &et).is_err() {
+                    if crate::unify::unify(&mut subst, &first_ty, &et, &db.name_ctx()).is_err() {
                         homogeneity_fault = true;
                         let code = list_homogeneity_code(&first_ty, &et);
                         trace!(target: "rcdzc::infer", node = id.0, ?code, "fault: list elements differ in type");
@@ -12788,7 +12825,8 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                         // as a contradiction — route through the peer-join delta chain (which carries the
                         // qty-scale-mismatch tail) so this fault-walker site names the real cause, matching
                         // the `.at`-anchored list-literal join site.
-                        let delta = peer_type_delta_hint(&first_ty, &et).unwrap_or_default();
+                        let delta = peer_type_delta_hint(&first_ty, &et, &db.name_ctx())
+                            .unwrap_or_default();
                         // Anchor at the OFFENDING element `e`, not the whole list node — the squiggle points
                         // at the specific element whose type breaks homogeneity, the minimal culprit (PR #399
                         // review; matches the file's "anchor the specific offending element" pattern). Without
@@ -12799,8 +12837,8 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                                 code,
                                 format!(
                                     "list elements must share one type: {} and {}{delta}",
-                                    first_ty.render_name(),
-                                    et.render_name()
+                                    first_ty.render_name(&db.name_ctx()),
+                                    et.render_name(&db.name_ctx())
                                 ),
                             )
                             .at(e),
@@ -12848,7 +12886,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 let (fkt, fvt) = (type_of(db, fk), type_of(db, fv));
                 for &(k, v) in entries.iter().skip(1) {
                     let kt = type_of(db, k);
-                    if crate::unify::unify(&mut ksubst, &fkt, &kt).is_err() {
+                    if crate::unify::unify(&mut ksubst, &fkt, &kt, &db.name_ctx()).is_err() {
                         trace!(target: "rcdzc::infer", node = id.0, "fault: map keys differ in type (CDZ0201)");
                         out.push(Reject::coded(
                             Code::Malformed,
@@ -12856,7 +12894,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                         ));
                     }
                     let vt = type_of(db, v);
-                    if crate::unify::unify(&mut vsubst, &fvt, &vt).is_err() {
+                    if crate::unify::unify(&mut vsubst, &fvt, &vt, &db.name_ctx()).is_err() {
                         trace!(target: "rcdzc::infer", node = id.0, "fault: map values differ in type (CDZ0201)");
                         out.push(Reject::coded(
                             Code::Malformed,
@@ -12994,8 +13032,8 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                                          convert it explicitly (e.g. {how}) before placing it in the \
                                          segment",
                                         seg_kind_name(&seg.kind),
-                                        want.render_name(),
-                                        got.render_name(),
+                                        want.render_name(&db.name_ctx()),
+                                        got.render_name(&db.name_ctx()),
                                     ),
                                 )
                                 .at(seg.slot),
@@ -13008,7 +13046,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                                     format!(
                                         "a bin {} segment takes an integer value, but this value is {}",
                                         seg_kind_name(&seg.kind),
-                                        got.render_name()
+                                        got.render_name(&db.name_ctx())
                                     ),
                                 )
                                 .at(seg.slot),
@@ -13022,7 +13060,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                                     Code::IllFormedBinary,
                                     format!(
                                         "a bin utf8 segment takes a String value, but this value is {}",
-                                        type_of(db, seg.slot).render_name()
+                                        type_of(db, seg.slot).render_name(&db.name_ctx())
                                     ),
                                 )
                                 .at(seg.slot),
@@ -13036,7 +13074,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                                     Code::IllFormedBinary,
                                     format!(
                                         "a bin bytes segment takes a Bytes value, but this value is {}",
-                                        type_of(db, seg.slot).render_name()
+                                        type_of(db, seg.slot).render_name(&db.name_ctx())
                                     ),
                                 )
                                 .at(seg.slot),
@@ -13169,13 +13207,14 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 for (_, body) in arms.iter().skip(1) {
                     let bt = type_of(db, *body);
                     if !first_ty.agrees_with(&bt) {
-                        let delta = peer_type_delta_hint(&first_ty, &bt).unwrap_or_default();
+                        let delta = peer_type_delta_hint(&first_ty, &bt, &db.name_ctx())
+                            .unwrap_or_default();
                         let mut reject = Reject::coded(
                             Code::TypeMismatch,
                             format!(
                                 "match arms differ: {} vs {}{delta}",
-                                first_ty.render_name(),
-                                bt.render_name()
+                                first_ty.render_name(&db.name_ctx()),
+                                bt.render_name(&db.name_ctx())
                             ),
                         );
                         // An INT-LITERAL-vs-FLOAT arm clash has the same one-shot repair the if-branch,
@@ -13242,7 +13281,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                             Code::TypeMismatch,
                             format!(
                                 "a variant pattern cannot match a scrutinee of type {} — it is not a sum",
-                                st.render_name()
+                                st.render_name(&db.name_ctx())
                             ),
                         ));
                         break;
@@ -13282,13 +13321,13 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     }
                     let cond_ty = type_of(db, cond);
                     if !cond_ty.agrees_with(&Ty::Bool) {
-                        trace!(target: "rcdzc::infer", node = cond.0, cond_ty = %cond_ty.render_name(), "fault: guard condition not Bool (CDZ0203)");
+                        trace!(target: "rcdzc::infer", node = cond.0, cond_ty = %cond_ty.render_name(&db.name_ctx()), "fault: guard condition not Bool (CDZ0203)");
                         out.push(
                             Reject::coded(
                                 Code::TypeMismatch,
                                 format!(
                                     "guard condition must be Bool, found {}",
-                                    cond_ty.render_name()
+                                    cond_ty.render_name(&db.name_ctx())
                                 ),
                             )
                             .at(cond),
@@ -13411,7 +13450,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                                 Code::Malformed,
                                 format!(
                                     "`Record.{rec_op}` requires a record, found {}",
-                                    ot.render_name()
+                                    ot.render_name(&db.name_ctx())
                                 ),
                             )
                             .at(o),
@@ -13784,7 +13823,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                                 Code::Malformed,
                                 format!(
                                     "`Tuple.{tup_op}` requires a tuple, found {}",
-                                    ot.render_name()
+                                    ot.render_name(&db.name_ctx())
                                 ),
                             )
                             .at(o),
@@ -14004,13 +14043,14 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                         && w != 0
                         && !v.fits_width(it.ground_signed(), w)
                     {
-                        trace!(target: "rcdzc::infer", node = id.0, annot_ty = %annot_ty.render_name(), "fault: literal does not fit annotated width (CDZ0302)");
+                        trace!(target: "rcdzc::infer", node = id.0, annot_ty = %annot_ty.render_name(&db.name_ctx()), "fault: literal does not fit annotated width (CDZ0302)");
                         out.push(int_out_of_range_reject(
                             &annot_ty,
                             it.ground_signed(),
                             w,
                             &v,
                             ty_expr,
+                            &db.name_ctx(),
                         ));
                     }
                 } else if matches!(resolved_of(db, expr), Resolved::Int(_))
@@ -14082,15 +14122,15 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                         // annotated `(Qty Float64 meter)` — is caught (CDZ0203), exactly as a bare numeric
                         // annotation mismatch is: the dimension agreeing does not excuse a numeric-type clash.
                         let mut subst = Subst::new();
-                        if crate::unify::unify(&mut subst, ai, ei).is_err() {
-                            trace!(target: "rcdzc::infer", node = id.0, annot_inner = %ai.render_name(), expr_inner = %ei.render_name(), "fault: same-dimension quantity annotation with a mismatched INNER numeric type (CDZ0203)");
+                        if crate::unify::unify(&mut subst, ai, ei, &db.name_ctx()).is_err() {
+                            trace!(target: "rcdzc::infer", node = id.0, annot_inner = %ai.render_name(&db.name_ctx()), expr_inner = %ei.render_name(&db.name_ctx()), "fault: same-dimension quantity annotation with a mismatched INNER numeric type (CDZ0203)");
                             out.push(Reject::coded(
                                 Code::TypeMismatch,
                                 format!(
                                     "annotation type {} does not match value type {} — the units share a \
                                      dimension, but the underlying numeric types differ",
-                                    annot_ty.render_name(),
-                                    type_of(db, expr).render_name(),
+                                    annot_ty.render_name(&db.name_ctx()),
+                                    type_of(db, expr).render_name(&db.name_ctx()),
                                 ),
                             ));
                         } else {
@@ -14144,8 +14184,9 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                         type_of(db, expr)
                     };
                     let mut subst = Subst::new();
-                    if crate::unify::unify(&mut subst, &annot_ty, &expr_ty).is_err() {
-                        trace!(target: "rcdzc::infer", node = id.0, annot_ty = %annot_ty.render_name(), expr_ty = %expr_ty.render_name(), "fault: annotation type mismatch (CDZ0203)");
+                    if crate::unify::unify(&mut subst, &annot_ty, &expr_ty, &db.name_ctx()).is_err()
+                    {
+                        trace!(target: "rcdzc::infer", node = id.0, annot_ty = %annot_ty.render_name(&db.name_ctx()), expr_ty = %expr_ty.render_name(&db.name_ctx()), "fault: annotation type mismatch (CDZ0203)");
                         // This arm reports BOTH a genuine value annotation `(: value T)` the author wrote AND
                         // a CALL ARGUMENT checked via the parameter's SYNTHESIZED `(: arg paramtype)` wrap
                         // (`substituted_arg` — step (2) of the lambda-application check). For a call argument
@@ -14157,18 +14198,22 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                         // ⟹ a call argument. Phrase it as "this argument is a Bool, but … expects Int64"
                         // instead of "annotation type Int64 does not match value type Bool".
                         let is_call_arg = !db.is_user_node(id) && db.is_user_node(expr);
+                        // Pre-render the type names the lead needs (they do not depend on `verb_tail`), so the
+                        // closure captures owned Strings rather than borrowing `db` — a `db.name_ctx()` borrow
+                        // held across the closure would conflict with the later `wrap_variant_for(db, …)`.
+                        let expr_article = expr_ty.render_with_article(&db.name_ctx());
+                        let annot_name = annot_ty.render_name(&db.name_ctx());
+                        let expr_name = expr_ty.render_name(&db.name_ctx());
                         let mismatch_lead = |verb_tail: &str| {
                             if is_call_arg {
                                 format!(
                                     "this argument is {}, but a value of type {} is expected here{verb_tail}",
-                                    expr_ty.render_with_article(),
-                                    annot_ty.render_name(),
+                                    expr_article, annot_name,
                                 )
                             } else {
                                 format!(
                                     "annotation type {} does not match value type {}{verb_tail}",
-                                    annot_ty.render_name(),
-                                    expr_ty.render_name(),
+                                    annot_name, expr_name,
                                 )
                             }
                         };
@@ -14232,7 +14277,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                                 // `numeric_text_coercion_fix`'s int→float branch, which the ARGUMENT site
                                 // already offered — the annotation site had NO int→float wrap for a
                                 // non-literal, so `(: n Float64)` declined a fix the arg site gave.
-                                let f = annot_ty.render_name();
+                                let f = annot_ty.render_name(&db.name_ctx());
                                 if actual_int.ground_width() == 64 && actual_int.ground_signed() {
                                     Some((
                                         format!("({f}.of-int "),
@@ -14249,9 +14294,9 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                                     ))
                                 }
                             } else if let Some((prefix, suffix, verb)) =
-                                int_coercion_wrap(&annot_ty, &expr_ty)
+                                int_coercion_wrap(&annot_ty, &expr_ty, &db.name_ctx())
                             {
-                                let n = annot_ty.render_name();
+                                let n = annot_ty.render_name(&db.name_ctx());
                                 Some((
                                     prefix,
                                     suffix,
@@ -14317,8 +14362,15 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                             // Int64))`) buries the actual difference; name the specific missing/extra
                             // fields instead (rustc's "missing field `y`" / "no field `z`"). Tail only.
                             let record_tail = if wrap.is_none() && option_tail.is_none() {
-                                record_field_diff_hint(&annot_ty, &expr_ty)
-                                    .or_else(|| tuple_arity_mismatch_hint(&annot_ty, &expr_ty))
+                                record_field_diff_hint(&annot_ty, &expr_ty, &db.name_ctx()).or_else(
+                                    || {
+                                        tuple_arity_mismatch_hint(
+                                            &annot_ty,
+                                            &expr_ty,
+                                            &db.name_ctx(),
+                                        )
+                                    },
+                                )
                             } else {
                                 None
                             };
@@ -14331,7 +14383,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                             let fn_tail =
                                 if wrap.is_none() && option_tail.is_none() && record_tail.is_none()
                                 {
-                                    fn_not_applied_hint(&annot_ty, &expr_ty)
+                                    fn_not_applied_hint(&annot_ty, &expr_ty, &db.name_ctx())
                                 } else {
                                     None
                                 };
@@ -14345,7 +14397,11 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                                 && record_tail.is_none()
                                 && fn_tail.is_none()
                             {
-                                collection_element_mismatch_hint(&annot_ty, &expr_ty)
+                                collection_element_mismatch_hint(
+                                    &annot_ty,
+                                    &expr_ty,
+                                    &db.name_ctx(),
+                                )
                             } else {
                                 None
                             };
@@ -14358,7 +14414,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                                 && fn_tail.is_none()
                                 && collection_tail.is_none()
                             {
-                                sum_payload_mismatch_hint(&annot_ty, &expr_ty)
+                                sum_payload_mismatch_hint(&annot_ty, &expr_ty, &db.name_ctx())
                             } else {
                                 None
                             };
@@ -14377,7 +14433,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                                 && collection_tail.is_none()
                                 && sum_tail.is_none()
                             {
-                                fn_signature_delta_hint(&annot_ty, &expr_ty)
+                                fn_signature_delta_hint(&annot_ty, &expr_ty, &db.name_ctx())
                             } else {
                                 None
                             };
@@ -14394,7 +14450,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                                 && collection_tail.is_none()
                                 && sum_tail.is_none()
                             {
-                                same_name_distinct_type_hint(&annot_ty, &expr_ty)
+                                same_name_distinct_type_hint(&annot_ty, &expr_ty, &db.name_ctx())
                             } else {
                                 None
                             };
@@ -14421,8 +14477,8 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                                 Some(format!(
                                     " — a floating-point value has a fractional part {} cannot hold; \
                                      annotate a float type (e.g. `{}`), or round/truncate it to an integer first",
-                                    annot_ty.render_name(),
-                                    expr_ty.render_name(),
+                                    annot_ty.render_name(&db.name_ctx()),
+                                    expr_ty.render_name(&db.name_ctx()),
                                 ))
                             } else {
                                 None
@@ -14832,7 +14888,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 // literal too big even for its `UInt64` operand), else the Int64 default (a bare literal
                 // with no width in sight). Both are CDZ0201 — a number with no annotation to blame.
                 let ty_name = context
-                    .map(|it| Ty::Int(it).render_name())
+                    .map(|it| Ty::Int(it).render_name(&db.name_ctx()))
                     .unwrap_or_else(|| "Int64".to_string());
                 trace!(target: "rcdzc::infer", node = id.0, "fault: integer literal exceeds its width (malformed, CDZ0201)");
                 // Name the valid RANGE the literal overflowed (as the annotated-width CDZ0302 does), so a
@@ -15093,7 +15149,7 @@ mod tests {
         let t = type_of(&mut db, body);
         assert_eq!(t, Ty::int());
         assert!(t.agrees_with(&Ty::int64()));
-        assert_eq!(t.render_name(), "Int64");
+        assert_eq!(t.render_name(&db.name_ctx()), "Int64");
     }
 
     #[test]
@@ -15147,7 +15203,7 @@ mod tests {
         assert!(
             scheme.ty.agrees_with(&expected),
             "add scheme {} != Int64->Int64->Int64",
-            scheme.ty.render_name()
+            scheme.ty.render_name(&db.name_ctx())
         );
     }
 
@@ -15175,8 +15231,8 @@ mod tests {
         assert!(
             call_ty.agrees_with(&result),
             "β-reduced call type {} disagrees with scheme result {}",
-            call_ty.render_name(),
-            result.render_name()
+            call_ty.render_name(&db.name_ctx()),
+            result.render_name(&db.name_ctx())
         );
     }
 
@@ -15222,7 +15278,7 @@ mod tests {
         assert!(
             scheme.ty.agrees_with(&expected),
             "sum-to scheme {} != Int64->Int64",
-            scheme.ty.render_name()
+            scheme.ty.render_name(&db.name_ctx())
         );
     }
 
@@ -15242,7 +15298,7 @@ mod tests {
         assert!(
             scheme.ty.agrees_with(&expected),
             "sum-to scheme {} != Int64->Int64",
-            scheme.ty.render_name()
+            scheme.ty.render_name(&db.name_ctx())
         );
     }
 
@@ -15266,8 +15322,8 @@ mod tests {
         let sb = def_scheme(&mut db_b, db_b_def).expect("scheme B");
 
         assert_eq!(
-            sa.ty.render_name(),
-            sb.ty.render_name(),
+            sa.ty.render_name(&db_a.name_ctx()),
+            sb.ty.render_name(&db_b.name_ctx()),
             "recursive param solve must be order-independent"
         );
     }
@@ -15299,16 +15355,20 @@ mod tests {
         // the collision made both `A`. It should be a free var (`?err`, no branch fixed it).
         match result {
             Ty::Sum { args, .. } if args.len() == 2 => {
-                assert_eq!(args[0].render_name(), "A", "ok payload should be A");
+                assert_eq!(
+                    args[0].render_name(&db.name_ctx()),
+                    "A",
+                    "ok payload should be A"
+                );
                 assert!(
                     !matches!(&args[1], Ty::Sum { .. }),
                     "error slot must NOT collapse to the ok type A (collision bug); got {}",
-                    args[1].render_name()
+                    args[1].render_name(&db.name_ctx())
                 );
             }
             other => panic!(
                 "g result should be a 2-arg Result sum, got {}",
-                other.render_name()
+                other.render_name(&db.name_ctx())
             ),
         }
     }

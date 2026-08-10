@@ -7347,7 +7347,7 @@ fn encode_sum_walk_body(
 //# A compiled program's entry MUST export its result as the result's proper component type, so that the boundary is strictly, statically typed rather than a dynamically-tagged value.
 //= spec/capabilities/self-hosting-surface.md#the-result-crosses-the-boundary-as-its-proper-type
 //# The compiler MUST NOT collapse a typed result to an untyped string at the boundary in place of the result's proper component type, so that static typing is enforced at the boundary rather than deferred to a stringly-typed convention.
-pub fn export_result_valtype(ret: &Ty) -> Result<Option<u8>, String> {
+pub fn export_result_valtype(ret: &Ty, ncx: &crate::ty::NameCtx) -> Result<Option<u8>, String> {
     // A NOMINAL newtype's boundary form is its ERASED underlying type (the tag adds nothing to the
     // representation): peel it so a nominal-over-scalar crosses as its scalar, and a nominal-over-compound
     // reaching HERE (a multi-export/parameterized position) declines as the underlying compound would.
@@ -7363,7 +7363,7 @@ pub fn export_result_valtype(ret: &Ty) -> Result<Option<u8>, String> {
         // handing the host a raw handle would misreport the value. Reject-don't-miscompile, not a leak.
         Ty::Tuple(_) | Ty::Record(_) => Err(format!(
             "returning a {} on the multi-export boundary is not supported (use a single compound export, which escapes as a resource)",
-            ret.render_name()
+            ret.render_name(ncx)
         )),
         // A sum crosses ONLY via the single-nullary-export escape path (handled in `emit` before this is
         // reached); a sum in any OTHER boundary position — a multi-export result, a parameter — has no
@@ -7371,14 +7371,14 @@ pub fn export_result_valtype(ret: &Ty) -> Result<Option<u8>, String> {
         // lone-export case).
         Ty::Sum { .. } => Err(format!(
             "a `{}` sum crosses the host boundary only as a single nullary export's result",
-            ret.render_name()
+            ret.render_name(ncx)
         )),
         other => match comp_valtype_of(other) {
             Some(b) => Ok(Some(b)),
             None => Err(format!(
                 "type `{}` has no component boundary representation (only the aliased integer widths \
                  8/16/32/64 cross the boundary)",
-                other.render_name()
+                other.render_name(ncx)
             )),
         },
     }
@@ -7391,7 +7391,10 @@ pub fn export_result_valtype(ret: &Ty) -> Result<Option<u8>, String> {
 /// through this function; a compound reaching HERE is a multi-export/parameterized return, which
 /// declines (see [`export_result_valtype`]). The `Bytes` variant is produced by that escape path and
 /// exercised by the R0 envelope oracle + wasmtime tests, which hand-build a `list<u8>`-returning core.
-pub fn export_result(ret: &Ty) -> Result<crate::backend::wasm::envelope::BoundaryResult, String> {
+pub fn export_result(
+    ret: &Ty,
+    ncx: &crate::ty::NameCtx,
+) -> Result<crate::backend::wasm::envelope::BoundaryResult, String> {
     use crate::backend::wasm::envelope::BoundaryResult;
     // A non-aliased integer width has no component primitive of its own, so `export_result_valtype`
     // declines it — but a RESULT we PRODUCE is guaranteed in range (its own arithmetic/`wrap` fold
@@ -7408,7 +7411,7 @@ pub fn export_result(ret: &Ty) -> Result<crate::backend::wasm::envelope::Boundar
     {
         return Ok(BoundaryResult::Primitive(b));
     }
-    match export_result_valtype(ret) {
+    match export_result_valtype(ret, ncx) {
         Ok(None) => Ok(BoundaryResult::None),
         Ok(Some(b)) => Ok(BoundaryResult::Primitive(b)),
         Err(e) => Err(e),
