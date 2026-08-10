@@ -168,7 +168,10 @@ enum Cmd {
     /// tool for `spec/semantics/*.sexp`. Folded in from the `cdz-corpus` bin so it needn't be a separate
     /// binary on the PATH. `cdz corpus records FILE…` emits the flat record stream the gate consumes;
     /// `migrate` projects a `.sexp` corpus to literate markdown; `check` proves a migration is
-    /// behaviour-preserving.
+    /// behaviour-preserving. Behind the `corpus` feature (default-on): the compiler-ml spine-gate's
+    /// test-runner cdz builds without it (corpus-independent `cdz test`) to break the seedCompiler→corpus
+    /// dep edge that over-triggered the spine on corpus-only MRs.
+    #[cfg(feature = "corpus")]
     Corpus(cdz_corpus::cli::CorpusArgs),
 
     // ── calc (cdz-calc) ─────────────────────────────────────────────────────────────────────────
@@ -529,6 +532,7 @@ fn main() -> ExitCode {
         }
         Cmd::Run(a) => cdz_run::cli::run(&a, PROG),
         // `cdz corpus` — mounted from the `cdz-corpus` lib; the same code the standalone bin runs.
+        #[cfg(feature = "corpus")]
         Cmd::Corpus(a) => cdz_corpus::cli::run(&a, PROG),
         // `cdz calc` — mounted from the `cdz-calc` lib; the same code the standalone `cdz-calc` bin runs.
         Cmd::Calc(a) => cdz_calc::cli::run(&a, PROG),

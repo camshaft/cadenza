@@ -30,8 +30,13 @@ cdz-rust-render = { path = "../cdz-rust-render" }
 # `cdz-run`. Pulls in wasmtime + the runtime store; that weight is the price of the one-binary story.
 cdz-run = { path = "../cdz-run" }
 # The corpus reader/migrator, mounted as `cdz corpus <records|migrate|check>` — the maintenance tool
-# for the executable-semantics corpus, folded in so it needn't be a separate binary on the PATH.
-cdz-corpus = { path = "../cdz-corpus" }
+# for the executable-semantics corpus, folded in so it needn't be a separate binary on the PATH. OPTIONAL
+# behind the `corpus` feature (in `default`): the `cdz test` runner path is corpus-INDEPENDENT (cdz_corpus
+# is referenced ONLY by the `corpus` subcommand — main.rs:172/532), so the compiler-ml spine gate's
+# test-runner cdz builds WITHOUT `corpus` (`--no-default-features` + the features it needs), which drops
+# cdz-corpus from that build's closure. That breaks the seedCompiler→corpus edge so a corpus-only MR no
+# longer needlessly re-runs the ~28min spine (v-nix's over-trigger fix); a Core/rcdzc MR still busts it.
+cdz-corpus = { path = "../cdz-corpus", optional = true }
 # The calculator REPL, mounted as `cdz calc` — folded in so a single `cdz` on the PATH also gives the
 # interactive/one-shot calculator. Its engine (Calculator/Eval) is owned by v-guide-infra; we mount
 # only the CLI surface (`cdz_calc::cli`). Pulls in cdz-run transitively (it runs compiled exprs).
@@ -74,3 +79,13 @@ notify = "6"
 # installed and every `trace!` compiles to a runtime no-op — a normal run pays nothing. (rcdzc's OWN bin
 # uses the tool-private `CDZ_LOG` to avoid fan-out inside the piped pipeline; `cdz` isn't in that pipe.)
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+[features]
+# `corpus` (in `default`) mounts the `cdz corpus` subcommand (the cdz-corpus reader/migrator). Split out
+# as a feature so the compiler-ml SPINE GATE's test-runner cdz can build WITHOUT it
+# (`--no-default-features --features <the rest>`, or the flake selecting a corpus-free feature set): the
+# `cdz test` path is corpus-INDEPENDENT (cdz_corpus is referenced only by the `corpus` subcommand), so
+# dropping it removes cdz-corpus from that build's closure and breaks the seedCompiler→corpus dep edge —
+# a corpus-only MR no longer needlessly re-runs the ~28min spine. A normal `cdz` keeps `corpus` (default).
+default = ["corpus"]
+corpus = ["dep:cdz-corpus"]
