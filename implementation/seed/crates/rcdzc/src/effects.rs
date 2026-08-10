@@ -1852,7 +1852,7 @@ fn ctl_arm_lexical_k_to_resume(db: &mut Db, arm: &HandleArm) -> Option<StructId>
         if args.len() != 1 {
             return None; // `(k)` or `(k a b)` — not a single-value resume
         }
-        let resume_head = db.push_atom(Leaf::Name("resume".into()));
+        let resume_head = db.push_name("resume");
         let state_ref = copy_pure(db, arm.state);
         let resume = db.push_list(vec![resume_head, args[0], state_ref]);
         sub.insert(app, resume);
@@ -2345,10 +2345,10 @@ pub fn reduce_handle(
         // names, which the closure lift resolves into its env.
         let folded = if let Some(k_binder) = arm.cont {
             let kv_name = format!("#kv{}", perform.0);
-            let kv_binder = db.push_atom(Leaf::Name(kv_name.clone().into()));
-            let kv_ref = db.push_atom(Leaf::Name(kv_name.into()));
+            let kv_binder = db.push_name(&kv_name);
+            let kv_ref = db.push_name(&kv_name);
             let cont_body = splice_context(db, body, perform, kv_ref);
-            let fn_head = db.push_atom(Leaf::Name("fn".into()));
+            let fn_head = db.push_name("fn");
             let params_list = db.push_list(vec![kv_binder]);
             let k_lambda = db.push_list(vec![fn_head, params_list, cont_body]);
             let mut subst_k = subst.clone();
@@ -2485,10 +2485,10 @@ pub fn reduce_handle(
         // Reify `k = (fn (#kv) H[leading-perform := #kv])`: splice the leading perform inside the WHOLE
         // handle node (not just the body) so the continuation carries the handler around itself.
         let kv_name = format!("#kv{}", perform.0);
-        let kv_binder = db.push_atom(Leaf::Name(kv_name.clone().into()));
-        let kv_ref = db.push_atom(Leaf::Name(kv_name.into()));
+        let kv_binder = db.push_name(&kv_name);
+        let kv_ref = db.push_name(&kv_name);
         let cont_body = splice_context(db, handle_node, perform, kv_ref);
-        let fn_head = db.push_atom(Leaf::Name("fn".into()));
+        let fn_head = db.push_name("fn");
         let params_list = db.push_list(vec![kv_binder]);
         let k_lambda = db.push_list(vec![fn_head, params_list, cont_body]);
         subst.insert(k_binder, k_lambda);
@@ -2622,8 +2622,8 @@ pub fn reduce_handle(
     // the rare runtime-arg seed the bug needs.
     let seed_wrap: Option<(StructId, StructId)> = if !seed_is_shareable_constant(db, init) {
         let nm = format!("#seed{}", init.0);
-        let binder = db.push_atom(Leaf::Name(nm.clone().into()));
-        let sref = db.push_atom(Leaf::Name(nm.into()));
+        let binder = db.push_name(&nm);
+        let sref = db.push_name(&nm);
         Some((binder, sref))
     } else {
         None
@@ -2899,10 +2899,10 @@ fn desugar_performing_guard_match(
             // to the scrutinee. A wildcard `_` binds nothing.
             let mut binders: Vec<StructId> = Vec::new();
             for &p in &[g[0], pat1] {
-                if let Some(name) = db.ast.as_name(p)
+                if let Some(name) = db.ast.as_name(p).map(|s| s.to_string())
                     && name != "_"
                 {
-                    let name_atom = db.push_atom(Leaf::Name(name.into()));
+                    let name_atom = db.push_name(&name);
                     let scrut_copy = copy_pure(db, scrutinee);
                     binders.push(db.push_list(vec![name_atom, scrut_copy]));
                 }
@@ -3604,7 +3604,7 @@ fn hoist_once(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> Option<StructId>
                         };
                         let new_then = rebuild(db, then_);
                         let new_else = rebuild(db, else_);
-                        let if_head = db.push_atom(Leaf::Name("if".into()));
+                        let if_head = db.push_name("if");
                         return Some(db.push_list(vec![if_head, cond, new_then, new_else]));
                     }
                 }
@@ -3649,7 +3649,7 @@ fn hoist_once(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> Option<StructId>
                         )
                         .collect();
                     let app = db.push_list(inner_app);
-                    let let_head = db.push_atom(Leaf::Name("let".into()));
+                    let let_head = db.push_name("let");
                     return Some(db.push_list(vec![let_head, letform[0], app]));
                 }
             }
@@ -3670,7 +3670,7 @@ fn hoist_once(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> Option<StructId>
     if let Resolved::And { lhs, rhs, is_and } = resolved_of(db, node)
         && subtree_has_abortive_perform(db, rhs, ctx)
     {
-        let if_head = db.push_atom(Leaf::Name("if".into()));
+        let if_head = db.push_name("if");
         let (then_, else_) = if is_and {
             let false_lit = db.push_atom(Leaf::Bool(false));
             (rhs, false_lit) // (and lhs rhs) ≡ (if lhs rhs false)
@@ -3719,12 +3719,12 @@ fn hoist_once(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> Option<StructId>
                                 .map(|(j, &p)| if j == bi { new_pair } else { p })
                                 .collect();
                             let new_bindings = db.push_list(new_pairs);
-                            let let_head = db.push_atom(Leaf::Name("let".into()));
+                            let let_head = db.push_name("let");
                             db.push_list(vec![let_head, new_bindings, body_occ])
                         };
                         let new_then = rebuild(db, then_);
                         let new_else = rebuild(db, else_);
-                        let if_head = db.push_atom(Leaf::Name("if".into()));
+                        let if_head = db.push_name("if");
                         return Some(db.push_list(vec![if_head, cond, new_then, new_else]));
                     }
                 }
@@ -3753,7 +3753,7 @@ fn hoist_once(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> Option<StructId>
         && !subtree_performs(db, else_, ctx)
     {
         let mk_if = |db: &mut Db, c: StructId, t: StructId, e: StructId| -> StructId {
-            let if_head = db.push_atom(Leaf::Name("if".into()));
+            let if_head = db.push_name("if");
             db.push_list(vec![if_head, c, t, e])
         };
         // Copy the duplicated outer branches per inner arm (single-parent arena — each use needs its own node).
@@ -4087,11 +4087,11 @@ fn map_conditional_branches(
         Resolved::If { cond, then_, else_ } => {
             let nt = f(db, then_);
             let ne = f(db, else_);
-            let if_head = db.push_atom(Leaf::Name("if".into()));
+            let if_head = db.push_name("if");
             db.push_list(vec![if_head, cond, nt, ne])
         }
         Resolved::Match { scrutinee, arms } => {
-            let match_head = db.push_atom(Leaf::Name("match".into()));
+            let match_head = db.push_name("match");
             let mut children = vec![match_head, scrutinee];
             for (pat, body) in arms {
                 let nbody = f(db, body);
@@ -4185,7 +4185,7 @@ fn hoist_resumptive_once(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> Optio
     if let Resolved::And { lhs, rhs, is_and } = resolved_of(db, node)
         && subtree_performs(db, rhs, ctx)
     {
-        let if_head = db.push_atom(Leaf::Name("if".into()));
+        let if_head = db.push_name("if");
         let (then_, else_) = if is_and {
             let false_lit = db.push_atom(Leaf::Bool(false));
             (rhs, false_lit) // (and lhs rhs) ≡ (if lhs rhs false)
@@ -4242,7 +4242,7 @@ fn hoist_resumptive_once(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> Optio
                 // every continuation node here — making the "continuation duplicated across branches" comment
                 // structurally true and robust to a future thread-pass change. (Copilot flag on PR #534.)
                 let wrap = |db: &mut Db, branch: StructId| -> StructId {
-                    let let_head = db.push_atom(Leaf::Name("let".into()));
+                    let let_head = db.push_name("let");
                     let binder_c = deep_fresh_copy(db, binder);
                     let this_pair = db.push_list(vec![binder_c, branch]);
                     let mut bindings = vec![this_pair];
@@ -4260,7 +4260,7 @@ fn hoist_resumptive_once(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> Optio
                 if k == 0 {
                     return Some(distributed);
                 }
-                let let_head = db.push_atom(Leaf::Name("let".into()));
+                let let_head = db.push_name("let");
                 let prefix_bindings = db.push_list(pairs[..k].to_vec());
                 return Some(db.push_list(vec![let_head, prefix_bindings, distributed]));
             }
@@ -4312,15 +4312,15 @@ fn hoist_resumptive_once(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> Optio
             // it. The bound name is a fresh `#cv{node}` — unbindable in source (a `#`-name is CDZ0210 in binder
             // position) so it cannot be captured by a user binder.
             let cv_name = format!("#cv{}", node.0);
-            let cv_binder = db.push_atom(Leaf::Name(cv_name.clone().into()));
-            let cv_ref = db.push_atom(Leaf::Name(cv_name.into()));
+            let cv_binder = db.push_name(&cv_name);
+            let cv_ref = db.push_name(&cv_name);
             let rebuilt = match resolved_of(db, node) {
                 Resolved::If { then_, else_, .. } => {
-                    let if_head = db.push_atom(Leaf::Name("if".into()));
+                    let if_head = db.push_name("if");
                     db.push_list(vec![if_head, cv_ref, then_, else_])
                 }
                 Resolved::Match { arms, .. } => {
-                    let match_head = db.push_atom(Leaf::Name("match".into()));
+                    let match_head = db.push_name("match");
                     let mut children = vec![match_head, cv_ref];
                     for (pat, body) in arms {
                         children.push(db.push_list(vec![pat, body]));
@@ -4331,7 +4331,7 @@ fn hoist_resumptive_once(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> Optio
             };
             let pair = db.push_list(vec![cv_binder, cs]);
             let bindings = db.push_list(vec![pair]);
-            let let_head = db.push_atom(Leaf::Name("let".into()));
+            let let_head = db.push_name("let");
             return Some(db.push_list(vec![let_head, bindings, rebuilt]));
         }
     }
@@ -4388,7 +4388,7 @@ fn hoist_resumptive_once(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> Optio
                 }
                 let new_bindings = db.push_list(new_pairs);
                 let body_c = deep_fresh_copy(db, outer_body);
-                let let_head = db.push_atom(Leaf::Name("let".into()));
+                let let_head = db.push_name("let");
                 return Some(db.push_list(vec![let_head, new_bindings, body_c]));
             }
         }
@@ -4905,8 +4905,8 @@ fn drain_and_wrap(db: &mut Db, ctx: &HandlerCtx, mark: usize, inner: StructId) -
     let entries: Vec<(String, StructId)> = ctx.pending.borrow_mut().split_off(mark);
     let mut acc = inner;
     for (name, init) in entries.into_iter().rev() {
-        let let_head = db.push_atom(Leaf::Name("let".into()));
-        let name_atom = db.push_atom(Leaf::Name(name.into()));
+        let let_head = db.push_name("let");
+        let name_atom = db.push_name(&name);
         let pair = db.push_list(vec![name_atom, init]);
         let bindings = db.push_list(vec![pair]);
         acc = db.push_list(vec![let_head, bindings, acc]);
@@ -4918,7 +4918,7 @@ fn drain_and_wrap(db: &mut Db, ctx: &HandlerCtx, mark: usize, inner: StructId) -
 /// multi-value return shape `f#ctx` yields so a caller's self-call can project the value (`.0`) and thread
 /// each slot's advanced out-state (`.{slot+1}`) forward.
 fn build_value_state_tuple(db: &mut Db, value: StructId, out_states: &[StructId]) -> StructId {
-    let head = db.push_atom(Leaf::Str("tuple".into()));
+    let head = db.push_str("tuple");
     let mut children = vec![head, value];
     children.extend_from_slice(out_states);
     db.push_list(children)
@@ -5148,7 +5148,7 @@ fn thread_returning_tuple(
             let else_states: Vec<StructId> = cur.iter().map(|&s| copy_pure(db, s)).collect();
             let rthen = thread_returning_tuple(db, then_, then_states, ctx, callee_def)?;
             let relse = thread_returning_tuple(db, else_, else_states, ctx, callee_def)?;
-            let if_head = db.push_atom(Leaf::Name("if".into()));
+            let if_head = db.push_name("if");
             let if_node = db.push_list(vec![if_head, rcond, rthen, relse]);
             Some(drain_and_wrap(db, ctx, mark, if_node))
         }
@@ -5158,7 +5158,7 @@ fn thread_returning_tuple(
         Resolved::Match { scrutinee, arms } => {
             let mark = ctx.pending.borrow().len();
             let (rscrut, cur) = thread_bounded(db, scrutinee, states, ctx, 0)?;
-            let match_head = db.push_atom(Leaf::Name("match".into()));
+            let match_head = db.push_name("match");
             let mut children = vec![match_head, rscrut];
             for (pat, arm_body) in arms {
                 let rpat = copy_pure(db, pat);
@@ -5452,8 +5452,8 @@ fn thread_bounded(
                     // captured_by_a_user_binder`. No centralized gensym needed — arena-id monotonicity + binder-
                     // position rejection guarantee it (github-liaison/Copilot #2120/#2156 reviews).
                     let cv_name = format!("#cv{}", a.0);
-                    let cv_binder = db.push_atom(Leaf::Name(cv_name.clone().into()));
-                    let cv_ref = db.push_atom(Leaf::Name(cv_name.into()));
+                    let cv_binder = db.push_name(&cv_name);
+                    let cv_ref = db.push_name(&cv_name);
                     arg_lifts.push((cv_binder, a));
                     rewritten_args[i] = cv_ref;
                 }
@@ -5585,7 +5585,7 @@ fn thread_bounded(
             } else {
                 let mut wrapped = value;
                 for (binder, arg) in arg_lifts.into_iter().rev() {
-                    let let_head = db.push_atom(Leaf::Name("let".into()));
+                    let let_head = db.push_name("let");
                     let pair = db.push_list(vec![binder, arg]);
                     let bindings = db.push_list(vec![pair]);
                     wrapped = db.push_list(vec![let_head, bindings, wrapped]);
@@ -5750,7 +5750,7 @@ fn thread_bounded(
             // call — no threading. This one arm handles both the internal self-calls and the initial call.
             if let Some(captures) = db.effect_spec_captures.get(&spec).cloned() {
                 for name in captures {
-                    rargs.push(db.push_atom(Leaf::Name(name.into())));
+                    rargs.push(db.push_name(&name));
                 }
             }
             // One trailing state arg per slot, in slot order — each a FRESH copy of the incoming state node.
@@ -5770,7 +5770,7 @@ fn thread_bounded(
             // Build the call `(<spec-name> args… state…)`. The specialized def is named, so a name atom
             // resolves to it (via `def_by_name`), and the ordinary recursive `Core::Call` + reachability
             // path emits it.
-            let name_atom = db.push_atom(Leaf::Name(spec.clone().into()));
+            let name_atom = db.push_name(&spec);
             let mut call = vec![name_atom];
             call.extend(rargs);
             let call_node = db.push_list(call);
@@ -5868,7 +5868,7 @@ fn thread_bounded(
                 thread_branch_local_abort_with_out(db, then_, then_states, ctx, inline_depth)?;
             let (relse, else_out) =
                 thread_branch_local_abort_with_out(db, else_, else_states, ctx, inline_depth)?;
-            let if_head = db.push_atom(Leaf::Name("if".into()));
+            let if_head = db.push_name("if");
             let rif = db.push_list(vec![if_head, rcond, rthen, relse]);
             // MERGE the per-branch out-states. Only ONE branch runs at runtime, so the `if`'s out-state for
             // each slot is that branch's out-state, selected by the SAME condition: `(if cond then_out
@@ -5925,7 +5925,7 @@ fn thread_bounded(
                         && !contains_cv_ref(db, t)
                         && !contains_cv_ref(db, e);
                     if mergeable {
-                        let ifh = db.push_atom(Leaf::Name("if".into()));
+                        let ifh = db.push_name("if");
                         let condc = deep_fresh_copy(db, rcond);
                         let tc = deep_fresh_copy(db, t);
                         let ec = deep_fresh_copy(db, e);
@@ -5964,7 +5964,7 @@ fn thread_bounded(
             if ctx.abort_value.get() != abort_before_scrut {
                 return Some((rscrut, cur));
             }
-            let match_head = db.push_atom(Leaf::Name("match".into()));
+            let match_head = db.push_name("match");
             let mut children = vec![match_head, rscrut];
             // Collect each arm's (pattern, out-state) so the arm out-states can be MERGED into a match-valued
             // out-state (the `Match` analogue of the `if` per-branch out-state merge — see that arm). An
@@ -6012,7 +6012,7 @@ fn thread_bounded(
                     let advanced = arm_outs.iter().any(|o| o[i] != c);
                     let cv_clean = arm_outs.iter().all(|o| !contains_cv_ref(db, o[i]));
                     if scrut_pure && advanced && cv_clean {
-                        let mh = db.push_atom(Leaf::Name("match".into()));
+                        let mh = db.push_name("match");
                         let sc = deep_fresh_copy(db, rscrut);
                         let mut ch = vec![mh, sc];
                         for (a, &pat) in arm_pats.iter().enumerate() {
@@ -6036,7 +6036,7 @@ fn thread_bounded(
         // condition — evaluated exactly once either way. Only reached when a perform is inside (a pure
         // connective is copied wholesale by the pure-subtree arm below).
         Resolved::And { lhs, rhs, is_and } => {
-            let if_head = db.push_atom(Leaf::Name("if".into()));
+            let if_head = db.push_name("if");
             let (then_, else_) = if is_and {
                 let f = db.push_atom(Leaf::Bool(false));
                 (rhs, f)
@@ -6051,7 +6051,7 @@ fn thread_bounded(
         // reads/threads state, `(not (= (Get.next) 0))`), then rebuild `(not roperand)`.
         Resolved::Not { operand } => {
             let (roperand, cur) = thread_bounded(db, operand, states, ctx, inline_depth)?;
-            let not_head = db.push_atom(Leaf::Name("not".into()));
+            let not_head = db.push_name("not");
             Some((db.push_list(vec![not_head, roperand]), cur))
         }
         // A tuple PROJECTION `(. operand index)` — STRICT one-operand. Thread the operand (a perform there
@@ -6059,7 +6059,7 @@ fn thread_bounded(
         // index is a literal (copied structurally). `push_list` with the same `.`-head + index re-forms it.
         Resolved::Proj { operand, index } => {
             let (roperand, cur) = thread_bounded(db, operand, states, ctx, inline_depth)?;
-            let dot = db.push_atom(Leaf::Name(".".into()));
+            let dot = db.push_name(".");
             let idx_atom = db.push_atom(Leaf::Int {
                 value: IntValue::from_i64(index as i64),
                 radix: Radix::Dec,
@@ -6070,15 +6070,15 @@ fn thread_bounded(
         // the operand; rebuild `(. roperand key)` with the key copied as a bare name atom.
         Resolved::Member { operand, key } => {
             let (roperand, cur) = thread_bounded(db, operand, states, ctx, inline_depth)?;
-            let dot = db.push_atom(Leaf::Name(".".into()));
-            let key_atom = db.push_atom(Leaf::Name(key.name.as_ref().into()));
+            let dot = db.push_name(".");
+            let key_atom = db.push_name(&key.name);
             Some((db.push_list(vec![dot, roperand, key_atom]), cur))
         }
         // An annotation `(: expr T)` — STRICT one-operand (the type is not runtime code). Thread `expr`,
         // rebuild `(: rexpr T)` with the type expression copied structurally.
         Resolved::Annot { expr, ty_expr } => {
             let (rexpr, cur) = thread_bounded(db, expr, states, ctx, inline_depth)?;
-            let colon = db.push_atom(Leaf::Name(":".into()));
+            let colon = db.push_name(":");
             let rty = copy_pure(db, ty_expr);
             Some((db.push_list(vec![colon, rexpr, rty]), cur))
         }
@@ -6103,7 +6103,7 @@ fn thread_bounded(
                 relems.push(re);
                 cur = next;
             }
-            let head = db.push_atom(Leaf::Str(ctor.into()));
+            let head = db.push_str(ctor);
             let mut children = vec![head];
             children.extend(relems);
             Some((db.push_list(children), cur))
@@ -6148,7 +6148,7 @@ fn thread_bounded(
                 };
                 rfields.push(rebuilt);
             }
-            let head = db.push_atom(Leaf::Str("record".into()));
+            let head = db.push_str("record");
             let mut children = vec![head];
             children.extend(rfields);
             Some((db.push_list(children), cur))
@@ -6176,7 +6176,7 @@ fn thread_bounded(
                 cur = next_v;
                 rentries.push(db.push_list(vec![rkey, rvalue]));
             }
-            let head = db.push_atom(Leaf::Str("map".into()));
+            let head = db.push_str("map");
             let mut children = vec![head];
             children.extend(rentries);
             Some((db.push_list(children), cur))
@@ -6319,7 +6319,7 @@ fn thread_bounded(
             // Snapshot the abort cell BEFORE threading the body, so we can tell if THIS body fires an abort.
             let abort_before = ctx.abort_value.get();
             let (rbody, cur) = thread_bounded(db, body_occ, cur, ctx, inline_depth)?;
-            let let_head = db.push_atom(Leaf::Name("let".into()));
+            let let_head = db.push_name("let");
             let rbindings = db.push_list(rpairs);
             let wrapped = db.push_list(vec![let_head, rbindings, rbody]);
             // ABORT-VALUE RE-SCOPE. If threading the body FIRED AN ABORT (`(let ((v e)) (Bail.bail v))` — the
@@ -6745,7 +6745,7 @@ fn freshen_walk(
                 let new_init = freshen_walk(db, kv[1], renames).unwrap_or(kv[1]);
                 let fresh = format!("#{name}{}", kv[0].0);
                 renames.insert(kv[1], fresh.clone());
-                let fresh_binder = db.push_atom(Leaf::Name(fresh.into()));
+                let fresh_binder = db.push_name(&fresh);
                 new_pairs.push(db.push_list(vec![fresh_binder, new_init]));
                 changed = true; // a binder was always renamed
             } else if let Some(np) = freshen_walk(db, pair, renames) {
@@ -6778,7 +6778,7 @@ fn freshen_walk(
                 let new_val = freshen_walk(db, dtail[1], renames).unwrap_or(dtail[1]);
                 let fresh = format!("#{name}{}", dtail[0].0);
                 renames.insert(dtail[1], fresh.clone());
-                let fresh_binder = db.push_atom(Leaf::Name(fresh.into()));
+                let fresh_binder = db.push_name(&fresh);
                 let def_head = db.push_name("def");
                 new_items.push(db.push_list(vec![def_head, fresh_binder, new_val]));
                 changed = true;
@@ -6798,7 +6798,7 @@ fn freshen_walk(
         && let Resolved::Ref { value } = resolved_of(db, node)
         && let Some(fresh) = renames.get(&value).cloned()
     {
-        return Some(db.push_atom(Leaf::Name(fresh.into())));
+        return Some(db.push_name(&fresh));
     }
     // Otherwise: recurse into children, rebuilding ONLY if some child changed (else SHARE `node` so a free
     // name keeps its pinned resolution).
@@ -8235,20 +8235,20 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
     }
     let capture_names: Vec<String> = captured_specs.iter().map(|(n, _)| n.clone()).collect();
 
-    let spec_name_atom = db.push_atom(Leaf::Name(spec_name.clone().into()));
+    let spec_name_atom = db.push_name(&spec_name);
     let mut sig_children = vec![spec_name_atom];
     for (n, ty) in &orig_param_specs {
-        let name_atom = db.push_atom(Leaf::Name(n.clone().into()));
+        let name_atom = db.push_name(n);
         let ty_expr = crate::eval::encode_typeval(db, ty);
-        let colon = db.push_atom(Leaf::Name(":".into()));
+        let colon = db.push_name(":");
         sig_children.push(db.push_list(vec![colon, name_atom, ty_expr]));
     }
     // The captured enclosing-fn params — annotated with each capture's solved type, AFTER the originals and
     // BEFORE the trailing states (the layout every call site appends args in: orig, captured, states).
     for (n, ty) in &captured_specs {
-        let name_atom = db.push_atom(Leaf::Name(n.clone().into()));
+        let name_atom = db.push_name(n);
         let ty_expr = crate::eval::encode_typeval(db, ty);
-        let colon = db.push_atom(Leaf::Name(":".into()));
+        let colon = db.push_name(":");
         sig_children.push(db.push_list(vec![colon, name_atom, ty_expr]));
     }
     // The trailing state params — one per slot, named `{spec}$s{k}`, annotated with the slot's state type.
@@ -8256,9 +8256,9 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
         .map(|k| format!("{spec_name}$s{k}"))
         .collect();
     for (k, ty) in slot_tys.iter().enumerate() {
-        let state_name = db.push_atom(Leaf::Name(state_names[k].clone().into()));
+        let state_name = db.push_name(&state_names[k]);
         let state_type_expr = crate::eval::encode_typeval(db, ty);
-        let colon = db.push_atom(Leaf::Name(":".into()));
+        let colon = db.push_name(":");
         sig_children.push(db.push_list(vec![colon, state_name, state_type_expr]));
     }
     let sig = db.push_list(sig_children.clone());
@@ -8293,10 +8293,7 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
     // with that slot's state expression; the recursive self-call re-enters and (via the memo) rewrites to
     // `(spec_name args… <threaded-states>)`. Each state name atom must re-resolve to its param, so we pass
     // FRESH occurrences of the names (bare `s{k}` references), not the binder occurrences.
-    let state_refs: Vec<StructId> = state_names
-        .iter()
-        .map(|n| db.push_atom(Leaf::Name(n.clone().into())))
-        .collect();
+    let state_refs: Vec<StructId> = state_names.iter().map(|n| db.push_name(n)).collect();
     // PRE-SPEC-LIFT (recursive-nested-arm-resume fix, concierge-steered). When the recursive callee calls an
     // INNER op whose ARM resume-value performs an OUTER (merged-slot) op — `(step (u) t (resume (A.tick) t))`
     // — that outer perform is hidden until the inner op folds mid-thread, and re-threading the peeled resume
@@ -8351,7 +8348,7 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
     // Case 4 resolves a body reference against the def signature. Without this the synthesized params
     // would not resolve. The `db.defs` entry's `body` points at `spec_body` (the def-form node is for
     // scope/param resolution, not the emitted body — emission reads `db.defs[i].body`).
-    let def_head = db.push_atom(Leaf::Name("def".into()));
+    let def_head = db.push_name("def");
     let _def_form = db.push_list(vec![def_head, sig, spec_body]);
 
     db.fill_specialized_def(spec_index, spec_params, spec_body);
@@ -8362,8 +8359,8 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
 /// `index`. Used by the multi-value self-call rewrite to read a let-bound self-call temp's value (`.0`)
 /// and each slot's out-state (`.{slot+1}`).
 fn tuple_proj(db: &mut Db, name: &str, index: u32) -> StructId {
-    let dot = db.push_atom(Leaf::Name(".".into()));
-    let name_atom = db.push_atom(Leaf::Name(name.into()));
+    let dot = db.push_name(".");
+    let name_atom = db.push_name(name);
     let idx_atom = db.push_atom(Leaf::Int {
         value: IntValue::from_i64(index as i64),
         radix: Radix::Dec,
