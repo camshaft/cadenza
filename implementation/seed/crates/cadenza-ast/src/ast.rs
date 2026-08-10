@@ -716,6 +716,63 @@ mod tests {
         assert_eq!(b.leaf(Leaf::Sym("x".into())), y);
     }
 
+    #[test]
+    fn cheap_clone_leaf_payloads_share_the_allocation_not_deep_copy() {
+        // The cheap-clone arc's core invariant: the text/byte-carrying leaves hold a REFCOUNTED payload
+        // (`Str`/`Sym`/`Name` = `Arc<str>`, `Bytes` = `Arc<[u8]>`), so cloning a `Leaf` is an O(1)
+        // refcount bump that SHARES the underlying buffer — not a deep copy of the bytes. This pins that
+        // property: if a future change reverts any of these variants to an owned `String`/`Vec<u8>`, the
+        // clone silently becomes a deep copy and these `ptr_eq`/`strong_count` assertions fail (and the
+        // `Arc`-typed bindings below stop compiling), catching the regression at gate time rather than in
+        // a later profile. Guards the whole String->Arc<str> (increment 1) + Bytes Vec->Arc<[u8]> (2a) arc.
+        let s: Arc<str> =
+            Arc::from("a reasonably long string that would be costly to deep-copy per clone");
+        let str_leaf = Leaf::Str(Arc::clone(&s));
+        let cloned = str_leaf.clone();
+        // The clone shares `s`'s allocation: extract each variant's Arc and assert pointer identity.
+        if let (Leaf::Str(a), Leaf::Str(b)) = (&str_leaf, &cloned) {
+            assert!(
+                Arc::ptr_eq(a, b),
+                "Str clone must share the Arc<str> allocation, not deep-copy"
+            );
+            assert!(
+                Arc::ptr_eq(a, &s),
+                "the leaf holds the same Arc it was built from"
+            );
+        } else {
+            panic!("expected two Str leaves");
+        }
+        // Bytes: same refcount-share property over Arc<[u8]>.
+        let raw: Arc<[u8]> = Arc::from(&b"\x00\xff a byte sequence long enough to matter"[..]);
+        let before = Arc::strong_count(&raw);
+        let bytes_leaf = Leaf::Bytes(Arc::clone(&raw));
+        let bytes_clone = bytes_leaf.clone();
+        assert_eq!(
+            Arc::strong_count(&raw),
+            before + 2,
+            "each Bytes leaf holding the Arc bumps the refcount — a clone shares, never deep-copies"
+        );
+        if let (Leaf::Bytes(a), Leaf::Bytes(b)) = (&bytes_leaf, &bytes_clone) {
+            assert!(
+                Arc::ptr_eq(a, b),
+                "Bytes clone must share the Arc<[u8]> allocation"
+            );
+        } else {
+            panic!("expected two Bytes leaves");
+        }
+        // Sym + Name are the other two Arc<str> payloads — clone shares for them too.
+        let name = Leaf::Name(Arc::clone(&s));
+        let sym = Leaf::Sym(Arc::clone(&s));
+        if let (Leaf::Name(n), Leaf::Sym(y)) = (&name.clone(), &sym.clone()) {
+            assert!(
+                Arc::ptr_eq(n, &s) && Arc::ptr_eq(y, &s),
+                "Name/Sym clones share their Arc<str>"
+            );
+        } else {
+            panic!("expected Name and Sym leaves");
+        }
+    }
+
     // Build a one-form arena `(head child…)` where `head` is either a Name or a Str atom.
     fn form(head: Leaf, children: &[Leaf]) -> Arenas {
         let mut b = Builder::new();
