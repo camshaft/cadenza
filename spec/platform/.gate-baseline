@@ -1,5 +1,6 @@
 # gate baseline — per-case verdicts (verdict\tdescription). Regenerate with `cargo xtask gate --save`.
 pass	a counter session bumps kv count on its kick-off message
+pass	a sender emits a message to a peer session, which the peer receives and folds
 pass	a session stores a fixed mid-range byte value (decoder past the counter's 1)
 pass	a session writes TWO kv keys on its kick-off (multi-key end-state)
 pass	a worker performs a userspace effect served by a handler session, and resumes on the reply

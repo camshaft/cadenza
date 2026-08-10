@@ -24,6 +24,7 @@
 //! ## Output (tab-delimited lines on stdout, for xtask to parse + grade)
 //! ```text
 //! effect\t<from-alias>\t<family>[\t<payload-hex>]   one per dispatched effect, in whole-run order
+//! message\t<from-alias>\t<to-alias>[\t<payload-hex>] one per routed inter-session message, in order (I3)
 //! end-fault\t<alias>\t<reason>                       present ONLY when a fold trapped/failed (grades Fail)
 //! end-status\t<alias>\t<state>                       state in active|quiescent|stalled|closed
 //! events-processed\t<alias>\t<n>
@@ -37,6 +38,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 
 use cdz_agent_host::effect_reply::ReplyTokenRegistry;
+use cdz_agent_host::emit::EmitExecutor;
 use cdz_agent_host::host::{AgentHost, HostedSession, SessionId};
 use cdz_agent_host::reply_exec::{reply_settle_channel, ReplyExecutor};
 use cdz_agent_host::userspace_effect_exec::{HandlerResolver, UserspaceEffectExecutor};
@@ -67,6 +69,13 @@ struct Args {
     /// Repeatable; zero or more. A session may serve several families (repeat the flag).
     #[arg(long = "serves", value_name = "ALIAS=FAMILY")]
     serves: Vec<String>,
+    /// A peer binding: `<holder>=<peer>` — before the kick-off, seed session `<holder>`'s KV["peer"] with
+    /// session `<peer>`'s deterministic SessionId HEX (MD1 peer-addressing: a case names peers by ALIAS and
+    /// the runner threads the resolved id in, so a reducer can `Emit` to `<peer>` without an author ever
+    /// writing a content-derived hash). Delivered as a `platform/peers` CONFIGURATION inbound (folded into
+    /// KV, distinct from the one kick-off stimulus — session setup, not the interaction). Repeatable.
+    #[arg(long = "peer", value_name = "HOLDER=PEER")]
+    peers: Vec<String>,
     /// Content-addressed store dir the reducers' `cadenza:runtime/heap` dep resolves from.
     #[arg(long)]
     store: std::path::PathBuf,
@@ -190,6 +199,22 @@ async fn main() -> Result<()> {
         family_handler.insert(family, id);
     }
 
+    // The peer map: holder alias → the peer's SessionId-HEX (MD1). Resolved from `--peer HOLDER=PEER`
+    // through the deterministic alias→id table, so a holder reducer can `Emit` to the peer by reading the
+    // hex from its seeded KV — the author names peers by alias, never by a content-derived hash. Seeded
+    // pre-kick-off as a `platform/peers` configuration inbound (below), distinct from the one stimulus.
+    let mut peer_of: HashMap<String, String> = HashMap::new();
+    for p in &args.peers {
+        let (holder, peer) = split_pair(p)?;
+        let _ = *id_of
+            .get(&holder)
+            .with_context(|| format!("peer names unknown holder alias {holder:?}"))?;
+        let peer_id = *id_of
+            .get(&peer)
+            .with_context(|| format!("peer names unknown peer alias {peer:?}"))?;
+        peer_of.insert(holder, peer_id.to_hex().to_string());
+    }
+
     // The shared collaborators the round-trip binds through: ONE reply-token registry (minted by each
     // caller's UserspaceEffectExecutor forward, consumed by each handler's ReplyExecutor), ONE forwarded-
     // request inbox, ONE reply-settle channel — exactly the loop's shape, drained by the FIFO drive below.
@@ -215,6 +240,14 @@ async fn main() -> Result<()> {
                 effect_ct::EFFECT_REPLY,
                 Box::new(ReplyExecutor::new(reply_tokens.clone(), settle_tx.clone())),
             )
+            // The `emit` family is cross-session messaging (I3): an EmitExecutor routes a peer message as a
+            // `message` Inbound into the SAME shared inbox the FIFO drive drains, addressed to the target
+            // peer id (read by the reducer from its seeded KV["peer"]). owner is the emitter (the drive's
+            // delivery-failure bounce uses it as the return-address if the target is gone).
+            .with_effect(
+                effect_ct::EMIT,
+                Box::new(EmitExecutor::new(inbox_tx.clone(), owner)),
+            )
             .with_fallback(Box::new(UserspaceEffectExecutor::new(
                 MapResolver(family_handler.clone()),
                 inbox_tx.clone(),
@@ -233,8 +266,29 @@ async fn main() -> Result<()> {
 
     // Observed effects, in whole-run dispatch order (each forwarded effect-request the drive routes).
     let mut observed_effects: Vec<(String, String, Option<Vec<u8>>)> = Vec::new();
+    // Observed inter-session messages (I3), in whole-run routing order: (from-alias, to-alias, payload).
+    // A `message`-family Inbound on the shared inbox is a cross-session Emit routed by an EmitExecutor
+    // (distinct from an `effect-request/*` forward, which is a deferred userspace effect).
+    let mut observed_messages: Vec<(String, String, Option<Vec<u8>>)> = Vec::new();
     let mut steps: u32 = 0;
     let mut budget_exceeded = false;
+
+    // MD1 CONFIGURATION pre-seed (distinct from the one kick-off stimulus): before the interaction starts,
+    // deliver each peer-holder a `platform/peers` inbound carrying the resolved peer SessionId-hex, which
+    // the holder reducer folds into KV["peer"]. This threads the deterministic id in so a reducer can `Emit`
+    // to a peer by alias-resolution without an author ever writing a content-derived hash. Config, not the
+    // interaction: it sets the constellation up; the single kick-off below starts the interaction.
+    for (holder, peer_hex) in &peer_of {
+        let holder_id = id_of[holder];
+        let config = EventBody::Inbound {
+            content_type: ContentType {
+                family: "platform/peers".into(),
+                version: 1,
+            },
+            payload: Payload::Inline(peer_hex.clone().into_bytes().into()),
+        };
+        host.deliver(&holder_id, config, None).await;
+    }
 
     // Deliver the ONE kick-off, then drive the FIFO to a fixpoint.
     let kickoff_target = *id_of.get(&args.kickoff_alias).with_context(|| {
@@ -264,24 +318,36 @@ async fn main() -> Result<()> {
                 break;
             }
             steps += 1;
-            // Record the observed effect: the FROM is the reply_to (caller) alias; the FAMILY strips the
-            // `effect-request/` prefix; the payload is the request bytes AFTER the framing header.
+            // Classify the inbound. The FROM is the reply_to (sender/caller) alias.
+            //  - `message` family (I3): a cross-session Emit routed by an EmitExecutor — record it as an
+            //    observed message (from → to = the addressed session), payload verbatim.
+            //  - `effect-request/<family>`: a deferred userspace effect forwarded to its handler — record it
+            //    as an observed effect (family strips the prefix; payload is AFTER the framing header).
             if let EventBody::Inbound {
                 content_type,
                 payload: Payload::Inline(bytes),
             } = &inbound.body
             {
-                let family = content_type
-                    .family
-                    .strip_prefix(EFFECT_REQUEST_PREFIX)
-                    .unwrap_or(&content_type.family)
-                    .to_string();
                 let from = inbound
                     .reply_to
                     .and_then(|c| alias_of.get(&c).cloned())
                     .unwrap_or_else(|| "?".to_string());
-                let payload = strip_framing_payload(bytes);
-                observed_effects.push((from, family, payload));
+                if content_type.family.as_ref() == "message" {
+                    let to = alias_of
+                        .get(&inbound.session)
+                        .cloned()
+                        .unwrap_or_else(|| "?".to_string());
+                    let payload = (!bytes.is_empty()).then(|| bytes.to_vec());
+                    observed_messages.push((from, to, payload));
+                } else {
+                    let family = content_type
+                        .family
+                        .strip_prefix(EFFECT_REQUEST_PREFIX)
+                        .unwrap_or(&content_type.family)
+                        .to_string();
+                    let payload = strip_framing_payload(bytes);
+                    observed_effects.push((from, family, payload));
+                }
             }
             host.deliver(&inbound.session, inbound.body, inbound.cause)
                 .await;
@@ -312,6 +378,15 @@ async fn main() -> Result<()> {
                 out.push_str(&format!("effect\t{from}\t{family}\thex:{}\n", to_hex(p)));
             }
             _ => out.push_str(&format!("effect\t{from}\t{family}\n")),
+        }
+    }
+    // Observed inter-session messages (I3), in whole-run routing order: `message\t<from>\t<to>[\thex:..]`.
+    for (from, to, payload) in &observed_messages {
+        match payload {
+            Some(p) if !p.is_empty() => {
+                out.push_str(&format!("message\t{from}\t{to}\thex:{}\n", to_hex(p)));
+            }
+            _ => out.push_str(&format!("message\t{from}\t{to}\n")),
         }
     }
     // Per-session end-state, in the case's declaration order (stable, deterministic).

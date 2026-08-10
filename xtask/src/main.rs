@@ -4335,6 +4335,11 @@ struct PlatformCaseRecord {
     /// Ordered `(expect-effects (effect (from <a>) (family <f>) <value>?)…)` → the whole-run dispatched
     /// effect sequence, in order. `value` (a `(: v T)` form) optional (a payload-less effect omits it).
     expect_effects: Vec<ExpectEffect>,
+    /// Ordered `(expect-messages (message (from <a>) (to <b>) (family <f>) <value>)…)` (I3) → the whole-run
+    /// inter-session message sequence, in order. Each pins `from`/`to` aliases + a `(: v T)` payload value.
+    expect_messages: Vec<ExpectMessage>,
+    /// `(expect-delivery-failure (from <a>) (to <b>))` (I3) → `(from, to)` pairs whose delivery must bounce.
+    expect_delivery_failures: Vec<(String, String)>,
     /// `(end-state <alias> (kv <key> <value-form>)…)` → `(alias, key, value-form)`.
     end_kv: Vec<(String, String, String)>,
     /// `(end-state <alias> (status <state>))` → `(alias, status)`.
@@ -4351,6 +4356,16 @@ struct ExpectEffect {
     value: Option<String>,
 }
 
+/// One expected inter-session message (I3): session `from` emitted a `message` to peer `to` carrying the
+/// `(: v T)` `value` (the grader decodes it + compares to the observed message payload hex). The corpus
+/// `expect-message` line carries a `family` column too, but the routed cross-session family is always
+/// `message` (the EmitExecutor's wire contract), so the runner keys on from/to/value.
+struct ExpectMessage {
+    from: String,
+    to: String,
+    value: String,
+}
+
 /// Parse the platform record stream (`cdz corpus records` on a `spec/platform/*.sexp`) — the fixed-arity
 /// tab lines `cdz-corpus::render_platform` emits, one `---`-terminated record per case. Split-on-tab, no
 /// s-expr parser (the corpus reader's founding constraint), mirroring `parse_records` for the compiler genre.
@@ -4360,6 +4375,8 @@ fn parse_platform_records(text: &str) -> Vec<PlatformCaseRecord> {
     let mut sessions: Vec<PlatformSession> = Vec::new();
     let mut kickoff = (String::new(), String::new(), String::new());
     let mut expect_effects: Vec<ExpectEffect> = Vec::new();
+    let mut expect_messages: Vec<ExpectMessage> = Vec::new();
+    let mut expect_delivery_failures: Vec<(String, String)> = Vec::new();
     let mut end_kv: Vec<(String, String, String)> = Vec::new();
     let mut end_status: Vec<(String, String)> = Vec::new();
     let mut events_processed: Vec<(String, String)> = Vec::new();
@@ -4370,6 +4387,8 @@ fn parse_platform_records(text: &str) -> Vec<PlatformCaseRecord> {
                 sessions: std::mem::take(&mut sessions),
                 kickoff: std::mem::take(&mut kickoff),
                 expect_effects: std::mem::take(&mut expect_effects),
+                expect_messages: std::mem::take(&mut expect_messages),
+                expect_delivery_failures: std::mem::take(&mut expect_delivery_failures),
                 end_kv: std::mem::take(&mut end_kv),
                 end_status: std::mem::take(&mut end_status),
                 events_processed: std::mem::take(&mut events_processed),
@@ -4444,7 +4463,25 @@ fn parse_platform_records(text: &str) -> Vec<PlatformCaseRecord> {
                     _ => {}
                 }
             }
-            // expect-message/expect-delivery-failure are parsed at I3 (messaging).
+            // `expect-message\t<from>\t<to>\t<family>\t<value-form>` (I3) — one routed inter-session message,
+            // in order. The `family` column is always `message` (the routed cross-session family); the grader
+            // keys on from/to + the decoded value payload.
+            "expect-message" => {
+                let cols: Vec<&str> = val.splitn(4, '\t').collect();
+                if let [from, to, _family, value] = cols.as_slice() {
+                    expect_messages.push(ExpectMessage {
+                        from: (*from).to_string(),
+                        to: (*to).to_string(),
+                        value: (*value).to_string(),
+                    });
+                }
+            }
+            // `expect-delivery-failure\t<from>\t<to>` (I3) — a message whose delivery must bounce.
+            "expect-delivery-failure" => {
+                if let Some((from, to)) = val.split_once('\t') {
+                    expect_delivery_failures.push((from.to_string(), to.to_string()));
+                }
+            }
             _ => {}
         }
     }
@@ -4470,6 +4507,9 @@ struct ObservedRun {
     sessions: std::collections::BTreeMap<String, ObservedSession>,
     /// The dispatched effects in whole-run order: `(from-alias, family, optional value-render)`.
     effects: Vec<(String, String, Option<String>)>,
+    /// The routed inter-session messages in whole-run order (I3): `(from-alias, to-alias, optional
+    /// value-render)` from each `message\t<from>\t<to>[\t<hex>]` line.
+    messages: Vec<(String, String, Option<String>)>,
 }
 
 /// Parse a `cdz-session-run` invocation's stdout (per-alias `end-*` lines + whole-run `effect` lines) into
@@ -4487,6 +4527,17 @@ fn parse_observed_run(stdout: &str) -> ObservedRun {
                 run.effects.push((
                     (*from).to_string(),
                     (*family).to_string(),
+                    Some((*value).to_string()),
+                ));
+            }
+            ["message", from, to] => {
+                run.messages
+                    .push(((*from).to_string(), (*to).to_string(), None));
+            }
+            ["message", from, to, value] => {
+                run.messages.push((
+                    (*from).to_string(),
+                    (*to).to_string(),
                     Some((*value).to_string()),
                 ));
             }
@@ -4611,6 +4662,20 @@ fn grade_platform_case(
             cmd.args(["--serves", &format!("{}={}", s.alias, family)]);
         }
     }
+    // MD1 peer-addressing (I3): each `expect-message (from A) (to B)` declares A must reach peer B, so seed
+    // A's KV with B's resolved SessionId-hex (--peer A=B) — the runner delivers a `platform/peers` config
+    // inbound pre-kick-off so A's reducer can Emit to B by alias without an author writing a content hash.
+    // De-dup identical holder=peer pairs (a case may declare several messages on the same edge).
+    let mut peer_pairs: Vec<(String, String)> = Vec::new();
+    for m in &rec.expect_messages {
+        let pair = (m.from.clone(), m.to.clone());
+        if !peer_pairs.contains(&pair) {
+            peer_pairs.push(pair);
+        }
+    }
+    for (holder, peer) in &peer_pairs {
+        cmd.args(["--peer", &format!("{holder}={peer}")]);
+    }
     cmd.args(["--kickoff-alias", &rec.kickoff.0])
         .args(["--kickoff-family", &rec.kickoff.1])
         // I1/I2 kick-offs are payload-less (unit); a typed kick-off payload is a later increment.
@@ -4714,6 +4779,44 @@ fn grade_platform_case(
                 }
             }
         }
+    }
+    // Whole-run ordered inter-session message sequence (I3): each expected message must appear, in order, in
+    // the observed routing stream. Compared as (from, to) + the decoded value payload (a message always
+    // carries a payload in a case — a bare signal would omit the value column, but the suite pins content).
+    if !rec.expect_messages.is_empty() {
+        if obs.messages.len() != rec.expect_messages.len() {
+            return Grade::Fail(format!(
+                "expect-messages: expected {} message(s), observed {}",
+                rec.expect_messages.len(),
+                obs.messages.len()
+            ));
+        }
+        for (i, em) in rec.expect_messages.iter().enumerate() {
+            let (from, to, value) = &obs.messages[i];
+            if from != &em.from || to != &em.to {
+                return Grade::Fail(format!(
+                    "expect-message #{i}: expected ({} -> {}), observed ({from} -> {to})",
+                    em.from, em.to
+                ));
+            }
+            let Some(expected_hex) = decode_value_form_to_hex(&em.value) else {
+                return Grade::Todo;
+            };
+            match value {
+                Some(observed) if observed == &expected_hex => {}
+                other => {
+                    return Grade::Fail(format!(
+                        "expect-message #{i} value: expected {expected_hex} (from {}), observed {other:?}",
+                        em.value
+                    ));
+                }
+            }
+        }
+    }
+    // Delivery-failure assertions (I3) land with the bounce-replication slice; a case that declares one
+    // before the drive replicates the loop's bounce path grades Todo (coverage-not-yet), never a false pass.
+    if !rec.expect_delivery_failures.is_empty() {
+        return Grade::Todo;
     }
     Grade::Pass
 }
