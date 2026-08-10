@@ -4295,31 +4295,9 @@ fn hoist_resumptive_once(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> Optio
     }
     // Not a site here — recurse into children, rebuilding with the FIRST rewritten child (so a
     // conditional nested inside a `let` init / branch / arm is lifted within that sub-position, then the
-    // enclosing pass lifts it further if needed). EXCEPTION: a nested `handle-internal`'s ARM LIST is OPAQUE
-    // to this outer hoist — its arms belong to THAT handler's own fold (reduced under ITS ctx by the
-    // inside-out `reduce_handle(inner)`), NOT this pass. Recursing into an inner arm treated its shape
-    // `((. B cut) (b) t (match S …))` as an ordinary strict application `(op a0 a1 <match>)` and let Site 2
-    // distribute the `(. B cut)` op HEAD into the `match` branches — inverting the arm to
-    // `(match S (pat ((. B cut) (b) t (resume …))) …)`. With the `match` in the arm's OP-slot,
-    // `effect_op_of` returns `None`, the inner `reduce_handle` builds an EMPTY op-map, and the whole nested
-    // fold declines (nv1f: a sound cross-handler foreign-arg × match-shaped-arm program falsely "not yet
-    // reducible"). So on a `(handle-internal seed ARMS body)` node, SKIP the arms child (index 2) while
-    // still recursing into the seed and body — a conditional legitimately wrapping/around the inner handle
-    // (ic6/ao10) is still hoisted; only the inner arms are left intact for their own fold. (The inner handle
-    // is reduced whole by the inside-out path, exactly as `thread_bounded` treats a nested handle as opaque.)
-    let arms_child = if db.ast.head_name(node) == Some(HANDLE_INTERNAL) {
-        // `(handle-internal seed arms body)` — the arms list is child index 2.
-        db.ast
-            .as_form(node, HANDLE_INTERNAL)
-            .and_then(|t| t.get(1).copied())
-    } else {
-        None
-    };
+    // enclosing pass lifts it further if needed).
     if let Struct::List(children) = db.ast.get(node).clone() {
         for (k, &c) in children.iter().enumerate() {
-            if Some(c) == arms_child {
-                continue; // opaque: an inner handler's arms are folded by its own reduce_handle
-            }
             if let Some(new_c) = hoist_resumptive_once(db, c, ctx) {
                 let mut new_children = children.clone();
                 new_children[k] = new_c;
