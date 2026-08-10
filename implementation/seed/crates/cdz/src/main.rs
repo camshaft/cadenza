@@ -264,11 +264,15 @@ enum Cmd {
     Uses(UsesArgs),
     /// Report every well-formedness fault in FILE (type mismatch, unbound name, …) as
     /// `file:line:col: severity [CODE]: message` — "diagnostics as you type". No export/run needed;
-    /// exits non-zero if any error-severity fault is present. Surfaces error-severity faults from the
-    /// WHOLE pipeline — including emit/lowering rejects (e.g. CDZ0304 constant divide-by-zero, and the
-    /// float/set/map compound-ordering carve-out), which `compile::diagnostics` reports as coded faults
-    /// so `check` ≡ `compile` on what it rejects. It does NOT run/export the program, so a fault only a
-    /// RUN would hit is out of scope.
+    /// exits non-zero if any error-severity fault is present. Surfaces every CODED fault from the whole
+    /// pipeline — including emit/lowering ones (e.g. CDZ0304 constant divide-by-zero) — since
+    /// `compile::diagnostics` collects coded faults. It does NOT surface a CODELESS emit-path DECLINE:
+    /// e.g. the float/set/map compound-ordering carve-out over a PARAMETER (`f(x: Float64, …) = (x,1) <
+    /// (y,2)`) is a code-less `Reject::decline`, so `check` exits 0 while `cdz compile` rejects it. (A
+    /// LITERAL compound-ordering folds to a coded fault and DOES surface — so it's the codeless declines,
+    /// not "the emit pass", that check misses.) Whether those permanent carve-outs SHOULD be coded
+    /// rejections (surfacing here for free) or stay declines is a spec decline-vs-reject question in
+    /// flight (v-diagnostics + operator). Also out of scope: a fault only a RUN would hit (no export/run).
     Check(CheckArgs),
     /// Apply every VERIFIED fix in FILE — each proposed fix that, applied + re-checked, actually clears
     /// its diagnostic — and write the repaired program back (or preview with `--diff`/`--dry-run`).
@@ -7766,18 +7770,27 @@ fn resolve_check_targets(target: Option<&str>) -> Result<Vec<String>, String> {
 /// did). On a load failure the closure is empty (the caller still covers `file` itself).
 /// `json`/`verify_fixes` are the `cdz check` flags.
 ///
-/// CHECK ≡ COMPILE ON REJECTS: the diagnostics come from `Query::Diagnostics` (`compile::diagnostics` →
-/// `collect_faults`), which is NOT front-end-only — it surfaces error-severity faults from the whole
-/// pipeline, INCLUDING emit/lowering rejects. Verified on trunk: a coded lowering reject (CDZ0304
-/// constant `(/ 5 0)`) AND the float/set/map compound-ordering carve-out (`(1.0,2.0) < (3.0,4.0)` →
-/// "a compound value with a float/set/map leaf has no total order") BOTH make `cdz check` exit non-zero,
-/// identical to `cdz compile`. `compile.rs` (see the `layout` decline path) deliberately runs
-/// `collect_faults` on an emit/layout decline and reports the coded fault set precisely so `check` ≡
-/// `compile` — the comments there call out avoiding a "check≡compile discrepancy". `check` does NOT
-/// run/export the program (no target, no wasmtime), so only a fault a RUN would hit is out of scope.
-/// (Historical note: a 2026-08-09 finding claimed check missed these; it did not reproduce on fresh
-/// trunk — a transient "not yet built" decline had been reclassified to the permanent coded rejection
-/// that check surfaces. The earlier "front-end only" doc was inaccurate and was reverted.)
+/// CODED faults surface (incl. emit/lowering); CODELESS declines do NOT. The diagnostics come from
+/// `Query::Diagnostics` (`compile::diagnostics` → `collect_faults`), which is NOT front-end-only — it
+/// surfaces error-severity CODED faults from the whole pipeline, including emit/lowering ones.
+/// `compile.rs`'s `layout` decline path deliberately runs `collect_faults` and reports the coded fault
+/// set precisely so `check` ≡ `compile` FOR CODED FAULTS (its comments call out avoiding a "check≡compile
+/// discrepancy"). Verified on trunk, both sides run both ways:
+///   • CDZ0304 constant `(/ 5 0)` (a coded lowering reject) → check exit=1, surfaced. ✓
+///   • LITERAL compound-ordering `(1.0,2.0) < (3.0,4.0)` → FOLDS to a coded fault → check exit=1. ✓
+///   • PARAMETER compound-ordering `f(x: Float64, y: Float64) = (x,1) < (y,2)` → a CODELESS
+///     `Reject::decline` (the float-leaf-no-total-order carve-out) → check exit=0 while `cdz compile`
+///     exit=1. ✗ HIDDEN — `collect_faults` has no code to collect for a code-less decline.
+/// So the gap is precisely the CODELESS emit-path declines, not "check skips emit" (it doesn't). A prior
+/// framing that called check "front-end only" (and, in the first correction, "≡ compile on rejects") was
+/// wrong on both counts — the accurate split is coded-surfaces / codeless-hides, and a const-foldable
+/// LITERAL masks it (probe with a PARAMETER). Whether the PERMANENT carve-outs (float-leaf compound
+/// ordering/compare, bare-float compare) should be promoted from codeless decline to a CODED rejection —
+/// which would make them surface here for free like CDZ0304 — is a spec decline-vs-reject question in
+/// flight (v-diagnostics owns the reclassification; the corpus pins them as `(declines)` at
+/// `03-equality-and-observation.sexp:720/739/783`, so the category flip is an operator call). If the
+/// ruling keeps them declines but asks check to surface PERMANENT ones, that marker-consumption lands
+/// HERE (this crate); if it makes them coded, no change here is needed.
 fn check_one(file: &str, json: bool, verify_fixes: bool) -> (bool, Vec<String>) {
     // Follow the entry file's IMPORT CLOSURE so a cross-file reference (an imported type or definition)
     // resolves and checks — `cdz check FILE` then sees the SAME linked program the package compile does.
