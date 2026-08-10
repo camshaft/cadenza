@@ -712,7 +712,7 @@ fn call_needs_pin(db: &mut Db, callee: usize) -> bool {
             // A call node: its own callee is in tail position HERE (handled by the caller's descent), but
             // its ARGS are non-tail — collect calls inside them.
             Core::Call { args, .. } => {
-                for a in args {
+                for a in args.iter().copied() {
                     collect_all_calls(db, a, out);
                 }
             }
@@ -2826,7 +2826,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         Core::CallClosure { closure, args } => {
             let c = emit(db, closure, env, ctx)?;
             let mut rendered = Vec::with_capacity(args.len());
-            for &a in &args {
+            for &a in args.iter() {
                 rendered.push(emit(db, a, env, ctx)?);
             }
             if ctx.mode.is_async() {
@@ -3388,7 +3388,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // the order the program made them (the sequencing invariant the wasm backend also holds).
         Core::Seq { stmts, tail } => {
             let mut body = String::new();
-            for &s in &stmts {
+            for &s in stmts.iter() {
                 // DROP a non-final statement that reaches NO host call. `lower` only produces a `Seq`
                 // (rather than folding to `tail`) because SOME statement reaches a side effect the backend
                 // must emit (a host call). A statement whose value is DISCARDED and which reaches no host
@@ -6357,7 +6357,7 @@ fn emit_sum_payload(
             && payloads.len() != 1
         {
             let mut parts = Vec::with_capacity(payloads.len());
-            for &p in &payloads {
+            for &p in payloads.iter() {
                 parts.push(emit(db, p, env, ctx)?);
             }
             return Ok(format!("({})", parts.join(", ")));

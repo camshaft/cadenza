@@ -342,7 +342,7 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
             //# A cross-component imported or exported signature by which components exchange values MUST be monomorphic, per §Generics Do Not Cross The Boundary, so that the exchanged interface names concrete types and a component binds a peer's export at a fixed instantiation the peer emitted rather than requesting an instantiation on demand.
             let peer_bound = db.effect_bindings.contains_key(&*effect);
             let mut params = Vec::new();
-            for &a in &args {
+            for &a in args.iter() {
                 let at = crate::infer::type_of(db, a);
                 match &at {
                     Ty::Unit => {}
@@ -380,7 +380,7 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
             if !out.iter().any(|h| h.effect == imp.effect && h.op == imp.op) {
                 out.push(imp);
             }
-            for a in args {
+            for a in args.iter().copied() {
                 collect_host_imports(db, a, out);
             }
         }
@@ -388,13 +388,13 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
         // walked when it is itself expanded from `layout.order`. A CallClosure likewise descends the
         // closure value + args.
         Core::Call { args, .. } => {
-            for a in args {
+            for a in args.iter().copied() {
                 collect_host_imports(db, a, out);
             }
         }
         Core::CallClosure { closure, args } => {
             collect_host_imports(db, closure, out);
-            for a in args {
+            for a in args.iter().copied() {
                 collect_host_imports(db, a, out);
             }
         }
@@ -403,7 +403,7 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
         // captures must be walked or that host op is missed and the program declines. The closure's BODY is
         // walked separately (it emits as its own lifted function whose body the layout reaches).
         Core::Closure { captures, .. } => {
-            for c in captures {
+            for c in captures.iter().copied() {
                 collect_host_imports(db, c, out);
             }
         }
@@ -419,7 +419,7 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
             collect_host_imports(db, body, out);
         }
         Core::Seq { stmts, tail } => {
-            for s in stmts {
+            for s in stmts.iter().copied() {
                 collect_host_imports(db, s, out);
             }
             collect_host_imports(db, tail, out);
@@ -583,7 +583,7 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
         }
         Core::Proj { operand, .. } => collect_host_imports(db, operand, out),
         Core::SumNew { payloads, .. } => {
-            for p in payloads {
+            for p in payloads.iter().copied() {
                 collect_host_imports(db, p, out);
             }
         }
@@ -743,7 +743,7 @@ pub fn first_unrepresentable_host_op(
         // (host) a scalar. A `Bytes` arg now crosses as `list<u8>` at the host boundary (the `(ptr,len)`
         // shared-memory shape, same as String), so it is emittable — no longer a deferred compound. An
         // undetermined arg type (a synthesized node) is skipped for the same reason as the result.
-        for &a in &args {
+        for &a in args.iter() {
             let at = crate::infer::type_of(db, a);
             if !matches!(at, Ty::Unit | Ty::String | Ty::Bytes)
                 && !ty_undetermined(&at)
@@ -753,7 +753,7 @@ pub fn first_unrepresentable_host_op(
             }
         }
         // Descend the args too (a host call may be nested in an arg).
-        for a in args {
+        for a in args.iter().copied() {
             if let Some(hit) = first_unrepresentable_host_op(db, a) {
                 return Some(hit);
             }
