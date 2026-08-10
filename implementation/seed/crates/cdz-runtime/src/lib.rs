@@ -9644,6 +9644,116 @@ mod tests {
         acc
     }
 
+    /// A `record { members: (Set Int64), tag: Int64 }` descriptor — table [0]=Int, [1]=Set(→0),
+    /// [2]=Record[(members→1),(tag→0)]; root=2. Exercises BOTH canon-convergence sites in one value: the
+    /// record-field `=` head AND the Set `(. Set of)` head.
+    fn record_with_set_descriptor() -> Vec<u8> {
+        fn leb(out: &mut Vec<u8>, mut v: u64) {
+            loop {
+                let mut b = (v & 0x7f) as u8;
+                v >>= 7;
+                if v != 0 {
+                    b |= 0x80;
+                }
+                out.push(b);
+                if v == 0 {
+                    break;
+                }
+            }
+        }
+        fn name(out: &mut Vec<u8>, s: &str) {
+            leb(out, s.len() as u64);
+            out.extend_from_slice(s.as_bytes());
+        }
+        let mut d = Vec::new();
+        leb(&mut d, 3); // table_len = 3
+        d.push(0); // [0] Int
+        d.push(12); // [1] Set(→0)
+        leb(&mut d, 0);
+        d.push(8); // [2] Record with 2 fields, in descriptor (sorted) order: members, tag
+        leb(&mut d, 2);
+        name(&mut d, "members");
+        leb(&mut d, 1); // members → Set
+        name(&mut d, "tag");
+        leb(&mut d, 0); // tag → Int
+        leb(&mut d, 2); // root = 2
+        d
+    }
+
+    /// CANON-STABILITY GATE (protects the value-encode→canon convergence, trunk 51a4a7a8d): value-encode's
+    /// document must have its LEAVES interned in canon's order — strictly PRE-ORDER, first-encounter,
+    /// left-to-right over the struct tree from the root (see cadenza-ast/canon.rs `visit`). This is what
+    /// makes `value_encode(v)` == `codec::encode(canon(tree))` byte-for-byte, i.e. a STABLE content-address.
+    ///
+    /// A rendered-text gate CANNOT catch a regression here: emitting the record-field `=` or the Set
+    /// `(. Set of)` head POST-order (the pre-convergence bug) produces IDENTICAL rendered s-expr text but a
+    /// DIFFERENT leaf pool — so it would slip silently past the corpus. This walks the parsed document and
+    /// asserts each leaf id is first-referenced in non-decreasing pre-order, exactly canon's numbering.
+    #[test]
+    fn value_encode_leaf_order_is_canon_pre_order_first_encounter() {
+        reset();
+        let desc = record_with_set_descriptor();
+        // record { members: {10, 2, 1, 3} (hash order ≠ value order), tag: 42 }.
+        let mut set = op_set_empty();
+        for &e in &[10i64, 2, 1, 3] {
+            set = op_set_insert(set, op_box_int(e));
+        }
+        let rec = op_arr_alloc(2);
+        op_arr_set(rec, 0, set); // field 0 = members (Set)
+        op_arr_set(rec, 1, op_box_int(42)); // field 1 = tag (Int)
+        let doc_bytes = op_value_encode_form(rec, &desc).expect("encode record-with-set");
+        let doc = parse_doc(&doc_bytes).expect("parse the value-form document");
+
+        // Re-walk the struct tree PRE-ORDER (root, then children left-to-right, an atom on first visit),
+        // recording the order leaves are first referenced. `expected_next` is the id the NEXT
+        // first-encountered leaf must have under canon's first-encounter numbering: 0, then 1, then 2, …
+        // A leaf id that jumps ahead (or a re-encountered leaf that isn't already assigned) means the
+        // emission order does NOT match canon — the exact post-order-emission regression this gate exists
+        // to catch.
+        let mut seen: alloc::collections::BTreeSet<u32> = alloc::collections::BTreeSet::new();
+        let mut expected_next: u32 = 0;
+        let mut stack: Vec<u32> = vec![doc.root];
+        while let Some(struct_ix) = stack.pop() {
+            match doc.structs.get(struct_ix as usize) {
+                Some(ParsedStruct::Atom(leaf_id)) => {
+                    if !seen.contains(leaf_id) {
+                        assert_eq!(
+                            *leaf_id, expected_next,
+                            "leaf {leaf_id} first-encountered out of canon pre-order (expected \
+                             {expected_next}) — value-encode's leaf pool diverges from \
+                             codec::encode(canon(tree)); a `=`/Set-head atom is emitted post-order again"
+                        );
+                        seen.insert(*leaf_id);
+                        expected_next += 1;
+                    }
+                }
+                Some(ParsedStruct::List(kids)) => {
+                    // Push children in REVERSE so they pop left-to-right (source order) — matching canon's
+                    // `visit`, which pushes children reversed onto its job stack for the same reason.
+                    for &k in kids.iter().rev() {
+                        stack.push(k);
+                    }
+                }
+                None => panic!("dangling struct index {struct_ix} in parsed document"),
+            }
+        }
+        assert_eq!(
+            seen.len() as u32,
+            expected_next,
+            "every distinct leaf must be first-encountered exactly once in pre-order"
+        );
+        // Sanity: the fixture actually exercised both convergence sites (it has an `=` leaf and a `Set`
+        // leaf), so a future refactor can't accidentally make this gate vacuous.
+        let has_leaf = |want: &str| {
+            doc.leaves.iter().any(|l| matches!(l, ParsedLeaf::Name(n) if n == want.as_bytes()))
+        };
+        assert!(has_leaf("="), "fixture must contain a record-field `=` leaf");
+        assert!(has_leaf("Set"), "fixture must contain a Set `(. Set of)` head leaf");
+
+        op_drop(rec);
+        assert_eq!(live_nodes(), 0, "no leak: the record (and its set) dropped");
+    }
+
     /// The iterative production `encode_value` must produce BYTE-IDENTICAL documents to the recursive
     /// oracle, across the interesting shapes (nested sums, lists, tuples). Drives only modest depth — a
     /// deep value would overflow the recursive oracle (the exact bug the iterative walk fixes).
