@@ -133,13 +133,18 @@ returning to the tick-top check):
    xtask check` builds the whole workspace — ~8-15min, and pr-sync RE-GATES the full battery on your MR
    anyway, so paying it on EVERY inner iteration is the dominant per-step cost. While you're iterating a
    slice, self-check NARROW — only what you touched:
-   - `cargo test -p <your-crate> --lib` (already scoped), and
+   - **`cargo xtask dev-gate`** (PREFERRED — the fast inner-loop gate: auto-detects your touched crates
+     from `git diff` and runs only their test+clippy+fmt, warm = seconds). Pass crate names to scope
+     explicitly (`cargo xtask dev-gate rcdzc`). It's a code-level check (crate tests/clippy), so pair it
+     with a corpus spot-check if your slice changes behavior:
    - `cargo xtask gate --files spec/semantics/<your-file>.sexp --target wasm` (scope to YOUR corpus file
-     + one backend; add `--target rust`/`rust-async` only if your slice touches backend-specific emit).
-   That narrow loop is ~1-3min. Run the FULL `cargo xtask gate` + `cargo xtask check` ONCE, right before
-   your final send (the authoritative self-verify), not on every edit. pr-sync's pass is the full-battery
-   backstop; the tradeoff is that a scoped self-check can miss a cross-cutting break → one reject
-   round-trip, which is rare for a well-scoped slice and far cheaper than 10min/iteration.
+     + one backend; add `--target rust`/`rust-async` only if your slice touches backend-specific emit), and
+   - `cargo test -p <your-crate> --lib` if `dev-gate` isn't picking up a test you want to run directly.
+   That narrow loop is seconds-to-a-few-minutes vs the ~8-15min full battery. Run the FULL `cargo xtask
+   gate` + `cargo xtask check` ONCE, right before your final send (the authoritative self-verify), not on
+   every edit — a green `dev-gate` is NOT merge-safe (it prints that caveat). pr-sync's pass is the
+   full-battery backstop; the tradeoff is that a scoped self-check can miss a cross-cutting break → one
+   reject round-trip, which is rare for a well-scoped slice and far cheaper than 10min/iteration.
    **Then apply discipline (b): a full gate/build cycle is the single biggest context ingest in a
    tick — CHECK your context after it and `/compact` if past ~70% BEFORE the next unit** (committing,
    the next slice, or resending after a reject). Never carry a near-full window into another gate run.

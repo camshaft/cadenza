@@ -209,12 +209,13 @@ heartbeat, so even a missed nudge is eventually picked up. Pass `--no-wake` when
 **⏱ ITERATE NARROW, gate FULL once (per-agent loop-latency squash, operator priority 2026-08-10).**
 The full battery below is ~8-15min and pr-sync RE-GATES it on your MR anyway, so paying it on every
 inner iteration is the dominant per-step waste. While ITERATING a slice, self-check NARROW — only what
-you touched: `cargo test -p <your-crate> --lib` + `cargo xtask gate --files <your-file>.sexp --target
-wasm` (~1-3min). (A dedicated fast dev-gate — `cargo xtask dev-gate`, auto-detecting touched crates and
-running v-nix's per-crate test+clippy checks, warm = seconds — is being built as the even-faster inner-
-loop entrypoint; prefer it once it lands.) Run the FULL battery below ONCE, right before your final
-send — it's the authoritative self-verify; pr-sync's pass is the full-battery backstop, so a rare
-scoped-miss costs one reject round-trip, far cheaper than 10min/iteration.
+you touched: **`cargo xtask dev-gate`** (the fast inner-loop gate — auto-detects your touched crates
+from `git diff` and runs only their test+clippy+fmt, warm = seconds; pass crate names to scope
+explicitly). It's a code-level check, so pair it with a corpus spot-check when your slice changes
+behavior: `cargo xtask gate --files <your-file>.sexp --target wasm`. Run the FULL battery below ONCE,
+right before your final send — it's the authoritative self-verify; a green `dev-gate` is NOT merge-safe
+(it prints that caveat), and pr-sync's pass is the full-battery backstop, so a rare scoped-miss costs
+one reject round-trip, far cheaper than 10min/iteration.
 
 Before you send a `merge-request`, all of these must hold in your worktree (the FINAL pre-send verify):
 
