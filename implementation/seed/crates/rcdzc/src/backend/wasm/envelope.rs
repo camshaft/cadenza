@@ -542,6 +542,14 @@ pub fn assemble_reducer_apply(
     // instances/types `0..g`; the runtime is comp instance/type `g`. Empty for a heap-only reducer (b1/b2).
     let ifaces = distinct_ifaces(op_ifaces);
     let g = ifaces.len();
+    // Whether any kv op returns a COMPOUND result (get's option<list<u8>>) — its canon-lower needs a Realloc
+    // option (a real cabi_realloc the shared memory exports). If so, use `shared_mem_realloc_module` (mem +
+    // cabi_realloc) and alias that realloc as a core func the get-lower references; put (no result) needs
+    // only Memory. The realloc core func is aliased AFTER the op-lowers → core func index `e+k` (the
+    // component core-func index space is populated across the lower + alias sections; a canon-option may
+    // reference a core func by its final index). `mem_needs_realloc` gates the whole thing.
+    let mem_needs_realloc = extern_fns.iter().any(|f| f.op == "get");
+    let realloc_core_func = (e + k) as u32; // the cabi_realloc alias, right after the op lowers
 
     // sec 7: g peer instance-types (comp types `0..g`) + the runtime instance-type (comp type `g`) + the
     // shared `list u8` (comp type `g+1`) + the apply functype (comp type `g+2`).
@@ -636,8 +644,18 @@ pub fn assemble_reducer_apply(
     // ops are handle-scalar → memoryless plain lower. (e=0 → all plain, byte-identical to the old shape.)
     let lower_sec = {
         let mut items = Vec::new();
-        for i in 0..e {
-            items.extend_from_slice(&canon_lower_item_mem(i as u32, 0));
+        for (i, f) in extern_fns.iter().enumerate() {
+            // A COMPOUND-result kv op (get) lowers with Memory + Realloc (reconstruct the returned list);
+            // a no-result op (put) lowers with Memory only.
+            if f.op == "get" {
+                items.extend_from_slice(&canon_lower_item_mem_realloc(
+                    i as u32,
+                    0,
+                    realloc_core_func,
+                ));
+            } else {
+                items.extend_from_slice(&canon_lower_item_mem(i as u32, 0));
+            }
         }
         for i in e..(e + k) {
             items.extend_from_slice(&canon_lower_item(i as u32));
@@ -711,23 +729,36 @@ pub fn assemble_reducer_apply(
         items.extend_from_slice(&prog);
         section(sec::CORE_INSTANCE, &wasm_vec(n_core_inst, &items))
     };
-    // sec 6 (second): alias `apply`, `memory`, `cabi_realloc` off the PROGRAM core instance. apply → core
-    // func `e+k`; cabi_realloc → core func `e+k+1`.
-    let realloc_func = (e + k + 1) as u32;
+    // sec 6 (second): (when get is present) alias the shared-mem module's `cabi_realloc` as core func
+    // `e+k` FIRST — the get-lower's Realloc option references it. Then alias `apply`, `memory`,
+    // `cabi_realloc` off the PROGRAM instance. So the boundary core funcs start at `boundary_base` (= e+k,
+    // or e+k+1 when the realloc alias shifted them): apply → boundary_base, cabi_realloc → boundary_base+1.
+    let boundary_base = if mem_needs_realloc { e + k + 1 } else { e + k } as u32;
+    let apply_core_func = boundary_base;
+    let realloc_func = boundary_base + 1;
     let boundary_alias_sec = {
         let mut items = Vec::new();
+        let mut n = 3;
+        if mem_needs_realloc {
+            // Alias the shared-mem module's cabi_realloc (from the mem core instance) as core func `e+k`.
+            items.extend_from_slice(&core_alias_item(
+                mem_core_inst_idx.expect("mem instance exists when get is present"),
+                "cabi_realloc",
+            ));
+            n += 1;
+        }
         items.extend_from_slice(&core_alias_item(prog_core_inst_idx, &apply.name));
         items.extend_from_slice(&memory_alias_item(prog_core_inst_idx, "memory"));
         items.extend_from_slice(&core_alias_item(prog_core_inst_idx, "cabi_realloc"));
-        section(sec::ALIAS, &wasm_vec(3, &items))
+        section(sec::ALIAS, &wasm_vec(n, &items))
     };
-    // sec 8 (second): lift the apply core func (`e+k`) with Memory+Realloc, using the apply functype
-    // (comp type `g+2`) → comp func `e+k`.
+    // sec 8 (second): lift the apply core func with Memory+Realloc, using the apply functype (comp type
+    // `g+2`) → comp func `e+k`.
     let lift_sec = section(
         sec::CANON,
         &wasm_vec(
             1,
-            &canon_lift_list_item((e + k) as u32, 0, realloc_func, apply_type_idx),
+            &canon_lift_list_item(apply_core_func, 0, realloc_func, apply_type_idx),
         ),
     );
     // sec 5: bundle the lifted apply (comp func `e+k`) into a component instance.
@@ -754,9 +785,16 @@ pub fn assemble_reducer_apply(
     // alias — emitted BEFORE the lower (which binds core memory 0 via the kv ops' Memory option) so the
     // memory exists at lower time. The exact `assemble_host_runtime_mem` shape. Only when e>0 (kv present);
     // e=0 → empty (byte-identical to the pre-kv shape). The program module then imports `mem`.`mem`.
+    // With a compound-result kv op (get), the mem module also exports a `cabi_realloc` (the get-lower's
+    // Realloc option binds it); otherwise (put-only, e.g. genesis) a plain mem module suffices.
+    let mem_module_bytes = if mem_needs_realloc {
+        shared_mem_realloc_module()
+    } else {
+        shared_mem_module()
+    };
     let (mem_module_sec, mem_instance_sec, mem_alias_sec) = if e > 0 {
         (
-            core_module_section(&shared_mem_module()),
+            core_module_section(&mem_module_bytes),
             section(
                 sec::CORE_INSTANCE,
                 &wasm_vec(1, &core_instantiate_item(0, &[])),
