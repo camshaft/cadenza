@@ -6149,28 +6149,33 @@ fn sync(fleet: &Fleet, force: bool) {
     let cherry = git_stdout(&["cherry", base, &old_head]);
     let mut replay = commits_to_replay(&cherry);
 
-    // DROP the auto-generated archive-mirror commit from the replay set (v-fleet-tooling + v-syntax +
-    // corpus-bugfix hit this every tick). pr-sync's per-tick `fleet archive` commits a work-queue/roster
-    // SNAPSHOT whose content changes every cycle, so patch-id matching can NEVER mark it landed — once
-    // any agent's branch tip sits on one (from a prior reset), `git cherry` re-flags it as "unlanded"
-    // and the sync would replay a foreign infra commit as the agent's own work (and even hit a
-    // cherry-pick conflict against advanced trunk). It is NEVER any agent's work, and its subject is a
-    // fixed literal emitted from exactly one place (the `archive` fn's `git commit -m`), so dropping it
-    // by subject is a zero-false-positive exclusion — no agent legitimately authors that subject. This
-    // stops the every-tick manual `git reset --hard trunk` the papercut forced on every vertical.
+    // DROP pr-sync's FOREIGN-INFRA commits from the replay set (v-fleet-tooling + v-syntax + corpus-bugfix
+    // hit this every tick). Two provably-pr-sync-only classes, each matched by its single-emitter subject:
+    //   (1) the per-tick `fleet archive` work-queue/roster SNAPSHOT (content changes every cycle, so
+    //       patch-id can NEVER mark it landed), and
+    //   (2) batch INTEGRATION merges `integrate <short-sha>[: …]` (re-parented under a fresh sha every
+    //       publish cycle, so patch-id differs and `git cherry` marks them `+`).
+    // Once any agent's branch tip sits on one (from a prior reset onto a re-parented trunk), `git cherry`
+    // re-flags it as "unlanded" and the sync would replay a foreign infra commit as the agent's own work
+    // (and even hit a cherry-pick conflict against advanced trunk). Neither is EVER an agent's work, and
+    // both subjects come from exactly one emitter, so dropping them by subject is a zero-false-positive
+    // exclusion. This is the residual half of the every-tick manual `git reset --hard trunk` toil: the
+    // content-identical fast-path already covers a branch with NO own work, but an authoring vertical WITH
+    // own work has a divergent tree, so it fell through to here and replayed+warned the carried integrate
+    // merges until now (v-fleet-tooling hit exactly this two ticks ago).
     let before = replay.len();
     if !replay.is_empty() {
         // Read ALL replay-commit subjects in ONE `git show` (not one subprocess per commit — PR #1684
         // review): `git show -s --format=%s <sha…>` prints one subject line per commit, in the order
-        // given, so we zip them back to `replay` by index (see `filter_out_archive_mirrors`).
+        // given, so we zip them back to `replay` by index (see `filter_out_foreign_infra_commits`).
         let mut args: Vec<&str> = vec!["show", "-s", "--format=%s"];
         args.extend(replay.iter().map(String::as_str));
         let raw = String::from_utf8_lossy(&git(&args).stdout).into_owned();
-        replay = filter_out_archive_mirrors(replay, &raw);
+        replay = filter_out_foreign_infra_commits(replay, &raw);
     }
     if replay.len() < before {
         println!(
-            "fleet sync: dropped {} auto-generated archive-mirror commit(s) from the replay set (never agent work).",
+            "fleet sync: dropped {} pr-sync infra commit(s) (archive-mirror / integrate-merge) from the replay set (never agent work).",
             before - replay.len()
         );
     }
@@ -7345,6 +7350,36 @@ fn commit_is_archive_mirror(subject: &str) -> bool {
     subject.trim() == ARCHIVE_MIRROR_SUBJECT
 }
 
+/// Is a commit one of pr-sync's batch INTEGRATION merges? Batch-stage names each `git merge --no-ff`
+/// `integrate <short-sha>[: <ref subject>]` (the ONLY emitter — see the `format!("integrate {short}…")`
+/// in batch-stage). When a batch tip is rebuilt/rewound under a fresh sha (the re-parent that happens
+/// every publish cycle), these merges get a new sha + differing patch-id, so `git cherry` marks them
+/// `+`/"unlanded" and `fleet sync` would replay a stack of FOREIGN integration history as the agent's
+/// own work — the every-tick manual `git reset --hard trunk` toil. They are NEVER an agent's authored
+/// work: no vertical writes a commit whose subject is `integrate <hex>` (verified zero across 800 trunk
+/// commits), so dropping them from the replay set by subject is a zero-false-positive exclusion, exactly
+/// like [`commit_is_archive_mirror`]. Match `integrate ` + a hex short-sha token (≥4 hex chars, git's
+/// min abbrev) so a legitimate English subject that merely starts with the word "integrate" (e.g.
+/// "integrate the parser into…") is NOT swept — those don't have a bare hex token in position 2. Pure.
+fn commit_is_integrate_merge(subject: &str) -> bool {
+    let s = subject.trim();
+    let Some(rest) = s.strip_prefix("integrate ") else {
+        return false;
+    };
+    // The token right after `integrate ` must be a git short-sha: 4+ hex chars, ending at end-of-string
+    // or the `:`/space that precedes the optional ref subject. A word like "the" fails the all-hex test.
+    let tok = rest.split([':', ' ']).next().unwrap_or("");
+    tok.len() >= 4 && tok.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// A commit that is pr-sync-authored INFRA (archive-mirror snapshot OR batch integration merge), never
+/// an agent's own work — the two provably-foreign classes `fleet sync` drops from its patch-id replay so
+/// a re-parented trunk doesn't re-adopt them as "unlanded" agent commits. Both are matched by their
+/// single-emitter subject, so this is a zero-false-positive exclusion. Pure.
+fn commit_is_foreign_infra(subject: &str) -> bool {
+    commit_is_archive_mirror(subject) || commit_is_integrate_merge(subject)
+}
+
 /// May `fleet archive` COMMIT the mirror on this `current_branch`? Only on `trunk` (pr-sync's worktree).
 /// The archive-mirror commit is meaningful only on trunk; if `fleet archive` runs from an agent's worktree
 /// (a stray/mis-fired invocation), committing lands the mirror on that `fleet/<agent>` branch, where it
@@ -7356,7 +7391,8 @@ fn archive_commit_allowed(current_branch: &str) -> bool {
     current_branch.trim() == TRUNK
 }
 
-/// Drop archive-mirror commits from a `replay` list, given the RAW batched output of
+/// Drop pr-sync's foreign-infra commits (archive-mirror snapshots AND batch integration merges — see
+/// [`commit_is_foreign_infra`]) from a `replay` list, given the RAW batched output of
 /// `git show -s --format=%s <sha…>` (one subject line per commit, in `replay` order). Pure so the
 /// index-alignment — the load-bearing invariant — is unit-tested without git.
 ///
@@ -7368,17 +7404,13 @@ fn archive_commit_allowed(current_branch: &str) -> bool {
 /// the WRONG commit is dropped (PR #1690 review, a real latent bug). `split_terminator` drops only the
 /// final-newline artifact, never a genuine empty subject. A subject line MISSING entirely (fewer lines
 /// than shas — a short/failed read) → `get(i)` is `None` → that commit is KEPT (never wrongly dropped).
-/// Per-element trim is handled by [`commit_is_archive_mirror`].
-fn filter_out_archive_mirrors(replay: Vec<String>, raw_subjects: &str) -> Vec<String> {
+/// Per-element trim is handled by the matchers.
+fn filter_out_foreign_infra_commits(replay: Vec<String>, raw_subjects: &str) -> Vec<String> {
     let subjects: Vec<&str> = raw_subjects.split_terminator('\n').collect();
     replay
         .into_iter()
         .enumerate()
-        .filter(|(i, _)| {
-            !subjects
-                .get(*i)
-                .is_some_and(|s| commit_is_archive_mirror(s))
-        })
+        .filter(|(i, _)| !subjects.get(*i).is_some_and(|s| commit_is_foreign_infra(s)))
         .map(|(_, sha)| sha)
         .collect()
 }
@@ -14092,35 +14124,91 @@ mod tests {
         let v = |xs: &[&str]| xs.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         // Basic: drop exactly the archive-mirror sha, keep the rest (subjects in replay order).
         assert_eq!(
-            filter_out_archive_mirrors(v(&["a", "b", "c"]), &format!("feat A\n{mirror}\nfix C")),
+            filter_out_foreign_infra_commits(
+                v(&["a", "b", "c"]),
+                &format!("feat A\n{mirror}\nfix C")
+            ),
             v(&["a", "c"])
         );
         // THE BUG THIS GUARDS (PR #1690): an EMPTY subject at index 0 must NOT shift the alignment.
         // With `.lines()` on a trimmed string the leading blank would vanish → "b"(the mirror) maps to
         // index 0's dropped slot → WRONG commit dropped. `split_terminator` preserves the blank line.
         assert_eq!(
-            filter_out_archive_mirrors(v(&["a", "b", "c"]), &format!("\n{mirror}\nfix C")),
+            filter_out_foreign_infra_commits(v(&["a", "b", "c"]), &format!("\n{mirror}\nfix C")),
             v(&["a", "c"]) // a has empty subject (kept), b is the mirror (dropped), c kept
         );
         // Empty subject in the MIDDLE, mirror last.
         assert_eq!(
-            filter_out_archive_mirrors(v(&["a", "b", "c"]), &format!("feat A\n\n{mirror}")),
+            filter_out_foreign_infra_commits(v(&["a", "b", "c"]), &format!("feat A\n\n{mirror}")),
             v(&["a", "b"])
         );
         // A trailing-newline artifact must NOT create a phantom extra subject (split_terminator drops it).
         assert_eq!(
-            filter_out_archive_mirrors(v(&["a", "b"]), &format!("feat A\n{mirror}\n")),
+            filter_out_foreign_infra_commits(v(&["a", "b"]), &format!("feat A\n{mirror}\n")),
             v(&["a"])
         );
         // SHORT read (fewer subject lines than shas) → missing-index commits are KEPT, never wrongly dropped.
         assert_eq!(
-            filter_out_archive_mirrors(v(&["a", "b", "c"]), mirror),
+            filter_out_foreign_infra_commits(v(&["a", "b", "c"]), mirror),
             v(&["b", "c"]) // only index 0 has a subject (the mirror, dropped); b/c have none → kept
         );
         // No mirrors present → everything kept.
         assert_eq!(
-            filter_out_archive_mirrors(v(&["a", "b"]), "feat A\nfix B"),
+            filter_out_foreign_infra_commits(v(&["a", "b"]), "feat A\nfix B"),
             v(&["a", "b"])
+        );
+    }
+
+    #[test]
+    fn commit_is_integrate_merge_matches_pr_syncs_batch_merges_only() {
+        // pr-sync's batch-stage names each `git merge --no-ff` `integrate <short-sha>[: <ref subject>]`.
+        // These are the FOREIGN integration merges a re-parented trunk makes `git cherry` re-flag as
+        // "unlanded" — dropped from the sync replay set. The subject comes from exactly one emitter.
+        assert!(commit_is_integrate_merge("integrate 1f79c6d")); // bare short-sha form
+        assert!(commit_is_integrate_merge(
+            "integrate 0aa4246: test(xtask/fleet): pin refs_to_drop"
+        )); // with ref subject
+        assert!(commit_is_integrate_merge("integrate abcd")); // git's 4-char min abbrev
+        assert!(commit_is_integrate_merge("  integrate deadbeef  ")); // whitespace-padded
+        // NOT a batch merge: a genuine English subject that merely starts with the word "integrate" — the
+        // token after it is a WORD, not an all-hex sha, so it must never be swept as infra noise.
+        assert!(!commit_is_integrate_merge(
+            "integrate the parser into the frontend"
+        ));
+        assert!(!commit_is_integrate_merge("integrate zzzz")); // 4 chars but not hex
+        assert!(!commit_is_integrate_merge("integrate abc")); // 3 hex chars — below git's min abbrev
+        assert!(!commit_is_integrate_merge("integrate")); // bare word, no token
+        assert!(!commit_is_integrate_merge("integrated fleet/x onto trunk")); // no space-delimited prefix
+        assert!(!commit_is_integrate_merge("feat: integrate 1f79c6d")); // token not in leading position
+        assert!(!commit_is_integrate_merge(""));
+    }
+
+    #[test]
+    fn filter_out_foreign_infra_drops_both_archive_mirror_and_integrate_merges() {
+        // The generalized drop covers BOTH pr-sync infra classes in one index-aligned pass — a
+        // re-parented trunk can carry a MIX (an archive-mirror snapshot AND stale integrate merges), and
+        // an authoring vertical with genuine own work (a divergent tree, so the content-identical
+        // fast-path doesn't fire) would otherwise replay+warn them all. Real agent commits survive.
+        let mirror = ARCHIVE_MIRROR_SUBJECT;
+        let v = |xs: &[&str]| xs.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            filter_out_foreign_infra_commits(
+                v(&["own1", "int1", "mir", "int2", "own2"]),
+                &format!(
+                    "rcdzc: my real slice\nintegrate 1f79c6d: peer feat\n{mirror}\nintegrate 0aa4246\nfix: my other real slice"
+                ),
+            ),
+            v(&["own1", "own2"]),
+            "only the agent's own two commits survive; both integrate merges + the mirror are dropped"
+        );
+        // A vertical whose OWN commit subject happens to start with the word 'integrate' (English) keeps it.
+        assert_eq!(
+            filter_out_foreign_infra_commits(
+                v(&["mine"]),
+                "integrate the new codec path into the emitter",
+            ),
+            v(&["mine"]),
+            "a legit English 'integrate …' subject is not pr-sync infra — kept"
         );
     }
 
