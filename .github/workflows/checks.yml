@@ -361,8 +361,8 @@ jobs:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@v22
       - uses: ./.github/actions/nix-store-cache
-      - name: cdz-agent-host test + clippy + fmt + feature matrix + genesis e2e (via nix)
-        run: nix build .#checks.aarch64-linux.cdz-agent-host-native --print-build-logs
+      - name: cdz-agent-host test + clippy + fmt + feature matrix + genesis e2e (via nix, 2-way parallel split)
+        run: nix build .#checks.aarch64-linux.cdz-agent-host-native-core .#checks.aarch64-linux.cdz-agent-host-native-live-net --print-build-logs
 
   rcdzc-wasm:
     # The Cadenza COMPILER as a WASM artifact (implementation/seed/crates/rcdzc-wasm, v-agent-harness

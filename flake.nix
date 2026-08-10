@@ -990,8 +990,50 @@
         # pkg-config + a cc up front makes it robust regardless of aws-lc-sys's build path (github-liaison
         # #2018). Build tools only — this changes THIS derivation's store-path/hash (as any input change
         # does in Nix), but produces no DOWNSTREAM consumed artifact (it's a lint+test check).
-        cdzAgentHostNativeCheck = pkgs.stdenv.mkDerivation {
-          pname = "cdz-agent-host-native";
+        # 2-WAY PARALLEL SPLIT (v-nix, operator 12-MRs/hr throughput target 2026-08-09; concierge + v-ft
+        # signed off). cdz-agent-host-native was the batch-gate LONG POLE (~10-12m): ONE derivation ran 8
+        # sequential cargo passes (test/clippy/fmt × default/admin/live-net/admin,live-net feature combos).
+        # Split into TWO derivations that nix builds CONCURRENTLY → wall ≈ max(half) not sum(8). Partitioned
+        # along the DEPENDENCY-divergence boundary (the key design point): the `live-net` feature closure
+        # pulls the heavy aws-sdk/aws-lc-sys(cmake) chain, default/admin do NOT (admin adds only tokio
+        # subfeatures). So the CORE half (default + admin) never compiles the aws chain, and the LIVE-NET
+        # half compiles it once — each half stays internally sequential (shares ONE target/ like today, so
+        # no dep-recompile blowup), and only 2 run concurrently (well under v-ft's NIX_GATE_MAX_JOBS=4
+        # box-saturation cap — a 4-way per-feature split would 4× the aws dep-compile + risk the cap). BOTH
+        # halves fold into localGate (v-ft constraint 1: no split-out check left un-gated) + expose as
+        # checks.<sys>; both are the AARCH64 variants (constraint 3). Coverage is IDENTICAL — the same 8
+        # passes, repartitioned. The env-gated e2e wiring (guest components + CDZ_STORE) is shared via the
+        # `agentHostEnvSetup` preamble so both halves run the same e2es they did before the split. Before/
+        # after gate-wall-time read from pr-sync's --json blocks bracketing this land (measure-after, per
+        # concierge's ruling — the split is coverage-identical so correctness is baseline-independent).
+        agentHostEnvSetup = ''
+          # cdz-agent-host has a GIT dependency (s2n-quic-dc-metrics) — mkCargoVendorEnv's default
+          # (merged = false) sources the vendor's own config.toml, which carries the git source-
+          # replacement stanza, so the offline build resolves the git crate from the vendor.
+          ${mkCargoVendorEnv { vendor = cdzAgentHostVendor; }}
+          cd implementation/seed/crates/cdz-agent-host
+          # Feed the pre-built, pre-validated guest components (my derivations) so the env-gated cedar
+          # authz + ComponentSessionFactory e2es RUN instead of skipping.
+          export CEDAR_POLICY_COMPONENT="${cedarGuest}"
+          export CDZ_REDUCER_COMPONENT="${reducerGuest}"
+          # signature-query part-1 E2E (#2711): reflect the lifted cadenza:syntax component; feed syntaxGuest
+          # so the CDZ_SYNTAX_COMPONENT-gated reflect E2E RUNS (unset → skips).
+          export CDZ_SYNTAX_COMPONENT="${syntaxGuest}"
+          # signature-query part-2 compose E2E (v-ah-host): feed the lifted consumer so the
+          # CDZ_SYNTAX_CONSUMER_COMPONENT-gated compose E2E RUNS (skip-when-either-unset).
+          export CDZ_SYNTAX_CONSUMER_COMPONENT="${consumerGuest}"
+          # seq-144 genesis tail: feed the compiled GENESIS Cadenza reducer + the value-heap store so
+          # v-ah-host's genesis round-trip E2E (host.rs real_genesis_reducer_folds_setup_events…) RUNS. The
+          # genesis reducer imports the value-heap runtime + transitive nfc, resolved by hash/name from
+          # CDZ_STORE (my hash-keyed componentStore). Distinct var from CDZ_REDUCER_COMPONENT.
+          export GENESIS_REDUCER_COMPONENT="${reducerCadenzaGenesis}"
+          # CDZ_STORE resolves the genesis reducer's value-heap runtime + transitive nfc.
+          export CDZ_STORE="${componentStore}"
+        '';
+        # The helper: one native-check half. `pname`/`passes` differ; everything else (src, the full stdenv
+        # C toolchain + cmake for aws-lc-sys, the env preamble) is shared. See the split note above.
+        mkAgentHostNative = { pname, passes }: pkgs.stdenv.mkDerivation {
+          inherit pname;
           version = "0.0.0";
           src = cdzAgentHostSrc;
           nativeBuildInputs = [ rustToolchain pkgs.cmake pkgs.pkg-config ];
@@ -1000,69 +1042,39 @@
           dontUseCmakeConfigure = true;
           buildPhase = ''
             runHook preBuild
-            # cdz-agent-host has a GIT dependency (s2n-quic-dc-metrics) — mkCargoVendorEnv's default
-            # (merged = false) sources the vendor's own config.toml, which carries the git source-
-            # replacement stanza, so the offline build resolves the git crate from the vendor.
-            ${mkCargoVendorEnv { vendor = cdzAgentHostVendor; }}
-            cd implementation/seed/crates/cdz-agent-host
-            # Feed the pre-built, pre-validated guest components (my derivations) so the env-gated cedar
-            # authz + ComponentSessionFactory e2es RUN instead of skipping.
-            export CEDAR_POLICY_COMPONENT="${cedarGuest}"
-            export CDZ_REDUCER_COMPONENT="${reducerGuest}"
-            # signature-query part-1 E2E (#2711, signature_query_e2e.rs): the host reflects the lifted
-            # cadenza:syntax component's exported funcs into a ComponentSignature. Feed my pre-validated
-            # syntaxGuest derivation so the CDZ_SYNTAX_COMPONENT-gated reflect E2E RUNS instead of skipping
-            # (unset → the test skips cleanly). Same shape as the cedar/reducer siblings above.
-            export CDZ_SYNTAX_COMPONENT="${syntaxGuest}"
-            # signature-query part-2 compose E2E (v-ah-host): the host blob.put's BOTH the dep
-            # (CDZ_SYNTAX_COMPONENT above) AND the consumer, then drives the ComponentReducer compose path
-            # so the consumer's +hash cadenza:syntax dep resolves + links, asserting the composed parse
-            # ran. Feed the lifted consumer component so that CDZ_SYNTAX_CONSUMER_COMPONENT-gated E2E RUNS
-            # (skip-when-either-unset). Parallel to CDZ_SYNTAX_COMPONENT, second var → consumerGuest.
-            export CDZ_SYNTAX_CONSUMER_COMPONENT="${consumerGuest}"
-            # seq-144 genesis tail: feed the compiled GENESIS Cadenza reducer component + the value-heap store
-            # so v-ah-host's genesis round-trip E2E (host.rs real_genesis_reducer_folds_setup_events…,
-            # skip-on-unset) RUNS instead of skipping. It drives the real reducer_genesis through the full async
-            # fold path, which now (kernel #2285 drive + #2290 kv-serving + #2298 fold→apply_handle_lowered
-            # routing, all on trunk) carries the guest's Kv.put through to session KV — so it asserts each setup
-            # payload lands under its genesis_ct KV key. The genesis reducer imports the value-heap runtime +
-            # transitive nfc, resolved by hash/name from CDZ_STORE (my hash-keyed componentStore ROOT DIR:
-            # <sha256hex>.wasm blobs + runtime.toml), same resolution as the b1/b2 kernel e2es. Distinct var from
-            # CDZ_REDUCER_COMPONENT (the Rust reducerGuest above); both set — the genesis test keys on GENESIS_REDUCER_COMPONENT.
-            export GENESIS_REDUCER_COMPONENT="${reducerCadenzaGenesis}"
-            # NOTE: no REDUCER_CADENZA_B2/B3 export here. #2315's full-agent-loop host-dispatch E2E
-            # (real_effect_reducer_runs_a_full_http_turn) was REMOVED (#2343): reducer_b2/b3 emit an Http effect
-            # with payload=None, which HttpExecutor rejects before dispatch, so a real host-DISPATCH turn can't
-            # be exercised by the available fixtures (the deliver-loop is covered by the native ClockAgent test +
-            # the genesis E2E). With that test gone, NO test reads REDUCER_CADENZA_B2/B3 here, so setting it would
-            # be a dead export (and a half-wired-panic footgun if the shared helper is reused). CDZ_STORE stays —
-            # the genesis E2E resolves reducerCadenzaGenesis's value-heap runtime + transitive nfc from it.
-            export CDZ_STORE="${componentStore}"
+            ${agentHostEnvSetup}
+            ${passes}
+            runHook postBuild
+          '';
+          installPhase = ''
+            runHook preInstall
+            echo "ok: ${pname}" > "$out"
+            runHook postInstall
+          '';
+        };
+        # CORE half: default + admin feature-sets (NO aws-sdk/live-net deps → no cmake-C aws-lc-sys build).
+        cdzAgentHostNativeCore = mkAgentHostNative {
+          pname = "cdz-agent-host-native-core";
+          passes = ''
             cargo test --locked
             cargo clippy --all-targets --locked -- -D warnings
             cargo fmt --check
             cargo test --locked --features admin
             cargo clippy --all-targets --locked --features admin -- -D warnings
-            cargo clippy --all-targets --locked --features live-net -- -D warnings
-            cargo clippy --all-targets --locked --features admin,live-net -- -D warnings
-            # live-net TEST coverage (v-nix 2026-08-09, v-ft/concierge GAP-2): the matrix above catches a
-            # live-net COMPILE break at CLIPPY, but the TEST run was admin-only, so a live-net RUNTIME/test
-            # break (a test that only fails with the real transports wired) could pass localGate + land
-            # (v-ah-host hit exactly this — a factory registration landed without its CanonicalResolver dep,
-            # E0433 only under live-net, invisible to the admin-only gate). SAFE in the hermetic sandbox: the
-            # live-net tests (tests/live_transport_e2e.rs) are ENV-GATED — they SKIP cleanly unless
-            # CDZ_LIVE_HTTP_URL / AWS creds are set (which the sandbox has NOT), so this COMPILES the live-net
-            # test targets (the real coverage) + the network tests skip without egress. No net dep, no flake.
-            cargo test --locked --features live-net
-            runHook postBuild
-          '';
-          installPhase = ''
-            runHook preInstall
-            echo "ok: cdz-agent-host native (test + clippy + fmt + feature matrix)" > "$out"
-            runHook postInstall
           '';
         };
-
+        # LIVE-NET half: the live-net + admin,live-net feature-sets (pulls the aws-sdk/aws-lc-sys chain once).
+        # Runs CONCURRENTLY with the core half. The live-net TEST (below) COMPILES the live-net test targets
+        # (the real GAP-2 coverage — a live-net-only compile break like the CanonicalResolver E0433 reds
+        # here); the network tests are ENV-GATED (CDZ_LIVE_HTTP_URL / AWS creds) so they SKIP without egress.
+        cdzAgentHostNativeLiveNet = mkAgentHostNative {
+          pname = "cdz-agent-host-native-live-net";
+          passes = ''
+            cargo clippy --all-targets --locked --features live-net -- -D warnings
+            cargo clippy --all-targets --locked --features admin,live-net -- -D warnings
+            cargo test --locked --features live-net
+          '';
+        };
         # ── N1: the value-heap runtime components AS input-addressed derivations (hash from output) ─
         #
         # `xtask build` produces TWO runtime components (build_component + canonicalize_runtime in
@@ -2230,7 +2242,7 @@
                 # advisory (exposed as a check but NOT in this fail-set).
                 inherit clippyShardA clippyShardB codegenCheck gateCheck guideExamplesCheck
                   benchCheck runtimeHashParity fmtCheck testCraneAggregate roundtripCheck
-                  cdzAgentHostNativeCheck cdzKernelNativeCheck mandateLintCheck;
+                  cdzAgentHostNativeCore cdzAgentHostNativeLiveNet cdzKernelNativeCheck mandateLintCheck;
               } ''
               echo "ok: local-gate — 9 merge-required contexts (ruleset-10 minus test-macos) + cdz-agent-host/kernel-native + mandate-lint, green on aarch64-nix" > $out
             '';
@@ -2320,7 +2332,8 @@
             # Full-CI-in-nix increment 4: the GHA cdz-kernel job (test + clippy + fmt + live-exec).
             cdz-kernel-native = cdzKernelNativeCheck;
             # Full-CI-in-nix increment 5: the GHA cdz-agent-host job (test + clippy + fmt + feature matrix).
-            cdz-agent-host-native = cdzAgentHostNativeCheck;
+            cdz-agent-host-native-core = cdzAgentHostNativeCore;
+            cdz-agent-host-native-live-net = cdzAgentHostNativeLiveNet;
             # Full-CI-in-nix increment 6b: the GHA codegen job (cargo xtask codegen --check, ABI staleness).
             codegen-check = codegenCheck;
             # Full-CI-in-nix increment 6c: the GHA gate job (cargo xtask gate --check — THE behavior gate).

@@ -124,7 +124,7 @@ jobs:
             .#packages.aarch64-linux.reducer-guest \
             .#packages.aarch64-linux.syntax-guest \
             --out-link guest-components-root --print-build-logs
-          nix build .#checks.aarch64-linux.cdz-agent-host-native --print-build-logs
+          nix build .#checks.aarch64-linux.cdz-agent-host-native-core .#checks.aarch64-linux.cdz-agent-host-native-live-net --print-build-logs
           nix build .#checks.aarch64-linux.cad-tests --print-build-logs
       # DRV-IN-SAVE-KEY (v-nix+v-ft 2026-08-06): compute the SAVE key with the seed-compiler's OUTPUT drv-hash
       # as a suffix ON AARCH64, so the key rotates WITH the payload. WHY: the seed-compiler drv rotates on every
