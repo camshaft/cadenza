@@ -461,6 +461,28 @@ each with doc + signature; the round-trip decodes. **Anchors:** `control/` query
 > migration note in D15/D14). Everything below in this section is that model; the seq367 note just states
 > it applies UNIVERSALLY, not only to extension families.
 
+> **The 6 kernel built-ins ARE the first schemas in the uniform model (seq367 step-2 fit-confirm,
+> 2026-08-10).** v-agent-harness authors the built-in schemas (`shell`/`http`/`model`/`now`/`timer`/
+> `emit`); they conform to THIS model, not a parallel kernel-only one. Confirmed fit (no model gap):
+> - **Single perform-op per built-in.** A built-in is `(effect http (op perform (-> Req Res)))` — ONE
+>   op, because it is one request→one result. The Weather `today`/`set` multi-op example was a STATEFUL
+>   handler with several operations; the model ALLOWS any op count but never MANDATES multi-op. Built-ins
+>   are genuinely "the first schemas in the uniform model, kernel-authored, single-op" — identical shape
+>   to a userspace effect. Derived from each built-in's existing `EffectRequest`/result shape.
+> - **Absent request/result = `Unit`.** `now = (op perform (-> Unit Timestamp))`, `emit = (op perform
+>   (-> EmitRequest Unit))` (fire-and-forget), `timer` likewise. `build_type` + the cdzast tree already
+>   encode `Unit` as a type, so a missing request or result side is just `Unit` — no special-case.
+> - **Minimal step-2 authz node; the full vocabulary stays deferred to I5.** The authz CONTRACT a
+>   built-in schema carries for step-2 is MINIMAL: (a) the action NAME, already the effect HEAD per
+>   D14=A (`(effect http …)`) — no separate node; plus (b) a declaration of WHICH request field is the
+>   SEC-F1 target the predicate gates (existing kernel authz = action + `ResourcePredicate.admits(&req.
+>   target)`; the only authz-relevant structural fact beyond the name is which field IS that target). The
+>   PREDICATE KIND (host/prefix/exact/Cedar-entity) is NOT baked into the schema — that is the external
+>   policy's + I5's concern (D15: authz CONTRACT in schema, authz POLICY external). So do NOT invent the
+>   full `(authz (target-predicate …))` vocabulary now; it is I5's to design and baking it would foreclose
+>   the deferred Cedar resource model. The step-2 node is just the target-field declaration, keeping the
+>   authz seam OPEN/PLUGGABLE (the I1–I4 constraint).
+
 This holds up and fits the platform's everything-hash-identified through-line (sessions = genesis hash,
 blobs = content hash, ws-conns = a hash). An effect's SCHEMA — the operation signatures + type contract
 that I11 already makes an introspectable, binary-AST artifact — gets a content **hash**, and that hash
