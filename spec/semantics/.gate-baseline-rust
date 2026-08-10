@@ -4591,6 +4591,7 @@ pass	an unsigned runtime value is not accepted by a signed segment of the same w
 pass	an unsigned segment reads the same sign-bit-only byte as 128
 pass	an unsigned-byte entrypoint takes and returns a u8 at the boundary
 pass	an untaken arm's overflowing operand does not trap under the operator hoist
+pass	an unused let binding whose init does not reduce to a value is elided but earns a CDZ0305 warning
 pass	an unused let binding whose init performs still advances the handler state
 pass	an unused let binding whose init would divide by zero is elided, so its trap does not occur
 pass	an unused let binding whose init would overflow is elided, so its trap does not occur

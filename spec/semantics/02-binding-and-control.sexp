@@ -5324,6 +5324,28 @@
   (output (: 42 Int64))
   (warns  CDZ0305 (message "always traps but its value is never used")))
 
+; The dead-COMPUTATION warning covers a computation with NO VALUE, not only a trapping one: the same
+; CDZ0305 code + elision applies when an unobserved init does not REDUCE to a value (a non-terminating or
+; explosively-growing reduction) — DCE consistency, an un-observed non-normalizing binding is elided
+; exactly as an un-observed trap is. The message differs (`does not reduce to a value` vs `always traps`),
+; so this is a distinct sub-face worth pinning. (The SAME term USED is a hard error, not a warning.)
+(case "an unused let binding whose init does not reduce to a value is elided but earns a CDZ0305 warning"
+  (doc    "The no-normal-form face of the dead-computation warning: `(let ((y ((fn (v0) (v0 v0)) (fn (v1)
+           (v1 (v1 v1)))))) 0)` binds `y` to a non-normalizing self-application (no normal form — the
+           reduction grows without bound), but the body returns the constant `0`, never referencing `y`.
+           `y`'s value is unobserved, so the fold ELIDES the binding rather than diverging — the program
+           compiles and yields 0 — AND the build surfaces the non-error CDZ0305 warning, whose message names
+           the non-normalizing reason (`does not reduce to a value`) rather than the trap wording of the
+           cases above. This is DCE consistency: an un-observed non-normalizing binding is elided exactly as
+           an un-observed trap is. (The SAME term USED — `… y` as the body — is a hard CDZ0999 error, the
+           component is DENIED; only the UNUSED case warns.) Wasm-graded (the run paths skip the (warns ..)
+           check, not fail it). Portable companion of the rcdzc
+           an_unused_non_normalizing_let_init_warns_but_still_compiles test, which additionally pins the
+           exactly-one count and the used-term-is-an-error contrast.")
+  (input  (do (def (main) (let ((y ((fn (v0) (v0 v0)) (fn (v1) (v1 (v1 v1)))))) 0)) (export main)))
+  (output (: 0 Int64))
+  (warns  CDZ0305 (message "does not reduce to a value")))
+
 ; ── The elision ruling is PURE-only: an unused binding whose init PERFORMS is NOT elidable ───────────
 ; The cases above establish that an unreferenced binding's init MAY be elided — for PURE inits, whose
 ; only observable is the value (and the trap observation would force). An init that PERFORMS an effect
