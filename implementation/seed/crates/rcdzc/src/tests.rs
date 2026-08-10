@@ -257,7 +257,7 @@ fn envelope_matches_wasm_encoder_oracle() {
 /// runtime function needs.
 #[test]
 fn parameterized_envelope_matches_wasm_encoder_oracle() {
-    use crate::backend::wasm::envelope::{BoundaryExport, BoundaryResult, assemble};
+    use crate::backend::wasm::envelope::{BoundaryExport, BoundaryParam, BoundaryResult, assemble};
     // A core module with one `(i64, i64) -> i64` function returning param 0 + param 1.
     let core = {
         use wasm_encoder::*;
@@ -321,7 +321,10 @@ fn parameterized_envelope_matches_wasm_encoder_oracle() {
         &core,
         &[BoundaryExport {
             name: "add".to_string(),
-            params: vec![0x78, 0x78], // two s64 params
+            params: vec![
+                BoundaryParam::Primitive(0x78),
+                BoundaryParam::Primitive(0x78),
+            ], // two s64 params
             result: BoundaryResult::Primitive(0x78),
         }],
         &[],
@@ -336,7 +339,7 @@ fn parameterized_envelope_matches_wasm_encoder_oracle() {
 /// `(p0: u8, p1: s16) -> s8` over a `(i32, i32) -> i32` core covers three of the four narrow primitives.
 #[test]
 fn narrow_primitive_envelope_matches_wasm_encoder_oracle() {
-    use crate::backend::wasm::envelope::{BoundaryExport, BoundaryResult, assemble};
+    use crate::backend::wasm::envelope::{BoundaryExport, BoundaryParam, BoundaryResult, assemble};
     // A minimal `(i32, i32) -> i32` core — the machine signature a narrow-width export lowers to (a
     // ≤32-bit value occupies an i32 slot; the ABI lifts it to the narrow primitive at the edge).
     let core = {
@@ -399,7 +402,7 @@ fn narrow_primitive_envelope_matches_wasm_encoder_oracle() {
         &core,
         &[BoundaryExport {
             name: "f".to_string(),
-            params: vec![0x7D, 0x7C],                // u8, s16
+            params: vec![BoundaryParam::Primitive(0x7D), BoundaryParam::Primitive(0x7C)], // u8, s16
             result: BoundaryResult::Primitive(0x7E), // s8
         }],
         &[],
@@ -92128,7 +92131,7 @@ mod cross_component_oracle {
     /// wrap them as an inner component via `component_raw`.
     fn consumer_component_b_via_envelope() -> Vec<u8> {
         use crate::backend::wasm::envelope::{
-            BoundaryExport, BoundaryResult, HostFn, assemble_extern,
+            BoundaryExport, BoundaryParam, BoundaryResult, HostFn, assemble_extern,
         };
         use crate::backend::wasm::wasm_abi::{COMP_FUNCTYPE_FORM, COMP_S32};
         // The peer op `f`'s component functype item: `[FORM] <1 param: p0:s32> <result: s32>`.
@@ -92150,7 +92153,7 @@ mod cross_component_oracle {
         }];
         let exports = [BoundaryExport {
             name: "main".to_string(),
-            params: vec![COMP_S32],
+            params: vec![BoundaryParam::Primitive(COMP_S32)],
             result: BoundaryResult::Primitive(COMP_S32),
         }];
         assemble_extern(

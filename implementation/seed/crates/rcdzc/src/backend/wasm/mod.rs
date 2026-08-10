@@ -797,7 +797,9 @@ pub fn emit(
                         ty.render_name(&db.name_ctx())
                     ))
                 })?;
-                params.push(av.comp_byte());
+                params.push(crate::backend::wasm::envelope::BoundaryParam::Primitive(
+                    av.comp_byte(),
+                ));
             }
             boundary.push(BoundaryExport {
                 name: e.name.clone(),
@@ -844,7 +846,7 @@ pub fn emit(
                                     ty.render_name(&db.name_ctx())
                                 ))
                             })?;
-                        params.push(vt);
+                        params.push(crate::backend::wasm::envelope::BoundaryParam::Primitive(vt));
                     }
                     params
                 },
@@ -926,7 +928,7 @@ pub fn emit(
             let vt = serialize::export_result_valtype(ty, &db.name_ctx())
                 .map_err(Reject::decline)?
                 .ok_or_else(|| Reject::decline("a parameter type has no component valtype"))?;
-            params.push(vt);
+            params.push(crate::backend::wasm::envelope::BoundaryParam::Primitive(vt));
         }
         boundary.push(BoundaryExport {
             name: e.name.clone(),

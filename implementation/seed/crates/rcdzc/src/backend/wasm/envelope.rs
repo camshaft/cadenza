@@ -121,11 +121,27 @@ pub enum BoundaryResult {
     Bytes,
 }
 
-/// One export as the envelope assembler needs it: its verbatim boundary name, its parameter component
-/// valtype bytes (in order; empty for a nullary export), and its result form (see [`BoundaryResult`]).
+/// One export PARAMETER as the boundary crosses it. A scalar crosses as a component primitive valtype
+/// byte (inline); a `list<u8>` crosses as a reference to the shared `list u8` defined type (the reducer
+/// fold `apply`'s `event` param — the only non-scalar export param, B3's byte ABI). Mirrors
+/// [`BoundaryResult`] on the param side: the result side already distinguishes an inline primitive from
+/// the `list u8` defined type, and a `list<u8>` PARAM needs the same distinction to survive to the
+/// functype encoder (an inline primitive byte vs a signed-LEB type-index reference) and to the canon-lift
+/// (a `list<u8>` param binds the shared Memory, like a `list<u8>` result binds Memory+Realloc).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum BoundaryParam {
+    /// A component primitive valtype byte (`s64`/`u32`/`bool`/…) — a scalar param, inline.
+    Primitive(u8),
+    /// A `list<u8>` — references the shared `list u8` defined type (component type index 0). The reducer
+    /// fold `apply`'s `event` param.
+    ListU8,
+}
+
+/// One export as the envelope assembler needs it: its verbatim boundary name, its parameter forms (in
+/// order; empty for a nullary export — see [`BoundaryParam`]), and its result form (see [`BoundaryResult`]).
 pub struct BoundaryExport {
     pub name: String,
-    pub params: Vec<u8>,
+    pub params: Vec<BoundaryParam>,
     pub result: BoundaryResult,
 }
 
@@ -8924,11 +8940,27 @@ fn op_comp_functype(op: &RtOp) -> Vec<u8> {
 fn comp_functype(e: &BoundaryExport, list_type_idx: u32) -> Vec<u8> {
     let mut item = vec![wasm_abi::COMP_FUNCTYPE_FORM]; // function type form
     let mut param_items = Vec::new();
-    for (i, &vt) in e.params.iter().enumerate() {
-        let pname = format!("p{i}");
+    for (i, p) in e.params.iter().enumerate() {
+        // The reducer fold `apply`'s sole param is named `event` (matching reducer.wit); every other
+        // export's params are positional `p{i}`. The name is cosmetic to the ABI, but pinned so the
+        // reducer functype byte-matches the kernel's expectation.
+        let pname = match p {
+            BoundaryParam::ListU8 => "event".to_string(),
+            BoundaryParam::Primitive(_) => format!("p{i}"),
+        };
         param_items.extend_from_slice(&uleb_bytes(pname.len() as u64));
         param_items.extend_from_slice(pname.as_bytes());
-        param_items.push(vt);
+        match p {
+            // A scalar param is its own valtype byte, inline.
+            BoundaryParam::Primitive(vt) => param_items.push(*vt),
+            // A `list<u8>` param references the shared `list u8` defined type as a component valtype = a
+            // SIGNED-LEB128 type index (`wasm_encoder`'s `ComponentValType::Type(i) => (i as i64).encode`,
+            // the same encoding a nested-tuple field uses — distinct from the inline primitive-byte range
+            // 0x64..=0x7f, and distinct from the result reference which is a bare uleb after the form tag).
+            BoundaryParam::ListU8 => {
+                crate::backend::wasm::encode::sleb128(list_type_idx as i64, &mut param_items)
+            }
+        }
     }
     item.extend_from_slice(&wasm_vec(e.params.len(), &param_items));
     match e.result {
@@ -8941,31 +8973,6 @@ fn comp_functype(e: &BoundaryExport, list_type_idx: u32) -> Vec<u8> {
         }
         BoundaryResult::None => item.extend_from_slice(&[0x01, 0x00]),
     }
-    item
-}
-
-/// The sec-7 component functype for the REDUCER fold `apply`: `func(event: list<u8>) -> list<u8>`
-/// (B3's byte ABI). BOTH the single param `event` AND the result reference the shared `list u8` defined
-/// type (`list_type_idx`, laid by [`list_u8_defined_type`] at component-type index 0). The param
-/// references it as a component valtype = a SIGNED LEB128 of the type index (`wasm_encoder`'s
-/// `ComponentValType::Type(i) => (i as i64).encode` — the SAME encoding a nested-tuple field uses in
-/// [`mint_tuple_type_nested`], distinct from the inline primitive-byte range 0x64..=0x7f); the result
-/// references it as a bare uleb after the one-result form tag `0x00` (exactly as a `BoundaryResult::Bytes`
-/// export result does in [`comp_functype`]). A small positive index is one byte either way, but the
-/// encodings are kept distinct so a larger index still matches the oracle. Byte-neutral: pins the functype
-/// item shape (like `closure_call_functype_encodes_the_call_method_shape`) so the assembled-component
-/// wiring increment builds on a checked primitive.
-fn reducer_apply_functype(list_type_idx: u32) -> Vec<u8> {
-    let mut item = vec![wasm_abi::COMP_FUNCTYPE_FORM]; // 0x40 functype form
-    // One param `event`, whose valtype is the `list u8` defined type referenced as a signed-LEB type index.
-    let mut param_items = Vec::new();
-    param_items.extend_from_slice(&uleb_bytes("event".len() as u64));
-    param_items.extend_from_slice(b"event");
-    crate::backend::wasm::encode::sleb128(list_type_idx as i64, &mut param_items);
-    item.extend_from_slice(&wasm_vec(1, &param_items));
-    // One result, the same `list u8` defined type referenced as a bare uleb after the one-result form tag.
-    item.push(0x00);
-    uleb128(list_type_idx as u64, &mut item);
     item
 }
 
@@ -9658,16 +9665,21 @@ mod closure_resource_tests {
     }
 
     /// B3 (byte-neutral): the reducer fold `apply` functype `func(event: list<u8>) -> list<u8>` encodes
-    /// to the exact component-model bytes — form `0x40`, a one-param vec `[event : <list-type-idx>]` where
-    /// the param valtype is the `list u8` DEFINED type referenced as a SIGNED-LEB type index (NOT an
-    /// inline primitive byte — the novel piece: a `list<u8>` PARAM, which no export took before B3), then
-    /// result `00 <list-type-idx>` (the same defined type as a bare uleb, exactly a `BoundaryResult::Bytes`
-    /// result). Pins the item shape so the assembled-component wiring increment (reshaping the reducer
-    /// `apply` export) builds on a checked primitive, as the closure/value-resource functype tests did.
+    /// to the exact component-model bytes through the GENERAL `comp_functype` — form `0x40`, a one-param
+    /// vec `[event : <list-type-idx>]` where the param valtype is the `list u8` DEFINED type referenced as
+    /// a SIGNED-LEB type index (NOT an inline primitive byte — the novel piece: a `BoundaryParam::ListU8`
+    /// param, which no export took before B3), then result `00 <list-type-idx>` (the same defined type as
+    /// a bare uleb, a `BoundaryResult::Bytes` result). Drives `comp_functype` directly (no special-case
+    /// builder — the param-kind enum folds the reducer apply into the general path).
     #[test]
     fn reducer_apply_functype_encodes_the_list_param_and_result_shape() {
         // The shared `list u8` defined type is component-type index 0 (see `list_u8_defined_type`).
-        let got = reducer_apply_functype(0);
+        let apply0 = BoundaryExport {
+            name: "apply".to_string(),
+            params: vec![BoundaryParam::ListU8],
+            result: BoundaryResult::Bytes,
+        };
+        let got = comp_functype(&apply0, 0);
         let want: Vec<u8> = vec![
             wasm_abi::COMP_FUNCTYPE_FORM, // 0x40 functype form
             0x01,                         // param count = 1 (event only)
@@ -9688,7 +9700,7 @@ mod closure_resource_tests {
 
         // A larger type index proves the two encodings stay well-formed (both single-byte for idx 5, but
         // the param is sleb128 and the result is uleb128 — distinct paths, verified to agree here).
-        let got5 = reducer_apply_functype(5);
+        let got5 = comp_functype(&apply0, 5);
         let want5: Vec<u8> = vec![
             wasm_abi::COMP_FUNCTYPE_FORM,
             0x01,
