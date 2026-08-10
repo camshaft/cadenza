@@ -22281,3 +22281,50 @@
   (call   main (: 0 Int64)) (output (: 12 Int64))
   (call   main (: 5 Int64)) (output (: 38 Int64))
   (call   main (: -7 Int64)) (output (: -28 Int64)))
+
+
+; ── String REASONS inside crossing Result sums (breaker sr2/sr3) ──────────────────────────────
+; A Result-typed op whose Err carries a STRING reason, discriminated by string EQUALITY in the
+; body's consumer closure. sr2 uses a literal reason; sr3 BUILDS the reason in the arm —
+; String.concat of a prefix and a sign-picked tag — and matches it against literals in the body
+; (the built-vs-literal equality face inside a sum crossing the dispatch boundary). All rows
+; hand-computed; all pass on wasm, rust, and rust-async.
+
+(case "sr2 a Result-typed op whose Err carries a STRING reason — the body matches Ok payload vs the reason by string equality"
+  (input  (do
+            (type Res (Ok Int64) (Err String))
+            (effect E (op step (-> Res)))
+            (def (main (: n Int64))
+              (handle E n
+                ((step () s
+                  (resume (if (= (% s 2) 0) (Res.Ok s) (Res.Err "odd")) (+ s 3))))
+                (let ((score (fn ((: r Res))
+                               (match r
+                                 ((Res.Ok v) v)
+                                 ((Res.Err why) (if (= why "odd") 7 1))))))
+                  (+ (* 10 (score (E.step))) (score (E.step))))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 27 Int64))
+  (call   main (: 1 Int64)) (output (: 74 Int64))
+  (call   main (: -4 Int64)) (output (: -33 Int64)))
+
+(case "sr3 the Err reason is BUILT in the arm — String.concat of a prefix and a sign-picked tag, matched against literals in the body"
+  (input  (do
+            (type Res (Ok Int64) (Err String))
+            (effect E (op step (-> Res)))
+            (def (main (: n Int64))
+              (handle E n
+                ((step () s
+                  (resume (if (= (% s 2) 0)
+                              (Res.Ok s)
+                              (Res.Err (String.concat "e-" (if (< s 0) "lo" "hi"))))
+                          (+ s 3))))
+                (let ((score (fn ((: r Res))
+                               (match r
+                                 ((Res.Ok v) v)
+                                 ((Res.Err why) (if (= why "e-lo") 3 9))))))
+                  (+ (* 10 (score (E.step))) (score (E.step))))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 94 Int64))
+  (call   main (: -3 Int64)) (output (: 30 Int64))
+  (call   main (: -4 Int64)) (output (: -37 Int64)))

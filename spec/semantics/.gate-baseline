@@ -7151,3 +7151,5 @@ pass	cr2 RETRY-until-success — a recursive driver re-runs a conditionally-abor
 pass	cr3 a BOUNDED retry budget — two attempts then give up, the fallback negating the last failed attempt
 pass	bd1 the arm CLASSIFIES its state into a tri-band SUM — the body matches Lo/Mid/Hi per dispatch as the thread climbs through the bands
 pass	bd2 the scoring CLOSURE captures a DRAW — the weight itself comes from the thread before the classified reads
+pass	sr2 a Result-typed op whose Err carries a STRING reason — the body matches Ok payload vs the reason by string equality
+pass	sr3 the Err reason is BUILT in the arm — String.concat of a prefix and a sign-picked tag, matched against literals in the body
