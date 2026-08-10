@@ -280,7 +280,9 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     })
                 })
                 .collect();
-            Core::BytesOf { elems }
+            Core::BytesOf {
+                elems: elems.into(),
+            }
         }
         // A `(bin …)` construction in value position → the assembled byte sequence. On all-constant
         // segments it FOLDS to a `Core::BytesOf` of the emitted bytes (bakes at escape, compares/slices as
@@ -586,9 +588,9 @@ fn compute(db: &mut Db, id: StructId) -> Core {
             if let Some(r) = reduction_bound_element(db, &elems) {
                 return Core::Poison(r);
             }
-            Core::Tuple {
-                elems: elems.to_vec(),
-            }
+            // `Resolved::Tuple.elems` is already `Rc<[StructId]>`, so pass the shared slice straight
+            // through to `Core::Tuple` — a move (no copy), and Core clones become refcount bumps.
+            Core::Tuple { elems }
         }
         // A list literal — a `Core::ListNew` the backend builds on the persistent `vec-*` heap. (Unlike a
         // tuple, a list has no projection-fold: `List.len`/`List.at` are operations, not a static index.)
@@ -596,9 +598,8 @@ fn compute(db: &mut Db, id: StructId) -> Core {
             if let Some(r) = reduction_bound_element(db, &elems) {
                 return Core::Poison(r);
             }
-            Core::ListNew {
-                elems: elems.to_vec(),
-            }
+            // `Resolved::List.elems` is already `Rc<[StructId]>` — pass the shared slice through.
+            Core::ListNew { elems }
         }
         // A map literal `(map (k v) …)` — a `Core::MapNew` the backend builds on the persistent CHAMP
         // `map-*` heap (`map-empty` + a `map-insert` per entry, in source order). The key/value types come
@@ -1725,10 +1726,11 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                         // with the element APPENDED — a constant list (bakes at escape / folds through
                         // `List.at`/`len`), exactly as a written `(list …)`. The pushed element's own
                         // occurrence (`args[1]`) carries over regardless of whether IT is constant.
-                        (Core::ListNew { elems: mut a }, _) => {
+                        (Core::ListNew { elems: a }, _) => {
+                            let mut a = a.to_vec();
                             a.push(args[1]);
                             trace!(target: "rcdzc::fold", node = id.0, len = a.len(), "List.push folds onto a constant list");
-                            Core::ListNew { elems: a }
+                            Core::ListNew { elems: a.into() }
                         }
                         // A runtime list — the persistent `vec-push` on the heap.
                         _ => Core::ListPush {
@@ -1816,10 +1818,11 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                         // that bakes at escape / folds through `List.at`/`len`, exactly as a written
                         // `(list …)` does. `List Int64` concat `List Int64` → `List Int64`; the element
                         // occurrences carry over unchanged (they keep their own types).
-                        (Core::ListNew { elems: mut a }, Core::ListNew { elems: b }) => {
-                            a.extend(b);
+                        (Core::ListNew { elems: a }, Core::ListNew { elems: b }) => {
+                            let mut a = a.to_vec();
+                            a.extend(b.iter().copied());
                             trace!(target: "rcdzc::fold", node = id.0, len = a.len(), "List.concat folds two constant lists");
-                            Core::ListNew { elems: a }
+                            Core::ListNew { elems: a.into() }
                         }
                         // A runtime list operand — the persistent `vec-concat` on the heap.
                         _ => Core::ListConcat {
@@ -1846,22 +1849,21 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                         // OOB, so the compiler proves it and FAILS the build (CDZ0304), never ships a
                         // trapping component (numeric-model.md §A Constant Operation With No Value Is
                         // Rejected At Compile Time). The replacement element's own occurrence carries over.
-                        (Core::ListNew { elems: mut a }, Core::ConstInt(i), _) => {
-                            match i.to_i64() {
-                                Some(n) if n >= 0 && (n as usize) < a.len() => {
-                                    a[n as usize] = args[2];
-                                    trace!(target: "rcdzc::fold", node = id.0, index = n, "List.update folds (in-range constant index)");
-                                    Core::ListNew { elems: a }
-                                }
-                                _ => {
-                                    trace!(target: "rcdzc::fold", node = id.0, "List.update out-of-range constant index → CDZ0304");
-                                    Core::Poison(Reject::coded(
-                                        Code::ConstTrap,
-                                        "List.update index is out of bounds (a constant out-of-range update traps)",
-                                    ))
-                                }
+                        (Core::ListNew { elems: a }, Core::ConstInt(i), _) => match i.to_i64() {
+                            Some(n) if n >= 0 && (n as usize) < a.len() => {
+                                let mut a = a.to_vec();
+                                a[n as usize] = args[2];
+                                trace!(target: "rcdzc::fold", node = id.0, index = n, "List.update folds (in-range constant index)");
+                                Core::ListNew { elems: a.into() }
                             }
-                        }
+                            _ => {
+                                trace!(target: "rcdzc::fold", node = id.0, "List.update out-of-range constant index → CDZ0304");
+                                Core::Poison(Reject::coded(
+                                    Code::ConstTrap,
+                                    "List.update index is out of bounds (a constant out-of-range update traps)",
+                                ))
+                            }
+                        },
                         // A runtime list or index — the persistent `vec-update` on the heap.
                         _ => Core::ListUpdate {
                             list: args[0],
@@ -2647,7 +2649,9 @@ fn lower_ast_splice_lift(db: &mut Db, id: StructId, elems: &[StructId]) -> Optio
         );
         wrapped.push(node);
     }
-    Some(Core::ListNew { elems: wrapped })
+    Some(Core::ListNew {
+        elems: wrapped.into(),
+    })
 }
 
 /// Lower `ast-lift` (`∀a. a → Ast`) — the RUNTIME active-unquote lift. Wrap the operand's value in the
@@ -2791,7 +2795,7 @@ fn lower_ast_encode(db: &mut Db, id: StructId, ast_val: StructId) -> Core {
     }
     trace!(target: "rcdzc::fold", node = id.0, len = bytes.len(), "Ast.encode folds a constant AST to its canonical bytes");
     Core::BytesOf {
-        elems: bytes_to_elems(db, &bytes),
+        elems: bytes_to_elems(db, &bytes).into(),
     }
 }
 
@@ -2883,7 +2887,7 @@ fn print_ast_value(db: &mut Db, node: StructId, disc: &AstDiscs, out: &mut Strin
             return None;
         };
         out.push_str("b\"");
-        for e in &elems {
+        for e in elems.iter() {
             let Core::ConstInt(v) = core_of(db, *e) else {
                 return None;
             };
@@ -3116,14 +3120,20 @@ fn reify_read_ast(db: &mut Db, node: &SNode, disc: &AstDiscs) -> Core {
             // raw bytes (the same shape `b"…"`/`Bytes.of` build, and the shape `decode_ast_value`'s bytes
             // arm produces), so `read(print v) == v` for a bytes node. Typed `Ty::Bytes`.
             let elems = bytes_to_elems(db, raw);
-            let payload = synth_core(db, Core::BytesOf { elems }, crate::ty::Ty::Bytes);
+            let payload = synth_core(
+                db,
+                Core::BytesOf {
+                    elems: elems.into(),
+                },
+                crate::ty::Ty::Bytes,
+            );
             Core::SumNew {
                 disc: disc.bytes,
                 payloads: vec![payload],
             }
         }
         SNode::List(items) => {
-            let elems = items
+            let elems: Vec<StructId> = items
                 .iter()
                 .map(|e| {
                     let core = reify_read_ast(db, e, disc);
@@ -3132,7 +3142,9 @@ fn reify_read_ast(db: &mut Db, node: &SNode, disc: &AstDiscs) -> Core {
                 .collect();
             let payload = synth_core(
                 db,
-                Core::ListNew { elems },
+                Core::ListNew {
+                    elems: elems.into(),
+                },
                 crate::ty::Ty::List(Box::new(disc.ty.clone())),
             );
             Core::SumNew {
@@ -3494,7 +3506,7 @@ fn encode_ast_value(db: &mut Db, node: StructId, disc: &AstDiscs, out: &mut Vec<
         };
         out.push(AST_TAG_LIST);
         out.extend_from_slice(&(u32::try_from(elems.len()).ok()?).to_le_bytes());
-        for e in elems {
+        for e in elems.iter().copied() {
             encode_ast_value(db, e, disc, out)?;
         }
         Some(())
@@ -3508,7 +3520,7 @@ fn encode_ast_value(db: &mut Db, node: StructId, disc: &AstDiscs, out: &mut Vec<
             return None;
         };
         let mut raw = Vec::with_capacity(elems.len());
-        for e in elems {
+        for e in elems.iter().copied() {
             let Core::ConstInt(v) = core_of(db, e) else {
                 return None;
             };
@@ -3563,7 +3575,7 @@ fn lower_ast_decode(db: &mut Db, id: StructId, bytes: StructId) -> Core {
         ));
     };
     let mut raw = Vec::with_capacity(elems.len());
-    for e in elems {
+    for e in elems.iter().copied() {
         match core_of(db, e) {
             Core::ConstInt(v) => match v.to_i64() {
                 Some(n) if (0..=255).contains(&n) => raw.push(n as u8),
@@ -3885,7 +3897,13 @@ fn decode_ast_value(db: &mut Db, raw: &[u8], disc: &AstDiscs) -> Option<(StructI
             let end = 4usize.checked_add(len)?;
             let raw_bytes = rest.get(4..end)?.to_vec();
             let elems = bytes_to_elems(db, &raw_bytes);
-            let payload = synth_core(db, Core::BytesOf { elems }, crate::ty::Ty::Bytes);
+            let payload = synth_core(
+                db,
+                Core::BytesOf {
+                    elems: elems.into(),
+                },
+                crate::ty::Ty::Bytes,
+            );
             let node = synth_core(
                 db,
                 Core::SumNew {
@@ -3908,7 +3926,9 @@ fn decode_ast_value(db: &mut Db, raw: &[u8], disc: &AstDiscs) -> Option<(StructI
             }
             let payload = synth_core(
                 db,
-                Core::ListNew { elems },
+                Core::ListNew {
+                    elems: elems.into(),
+                },
                 crate::ty::Ty::List(Box::new(disc.ty.clone())),
             );
             let node = synth_core(
@@ -5302,10 +5322,10 @@ pub(crate) fn sroa_tuple_scrutinee_candidate(
     // via `sroa_let_wrap` below, so the kept bindings are actually emitted. Self-keyed (`(elem, elem)`): no
     // synthetic binder needed — the element's own occurrence is the binding key (the bin-match
     // materialize-once idiom at `lower_match_sum`).
-    for &elem in &elems {
+    for &elem in elems.iter() {
         db.kept_bindings.insert(elem);
     }
-    Some(elems)
+    Some(elems.to_vec())
 }
 
 /// Wrap a SROA dispatch `body` in the `Core::Let` that binds the tuple's elements (the `elems` returned by
@@ -5365,8 +5385,8 @@ fn sink_ctor_through_match_arms(
         // separate check), 1=Tuple, 2=List, 3=Record. The disc/keys are compared separately below.
         match core_of(db, body) {
             Core::SumNew { disc: _, payloads } => Some((0, payloads)),
-            Core::Tuple { elems } => Some((1, elems)),
-            Core::ListNew { elems } => Some((2, elems)),
+            Core::Tuple { elems } => Some((1, elems.to_vec())),
+            Core::ListNew { elems } => Some((2, elems.to_vec())),
             Core::Record { fields } => Some((3, fields.values().copied().collect())),
             _ => None,
         }
@@ -5375,8 +5395,8 @@ fn sink_ctor_through_match_arms(
     let first_body = probes[0].2;
     let (shape, first_vals): (Shape, Vec<StructId>) = match core_of(db, first_body) {
         Core::SumNew { disc, payloads } => (Shape::Sum(disc), payloads),
-        Core::Tuple { elems } => (Shape::Tuple, elems),
-        Core::ListNew { elems } => (Shape::List, elems),
+        Core::Tuple { elems } => (Shape::Tuple, elems.to_vec()),
+        Core::ListNew { elems } => (Shape::List, elems.to_vec()),
         Core::Record { fields } => {
             let keys: Vec<crate::resolved::Symbol> = fields.keys().cloned().collect();
             let vals: Vec<StructId> = keys.iter().map(|k| fields[k]).collect();
@@ -5443,8 +5463,12 @@ fn sink_ctor_through_match_arms(
             disc,
             payloads: out_vals,
         },
-        Shape::Tuple => Core::Tuple { elems: out_vals },
-        Shape::List => Core::ListNew { elems: out_vals },
+        Shape::Tuple => Core::Tuple {
+            elems: out_vals.into(),
+        },
+        Shape::List => Core::ListNew {
+            elems: out_vals.into(),
+        },
         Shape::Record(keys) => Core::Record {
             fields: std::rc::Rc::new(keys.into_iter().zip(out_vals).collect()),
         },
@@ -8063,7 +8087,7 @@ fn fold_sum_path(db: &mut Db, root: StructId, steps: &[crate::core::PathStep]) -
             // elements (from index `k`) — a synthesized node so the tail sublist is itself constant.
             (PathStep::RestFrom(k), Core::ListNew { elems }) => {
                 let tail: Vec<StructId> = elems.iter().skip(*k).copied().collect();
-                return Some(Core::ListNew { elems: tail });
+                return Some(Core::ListNew { elems: tail.into() });
             }
             _ => return None,
         };
@@ -11436,7 +11460,7 @@ fn const_at_path(db: &mut Db, scrutinee: StructId, path: &[crate::core::PathStep
             // elements (from index `k`) — a synthesized node so the tail sublist is itself constant.
             (PathStep::RestFrom(k), Core::ListNew { elems }) => {
                 let tail: Vec<StructId> = elems.iter().skip(*k).copied().collect();
-                return Some(Core::ListNew { elems: tail });
+                return Some(Core::ListNew { elems: tail.into() });
             }
             _ => return None,
         };
@@ -15349,7 +15373,7 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
         Core::Tuple { elems } => {
             let head = b.name("tuple");
             let mut children = vec![head];
-            for e in elems {
+            for e in elems.iter().copied() {
                 children.push(const_value_ast(db, b, e)?);
             }
             Some(b.list(children))
@@ -15380,7 +15404,7 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
         Core::ListNew { elems } => {
             let head = b.name("list");
             let mut children = vec![head];
-            for e in elems {
+            for e in elems.iter().copied() {
                 children.push(const_value_ast(db, b, e)?);
             }
             Some(b.list(children))
@@ -15440,7 +15464,7 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
         //= spec/capabilities/collections-and-text.md#set-iteration-is-deterministic
         //# The order in which a set's elements are visited MUST agree with the order its canonical byte form places them in.
         Core::SetOf { elems, .. } => {
-            let mut sorted: Vec<StructId> = elems.clone();
+            let mut sorted: Vec<StructId> = elems.to_vec();
             let mut orderable = true;
             sorted.sort_by(|&x, &y| {
                 const_key_order(db, x, y).unwrap_or_else(|| {
@@ -15499,7 +15523,7 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
         // every element here folds to a `ConstInt` in range.
         Core::BytesOf { elems } => {
             let mut raw = Vec::with_capacity(elems.len());
-            for e in elems {
+            for e in elems.iter().copied() {
                 match core_of(db, e) {
                     Core::ConstInt(v) => {
                         raw.push(v.to_i64().filter(|n| (0..=255).contains(n))? as u8)
@@ -19045,7 +19069,7 @@ pub(crate) fn is_trap_free(db: &mut Db, id: StructId) -> bool {
         // NOT trap-free, so the fold declines and the runtime op preserves the element's trap.)
         Core::Record { fields } => fields.values().copied().all(|v| is_trap_free(db, v)),
         Core::Tuple { elems } | Core::ListNew { elems } => {
-            elems.into_iter().all(|e| is_trap_free(db, e))
+            elems.iter().copied().all(|e| is_trap_free(db, e))
         }
         Core::SumNew { payloads, .. } => payloads.into_iter().all(|p| is_trap_free(db, p)),
         // Bitwise ops are total; a comparison never traps — trap-free if their operands are. The WRAPPING
@@ -19294,18 +19318,20 @@ fn hoist_common_ctor(
             ) if dt == de && pt.len() == pe.len() => {
                 (Shape::Sum(dt), pt.into_iter().zip(pe).collect())
             }
-            (Core::Tuple { elems: et }, Core::Tuple { elems: ee }) if et.len() == ee.len() => {
-                (Shape::Tuple, et.into_iter().zip(ee).collect())
-            }
+            (Core::Tuple { elems: et }, Core::Tuple { elems: ee }) if et.len() == ee.len() => (
+                Shape::Tuple,
+                et.iter().copied().zip(ee.iter().copied()).collect(),
+            ),
             // A LIST is positional like a tuple, but a list's LENGTH is part of its value (two lists of
             // different lengths are distinct values, not a common constructor) — so the same-length guard
             // both aligns the elements AND is a genuine value check. A list is HOMOGENEOUS (one element
             // type), so a per-element `(if c eᵢ fᵢ)` is well-typed. The backend builds it `vec-empty` +
             // per-element `vec-push`; hoisting shares that whole chain and selects only the differing
             // element, exactly as the tuple arm shares the `arr-alloc` + stores.
-            (Core::ListNew { elems: et }, Core::ListNew { elems: ee }) if et.len() == ee.len() => {
-                (Shape::List, et.into_iter().zip(ee).collect())
-            }
+            (Core::ListNew { elems: et }, Core::ListNew { elems: ee }) if et.len() == ee.len() => (
+                Shape::List,
+                et.iter().copied().zip(ee.iter().copied()).collect(),
+            ),
             (Core::Record { fields: ft }, Core::Record { fields: fe })
                 if ft.len() == fe.len() && ft.keys().zip(fe.keys()).all(|(a, b)| a == b) =>
             {
@@ -19362,8 +19388,8 @@ fn hoist_common_ctor(
             disc,
             payloads: vals,
         },
-        Shape::Tuple => Core::Tuple { elems: vals },
-        Shape::List => Core::ListNew { elems: vals },
+        Shape::Tuple => Core::Tuple { elems: vals.into() },
+        Shape::List => Core::ListNew { elems: vals.into() },
         Shape::Record(keys) => Core::Record {
             fields: std::rc::Rc::new(keys.into_iter().zip(vals).collect()),
         },
@@ -21840,7 +21866,7 @@ pub(crate) fn const_compound_eq(db: &mut Db, a: StructId, b: StructId) -> Option
             if ea.len() != eb.len() {
                 return Some(false);
             }
-            for &x in &ea {
+            for &x in ea.iter() {
                 if !set_has_const_elem(db, &eb, x) {
                     return Some(false);
                 }
@@ -22184,9 +22210,7 @@ fn lower_sum_new(db: &mut Db, id: StructId, head: StructId, args: &[StructId]) -
         return match args.len() {
             0 => Core::Unit,
             1 => core_of(db, args[0]),
-            _ => Core::Tuple {
-                elems: args.to_vec(),
-            },
+            _ => Core::Tuple { elems: args.into() },
         };
     }
     // A NULLARY variant is CONSTRUCTED by applying it to the unit value — `(None unit)` / `(Nil ())` —
@@ -22385,9 +22409,9 @@ fn success_disc_of(db: &mut Db, id: StructId) -> Option<u32> {
 // misread — there is no recursion here. Dismissed.)
 fn const_list_elems(db: &mut Db, list: StructId) -> Option<Vec<StructId>> {
     match core_of(db, list) {
-        Core::ListNew { elems } => Some(elems),
+        Core::ListNew { elems } => Some(elems.to_vec()),
         Core::LocalRef { binder } => match core_of(db, binder) {
-            Core::ListNew { elems } => Some(elems),
+            Core::ListNew { elems } => Some(elems.to_vec()),
             _ => None,
         },
         _ => None,
@@ -22592,6 +22616,7 @@ fn lower_set_of(db: &mut Db, id: StructId, list: StructId) -> Core {
         // `Core`) — a `(Set.of (list 0 1 … N))` of N distinct ints was quadratic (N=3200 spent ~82% of
         // the compile in `const_compound_eq`); the scalar fast path makes it linear.
         Core::ListNew { elems } => {
+            let elems = elems.to_vec();
             let mut deduped: Vec<StructId> = Vec::with_capacity(elems.len());
             let mut seen_scalars: crate::fxhash::FxHashSet<ScalarKey> =
                 crate::fxhash::FxHashSet::default();
@@ -22616,7 +22641,7 @@ fn lower_set_of(db: &mut Db, id: StructId, list: StructId) -> Core {
             }
             trace!(target: "rcdzc::fold", node = id.0, elems = deduped.len(), "Set.of folds a constant list to a canonical set");
             Core::SetOf {
-                elems: deduped,
+                elems: deduped.into(),
                 elem_ty,
             }
         }
@@ -22686,7 +22711,9 @@ fn lower_set_to_list(db: &mut Db, set: StructId) -> Core {
         && elems.is_empty()
     {
         trace!(target: "rcdzc::fold", node = set.0, "Set.to-list folds an empty constant set to the empty list");
-        return Core::ListNew { elems: vec![] };
+        return Core::ListNew {
+            elems: std::rc::Rc::from([]),
+        };
     }
     let Some(elem_ty) = set_elem_type(db, set) else {
         return Core::Poison(Reject::decline(
@@ -22720,7 +22747,9 @@ fn lower_map_to_list(db: &mut Db, map: StructId) -> Core {
         && entries.is_empty()
     {
         trace!(target: "rcdzc::fold", node = map.0, "Map.to-list folds an empty constant map to the empty list");
-        return Core::ListNew { elems: vec![] };
+        return Core::ListNew {
+            elems: std::rc::Rc::from([]),
+        };
     }
     let Some((key_ty, val_ty)) = map_kv_types(db, map) else {
         return Core::Poison(Reject::decline(
@@ -22777,7 +22806,7 @@ fn lower_set_insert_remove(
         }
         trace!(target: "rcdzc::fold", elems = out.len(), insert = is_insert, "Set.insert/remove folds onto a constant set");
         return Core::SetOf {
-            elems: out,
+            elems: out.into(),
             elem_ty: elem_ty.clone(),
         };
     }
@@ -22837,7 +22866,7 @@ fn lower_set_algebra(
             // union: a's elements, then b's elements not already present.
             SetAlgebraOp::Union => {
                 let mut out = a.to_vec();
-                for &e in b {
+                for &e in b.iter() {
                     if !set_has_const_elem(db, &out, e) {
                         out.push(e);
                     }
@@ -22859,7 +22888,7 @@ fn lower_set_algebra(
         };
         trace!(target: "rcdzc::fold", ?op, elems = out.len(), "set-algebra folds two constant sets");
         return Core::SetOf {
-            elems: out,
+            elems: out.into(),
             elem_ty: elem_ty.clone(),
         };
     }
@@ -23570,7 +23599,9 @@ fn lower_str_to_bytes(db: &mut Db, string: StructId) -> Core {
                 })
                 .collect();
             trace!(target: "rcdzc::fold", len = elems.len(), "String.to-bytes folds a constant string to its UTF-8 bytes");
-            Core::BytesOf { elems }
+            Core::BytesOf {
+                elems: elems.into(),
+            }
         }
         Core::Poison(r) => Core::Poison(r),
         _ => Core::StrToBytes { string },
@@ -23604,7 +23635,7 @@ fn lower_str_from_bytes(db: &mut Db, id: StructId, bytes: StructId) -> Core {
         };
     };
     let mut raw = Vec::with_capacity(elems.len());
-    for e in elems {
+    for e in elems.iter().copied() {
         match core_of(db, e) {
             Core::ConstInt(v) => match v.to_i64() {
                 Some(n) if (0..=255).contains(&n) => raw.push(n as u8),
@@ -23930,7 +23961,7 @@ fn lower_record_pop(db: &mut Db, id: StructId, record: StructId, name: StructId)
     // synth projections). Materialize it once so the runtime operand's computation emits a single time; the
     // helper's `type_of(id)` is the pop RESULT tuple type, which it wraps as the `Core::Let` body.
     let tuple = Core::Tuple {
-        elems: vec![value, rest_record],
+        elems: std::rc::Rc::from([value, rest_record]),
     };
     materialize_row_op_operand(db, id, record, is_runtime, tuple)
 }
@@ -23942,10 +23973,12 @@ fn lower_tuple_cat(db: &mut Db, id: StructId, a: StructId, b: StructId) -> Core 
     match (core_of(db, a), core_of(db, b)) {
         (Core::Poison(r), _) | (_, Core::Poison(r)) => Core::Poison(r),
         (Core::Tuple { elems: ea }, Core::Tuple { elems: eb }) => {
-            let mut elems = ea;
-            elems.extend(eb);
+            let mut elems = ea.to_vec();
+            elems.extend(eb.iter().copied());
             trace!(target: "rcdzc::fold", node = id.0, n = elems.len(), "Tuple.concat folds two constant tuples");
-            Core::Tuple { elems }
+            Core::Tuple {
+                elems: elems.into(),
+            }
         }
         _ => Core::Poison(Reject::decline(
             "Tuple.concat over a runtime tuple is not yet built",
@@ -23964,7 +23997,13 @@ fn synth_tuple(db: &mut Db, elems: Vec<StructId>) -> StructId {
         .iter()
         .map(|&e| crate::infer::type_of(db, e))
         .collect();
-    synth_core(db, Core::Tuple { elems }, crate::ty::Ty::Tuple(tys.into()))
+    synth_core(
+        db,
+        Core::Tuple {
+            elems: elems.into(),
+        },
+        crate::ty::Ty::Tuple(tys.into()),
+    )
 }
 
 /// Lower `(Tuple.split-at t k)` — split a constant `Core::Tuple` at compile-time literal `k` into the
@@ -23996,7 +24035,7 @@ fn lower_tuple_split_at(db: &mut Db, id: StructId, tuple: StructId, pos: StructI
     let suffix = synth_tuple(db, elems[k..].to_vec());
     trace!(target: "rcdzc::fold", node = id.0, k, "Tuple.split-at folds to a (prefix, suffix) pair");
     Core::Tuple {
-        elems: vec![prefix, suffix],
+        elems: std::rc::Rc::from([prefix, suffix]),
     }
 }
 
@@ -24018,7 +24057,7 @@ fn lower_tuple_pop(db: &mut Db, id: StructId, tuple: StructId) -> Core {
     let rest_tuple = synth_tuple(db, rest.to_vec());
     trace!(target: "rcdzc::fold", node = id.0, "Tuple.remove folds to a (element0, rest) tuple");
     Core::Tuple {
-        elems: vec![first, rest_tuple],
+        elems: std::rc::Rc::from([first, rest_tuple]),
     }
 }
 
@@ -24214,7 +24253,7 @@ fn lower_bytes_of(db: &mut Db, id: StructId, list: StructId) -> Core {
     // its i32 value into `bytes-set`, so `(Bytes.of (list (UInt8.wrap n)))` builds a byte from a runtime
     // value (the LEB128 encoder). The `Core::BytesOf` is built either way; a CONSTANT one bakes at escape
     // (R1), a RUNTIME one builds on the rope heap + escapes via the looping walker (L2b).
-    for &e in &elems {
+    for &e in elems.iter() {
         match core_of(db, e) {
             Core::Poison(r) => return Core::Poison(r),
             Core::ConstInt(v) => match v.to_i64() {
@@ -24246,6 +24285,8 @@ fn lower_bytes_of(db: &mut Db, id: StructId, list: StructId) -> Core {
         }
     }
     trace!(target: "rcdzc::lower", node = id.0, len = elems.len(), "Bytes.of → Core::BytesOf");
+    // `elems` is the `Core::ListNew`'s `Rc<[StructId]>` — reuse the shared slice (a `Bytes.of` of a
+    // constant list is its elements as bytes), so this is a refcount bump, not a copy.
     Core::BytesOf { elems }
 }
 
@@ -24319,10 +24360,12 @@ fn lower_bytes_concat(db: &mut Db, lhs: StructId, rhs: StructId) -> Core {
     if let (Core::BytesOf { elems: a }, Core::BytesOf { elems: b }) =
         (core_of(db, lhs), core_of(db, rhs))
     {
-        let mut elems = a;
-        elems.extend(b);
+        let mut elems = a.to_vec();
+        elems.extend(b.iter().copied());
         trace!(target: "rcdzc::fold", len = elems.len(), "Bytes.concat folds two constant sequences");
-        return Core::BytesOf { elems };
+        return Core::BytesOf {
+            elems: elems.into(),
+        };
     }
     Core::BytesConcat { lhs, rhs }
 }
@@ -24382,7 +24425,7 @@ fn lower_bytes_slice(
                     })
                     .collect();
                 let payload = db.push_atom(crate::ast::Leaf::Bytes(raw));
-                db.core.fill(payload, Core::BytesOf { elems: sub });
+                db.core.fill(payload, Core::BytesOf { elems: sub.into() });
                 db.types.fill(payload, crate::ty::Ty::Bytes);
                 trace!(target: "rcdzc::fold", node = id.0, start = s, len = l, "Bytes.slice folds to Some (in-range constant)");
                 return Core::SumNew {
@@ -24594,7 +24637,9 @@ fn lower_bin_build(db: &mut Db, id: StructId, segs: &[crate::resolved::Segment])
         // itself; else fold to a chain of `Core::BytesConcat`.
         let mut iter = pieces.into_iter();
         let Some(first) = iter.next() else {
-            return Core::BytesOf { elems: Vec::new() }; // (bin) with only… nothing — empty
+            return Core::BytesOf {
+                elems: std::rc::Rc::from([]),
+            }; // (bin) with only… nothing — empty
         };
         let mut acc = first;
         for piece in iter {
@@ -24767,7 +24812,9 @@ fn lower_bin_build(db: &mut Db, id: StructId, segs: &[crate::resolved::Segment])
             })
         })
         .collect();
-    Core::BytesOf { elems }
+    Core::BytesOf {
+        elems: elems.into(),
+    }
 }
 
 /// The constant bytes of `scrutinee` if it reduces to a compile-time-visible `Core::BytesOf` (a `(bin
@@ -24778,7 +24825,7 @@ fn bin_const_scrutinee(db: &mut Db, scrutinee: StructId) -> Option<Vec<u8>> {
         return None;
     };
     let mut raw = Vec::with_capacity(elems.len());
-    for e in elems {
+    for e in elems.iter().copied() {
         match core_of(db, e) {
             Core::ConstInt(v) => raw.push(v.to_i64().filter(|n| (0..=255).contains(n))? as u8),
             _ => return None,
@@ -25022,7 +25069,7 @@ fn decode_bin_field(
                 })
                 .collect();
             let payload = db.push_atom(crate::ast::Leaf::Bytes(raw[*s..*e].to_vec()));
-            db.core.fill(payload, Core::BytesOf { elems: sub });
+            db.core.fill(payload, Core::BytesOf { elems: sub.into() });
             db.types.fill(payload, crate::ty::Ty::Bytes);
             core_of(db, payload)
         }
@@ -25482,13 +25529,19 @@ fn lower_list_prepend(db: &mut Db, id: StructId, list: StructId, elem: StructId)
         (Core::ListNew { elems }, _) => {
             let mut a = Vec::with_capacity(elems.len() + 1);
             a.push(elem);
-            a.extend(elems);
+            a.extend(elems.iter().copied());
             trace!(target: "rcdzc::fold", node = id.0, len = a.len(), "List.prepend folds onto a constant list");
-            Core::ListNew { elems: a }
+            Core::ListNew { elems: a.into() }
         }
         _ => {
             let list_ty = crate::infer::type_of(db, list);
-            let singleton = synth_core(db, Core::ListNew { elems: vec![elem] }, list_ty);
+            let singleton = synth_core(
+                db,
+                Core::ListNew {
+                    elems: std::rc::Rc::from([elem]),
+                },
+                list_ty,
+            );
             Core::ListConcat {
                 lhs: singleton,
                 rhs: list,

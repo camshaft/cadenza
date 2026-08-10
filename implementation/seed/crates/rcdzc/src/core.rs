@@ -338,7 +338,7 @@ pub enum Core {
     //= spec/capabilities/core-semantics.md#a-tuple-is-a-fixed-size-positional-product
     //# A tuple MAY hold elements of distinct types.
     Tuple {
-        elems: Vec<StructId>,
+        elems: std::rc::Rc<[StructId]>,
     },
     /// A tuple PROJECTION — read element `index` of the tuple the `operand` occurrence denotes. Present
     /// only when the operand is a RUNTIME tuple (a projection of a compile-time-visible tuple folds to
@@ -354,7 +354,7 @@ pub enum Core {
     /// on the persistent `vec-*` heap: `vec-empty` then a `vec-push` per element (each boxed by the
     /// element type). Elements are lowered on demand. Homogeneous — one element type.
     ListNew {
-        elems: Vec<StructId>,
+        elems: std::rc::Rc<[StructId]>,
     },
     /// `List.len` of the list the `operand` occurrence denotes — the runtime `vec-len` op, an `Int64`.
     /// Present when the operand is a RUNTIME list (a constant list's length folds to a `ConstInt` in
@@ -405,7 +405,7 @@ pub enum Core {
     /// `< 0` or `> 255` traps at run time, matching the fold's compile-time CDZ0304). Only the
     /// literal-length form is built here; a runtime-length list source is a later increment.
     BytesOf {
-        elems: Vec<StructId>,
+        elems: std::rc::Rc<[StructId]>,
     },
     /// `Bytes.len` of the bytes the `operand` denotes — the runtime `bytes-len` op, an `Int64`. Present
     /// when the operand is a RUNTIME bytes value (a compile-time-visible `Bytes.of` folds its length to
@@ -741,7 +741,7 @@ pub enum Core {
     /// CONSUMES along with the set). `elem_ty` is the solved element type (choosing the box op). An empty
     /// `(Set.of (list))` has no elements. The set analogue of `MapNew`, one axis.
     SetOf {
-        elems: Vec<StructId>,
+        elems: std::rc::Rc<[StructId]>,
         elem_ty: crate::ty::Ty,
     },
     /// `Set.contains` — the TOTAL membership predicate, present when the set is a RUNTIME value. The backend

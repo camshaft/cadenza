@@ -4551,7 +4551,7 @@ fn collect_reached_poisons_at(db: &mut Db, id: StructId, out: &mut Vec<Reject>) 
         // A tuple's elements are all unconditionally part of the value; a projection's operand is
         // unconditionally evaluated. Descend into each.
         Core::Tuple { elems } | Core::ListNew { elems } | Core::BytesOf { elems } => {
-            for e in elems {
+            for &e in elems.iter() {
                 collect_reached_poisons(db, e, out);
             }
         }
@@ -4682,7 +4682,7 @@ fn collect_reached_poisons_at(db: &mut Db, id: StructId, out: &mut Vec<Reject>) 
         Core::MapSize { map } => collect_reached_poisons(db, map, out),
         // A set construction's elements are all unconditionally part of the value — descend into each.
         Core::SetOf { elems, .. } => {
-            for e in elems {
+            for &e in elems.iter() {
                 collect_reached_poisons(db, e, out);
             }
         }

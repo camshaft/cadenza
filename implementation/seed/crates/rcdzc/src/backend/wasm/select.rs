@@ -1383,7 +1383,7 @@ pub fn core_child_ids(db: &mut Db, id: StructId) -> Vec<StructId> {
         Core::Tuple { elems }
         | Core::ListNew { elems }
         | Core::BytesOf { elems }
-        | Core::SetOf { elems, .. } => cs.extend(elems),
+        | Core::SetOf { elems, .. } => cs.extend(elems.iter().copied()),
         Core::SumNew { payloads, .. } => cs.extend(payloads),
         Core::Record { fields } => cs.extend(fields.values().copied()),
         Core::MapNew { entries, .. } => {
@@ -2798,7 +2798,7 @@ fn collect_used_ops_into(
         Core::Tuple { elems } => {
             out.insert(OP_ARR_ALLOC);
             out.insert(OP_ARR_SET);
-            for elem in &elems {
+            for elem in elems.iter() {
                 // A scalar element boxes (`box-int`/`box-bool`); a nested compound is already a handle
                 // (`box_op` → `Ok(None)`), stored as-is. Recurse either way so a nested compound's own
                 // construction ops (`arr-alloc`/`arr-set`/its element boxes) are collected.
@@ -2840,7 +2840,7 @@ fn collect_used_ops_into(
             out.insert(OP_ARR_ALLOC);
             out.insert(OP_ARR_SET);
             out.insert(OP_VEC_OF_ARR);
-            for elem in &elems {
+            for elem in elems.iter() {
                 if let Ok(Some(op)) = box_op(db, *elem) {
                     out.insert(op);
                 }
@@ -2869,7 +2869,7 @@ fn collect_used_ops_into(
         Core::BytesOf { elems } => {
             out.insert(OP_BYTES_ALLOC);
             out.insert(OP_BYTES_SET);
-            for elem in &elems {
+            for elem in elems.iter() {
                 collect_used_ops_into(db, *elem, out);
             }
         }
@@ -3128,7 +3128,7 @@ fn collect_used_ops_into(
             if !elems.is_empty() {
                 out.insert(OP_SET_INSERT);
             }
-            for &e in &elems {
+            for &e in elems.iter() {
                 // NODE-AWARE box op (mirror the emit's `box_op_for`, NOT `box_op_ty`): when `elem_ty` is an
                 // unresolved `Var`/`Any` (an empty-base set fixed no element type), `box_op_ty` DEFAULTS to
                 // `box-int`, but the emit's `box_op_for` falls back to the ELEMENT NODE's real type — a Float
@@ -6838,10 +6838,15 @@ fn const_disc_at(db: &mut Db, scrutinee: StructId, path: &[crate::core::PathStep
                 payloads[0]
             }
             (crate::core::PathStep::Elem(i), Core::Tuple { elems })
-            | (crate::core::PathStep::Elem(i), Core::ListNew { elems })
+            | (crate::core::PathStep::Elem(i), Core::ListNew { elems }) => *elems.get(*i)?,
             // A multi-payload variant's payloads: after the `Payload` no-op above, `cur` is the `SumNew`
             // and `Elem(i)` selects the i-th payload — the constant twin of `sum-payload` + `arr-get i`.
-            | (crate::core::PathStep::Elem(i), Core::SumNew { payloads: elems, .. }) => *elems.get(*i)?,
+            (
+                crate::core::PathStep::Elem(i),
+                Core::SumNew {
+                    payloads: elems, ..
+                },
+            ) => *elems.get(*i)?,
             _ => return None,
         };
     }
@@ -8282,7 +8287,7 @@ fn emit(
         // map insert). A duplicate element is a no-op at insert (the set dedups). Leaves the set handle.
         Core::SetOf { elems, elem_ty } => {
             out.push(Lir::CallImport(OP_SET_EMPTY)); // → [set]
-            for &e in &elems {
+            for &e in elems.iter() {
                 // Each element starts its scratch ABOVE the running high-water, NOT at a fixed `base` —
                 // the same disjoint-slot discipline `Core::Tuple`/`Core::Record`/`Core::ListNew` apply.
                 // An element that stashes a transient in a scratch slot at a given TYPE (a BigInt arith's

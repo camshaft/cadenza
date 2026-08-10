@@ -1255,7 +1255,7 @@ fn collect_closure_codes_at(db: &mut Db, id: StructId, out: &mut std::collection
         }
         Core::MapSize { map } => collect_closure_codes(db, map, out),
         Core::SetOf { elems, .. } => {
-            for &e in &elems {
+            for &e in elems.iter() {
                 collect_closure_codes(db, e, out);
             }
         }
@@ -1333,7 +1333,7 @@ fn collect_closure_codes_at(db: &mut Db, id: StructId, out: &mut std::collection
             }
         }
         Core::Tuple { elems } | Core::ListNew { elems } | Core::BytesOf { elems } => {
-            for e in elems {
+            for &e in elems.iter() {
                 collect_closure_codes(db, e, out);
             }
         }
@@ -1536,7 +1536,7 @@ fn collect_call_callees_at(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
         }
         crate::core::Core::MapSize { map } => collect_call_callees(db, map, out),
         crate::core::Core::SetOf { elems, .. } => {
-            for &e in &elems {
+            for &e in elems.iter() {
                 collect_call_callees(db, e, out);
             }
         }
@@ -1619,7 +1619,7 @@ fn collect_call_callees_at(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
         crate::core::Core::Tuple { elems }
         | crate::core::Core::ListNew { elems }
         | crate::core::Core::BytesOf { elems } => {
-            for e in elems {
+            for &e in elems.iter() {
                 collect_call_callees(db, e, out);
             }
         }

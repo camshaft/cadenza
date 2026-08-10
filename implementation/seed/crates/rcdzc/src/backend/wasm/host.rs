@@ -481,7 +481,7 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
         }
         Core::MapSize { map } => collect_host_imports(db, map, out),
         Core::SetOf { elems, .. } => {
-            for e in elems {
+            for &e in elems.iter() {
                 collect_host_imports(db, e, out);
             }
         }
@@ -544,7 +544,7 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
             }
         }
         Core::Tuple { elems } | Core::ListNew { elems } | Core::BytesOf { elems } => {
-            for e in elems {
+            for &e in elems.iter() {
                 collect_host_imports(db, e, out);
             }
         }

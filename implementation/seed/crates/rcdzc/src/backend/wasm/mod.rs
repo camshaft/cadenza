@@ -1215,7 +1215,7 @@ fn collect_host_arg_strings_at(db: &mut Db, id: crate::ast::StructId, out: &mut 
         }
         Core::MapSize { map } => collect_host_arg_strings(db, map, out),
         Core::SetOf { elems, .. } => {
-            for e in elems {
+            for &e in elems.iter() {
                 collect_host_arg_strings(db, e, out);
             }
         }
@@ -1278,7 +1278,7 @@ fn collect_host_arg_strings_at(db: &mut Db, id: crate::ast::StructId, out: &mut 
             }
         }
         Core::Tuple { elems } | Core::ListNew { elems } | Core::BytesOf { elems } => {
-            for e in elems {
+            for &e in elems.iter() {
                 collect_host_arg_strings(db, e, out);
             }
         }

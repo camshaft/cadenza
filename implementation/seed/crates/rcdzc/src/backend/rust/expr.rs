@@ -1769,7 +1769,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 _ => None,
             };
             let mut parts = Vec::with_capacity(elems.len());
-            for &e in &elems {
+            for &e in elems.iter() {
                 let part = match elem_it {
                     Some(it) => emit_grounded(db, e, it, env, use_ctx)?,
                     None => emit(db, e, env, use_ctx)?,
@@ -2205,7 +2205,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 _ => None,
             };
             let mut lines = String::new();
-            for e in &elems {
+            for e in elems.iter() {
                 let ee = match set_elem_ty {
                     Some(it) => emit_grounded(db, *e, it, env, ctx)?,
                     None => emit(db, *e, env, ctx)?,
@@ -2368,7 +2368,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // value halts rather than silently wrapping.
         Core::BytesOf { elems } => {
             let mut lines = String::new();
-            for e in &elems {
+            for e in elems.iter() {
                 let ee = emit(db, *e, env, ctx)?;
                 lines.push_str(&format!(
                     "{{ let __e = {ee}; if __e < 0 || __e > 255 {{ panic!(\"byte value out of range\") }} __b.push(__e as u8); }} "
