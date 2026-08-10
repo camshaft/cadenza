@@ -35,6 +35,10 @@ inherits = "dev"
 opt-level = 2
 
 [dependencies]
+# The kernel's `Authorize` trait is an `#[async_trait(?Send)]` — the suite's permissive `SuiteAuthorizer`
+# impl needs the same macro (single-threaded, no Send: it runs in the current-thread runtime with the
+# non-Send wasmtime store, same as the kernel).
+async-trait = "0.1"
 # The real kernel — Session/deliver/Kv/ComponentReducer/Authorizer/RecordingExecutor + ComponentStore
 # + CompositeExecutor. The whole point is to drive the SAME machinery production runs, not a stand-in.
 cdz-kernel = { path = "../cdz-kernel" }

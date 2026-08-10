@@ -2,5 +2,5 @@
 pass	a counter session bumps kv count on its kick-off message
 pass	a session stores a fixed mid-range byte value (decoder past the counter's 1)
 pass	a session writes TWO kv keys on its kick-off (multi-key end-state)
+pass	a worker performs a userspace effect served by a handler session, and resumes on the reply
 pass	the same counter IGNORES a non-message kick-off (else-branch writes no state)
-todo	a worker performs a `weather` effect served by a handler session (round-trip)

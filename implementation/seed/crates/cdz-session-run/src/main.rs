@@ -40,9 +40,8 @@ use cdz_agent_host::effect_reply::ReplyTokenRegistry;
 use cdz_agent_host::host::{AgentHost, HostedSession, SessionId};
 use cdz_agent_host::reply_exec::{reply_settle_channel, ReplyExecutor};
 use cdz_agent_host::userspace_effect_exec::{HandlerResolver, UserspaceEffectExecutor};
-use cdz_kernel::authz::Authorizer;
 use cdz_kernel::component_store::ComponentStore;
-use cdz_kernel::effect::{effect_ct, Capability, FamilyGrant, Payload, ResourcePredicate};
+use cdz_kernel::effect::{effect_ct, Payload};
 use cdz_kernel::event::{ContentType, EventBody};
 use cdz_kernel::hash::Hash;
 use cdz_kernel::kernel::SessionState;
@@ -98,6 +97,29 @@ struct MapResolver(HashMap<String, SessionId>);
 impl HandlerResolver for MapResolver {
     fn resolve_handler(&self, family: &str) -> Option<SessionId> {
         self.0.get(family).copied()
+    }
+}
+
+/// The conformance-suite authorizer: PERMISSIVE by design (the suite tests platform SEMANTICS, not authz
+/// policy — a later increment can add a policy-testing genre). It admits:
+///  - `effect/reply` UNCONDITIONALLY, regardless of target. A handler settles a caller by echoing the raw
+///    32-byte reply-token as the effect's `target`; that token is a non-UTF-8 opaque byte string, and the
+///    host `ReplyExecutor` CRYPTOGRAPHICALLY validates+consumes it (unforgeable, one-shot) — strictly
+///    stronger than a capability grant, so gating the target is both impossible (a `FamilyGrant` requires a
+///    UTF-8 target — `target_str().is_ok`) and redundant. This mirrors the intended kernel end-state where
+///    `effect/reply` is authz-exempt like `control/*` (the token IS the security — v-agent-harness-host,
+///    design-userspace-effects D2); the kernel exemption is v-agent-harness's seam, so the suite grants it
+///    here in the meantime (no rework needed when the kernel formally exempts it).
+///  - any OTHER family — the suite lets a reducer perform whatever effect it declares (conformance, not policy).
+struct SuiteAuthorizer;
+
+#[async_trait::async_trait(?Send)]
+impl cdz_kernel::authz::Authorize for SuiteAuthorizer {
+    async fn authorize(&self, _req: &cdz_kernel::effect::EffectRequest) -> Result<(), String> {
+        // Permissive: admit everything (incl. effect/reply with its raw-bytes token target). The suite
+        // grades platform behavior, not the capability policy; the token-validation in ReplyExecutor is the
+        // real security boundary for a reply.
+        Ok(())
     }
 }
 
@@ -184,34 +206,10 @@ async fn main() -> Result<()> {
         let (reducer, reducer_hash) = load_reducer(path, &store)?;
         let owner = id_of[alias];
         let nonce = owner.hash(); // the nonce IS Hash::of(salt++alias); the id is its genesis hash
-                                  // A permissive authorizer: the suite's callers PERFORM the served effect, and authz runs BEFORE
-                                  // the executor, so a performed family must be granted or the effect AuthzDenies before it reaches
-                                  // the userspace forward. Two grant shapes, because a family is authorized differently by shape:
-                                  //  - a BUILT-IN kind (now/http/model/shell/timer/emit) needs a Capability{kind} (SEC-F1 keys on the
-                                  //    EffectKind). Until binary-AST B2 lets a Cadenza guest emit a register-by-string family, a served
-                                  //    effect a Cadenza CALLER can actually emit IS a built-in kind (the fold boundary only carries the
-                                  //    6-variant enum), so a forward-only I2 case uses a built-in family (e.g. `now`) as the served verb.
-                                  //  - a REGISTER-BY-STRING family (effect/reply, and post-B2 arbitrary handler families) needs a
-                                  //    FamilyGrant. effect/reply is always granted so a handler can settle once B2 lands.
-                                  // The suite is a conformance harness, not a policy test (authz semantics are a later increment).
-        let mut kind_caps: Vec<Capability> = Vec::new();
-        let mut family_grants: Vec<FamilyGrant> = vec![Capability::for_family(
-            effect_ct::EFFECT_REPLY,
-            ResourcePredicate::Any,
-        )];
-        for family in family_handler.keys() {
-            match cdz_kernel::effect::EffectKind::from_family(family) {
-                Some(kind) => kind_caps.push(Capability {
-                    kind,
-                    predicate: ResourcePredicate::Any,
-                }),
-                None => family_grants.push(Capability::for_family(
-                    family.clone(),
-                    ResourcePredicate::Any,
-                )),
-            }
-        }
-        let authz = Authorizer::new(kind_caps).with_family_grants(family_grants);
+                                  // The suite authorizer is permissive (conformance, not policy) + admits effect/reply's raw-bytes
+                                  // token target (see SuiteAuthorizer). Under B2 a reducer emits an arbitrary `kind` STRING, so a
+                                  // served family is register-by-string; there is no capability-shape distinction to make here.
+        let authz = SuiteAuthorizer;
         let executor = cdz_kernel::executor::CompositeExecutor::new()
             .with_effect(
                 effect_ct::EFFECT_REPLY,
@@ -296,6 +294,9 @@ async fn main() -> Result<()> {
                 break;
             }
             steps += 1;
+            // Settle the caller's open (Deferred) effect with the handler's reply outcome — resumes its
+            // continuation. A no-op (caller gone / already settled) is benign; the caller then simply never
+            // resumes, which a case's `(end-state …)` on the caller would catch.
             host.settle_reply(&settle.caller, settle.effect_id, settle.outcome)
                 .await;
             continue;
