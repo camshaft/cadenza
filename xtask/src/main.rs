@@ -4256,12 +4256,23 @@ struct PlatformCaseRecord {
     sessions: Vec<PlatformSession>,
     /// `(kickoff <alias> <inbound-family> <value-form>)` — the single stimulus.
     kickoff: (String, String, String),
+    /// Ordered `(expect-effects (effect (from <a>) (family <f>) <value>?)…)` → the whole-run dispatched
+    /// effect sequence, in order. `value` (a `(: v T)` form) optional (a payload-less effect omits it).
+    expect_effects: Vec<ExpectEffect>,
     /// `(end-state <alias> (kv <key> <value-form>)…)` → `(alias, key, value-form)`.
     end_kv: Vec<(String, String, String)>,
     /// `(end-state <alias> (status <state>))` → `(alias, status)`.
     end_status: Vec<(String, String)>,
     /// `(events-processed <alias> <n>)` → `(alias, n)`.
     events_processed: Vec<(String, String)>,
+}
+
+/// One expected dispatched effect (I2): session `from` performed effect `family`, optionally carrying a
+/// `(: v T)` value the grader decodes + compares to the observed payload hex.
+struct ExpectEffect {
+    from: String,
+    family: String,
+    value: Option<String>,
 }
 
 /// Parse the platform record stream (`cdz corpus records` on a `spec/platform/*.sexp`) — the fixed-arity
@@ -4272,6 +4283,7 @@ fn parse_platform_records(text: &str) -> Vec<PlatformCaseRecord> {
     let mut title = String::new();
     let mut sessions: Vec<PlatformSession> = Vec::new();
     let mut kickoff = (String::new(), String::new(), String::new());
+    let mut expect_effects: Vec<ExpectEffect> = Vec::new();
     let mut end_kv: Vec<(String, String, String)> = Vec::new();
     let mut end_status: Vec<(String, String)> = Vec::new();
     let mut events_processed: Vec<(String, String)> = Vec::new();
@@ -4281,6 +4293,7 @@ fn parse_platform_records(text: &str) -> Vec<PlatformCaseRecord> {
                 title: std::mem::take(&mut title),
                 sessions: std::mem::take(&mut sessions),
                 kickoff: std::mem::take(&mut kickoff),
+                expect_effects: std::mem::take(&mut expect_effects),
                 end_kv: std::mem::take(&mut end_kv),
                 end_status: std::mem::take(&mut end_status),
                 events_processed: std::mem::take(&mut events_processed),
@@ -4337,17 +4350,35 @@ fn parse_platform_records(text: &str) -> Vec<PlatformCaseRecord> {
                     events_processed.push((a.to_string(), n.to_string()));
                 }
             }
-            // expect-effect/expect-message/expect-delivery-failure are parsed at I2/I3 (effects/messaging).
+            // `expect-effect\t<from>\t<family>[\t<value-form>]` — one dispatched effect, in order. The
+            // value column is present only for a payload-carrying effect (cdz-corpus omits it otherwise).
+            "expect-effect" => {
+                let cols: Vec<&str> = val.splitn(3, '\t').collect();
+                match cols.as_slice() {
+                    [from, family] => expect_effects.push(ExpectEffect {
+                        from: (*from).to_string(),
+                        family: (*family).to_string(),
+                        value: None,
+                    }),
+                    [from, family, value] => expect_effects.push(ExpectEffect {
+                        from: (*from).to_string(),
+                        family: (*family).to_string(),
+                        value: Some((*value).to_string()),
+                    }),
+                    _ => {}
+                }
+            }
+            // expect-message/expect-delivery-failure are parsed at I3 (messaging).
             _ => {}
         }
     }
     records
 }
 
-/// The parsed observed end-state of a driven session (one `cdz-session-run` invocation's stdout lines).
+/// The observed end-state of ONE driven session (its `end-*` lines, keyed by alias in [`ObservedRun`]).
 #[derive(Default)]
-struct ObservedEndState {
-    /// A `end-fault\t<alias>\t<reason>` line — set iff the fold trapped/failed (grades the case Fail).
+struct ObservedSession {
+    /// An `end-fault` line — set iff the fold trapped/failed (grades the case Fail).
     fault: Option<String>,
     status: Option<String>,
     events_processed: Option<String>,
@@ -4355,23 +4386,59 @@ struct ObservedEndState {
     kv: std::collections::BTreeMap<String, String>,
 }
 
-/// Parse one `cdz-session-run` invocation's stdout (the `end-fault`/`end-status`/`events-processed`/
-/// `end-kv` tab lines for a single alias) into an [`ObservedEndState`].
-fn parse_observed_end_state(stdout: &str) -> ObservedEndState {
-    let mut obs = ObservedEndState::default();
+/// The parsed observed run of a whole `cdz-session-run` invocation: per-alias end-state + the whole-run
+/// ordered effect sequence (`effect\t<from>\t<family>[\t<hex>]` lines, in dispatch order).
+#[derive(Default)]
+struct ObservedRun {
+    /// alias → its observed end-state.
+    sessions: std::collections::BTreeMap<String, ObservedSession>,
+    /// The dispatched effects in whole-run order: `(from-alias, family, optional value-render)`.
+    effects: Vec<(String, String, Option<String>)>,
+}
+
+/// Parse a `cdz-session-run` invocation's stdout (per-alias `end-*` lines + whole-run `effect` lines) into
+/// an [`ObservedRun`] (multi-session: the `end-*` lines carry their alias in column 2).
+fn parse_observed_run(stdout: &str) -> ObservedRun {
+    let mut run = ObservedRun::default();
     for line in stdout.lines() {
         let parts: Vec<&str> = line.split('\t').collect();
         match parts.as_slice() {
-            ["end-fault", _alias, reason] => obs.fault = Some((*reason).to_string()),
-            ["end-status", _alias, state] => obs.status = Some((*state).to_string()),
-            ["events-processed", _alias, n] => obs.events_processed = Some((*n).to_string()),
-            ["end-kv", _alias, key, value] => {
-                obs.kv.insert((*key).to_string(), (*value).to_string());
+            ["effect", from, family] => {
+                run.effects
+                    .push(((*from).to_string(), (*family).to_string(), None));
+            }
+            ["effect", from, family, value] => {
+                run.effects.push((
+                    (*from).to_string(),
+                    (*family).to_string(),
+                    Some((*value).to_string()),
+                ));
+            }
+            ["end-fault", alias, reason] => {
+                run.sessions.entry((*alias).to_string()).or_default().fault =
+                    Some((*reason).to_string());
+            }
+            ["end-status", alias, state] => {
+                run.sessions.entry((*alias).to_string()).or_default().status =
+                    Some((*state).to_string());
+            }
+            ["events-processed", alias, n] => {
+                run.sessions
+                    .entry((*alias).to_string())
+                    .or_default()
+                    .events_processed = Some((*n).to_string());
+            }
+            ["end-kv", alias, key, value] => {
+                run.sessions
+                    .entry((*alias).to_string())
+                    .or_default()
+                    .kv
+                    .insert((*key).to_string(), (*value).to_string());
             }
             _ => {}
         }
     }
-    obs
+    run
 }
 
 /// Decode a KV value-form the case pins (the corpus `(: <value> <Type>)` text) to the raw BYTES a
@@ -4410,53 +4477,65 @@ fn grade_platform_case(
     store: &Path,
     rec: &PlatformCaseRecord,
 ) -> Grade {
-    // I1 is single-session; a multi-session case is I3 (needs the FIFO fixpoint drive) → Todo for now.
-    if rec.sessions.len() != 1 {
-        return Grade::Todo;
+    if rec.sessions.is_empty() {
+        return Grade::Fail("a platform case must declare at least one session".into());
     }
-    let session = &rec.sessions[0];
-    // Compile the reducer SEXPR to a fold-world component. Write the program to a temp `.sexp` (cdz
-    // compile reads a source path, dispatching on extension) and emit the component beside it.
+    // Compile EVERY session's reducer SEXPR to a fold-world component (write each to a temp `.sexp` — cdz
+    // compile reads a source path, dispatching on extension — and emit the component beside it). One temp
+    // dir per case, per-alias file names so a multi-session case doesn't clobber.
     let tmp = std::env::temp_dir().join(format!("cdz-platform-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&tmp);
-    let src = tmp.join("reducer.sexp");
-    let out = tmp.join("reducer.wasm");
-    if std::fs::write(&src, &session.program).is_err() {
-        return Grade::Fail("could not write the reducer program to a temp file".into());
-    }
-    let compile = std::process::Command::new(cdz)
-        .arg("compile")
-        .arg(&src)
-        .args([
-            "--target",
-            "wasm",
-            "--component-name",
-            "cadenza:agent-kernel/fold",
-        ])
-        .arg("-o")
-        .arg(&out)
-        .output();
-    match compile {
-        Ok(o) if o.status.success() => {}
-        Ok(_) => {
-            // A reducer the compiler can't yet emit is coverage-not-yet (Todo), not a disagreement —
-            // mirrors the corpus's "declines → Todo". A genuine miscompile surfaces as a drive fault below.
-            return Grade::Todo;
+    let mut session_args: Vec<String> = Vec::new();
+    for s in &rec.sessions {
+        let src = tmp.join(format!("{}.sexp", s.alias));
+        let out = tmp.join(format!("{}.wasm", s.alias));
+        if std::fs::write(&src, &s.program).is_err() {
+            return Grade::Fail(format!(
+                "could not write reducer for {} to a temp file",
+                s.alias
+            ));
         }
-        Err(e) => return Grade::Fail(format!("cdz compile failed to launch: {e}")),
+        let compile = std::process::Command::new(cdz)
+            .arg("compile")
+            .arg(&src)
+            .args([
+                "--target",
+                "wasm",
+                "--component-name",
+                "cadenza:agent-kernel/fold",
+            ])
+            .arg("-o")
+            .arg(&out)
+            .output();
+        match compile {
+            Ok(o) if o.status.success() => {}
+            Ok(_) => {
+                // A reducer the compiler can't yet emit is coverage-not-yet (Todo), not a disagreement —
+                // mirrors the corpus's "declines → Todo". A genuine miscompile surfaces as a drive fault.
+                return Grade::Todo;
+            }
+            Err(e) => return Grade::Fail(format!("cdz compile failed to launch: {e}")),
+        }
+        session_args.push(format!("{}={}", s.alias, out.display()));
     }
-    // Drive it through the kernel via cdz-session-run.
-    let run = std::process::Command::new(session_run)
-        .arg("--reducer")
-        .arg(&out)
-        .arg("--store")
-        .arg(store)
-        .args(["--alias", &session.alias])
+    // Drive the constellation through the kernel via cdz-session-run: one --session per reducer, one
+    // --serves per handler binding, and the single kick-off (target alias + family). The runner drives the
+    // deterministic FIFO fixpoint and prints observed effects + per-session end-state.
+    let mut cmd = std::process::Command::new(session_run);
+    cmd.arg("--store").arg(store);
+    for sa in &session_args {
+        cmd.args(["--session", sa]);
+    }
+    for s in &rec.sessions {
+        for family in &s.serves {
+            cmd.args(["--serves", &format!("{}={}", s.alias, family)]);
+        }
+    }
+    cmd.args(["--kickoff-alias", &rec.kickoff.0])
         .args(["--kickoff-family", &rec.kickoff.1])
-        // The kick-off value-form is the corpus `(: v T)` text; I1 kick-offs are payload-less (unit), so
-        // pass an empty payload. (A later increment threads a typed kick-off payload.)
-        .args(["--kickoff-value", ""])
-        .output();
+        // I1/I2 kick-offs are payload-less (unit); a typed kick-off payload is a later increment.
+        .args(["--kickoff-value", ""]);
+    let run = cmd.output();
     let run = match run {
         Ok(o) if o.status.success() => o,
         Ok(o) => {
@@ -4468,56 +4547,91 @@ fn grade_platform_case(
         }
         Err(e) => return Grade::Fail(format!("cdz-session-run failed to launch: {e}")),
     };
-    let obs = parse_observed_end_state(&String::from_utf8_lossy(&run.stdout));
+    let obs = parse_observed_run(&String::from_utf8_lossy(&run.stdout));
 
-    // A fold fault is always a Fail — a conformance case asserts a SUCCESSFUL run.
-    if let Some(reason) = &obs.fault {
-        return Grade::Fail(format!("reducer fold faulted: {reason}"));
-    }
-    // Grade the case's assertions against the observed end-state (all keyed to the single session's alias).
-    for (alias, status) in &rec.end_status {
-        if alias != &session.alias {
-            return Grade::Todo; // multi-alias assertion is I3
+    // A fold fault on ANY session is a Fail — a conformance case asserts a SUCCESSFUL run.
+    for (alias, s) in &obs.sessions {
+        if let Some(reason) = &s.fault {
+            return Grade::Fail(format!("{alias}: reducer fold faulted: {reason}"));
         }
-        match &obs.status {
+    }
+    // Grade each per-alias assertion against that alias's observed end-state.
+    for (alias, status) in &rec.end_status {
+        match obs.sessions.get(alias).and_then(|s| s.status.as_ref()) {
             Some(s) if s == status => {}
-            Some(s) => return Grade::Fail(format!("status: expected {status}, observed {s}")),
-            None => return Grade::Fail("no end-status observed".into()),
+            Some(s) => {
+                return Grade::Fail(format!("{alias} status: expected {status}, observed {s}"));
+            }
+            None => return Grade::Fail(format!("{alias}: no end-status observed")),
         }
     }
     for (alias, n) in &rec.events_processed {
-        if alias != &session.alias {
-            return Grade::Todo;
-        }
-        match &obs.events_processed {
+        match obs
+            .sessions
+            .get(alias)
+            .and_then(|s| s.events_processed.as_ref())
+        {
             Some(observed) if observed == n => {}
             Some(observed) => {
                 return Grade::Fail(format!(
-                    "events-processed: expected {n}, observed {observed}"
+                    "{alias} events-processed: expected {n}, observed {observed}"
                 ));
             }
-            None => return Grade::Fail("no events-processed observed".into()),
+            None => return Grade::Fail(format!("{alias}: no events-processed observed")),
         }
     }
     for (alias, key, value_form) in &rec.end_kv {
-        if alias != &session.alias {
-            return Grade::Todo;
-        }
         let Some(expected_hex) = decode_value_form_to_hex(value_form) else {
-            // A value shape the I1 decoder doesn't model yet → coverage-not-yet, not a false Fail.
+            // A value shape the decoder doesn't model yet → coverage-not-yet, not a false Fail.
             return Grade::Todo;
         };
-        match obs.kv.get(key) {
-            Some(observed) if observed == &expected_hex => {}
+        let expected_hex = expected_hex.strip_prefix("hex:").unwrap_or(&expected_hex);
+        let expected = format!("hex:{expected_hex}");
+        match obs.sessions.get(alias).and_then(|s| s.kv.get(key)) {
+            Some(observed) if observed == &expected => {}
             Some(observed) => {
                 return Grade::Fail(format!(
-                    "kv[{key}]: expected {expected_hex} (from {value_form}), observed {observed}"
+                    "{alias} kv[{key}]: expected {expected} (from {value_form}), observed {observed}"
                 ));
             }
             None => {
                 return Grade::Fail(format!(
-                    "kv[{key}]: expected {expected_hex}, but key absent"
+                    "{alias} kv[{key}]: expected {expected}, but key absent"
                 ));
+            }
+        }
+    }
+    // Whole-run ordered effect sequence (I2): each expected effect must appear, in order, in the observed
+    // dispatch stream. Compared as (from, family) + optional value; an expect-effect with a value pins the
+    // payload hex too (decoded from its (: v T) form).
+    if !rec.expect_effects.is_empty() {
+        if obs.effects.len() != rec.expect_effects.len() {
+            return Grade::Fail(format!(
+                "expect-effects: expected {} effect(s), observed {}",
+                rec.expect_effects.len(),
+                obs.effects.len()
+            ));
+        }
+        for (i, ee) in rec.expect_effects.iter().enumerate() {
+            let (from, family, value) = &obs.effects[i];
+            if from != &ee.from || family != &ee.family {
+                return Grade::Fail(format!(
+                    "expect-effect #{i}: expected ({} {}), observed ({from} {family})",
+                    ee.from, ee.family
+                ));
+            }
+            if let Some(vf) = &ee.value {
+                let Some(expected_hex) = decode_value_form_to_hex(vf) else {
+                    return Grade::Todo;
+                };
+                match value {
+                    Some(observed) if observed == &expected_hex => {}
+                    other => {
+                        return Grade::Fail(format!(
+                            "expect-effect #{i} value: expected {expected_hex} (from {vf}), observed {other:?}"
+                        ));
+                    }
+                }
             }
         }
     }

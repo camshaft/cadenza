@@ -1,193 +1,362 @@
-//! `cdz-session-run` — drive a Cadenza reducer component through the real `cdz-kernel` `Session` and
-//! print its end-state. The DRIVE half of the platform-conformance suite; xtask's `run_platform_case`
-//! owns compile + parse + grade (see the crate `Cargo.toml` header for the ownership split).
+//! `cdz-session-run` — drive a constellation of Cadenza reducer SESSIONS through the real
+//! `cdz-kernel`/`cdz-agent-host` machinery from ONE kick-off event to a fixpoint, and print the observed
+//! effects plus per-session end-state. The DRIVE half of the platform-conformance suite; xtask's
+//! `run_platform_case` owns compile + parse + grade (see the crate `Cargo.toml` header for the split).
 //!
-//! I1 SCOPE: a SINGLE session, a SINGLE kick-off inbound event, driven to quiescence. No cross-session
-//! messaging, no effect-handler sessions (those are I2/I3, which add `cdz-agent-host` + a deterministic
-//! FIFO fixpoint here). So I1 drives `Session` directly, exactly like the reference
-//! `cdz-kernel/src/kernel_e2e_tests/loop_and_recovery.rs`.
+//! ## Model (I1 single-session → I2 handler-sessions + fixpoint)
+//! Each `--session <alias>=<component>` is a Cadenza reducer already compiled to the
+//! `cadenza:agent-kernel/fold` world. A `--serves <alias>=<family>` binds that session as the HANDLER for
+//! an effect family: when another session performs an effect of that family, the kernel DEFERS it (via a
+//! `UserspaceEffectExecutor` registered as the caller's `CompositeExecutor` fallback), the runner forwards
+//! it as an `effect-request/<family>` inbound to the handler session, the handler folds it and emits
+//! `effect/reply`, and a `ReplyExecutor` settles the reply onto the caller's open effect — the real
+//! in-process round-trip (the SAME machinery the OUTPOST federates over the wire).
 //!
-//! The reducer is driven as an [`AsyncComponentReducer`], NOT the sync `ComponentReducer`: a REAL rcdzc
-//! reducer lowers its `fold.apply` to the handle-ABI `apply(u32,u32,u32)->u32` and imports
-//! `cadenza:runtime/heap`, and only the async path DISPATCHES a heap-dep-bearing reducer to
-//! `apply_handle_lowered` — which drives the handle boundary AND serves the bound handle-ABI `kv` the
-//! reducer imports, so the guest's `Kv.put` writes actually land in the session KV. The sync path always
-//! takes the WIT-structural `call_apply`, which neither drives the handle boundary nor serves the
-//! handle-ABI kv (the guest's `Kv.put` no-op'd + the kv import failed to link) — a wrong fit here.
-//!
-//! ## Invocation (called by xtask, one process per case)
-//! ```text
-//! cdz-session-run --reducer <component.wasm> --store <dir> \
-//!     --alias worker --kickoff-family start --kickoff-value ""
-//! ```
-//! `--reducer` is the ALREADY-COMPILED reducer component (xtask compiled the `(reducer <prog>)` via
-//! `cdz compile --target wasm --component-name cadenza:agent-kernel/fold`, the fold-world recipe the
-//! kernel loads). `--store` is the content-addressed store (`<hash>.wasm`) the reducer's
-//! `cadenza:runtime/heap` dep resolves from — the same `target/cadenza-store` `cargo xtask build`
-//! populates. The kick-off is one inbound event of the given family carrying the given payload bytes.
+//! ## Determinism (D5): a deterministic FIFO fixpoint, NOT the production `select!` loop
+//! The runner does NOT use `AsyncAgentHost::run` (it multiplexes with tokio `select!`, which has NO
+//! ordering guarantee — unusable for a reproducible gate). It drives `AgentHost::deliver` itself over a
+//! single in-memory FIFO: deliver the one kick-off, then drain (in arrival order) every forwarded
+//! effect-request → deliver to its handler, and every reply-settle → resume its caller, until the queues
+//! are empty and every session is quiescent. Session ids are deterministic (`Hash::of(salt ++ alias)`,
+//! never OS entropy), so a run is identical every time and in CI. A per-case STEP BUDGET bounds the drive:
+//! an unbounded effect/reply ping-pong is a recorded `SettleUnbounded` fault (exit non-zero), never a hang.
 //!
 //! ## Output (tab-delimited lines on stdout, for xtask to parse + grade)
 //! ```text
-//! end-fault\t<alias>\t<reason>          present ONLY when the fold trapped/failed (grades Fail)
-//! end-status\t<alias>\t<state>          state in active|quiescent|stalled|closed
+//! effect\t<from-alias>\t<family>[\t<payload-hex>]   one per dispatched effect, in whole-run order
+//! end-fault\t<alias>\t<reason>                       present ONLY when a fold trapped/failed (grades Fail)
+//! end-status\t<alias>\t<state>                       state in active|quiescent|stalled|closed
 //! events-processed\t<alias>\t<n>
 //! end-kv\t<alias>\t<key-utf8-or-hex>\t<value-hex>
 //! ```
-//! KV keys/values are OPAQUE bytes at the kernel boundary, so they are printed as-is (key as UTF-8 when
-//! it is valid UTF-8 else `hex:<hex>`; value always `hex:<hex>`). xtask decodes/compares against the
-//! case's `(: v T)` value-form. A hard error (bad component, unresolved dep, fold failure) exits non-zero
-//! with the reason on stderr so xtask grades the case a Fail rather than a false Pass.
+//! KV/effect payloads are OPAQUE bytes at the kernel boundary, printed as `hex:<hex>` (a KV key is UTF-8
+//! when valid else `hex:<hex>`); xtask decodes/compares against the case's `(: v T)` value-form. A hard
+//! error (bad component, unresolved dep, unbounded drive) exits non-zero with the reason on stderr.
 
 use anyhow::{Context, Result};
 use clap::Parser;
 
+use cdz_agent_host::effect_reply::ReplyTokenRegistry;
+use cdz_agent_host::host::{AgentHost, HostedSession, SessionId};
+use cdz_agent_host::reply_exec::{reply_settle_channel, ReplyExecutor};
+use cdz_agent_host::userspace_effect_exec::{HandlerResolver, UserspaceEffectExecutor};
 use cdz_kernel::authz::Authorizer;
 use cdz_kernel::component_store::ComponentStore;
-use cdz_kernel::effect::Payload;
+use cdz_kernel::effect::{effect_ct, Capability, FamilyGrant, Payload, ResourcePredicate};
 use cdz_kernel::event::{ContentType, EventBody};
-use cdz_kernel::executor::RecordingExecutor;
 use cdz_kernel::hash::Hash;
-use cdz_kernel::kernel::{Session, SessionState};
+use cdz_kernel::kernel::SessionState;
 use cdz_kernel::wasm_host::AsyncComponentReducer;
+use std::collections::HashMap;
+use std::rc::Rc;
+
+/// The `effect-request/<family>` content-type prefix a `UserspaceEffectExecutor` forwards under. The
+/// runner strips it to recover the bare family for the observed-effect line + reads the framed payload.
+const EFFECT_REQUEST_PREFIX: &str = "effect-request/";
 
 #[derive(Parser)]
 #[command(
     name = "cdz-session-run",
-    about = "Drive a Cadenza reducer component through the kernel Session and print its end-state (platform-conformance I1)."
+    about = "Drive Cadenza reducer sessions through the kernel to a fixpoint and print observed effects + end-state (platform-conformance)."
 )]
 struct Args {
-    /// Path to the already-compiled reducer wasm component.
-    #[arg(long)]
-    reducer: std::path::PathBuf,
-    /// Content-addressed store dir the reducer's `cadenza:runtime/heap` dep resolves from
-    /// (`<hash>.wasm` naming — the `target/cadenza-store` `cargo xtask build` populates).
+    /// A session: `<alias>=<path-to-compiled-component>`. Repeatable; at least one. The FIRST is not
+    /// special — the kick-off names its target alias.
+    #[arg(long = "session", value_name = "ALIAS=PATH")]
+    sessions: Vec<String>,
+    /// A handler binding: `<alias>=<family>` — bind session `<alias>` as the handler for effect `<family>`.
+    /// Repeatable; zero or more. A session may serve several families (repeat the flag).
+    #[arg(long = "serves", value_name = "ALIAS=FAMILY")]
+    serves: Vec<String>,
+    /// Content-addressed store dir the reducers' `cadenza:runtime/heap` dep resolves from.
     #[arg(long)]
     store: std::path::PathBuf,
-    /// The session's alias (echoed into the printed end-state lines so xtask keys them per-session).
+    /// The kick-off target session alias.
     #[arg(long)]
-    alias: String,
+    kickoff_alias: String,
     /// The kick-off inbound event's content-type family (e.g. `start`, `message`).
     #[arg(long)]
     kickoff_family: String,
-    /// The kick-off inbound payload as raw UTF-8 bytes (empty for a payload-less stimulus). I1 keeps the
-    /// payload a plain string; a later increment can carry a typed value-form.
+    /// The kick-off inbound payload as raw UTF-8 bytes (empty for a payload-less stimulus).
     #[arg(long, default_value = "")]
     kickoff_value: String,
-    /// Deterministic-id salt: the session's genesis nonce is `Hash::of(salt ++ alias)`, so ids are a pure
-    /// function of the case (D5.3) — never OS entropy. The reducer-content hash is the genesis `reducer`.
+    /// Deterministic-id salt: each session's genesis nonce is `Hash::of(salt ++ alias)` (D5.3).
     #[arg(long, default_value = "platform-conformance")]
     salt: String,
-    /// Stall threshold (ms) for the terminal status snapshot. I1 has no in-flight effects, so any value
-    /// yields Quiescent; kept configurable for later increments. `0` = no clock (Active/Quiescent/Closed).
+    /// Per-case step budget (total deliveries in the fixpoint drive) — exceeding it is a `SettleUnbounded`
+    /// fault (exit non-zero), so an unbounded effect/reply ping-pong is a graded failure, never a hang.
+    #[arg(long, default_value_t = 1000)]
+    step_budget: u32,
+    /// Stall threshold (ms) for the terminal status snapshot. `0` = no clock (Active/Quiescent/Closed).
     #[arg(long, default_value_t = 0)]
     stall_after_ms: u64,
+}
+
+/// A family→handler-SessionId resolver built from the case's `serves` map — the `HandlerResolver` the
+/// caller's `UserspaceEffectExecutor` consults to route a deferred effect to its handler session.
+struct MapResolver(HashMap<String, SessionId>);
+impl HandlerResolver for MapResolver {
+    fn resolve_handler(&self, family: &str) -> Option<SessionId> {
+        self.0.get(family).copied()
+    }
+}
+
+/// Parse an `alias=value` CLI pair (splitting on the FIRST `=`, so a value may contain `=`).
+fn split_pair(s: &str) -> Result<(String, String)> {
+    let (a, b) = s
+        .split_once('=')
+        .with_context(|| format!("expected ALIAS=VALUE, got {s:?}"))?;
+    Ok((a.to_string(), b.to_string()))
+}
+
+/// Load a reducer component, resolve its `cadenza:runtime/heap` dep from the store, and wrap it as an
+/// `AsyncComponentReducer` (the handle-ABI path that serves the bound kv — see the I1 lesson).
+fn load_reducer(
+    path: &std::path::Path,
+    store: &ComponentStore,
+) -> Result<(AsyncComponentReducer, Hash)> {
+    let bytes =
+        std::fs::read(path).with_context(|| format!("reading reducer {}", path.display()))?;
+    let reducer = AsyncComponentReducer::from_component_bytes(&bytes)
+        .map_err(|e| anyhow::anyhow!("{} is not a valid component: {e:?}", path.display()))?;
+    let deps = reducer.deps().to_vec();
+    let mut resolved = Vec::with_capacity(deps.len());
+    for dep in &deps {
+        let b = store.get_by_hash(&dep.hash).map_err(|e| {
+            anyhow::anyhow!(
+                "store has no blob for dep {:?} ({}): {e:?}",
+                dep.import_name,
+                dep.hash.to_hex()
+            )
+        })?;
+        resolved.push((dep.clone(), b));
+    }
+    let reducer = reducer
+        .with_resolved_deps(resolved)
+        .with_component_store(store.clone());
+    Ok((reducer, Hash::of(&bytes)))
 }
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     let args = Args::parse();
-
-    // Load + parse the already-compiled reducer component.
-    let component = std::fs::read(&args.reducer)
-        .with_context(|| format!("reading reducer component {}", args.reducer.display()))?;
-    let reducer = AsyncComponentReducer::from_component_bytes(&component)
-        .map_err(|e| anyhow::anyhow!("reducer is not a valid component: {e:?}"))?;
-
-    // Resolve every declared dep (the `cadenza:runtime/heap` a real Cadenza reducer imports) from the
-    // content-addressed store, then attach the store so the runtime's transitive bare imports (e.g.
-    // `cadenza:nfc/normalize`) compose too — mirroring `reducer_cadenza_b1_e2e.rs`'s resolve path.
     let store = ComponentStore::open(&args.store);
-    let deps = reducer.deps().to_vec();
-    let mut resolved = Vec::with_capacity(deps.len());
-    for dep in &deps {
-        let bytes = store.get_by_hash(&dep.hash).map_err(|e| {
-            anyhow::anyhow!(
-                "store {} has no valid blob for dep {:?} (hash {}): {e:?}",
-                args.store.display(),
-                dep.import_name,
-                dep.hash.to_hex()
-            )
-        })?;
-        resolved.push((dep.clone(), bytes));
+
+    // Deterministic alias → SessionId (id = Hash::of(salt ++ alias), D5.3) + the reverse map for labelling
+    // observed effects/messages by the human alias rather than a genesis-hash hex.
+    let mut alias_of: HashMap<SessionId, String> = HashMap::new();
+    let mut id_of: HashMap<String, SessionId> = HashMap::new();
+    let mut session_specs: Vec<(String, std::path::PathBuf)> = Vec::new();
+    for s in &args.sessions {
+        let (alias, path) = split_pair(s)?;
+        let mut seed = args.salt.clone().into_bytes();
+        seed.extend_from_slice(alias.as_bytes());
+        let id = SessionId::new(Hash::of(&seed));
+        alias_of.insert(id, alias.clone());
+        id_of.insert(alias.clone(), id);
+        session_specs.push((alias, path.into()));
     }
-    let mut reducer = reducer
-        .with_resolved_deps(resolved)
-        .with_component_store(ComponentStore::open(&args.store));
 
-    // Genesis with a DETERMINISTIC nonce (D5.3): id = pure function of (salt, alias), not OS entropy, so
-    // the run is identical every time and in CI. The reducer-content hash seeds the genesis `reducer`.
-    let reducer_hash = Hash::of(&component);
-    let mut nonce_seed = args.salt.clone().into_bytes();
-    nonce_seed.extend_from_slice(args.alias.as_bytes());
-    let spawn_nonce = Hash::of(&nonce_seed);
-    let mut session = Session::genesis(reducer_hash, spawn_nonce);
+    // The serves map: family → handler SessionId (resolved through the alias). Shared by every caller's
+    // resolver (a MapResolver is cloned-by-rebuild per session below, all from this table).
+    let mut family_handler: HashMap<String, SessionId> = HashMap::new();
+    for sv in &args.serves {
+        let (alias, family) = split_pair(sv)?;
+        let id = *id_of
+            .get(&alias)
+            .with_context(|| format!("serves names unknown session alias {alias:?}"))?;
+        family_handler.insert(family, id);
+    }
 
-    // Deliver the ONE kick-off event and drive it to quiescence. I1 has no effects, so `deny_all()` is
-    // the correct authorizer (a pure fold needs no ambient authority) and a `RecordingExecutor` observes
-    // that zero effects were dispatched. `deliver` folds reactively until the session settles (§9d).
-    let authz = Authorizer::deny_all();
-    let mut exec = RecordingExecutor::new();
-    let body = EventBody::Inbound {
+    // The shared collaborators the round-trip binds through: ONE reply-token registry (minted by each
+    // caller's UserspaceEffectExecutor forward, consumed by each handler's ReplyExecutor), ONE forwarded-
+    // request inbox, ONE reply-settle channel — exactly the loop's shape, drained by the FIFO drive below.
+    let reply_tokens = Rc::new(ReplyTokenRegistry::new());
+    let (inbox_tx, mut inbox_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (settle_tx, mut settle_rx) = reply_settle_channel();
+
+    // Build the host + spawn every session with its own CompositeExecutor:
+    //  - EVERY session gets a ReplyExecutor (family effect/reply) so it can REPLY when it serves an effect,
+    //    and a UserspaceEffectExecutor fallback so it can PERFORM an effect served by a peer. A session that
+    //    does neither simply never exercises them. This uniform wiring keeps the constellation symmetric.
+    let mut host = AgentHost::new();
+    for (alias, path) in &session_specs {
+        let (reducer, reducer_hash) = load_reducer(path, &store)?;
+        let owner = id_of[alias];
+        let nonce = owner.hash(); // the nonce IS Hash::of(salt++alias); the id is its genesis hash
+                                  // A permissive family-grant authorizer: the suite's callers PERFORM userspace effects, and authz
+                                  // runs BEFORE the executor, so each served family must be granted or the effect AuthzDenies before
+                                  // the userspace forward. Grant every served family + effect/reply (Any target) — the suite is a
+                                  // conformance harness, not a policy test (authz semantics are a later increment's concern).
+        let mut grants: Vec<FamilyGrant> = vec![Capability::for_family(
+            effect_ct::EFFECT_REPLY,
+            ResourcePredicate::Any,
+        )];
+        for family in family_handler.keys() {
+            grants.push(Capability::for_family(
+                family.clone(),
+                ResourcePredicate::Any,
+            ));
+        }
+        let authz = Authorizer::new(Vec::new()).with_family_grants(grants);
+        let executor = cdz_kernel::executor::CompositeExecutor::new()
+            .with_effect(
+                effect_ct::EFFECT_REPLY,
+                Box::new(ReplyExecutor::new(reply_tokens.clone(), settle_tx.clone())),
+            )
+            .with_fallback(Box::new(UserspaceEffectExecutor::new(
+                MapResolver(family_handler.clone()),
+                inbox_tx.clone(),
+                reply_tokens.clone(),
+                owner,
+            )));
+        let hosted = HostedSession::genesis_with_nonce(
+            reducer_hash,
+            nonce,
+            Box::new(reducer),
+            Box::new(authz),
+            executor,
+        );
+        host.spawn(owner, hosted);
+    }
+
+    // Observed effects, in whole-run dispatch order (each forwarded effect-request the drive routes).
+    let mut observed_effects: Vec<(String, String, Option<Vec<u8>>)> = Vec::new();
+    let mut steps: u32 = 0;
+    let mut budget_exceeded = false;
+
+    // Deliver the ONE kick-off, then drive the FIFO to a fixpoint.
+    let kickoff_target = *id_of.get(&args.kickoff_alias).with_context(|| {
+        format!(
+            "kickoff names unknown session alias {:?}",
+            args.kickoff_alias
+        )
+    })?;
+    let kickoff_body = EventBody::Inbound {
         content_type: ContentType {
             family: args.kickoff_family.clone().into(),
             version: 1,
         },
         payload: Payload::Inline(args.kickoff_value.clone().into_bytes().into()),
     };
-    session
-        .deliver(body, None, &mut reducer, &authz, &mut exec)
-        .await
-        .map_err(|e| anyhow::anyhow!("kernel deliver failed: {e:?}"))?;
+    host.deliver(&kickoff_target, kickoff_body, None).await;
+    steps += 1;
 
-    if std::env::var("CDZ_SESSION_RUN_DEBUG").is_ok() {
-        eprintln!(
-            "DEBUG deps={} tip_fault={:?} kv_len={} exec_seen={}",
-            deps.len(),
-            session.last_fault_reason(),
-            session.kv().len(),
-            exec.seen.len()
-        );
+    // FIFO breadth-first: drain forwarded effect-requests (→ deliver to handler) and reply-settles (→ resume
+    // caller) in arrival order until both queues are empty and nothing new is produced. Each drained item is
+    // one delivery against the step budget.
+    loop {
+        // A forwarded effect-request: route it to its handler session (and record the observed effect).
+        if let Ok(inbound) = inbox_rx.try_recv() {
+            if steps >= args.step_budget {
+                budget_exceeded = true;
+                break;
+            }
+            steps += 1;
+            // Record the observed effect: the FROM is the reply_to (caller) alias; the FAMILY strips the
+            // `effect-request/` prefix; the payload is the request bytes AFTER the framing header.
+            if let EventBody::Inbound {
+                content_type,
+                payload: Payload::Inline(bytes),
+            } = &inbound.body
+            {
+                let family = content_type
+                    .family
+                    .strip_prefix(EFFECT_REQUEST_PREFIX)
+                    .unwrap_or(&content_type.family)
+                    .to_string();
+                let from = inbound
+                    .reply_to
+                    .and_then(|c| alias_of.get(&c).cloned())
+                    .unwrap_or_else(|| "?".to_string());
+                let payload = strip_framing_payload(bytes);
+                observed_effects.push((from, family, payload));
+            }
+            host.deliver(&inbound.session, inbound.body, inbound.cause)
+                .await;
+            continue;
+        }
+        // A reply-settle: resume the caller's open effect with the handler's reply outcome.
+        if let Ok(settle) = settle_rx.try_recv() {
+            if steps >= args.step_budget {
+                budget_exceeded = true;
+                break;
+            }
+            steps += 1;
+            host.settle_reply(&settle.caller, settle.effect_id, settle.outcome)
+                .await;
+            continue;
+        }
+        break; // both queues empty → fixpoint reached
     }
 
-    // Report the terminal end-state as tab lines for xtask to grade.
+    // Report.
     let mut out = String::new();
-    // A FOLD FAILURE (a reducer trap / fuel-exhaustion / instantiate failure) is recorded on the log as a
-    // `FoldFailed` tip — it is NOT a `deliver` Err (deliver returns Ok, the kernel captures the fault as a
-    // first-class event, §17 can't-brick), and the KV is atomically restored, leaving the session
-    // Quiescent. So a miscompiled reducer would read as a clean `quiescent` end-state and FALSE-PASS unless
-    // the fault is surfaced. Emit an `end-fault` line whenever the tip is a fault; xtask grades any
-    // end-fault a Fail (a conformance case asserts a SUCCESSFUL run, never a fold that trapped).
-    if let Some(reason) = session.last_fault_reason() {
-        out.push_str(&format!(
-            "end-fault\t{}\t{}\n",
-            args.alias,
-            reason.replace(['\t', '\n'], " ")
-        ));
+    for (from, family, payload) in &observed_effects {
+        match payload {
+            Some(p) if !p.is_empty() => {
+                out.push_str(&format!("effect\t{from}\t{family}\thex:{}\n", to_hex(p)));
+            }
+            _ => out.push_str(&format!("effect\t{from}\t{family}\n")),
+        }
     }
-    let snap = session.status_snapshot(None, args.stall_after_ms);
-    out.push_str(&format!(
-        "end-status\t{}\t{}\n",
-        args.alias,
-        state_str(snap.state)
-    ));
-    out.push_str(&format!(
-        "events-processed\t{}\t{}\n",
-        args.alias,
-        session.event_count()
-    ));
-    for (key, value) in session.kv().prefix_scan(b"") {
+    // Per-session end-state, in the case's declaration order (stable, deterministic).
+    for (alias, _) in &session_specs {
+        let id = id_of[alias];
+        let Some(hosted) = host.get(&id) else {
+            continue;
+        };
+        let session = hosted.session();
+        if let Some(reason) = session.last_fault_reason() {
+            out.push_str(&format!(
+                "end-fault\t{alias}\t{}\n",
+                reason.replace(['\t', '\n'], " ")
+            ));
+        }
+        let snap = session.status_snapshot(None, args.stall_after_ms);
+        out.push_str(&format!("end-status\t{alias}\t{}\n", state_str(snap.state)));
         out.push_str(&format!(
-            "end-kv\t{}\t{}\t{}\n",
-            args.alias,
-            render_key(key),
-            render_value(value)
+            "events-processed\t{alias}\t{}\n",
+            session.event_count()
         ));
+        for (key, value) in session.kv().prefix_scan(b"") {
+            out.push_str(&format!(
+                "end-kv\t{alias}\t{}\thex:{}\n",
+                render_key(key),
+                to_hex(value)
+            ));
+        }
     }
     print!("{out}");
+    if budget_exceeded {
+        anyhow::bail!(
+            "SettleUnbounded: the fixpoint drive exceeded the step budget of {} deliveries (an unbounded \
+             effect/reply ping-pong) — raise --step-budget only if the case is genuinely that long",
+            args.step_budget
+        );
+    }
     Ok(())
 }
 
-/// The session state as the lowercase token the case's `(status …)` clause uses.
+/// Recover the opaque request payload from a forwarded effect-request's framed bytes:
+/// `[caller_len u32][caller][token_len u32][token][effect_id u64][payload]` (see
+/// `userspace_effect_exec::effect_request_inbound`). Returns the trailing payload, or `None` if the header
+/// is malformed (the observed-effect line then carries no payload).
+fn strip_framing_payload(bytes: &[u8]) -> Option<Vec<u8>> {
+    let mut off = 0usize;
+    let take_u32 = |b: &[u8], off: &mut usize| -> Option<usize> {
+        let v = b.get(*off..*off + 4)?;
+        *off += 4;
+        Some(u32::from_le_bytes(v.try_into().ok()?) as usize)
+    };
+    let caller_len = take_u32(bytes, &mut off)?;
+    off += caller_len;
+    let token_len = take_u32(bytes, &mut off)?;
+    off += token_len;
+    off += 8; // effect_id u64-le
+    bytes.get(off..).map(|s| s.to_vec())
+}
+
 fn state_str(s: SessionState) -> &'static str {
     match s {
         SessionState::Active => "active",
@@ -197,18 +366,11 @@ fn state_str(s: SessionState) -> &'static str {
     }
 }
 
-/// A KV key: UTF-8 verbatim when valid (the common case — reducers key by string), else `hex:<hex>`.
 fn render_key(key: &[u8]) -> String {
     match std::str::from_utf8(key) {
         Ok(s) if !s.contains('\t') && !s.contains('\n') => s.to_string(),
         _ => format!("hex:{}", to_hex(key)),
     }
-}
-
-/// A KV value: always `hex:<hex>` — values are opaque bytes and may not be UTF-8, and xtask decodes them
-/// against the case's typed `(: v T)` value-form, so a stable hex encoding is the unambiguous wire.
-fn render_value(value: &[u8]) -> String {
-    format!("hex:{}", to_hex(value))
 }
 
 fn to_hex(bytes: &[u8]) -> String {
