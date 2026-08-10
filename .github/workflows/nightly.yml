@@ -69,6 +69,29 @@ jobs:
       - name: Run the full ignored probe set (leak / UAF / enumeration — no name filter)
         run: cargo test -p rcdzc --lib -- --ignored --test-threads=1
 
+  # rust-gate-full — the FULL rust-backend gate (all ~6686 .gate-baseline-rust cases), NIGHTLY (v-nix+v-ft
+  # 2026-08-10). The per-MR localGate runs only a NARROW rust-backend subset (checks.<sys>.gate-check-rust =
+  # `--case mutual`, the divergence-prone mutual-recursion class) because `--target rust` is a rustc-invocation
+  # -per-case (the full set is >1hr of rustc — prohibitive to gate every MR without re-serializing pr-sync).
+  # This nightly job gives the BROAD coverage the per-MR needle can't: it drives the WHOLE corpus through the
+  # rust backend, so a backend-divergent emit OUTSIDE the `--case mutual` needle (green-on-wasm, red-on-rust)
+  # is caught here within a day. On a RED: note the owner + WIDEN the per-MR needle reactively (add a second
+  # gate-check-rust `--case` or case-id set for the new divergence class — the widen-on-new-class pattern, same
+  # as re-recording a baseline). Builds the store first (like rc-leak-full) so the rust emit resolves the runtime.
+  rust-gate-full:
+    name: rust-backend gate (full corpus)
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-rust
+        with:
+          wasm-tools: "true"
+          cache-key: rust-gate-full
+      - name: Build the runtime store
+        run: cargo xtask build
+      - name: Full rust-backend gate (all cases, no --case filter)
+        run: cargo xtask gate --check --target rust
+
   publish:
     name: rolling nightly prerelease
     runs-on: ubuntu-latest

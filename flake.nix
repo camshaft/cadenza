@@ -1675,6 +1675,44 @@
           '';
         };
 
+        # gateCheckRust — the RUST-BACKEND gate, a NARROW per-MR subset (v-nix+v-ft 2026-08-10). WHY: gateCheck
+        # above runs `gate --check` with NO --target → it defaults to WASM, so the RUST backend emit was NEVER
+        # gated in localGate. A rust-only divergence (v-effects E0425: mutual-recursive effect-spec dedup dropped
+        # a by-name-resolved fn — green-on-wasm, red-on-rust) reached trunk green through the wasm-only gate.
+        # This folds a rust-backend check into localGate to close that hole. SUBSET, NOT FULL: `--target rust`
+        # is a rustc-invocation-per-case (measured: even a tiny slice ~76s cold; the full 6686-case baseline is
+        # >1hr of rustc) — a full per-MR rust gate would re-serialize pr-sync exactly like the corpus-over-
+        # trigger did. So `--case mutual` (the 38 mutual-recursion cases = the EXACT divergence-mechanism class
+        # that bit v-effects, NOT the whole ~1260-case 14-effects file) is the tight principled needle: it runs
+        # the mutual-rec emit through rustc where the by-name-resolution divergence surfaces. VERIFIED the needle
+        # runs those cases through the rust backend + passes on the fixed trunk (so the pre-fix shape would have
+        # RED'd here). Full rust-backend coverage of the classes OUTSIDE the needle comes from a NIGHTLY
+        # scheduled `gate --check --target rust` (checks.yml, NOT a localGate constituent) — widen the per-MR
+        # needle reactively when a new divergence class reds nightly (same widen-on-new-class pattern as a
+        # baseline). Rotates on a compiler-closure edit (seedCompiler in the emit path) → reruns when rust emit
+        # can diverge; caches otherwise. Case-set policy is v-ft's; the derivation + fold are mine.
+        gateCheckRust = craneLib.mkCargoDerivation {
+          pname = "cdz-gate-check-rust";
+          version = "0.0.0";
+          src = gateSrc;
+          cargoArtifacts = cargoArtifactsRelease;
+          cargoVendorDir = seedCargoVendor;
+          CARGO_PROFILE = "release";
+          doInstallCargoArtifacts = false;
+          # rustToolchain: the rust backend emits a Rust source artifact + compiles it with rustc per case, so
+          # the toolchain must be on PATH (unlike the wasm gate). wasm-tools kept for parity with gateCheck's
+          # pipeline needs.
+          nativeBuildInputs = [ rustToolchain pkgs.wasm-tools ];
+          # --target rust drives each matched case through the Rust backend (emit → rustc → run), graded against
+          # .gate-baseline-rust. --case mutual = the narrow divergence-prone needle (see the note above).
+          buildPhaseCargoCommand = ''
+            cargo run --locked --package xtask --profile release -- gate --check --target rust --case "mutual" --store "${componentStore}"
+          '';
+          installPhaseCommand = ''
+            echo "ok: cdz-gate-check-rust (gate --check --target rust --case mutual — narrow rust-backend divergence guard)" > "$out"
+          '';
+        };
+
         # Full-CI-in-nix increment 6d: the GHA `bench` job (`cargo xtask bench`) — the runtime ALLOCATION
         # benchmark. xtask runs cdz-runtime's `#[ignore]`d `hot_op_allocation_ceilings` test
         # (`cargo test --release … --ignored --test-threads=1`), parses its ALLOC lines, and diffs vs the
@@ -2290,9 +2328,13 @@
                 # DENY (e.g. a new non-allowlisted tests/*.rs) now REJECTS the merge path. It's a cheap native
                 # source-scan (seconds), so it adds ~no gate time. Distinct from emojiLintCheck, which stays
                 # advisory (exposed as a check but NOT in this fail-set).
-                inherit clippyShardA clippyShardB codegenCheck gateCheck guideExamplesCheck
+                inherit clippyShardA clippyShardB codegenCheck gateCheck gateCheckRust guideExamplesCheck
                   benchCheck runtimeHashParity fmtCheck testCraneAggregate roundtripCheck
                   cdzAgentHostNativeCore cdzAgentHostNativeLiveNet cdzKernelNativeCheck mandateLintCheck;
+                # gateCheckRust folded into the fail-set (v-nix+v-ft 2026-08-10): closes the RUST-backend gate
+                # hole — gateCheck is wasm-only, so a rust-only emit divergence (v-effects E0425 mutual-rec)
+                # reached trunk green. Narrow `--case mutual` subset (rustc-per-case → full 6686 is prohibitive
+                # per-MR); nightly runs the full rust gate. See gateCheckRust's def note.
                 # cad-test-compiler-ml folded into the fail-set (v-ft/v-cml/concierge 2026-08-10, HARD gate):
                 # it runs the compiler-ml pfq SPINE (compiler-ml Project.cdz tests = src/*.cdz incl
                 # db-query-perfield.cdz), which a Core-shape edit can break — the hole broke twice. ZERO added
@@ -2398,6 +2440,7 @@
             codegen-check = codegenCheck;
             # Full-CI-in-nix increment 6c: the GHA gate job (cargo xtask gate --check — THE behavior gate).
             gate-check = gateCheck;
+            gate-check-rust = gateCheckRust;
             # Full-CI-in-nix increment 6d: the GHA bench job (cargo xtask bench — runtime alloc ceilings).
             bench-check = benchCheck;
             # Full-CI-in-nix increment 6e: the GHA cad-tests job (cdz test on the 4 in-tree Cadenza projects).
