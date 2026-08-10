@@ -1284,6 +1284,34 @@ mod tests {
     }
 
     #[test]
+    fn every_payload_leaf_kind_including_markers_round_trips_equal_through_the_codec() {
+        // `round_trips()` above uses `sample()`, which only carries Int/Float/Str/Bool/Name — it does NOT
+        // exercise Sym, Char, Bytes, or the two MARKER leaves (BadChar/BadEscape). `radix_sample()` carries
+        // exactly those (+ Suffixed), but it's only fed to the TOTALITY/mutation/idempotence sweeps, which
+        // assert decode doesn't PANIC — not that the arena round-trips EQUAL. That leaves a gap: a decode
+        // change could corrupt a marker's/Sym's/Char's payload (wrong scalar, truncated text) while still
+        // not panicking, so totality holds but faithful round-trip silently breaks. This matters most for
+        // the markers: BadChar/BadEscape exist specifically to SURVIVE the binary codec so the compiler can
+        // reject them (CDZ0001/0002) — if the codec mangled a marker, the compiler would reject the wrong
+        // thing or miss the defect. Pin encode->decode EQUALITY over every payload-carrying leaf kind, plus
+        // re-encode determinism. `encode` canonicalizes (DFS re-index), so assert with `structurally_eq`
+        // (the round-trip contract, robust to a non-canonical build) rather than raw `==`.
+        let a = radix_sample();
+        let bytes = encode(&a);
+        let back = decode(&bytes).expect("decode of the every-leaf-kind fixture");
+        assert!(
+            a.structurally_eq(&back),
+            "every-leaf-kind arena (Sym/Char/Bytes/BadChar/BadEscape/Suffixed) not preserved through the \
+             codec: {a:?} vs {back:?}"
+        );
+        assert_eq!(
+            bytes,
+            encode(&back),
+            "re-encode of the decoded (canonical) every-leaf-kind arena is not byte-identical"
+        );
+    }
+
+    #[test]
     fn an_empty_list_node_round_trips_through_the_codec() {
         // The `sample()` fixture only exercises NON-empty lists, yet an empty `Struct::List([])` is a real
         // arena node (the inner `()` of a quote pattern `(quote ())`, now reachable after the empty-list
