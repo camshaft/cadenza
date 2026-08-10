@@ -43,6 +43,11 @@ use tokio_tungstenite::tungstenite::Message;
 /// is the outpost session the hub's inbound events are addressed to; `control_tx` routes register/deregister
 /// to the host loop; `inbox` carries the connect/frame/disconnect events.
 ///
+/// `conn_id` is minted BY THE CALLER (the [`WsDialExecutor`] mints it + returns it synchronously as the
+/// `ws/dial` effect result, so a reducer binds `conn_id`↔hub the moment it emits the dial — BEFORE the async
+/// connect completes). This function then registers the connection's sink under that same id + surfaces its
+/// `ws/connect`/frame/`ws/disconnect` events with it, so the reducer's pre-known id matches the live conn.
+///
 /// Returns `Err` if the initial dial/handshake fails (bad URL, hub unreachable, non-ws endpoint) — a caller
 /// that wants ret/reconnect drives that at a higher layer (v0 is a single connect; reconnect policy is a
 /// federation-protocol decision, coordinated with `design-hub-federation`, not baked into this transport).
@@ -51,6 +56,7 @@ use tokio_tungstenite::tungstenite::Message;
 /// per-connection path).
 pub async fn dial_hub(
     hub_url: &str,
+    conn_id: cdz_kernel::hash::Hash,
     session: SessionId,
     inbox: Inbox,
     control_tx: WsControlSender,
@@ -66,7 +72,7 @@ pub async fn dial_hub(
                 format!("ws dial {hub_url}: {e}"),
             )
         })?;
-    serve_hub_connection(ws, session, inbox, control_tx, shutdown).await
+    serve_hub_connection(ws, conn_id, session, inbox, control_tx, shutdown).await
 }
 
 /// Drive one established hub connection: mint the conn-id, register + announce it, then pump frames both ways
@@ -76,6 +82,7 @@ pub async fn dial_hub(
 /// real dial.
 async fn serve_hub_connection<S>(
     ws: tokio_tungstenite::WebSocketStream<S>,
+    conn_id: cdz_kernel::hash::Hash,
     session: SessionId,
     inbox: Inbox,
     control_tx: WsControlSender,
@@ -86,12 +93,11 @@ where
 {
     let (mut write, mut read) = ws.split();
 
-    // Mint the conn-id (a Hash) + the per-connection outbound sink; register the sink with the host loop +
-    // announce the hub via ws/connect BEFORE reading frames, so a reducer's ws/send can address it and the
-    // frames that follow are attributable. If the loop's control/inbox channel is already closed (host
-    // shutting down), abandon the connection. Identical to the listener's per-connection setup — the outpost
-    // reducer sees a federated hub as just another ws conn-id.
-    let conn_id = mint_conn_id();
+    // Register the per-connection outbound sink under the CALLER-minted `conn_id` + announce the hub via
+    // ws/connect BEFORE reading frames, so a reducer's ws/send can address it and the frames that follow are
+    // attributable. If the loop's control/inbox channel is already closed (host shutting down), abandon the
+    // connection. Identical to the listener's per-connection setup — the outpost reducer sees a federated hub
+    // as just another ws conn-id.
     let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<bytes::Bytes>();
     if control_tx
         .send(WsControlOp::Register {
@@ -163,6 +169,112 @@ where
     Ok(())
 }
 
+/// The `ws/dial` effect executor — makes hub-dialing REDUCER-EMITTABLE (federation F0-effect). A reducer folds
+/// a decision to federate and emits a `ws/dial` effect whose `target` is the hub URL; the kernel authorizes it
+/// (SEC-F1 — a session dials only URLs its capability grants, the egress/SSRF guard, gated BEFORE dispatch, so
+/// this executor never re-authorizes — same discipline as [`WsSendExecutor`](crate::WsSendExecutor)) and
+/// dispatches it here. This executor MINTS the conn-id, SPAWNS the dial+pump ([`dial_hub`]) on the host loop's
+/// local task set, and returns the conn-id hex SYNCHRONOUSLY as the effect result — so the reducer binds
+/// `conn_id`↔hub the instant it folds the dial result, BEFORE the async connect completes.
+///
+/// **Dispatched-with-result, async connect.** The returned conn-id is a PROMISE of a link, not a
+/// connected-confirmation: the actual TCP+ws handshake runs in the spawned task. Success surfaces later as a
+/// `ws/connect` `Inbound` (the reducer learns the link is live); a dial FAILURE (unreachable hub / bad URL)
+/// surfaces as a `ws/disconnect` `Inbound` for that conn-id (NOT as the `ws/dial` result — the result already
+/// returned the id). This matches the federation design: reconnect is reducer-driven (on `ws/disconnect` the
+/// reducer decides re-dial/backoff/give-up), so a dial that never connects is just an immediate disconnect the
+/// reducer folds — no transport-level retry, no hidden lifecycle.
+///
+/// **Host = plumbing only.** WHICH hubs a reducer may dial is the Cedar policy (authz on the URL target); the
+/// federation handshake + what-federates is the reducer's fold over the surfaced frames. This executor only
+/// establishes the byte-transport. Holds the host loop's [`Inbox`] + [`WsControlSender`] (the same seam the
+/// listener + [`WsSendExecutor`] use) + the owning outpost [`SessionId`] the dial's events are addressed to.
+pub struct WsDialExecutor {
+    inbox: Inbox,
+    control_tx: WsControlSender,
+    owner: SessionId,
+}
+
+impl WsDialExecutor {
+    /// Build over the host loop's [`Inbox`] + [`WsControlSender`] (from the same channels the listener and
+    /// [`WsSendExecutor`] use) for the outpost session `owner` (whose `CompositeExecutor` this registers in
+    /// under `ws/dial`). The dial's `ws/connect`/frame/`ws/disconnect` events are addressed to `owner`.
+    pub fn new(inbox: Inbox, control_tx: WsControlSender, owner: SessionId) -> Self {
+        WsDialExecutor {
+            inbox,
+            control_tx,
+            owner,
+        }
+    }
+}
+
+#[async_trait::async_trait(?Send)]
+impl cdz_kernel::executor::Executor for WsDialExecutor {
+    async fn perform(
+        &mut self,
+        _id: cdz_kernel::effect::EffectId,
+        req: &cdz_kernel::effect::EffectRequest,
+        _idempotency_key: cdz_kernel::hash::Hash,
+    ) -> cdz_kernel::event::EffectOutcome {
+        use cdz_kernel::effect::effect_ct;
+        use cdz_kernel::event::EffectOutcome;
+        let family = req.content_type.family.as_ref();
+        // Serves ONLY ws/dial (the outbound dial effect). ws/connect + ws/disconnect are INBOUND events the
+        // transport emits, never effects dispatched here; ws/send is the peer-write effect. A mis-route is
+        // structural → PERMANENT (§17: observable Err, never a panic).
+        if family != effect_ct::WS_DIAL {
+            return EffectOutcome::err(format!(
+                "WsDialExecutor only handles {}, got {family}",
+                effect_ct::WS_DIAL
+            ));
+        }
+        // target = the hub URL (opaque UTF-8, like ws/send's conn-id / shell's program). A non-UTF-8 or empty
+        // target is malformed → structural PERMANENT (fail-closed). The URL is otherwise opaque here — the
+        // kernel's capability already gated WHICH URLs this session may dial (SSRF/egress guard).
+        let Ok(hub_url) = req.target_str() else {
+            return EffectOutcome::err("ws/dial: target is not valid UTF-8 (expected the hub URL)");
+        };
+        if hub_url.is_empty() {
+            return EffectOutcome::err("ws/dial: empty target (expected the hub URL to dial)");
+        }
+        // Mint the conn-id NOW so it can be returned synchronously as the effect result (the reducer binds
+        // conn_id↔hub before the async connect completes). The spawned task drives connect+pump under this id.
+        let conn_id = mint_conn_id();
+        let hub_url = hub_url.to_string();
+        let owner = self.owner;
+        let inbox = self.inbox.clone();
+        let control_tx = self.control_tx.clone();
+        // v0: no reducer-facing shutdown handle (reconnect is reducer-driven via re-dial on ws/disconnect, not
+        // a transport control). Drop the sender so the dial task runs until the hub closes / the connection
+        // ends; the reducer prunes the peer on the surfaced ws/disconnect. A future close-this-link effect
+        // could retain the sender keyed by conn_id.
+        let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        // Keep a clone of the inbox for the connect-failure path (dial_hub moves the other into itself).
+        let failure_inbox = inbox.clone();
+        tokio::task::spawn_local(async move {
+            if let Err(e) = dial_hub(&hub_url, conn_id, owner, inbox, control_tx, shutdown_rx).await
+            {
+                // The connect never came up (unreachable hub / bad URL). Surface it as a ws/disconnect for the
+                // pre-returned conn_id so the reducer folds the failed link + decides re-dial/give-up — the
+                // reducer-driven-reconnect contract (the ws/dial result already returned the id; a failure is
+                // a lifecycle event, not the effect result). dial_hub errors BEFORE any Register, so emit the
+                // ws/disconnect directly. NEVER log the URL (untrusted); the io error is ours.
+                eprintln!("cdz-agent-daemon ws/dial: connect failed: {e}");
+                let _ = emit_ws_event(&failure_inbox, ws_disconnect_inbound(owner, conn_id));
+            }
+        });
+        // Return the minted conn-id hex as the dispatched result — the reducer folds it + binds conn_id↔hub.
+        EffectOutcome::Ok(Some(cdz_kernel::effect::Payload::Inline(
+            conn_id.to_hex().into_bytes().into(),
+        )))
+    }
+
+    /// Serves ONLY `ws/dial` — the outbound dial effect. Overrides the trait's fail-safe `false` default.
+    fn handles_family(&self, family: &str) -> bool {
+        family == cdz_kernel::effect::effect_ct::WS_DIAL
+    }
+}
+
 #[cfg(test)]
 mod tests {
     // THE OUTPOST federation CLIENT dial-out END-TO-END (live-ws). HERMETIC: an in-process WsListener plays
@@ -211,10 +323,13 @@ mod tests {
         let (out_control_tx, mut out_control_rx) = ws_control_channel();
         let (dial_shutdown_tx, dial_shutdown_rx) = tokio::sync::oneshot::channel();
         let outpost_session = SessionId::new(Hash::of(b"outpost-dialer-e2e"));
+        // The caller mints the conn-id (as the WsDialExecutor does) + hands it to dial_hub.
+        let dialer_conn_id = mint_conn_id();
         let url = format!("ws://{hub_addr}/");
         let dial = tokio::spawn(async move {
             dial_hub(
                 &url,
+                dialer_conn_id,
                 outpost_session,
                 out_inbox_tx,
                 out_control_tx,
@@ -223,13 +338,17 @@ mod tests {
             .await
         });
 
-        // 1. CONNECT: the dialer minted a conn-id, Registered its outbound sink, + emitted ws/connect (the hub
-        // is just another ws conn-id to the outpost reducer).
+        // 1. CONNECT: the dialer Registered its outbound sink under the minted conn-id + emitted ws/connect
+        // (the hub is just another ws conn-id to the outpost reducer).
         let reg = out_control_rx.recv().await.expect("a Register control op");
         let (conn_id, out_sink) = match reg {
             WsControlOp::Register { conn_id, sink } => (conn_id, sink),
             other => panic!("first control op is Register, got {other:?}"),
         };
+        assert_eq!(
+            conn_id, dialer_conn_id,
+            "the connection registers under the caller-minted conn-id"
+        );
         let connect_ev = out_inbox_rx.recv().await.expect("a ws/connect Inbound");
         let (family, payload) = family_payload(&connect_ev.body);
         assert_eq!(family, effect_ct::WS_CONNECT);
@@ -288,25 +407,27 @@ mod tests {
         let _ = dial_shutdown_tx.send(());
         let mut saw_disconnect = false;
         let mut saw_deregister = false;
-        for _ in 0..4 {
-            tokio::select! {
-                ev = out_inbox_rx.recv() => {
-                    if let Some(ev) = ev {
-                        let (family, payload) = family_payload(&ev.body);
-                        if family == effect_ct::WS_DISCONNECT {
-                            assert_eq!(payload, conn_id.to_hex().into_bytes(), "disconnect names the conn-id");
-                            saw_disconnect = true;
-                        }
-                    }
-                }
-                op = out_control_rx.recv() => {
-                    if let Some(WsControlOp::Deregister { conn_id: gone }) = op {
-                        assert_eq!(gone, conn_id, "deregister names the closed conn-id");
-                        saw_deregister = true;
-                    }
-                }
+        // Drain the inbox for the ws/disconnect (tolerating any leftover frame Inbounds ahead of it), then the
+        // control channel for the Deregister. Drain each channel INDEPENDENTLY to completion — a `select!`
+        // that breaks when one channel closes could exit before the OTHER channel's buffered signal is
+        // consumed (the task sends BOTH before returning, so both are buffered; a closed channel yields its
+        // buffered items before `None`). `recv()` returning `None` = drained + closed = genuine miss.
+        while let Some(ev) = out_inbox_rx.recv().await {
+            let (family, payload) = family_payload(&ev.body);
+            if family == effect_ct::WS_DISCONNECT {
+                assert_eq!(
+                    payload,
+                    conn_id.to_hex().into_bytes(),
+                    "disconnect names the conn-id"
+                );
+                saw_disconnect = true;
+                break;
             }
-            if saw_disconnect && saw_deregister {
+        }
+        while let Some(op) = out_control_rx.recv().await {
+            if let WsControlOp::Deregister { conn_id: gone } = op {
+                assert_eq!(gone, conn_id, "deregister names the closed conn-id");
+                saw_deregister = true;
                 break;
             }
         }
@@ -337,6 +458,7 @@ mod tests {
         // 127.0.0.1:1 — port 1 is privileged + unused, so the connect refuses fast.
         let out = dial_hub(
             "ws://127.0.0.1:1/",
+            mint_conn_id(),
             SessionId::new(Hash::of(b"outpost-noconnect")),
             inbox_tx,
             control_tx,
@@ -347,5 +469,111 @@ mod tests {
             out.is_err(),
             "dialing an unreachable hub is an Err, got {out:?}"
         );
+    }
+
+    // ---- WsDialExecutor: the reducer-emittable ws/dial EFFECT ----
+    use cdz_kernel::effect::{EffectId, EffectRequest, Timeliness};
+    use cdz_kernel::event::EffectOutcome;
+    use cdz_kernel::executor::Executor;
+
+    fn ws_dial_req(hub_url: &str) -> EffectRequest {
+        EffectRequest::new_with_family(effect_ct::WS_DIAL, hub_url, None, Timeliness::Interactive)
+    }
+
+    #[tokio::test]
+    async fn ws_dial_executor_rejects_a_non_dial_family_and_an_empty_target() {
+        let (inbox_tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let (control_tx, _crx) = ws_control_channel();
+        let mut exec =
+            WsDialExecutor::new(inbox_tx, control_tx, SessionId::new(Hash::of(b"outpost")));
+        // Wrong family → PERMANENT mis-route error.
+        let wrong = EffectRequest::new_with_family(
+            effect_ct::WS_SEND,
+            "ws://h/",
+            None,
+            Timeliness::Interactive,
+        );
+        assert!(
+            matches!(&exec.perform(EffectId(0), &wrong, Hash::of(b"k")).await,
+                EffectOutcome::Err { message, .. } if message.contains("only handles")),
+            "a non-ws/dial family is a mis-route Err"
+        );
+        // Empty target → PERMANENT (no URL to dial).
+        assert!(
+            matches!(&exec.perform(EffectId(0), &ws_dial_req(""), Hash::of(b"k")).await,
+                EffectOutcome::Err { message, .. } if message.contains("empty target")),
+            "an empty ws/dial target is an Err"
+        );
+        assert!(
+            exec.handles_family(effect_ct::WS_DIAL) && !exec.handles_family(effect_ct::WS_SEND)
+        );
+    }
+
+    #[tokio::test]
+    async fn ws_dial_executor_dials_a_hub_and_returns_the_conn_id_synchronously() {
+        use crate::ws_listen::WsListener;
+        // Needs spawn_local (the executor spawns the dial task), so run under a LocalSet — the same shape the
+        // deployed daemon's current_thread runtime + LocalSet give.
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                // A loopback WsListener plays the hub.
+                let hub = WsListener::bind("127.0.0.1:0").await.expect("bind hub");
+                let hub_addr = hub.local_addr().expect("hub addr");
+                let (hub_inbox_tx, mut hub_inbox_rx) = tokio::sync::mpsc::unbounded_channel();
+                let (hub_control_tx, _hub_crx) = ws_control_channel();
+                let (_hub_sd_tx, hub_sd_rx) = tokio::sync::oneshot::channel();
+                let hub_session = SessionId::new(Hash::of(b"hub-exec-e2e"));
+                tokio::task::spawn_local(hub.serve(
+                    hub_session,
+                    hub_inbox_tx,
+                    hub_control_tx,
+                    hub_sd_rx,
+                ));
+
+                // The outpost host loop's seam: the executor Registers + emits events over these.
+                let (out_inbox_tx, mut out_inbox_rx) = tokio::sync::mpsc::unbounded_channel();
+                let (out_control_tx, mut out_control_rx) = ws_control_channel();
+                let owner = SessionId::new(Hash::of(b"outpost-exec"));
+                let mut exec = WsDialExecutor::new(out_inbox_tx, out_control_tx, owner);
+
+                // Emit ws/dial(hub_url): the executor mints + returns the conn-id SYNCHRONOUSLY, spawns the dial.
+                let url = format!("ws://{hub_addr}/");
+                let out = exec
+                    .perform(EffectId(7), &ws_dial_req(&url), Hash::of(b"k"))
+                    .await;
+                let EffectOutcome::Ok(Some(Payload::Inline(bytes))) = &out else {
+                    panic!("ws/dial returns Ok(Some(conn-id)), got {out:?}");
+                };
+                let returned_conn_id = String::from_utf8(bytes.to_vec()).unwrap();
+                assert_eq!(
+                    returned_conn_id.len(),
+                    64,
+                    "conn-id is a 64-char genesis-hash hex"
+                );
+
+                // The spawned dial connected: it Registers the sink + emits ws/connect under the SAME conn-id
+                // the effect returned (the reducer's pre-known id matches the live link).
+                let reg = out_control_rx
+                    .recv()
+                    .await
+                    .expect("dial Registered the sink");
+                let conn_id = match reg {
+                    WsControlOp::Register { conn_id, .. } => conn_id,
+                    other => panic!("expected Register, got {other:?}"),
+                };
+                assert_eq!(
+                    conn_id.to_hex(),
+                    returned_conn_id,
+                    "the live connection's conn-id == the id ws/dial returned synchronously"
+                );
+                let connect_ev = out_inbox_rx.recv().await.expect("ws/connect Inbound");
+                let (family, payload) = family_payload(&connect_ev.body);
+                assert_eq!(family, effect_ct::WS_CONNECT);
+                assert_eq!(payload, conn_id.to_hex().into_bytes());
+                // The hub saw the dialer connect.
+                let _ = hub_inbox_rx.recv().await.expect("hub ws/connect");
+            })
+            .await;
     }
 }

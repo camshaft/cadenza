@@ -173,7 +173,7 @@ pub use userspace_effect_exec::{
     EFFECT_REQUEST_VERSION,
 };
 #[cfg(feature = "live-ws")]
-pub use ws_dial::dial_hub;
+pub use ws_dial::{dial_hub, WsDialExecutor};
 pub use ws_exec::{WsConnRegistry, WsSendExecutor, WsSendResult};
 #[cfg(feature = "live-ws")]
 pub use ws_listen::WsListener;
