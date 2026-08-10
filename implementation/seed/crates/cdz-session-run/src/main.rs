@@ -319,11 +319,13 @@ async fn main() -> Result<()> {
             "events-processed\t{alias}\t{}\n",
             session.event_count()
         ));
+        // KV-Bytes (operator seq364): prefix_scan now yields `(Bytes, Bytes)` (Arc-backed, cheap clone).
+        // Take a `&[u8]` view via `as_ref()` — the render fns are byte-oriented (opaque KV wire).
         for (key, value) in session.kv().prefix_scan(b"") {
             out.push_str(&format!(
                 "end-kv\t{alias}\t{}\thex:{}\n",
-                render_key(key),
-                to_hex(value)
+                render_key(key.as_ref()),
+                to_hex(value.as_ref())
             ));
         }
     }
