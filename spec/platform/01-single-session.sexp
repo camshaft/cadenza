@@ -126,3 +126,38 @@
   (kickoff "worker" (inbound "message" (: unit Unit)))
   (end-state "worker" (kv "a" (: 7 Int64)) (kv "b" (: 9 Int64)) (status quiescent))
   (events-processed "worker" 2))
+
+(platform-case "a session stores a fixed mid-range byte value (decoder past the counter's 1)"
+  (doc "A reducer that writes a FIXED byte 42 under `answer` on its message kick-off (not a bump, not
+        derived) — witnessing the value decoder at a mid-range number (0x2a) and a fresh key name, so the
+        grader's (: n Int64) → one-byte hex path is pinned beyond the count=1 the other cases use. Guards
+        that an arbitrary stored byte round-trips through the end-kv comparison, not just the value 1.")
+  (session "worker" (reducer
+    (do
+      (type EffectKind (Shell) (Http) (Model) (Now) (Timer) (Emit))
+      (type EffectRequest
+        (Mk (Record
+          (: kind EffectKind)
+          (: target String)
+          (: payload (Option Bytes))
+          (: correlation (Option Bytes)))))
+      (effect Kv (op get (-> Bytes (Option Bytes))) (op put (-> Bytes Bytes Unit)))
+      (bind Kv "cadenza:agent-kernel/kv")
+      (def (apply
+             (: ct (Record (: family String) (: version (UInt 32))))
+             (: payload (Option Bytes))
+             (: resumes (Option Bytes)))
+        (: (match resumes
+             ((Some _) ("list"))
+             ((None)
+              (if (= (. ct family) "message")
+                (host (Kv)
+                  (do
+                    ((. Kv put) ((. String to-bytes) "answer") ((. Bytes of) ("list" ((. UInt8 wrap) 42))))
+                    ("list")))
+                ("list"))))
+           (List EffectRequest)))
+      (export apply))))
+  (kickoff "worker" (inbound "message" (: unit Unit)))
+  (end-state "worker" (kv "answer" (: 42 Int64)) (status quiescent))
+  (events-processed "worker" 2))
