@@ -44,8 +44,11 @@
 //! socket-listener task can drive the control interface without the registry ever crossing a thread. The
 //! `admin_socket` module (behind the `admin` cargo feature) is that transport: an `AdminSocket` binds a
 //! local Unix-domain socket (owner-only perms), reads length-prefixed command frames, forwards them over
-//! the channel, and writes response frames back — the default build binds no socket. The Cedar `admin/*`
-//! authorization of each command is the following slice.
+//! the channel, and writes response frames back — the default build binds no socket. Every command is
+//! authorize-then-apply gated: the loop calls `apply_admin_authorized`, which runs the configured
+//! [`AdminAuthorizer`] on the command's action + principal BEFORE mutating (a denied command never touches
+//! the registry). The deployed daemon installs the trusted-local-admin [`AllowList`]; swapping in a
+//! Cedar-policy-component authorizer (reusing the kernel `ComponentAuthorizer` path) is the following slice.
 //!
 //! All executor errors are RECOVERABLE + classified for the kernel's supervision tree:
 //! an `EffectOutcome::Err` carries a typed [`Retryability`](cdz_kernel::event::Retryability) field so a
