@@ -1196,7 +1196,7 @@ fn collect_closure_codes_at(db: &mut Db, id: StructId, out: &mut std::collection
             collect_closure_codes(db, else_, out);
         }
         Core::Let { bindings, body } => {
-            for (_, value) in bindings {
+            for (_, value) in bindings.iter().copied() {
                 collect_closure_codes(db, value, out);
             }
             collect_closure_codes(db, body, out);
@@ -1239,7 +1239,7 @@ fn collect_closure_codes_at(db: &mut Db, id: StructId, out: &mut std::collection
             collect_closure_codes(db, index, out);
         }
         Core::MapNew { entries, .. } => {
-            for (k, v) in entries {
+            for (k, v) in entries.iter().copied() {
                 collect_closure_codes(db, k, out);
                 collect_closure_codes(db, v, out);
             }
@@ -1488,7 +1488,7 @@ fn collect_call_callees_at(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
             collect_call_callees(db, else_, out);
         }
         crate::core::Core::Let { bindings, body } => {
-            for (_, value) in bindings {
+            for (_, value) in bindings.iter().copied() {
                 collect_call_callees(db, value, out);
             }
             collect_call_callees(db, body, out);
@@ -1519,7 +1519,7 @@ fn collect_call_callees_at(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
             collect_call_callees(db, index, out);
         }
         crate::core::Core::MapNew { entries, .. } => {
-            for (k, v) in entries {
+            for (k, v) in entries.iter().copied() {
                 collect_call_callees(db, k, out);
                 collect_call_callees(db, v, out);
             }

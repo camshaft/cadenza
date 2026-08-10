@@ -998,7 +998,7 @@ fn collect_consuming_payload_sites_expr(
             collect_consuming_payload_sites_expr(db, value, scrut, consuming, out)
         }
         Core::Let { bindings, body } => {
-            for (_, v) in &bindings {
+            for (_, v) in bindings.iter() {
                 collect_consuming_payload_sites_expr(db, *v, scrut, true, out);
             }
             collect_consuming_payload_sites_expr(db, body, scrut, consuming, out);
@@ -1082,7 +1082,7 @@ fn collect_shell_reclaim_child_dups(db: &mut Db, id: StructId, dup_sites: &mut H
 fn collect_row_op_field_dups(db: &mut Db, id: StructId, dup_sites: &mut HashSet<StructId>) {
     if let Core::Let { bindings, body } = core_of(db, id)
         // A self-keyed single binding `(k, k)` — the materialize-once row-op operand signature.
-        && let [(bk, bv)] = bindings.as_slice()
+        && let [(bk, bv)] = &bindings[..]
         && bk == bv
     {
         let binder = *bk;
@@ -1237,7 +1237,7 @@ fn binder_absent_in_subtree(binder: StructId, id: StructId) -> bool {
 fn collect_retain_candidate_binders(db: &mut Db, id: StructId, out: &mut Vec<StructId>) {
     match core_of(db, id) {
         Core::Let { bindings, .. } => {
-            for (binder, _) in &bindings {
+            for (binder, _) in bindings.iter() {
                 // `is_heap_type_for_retain`: a still-`Var` binder type counts as a candidate (leak-safe;
                 // avoids the demand-order UAF where a not-yet-ground heap payload was skipped). The dup/drop
                 // EMISSION is concrete-type-gated, so a Var that solves to a scalar emits nothing.
@@ -1387,7 +1387,7 @@ pub fn core_child_ids(db: &mut Db, id: StructId) -> Vec<StructId> {
         Core::SumNew { payloads, .. } => cs.extend(payloads.iter().copied()),
         Core::Record { fields } => cs.extend(fields.values().copied()),
         Core::MapNew { entries, .. } => {
-            for (k, v) in entries {
+            for (k, v) in entries.iter().copied() {
                 cs.push(k);
                 cs.push(v);
             }
@@ -3015,7 +3015,7 @@ fn collect_used_ops_into(
             if !entries.is_empty() {
                 out.insert(OP_MAP_INSERT);
             }
-            for (k, v) in &entries {
+            for (k, v) in entries.iter() {
                 // NODE-AWARE box op (mirror the emit's `box_op_for`, not `box_op_ty`) — a Float key/value into
                 // an empty (`Var`-typed) map must import the `box-float` the emit calls, not the `box-int`
                 // `box_op_ty` defaults an unresolved `Var` to (the empty-collection float-element gap).
@@ -3464,7 +3464,7 @@ fn collect_used_ops_into(
             }
         }
         Core::Let { bindings, body } => {
-            for (binder, value) in &bindings {
+            for (binder, value) in bindings.iter() {
                 // A HEAP-typed binding is `drop`'d after the body (Perceus) — so the program imports
                 // `drop`. (A scalar binding owns no heap cell → no drop, matching `emit`.) The `dup` a
                 // consumed-then-reused binding needs is imported ONCE at the `collect_used_ops` entry
@@ -5993,7 +5993,7 @@ fn emit_tail(
             // epilogue is needed — the `any_drop` check above guaranteed none.)
             let mut extended = slots.clone();
             let mut floor = base;
-            for (binder, value) in &bindings {
+            for (binder, value) in bindings.iter() {
                 let slot = floor;
                 let ty = type_of(db, *binder);
                 let vt = valtype_of(&ty).ok_or_else(|| {
@@ -8152,7 +8152,7 @@ fn emit(
             val_ty,
         } => {
             out.push(Lir::CallImport(OP_MAP_EMPTY)); // → [map]
-            for &(k, v) in &entries {
+            for &(k, v) in entries.iter() {
                 // Each key/value sub-expression starts its scratch ABOVE the running high-water, NOT at a
                 // fixed `base` — the same disjoint-slot discipline `Core::Tuple`/`Core::ListNew` apply, so a
                 // key/value that stashes an i32 handle in a scratch slot never collides with a sibling's i64
@@ -10440,7 +10440,7 @@ fn emit(
             // `value` is kept in the tuple so the drop site can consult its ownership. (A scalar binding owns
             // no heap cell → no drop.)
             let mut heap_bindings: Vec<(StructId, u32, StructId)> = Vec::new();
-            for (binder, value) in &bindings {
+            for (binder, value) in bindings.iter() {
                 let ty = type_of(db, *binder);
                 // The binding's machine value type — read off its solved type (the value's type). A
                 // binding whose type has no machine rep (a compound/unresolved value) declines.

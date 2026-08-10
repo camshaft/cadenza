@@ -447,7 +447,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 _ => (crate::ty::Ty::Any, crate::ty::Ty::Any),
             };
             Core::MapNew {
-                entries: Vec::new(),
+                entries: Vec::new().into(),
                 key_ty,
                 val_ty,
             }
@@ -622,7 +622,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 _ => (crate::ty::Ty::Any, crate::ty::Ty::Any),
             };
             Core::MapNew {
-                entries: entries.to_vec(),
+                entries,
                 key_ty,
                 val_ty,
             }
@@ -4130,13 +4130,13 @@ fn lower_let(
             return core_of(db, body);
         }
         return Core::Let {
-            bindings: live,
+            bindings: live.into(),
             body,
         };
     }
     trace!(target: "rcdzc::lower", body = body.0, kept = kept.len(), "let: A-normalized (named multi-use runtime bindings)");
     Core::Let {
-        bindings: kept,
+        bindings: kept.into(),
         body,
     }
 }
@@ -7450,7 +7450,7 @@ fn desugar_map_value_subpatterns(
             _ => pat,
         };
         if let Some((entries, _rest)) = crate::resolve::map_pattern_of(db, inner) {
-            for (_, v) in entries {
+            for (_, v) in entries.iter().copied() {
                 if !is_bare_map_value(db, v) && map_value_liftable(db, v) {
                     any = true;
                 }
@@ -8278,7 +8278,7 @@ fn lower_match_bin(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
         // Wrap in a `let` that materializes the scrutinee once (keyed by its own occurrence — the same
         // occurrence the `scrut_ref` + each arm body's `BinField` read resolve their `LocalRef` to).
         return Core::Let {
-            bindings: vec![(scrutinee, scrutinee)],
+            bindings: vec![(scrutinee, scrutinee)].into(),
             body: root,
         };
     };
@@ -13552,7 +13552,7 @@ fn collect_binding_uses(db: &mut Db, node: StructId, proj_operand: bool, out: &m
         // count as a projection position; recurse with `proj_operand = false`.
         Resolved::Try { operand } => collect_binding_uses(db, operand, false, out),
         Resolved::Let { bindings, body } => {
-            for (_, v) in &bindings {
+            for (_, v) in bindings.iter() {
                 collect_binding_uses(db, *v, false, out);
             }
             collect_binding_uses(db, body, false, out);
@@ -15429,7 +15429,7 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
         //= spec/capabilities/collections-and-text.md#map-iteration-is-deterministic
         //# The order in which a map's entries are visited MUST agree with the order its canonical byte form places them in.
         Core::MapNew { entries, .. } => {
-            let mut sorted: Vec<(StructId, StructId)> = entries.clone();
+            let mut sorted: Vec<(StructId, StructId)> = entries.to_vec();
             // Sort by canonical key order. A key that is not orderable-as-a-constant declines the whole
             // escape (the runtime walker path is deferred), so a failed comparison bails to `None`.
             let mut orderable = true;
@@ -20241,7 +20241,7 @@ fn lower_runtime_compare(
     let outer = synth_if(db, lt_cmp, less, inner);
     trace!(target: "rcdzc::lower", node = id.0, "compare of runtime operands → nested-if over the boolean ordering op (three-way, materialize-once)");
     Core::Let {
-        bindings: vec![(lhs, lhs), (rhs, rhs)],
+        bindings: vec![(lhs, lhs), (rhs, rhs)].into(),
         body: outer,
     }
 }
@@ -21885,14 +21885,14 @@ pub(crate) fn const_compound_eq(db: &mut Db, a: StructId, b: StructId) -> Option
             if ea.len() != eb.len() {
                 return Some(false);
             }
-            for &(ka, va) in &ea {
+            for &(ka, va) in ea.iter() {
                 // Find `ka` among `eb`'s keys (by value). Track whether any key comparison was AMBIGUOUS
                 // (a non-const nested key → `None`): if the key is not found AND every comparison was a
                 // definite `Some(false)`, the key is genuinely ABSENT, so — sizes being equal — the maps
                 // differ (`false`); but if a comparison was ambiguous we cannot conclude absence, so decline.
                 let mut value_at_key = None;
                 let mut ambiguous_key = false;
-                for &(kb, vb) in &eb {
+                for &(kb, vb) in eb.iter() {
                     match const_compound_eq(db, ka, kb) {
                         Some(true) => {
                             value_at_key = Some(vb);
@@ -22923,7 +22923,7 @@ fn lower_map_insert(db: &mut Db, id: StructId, args: &[StructId]) -> Core {
     // persistent CHAMP op). Keys compared by VALUE (`const_compound_eq`), so two names bound to the same
     // value collapse here just as they do at run time.
     if let (Core::MapNew { entries, .. }, true) = (core_of(db, map), is_const_value(db, key)) {
-        let mut merged = entries.clone();
+        let mut merged = entries.to_vec();
         let mut replaced = false;
         for e in merged.iter_mut() {
             if const_compound_eq(db, e.0, key) == Some(true) {
@@ -22937,7 +22937,7 @@ fn lower_map_insert(db: &mut Db, id: StructId, args: &[StructId]) -> Core {
         }
         trace!(target: "rcdzc::fold", node = id.0, entries = merged.len(), "Map.insert folds onto a constant map");
         return Core::MapNew {
-            entries: merged,
+            entries: merged.into(),
             key_ty,
             val_ty,
         };
@@ -23060,7 +23060,7 @@ fn lower_map_field(
                 .copied()
                 .collect();
             Core::MapNew {
-                entries: rest,
+                entries: rest.into(),
                 key_ty,
                 val_ty,
             }
@@ -23895,7 +23895,7 @@ fn materialize_row_op_operand(
     let result_ty = crate::infer::type_of(db, id);
     let body = synth_core(db, result_core, result_ty);
     Core::Let {
-        bindings: vec![(record, record)],
+        bindings: vec![(record, record)].into(),
         body,
     }
 }

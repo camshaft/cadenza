@@ -4511,7 +4511,7 @@ fn collect_reached_poisons_at(db: &mut Db, id: StructId, out: &mut Vec<Reject>) 
         // value used more than once, always evaluated), and the body is unconditionally reached — so a
         // provable trap in either is a build failure. Descend into each.
         Core::Let { bindings, body } => {
-            for (_, value) in bindings {
+            for (_, value) in bindings.iter().copied() {
                 collect_reached_poisons(db, value, out);
             }
             collect_reached_poisons(db, body, out);
@@ -4662,7 +4662,7 @@ fn collect_reached_poisons_at(db: &mut Db, id: StructId, out: &mut Vec<Reject>) 
         // A map construction's entry keys AND values are all unconditionally part of the value — descend
         // into each `(key, value)` pair.
         Core::MapNew { entries, .. } => {
-            for (k, v) in entries {
+            for (k, v) in entries.iter().copied() {
                 collect_reached_poisons(db, k, out);
                 collect_reached_poisons(db, v, out);
             }
@@ -5276,7 +5276,7 @@ fn walk_for_dead_traps(
             }
         }
         Resolved::Let { bindings, body } => {
-            for (_, init) in &bindings {
+            for (_, init) in bindings.iter() {
                 discarded(db, *init, out, seen);
             }
             walk_for_dead_traps(db, body, out, seen);

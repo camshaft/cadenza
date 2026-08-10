@@ -351,7 +351,7 @@ pub(crate) mod cse {
         db.install_core_override(
             body,
             Core::Let {
-                bindings,
+                bindings: bindings.into(),
                 body: inner,
             },
         );

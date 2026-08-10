@@ -413,7 +413,7 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
             collect_host_imports(db, else_, out);
         }
         Core::Let { bindings, body } => {
-            for (_, value) in bindings {
+            for (_, value) in bindings.iter().copied() {
                 collect_host_imports(db, value, out);
             }
             collect_host_imports(db, body, out);
@@ -465,7 +465,7 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
             collect_host_imports(db, index, out);
         }
         Core::MapNew { entries, .. } => {
-            for (k, v) in entries {
+            for (k, v) in entries.iter().copied() {
                 collect_host_imports(db, k, out);
                 collect_host_imports(db, v, out);
             }

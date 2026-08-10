@@ -697,7 +697,7 @@ pub enum Core {
     /// its type before the insert, which CONSUMES the map handle + the key + the value). `key_ty`/`val_ty`
     /// are the solved key/value types (choosing the box/unbox ops). An empty map has no entries.
     MapNew {
-        entries: Vec<(StructId, StructId)>,
+        entries: std::rc::Rc<[(StructId, StructId)]>,
         key_ty: crate::ty::Ty,
         val_ty: crate::ty::Ty,
     },
@@ -958,7 +958,7 @@ pub enum Core {
     /// a single-use or constant binding is copy-propagated / erased at lowering, leaving no `Let`.
     /// Bindings are sequential (a later one may reference an earlier's name), matching `let*`.
     Let {
-        bindings: Vec<(StructId, StructId)>,
+        bindings: std::rc::Rc<[(StructId, StructId)]>,
         body: StructId,
     },
     /// A reference to a [`Core::Let`] binding — read the value named by `binder` (the initializer

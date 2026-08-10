@@ -726,7 +726,7 @@ fn call_needs_pin(db: &mut Db, callee: usize) -> bool {
                 nontail_callees(db, else_, out);
             }
             Core::Let { bindings, body } => {
-                for (_, v) in bindings {
+                for (_, v) in bindings.iter().copied() {
                     collect_all_calls(db, v, out);
                 }
                 nontail_callees(db, body, out);
@@ -1139,7 +1139,7 @@ fn emit_tail(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, 
         Core::Let { bindings, body } => {
             let mut extended = env.clone();
             let mut lines = String::new();
-            for (binder, value) in &bindings {
+            for (binder, value) in bindings.iter() {
                 let name = local_name(db, *binder, &extended);
                 let v = emit(db, *value, &extended, ctx)?;
                 lines.push_str(&format!("let {name} = {v}; "));
@@ -1291,7 +1291,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         Core::Let { bindings, body } => {
             let mut extended = env.clone();
             let mut lines = String::new();
-            for (binder, value) in &bindings {
+            for (binder, value) in bindings.iter() {
                 let name = local_name(db, *binder, &extended);
                 let v = emit(db, *value, &extended, ctx)?;
                 lines.push_str(&format!("let {name} = {v}; "));
@@ -1894,7 +1894,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                     _ => (None, None),
                 };
             let mut lines = String::new();
-            for (k, v) in &entries {
+            for (k, v) in entries.iter() {
                 let ke = match key_it {
                     Some(it) => emit_grounded(db, *k, it, env, ctx)?,
                     None => emit(db, *k, env, ctx)?,

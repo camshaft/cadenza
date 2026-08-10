@@ -1147,7 +1147,7 @@ fn collect_host_arg_strings_at(db: &mut Db, id: crate::ast::StructId, out: &mut 
             collect_host_arg_strings(db, else_, out);
         }
         Core::Let { bindings, body } => {
-            for (_, value) in bindings {
+            for (_, value) in bindings.iter().copied() {
                 collect_host_arg_strings(db, value, out);
             }
             collect_host_arg_strings(db, body, out);
@@ -1199,7 +1199,7 @@ fn collect_host_arg_strings_at(db: &mut Db, id: crate::ast::StructId, out: &mut 
             collect_host_arg_strings(db, index, out);
         }
         Core::MapNew { entries, .. } => {
-            for (k, v) in entries {
+            for (k, v) in entries.iter().copied() {
                 collect_host_arg_strings(db, k, out);
                 collect_host_arg_strings(db, v, out);
             }

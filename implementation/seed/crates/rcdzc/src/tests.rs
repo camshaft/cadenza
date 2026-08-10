@@ -7409,7 +7409,7 @@ fn sroa_tuple_scrutinee_candidate_fires_only_on_an_escape_free_runtime_tuple_des
         match crate::lower::sroa_let_wrap(&elems, m_body) {
             Core::Let { bindings, .. } => {
                 assert_eq!(bindings.len(), 2, "Let binds both elems");
-                for (b, init) in &bindings {
+                for (b, init) in bindings.iter() {
                     assert_eq!(
                         b, init,
                         "SROA bindings are self-keyed (binder == init == the elem)"
