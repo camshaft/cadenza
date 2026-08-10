@@ -133,6 +133,14 @@ enum Cmd {
         #[arg(trailing_var_arg = true)]
         crates: Vec<String>,
     },
+    /// Canonicalize the `.gate-baseline*` files in place: sort + de-dup verdict-aware, WITHOUT a gate
+    /// run. The root-fix for the `merge=union` benign-dup re-accumulation (a concurrent baseline append
+    /// merges both sides' rows, re-injecting same-verdict duplicate lines that red `check`'s no-dup lint
+    /// fleet-wide). pr-sync runs this as a post-land step so baselines land already-canonical; it is also
+    /// exposed here so it can be run by hand. A same-title/DIFFERENT-verdict conflict is SURFACED (exit
+    /// non-zero, names the titles) — never silently deduped. Writes only files that were non-canonical
+    /// (an already-clean file is left byte-identical, so it never dirties the worktree).
+    CanonicalizeBaselines,
     /// Emoji-ban lint, standalone (operator directive): fail if any emoji/pictographic/dingbat char
     /// appears in an `implementation/**/*.rs` source COMMENT. This is the same `emoji_free_lint` the
     /// omnibus `check` runs, exposed as its own fast subcommand so CI can gate it as an isolated
@@ -288,6 +296,7 @@ fn main() {
         }
         Cmd::Check => check(&paths, profile),
         Cmd::DevGate { crates } => dev_gate(&paths, &crates),
+        Cmd::CanonicalizeBaselines => canonicalize_baselines(&paths),
         Cmd::LintEmoji => match emoji_free_lint(&paths) {
             Ok(()) => println!("lint-emoji: ok — no emoji in source comments"),
             Err(msg) => {
@@ -4784,20 +4793,155 @@ fn save_baseline(paths: &Paths, verdicts: &[(String, Verdict)], target: GateTarg
     // writing a canonical (sorted, unique-by-description) file means a `gate --save` also CLEANS UP any
     // duplicate lines a `merge=union` merge introduced into the committed baseline. Last verdict wins
     // per description (matches the map-load in `check_baseline`).
-    let mut by_desc: std::collections::BTreeMap<&str, Verdict> = std::collections::BTreeMap::new();
+    let mut by_desc: std::collections::BTreeMap<String, Verdict> =
+        std::collections::BTreeMap::new();
     for (d, v) in verdicts {
-        by_desc.insert(d.as_str(), *v);
+        by_desc.insert(d.clone(), *v);
     }
+    let body = serialize_baseline(&by_desc);
+    std::fs::write(baseline_path(paths, target), body).expect("write baseline");
+}
+
+/// The exact serialized form `save_baseline` writes: a `#` header then one `verdict\tdescription` line
+/// per case, sorted. Factored out so the file-level canonicalizer ([`canonicalize_baseline_text`])
+/// produces a byte-identical file WITHOUT needing a gate run to rebuild verdicts. Pure.
+fn serialize_baseline(by_desc: &std::collections::BTreeMap<String, Verdict>) -> String {
     let mut lines: Vec<String> = by_desc
         .iter()
         .map(|(d, v)| format!("{}\t{d}", v.tag()))
         .collect();
     lines.sort();
-    let body = format!(
+    format!(
         "# gate baseline — per-case verdicts (verdict\\tdescription). Regenerate with `cargo xtask gate --save`.\n{}\n",
         lines.join("\n")
-    );
-    std::fs::write(baseline_path(paths, target), body).expect("write baseline");
+    )
+}
+
+/// Canonicalize a gate-baseline FILE from its text alone — sort + de-dup verdict-aware — WITHOUT a gate
+/// run. This is the root-fix for the `merge=union` re-accumulation (concierge assign 2026-08-10, option
+/// (a)): the `.gate-baseline*` files carry `merge=union` so every concurrent baseline append merges BOTH
+/// sides' rows, re-injecting benign same-verdict duplicate lines; the within-file `baseline_no_dup_titles`
+/// lint then reds `cargo xtask check` FLEET-WIDE, and a manual dedup MR can never win the race against the
+/// steady append stream (corpus-bugfix's heal was rebuilt 3+ times). Running this as a pr-sync POST-LAND
+/// step lands every baseline already-canonical, killing the accumulation at the source while KEEPING
+/// `merge=union`'s conflict-free appends (best of both).
+///
+/// Verdict-aware, per the assign's must-not-silently-dedup requirement:
+/// - same title + SAME verdict  → a benign `merge=union` duplicate → collapse to one line.
+/// - same title + DIFFERENT verdict → a REAL integrity conflict (the map-keyed baseline would mask one
+///   via last-wins) → return `Err(conflicting titles)`. The caller MUST surface this, never silently pick
+///   a side. (This mirrors `check_baseline`'s benign-vs-conflicting split, at the file layer.)
+///
+/// Returns `Ok(Some(canonical))` when the input was NON-canonical (caller rewrites the file),
+/// `Ok(None)` when it was ALREADY canonical (caller writes nothing — no dirty worktree, no churn), and
+/// `Err(titles)` on a conflicting dup. Malformed lines (no tab / unknown verdict tag) are preserved by
+/// being ignored here only for the dedup decision — but since a rewrite would DROP them, we treat any
+/// unparseable non-comment/non-blank line as "leave the file alone" (`Ok(None)` is wrong; we return the
+/// input unchanged via `Err`? no — we simply refuse to canonicalize): see the `unparseable` guard.
+fn canonicalize_baseline_text(text: &str) -> Result<Option<String>, Vec<String>> {
+    let mut by_desc: std::collections::BTreeMap<String, Verdict> =
+        std::collections::BTreeMap::new();
+    let mut conflicting: Vec<String> = Vec::new();
+    for line in text.lines() {
+        if line.starts_with('#') || line.is_empty() {
+            continue;
+        }
+        // A non-comment, non-blank line that doesn't parse as `verdict\tdescription` is unexpected. Refuse
+        // to rewrite (a rewrite would silently DROP it) — treat the file as "already canonical / hands
+        // off" so we never eat data we don't understand. Zero-risk: the no-dup lint still guards dups.
+        let Some((v, d)) = line.split_once('\t') else {
+            return Ok(None);
+        };
+        let Some(verdict) = Verdict::parse(v) else {
+            return Ok(None);
+        };
+        match by_desc.insert(d.to_string(), verdict) {
+            None => {}
+            Some(prev) if prev == verdict => {} // benign same-verdict dup — collapsed by the map insert
+            Some(_) => conflicting.push(d.to_string()),
+        }
+    }
+    if !conflicting.is_empty() {
+        conflicting.sort();
+        conflicting.dedup();
+        return Err(conflicting);
+    }
+    let canonical = serialize_baseline(&by_desc);
+    if canonical == text {
+        Ok(None) // already canonical — caller writes nothing (keeps the worktree clean)
+    } else {
+        Ok(Some(canonical))
+    }
+}
+
+/// Every committed gate-baseline file: the three semantics backends + the platform suite's own baseline.
+/// The set the canonicalizer sweeps and the no-dup lint guards.
+fn all_baseline_paths(paths: &Paths) -> Vec<PathBuf> {
+    vec![
+        baseline_path(paths, GateTarget::Wasm),
+        baseline_path(paths, GateTarget::Rust),
+        baseline_path(paths, GateTarget::RustAsync),
+        baseline_path(paths, GateTarget::Platform),
+    ]
+}
+
+/// Canonicalize every `.gate-baseline*` file in place (the `CanonicalizeBaselines` subcommand +
+/// pr-sync's post-land step). Reads each file, runs the pure [`canonicalize_baseline_text`], and rewrites
+/// ONLY the files that were non-canonical (an already-clean file is untouched → no dirty worktree). A
+/// conflicting same-title/different-verdict dup in ANY file makes the whole run FAIL (exit 1) naming the
+/// file + titles, so a real integrity error is surfaced, never silently resolved. Absent files are
+/// skipped (rust/platform baselines are opt-in). Prints a one-line summary of what it rewrote.
+fn canonicalize_baselines(paths: &Paths) {
+    let mut rewrote: Vec<String> = Vec::new();
+    let mut conflicts: Vec<String> = Vec::new();
+    for path in all_baseline_paths(paths) {
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => {
+                eprintln!(
+                    "canonicalize-baselines: cannot read {}: {e}",
+                    path.display()
+                );
+                std::process::exit(2);
+            }
+        };
+        match canonicalize_baseline_text(&text) {
+            Ok(None) => {} // already canonical — leave the file untouched
+            Ok(Some(canonical)) => {
+                std::fs::write(&path, canonical).expect("write canonical baseline");
+                rewrote.push(path.display().to_string());
+            }
+            Err(titles) => {
+                conflicts.push(format!(
+                    "{}: {} conflicting title(s) (same case, DIFFERENT verdicts — cannot auto-dedup):\n    {}",
+                    path.display(),
+                    titles.len(),
+                    titles.join("\n    ")
+                ));
+            }
+        }
+    }
+    if !conflicts.is_empty() {
+        eprintln!(
+            "canonicalize-baselines: REFUSING — a same-title/different-verdict conflict is a real \
+             integrity error (the map-keyed baseline would mask one via last-wins). Resolve which \
+             verdict is correct (keep one line), then re-run. Conflicts:\n  {}",
+            conflicts.join("\n  ")
+        );
+        std::process::exit(1);
+    }
+    if rewrote.is_empty() {
+        println!(
+            "canonicalize-baselines: ok — all baselines already canonical (nothing rewritten)."
+        );
+    } else {
+        println!(
+            "canonicalize-baselines: rewrote {} baseline(s) to canonical (sorted + verdict-aware deduped):\n  {}",
+            rewrote.len(),
+            rewrote.join("\n  ")
+        );
+    }
 }
 
 /// Compare current verdicts to the baseline. Returns the process exit code: non-zero if any case
@@ -5995,9 +6139,9 @@ fn ran_summary(r: &Ran) -> String {
 }
 
 /// The case DESCRIPTIONS in a gate-baseline file, in file order — the `verdict\tdescription` lines,
-/// skipping `#` header/blank lines, taking field 2. The shared parse behind both `baseline_titles` (a
-/// `BTreeSet`, for the cross-file agreement lint) and `baseline_title_lines` (a `Vec`, which preserves a
-/// within-file duplicate for the no-dup lint); each collects this iterator into its own container.
+/// skipping `#` header/blank lines, taking field 2. The shared parse behind `baseline_titles` (a
+/// `BTreeSet`, for the cross-file agreement lint). The within-file dup lint reads verdicts too, so it
+/// parses lines directly ([`conflicting_dup_titles`]) rather than through this title-only iterator.
 fn baseline_title_iter(text: &str) -> impl Iterator<Item = String> + '_ {
     text.lines()
         .filter(|l| !l.starts_with('#') && !l.is_empty())
@@ -6071,20 +6215,47 @@ pub(crate) fn baseline_titles_agree_lint(paths: &Paths) -> Result<(), String> {
     ))
 }
 
-/// The case-titles in a baseline as they APPEAR (a `Vec`, NOT a set) — so a within-file DUPLICATE title
-/// is visible (the set-based `baseline_titles` silently dedups, which is why the agree-lint can't catch a
-/// dup). Same `baseline_title_iter` parse, collected into a `Vec` to preserve duplicates.
-fn baseline_title_lines(text: &str) -> Vec<String> {
-    baseline_title_iter(text).collect()
+/// The CONFLICTING duplicate case-titles in a baseline: a title that appears on 2+ lines with DIFFERENT
+/// verdicts. Pure so it's unit-tested without the filesystem. A benign same-verdict repeat (the routine
+/// `merge=union` artifact — both merge sides append their copy of an unchanged row) is NOT returned: it's
+/// harmless (the description-keyed baseline map collapses it, no verdict is masked), exactly as
+/// `check_baseline` and `canonicalize_baseline_text` treat it. Only a same-title/DIFFERENT-verdict dup is
+/// dangerous (the map's last-wins silently masks one verdict), so only that is flagged. Malformed lines
+/// (no tab / unknown verdict tag) are skipped for this classification. Returns first-seen order, stable.
+fn conflicting_dup_titles(text: &str) -> Vec<String> {
+    let mut seen: std::collections::HashMap<String, Verdict> = std::collections::HashMap::new();
+    let mut conflicting: Vec<String> = Vec::new();
+    for line in text.lines() {
+        if line.starts_with('#') || line.is_empty() {
+            continue;
+        }
+        if let Some((v, d)) = line.split_once('\t')
+            && let Some(verdict) = Verdict::parse(v)
+        {
+            match seen.insert(d.to_string(), verdict) {
+                None => {}
+                Some(prev) if prev == verdict => {} // benign same-verdict dup — tolerated
+                // A conflict; record the title once (first conflicting sighting) in encounter order.
+                Some(_) if !conflicting.iter().any(|t| t == d) => conflicting.push(d.to_string()),
+                Some(_) => {} // already-recorded conflict on this title
+            }
+        }
+    }
+    conflicting
 }
 
-/// Assert no gate baseline has the SAME case-title on 2+ lines. A duplicate title is how a `gate --save`
-/// / hand-append can leave two verdict lines for one case; when the verdicts DIFFER (a `pass`+`todo`
-/// conflicting-dup) the map-keyed baseline masks one (last-wins) and `gate --check` HARD-ERRORS, reddening
-/// that target FLEET-WIDE until healed (recurred 3× — corpus-bugfix's `545c8e44a`, `6a3e7906e`). The
-/// agree-lint only compares title SETS across files, so it can't see a within-file dup (a set dedups). This
-/// catches the class at MR time. Returns an actionable error naming the dup'd title(s) + heal command;
-/// `Ok(())` when every baseline's titles are unique (or a baseline is absent — nothing to check).
+/// Assert no gate baseline has the same case-title on 2+ lines with CONFLICTING verdicts. A
+/// same-title/different-verdict dup is how a bad `gate --save` / hand-append masks a verdict: the
+/// description-keyed baseline map is last-wins, so `gate --check` HARD-ERRORS on it, reddening that target
+/// FLEET-WIDE until healed (recurred 3× — corpus-bugfix's `545c8e44a`, `6a3e7906e`). This lint pins the
+/// class at MR time. VERDICT-AWARE (fixed 2026-08-10, v-wasm-opt trunk-RED report): it tolerates BENIGN
+/// same-verdict duplicate lines — the routine `merge=union` artifact from parallel baseline appends, which
+/// `gate --check` itself deems harmless (the map collapses them, no masking) and passes. The old lint
+/// flagged ANY repeated title, so a benign union-merge dup (e.g. 506 same-verdict repeats on trunk) red
+/// `cargo xtask check` fleet-wide even though `gate --check` passed — a self-inconsistency that blocked
+/// every check-gated MR. Now the lint and `gate --check` agree: benign is fine, only a conflict fails.
+/// Returns an actionable error naming the conflicting title(s) + heal command; `Ok(())` when no baseline
+/// has a conflicting dup (or a baseline is absent — nothing to check).
 pub(crate) fn baseline_no_dup_titles_lint(paths: &Paths) -> Result<(), String> {
     let targets = [
         (".gate-baseline", GateTarget::Wasm),
@@ -6101,25 +6272,12 @@ pub(crate) fn baseline_no_dup_titles_lint(paths: &Paths) -> Result<(), String> {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
             Err(e) => return Err(format!("cannot read baseline {}: {e}", path.display())),
         };
-        // Count each title; a count > 1 is a duplicate. Preserve first-seen order for a stable report.
-        let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-        let mut order: Vec<String> = Vec::new();
-        for t in baseline_title_lines(&text) {
-            if *counts.entry(t.clone()).or_insert(0) == 0 {
-                order.push(t.clone());
-            }
-            *counts.get_mut(&t).unwrap() += 1;
-        }
-        let dups: Vec<String> = order
-            .into_iter()
-            .filter(|t| counts[t] > 1)
-            .map(|t| format!("{}× {t}", counts[&t]))
-            .collect();
-        if !dups.is_empty() {
+        let conflicts = conflicting_dup_titles(&text);
+        if !conflicts.is_empty() {
             problems.push(format!(
-                "{name} has {} duplicated case-title(s):\n    {}",
-                dups.len(),
-                dups.join("\n    ")
+                "{name} has {} case-title(s) with CONFLICTING verdicts on 2+ lines:\n    {}",
+                conflicts.len(),
+                conflicts.join("\n    ")
             ));
         }
     }
@@ -6127,11 +6285,12 @@ pub(crate) fn baseline_no_dup_titles_lint(paths: &Paths) -> Result<(), String> {
         return Ok(());
     }
     Err(format!(
-        "a gate baseline has the SAME case-title on 2+ lines — a duplicate. When the verdicts differ \
-         (pass+todo) the map-keyed baseline masks one (last-wins) and `gate --check` hard-errors, \
-         reddening that target FLEET-WIDE. Heal by removing the stale/extra line (keep the correct verdict), \
-         or re-run `cargo xtask gate --save --target <t>` to regenerate the file cleanly (one line per case). \
-         Duplicates:\n  {}",
+        "a gate baseline has the SAME case-title on 2+ lines with DIFFERENT verdicts — the map-keyed \
+         baseline masks one (last-wins) and `gate --check` hard-errors, reddening that target FLEET-WIDE. \
+         (Benign same-verdict duplicate lines — the routine `merge=union` artifact — are tolerated; only a \
+         verdict CONFLICT fails this lint.) Heal by removing the wrong line (keep the correct verdict), or \
+         re-run `cargo xtask gate --save --target <t>` / `cargo xtask canonicalize-baselines` to rewrite the \
+         file clean. Conflicting:\n  {}",
         problems.join("\n  ")
     ))
 }
@@ -8110,23 +8269,35 @@ mod trap_grading_tests {
     }
 
     #[test]
-    fn baseline_title_lines_keeps_a_duplicate_that_the_set_form_dedups() {
-        // The dup-lint's foundation: `baseline_title_lines` preserves a repeated title (a Vec), whereas
-        // `baseline_titles` (a set) collapses it — which is exactly why the set-based agree-lint can't see
-        // a within-file dup and this Vec-based check can. A `pass`+`todo` conflicting-dup is the real case.
-        let text = "# gate baseline\npass\tdup case\ntodo\tdup case\npass\tunique case\n";
-        let lines = baseline_title_lines(text);
-        assert_eq!(lines.len(), 3, "the duplicate is NOT collapsed: {lines:?}");
+    fn conflicting_dup_titles_flags_only_verdict_conflicts_not_benign_repeats() {
+        // The within-file dup lint is VERDICT-AWARE (v-wasm-opt trunk-RED fix 2026-08-10): only a
+        // same-title/DIFFERENT-verdict dup is dangerous (the map-keyed baseline masks one via last-wins).
+        // A benign same-verdict repeat — the routine `merge=union` artifact — must be TOLERATED, matching
+        // `gate --check`'s own benign-dedup, else a union-merge dup reds `cargo xtask check` fleet-wide.
+        // Conflict (pass vs todo on the same title) → flagged, once, in first-conflict order.
         assert_eq!(
-            lines.iter().filter(|t| *t == "dup case").count(),
-            2,
-            "`dup case` appears twice (conflicting pass+todo): {lines:?}"
+            conflicting_dup_titles(
+                "# gate baseline\npass\tdup case\ntodo\tdup case\npass\tunique case\n"
+            ),
+            vec!["dup case".to_string()]
         );
-        // The set form (used by the agree-lint) dedups it to a single entry — the blind spot this closes.
+        // BENIGN same-verdict repeat (the merge=union artifact — the 506-dup trunk RED) → NOT flagged.
+        assert!(
+            conflicting_dup_titles("pass\tsame case\npass\tsame case\npass\tother\n").is_empty(),
+            "a same-verdict duplicate is a harmless merge=union artifact, tolerated like `gate --check`"
+        );
+        // A three-way with a conflict buried among benign repeats → still caught, reported once.
         assert_eq!(
-            baseline_titles(text).len(),
+            conflicting_dup_titles("pass\tc\npass\tc\ntodo\tc\n"),
+            vec!["c".to_string()],
+            "a benign repeat followed by a conflicting verdict on the same title is a conflict"
+        );
+        // The set form (agree-lint's) still collapses a repeated title to one entry — unchanged behavior.
+        assert_eq!(
+            baseline_titles("# gate baseline\npass\tdup case\ntodo\tdup case\npass\tunique case\n")
+                .len(),
             2,
-            "the set form collapses the dup (why a within-file dup needs the Vec-based lint)"
+            "the set form collapses the dup (the agree-lint compares SETS across files)"
         );
     }
 
@@ -8209,6 +8380,63 @@ mod trap_grading_tests {
         assert!(err.contains("cannot read baseline"), "got: {err}");
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn canonicalize_baseline_text_collapses_benign_dups_and_sorts() {
+        // The core of the merge=union root-fix: a file with same-verdict duplicate lines (the merge
+        // artifact) canonicalizes to one sorted line per case. Unsorted + dup'd input → canonical output.
+        let input = "# gate baseline — per-case verdicts (verdict\\tdescription). Regenerate with `cargo xtask gate --save`.\n\
+                     pass\tzeta case\n\
+                     pass\talpha case\n\
+                     pass\tzeta case\n\
+                     todo\tbeta case\n";
+        let out = canonicalize_baseline_text(input)
+            .expect("no conflict")
+            .expect("input was non-canonical → rewritten");
+        // Sorted by the full `verdict\tdesc` line, one per case, dup collapsed, canonical header + trailing \n.
+        assert_eq!(
+            out,
+            "# gate baseline — per-case verdicts (verdict\\tdescription). Regenerate with `cargo xtask gate --save`.\n\
+             pass\talpha case\n\
+             pass\tzeta case\n\
+             todo\tbeta case\n"
+        );
+        // Idempotent: canonicalizing the OUTPUT is a no-op (already canonical → Ok(None), no rewrite).
+        assert_eq!(
+            canonicalize_baseline_text(&out).expect("no conflict"),
+            None,
+            "an already-canonical file must not be rewritten (keeps the worktree clean)"
+        );
+    }
+
+    #[test]
+    fn canonicalize_baseline_text_surfaces_a_conflicting_dup_never_silently_picks() {
+        // The assign's hard requirement: same title + DIFFERENT verdict is a REAL conflict (the map-keyed
+        // baseline would mask one via last-wins) — it must be SURFACED, never silently deduped.
+        let input = "pass\tcontested case\n\
+                     todo\tcontested case\n\
+                     pass\tfine case\n";
+        let err = canonicalize_baseline_text(input)
+            .expect_err("a pass-vs-todo conflict on the same title must be surfaced");
+        assert_eq!(err, vec!["contested case".to_string()]);
+    }
+
+    #[test]
+    fn canonicalize_baseline_text_leaves_an_unparseable_file_alone() {
+        // A non-comment/non-blank line that isn't `verdict\tdescription` (no tab, or unknown verdict tag)
+        // is data we don't understand — refuse to rewrite (a rewrite would DROP it), returning Ok(None).
+        assert_eq!(
+            canonicalize_baseline_text("pass\tok case\nthis line has no tab\n")
+                .expect("no conflict"),
+            None,
+            "a line with no tab → hands off (never eat unrecognized data)"
+        );
+        assert_eq!(
+            canonicalize_baseline_text("mystery\tsome case\n").expect("no conflict"),
+            None,
+            "an unknown verdict tag → hands off"
+        );
     }
 
     #[test]
