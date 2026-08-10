@@ -551,19 +551,33 @@ pub fn assemble_reducer_apply(
         let mut items = Vec::new();
         for iface in &ifaces {
             let ops = peer_group_ops(extern_fns, &op_ifaces, iface);
+            // The kv (and any bound-effect Bytes) peer ops are WIT-TYPED: a `Bytes` param/result crosses as
+            // `list<u8>`, an `Option(Bytes)` result as `option<list<u8>>`. An instance-type is a SELF-CONTAINED
+            // type space, so declare its OWN defined types FIRST — `list u8` at instance-local type index 0,
+            // `option<list u8>` at index 1 — then the func decls reference them (a param/result at a list/option
+            // is the defined-type index, not an inline scalar). The op's WIT functype is derived from its
+            // handle-param count + whether it has a result (put: (list,list)->(); get: (list)->option<list>).
+            // Decl layout: 2 `ty` (the defined types) + 2 per op (`ty` functype + `export`).
             let mut decls = Vec::new();
+            let inst_list_idx: u32 = 0;
+            let inst_opt_idx: u32 = 1;
+            decls.push(0x01);
+            decls.extend_from_slice(&list_u8_defined_type()); // instance type 0 = list u8
+            decls.push(0x01);
+            decls.extend_from_slice(&option_list_u8_defined_type(inst_list_idx)); // type 1 = option<list u8>
+            // Each op's WIT functype (referencing the instance-local defined types) at type index 2+local.
             for (local, f) in ops.iter().enumerate() {
                 decls.push(0x01);
-                decls.extend_from_slice(&f.comp_functype);
+                decls.extend_from_slice(&kv_wit_comp_functype(f, inst_list_idx, inst_opt_idx));
                 decls.push(0x04);
                 decls.extend_from_slice(&extern_name(
                     &crate::backend::common::export_name::kebab_extern_name(&f.op),
                 ));
                 decls.push(0x01);
-                uleb128(local as u64, &mut decls);
+                uleb128((2 + local) as u64, &mut decls); // func type index (after the 2 defined types)
             }
             let mut it = vec![0x42];
-            it.extend_from_slice(&wasm_vec(2 * ops.len(), &decls));
+            it.extend_from_slice(&wasm_vec(2 + 2 * ops.len(), &decls));
             items.extend_from_slice(&it);
         }
         let mut rt = Vec::new();
@@ -9289,6 +9303,52 @@ fn memory_alias_item(instance: u32, name: &str) -> Vec<u8> {
 /// `wasm-encoder` does not expose as a constant, pinned by the R0 byte-identity oracle.
 fn list_u8_defined_type() -> Vec<u8> {
     vec![0x70, wasm_abi::COMP_U8]
+}
+
+/// The WIT COMPONENT functype for a kv peer op (B3), referencing the instance-local defined types by index:
+/// `list u8` = `list_idx`, `option<list u8>` = `opt_idx`. Shape by op name (the kv WIT — reducer.wit):
+///   * `put(key, value)`   → `(list<u8>, list<u8>) -> ()`
+///   * `get(key)`          → `(list<u8>) -> option<list<u8>>`
+///   * `delete(key)`       → `(list<u8>) -> bool`
+///   * else (1 list arg)   → `(list<u8>) -> ()` (a conservative default; only put/get/delete exist today)
+/// A `list<u8>` param/the result reference the defined type as a SIGNED-LEB component-valtype index (like a
+/// nested-tuple field); the `bool` result is an inline primitive; `()` is the no-result form `0x01 0x00`.
+fn kv_wit_comp_functype(f: &HostFn, list_idx: u32, opt_idx: u32) -> Vec<u8> {
+    let mut item = vec![wasm_abi::COMP_FUNCTYPE_FORM];
+    let list_param = |name: &str, out: &mut Vec<u8>| {
+        out.extend_from_slice(&uleb_bytes(name.len() as u64));
+        out.extend_from_slice(name.as_bytes());
+        crate::backend::wasm::encode::sleb128(list_idx as i64, out);
+    };
+    match f.op.as_str() {
+        "put" => {
+            let mut params = Vec::new();
+            list_param("key", &mut params);
+            list_param("value", &mut params);
+            item.extend_from_slice(&wasm_vec(2, &params));
+            item.extend_from_slice(&[0x01, 0x00]); // no result
+        }
+        "get" => {
+            let mut params = Vec::new();
+            list_param("key", &mut params);
+            item.extend_from_slice(&wasm_vec(1, &params));
+            item.push(0x00); // one result
+            crate::backend::wasm::encode::sleb128(opt_idx as i64, &mut item); // option<list u8>
+        }
+        "delete" => {
+            let mut params = Vec::new();
+            list_param("key", &mut params);
+            item.extend_from_slice(&wasm_vec(1, &params));
+            item.extend_from_slice(&[0x00, wasm_abi::COMP_BOOL]); // -> bool (inline primitive)
+        }
+        _ => {
+            let mut params = Vec::new();
+            list_param("key", &mut params);
+            item.extend_from_slice(&wasm_vec(1, &params));
+            item.extend_from_slice(&[0x01, 0x00]);
+        }
+    }
+    item
 }
 
 /// The sec-7 defined-type item for `option<list<u8>>`: `6b <inner>` — the component-model `option`
