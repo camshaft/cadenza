@@ -1667,7 +1667,8 @@ pub struct Db {
     /// record-field twin of `variant_suggest_winner`; a pure function of the record's field set and the
     /// mistyped key. Populated only when the operand reduces to a concrete record occurrence (the shared
     /// case that repeats); a type-only fallback re-scans (rare, not the hot repeat).
-    pub(crate) no_field_suggestion: crate::fxhash::FxHashMap<(StructId, String), NoFieldSuggestion>,
+    pub(crate) no_field_suggestion:
+        crate::fxhash::FxHashMap<(StructId, std::sync::Arc<str>), NoFieldSuggestion>,
 
     /// CAPTURED-reference occurrences: a body reference inside a lifted lambda that names a FREE VARIABLE
     /// (a binding from the lambda's creation scope), mapped to `(capture index, solved type)`. Recorded

@@ -2143,21 +2143,24 @@ pub fn member_value(db: &mut Db, operand: StructId, key: &Symbol) -> Member {
 /// "closest matches: `t`, `None`, `Some`", the internal `t` a baseless variant suggestion. Filtering by
 /// namespace is the principled cut (a meta field is `Symbol { namespace: Some("meta"), … }`), so no
 /// name-string knowledge lives here.
-pub fn record_field_names(db: &mut Db, operand: StructId) -> Vec<String> {
+pub fn record_field_names(db: &mut Db, operand: StructId) -> Vec<std::sync::Arc<str>> {
+    // Field names come off `Symbol`'s `Arc<str>` key; the sole consumer feeds them to the `AsRef<str>`
+    // suggestion helpers (`suggest::nearest`/`did_you_mean`), so carry the `Arc<str>` (a refcount bump)
+    // rather than materializing a fresh `String` per field.
     if let Some(rec) = reduce_to_record_id(db, operand)
         && let Resolved::Record { fields } = resolved_of(db, rec)
     {
         return fields
             .keys()
             .filter(|k| k.namespace.as_deref() != Some("meta"))
-            .map(|k| k.name.to_string())
+            .map(|k| k.name.clone())
             .collect();
     }
     match crate::infer::type_of(db, operand) {
         crate::ty::Ty::Record(fields) => fields
             .keys()
             .filter(|k| k.namespace.as_deref() != Some("meta"))
-            .map(|k| k.name.to_string())
+            .map(|k| k.name.clone())
             .collect(),
         _ => Vec::new(),
     }

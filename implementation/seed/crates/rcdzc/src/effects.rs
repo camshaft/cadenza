@@ -846,12 +846,14 @@ pub fn arm_op_shadow_hint(db: &mut Db, op: StructId) -> Option<String> {
 /// and the reduction plan use. `None` if `op` is not `(. E k)` on an effect (an undeclared/malformed arm,
 /// whose own fault CDZ0403 is reported instead). The op key's OCCURRENCE (for a delete fix's anchor) is
 /// read separately via `arm_op_key_occ`.
-pub fn arm_op_identity(db: &mut Db, op: StructId) -> Option<(u32, String)> {
+pub fn arm_op_identity(db: &mut Db, op: StructId) -> Option<(u32, std::sync::Arc<str>)> {
     let Resolved::Member { operand, key } = resolved_of(db, op) else {
         return None;
     };
     let decl = effect_decl_of_value(db, operand)?;
-    Some((decl, key.name.to_string()))
+    // `key.name` is `Arc<str>` — a duplicate-arm check only compares/hashes this identity, so carry the
+    // `Arc<str>` (a refcount bump) rather than materializing a fresh `String` at each call.
+    Some((decl, key.name.clone()))
 }
 
 /// The operations an exhaustive handler for the effect discharged by `arms` MUST bind but does NOT —
@@ -872,11 +874,13 @@ pub fn handler_missing_operations(db: &mut Db, arms: &[HandleArm]) -> Vec<Missin
     let Some(decl) = decl else {
         return Vec::new();
     };
-    // The operation names the arms bind (an arm op is `(. E k)` → its key name).
-    let bound: std::collections::HashSet<String> = arms
+    // The operation names the arms bind (an arm op is `(. E k)` → its key name). `key.name` is `Arc<str>`;
+    // this is a membership set (`bound.contains` below), so carry the `Arc<str>` (a refcount bump) rather
+    // than materializing a fresh `String` per arm.
+    let bound: std::collections::HashSet<std::sync::Arc<str>> = arms
         .iter()
         .filter_map(|a| match resolved_of(db, a.op) {
-            Resolved::Member { key, .. } => Some(key.name.to_string()),
+            Resolved::Member { key, .. } => Some(key.name.clone()),
             _ => None,
         })
         .collect();
@@ -889,7 +893,7 @@ pub fn handler_missing_operations(db: &mut Db, arms: &[HandleArm]) -> Vec<Missin
     let pending: Vec<(String, Option<StructId>)> = eff
         .ops
         .iter()
-        .filter(|o| !bound.contains(&o.name))
+        .filter(|o| !bound.contains(o.name.as_str()))
         .map(|o| (o.name.clone(), o.ty))
         .collect();
     pending

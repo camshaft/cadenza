@@ -11732,7 +11732,7 @@ fn no_field_reject(
     // hint) pair caches. A type-only operand (no concrete record occ) falls through to a fresh compute — the
     // rare non-repeating case. (The record-field twin of `variant_suggest_winner`, fix-26/45.)
     let cache_key =
-        crate::eval::reduce_to_record_id(db, operand).map(|rec| (rec, key.name.to_string()));
+        crate::eval::reduce_to_record_id(db, operand).map(|rec| (rec, key.name.clone()));
     let (suggestion, hint) = if let Some(k) = &cache_key
         && let Some(hit) = db.no_field_suggestion.get(k)
     {
@@ -14609,7 +14609,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             // family. Keyed by `(effect-decl, op-name)` (`arm_op_identity`) so two effects each declaring
             // `emit` never false-collide; an UNDECLARED-op arm has no identity (its own CDZ0403 fires
             // below), so it never participates here.
-            let mut seen_arm_ops: std::collections::HashSet<(u32, String)> =
+            let mut seen_arm_ops: std::collections::HashSet<(u32, std::sync::Arc<str>)> =
                 std::collections::HashSet::new();
             for arm in arms.iter() {
                 if let Some(identity) = crate::effects::arm_op_identity(db, arm.op)
