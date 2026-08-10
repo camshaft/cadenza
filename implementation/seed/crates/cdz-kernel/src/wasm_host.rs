@@ -3151,6 +3151,8 @@ impl AsyncComponentReducer {
                 target: g.target,
                 payload: g.payload,
                 correlation: g.correlation,
+                // Carry the register-by-string family override through the async→sync bridge unchanged.
+                family: g.family,
             })
             .collect();
         Ok((effects, kv))
@@ -3743,13 +3745,29 @@ fn guest_kind_to_kernel(k: &EffectKind) -> crate::effect::EffectKind {
 /// built this inline identically; the fold-boundary handle-ABI rebind reuses it too, so the boundary→kernel
 /// mapping is defined once (no drift between the WIT-structural path and the handle-lowered path).
 fn guest_effect_to_kernel_effect(g: EffectRequest) -> crate::reducer::Effect {
-    crate::reducer::Effect {
-        request: crate::effect::EffectRequest::new(
-            guest_kind_to_kernel(&g.kind),
+    let kernel_kind = guest_kind_to_kernel(&g.kind);
+    let payload = g.payload.map(|p| crate::effect::Payload::Inline(p.into()));
+    // REGISTER-BY-STRING escape: if the guest set an explicit `family`, build the request with THAT
+    // family (new_with_family, seq-39 — the family string is the authoritative identity, `kind` is the
+    // placeholder tag), so a Cadenza reducer can emit a register-by-string family like `effect/reply`
+    // that has no matching `effect-kind`. Otherwise (the default) derive the family from `kind` exactly
+    // as before — every existing guest is byte-for-byte unchanged.
+    let request = match g.family {
+        Some(family) => crate::effect::EffectRequest::new_with_family(
+            family,
             g.target,
-            g.payload.map(|p| crate::effect::Payload::Inline(p.into())),
+            payload,
             crate::effect::Timeliness::Interactive,
         ),
+        None => crate::effect::EffectRequest::new(
+            kernel_kind,
+            g.target,
+            payload,
+            crate::effect::Timeliness::Interactive,
+        ),
+    };
+    crate::reducer::Effect {
+        request,
         token: g.correlation,
     }
 }
@@ -3854,6 +3872,7 @@ mod tests {
             target: "https://example.test".to_string(),
             payload: Some(b"body".to_vec()),
             correlation: Some(b"tok-1".to_vec()),
+            family: None,
         };
         let e = guest_effect_to_kernel_effect(g);
         assert_eq!(e.request.kind, crate::effect::EffectKind::Http);
@@ -3873,6 +3892,7 @@ mod tests {
             target: "peer-session".to_string(),
             payload: None,
             correlation: None,
+            family: None,
         };
         let e = guest_effect_to_kernel_effect(g);
         assert_eq!(e.request.kind, crate::effect::EffectKind::Emit);
@@ -3884,6 +3904,30 @@ mod tests {
             e.token.is_none(),
             "None correlation must stay None (fire-and-forget)"
         );
+    }
+
+    #[test]
+    fn guest_effect_with_explicit_family_emits_a_register_by_string_family() {
+        // REGISTER-BY-STRING escape: a guest that sets `family: Some(...)` emits an effect whose kernel
+        // content-type family is EXACTLY that string (via new_with_family), overriding the kind-derived
+        // family — so a Cadenza handler-session reducer can emit `effect/reply` (or any userspace family)
+        // that has no matching `effect-kind` variant. `kind` rides as a placeholder; the family string is
+        // the authoritative identity (seq-39). This is the unblock for platform-conformance I2 replies.
+        let g = EffectRequest {
+            kind: EffectKind::Emit, // placeholder — register-by-string families carry no real kind
+            target: "caller-session".to_string(),
+            payload: Some(b"reply-body".to_vec()),
+            correlation: Some(b"reply-tok".to_vec()),
+            family: Some(crate::effect::effect_ct::EFFECT_REPLY.to_string()),
+        };
+        let e = guest_effect_to_kernel_effect(g);
+        assert_eq!(
+            e.request.content_type.family.as_ref(),
+            crate::effect::effect_ct::EFFECT_REPLY,
+            "the explicit family overrides the kind-derived family (register-by-string)"
+        );
+        assert_eq!(e.request.target_str().unwrap(), "caller-session");
+        assert_eq!(e.token.as_deref(), Some(&b"reply-tok"[..]));
     }
 
     // The host `kv` import is backed by the kernel KV THROUGH the transactional overlay: reads see the

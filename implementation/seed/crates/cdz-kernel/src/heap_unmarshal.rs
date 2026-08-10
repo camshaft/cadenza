@@ -119,6 +119,10 @@ fn read_effect_request<T>(
         target,
         payload,
         correlation,
+        // The value-heap (handle-lowered) path carries no explicit register-by-string family — that
+        // override rides the binary-AST fold boundary (B2), not the 90-op heap ABI. `None` = derive the
+        // family from `kind` as before (unchanged behavior for handle-lowered rcdzc reducers).
+        family: None,
     })
 }
 
@@ -187,6 +191,10 @@ async fn read_effect_request_async<T: Send + 'static>(
         target,
         payload,
         correlation,
+        // The value-heap (handle-lowered) path carries no explicit register-by-string family — that
+        // override rides the binary-AST fold boundary (B2), not the 90-op heap ABI. `None` = derive the
+        // family from `kind` as before (unchanged behavior for handle-lowered rcdzc reducers).
+        family: None,
     })
 }
 

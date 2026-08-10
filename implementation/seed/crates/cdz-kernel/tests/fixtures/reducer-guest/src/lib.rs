@@ -46,6 +46,9 @@ impl Guest for Guest0 {
                 // The guest's own continuation token (the single resume mechanism): echoed back on the
                 // result event so the guest can resume. Here just a marker proving round-trip.
                 correlation: Some(b"step-1".to_vec()),
+                // This fixture emits a built-in family (http), so it does NOT use the register-by-string
+                // family override — `None` derives the family from `kind` as before.
+                family: None,
             }];
         }
         Vec::new()

@@ -80,6 +80,15 @@ interface types {
     // won't await this effect). This is what the guest resumes on — it never sees the kernel's internal
     // effect id.
     correlation: option<list<u8>>,
+    // REGISTER-BY-STRING escape (effect.rs "future register-by-string slice"): an OPTIONAL explicit
+    // content-type FAMILY string. `none` (the default) = the family is derived from `kind` as before
+    // (shell→"shell", emit→"message", …) — every existing guest is unchanged. `some("<family>")` =
+    // emit an effect whose family is EXACTLY that string, overriding the kind-derived family, so a
+    // Cadenza reducer can emit a REGISTER-BY-STRING family (e.g. `effect/reply` to settle a caller in a
+    // handler session, or any userspace-effect family) that has no matching `effect-kind` variant. `kind`
+    // still rides along (a placeholder like `emit` for such families — the kernel keys on the family
+    // string, seq-39). Append-only field (contract-additive; existing callers pass `none`).
+    family: option<string>,
   }
 }
 
