@@ -7140,3 +7140,5 @@ pass	ac2 the chain's MIDDLE result routes the branch that picks WHICH op finishe
 pass	ac3 the pipeline BOUNCES between two effects — inner B's result feeds outer E's op, whose result feeds B again
 pass	md2 the arm DRAINS a Map entry per dispatch — Map.remove keyed by the op arg, a re-take of the same key routes to the miss path
 pass	md3 the drained value RE-FILES under a shifted key — the third take HITS the re-filed entry, the final take finds it moved on
+pass	il1 strict O-I-O-I body interleave — two independent threads advance in lockstep, positional weights pin the dispatch order
+pass	il2 the interleave WIDTH is data-driven — parity picks one-or-two O draws per I tick, a helper sums each O burst

@@ -22084,3 +22084,51 @@
   (call   main (: 5 Int64)) (output (: 17149 Int64))
   (call   main (: 0 Int64)) (output (: 12099 Int64))
   (call   main (: -12 Int64)) (output (: -21 Int64)))
+
+
+; ── Cross-effect INTERLEAVING at the body level (breaker il) ──────────────────────────────────
+; Two independent effect threads advancing in alternation. il1 is the strict O-I-O-I lockstep —
+; positional weights pin the exact dispatch order across the nested-handle boundary. il2 makes
+; the interleave WIDTH data-driven: parity picks one-or-two O draws per I tick, with a
+; performing `burst` helper called from the nested body summing each O burst. (The inner arm's
+; NEXT-STATE drawing the outer effect DECLINES — the performing-next-state boundary, pinned by
+; the rv3 family; resume-VALUE position folds per the landed wc1.) All rows hand-computed; all
+; pass on wasm, rust, and rust-async.
+
+(case "il1 strict O-I-O-I body interleave — two independent threads advance in lockstep, positional weights pin the dispatch order"
+  (input  (do
+            (effect O (op next (-> Int64)))
+            (effect I (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle O n
+                ((next () s (resume s (+ s 1))))
+                (handle I 100
+                  ((tick () t (resume t (+ t 2))))
+                  (+ (O.next)
+                     (+ (* 10 (I.tick))
+                        (+ (* 100 (O.next))
+                           (* 1000 (I.tick))))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 103403 Int64))
+  (call   main (: 0 Int64)) (output (: 103100 Int64)))
+
+(case "il2 the interleave WIDTH is data-driven — parity picks one-or-two O draws per I tick, a helper sums each O burst"
+  (input  (do
+            (effect O (op next (-> Int64)))
+            (effect I (op tick (-> Int64)))
+            (def (burst (: k Int64))
+              (if (= k 2) (+ (O.next) (O.next)) (O.next)))
+            (def (main (: n Int64))
+              (handle O n
+                ((next () s (resume s (+ s 1))))
+                (handle I 100
+                  ((tick () t (resume t (+ t 2))))
+                  (let ((k (if (= (% n 2) 0) 2 1)))
+                    (+ (burst k)
+                       (+ (* 10 (I.tick))
+                          (+ (* 100 (burst k))
+                             (* 1000 (I.tick)))))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 103403 Int64))
+  (call   main (: 2 Int64)) (output (: 103905 Int64))
+  (call   main (: -1 Int64)) (output (: 102999 Int64)))
