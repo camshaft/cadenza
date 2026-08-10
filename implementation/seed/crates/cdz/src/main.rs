@@ -605,33 +605,10 @@ struct ChorArgs {
 /// `run-src`, then compile+run it and read the rendered `Option`. The driver MUST live in the compiler-ml
 /// `src/` dir because `import "sread-eval"` resolves RELATIVE TO THE ENTRY FILE'S DIR (no `--search-path`).
 ///
-/// Locate `implementation/compiler-ml/src` ROBUSTLY (not assuming cwd == repo root): walk upward from the
-/// current dir, then from the exe's dir, returning the first ancestor that contains it. So `cdz run-ml`
-/// works from any working directory — e.g. `cargo test`, whose per-crate cwd is NOT the repo root (the bug
-/// that reded the shared gate). Returns the resolved `…/compiler-ml/src` dir, or `None` if not found.
+/// Resolves `implementation/compiler-ml/src` via [`find_impl_src_dir`] (robust upward search from cwd + exe
+/// dir), so `cdz run-ml` works from any working directory. `None` if not found.
 fn find_compiler_ml_src() -> Option<std::path::PathBuf> {
-    const REL: &str = "implementation/compiler-ml/src";
-    let mut roots: Vec<std::path::PathBuf> = Vec::new();
-    if let Ok(cwd) = std::env::current_dir() {
-        roots.push(cwd);
-    }
-    if let Some(exe_dir) = std::env::current_exe()
-        .ok()
-        .and_then(|e| e.parent().map(|p| p.to_path_buf()))
-    {
-        roots.push(exe_dir);
-    }
-    for start in roots {
-        let mut cur: Option<&std::path::Path> = Some(start.as_path());
-        while let Some(dir) = cur {
-            let candidate = dir.join(REL);
-            if candidate.is_dir() {
-                return Some(candidate);
-            }
-            cur = dir.parent();
-        }
-    }
-    None
+    find_impl_src_dir("implementation/compiler-ml/src")
 }
 
 /// Locate `implementation/choreography/src` by searching UP from the cwd and the exe's dir (same robust
@@ -639,7 +616,15 @@ fn find_compiler_ml_src() -> Option<std::path::PathBuf> {
 /// The generated driver + copied protocol module must live here so their `import "chor-driver"` /
 /// `import "chor"` resolve (imports are entry-file-dir-relative).
 fn find_choreography_src() -> Option<std::path::PathBuf> {
-    const REL: &str = "implementation/choreography/src";
+    find_impl_src_dir("implementation/choreography/src")
+}
+
+/// Locate a repo-relative `implementation/<pkg>/src` dir ROBUSTLY (not assuming cwd == repo root): walk
+/// upward from the current dir, then from the exe's dir, returning the first ancestor that contains `rel`.
+/// So a `cdz` sidecar-driver subcommand works from any working directory — e.g. `cargo test`, whose
+/// per-crate cwd is NOT the repo root (the bug that reded the shared gate). `None` if `rel` is nowhere on
+/// either upward path. The shared search behind `find_compiler_ml_src` / `find_choreography_src`.
+fn find_impl_src_dir(rel: &str) -> Option<std::path::PathBuf> {
     let mut roots: Vec<std::path::PathBuf> = Vec::new();
     if let Ok(cwd) = std::env::current_dir() {
         roots.push(cwd);
@@ -653,7 +638,7 @@ fn find_choreography_src() -> Option<std::path::PathBuf> {
     for start in roots {
         let mut cur: Option<&std::path::Path> = Some(start.as_path());
         while let Some(dir) = cur {
-            let candidate = dir.join(REL);
+            let candidate = dir.join(rel);
             if candidate.is_dir() {
                 return Some(candidate);
             }
