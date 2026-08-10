@@ -100,6 +100,23 @@ pub(crate) fn crosses_as_resource_escape(ty: &crate::ty::Ty) -> bool {
     )
 }
 
+/// The component interface name a Cadenza REDUCER is built under (`cdz compile … --component-name
+/// cadenza:agent-kernel/fold`). The kernel's `reducer.wit` world imports `kv` and exports this `fold`
+/// interface, whose sole method is `apply`. B3 keys the byte-ABI reshape on THIS name (not on the apply
+/// signature): a build whose `db.component_name` is the fold interface is a reducer, and its `apply`
+/// export must cross as the byte ABI `apply(event: list<u8>) -> list<u8>` (value-decode the event
+/// document → the guest's 3 structured args → guest apply → value-encode the effect list), rather than
+/// the default provider handle ABI `apply(u32,u32,u32) -> u32`.
+pub(crate) const REDUCER_FOLD_IFACE: &str = "cadenza:agent-kernel/fold";
+
+/// Whether the export named `export_name` in a build targeting component interface `component_name`
+/// (`db.component_name`) is the reducer FOLD apply that B3 reshapes to the byte ABI. True only for the
+/// `apply` export of a build whose component name is exactly the fold interface — so an ordinary provider
+/// build, or a different export of a reducer build, is untouched and keeps the default handle ABI.
+pub(crate) fn is_reducer_fold_apply(component_name: Option<&str>, export_name: &str) -> bool {
+    component_name == Some(REDUCER_FOLD_IFACE) && export_name == "apply"
+}
+
 /// Append the lambda-lifted closure bodies to `funcs`, AFTER the `layout.order` defs, in table-slot
 /// order — the shared step both the main emit path and the runtime-resource ESCAPE path need so a
 /// first-class closure's `call_indirect` has a body to dispatch (at func idx `import_base + order.len() +
@@ -8093,6 +8110,24 @@ mod runtime_abi_tests {
         // A lowerable op has only core-scalar params; str-new (string) is flagged unlowerable.
         assert!(OPS.arr_get.lowerable);
         assert!(!OPS.str_new.lowerable);
+    }
+
+    /// B3 trigger: the reducer byte-ABI reshape fires ONLY for the `apply` export of a build whose
+    /// component name is exactly the fold interface. A different export of a reducer build, an ordinary
+    /// provider build (a different / no component name), and a non-reducer `apply` all keep the default
+    /// handle ABI — so the reshape can never fire on a component it was not meant for.
+    #[test]
+    fn reducer_fold_apply_trigger() {
+        use super::{is_reducer_fold_apply, REDUCER_FOLD_IFACE};
+        assert_eq!(REDUCER_FOLD_IFACE, "cadenza:agent-kernel/fold");
+        // The one true trigger: fold interface + `apply`.
+        assert!(is_reducer_fold_apply(Some(REDUCER_FOLD_IFACE), "apply"));
+        // A different export of the SAME reducer build is untouched.
+        assert!(!is_reducer_fold_apply(Some(REDUCER_FOLD_IFACE), "init"));
+        // A DIFFERENT component interface, even with an `apply` export, is an ordinary provider.
+        assert!(!is_reducer_fold_apply(Some("cadenza:agent-kernel/other"), "apply"));
+        // A NON-component (plain) build — no component name — never triggers.
+        assert!(!is_reducer_fold_apply(None, "apply"));
     }
 }
 
