@@ -476,22 +476,37 @@ pub fn encode_with_dict(arenas: &Arenas, dicts: &DictSet) -> Vec<u8> {
     out
 }
 
+/// Serialize an integer body: the `int_kind` tag byte (sign + radix), then the LEB-framed big-endian
+/// magnitude. Shared by the bare [`Leaf::Int`] leaf (whose kind tag IS this leading byte) and the
+/// [`SuffixBody::Int`] body (which prefixes a `BODY_INT` marker, then this identical sequence), so both
+/// emit byte-identical bytes. Its inverse is [`read_int_body`].
+fn write_int_body(out: &mut Vec<u8>, value: &BigInt, radix: Radix) {
+    let (sign, mag) = value.to_bytes_be();
+    out.push(int_kind(sign, radix));
+    leb128::write_u64(out, mag.len() as u64);
+    out.extend_from_slice(&mag);
+}
+
+/// Serialize a float/decimal body: the `negative` flag, the LEB i64 exponent, then the LEB-framed
+/// big-endian significand magnitude (the significand is a non-negative magnitude; its sign lives in
+/// `negative`). Shared by the bare [`Leaf::Float`] leaf and the [`SuffixBody::Float`] body, each after its
+/// own leading kind/`BODY_FLOAT` byte, so both emit byte-identical bytes. Its inverse is [`read_float_body`].
+fn write_float_body(out: &mut Vec<u8>, d: &Decimal) {
+    out.push(d.negative as u8);
+    leb128::write_i64_be(out, d.exponent);
+    let (_sign, mag) = d.significand.to_bytes_be();
+    leb128::write_u64(out, mag.len() as u64);
+    out.extend_from_slice(&mag);
+}
+
 fn write_leaf(out: &mut Vec<u8>, leaf: &Leaf) {
     match leaf {
         Leaf::Int { value, radix } => {
-            let (sign, mag) = value.to_bytes_be();
-            out.push(int_kind(sign, *radix));
-            leb128::write_u64(out, mag.len() as u64);
-            out.extend_from_slice(&mag);
+            write_int_body(out, value, *radix);
         }
         Leaf::Float(d) => {
             out.push(KIND_FLOAT);
-            out.push(d.negative as u8);
-            leb128::write_i64_be(out, d.exponent);
-            // The significand is a non-negative magnitude; its sign lives in `d.negative`.
-            let (_sign, mag) = d.significand.to_bytes_be();
-            leb128::write_u64(out, mag.len() as u64);
-            out.extend_from_slice(&mag);
+            write_float_body(out, d);
         }
         Leaf::Str(s) => {
             out.push(KIND_STR);
@@ -541,18 +556,11 @@ fn write_leaf(out: &mut Vec<u8>, leaf: &Leaf) {
             match value {
                 SuffixBody::Int { value, radix } => {
                     out.push(BODY_INT);
-                    let (sign, mag) = value.to_bytes_be();
-                    out.push(int_kind(sign, *radix));
-                    leb128::write_u64(out, mag.len() as u64);
-                    out.extend_from_slice(&mag);
+                    write_int_body(out, value, *radix);
                 }
                 SuffixBody::Float(d) => {
                     out.push(BODY_FLOAT);
-                    out.push(d.negative as u8);
-                    leb128::write_i64_be(out, d.exponent);
-                    let (_sign, mag) = d.significand.to_bytes_be();
-                    leb128::write_u64(out, mag.len() as u64);
-                    out.extend_from_slice(&mag);
+                    write_float_body(out, d);
                 }
             }
         }
@@ -1107,30 +1115,42 @@ fn verify_tree(arenas: &Arenas) -> Result<(), DecodeError> {
     Ok(())
 }
 
+/// Decode an integer body whose already-read `kind` tag encodes its sign + radix: read the LEB-framed
+/// big-endian magnitude and rebuild the signed `BigInt`. The inverse of [`write_int_body`], shared by the
+/// bare [`Leaf::Int`] arm (which reads the kind tag as the leaf discriminator) and the [`SuffixBody::Int`]
+/// arm (which reads the kind tag after its `BODY_INT` marker).
+fn read_int_body(r: &mut Reader, kind: u8) -> Result<(BigInt, Radix), DecodeError> {
+    let (neg, radix) = int_kind_parts(kind)?;
+    let len = r.read_var_len_checked()?;
+    let mag = r.take(len).ok_or(DecodeError::Truncated)?;
+    let sign = if neg { Sign::Minus } else { Sign::Plus };
+    Ok((BigInt::from_bytes_be(sign, mag), radix))
+}
+
+/// Decode a float/decimal body: the `negative` flag, the i64 exponent, then the LEB-framed big-endian
+/// significand magnitude. The inverse of [`write_float_body`], shared by the bare [`Leaf::Float`] arm and
+/// the [`SuffixBody::Float`] arm.
+fn read_float_body(r: &mut Reader) -> Result<Decimal, DecodeError> {
+    let negative = read_bool(r)?;
+    let exponent = r.read_i64_be().ok_or(DecodeError::Truncated)?;
+    let sig_len = r.read_var_len_checked()?;
+    let mag = r.take(sig_len).ok_or(DecodeError::Truncated)?;
+    Ok(Decimal {
+        negative,
+        significand: BigInt::from_bytes_be(Sign::Plus, mag),
+        exponent,
+    })
+}
+
 fn read_leaf(r: &mut Reader) -> Result<Leaf, DecodeError> {
     let kind = r.byte().ok_or(DecodeError::Truncated)?;
     Ok(match kind {
         KIND_INT_POS_DEC | KIND_INT_POS_HEX | KIND_INT_POS_BIN | KIND_INT_NEG_DEC
         | KIND_INT_NEG_HEX | KIND_INT_NEG_BIN => {
-            let (neg, radix) = int_kind_parts(kind)?;
-            let len = r.read_var_len_checked()?;
-            let mag = r.take(len).ok_or(DecodeError::Truncated)?;
-            let sign = if neg { Sign::Minus } else { Sign::Plus };
-            let value = BigInt::from_bytes_be(sign, mag);
+            let (value, radix) = read_int_body(r, kind)?;
             Leaf::Int { value, radix }
         }
-        KIND_FLOAT => {
-            let negative = read_bool(r)?;
-            let exponent = r.read_i64_be().ok_or(DecodeError::Truncated)?;
-            let sig_len = r.read_var_len_checked()?;
-            let mag = r.take(sig_len).ok_or(DecodeError::Truncated)?;
-            let significand = BigInt::from_bytes_be(Sign::Plus, mag);
-            Leaf::Float(Decimal {
-                negative,
-                significand,
-                exponent,
-            })
-        }
+        KIND_FLOAT => Leaf::Float(read_float_body(r)?),
         KIND_STR => Leaf::Str(read_string(r)?.into()),
         KIND_BYTES => Leaf::Bytes(read_raw_bytes(r)?.into()),
         KIND_BOOL_FALSE => Leaf::Bool(false),
@@ -1150,26 +1170,11 @@ fn read_leaf(r: &mut Reader) -> Result<Leaf, DecodeError> {
             };
             let value = match r.byte().ok_or(DecodeError::Truncated)? {
                 BODY_INT => {
-                    let (neg, radix) = int_kind_parts(r.byte().ok_or(DecodeError::Truncated)?)?;
-                    let len = r.read_var_len_checked()?;
-                    let mag = r.take(len).ok_or(DecodeError::Truncated)?;
-                    let sign = if neg { Sign::Minus } else { Sign::Plus };
-                    SuffixBody::Int {
-                        value: BigInt::from_bytes_be(sign, mag),
-                        radix,
-                    }
+                    let kind = r.byte().ok_or(DecodeError::Truncated)?;
+                    let (value, radix) = read_int_body(r, kind)?;
+                    SuffixBody::Int { value, radix }
                 }
-                BODY_FLOAT => {
-                    let negative = read_bool(r)?;
-                    let exponent = r.read_i64_be().ok_or(DecodeError::Truncated)?;
-                    let sig_len = r.read_var_len_checked()?;
-                    let mag = r.take(sig_len).ok_or(DecodeError::Truncated)?;
-                    SuffixBody::Float(Decimal {
-                        negative,
-                        significand: BigInt::from_bytes_be(Sign::Plus, mag),
-                        exponent,
-                    })
-                }
+                BODY_FLOAT => SuffixBody::Float(read_float_body(r)?),
                 _ => return Err(DecodeError::BadTag),
             };
             Leaf::Suffixed { value, kind }
