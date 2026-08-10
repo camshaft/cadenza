@@ -445,6 +445,22 @@ each with doc + signature; the round-trip decodes. **Anchors:** `control/` query
 > Operator: *"I wonder if effects should be identified by hashes of their schemas. That makes it easier
 > to expand effect contracts over time since it does not invalidate any old messages."*
 
+> **⚡ seq367 — schema-identity is UNIVERSAL; it SUPERSEDES family-string routing everywhere in this doc
+> (including built-ins).** Operator seq367 (2026-08-10, via v-agent-harness): effects are identified by
+> SCHEMA, not string NAME, and the 6 built-ins (`shell`/`http`/`model`/`now`/`timer`/`emit`) migrate to
+> schema-identity too. So wherever earlier sections (What it is, the four-pillars table, I1) describe
+> routing/authz keying on the family STRING (`effect_ct` consts, `new_with_family`,
+> `effect/<family> → SessionId`), read the KEY as the **schema-hash**: the family string becomes a HUMAN
+> ALIAS declared IN the schema (D14=A) for logging/manifest/policy-readability, resolved FROM the schema,
+> never the routing/authz key. This removes the built-in carve-out those sections carried (built-in
+> `effect_ct` strings were treated as durable wire keys); post-seq367 there is no carve-out — the wire is
+> a bare schema-hash for ALL families (D14=A), registration is `effect/<schema-hash> → SessionId`, and
+> `handles_family` becomes `handles_schema`. The `effect_ct` string consts survive only as the
+> alias/display table (schema-hash → name), not as identity. This is the clean end-state of D13/D14=A/D15;
+> the build stages it incrementally (extension families first, then the built-in migration — see the
+> migration note in D15/D14). Everything below in this section is that model; the seq367 note just states
+> it applies UNIVERSALLY, not only to extension families.
+
 This holds up and fits the platform's everything-hash-identified through-line (sessions = genesis hash,
 blobs = content hash, ws-conns = a hash). An effect's SCHEMA — the operation signatures + type contract
 that I11 already makes an introspectable, binary-AST artifact — gets a content **hash**, and that hash
@@ -460,7 +476,13 @@ those canonical binary-AST bytes.** Confirmed with `v-syntax` (owns `cadenza-ast
 no gap:
 - A schema encodes via `cadenza_ast::codec::encode` as a name-headed tree, e.g.
   `(effect Weather (op today (-> Unit Forecast)) (op set (-> Forecast Unit)))`; the codec round-trips
-  ANY such tree byte-identically (structure-only, TOTAL decode, `cdzast\x00\x01` header).
+  ANY such tree byte-identically (structure-only, TOTAL decode, `cdzast\x00\x01` header). The
+  per-op type SIGNATURES within the tree are produced by `ast_marshal::build_type` (the landed wit-Type
+  → structural type-descriptor AST used by signature-query / `component_signature`) — so the effect
+  schema is the RICHER cdzast tree (declared name per D14=A + op signatures + the D15 authz contract)
+  and `build_type` COMPOSES INTO it to encode each op's type, rather than being the whole schema. Hash
+  the whole cdzast effect-tree = the identity (v-agent-harness seq367; reconcile the `build_type` ↔
+  cdzast-tree split with v-syntax + the `ast_marshal` owner).
 - **schema-hash = content hash of the canonical `encode()` bytes** — hash the canonical `\x00\x01`
   bytes (call `encode()` then hash), NOT a re-derived form. Per the `Event::hash` precedent, treat the
   schema-hash as an identity STABLE across cdzast container-format evolution (the `\x00\x01` canonical
