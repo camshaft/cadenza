@@ -4028,6 +4028,7 @@ pass	an @ensures on a PERFORMING def called TWICE under one handler — both eff
 pass	an @ensures on a recursive def is re-checked at every EXIT including self-call returns (not only the outermost)
 pass	an @ensures over a MATCH-bodied def wraps the whole match — the postcondition checks the match's result
 pass	an @ensures predicate reading a top-level GLOBAL alongside ret resolves and enforces (resolution seam)
+pass	an @ensures predicate that is NOT Bool-typed is REJECTED CDZ0203 — the postcondition must denote a truth value too
 pass	an @ensures predicate that itself traps keeps its own trap kind (not the @ensures-failed unreachable)
 pass	an @ensures relating the RESULT to a PARAM over heap values enforces growth
 pass	an @invariant newtype REBUILT through a chain of constructor calls re-establishes each time

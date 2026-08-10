@@ -2269,6 +2269,22 @@
             (export main)))
   (error  CDZ0203))
 
+(case "an @ensures predicate that is NOT Bool-typed is REJECTED CDZ0203 — the postcondition must denote a truth value too"
+  (doc    "The @ensures twin of the non-Bool @requires reject above, pinning the Bool constraint on the EXIT-check
+           side. An @ensures predicate binds `ret` and is spliced into the injected `(let ((ret BODY)) (if Q ret
+           (trap …)))`, whose `if` test DEMANDS a Bool, so the postcondition expression must type as Bool.
+           `@ensures(+ ret 1)` is Int64-typed (`ret` is Int64, `+` returns Int64) — well-scoped (ret IS in scope
+           for @ensures, unlike @requires), but the WRONG TYPE for a truth value → rejected CDZ0203 (cannot unify
+           Int64 with Bool). Pins that BOTH injected checks constrain their predicate to Bool: a regression that
+           dropped the Bool constraint on only the postcondition side would splice a non-Bool into the exit `if`
+           while the entry side stayed sound. Together with the @requires case this closes the predicate-type
+           obligation on both rewrite halves.")
+  (input  (do
+            (@ (ensures (+ ret 1)) (def (f (: x Int64)) x))
+            (def (main) (f 5))
+            (export main)))
+  (error  CDZ0203))
+
 (case "a PLAIN @ensures on a NULLARY def (no parameters) enforces — ret binds the body, predicate reads only ret"
   (doc    "Every runtime @ensures case so far has at least one parameter; this pins @ensures on a def with NO
            parameters, where the postcondition predicate reads ONLY the result binder `ret` (no param is in
