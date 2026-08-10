@@ -7163,3 +7163,11 @@ pass	bg4 BIGINT comparison in the arm routes tri-band verdicts — doubling walk
 pass	rq1 a RATIONAL handler state — three exact fractional adds (1/2 + 1/3 + 1/6) land on a WHOLE value — the canonical n/1 render pinned
 pass	rq2 floor/ceil/numerator/denominator READ a rational state — canonicalization (8/4 to 2/1) and negative rounding both pinned
 pass	rq3 a FRACTIONAL drain with a sign guard — subtracting 1/3 per tick until the rational state crosses zero, the recursion counts full ticks
+pass	gs1 a user-declared GENERIC sum resolves by NAME in a param annotation — the applied (Container Int64) checks and the payload unwraps
+pass	gs2 a TWO-parameter generic sum by name — (Pair Int64 Int64) in the annotation, both payload slots extracted
+pass	gs3 the applied generic sum CROSSES a dispatch — (Container Int64) as an op result, unwrapped in the body after the arm wraps the state
+pass	gs4 the applied generic wraps a HEAP payload — (Container (List Int64)) in the annotation, the list summed after unwrap
+pass	gs5 the generic applied to ITSELF — (Container (Container Int64)) double-wraps and double-unwraps
+pass	gs6 a TWO-VARIANT generic (Either a b) by name — parity routes construction between Left and Right, the annotated consumer matches both
+pass	gs7 the applied generic in the op ARGUMENT position — the arm unwraps (Container Int64) payloads into the accumulating state
+pass	gs8 the applied generic AS the handler state — (Container Int64) seeds the handle, the arm unwraps and re-wraps per dispatch

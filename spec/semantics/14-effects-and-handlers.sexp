@@ -22535,3 +22535,112 @@
   (call   main (: 2 Int64)) (output (: 199 Int64))
   (call   main (: 1 Int64)) (output (: 99 Int64))
   (call   main (: 0 Int64)) (output (: -1 Int64)))
+
+
+; ── User GENERIC sums resolving BY NAME (breaker gs — the resolve-path fix promotion) ─────────
+; A user-declared generic sum referenced by NAME in type positions once declined CDZ0101
+; "unbound name"; the resolve-path fix makes the applied form check and run (the bare no-arg
+; form now gives the correct CDZ0203 needs-type-argument). The position matrix over the fix:
+; gs1 the applied annotation (Container Int64) on a def param; gs2 TWO type parameters
+; ((Pair Int64 Int64), both slots extracted); gs3 the applied generic as an effect-op RESULT
+; (the arm wraps the advancing state); gs4 a HEAP payload ((Container (List Int64)), summed
+; after unwrap); gs5 SELF-application ((Container (Container Int64)), double unwrap); gs6 a
+; TWO-VARIANT generic ((Either a b), parity-routed construction, both arms matched); gs7 the
+; op ARGUMENT position (the arm unwraps payloads into the state); gs8 the generic AS the
+; handler state (seeded wrapped, unwrapped and re-wrapped per dispatch). All rows hand-computed;
+; all pass on wasm, rust, and rust-async.
+
+(case "gs1 a user-declared GENERIC sum resolves by NAME in a param annotation — the applied (Container Int64) checks and the payload unwraps"
+  (input  (do
+            (type (Container a) (Full a))
+            (def (unwrap (: b (Container Int64))) (match b ((Full v) v)))
+            (def (main (: k Int64)) (unwrap (Full k)))
+            (export main)))
+  (call   main (: 7 Int64)) (output (: 7 Int64))
+  (call   main (: -12 Int64)) (output (: -12 Int64)))
+
+(case "gs2 a TWO-parameter generic sum by name — (Pair Int64 Int64) in the annotation, both payload slots extracted"
+  (input  (do
+            (type (Pair a b) (Both a b))
+            (def (mix (: p (Pair Int64 Int64))) (match p ((Both x y) (+ (* 10 x) y))))
+            (def (main (: k Int64)) (mix (Both k 3)))
+            (export main)))
+  (call   main (: 7 Int64)) (output (: 73 Int64))
+  (call   main (: -2 Int64)) (output (: -17 Int64)))
+
+(case "gs3 the applied generic sum CROSSES a dispatch — (Container Int64) as an op result, unwrapped in the body after the arm wraps the state"
+  (input  (do
+            (type (Container a) (Full a))
+            (effect E (op box (-> (Container Int64))))
+            (def (main (: k Int64))
+              (handle E k
+                ((box () s (resume (Full s) (+ s 1))))
+                (+ (match (E.box) ((Full v) v))
+                   (* 10 (match (E.box) ((Full v) v))))))
+            (export main)))
+  (call   main (: 7 Int64)) (output (: 87 Int64))
+  (call   main (: -4 Int64)) (output (: -34 Int64)))
+
+(case "gs4 the applied generic wraps a HEAP payload — (Container (List Int64)) in the annotation, the list summed after unwrap"
+  (input  (do
+            (type (Container a) (Full a))
+            (def (sum-at (: xs (List Int64)) (: i Int64) (: acc Int64))
+              (match (List.at xs i)
+                ((Some v) (sum-at xs (+ i 1) (+ acc v)))
+                ((None) acc)))
+            (def (unwrap-sum (: b (Container (List Int64))))
+              (match b ((Full xs) (sum-at xs 0 0))))
+            (def (main (: k Int64)) (unwrap-sum (Full (list k 7 1))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 13 Int64))
+  (call   main (: -9 Int64)) (output (: -1 Int64)))
+
+(case "gs5 the generic applied to ITSELF — (Container (Container Int64)) double-wraps and double-unwraps"
+  (input  (do
+            (type (Container a) (Full a))
+            (def (unwrap2 (: b (Container (Container Int64))))
+              (match b ((Full inner) (match inner ((Full v) (* 2 v))))))
+            (def (main (: k Int64)) (unwrap2 (Full (Full k))))
+            (export main)))
+  (call   main (: 6 Int64)) (output (: 12 Int64))
+  (call   main (: -5 Int64)) (output (: -10 Int64)))
+
+(case "gs6 a TWO-VARIANT generic (Either a b) by name — parity routes construction between Left and Right, the annotated consumer matches both"
+  (input  (do
+            (type (Either a b) (Left a) (Right b))
+            (def (score (: e (Either Int64 Int64)))
+              (match e
+                ((Left x) (* 10 x))
+                ((Right y) y)))
+            (def (main (: k Int64))
+              (score (if (= (% k 2) 0) (Left k) (Right (+ k 1)))))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: 40 Int64))
+  (call   main (: 3 Int64)) (output (: 4 Int64))
+  (call   main (: -2 Int64)) (output (: -20 Int64)))
+
+(case "gs7 the applied generic in the op ARGUMENT position — the arm unwraps (Container Int64) payloads into the accumulating state"
+  (input  (do
+            (type (Container a) (Full a))
+            (effect E (op feed (-> (Container Int64) Int64)))
+            (def (main (: k Int64))
+              (handle E 0
+                ((feed (c) s (match c
+                               ((Full v) (resume (+ s v) (+ s v))))))
+                (+ (* 10 (E.feed (Full k))) (E.feed (Full 5)))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 38 Int64))
+  (call   main (: -4 Int64)) (output (: -39 Int64)))
+
+(case "gs8 the applied generic AS the handler state — (Container Int64) seeds the handle, the arm unwraps and re-wraps per dispatch"
+  (input  (do
+            (type (Container a) (Full a))
+            (effect E (op tick (-> Int64)))
+            (def (main (: k Int64))
+              (handle E (Full k)
+                ((tick () st (match st
+                               ((Full v) (resume v (Full (+ v 3)))))))
+                (+ (* 10 (E.tick)) (E.tick))))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: 47 Int64))
+  (call   main (: -1 Int64)) (output (: -8 Int64)))
