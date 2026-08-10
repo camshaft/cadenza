@@ -750,6 +750,13 @@ pub enum FleetCmd {
         /// How many concurrent children to spawn (default 3).
         #[arg(long, default_value = "3")]
         n: usize,
+        /// Run the REAL concurrent-gate orchestration over the live queue's concurrent-gate plan
+        /// (`gate_lanes_concurrently`): allocate per-lane worktrees, re-form each lane's refs, spawn a
+        /// TRIVIAL gate (a fast `true`, NOT the real nix build) concurrently, harvest + report per-lane
+        /// verdict + overlap. Read-only: NO push, NO trunk change — proves the orchestration path (worktree
+        /// alloc + reform + concurrent spawn/harvest) end-to-end before slice ii-e wires the real nix gate.
+        #[arg(long)]
+        real: bool,
     },
     /// DISPATCH a merge-request as a CI-gated candidate PR (I3, operator-greenlit 2026-08-02): re-parent
     /// the `--ref` commit onto `origin/main` in a detached scratch worktree, push `cand/<agent>-<sha>`,
@@ -1078,7 +1085,7 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
         FleetCmd::LaneOf { r#ref } => lane_of_cmd(&r#ref),
         FleetCmd::DispatchPlan { r#ref, agent } => dispatch_plan(&fleet, &r#ref, &agent),
         FleetCmd::BatchPlan => batch_plan(&fleet),
-        FleetCmd::GateParallelProbe { n } => gate_parallel_probe(n),
+        FleetCmd::GateParallelProbe { n, real } => gate_parallel_probe(&fleet, n, real),
         FleetCmd::PublishCandidate {
             r#ref,
             agent,
@@ -7913,25 +7920,33 @@ fn partition_batch(n: usize, mut gate: impl FnMut(&[usize]) -> bool) -> (Vec<usi
 /// Created DETACHED (no branch) — the scratch BRANCH is created inside it per round via `checkout -B`.
 /// Returns `None` if the worktree cannot be created (caller aborts, nothing changed).
 fn ensure_gate_batch_worktree(fleet: &Fleet) -> Option<PathBuf> {
-    let wt = fleet.worktrees.join("fleet-gate-batch");
+    ensure_named_gate_worktree(fleet, "fleet-gate-batch", TRUNK)
+}
+
+/// The generalized scratch-worktree allocator: ensure a DEDICATED, reusable detached work tree named
+/// `dir_name` under `.claude/worktrees/`, anchored at `base` (a ref/sha), scrubbed to pristine if it
+/// already exists. Factored out of [`ensure_gate_batch_worktree`] so the CONCURRENT gate (scope-split
+/// slice ii-d) allocates ONE warm reusable tree PER LANE (`fleet-gate-lane-<lane>`, base `origin/main`) —
+/// distinct dirs so N concurrent gates never share a tree — reusing the exact crash-recovery +
+/// detached-add discipline rather than a parallel copy. `dir_name` MUST be a safe single path component
+/// (callers pass a fixed literal or a [`sanitize_lane_component`] output). Returns `None` if the add fails.
+fn ensure_named_gate_worktree(fleet: &Fleet, dir_name: &str, base: &str) -> Option<PathBuf> {
+    let wt = fleet.worktrees.join(dir_name);
     if wt.join(".git").exists() {
-        // CRASH-RECOVERY SCRUB. A prior gate-batch run SIGKILLed mid-`git merge` (the 137/SIGTERM
-        // scenario the whole hardening arc addresses) leaves the reused worktree with a half-done merge
-        // (`.git/MERGE_HEAD` + a conflicted index) and/or a dirty tree + stray untracked files. The
-        // per-round `cleanup` closure's `checkout --detach trunk` FAILS on an in-progress merge ("you
-        // need to resolve your current index first"), so without this scrub every subsequent run would
-        // abort at `git_branch_at`. Reset it to pristine detached-trunk before reuse.
+        // CRASH-RECOVERY SCRUB: a prior run SIGKILLed mid-merge/cherry-pick leaves a half-done merge
+        // (`.git/MERGE_HEAD` + conflicted index) and/or a dirty tree; scrub to pristine before reuse
+        // (else the next `checkout -B`/cherry-pick aborts on the in-progress state). Idempotent if clean.
         scrub_gate_batch_worktree(&wt);
         return Some(wt);
     }
     std::fs::create_dir_all(&fleet.worktrees).ok();
-    // `--detach` at trunk: HEAD is not on any branch, so the per-round `checkout -B scratch trunk`
-    // never collides with a branch this worktree "owns", and cleanup can just detach back.
+    // `--detach` at `base`: HEAD is on no branch, so a per-round `checkout -B scratch`/cherry-pick never
+    // collides with a branch this worktree "owns", and cleanup can just detach back.
     let ok = Command::new("git")
         .current_dir(&fleet.repo)
         .args(["worktree", "add", "--detach"])
         .arg(&wt)
-        .arg(TRUNK)
+        .arg(base)
         .status()
         .map(|s| s.success())
         .unwrap_or(false);
@@ -9251,6 +9266,104 @@ fn sanitize_lane_component(lane: &str) -> String {
         .collect()
 }
 
+/// One lane's concurrent-gate OUTCOME: the lane, its `CiVerdict`, and its run time-span `(start_ms,
+/// end_ms)` on the shared origin clock so the caller can [`crate::spans_overlap`]-check that lanes truly
+/// ran concurrently. The per-lane result of [`gate_lanes_concurrently`].
+#[derive(Debug, Clone)]
+struct LaneGateOutcome {
+    lane: String,
+    verdict: CiVerdict,
+    span_ms: (u128, u128),
+}
+
+/// Execute a concurrent-gate PLAN (scope-split slice ii-d): for each [`LaneGateSlot`], allocate its
+/// dedicated `fleet-gate-lane-<lane>` worktree ([`ensure_named_gate_worktree`] at `base`), re-form the
+/// slot's refs onto it ([`reform_reparent`]), then SPAWN each lane's gate via `spawn_gate` NON-blocking so
+/// all lanes build CONCURRENTLY, and harvest them under ONE shared deadline
+/// ([`crate::wait_children_until`]). Returns a per-lane [`LaneGateOutcome`] (verdict + run span), each
+/// INDEPENDENT (a green lane stands even if a sibling reds/hangs; a hung lane → NoChecks). `spawn_gate` is
+/// injected (`&Path -> Child`) so a unit test / the probe substitutes a trivial child for the real `nix
+/// build`. A lane whose worktree can't be allocated, whose refs won't re-form, or whose gate won't spawn
+/// is recorded NoChecks (conservative — never false-green). Gate ONLY: the serial FF-push of the green
+/// lanes is slice iii (single-writer trunk preserved). Concurrency comes from spawning ALL before waiting.
+fn gate_lanes_concurrently(
+    fleet: &Fleet,
+    slots: &[LaneGateSlot],
+    base: &str,
+    timeout: std::time::Duration,
+    spawn_gate: impl Fn(&Path) -> std::io::Result<std::process::Child>,
+) -> Vec<LaneGateOutcome> {
+    let origin = std::time::Instant::now();
+    let mut spawned: Vec<(String, u128, std::process::Child)> = Vec::new();
+    let mut failed: Vec<LaneGateOutcome> = Vec::new();
+    // Phase 1: set up + SPAWN each lane's gate (non-blocking) so they run concurrently at the OS level.
+    for slot in slots {
+        let start_ms = origin.elapsed().as_millis();
+        let mut fail = |verdict| {
+            failed.push(LaneGateOutcome {
+                lane: slot.lane.clone(),
+                verdict,
+                span_ms: (start_ms, origin.elapsed().as_millis()),
+            });
+        };
+        let Some(wt) = ensure_named_gate_worktree(fleet, &slot.worktree_name, base) else {
+            eprintln!(
+                "concurrent-gate: lane '{}' worktree alloc failed → NoChecks",
+                slot.lane
+            );
+            fail(CiVerdict::NoChecks);
+            continue;
+        };
+        let members: Vec<BatchMr> = slot
+            .refs
+            .iter()
+            .map(|r| BatchMr {
+                file: String::new(),
+                from: String::new(),
+                r#ref: r.clone(),
+                subject: String::new(),
+            })
+            .collect();
+        if !reform_reparent(&wt, &members) {
+            eprintln!(
+                "concurrent-gate: lane '{}' refs won't re-form onto {base} → NoChecks",
+                slot.lane
+            );
+            fail(CiVerdict::NoChecks);
+            continue;
+        }
+        match spawn_gate(&wt) {
+            Ok(child) => spawned.push((slot.lane.clone(), start_ms, child)),
+            Err(e) => {
+                eprintln!(
+                    "concurrent-gate: lane '{}' gate spawn failed ({e}) → NoChecks",
+                    slot.lane
+                );
+                fail(CiVerdict::NoChecks);
+            }
+        }
+    }
+    // Phase 2: harvest all spawned lanes CONCURRENTLY under one shared deadline.
+    let starts: Vec<(String, u128)> = spawned.iter().map(|(l, s, _)| (l.clone(), *s)).collect();
+    let children: Vec<(String, std::process::Child)> =
+        spawned.into_iter().map(|(l, _, c)| (l, c)).collect();
+    let results = crate::wait_children_until(children, timeout);
+    let end_ms = origin.elapsed().as_millis();
+    let mut outcomes = failed;
+    for ((lane, start_ms), (_, res)) in starts.into_iter().zip(results) {
+        let verdict = match res {
+            Ok(Some(status)) => local_gate_verdict(true, status.success()),
+            Ok(None) | Err(_) => CiVerdict::NoChecks, // hung→killed / wait-error: no verdict
+        };
+        outcomes.push(LaneGateOutcome {
+            lane,
+            verdict,
+            span_ms: (start_ms, end_ms),
+        });
+    }
+    outcomes
+}
+
 /// `fleet batch-plan`: read-only preview of how the currently-queued merge-requests partition into
 /// per-lane scope-batches ([`partition_batch_by_lane`] over the live queue, resolving each ref's files via
 /// `changed_files_of`). Prints one line per lane — PARALLEL (can gate concurrently with other parallel
@@ -9311,7 +9424,10 @@ fn batch_plan(fleet: &Fleet) {
 /// run spans actually OVERLAPPED ([`crate::spans_overlap`]) — the concierge's sanity-check that the
 /// parallelism is real, not silently serialized. The live concurrent gate (slice ii-c) swaps the `sleep`
 /// children for `nix build .#checks.<arch>.local-gate` per lane worktree; this probe pins the harness.
-fn gate_parallel_probe(n: usize) {
+fn gate_parallel_probe(fleet: &Fleet, n: usize, real: bool) {
+    if real {
+        return gate_parallel_probe_real(fleet);
+    }
     let n = n.max(1);
     let origin = std::time::Instant::now();
     let mut spans: Vec<(u128, u128)> = Vec::new();
@@ -9360,6 +9476,61 @@ fn gate_parallel_probe(n: usize) {
             n * 1000
         );
     }
+}
+
+/// `fleet gate-parallel-probe --real`: exercise the REAL concurrent-gate orchestration
+/// ([`gate_lanes_concurrently`]) over the LIVE queue's concurrent-gate plan — allocate per-lane
+/// worktrees, re-form each lane's refs onto origin/main, spawn a TRIVIAL gate (`sleep 1`, NOT the real
+/// nix build) concurrently, harvest + report per-lane verdict + overlap. READ-ONLY: no push, no trunk
+/// change. Proves the orchestration path (worktree alloc + reform + concurrent spawn/harvest) end-to-end
+/// on real worktrees before slice ii-e swaps the trivial gate for `nix build .#checks.<arch>.local-gate`
+/// and wires it into `schedule_pass_local_gate`. A `sleep 1` per lane makes overlap observable (a
+/// serialized harness would take N seconds; concurrent stays ~1s).
+fn gate_parallel_probe_real(fleet: &Fleet) {
+    let _ = Command::new("git")
+        .current_dir(&fleet.repo)
+        .args(["fetch", "origin", "main", "--quiet"])
+        .status();
+    let queued = queued_merge_requests(fleet);
+    let batches = partition_batch_by_lane(&queued, changed_files_of);
+    let plan = plan_concurrent_gate(&batches);
+    if plan.is_empty() {
+        println!(
+            "gate-parallel-probe --real: <2 parallel lanes with work in the live queue → nothing to gate \
+             concurrently. (Run `fleet batch-plan` to see the split.)"
+        );
+        return;
+    }
+    println!(
+        "gate-parallel-probe --real: running the concurrent-gate orchestration over {} lanes (TRIVIAL \
+         `sleep 1` gate, no push)…",
+        plan.len()
+    );
+    // Inject a trivial gate: `sleep 1` (exits 0) so every lane reads Green and the ~1s runs overlap
+    // observably. ii-e swaps this for the real `nix build .#checks.<arch>.local-gate` in `dir`.
+    let outcomes = gate_lanes_concurrently(
+        fleet,
+        &plan,
+        "origin/main",
+        std::time::Duration::from_secs(60),
+        |_dir| Command::new("sleep").arg("1").spawn(),
+    );
+    let spans: Vec<(u128, u128)> = outcomes.iter().map(|o| o.span_ms).collect();
+    for o in &outcomes {
+        println!(
+            "  lane '{}' → {:?}  (span {}..{}ms)",
+            o.lane, o.verdict, o.span_ms.0, o.span_ms.1
+        );
+    }
+    let overlapped = crate::spans_overlap(&spans);
+    println!(
+        "  spans overlap: {overlapped} — {}",
+        if overlapped {
+            "PARALLELISM CONFIRMED (lanes gated concurrently)"
+        } else {
+            "NO OVERLAP (lanes serialized — investigate before trusting the concurrent gate)"
+        }
+    );
 }
 
 /// What the scheduler should DO with one in-flight candidate PR, given whether GitHub has already
@@ -16996,6 +17167,97 @@ mod tests {
         );
         // empty.
         assert!(plan_concurrent_gate(&[]).is_empty());
+    }
+
+    #[test]
+    fn gate_lanes_concurrently_reforms_spawns_and_harvests_per_lane_independently() {
+        // End-to-end orchestration over a REAL fixture repo: two lanes, each a clean disjoint commit off
+        // trunk. gate_lanes_concurrently must alloc a per-lane worktree, reform the ref, spawn the injected
+        // gate CONCURRENTLY, and return a per-lane outcome — a green lane and a red lane side by side, plus
+        // overlapping spans (the injected gates sleep so the concurrency is observable).
+        let dir = init_batch_fixture_repo("concgate");
+        let git = |args: &[&str]| {
+            Command::new("git")
+                .current_dir(&dir)
+                .args(args)
+                .output()
+                .unwrap()
+        };
+        // origin/main must exist (gate_lanes_concurrently bases worktrees on it) — point it at trunk.
+        let _ = git(&["update-ref", "refs/remotes/origin/main", TRUNK]);
+        // Two disjoint feature commits (distinct new files → reform cleanly onto origin/main).
+        let _ = git(&["checkout", "-q", "-b", "laneA", TRUNK]);
+        std::fs::write(dir.join("a-lane.txt"), "A").unwrap();
+        let _ = git(&["add", "a-lane.txt"]);
+        let _ = git(&["commit", "-q", "-m", "laneA"]);
+        let ref_a = git_rev(&dir, "HEAD");
+        let _ = git(&["checkout", "-q", "-b", "laneB", TRUNK]);
+        std::fs::write(dir.join("b-lane.txt"), "B").unwrap();
+        let _ = git(&["add", "b-lane.txt"]);
+        let _ = git(&["commit", "-q", "-m", "laneB"]);
+        let ref_b = git_rev(&dir, "HEAD");
+        let _ = git(&["checkout", "-q", TRUNK]);
+
+        let wtroot = std::env::temp_dir().join(format!("cdz-concgate-wt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&wtroot);
+        let fleet = Fleet {
+            root: dir.join(".claude/fleet"),
+            worktrees: wtroot.clone(),
+            repo: dir.clone(),
+            src: dir.clone(),
+        };
+        let slots = vec![
+            LaneGateSlot {
+                lane: "green".into(),
+                worktree_name: "fleet-gate-lane-green".into(),
+                refs: vec![ref_a],
+            },
+            LaneGateSlot {
+                lane: "red".into(),
+                worktree_name: "fleet-gate-lane-red".into(),
+                refs: vec![ref_b],
+            },
+        ];
+        // Injected gate: green lane sleeps-then-exits-0, red lane sleeps-then-exits-1 → both spans overlap,
+        // verdicts independent. Uses the worktree dir only to prove it's passed (a real gate would build it).
+        let outcomes = gate_lanes_concurrently(
+            &fleet,
+            &slots,
+            "origin/main",
+            std::time::Duration::from_secs(30),
+            |dir| {
+                let red = dir
+                    .file_name()
+                    .is_some_and(|n| n.to_string_lossy().contains("-red"));
+                let script = if red {
+                    "sleep 1; exit 1"
+                } else {
+                    "sleep 1; exit 0"
+                };
+                Command::new("sh").args(["-c", script]).spawn()
+            },
+        );
+        assert_eq!(outcomes.len(), 2, "one outcome per lane");
+        let green = outcomes
+            .iter()
+            .find(|o| o.lane == "green")
+            .expect("green lane");
+        let red = outcomes.iter().find(|o| o.lane == "red").expect("red lane");
+        assert_eq!(green.verdict, CiVerdict::Green, "exit 0 → Green");
+        assert_eq!(
+            red.verdict,
+            CiVerdict::Red,
+            "exit 1 → Red (independent of the green sibling)"
+        );
+        // The two lanes' gate spans overlap → they ran concurrently (both ~1s, harvested together).
+        let spans: Vec<(u128, u128)> = outcomes.iter().map(|o| o.span_ms).collect();
+        assert!(
+            crate::spans_overlap(&spans),
+            "lanes gated concurrently (overlapping spans)"
+        );
+
+        let _ = std::fs::remove_dir_all(&wtroot);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
