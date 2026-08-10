@@ -128,6 +128,18 @@ returning to the tick-top check):
 4. **Gate green** (all three, per the contract — diff the FAIL SET, additive only). Verify runtime
    slices e2e via `cdz-run` with a RECURSIVE non-foldable value (a constant folds away + imports no
    runtime, so it doesn't exercise the runtime path).
+   **⏱ ITERATE NARROW, gate FULL once (loop-latency squash, operator priority 2026-08-10).** The full
+   `cargo xtask gate` is the whole corpus battery (29 `spec/semantics/*.sexp` × 3 backends) and `cargo
+   xtask check` builds the whole workspace — ~8-15min, and pr-sync RE-GATES the full battery on your MR
+   anyway, so paying it on EVERY inner iteration is the dominant per-step cost. While you're iterating a
+   slice, self-check NARROW — only what you touched:
+   - `cargo test -p <your-crate> --lib` (already scoped), and
+   - `cargo xtask gate --files spec/semantics/<your-file>.sexp --target wasm` (scope to YOUR corpus file
+     + one backend; add `--target rust`/`rust-async` only if your slice touches backend-specific emit).
+   That narrow loop is ~1-3min. Run the FULL `cargo xtask gate` + `cargo xtask check` ONCE, right before
+   your final send (the authoritative self-verify), not on every edit. pr-sync's pass is the full-battery
+   backstop; the tradeoff is that a scoped self-check can miss a cross-cutting break → one reject
+   round-trip, which is rare for a well-scoped slice and far cheaper than 10min/iteration.
    **Then apply discipline (b): a full gate/build cycle is the single biggest context ingest in a
    tick — CHECK your context after it and `/compact` if past ~70% BEFORE the next unit** (committing,
    the next slice, or resending after a reject). Never carry a near-full window into another gate run.
