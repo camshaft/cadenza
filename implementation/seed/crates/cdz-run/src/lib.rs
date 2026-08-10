@@ -2177,15 +2177,21 @@ fn callable_exports_hint(engine: &Engine, component: &Component) -> String {
 /// inside it). `cdz-run` recognizes this instance to take the resource-decode path.
 const RUN_INTERFACE: &str = "cadenza:run/run";
 
-/// Whether `component` exports a `cadenza:run/run` INSTANCE — the marker of a resource-escape program
-/// (its compound result crosses as a resource with a `make`/`encode` pair, not a bare function).
-fn has_run_instance(engine: &Engine, component: &Component) -> bool {
+/// Whether `component` exports `iface_name` as a component-INSTANCE (not a bare function or a type). The
+/// shared marker-detection behind `has_run_instance` / `has_closure_instance`.
+fn exports_instance(engine: &Engine, component: &Component, iface_name: &str) -> bool {
     component
         .component_type()
         .exports(engine)
         .any(|(name, item)| {
-            name == RUN_INTERFACE && matches!(item, ComponentItem::ComponentInstance(_))
+            name == iface_name && matches!(item, ComponentItem::ComponentInstance(_))
         })
+}
+
+/// Whether `component` exports a `cadenza:run/run` INSTANCE — the marker of a resource-escape program
+/// (its compound result crosses as a resource with a `make`/`encode` pair, not a bare function).
+fn has_run_instance(engine: &Engine, component: &Component) -> bool {
+    exports_instance(engine, component, RUN_INTERFACE)
 }
 
 /// The interface a CLOSURE-resource export publishes under (`make`/`call` live inside it) —
@@ -2196,32 +2202,15 @@ const CLOSURE_INTERFACE: &str = "cadenza:closure/exports";
 /// Whether `component` exports a `cadenza:closure/exports` INSTANCE — the marker of a closure-resource
 /// program (its result is a closure crossing as a resource with a `make`/`call` pair).
 fn has_closure_instance(engine: &Engine, component: &Component) -> bool {
-    component
-        .component_type()
-        .exports(engine)
-        .any(|(name, item)| {
-            name == CLOSURE_INTERFACE && matches!(item, ComponentItem::ComponentInstance(_))
-        })
+    exports_instance(engine, component, CLOSURE_INTERFACE)
 }
 
 /// The FUNCTION names the `cadenza:closure/exports` instance exports — used to distinguish a round-trip
 /// component (named producer + consumer funcs, NO `call` method) from the single/multi-export shape
-/// (which has a `call`). Read off the component type, so nothing is hard-coded.
+/// (which has a `call`). The same instance-func read as [`interface_func_names`], but a missing interface
+/// is a plain empty list here (not an error), so a non-closure component simply has no closure funcs.
 fn closure_interface_funcs(engine: &Engine, component: &Component) -> Vec<String> {
-    for (name, item) in component.component_type().exports(engine) {
-        if name != CLOSURE_INTERFACE {
-            continue;
-        }
-        if let ComponentItem::ComponentInstance(inst) = item {
-            return inst
-                .exports(engine)
-                .filter_map(|(fname, i)| {
-                    matches!(i, ComponentItem::ComponentFunc(_)).then(|| fname.to_string())
-                })
-                .collect();
-        }
-    }
-    Vec::new()
+    interface_func_names(engine, component, CLOSURE_INTERFACE).unwrap_or_default()
 }
 
 /// Run a ROUND-TRIP closure program (C-HOST-4): the host produces a closure handle from a PRODUCER export,
