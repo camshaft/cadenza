@@ -2252,6 +2252,23 @@
             (export main)))
   (error  CDZ0101))
 
+(case "a @requires predicate that is NOT Bool-typed is REJECTED CDZ0203 — a predicate must denote a truth value"
+  (doc    "The type-of-the-predicate pin, distinct from the scope pins above (unbound name → CDZ0101). A contract
+           predicate is spliced into an injected `(if PRE BODY (trap …))`, whose test position DEMANDS a Bool, so
+           the predicate expression must type as Bool. `@requires(+ x 1)` gives an Int64-typed predicate (`x` is
+           Int64, `+` returns Int64) — well-scoped, but the WRONG TYPE for a truth value. It is rejected CDZ0203
+           (cannot unify Int64 with Bool) at the annotation, exactly as a hand-written `(if (+ x 1) …)` would be.
+           This guards the predicate's TYPE obligation separately from its NAME obligation: a regression that
+           dropped the Bool constraint on the predicate would silently accept `@requires(+ x 1)` and splice a
+           non-Bool into the `if`, either miscompiling or coercing the guard — so pinning the reject keeps a
+           contract predicate constrained to a genuine truth value. (The dual of the value-domain enforcement
+           cases: those pin that a Bool-typed predicate ENFORCES; this pins that a non-Bool one is REFUSED.)")
+  (input  (do
+            (@ (requires (+ x 1)) (def (f (: x Int64)) x))
+            (def (main) (f 5))
+            (export main)))
+  (error  CDZ0203))
+
 (case "a PLAIN @ensures on a NULLARY def (no parameters) enforces — ret binds the body, predicate reads only ret"
   (doc    "Every runtime @ensures case so far has at least one parameter; this pins @ensures on a def with NO
            parameters, where the postcondition predicate reads ONLY the result binder `ret` (no param is in
