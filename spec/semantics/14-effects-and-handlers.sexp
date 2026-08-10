@@ -1744,6 +1744,28 @@
                   (+ b (A.get))))) (export main)))
   (output (: 110 Int64)))
 
+(case "an inner abort whose ARGUMENT performs the outer effect commits BOTH the pre-abort and the in-arg advance"
+  (doc    "The outer-advance-preservation family above pins a CONSTANT abort arg `(B.bail 99)` with the outer
+           perform as a pre-abort SIBLING. This is the distinct variant where the outer perform is INSIDE the
+           abort ARGUMENT — `(+ (A.tick) (B.bail (+ 50 (A.tick))))` under B — so the abandoned VALUE is COMPUTED
+           from an outer perform, not merely sequenced beside one. TWO A-advances must both commit and both be
+           observed: the leading `+`-operand `(A.tick)` reads 10 → commits 10→11 (survives the abort via the
+           operand-lift), then the abort-arg `(A.tick)` reads 11 → commits 11→12 while EVALUATING the arg, so
+           `B.bail (+ 50 11)` = 61 abandons B's handle (`b` = 61). The outer `(A.get)` then reads 12 →
+           `(+ 61 12)` = 73. A drop of either advance (the pre-abort operand OR the in-arg perform) or a failure
+           to evaluate the abort arg before abandoning would shift the value; a bare-abort collapse that discarded
+           the arg's perform would read a stale A-state. Pins that the abort ARG's own foreign perform is
+           evaluated + committed on the strict spine before the arm abandons, composing the operand-lift with an
+           arg-position perform (v-effects self-probe, adjacent to breaker ao5).")
+  (input  (do
+            (effect A (op tick (-> Unit Int64)) (op get (-> Unit Int64)))
+            (effect B (op bail (-> Int64 Int64)))
+            (def (main)
+              (handle A 10 ((tick (u) s (resume s (+ s 1))) (get (u) s (resume s s)))
+                (let ((b (handle B 0 ((bail (v) s v)) (+ (A.tick) (B.bail (+ 50 (A.tick)))))))
+                  (+ b (A.get))))) (export main)))
+  (output (: 73 Int64)))
+
 (case "a strict-operand abort in a DEEP-nested handler stack keeps its 99 when the advances are UNOBSERVED"
   (doc    "The soundness control for the operand-lift: the SAME strict-operand-abort-with-foreign-prefix shape
            `(+ (A.a) (+ (B.b) (Bail.bail 99)))` under `handle A…(handle B…(handle Bail…))`, but here the outer

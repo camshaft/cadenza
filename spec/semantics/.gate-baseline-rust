@@ -4442,6 +4442,7 @@ pass	an inner abort preserves an OUTER advance committed in a MATCH-SCRUTINEE be
 pass	an inner abort preserves an OUTER advance committed in a STRICT OPERAND before it (operand-lift)
 pass	an inner abort preserves an OUTER advance committed in an IF-BRANCH before it (branch do-shape)
 pass	an inner abort preserves an outer advance committed in a NESTED strict operand (deeper-operand-lift)
+pass	an inner abort whose ARGUMENT performs the outer effect commits BOTH the pre-abort and the in-arg advance
 pass	an inner abortive handler preserves an OUTER effect's advance committed before the abort (do-shape)
 pass	an inner arm performs TWO DISTINCT outer effects in one resume value — both thread per dispatch
 pass	an inner arm resumes with the OUTER handler's result while both states advance
