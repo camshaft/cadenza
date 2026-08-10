@@ -60,9 +60,39 @@ pub struct MetricExecutor {
     cache: HashMap<CacheKey, MetricHandle>,
 }
 
-/// The cache/registry key: the reducer's metric name, its kind, and its sorted labels — so distinct
-/// (name, kind, label-set) tuples are distinct series (the queryable-series shape the review asked for).
-type CacheKey = (String, String, Vec<(String, String)>);
+/// The cache key: a content [`Hash`] of (name, kind, sorted-labels) — so distinct (name, kind, label-set)
+/// tuples are distinct series (the queryable-series shape the review asked for), while the key itself is a
+/// `Copy` 32-byte Hash. Keying by the Hash (not the owned `(String, String, Vec<(String,String)>)` tuple)
+/// means a repeat publish — the HOT path, `record` runs once per sample in a batch — allocates NOTHING to
+/// build the lookup key (the old tuple key cloned name+kind+labels on EVERY call, even a cache HIT; the
+/// cheaply-clonable audit's HOT-1 finding). The owned strings are cloned only on a cache MISS, when a handle
+/// is registered (rare — first publish of a series). Collision-safe: blake3 over a length-delimited encoding.
+type CacheKey = Hash;
+
+/// Compute the cache key for a sample: `Hash::of` a length-delimited encoding of (name, kind, sorted labels).
+/// Length-delimited so distinct field boundaries can't alias (e.g. name="ab"+kind="c" vs name="a"+kind="bc").
+/// Labels are sorted (the guest may emit them in any order) so a label-reordering publish hits the same key —
+/// the same series-identity the old sorted-Vec key gave. Sorts a Vec of REFERENCES (pointer-only, no deep
+/// String copy), so on the HOT path (a cache hit) this allocates only the scratch buffer + the small ref Vec —
+/// NOT the 3 deep String/Vec clones the old owned-tuple key did per call.
+fn cache_key_of(name: &str, kind: &str, labels: &[(String, String)]) -> Hash {
+    let mut refs: Vec<&(String, String)> = labels.iter().collect();
+    refs.sort();
+    let mut buf: Vec<u8> = Vec::new();
+    // length-delimited append: a 4-byte LE length prefix then the bytes (so field boundaries can't alias).
+    fn push(buf: &mut Vec<u8>, s: &[u8]) {
+        buf.extend_from_slice(&(s.len() as u32).to_le_bytes());
+        buf.extend_from_slice(s);
+    }
+    push(&mut buf, name.as_bytes());
+    push(&mut buf, kind.as_bytes());
+    buf.extend_from_slice(&(refs.len() as u32).to_le_bytes());
+    for (k, v) in refs {
+        push(&mut buf, k.as_bytes());
+        push(&mut buf, v.as_bytes());
+    }
+    Hash::of(&buf)
+}
 
 impl MetricExecutor {
     /// Build the executor over the daemon's shared metrics [`Registry`] (the same one host/effect metrics
@@ -156,9 +186,12 @@ impl MetricExecutor {
                 sample.kind
             )));
         }
-        let mut labels = sample.labels.clone();
-        labels.sort();
-        let key: CacheKey = (sample.name.clone(), sample.kind.clone(), labels);
+        // Build the lookup key WITHOUT cloning name/kind/labels (HOT-1: `record` runs once per sample in a
+        // batch, so the old owned-tuple key allocated 3× — name+kind+labels — on EVERY publish, incl. a cache
+        // HIT). The Hash key is Copy; `cache_key_of` hashes the fields in place (sorting label REFERENCES, no
+        // deep copy), so a hit allocates only a small scratch buffer + ref Vec. The miss-path registration
+        // below clones the strings it needs (rare — first publish of a series).
+        let key: CacheKey = cache_key_of(&sample.name, &sample.kind, &sample.labels);
 
         // Get-or-register the handle (register only on a cache MISS — no registry interaction on hits).
         let handle = self.cache.entry(key).or_insert_with(|| {
