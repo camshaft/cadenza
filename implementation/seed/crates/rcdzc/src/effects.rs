@@ -8058,8 +8058,27 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
     // two-effect-helpers, where two helpers driving the SAME DbState group each capture a cross-scope `id`
     // whose binder StructId differs from `type-of`'s own `id` param, dodging the by-StructId `own_binders`
     // filter) and (b) bind the wrong value (the body's `id` reads the original, not the appended capture).
-    let orig_param_names: std::collections::HashSet<String> =
+    let mut orig_param_names: std::collections::HashSet<String> =
         orig_param_specs.iter().map(|(n, _)| n.clone()).collect();
+    // ALSO seed with each arm's STATE-BINDER name (`db` in the DbState demand spine): a reference to the
+    // handler state binder must resolve to the threaded state slot `f#eff$s0`, NOT be captured as an extra
+    // enclosing param. The by-StructId `own_binders` filter above already excludes the state binder's OWN
+    // occurrence — but with MULTIPLE arms all binding the SAME state name (`db` in every DbState arm) plus
+    // the fold's arm copies, a `db` reference can resolve to a state-binder StructId that dodges that filter
+    // (the same StructId-vs-name gap the `orig_param_names` seed closes for `id`). Wrongly captured, `db`
+    // threads as a raw param and the arm's `require-ty db id` / `fill-ty db id t` read the STALE param instead
+    // of the threaded slot — so a `set-ty` write is invisible to the next `get-ty` → re-demand/wrong value →
+    // wasm unreachable, and ONLY when the wide-op arms (get-tcol/get-tree) coexist to expose the extra
+    // state-binder occurrences (v-cml bug-3: arg-flow test passes standalone, fails in-suite; the 4-way
+    // SPECBODY dump shows `require-ty db id` in the failing build vs `require-ty type-of#eff$s0 id` in the
+    // passing one). Seeding the state name skips the wrong capture; the state-binder substitution binds the
+    // reference to `$s0` as it does for the single-arm case. A NAME shared with a real enclosing capture is
+    // out of scope here (the state binder is bound within the spec — its name never denotes an outer value).
+    orig_param_names.extend(
+        ctx.arms
+            .values()
+            .filter_map(|a| db.ast.as_name(a.state).map(str::to_string)),
+    );
     let captured_specs = captured_enclosing_params(db, ctx, &own_binders, &orig_param_names);
     // A capture with an undetermined type cannot annotate its extra param — decline the whole specialization
     // (mirrors the `orig_params` `Ty::Any` guard), so the shape stays a clean todo rather than emitting a
