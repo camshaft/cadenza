@@ -23294,7 +23294,7 @@ mod tests {
             t.push(s);
             (t.len() - 1) as u32
         }
-        match tag % if allow_compound { 9 } else { 6 } {
+        match tag % if allow_compound { 11 } else { 6 } {
             0 => {
                 let h = op_box_int(p as i64 - 128);
                 (h, emit(table, S::Int))
@@ -23347,6 +23347,35 @@ mod tests {
                 table[ix as usize] = S::Sum(variants.into());
                 (op_sum_new(disc as u32, payload), ix)
             }
+            8 => {
+                // 2-field Record, fields in descriptor (sorted) name order `f0` < `f1` — exercises the
+                // record-field `=` convergence site. Reserve the slot before recursing (children later).
+                let ix = emit(table, S::Record(vec![].into()));
+                let (a, sa) = build_rand_value_and_shape(bytes, cur, budget, depth + 1, table);
+                let (bch, sb) = build_rand_value_and_shape(bytes, cur, budget, depth + 1, table);
+                table[ix as usize] =
+                    S::Record(vec![("f0".into(), sa), ("f1".into(), sb)].into());
+                let r = op_arr_alloc(2);
+                op_arr_set(r, 0, a);
+                op_arr_set(r, 1, bch);
+                (r, ix)
+            }
+            9 => {
+                // Set of Int (scalar elements are canonically orderable — `set_elements_canonical` sorts
+                // them) — exercises the Set `(. Set of)` head convergence site. Insert a few ints in
+                // non-sorted order; the encode re-sorts to canonical value order.
+                let ix = emit(table, S::Set(0));
+                // Element shape [0] = Int must exist BEFORE the Set entry references it. The Set entry is
+                // at `ix`; point it at a freshly-emitted Int shape so the index is valid regardless of
+                // where `ix` landed.
+                let elem_ix = emit(table, S::Int);
+                table[ix as usize] = S::Set(elem_ix);
+                let mut s = op_set_empty();
+                for k in 0..((p % 4) as i64) {
+                    s = op_set_insert(s, op_box_int((3 - k) * 7 + (p as i64 & 3)));
+                }
+                (s, ix)
+            }
             _ => {
                 // 3-tuple.
                 let ix = emit(table, S::Tuple(vec![0, 0, 0].into()));
@@ -23395,6 +23424,77 @@ mod tests {
                 iter_doc, rec_doc,
                 "iterative and recursive value-encode disagree on a random mixed value"
             );
+            op_drop(v);
+            assert_eq!(
+                live_nodes(),
+                before,
+                "value-encode borrows — no leak building/encoding a random value"
+            );
+        });
+    }
+
+    /// CANON-STABILITY across the FULL shape space (the property companion of the hand-written
+    /// `value_encode_leaf_order_is_canon_pre_order_first_encounter`): for ANY random value/descriptor,
+    /// value-encode's document must have its LEAVES interned in canon's order — strictly PRE-ORDER,
+    /// first-encounter, left-to-right over the struct tree from the root (cadenza-ast/canon.rs `visit`).
+    /// That is exactly what makes `value_encode(v)` == `codec::encode(canon(tree))` a stable content-
+    /// address. The two-shape unit test only reaches the record-`=` and Set-head arms; this exercises
+    /// Tuple/List/Sum/Map/Named/Framed/nested arms too, so a post-order regression in ANY arm is caught.
+    #[test]
+    fn prop_value_encode_leaf_order_is_canon_over_random_shapes() {
+        bolero::check!().with_type::<Vec<u8>>().for_each(|bytes| {
+            reset();
+            let before = live_nodes();
+            let mut table: Vec<super::Shape> = Vec::new();
+            let (mut cur, mut budget) = (0usize, 40u32);
+            let (v, root) = build_rand_value_and_shape(bytes, &mut cur, &mut budget, 0, &mut table);
+            let descriptor = super::Descriptor { table, root };
+            // Encode via the production iterative walk, then parse the document back.
+            let mut b = DocBuilder::default();
+            if let Some(r) = encode_value(
+                &descriptor,
+                &mut b,
+                &mut Vec::new(),
+                &mut Vec::new(),
+                v,
+                descriptor.root,
+            ) {
+                let doc_bytes = b.finish(r);
+                let doc = parse_doc(&doc_bytes).expect("a document value-encode produced must parse");
+                // Re-walk the struct tree PRE-order LTR; each leaf's FIRST reference must have the next
+                // id under canon first-encounter numbering (0, 1, 2, …). Any jump means the leaf pool
+                // diverges from codec::encode(canon(tree)) — a post-order-emission regression.
+                let mut seen: alloc::collections::BTreeSet<u32> = alloc::collections::BTreeSet::new();
+                let mut expected_next: u32 = 0;
+                let mut stack: Vec<u32> = vec![doc.root];
+                while let Some(struct_ix) = stack.pop() {
+                    match doc.structs.get(struct_ix as usize) {
+                        Some(ParsedStruct::Atom(leaf_id)) => {
+                            if !seen.contains(leaf_id) {
+                                assert_eq!(
+                                    *leaf_id, expected_next,
+                                    "leaf {leaf_id} first-encountered out of canon pre-order \
+                                     (expected {expected_next}) on a random value — value-encode's \
+                                     leaf pool diverges from codec::encode(canon(tree))"
+                                );
+                                seen.insert(*leaf_id);
+                                expected_next += 1;
+                            }
+                        }
+                        Some(ParsedStruct::List(kids)) => {
+                            for &k in kids.iter().rev() {
+                                stack.push(k);
+                            }
+                        }
+                        None => panic!("dangling struct index {struct_ix} in a produced document"),
+                    }
+                }
+                assert_eq!(
+                    seen.len() as u32,
+                    expected_next,
+                    "every distinct leaf first-encountered exactly once in pre-order"
+                );
+            }
             op_drop(v);
             assert_eq!(
                 live_nodes(),
