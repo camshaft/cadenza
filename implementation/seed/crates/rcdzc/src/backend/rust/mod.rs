@@ -75,18 +75,18 @@ fn is_capture_scalar(t: &crate::ty::Ty) -> bool {
 /// consumer applies it to an IN-GUEST-built inner closure (`(g (fn (y) …))`, which the emitter already
 /// lowers), and the higher-order producer (`mk`) is passed by the harness as `Rc::new(mk)`. Distinct from
 /// `s2_arg_ok` (which rejects every `Ty::Fn`) so the base non-higher-order gates keep their exact behavior.
-fn arg_ok_or_fn(t: &crate::ty::Ty) -> bool {
+fn arg_ok_or_fn(ncx: &crate::ty::NameCtx, t: &crate::ty::Ty) -> bool {
     if let crate::ty::Ty::Fn(_, _) = t.strip_nominal() {
         let mut cur = t.strip_nominal();
         while let crate::ty::Ty::Fn(p, r) = cur {
-            if !arg_ok_or_fn(p) {
+            if !arg_ok_or_fn(ncx, p) {
                 return false;
             }
             cur = r.strip_nominal();
         }
-        return arg_ok_or_fn(cur);
+        return arg_ok_or_fn(ncx, cur);
     }
-    s2_arg_ok(t)
+    s2_arg_ok(ncx, t)
 }
 
 /// Whether a closure ARG type is OK for the host-closure FACTORY slice: a scalar (Int/Bool/Float — the
@@ -96,7 +96,7 @@ fn arg_ok_or_fn(t: &crate::ty::Ty) -> bool {
 /// the native `(i64, i64)`), a LIST (`…(vec![…])`), or Option/Result (the well-known 2-variant sums, `(Some
 /// v)`→`Some(v)` etc.). A String/Bytes arg PASSED FROM THE HOST at the boundary (a different ABI) or a USER
 /// sum arg stays DEFERRED — the factory still emits a valid `Rc<dyn Fn>`, so those cases stay a clean `todo`.
-fn s2_arg_ok(t: &crate::ty::Ty) -> bool {
+fn s2_arg_ok(ncx: &crate::ty::NameCtx, t: &crate::ty::Ty) -> bool {
     use crate::ty::Ty;
     match t.strip_nominal() {
         Ty::Int(_) | Ty::Bool | Ty::Float(_) => true,
@@ -106,22 +106,22 @@ fn s2_arg_ok(t: &crate::ty::Ty) -> bool {
         // and the closure param type maps to `Rc<dyn Fn(String) -> …>`. (A String arg PASSED FROM THE HOST at
         // the boundary is a different, still-deferred ABI — that shape has no producing-sibling-driven synth.)
         Ty::String | Ty::Bytes => true,
-        Ty::Tuple(elems) => elems.iter().all(s2_arg_ok),
+        Ty::Tuple(elems) => elems.iter().all(|e| s2_arg_ok(ncx, e)),
         // A RECORD closure ARG — the harness's `rust_call_arg` rebuilds a `(record …)` literal into the
         // native positional Rust tuple in SORTED-key order (matching the emit's field layout). Admitted iff
         // every field type is. NOTE: a Tuple-arg and a same-field-type Record-arg closure erase to the
         // IDENTICAL `Rc<dyn Fn((i64,i64))>`, so the driver disambiguates producer↔consumer pairing via the
         // `// cdz-param-shapes` note (the pre-erasure arrow type) — without that, a distinct-sig two-closure
         // consumer could mispair (breaker; the reason this arm waited for the param-shapes note).
-        Ty::Record(fields) => fields.values().all(s2_arg_ok),
-        Ty::List(elem) => s2_arg_ok(elem),
+        Ty::Record(fields) => fields.values().all(|t| s2_arg_ok(ncx, t)),
+        Ty::List(elem) => s2_arg_ok(ncx, elem),
         // Option/Result (the WELL-KNOWN 2-variant sums the harness rebuilds — `(Some v)`→`Some(v)`,
         // `(Ok v)`/`(Err e)`→`Ok(v)`/`Err(e)`, `(None …)`→`None`) over S2-OK payloads. Identified by the
         // sum's NAME (its type args ARE the payloads: `Option Int64`→`[Int64]`, `Result a b`→`[a, b]`); a
         // USER sum stays deferred (the harness has no constructor rebuild for it). Recurse over the args so
         // a nested `Option (Tuple …)` / `Result (List …) …` is admitted iff its payloads are.
-        Ty::Sum { name, args, .. } if name == "Option" || name == "Result" => {
-            args.iter().all(s2_arg_ok)
+        Ty::Sum { decl, args } if matches!(ncx.name_of(*decl), Some("Option") | Some("Result")) => {
+            args.iter().all(|a| s2_arg_ok(ncx, a))
         }
         _ => false,
     }
@@ -185,7 +185,12 @@ fn collect_qty_scale_paths(
         // is `?0` / Err is `?1`) — a segment the render's Option/Result arms mirror when they extend the
         // logical path. So a `(Option (Qty km))` result scales its payload; a nested
         // `(Tuple (Option (Qty km)) …)` composes (`0?0`).
-        Ty::Sum { name, args, .. } if name == "Option" || name == "Result" => {
+        Ty::Sum { decl, args }
+            if matches!(
+                db.type_decl_by_occ(*decl).map(|t| t.name.as_str()),
+                Some("Option") | Some("Result")
+            ) =>
+        {
             for (i, a) in args.iter().enumerate() {
                 let child = if path.is_empty() {
                     format!("?{i}")
@@ -352,7 +357,7 @@ fn fn_result_renderable(db: &mut Db, ty: &crate::ty::Ty) -> bool {
         // supply the inner closure over the boundary — which declines (the "closure-typed closure ARG on
         // the DIRECT-CALL path is declined" pin). The higher-order ROUND-TRIP cases work via the CONSUMER
         // path (`app` consumes `mk`), where `mk` is eta-peeled to a consumer — NOT this factory gate.
-        if !s2_arg_ok(p) {
+        if !s2_arg_ok(&db.name_ctx(), p) {
             return false;
         }
         cur = r.strip_nominal();
@@ -515,11 +520,15 @@ pub(super) const ENV_PARAM: &str = "__cdz_env";
 /// uniform `Rc<dyn EnvClosure<A,R>>` ABI (Option A) via [`types::async_closure_type`]; in SYNC mode (and for
 /// any closure-free type in either mode) it is the plain [`types::rust_type`]. Use at every SIGNATURE-emit
 /// site (def/lifted param + result) so a closure value (`Rc<dyn EnvClosure>` in async) fits its slot.
-pub(super) fn async_or_rust_type(ty: &crate::ty::Ty, mode: Mode) -> Option<String> {
+pub(super) fn async_or_rust_type(
+    ncx: &crate::ty::NameCtx,
+    ty: &crate::ty::Ty,
+    mode: Mode,
+) -> Option<String> {
     if mode.is_async() {
-        types::async_closure_type(ty)
+        types::async_closure_type(ncx, ty)
     } else {
-        types::rust_type(ty)
+        types::rust_type(ncx, ty)
     }
 }
 
@@ -922,6 +931,7 @@ fn emit_signature(
     // arg/result, or an export whose OWN result is compound (needs the S3 factory-style render the consumer
     // path doesn't do yet) still DECLINES — a clean `todo`, a later increment — rather than emit an
     // artifact the harness drives wrongly (a FALSE gate FAIL).
+    let sig_ncx = db.name_ctx();
     let closure_param_is_simple = |t: &crate::ty::Ty| -> bool {
         // Peel the arrow spine. Each closure ARG may be an S1 scalar OR an S2 compound the harness rebuilds
         // (`s2_arg_ok`: Tuple/List/Option/Result over OK elements) — the consumer applies `(g <arg>)` where
@@ -942,12 +952,12 @@ fn emit_signature(
             // consumer taking `g: (-> (-> Int64 Int64) Int64)` is admitted — the inner closure it applies
             // `g` to is built IN-GUEST (`(g (fn (y) …))`, already lowered), and the harness supplies `g`
             // from its higher-order producer sibling (`Rc::new(mk)`).
-            if !arg_ok_or_fn(p) {
+            if !arg_ok_or_fn(&sig_ncx, p) {
                 return false;
             }
             cur = r.strip_nominal();
         }
-        s2_arg_ok(cur)
+        s2_arg_ok(&sig_ncx, cur)
     };
     // A closure param needs a PRODUCING sibling export to supply its closure — either a FACTORY (an export
     // whose result is that closure type) or a PEELED producer (a nullary `(fn …)` eta-peeled to a direct
@@ -1111,7 +1121,7 @@ fn emit_signature(
         // In ASYNC mode a closure-typed param spells the uniform `Rc<dyn EnvClosure<A,R>>` ABI (a closure
         // value flowing in is `Rc<dyn EnvClosure>`, not `Rc<dyn Fn>`); `async_closure_type` == `rust_type`
         // for any closure-free type, so a scalar/compound param is byte-identical in both modes.
-        let rty = async_or_rust_type(ty, mode).ok_or_else(|| {
+        let rty = async_or_rust_type(&db.name_ctx(), ty, mode).ok_or_else(|| {
             Reject::decline(format!(
                 "`{name}`: parameter type {} has no native Rust representation",
                 ty.render_name(&db.name_ctx())
@@ -1140,7 +1150,7 @@ fn emit_signature(
     // which missed a both-diverge `if`/match (v-wasm-opt + breaker's Never-in-emit-position family).
     // Checked BEFORE the `rust_type` decline so a diverging `Any`/`Var` result is not misdiagnosed as an
     // unrepresentable type. A genuinely-unconstrained (non-diverging) result var still declines below.
-    let diverges = types::rust_type(result).is_none()
+    let diverges = types::rust_type(&db.name_ctx(), result).is_none()
         && crate::backend::common::diverge::body_diverges(db, body);
     // An ILL-FORMED integer width in the RESULT type is a REJECT (CDZ0302), not a decline — the twin of
     // the parameter check above, matching the wasm target (`(: 5 (Int -8))` → CDZ0302, not a codeless
@@ -1153,7 +1163,7 @@ fn emit_signature(
         "!".to_string()
     } else {
         // Async: a closure-typed RESULT (a factory export returning a closure) spells the `EnvClosure` ABI.
-        async_or_rust_type(result, mode).ok_or_else(|| {
+        async_or_rust_type(&db.name_ctx(), result, mode).ok_or_else(|| {
             Reject::decline(format!(
                 "`{name}`: result type {} has no native Rust representation",
                 result.render_name(&db.name_ctx())

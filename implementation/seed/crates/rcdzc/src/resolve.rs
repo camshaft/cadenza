@@ -5703,7 +5703,9 @@ fn decode_ty(db: &Db, node: StructId) -> Option<crate::ty::Ty> {
         // match (module A's `Foo` ≠ module B's `Foo`; `Option Int64` ≠ `Option Bool`).
         "Sum" => {
             let tail = db.ast.as_form(node, "Sum")?;
-            let name = db.ast.as_name(*tail.first()?)?.to_string();
+            // The NAME token is read (to validate the wire shape) but DISCARDED — the name is no longer
+            // carried on `Ty::Sum` (identity is `decl + args`; render recovers it from `decl`).
+            let _ = db.ast.as_name(*tail.first()?)?;
             let decl = match db.ast.get(*tail.get(1)?) {
                 Struct::Atom(l) => match db.ast.leaf(*l) {
                     Leaf::Int { value, .. } => {
@@ -5723,7 +5725,7 @@ fn decode_ty(db: &Db, node: StructId) -> Option<crate::ty::Ty> {
             // `eval::reduce_sum_ctor` (the generic ctor `(Box Int64)` type-application path). An erasable
             // newtype decl decodes to `Ty::Nominal { inner }` (its stored template with `args` substituted
             // for the param vars); a non-erasable decl stays a boxed `Ty::Sum`.
-            Some(db.normalize_sum(decl, name, args))
+            Some(db.normalize_sum(decl, args))
         }
         // A nominal type-value: `(Nominal <name> <decl> (args…) <inner>)` — the dual of `eval::encode_ty`'s
         // `Nominal` arm. Carries its own `decl + args` (identity) and encoded `inner` (machine-rep hint),
@@ -5731,7 +5733,8 @@ fn decode_ty(db: &Db, node: StructId) -> Option<crate::ty::Ty> {
         // e.g. through `reduce_ctor`).
         "Nominal" => {
             let tail = db.ast.as_form(node, "Nominal")?;
-            let name = db.ast.as_name(*tail.first()?)?.to_string();
+            // NAME read for wire-shape validation but DISCARDED (recovered from `decl` at render time).
+            let _ = db.ast.as_name(*tail.first()?)?;
             let decl = match db.ast.get(*tail.get(1)?) {
                 Struct::Atom(l) => match db.ast.leaf(*l) {
                     Leaf::Int { value, .. } => {
@@ -5749,7 +5752,6 @@ fn decode_ty(db: &Db, node: StructId) -> Option<crate::ty::Ty> {
             let inner = decode_ty(db, *tail.get(3)?)?;
             Some(Ty::Nominal {
                 decl: StructId(decl),
-                name,
                 args: args.into(),
                 inner: std::rc::Rc::new(inner),
             })

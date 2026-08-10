@@ -854,13 +854,12 @@ pub enum Ty {
     /// instantiated at (`type-system.md §Generics Are Type-Valued Parameters`). A MONOMORPHIC sum
     /// (`(type Sign Neg Zero Pos)` — no free type variable in any payload) has `args: []`. A GENERIC sum
     /// `(type Option (Some a) None)` at a concrete instantiation carries them: `Option Int64` is `Sum {
-    /// decl: <Option>, name: "Option", args: [Int64] }`. Two sums are the SAME type iff their `decl` AND
+    /// decl: <Option>, args: [Int64] }`. Two sums are the SAME type iff their `decl` AND
     /// their `args` agree, so `Option Int64 ≠ Option Bool` (same declaration, different instantiation) —
     /// the payload-type discrimination `type-system.md §the head Option agrees but the payload does not`
     /// requires. Args are positional, in the parameters' first-appearance order.
     Sum {
         decl: crate::ast::StructId,
-        name: String,
         // `Rc<[Ty]>` (an immutable shared slice), NOT `Vec<Ty>`: a sum's type-arguments are cloned on
         // every `Ty::clone` (which `type_of`/`unify`/`subst.apply` do constantly), and a GENERIC sum
         // NESTED in another (`(Option (Option … Int64))`) held its inner sum in `args`, so a `Vec<Ty>`
@@ -888,7 +887,8 @@ pub enum Ty {
     /// with the bare `Int64` it wraps (a different `Ty` variant ⇒ mismatch, §Nominal Types Are Not
     /// Comparable Across Their Boundary); two same-shape declarations `(type A (Mk Int64))` / `(type B
     /// (Mk Int64))` are DISTINCT (distinct `decl`s); and a generic `Box Int64 != Box Bool` (same `decl`,
-    /// different `args`). `name` is the declared LOCAL name, carried for rendering only.
+    /// different `args`). The declared LOCAL name is recovered from `decl` at render time (via
+    /// `NameCtx`/`db.type_decl_by_occ`), no longer carried on the type — it was redundant render-only state.
     ///
     /// `inner` is the erased UNDERLYING type — the machine representation `valtype_of`/`box_op_ty`/field
     /// access read THROUGH (it takes `&Ty`, cannot reach `Db`). It is DERIVED from `decl + args`
@@ -906,7 +906,6 @@ pub enum Ty {
     //# Two nominal types MUST be distinct whenever their fully-qualified names differ, even when their underlying structures and their declared local names are identical, so that a module cannot forge a value of another module's nominal type by re-declaring a same-shape same-name type.
     Nominal {
         decl: crate::ast::StructId,
-        name: String,
         // `Rc<[Ty]>` (not `Vec<Ty>`), the sibling of `Ty::Sum::args` — a nominal's type-arguments are
         // cloned on every `Ty::clone` and a nested generic nominal held its child in `args`, so a
         // `Vec<Ty>` clone deep-copied the nesting per level; `Rc<[Ty]>` shares it (a refcount bump).
@@ -1257,14 +1256,9 @@ impl Ty {
                 }
                 _ => self.clone(),
             },
-            Ty::Sum {
-                decl,
-                name,
-                args: aa,
-            } => match concrete {
+            Ty::Sum { decl, args: aa } => match concrete {
                 Ty::Sum { args: ab, .. } if self.agrees_with(concrete) => Ty::Sum {
                     decl: *decl,
-                    name: name.clone(),
                     args: aa
                         .iter()
                         .zip(ab.iter())
@@ -1659,18 +1653,12 @@ impl Ty {
             // "projecting a tuple element of type ?0 needs the value heap". Joining the args makes the
             // conditional's type ORDER-INDEPENDENT: the payload-carrying branch fixes the parameter in
             // either position. (`agrees_with` guarantees same `decl` + arg arity.)
-            (
+            (Ty::Sum { decl, args: aa }, Ty::Sum { args: ab, .. }) if self.agrees_with(other) => {
                 Ty::Sum {
-                    decl,
-                    name,
-                    args: aa,
-                },
-                Ty::Sum { args: ab, .. },
-            ) if self.agrees_with(other) => Ty::Sum {
-                decl: *decl,
-                name: name.clone(),
-                args: aa.iter().zip(ab.iter()).map(|(x, y)| x.join(y)).collect(),
-            },
+                    decl: *decl,
+                    args: aa.iter().zip(ab.iter()).map(|(x, y)| x.join(y)).collect(),
+                }
+            }
             // Two agreeing lists join their element type — a deferred element (`List ?0`, the empty list)
             // is fixed by the other branch's `List Int64`, the list analogue of the sum-arg join above.
             (Ty::List(a), Ty::List(b)) if self.agrees_with(other) => Ty::List(Box::new(a.join(b))),
@@ -1704,14 +1692,12 @@ impl Ty {
             (
                 Ty::Nominal {
                     decl,
-                    name,
                     args: aa,
                     inner,
                 },
                 Ty::Nominal { args: ab, .. },
             ) if self.agrees_with(other) => Ty::Nominal {
                 decl: *decl,
-                name: name.clone(),
                 args: aa.iter().zip(ab.iter()).map(|(x, y)| x.join(y)).collect(),
                 inner: inner.clone(),
             },
@@ -1724,11 +1710,6 @@ impl Ty {
     /// such name. An integer's name is composed from its signedness and its GROUND width — a deferred
     /// width renders as its default — so an observed value's type is always concrete (`Int64`,
     /// `UInt32`, …). A language-level fact, target-neutral.
-    // `ncx` is threaded through the recursion but not yet CONSULTED this increment (the Sum/Nominal arms
-    // still read the redundant `name` field); the follow-up increment flips those reads onto
-    // `ncx.name_of(decl)` and drops the field. Until then `only_used_in_recursion` is a false positive —
-    // the param is intentionally present ahead of its use so this step stays a green no-op.
-    #[allow(clippy::only_used_in_recursion)]
     pub fn render_name(&self, ncx: &NameCtx) -> String {
         match self {
             Ty::Int(it) => {
@@ -1792,9 +1773,13 @@ impl Ty {
             // sum (`args: []`) is the bare name (`(: (Neg unit) Sign)`); a generic sum is `(Name arg…)`
             // — `(: (Some 5) (Option Int64))` (`type-system.md §158`; the corpus form). The variant set
             // is not part of the rendered type (a match reads it from `db.type_decls`).
-            Ty::Sum { name, args, .. } => {
+            Ty::Sum { decl, args, .. } => {
+                // The declared name is recovered from `decl` via the render-context (no longer carried on
+                // the type — identity is `decl + args`). A synthesized/unresolved `decl` with no declared
+                // name falls back to `<sum>` (never panics; a render is always a definite string).
+                let name = ncx.name_of(*decl).unwrap_or("<sum>");
                 if args.is_empty() {
-                    name.clone()
+                    name.to_string()
                 } else {
                     let mut s = format!("({name}");
                     for a in args.iter() {
@@ -1807,9 +1792,9 @@ impl Ty {
             }
             // A nominal renders as its declared NAME (`(: (Mk 42) UserId)`) — its identity is the name,
             // not its underlying shape (`type-system.md §A Nominal Type's Identity Is Its
-            // Fully-Qualified Name`). The underlying type is not part of the rendered annotation, just
-            // as a sum's variant set is not.
-            Ty::Nominal { name, .. } => name.clone(),
+            // Fully-Qualified Name`). Recovered from `decl` via the render-context (no longer carried on
+            // the type); a nameless synth decl falls back to `<nominal>`.
+            Ty::Nominal { decl, .. } => ncx.name_of(*decl).unwrap_or("<nominal>").to_string(),
             Ty::Fn(p, r) => format!("(-> {} {})", p.render_name(ncx), r.render_name(ncx)),
             // A reified continuation renders as `(Cont resume answer)` — the type a stored/escaping `k`
             // would be named. Compile-time-only until the step-3 heap rep lands; a name for diagnostics.
@@ -1884,9 +1869,10 @@ impl Ty {
                 v.render_named_vars(names, ncx)
             ),
             Ty::Set(elem) => format!("(Set {})", elem.render_named_vars(names, ncx)),
-            Ty::Sum { name, args, .. } => {
+            Ty::Sum { decl, args, .. } => {
+                let name = ncx.name_of(*decl).unwrap_or("<sum>");
                 if args.is_empty() {
-                    name.clone()
+                    name.to_string()
                 } else {
                     let mut s = format!("({name}");
                     for a in args.iter() {

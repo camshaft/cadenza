@@ -3958,17 +3958,11 @@ impl Db {
     /// has a stored inner TEMPLATE (params as `Ty::Var(i)`); substitute `args` positionally to get the
     /// inner at this instantiation and return `Ty::Nominal`. A non-erasable decl returns the boxed
     /// `Ty::Sum`. Pure over `&self` (a map lookup + a structural substitution) — no reduction.
-    pub(crate) fn normalize_sum(
-        &self,
-        decl: StructId,
-        name: String,
-        args: Vec<crate::ty::Ty>,
-    ) -> crate::ty::Ty {
+    pub(crate) fn normalize_sum(&self, decl: StructId, args: Vec<crate::ty::Ty>) -> crate::ty::Ty {
         if let Some(template) = self.newtype_inner.get(&decl) {
             let inner = subst_template_vars(template, &args);
             return crate::ty::Ty::Nominal {
                 decl,
-                name,
                 // `args` is the nominal's IDENTITY axis (like `Ty::Sum::args`) — `Box Int64` vs `Box
                 // Bool` differ here. `inner` is the derived machine-rep hint (the template with `args`
                 // substituted); it is never compared, so a recursive nominal's divergent inner is
@@ -3979,7 +3973,6 @@ impl Db {
         }
         crate::ty::Ty::Sum {
             decl,
-            name,
             args: args.into(),
         }
     }
@@ -6251,33 +6244,25 @@ fn normalize_embedded_sums(db: &Db, t: &crate::ty::Ty) -> crate::ty::Ty {
         // A keyed newtype reference (as a raw `Sum` baked by the load-order, or an already-erased
         // `Nominal`) → its canonical `normalize_sum` form, with its args normalized first. `normalize_sum`
         // re-derives `inner` from the decl's own (separately-rewritten) stored template; we do not walk it.
-        Ty::Sum { decl, name, args }
-        | Ty::Nominal {
-            decl, name, args, ..
-        } if db.newtype_inner.contains_key(decl) => {
+        Ty::Sum { decl, args } | Ty::Nominal { decl, args, .. }
+            if db.newtype_inner.contains_key(decl) =>
+        {
             let new_args: Vec<Ty> = args
                 .iter()
                 .map(|a| normalize_embedded_sums(db, a))
                 .collect();
-            db.normalize_sum(*decl, name.clone(), new_args)
+            db.normalize_sum(*decl, new_args)
         }
         // A non-newtype sum stays boxed; normalize its args (a generic sum's payload template).
-        Ty::Sum { decl, name, args } => Ty::Sum {
+        Ty::Sum { decl, args } => Ty::Sum {
             decl: *decl,
-            name: name.clone(),
             args: args
                 .iter()
                 .map(|a| normalize_embedded_sums(db, a))
                 .collect(),
         },
-        Ty::Nominal {
-            decl,
-            name,
-            args,
-            inner,
-        } => Ty::Nominal {
+        Ty::Nominal { decl, args, inner } => Ty::Nominal {
             decl: *decl,
-            name: name.clone(),
             args: args
                 .iter()
                 .map(|a| normalize_embedded_sums(db, a))
@@ -6512,7 +6497,11 @@ mod tests {
     ) {
         use crate::ty::Ty;
         match t {
-            Ty::Sum { decl, name, args } => {
+            Ty::Sum { decl, args } => {
+                let name = db
+                    .type_decl_by_occ(*decl)
+                    .map(|d| d.name.as_str())
+                    .unwrap_or("<sum>");
                 assert!(
                     !db.newtype_inner.contains_key(decl),
                     "a raw Ty::Sum naming the KEYED newtype `{name}` survives in {ctx} — 9939 residual"

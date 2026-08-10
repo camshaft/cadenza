@@ -24118,12 +24118,10 @@ mod match_engine {
         use crate::ty::Ty;
         let inner = Ty::Sum {
             decl: crate::ast::StructId(7),
-            name: "Option".to_string(),
             args: std::rc::Rc::from([Ty::int64()]),
         };
         let outer = Ty::Sum {
             decl: crate::ast::StructId(7),
-            name: "Option".to_string(),
             args: std::rc::Rc::from([inner]),
         };
         let cloned = outer.clone();
@@ -70632,8 +70630,9 @@ mod stage1 {
         let occ = db.type_decl_by_name("Option").expect("Option bound");
         let ty = typeval_of(&mut db, occ).expect("Option is a type");
         match ty {
-            Ty::Sum { name, decl, args } => {
-                assert_eq!(name, "Option");
+            Ty::Sum { decl, args } => {
+                // The declared name is recovered from `decl` via the render context (no longer on the type).
+                assert_eq!(db.name_ctx().name_of(decl), Some("Option"));
                 assert!(
                     args.is_empty(),
                     "a bare monomorphic-shaped sum has no type args"
@@ -72942,12 +72941,10 @@ mod stage1 {
         // path in the run tests below. Here we assert the SCAN + the type identity via encode/decode.)
         let opt_int = Ty::Sum {
             decl: decl.occ,
-            name: "Option".to_string(),
             args: std::rc::Rc::from([Ty::int64()]),
         };
         let opt_bool = Ty::Sum {
             decl: decl.occ,
-            name: "Option".to_string(),
             args: std::rc::Rc::from([Ty::Bool]),
         };
         assert!(
@@ -73030,8 +73027,8 @@ mod stage1 {
             .and_then(|d| d.body)
             .expect("i");
         match type_of(&mut db, i_body) {
-            Ty::Sum { name, args, .. } => {
-                assert_eq!(name, "Option");
+            Ty::Sum { decl, args } => {
+                assert_eq!(db.name_ctx().name_of(decl), Some("Option"));
                 assert_eq!(args.len(), 1);
                 assert_eq!(
                     args[0].render_name(&db.name_ctx()),
@@ -73212,8 +73209,12 @@ mod stage1 {
             .and_then(|d| d.body)
             .expect("s");
         match type_of(&mut db, s_body) {
-            Ty::Sum { name, args, .. } => {
-                assert_eq!(name, "Option", "bare Some builds the prelude Option");
+            Ty::Sum { decl, args } => {
+                assert_eq!(
+                    db.name_ctx().name_of(decl),
+                    Some("Option"),
+                    "bare Some builds the prelude Option"
+                );
                 assert_eq!(
                     args[0].render_name(&db.name_ctx()),
                     "Int64",
@@ -92576,7 +92577,6 @@ mod cross_component_oracle {
                 "Sum",
                 Ty::Sum {
                     decl: crate::ast::StructId(0),
-                    name: "Option".to_string(),
                     args: std::rc::Rc::from([Ty::int64()]),
                 },
             ),
@@ -92592,7 +92592,6 @@ mod cross_component_oracle {
                 "Nominal<List>",
                 Ty::Nominal {
                     decl: crate::ast::StructId(0),
-                    name: "MyList".to_string(),
                     args: std::rc::Rc::from([]),
                     inner: std::rc::Rc::new(Ty::List(Box::new(Ty::int64()))),
                 },

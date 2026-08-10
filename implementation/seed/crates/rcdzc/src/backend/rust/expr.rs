@@ -232,12 +232,12 @@ fn key_ty_has_wrappable_float(ty: &Ty) -> bool {
 /// inner-payload decision + the read-side unwrap gates. Mirrors `ord_key_type`'s wrapping so the value and
 /// type agree. (Bare Option key, or Option nested — this walks the same Float/Tuple/Record/Option shapes the
 /// wrap descends; a plain Int/String/etc. needs no wrap.)
-fn key_ty_needs_ord_wrap(ty: &Ty) -> bool {
+fn key_ty_needs_ord_wrap(ncx: &crate::ty::NameCtx, ty: &Ty) -> bool {
     match ty.strip_nominal() {
         Ty::Float(_) => true,
-        s if types::is_flip_order_option_key_shallow(s) => true,
-        Ty::Tuple(elems) => elems.iter().any(key_ty_needs_ord_wrap),
-        Ty::Record(fields) => fields.values().any(key_ty_needs_ord_wrap),
+        s if types::is_flip_order_option_key_shallow(ncx, s) => true,
+        Ty::Tuple(elems) => elems.iter().any(|e| key_ty_needs_ord_wrap(ncx, e)),
+        Ty::Record(fields) => fields.values().any(|t| key_ty_needs_ord_wrap(ncx, t)),
         _ => false,
     }
 }
@@ -282,7 +282,7 @@ fn key_ty_has_wrappable_float_deep(ty: &Ty) -> bool {
     }
 }
 
-fn wrap_ord_key(expr: String, key_ty: &Ty) -> String {
+fn wrap_ord_key(ncx: &crate::ty::NameCtx, expr: String, key_ty: &Ty) -> String {
     match key_ty {
         Ty::Float(ft) if ft.ground_width() == 32 => format!("__CdzF32::new({expr})"),
         Ty::Float(_) => format!("__CdzF64::new({expr})"),
@@ -298,7 +298,7 @@ fn wrap_ord_key(expr: String, key_ty: &Ty) -> String {
             let parts: Vec<String> = elems
                 .iter()
                 .enumerate()
-                .map(|(i, e)| wrap_ord_key(format!("__k.{i}"), e))
+                .map(|(i, e)| wrap_ord_key(ncx, format!("__k.{i}"), e))
                 .collect();
             let rebuilt = if parts.len() == 1 {
                 format!("({},)", parts[0])
@@ -317,7 +317,7 @@ fn wrap_ord_key(expr: String, key_ty: &Ty) -> String {
             let parts: Vec<String> = fields
                 .values()
                 .enumerate()
-                .map(|(i, t)| wrap_ord_key(format!("__k.{i}"), t))
+                .map(|(i, t)| wrap_ord_key(ncx, format!("__k.{i}"), t))
                 .collect();
             let rebuilt = if parts.len() == 1 {
                 format!("({},)", parts[0])
@@ -332,11 +332,11 @@ fn wrap_ord_key(expr: String, key_ty: &Ty) -> String {
         // payload wraps to `__CdzF64`): `.map(|__ov| <wrapped __ov>)`. A payload needing NO wrap (the common
         // `Option Int64`/`Option String`) passes the `Option` through unmapped (`__CdzOpt::new(<opt>)`). The
         // wrapped TYPE `types::ord_key_type` spells (`__CdzOpt<inner_ord_key>`) agrees with this value.
-        Ty::Sum { args, .. } if types::is_flip_order_option_key_shallow(key_ty) => {
+        Ty::Sum { args, .. } if types::is_flip_order_option_key_shallow(ncx, key_ty) => {
             let inner = &args[0];
-            if key_ty_needs_ord_wrap(inner) {
+            if key_ty_needs_ord_wrap(ncx, inner) {
                 // The payload itself wraps — map the inner Option value: `Some(p)` → `Some(<wrap p>)`.
-                let wrapped_inner = wrap_ord_key("__ov".to_string(), inner);
+                let wrapped_inner = wrap_ord_key(ncx, "__ov".to_string(), inner);
                 format!("__CdzOpt::new(({expr}).map(|__ov| {wrapped_inner}))")
             } else {
                 format!("__CdzOpt::new({expr})")
@@ -394,7 +394,7 @@ pub(super) fn emit_closure_struct(
     let mut field_clones = Vec::with_capacity(lam.captures.len());
     for (j, &cap_binder) in lam.captures.iter().enumerate() {
         let cty = type_of(db, cap_binder);
-        let rty = types::async_closure_type(&cty).ok_or_else(|| {
+        let rty = types::async_closure_type(&db.name_ctx(), &cty).ok_or_else(|| {
             Reject::decline(format!(
                 "async closure capture {j} type {} has no native Rust representation",
                 cty.render_name(&db.name_ctx())
@@ -425,9 +425,10 @@ pub(super) fn emit_closure_struct(
     fwd.extend(field_clones);
     fwd.extend((0..arity).map(|i| format!("__a{i}")));
     // `A`/`R` for the `impl EnvClosure<A,R>` header — the SAME spelling the value cast + type positions use.
-    let (a_ty, r_ty) = types::env_closure_args(&lam.params, &lam.ret_ty).ok_or_else(|| {
-        Reject::decline("an async closure's arg/result type has no native Rust representation")
-    })?;
+    let (a_ty, r_ty) = types::env_closure_args(&db.name_ctx(), &lam.params, &lam.ret_ty)
+        .ok_or_else(|| {
+            Reject::decline("an async closure's arg/result type has no native Rust representation")
+        })?;
     // `#[derive(Clone)]`: a closure value is `Rc<dyn EnvClosure>` (shared via Rc clone), but a captured
     // closure-in-closure or a clone-on-read of the struct itself needs Clone; deriving it is harmless (all
     // fields are Clone — they are captured values, each `needs_clone_on_read`-safe).
@@ -496,7 +497,7 @@ pub(super) fn emit_lifted_lambda(
         let cty = type_of(db, cap_binder);
         // Async: a captured CLOSURE spells the `EnvClosure` ABI (a captured closure value is `Rc<dyn
         // EnvClosure>`); `async_closure_type` == `rust_type` for a closure-free capture.
-        let rty = super::async_or_rust_type(&cty, mode).ok_or_else(|| {
+        let rty = super::async_or_rust_type(&db.name_ctx(), &cty, mode).ok_or_else(|| {
             Reject::decline(format!(
                 "lifted lambda capture {j} type {} has no native Rust representation",
                 cty.render_name(&db.name_ctx())
@@ -513,7 +514,7 @@ pub(super) fn emit_lifted_lambda(
     // Then the lambda's own PARAMETERS, in order.
     for (i, (binder, ty)) in lam.params.iter().enumerate() {
         // Async: a closure-typed param (a higher-order lifted lambda) spells the `EnvClosure` ABI.
-        let rty = super::async_or_rust_type(ty, mode).ok_or_else(|| {
+        let rty = super::async_or_rust_type(&db.name_ctx(), ty, mode).ok_or_else(|| {
             Reject::decline(format!(
                 "lifted lambda parameter {i} type {} has no native Rust representation",
                 ty.render_name(&db.name_ctx())
@@ -528,7 +529,7 @@ pub(super) fn emit_lifted_lambda(
         first = false;
     }
     // Async: a closure-typed RESULT (a lifted lambda returning a closure) spells the `EnvClosure` ABI.
-    let ret = super::async_or_rust_type(&lam.ret_ty, mode).ok_or_else(|| {
+    let ret = super::async_or_rust_type(&db.name_ctx(), &lam.ret_ty, mode).ok_or_else(|| {
         Reject::decline(format!(
             "lifted lambda result type {} has no native Rust representation",
             lam.ret_ty.render_name(&db.name_ctx())
@@ -835,11 +836,12 @@ fn sig_types(db: &mut Db, def: usize) -> Option<Vec<String>> {
     let body = db.defs[def].body?;
     let mut sig = Vec::new();
     for (_, ty) in &params {
-        sig.push(types::rust_type(ty)?);
+        sig.push(types::rust_type(&db.name_ctx(), ty)?);
     }
     // A sentinel separates params from result so `(u8)->u16` ≠ `(u8,u16)->()` etc.
     sig.push("->".to_string());
-    sig.push(types::rust_type(&type_of(db, body))?);
+    let bty = type_of(db, body);
+    sig.push(types::rust_type(&db.name_ctx(), &bty)?);
     Some(sig)
 }
 
@@ -965,7 +967,7 @@ fn emit_elem_grounding_empty_list(
         // LOUDLY at rustc (E0308), never a silent miscompile — the same contract `ground_open_vars` carries
         // for empty `Map`/`Set`. (wasm's list handle needs no spelled element type, so it ran regardless —
         // NOT proof the type was solved.)
-        if let Some(rust_elem) = types::rust_type(&types::ground_open_vars(elem)) {
+        if let Some(rust_elem) = types::rust_type(&db.name_ctx(), &types::ground_open_vars(elem)) {
             return Ok(format!("Vec::<{rust_elem}>::new()"));
         }
     }
@@ -1006,7 +1008,7 @@ fn emit_grounded(
     ctx: &Ctx,
 ) -> Result<String, Reject> {
     if let Core::ConstInt(v) = core_of(db, id) {
-        return emit_const_int_at(it, &v);
+        return emit_const_int_at(&db.name_ctx(), it, &v);
     }
     let rendered = emit(db, id, env, ctx)?;
     // WIDTH NORMALIZATION for a CONTROL-FLOW / non-literal operand. A bare literal is grounded above; but
@@ -1024,7 +1026,7 @@ fn emit_grounded(
     // redundant `as`); a non-integer operand emits unchanged.
     if let Ty::Int(op_it) = type_of(db, id)
         && (op_it.ground_signed(), op_it.ground_width()) != (it.ground_signed(), it.ground_width())
-        && let Some(target) = types::rust_type(&Ty::Int(it))
+        && let Some(target) = types::rust_type(&db.name_ctx(), &Ty::Int(it))
     {
         // Parenthesize the rendered operand before the `as` so the cast binds to the WHOLE expression
         // regardless of its shape (an `if`/`match`/block would otherwise let `as` bind only to the last
@@ -1264,7 +1266,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             // type keeps the bare `if` (a monomorphic sum / scalar / collection branch is never ambiguous).
             if let ty @ Ty::Sum { args, .. } = type_of(db, id).strip_nominal()
                 && !args.is_empty()
-                && let Some(rty) = types::rust_type(ty)
+                && let Some(rty) = types::rust_type(&db.name_ctx(), ty)
             {
                 Ok(format!("{{ let __if: {rty} = {bare}; __if }}"))
             } else {
@@ -1461,7 +1463,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         Core::Convert { op, operand } => match op {
             Prim::Wrap => {
                 let dst = int_ty_of(db, id);
-                let rty = types::rust_type(&Ty::Int(dst)).ok_or_else(|| {
+                let rty = types::rust_type(&db.name_ctx(), &Ty::Int(dst)).ok_or_else(|| {
                     Reject::decline("wrap target width has no native Rust representation")
                 })?;
                 let operand_s = emit(db, operand, env, ctx)?;
@@ -1501,7 +1503,8 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             // A runtime int→float conversion `Float N.of-int` → an `as f64`/`as f32` cast (total,
             // round-to-nearest, matches the wasm `convert_i64_s`). The target width is the node's type.
             Prim::FloatOfInt => {
-                let rty = types::rust_type(&type_of(db, id)).ok_or_else(|| {
+                let idty = type_of(db, id);
+                let rty = types::rust_type(&db.name_ctx(), &idty).ok_or_else(|| {
                     Reject::decline("of-int target has no native Rust representation")
                 })?;
                 let operand_s = emit(db, operand, env, ctx)?;
@@ -1511,7 +1514,8 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             // between floats demotes with rounding (f64→f32) / promotes exactly (f32→f64) / is the
             // identity (same width) — matching the wasm demote/promote. Target width is the node's type.
             Prim::FloatOf => {
-                let rty = types::rust_type(&type_of(db, id)).ok_or_else(|| {
+                let idty = type_of(db, id);
+                let rty = types::rust_type(&db.name_ctx(), &idty).ok_or_else(|| {
                     Reject::decline("of target has no native Rust representation")
                 })?;
                 let operand_s = emit(db, operand, env, ctx)?;
@@ -1720,7 +1724,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             // the `Rc<dyn EnvClosure>` closures pushed in (E0308). Byte-identical for a closure-free element.
             if elems.is_empty()
                 && let Ty::List(elem) = type_of(db, id).strip_nominal()
-                && let Some(rust_elem) = super::async_or_rust_type(elem, ctx.mode)
+                && let Some(rust_elem) = super::async_or_rust_type(&db.name_ctx(), elem, ctx.mode)
             {
                 return Ok(format!("Vec::<{rust_elem}>::new()"));
             }
@@ -1734,7 +1738,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             if elems.is_empty()
                 && let Some(exp) = ctx.expected_ty.as_ref()
                 && let Ty::List(elem) = exp.strip_nominal()
-                && let Some(rust_elem) = super::async_or_rust_type(elem, ctx.mode)
+                && let Some(rust_elem) = super::async_or_rust_type(&db.name_ctx(), elem, ctx.mode)
             {
                 return Ok(format!("Vec::<{rust_elem}>::new()"));
             }
@@ -1899,7 +1903,8 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                     Some(it) => emit_grounded(db, *k, it, env, ctx)?,
                     None => emit(db, *k, env, ctx)?,
                 };
-                let ke = wrap_ord_key(ke, &type_of(db, *k));
+                let kt = type_of(db, *k);
+                let ke = wrap_ord_key(&db.name_ctx(), ke, &kt);
                 let ve = match val_it {
                     Some(it) => emit_grounded(db, *v, it, env, ctx)?,
                     None => emit(db, *v, env, ctx)?,
@@ -1923,8 +1928,9 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             // annotation must use `async_closure_type` (via `async_or_rust_type`) — else a
             // `BTreeMap<K, Rc<dyn Fn>>` annotation mismatches the `Rc<dyn EnvClosure>` values inserted (a
             // closure-as-map-value case: E0308). A closure-free map annotation is byte-identical to `rust_type`.
+            let ncx = db.name_ctx();
             let map_type_str =
-                |t: &Ty| -> Option<String> { super::async_or_rust_type(t, ctx.mode) };
+                |t: &Ty| -> Option<String> { super::async_or_rust_type(&ncx, t, ctx.mode) };
             let ann = if ctx.map_typed_by_enclosing_insert {
                 // The enclosing `.insert`/`.remove` will fix K/V — a bare `new()` infers, and an annotation
                 // would OVER-CONSTRAIN (grounding an open var here clashes with a Rational/String/Bytes key
@@ -1954,7 +1960,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 // value (`List Any` → wrongly `Vec<i64>` → E0308 at `.push(vec![..])`) — the miscompile-CLASS
                 // this fixes. Sound: a get-only empty-map lookup always MISSES (the `Some` arm is dead), and a
                 // concrete call-arg value is exact — a wrong OUTER shape errors LOUD at rustc, never silent.
-                match map_type_str(exp).or_else(|| types::rust_type_holes(exp)) {
+                match map_type_str(exp).or_else(|| types::rust_type_holes(&ncx, exp)) {
                     Some(t) => format!(": {t}"),
                     None => String::new(),
                 }
@@ -2013,7 +2019,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 Some(it) => emit_grounded(db, key, it, env, ctx)?,
                 None => emit(db, key, env, ctx)?,
             };
-            let k = wrap_ord_key(k, &kt);
+            let k = wrap_ord_key(&db.name_ctx(), k, &kt);
             let v = match val_it {
                 Some(it) => emit_grounded(db, val, it, env, ctx)?,
                 None => emit(db, val, env, ctx)?,
@@ -2050,7 +2056,12 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             // over by a wrong annotation. This is a MISCOMPILE fix, so a fail-loud floor is the safe default
             // (github-liaison/Copilot #2456: the `_ => Ty::Var(0)` fallback could mask a real bug).
             let val_ty = match type_of(db, id).strip_nominal() {
-                Ty::Sum { name, args, .. } if name == "Option" && args.len() == 1 => {
+                Ty::Sum { decl, args, .. }
+                    if args.len() == 1
+                        && db
+                            .type_decl_by_occ(*decl)
+                            .is_some_and(|d| d.name == "Option") =>
+                {
                     Some(args[0].clone())
                 }
                 _ => None,
@@ -2103,7 +2114,8 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             let k = emit(db, key, env, ctx)?;
             // Wrap a bare-float lookup key in `CdzF64::new` to match the map's `CdzF64` key type (and
             // NaN-canonicalize — a differently-produced NaN finds the stored entry, the corpus case).
-            let k = wrap_ord_key(k, &type_of(db, key));
+            let kt = type_of(db, key);
+            let k = wrap_ord_key(&db.name_ctx(), k, &kt);
             Ok(format!("({m}).get(&({k})).cloned()"))
         }
         // `Map.remove` → drop the key, returning the new map (removing an absent key is total, `remove`
@@ -2115,7 +2127,8 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             map_ctx.map_typed_by_enclosing_insert = true;
             let m = emit(db, map, env, &map_ctx)?;
             let k = emit(db, key, env, ctx)?;
-            let k = wrap_ord_key(k, &type_of(db, key));
+            let kt = type_of(db, key);
+            let k = wrap_ord_key(&db.name_ctx(), k, &kt);
             Ok(format!("{{ let mut __m = {m}; __m.remove(&({k})); __m }}"))
         }
         // `Map.len` (the node is `MapSize`) → the distinct-key count as `Int64`.
@@ -2144,13 +2157,14 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             let m = emit(db, map, env, ctx)?;
             // A float-KEYED map iterates `CdzF64` keys; the `List (Tuple Float64 V)` key element is a bare
             // `f64`, so UNWRAP the key via `.get()`. The value is unaffected (a float VALUE stays `f64`).
+            let map_ty = type_of(db, map);
             let key_is_float = matches!(
-                type_of(db, map),
+                map_ty,
                 Ty::Map(ref k, _) if matches!(**k, Ty::Float(_))
             );
             let key_is_opt = matches!(
-                type_of(db, map),
-                Ty::Map(ref k, _) if types::is_flip_order_option_key_shallow(k)
+                map_ty,
+                Ty::Map(ref k, _) if types::is_flip_order_option_key_shallow(&db.name_ctx(), k)
             );
             if key_is_float {
                 Ok(format!(
@@ -2211,7 +2225,8 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                     None => emit(db, *e, env, ctx)?,
                 };
                 // Wrap a bare-float element in `CdzF64::new` (the set's element type is `CdzF64`).
-                let ee = wrap_ord_key(ee, &type_of(db, *e));
+                let et = type_of(db, *e);
+                let ee = wrap_ord_key(&db.name_ctx(), ee, &et);
                 lines.push_str(&format!("__s.insert({ee}); "));
             }
             // ANNOTATE `__s` with the node's solved `BTreeSet<T>` type. When it maps concretely, spell it
@@ -2224,8 +2239,9 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             // E0282. A wrong ground → a LOUD rustc error at `new()` (a build failure graded todo), never a
             // silent miscompile — strictly safer than the bare `new()`. The exact twin of the empty-Map fix.
             let set_ty = type_of(db, id);
+            let ncx = db.name_ctx();
             let ann = if ctx.set_typed_by_enclosing_insert {
-                match types::rust_type(&set_ty) {
+                match types::rust_type(&ncx, &set_ty) {
                     Some(t) => format!(": {t}"),
                     None => String::new(),
                 }
@@ -2237,12 +2253,12 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 // The node's element is unsolved here (an empty `Set.of (list)` at a CALL-ARG position),
                 // but the consuming context (the callee's param type) FIXES it — annotate from the expected
                 // `Set` type, not the default `i64` ground (which would clash with the param → E0308).
-                match types::rust_type(exp) {
+                match types::rust_type(&ncx, exp) {
                     Some(t) => format!(": {t}"),
                     None => String::new(),
                 }
             } else {
-                match types::rust_type(&types::ground_open_vars(&set_ty)) {
+                match types::rust_type(&ncx, &types::ground_open_vars(&set_ty)) {
                     Some(t) => format!(": {t}"),
                     None => String::new(),
                 }
@@ -2257,7 +2273,8 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             let e = emit(db, elem, env, ctx)?;
             // Wrap a bare-float probe in `CdzF64::new` so it matches the set's `CdzF64` element type (and
             // NaN-canonicalizes — a NaN probe finds a stored NaN, the corpus's nan-membership case).
-            let e = wrap_ord_key(e, &type_of(db, elem));
+            let et = type_of(db, elem);
+            let e = wrap_ord_key(&db.name_ctx(), e, &et);
             Ok(format!("({s}).contains(&({e}))"))
         }
         // `Set.insert`/`Set.remove` → the new set (persistent → consume into a `mut` local; insert of a
@@ -2280,7 +2297,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             set_ctx.set_typed_by_enclosing_insert = true;
             let s = emit(db, set, env, &set_ctx)?;
             let e = emit(db, elem, env, ctx)?;
-            let e = wrap_ord_key(e, &et);
+            let e = wrap_ord_key(&db.name_ctx(), e, &et);
             Ok(format!("{{ let mut __s = {s}; __s.insert({e}); __s }}"))
         }
         Core::SetRemove { set, elem, .. } => {
@@ -2291,7 +2308,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             set_ctx.set_typed_by_enclosing_insert = true;
             let s = emit(db, set, env, &set_ctx)?;
             let e = emit(db, elem, env, ctx)?;
-            let e = wrap_ord_key(e, &et);
+            let e = wrap_ord_key(&db.name_ctx(), e, &et);
             Ok(format!("{{ let mut __s = {s}; __s.remove(&({e})); __s }}"))
         }
         // `Set.len` → the cardinality (deduped) as `Int64`.
@@ -2331,7 +2348,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             // rebuild the tuple element-wise on read, as the float tuple does — deferred to keep this bounded).
             let elem_is_opt = elem_ty
                 .as_ref()
-                .map(types::is_flip_order_option_key_shallow)
+                .map(|t| types::is_flip_order_option_key_shallow(&db.name_ctx(), t))
                 .unwrap_or(false);
             if elem_is_float {
                 // `__CdzF` is Copy → `__f.get()` reads the f64 (byte-identical to before).
@@ -2593,7 +2610,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 // node's solved type args (`Option::<(Vec<Term>, Term)>::None`) so the type is explicit.
                 // A MONOMORPHIC sum (no args) keeps the bare path. This is the nullary-generic-variant twin
                 // of the empty-collection annotation — a construct with no operand to carry its element type.
-                0 => Ok(nullary_variant_path(&ty, disc, &path)),
+                0 => Ok(nullary_variant_path(&db.name_ctx(), &ty, disc, &path)),
                 // A one-payload variant carries its payload directly (`Some(x)`), boxed if recursive.
                 1 => Ok(format!("{path}({})", wrap(args[0].clone()))),
                 // A MULTI-payload variant carries ONE TUPLE (matching the enum decl's `V((T0, T1))` and the
@@ -2767,7 +2784,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             // `env_closure_args` (the SAME spelling `async_closure_type(Ty::Fn)` produces at a type position,
             // so this value fits a param/result/field slot spelled by `async_closure_type`).
             if ctx.mode.is_async() {
-                let (a_ty, r_ty) = types::env_closure_args(&lam.params, &lam.ret_ty).ok_or_else(|| {
+                let (a_ty, r_ty) = types::env_closure_args(&db.name_ctx(), &lam.params, &lam.ret_ty).ok_or_else(|| {
                     Reject::decline(
                         "an async closure whose function type is not fully representable has no native Rust representation",
                     )
@@ -2787,10 +2804,11 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 return Ok(wrap_closure_value(&cap_lets, &closure_expr));
             }
             let dyn_ty = {
+                let ncx = db.name_ctx();
                 let mut param_tys = Vec::with_capacity(lam.params.len());
                 let mut ok = true;
                 for (_, ty) in &lam.params {
-                    match types::rust_type(ty) {
+                    match types::rust_type(&ncx, ty) {
                         Some(rt) => param_tys.push(rt),
                         None => {
                             ok = false;
@@ -2798,18 +2816,21 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                         }
                     }
                 }
-                let ret_ty = types::rust_type(&lam.ret_ty);
+                let ret_ty = types::rust_type(&ncx, &lam.ret_ty);
                 match (ok, ret_ty) {
                     (true, Some(ret)) => {
                         format!("std::rc::Rc<dyn Fn({}) -> {ret}>", param_tys.join(", "))
                     }
                     // A `lam` type that does not map (should not happen — the lifted fn would decline) — fall
                     // back to the node's solved type; decline if that also fails.
-                    _ => types::rust_type(&type_of(db, id)).ok_or_else(|| {
-                        Reject::decline(
-                            "a closure whose function type is not fully solved here has no native Rust representation",
-                        )
-                    })?,
+                    _ => {
+                        let idty = type_of(db, id);
+                        types::rust_type(&db.name_ctx(), &idty).ok_or_else(|| {
+                            Reject::decline(
+                                "a closure whose function type is not fully solved here has no native Rust representation",
+                            )
+                        })?
+                    }
                 }
             };
             let closure_expr = format!(
@@ -2912,7 +2933,8 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             // UNSIGNED. For an Int64 operand it is `as i64` (a no-op, elided). This is the `BigInt.of` twin of
             // the BinIntRead cast; both target the same u64-carried-as-i64 sign-extension. (corpus-bugfix
             // finding #4, wasm oracle 817; rust/rust-async sign-extended to -799.)
-            let opt = types::rust_type(&Ty::Int(int_ty_of(db, value)))
+            let vit = int_ty_of(db, value);
+            let opt = types::rust_type(&db.name_ctx(), &Ty::Int(vit))
                 .unwrap_or_else(|| "i64".to_string());
             let widened = if opt == "i64" {
                 format!("({v}) as i128")
@@ -3240,8 +3262,9 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             // 2^63+1 (the true unsigned value), so `% 1000` runs unsigned → 809, and `Int64.of` narrows a
             // genuine `u64`. A narrower/signed segment already solves to `Int64`, so its cast is `as i64` —
             // a no-op elided here (keeps the common case byte-identical + dodges the `unnecessary_cast` lint).
-            let rt =
-                types::rust_type(&Ty::Int(int_ty_of(db, id))).unwrap_or_else(|| "i64".to_string());
+            let idit = int_ty_of(db, id);
+            let rt = types::rust_type(&db.name_ctx(), &Ty::Int(idit))
+                .unwrap_or_else(|| "i64".to_string());
             if rt == "i64" {
                 body.push_str("__acc }");
             } else {
@@ -3311,7 +3334,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             let mut call_args = Vec::with_capacity(args.len());
             for (i, &a) in args.iter().enumerate() {
                 let a_ty = type_of(db, a);
-                let Some(a_rt) = types::rust_type(&a_ty) else {
+                let Some(a_rt) = types::rust_type(&db.name_ctx(), &a_ty) else {
                     return Err(Reject::decline(
                         "the Rust backend does not yet render a host call with an argument of no native Rust type (later increment)",
                     ));
@@ -3353,7 +3376,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             // INTEGER/BOOL result → the shim returns `i64` (int casts to width; bool reads `!= 0`); a FLOAT
             // result → the shim returns `f64` directly, cast to the declared float width (`as f32`/`as f64`).
             // Any other result (string/bytes/compound) needs its own boundary form → a later increment.
-            let marshalled = match types::rust_type(&result) {
+            let marshalled = match types::rust_type(&db.name_ctx(), &result) {
                 Some(t) if int_rust_ty(&t) => format!("({call} as {t})"),
                 Some(t) if t == "bool" => format!("({call} != 0)"),
                 Some(t) if t == "f32" || t == "f64" => format!("({call} as {t})"),
@@ -3424,7 +3447,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 let r = emit(db, rhs, env, ctx)?;
                 Ok(format!("({l} == {r})"))
             } else if let Some(grounded) = super::enums::ground_free_for_eq(db, &ty)
-                && let Some(rust_ty) = types::rust_type(&grounded)
+                && let Some(rust_ty) = types::rust_type(&db.name_ctx(), &grounded)
             {
                 // The operand type's ONLY block to native eq is a PHANTOM free var (a variant never
                 // constructed — e.g. `Result Int64 ?e` with no `Err` built). Grounding it to `()` gives an
@@ -3822,10 +3845,14 @@ fn emit_value_ord_walk_seen(
         // declaration order, which for a monomorphic user sum matches the emitted enum's variant order). The
         // helper (call-indirection) makes a RECURSIVE sum (`Ast.List (List Ast)`) terminate at runtime —
         // exactly like the eq-walk's `__eq_<Ident>`. Monomorphic only (a generic re-entry declines).
-        Ty::Sum { decl, args, name } => {
-            let enum_ty = super::types::rust_type(ty)
+        Ty::Sum { decl, args } => {
+            let enum_ty = super::types::rust_type(&db.name_ctx(), ty)
                 .ok_or_else(|| Reject::decline("sum ord: no rust type for the enum"))?;
-            let fn_name = format!("__ord_{}", super::types::sum_ident(name));
+            let name = db
+                .type_decl_by_occ(*decl)
+                .map(|t| t.name.clone())
+                .ok_or_else(|| Reject::decline("sum ord: no decl name"))?;
+            let fn_name = format!("__ord_{}", super::types::sum_ident(&name));
             let sum_ty = ty.clone();
             if seen.contains(&sum_ty) {
                 if !args.is_empty() {
@@ -4033,10 +4060,14 @@ fn emit_value_eq_walk_seen(
         // a spelled generic signature (`fn __eq_Box<T0: ?>(…)`) with the right payload bound — a follow-up.
         // A non-recursive generic sum is native-Eq (took the `==` path); only a recursive generic one reaches
         // here, and it declines cleanly (todo, not a miscompile — wasm computes it).
-        Ty::Sum { decl, args, name } => {
-            let enum_ty = super::types::rust_type(ty)
+        Ty::Sum { decl, args } => {
+            let enum_ty = super::types::rust_type(&db.name_ctx(), ty)
                 .ok_or_else(|| Reject::decline("sum eq: no rust type for the enum"))?;
-            let fn_name = format!("__eq_{}", super::types::sum_ident(name));
+            let name = db
+                .type_decl_by_occ(*decl)
+                .map(|t| t.name.clone())
+                .ok_or_else(|| Reject::decline("sum eq: no decl name"))?;
+            let fn_name = format!("__eq_{}", super::types::sum_ident(&name));
             let sum_ty = ty.clone();
             // On re-entry of THIS EXACT instantiated type (a true self-referential cycle — identical
             // decl+args), emit a CALL to its helper (the recursion base). A GENERIC self-recursive sum still
@@ -4340,7 +4371,7 @@ fn emit_sum_cmp_walk(
         Ty::Sum { .. } => {}
         _ => return Err(Reject::decline("value-cmp: not a sum type")),
     };
-    let enum_ty = super::types::rust_type(ty)
+    let enum_ty = super::types::rust_type(&db.name_ctx(), ty)
         .ok_or_else(|| Reject::decline("value-cmp: no rust type for the sum"))?;
     // The helper fn name is mangled by the FULL INSTANTIATED type (via `rust_type`), not the bare sum name:
     // a nested `(Option (Option Int64))` needs a distinct `fn __cmp_*` for the outer `Option<Option<i64>>`
@@ -4504,7 +4535,8 @@ fn ty_supports_native_eq(db: &mut Db, ty: &Ty) -> bool {
 /// via [`emit_const_int_at`] — see [`emit_grounded`] — because a bare literal's own type is the default
 /// (`Int64`), which unification does not thread the context width back onto.
 fn emit_const_int(db: &mut Db, id: StructId, v: &IntValue) -> Result<String, Reject> {
-    emit_const_int_at(int_ty_of(db, id), v)
+    let it = int_ty_of(db, id);
+    emit_const_int_at(&db.name_ctx(), it, v)
 }
 
 /// Whether a solved type is BIGINT-VALUED — a value that emits as a `cdz_num::Big`. That is a bare
@@ -4563,7 +4595,7 @@ fn emit_int_as_big(db: &mut Db, node: StructId, env: &Env, ctx: &Ctx) -> Result<
 /// (`emit_operand`/`emit_branch` ground a bare literal to the op/branch width): the value must fit that
 /// width (else CDZ0302 — never truncate), and it is written as the two's-complement bit pattern so a
 /// negative signed value and a large unsigned value share one spelling.
-fn emit_const_int_at(it: IntTy, v: &IntValue) -> Result<String, Reject> {
+fn emit_const_int_at(ncx: &crate::ty::NameCtx, it: IntTy, v: &IntValue) -> Result<String, Reject> {
     let signed = it.ground_signed();
     let width = it.ground_width();
     if !v.fits_width(signed, width) {
@@ -4572,7 +4604,7 @@ fn emit_const_int_at(it: IntTy, v: &IntValue) -> Result<String, Reject> {
             "integer literal does not fit its width",
         ));
     }
-    let target = types::rust_type(&Ty::Int(it)).ok_or_else(|| {
+    let target = types::rust_type(ncx, &Ty::Int(it)).ok_or_else(|| {
         Reject::decline("integer literal width has no native Rust representation")
     })?;
     let ubits = types::unsigned_bits_type(it).ok_or_else(|| {
@@ -4745,7 +4777,7 @@ fn emit_arith(
         } else {
             (0, (1i128 << w) - 1)
         };
-        let store = super::types::rust_type(&Ty::Int(it))
+        let store = super::types::rust_type(&db.name_ctx(), &Ty::Int(it))
             .ok_or_else(|| Reject::decline("unusual-width arith: no storage type"))?;
         return Ok(match op {
             // ADD/SUB — the storage type is STRICTLY WIDER than the type's N bits, so the true result of
@@ -4872,7 +4904,7 @@ fn emit_arith(
                 // trapped). Compute the declared min `-(1 << (N-1))` from the width `w` and compare against
                 // THAT (as the checked +/-/* unusual-width path already re-checks the declared range). For an
                 // aliased width (8/16/32/64) the declared min == slot min, so this is behavior-identical there.
-                true => match (types::rust_type(&Ty::Int(it)), it.width) {
+                true => match (types::rust_type(&db.name_ctx(), &Ty::Int(it)), it.width) {
                     (Some(t), Width::Fixed(w)) if (1..=64).contains(&w) => {
                         // The declared minimum as a literal in the storage type `t`. TWO cases:
                         //  • ALIASED width (8/16/32/64): the slot IS the declared width, so `{t}::MIN` is the
@@ -4957,7 +4989,7 @@ fn emit_arith(
         // a block that binds the value + count once (so a computed operand is evaluated once) then guards.
         Prim::Shl | Prim::Shr => {
             let width = it.ground_width();
-            let vty = types::rust_type(&Ty::Int(it)).ok_or_else(|| {
+            let vty = types::rust_type(&db.name_ctx(), &Ty::Int(it)).ok_or_else(|| {
                 Reject::decline("shift value width has no native Rust representation")
             })?;
             // The count expression: its own solved type (a shift count is not rigidly the value's type).
@@ -5292,7 +5324,7 @@ fn arm_result_it(db: &mut Db, arms: &[crate::core::ListArm]) -> Option<IntTy> {
 /// above the signed max) is written as its signed decimal / plain unsigned decimal directly.
 fn int_pattern(db: &mut Db, scrutinee: StructId, v: &IntValue) -> Result<String, Reject> {
     let it = int_ty_of(db, scrutinee);
-    let target = types::rust_type(&Ty::Int(it)).ok_or_else(|| {
+    let target = types::rust_type(&db.name_ctx(), &Ty::Int(it)).ok_or_else(|| {
         Reject::decline("match scrutinee width has no native Rust representation")
     })?;
     // A pattern is written as a plain decimal in the target type (`5i64`, `-1i8`). `int_value_decimal`
@@ -5565,7 +5597,7 @@ fn sum_variant_path(db: &mut Db, id: StructId, disc: u32) -> Result<String, Reje
 /// (an uncompilable artifact). So DECLINE — decline-don't-miscompile. (A later increment that threads the
 /// expected type from the enclosing `def` result / match subject into the branch emit would lift this; the
 /// wasm backend has the type at the value-encode boundary, so it does not hit this.)
-fn nullary_variant_path(ty: &Ty, disc: u32, bare: &str) -> String {
+fn nullary_variant_path(ncx: &crate::ty::NameCtx, ty: &Ty, disc: u32, bare: &str) -> String {
     let _ = disc; // the disc already selected `bare`; kept for call-site symmetry with sum_variant_path.
     let Ty::Sum { args, .. } = ty.strip_nominal() else {
         return bare.to_string();
@@ -5584,7 +5616,7 @@ fn nullary_variant_path(ty: &Ty, disc: u32, bare: &str) -> String {
     //  decline-when-unsolved attempt; the behavior always fell back to bare, so the type is now `String`.]
     let mut params = Vec::with_capacity(args.len());
     for a in args.iter() {
-        match types::rust_type(a) {
+        match types::rust_type(ncx, a) {
             Some(p) => params.push(p),
             None => return bare.to_string(),
         }
@@ -5980,9 +6012,12 @@ fn emit_sum_cont(
                             width: Width::Fixed(crate::ty::DEFAULT_INT_WIDTH),
                         },
                     };
-                    let target = types::rust_type(&Ty::Int(it)).ok_or_else(|| {
-                        Reject::decline("a literal-payload width has no native Rust representation")
-                    })?;
+                    let target =
+                        types::rust_type(&db.name_ctx(), &Ty::Int(it)).ok_or_else(|| {
+                            Reject::decline(
+                                "a literal-payload width has no native Rust representation",
+                            )
+                        })?;
                     // Cast the subject to the SAME width as the literal so both sides of `==` agree (fixes
                     // the widened-subject E0308); a subject already at `target` casts to itself (a no-op the
                     // compiler folds).

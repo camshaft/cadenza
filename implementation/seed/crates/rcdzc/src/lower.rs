@@ -3432,7 +3432,7 @@ pub(crate) fn is_ast_float_variant(db: &mut Db, ty: &crate::ty::Ty, disc: u32) -
 fn ast_variant_discs(db: &mut Db) -> Option<AstDiscs> {
     let ty = {
         let occ = db.type_decls.iter().find(|t| t.name == "Ast")?.occ;
-        db.normalize_sum(occ, "Ast".to_string(), Vec::new())
+        db.normalize_sum(occ, Vec::new())
     };
     Some(AstDiscs {
         int: variant_disc_by_name(db, &ty, "Int")?,
@@ -3754,7 +3754,6 @@ fn decode_error_ty(db: &mut Db) -> crate::ty::Ty {
         if td.name == "DecodeError" {
             return crate::ty::Ty::Sum {
                 decl: td.occ,
-                name: "DecodeError".to_string(),
                 args: std::rc::Rc::from(&[][..]),
             };
         }
@@ -14404,10 +14403,11 @@ pub fn sum_shape_descriptor(db: &mut Db, ty: &crate::ty::Ty) -> Option<Vec<u8>> 
         // wraps in a PARAMETRIC `Framed(<type-node>, …)` frame built from the full type (`type_node_of`
         // renders `(Option String)`), exactly as a `List`/`Map`/`Set` does. Without this a generic sum
         // result dropped its type args at the boundary.
-        crate::ty::Ty::Sum { name, args, .. } => {
+        crate::ty::Ty::Sum { decl, args, .. } => {
+            let name = db.type_decl_by_occ(*decl)?.name.clone();
             let inner = builder.shape_of(db, ty)?;
             if args.is_empty() {
-                let named = builder.push(ShapeNode::Named(name.clone(), inner));
+                let named = builder.push(ShapeNode::Named(name, inner));
                 Some(builder.encode(named))
             } else {
                 let type_node = type_node_of(ty, &db.name_ctx())?;
@@ -14526,21 +14526,22 @@ fn type_node_of(ty: &crate::ty::Ty, ncx: &crate::ty::NameCtx) -> Option<TypeNode
             }
         }
         // A monomorphic sum renders as its bare name; a generic sum as `(Name arg…)`.
-        Ty::Sum { name, args, .. } => {
+        Ty::Sum { decl, args, .. } => {
+            let name = ncx.name_of(*decl)?.to_string();
             if args.is_empty() {
-                leaf(name.clone())
+                leaf(name)
             } else {
                 let mut children = Vec::with_capacity(args.len());
                 for a in args.iter() {
                     children.push(type_node_of(a, ncx)?);
                 }
                 TypeNode {
-                    head: name.clone(),
+                    head: name,
                     children,
                 }
             }
         }
-        Ty::Nominal { name, .. } => leaf(name.clone()),
+        Ty::Nominal { decl, .. } => leaf(ncx.name_of(*decl)?.to_string()),
         // Qty/Fn/Var/Any/Type: not an escaping collection element/arg — decline rather than misrender.
         _ => return None,
     })
@@ -14755,16 +14756,15 @@ impl ShapeTableBuilder {
             // self-reference resolves to a `Ref`), then fill it. The inner's `Ty::Sum{decl}` back-edge (the
             // erased-newtype μ-binder) resolves to this same reserved entry via `sums`, so the shape table
             // is finite. Reuses `Named`, which the runtime `value-encode` walker already renders.
-            Ty::Nominal {
-                decl, name, inner, ..
-            } => {
+            Ty::Nominal { decl, inner, .. } => {
                 if let Some(&existing) = self.sums.get(decl) {
                     return Some(self.push(ShapeNode::Ref(existing)));
                 }
+                let name = db.type_decl_by_occ(*decl)?.name.clone();
                 let self_ix = self.push(ShapeNode::Unit); // placeholder, filled below
                 self.sums.insert(*decl, self_ix);
                 let inner_ix = self.shape_of(db, inner)?;
-                self.table[self_ix as usize] = ShapeNode::Named(name.clone(), inner_ix);
+                self.table[self_ix as usize] = ShapeNode::Named(name, inner_ix);
                 self_ix
             }
             // A QUANTITY erases to its inner scalar at runtime (the unit is a compile-time concern carried
@@ -15734,11 +15734,12 @@ fn type_ast(
         // STRUCTURED application `(Option Int64)` for a generic instantiation — a `(NAME arg…)` list, so
         // the args round-trip as separate nodes (not one spaced-out name atom). Matches `render_name`'s
         // surface but built as real structure so the codec + host reader see the parameterized type.
-        Ty::Sum { name, args, .. } => {
+        Ty::Sum { decl, args, .. } => {
+            let name = ncx.name_of(*decl)?.to_string();
             if args.is_empty() {
-                Some(b.name(name.clone()))
+                Some(b.name(name))
             } else {
-                let head = b.name(name.clone());
+                let head = b.name(name);
                 let mut children = vec![head];
                 for a in args.iter() {
                     children.push(type_ast(b, a, ncx)?);
@@ -15816,7 +15817,7 @@ fn type_ast(
         // A nominal's type surface is its declared NAME atom (`(: (Mk 42) UserId)`) — its identity is
         // the name, not its underlying shape (like a monomorphic sum). The value itself renders as the
         // underlying value form (built by the value walker, which sees through the tag).
-        Ty::Nominal { name, .. } => Some(b.name(name.clone())),
+        Ty::Nominal { decl, .. } => Some(b.name(ncx.name_of(*decl)?.to_string())),
         // The TYPE OF TYPES — the type surface of a type-VALUE (`(: Int64 Type)`). A type is a first-class
         // value that can be returned and inspected at run time (core-semantics.md §Types Are First-Class
         // Values), so a bare type-value crosses the boundary; its TYPE node is the atom `Type` (the value

@@ -142,72 +142,64 @@ fn variant_payload_renders_generic(
     decl: &crate::db::TypeDecl,
     variant: &crate::db::Variant,
 ) -> Vec<String> {
-    variant
+    // Resolve every payload type FIRST (needs `&mut db`), then render (needs `&db` via `NameCtx`) — the two
+    // borrows cannot overlap, so collect the types before taking the render context.
+    let tys: Vec<crate::ty::Ty> = variant
         .payloads
         .iter()
-        .filter_map(|&occ| {
-            let ty = sentinel_payload_ty(db, decl, occ)?;
-            Some(rewrite_sentinel_vars(&ty, decl).render_name(&db.name_ctx()))
-        })
+        .filter_map(|&occ| sentinel_payload_ty(db, decl, occ))
+        .collect();
+    let ncx = db.name_ctx();
+    tys.iter()
+        .map(|ty| render_sentinel_payload(ty, &ncx))
         .collect()
 }
 
-/// Replace each sentinel param var `Ty::Var(PARAM_SENTINEL_BASE+k)` in `ty` with a placeholder type that
-/// `render_name`s to `T{k}` (a nullary `Ty::Sum` named `T{k}` — `render_name` prints a no-arg sum as its
-/// bare name), so the Cadenza-syntax descriptor shows the placeholder in `(W T0)` / `(Option T0)`. Done as
-/// a Ty-TREE substitution BEFORE `render_name` (not a string replace on its output): an unsolved `Ty::Var`
-/// now renders as the placeholder `_` (a user-facing diagnostic reads `_`, not the internal `?{n}`), so a
-/// string match on `?{n}` no longer works — the sentinel var must be resolved to its `T{k}` placeholder in
-/// the type itself. A genuine free var (none should occur at a resolved sentinel instantiation) is left as
-/// `_`, matching the diagnostic render. `decl.occ` is a harmless dummy decl for the placeholder sum (a
-/// nullary sum's `render_name` reads only its `name`).
-fn rewrite_sentinel_vars(ty: &crate::ty::Ty, decl: &crate::db::TypeDecl) -> crate::ty::Ty {
+/// Render a sentinel-instantiated payload type in Cadenza TYPE SYNTAX (the SAME surface `render_name`
+/// produces — `(Option Int64)`, not Rust `Option<T0>`), EXCEPT each sentinel param var
+/// `Ty::Var(PARAM_SENTINEL_BASE+k)` renders as its placeholder `T{k}` — the token the gate driver parses
+/// with `parse_head_type` and substitutes with the result type's concrete args. So `(W a)` → `T0`, `(W
+/// (Option a))` → `(Option T0)`. This mirrors `Ty::render_name`'s structural arms but overrides only the
+/// sentinel-var leaf (which `render_name` would print as the diagnostic hole `_`); every other leaf/compound
+/// delegates to `render_name` so the two stay in lock-step. (Was a fake nullary `Ty::Sum` named `T{k}`
+/// rendered through `render_name` — the type no longer carries a `name`, so the placeholder is spelled here.)
+fn render_sentinel_payload(ty: &crate::ty::Ty, ncx: &crate::ty::NameCtx) -> String {
     use crate::ty::Ty;
     match ty {
-        Ty::Var(n) if *n >= PARAM_SENTINEL_BASE => Ty::Sum {
-            decl: decl.occ,
-            name: format!("T{}", n - PARAM_SENTINEL_BASE),
-            args: std::rc::Rc::from([]),
-        },
-        Ty::List(e) => Ty::List(Box::new(rewrite_sentinel_vars(e, decl))),
-        Ty::Set(e) => Ty::Set(Box::new(rewrite_sentinel_vars(e, decl))),
-        Ty::Map(k, v) => Ty::Map(
-            Box::new(rewrite_sentinel_vars(k, decl)),
-            Box::new(rewrite_sentinel_vars(v, decl)),
+        Ty::Var(n) if *n >= PARAM_SENTINEL_BASE => format!("T{}", n - PARAM_SENTINEL_BASE),
+        Ty::List(e) => format!("(List {})", render_sentinel_payload(e, ncx)),
+        Ty::Set(e) => format!("(Set {})", render_sentinel_payload(e, ncx)),
+        Ty::Map(k, v) => format!(
+            "(Map {} {})",
+            render_sentinel_payload(k, ncx),
+            render_sentinel_payload(v, ncx)
         ),
-        Ty::Tuple(elems) => Ty::Tuple(
-            elems
-                .iter()
-                .map(|e| rewrite_sentinel_vars(e, decl))
-                .collect(),
-        ),
-        Ty::Sum {
-            decl: d,
-            name,
-            args,
-        } => Ty::Sum {
-            decl: *d,
-            name: name.clone(),
-            args: args
-                .iter()
-                .map(|a| rewrite_sentinel_vars(a, decl))
-                .collect(),
-        },
-        Ty::Nominal {
-            decl: d,
-            name,
-            args,
-            inner,
-        } => Ty::Nominal {
-            decl: *d,
-            name: name.clone(),
-            args: args
-                .iter()
-                .map(|a| rewrite_sentinel_vars(a, decl))
-                .collect(),
-            inner: std::rc::Rc::new(rewrite_sentinel_vars(inner, decl)),
-        },
-        other => other.clone(),
+        Ty::Tuple(elems) => {
+            let mut s = String::from("(Tuple");
+            for e in elems.iter() {
+                s.push(' ');
+                s.push_str(&render_sentinel_payload(e, ncx));
+            }
+            s.push(')');
+            s
+        }
+        Ty::Sum { decl, args } => {
+            let name = ncx.name_of(*decl).unwrap_or("<sum>");
+            if args.is_empty() {
+                name.to_string()
+            } else {
+                let mut s = format!("({name}");
+                for a in args.iter() {
+                    s.push(' ');
+                    s.push_str(&render_sentinel_payload(a, ncx));
+                }
+                s.push(')');
+                s
+            }
+        }
+        Ty::Nominal { inner, .. } => render_sentinel_payload(inner, ncx),
+        // No sentinel var inside — spell exactly as `render_name` (scalars/text/etc.).
+        _ => ty.render_name(ncx),
     }
 }
 
@@ -427,7 +419,6 @@ fn emit_one_enum(db: &mut Db, i: usize, mode: super::Mode) -> Result<String, Rej
 fn sentinel_sum_of(decl: &crate::db::TypeDecl) -> crate::ty::Ty {
     crate::ty::Ty::Sum {
         decl: decl.occ,
-        name: decl.name.clone(),
         args: (0..decl.params.len())
             .map(|k| crate::ty::Ty::Var(PARAM_SENTINEL_BASE + k as u32))
             .collect(),
@@ -504,7 +495,7 @@ fn payload_rust_type(
         sentinel_payload_ty(db, decl, pty_occ)
             .ok_or_else(|| Reject::decline("a variant payload type does not resolve"))?
     };
-    render_payload_ty(&ty, decl, mode).ok_or_else(|| {
+    render_payload_ty(&db.name_ctx(), &ty, decl, mode).ok_or_else(|| {
         Reject::decline(format!(
             "a variant payload type {} has no native Rust representation",
             ty.render_name(&db.name_ctx())
@@ -536,7 +527,6 @@ fn sentinel_payload_ty(
         .and_then(|v| v.ctor)?;
     let sentinel_sum = Ty::Sum {
         decl: decl.occ,
-        name: decl.name.clone(),
         args: (0..decl.params.len())
             .map(|k| Ty::Var(PARAM_SENTINEL_BASE + k as u32))
             .collect(),
@@ -565,6 +555,7 @@ fn sentinel_payload_ty(
 /// self-referential payload name the enum correctly (E0107 otherwise). Non-self sums/compounds delegate to
 /// `types::rust_type` (their args are concrete). `None` for a type with no native Rust form.
 fn render_payload_ty(
+    ncx: &crate::ty::NameCtx,
     ty: &crate::ty::Ty,
     decl: &crate::db::TypeDecl,
     mode: super::Mode,
@@ -592,7 +583,7 @@ fn render_payload_ty(
         // to the positional `T{k}` if an arg is missing (a bare self-mention with no args).
         let ps: Vec<String> = if args.len() == decl.params.len() {
             args.iter()
-                .map(|a| render_payload_ty(a, decl, mode))
+                .map(|a| render_payload_ty(ncx, a, decl, mode))
                 .collect::<Option<Vec<_>>>()?
         } else {
             (0..decl.params.len()).map(|k| format!("T{k}")).collect()
@@ -606,7 +597,7 @@ fn render_payload_ty(
         Ty::Tuple(elems) => {
             let parts: Option<Vec<String>> = elems
                 .iter()
-                .map(|e| render_payload_ty(e, decl, mode))
+                .map(|e| render_payload_ty(ncx, e, decl, mode))
                 .collect();
             let parts = parts?;
             match parts.len() {
@@ -619,12 +610,12 @@ fn render_payload_ty(
         // recursively so a param arg becomes `T{k}`. A no-arg sum delegates to `types::rust_type` (a
         // concrete monomorphic sum name). The head name uses the built-in std mapping for Option/Result
         // via `types::rust_type` on the ARGS-STRIPPED shape is not needed — render the name + args here.
-        Ty::Sum { name, args, .. } if !args.is_empty() => {
+        Ty::Sum { decl: d, args } if !args.is_empty() => {
             let parts: Option<Vec<String>> = args
                 .iter()
-                .map(|a| render_payload_ty(a, decl, mode))
+                .map(|a| render_payload_ty(ncx, a, decl, mode))
                 .collect();
-            let ident = types::sum_ident(name);
+            let ident = types::sum_ident(ncx.name_of(*d)?);
             Some(format!("{ident}<{}>", parts?.join(", ")))
         }
         // A `List`/`Map`/`Set` element is NOT rendered (collections-as-values are unrealized on the Rust
@@ -633,7 +624,7 @@ fn render_payload_ty(
         // mode a closure crosses as `Rc<dyn EnvClosure<A,R>>` (the enum FIELD must match the `Rc<dyn
         // EnvClosure>` VALUE a `Core::SumNew` constructs — else E0308), in sync mode the plain `Rc<dyn Fn>`.
         // A closure-free leaf is byte-identical (`async_closure_type` == `rust_type` off `Ty::Fn`).
-        _ => super::async_or_rust_type(ty, mode),
+        _ => super::async_or_rust_type(ncx, ty, mode),
     }
 }
 
@@ -710,19 +701,12 @@ fn ground_free_vars(ty: &crate::ty::Ty) -> crate::ty::Ty {
                 .map(|(k, v)| (k.clone(), ground_free_vars(v)))
                 .collect(),
         )),
-        Ty::Sum { decl, name, args } => Ty::Sum {
+        Ty::Sum { decl, args } => Ty::Sum {
             decl: *decl,
-            name: name.clone(),
             args: args.iter().map(ground_free_vars).collect(),
         },
-        Ty::Nominal {
-            decl,
-            name,
-            args,
-            inner,
-        } => Ty::Nominal {
+        Ty::Nominal { decl, args, inner } => Ty::Nominal {
             decl: *decl,
-            name: name.clone(),
             args: args.iter().map(ground_free_vars).collect(),
             inner: std::rc::Rc::new(ground_free_vars(inner)),
         },

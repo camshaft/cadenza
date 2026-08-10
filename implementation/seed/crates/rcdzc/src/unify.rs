@@ -164,9 +164,8 @@ impl Subst {
             // A sum's identity is its `decl`, but a GENERIC instantiation carries type ARGS that may hold
             // unsolved variables (a deferred payload — `Option ?0`), so substitute into each arg. A
             // monomorphic sum has empty args, so this is a cheap clone of the name/decl.
-            Ty::Sum { decl, name, args } => Ty::Sum {
+            Ty::Sum { decl, args } => Ty::Sum {
                 decl: *decl,
-                name: name.clone(),
                 args: args
                     .iter()
                     .map(|t| self.apply_depth(t, chain + 1))
@@ -180,14 +179,8 @@ impl Subst {
             },
             // A nominal substitutes into its type ARGS (a generic `Box ?0` — the deferred instantiation)
             // AND its `inner` machine-rep hint, so a solved var flows into both; `decl`/`name` unchanged.
-            Ty::Nominal {
-                decl,
-                name,
-                args,
-                inner,
-            } => Ty::Nominal {
+            Ty::Nominal { decl, args, inner } => Ty::Nominal {
                 decl: *decl,
-                name: name.clone(),
                 args: args
                     .iter()
                     .map(|t| self.apply_depth(t, chain + 1))
@@ -785,9 +778,8 @@ fn rename(ty: &Ty, m: &Rename) -> Ty {
         Ty::Map(k, v) => Ty::Map(Box::new(rename(k, m)), Box::new(rename(v, m))),
         // A GENERIC sum scheme's type ARGS may hold bound variables (a `(fn (a) … (Option a))` variant
         // ctor scheme) — rename each. A monomorphic sum has empty args; nothing to rename.
-        Ty::Sum { decl, name, args } => Ty::Sum {
+        Ty::Sum { decl, args } => Ty::Sum {
             decl: *decl,
-            name: name.clone(),
             args: args.iter().map(|t| rename(t, m)).collect(),
         },
         // A quantity scheme's INNER type may hold a bound variable (a `(fn (T) … (Qty T u))` op scheme) —
@@ -798,14 +790,8 @@ fn rename(ty: &Ty, m: &Rename) -> Ty {
         },
         // A generic nominal scheme's ARGS (and its `inner` hint) may hold a bound variable (a `(fn (a) …
         // (Box a))` ctor scheme) — rename both; `decl`/`name` identity is unchanged.
-        Ty::Nominal {
-            decl,
-            name,
-            args,
-            inner,
-        } => Ty::Nominal {
+        Ty::Nominal { decl, args, inner } => Ty::Nominal {
             decl: *decl,
-            name: name.clone(),
             args: args.iter().map(|t| rename(t, m)).collect(),
             inner: std::rc::Rc::new(rename(inner, m)),
         },
@@ -933,9 +919,8 @@ fn freshen_free_go(
             Box::new(freshen_free_go(k, fresh, map, wmap, smap)),
             Box::new(freshen_free_go(v, fresh, map, wmap, smap)),
         ),
-        Ty::Sum { decl, name, args } => Ty::Sum {
+        Ty::Sum { decl, args } => Ty::Sum {
             decl: *decl,
-            name: name.clone(),
             args: args
                 .iter()
                 .map(|t| freshen_free_go(t, fresh, map, wmap, smap))
@@ -947,14 +932,8 @@ fn freshen_free_go(
             inner: Box::new(freshen_free_go(inner, fresh, map, wmap, smap)),
             unit: unit.clone(),
         },
-        Ty::Nominal {
-            decl,
-            name,
-            args,
-            inner,
-        } => Ty::Nominal {
+        Ty::Nominal { decl, args, inner } => Ty::Nominal {
             decl: *decl,
-            name: name.clone(),
             args: args
                 .iter()
                 .map(|t| freshen_free_go(t, fresh, map, wmap, smap))
@@ -1116,7 +1095,6 @@ mod tests {
         for _ in 0..500 {
             inner = Ty::Sum {
                 decl: crate::ast::StructId(0),
-                name: "Option".into(),
                 args: std::rc::Rc::from([inner]),
             };
         }
@@ -1130,7 +1108,6 @@ mod tests {
         for _ in 0..500 {
             cyclic = Ty::Sum {
                 decl: crate::ast::StructId(0),
-                name: "Option".into(),
                 args: std::rc::Rc::from([cyclic]),
             };
         }
@@ -1172,7 +1149,6 @@ mod tests {
         // the cyclic `?0 = Option ?0`.
         let opt0 = Ty::Sum {
             decl: crate::ast::StructId(0),
-            name: "Option".to_string(),
             args: std::rc::Rc::from([Ty::Var(0)]),
         };
         let mut fresh = Fresh::new();

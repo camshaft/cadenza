@@ -251,7 +251,6 @@ fn type_in_env(db: &mut Db, id: StructId, env: &HashMap<StructId, TyOrWidth>) ->
                         }
                         _ => return None,
                     };
-                    let name = db.type_decl_by_occ(decl)?.name.clone();
                     let mut arg_tys = Vec::with_capacity(args.len());
                     for &a in args.iter() {
                         arg_tys.push(type_in_env(db, a, env)?);
@@ -262,7 +261,7 @@ fn type_in_env(db: &mut Db, id: StructId, env: &HashMap<StructId, TyOrWidth>) ->
                     // so the substituted `inner` shares them — when `apply_type` later solves `a := Int64`,
                     // the substitution flows into `inner` too, giving `Ty::Nominal { inner: Int64 }` at the
                     // use site. This is the scheme-position analogue of `reduce_sum_ctor`/`decode_ty`.
-                    Some(db.normalize_sum(decl, name, arg_tys))
+                    Some(db.normalize_sum(decl, arg_tys))
                 }
                 // A `(Tuple T…)` inside a type-lambda — each element reduced UNDER THE ENV, so a type
                 // parameter `a` in a tuple element becomes its type variable. This is what lets a generic
@@ -2991,7 +2990,6 @@ pub fn reduce_sum_ctor(db: &mut Db, head: StructId, args: &[StructId]) -> Option
         Resolved::Int(v) => crate::ast::StructId(v.to_i64().and_then(|n| u32::try_from(n).ok())?),
         _ => return None,
     };
-    let name = db.type_decl_by_occ(decl)?.name.clone();
     let mut arg_tys = Vec::with_capacity(args.len());
     for &a in args {
         arg_tys.push(typeval_of(db, a)?);
@@ -3000,7 +2998,7 @@ pub fn reduce_sum_ctor(db: &mut Db, head: StructId, args: &[StructId]) -> Option
     // instantiation becomes `Ty::Nominal { inner }` (its template with `arg_tys` substituted), NOT a boxed
     // `Ty::Sum` — the same decision `decode_ty` makes for the wire form. Without this the generic ctor's
     // result typed as `Ty::Sum`, so the erased value's binder read the wrong (boxed) representation.
-    let sum = db.normalize_sum(decl, name, arg_tys);
+    let sum = db.normalize_sum(decl, arg_tys);
     trace!(target: "rcdzc::eval", ty = %sum.render_name(&db.name_ctx()), "ctor (Sum): built generic sum type-value");
     Some(sum)
 }
@@ -3193,12 +3191,11 @@ fn typeval_of_uncached(db: &mut Db, id: StructId) -> Option<crate::ty::Ty> {
                     .type_decl_by_occ(decl)
                     .is_some_and(|td| !td.params.is_empty())
             {
-                let name = db.type_decl_by_occ(decl)?.name.clone();
                 let mut arg_tys = Vec::with_capacity(args.len());
                 for &a in args.iter() {
                     arg_tys.push(typeval_of(db, a)?);
                 }
-                return Some(db.normalize_sum(decl, name, arg_tys));
+                return Some(db.normalize_sum(decl, arg_tys));
             }
             let prim = meta_apply_of(db, head)?;
             if prim.is_arith() {
@@ -3767,9 +3764,16 @@ fn encode_ty(db: &mut Db, ty: &crate::ty::Ty) -> StructId {
         // declaration occurrence (the identity, an integer literal so it round-trips), and the type ARGS
         // (empty for a monomorphic sum). Round-trips with `resolve::decode_ty`'s `"Sum"` arm. This is the
         // shape `sums::synthesize` also builds for a sum record's `(meta t)`, so the two must agree.
-        Ty::Sum { decl, name, args } => {
+        Ty::Sum { decl, args, .. } => {
+            // NAME is recovered from `decl` (no longer carried on the type) so the wire format
+            // `(Sum NAME <decl> arg…)` stays byte-identical — `decode_ty` reads+discards it. Look it up
+            // (immutable borrow) into an owned string before the `push_name` mutable borrow.
+            let name = db
+                .type_decl_by_occ(*decl)
+                .map(|t| t.name.clone())
+                .unwrap_or_else(|| "<sum>".to_string());
             let head = db.push_name("Sum");
-            let nm = db.push_name(name);
+            let nm = db.push_name(&name);
             let d = db.push_atom(Leaf::Int {
                 value: IntValue::from_i64(decl.0 as i64),
                 radix: crate::ast::Radix::Dec,
@@ -3789,13 +3793,15 @@ fn encode_ty(db: &mut Db, ty: &crate::ty::Ty) -> StructId {
         // this arm the catch-all encoded a `Ty::Nominal` as `Unit`, so a ctor arrow `(-> Int64 UserId)`
         // round-tripped to `(-> Int64 Unit)` — the newtype vanished.
         Ty::Nominal {
-            decl,
-            name,
-            args,
-            inner,
+            decl, args, inner, ..
         } => {
+            // NAME recovered from `decl` so the wire `(Nominal NAME <decl> (args…) <inner>)` is unchanged.
+            let name = db
+                .type_decl_by_occ(*decl)
+                .map(|t| t.name.clone())
+                .unwrap_or_else(|| "<nominal>".to_string());
             let head = db.push_name("Nominal");
-            let nm = db.push_name(name);
+            let nm = db.push_name(&name);
             let d = db.push_atom(Leaf::Int {
                 value: IntValue::from_i64(decl.0 as i64),
                 radix: crate::ast::Radix::Dec,

@@ -24,7 +24,7 @@ use crate::ty::{IntTy, Sign, Ty, Width};
 ///
 /// Returns an owned `String` because a compound type is a COMPOSED spelling (a tuple `(T0, T1)`), not a
 /// fixed primitive name. A scalar's mapping is still one of a fixed set (`int_type`/`bool`/`()`).
-pub fn rust_type(ty: &Ty) -> Option<String> {
+pub fn rust_type(ncx: &crate::ty::NameCtx, ty: &Ty) -> Option<String> {
     match ty {
         Ty::Int(it) => int_type(*it).map(String::from),
         // A float maps to Rust's native `f64`/`f32` by its width — the admitted {32,64} are exactly
@@ -65,7 +65,7 @@ pub fn rust_type(ty: &Ty) -> Option<String> {
         Ty::Qty { inner, unit }
             if unit.scale() == (1, 1) || qty_scale_supported(inner, unit.scale()) =>
         {
-            rust_type(inner)
+            rust_type(ncx, inner)
         }
         // A CHAR is a single Unicode scalar value — Rust's native `char` (which IS a Unicode scalar,
         // exactly the Cadenza model). Copy, so no clone-on-read needed. Lets a `Char` cross as a sum
@@ -76,7 +76,7 @@ pub fn rust_type(ty: &Ty) -> Option<String> {
         // comma to distinguish it from a parenthesized type). An element with no native mapping declines
         // the whole tuple. (The empty tuple `Ty::Tuple([])` is distinct from `Unit` upstream, but has no
         // element to map — render it as `()`, Rust's unit/empty-tuple type.)
-        Ty::Tuple(elems) => tuple_type(elems.iter()),
+        Ty::Tuple(elems) => tuple_type(ncx, elems.iter()),
         // A RECORD is structural (anonymous) in Cadenza and at run time IS a positional array in
         // sorted-field-name order (a record field read is a `Core::Proj` at the field's sorted index —
         // the SAME machinery a tuple uses). So it maps to the SAME Rust tuple as a tuple of its fields'
@@ -86,20 +86,20 @@ pub fn rust_type(ty: &Ty) -> Option<String> {
         // positionally (`r.0`); the names re-appear only in the boundary render (`(record (a …) …)`).
         // (When Cadenza gains NOMINAL records, THAT is when a named Rust struct becomes the right
         // emission — the name will come from the language, not be synthesized.)
-        Ty::Record(fields) => tuple_type(fields.values()),
+        Ty::Record(fields) => tuple_type(ncx, fields.values()),
         // A SUM is a NOMINAL type — unlike a record it HAS a name (the declared sum name), so it maps to
         // a Rust ENUM of that name (the backend emits the `enum <Name> { … }` declaration separately).
         // A generic sum instantiation carries its type ARGS (`Option Int64` → args `[Int64]`), which
         // become the Rust type parameters: `Option<i64>`. A monomorphic sum (`Sign`, no args) is the
         // bare name. The enum name is sanitized (a `-` in a sum name → `_`), matching the declaration.
-        Ty::Sum { name, args, .. } => {
-            let ident = sum_ident(name);
+        Ty::Sum { decl, args } => {
+            let ident = sum_ident(ncx.name_of(*decl)?);
             if args.is_empty() {
                 Some(ident)
             } else {
                 let mut params = Vec::with_capacity(args.len());
                 for a in args.iter() {
-                    params.push(rust_type(a)?);
+                    params.push(rust_type(ncx, a)?);
                 }
                 Some(format!("{ident}<{}>", params.join(", ")))
             }
@@ -109,7 +109,7 @@ pub fn rust_type(ty: &Ty) -> Option<String> {
         // as its underlying type — a transparent alias. `(type UserId (Mk Int64))` → `i64`, `(type Point
         // (Mk Int64 Int64))` → `(i64, i64)`. (A named Rust newtype struct is a possible future
         // refinement; the erased mapping is correct and matches the wasm backend's read-through.)
-        Ty::Nominal { inner, .. } => rust_type(inner),
+        Ty::Nominal { inner, .. } => rust_type(ncx, inner),
         // A FUNCTION value is a first-class closure — `Rc<dyn Fn(A, …) -> R>`. `Rc` (not `Box`) so it is
         // CLONE-able: a closure bound/used in more than one position is cloned on read (the tick-5
         // clone-on-read discipline), and `Box<dyn Fn>` is not Clone.
@@ -125,10 +125,10 @@ pub fn rust_type(ty: &Ty) -> Option<String> {
             let mut params = Vec::new();
             let mut cur = ty;
             while let Ty::Fn(p, r) = cur {
-                params.push(rust_type(p)?);
+                params.push(rust_type(ncx, p)?);
                 cur = r;
             }
-            let ret = rust_type(cur)?;
+            let ret = rust_type(ncx, cur)?;
             Some(format!(
                 "std::rc::Rc<dyn Fn({}) -> {ret}>",
                 params.join(", ")
@@ -140,7 +140,7 @@ pub fn rust_type(ty: &Ty) -> Option<String> {
         // compose; an element with no native mapping declines the whole list. (Cadenza lists are
         // PERSISTENT/immutable; a `Vec` is owned+`Clone`, and every list op emitted for this backend
         // produces a NEW `Vec` — no in-place mutation — so the value semantics agree.)
-        Ty::List(elem) => Some(format!("Vec<{}>", rust_type(elem)?)),
+        Ty::List(elem) => Some(format!("Vec<{}>", rust_type(ncx, elem)?)),
         // A MAP is a persistent key→value association — Rust's ordered `BTreeMap<K, V>`. `BTree` (not
         // `HashMap`) because it ITERATES IN SORTED KEY ORDER, which is exactly the CANONICAL order Cadenza's
         // `Map.to-list` yields — so enumeration matches the runtime for free (a `HashMap` would need an
@@ -154,15 +154,15 @@ pub fn rust_type(ty: &Ty) -> Option<String> {
         // shape; a non-Ord key/element is caught before it can emit an uncompilable `BTreeMap`/`BTreeSet`.
         Ty::Map(k, v) => Some(format!(
             "std::collections::BTreeMap<{}, {}>",
-            ord_key_type(k)?,
-            rust_type(v)?
+            ord_key_type(ncx, k)?,
+            rust_type(ncx, v)?
         )),
         // A SET is a persistent collection of unique elements — Rust's ordered `BTreeSet<T>` (sorted
         // iteration = the canonical `Set.to-list` order; `Ord` element compares by value, dedup at insert).
         // The Ord-element decline is enforced by the `Db`-aware gates (see the `Ty::Map` note), not here.
         Ty::Set(elem) => Some(format!(
             "std::collections::BTreeSet<{}>",
-            ord_key_type(elem)?
+            ord_key_type(ncx, elem)?
         )),
         // A BYTES value is a raw byte sequence — Rust's owned `Vec<u8>`. Non-Copy (owned heap buffer) →
         // clone-on-read covers a shared bytes value. (Cadenza's `Bytes` is a persistent rope at run time;
@@ -200,7 +200,7 @@ pub fn rust_type(ty: &Ty) -> Option<String> {
 /// spelled async too — the walk recurses with `async_closure_type` through every compound arm, delegating a
 /// scalar/leaf to [`rust_type`] (which is mode-agnostic for non-function types). `None` on any
 /// non-representable component, exactly like `rust_type`.
-pub(super) fn async_closure_type(ty: &Ty) -> Option<String> {
+pub(super) fn async_closure_type(ncx: &crate::ty::NameCtx, ty: &Ty) -> Option<String> {
     match ty {
         // A FUNCTION → the uniform async closure ABI. Peel the arrow SPINE (flat, like `rust_type`): the
         // args are the spine's params, the result is the final non-arrow tail. Each arg + the result is
@@ -209,10 +209,10 @@ pub(super) fn async_closure_type(ty: &Ty) -> Option<String> {
             let mut args = Vec::new();
             let mut cur = ty;
             while let Ty::Fn(p, r) = cur {
-                args.push(async_closure_type(p)?);
+                args.push(async_closure_type(ncx, p)?);
                 cur = r;
             }
-            let ret = async_closure_type(cur)?;
+            let ret = async_closure_type(ncx, cur)?;
             // `A` = () for 0 args, the single type for 1, a tuple for ≥2 (the lifted convention tuples a
             // multi-arg closure's args into one `A`; `EnvClosure::call` destructures it).
             let a = match args.len() {
@@ -227,7 +227,7 @@ pub(super) fn async_closure_type(ty: &Ty) -> Option<String> {
         Ty::Tuple(elems) => {
             let mut parts = Vec::with_capacity(elems.len());
             for e in elems.iter() {
-                parts.push(async_closure_type(e)?);
+                parts.push(async_closure_type(ncx, e)?);
             }
             Some(if parts.len() == 1 {
                 format!("({},)", parts[0])
@@ -238,7 +238,7 @@ pub(super) fn async_closure_type(ty: &Ty) -> Option<String> {
         Ty::Record(fields) => {
             let mut parts = Vec::with_capacity(fields.len());
             for v in fields.values() {
-                parts.push(async_closure_type(v)?);
+                parts.push(async_closure_type(ncx, v)?);
             }
             Some(if parts.len() == 1 {
                 format!("({},)", parts[0])
@@ -246,39 +246,39 @@ pub(super) fn async_closure_type(ty: &Ty) -> Option<String> {
                 format!("({})", parts.join(", "))
             })
         }
-        Ty::Sum { name, args, .. } => {
-            let ident = sum_ident(name);
+        Ty::Sum { decl, args } => {
+            let ident = sum_ident(ncx.name_of(*decl)?);
             if args.is_empty() {
                 Some(ident)
             } else {
                 let mut params = Vec::with_capacity(args.len());
                 for a in args.iter() {
-                    params.push(async_closure_type(a)?);
+                    params.push(async_closure_type(ncx, a)?);
                 }
                 Some(format!("{ident}<{}>", params.join(", ")))
             }
         }
-        Ty::Nominal { inner, .. } => async_closure_type(inner),
-        Ty::List(elem) => Some(format!("Vec<{}>", async_closure_type(elem)?)),
+        Ty::Nominal { inner, .. } => async_closure_type(ncx, inner),
+        Ty::List(elem) => Some(format!("Vec<{}>", async_closure_type(ncx, elem)?)),
         // A Map/Set KEY cannot be a closure (not `Ord`), so the key keeps `ord_key_type`; only the Map VALUE
         // can carry a closure, so it recurses. (A closure-keyed collection would have declined upstream.)
         Ty::Map(k, v) => Some(format!(
             "std::collections::BTreeMap<{}, {}>",
-            ord_key_type(k)?,
-            async_closure_type(v)?
+            ord_key_type(ncx, k)?,
+            async_closure_type(ncx, v)?
         )),
         Ty::Set(elem) => Some(format!(
             "std::collections::BTreeSet<{}>",
-            ord_key_type(elem)?
+            ord_key_type(ncx, elem)?
         )),
         Ty::Qty { inner, unit }
             if unit.scale() == (1, 1) || qty_scale_supported(inner, unit.scale()) =>
         {
-            async_closure_type(inner)
+            async_closure_type(ncx, inner)
         }
         // Every other type (scalars, Bytes, String, Symbol, …) has no closure inside — delegate to the
         // mode-agnostic `rust_type` (identical spelling in both modes).
-        _ => rust_type(ty),
+        _ => rust_type(ncx, ty),
     }
 }
 
@@ -288,19 +288,20 @@ pub(super) fn async_closure_type(ty: &Ty) -> Option<String> {
 /// VALUE's `Rc<dyn EnvClosure<A,R>>` and its TYPE-position spelling agree. `None` if any param/result has no
 /// async representation.
 pub(super) fn env_closure_args(
+    ncx: &crate::ty::NameCtx,
     params: &[(crate::ast::StructId, Ty)],
     ret: &Ty,
 ) -> Option<(String, String)> {
     let mut arg_tys = Vec::with_capacity(params.len());
     for (_, t) in params {
-        arg_tys.push(async_closure_type(t)?);
+        arg_tys.push(async_closure_type(ncx, t)?);
     }
     let a = match arg_tys.len() {
         0 => "()".to_string(),
         1 => arg_tys.into_iter().next().unwrap(),
         _ => format!("({})", arg_tys.join(", ")),
     };
-    let r = async_closure_type(ret)?;
+    let r = async_closure_type(ncx, ret)?;
     Some((a, r))
 }
 
@@ -313,7 +314,7 @@ pub(super) fn env_closure_args(
 /// compound KEY (a `(Tuple Float Int64)` key) is NOT handled here — that still declines via `ty_is_ord` (the
 /// wrapper would have to be threaded through the tuple, a later increment); this covers the bare-`Float`
 /// key/element the corpus exercises. Any other type falls through to `rust_type` unchanged.
-pub(super) fn ord_key_type(ty: &Ty) -> Option<String> {
+pub(super) fn ord_key_type(ncx: &crate::ty::NameCtx, ty: &Ty) -> Option<String> {
     match ty {
         Ty::Float(ft) => Some(if ft.ground_width() == 32 {
             "__CdzF32".to_string()
@@ -330,7 +331,7 @@ pub(super) fn ord_key_type(ty: &Ty) -> Option<String> {
         Ty::Tuple(elems) => {
             let mut parts = Vec::with_capacity(elems.len());
             for e in elems.iter() {
-                parts.push(ord_key_type(e)?);
+                parts.push(ord_key_type(ncx, e)?);
             }
             Some(if parts.len() == 1 {
                 format!("({},)", parts[0])
@@ -345,7 +346,7 @@ pub(super) fn ord_key_type(ty: &Ty) -> Option<String> {
         Ty::Record(fields) => {
             let mut parts = Vec::with_capacity(fields.len());
             for t in fields.values() {
-                parts.push(ord_key_type(t)?);
+                parts.push(ord_key_type(ncx, t)?);
             }
             Some(if parts.len() == 1 {
                 format!("({},)", parts[0])
@@ -359,13 +360,13 @@ pub(super) fn ord_key_type(ty: &Ty) -> Option<String> {
         // — the wrapper composes). A NON-Option sum, or an Option over a payload with no ord-key mapping,
         // falls through to `rust_type`/decline as before. `is_flip_order_option_key` recognizes the built-in
         // Option (not a user `(type Option …)`, which emits its own decl-order enum with correct native Ord).
-        Ty::Sum { args, .. } if is_flip_order_option_key_shallow(ty) => {
+        Ty::Sum { args, .. } if is_flip_order_option_key_shallow(ncx, ty) => {
             // `Option a` has exactly one type arg = the `Some` payload.
             let inner = args.first()?;
-            let inner_key = ord_key_type(inner)?;
+            let inner_key = ord_key_type(ncx, inner)?;
             Some(format!("__CdzOpt<{inner_key}>"))
         }
-        _ => rust_type(ty),
+        _ => rust_type(ncx, ty),
     }
 }
 
@@ -378,8 +379,8 @@ pub(super) fn ord_key_type(ty: &Ty) -> Option<String> {
 /// (PR#894): a non-built-in never reaches the wrap path, so by the time this shallow test runs on an admitted
 /// key it IS the built-in. (Correcting the earlier doc, which wrongly claimed `wrap_ord_key` has a `Db` +
 /// re-checks `is_builtin_std_sum` — it does not; the gate is `ty_is_ord_key`.) Nominal is peeled first.
-pub(super) fn is_flip_order_option_key_shallow(ty: &Ty) -> bool {
-    matches!(ty.strip_nominal(), Ty::Sum { name, args, .. } if name == "Option" && args.len() == 1)
+pub(super) fn is_flip_order_option_key_shallow(ncx: &crate::ty::NameCtx, ty: &Ty) -> bool {
+    matches!(ty.strip_nominal(), Ty::Sum { decl, args } if args.len() == 1 && ncx.name_of(*decl) == Some("Option"))
 }
 
 /// GROUND the still-unsolved type VARIABLES in `ty` to the default `Int64`, recursively — the type-level
@@ -407,23 +408,23 @@ pub(super) fn is_flip_order_option_key_shallow(ty: &Ty) -> bool {
 /// which under-approximates a nested value (`List (List i64)` → wrongly `Vec<i64>` → E0308 at `.push`).
 /// A concrete leaf renders as itself; a compound recurses. `None` only if a NON-var component has no rep
 /// (a float Map key, a closure in sync-map position) — the same decline surface as `rust_type`.
-pub(super) fn rust_type_holes(ty: &Ty) -> Option<String> {
+pub(super) fn rust_type_holes(ncx: &crate::ty::NameCtx, ty: &Ty) -> Option<String> {
     match ty {
         Ty::Var(_) | Ty::Any => Some("_".to_string()),
-        Ty::List(e) => Some(format!("Vec<{}>", rust_type_holes(e)?)),
+        Ty::List(e) => Some(format!("Vec<{}>", rust_type_holes(ncx, e)?)),
         Ty::Set(e) => Some(format!(
             "std::collections::BTreeSet<{}>",
-            ord_key_type_holes(e)?
+            ord_key_type_holes(ncx, e)?
         )),
         Ty::Map(k, v) => Some(format!(
             "std::collections::BTreeMap<{}, {}>",
-            ord_key_type_holes(k)?,
-            rust_type_holes(v)?
+            ord_key_type_holes(ncx, k)?,
+            rust_type_holes(ncx, v)?
         )),
         Ty::Tuple(elems) => {
             let mut parts = Vec::with_capacity(elems.len());
             for e in elems.iter() {
-                parts.push(rust_type_holes(e)?);
+                parts.push(rust_type_holes(ncx, e)?);
             }
             Some(if parts.len() == 1 {
                 format!("({},)", parts[0])
@@ -434,7 +435,7 @@ pub(super) fn rust_type_holes(ty: &Ty) -> Option<String> {
         // A non-compound (scalar/text/sum/nominal/…) has no interior collection var to hole out — spell
         // it exactly as `rust_type` (a free var in a sum ARG is rare here and rust_type declines it, the
         // same fail-loud floor).
-        _ => rust_type(ty),
+        _ => rust_type(ncx, ty),
     }
 }
 
@@ -442,20 +443,20 @@ pub(super) fn rust_type_holes(ty: &Ty) -> Option<String> {
 /// var as `_` and otherwise defers to [`ord_key_type`] (the `__CdzF*`/`__CdzOpt` wrapper spellings). A
 /// key is almost always solved (it IS the lookup key), but a NESTED key inside a holed value (a
 /// `Map String (Set <var>)`) recurses here for the inner set element.
-fn ord_key_type_holes(ty: &Ty) -> Option<String> {
+fn ord_key_type_holes(ncx: &crate::ty::NameCtx, ty: &Ty) -> Option<String> {
     match ty {
         Ty::Var(_) | Ty::Any => Some("_".to_string()),
-        Ty::List(e) => Some(format!("Vec<{}>", rust_type_holes(e)?)),
+        Ty::List(e) => Some(format!("Vec<{}>", rust_type_holes(ncx, e)?)),
         Ty::Set(e) => Some(format!(
             "std::collections::BTreeSet<{}>",
-            ord_key_type_holes(e)?
+            ord_key_type_holes(ncx, e)?
         )),
         Ty::Map(k, v) => Some(format!(
             "std::collections::BTreeMap<{}, {}>",
-            ord_key_type_holes(k)?,
-            rust_type_holes(v)?
+            ord_key_type_holes(ncx, k)?,
+            rust_type_holes(ncx, v)?
         )),
-        _ => ord_key_type(ty),
+        _ => ord_key_type(ncx, ty),
     }
 }
 
@@ -557,7 +558,12 @@ pub(super) fn ty_is_ord_key(db: &mut Db, ty: &Ty) -> bool {
         // key → not emitted → no mismatch. (A user-Option ord key is vanishingly rare — the prelude owns
         // `Option` — and declining is sound: correct-wrap-or-honest-decline. A user sum NOT named `Option`
         // takes the strict `ty_is_ord` path unaffected.)
-        s @ Ty::Sum { name, args, .. } if name == "Option" && args.len() == 1 => {
+        s @ Ty::Sum { decl, args }
+            if args.len() == 1
+                && db
+                    .type_decl_by_occ(*decl)
+                    .is_some_and(|d| d.name == "Option") =>
+        {
             is_builtin_option(db, s)
         }
         // A TUPLE key is ord iff each element is ord-KEY-able (a float element is OK via `__CdzF`) — matching
@@ -588,13 +594,13 @@ pub(super) fn ty_is_ord_key(db: &mut Db, ty: &Ty) -> bool {
 /// which emits its own decl-order enum and must NOT be `__CdzOpt`-wrapped). Peels a nominal. This is the
 /// authority the key-wrap path needs but `is_flip_order_option_key_shallow` (name-only, Db-free) cannot be.
 pub(super) fn is_builtin_option(db: &mut Db, ty: &Ty) -> bool {
-    if let Ty::Sum { decl, name, args } = ty.strip_nominal()
-        && name == "Option"
+    if let Ty::Sum { decl, args } = ty.strip_nominal()
         && args.len() == 1
     {
         let decl_occ = *decl;
         return db
             .type_decl_by_occ(decl_occ)
+            .filter(|d| d.name == "Option")
             .map(|d| {
                 let d = d.clone();
                 crate::backend::rust::enums::is_builtin_std_sum(db, &d)
@@ -712,10 +718,10 @@ fn is_rust_primitive_type(s: &str) -> bool {
 /// type); an empty one is `()`. `None` if any element has no native mapping. Shared by `Ty::Tuple` and
 /// `Ty::Record` (a record IS a tuple of its fields' types in sorted-key order — the `BTreeMap`'s
 /// `.values()` iterate sorted, so passing them here gives the right positional order).
-fn tuple_type<'a>(elems: impl Iterator<Item = &'a Ty>) -> Option<String> {
+fn tuple_type<'a>(ncx: &crate::ty::NameCtx, elems: impl Iterator<Item = &'a Ty>) -> Option<String> {
     let mut parts = Vec::new();
     for e in elems {
-        parts.push(rust_type(e)?);
+        parts.push(rust_type(ncx, e)?);
     }
     if parts.is_empty() {
         return Some("()".to_string());

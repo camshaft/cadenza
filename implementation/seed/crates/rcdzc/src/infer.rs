@@ -1395,7 +1395,6 @@ fn width_fault_against_ty(db: &mut Db, value: StructId, want: &Ty) -> Option<Rej
         && let Some(&sum_arg) = args.first()
         && let Ty::Sum {
             decl,
-            name,
             args: sum_args,
         } = type_of(db, sum_arg)
         && !sum_args.is_empty()
@@ -1407,7 +1406,6 @@ fn width_fault_against_ty(db: &mut Db, value: StructId, want: &Ty) -> Option<Rej
         new_args[0] = want.clone();
         let payload_sum = Ty::Sum {
             decl,
-            name,
             args: std::rc::Rc::from(new_args),
         };
         return width_fault_against_ty(db, sum_arg, &payload_sum);
@@ -4850,7 +4848,7 @@ fn compound_ctor_type(db: &mut Db, prim: crate::resolved::Prim, args: &[StructId
 /// declaration is somehow absent. Used to type `ast-splice-lift`'s `(List Ast)` result.
 fn ast_sum_ty(db: &Db) -> Option<Ty> {
     let occ = db.type_decls.iter().find(|t| t.name == "Ast")?.occ;
-    Some(db.normalize_sum(occ, "Ast".to_string(), Vec::new()))
+    Some(db.normalize_sum(occ, Vec::new()))
 }
 
 /// The result type of `(Qty.pow q n)`: q's inner numeric type carried over, with q's unit raised to the
@@ -6238,9 +6236,9 @@ fn call_argument_mismatch_message(
     )
 }
 
-fn option_payload_mismatch_hint(expected: &Ty, actual: &Ty) -> Option<String> {
-    if let Ty::Sum { name, args, .. } = actual
-        && name == "Option"
+fn option_payload_mismatch_hint(ncx: &NameCtx, expected: &Ty, actual: &Ty) -> Option<String> {
+    if let Ty::Sum { decl, args } = actual
+        && ncx.name_of(*decl) == Some("Option")
         && let [payload] = &args[..]
         && payload.agrees_with(expected)
     {
@@ -7055,8 +7053,8 @@ fn peer_type_delta_hint(first: &Ty, other: &Ty, ncx: &NameCtx) -> Option<String>
         // the real cause (same dimension, different units — convert with `in`/`as`) rather than two
         // identical-looking types.
         .or_else(|| qty_scale_mismatch_hint(first, other))
-        .or_else(|| option_payload_mismatch_hint(first, other))
-        .or_else(|| option_payload_mismatch_hint(other, first))
+        .or_else(|| option_payload_mismatch_hint(ncx, first, other))
+        .or_else(|| option_payload_mismatch_hint(ncx, other, first))
         .or_else(|| fn_not_applied_hint(first, other, ncx))
         .or_else(|| fn_not_applied_hint(other, first, ncx))
 }
@@ -9433,8 +9431,8 @@ fn check_application(
         // (match the Option to handle `None`), attached by the generic-path `option_payload_mismatch_hint`
         // below. Exclude it from the cross-kind sum-vs-atom branch (which the `Ty::Sum` addition to
         // `is_compound` would otherwise capture first), so the "the value is optional; match it" hint wins.
-        let is_option_payload_pair = option_payload_mismatch_hint(&a, &b).is_some()
-            || option_payload_mismatch_hint(&b, &a).is_some();
+        let is_option_payload_pair = option_payload_mismatch_hint(&db.name_ctx(), &a, &b).is_some()
+            || option_payload_mismatch_hint(&db.name_ctx(), &b, &a).is_some();
         let cross_kind = !is_option_payload_pair
             && ((is_text(&a) && is_scalar(&b))
                 || (is_scalar(&a) && is_text(&b))
@@ -11202,7 +11200,9 @@ fn check_application(
                                 format!("wrap the value in `{variant}`"),
                             )),
                         );
-                    } else if let Some(hint) = option_payload_mismatch_hint(&sparam, &sat) {
+                    } else if let Some(hint) =
+                        option_payload_mismatch_hint(&db.name_ctx(), &sparam, &sat)
+                    {
                         // The INVERSE of the wrap-variant case: the ARGUMENT is `(Option T)` where the
                         // param wants the bare payload `T` — a fallible read (`(+ ((. List at) xs i) 1)`)
                         // used directly. No total unwrap exists (an Option is matched, not unwrapped), so no
@@ -14352,7 +14352,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                             // to handle the absent (`None`) case") instead of only naming two types. Tail
                             // only (no fix), and only when the wrap chain found nothing.
                             let option_tail = if wrap.is_none() {
-                                option_payload_mismatch_hint(&annot_ty, &expr_ty)
+                                option_payload_mismatch_hint(&db.name_ctx(), &annot_ty, &expr_ty)
                             } else {
                                 None
                             };
