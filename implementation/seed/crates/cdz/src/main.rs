@@ -54,6 +54,38 @@ mod doc_module;
 /// The unified tool. The name reported in tool-level diagnostics is `cdz`.
 const PROG: &str = "cdz";
 
+/// An RAII guard that best-effort removes a temp path when dropped — used by the driver-scaffolding
+/// paths (`run_ml`, `chor`, the sandboxed-build queries) that write pid-stamped temp files/dirs and must
+/// clean them on EVERY exit path (success, error, or panic-unwind). `RemoveOnDrop::file` removes a file,
+/// `RemoveOnDrop::dir` removes a directory tree; removal errors are ignored (the path may already be gone).
+struct RemoveOnDrop {
+    path: std::path::PathBuf,
+    is_dir: bool,
+}
+
+impl RemoveOnDrop {
+    fn file(path: std::path::PathBuf) -> Self {
+        Self {
+            path,
+            is_dir: false,
+        }
+    }
+
+    fn dir(path: std::path::PathBuf) -> Self {
+        Self { path, is_dir: true }
+    }
+}
+
+impl Drop for RemoveOnDrop {
+    fn drop(&mut self) {
+        let _ = if self.is_dir {
+            std::fs::remove_dir_all(&self.path)
+        } else {
+            std::fs::remove_file(&self.path)
+        };
+    }
+}
+
 #[derive(Parser)]
 #[command(
     name = "cdz",
@@ -773,13 +805,7 @@ fn run_run_ml(args: &RunMlArgs) -> ExitCode {
     // panic or an early `return` (e.g. a future guard added below `compile_run_ml_driver`) would otherwise
     // leak a `zz-run-ml-driver-<pid>.cdz` into every agent's `git status`. (A SIGTERM'd process still can't
     // run Drop — that residue is what the `.gitignore` entry covers — but this closes every in-process path.)
-    struct DriverFile(std::path::PathBuf);
-    impl Drop for DriverFile {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.0);
-        }
-    }
-    let _driver_guard = DriverFile(driver_path.clone());
+    let _driver_guard = RemoveOnDrop::file(driver_path.clone());
 
     // 4. Compile + run the driver by shelling `cdz` to itself (install-location-independent via current_exe),
     //    the same compile→run path the gate uses for rcdzc. Capture stdout (the rendered Option). The
@@ -932,15 +958,9 @@ fn run_chor(args: &ChorArgs) -> ExitCode {
     //    RAII-removed on every exit path.
     let pid = std::process::id();
     let driver_path = src_dir.join(format!("zz-chor-driver-{pid}.cdz"));
-    struct TempFile(std::path::PathBuf);
-    impl Drop for TempFile {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.0);
-        }
-    }
     let is_sexp = args.file.ends_with(".sexp") || args.file.ends_with(".chor");
     // `_proto_guard` must outlive the driver run, so bind it in this scope even when unused (the .sexp path).
-    let mut _proto_guard: Option<TempFile> = None;
+    let mut _proto_guard: Option<RemoveOnDrop> = None;
     let driver = if is_sexp {
         // Embed the s-expr as a one-line Cadenza string literal (escape `\`, `"`, newline→space — protocol
         // s-exprs are whitespace-insensitive, and `read` skips interior whitespace) and call the package's
@@ -960,7 +980,7 @@ fn run_chor(args: &ChorArgs) -> ExitCode {
             eprintln!("{PROG} chor: cannot write protocol temp module: {e}");
             return ExitCode::FAILURE;
         }
-        _proto_guard = Some(TempFile(proto_path.clone()));
+        _proto_guard = Some(RemoveOnDrop::file(proto_path.clone()));
         format!(
             "import {{ render-all }} from \"chor-driver\"\nimport {{ protocol, roles }} from \"{proto_mod}\"\ndef main() = render-all(roles, protocol)\nexport {{ main }}\n"
         )
@@ -969,7 +989,7 @@ fn run_chor(args: &ChorArgs) -> ExitCode {
         eprintln!("{PROG} chor: cannot write driver: {e}");
         return ExitCode::FAILURE;
     }
-    let _driver_guard = TempFile(driver_path.clone());
+    let _driver_guard = RemoveOnDrop::file(driver_path.clone());
 
     // 4. Compile + run the driver, capturing the rendered String bundle.
     let bundle = match compile_run_chor_driver(&driver_path) {
@@ -1245,13 +1265,7 @@ fn run_run_emitted(args: &RunEmittedArgs) -> ExitCode {
         eprintln!("{PROG} run-emitted: cannot write driver: {e}");
         return ExitCode::FAILURE;
     }
-    struct DriverFile(std::path::PathBuf);
-    impl Drop for DriverFile {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.0);
-        }
-    }
-    let _driver_guard = DriverFile(driver_path.clone());
+    let _driver_guard = RemoveOnDrop::file(driver_path.clone());
 
     // 4. Compile + run the driver via `cdz` to self → the rendered `Option(List UInt8)`, then map to a
     //    verdict: None → declined; Some(bytes) → run the core module (i64 → value, trap → declined,
@@ -1615,13 +1629,7 @@ fn emit_rust_module(exe: &std::path::Path, source: &str) -> EmitOutcome {
     if let Err(e) = std::fs::create_dir_all(&dir) {
         return EmitOutcome::Harness(format!("create temp dir: {e}"));
     }
-    struct TmpDir(std::path::PathBuf);
-    impl Drop for TmpDir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-    let _guard = TmpDir(dir.clone());
+    let _guard = RemoveOnDrop::dir(dir.clone());
     let src = dir.join("prog.sexp");
     if let Err(e) = std::fs::write(&src, source) {
         return EmitOutcome::Harness(format!("write source: {e}"));
@@ -1703,13 +1711,7 @@ fn compile_and_run_rust_driver(exe: &std::path::Path, driver: &str) -> Result<St
     let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!("cdz-run-rust-{}-{seq}", std::process::id()));
     let _ = std::fs::create_dir_all(&dir);
-    struct TmpDir(std::path::PathBuf);
-    impl Drop for TmpDir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-    let _guard = TmpDir(dir.clone());
+    let _guard = RemoveOnDrop::dir(dir.clone());
     let src = dir.join("prog.rs");
     let bin = dir.join("prog");
     std::fs::write(&src, driver).map_err(|e| format!("write driver: {e}"))?;
