@@ -3340,13 +3340,25 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
                 trunk_commit_age,
                 PR_SYNC_RECENT_TRUNK_SECS,
             );
+        // Sixth exoneration (pr-sync only): ACTIVE gate/build procs. A long authoritative gate — esp. the
+        // compiler-ml spine now folded into localGate (~26min on a Core-touch MR) — runs as DETACHED procs
+        // that may not hold a `priority` lease the whole time, with trunk parked throughout, so the lease
+        // + trunk exonerations above can all miss and pr-sync's idle-at-prompt-while-polling false-flags as
+        // a stall (concierge 2026-08-10, now recurring since the spine fold). A running `nix build
+        // local-gate` / `cdz test` / `xtask gate` proc is unforgeable proof it's gating NOW — the process-
+        // level analogue of the pane-shows-work exemption. Only spend the `ps` when a stall is already
+        // suspected + only for pr-sync (same cost discipline as trunk/gate_exonerates).
+        let gate_procs_exonerates = suspected_stall
+            && a.name == "pr-sync"
+            && gate_procs_active_exonerates(&a.name, gate_procs_running());
         let drain_stall = drain_stall_confirmed(
             suspected_stall,
             working_on_recheck
                 || queue_draining
                 || trunk_exonerates
                 || gate_exonerates
-                || recent_trunk_exonerates,
+                || recent_trunk_exonerates
+                || gate_procs_exonerates,
         );
         if drain_stall {
             drain_stalls += 1;
@@ -5108,6 +5120,44 @@ fn trunk_advance_exonerates(name: &str, trunk_commit_age: Option<u64>, stale_aft
 /// priority-lease count it computed.
 fn gate_in_flight_exonerates(name: &str, live_priority_leases: usize) -> bool {
     name == "pr-sync" && live_priority_leases > 0
+}
+
+/// Pure: does an ACTIVE gate/build process exonerate pr-sync from the drain-stall flag? Mirrors
+/// `gate_in_flight_exonerates` but keyed on live gate PROCESSES rather than the check-lease — because a
+/// long authoritative gate (esp. the compiler-ml spine now folded into localGate, ~26min on a Core-touch
+/// MR) runs as DETACHED procs that don't necessarily hold a `priority` lease for their full duration,
+/// and trunk stays parked the whole time. So all the trunk/lease exonerations can miss, and pr-sync's
+/// idle-at-prompt-while-polling looks exactly like a stall (concierge 2026-08-10: escalated every ~30min
+/// plus spuriously nudged mid-gate). Running gate/build procs are unforgeable proof pr-sync is GATING
+/// (not stalled) — the process-level analogue of the pane-shows-work exemption. Pr-sync only; the caller
+/// cost-gates the `ps` scan to a suspected stall.
+fn gate_procs_active_exonerates(name: &str, gate_procs_running: bool) -> bool {
+    name == "pr-sync" && gate_procs_running
+}
+
+/// Are gate/build processes running right now (the authoritative merge gate in flight)? Scans `ps` for
+/// the signatures a localGate run spawns: `nix build .#checks…local-gate`, a `cdz test` (the cad-tests/
+/// compiler-ml spine), or an `xtask gate`. Any match ⇒ a gate is grinding. Fails SAFE: a `ps` error →
+/// false → no exoneration → the heuristic falls back to its other signals rather than suppressing a real
+/// stall. Cheap (one `ps`), and the caller only invokes it when a stall is already suspected + for pr-sync.
+fn gate_procs_running() -> bool {
+    let out = Command::new("ps").args(["-eo", "args"]).output();
+    let Ok(o) = out else {
+        return false; // can't inspect → don't exonerate (fail safe toward flagging, not suppressing).
+    };
+    ps_output_shows_gate_proc(&String::from_utf8_lossy(&o.stdout))
+}
+
+/// Pure: does `ps` output contain a gate/build process line? Split out so the signature matching is
+/// unit-tested without spawning `ps`. Matches a localGate nix build, a `cdz test` (cad-tests/spine), or
+/// an `xtask gate`. Deliberately does NOT match `cargo xtask fleet …` (the drain loop itself) or a bare
+/// `nix` (a substituter fetch) — only real gate work.
+fn ps_output_shows_gate_proc(ps: &str) -> bool {
+    ps.lines().any(|l| {
+        (l.contains("nix") && l.contains("local-gate"))
+            || l.contains("cdz test")
+            || (l.contains("xtask") && l.contains("gate"))
+    })
 }
 
 /// Fixed "trunk advanced recently" window (seconds) for the pr-sync COMPOSE-window exoneration. Sized to
@@ -15352,6 +15402,41 @@ mod tests {
         // mail must still flag even if (somehow) a priority lease is live.
         assert!(!gate_in_flight_exonerates("v-runtime", 1));
         assert!(!gate_in_flight_exonerates("reviewer", 3));
+    }
+
+    #[test]
+    fn gate_procs_active_exonerates_pr_sync_only_when_a_gate_proc_runs() {
+        // pr-sync with a live gate/build proc (the detached spine gate, no lease held) → exonerated.
+        assert!(gate_procs_active_exonerates("pr-sync", true));
+        // No gate proc → not exonerated (a genuinely idle pr-sync with unconsumed mail is a real stall).
+        assert!(!gate_procs_active_exonerates("pr-sync", false));
+        // Never for a non-pr-sync agent — only the single writer can't-drain-while-gating.
+        assert!(!gate_procs_active_exonerates("v-runtime", true));
+    }
+
+    #[test]
+    fn ps_output_shows_gate_proc_matches_real_gate_work_only() {
+        // A localGate nix build, a cdz test (cad-tests/spine), an xtask gate → all count as gating.
+        assert!(ps_output_shows_gate_proc(
+            "/nix/store/x/bin/nix build .#checks.aarch64-linux.local-gate --no-link"
+        ));
+        assert!(ps_output_shows_gate_proc(
+            "cdz test implementation/compiler-ml"
+        ));
+        assert!(ps_output_shows_gate_proc(
+            "target/release/xtask gate --files spec/semantics/14-effects-and-handlers.sexp"
+        ));
+        // Multi-line ps: any matching line counts.
+        assert!(ps_output_shows_gate_proc(
+            "bash\ntmux: server\ncdz test implementation/cad\nzsh"
+        ));
+        // The drain LOOP itself (`fleet inbox`/`fleet sync`) is NOT a gate proc — must not false-exonerate.
+        assert!(!ps_output_shows_gate_proc(
+            "target/release/xtask fleet inbox pr-sync\ncargo xtask fleet sync"
+        ));
+        // A bare nix substituter fetch (no local-gate) is not a gate.
+        assert!(!ps_output_shows_gate_proc("nix-daemon\nnix store gc"));
+        assert!(!ps_output_shows_gate_proc(""));
     }
 
     #[test]
