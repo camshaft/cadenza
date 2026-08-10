@@ -7134,7 +7134,25 @@ pub fn reducer_core_module(
         import_items.extend_from_slice(&import_item(o.name, ti));
         import_index.insert(o.name, ti);
     }
-    let import_sec = section(2, &wasm_vec(e + k, &import_items));
+    // When there are kv peer ops (e>0), the shim's marshal STORES + the kv WIT import's (ptr,len) READS +
+    // the apply wrapper's copy-out must all share ONE linear memory. So the program IMPORTS `mem`.`mem`
+    // (limits {min:1}) — the shared memory the assembler provides via `shared_mem_module` — instead of
+    // defining its own (which the kv-op canon-lower could not bind at lower time). A memory import does NOT
+    // occupy a func index (separate index space). e=0 (b1/b2) keeps a locally-DEFINED memory (below).
+    let n_imports = if e > 0 {
+        let mut item = uleb_bytes("mem".len() as u64);
+        item.extend_from_slice(b"mem");
+        item.extend_from_slice(&uleb_bytes("mem".len() as u64));
+        item.extend_from_slice(b"mem");
+        item.push(0x02); // import desc: memory
+        item.push(0x00); // limits flag: min only
+        item.push(0x01); // min 1 page
+        import_items.extend_from_slice(&item);
+        e + k + 1
+    } else {
+        e + k
+    };
+    let import_sec = section(2, &wasm_vec(n_imports, &import_items));
 
     // Core func indices: shims e+k..e+k+e; defined funcs e+k+e .. (apply = def_base+apply_pos); wrapper;
     // realloc. The guest body's sibling `Core::Call` resolves via layout.abs = import_base(=def_base) + pos.
@@ -7154,8 +7172,15 @@ pub fn reducer_core_module(
     uleb128((def_base + n + 1) as u64, &mut func_items);
     let func_sec = section(wasm_abi::CORE_SEC_FUNCTION, &wasm_vec(e + n + 2, &func_items));
 
-    // ── Memory section ── one memory, min 1 page (the canon-lift Memory option binds mem 0).
-    let mem_sec = section(wasm_abi::CORE_SEC_MEMORY, &wasm_vec(1, &[0x00, 0x01]));
+    // ── Memory section ── DEFINE a local memory ONLY when there are no kv ops (e==0); with kv (e>0) the
+    // memory is IMPORTED as `mem`.`mem` (above) so the shim/kv/wrapper share it. Either way memory INDEX 0
+    // is the memory (an imported memory precedes any defined one in the index space), so the canon-lift's
+    // Memory option + the "memory" export both name index 0 unchanged.
+    let mem_sec = if e > 0 {
+        Vec::new()
+    } else {
+        section(wasm_abi::CORE_SEC_MEMORY, &wasm_vec(1, &[0x00, 0x01]))
+    };
 
     // ── Export section ── apply → wrapper, memory → 0, cabi_realloc.
     let export_sec = {

@@ -630,10 +630,16 @@ pub fn assemble_reducer_apply(
         }
         section(sec::ALIAS, &wasm_vec(e + k, &items))
     };
-    // sec 8 (first): lower each aliased op (comp funcs `0..e+k`) → core funcs `0..e+k`.
+    // sec 8 (first): lower each aliased op → core funcs `0..e+k`. The e kv PEER ops take `list<u8>` params
+    // (+ get returns option<list<u8>>), so their canon-lower carries the MEMORY option (core memory 0 = the
+    // shared_mem_module's memory, aliased below) — the `(ptr,len)` lowering reads/writes it. The k runtime
+    // ops are handle-scalar → memoryless plain lower. (e=0 → all plain, byte-identical to the old shape.)
     let lower_sec = {
         let mut items = Vec::new();
-        for i in 0..(e + k) {
+        for i in 0..e {
+            items.extend_from_slice(&canon_lower_item_mem(i as u32, 0));
+        }
+        for i in e..(e + k) {
             items.extend_from_slice(&canon_lower_item(i as u32));
         }
         section(sec::CANON, &wasm_vec(e + k, &items))
