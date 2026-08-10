@@ -287,8 +287,11 @@ pub enum Core {
     /// A boolean constant.
     ConstBool(bool),
     /// A string constant — the canonical text of a string literal. A `Ty::String` value; escapes as its
-    /// baked UTF-8 bytes (like a constant compound). Runtime string ops are a later stage.
-    ConstStr(String),
+    /// baked UTF-8 bytes (like a constant compound). Runtime string ops are a later stage. Behind an
+    /// `Rc<str>` so cloning a `Core::ConstStr` (which `core_of` does on every memo read + every recursive
+    /// Core walk per node) is a refcount bump, not a UTF-8 heap copy — same rationale as `Core::Record`'s
+    /// `Rc<BTreeMap>` and the element families' `Rc<[StructId]>`.
+    ConstStr(std::rc::Rc<str>),
     /// A CHAR constant — a single Unicode scalar value (`Ty::Char`). Constant equality/ordering compare
     /// by scalar value (`c as u32`). Crossing the boundary as a char value + `Char.to-int`/`from-int` are
     /// later increments (a char at the boundary still declines — no scalar machine path yet).

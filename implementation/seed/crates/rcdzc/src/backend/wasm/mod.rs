@@ -1115,7 +1115,7 @@ fn collect_host_arg_strings_at(db: &mut Db, id: crate::ast::StructId, out: &mut 
             if !peer_bound {
                 for a in &args {
                     if let Core::ConstStr(s) = crate::lower::core_of(db, *a) {
-                        out.push(s);
+                        out.push(s.to_string());
                     }
                 }
             }

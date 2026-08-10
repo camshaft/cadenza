@@ -257,11 +257,11 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         // (no pragma, or `<T>` not Rational) stays `ConstInt`.
         Resolved::Int(v) => default_fraction_rational(db, id).unwrap_or(Core::ConstInt(v)),
         Resolved::Bool(b) => Core::ConstBool(b),
-        Resolved::Str(s) => Core::ConstStr(s),
+        Resolved::Str(s) => Core::ConstStr(s.into()),
         // A symbol literal (`#"meter"`) shares the constant-string REP — its identity is its text — so it
         // lowers to `Core::ConstStr` exactly like a `Symbol.of` on a constant string. Only the static type
         // (`Ty::Symbol`) differs, so `=` folds via the shared constant-string equality.
-        Resolved::SymbolConst(s) => Core::ConstStr(s),
+        Resolved::SymbolConst(s) => Core::ConstStr(s.into()),
         // A char literal (`#\a`) folds to its `Core::ConstChar` — a `Ty::Char` value. Constant
         // equality/ordering compare by scalar value; crossing the boundary as a char value is a later
         // increment (a char at the boundary declines).
@@ -2278,7 +2278,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     match (core_of(db, args[0]), core_of(db, args[1])) {
                         (Core::ConstStr(a), Core::ConstStr(b)) if a.is_ascii() && b.is_ascii() => {
                             trace!(target: "rcdzc::fold", node = id.0, "String.concat folds two constant ASCII strings");
-                            Core::ConstStr(format!("{a}{b}"))
+                            Core::ConstStr(format!("{a}{b}").into())
                         }
                         (Core::Poison(r), _) | (_, Core::Poison(r)) => Core::Poison(r),
                         // A RUNTIME string concatenation: a String value IS a flat UTF-8 byte leaf (an i32
@@ -2818,7 +2818,7 @@ fn lower_print(db: &mut Db, ast_val: StructId) -> Core {
             "print of a runtime AST value is not yet computed (constant AST values only)",
         ));
     }
-    Core::ConstStr(text)
+    Core::ConstStr(text.into())
 }
 
 /// Render a compile-time-visible `Ast` value (a `Core::SumNew` at an Int/Name/List disc) as canonical
@@ -3102,14 +3102,18 @@ fn reify_read_ast(db: &mut Db, node: &SNode, disc: &AstDiscs) -> Core {
             }
         }
         SNode::Str(s) => {
-            let payload = synth_core(db, Core::ConstStr(s.clone()), crate::ty::Ty::String);
+            let payload = synth_core(db, Core::ConstStr(s.clone().into()), crate::ty::Ty::String);
             Core::SumNew {
                 disc: disc.str,
                 payloads: vec![payload],
             }
         }
         SNode::Name(name) => {
-            let payload = synth_core(db, Core::ConstStr(name.clone()), crate::ty::Ty::String);
+            let payload = synth_core(
+                db,
+                Core::ConstStr(name.clone().into()),
+                crate::ty::Ty::String,
+            );
             Core::SumNew {
                 disc: disc.name,
                 payloads: vec![payload],
@@ -3857,7 +3861,7 @@ fn decode_ast_value(db: &mut Db, raw: &[u8], disc: &AstDiscs) -> Option<(StructI
             let end = 4usize.checked_add(len)?;
             let sbytes = rest.get(4..end)?;
             let s = std::str::from_utf8(sbytes).ok()?.to_string();
-            let payload = synth_core(db, Core::ConstStr(s), crate::ty::Ty::String);
+            let payload = synth_core(db, Core::ConstStr(s.into()), crate::ty::Ty::String);
             let node = synth_core(
                 db,
                 Core::SumNew {
@@ -3876,7 +3880,7 @@ fn decode_ast_value(db: &mut Db, raw: &[u8], disc: &AstDiscs) -> Option<(StructI
             let end = 4usize.checked_add(len)?;
             let sbytes = rest.get(4..end)?;
             let s = std::str::from_utf8(sbytes).ok()?.to_string();
-            let payload = synth_core(db, Core::ConstStr(s), crate::ty::Ty::String);
+            let payload = synth_core(db, Core::ConstStr(s.into()), crate::ty::Ty::String);
             let node = synth_core(
                 db,
                 Core::SumNew {
@@ -4925,7 +4929,7 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
     let const_scrut = match &scrut_core {
         Core::ConstInt(v) => Some(GuardFoldScrut::Int(v.clone())),
         Core::ConstBool(b) => Some(GuardFoldScrut::Bool(*b)),
-        Core::ConstStr(s) => Some(GuardFoldScrut::Str(s.clone())),
+        Core::ConstStr(s) => Some(GuardFoldScrut::Str(s.to_string())),
         Core::ConstChar(c) => Some(GuardFoldScrut::Char(*c)),
         _ => None,
     };
@@ -10596,7 +10600,7 @@ fn build_tree_ft(
                     // A string-literal payload test folds against a constant `Core::ConstStr` by value
                     // equality (both NFC-normalized by the reader) — `(Ast.Name "+")` matches an
                     // `Ast.Name` carrying "+". A runtime string payload has no `ConstStr` → declines below.
-                    (crate::core::Probe::Str(s), Core::ConstStr(cs)) => s == cs,
+                    (crate::core::Probe::Str(s), Core::ConstStr(cs)) => s.as_str() == &cs[..],
                     // A char-literal payload test folds against a constant `Core::ConstChar` by codepoint
                     // equality — `(Tok.Ch #\a)` matches a `Tok.Ch` carrying `#\a`. A runtime char payload
                     // has no `ConstChar` → declines below.
@@ -15310,7 +15314,7 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
         && let Core::ConstStr(s) = core_of(db, id)
     {
         let symbol_of = member_access(b, "Symbol", "of");
-        let text = b.atom_leaf(Leaf::Str(s));
+        let text = b.atom_leaf(Leaf::Str(s.to_string()));
         return Some(b.list(vec![symbol_of, text]));
     }
     // A TYPE-VALUE renders its concrete type's NAME surface — `(: Int64 Type)`, whose VALUE node is the
@@ -15352,7 +15356,7 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
         Core::ConstBool(x) => Some(b.atom_leaf(Leaf::Bool(x))),
         // A constant string bakes as its `"…"` leaf — the codec encodes it (KIND_STR: len + UTF-8
         // bytes), and the host reader lifts it back to a string value.
-        Core::ConstStr(s) => Some(b.atom_leaf(Leaf::Str(s))),
+        Core::ConstStr(s) => Some(b.atom_leaf(Leaf::Str(s.to_string()))),
         // A constant char bakes as its `#\c` leaf — the codec encodes it (KIND_CHAR), and the host reader
         // renders it `#\c`. This lets a constant `(Some #\a)` (a `Char.from-int` fold) cross the boundary.
         Core::ConstChar(c) => Some(b.atom_leaf(Leaf::Char(c))),
@@ -22580,7 +22584,7 @@ fn scalar_const_key(db: &mut Db, id: StructId) -> Option<ScalarKey> {
             })
         }
         Core::ConstBool(b) => Some(ScalarKey::Bool(b)),
-        Core::ConstStr(s) => Some(ScalarKey::Str(s)),
+        Core::ConstStr(s) => Some(ScalarKey::Str(s.to_string())),
         Core::ConstChar(c) => Some(ScalarKey::Char(c)),
         Core::ConstFloat(d) => Some(ScalarKey::FloatBits(d.to_f64_bits())),
         Core::ConstFloatNan => Some(ScalarKey::FloatNan),
@@ -25055,7 +25059,7 @@ fn decode_bin_field(
         Some(BinDecoded::Int(n)) => Core::ConstInt(n.clone()),
         // A `utf8` segment binds the decoded, already-validated string as a `Core::ConstStr` (typed
         // `Ty::String`) — the same rep a string literal lowers to, so it rides the constant path.
-        Some(BinDecoded::Str(s)) => Core::ConstStr(s.clone()),
+        Some(BinDecoded::Str(s)) => Core::ConstStr(s.clone().into()),
         Some(BinDecoded::ByteRange(s, e)) => {
             // A synthesized constant `Core::BytesOf` of the bound sub-range (same shape the Bytes.slice
             // fold produces): fresh UInt8 element leaves, core/ty pre-filled so it rides the constant path.
