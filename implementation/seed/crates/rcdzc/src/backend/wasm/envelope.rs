@@ -2081,6 +2081,79 @@ fn shared_mem_module() -> Vec<u8> {
     out
 }
 
+/// The SHARED-MEMORY + REALLOC core module (B3 reducer kv): a one-page memory EXPORTED as `mem` PLUS a
+/// `cabi_realloc` func (core func 0). B3's kv `get` returns `option<list<u8>>` — a COMPOUND result whose
+/// canon-LOWER (the guest calling the host's get) must RECONSTRUCT the returned list into guest memory,
+/// which needs a Realloc canon option (a real allocating func), unlike `put` (no result → Memory only).
+/// The realloc is a FIXED-REGION bump: it ignores its args and returns a constant high pointer (`16384`,
+/// above the kv shim's scratch regions 4096/8192/12288) — SAFE because a single `get` result is written by
+/// the host + immediately copied out by the shim BEFORE the next kv call, so one live allocation at a time.
+/// `cabi_realloc: (old_ptr, old_size, align, new_size) -> new_ptr` (the canonical ABI signature).
+fn shared_mem_realloc_module() -> Vec<u8> {
+    use crate::backend::wasm::wasm_abi::op;
+    let mem_sec = section(wasm_abi::CORE_SEC_MEMORY, &wasm_vec(1, &[0x00, 0x01])); // limits {min:1}
+    // Type 0: (i32,i32,i32,i32) -> i32 (cabi_realloc).
+    let type_sec = {
+        let mut t = vec![wasm_abi::CORE_FUNCTYPE_FORM];
+        t.extend_from_slice(&wasm_vec(4, &[wasm_abi::CORE_I32; 4]));
+        t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
+        section(wasm_abi::CORE_SEC_TYPE, &wasm_vec(1, &t))
+    };
+    let func_sec = section(wasm_abi::CORE_SEC_FUNCTION, &wasm_vec(1, &{
+        let mut f = Vec::new();
+        uleb128(0, &mut f); // func 0 uses type 0
+        f
+    }));
+    let export_sec = {
+        let mut items = Vec::new();
+        // mem = memory 0.
+        let mut m = uleb_bytes("mem".len() as u64);
+        m.extend_from_slice(b"mem");
+        m.push(wasm_abi::EXPORT_KIND_MEMORY);
+        uleb128(0, &mut m);
+        items.extend_from_slice(&m);
+        // cabi_realloc = func 0.
+        let mut r = uleb_bytes("cabi_realloc".len() as u64);
+        r.extend_from_slice(b"cabi_realloc");
+        r.push(wasm_abi::EXPORT_KIND_FUNC);
+        uleb128(0, &mut r);
+        items.extend_from_slice(&r);
+        section(wasm_abi::CORE_SEC_EXPORT, &wasm_vec(2, &items))
+    };
+    let code_sec = {
+        // body: `i32.const 16384; end` (no locals) — return the fixed high scratch pointer.
+        let mut inner = uleb_bytes(0); // 0 local groups
+        inner.push(op::I32_CONST);
+        crate::backend::wasm::encode::sleb128(16384, &mut inner);
+        inner.push(op::END);
+        let mut entry = uleb_bytes(inner.len() as u64);
+        entry.extend_from_slice(&inner);
+        section(wasm_abi::CORE_SEC_CODE, &wasm_vec(1, &entry))
+    };
+    let mut out = Vec::new();
+    out.extend_from_slice(wasm_abi::CORE_MAGIC);
+    out.extend_from_slice(&type_sec);
+    out.extend_from_slice(&func_sec);
+    out.extend_from_slice(&mem_sec);
+    out.extend_from_slice(&export_sec);
+    out.extend_from_slice(&code_sec);
+    out
+}
+
+/// [`canon_lower_item_mem`] plus a Realloc option (`0x04 <realloc-func-idx>`) — for a lowered peer op whose
+/// COMPOUND result (B3 kv `get`'s `option<list<u8>>`) the canon-lower reconstructs into memory. Options
+/// are ordered Memory-then-Realloc (the same order `canon_lift_list_item` uses; pinned by the oracle).
+fn canon_lower_item_mem_realloc(comp_func: u32, mem_idx: u32, realloc_func: u32) -> Vec<u8> {
+    let mut item = vec![0x01, 0x00];
+    uleb128(comp_func as u64, &mut item);
+    item.push(0x02); // canon options: count 2
+    item.push(0x03); // CanonicalOption::Memory
+    uleb128(mem_idx as u64, &mut item);
+    item.push(0x04); // CanonicalOption::Realloc
+    uleb128(realloc_func as u64, &mut item);
+    item
+}
+
 /// The HOST-IMPORT + MEMORY shape (E2h-string): a program that delegates a single effect `iface` whose
 /// operations take a `string` parameter. Adds, over [`assemble_host`], a shared-memory core module + its
 /// instance + a memory alias, a Memory canon-option on each op's lower, and the program instance
