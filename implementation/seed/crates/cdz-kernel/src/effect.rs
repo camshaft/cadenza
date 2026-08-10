@@ -297,6 +297,16 @@ pub mod effect_ct {
     /// peer-classes a reducer may send to). NO new kernel type — conn-id is a string target, frame is bytes.
     pub const WS_SEND: &str = "ws/send";
 
+    /// `ws/dial` — (OUTBOUND EFFECT, hub-federation F0-effect) a reducer's fold DECIDES to federate and dials
+    /// a hub: `target` = the hub URL (opaque UTF-8, like a `shell` program-target or an `Emit` peer-id — the
+    /// kernel never interprets it), authz-gated per-dial exactly like [`WS_SEND`] (`resource.target = <hub-url>`,
+    /// the SSRF/egress guard — a session may dial only URLs its capability grants). Dispatched-WITH-result: the
+    /// HOST `WsDialExecutor` spawns the dial (the landed `ws_dial::dial_hub` transport primitive) and folds the
+    /// minted conn-id hex back as the effect result, so the reducer binds conn-id↔hub and can then address
+    /// [`WS_SEND`] to it. A grantable outbound effect (in [`ALL`]), unlike the host-minted inbound
+    /// [`WS_CONNECT`]/[`WS_DISCONNECT`] events. NO new kernel type — url is a string target, conn-id is bytes.
+    pub const WS_DIAL: &str = "ws/dial";
+
     /// `ws/connect` — (INBOUND EVENT `content_type.family`, operator directive #2804) the host emits this
     /// `Inbound` when a peer websocket connection is ESTABLISHED; `payload` = the opaque conn-id bytes the
     /// host minted on accept (v0 — a peer-descriptor blob may ride later). The reducer folds it to learn the
@@ -423,6 +433,7 @@ pub mod effect_ct {
         BLOB_PUT,
         BLOB_GET,
         WS_SEND,
+        WS_DIAL,
         EFFECT_REPLY,
     ];
 
@@ -466,6 +477,7 @@ pub mod effect_ct {
             BLOB_PUT => Some(BLOB_PUT),
             BLOB_GET => Some(BLOB_GET),
             WS_SEND => Some(WS_SEND),
+            WS_DIAL => Some(WS_DIAL),
             // ws/connect + ws/disconnect are INBOUND event content-type families (not effects, so not in
             // ALL) — but they're fixed kernel-defined strings, so classify them safe-to-log-verbatim too.
             WS_CONNECT => Some(WS_CONNECT),
@@ -1111,6 +1123,7 @@ mod tests {
         assert_eq!(wellknown_static_str(BLOB_PUT), Some(BLOB_PUT));
         assert_eq!(wellknown_static_str(BLOB_GET), Some(BLOB_GET));
         assert_eq!(wellknown_static_str(WS_SEND), Some(WS_SEND));
+        assert_eq!(wellknown_static_str(WS_DIAL), Some(WS_DIAL));
         // Extension families (register-by-string, guest-controlled) → None (redacted).
         assert_eq!(wellknown_static_str("my/custom-effect"), None);
         assert_eq!(wellknown_static_str("weather"), None);
@@ -1538,6 +1551,15 @@ mod tests {
         assert_eq!(effect_ct::WS_SEND, "ws/send");
         assert!(effect_ct::is_ws_family(effect_ct::WS_SEND));
         assert!(effect_ct::WS_SEND.starts_with(effect_ct::WS_PREFIX));
+        // ws/dial — the OUTBOUND hub-federation effect (F0-effect), mirrors ws/send: in the ws/* family,
+        // safe-to-log verbatim, and a grantable capability in ALL (unlike the inbound ws/connect events).
+        assert_eq!(effect_ct::WS_DIAL, "ws/dial");
+        assert!(effect_ct::is_ws_family(effect_ct::WS_DIAL));
+        assert_eq!(
+            effect_ct::wellknown_static_str(effect_ct::WS_DIAL),
+            Some(effect_ct::WS_DIAL)
+        );
+        assert!(effect_ct::ALL.contains(&effect_ct::WS_DIAL));
         // SAFE-LOGGING (#2180): the exact string is a kernel-defined fixed &'static → log VERBATIM.
         assert_eq!(
             effect_ct::wellknown_static_str(effect_ct::WS_SEND),
