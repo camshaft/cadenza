@@ -94,6 +94,8 @@ pub mod status;
 #[cfg(test)]
 mod test_support;
 pub mod userspace_effect_exec;
+#[cfg(feature = "live-ws")]
+pub mod ws_dial;
 pub mod ws_exec;
 #[cfg(feature = "live-ws")]
 pub mod ws_listen;
@@ -170,6 +172,8 @@ pub use userspace_effect_exec::{
     effect_request_inbound, HandlerResolver, UserspaceEffectExecutor, EFFECT_REQUEST_FAMILY_PREFIX,
     EFFECT_REQUEST_VERSION,
 };
+#[cfg(feature = "live-ws")]
+pub use ws_dial::dial_hub;
 pub use ws_exec::{WsConnRegistry, WsSendExecutor, WsSendResult};
 #[cfg(feature = "live-ws")]
 pub use ws_listen::WsListener;
