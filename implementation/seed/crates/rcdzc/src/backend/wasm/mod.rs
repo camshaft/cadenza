@@ -155,9 +155,15 @@ pub(crate) fn reducer_descriptors(
     params: &[(crate::ast::StructId, crate::ty::Ty)],
     result: &crate::ty::Ty,
 ) -> Option<(Vec<u8>, Vec<u8>)> {
+    // value_cmp_shape_descriptor is the UN-FRAMED builder (shape_of + encode, NO `Framed`/`(: value Type)`
+    // wrap) — the kernel's build_val/parse_effect_list speak the BARE value form: a list is `(list …)`, a
+    // record `(record (= name value)…)`, NOT `(: (list …) (List …))`. sum_shape_descriptor would wrap a
+    // List/Record result in a Framed frame → the guest's value-encode would emit `(: (list …) …)` and the
+    // kernel's parse_effect_list rejects it ("not a list form" — the root is a `:` frame, not a list). So
+    // bake BOTH descriptors un-framed.
     let event_ty = reducer_event_record_ty(params)?;
-    let event_desc = crate::lower::sum_shape_descriptor(db, &event_ty)?;
-    let effect_list_desc = crate::lower::sum_shape_descriptor(db, result)?;
+    let event_desc = crate::lower::value_cmp_shape_descriptor(db, &event_ty)?;
+    let effect_list_desc = crate::lower::value_cmp_shape_descriptor(db, result)?;
     Some((event_desc, effect_list_desc))
 }
 
