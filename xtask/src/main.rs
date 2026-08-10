@@ -9387,3 +9387,93 @@ mod trap_grading_tests {
         );
     }
 }
+
+/// Unit tests for the PLATFORM-conformance grader helpers (`parse_observed_run` + `decode_value_form_to_hex`).
+/// These pin the grader's own logic — the parse of `cdz-session-run`'s tab-line output into a per-alias
+/// [`ObservedRun`], and the `(: v T)` value-form → stored-byte-hex decode — so a future refactor of the
+/// grade path can't silently misread a run or mis-decode a value. Runs under `cargo test --workspace` in
+/// `cargo xtask check`, so it guards the platform vertical fleet-wide. (Distinct module from
+/// `trap_grading_tests`; no shared env state, so no lock needed.)
+#[cfg(test)]
+mod platform_grading_tests {
+    use super::*;
+
+    #[test]
+    fn parse_observed_run_keys_end_state_by_alias_and_orders_effects() {
+        // A whole-run stdout: two sessions' end-state + an ordered effect line each (a multi-session run).
+        let stdout = "effect\tworker\tweather\n\
+                      effect\tworker\tlog\thex:74\n\
+                      end-status\tworker\tquiescent\n\
+                      events-processed\tworker\t3\n\
+                      end-kv\tworker\tcount\thex:01\n\
+                      end-status\tsky\tquiescent\n\
+                      events-processed\tsky\t1\n\
+                      end-kv\tsky\tserved\thex:01\n";
+        let run = parse_observed_run(stdout);
+        // Effects are whole-run ordered, value optional.
+        assert_eq!(run.effects.len(), 2);
+        assert_eq!(
+            run.effects[0],
+            ("worker".to_string(), "weather".to_string(), None)
+        );
+        assert_eq!(
+            run.effects[1],
+            (
+                "worker".to_string(),
+                "log".to_string(),
+                Some("hex:74".to_string())
+            )
+        );
+        // End-state is keyed per alias.
+        let worker = run.sessions.get("worker").expect("worker end-state");
+        assert_eq!(worker.status.as_deref(), Some("quiescent"));
+        assert_eq!(worker.events_processed.as_deref(), Some("3"));
+        assert_eq!(worker.kv.get("count").map(String::as_str), Some("hex:01"));
+        let sky = run.sessions.get("sky").expect("sky end-state");
+        assert_eq!(sky.kv.get("served").map(String::as_str), Some("hex:01"));
+        assert!(sky.fault.is_none());
+    }
+
+    #[test]
+    fn parse_observed_run_surfaces_a_fold_fault() {
+        let stdout = "end-fault\tworker\tasync wasm reducer fold failed: Trap(..)\n\
+                      end-status\tworker\tquiescent\n";
+        let run = parse_observed_run(stdout);
+        assert_eq!(
+            run.sessions.get("worker").and_then(|s| s.fault.as_deref()),
+            Some("async wasm reducer fold failed: Trap(..)")
+        );
+    }
+
+    #[test]
+    fn decode_value_form_maps_small_ints_to_their_low_byte_hex() {
+        // A counter stores a one-byte value (`Bytes.of([UInt8.wrap(n)])`, matching reducer_b3), so the
+        // grader decodes `(: n IntNN)` to the low byte's hex — pinned at several numbers + widths.
+        assert_eq!(
+            decode_value_form_to_hex("(: 1 Int64)").as_deref(),
+            Some("hex:01")
+        );
+        assert_eq!(
+            decode_value_form_to_hex("(: 42 Int64)").as_deref(),
+            Some("hex:2a")
+        );
+        assert_eq!(
+            decode_value_form_to_hex("(: 255 UInt8)").as_deref(),
+            Some("hex:ff")
+        );
+        assert_eq!(
+            decode_value_form_to_hex("(: 9 Int32)").as_deref(),
+            Some("hex:09")
+        );
+    }
+
+    #[test]
+    fn decode_value_form_is_none_for_an_unmodeled_shape() {
+        // A value shape the I1 decoder doesn't model yet → None, so the grader treats it as coverage-not-yet
+        // (Todo), never a false Fail. A String value + a malformed form both decline.
+        assert_eq!(decode_value_form_to_hex("(: \"hi\" String)"), None);
+        assert_eq!(decode_value_form_to_hex("(: 1 Bool)"), None);
+        assert_eq!(decode_value_form_to_hex("not-a-value-form"), None);
+        assert_eq!(decode_value_form_to_hex("(: 1)"), None);
+    }
+}
