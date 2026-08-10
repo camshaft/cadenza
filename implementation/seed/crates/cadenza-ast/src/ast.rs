@@ -337,6 +337,51 @@ impl Builder {
         }
     }
 
+    /// Build the CANONICAL effect-schema tree `(effect Name (op OpName Sig)… (authz Authz)?)` and return
+    /// its root — the single constructor for the shape whose `Hash::of(codec::encode(root))` is the
+    /// effect-schema identity (DESIGN-userspace-effects; the wire key a resolver maps to a schema AST, its
+    /// declared name read back by [`Arenas::schema_declared_name`]). cadenza-ast OWNS this shape; a caller
+    /// (the kernel's `ast_marshal::build_type`) emits each op's type-SIGNATURE node INTO this same
+    /// `Builder` and hands its `StructId` in via `ops`, so there is ONE structural-encode path (these
+    /// nodes → this tree → `codec::encode` → `Hash`), never a parallel encoder.
+    ///
+    /// HEAD-KIND is FIXED here so two identical schemas hash-BYTE-identically (identity is byte-exact
+    /// `Hash::of(encode)`, and the codec emits distinct bytes for a `Name` vs `Str` head of the same
+    /// spelling — even though [`Arenas::structurally_eq`] normalizes the four compound-ctor heads): the
+    /// effect-tree STRUCTURE heads (`effect`/`op`/`authz`) are NAME atoms (matching how
+    /// `schema_declared_name` reads the name via `as_name`); the per-op signature nodes keep whatever heads
+    /// their emitter chose (the kernel type descriptors are string-head `("record" …)`/`("list" …)`/… — a
+    /// distinct, consistent layer this builder does not touch). By centering the wrapper here, a caller
+    /// cannot drift the structural head-kind and split the identity of an otherwise-identical schema.
+    ///
+    /// `ops` is `(op_name, signature_node)` in the caller's order (op order is significant to the hash —
+    /// the caller sorts if it wants order-independent identity). `authz`, when `Some`, is wrapped as a
+    /// trailing `(authz <node>)`; `None` omits the slot entirely.
+    pub fn effect_schema_tree(
+        &mut self,
+        name: &str,
+        ops: &[(&str, StructId)],
+        authz: Option<StructId>,
+    ) -> StructId {
+        let mut children = Vec::with_capacity(2 + ops.len() + authz.is_some() as usize);
+        let effect_head = self.name("effect");
+        children.push(effect_head);
+        let ename = self.name(name);
+        children.push(ename);
+        for &(op_name, sig) in ops {
+            let op_head = self.name("op");
+            let opn = self.name(op_name);
+            let op_node = self.list(vec![op_head, opn, sig]);
+            children.push(op_node);
+        }
+        if let Some(a) = authz {
+            let authz_head = self.name("authz");
+            let authz_node = self.list(vec![authz_head, a]);
+            children.push(authz_node);
+        }
+        self.list(children)
+    }
+
     pub fn finish(self, root: StructId) -> Arenas {
         Arenas {
             leaves: self.leaves,
@@ -1080,5 +1125,86 @@ mod tests {
         let bare_root = b3.list(vec![e3]);
         let bare = b3.finish(bare_root);
         assert_eq!(bare.schema_declared_name(), None);
+    }
+
+    #[test]
+    fn effect_schema_tree_builds_the_canonical_shape_and_reads_back_its_name() {
+        // The builder produces the SAME tree a hand-assembled `(effect Weather (op get SIG))` gives, and
+        // `schema_declared_name` reads its name — so the one constructor is interchangeable with the shape
+        // the reader was written against.
+        let mut hand = Builder::new();
+        let h_effect = hand.name("effect");
+        let h_name = hand.name("Weather");
+        let h_op = hand.name("op");
+        let h_get = hand.name("get");
+        let h_str = hand.name("string"); // a stand-in signature node (a string-head descriptor in practice)
+        let h_sig = hand.list(vec![h_str]);
+        let h_opget = hand.list(vec![h_op, h_get, h_sig]);
+        let h_root = hand.list(vec![h_effect, h_name, h_opget]);
+        let hand = hand.finish(h_root);
+
+        let mut b = Builder::new();
+        let sig = {
+            let s = b.name("string");
+            b.list(vec![s])
+        };
+        let root = b.effect_schema_tree("Weather", &[("get", sig)], None);
+        let built = b.finish(root);
+
+        assert_eq!(built.schema_declared_name(), Some("Weather"));
+        assert!(
+            built.structurally_eq(&hand),
+            "the builder's tree matches the hand-assembled canonical shape"
+        );
+        // Identity is byte-exact: re-encoding the built tree is stable, and two builds of the SAME schema
+        // hash-match (the head-kind is fixed in the builder, so no Name/Str drift splits identity).
+        let bytes1 = crate::codec::encode(&built);
+        let mut b2 = Builder::new();
+        let sig2 = {
+            let s = b2.name("string");
+            b2.list(vec![s])
+        };
+        let root2 = b2.effect_schema_tree("Weather", &[("get", sig2)], None);
+        let built2 = b2.finish(root2);
+        assert_eq!(
+            bytes1,
+            crate::codec::encode(&built2),
+            "two builds of the same schema encode byte-identically (stable identity)"
+        );
+    }
+
+    #[test]
+    fn effect_schema_tree_carries_ops_in_order_and_an_optional_authz() {
+        // Multiple ops in caller order + a trailing `(authz …)` slot when provided; the structural heads
+        // (effect/op/authz) are NAME atoms so `as_form`/`schema_declared_name` read them.
+        let mut b = Builder::new();
+        let (s1, s2, az) = (b.name("string"), b.name("u8"), b.name("public"));
+        let root = b.effect_schema_tree("Fs", &[("read", s1), ("write", s2)], Some(az));
+        let built = b.finish(root);
+        assert_eq!(built.schema_declared_name(), Some("Fs"));
+        // Two ops present as `(op read …)` / `(op write …)`, and an `(authz public)` tail.
+        let tail = built.as_form(built.root, "effect").expect("effect form");
+        assert_eq!(tail.len(), 4, "name + 2 ops + authz");
+        assert!(
+            built.as_form(tail[1], "op").is_some(),
+            "first op is an (op …) form"
+        );
+        assert!(
+            built.as_form(tail[2], "op").is_some(),
+            "second op is an (op …) form"
+        );
+        assert!(
+            built.as_form(tail[3], "authz").is_some(),
+            "trailing (authz …)"
+        );
+        // No-authz omits the slot entirely.
+        let mut b2 = Builder::new();
+        let s = b2.name("string");
+        let r2 = b2.effect_schema_tree("Fs", &[("read", s)], None);
+        let no_authz = b2.finish(r2);
+        let tail2 = no_authz
+            .as_form(no_authz.root, "effect")
+            .expect("effect form");
+        assert_eq!(tail2.len(), 2, "name + 1 op, no authz slot");
     }
 }
