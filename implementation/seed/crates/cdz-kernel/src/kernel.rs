@@ -1205,30 +1205,42 @@ impl Session {
             // just another target). A bare-target shell (no payload) + every other effect take the single-
             // target authorize. Same "the target is what authz gated" discipline as the store name check
             // below (a stage whose program the authorizer denies can never be dispatched).
-            let authz_result = match authorize_shell_pipeline(&req, authz).await {
-                // The payload decoded as a `(shell-pipeline …)` → the per-stage fan-out verdict IS the gate:
-                // each stage's PROGRAM was authorized (the SEC-F1 unit), deny-all-if-any-denied. `req.target`
-                // is NOT gated for a pipeline — it is vestigial on the pipeline path.
-                //
-                // TARGET-GATE RELAX (co-landed with the host pipeline executor). Earlier (reviewer HIGH on
-                // #2596) the kernel ALSO gated `req.target` here — a belt-and-suspenders check — because no
-                // pipeline-executing host consumer had landed and the host `ShellExecutor` still direct-exec'd
-                // `req.target`; without the extra gate a reducer could pair a DENIED `target` with an ALLOWED
-                // one-stage pipeline payload, the stages would authorize, and the host would run the ungated
-                // denied `target`. The host pipeline executor has now landed (`cdz-agent-host` shell.rs): it
-                // keys on the SAME "payload decodes as (shell-pipeline …)" discriminant and runs the decoded
-                // STAGES, never `req.target`, on the pipeline path. So the belt-and-suspenders `target` gate is
-                // no longer load-bearing — `req.target` is unreachable by the host for a pipeline — and gating
-                // it would only reject pipelines whose (unused) `target` a policy happens to deny, a spurious
-                // denial. The per-stage fan-out remains the sole, complete SEC-F1 gate for the pipeline path.
-                Some(stage_verdict) => stage_verdict,
-                // NOT a pipeline (a bare-target shell, an opaque non-pipeline payload like an M3 tool-call's
-                // raw input, a blob-ref, or any non-shell effect) → the ordinary single-target SEC-F1 gate on
-                // `req.target`. Backward-compatible: today's single-command shell + every other effect are
-                // unchanged. The host MUST use the SAME "decodes as (shell-pipeline …)" discriminant so a guest
-                // can't get multi-stage execution without a decodable pipeline (which is what triggers fan-out).
-                None => authz.authorize(&req).await,
-            };
+            // AUTHZ-EXEMPT families skip the SEC-F1 capability gate (the control path already `continue`d
+            // above; this covers `effect/reply`, still reached here because it is EXECUTOR-routed, not
+            // control). `effect/reply`'s `target` is an opaque reply-TOKEN (not UTF-8) that a capability
+            // predicate cannot admit, and the host `ReplyExecutor` cryptographically validates the token —
+            // a strictly stronger gate than capability-matching. See `effect_ct::is_authz_exempt`. Routing is
+            // unchanged: an exempt effect is still dispatched to its executor (no executor → unhandled, never
+            // an unchecked action), so this only drops the redundant+impossible capability check.
+            let authz_result =
+                if crate::effect::effect_ct::is_authz_exempt(&req.content_type.family) {
+                    Ok(())
+                } else {
+                    match authorize_shell_pipeline(&req, authz).await {
+                        // The payload decoded as a `(shell-pipeline …)` → the per-stage fan-out verdict IS the gate:
+                        // each stage's PROGRAM was authorized (the SEC-F1 unit), deny-all-if-any-denied. `req.target`
+                        // is NOT gated for a pipeline — it is vestigial on the pipeline path.
+                        //
+                        // TARGET-GATE RELAX (co-landed with the host pipeline executor). Earlier (reviewer HIGH on
+                        // #2596) the kernel ALSO gated `req.target` here — a belt-and-suspenders check — because no
+                        // pipeline-executing host consumer had landed and the host `ShellExecutor` still direct-exec'd
+                        // `req.target`; without the extra gate a reducer could pair a DENIED `target` with an ALLOWED
+                        // one-stage pipeline payload, the stages would authorize, and the host would run the ungated
+                        // denied `target`. The host pipeline executor has now landed (`cdz-agent-host` shell.rs): it
+                        // keys on the SAME "payload decodes as (shell-pipeline …)" discriminant and runs the decoded
+                        // STAGES, never `req.target`, on the pipeline path. So the belt-and-suspenders `target` gate is
+                        // no longer load-bearing — `req.target` is unreachable by the host for a pipeline — and gating
+                        // it would only reject pipelines whose (unused) `target` a policy happens to deny, a spurious
+                        // denial. The per-stage fan-out remains the sole, complete SEC-F1 gate for the pipeline path.
+                        Some(stage_verdict) => stage_verdict,
+                        // NOT a pipeline (a bare-target shell, an opaque non-pipeline payload like an M3 tool-call's
+                        // raw input, a blob-ref, or any non-shell effect) → the ordinary single-target SEC-F1 gate on
+                        // `req.target`. Backward-compatible: today's single-command shell + every other effect are
+                        // unchanged. The host MUST use the SAME "decodes as (shell-pipeline …)" discriminant so a guest
+                        // can't get multi-stage execution without a decodable pipeline (which is what triggers fan-out).
+                        None => authz.authorize(&req).await,
+                    }
+                };
             if let Err(reason) = authz_result {
                 // SEC-F1 denial — WARN (an authorization boundary was hit). Log only NON-SENSITIVE
                 // metadata: `target` is GUEST-controlled (a URL with a token/query, a PII path) and

@@ -382,6 +382,25 @@ pub mod effect_ct {
         family.starts_with(CONTROL_PREFIX)
     }
 
+    /// Is `family` EXEMPT from the SEC-F1 capability authz gate? A control family (host-answered, never
+    /// executor-routed) OR [`EFFECT_REPLY`]. This is the authz-gate test ONLY — it does NOT change routing:
+    /// a control family still takes the control path, and `effect/reply` is still EXECUTOR-routed to the host
+    /// `ReplyExecutor`; exemption only means the drive loop skips the `authorize()` call for it.
+    ///
+    /// Why `effect/reply` is exempt (userspace-effects D2, and the [`EFFECT_REPLY`] doc): its `target` is an
+    /// opaque 32-byte reply-TOKEN (not UTF-8), so a `FamilyGrant`/`Capability` predicate — which matches on
+    /// `req.target_str()` (UTF-8) — CANNOT admit it (`target_str` Errs → `permits` is false → the reply is
+    /// wrongly `AuthzDenied` and the caller never resumes). And capability-gating would be REDUNDANT anyway:
+    /// the host `ReplyExecutor` cryptographically validates+consumes the unforgeable one-shot token (a handler
+    /// may only reply to a token it holds; forged/stale/double-settle are refused), which is STRICTLY STRONGER
+    /// than a capability grant on the opaque target. Exemption is NOT a security hole: the reply is still
+    /// executor-routed, so with no `ReplyExecutor` it is an unhandled-effect error, never an unchecked action —
+    /// the token gate lives in the executor, independent of this authz gate. If policy on `effect/reply` is
+    /// ever wanted (I5 Cedar), it keys on the caller/handler identity, NOT the opaque token-target.
+    pub fn is_authz_exempt(family: &str) -> bool {
+        is_control_family(family) || family == EFFECT_REPLY
+    }
+
     /// Is `family` a FOLD-BACK control family — a `control/*` whose answer must RESUME the emitting
     /// reducer's continuation, so the drive loop gives it a `Dispatched` frame (entering `open`, keyed by
     /// `EffectId` + carrying the token) and the host later settles it via
@@ -1130,6 +1149,28 @@ mod tests {
         // A guest string sharing a control/store PREFIX is STILL guest bytes → None (prefix ≠ safe).
         assert_eq!(wellknown_static_str("store/secret-token-abc123"), None);
         assert_eq!(wellknown_static_str("control/leak-me"), None);
+    }
+
+    // Authz-exempt set (userspace-effects D2): control families (host-answered) AND `effect/reply` (its
+    // target is an opaque non-UTF-8 reply-token a capability predicate can't admit; the host ReplyExecutor
+    // does the stronger cryptographic token check). Every OTHER family — built-in or extension — goes
+    // through the SEC-F1 capability gate. Exemption is authz-only, not a routing change.
+    #[test]
+    fn is_authz_exempt_covers_control_families_and_effect_reply_only() {
+        use effect_ct::*;
+        // effect/reply is exempt (token-authorized by the host executor, not capability-gated).
+        assert!(is_authz_exempt(EFFECT_REPLY));
+        // Control families are exempt (host-answered, never capability-gated).
+        assert!(is_authz_exempt(CAPABILITIES));
+        assert!(is_authz_exempt("control/anything"));
+        // Ordinary executor-routed effects are NOT exempt — they take the SEC-F1 gate.
+        assert!(!is_authz_exempt(HTTP));
+        assert!(!is_authz_exempt(SHELL));
+        assert!(!is_authz_exempt(STORE_SET));
+        assert!(!is_authz_exempt("weather")); // an extension family
+                                              // A guest string merely sharing the `effect/` prefix (a registry pointer name, not the reply verb)
+                                              // is NOT exempt — only the exact `effect/reply` family is.
+        assert!(!is_authz_exempt("effect/weather"));
     }
 
     // §4c session-directory I3: the store sub-partition split — both pointer and group verbs share the
