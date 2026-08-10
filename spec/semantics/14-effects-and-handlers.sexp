@@ -22724,3 +22724,187 @@
             (export main)))
   (call   main (: 4 Int64)) (output (: 47 Int64))
   (call   main (: -1 Int64)) (output (: -8 Int64)))
+
+; ── Symbol modes, width-boundary states, snapshots, and float specials (breaker batch 218) ────
+; Four small arcs. sy7: a SYMBOL mode discriminant beside an accumulator — symbol equality routes
+; idle→run promotion vs run-mode accumulation, stop resets. Width boundaries: u64s1 threads a
+; UInt64 state ABOVE 2^63 (unsigned comparison stays correct as the thread crosses — a signedness
+; miscompile would flip every row); i8s1 walks an Int8 state to EXACTLY 127 under a guard (the
+; boundary-exact no-trap face). Snapshots: sn1 resumes the WHOLE tuple state as a value; sn2 pins
+; snapshot IMMUTABILITY across interleaved bumps; sn3 crosses the snapshot to a DEF-parameter
+; consumer; ls1 is the HEAP twin — a list snapshot stays immutable while the state grows past it.
+; Float specials through the state thread: fx5 saturates to infinity mid-thread (never-traps in
+; arm position); fx6 births NaN in the arm (s2−s2) with canonical equality distinguishing it;
+; fx7 threads NEGATIVE ZERO (canonical -0.0 ≠ +0.0; IEEE addition washes the sign; seed via
+; (* -1.0 a) — (- 0.0 a) gives +0.0 at zero). All rows hand-computed; all pass on wasm, rust,
+; and rust-async.
+
+(case "sy7 a SYMBOL mode BESIDE an accumulator in the tuple state — symbol equality routes the go arm between idle and run, stop resets the mode"
+  (input  (do
+            (effect E (op go (-> Int64)) (op stop (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (tuple (Symbol.of "idle") n)
+                ((go () st (match st
+                             ((tuple m acc)
+                              (if (= m (Symbol.of "idle"))
+                                  (resume 1 (tuple (Symbol.of "run") acc))
+                                  (resume (+ acc 10) (tuple m (+ acc 10)))))))
+                 (stop () st (match st
+                               ((tuple m acc) (resume acc (tuple (Symbol.of "idle") acc))))))
+                (+ (E.go)
+                   (+ (* 10 (E.go))
+                      (+ (* 100 (E.stop))
+                         (* 1000 (E.go)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 2651 Int64))
+  (call   main (: 0 Int64)) (output (: 2101 Int64))
+  (call   main (: -3 Int64)) (output (: 1771 Int64)))
+
+(case "u64s1 a UInt64 handler state ABOVE the i64 boundary — unsigned comparison in the arm stays correct as the thread advances past 2^63"
+  (input  (do
+            (effect E (op probe (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (if (> n 0) (: 9223372036854775813 UInt64)
+                            (if (= n 0) (: 9223372036854775808 UInt64)
+                                (: 9223372036854775802 UInt64)))
+                ((probe () s
+                  (resume (if (> s (: 9223372036854775808 UInt64)) 1 0)
+                          (+ s (: 5 UInt64)))))
+                (+ (* 10 (E.probe)) (E.probe))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 11 Int64))
+  (call   main (: 0 Int64)) (output (: 1 Int64))
+  (call   main (: -6 Int64)) (output (: 0 Int64)))
+
+(case "i8s1 an Int8 handler state walked to the TOP of its range under a guard — the +40 stride stops exactly where one more step would overflow"
+  (input  (do
+            (effect E (op step (-> Int64)))
+            (def (walk (: steps Int64))
+              (let ((v (E.step)))
+                (if (> v 87) (+ (* 1000 steps) v) (walk (+ steps 1)))))
+            (def (main (: n Int8))
+              (handle E n
+                ((step () s
+                  (if (> s (: 87 Int8))
+                      (resume (Int64.of s) s)
+                      (resume (Int64.of (+ s (: 40 Int8))) (+ s (: 40 Int8))))))
+                (walk 0)))
+            (export main)))
+  (call   main (: 0 Int8)) (output (: 2120 Int64))
+  (call   main (: -100 Int8)) (output (: 4100 Int64))
+  (call   main (: 87 Int8)) (output (: 127 Int64)))
+
+(case "sn1 a snapshot op resumes the WHOLE tuple state as a value — the body destructures the live pair after mixed bumps"
+  (input  (do
+            (effect E (op bumpa (-> Int64)) (op bumpb (-> Int64)) (op snap (-> (Tuple Int64 Int64))))
+            (def (main (: n Int64))
+              (handle E (tuple n 10)
+                ((bumpa () st (match st ((tuple a b) (resume a (tuple (+ a 1) b)))))
+                 (bumpb () st (match st ((tuple a b) (resume b (tuple a (+ b 5))))))
+                 (snap () st (resume st st)))
+                (do (E.bumpa) (E.bumpa) (E.bumpb)
+                    (match (E.snap)
+                      ((tuple a b) (+ (* 100 a) b))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 715 Int64))
+  (call   main (: 0 Int64)) (output (: 215 Int64))
+  (call   main (: -3 Int64)) (output (: -85 Int64)))
+
+(case "sn2 TWO whole-state snapshots straddle interleaved bumps — the first snapshot is IMMUTABLE, the pair differ by exactly the bumps between them"
+  (input  (do
+            (effect E (op bumpa (-> Int64)) (op bumpb (-> Int64)) (op snap (-> (Tuple Int64 Int64))))
+            (def (main (: n Int64))
+              (handle E (tuple n 10)
+                ((bumpa () st (match st ((tuple a b) (resume a (tuple (+ a 1) b)))))
+                 (bumpb () st (match st ((tuple a b) (resume b (tuple a (+ b 5))))))
+                 (snap () st (resume st st)))
+                (do (E.bumpa)
+                    (let ((s1 (E.snap)))
+                      (do (E.bumpb) (E.bumpa)
+                          (let ((s2 (E.snap)))
+                            (match s1
+                              ((tuple a1 b1)
+                               (match s2
+                                 ((tuple a2 b2)
+                                  (+ (+ a1 b1) (* 10 (+ a2 b2)))))))))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 236 Int64))
+  (call   main (: 0 Int64)) (output (: 181 Int64))
+  (call   main (: -8 Int64)) (output (: 93 Int64)))
+
+(case "sn3 the snapshot crosses to a DEF helper — the crossed state tuple is consumed by a function parameter, not a body match"
+  (input  (do
+            (effect E (op bumpa (-> Int64)) (op bumpb (-> Int64)) (op snap (-> (Tuple Int64 Int64))))
+            (def (mix (: p (Tuple Int64 Int64)))
+              (match p ((tuple a b) (+ (* 2 a) b))))
+            (def (main (: n Int64))
+              (handle E (tuple n 10)
+                ((bumpa () st (match st ((tuple a b) (resume a (tuple (+ a 1) b)))))
+                 (bumpb () st (match st ((tuple a b) (resume b (tuple a (+ b 5))))))
+                 (snap () st (resume st st)))
+                (do (E.bumpa) (E.bumpb) (mix (E.snap)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 27 Int64))
+  (call   main (: 0 Int64)) (output (: 17 Int64))
+  (call   main (: -4 Int64)) (output (: 9 Int64)))
+
+(case "ls1 a LIST-state snapshot crosses mid-growth — the held list is immutable while the state keeps growing, sum and final length both pinned"
+  (input  (do
+            (effect E (op push (-> Int64 Int64)) (op snap (-> (List Int64))) (op len (-> Int64)))
+            (def (sum-at (: xs (List Int64)) (: i Int64) (: acc Int64))
+              (match (List.at xs i)
+                ((Some v) (sum-at xs (+ i 1) (+ acc v)))
+                ((None) acc)))
+            (def (main (: n Int64))
+              (handle E (list n)
+                ((push (v) xs (resume v (List.push xs v)))
+                 (snap () xs (resume xs xs))
+                 (len () xs (resume (List.len xs) xs)))
+                (do (E.push 7)
+                    (let ((s1 (E.snap)))
+                      (do (E.push 9)
+                          (+ (sum-at s1 0 0) (* 100 (E.len))))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 312 Int64))
+  (call   main (: 0 Int64)) (output (: 307 Int64))
+  (call   main (: -3 Int64)) (output (: 304 Int64)))
+
+(case "fx5 the float state SATURATES to infinity mid-thread — a squaring ladder crosses Float64.max, the arm's finite/inf verdict flips per dispatch"
+  (input  (do
+            (effect E (op sq (-> Int64)))
+            (def (main (: a Float64))
+              (handle E a
+                ((sq () s
+                  (let ((s2 (* s s)))
+                    (resume (if (> s2 1.7e308) 1 0) s2))))
+                (+ (* 10 (E.sq)) (E.sq))))
+            (export main)))
+  (call   main (: 1.0e100 Float64)) (output (: 1 Int64))
+  (call   main (: 1.0e50 Float64)) (output (: 0 Int64))
+  (call   main (: 1.0e200 Float64)) (output (: 11 Int64)))
+
+(case "fx6 NaN born in the ARM — s2−s2 is 0.0 while finite and NaN once the thread saturates; canonical equality distinguishes them per dispatch"
+  (input  (do
+            (effect E (op step (-> Int64)))
+            (def (main (: a Float64))
+              (handle E a
+                ((step () s
+                  (let ((s2 (* s s)))
+                    (let ((d (- s2 s2)))
+                      (resume (if (= d 0.0) 1 (if (= d Float64.nan) 2 0)) s2)))))
+                (+ (* 10 (E.step)) (E.step))))
+            (export main)))
+  (call   main (: 1.0e100 Float64)) (output (: 12 Int64))
+  (call   main (: 1.0e50 Float64)) (output (: 11 Int64)))
+
+(case "fx7 NEGATIVE ZERO through the state thread — canonical equality separates -0.0 from +0.0, and IEEE addition washes the sign out mid-thread"
+  (input  (do
+            (effect E (op probe (-> Int64)))
+            (def (main (: a Float64))
+              (handle E (* -1.0 a)
+                ((probe () s
+                  (resume (if (= s 0.0) 1 0) (+ s 0.0))))
+                (+ (* 10 (E.probe)) (E.probe))))
+            (export main)))
+  (call   main (: 0.0 Float64)) (output (: 1 Int64))
+  (call   main (: 5.0 Float64)) (output (: 0 Int64)))

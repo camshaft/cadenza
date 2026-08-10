@@ -7174,3 +7174,13 @@ pass	gs5 the generic applied to ITSELF — (Container (Container Int64)) double-
 pass	gs6 a TWO-VARIANT generic (Either a b) by name — parity routes construction between Left and Right, the annotated consumer matches both
 pass	gs7 the applied generic in the op ARGUMENT position — the arm unwraps (Container Int64) payloads into the accumulating state
 pass	gs8 the applied generic AS the handler state — (Container Int64) seeds the handle, the arm unwraps and re-wraps per dispatch
+pass	sy7 a SYMBOL mode BESIDE an accumulator in the tuple state — symbol equality routes the go arm between idle and run, stop resets the mode
+pass	u64s1 a UInt64 handler state ABOVE the i64 boundary — unsigned comparison in the arm stays correct as the thread advances past 2^63
+pass	i8s1 an Int8 handler state walked to the TOP of its range under a guard — the +40 stride stops exactly where one more step would overflow
+pass	sn1 a snapshot op resumes the WHOLE tuple state as a value — the body destructures the live pair after mixed bumps
+pass	sn2 TWO whole-state snapshots straddle interleaved bumps — the first snapshot is IMMUTABLE, the pair differ by exactly the bumps between them
+pass	sn3 the snapshot crosses to a DEF helper — the crossed state tuple is consumed by a function parameter, not a body match
+pass	ls1 a LIST-state snapshot crosses mid-growth — the held list is immutable while the state keeps growing, sum and final length both pinned
+pass	fx5 the float state SATURATES to infinity mid-thread — a squaring ladder crosses Float64.max, the arm's finite/inf verdict flips per dispatch
+pass	fx6 NaN born in the ARM — s2−s2 is 0.0 while finite and NaN once the thread saturates; canonical equality distinguishes them per dispatch
+pass	fx7 NEGATIVE ZERO through the state thread — canonical equality separates -0.0 from +0.0, and IEEE addition washes the sign out mid-thread
