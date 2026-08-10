@@ -13,30 +13,32 @@
 // BUILD: cdz compile reducer_b3.cdz --target wasm --component-name cadenza:agent-kernel/fold
 //   -> apply: func(u32,u32,u32)->u32 + imports cadenza:agent-kernel/kv + cadenza:runtime/heap; VALID.
 
-// The protocol effect-request is an INLINE flat record (kind a family String, target Bytes, sorted fields)
-// — the B2 value-form wire (ruling Q): the guest returns the flat record directly, value-encode(result) IS
-// the wire (no Mk wrapper / EffectKind sum — kind is a lowercased family string, register-by-string seq366).
-// `type X = Record(..)` in Cadenza is a single-variant SUM, so we spell the record type inline.
+type EffectKind =
+  | Shell()
+  | Http()
+  | Model()
+  | Now()
+  | Timer()
+  | Emit()
 
-// kv host import — a WIT-typed peer interface (get/put on cadenza:agent-kernel/kv). Keys/values are opaque
-// Bytes, lowered to the component-model `list<u8>` (get: func(key: list<u8>) -> option<list<u8>>, put: func(
-// key: list<u8>, value: list<u8>)) — the same signatures reducer.wit declares and the kernel host linker
-// registers. NOT a shared-value-heap handle ABI: B2 deleted that path, and kv is a fixed host interface over
-// opaque bytes, so it stays WIT-typed (unlike apply's byte-AST channel, which carries arbitrary effect schemas).
+type EffectRequest =
+  | Mk(Record(kind: EffectKind, target: String, payload: Option(Bytes), correlation: Option(Bytes)))
+
+// kv host import — BOUND peer interface over the shared value-heap runtime (handle ABI): get + put.
 effect Kv =
   | get : Bytes -> Option(Bytes)
   | put : `->`(Bytes, Bytes, Unit)
 
 bind(Kv, "cadenza:agent-kernel/kv")
 
-// The one http effect a "message" triggers — the flat protocol record.
-def http-effect() -> Record(correlation: Option(Bytes), kind: String, payload: Option(Bytes), target: Bytes) =
-  {
-    correlation = Some(String.to-bytes("step-1")),
-    kind = "http",
+// The one Http effect a "message" triggers.
+def http-effect() =
+  EffectRequest.Mk({
+    kind = EffectKind.Http(),
+    target = "https://ok.host/x",
     payload = None(),
-    target = String.to-bytes("https://ok.host/x"),
-  }
+    correlation = Some(String.to-bytes("step-1")),
+  })
 
 // Bump the single-byte "count" counter, mirroring the Rust reducer-guest EXACTLY: read the first byte of
 // the prior value (or 0 if absent/empty), wrapping_add(1), write it back as a one-byte Bytes.
@@ -54,7 +56,7 @@ def apply(
   ct: Record(family: String, version: UInt(32)),
   payload: Option(Bytes),
   resumes: Option(Bytes),
-) -> List(Record(correlation: Option(Bytes), kind: String, payload: Option(Bytes), target: Bytes)) = match resumes with
+) -> List(EffectRequest) = match resumes with
   // A result/timer event — the effect completed; stop (no cascade).
   | Some(_) => []
   | None() =>
@@ -108,23 +110,32 @@ def b3_counter_wraps_at_max() =
 // sum-disc, str-get, and sum-payload) so a silent target/token change is caught.
 @test
 def b3_http_effect_kind_is_http() =
-  if http-effect().kind == "http" then unit
-  else trap("B3's http-effect kind must be the family string \"http\"")
+  match http-effect() with
+    | EffectRequest.Mk(r) =>
+      (match r.kind with
+        | EffectKind.Http() => unit
+        | _ => trap("B3's http-effect kind must be Http"))
 
 @test
 def b3_http_effect_target_is_pinned() =
-  if http-effect().target == String.to-bytes("https://ok.host/x") then unit
-  else trap("B3's http-effect target must be https://ok.host/x")
+  match http-effect() with
+    | EffectRequest.Mk(r) =>
+      if r.target == "https://ok.host/x" then unit
+      else trap("B3's http-effect target must be https://ok.host/x")
 
 @test
 def b3_http_effect_correlation_is_pinned() =
-  if http-effect().correlation == Some(String.to-bytes("step-1")) then unit
-  else trap("B3's http-effect correlation must be Some(\"step-1\")")
+  match http-effect() with
+    | EffectRequest.Mk(r) =>
+      if r.correlation == Some(String.to-bytes("step-1")) then unit
+      else trap("B3's http-effect correlation must be Some(\"step-1\")")
 
 @test
 def b3_http_effect_payload_is_none() =
-  match http-effect().payload with
-    | None() => unit
-    | Some(_) => trap("B3's http-effect payload must be None")
+  match http-effect() with
+    | EffectRequest.Mk(r) =>
+      (match r.payload with
+        | None() => unit
+        | Some(_) => trap("B3's http-effect payload must be None"))
 
 export { apply }

@@ -23,14 +23,19 @@
 // BUILD: cdz compile reducer_genesis.cdz --target wasm --component-name cadenza:agent-kernel/fold
 //   -> apply: func(u32,u32,u32)->u32 + imports cadenza:agent-kernel/kv + cadenza:runtime/heap; VALID.
 
-// The protocol effect-request is an INLINE flat record on apply's return (B2 value-form, ruling Q) — genesis
-// requests NO effects (returns []), so it constructs none; the type is spelled inline where needed. `kind` is
-// a family String, `target` Bytes (register-by-string, seq366, NOT a closed EffectKind sum).
+type EffectKind =
+  | Shell()
+  | Http()
+  | Model()
+  | Now()
+  | Timer()
+  | Emit()
 
-// kv host import — a WIT-typed peer interface (put on cadenza:agent-kernel/kv); only put is needed (genesis
-// WRITES setup state, never reads to decide an action). Keys/values are opaque Bytes lowered to `list<u8>`
-// (put: func(key: list<u8>, value: list<u8>)) — the reducer.wit signatures the kernel host linker registers.
-// NOT a shared-value-heap handle ABI (B2 deleted that path); kv is a fixed host interface over opaque bytes.
+type EffectRequest =
+  | Mk(Record(kind: EffectKind, target: String, payload: Option(Bytes), correlation: Option(Bytes)))
+
+// kv host import (bound peer iface over the shared value-heap runtime — handle ABI): only put is needed
+// (genesis WRITES setup state; it never reads to decide an action).
 effect Kv =
   | put : `->`(Bytes, Bytes, Unit)
 
@@ -50,7 +55,7 @@ def apply(
   ct: Record(family: String, version: UInt(32)),
   payload: Option(Bytes),
   resumes: Option(Bytes),
-) -> List(Record(correlation: Option(Bytes), kind: String, payload: Option(Bytes), target: Bytes)) = match resumes with
+) -> List(EffectRequest) = match resumes with
   // Genesis has no effects to await; a resume event is not part of setup — ignore.
   | Some(_) => []
   | None() =>

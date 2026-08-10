@@ -100,74 +100,6 @@ pub(crate) fn crosses_as_resource_escape(ty: &crate::ty::Ty) -> bool {
     )
 }
 
-/// The component interface name a Cadenza REDUCER is built under (`cdz compile … --component-name
-/// cadenza:agent-kernel/fold`). The kernel's `reducer.wit` world imports `kv` and exports this `fold`
-/// interface, whose sole method is `apply`. B3 keys the byte-ABI reshape on THIS name (not on the apply
-/// signature): a build whose `db.component_name` is the fold interface is a reducer, and its `apply`
-/// export must cross as the byte ABI `apply(event: list<u8>) -> list<u8>` (value-decode the event
-/// document → the guest's 3 structured args → guest apply → value-encode the effect list), rather than
-/// the default provider handle ABI `apply(u32,u32,u32) -> u32`.
-pub(crate) const REDUCER_FOLD_IFACE: &str = "cadenza:agent-kernel/fold";
-
-/// Whether the export named `export_name` in a build targeting component interface `component_name`
-/// (`db.component_name`) is the reducer FOLD apply that B3 reshapes to the byte ABI. True only for the
-/// `apply` export of a build whose component name is exactly the fold interface — so an ordinary provider
-/// build, or a different export of a reducer build, is untouched and keeps the default handle ABI.
-pub(crate) fn is_reducer_fold_apply(component_name: Option<&str>, export_name: &str) -> bool {
-    component_name == Some(REDUCER_FOLD_IFACE) && export_name == "apply"
-}
-
-/// The EVENT protocol Record type the reducer wrapper value-DECODEs — assembled from the guest `apply`'s
-/// three structured params (`ct`, `payload`, `resumes` in declaration order) into a Record with the
-/// KERNEL-PROTOCOL field names `content_type`/`payload`/`resumes`. This is the source-of-truth event Type
-/// (v-runtime's ruling: the wire is the kernel protocol, NOT the guest signature) whose `sum_shape_descriptor`
-/// drives `value-decode(event_bytes, desc)`. The `Record`'s `BTreeMap` sorts by field name, giving the
-/// canonical sorted-key order `value-decode` reads positionally (`content_type` < `payload` < `resumes`).
-/// The guest's own param TYPES supply the field types (param 0 = the content-type record, params 1/2 = the
-/// `Option(Bytes)` payload/resumes), so a guest whose apply is the reducer shape produces the exact protocol
-/// event Record. Returns `None` if the apply doesn't have the expected 3 params (not a reducer apply shape).
-pub(crate) fn reducer_event_record_ty(
-    params: &[(crate::ast::StructId, crate::ty::Ty)],
-) -> Option<crate::ty::Ty> {
-    use crate::resolved::Symbol;
-    let [ct, payload, resumes] = params else {
-        return None;
-    };
-    let mut fields = std::collections::BTreeMap::new();
-    fields.insert(Symbol::plain("content_type"), ct.1.clone());
-    fields.insert(Symbol::plain("payload"), payload.1.clone());
-    fields.insert(Symbol::plain("resumes"), resumes.1.clone());
-    Some(crate::ty::Ty::Record(std::rc::Rc::new(fields)))
-}
-
-/// The two shape descriptors the reducer `apply` wrapper bakes: `(event_desc, effect_list_desc)`.
-///   * `event_desc` = `sum_shape_descriptor` of the assembled event protocol Record (see
-///     [`reducer_event_record_ty`]) — drives `value-decode(event_bytes, event_desc)` into the guest args.
-///   * `effect_list_desc` = `sum_shape_descriptor` of the guest apply's RESULT type directly. Under the
-///     (Q) ruling the guest returns the FLAT protocol `List(Record{correlation, kind, target, payload})`
-///     with no `Mk`/`EffectKind` wrapper, so the result type IS the wire shape — no synthesis or value
-///     transform (a transform would be the adapter the no-adapter directive forbids); it drives
-///     `value-encode(result, effect_list_desc)` → the effect-list document bytes.
-///
-/// Returns `None` if the apply isn't the reducer shape (not 3 params) or either type has no descriptor
-/// (a shape `sum_shape_descriptor` cannot render) — the caller then declines the byte-ABI reshape.
-pub(crate) fn reducer_descriptors(
-    db: &mut Db,
-    params: &[(crate::ast::StructId, crate::ty::Ty)],
-    result: &crate::ty::Ty,
-) -> Option<(Vec<u8>, Vec<u8>)> {
-    // value_cmp_shape_descriptor is the UN-FRAMED builder (shape_of + encode, NO `Framed`/`(: value Type)`
-    // wrap) — the kernel's build_val/parse_effect_list speak the BARE value form: a list is `(list …)`, a
-    // record `(record (= name value)…)`, NOT `(: (list …) (List …))`. sum_shape_descriptor would wrap a
-    // List/Record result in a Framed frame → the guest's value-encode would emit `(: (list …) …)` and the
-    // kernel's parse_effect_list rejects it ("not a list form" — the root is a `:` frame, not a list). So
-    // bake BOTH descriptors un-framed.
-    let event_ty = reducer_event_record_ty(params)?;
-    let event_desc = crate::lower::value_cmp_shape_descriptor(db, &event_ty)?;
-    let effect_list_desc = crate::lower::value_cmp_shape_descriptor(db, result)?;
-    Some((event_desc, effect_list_desc))
-}
-
 /// Append the lambda-lifted closure bodies to `funcs`, AFTER the `layout.order` defs, in table-slot
 /// order — the shared step both the main emit path and the runtime-resource ESCAPE path need so a
 /// first-class closure's `call_indirect` has a body to dispatch (at func idx `import_base + order.len() +
@@ -579,184 +511,6 @@ pub fn emit(
         })
         .collect::<Result<_, _>>()?;
 
-    // ── B3 REDUCER byte-ABI path ──────────────────────────────────────────────────────────────────────
-    // A build whose component name is the fold interface, with a single `apply` export, is a REDUCER: its
-    // `apply` crosses as the byte ABI `apply(event: list<u8>) -> list<u8>` (value-decode the event doc →
-    // the guest's 3 structured args → guest apply → value-encode the effect list), NOT the default handle
-    // ABI. Intercept BEFORE the generic boundary emit: the wrapper needs runtime ops (value-decode/encode +
-    // bytes-*/arr-get/drop) the guest core never references, so `collect_module_used_ops` above does not
-    // include them — force them into the import set here (deterministic sorted union), select the guest
-    // apply body, bake the two protocol descriptors, and route to the dedicated reducer core module +
-    // assembler. Single export, single reducer def.
-    if let [e] = &layout.exports[..]
-        && is_reducer_fold_apply(db.component_name.as_deref(), &e.name)
-    {
-        // The wrapper's ops ∪ the guest's ops, as a deterministic sorted set → the import slice both the
-        // core module's import_index and the wrapper body's op-index agree on.
-        let mut red_used = used.clone();
-        for op in [
-            "value-decode",
-            "value-encode",
-            "bytes-alloc",
-            "bytes-set",
-            "bytes-get",
-            "bytes-len",
-            "arr-get",
-            "drop",
-        ] {
-            red_used.insert(op);
-        }
-        let red_imports: Vec<&runtime_abi::RtOp> = red_used
-            .iter()
-            .map(|name| {
-                runtime_abi::RUNTIME_OPS
-                    .iter()
-                    .find(|o| o.name == *name)
-                    .ok_or_else(|| {
-                        Reject::decline(format!("runtime op `{name}` not in the ABI table"))
-                    })
-            })
-            .collect::<Result<_, _>>()?;
-        // BOUND-EFFECT PEER imports (kv): a reducer that performs a bound effect (e.g. `bind(Kv,
-        // "cadenza:agent-kernel/kv")`) reaches its ops as peer calls. Collect the reducer body's host
-        // imports, keep only those bound to a peer interface (`db.effect_bindings`), and materialize an
-        // ExternImport per op — the guest body's `Lir::CallExternImport(i)` resolves to peer func `i`. b1/b2
-        // (no bound effect) → empty, so the emit is byte-identical to the heap-only reducer path.
-        let mut red_externs: Vec<host::ExternImport> = Vec::new();
-        if !db.effect_bindings.is_empty() {
-            let bindings = db.effect_bindings.clone();
-            let apply_body = def_body(db, e.def)?;
-            let mut host_imports: Vec<host::HostImport> = Vec::new();
-            host::collect_host_imports(db, apply_body, &mut host_imports);
-            for h in host_imports {
-                if let Some(iface) = bindings.get(&h.effect) {
-                    red_externs.push(host::ExternImport {
-                        interface: iface.clone(),
-                        op: h.op.clone(),
-                        params: h.params.iter().filter_map(host_param_abi).collect(),
-                        result: h.result,
-                    });
-                }
-            }
-        }
-        // The two protocol shape descriptors (event = assembled Record from the 3 params; effect-list =
-        // e.result directly, the flat protocol List<Record> under ruling (Q)).
-        let (event_desc, effect_list_desc) = reducer_descriptors(db, &e.params, &e.result)
-            .ok_or_else(|| {
-                Reject::decline(
-                    "the reducer apply is not the expected shape (3 structured params) — cannot bake the \
-                     event/effect-list descriptors for the byte-ABI reshape",
-                )
-            })?;
-        // The kv SHIMS sit at core funcs `e+k..e+k+e` (after the WIT imports 0..e + heap ops e..e+k). The
-        // guest defs follow at `e+k+e..`, so the reducer layout's import_base = e+k+e (so a guest sibling
-        // `Core::Call` resolves via `layout.abs` = import_base+pos to the right def slot). The guest's
-        // `CallExternImport(i)` (=call i, the RAW WIT import) is rewritten below → `Call(e+k+i)` = the shim.
-        let e_cnt = red_externs.len();
-        let k_cnt = red_imports.len();
-        let shim_base = (e_cnt + k_cnt) as u32;
-        let extern_order: Vec<(String, String)> = red_externs
-            .iter()
-            .map(|x| (x.interface.clone(), x.op.clone()))
-            .collect();
-        // Per-extern KvShimOp: `put` → Put; anything else (get) → Get with the result Option's discs. The
-        // discs come from the built-in `Option` decl (Some/None variant indices). b3/genesis use get+put.
-        let (opt_some, opt_none) = {
-            let mut some_d = 0u32;
-            let mut none_d = 1u32;
-            if let Some(decl_occ) = db.type_decl_by_name("Option")
-                && let Some(decl) = db.type_decl_by_occ(decl_occ)
-            {
-                for (vi, v) in decl.variants.iter().enumerate() {
-                    match v.name.as_str() {
-                        "Some" => some_d = vi as u32,
-                        "None" => none_d = vi as u32,
-                        _ => {}
-                    }
-                }
-            }
-            (some_d, none_d)
-        };
-        let kv_shims: Vec<serialize::KvShimOp> = red_externs
-            .iter()
-            .map(|x| {
-                if x.op == "put" {
-                    serialize::KvShimOp::Put
-                } else {
-                    serialize::KvShimOp::Get {
-                        disc_some: opt_some,
-                        disc_none: opt_none,
-                    }
-                }
-            })
-            .collect();
-        let red_layout = layout
-            .with_import_base((e_cnt + k_cnt + e_cnt) as u32)
-            .with_extern_order(extern_order);
-        let red_layout = &red_layout;
-        // Select ALL reachable reducer defs (the apply AND its callees — e.g. genesis's `setup-key`, which
-        // is NOT inlined, so `apply` emits a real `call` to it). Emitting only the apply would leave that
-        // call resolving to a missing/wrong func index (an invalid module). Find the apply's position.
-        let mut guest_funcs: Vec<select::SelectedFunc> = Vec::new();
-        let mut apply_pos = 0usize;
-        for (pos, &def) in red_layout.order.iter().enumerate() {
-            let body = def_body(db, def)?;
-            let params = match red_layout.export_plan(def) {
-                Some(ep) => ep.params.clone(),
-                None => crate::layout::def_params(db, def),
-            };
-            if def == e.def {
-                apply_pos = pos;
-            }
-            let mut f = select_function_of(db, body, &params, red_layout, Some(def))?;
-            // Rewrite each `CallExternImport(i)` → `Call(shim_base + i)`: the guest calls the SHIM (which
-            // marshals handle↔list<u8> + calls the raw WIT import), not the raw import directly.
-            for lir in f.code.iter_mut() {
-                if let crate::backend::wasm::lir::Lir::CallExternImport(i) = lir {
-                    *lir = crate::backend::wasm::lir::Lir::Call(shim_base + *i as u32);
-                }
-            }
-            guest_funcs.push(f);
-        }
-        let core = serialize::reducer_core_module(
-            &guest_funcs,
-            apply_pos,
-            &event_desc,
-            &effect_list_desc,
-            &red_imports,
-            &red_externs,
-            &kv_shims,
-        )
-        .map_err(Reject::decline)?;
-        let apply_export = crate::backend::wasm::envelope::BoundaryExport {
-            name: e.name.clone(),
-            params: vec![crate::backend::wasm::envelope::BoundaryParam::ListU8],
-            result: crate::backend::wasm::envelope::BoundaryResult::Bytes,
-        };
-        // Build the peer HostFn set + parallel op_ifaces for the assembler (comp functype per peer op +
-        // its interface), mirroring the normal extern path.
-        let red_op_ifaces: Vec<&str> = red_externs.iter().map(|x| x.interface.as_str()).collect();
-        let red_peer_fns: Vec<envelope::HostFn> = red_externs
-            .iter()
-            .map(|x| envelope::HostFn {
-                op: x.op.clone(),
-                comp_functype: extern_op_comp_functype(x),
-                core_functype: Vec::new(),
-                has_list_param: false,
-            })
-            .collect();
-        let import_name = runtime_import_name();
-        return Ok(envelope::assemble_reducer_apply(
-            &core,
-            &apply_export,
-            &red_imports,
-            &red_peer_fns,
-            &red_op_ifaces,
-            &import_name,
-            REDUCER_FOLD_IFACE,
-        ));
-    }
-
     // The per-program HOST-import set (E2h-2) — every host-delegated operation a reachable body performs
     // (a `Core::HostCall`), in first-encountered order. Like the runtime set, it must be fixed BEFORE
     // selection (it fixes the host-op call index a `Core::HostCall` resolves to) and it shifts the
@@ -1026,9 +780,7 @@ pub fn emit(
                         ty.render_name(&db.name_ctx())
                     ))
                 })?;
-                params.push(crate::backend::wasm::envelope::BoundaryParam::Primitive(
-                    av.comp_byte(),
-                ));
+                params.push(av.comp_byte());
             }
             boundary.push(BoundaryExport {
                 name: e.name.clone(),
@@ -1075,7 +827,7 @@ pub fn emit(
                                     ty.render_name(&db.name_ctx())
                                 ))
                             })?;
-                        params.push(crate::backend::wasm::envelope::BoundaryParam::Primitive(vt));
+                        params.push(vt);
                     }
                     params
                 },
@@ -1157,7 +909,7 @@ pub fn emit(
             let vt = serialize::export_result_valtype(ty, &db.name_ctx())
                 .map_err(Reject::decline)?
                 .ok_or_else(|| Reject::decline("a parameter type has no component valtype"))?;
-            params.push(crate::backend::wasm::envelope::BoundaryParam::Primitive(vt));
+            params.push(vt);
         }
         boundary.push(BoundaryExport {
             name: e.name.clone(),
@@ -8341,58 +8093,6 @@ mod runtime_abi_tests {
         // A lowerable op has only core-scalar params; str-new (string) is flagged unlowerable.
         assert!(OPS.arr_get.lowerable);
         assert!(!OPS.str_new.lowerable);
-    }
-
-    /// B3 trigger: the reducer byte-ABI reshape fires ONLY for the `apply` export of a build whose
-    /// component name is exactly the fold interface. A different export of a reducer build, an ordinary
-    /// provider build (a different / no component name), and a non-reducer `apply` all keep the default
-    /// handle ABI — so the reshape can never fire on a component it was not meant for.
-    #[test]
-    fn reducer_fold_apply_trigger() {
-        use super::{REDUCER_FOLD_IFACE, is_reducer_fold_apply};
-        assert_eq!(REDUCER_FOLD_IFACE, "cadenza:agent-kernel/fold");
-        // The one true trigger: fold interface + `apply`.
-        assert!(is_reducer_fold_apply(Some(REDUCER_FOLD_IFACE), "apply"));
-        // A different export of the SAME reducer build is untouched.
-        assert!(!is_reducer_fold_apply(Some(REDUCER_FOLD_IFACE), "init"));
-        // A DIFFERENT component interface, even with an `apply` export, is an ordinary provider.
-        assert!(!is_reducer_fold_apply(
-            Some("cadenza:agent-kernel/other"),
-            "apply"
-        ));
-        // A NON-component (plain) build — no component name — never triggers.
-        assert!(!is_reducer_fold_apply(None, "apply"));
-    }
-
-    /// B3 event-record assembly: the wrapper's event Type is a Record with the KERNEL-PROTOCOL field names
-    /// content_type/payload/resumes (NOT the guest param names ct/payload/resumes), field types taken from
-    /// the guest apply's 3 params, canonically sorted by name (content_type < payload < resumes). A non-3-param
-    /// apply is not the reducer shape → None.
-    #[test]
-    fn reducer_event_record_ty_assembles_the_protocol_record() {
-        use super::reducer_event_record_ty;
-        use crate::ast::StructId;
-        use crate::resolved::Symbol;
-        use crate::ty::{IntTy, Ty};
-        let sid = StructId(0);
-        // Guest apply params: ct: Record{...} (a stand-in scalar here is fine — the field TYPE is passed
-        // through opaquely), payload: Bytes, resumes: Bytes. The wrapper renames to the protocol fields.
-        let params = vec![
-            (sid, Ty::Bool),  // stand-in for the content-type record type (passed through)
-            (sid, Ty::Bytes), // payload
-            (sid, Ty::Int(IntTy::deferred())), // resumes (type passed through opaquely)
-        ];
-        let Some(Ty::Record(fields)) = reducer_event_record_ty(&params) else {
-            panic!("expected a Record");
-        };
-        // Exactly the three protocol field names, in sorted-key order, mapped to the guest param types.
-        let keys: Vec<&str> = fields.keys().map(|s| &*s.name).collect();
-        assert_eq!(keys, vec!["content_type", "payload", "resumes"]);
-        assert_eq!(fields.get(&Symbol::plain("content_type")), Some(&Ty::Bool));
-        assert_eq!(fields.get(&Symbol::plain("payload")), Some(&Ty::Bytes));
-        // Not the reducer 3-param shape → None.
-        assert!(reducer_event_record_ty(&[]).is_none());
-        assert!(reducer_event_record_ty(&params[..2]).is_none());
     }
 }
 

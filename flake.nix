@@ -1324,13 +1324,6 @@
           fileset = pkgs.lib.fileset.unions [
             ./implementation/seed/crates/cdz-kernel/tests/fixtures/reducer-guest
             ./implementation/seed/crates/cdz-kernel/wit
-            # B2 binary-AST fold boundary: the guest now speaks cadenza-ast at the fold seam (decode the
-            # event doc / encode the effect list), so it path-deps `cadenza-ast` (../../../../cadenza-ast in
-            # its Cargo.toml). The offline `--locked` build needs that crate's SOURCE in the sandbox — it is
-            # self-contained (only registry deps num-bigint + unicode-normalization, already in the fixture's
-            # Cargo.lock, so `reducerGuestVendor` vendors them). Without this the vendored build can't resolve
-            # the path-dep → cdz-component-store fails (the B2 reducer.wit-flip blast radius).
-            ./implementation/seed/crates/cadenza-ast
             ./rust-toolchain.toml
           ];
         };

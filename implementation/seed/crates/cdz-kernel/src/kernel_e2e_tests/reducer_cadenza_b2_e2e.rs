@@ -1,8 +1,8 @@
-//! End-to-end test of the BINARY-AST fold boundary (B2/B3) against the REAL B2 Cadenza reducer
-//! (`packages.reducer-cadenza-b2` — v-nix's nix-built component from `reducer_b2.cdz`).
-//! The B2 climb over b1 (empty-effects): B2 proves the EFFECT-REQUEST construction path — the reducer
-//! builds ONE `effect-request` and returns it in its cadenza-AST effect list, which the host parses back
-//! into a kernel [`EffectRequest`] via `ast_marshal::parse_effect_list`.
+//! End-to-end test of the OPTION-C HANDLE-LOWERED reducer path (§19e) against the REAL B2 Cadenza reducer
+//! (`packages.reducer-cadenza-b2` — v-nix's nix-built component from v-harness-bootstrap's `reducer_b2.cdz`).
+//! The B2 climb over b1 (empty-effects): B2 proves the EFFECT-REQUEST construction path through option-C
+//! marshalling — the reducer builds ONE bare `effect-request` record; the host reads its sorted-field-name
+//! arr indices (correlation/kind/payload/target) back into a kernel [`EffectRequest`].
 //!
 //! B2's documented behavior (reducer_b2.cdz): on ANY event, request ONE Http effect to
 //! `https://ok.host/x` with correlation token `step-1`. So the assertion is: exactly 1 effect, kind Http,
@@ -15,8 +15,7 @@
 //!   to resolve the runtime's own bare `cadenza:nfc/normalize`. UNSET → SKIP (else an opaque mid-run
 //!   linker error — same rationale as the b1 e2e).
 
-use crate::ast_marshal::{build_event_document, ContentTypeRef};
-use crate::wasm_host::{ComponentDep, ComponentReducer};
+use crate::wasm_host::{ComponentDep, ComponentReducer, ContentType, EffectKind};
 
 /// The compiled b2 component bytes from `REDUCER_CADENZA_B2_COMPONENT`; `None` (clean SKIP) when unset. A
 /// set path that's unreadable PANICS (a broken CI path must fail loud, not skip).
@@ -28,10 +27,10 @@ fn reducer_bytes() -> Option<Vec<u8>> {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn reducer_cadenza_b2_folds_one_http_effect_through_the_byte_ast_apply() {
+async fn reducer_cadenza_b2_folds_one_http_effect_through_apply_handle_lowered() {
     let Some(reducer_component) = reducer_bytes() else {
         eprintln!(
-            "SKIP reducer_cadenza_b2_folds_one_http_effect_through_the_byte_ast_apply: \
+            "SKIP reducer_cadenza_b2_folds_one_http_effect_through_apply_handle_lowered: \
              REDUCER_CADENZA_B2_COMPONENT unset"
         );
         return;
@@ -41,7 +40,7 @@ async fn reducer_cadenza_b2_folds_one_http_effect_through_the_byte_ast_apply() {
     // — SKIP cleanly + explain instead (a bare `cargo test` stays green; CI always sets CDZ_STORE).
     if std::env::var("CDZ_STORE").is_err() {
         eprintln!(
-            "SKIP reducer_cadenza_b2_folds_one_http_effect_through_the_byte_ast_apply: \
+            "SKIP reducer_cadenza_b2_folds_one_http_effect_through_apply_handle_lowered: \
              CDZ_STORE unset — required to resolve the runtime's transitive cadenza:nfc/normalize dep (§23)"
         );
         return;
@@ -53,8 +52,8 @@ async fn reducer_cadenza_b2_folds_one_http_effect_through_the_byte_ast_apply() {
     };
 
     // b2 declares its runtime dep by `+<hash>` (a real Cadenza reducer lowers compounds to opaque
-    // value-heap handles internally, so it imports cadenza:runtime/heap). Resolve + attach so `apply`
-    // can compose the runtime (and its transitive nfc, via the store) into the fold's linker.
+    // value-heap handles, so it imports cadenza:runtime/heap). Resolve + attach so apply_handle_lowered
+    // can compose the runtime (and its transitive nfc, via the store) + bind a HeapHandle.
     let deps = reducer.deps().to_vec();
     // Assert the HEAP dep SPECIFICALLY (not just any dep): strip the `@version` / `+hash` build-metadata
     // off each import name and match the bare interface — so the check actually verifies what its message
@@ -74,18 +73,13 @@ async fn reducer_cadenza_b2_folds_one_http_effect_through_the_byte_ast_apply() {
             reducer.with_component_store(crate::component_store::ComponentStore::open(&store_dir));
     }
 
-    // Fold an inbound "message" event (B2 binary-AST boundary). b2 emits exactly ONE Http effect to
-    // https://ok.host/x with correlation "step-1" — the effect-request construction path, now decoded from
-    // the guest's cadenza-AST effect list.
-    let event = build_event_document(
-        ContentTypeRef {
-            family: "message",
-            version: 1,
-        },
-        None,
-        None,
-    );
-    match reducer.apply(crate::kv::Kv::new(), &event) {
+    // Fold an inbound "message" event. b2 emits exactly ONE Http effect to https://ok.host/x with
+    // correlation "step-1" — the effect-request construction path through the option-C marshalled boundary.
+    let ct = ContentType {
+        family: "message".into(),
+        version: 1,
+    };
+    match reducer.apply_handle_lowered(crate::kv::Kv::new(), ct, None, None) {
         Ok((effects, _kv)) => {
             assert_eq!(
                 effects.len(),
@@ -94,25 +88,20 @@ async fn reducer_cadenza_b2_folds_one_http_effect_through_the_byte_ast_apply() {
                 effects.len()
             );
             let e = &effects[0];
-            assert_eq!(
-                e.request.content_type.family.as_ref(),
-                "http",
-                "b2's effect family is http, got {:?}",
-                e.request.content_type.family
+            assert!(
+                matches!(e.kind, EffectKind::Http),
+                "b2's effect is Http, got {:?}",
+                e.kind
             );
+            assert_eq!(e.target, "https://ok.host/x", "b2's Http target");
             assert_eq!(
-                e.request.target_str().unwrap(),
-                "https://ok.host/x",
-                "b2's Http target"
-            );
-            assert_eq!(
-                e.token.as_deref(),
+                e.correlation.as_deref(),
                 Some(&b"step-1"[..]),
                 "b2's correlation token is \"step-1\""
             );
         }
         Err((e, _kv)) => {
-            panic!("apply should drive the real reducer_b2 without error, got {e:?}")
+            panic!("apply_handle_lowered should drive the real reducer_b2 without error, got {e:?}")
         }
     }
 }
@@ -124,7 +113,7 @@ async fn resolve_runtime_deps(deps: &[ComponentDep]) -> Vec<(ComponentDep, Vec<u
     // Direct-path override supplies ONE component's bytes → only valid for a single-dep reducer (b2
     // declares exactly one, its cadenza:runtime/heap). FAIL LOUD on >1 dep (github-liaison #2312) — mapping
     // the same heap bytes to every dep would silently mis-supply an unrelated dep; use CDZ_STORE for a
-    // multi-dep reducer. (Mirrors apply's "MORE THAN ONE cadenza:runtime/heap dep" fail-loud.)
+    // multi-dep reducer. (Mirrors apply_handle_lowered's "MORE THAN ONE cadenza:runtime/heap dep" fail-loud.)
     if let Ok(path) = std::env::var("RUNTIME_HEAP_COMPONENT") {
         assert_eq!(
             deps.len(),

@@ -1,29 +1,37 @@
 // reducer_b2.cdz — B2: a Cadenza agent-harness reducer that EMITS one effect-request (ML surface).
 //
-// Extends B1 (empty-effects) — proves the effect-request construction path through the B2 value-form
-// boundary (design-binary-ast-abi, ruling Q): the reducer builds the FLAT protocol effect-request record
-// directly, so rcdzc's value-encode(result) IS the kernel wire (no Mk-strip / EffectKind->String adapter).
-// `kind` is the lowercased effect FAMILY string ("http" — register-by-string, seq366, NOT a closed enum);
-// `target` is Bytes. Fields sorted-key (correlation, kind, payload, target — the shared protocol descriptor).
-// Behavior: on ANY event, request ONE http effect to https://ok.host/x with correlation token "step-1"
+// Extends B1 (empty-effects) — proves the effect-request construction path through option-C marshalling:
+// the reducer builds a BARE effect-request record; the kernel host reads its fields at SORTED-name arr
+// indices (correlation, kind, payload, target) and turns them into a kernel EffectRequest. effect-kind
+// disc order Shell=0..Emit=5 (matches EffectKind decl order + cdz-kernel effect.rs).
+// Behavior: on ANY event, request ONE Http effect to https://ok.host/x with correlation token "step-1"
 // (mirrors the interim Rust reducer-guest). B3 adds the kv counter + content-type conditional.
 //
-// BUILD: cdz compile reducer_b2.cdz --target wasm --component-name cadenza:agent-kernel/fold → VALID.
+// BUILD: cdz compile reducer_b2.cdz --target wasm --component-name cadenza:agent-kernel/fold
+//   -> apply: func(u32,u32,u32)->u32 + import cadenza:runtime/heap; a VALID component.
 
-// The protocol effect-request is an INLINE flat record (kind a family String, target Bytes, sorted fields)
-// — NOT a named-type alias: `type X = Record(..)` in Cadenza is a single-variant SUM (needs match to read),
-// but the wire is a bare transparent record, so we spell the record type inline on apply's return.
+type EffectKind =
+  | Shell()
+  | Http()
+  | Model()
+  | Now()
+  | Timer()
+  | Emit()
+
+type EffectRequest =
+  | Mk(Record(kind: EffectKind, target: String, payload: Option(Bytes), correlation: Option(Bytes)))
+
 def apply(
   ct: Record(family: String, version: UInt(32)),
   payload: Option(Bytes),
   resumes: Option(Bytes),
-) -> List(Record(correlation: Option(Bytes), kind: String, payload: Option(Bytes), target: Bytes)) = [
-  {
-    correlation = Some(String.to-bytes("step-1")),
-    kind = "http",
+) -> List(EffectRequest) = [
+  EffectRequest.Mk({
+    kind = EffectKind.Http(),
+    target = "https://ok.host/x",
     payload = None(),
-    target = String.to-bytes("https://ok.host/x"),
-  }
+    correlation = Some(String.to-bytes("step-1")),
+  })
 ]
 
 // Behavioral coverage (runs on the seed compiler via `cdz test`, INDEPENDENT of the kernel host adapter;
@@ -40,23 +48,24 @@ def b2_emits_exactly_one_effect() =
 @test
 def b2_the_effect_is_http() =
   match List.at(apply({ family = "message", version = 1 }, None(), None()), 0) with
-    | Some(r) =>
-      if r.kind == "http" then unit
-      else trap("B2's effect kind must be the family string \"http\"")
+    | Some(EffectRequest.Mk(r)) =>
+      (match r.kind with
+        | EffectKind.Http() => unit
+        | _ => trap("B2's effect kind must be Http"))
     | None() => trap("B2 must have an effect at index 0")
 
 @test
 def b2_effect_target_is_pinned() =
   match List.at(apply({ family = "message", version = 1 }, None(), None()), 0) with
-    | Some(r) =>
-      if r.target == String.to-bytes("https://ok.host/x") then unit
+    | Some(EffectRequest.Mk(r)) =>
+      if r.target == "https://ok.host/x" then unit
       else trap("B2's effect target must be https://ok.host/x")
     | None() => trap("B2 must have an effect at index 0")
 
 @test
 def b2_effect_correlation_is_pinned() =
   match List.at(apply({ family = "message", version = 1 }, None(), None()), 0) with
-    | Some(r) =>
+    | Some(EffectRequest.Mk(r)) =>
       if r.correlation == Some(String.to-bytes("step-1")) then unit
       else trap("B2's effect correlation token must be Some(\"step-1\")")
     | None() => trap("B2 must have an effect at index 0")
@@ -64,7 +73,7 @@ def b2_effect_correlation_is_pinned() =
 @test
 def b2_effect_payload_is_none() =
   match List.at(apply({ family = "message", version = 1 }, None(), None()), 0) with
-    | Some(r) =>
+    | Some(EffectRequest.Mk(r)) =>
       (match r.payload with
         | None() => unit
         | Some(_) => trap("B2's effect payload must be None"))

@@ -40,6 +40,17 @@
 //!   wire (operator seq 107, "binary format = AST encoding"): [`ast_marshal::val_to_ast`] turns a result
 //!   `Val` of ANY WIT shape into a self-describing AST value; [`ast_marshal::ast_to_val`] is the dual
 //!   (AST bytes + a WIT type → `Val`, for marshalling args IN).
+//! - [`heap_marshal`] — the reducer-boundary INPUT marshalling for the option-C handle-lowered MODE (§19e):
+//!   WHEN a Cadenza reducer is invoked via `apply(u32,u32,u32)->u32` over the shared `cadenza:runtime/heap`,
+//!   the host marshals the `(content-type, payload, resumes)` fold inputs INTO value-heap handles via
+//!   [`wasm_host::HeapHandle`]'s build ops first. A tested helper staged AHEAD of its wiring — the current
+//!   live path is still `wasm_host`'s WIT-structural `bindgen!` fold.apply. Sorted-field records + sums.
+//! - [`heap_unmarshal`] — the READ dual of [`heap_marshal`], same option-C handle-lowered MODE (§19e): WHEN
+//!   a reducer is invoked via the handle-ABI, projects its returned `list<effect-request>` value-heap handle
+//!   back into a `Vec` of [`wasm_host::EffectRequest`] (the WIT-boundary type, not the kernel's
+//!   [`effect::EffectRequest`]) via [`wasm_host::HeapHandle`]'s read ops. Also staged ahead of wiring.
+//!   The `kind` enum-disc field boxes like an int (→ `get-int`), NOT a sum handle (v-rust-backend
+//!   authoritative); sorted-field records + `Some=0`/`None=1` option decode.
 //! - [`kernel`] — the core `fold → authorize → durably-dispatch → execute → fold-result` loop, plus
 //!   `replay`/`recover` (crash recovery: rebuild KV + open-obligation set from the log, no live
 //!   re-execution) and `time_out_effect` (the "or time out" half of the S4 recovery contract).
@@ -58,6 +69,8 @@ pub mod event;
 pub mod event_ast;
 pub mod executor;
 pub mod hash;
+pub mod heap_marshal;
+pub mod heap_unmarshal;
 pub mod kernel;
 pub mod kv;
 pub mod log_store;

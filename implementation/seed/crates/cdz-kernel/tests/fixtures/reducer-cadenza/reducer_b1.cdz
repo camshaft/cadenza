@@ -6,32 +6,39 @@
 // boundary (design/agent-harness-kernel.md: reducer.wit stays STRUCTURAL; the kernel host marshals each
 // WIT field <-> the shared value-heap runtime's handles around this reducer's handle-ABI apply).
 //
-// Fold shape — B2 binary-AST value-form boundary (design-binary-ast-abi): the guest apply keeps its
-// STRUCTURED args (rcdzc's B3 wrapper value-decodes the event record into them), and RETURNS the flat
-// PROTOCOL effect-request record directly — so value-encode(result) IS the kernel wire, no transform:
-//   apply(ct: Record{family, version}, payload: Option(Bytes), resumes: Option(Bytes))
-//       -> List(Record{ correlation: Option(Bytes), kind: String, payload: Option(Bytes), target: Bytes })
-// The effect-request is a FLAT record (no Mk wrapper, no EffectKind sum): `kind` is the lowercased effect
-// FAMILY string ("http"/"shell"/any userspace handler family — register-by-string, seq366, NOT a closed
-// enum); `target` is Bytes. Fields sorted-key (the shared protocol descriptor the kernel's ast_marshal +
-// rcdzc both bake). This is ruling (Q): the guest authors the protocol shape, value-encode is a pure
-// structural encode (no Mk-strip / enum->string / string->bytes adapter — no-adapter directive).
+// Fold shape — mirrors wit/reducer.wit fold.apply:
+//   apply(content-type, option<list<u8>>, option<list<u8>>) -> list<effect-request>
+//     content-type      = { family: string, version: u32 }
+//     payload / resumes = option<list<u8>>
+//     effect-request    = { kind, target, payload, correlation }   (BARE record — matches reducer.wit)
 //
 // B1 BEHAVIOR: a TOTAL fold that IGNORES its inputs and requests NO effects — returns the empty list
 // for EVERY event (can't-brick). The minimal fold that proves the path; B2 emits a real effect.
 //
 // BUILD: cdz compile reducer_b1.cdz --target wasm --component-name cadenza:agent-kernel/fold
-//   -> apply emitted as the byte-boundary fold (B3: value-decode event / value-encode result). VALID.
-// The cdz-kernel e2e loads this via REDUCER_CADENZA_COMPONENT (nix packages.reducer-cadenza builds it).
+//   -> apply: func(u32,u32,u32)->u32 + import cadenza:runtime/heap; a VALID component.
+// The kernel host composes the value-heap runtime + marshals the structural fields; the cdz-kernel e2e
+// loads this via the REDUCER_CADENZA_COMPONENT env path (nix packages.reducer-cadenza builds it).
 
-// The protocol effect-request is an INLINE flat record (kind a family String, target Bytes, sorted fields)
-// — NOT a named-type alias: `type X = Record(..)` in Cadenza is a single-variant SUM (needs match to read),
-// but the wire is a bare transparent record, so we spell the record type inline on apply's return.
+// The effect-kind enum — a closed set of nullary variants (declaration order = disc 0..5).
+type EffectKind =
+  | Shell()
+  | Http()
+  | Model()
+  | Now()
+  | Timer()
+  | Emit()
+
+// A bare structural record matching reducer.wit's effect-request. B1 constructs none (empty list).
+type EffectRequest =
+  | Mk(Record(kind: EffectKind, target: String, payload: Option(Bytes), correlation: Option(Bytes)))
+
+// The fold — total, ignores its inputs, requests no effects.
 def apply(
   ct: Record(family: String, version: UInt(32)),
   payload: Option(Bytes),
   resumes: Option(Bytes),
-) -> List(Record(correlation: Option(Bytes), kind: String, payload: Option(Bytes), target: Bytes)) = []
+) -> List(EffectRequest) = []
 
 // Behavioral coverage (runs on the seed compiler via `cdz test`, INDEPENDENT of the kernel host adapter;
 // a plain `cdz compile` ignores @test, so the emitted component is unchanged). Passes = returns unit,
