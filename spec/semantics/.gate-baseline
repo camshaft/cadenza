@@ -30,6 +30,7 @@ pass	@invariant over a RECORD-payload newtype establishes on the record's relati
 pass	@invariant with an unbound predicate name is REJECTED (CDZ0101 — only `self` + prelude are in scope)
 pass	@requires and @ensures read a HEAP String param's byte-len — enforce on the empty-string violation
 pass	@requires is enforced when the guarded def is applied through a first-class fn value
+pass	@requires on a MODULE export is enforced when the def is called across the module-access boundary
 pass	@requires over a BYTES parameter reads Bytes.len at body entry — completes the heap-param domain (List/Map/String/Bytes)
 pass	@requires over a HANDLE-bodied def, and @ensures over a handle arm that uses state 3x — both enforce (effects-fold robustness)
 pass	@requires over a HEAP argument reads the list's content at body entry

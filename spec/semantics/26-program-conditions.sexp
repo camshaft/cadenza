@@ -3472,6 +3472,26 @@
   (call   main (: -1 Int64))
   (trap   "unreachable"))
 
+(case "@requires on a MODULE export is enforced when the def is called across the module-access boundary"
+  (doc    "Every enforcement case so far calls the contracted def in the same top-level scope; this pins that
+           the body-entry check TRAVELS with a def exported from a module and reached via member access. A
+           module declaration binds its name in the enclosing scope (core-semantics.md), and `(. m f)` reaches
+           the export, so a `@requires`-guarded def defined INSIDE the module must carry its injected `(if PRE
+           BODY (trap …))` through the module-access call site. `m` exports `safe`, guarded by `@requires(>= x
+           0)`; `main` calls `((. m safe) v)`. main(5): `5 >= 0` holds → the export computes 6. main(-1): `-1 >=
+           0` is FALSE → the precondition traps THROUGH the member-access call, exactly as a same-scope direct
+           call would. Pins that verify_enforce's rewrite is a property of the def itself, not of the call being
+           lexically local — an enforcement keyed to local call sites would return the unchecked body across the
+           module boundary. Runtime arg via main's param so nothing folds.")
+  (input  (do
+            (module m
+              (@ (requires (>= x 0)) (def (safe (: x Int64)) (+ x 1)))
+              (export safe))
+            (def (main (: v Int64)) ((. m safe) v))
+            (export main)))
+  (call   main (: 5 Int64))   (output (: 6 Int64))
+  (call   main (: -1 Int64))  (trap "unreachable"))
+
 (case "@ensures holds when the guarded def arrives through a runtime branch"
   (doc    "The function-valued-conditional composition: `(if b abs1 idf)` selects between the
            @ensures-guarded `abs1` and the unguarded `idf` at run time, then applies the selection.
