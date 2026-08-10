@@ -60,7 +60,7 @@ fn module_record(
     // The record PRIMITIVE head is the STRING `"record"` (the bare NAME `record` is a shadowable prelude
     // alias); a compiler-synthesized record uses the string head so it resolves structurally to
     // `Resolved::Record` independent of any user binding of `record`, exactly as `sums`/`effects` do.
-    let head = push_atom(ast, Leaf::Str("record".to_string()));
+    let head = push_atom(ast, Leaf::Str("record".into()));
     let mut children = vec![head];
     // `(module NAME def…)` — the members are everything after NAME (index 0 of the tail).
     let members: Vec<StructId> = ast
@@ -98,7 +98,7 @@ fn module_record(
             if !visible(&inner_name) {
                 continue;
             }
-            let k = push_atom(ast, Leaf::Name(inner_name));
+            let k = push_atom(ast, Leaf::Name(inner_name.into()));
             children.push(push_list(ast, vec![k, inner_rec]));
         } else if let Some(name) = def_member_name(ast, member) {
             // A `(def …)` member — include its field ONLY if visible (exported, or no clause). `def_field`
@@ -126,15 +126,15 @@ fn module_record(
     //# A module's metadata MUST be reachable by a metadata key distinct from every export name, so that metadata access cannot collide with an export.
     let caps = module_capabilities(ast, &members);
     if !caps.is_empty() {
-        let list_head = push_atom(ast, Leaf::Str("list".to_string()));
+        let list_head = push_atom(ast, Leaf::Str("list".into()));
         let mut list_children = vec![list_head];
         for name in caps {
-            list_children.push(push_atom(ast, Leaf::Str(name)));
+            list_children.push(push_atom(ast, Leaf::Str(name.into())));
         }
         let list_val = push_list(ast, list_children);
         // The key `(meta capabilities)` — a `meta`-namespaced symbol, read by `resolve::read_key`.
-        let meta_head = push_atom(ast, Leaf::Name("meta".to_string()));
-        let caps_name = push_atom(ast, Leaf::Name("capabilities".to_string()));
+        let meta_head = push_atom(ast, Leaf::Name("meta".into()));
+        let caps_name = push_atom(ast, Leaf::Name("capabilities".into()));
         let meta_key = push_list(ast, vec![meta_head, caps_name]);
         children.push(push_list(ast, vec![meta_key, list_val]));
     }
@@ -243,7 +243,7 @@ fn def_field(ast: &mut Arenas, member: StructId) -> Option<StructId> {
     let body = *tail.get(1)?;
     // Bare-name value declaration `(def x V)` — field `x` → its value `V`.
     if let Some(name) = ast.as_name(sig).map(str::to_string) {
-        let k = push_atom(ast, Leaf::Name(name));
+        let k = push_atom(ast, Leaf::Name(name.into()));
         return Some(push_list(ast, vec![k, body]));
     }
     // List signature `(NAME param…)` — clone the children out before mutating the arena.
@@ -253,8 +253,8 @@ fn def_field(ast: &mut Arenas, member: StructId) -> Option<StructId> {
     let children = children.clone();
     let name = children.first().and_then(|&c| ast.as_name(c))?.to_string();
     let params: Vec<StructId> = children[1..].to_vec();
-    let k = push_atom(ast, Leaf::Name(name));
-    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let k = push_atom(ast, Leaf::Name(name.into()));
+    let fn_head = push_atom(ast, Leaf::Name("fn".into()));
     if params.is_empty() {
         // Nullary FUNCTION `(def (answer) V)` — a `Unit → T` export INVOKED by applying it to the unit value
         // `((. m answer) unit)` (core-semantics.md §A Nullary Function's Argument Type Is Unit; the module
@@ -267,9 +267,9 @@ fn def_field(ast: &mut Arenas, member: StructId) -> Option<StructId> {
         // export as `∀a. a → T` and silently accepting a NON-unit argument (`((. m answer) 5)` → V, an
         // accept-ill-formed type hole); annotating it `Unit` makes a non-unit argument fail CDZ0203, exactly
         // as a written `(def (f (: u Unit)) …)` does — the behavior the nullary-arg-is-Unit rule requires.
-        let unit_param = push_atom(ast, Leaf::Name("_$u".to_string()));
-        let colon = push_atom(ast, Leaf::Name(":".to_string()));
-        let unit_ty = push_atom(ast, Leaf::Name("Unit".to_string()));
+        let unit_param = push_atom(ast, Leaf::Name("_$u".into()));
+        let colon = push_atom(ast, Leaf::Name(":".into()));
+        let unit_ty = push_atom(ast, Leaf::Name("Unit".into()));
         let annotated = push_list(ast, vec![colon, unit_param, unit_ty]);
         let params_list = push_list(ast, vec![annotated]);
         let lambda = push_list(ast, vec![fn_head, params_list, body]);

@@ -79246,8 +79246,8 @@ mod r2_runtime_resource {
             .leaves
             .iter()
             .filter_map(|l| match l {
-                crate::ast::Leaf::Name(n) => Some(n.as_str()),
-                crate::ast::Leaf::Sym(s) => Some(s.as_str()),
+                crate::ast::Leaf::Name(n) => Some(&**n),
+                crate::ast::Leaf::Sym(s) => Some(&**s),
                 _ => None,
             })
             .collect();

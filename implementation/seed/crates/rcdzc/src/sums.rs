@@ -118,21 +118,21 @@ pub fn prelude_decls(ast: &mut Arenas) -> Vec<TypeDecl> {
     //= spec/capabilities/self-hosting-surface.md#a-program-s-syntax-tree-is-an-ordinary-value
     //# A compiler MUST be able to determine a node's kind and obtain its children from that value, so that it can walk the tree structurally.
     let ast_decl = {
-        let int_pay = push_atom(ast, Leaf::Name("BigInt".to_string()));
-        let float_pay = push_atom(ast, Leaf::Name("Float64".to_string()));
-        let bool_pay = push_atom(ast, Leaf::Name("Bool".to_string()));
-        let str_pay = push_atom(ast, Leaf::Name("String".to_string()));
-        let name_pay = push_atom(ast, Leaf::Name("String".to_string()));
+        let int_pay = push_atom(ast, Leaf::Name("BigInt".into()));
+        let float_pay = push_atom(ast, Leaf::Name("Float64".into()));
+        let bool_pay = push_atom(ast, Leaf::Name("Bool".into()));
+        let str_pay = push_atom(ast, Leaf::Name("String".into()));
+        let name_pay = push_atom(ast, Leaf::Name("String".into()));
         // `Bytes` — a raw byte-sequence LITERAL (`b"…"` / a `Bytes` value), the syntactic form for a
         // binary blob. Its payload is the `Bytes` type (not a `(List Int64)`), so a blob rides the AST +
         // its codec as ONE length-prefixed raw-bytes leaf (codec `KIND_BYTES`, tag 11 — already present)
         // rather than a node-per-byte list, cutting encode/decode overhead on the invoke wire format
         // (operator seq 113). Appended LAST so existing variant discriminants are unchanged (discs are
         // read BY NAME via `ast_variant_discs`, so order is display-only).
-        let bytes_pay = push_atom(ast, Leaf::Name("Bytes".to_string()));
+        let bytes_pay = push_atom(ast, Leaf::Name("Bytes".into()));
         // `(List Ast)` — the recursive list-of-Ast payload for the `List` variant.
-        let list_head = push_atom(ast, Leaf::Name("List".to_string()));
-        let ast_ref = push_atom(ast, Leaf::Name("Ast".to_string()));
+        let list_head = push_atom(ast, Leaf::Name("List".into()));
+        let ast_ref = push_atom(ast, Leaf::Name("Ast".into()));
         let list_ast = push_list(ast, vec![list_head, ast_ref]);
         // The `Ast` sum's variants follow the spec's enumeration order (`type-system.md` §The Abstract
         // Syntax Tree Is An Ordinary Sum Type: "an integer, a float, a string, a boolean, a name, and a
@@ -211,14 +211,14 @@ pub fn prelude_decls(ast: &mut Arenas) -> Vec<TypeDecl> {
 /// `(List Ast)`), not bare type-parameter names. Each variant is `(vname payload-node…)`; a nullary
 /// variant (`&[]`) is a bare `vname`.
 fn type_form_payloads(ast: &mut Arenas, name: &str, variants: &[(&str, &[StructId])]) -> StructId {
-    let head = push_atom(ast, Leaf::Name("type".to_string()));
-    let name_occ = push_atom(ast, Leaf::Name(name.to_string()));
+    let head = push_atom(ast, Leaf::Name("type".into()));
+    let name_occ = push_atom(ast, Leaf::Name(name.into()));
     let mut children = vec![head, name_occ];
     for (vname, payloads) in variants {
         if payloads.is_empty() {
-            children.push(push_atom(ast, Leaf::Name(vname.to_string())));
+            children.push(push_atom(ast, Leaf::Name((*vname).into())));
         } else {
-            let mut vlist = vec![push_atom(ast, Leaf::Name(vname.to_string()))];
+            let mut vlist = vec![push_atom(ast, Leaf::Name((*vname).into()))];
             vlist.extend_from_slice(payloads);
             children.push(push_list(ast, vlist));
         }
@@ -249,18 +249,18 @@ pub fn variant_ctor_field(ast: &Arenas, record: StructId, vname: &str) -> Option
 /// variant is `(vname payload-name…)` (a payload is a bare type-parameter name — lowercase, so the scan
 /// reads it as an implicit generic). A nullary variant (`&[]` payloads) is a bare `vname`.
 fn type_form(ast: &mut Arenas, name: &str, variants: &[(&str, &[&str])]) -> StructId {
-    let head = push_atom(ast, Leaf::Name("type".to_string()));
-    let name_occ = push_atom(ast, Leaf::Name(name.to_string()));
+    let head = push_atom(ast, Leaf::Name("type".into()));
+    let name_occ = push_atom(ast, Leaf::Name(name.into()));
     let mut children = vec![head, name_occ];
     for (vname, payloads) in variants {
         if payloads.is_empty() {
             // Nullary variant — a bare name.
-            children.push(push_atom(ast, Leaf::Name(vname.to_string())));
+            children.push(push_atom(ast, Leaf::Name((*vname).into())));
         } else {
             // `(vname payload…)`.
-            let mut vlist = vec![push_atom(ast, Leaf::Name(vname.to_string()))];
+            let mut vlist = vec![push_atom(ast, Leaf::Name((*vname).into()))];
             for p in *payloads {
-                vlist.push(push_atom(ast, Leaf::Name(p.to_string())));
+                vlist.push(push_atom(ast, Leaf::Name((*p).into())));
             }
             children.push(push_list(ast, vlist));
         }
@@ -278,7 +278,7 @@ fn type_form(ast: &mut Arenas, name: &str, variants: &[(&str, &[&str])]) -> Stru
 /// Returns the record occurrence AND, in declaration order, each variant's constructor occurrence — so
 /// `synthesize` can cache them on the variants (an O(1) later ctor lookup instead of a name-scan).
 fn sum_record(ast: &mut Arenas, decl: &TypeDecl) -> (StructId, Vec<StructId>) {
-    let head = push_atom(ast, Leaf::Str("record".to_string()));
+    let head = push_atom(ast, Leaf::Str("record".into()));
     let mut children = vec![head];
     let mut ctors = Vec::with_capacity(decl.variants.len());
 
@@ -292,8 +292,8 @@ fn sum_record(ast: &mut Arenas, decl: &TypeDecl) -> (StructId, Vec<StructId>) {
     // — the analogue of a variant ctor's `(meta variant)` disc).
     if !decl.params.is_empty() {
         let builder = {
-            let ih = push_atom(ast, Leaf::Name("intrinsic".to_string()));
-            let who = push_atom(ast, Leaf::Name("sum-ctor".to_string()));
+            let ih = push_atom(ast, Leaf::Name("intrinsic".into()));
+            let who = push_atom(ast, Leaf::Name("sum-ctor".into()));
             push_list(ast, vec![ih, who])
         };
         children.push(meta_field(ast, "apply", builder));
@@ -313,7 +313,7 @@ fn sum_record(ast: &mut Arenas, decl: &TypeDecl) -> (StructId, Vec<StructId>) {
     for (disc, variant) in decl.variants.iter().enumerate() {
         let ctor = variant_ctor(ast, decl, variant, disc as u32);
         ctors.push(ctor);
-        let k = push_atom(ast, Leaf::Name(variant.name.clone()));
+        let k = push_atom(ast, Leaf::Name(variant.name.clone().into()));
         children.push(push_list(ast, vec![k, ctor]));
     }
 
@@ -329,7 +329,7 @@ fn sum_record(ast: &mut Arenas, decl: &TypeDecl) -> (StructId, Vec<StructId>) {
     {
         let expect_ty = expect_type_scheme(ast, decl, present.payloads[0]);
         let expect_op = expect_op_record(ast, expect_ty);
-        let ek = push_atom(ast, Leaf::Name("expect".to_string()));
+        let ek = push_atom(ast, Leaf::Name("expect".into()));
         children.push(push_list(ast, vec![ek, expect_op]));
     }
 
@@ -348,14 +348,14 @@ fn sum_record(ast: &mut Arenas, decl: &TypeDecl) -> (StructId, Vec<StructId>) {
             arrow_type(ast, self_ty, bytes) // (-> Sum Bytes)
         };
         let encode_op = intrinsic_op_record(ast, encode_ty, "ast-encode");
-        let ek = push_atom(ast, Leaf::Name("encode".to_string()));
+        let ek = push_atom(ast, Leaf::Name("encode".into()));
         children.push(push_list(ast, vec![ek, encode_op]));
 
         // `decode : Bytes → (Result Sum e)` — total; `e` is a free error type (a fresh lambda param so the
         // caller unifies it), the sum reference re-built fresh so it does not share the encode occurrence.
         let decode_ty = decode_type_scheme(ast, decl);
         let decode_op = intrinsic_op_record(ast, decode_ty, "ast-decode");
-        let dk = push_atom(ast, Leaf::Name("decode".to_string()));
+        let dk = push_atom(ast, Leaf::Name("decode".into()));
         children.push(push_list(ast, vec![dk, decode_op]));
     }
 
@@ -383,7 +383,7 @@ fn is_node_tree_sum(ast: &Arenas, decl: &TypeDecl) -> bool {
 /// shape whose `(meta apply)` is the named intrinsic, so projecting the field and applying it rides the
 /// ordinary `(meta apply)` dispatch to the intrinsic's lowering. The generic form of `expect_op_record`.
 fn intrinsic_op_record(ast: &mut Arenas, type_scheme: StructId, prim: &str) -> StructId {
-    let head = push_atom(ast, Leaf::Str("record".to_string()));
+    let head = push_atom(ast, Leaf::Str("record".into()));
     let t_field = meta_field(ast, "t", type_scheme);
     let builder = intrinsic_node(ast, prim);
     let apply_field = meta_field(ast, "apply", builder);
@@ -393,14 +393,14 @@ fn intrinsic_op_record(ast: &mut Arenas, type_scheme: StructId, prim: &str) -> S
 /// `(intrinsic "NAME")` — a type-value / builder reference node. The sums-local twin of the same helper
 /// in `prelude` (a bare name would mis-resolve inside the record being built).
 fn intrinsic_node(ast: &mut Arenas, name: &str) -> StructId {
-    let ih = push_atom(ast, Leaf::Name("intrinsic".to_string()));
-    let who = push_atom(ast, Leaf::Name(name.to_string()));
+    let ih = push_atom(ast, Leaf::Name("intrinsic".into()));
+    let who = push_atom(ast, Leaf::Name(name.into()));
     push_list(ast, vec![ih, who])
 }
 
 /// `(-> L R)` — a function-type expression node.
 fn arrow_type(ast: &mut Arenas, l: StructId, r: StructId) -> StructId {
-    let arrow = push_atom(ast, Leaf::Name("->".to_string()));
+    let arrow = push_atom(ast, Leaf::Name("->".into()));
     push_list(ast, vec![arrow, l, r])
 }
 
@@ -409,15 +409,15 @@ fn arrow_type(ast: &mut Arenas, l: StructId, r: StructId) -> StructId {
 /// `Sum` is the sum's applied type-value (`sum_applied`); `Result` is the built-in generic sum.
 fn decode_type_scheme(ast: &mut Arenas, decl: &TypeDecl) -> StructId {
     let result_sum_e = {
-        let result = push_atom(ast, Leaf::Name("Result".to_string()));
+        let result = push_atom(ast, Leaf::Name("Result".into()));
         let sum = sum_applied(ast, decl);
-        let e = push_atom(ast, Leaf::Name("e".to_string()));
+        let e = push_atom(ast, Leaf::Name("e".into()));
         push_list(ast, vec![result, sum, e])
     };
     let bytes = intrinsic_node(ast, "bytes-ty");
     let body = arrow_type(ast, bytes, result_sum_e); // (-> Bytes (Result Sum e))
-    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
-    let e_param = push_atom(ast, Leaf::Name("e".to_string()));
+    let fn_head = push_atom(ast, Leaf::Name("fn".into()));
+    let e_param = push_atom(ast, Leaf::Name("e".into()));
     let params = push_list(ast, vec![e_param]);
     push_list(ast, vec![fn_head, params, body])
 }
@@ -431,23 +431,23 @@ fn expect_type_scheme(ast: &mut Arenas, decl: &TypeDecl, payload0: StructId) -> 
     // `(-> (Sum params) (-> String <payload0>))`.
     let ret = copy_subtree(ast, payload0);
     let string = {
-        let ih = push_atom(ast, Leaf::Name("intrinsic".to_string()));
-        let who = push_atom(ast, Leaf::Name("String".to_string()));
+        let ih = push_atom(ast, Leaf::Name("intrinsic".into()));
+        let who = push_atom(ast, Leaf::Name("String".into()));
         push_list(ast, vec![ih, who])
     };
-    let arrow2 = push_atom(ast, Leaf::Name("->".to_string()));
+    let arrow2 = push_atom(ast, Leaf::Name("->".into()));
     let inner = push_list(ast, vec![arrow2, string, ret]); // (-> String <payload0>)
     let sum = sum_applied(ast, decl); // (Sum params) or the bare typeval
-    let arrow1 = push_atom(ast, Leaf::Name("->".to_string()));
+    let arrow1 = push_atom(ast, Leaf::Name("->".into()));
     let body = push_list(ast, vec![arrow1, sum, inner]); // (-> (Sum params) (-> String payload0))
     if decl.params.is_empty() {
         return body;
     }
-    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let fn_head = push_atom(ast, Leaf::Name("fn".into()));
     let param_atoms: Vec<StructId> = decl
         .params
         .iter()
-        .map(|p| push_atom(ast, Leaf::Name(p.clone())))
+        .map(|p| push_atom(ast, Leaf::Name(p.clone().into())))
         .collect();
     let params_list = push_list(ast, param_atoms);
     push_list(ast, vec![fn_head, params_list, body])
@@ -458,11 +458,11 @@ fn expect_type_scheme(ast: &mut Arenas, decl: &TypeDecl, payload0: StructId) -> 
 /// intrinsic (`Prim::SumExpect`). Projecting `(. Option expect)` gives this record; applying it dispatches
 /// through the ordinary `(meta apply)` path to the unwrap-or-trap lowering.
 fn expect_op_record(ast: &mut Arenas, type_scheme: StructId) -> StructId {
-    let head = push_atom(ast, Leaf::Str("record".to_string()));
+    let head = push_atom(ast, Leaf::Str("record".into()));
     let t_field = meta_field(ast, "t", type_scheme);
     let builder = {
-        let ih = push_atom(ast, Leaf::Name("intrinsic".to_string()));
-        let who = push_atom(ast, Leaf::Name("sum-expect".to_string()));
+        let ih = push_atom(ast, Leaf::Name("intrinsic".into()));
+        let who = push_atom(ast, Leaf::Name("sum-expect".into()));
         push_list(ast, vec![ih, who])
     };
     let apply_field = meta_field(ast, "apply", builder);
@@ -482,13 +482,13 @@ fn expect_op_record(ast: &mut Arenas, type_scheme: StructId) -> StructId {
 ///    the discriminant is all this channel needs.
 fn variant_ctor(ast: &mut Arenas, decl: &TypeDecl, variant: &Variant, disc: u32) -> StructId {
     // The record PRIMITIVE head is the STRING `"record"` (the NAME `record` is a shadowable alias).
-    let head = push_atom(ast, Leaf::Str("record".to_string()));
+    let head = push_atom(ast, Leaf::Str("record".into()));
     let ctor_ty = ctor_type_scheme(ast, decl, variant);
     let t_field = meta_field(ast, "t", ctor_ty);
     // `(meta apply)` = the shared sum-new intrinsic.
     let builder = {
-        let ih = push_atom(ast, Leaf::Name("intrinsic".to_string()));
-        let who = push_atom(ast, Leaf::Name("sum-new".to_string()));
+        let ih = push_atom(ast, Leaf::Name("intrinsic".into()));
+        let who = push_atom(ast, Leaf::Name("sum-new".into()));
         push_list(ast, vec![ih, who])
     };
     let apply_field = meta_field(ast, "apply", builder);
@@ -516,11 +516,11 @@ fn ctor_type_scheme(ast: &mut Arenas, decl: &TypeDecl, variant: &Variant) -> Str
         return body;
     }
     // `(fn (a b…) <arrow>)` — the params, in first-appearance order, quantified over the ctor type.
-    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let fn_head = push_atom(ast, Leaf::Name("fn".into()));
     let param_atoms: Vec<StructId> = decl
         .params
         .iter()
-        .map(|p| push_atom(ast, Leaf::Name(p.clone())))
+        .map(|p| push_atom(ast, Leaf::Name(p.clone().into())))
         .collect();
     let params_list = push_list(ast, param_atoms);
     push_list(ast, vec![fn_head, params_list, body])
@@ -537,7 +537,7 @@ fn ctor_arrow(ast: &mut Arenas, decl: &TypeDecl, variant: &Variant) -> StructId 
     let mut ty = sum_applied(ast, decl);
     // Wrap right-to-left in `(-> payload …)` so the arrow curries in declaration order.
     for &payload in variant.payloads.iter().rev() {
-        let arrow = push_atom(ast, Leaf::Name("->".to_string()));
+        let arrow = push_atom(ast, Leaf::Name("->".into()));
         let p = copy_payload_type(ast, payload, decl);
         ty = push_list(ast, vec![arrow, p, ty]);
     }
@@ -564,7 +564,7 @@ fn copy_payload_type(ast: &mut Arenas, node: StructId, decl: &TypeDecl) -> Struc
         // form `sum_applied` builds for the result type. Any other name is copied verbatim.
         Struct::Atom(lid) => {
             if let Leaf::Name(n) = ast.leaf(lid).clone()
-                && n == decl.name
+                && n.as_ref() == decl.name.as_str()
             {
                 return sum_applied(ast, decl);
             }
@@ -606,10 +606,10 @@ fn sum_applied(ast: &mut Arenas, decl: &TypeDecl) -> StructId {
         return sum_typeval(ast, decl);
     }
     // `(NAME a b…)` — the sum name applied to its params; `NAME` re-resolves to the sum record.
-    let name = push_atom(ast, Leaf::Name(decl.name.clone()));
+    let name = push_atom(ast, Leaf::Name(decl.name.clone().into()));
     let mut items = vec![name];
     for p in &decl.params {
-        items.push(push_atom(ast, Leaf::Name(p.clone())));
+        items.push(push_atom(ast, Leaf::Name(p.clone().into())));
     }
     push_list(ast, items)
 }
@@ -618,9 +618,9 @@ fn sum_applied(ast: &mut Arenas, decl: &TypeDecl) -> StructId {
 /// `resolve::decode_ty`'s `Sum` arm and `eval::encode_ty`'s `Sum` arm — the declaration occurrence is
 /// the identity (an integer literal in the wire form), the name is for rendering.
 fn sum_typeval(ast: &mut Arenas, decl: &TypeDecl) -> StructId {
-    let tv_head = push_atom(ast, Leaf::Name("typeval".to_string()));
-    let sum_head = push_atom(ast, Leaf::Name("Sum".to_string()));
-    let nm = push_atom(ast, Leaf::Name(decl.name.clone()));
+    let tv_head = push_atom(ast, Leaf::Name("typeval".into()));
+    let sum_head = push_atom(ast, Leaf::Name("Sum".into()));
+    let nm = push_atom(ast, Leaf::Name(decl.name.clone().into()));
     let d = push_atom(
         ast,
         Leaf::Int {

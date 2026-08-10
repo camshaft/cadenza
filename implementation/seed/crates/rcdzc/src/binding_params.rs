@@ -31,7 +31,7 @@ use crate::prelude::{push_atom, push_list};
 
 /// Append a bare `Name` atom occurrence (a synthesized reference/binder).
 fn push_name(ast: &mut Arenas, name: &str) -> StructId {
-    push_atom(ast, Leaf::Name(name.to_string()))
+    push_atom(ast, Leaf::Name(name.into()))
 }
 
 /// The inner PATTERN of a parameter that this transform destructures, and (if it is an annotated

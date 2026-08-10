@@ -6008,8 +6008,8 @@ fn uses_verification_annotation(arena: &crate::ast::Arenas) -> bool {
         matches!(
             leaf,
             crate::ast::Leaf::Name(n)
-                if n == "requires" || n == "ensures" || n == "trap-free" || n == "trap_free"
-                    || n == "invariant"
+                if n.as_ref() == "requires" || n.as_ref() == "ensures" || n.as_ref() == "trap-free" || n.as_ref() == "trap_free"
+                    || n.as_ref() == "invariant"
         )
     })
 }

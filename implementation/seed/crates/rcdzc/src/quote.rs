@@ -162,7 +162,7 @@ pub fn reify_quotes(ast: &mut Arenas) -> Vec<StructId> {
     let has_quote_name = ast
         .leaves
         .iter()
-        .any(|l| matches!(l, Leaf::Name(n) if n == "quote" || n == "quasiquote"));
+        .any(|l| matches!(l, Leaf::Name(n) if n.as_ref() == "quote" || n.as_ref() == "quasiquote"));
     if !has_quote_name {
         return Vec::new();
     }
@@ -733,7 +733,7 @@ fn reify_pattern(ast: &mut Arenas, node: StructId, under_qq: bool) -> Option<Str
                     }
                     // FINAL `,@name` → a `.. name` rest binder: append the `..` marker then the bare
                     // binder (reused live), so the list pattern is `(list <pat…> .. name)`.
-                    let dotdot = push_atom(ast, Leaf::Name("..".to_string()));
+                    let dotdot = push_atom(ast, Leaf::Name("..".into()));
                     pat_children.push(dotdot);
                     pat_children.push(*spliced);
                 } else {
@@ -750,7 +750,7 @@ fn reify_pattern(ast: &mut Arenas, node: StructId, under_qq: bool) -> Option<Str
 /// `,`/`,@`/`` ` `` renders as the two-element list the reader produced (head name + operand), matching
 /// the corpus nested-quasiquote value form.
 fn reify_escape_list(ast: &mut Arenas, head: &str, inner: StructId) -> StructId {
-    let head_payload = push_atom(ast, Leaf::Str(head.to_string()));
+    let head_payload = push_atom(ast, Leaf::Str(head.into()));
     let head_name = ast_ctor(ast, "Name", head_payload);
     wrap_ast_list(ast, vec![head_name, inner])
 }
@@ -765,7 +765,7 @@ fn wrap_ast_list(ast: &mut Arenas, children: Vec<StructId>) -> StructId {
 /// Build a `(list <child…>)` value-constructor form — the reader-shaped list literal the `list` prelude
 /// alias resolves to (`ListNew`). Shared by `wrap_ast_list` and the splice element-list assembly.
 fn list_form(ast: &mut Arenas, children: Vec<StructId>) -> StructId {
-    let list_head = push_atom(ast, Leaf::Name("list".to_string()));
+    let list_head = push_atom(ast, Leaf::Name("list".into()));
     let mut form = Vec::with_capacity(children.len() + 1);
     form.push(list_head);
     form.extend(children);
@@ -776,8 +776,8 @@ fn list_form(ast: &mut Arenas, children: Vec<StructId>) -> StructId {
 /// Ast)` applied to an active `,@` splice's LIVE operand (it stays live — evaluated code). At lowering a
 /// constant operand list folds to a `(List Ast)` of `Ast.Int` nodes (`lower::lower_ast_splice_lift`).
 fn ast_splice_lift(ast: &mut Arenas, operand: StructId) -> StructId {
-    let intr = push_atom(ast, Leaf::Name("intrinsic".to_string()));
-    let who = push_atom(ast, Leaf::Name("ast-splice-lift".to_string()));
+    let intr = push_atom(ast, Leaf::Name("intrinsic".into()));
+    let who = push_atom(ast, Leaf::Name("ast-splice-lift".into()));
     let prim = push_list(ast, vec![intr, who]);
     push_list(ast, vec![prim, operand])
 }
@@ -788,8 +788,8 @@ fn ast_splice_lift(ast: &mut Arenas, operand: StructId) -> StructId {
 /// `Ast`, else wrap in the matching `Ast.Int`/`Bool`/`Str` leaf. The runtime-operand companion of the
 /// literal-operand `ast_ctor` dispatch (whose kind is known structurally at reify time).
 fn ast_lift(ast: &mut Arenas, operand: StructId) -> StructId {
-    let intr = push_atom(ast, Leaf::Name("intrinsic".to_string()));
-    let who = push_atom(ast, Leaf::Name("ast-lift".to_string()));
+    let intr = push_atom(ast, Leaf::Name("intrinsic".into()));
+    let who = push_atom(ast, Leaf::Name("ast-lift".into()));
     let prim = push_list(ast, vec![intr, who]);
     push_list(ast, vec![prim, operand])
 }
@@ -797,9 +797,9 @@ fn ast_lift(ast: &mut Arenas, operand: StructId) -> StructId {
 /// Build `((. List concat) a b)` — the `List.concat` member-access application that joins two element
 /// lists. A constant `a`/`b` folds to one merged `Core::ListNew` at lowering (`Prim::ListConcat`).
 fn list_concat(ast: &mut Arenas, a: StructId, b: StructId) -> StructId {
-    let dot = push_atom(ast, Leaf::Name(".".to_string()));
-    let list_mod = push_atom(ast, Leaf::Name("List".to_string()));
-    let concat = push_atom(ast, Leaf::Name("concat".to_string()));
+    let dot = push_atom(ast, Leaf::Name(".".into()));
+    let list_mod = push_atom(ast, Leaf::Name("List".into()));
+    let concat = push_atom(ast, Leaf::Name("concat".into()));
     let proj = push_list(ast, vec![dot, list_mod, concat]);
     push_list(ast, vec![proj, a, b])
 }
@@ -809,9 +809,9 @@ fn list_concat(ast: &mut Arenas, a: StructId, b: StructId) -> StructId {
 /// for the dotted name `Ast.<variant>`. So the emitted node is byte-for-byte the shape a hand-written
 /// `(Ast.Int 42)` reads to, and resolves/types/lowers identically.
 fn ast_ctor(ast: &mut Arenas, variant: &str, payload: StructId) -> StructId {
-    let dot = push_atom(ast, Leaf::Name(".".to_string()));
-    let ast_name = push_atom(ast, Leaf::Name("Ast".to_string()));
-    let variant_name = push_atom(ast, Leaf::Name(variant.to_string()));
+    let dot = push_atom(ast, Leaf::Name(".".into()));
+    let ast_name = push_atom(ast, Leaf::Name("Ast".into()));
+    let variant_name = push_atom(ast, Leaf::Name(variant.into()));
     let proj = push_list(ast, vec![dot, ast_name, variant_name]);
     push_list(ast, vec![proj, payload])
 }
@@ -826,7 +826,7 @@ fn ast_ctor(ast: &mut Arenas, variant: &str, payload: StructId) -> StructId {
 /// STRIPS this wrapper (`eval_ast::reconstruct`) so a reconstructed literal grounds by ordinary
 /// inference — BigInt is a STORAGE property of the AST value, not a property the source carries out.
 fn ast_bigint_payload(ast: &mut Arenas, payload: StructId) -> StructId {
-    let colon = push_atom(ast, Leaf::Name(":".to_string()));
-    let bigint = push_atom(ast, Leaf::Name("BigInt".to_string()));
+    let colon = push_atom(ast, Leaf::Name(":".into()));
+    let bigint = push_atom(ast, Leaf::Name("BigInt".into()));
     push_list(ast, vec![colon, payload, bigint])
 }

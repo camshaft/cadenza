@@ -325,8 +325,8 @@ fn copy_subtree(ast: &mut Arenas, node: StructId) -> StructId {
 }
 
 fn build_param_effect(ast: &mut Arenas, sites: &[ParamSite]) -> StructId {
-    let effect_head = push_atom(ast, Leaf::Name("effect".to_string()));
-    let param_name = push_atom(ast, Leaf::Name("Param".to_string()));
+    let effect_head = push_atom(ast, Leaf::Name("effect".into()));
+    let param_name = push_atom(ast, Leaf::Name("Param".into()));
     let mut children = vec![effect_head, param_name];
     for site in sites {
         if site.is_rational_family() {
@@ -339,7 +339,7 @@ fn build_param_effect(ast: &mut Arenas, sites: &[ParamSite]) -> StructId {
                 .expect("a rational-family param site has a name atom")
                 .to_string();
             for suffix in ["-num", "-den"] {
-                let op_name = push_atom(ast, Leaf::Name(format!("{name}{suffix}")));
+                let op_name = push_atom(ast, Leaf::Name(format!("{name}{suffix}").into()));
                 children.push(build_scalar_op(ast, op_name, "Int64"));
             }
         } else {
@@ -359,7 +359,7 @@ fn build_param_effect(ast: &mut Arenas, sites: &[ParamSite]) -> StructId {
 /// Build `(op <name> (-> Unit <ty-node>))` — a nullary host-delegated accessor whose result type reuses the
 /// existing `ty` occurrence (so its span + resolution carry). Used for a scalar param's single accessor.
 fn build_op(ast: &mut Arenas, name: StructId, ty: StructId) -> StructId {
-    let op_head = push_atom(ast, Leaf::Name("op".to_string()));
+    let op_head = push_atom(ast, Leaf::Name("op".into()));
     let arrow = build_arrow(ast, ty);
     push_list(ast, vec![op_head, name, arrow])
 }
@@ -367,14 +367,14 @@ fn build_op(ast: &mut Arenas, name: StructId, ty: StructId) -> StructId {
 /// Build `(op <name> (-> Unit <TyName>))` with a FRESH result-type name atom (e.g. `"Int64"`). Used for the
 /// synthesized num/den accessors, whose `Int64` result is not an existing occurrence in the source.
 fn build_scalar_op(ast: &mut Arenas, name: StructId, ty_name: &str) -> StructId {
-    let ty = push_atom(ast, Leaf::Name(ty_name.to_string()));
+    let ty = push_atom(ast, Leaf::Name(ty_name.into()));
     build_op(ast, name, ty)
 }
 
 /// Build `(-> Unit <ty>)` — the nullary accessor's function type (no argument but `Unit`, result `ty`).
 fn build_arrow(ast: &mut Arenas, ty: StructId) -> StructId {
-    let arrow_head = push_atom(ast, Leaf::Name("->".to_string()));
-    let unit_ty = push_atom(ast, Leaf::Name("Unit".to_string()));
+    let arrow_head = push_atom(ast, Leaf::Name("->".into()));
+    let unit_ty = push_atom(ast, Leaf::Name("Unit".into()));
     push_list(ast, vec![arrow_head, unit_ty, ty])
 }
 
@@ -474,9 +474,9 @@ fn build_param_accessor_call(ast: &mut Arenas, member: &str) -> StructId {
 
 /// Build a member-access form `(. <recv> <member>)`.
 fn build_member_access(ast: &mut Arenas, recv: &str, member: &str) -> StructId {
-    let dot = push_atom(ast, Leaf::Name(".".to_string()));
-    let recv_atom = push_atom(ast, Leaf::Name(recv.to_string()));
-    let member_atom = push_atom(ast, Leaf::Name(member.to_string()));
+    let dot = push_atom(ast, Leaf::Name(".".into()));
+    let recv_atom = push_atom(ast, Leaf::Name(recv.into()));
+    let member_atom = push_atom(ast, Leaf::Name(member.into()));
     push_list(ast, vec![dot, recv_atom, member_atom])
 }
 

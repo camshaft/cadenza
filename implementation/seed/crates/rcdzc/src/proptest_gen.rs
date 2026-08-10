@@ -51,7 +51,7 @@ use crate::prelude::{push_atom, push_list};
 /// Append a bare-`Name` atom occurrence — the module's node-builder shorthand (the `Builder::name`
 /// convenience is on the builder, not `&mut Arenas`; this is its `Arenas`-level twin over `push_atom`).
 fn name(ast: &mut Arenas, n: &str) -> StructId {
-    push_atom(ast, Leaf::Name(n.to_string()))
+    push_atom(ast, Leaf::Name(n.into()))
 }
 
 /// Append a decimal integer literal atom — the node-builder shorthand for a `Leaf::Int` (used by the
@@ -1394,19 +1394,22 @@ fn build_wrapper(ast: &mut Arenas, plan: &TestPlan) -> StructId {
             };
             let msg = push_atom(
                 ast,
-                Leaf::Str(format!(
-                    "{}: a parameter's type has no property-test-generatable form yet \
+                Leaf::Str(
+                    format!(
+                        "{}: a parameter's type has no property-test-generatable form yet \
                      (Char/Rational/BigInt/String/Symbol, a compound with such a leaf, or an empty \
                      (Tuple)/(Record) with nothing to generate) — not property-testable; use a \
                      boundary-representable type or drop the @test",
-                    plan.def_name
-                )),
+                        plan.def_name
+                    )
+                    .into(),
+                ),
             );
             push_list(ast, vec![member, msg])
         };
         let trap = {
             let t = name(ast, "trap");
-            let m = push_atom(ast, Leaf::Str("not property-testable".to_string()));
+            let m = push_atom(ast, Leaf::Str("not property-testable".into()));
             push_list(ast, vec![t, m])
         };
         // `(do (Test.fail "…") (trap "…"))` — sequence: perform the report, then trap. (`do` is the

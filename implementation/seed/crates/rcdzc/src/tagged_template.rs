@@ -63,7 +63,7 @@ pub fn expand(ast: &mut Arenas) {
     if !ast
         .leaves
         .iter()
-        .any(|l| matches!(l, Leaf::Name(n) if n == "tagged-template"))
+        .any(|l| matches!(l, Leaf::Name(n) if n.as_ref() == "tagged-template"))
     {
         return;
     }
@@ -115,14 +115,14 @@ fn rewrite_of(ast: &mut Arenas, node: StructId) -> Option<StructId> {
     let hole_list = list_form(ast, holes);
     // The application head is a FRESH name occurrence of the tag (a new binder-free reference resolving by
     // the ordinary scope walk), so the original `tag` node is untouched.
-    let tag_ref = push_atom(ast, Leaf::Name(tag_name));
+    let tag_ref = push_atom(ast, Leaf::Name(tag_name.into()));
     Some(push_list(ast, vec![tag_ref, chunk_list, hole_list]))
 }
 
 /// Build a `(list e…)` value-constructor form — the reader-shaped list literal the `list` prelude alias
 /// resolves to (`ListNew`). Mirrors `crate::quote::list_form`.
 fn list_form(ast: &mut Arenas, children: Vec<StructId>) -> StructId {
-    let list_head = push_atom(ast, Leaf::Name("list".to_string()));
+    let list_head = push_atom(ast, Leaf::Name("list".into()));
     let mut form = Vec::with_capacity(children.len() + 1);
     form.push(list_head);
     form.extend(children);

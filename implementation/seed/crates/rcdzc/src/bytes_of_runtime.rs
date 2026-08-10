@@ -41,7 +41,7 @@ const FOLD_NAME: &str = "__bytes_of_rt$";
 
 /// Append a bare `Name` atom occurrence — the synthesis workhorse (a reference or a binder).
 fn push_name(ast: &mut Arenas, name: &str) -> StructId {
-    push_atom(ast, Leaf::Name(name.to_string()))
+    push_atom(ast, Leaf::Name(name.into()))
 }
 
 /// Whether `id` is a `(. Bytes of)` member-access head — the head of a `Bytes.of` application.

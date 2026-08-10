@@ -37,7 +37,7 @@ pub enum Leaf {
         radix: Radix,
     },
     Float(Decimal),
-    Str(String),
+    Str(std::rc::Rc<str>),
     /// A CHAR literal (`#\a`, `#\u+00E9`) — a single Unicode scalar value, the element type of a string's
     /// scalar sequence (`collections-and-text.md` §A Char Is A Single Unicode Scalar Value). A `char` is a
     /// scalar by construction, so this only ever holds a valid scalar; a literal spelling a NON-scalar
@@ -56,9 +56,9 @@ pub enum Leaf {
     /// units-of-measure layer a base dimension is named by such a symbol (`(Unit.base #"meter")`) — this
     /// is the minimal symbol-literal slice that unblocks the units corpus surface; the full `Symbol`
     /// TYPE + intern table arrive with the symbols vertical.
-    Sym(String),
+    Sym(std::rc::Rc<str>),
     /// An identifier: a name reference, a construct head, a variant, or a qualified name segment.
-    Name(String),
+    Name(std::rc::Rc<str>),
     /// A string literal carrying an UNRECOGNIZED ESCAPE (`"\q"`) — a reader-detected lexical defect that
     /// the front-end cannot report through the artifact channel, so it rides the binary AST as a MARKER.
     /// Resolving it is a `CDZ0001` rejection (`collections-and-text.md` §A String Literal's Escapes Are A
@@ -67,7 +67,7 @@ pub enum Leaf {
     /// A CHAR literal naming a NON-scalar code point (`#\u+D800`, a surrogate) — a reader-detected lexical
     /// defect riding the binary AST as a MARKER. Resolving it is a `CDZ0002` rejection
     /// (`collections-and-text.md` §A Char Is A Single Unicode Scalar Value). Holds the literal's text.
-    BadChar(String),
+    BadChar(std::rc::Rc<str>),
 }
 
 /// An arbitrary-precision integer value: a sign plus a big-endian magnitude. This is the whole of
@@ -1018,7 +1018,7 @@ impl Builder {
     }
 
     /// Convenience: an atom occurrence of a `Name`.
-    pub fn name(&mut self, name: impl Into<String>) -> StructId {
+    pub fn name(&mut self, name: impl Into<std::rc::Rc<str>>) -> StructId {
         self.atom_leaf(Leaf::Name(name.into()))
     }
 

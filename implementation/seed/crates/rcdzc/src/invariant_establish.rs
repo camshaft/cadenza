@@ -106,7 +106,7 @@ use crate::ast::{Arenas, Leaf, Struct, StructId};
 use crate::prelude::{push_atom, push_list};
 
 fn name(ast: &mut Arenas, n: &str) -> StructId {
-    push_atom(ast, Leaf::Name(n.to_string()))
+    push_atom(ast, Leaf::Name(n.into()))
 }
 
 /// The `@invariant` VALUE binder — the name the invariant predicate references to mean "the value being
@@ -155,12 +155,12 @@ fn copy_rewrite(ast: &mut Arenas, node: StructId, from: &str, to: &str) -> Struc
         Struct::Atom(lid) => {
             let leaf = ast.leaf(lid).clone();
             if let Leaf::Name(n) = &leaf {
-                let n = if !from.is_empty() && n == from {
+                let n = if !from.is_empty() && n.as_ref() == from {
                     to.to_string()
                 } else {
-                    n.clone()
+                    n.to_string()
                 };
-                return push_atom(ast, Leaf::Name(n));
+                return push_atom(ast, Leaf::Name(n.into()));
             }
             node
         }
@@ -412,7 +412,7 @@ pub(crate) fn synthesize(ast: &mut Arenas) -> crate::fxhash::FxHashSet<StructId>
                         ast,
                         Leaf::Str(format!(
                             "@invariant violated: a constructed `{type_name}` does not satisfy its invariant"
-                        )),
+                        ).into()),
                     );
                     push_list(ast, vec![trap_head, msg])
                 };
@@ -510,7 +510,7 @@ pub(crate) fn synthesize(ast: &mut Arenas) -> crate::fxhash::FxHashSet<StructId>
                             ast,
                             Leaf::Str(format!(
                                 "@invariant violated: a constructed `{type_name}` does not satisfy its invariant"
-                            )),
+                            ).into()),
                         );
                         push_list(ast, vec![trap_head, msg])
                     };

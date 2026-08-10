@@ -3490,13 +3490,13 @@ impl Db {
 
     /// Convenience: append an `Atom` of a `Name`.
     pub fn push_name(&mut self, name: &str) -> StructId {
-        self.push_atom(Leaf::Name(name.to_string()))
+        self.push_atom(Leaf::Name(name.into()))
     }
 
     /// Append an `Atom` of a STRING literal. A synthesized primitive-constructor head (`"tuple"`/
     /// `"record"`) is a string, not a name — unspellable as an identifier, so unshadowable.
     pub fn push_str(&mut self, s: &str) -> StructId {
-        self.push_atom(Leaf::Str(s.to_string()))
+        self.push_atom(Leaf::Str(s.into()))
     }
 
     /// The definition of the given name, if one exists — how an export resolves its target and how a

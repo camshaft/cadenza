@@ -488,7 +488,7 @@ pub fn link(files: &[(String, Arenas)], entry: &str) -> Result<LinkedProgram, Re
     // that atom and whose tail is every file's top-level items. These nodes sit AFTER all files, so
     // they are outside every `FileSpan` (they belong to no source file).
     let do_leaf = LeafId(leaves.len() as u32);
-    leaves.push(Leaf::Name("do".to_string()));
+    leaves.push(Leaf::Name("do".into()));
     let do_atom = StructId(structure.len() as u32);
     structure.push(Struct::Atom(do_leaf));
     let mut root_children = Vec::with_capacity(do_children.len() + 1);

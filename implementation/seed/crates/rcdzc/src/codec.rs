@@ -363,15 +363,15 @@ fn read_leaf(r: &mut Reader) -> Option<Leaf> {
                 exponent,
             })
         }
-        KIND_STR => Leaf::Str(read_string(r)?),
+        KIND_STR => Leaf::Str(read_string(r)?.into()),
         KIND_BYTES => Leaf::Bytes(read_raw_bytes(r)?),
         KIND_BOOL_FALSE => Leaf::Bool(false),
         KIND_BOOL_TRUE => Leaf::Bool(true),
-        KIND_NAME => Leaf::Name(read_string(r)?),
-        KIND_SYM => Leaf::Sym(read_string(r)?),
+        KIND_NAME => Leaf::Name(read_string(r)?.into()),
+        KIND_SYM => Leaf::Sym(read_string(r)?.into()),
         KIND_BAD_ESCAPE => Leaf::BadEscape(read_string(r)?.chars().next()?),
         KIND_CHAR => Leaf::Char(read_string(r)?.chars().next()?),
-        KIND_BAD_CHAR => Leaf::BadChar(read_string(r)?),
+        KIND_BAD_CHAR => Leaf::BadChar(read_string(r)?.into()),
         // A TYPE-SUFFIXED literal decodes to its BARE `Int`/`Float` leaf: the suffix's type role was
         // already applied by the reader's desugar to `(: <literal> BigInt|Rational)`, so the compiler
         // only needs the value. Skip the suffix byte, then read the body exactly as the int/float arms.
@@ -482,7 +482,7 @@ mod tests {
             significand: vec![15], // 15 * 10^-1 = 1.5
             exponent: -1,
         }));
-        let s = b.atom_leaf(Leaf::Str("héllo".to_string()));
+        let s = b.atom_leaf(Leaf::Str("héllo".into()));
         let t = b.atom_leaf(Leaf::Bool(true));
         let root = b.list(vec![plus, x1, x2, big, hex, neg, flt, s, t]);
         b.finish(root)

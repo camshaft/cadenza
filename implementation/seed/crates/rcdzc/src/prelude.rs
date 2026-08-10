@@ -455,7 +455,7 @@ fn attach_builtin_docs(ast: &mut Arenas, names: &mut BTreeMap<String, StructId>)
         if !matches!(ast.get(rec), Struct::List(_)) {
             continue;
         }
-        let text_node = push_atom(ast, Leaf::Str(text.to_string()));
+        let text_node = push_atom(ast, Leaf::Str((*text).into()));
         let doc_field = meta_field(ast, "doc", text_node);
         let Struct::List(children) = ast.get(rec) else {
             continue;
@@ -469,8 +469,8 @@ fn attach_builtin_docs(ast: &mut Arenas, names: &mut BTreeMap<String, StructId>)
 /// An `(intrinsic NAME)` node — the arena form a native primitive value takes. `resolve` turns it
 /// into a `Resolved::Prim`; the name selects which primitive.
 fn intrinsic_node(ast: &mut Arenas, name: &str) -> StructId {
-    let head = push_atom(ast, Leaf::Name("intrinsic".to_string()));
-    let who = push_atom(ast, Leaf::Name(name.to_string()));
+    let head = push_atom(ast, Leaf::Name("intrinsic".into()));
+    let who = push_atom(ast, Leaf::Name(name.into()));
     push_list(ast, vec![head, who])
 }
 
@@ -479,8 +479,8 @@ fn intrinsic_node(ast: &mut Arenas, name: &str) -> StructId {
 /// so the program-driven sum-record synthesis (`sum_synth`) writes its `(meta t)`/`(meta variant)`
 /// channels the same way the prelude writes its built-in records.
 pub(crate) fn meta_field(ast: &mut Arenas, key: &str, value: StructId) -> StructId {
-    let meta_head = push_atom(ast, Leaf::Name("meta".to_string()));
-    let key_name = push_atom(ast, Leaf::Name(key.to_string()));
+    let meta_head = push_atom(ast, Leaf::Name("meta".into()));
+    let key_name = push_atom(ast, Leaf::Name(key.into()));
     let meta_key = push_list(ast, vec![meta_head, key_name]);
     push_list(ast, vec![meta_key, value])
 }
@@ -488,7 +488,7 @@ pub(crate) fn meta_field(ast: &mut Arenas, key: &str, value: StructId) -> Struct
 /// A ground-type record `(record ((meta t) (intrinsic PRIM)))` — `Bool`/`Unit`. Its `(meta t)` holds
 /// the ground type-value; it carries no `(meta apply)`, so it is not applyable.
 fn ground_type_record(ast: &mut Arenas, prim: &str) -> StructId {
-    let head = push_atom(ast, Leaf::Str("record".to_string()));
+    let head = push_atom(ast, Leaf::Str("record".into()));
     let ty_val = intrinsic_node(ast, prim);
     let t_field = meta_field(ast, "t", ty_val);
     push_list(ast, vec![head, t_field])
@@ -497,7 +497,7 @@ fn ground_type_record(ast: &mut Arenas, prim: &str) -> StructId {
 /// A type-constructor record `(record ((meta apply) (intrinsic PRIM)))` — `Int`/`UInt`/`->`. Applying
 /// it (`(Int a)`) projects `(meta apply)` and applies the native builder.
 fn ctor_record(ast: &mut Arenas, prim: &str) -> StructId {
-    let head = push_atom(ast, Leaf::Str("record".to_string()));
+    let head = push_atom(ast, Leaf::Str("record".into()));
     let builder = intrinsic_node(ast, prim);
     let apply_field = meta_field(ast, "apply", builder);
     push_list(ast, vec![head, apply_field])
@@ -514,7 +514,7 @@ fn ctor_record(ast: &mut Arenas, prim: &str) -> StructId {
 /// case the label operand, bypassing the scheme. The `(meta t)` is thus a PERMISSIVE placeholder
 /// (`∀a. a → a`) present only so `project` resolves as an applyable op; it is never unified.
 fn record_module(ast: &mut Arenas) -> StructId {
-    let head = push_atom(ast, Leaf::Str("record".to_string()));
+    let head = push_atom(ast, Leaf::Str("record".into()));
     // `(meta apply)` = the `Record` TYPE constructor (`(Record (a Int64) …)` builds the record type-value).
     let builder = intrinsic_node(ast, "Record");
     let apply_field = meta_field(ast, "apply", builder);
@@ -533,7 +533,7 @@ fn record_module(ast: &mut Arenas) -> StructId {
     ] {
         let lambda = row_op_placeholder_type(ast);
         let op = list_op_record(ast, prim, lambda);
-        let key = push_atom(ast, Leaf::Name(name.to_string()));
+        let key = push_atom(ast, Leaf::Name(name.into()));
         children.push(push_list(ast, vec![key, op]));
     }
     push_list(ast, children)
@@ -548,7 +548,7 @@ fn record_module(ast: &mut Arenas) -> StructId {
 /// `check_application` skips the scheme-unify. The `(meta t)` is the same permissive `∀a. a → a`
 /// placeholder (never unified), present only so member access resolves the op as applyable.
 fn tuple_module(ast: &mut Arenas) -> StructId {
-    let head = push_atom(ast, Leaf::Str("record".to_string()));
+    let head = push_atom(ast, Leaf::Str("record".into()));
     // `(meta apply)` = the `Tuple` TYPE constructor (`(Tuple Int64 Bool)` builds the tuple type-value).
     let builder = intrinsic_node(ast, "Tuple");
     let apply_field = meta_field(ast, "apply", builder);
@@ -560,7 +560,7 @@ fn tuple_module(ast: &mut Arenas) -> StructId {
     ] {
         let lambda = row_op_placeholder_type(ast);
         let op = list_op_record(ast, prim, lambda);
-        let key = push_atom(ast, Leaf::Name(name.to_string()));
+        let key = push_atom(ast, Leaf::Name(name.into()));
         children.push(push_list(ast, vec![key, op]));
     }
     push_list(ast, children)
@@ -572,11 +572,11 @@ fn tuple_module(ast: &mut Arenas) -> StructId {
 /// `check_application` skips the generic scheme-unify. This scheme exists ONLY so member access resolves
 /// the op as applyable; it is NEVER unified against, so `∀a. a → a` (the identity arrow) suffices.
 fn row_op_placeholder_type(ast: &mut Arenas) -> StructId {
-    let a1 = push_atom(ast, Leaf::Name("a".to_string()));
-    let a2 = push_atom(ast, Leaf::Name("a".to_string()));
+    let a1 = push_atom(ast, Leaf::Name("a".into()));
+    let a2 = push_atom(ast, Leaf::Name("a".into()));
     let body = arrow_type(ast, a1, a2); // (-> a a)
-    let param = push_atom(ast, Leaf::Name("a".to_string()));
-    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let param = push_atom(ast, Leaf::Name("a".into()));
+    let fn_head = push_atom(ast, Leaf::Name("fn".into()));
     let params = push_list(ast, vec![param]);
     push_list(ast, vec![fn_head, params, body])
 }
@@ -598,7 +598,7 @@ fn row_op_placeholder_type(ast: &mut Arenas) -> StructId {
 //= spec/capabilities/collections-and-text.md#indexing-and-lookup-are-fallible-not-trapping
 //# An operation that reads an element of a sequence by position — indexing a list, a string (by scalar or byte offset), or a `Bytes` value, or taking a sub-sequence slice — MUST be total, yielding an optional value that is present when the position is in bounds and absent when it is out of bounds, rather than trapping or producing an unspecified value.
 fn list_module(ast: &mut Arenas) -> StructId {
-    let head = push_atom(ast, Leaf::Str("record".to_string()));
+    let head = push_atom(ast, Leaf::Str("record".into()));
     // `(meta apply)` = the `List` TYPE constructor (`(List Int64)` reduces to `Ty::List(Int64)`).
     let builder = intrinsic_node(ast, "List");
     let apply_field = meta_field(ast, "apply", builder);
@@ -624,7 +624,7 @@ fn list_module(ast: &mut Arenas) -> StructId {
         ("at", "list-at", at_lambda),
     ] {
         let op = list_op_record(ast, prim, lambda);
-        let k = push_atom(ast, Leaf::Name(name.to_string()));
+        let k = push_atom(ast, Leaf::Name(name.into()));
         children.push(push_list(ast, vec![k, op]));
     }
     push_list(ast, children)
@@ -661,7 +661,7 @@ fn list_module(ast: &mut Arenas) -> StructId {
 //= spec/capabilities/collections-and-text.md#indexing-and-lookup-are-fallible-not-trapping
 //# Looking a key up in a map MUST likewise be total, yielding an optional value that is present when the map contains the key and absent when it does not.
 fn map_module(ast: &mut Arenas) -> StructId {
-    let head = push_atom(ast, Leaf::Str("record".to_string()));
+    let head = push_atom(ast, Leaf::Str("record".into()));
     // `(meta apply)` = the `Map` TYPE constructor (`(Map Int64 Int64)` reduces to `Ty::Map(Int64, Int64)`).
     let builder = intrinsic_node(ast, "Map");
     let apply_field = meta_field(ast, "apply", builder);
@@ -688,7 +688,7 @@ fn map_module(ast: &mut Arenas) -> StructId {
         ("take", "map-take", take_lambda),
     ] {
         let op = list_op_record(ast, prim, lambda);
-        let k = push_atom(ast, Leaf::Name(name.to_string()));
+        let k = push_atom(ast, Leaf::Name(name.into()));
         children.push(push_list(ast, vec![k, op]));
     }
     push_list(ast, children)
@@ -707,7 +707,7 @@ fn map_module(ast: &mut Arenas) -> StructId {
 //= spec/capabilities/collections-and-text.md#set-membership-is-total
 //# A set MUST NOT offer access to an element by position, because a set is unordered and has no positional element to address.
 fn set_module(ast: &mut Arenas) -> StructId {
-    let head = push_atom(ast, Leaf::Str("record".to_string()));
+    let head = push_atom(ast, Leaf::Str("record".into()));
     // `(meta apply)` = the `Set` TYPE constructor (`(Set Int64)` reduces to `Ty::Set(Int64)`).
     let builder = intrinsic_node(ast, "Set");
     let apply_field = meta_field(ast, "apply", builder);
@@ -733,7 +733,7 @@ fn set_module(ast: &mut Arenas) -> StructId {
         ("difference", "set-difference", difference_lambda),
     ] {
         let op = list_op_record(ast, prim, lambda);
-        let k = push_atom(ast, Leaf::Name(name.to_string()));
+        let k = push_atom(ast, Leaf::Name(name.into()));
         children.push(push_list(ast, vec![k, op]));
     }
     push_list(ast, children)
@@ -742,8 +742,8 @@ fn set_module(ast: &mut Arenas) -> StructId {
 /// Build `(Set a)` — the set type applied to the element parameter `a`, the shared shape in the `Set`
 /// operation type-lambdas (a fresh occurrence per use, referencing the same param name `a`).
 fn set_a_type(ast: &mut Arenas) -> StructId {
-    let set = push_atom(ast, Leaf::Name("Set".to_string()));
-    let a = push_atom(ast, Leaf::Name("a".to_string()));
+    let set = push_atom(ast, Leaf::Name("Set".into()));
+    let a = push_atom(ast, Leaf::Name("a".into()));
     push_list(ast, vec![set, a])
 }
 
@@ -767,8 +767,8 @@ fn set_to_list_type_lambda(ast: &mut Arenas) -> StructId {
 
 /// `(fn (a) (-> (Set a) (-> a Bool)))` for `Set.contains` — `∀a. (Set a) → a → Bool`: total membership.
 fn set_contains_type_lambda(ast: &mut Arenas) -> StructId {
-    let a = push_atom(ast, Leaf::Name("a".to_string()));
-    let bool_t = push_atom(ast, Leaf::Name("Bool".to_string()));
+    let a = push_atom(ast, Leaf::Name("a".into()));
+    let bool_t = push_atom(ast, Leaf::Name("Bool".into()));
     let elem_arrow = arrow_type(ast, a, bool_t); // (-> a Bool)
     let set_a = set_a_type(ast);
     let body = arrow_type(ast, set_a, elem_arrow); // (-> (Set a) (-> a Bool))
@@ -778,7 +778,7 @@ fn set_contains_type_lambda(ast: &mut Arenas) -> StructId {
 /// `(fn (a) (-> (Set a) Int64))` for `Set.len` — `∀a. (Set a) → Int64`: the distinct-element count.
 fn set_len_type_lambda(ast: &mut Arenas) -> StructId {
     let set_a = set_a_type(ast);
-    let int64 = push_atom(ast, Leaf::Name("Int64".to_string()));
+    let int64 = push_atom(ast, Leaf::Name("Int64".into()));
     let body = arrow_type(ast, set_a, int64); // (-> (Set a) Int64)
     list_type_lambda(ast, body)
 }
@@ -786,7 +786,7 @@ fn set_len_type_lambda(ast: &mut Arenas) -> StructId {
 /// `(fn (a) (-> (Set a) (-> a (Set a))))` for `Set.insert`/`Set.remove` — `∀a. (Set a) → a → (Set a)`.
 fn set_elem_to_set_type_lambda(ast: &mut Arenas) -> StructId {
     let set_r = set_a_type(ast);
-    let a = push_atom(ast, Leaf::Name("a".to_string()));
+    let a = push_atom(ast, Leaf::Name("a".into()));
     let elem_arrow = arrow_type(ast, a, set_r); // (-> a (Set a))
     let set_l = set_a_type(ast);
     let body = arrow_type(ast, set_l, elem_arrow); // (-> (Set a) (-> a (Set a)))
@@ -807,18 +807,18 @@ fn set_binary_type_lambda(ast: &mut Arenas) -> StructId {
 /// Build `(Map k v)` — the map type applied to the key parameter `k` and value parameter `v`, the shared
 /// shape in the `Map` operation type-lambdas (a fresh occurrence per use, referencing the same param names).
 fn map_k_v_type(ast: &mut Arenas) -> StructId {
-    let map = push_atom(ast, Leaf::Name("Map".to_string()));
-    let k = push_atom(ast, Leaf::Name("k".to_string()));
-    let v = push_atom(ast, Leaf::Name("v".to_string()));
+    let map = push_atom(ast, Leaf::Name("Map".into()));
+    let k = push_atom(ast, Leaf::Name("k".into()));
+    let v = push_atom(ast, Leaf::Name("v".into()));
     push_list(ast, vec![map, k, v])
 }
 
 /// Wrap `body` in `(fn (k v) body)` — the two-parameter type-lambda over the key type `k` and value type
 /// `v`, shared by the `Map` operation schemes (the map analogue of `list_type_lambda`).
 fn map_type_lambda(ast: &mut Arenas, body: StructId) -> StructId {
-    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
-    let k_param = push_atom(ast, Leaf::Name("k".to_string()));
-    let v_param = push_atom(ast, Leaf::Name("v".to_string()));
+    let fn_head = push_atom(ast, Leaf::Name("fn".into()));
+    let k_param = push_atom(ast, Leaf::Name("k".into()));
+    let v_param = push_atom(ast, Leaf::Name("v".into()));
     let params = push_list(ast, vec![k_param, v_param]);
     push_list(ast, vec![fn_head, params, body])
 }
@@ -835,9 +835,9 @@ fn map_empty_type_lambda(ast: &mut Arenas) -> StructId {
 /// v) → k → v → (Map k v)`: add-or-replace `key ↦ val`, returning the new map.
 fn map_insert_type_lambda(ast: &mut Arenas) -> StructId {
     let map_r = map_k_v_type(ast);
-    let v = push_atom(ast, Leaf::Name("v".to_string()));
+    let v = push_atom(ast, Leaf::Name("v".into()));
     let val_arrow = arrow_type(ast, v, map_r); // (-> v (Map k v))
-    let k = push_atom(ast, Leaf::Name("k".to_string()));
+    let k = push_atom(ast, Leaf::Name("k".into()));
     let key_arrow = arrow_type(ast, k, val_arrow); // (-> k (-> v (Map k v)))
     let map_l = map_k_v_type(ast);
     let body = arrow_type(ast, map_l, key_arrow); // (-> (Map k v) (-> k (-> v (Map k v))))
@@ -849,11 +849,11 @@ fn map_insert_type_lambda(ast: &mut Arenas) -> StructId {
 /// the built-in `Option` sum ctor, exactly as `List.at`'s `(Option a)` does.
 fn map_lookup_type_lambda(ast: &mut Arenas) -> StructId {
     let option_v = {
-        let option = push_atom(ast, Leaf::Name("Option".to_string()));
-        let v = push_atom(ast, Leaf::Name("v".to_string()));
+        let option = push_atom(ast, Leaf::Name("Option".into()));
+        let v = push_atom(ast, Leaf::Name("v".into()));
         push_list(ast, vec![option, v])
     };
-    let k = push_atom(ast, Leaf::Name("k".to_string()));
+    let k = push_atom(ast, Leaf::Name("k".into()));
     let key_arrow = arrow_type(ast, k, option_v); // (-> k (Option v))
     let map_l = map_k_v_type(ast);
     let body = arrow_type(ast, map_l, key_arrow); // (-> (Map k v) (-> k (Option v)))
@@ -865,7 +865,7 @@ fn map_lookup_type_lambda(ast: &mut Arenas) -> StructId {
 /// equal map).
 fn map_remove_type_lambda(ast: &mut Arenas) -> StructId {
     let map_r = map_k_v_type(ast);
-    let k = push_atom(ast, Leaf::Name("k".to_string()));
+    let k = push_atom(ast, Leaf::Name("k".into()));
     let key_arrow = arrow_type(ast, k, map_r); // (-> k (Map k v))
     let map_l = map_k_v_type(ast);
     let body = arrow_type(ast, map_l, key_arrow); // (-> (Map k v) (-> k (Map k v)))
@@ -876,7 +876,7 @@ fn map_remove_type_lambda(ast: &mut Arenas) -> StructId {
 /// count of distinct keys. The map companion of `List.len`.
 fn map_size_type_lambda(ast: &mut Arenas) -> StructId {
     let map_l = map_k_v_type(ast);
-    let int64 = push_atom(ast, Leaf::Name("Int64".to_string()));
+    let int64 = push_atom(ast, Leaf::Name("Int64".into()));
     let body = arrow_type(ast, map_l, int64); // (-> (Map k v) Int64)
     map_type_lambda(ast, body)
 }
@@ -888,12 +888,12 @@ fn map_size_type_lambda(ast: &mut Arenas) -> StructId {
 fn map_to_list_type_lambda(ast: &mut Arenas) -> StructId {
     let map_l = map_k_v_type(ast);
     // (Tuple k v)
-    let tuple = push_atom(ast, Leaf::Name("Tuple".to_string()));
-    let k = push_atom(ast, Leaf::Name("k".to_string()));
-    let v = push_atom(ast, Leaf::Name("v".to_string()));
+    let tuple = push_atom(ast, Leaf::Name("Tuple".into()));
+    let k = push_atom(ast, Leaf::Name("k".into()));
+    let v = push_atom(ast, Leaf::Name("v".into()));
     let tuple_kv = push_list(ast, vec![tuple, k, v]);
     // (List (Tuple k v))
-    let list = push_atom(ast, Leaf::Name("List".to_string()));
+    let list = push_atom(ast, Leaf::Name("List".into()));
     let list_tuple = push_list(ast, vec![list, tuple_kv]);
     let body = arrow_type(ast, map_l, list_tuple); // (-> (Map k v) (List (Tuple k v)))
     map_type_lambda(ast, body)
@@ -904,12 +904,12 @@ fn map_to_list_type_lambda(ast: &mut Arenas) -> StructId {
 /// Is Built By Functional Construction — the two-form rule).
 fn map_optional_and_map_tuple(ast: &mut Arenas) -> StructId {
     let option_v = {
-        let option = push_atom(ast, Leaf::Name("Option".to_string()));
-        let v = push_atom(ast, Leaf::Name("v".to_string()));
+        let option = push_atom(ast, Leaf::Name("Option".into()));
+        let v = push_atom(ast, Leaf::Name("v".into()));
         push_list(ast, vec![option, v])
     };
     let map_k_v = map_k_v_type(ast);
-    let tuple = push_atom(ast, Leaf::Name("Tuple".to_string()));
+    let tuple = push_atom(ast, Leaf::Name("Tuple".into()));
     push_list(ast, vec![tuple, option_v, map_k_v]) // (Tuple (Option v) (Map k v))
 }
 
@@ -918,9 +918,9 @@ fn map_optional_and_map_tuple(ast: &mut Arenas) -> StructId {
 /// value the key held before (present when it was associated) paired with the new map.
 fn map_swap_type_lambda(ast: &mut Arenas) -> StructId {
     let result = map_optional_and_map_tuple(ast);
-    let v = push_atom(ast, Leaf::Name("v".to_string()));
+    let v = push_atom(ast, Leaf::Name("v".into()));
     let val_arrow = arrow_type(ast, v, result); // (-> v (Tuple …))
-    let k = push_atom(ast, Leaf::Name("k".to_string()));
+    let k = push_atom(ast, Leaf::Name("k".into()));
     let key_arrow = arrow_type(ast, k, val_arrow); // (-> k (-> v (Tuple …)))
     let map_l = map_k_v_type(ast);
     let body = arrow_type(ast, map_l, key_arrow); // (-> (Map k v) (-> k (-> v (Tuple …))))
@@ -932,7 +932,7 @@ fn map_swap_type_lambda(ast: &mut Arenas) -> StructId {
 /// (present when it was associated) paired with the new map. The remove companion of `Map.swap`.
 fn map_take_type_lambda(ast: &mut Arenas) -> StructId {
     let result = map_optional_and_map_tuple(ast);
-    let k = push_atom(ast, Leaf::Name("k".to_string()));
+    let k = push_atom(ast, Leaf::Name("k".into()));
     let key_arrow = arrow_type(ast, k, result); // (-> k (Tuple …))
     let map_l = map_k_v_type(ast);
     let body = arrow_type(ast, map_l, key_arrow); // (-> (Map k v) (-> k (Tuple …)))
@@ -947,7 +947,7 @@ fn map_take_type_lambda(ast: &mut Arenas) -> StructId {
 /// at/slice/compact arrive in later increments (a projected-but-unrealized field DECLINES, the closed-
 /// module rule every prelude module follows).
 fn bytes_module(ast: &mut Arenas) -> StructId {
-    let head = push_atom(ast, Leaf::Str("record".to_string()));
+    let head = push_atom(ast, Leaf::Str("record".into()));
     // `(meta t)` = the ground type-value `Bytes` (`(intrinsic bytes-ty)` → `Ty::Bytes`), so bare `Bytes`
     // resolves as a TYPE and `(. Bytes of)` projects the constructor operation.
     let ty_val = intrinsic_node(ast, "bytes-ty");
@@ -971,7 +971,7 @@ fn bytes_module(ast: &mut Arenas) -> StructId {
         ("compact", "bytes-compact", compact_type),
     ] {
         let op = list_op_record(ast, prim, ty);
-        let k = push_atom(ast, Leaf::Name(name.to_string()));
+        let k = push_atom(ast, Leaf::Name(name.into()));
         children.push(push_list(ast, vec![k, op]));
     }
     push_list(ast, children)
@@ -991,7 +991,7 @@ fn bytes_module(ast: &mut Arenas) -> StructId {
 //= spec/capabilities/collections-and-text.md#a-string-offers-both-a-scalar-length-and-a-byte-length
 //# The byte length MUST be obtainable without materializing the UTF-8 encoding as a separate value, so that a size query an author expects to be cheap is not defined only in terms of an intermediate byte sequence.
 fn string_module(ast: &mut Arenas) -> StructId {
-    let head = push_atom(ast, Leaf::Str("record".to_string()));
+    let head = push_atom(ast, Leaf::Str("record".into()));
     // `(meta t)` = the ground type-value `String` (`(intrinsic "String")` → `Ty::String`), so bare
     // `String` in type position IS the type — `(: x String)` reduces it, and a variant payload `(Named
     // String)` reads it as the payload type — exactly as `Bytes` carries `(meta t) = bytes-ty`. Member
@@ -1012,13 +1012,13 @@ fn string_module(ast: &mut Arenas) -> StructId {
     ] {
         let ty = string_to_int64_type(ast);
         let op = list_op_record(ast, prim, ty);
-        let k = push_atom(ast, Leaf::Name(name.to_string()));
+        let k = push_atom(ast, Leaf::Name(name.into()));
         children.push(push_list(ast, vec![k, op]));
     }
     // `at : String → Int64 → (Option String)` — the fallible scalar-indexed read.
     let at_ty = str_at_type(ast);
     let at_op = list_op_record(ast, "str-at", at_ty);
-    let at_key = push_atom(ast, Leaf::Name("at".to_string()));
+    let at_key = push_atom(ast, Leaf::Name("at".into()));
     children.push(push_list(ast, vec![at_key, at_op]));
     // `scalar-at : String → Int64 → (Option Char)` — the fallible read of the CHAR (single Unicode scalar)
     // at a scalar position (the char-typed companion of `at`, which yields a one-scalar String). In range
@@ -1027,27 +1027,27 @@ fn string_module(ast: &mut Arenas) -> StructId {
     //# Reading a string's scalar at a position MUST be total, yielding an optional char that is present when the position is in bounds and absent when it is out of bounds, so that scalar access is fallible in the same way list and byte indexing are rather than trapping.
     let scalar_at_ty = str_scalar_at_type(ast);
     let scalar_at_op = list_op_record(ast, "str-scalar-at", scalar_at_ty);
-    let scalar_at_key = push_atom(ast, Leaf::Name("scalar-at".to_string()));
+    let scalar_at_key = push_atom(ast, Leaf::Name("scalar-at".into()));
     children.push(push_list(ast, vec![scalar_at_key, scalar_at_op]));
     // `concat : String → String → String` — the total binary join (the compiler builds error messages
     // and export names this way). On two constant strings it FOLDS to their concatenation.
     let concat_ty = string_concat_type(ast);
     let concat_op = list_op_record(ast, "str-concat", concat_ty);
-    let concat_key = push_atom(ast, Leaf::Name("concat".to_string()));
+    let concat_key = push_atom(ast, Leaf::Name("concat".into()));
     children.push(push_list(ast, vec![concat_key, concat_op]));
     // `slice : String → Int64 → Int64 → (Option String)` — the fallible sub-range read by SCALAR offsets
     // (`start`, `end`, half-open). In range (`0 <= start <= end <= scalar-len`) → `Some substring`, else
     // `None`. A constant string + constant bounds FOLD.
     let slice_ty = string_slice_type(ast);
     let slice_op = list_op_record(ast, "str-slice", slice_ty);
-    let slice_key = push_atom(ast, Leaf::Name("slice".to_string()));
+    let slice_key = push_atom(ast, Leaf::Name("slice".into()));
     children.push(push_list(ast, vec![slice_key, slice_op]));
     // `to-bytes : String → Bytes` — the UTF-8 encoding of the string's scalars (the compiler encodes
     // export names as UTF-8 for wasm sections). A constant string FOLDS to a constant `Bytes` of its
     // UTF-8 bytes; consumed by `Bytes.len`/`Bytes.at`. Monomorphic (no type param).
     let to_bytes_ty = string_to_bytes_type(ast);
     let to_bytes_op = list_op_record(ast, "str-to-bytes", to_bytes_ty);
-    let to_bytes_key = push_atom(ast, Leaf::Name("to-bytes".to_string()));
+    let to_bytes_key = push_atom(ast, Leaf::Name("to-bytes".into()));
     children.push(push_list(ast, vec![to_bytes_key, to_bytes_op]));
     // `from-bytes : Bytes → (Option String)` — the TOTAL UTF-8 DECODE (the inverse of `to-bytes`): a
     // well-formed byte sequence → `Some string`, ill-formed (invalid/overlong/surrogate) → `None`, never
@@ -1060,7 +1060,7 @@ fn string_module(ast: &mut Arenas) -> StructId {
     //# Encoding a string to its UTF-8 byte sequence MUST be the inverse of decoding a well-formed byte sequence, so that a string decoded from bytes and re-encoded yields those same bytes.
     let from_bytes_ty = string_from_bytes_type(ast);
     let from_bytes_op = list_op_record(ast, "str-from-bytes", from_bytes_ty);
-    let from_bytes_key = push_atom(ast, Leaf::Name("from-bytes".to_string()));
+    let from_bytes_key = push_atom(ast, Leaf::Name("from-bytes".into()));
     children.push(push_list(ast, vec![from_bytes_key, from_bytes_op]));
     push_list(ast, children)
 }
@@ -1075,19 +1075,19 @@ fn string_module(ast: &mut Arenas) -> StructId {
 //= spec/capabilities/collections-and-text.md#a-char-converts-to-and-from-an-integer-totally
 //# Converting an integer to a char MUST yield an optional char that is absent when the integer is not a Unicode scalar value — outside `U+0000..=U+10FFFF` or within the surrogate range — so that an out-of-range integer is handled as data rather than producing a char that is not a valid scalar.
 fn char_module(ast: &mut Arenas) -> StructId {
-    let head = push_atom(ast, Leaf::Str("record".to_string()));
+    let head = push_atom(ast, Leaf::Str("record".into()));
     let ty_val = intrinsic_node(ast, "Char");
     let t_field = meta_field(ast, "t", ty_val);
     let mut children = vec![head, t_field];
     // `to-int : Char → Int64` — the total scalar-value read.
     let to_int_ty = char_to_int_type(ast);
     let to_int_op = list_op_record(ast, "char-to-int", to_int_ty);
-    let to_int_key = push_atom(ast, Leaf::Name("to-int".to_string()));
+    let to_int_key = push_atom(ast, Leaf::Name("to-int".into()));
     children.push(push_list(ast, vec![to_int_key, to_int_op]));
     // `from-int : Int64 → (Option Char)` — the fallible integer→char conversion.
     let from_int_ty = char_from_int_type(ast);
     let from_int_op = list_op_record(ast, "char-from-int", from_int_ty);
-    let from_int_key = push_atom(ast, Leaf::Name("from-int".to_string()));
+    let from_int_key = push_atom(ast, Leaf::Name("from-int".into()));
     children.push(push_list(ast, vec![from_int_key, from_int_op]));
     push_list(ast, children)
 }
@@ -1098,19 +1098,19 @@ fn char_module(ast: &mut Arenas) -> StructId {
 /// a string into a symbol; `to-string : Symbol → String` recovers its content. Both FOLD on a constant
 /// operand (a constant symbol shares the underlying `Core::ConstStr` rep at type `Ty::Symbol`).
 fn symbol_module(ast: &mut Arenas) -> StructId {
-    let head = push_atom(ast, Leaf::Str("record".to_string()));
+    let head = push_atom(ast, Leaf::Str("record".into()));
     let ty_val = intrinsic_node(ast, "Symbol");
     let t_field = meta_field(ast, "t", ty_val);
     let mut children = vec![head, t_field];
     // `of : String → Symbol` — intern a String into a Symbol.
     let of_ty = symbol_of_type(ast);
     let of_op = list_op_record(ast, "symbol-of", of_ty);
-    let of_key = push_atom(ast, Leaf::Name("of".to_string()));
+    let of_key = push_atom(ast, Leaf::Name("of".into()));
     children.push(push_list(ast, vec![of_key, of_op]));
     // `to-string : Symbol → String` — recover a Symbol's content String.
     let to_string_ty = symbol_to_string_type(ast);
     let to_string_op = list_op_record(ast, "symbol-to-string", to_string_ty);
-    let to_string_key = push_atom(ast, Leaf::Name("to-string".to_string()));
+    let to_string_key = push_atom(ast, Leaf::Name("to-string".into()));
     children.push(push_list(ast, vec![to_string_key, to_string_op]));
     push_list(ast, children)
 }
@@ -1122,7 +1122,7 @@ fn symbol_of_type(ast: &mut Arenas) -> StructId {
     let string = intrinsic_node(ast, "String");
     let symbol = intrinsic_node(ast, "Symbol");
     let body = arrow_type(ast, string, symbol);
-    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let fn_head = push_atom(ast, Leaf::Name("fn".into()));
     let params = push_list(ast, vec![]);
     push_list(ast, vec![fn_head, params, body])
 }
@@ -1132,7 +1132,7 @@ fn symbol_of_type(ast: &mut Arenas) -> StructId {
 /// (`∀a. (Int a) → BigInt`, the widening from any fixed-width integer); arithmetic + the reverse
 /// checked narrowing arrive later.
 fn bigint_module(ast: &mut Arenas) -> StructId {
-    let head = push_atom(ast, Leaf::Str("record".to_string()));
+    let head = push_atom(ast, Leaf::Str("record".into()));
     let ty_val = intrinsic_node(ast, "BigInt");
     let t_field = meta_field(ast, "t", ty_val);
     let mut children = vec![head, t_field];
@@ -1141,7 +1141,7 @@ fn bigint_module(ast: &mut Arenas) -> StructId {
     // the source width, exactly as `wrap`/the arithmetic operators are.
     let of_ty = bigint_of_type(ast);
     let of_op = list_op_record(ast, "bigint-of", of_ty);
-    let of_key = push_atom(ast, Leaf::Name("of".to_string()));
+    let of_key = push_atom(ast, Leaf::Name("of".into()));
     children.push(push_list(ast, vec![of_key, of_op]));
     push_list(ast, children)
 }
@@ -1155,35 +1155,35 @@ fn bigint_module(ast: &mut Arenas) -> StructId {
 /// denominator. Arithmetic + comparison over rationals ride the ordinary `+`/`-`/`*`/`/`/`<`/`=` operators
 /// (dispatched on a `Ty::Rational` operand in `lower`/`infer`), not module fields.
 fn rational_module(ast: &mut Arenas) -> StructId {
-    let head = push_atom(ast, Leaf::Str("record".to_string()));
+    let head = push_atom(ast, Leaf::Str("record".into()));
     let ty_val = intrinsic_node(ast, "Rational");
     let t_field = meta_field(ast, "t", ty_val);
     let mut children = vec![head, t_field];
     // `of : ∀a b. (Int a) → (Int b) → Rational`.
     let of_ty = rational_of_type(ast);
     let of_op = list_op_record(ast, "rational-of", of_ty);
-    let of_key = push_atom(ast, Leaf::Name("of".to_string()));
+    let of_key = push_atom(ast, Leaf::Name("of".into()));
     children.push(push_list(ast, vec![of_key, of_op]));
     // `of-int : ∀a. (Int a) → Rational`.
     let of_int_ty = rational_of_int_type(ast);
     let of_int_op = list_op_record(ast, "rational-of-int", of_int_ty);
-    let of_int_key = push_atom(ast, Leaf::Name("of-int".to_string()));
+    let of_int_key = push_atom(ast, Leaf::Name("of-int".into()));
     children.push(push_list(ast, vec![of_int_key, of_int_op]));
     // `value : Rational → Rational` (identity).
     let value_ty = rational_value_type(ast);
     let value_op = list_op_record(ast, "rational-value", value_ty);
-    let value_key = push_atom(ast, Leaf::Name("value".to_string()));
+    let value_key = push_atom(ast, Leaf::Name("value".into()));
     children.push(push_list(ast, vec![value_key, value_op]));
     // `numerator : Rational → BigInt` / `denominator : Rational → BigInt` — read the components of the
     // normalized (lowest-terms, denominator > 0) pair. BigInt-valued (either can exceed i64); floor/round/
     // integer-projection compose in Cadenza on top.
     let numerator_ty = rational_to_bigint_type(ast);
     let numerator_op = list_op_record(ast, "rational-num", numerator_ty);
-    let numerator_key = push_atom(ast, Leaf::Name("numerator".to_string()));
+    let numerator_key = push_atom(ast, Leaf::Name("numerator".into()));
     children.push(push_list(ast, vec![numerator_key, numerator_op]));
     let denominator_ty = rational_to_bigint_type(ast);
     let denominator_op = list_op_record(ast, "rational-den", denominator_ty);
-    let denominator_key = push_atom(ast, Leaf::Name("denominator".to_string()));
+    let denominator_key = push_atom(ast, Leaf::Name("denominator".into()));
     children.push(push_list(ast, vec![denominator_key, denominator_op]));
     // `truncate : Rational → Int64` — the exact integer part TOWARD ZERO (`7/2 → 3`, `-7/2 → -3`). Unlike
     // `numerator`/`denominator` (BigInt-valued, since either component can exceed i64), the integer part of
@@ -1194,7 +1194,7 @@ fn rational_module(ast: &mut Arenas) -> StructId {
     // (which add a conditional ±1 off the remainder sign) compose on top in later increments.
     let truncate_ty = rational_to_int64_type(ast);
     let truncate_op = list_op_record(ast, "rational-truncate", truncate_ty);
-    let truncate_key = push_atom(ast, Leaf::Name("truncate".to_string()));
+    let truncate_key = push_atom(ast, Leaf::Name("truncate".into()));
     children.push(push_list(ast, vec![truncate_key, truncate_op]));
     // `floor : Rational → Int64` (toward −∞) and `ceil : Rational → Int64` (toward +∞) — the other two
     // exact integer projections, each `truncate` adjusted by ±1 off the remainder sign. Like `truncate`,
@@ -1203,11 +1203,11 @@ fn rational_module(ast: &mut Arenas) -> StructId {
     // (toward −∞, distinct from `truncate`'s −3); `ceil(7/2) = 4` (toward +∞).
     let floor_ty = rational_to_int64_type(ast);
     let floor_op = list_op_record(ast, "rational-floor", floor_ty);
-    let floor_key = push_atom(ast, Leaf::Name("floor".to_string()));
+    let floor_key = push_atom(ast, Leaf::Name("floor".into()));
     children.push(push_list(ast, vec![floor_key, floor_op]));
     let ceil_ty = rational_to_int64_type(ast);
     let ceil_op = list_op_record(ast, "rational-ceil", ceil_ty);
-    let ceil_key = push_atom(ast, Leaf::Name("ceil".to_string()));
+    let ceil_key = push_atom(ast, Leaf::Name("ceil".into()));
     children.push(push_list(ast, vec![ceil_key, ceil_op]));
     // `round : Rational → Int64` — round to the NEAREST integer, ties HALF-AWAY-FROM-ZERO (`1/2 → 1`,
     // `-1/2 → -1`, `3/2 → 2`, `5/2 → 3`). The last of the exact integer projections. Like the others, NOT a
@@ -1216,7 +1216,7 @@ fn rational_module(ast: &mut Arenas) -> StructId {
     // ruling (symmetric snapping for MIDI/ticks).
     let round_ty = rational_to_int64_type(ast);
     let round_op = list_op_record(ast, "rational-round", round_ty);
-    let round_key = push_atom(ast, Leaf::Name("round".to_string()));
+    let round_key = push_atom(ast, Leaf::Name("round".into()));
     children.push(push_list(ast, vec![round_key, round_op]));
     push_list(ast, children)
 }
@@ -1226,21 +1226,21 @@ fn rational_module(ast: &mut Arenas) -> StructId {
 /// to unify with `(Int _)` (CDZ0301).
 fn rational_of_type(ast: &mut Arenas) -> StructId {
     let int_a = {
-        let int = push_atom(ast, Leaf::Name("Int".to_string()));
-        let a = push_atom(ast, Leaf::Name("a".to_string()));
+        let int = push_atom(ast, Leaf::Name("Int".into()));
+        let a = push_atom(ast, Leaf::Name("a".into()));
         push_list(ast, vec![int, a])
     };
     let int_b = {
-        let int = push_atom(ast, Leaf::Name("Int".to_string()));
-        let b = push_atom(ast, Leaf::Name("b".to_string()));
+        let int = push_atom(ast, Leaf::Name("Int".into()));
+        let b = push_atom(ast, Leaf::Name("b".into()));
         push_list(ast, vec![int, b])
     };
     let rational = intrinsic_node(ast, "Rational");
     let inner = arrow_type(ast, int_b, rational);
     let body = arrow_type(ast, int_a, inner);
-    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
-    let a_param = push_atom(ast, Leaf::Name("a".to_string()));
-    let b_param = push_atom(ast, Leaf::Name("b".to_string()));
+    let fn_head = push_atom(ast, Leaf::Name("fn".into()));
+    let a_param = push_atom(ast, Leaf::Name("a".into()));
+    let b_param = push_atom(ast, Leaf::Name("b".into()));
     let params = push_list(ast, vec![a_param, b_param]);
     push_list(ast, vec![fn_head, params, body])
 }
@@ -1249,14 +1249,14 @@ fn rational_of_type(ast: &mut Arenas) -> StructId {
 /// integer, generic over the source width.
 fn rational_of_int_type(ast: &mut Arenas) -> StructId {
     let int_a = {
-        let int = push_atom(ast, Leaf::Name("Int".to_string()));
-        let a = push_atom(ast, Leaf::Name("a".to_string()));
+        let int = push_atom(ast, Leaf::Name("Int".into()));
+        let a = push_atom(ast, Leaf::Name("a".into()));
         push_list(ast, vec![int, a])
     };
     let rational = intrinsic_node(ast, "Rational");
     let body = arrow_type(ast, int_a, rational);
-    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
-    let a_param = push_atom(ast, Leaf::Name("a".to_string()));
+    let fn_head = push_atom(ast, Leaf::Name("fn".into()));
+    let a_param = push_atom(ast, Leaf::Name("a".into()));
     let params = push_list(ast, vec![a_param]);
     push_list(ast, vec![fn_head, params, body])
 }
@@ -1266,7 +1266,7 @@ fn rational_value_type(ast: &mut Arenas) -> StructId {
     let rational = intrinsic_node(ast, "Rational");
     let rational2 = intrinsic_node(ast, "Rational");
     let body = arrow_type(ast, rational, rational2);
-    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let fn_head = push_atom(ast, Leaf::Name("fn".into()));
     let params = push_list(ast, vec![]);
     push_list(ast, vec![fn_head, params, body])
 }
@@ -1280,7 +1280,7 @@ fn rational_to_bigint_type(ast: &mut Arenas) -> StructId {
     let rational = intrinsic_node(ast, "Rational");
     let bigint = intrinsic_node(ast, "BigInt");
     let body = arrow_type(ast, rational, bigint);
-    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let fn_head = push_atom(ast, Leaf::Name("fn".into()));
     let params = push_list(ast, vec![]);
     push_list(ast, vec![fn_head, params, body])
 }
@@ -1293,9 +1293,9 @@ fn rational_to_bigint_type(ast: &mut Arenas) -> StructId {
 /// `Int64` is spelled by the NAME node (like `string_to_int64_type`), not an intrinsic.
 fn rational_to_int64_type(ast: &mut Arenas) -> StructId {
     let rational = intrinsic_node(ast, "Rational");
-    let int64 = push_atom(ast, Leaf::Name("Int64".to_string()));
+    let int64 = push_atom(ast, Leaf::Name("Int64".into()));
     let body = arrow_type(ast, rational, int64);
-    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let fn_head = push_atom(ast, Leaf::Name("fn".into()));
     let params = push_list(ast, vec![]);
     push_list(ast, vec![fn_head, params, body])
 }
@@ -1306,14 +1306,14 @@ fn rational_to_int64_type(ast: &mut Arenas) -> StructId {
 /// the result `Ty::BigInt`; a non-integer source fails to unify with `(Int a)` (CDZ0301).
 fn bigint_of_type(ast: &mut Arenas) -> StructId {
     let int_a = {
-        let int = push_atom(ast, Leaf::Name("Int".to_string()));
-        let a = push_atom(ast, Leaf::Name("a".to_string()));
+        let int = push_atom(ast, Leaf::Name("Int".into()));
+        let a = push_atom(ast, Leaf::Name("a".into()));
         push_list(ast, vec![int, a])
     };
     let bigint = intrinsic_node(ast, "BigInt");
     let body = arrow_type(ast, int_a, bigint);
-    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
-    let a_param = push_atom(ast, Leaf::Name("a".to_string()));
+    let fn_head = push_atom(ast, Leaf::Name("fn".into()));
+    let a_param = push_atom(ast, Leaf::Name("a".into()));
     let params = push_list(ast, vec![a_param]);
     push_list(ast, vec![fn_head, params, body])
 }
@@ -1323,7 +1323,7 @@ fn symbol_to_string_type(ast: &mut Arenas) -> StructId {
     let symbol = intrinsic_node(ast, "Symbol");
     let string = intrinsic_node(ast, "String");
     let body = arrow_type(ast, symbol, string);
-    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let fn_head = push_atom(ast, Leaf::Name("fn".into()));
     let params = push_list(ast, vec![]);
     push_list(ast, vec![fn_head, params, body])
 }
@@ -1338,7 +1338,7 @@ fn symbol_to_string_type(ast: &mut Arenas) -> StructId {
 /// prim; a unit is a compile-time value reduced by `eval`. `Unit.*`/`Unit./`/`Unit.^` are registered as
 /// TOP-LEVEL names, not fields (the reader keeps them bare — `^`/`*`/`/` aren't alphabetic).
 fn unit_module(ast: &mut Arenas) -> StructId {
-    let head = push_atom(ast, Leaf::Str("record".to_string()));
+    let head = push_atom(ast, Leaf::Str("record".into()));
     // `(meta t) = Unit` — the ground type-value, so `Unit` in type position stays `Ty::Unit` (the
     // effect-op `(-> Unit Int64)` and every other `Unit`-as-type use keep resolving). This is what makes
     // the module a superset of the plain ground-type record it replaces (it ADDS fields, keeps the type).
@@ -1346,32 +1346,32 @@ fn unit_module(ast: &mut Arenas) -> StructId {
     let t_field = meta_field(ast, "t", ty_val);
     let mut children = vec![head, t_field];
     // `one` — the dimensionless unit (applying it, or using it bare, yields the group identity).
-    let one_field = push_atom(ast, Leaf::Name("one".to_string()));
+    let one_field = push_atom(ast, Leaf::Name("one".into()));
     let one_op = unit_op_ctor(ast, "unit-one");
     children.push(push_list(ast, vec![one_field, one_op]));
     // `base` — a base dimension named by a symbol: `(Unit.base #"meter")`.
-    let base_field = push_atom(ast, Leaf::Name("base".to_string()));
+    let base_field = push_atom(ast, Leaf::Name("base".into()));
     let base_op = unit_op_ctor(ast, "unit-base");
     children.push(push_list(ast, vec![base_field, base_op]));
     // `prefix` — scale a unit by a prefix's factor: `(Unit.prefix kilo (Unit.base #"meter"))`. Member
     // access (`prefix` is alphabetic → `(. Unit prefix)`), so a field, not a top-level name (unlike
     // `Unit.*`/`^`).
-    let prefix_field = push_atom(ast, Leaf::Name("prefix".to_string()));
+    let prefix_field = push_atom(ast, Leaf::Name("prefix".into()));
     let prefix_op = unit_op_ctor(ast, "unit-prefix");
     children.push(push_list(ast, vec![prefix_field, prefix_op]));
     // `of` — name a FAMILY unit from the registry: `(Unit.of #"foot")` = length at foot's scale to
     // meter. Member access (`(. Unit of)`), a field. Consults `Db::unit_families`.
-    let of_field = push_atom(ast, Leaf::Name("of".to_string()));
+    let of_field = push_atom(ast, Leaf::Name("of".into()));
     let of_op = unit_op_ctor(ast, "unit-of");
     children.push(push_list(ast, vec![of_field, of_op]));
     // `in` — EXPLICIT conversion of a quantity to a chosen unit: `(Unit.in meter (Qty.of 3.0 km))`.
     // Member access (`(. Unit in)`), a field. Takes a target unit + a quantity.
-    let in_field = push_atom(ast, Leaf::Name("in".to_string()));
+    let in_field = push_atom(ast, Leaf::Name("in".into()));
     let in_op = unit_op_ctor(ast, "unit-in");
     children.push(push_list(ast, vec![in_field, in_op]));
     // `define` — DECLARE a family unit: `(Unit.define #"furlong" (Unit.of #"foot") 660 1)`. As a value it
     // reduces to the defined unit (`base` scaled by num/den); its registration is a load-time scan.
-    let define_field = push_atom(ast, Leaf::Name("define".to_string()));
+    let define_field = push_atom(ast, Leaf::Name("define".into()));
     let define_op = unit_op_ctor(ast, "unit-define");
     children.push(push_list(ast, vec![define_field, define_op]));
     push_list(ast, children)
@@ -1389,7 +1389,7 @@ fn unit_module(ast: &mut Arenas) -> StructId {
 //= spec/capabilities/units-of-measure.md#a-scaled-unit-is-a-unit-scaled-by-an-exact-factor
 //# A scale factor MUST be an exact value, so that a prefixed unit converts to its base without approximation.
 fn prefix_record(ast: &mut Arenas, num: i64, den: i64) -> StructId {
-    let head = push_atom(ast, Leaf::Str("record".to_string()));
+    let head = push_atom(ast, Leaf::Str("record".into()));
     let n = push_atom(
         ast,
         Leaf::Int {
@@ -1659,7 +1659,7 @@ fn unit_op_ctor(ast: &mut Arenas, prim: &str) -> StructId {
 //= spec/capabilities/units-of-measure.md#dimensional-analysis-does-not-alter-the-numeric-core
 //# Attaching a unit to a numeric value, or combining values that already share a unit, MUST NOT change the value's runtime behavior.
 fn qty_module(ast: &mut Arenas) -> StructId {
-    let head = push_atom(ast, Leaf::Str("record".to_string()));
+    let head = push_atom(ast, Leaf::Str("record".into()));
     // `(meta apply) = Qty` — the quantity-TYPE constructor, so `(Qty Float64 u)` in TYPE position builds
     // `Ty::Qty` via the ordinary `typeval_of` path (an annotation `(: e (Qty T u))`), exactly as `(List
     // T)` reduces via `List`'s `(meta apply)`. The value constructor is `Qty.of` (a field); this channel
@@ -1667,22 +1667,22 @@ fn qty_module(ast: &mut Arenas) -> StructId {
     let ctor = intrinsic_node(ast, "Qty");
     let apply_field = meta_field(ast, "apply", ctor);
     let mut children = vec![head, apply_field];
-    let of_field = push_atom(ast, Leaf::Name("of".to_string()));
+    let of_field = push_atom(ast, Leaf::Name("of".into()));
     let of_op = ctor_record(ast, "qty-of");
     children.push(push_list(ast, vec![of_field, of_op]));
-    let value_field = push_atom(ast, Leaf::Name("value".to_string()));
+    let value_field = push_atom(ast, Leaf::Name("value".into()));
     let value_op = ctor_record(ast, "qty-value");
     children.push(push_list(ast, vec![value_field, value_op]));
     // `pow` — raise a quantity to a compile-time non-negative integer power, composing the unit like
     // `Unit.^`: `(Qty.pow (Qty.of 3.0 meter) 2)` = `9.0 : (Qty Float64 meter²)`. The exponent is read
     // off the second argument at type/lower time (not an HM variable), so `pow` is a plain field op.
-    let pow_field = push_atom(ast, Leaf::Name("pow".to_string()));
+    let pow_field = push_atom(ast, Leaf::Name("pow".into()));
     let pow_op = ctor_record(ast, "qty-pow");
     children.push(push_list(ast, vec![pow_field, pow_op]));
     // `unit` — extract a quantity's UNIT as a compile-time unit value: `(Qty.of new (Qty.unit y))` makes
     // a new quantity in `y`'s unit without re-spelling it. It IS a unit expression (reduces via
     // `unit_of`, reading `y`'s solved type), so it is used in unit position like `(Unit.base …)`.
-    let unit_field = push_atom(ast, Leaf::Name("unit".to_string()));
+    let unit_field = push_atom(ast, Leaf::Name("unit".into()));
     let unit_op = ctor_record(ast, "qty-unit");
     children.push(push_list(ast, vec![unit_field, unit_op]));
     push_list(ast, children)
@@ -1696,11 +1696,11 @@ fn qty_module(ast: &mut Arenas) -> StructId {
 /// module itself is NOT a type constructor (no top-level `(meta apply)`) — it is only a namespace; `Type`
 /// in a bare type position is not a type (a value's type-of is `Ty::Type`, spelled only by reflection).
 fn type_module(ast: &mut Arenas) -> StructId {
-    let head = push_atom(ast, Leaf::Str("record".to_string()));
-    let of_field = push_atom(ast, Leaf::Name("of".to_string()));
+    let head = push_atom(ast, Leaf::Str("record".into()));
+    let of_field = push_atom(ast, Leaf::Name("of".into()));
     let of_op = ctor_record(ast, "type-of");
     let of = push_list(ast, vec![of_field, of_op]);
-    let eq_field = push_atom(ast, Leaf::Name("eq".to_string()));
+    let eq_field = push_atom(ast, Leaf::Name("eq".into()));
     let eq_op = ctor_record(ast, "type-eq");
     let eq = push_list(ast, vec![eq_field, eq_op]);
     push_list(ast, vec![head, of, eq])
@@ -1711,9 +1711,9 @@ fn type_module(ast: &mut Arenas) -> StructId {
 /// [`string_to_int64_type`]). The `Char` param is `(intrinsic "Char")` (→ `Ty::Char`).
 fn char_to_int_type(ast: &mut Arenas) -> StructId {
     let char_ty = intrinsic_node(ast, "Char");
-    let int64 = push_atom(ast, Leaf::Name("Int64".to_string()));
+    let int64 = push_atom(ast, Leaf::Name("Int64".into()));
     let body = arrow_type(ast, char_ty, int64); // (-> Char Int64)
-    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let fn_head = push_atom(ast, Leaf::Name("fn".into()));
     let params = push_list(ast, vec![]);
     push_list(ast, vec![fn_head, params, body])
 }
@@ -1723,13 +1723,13 @@ fn char_to_int_type(ast: &mut Arenas) -> StructId {
 /// name applied to the `(intrinsic "Char")` type node, reducing to `Ty::Sum{Option, [Char]}`.
 fn char_from_int_type(ast: &mut Arenas) -> StructId {
     let option_char = {
-        let option = push_atom(ast, Leaf::Name("Option".to_string()));
+        let option = push_atom(ast, Leaf::Name("Option".into()));
         let char_ty = intrinsic_node(ast, "Char");
         push_list(ast, vec![option, char_ty])
     };
-    let int64 = push_atom(ast, Leaf::Name("Int64".to_string()));
+    let int64 = push_atom(ast, Leaf::Name("Int64".into()));
     let body = arrow_type(ast, int64, option_char); // (-> Int64 (Option Char))
-    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let fn_head = push_atom(ast, Leaf::Name("fn".into()));
     let params = push_list(ast, vec![]);
     push_list(ast, vec![fn_head, params, body])
 }
@@ -1742,7 +1742,7 @@ fn string_to_bytes_type(ast: &mut Arenas) -> StructId {
     let string = intrinsic_node(ast, "String");
     let bytes = intrinsic_node(ast, "bytes-ty");
     let body = arrow_type(ast, string, bytes); // (-> String Bytes)
-    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let fn_head = push_atom(ast, Leaf::Name("fn".into()));
     let params = push_list(ast, vec![]);
     push_list(ast, vec![fn_head, params, body])
 }
@@ -1753,13 +1753,13 @@ fn string_to_bytes_type(ast: &mut Arenas) -> StructId {
 /// `(intrinsic "String")` type node, reducing to `Ty::Sum{Option, [String]}` when the scheme is read.
 fn string_from_bytes_type(ast: &mut Arenas) -> StructId {
     let option_string = {
-        let option = push_atom(ast, Leaf::Name("Option".to_string()));
+        let option = push_atom(ast, Leaf::Name("Option".into()));
         let string = intrinsic_node(ast, "String");
         push_list(ast, vec![option, string])
     };
     let bytes = intrinsic_node(ast, "bytes-ty");
     let body = arrow_type(ast, bytes, option_string); // (-> Bytes (Option String))
-    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let fn_head = push_atom(ast, Leaf::Name("fn".into()));
     let params = push_list(ast, vec![]);
     push_list(ast, vec![fn_head, params, body])
 }
@@ -1771,11 +1771,11 @@ fn string_from_bytes_type(ast: &mut Arenas) -> StructId {
 /// module being built); `Option`/`Int64` are ordinary prelude names resolved when the scheme reduces.
 fn bytes_at_type(ast: &mut Arenas) -> StructId {
     let option_int64 = {
-        let option = push_atom(ast, Leaf::Name("Option".to_string()));
-        let int64 = push_atom(ast, Leaf::Name("Int64".to_string()));
+        let option = push_atom(ast, Leaf::Name("Option".into()));
+        let int64 = push_atom(ast, Leaf::Name("Int64".into()));
         push_list(ast, vec![option, int64])
     };
-    let int64_idx = push_atom(ast, Leaf::Name("Int64".to_string()));
+    let int64_idx = push_atom(ast, Leaf::Name("Int64".into()));
     let index_arrow = arrow_type(ast, int64_idx, option_int64); // (-> Int64 (Option Int64))
     let bytes = intrinsic_node(ast, "bytes-ty");
     arrow_type(ast, bytes, index_arrow) // (-> Bytes (-> Int64 (Option Int64)))
@@ -1798,13 +1798,13 @@ fn bytes_concat_type(ast: &mut Arenas) -> StructId {
 /// bytes companion of the fallible `at`, returning `Option Bytes` rather than `Option Int64`.
 fn bytes_slice_type(ast: &mut Arenas) -> StructId {
     let option_bytes = {
-        let option = push_atom(ast, Leaf::Name("Option".to_string()));
+        let option = push_atom(ast, Leaf::Name("Option".into()));
         let bytes = intrinsic_node(ast, "bytes-ty");
         push_list(ast, vec![option, bytes])
     };
-    let len_i = push_atom(ast, Leaf::Name("Int64".to_string()));
+    let len_i = push_atom(ast, Leaf::Name("Int64".into()));
     let len_arrow = arrow_type(ast, len_i, option_bytes); // (-> Int64 (Option Bytes))
-    let start_i = push_atom(ast, Leaf::Name("Int64".to_string()));
+    let start_i = push_atom(ast, Leaf::Name("Int64".into()));
     let start_arrow = arrow_type(ast, start_i, len_arrow); // (-> Int64 (-> Int64 (Option Bytes)))
     let bytes = intrinsic_node(ast, "bytes-ty");
     arrow_type(ast, bytes, start_arrow) // (-> Bytes (-> Int64 (-> Int64 (Option Bytes))))
@@ -1829,10 +1829,10 @@ fn bytes_compact_type(ast: &mut Arenas) -> StructId {
 /// name would mis-resolve inside the module being built). Reduced to `(List UInt8) → Bytes` by `infer`.
 fn bytes_of_type(ast: &mut Arenas) -> StructId {
     let list_u8 = {
-        let list = push_atom(ast, Leaf::Name("List".to_string()));
+        let list = push_atom(ast, Leaf::Name("List".into()));
         // `(UInt 8)` — the UInt8 type, applied via the `UInt` type constructor (the same reduction a
         // `UInt8` annotation takes). A `List` element of this type makes each byte a UInt8.
-        let uint = push_atom(ast, Leaf::Name("UInt".to_string()));
+        let uint = push_atom(ast, Leaf::Name("UInt".into()));
         let eight = push_atom(
             ast,
             Leaf::Int {
@@ -1852,7 +1852,7 @@ fn bytes_of_type(ast: &mut Arenas) -> StructId {
 /// [`bytes_of_type`] — a bare `Bytes` name would mis-resolve inside the module being built).
 fn bytes_len_type(ast: &mut Arenas) -> StructId {
     let bytes = intrinsic_node(ast, "bytes-ty");
-    let int64 = push_atom(ast, Leaf::Name("Int64".to_string()));
+    let int64 = push_atom(ast, Leaf::Name("Int64".into()));
     arrow_type(ast, bytes, int64)
 }
 
@@ -1865,10 +1865,10 @@ fn bytes_len_type(ast: &mut Arenas) -> StructId {
 /// `String` (which is the module record, a value).
 fn string_to_int64_type(ast: &mut Arenas) -> StructId {
     let string = intrinsic_node(ast, "String");
-    let int64 = push_atom(ast, Leaf::Name("Int64".to_string()));
+    let int64 = push_atom(ast, Leaf::Name("Int64".into()));
     let body = arrow_type(ast, string, int64);
     // `(fn () body)` — an empty parameter list (no quantified type variables), the monomorphic wrapper.
-    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let fn_head = push_atom(ast, Leaf::Name("fn".into()));
     let params = push_list(ast, vec![]);
     push_list(ast, vec![fn_head, params, body])
 }
@@ -1880,15 +1880,15 @@ fn string_to_int64_type(ast: &mut Arenas) -> StructId {
 /// not the NAME `String` (the module record); `(Option String)` reduces via the built-in Option ctor.
 fn str_at_type(ast: &mut Arenas) -> StructId {
     let option_string = {
-        let option = push_atom(ast, Leaf::Name("Option".to_string()));
+        let option = push_atom(ast, Leaf::Name("Option".into()));
         let string = intrinsic_node(ast, "String");
         push_list(ast, vec![option, string])
     };
-    let int64 = push_atom(ast, Leaf::Name("Int64".to_string()));
+    let int64 = push_atom(ast, Leaf::Name("Int64".into()));
     let index_arrow = arrow_type(ast, int64, option_string); // (-> Int64 (Option String))
     let string = intrinsic_node(ast, "String");
     let body = arrow_type(ast, string, index_arrow); // (-> String (-> Int64 (Option String)))
-    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let fn_head = push_atom(ast, Leaf::Name("fn".into()));
     let params = push_list(ast, vec![]);
     push_list(ast, vec![fn_head, params, body])
 }
@@ -1900,15 +1900,15 @@ fn str_at_type(ast: &mut Arenas) -> StructId {
 /// the `(intrinsic "Char")` type node (→ `Ty::Char`), reducing to `Ty::Sum{Option, [Char]}`.
 fn str_scalar_at_type(ast: &mut Arenas) -> StructId {
     let option_char = {
-        let option = push_atom(ast, Leaf::Name("Option".to_string()));
+        let option = push_atom(ast, Leaf::Name("Option".into()));
         let char_ty = intrinsic_node(ast, "Char");
         push_list(ast, vec![option, char_ty])
     };
-    let int64 = push_atom(ast, Leaf::Name("Int64".to_string()));
+    let int64 = push_atom(ast, Leaf::Name("Int64".into()));
     let index_arrow = arrow_type(ast, int64, option_char); // (-> Int64 (Option Char))
     let string = intrinsic_node(ast, "String");
     let body = arrow_type(ast, string, index_arrow); // (-> String (-> Int64 (Option Char)))
-    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let fn_head = push_atom(ast, Leaf::Name("fn".into()));
     let params = push_list(ast, vec![]);
     push_list(ast, vec![fn_head, params, body])
 }
@@ -1923,7 +1923,7 @@ fn string_concat_type(ast: &mut Arenas) -> StructId {
     let inner = arrow_type(ast, rhs, out); // (-> String String)
     let lhs = intrinsic_node(ast, "String");
     let body = arrow_type(ast, lhs, inner); // (-> String (-> String String))
-    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let fn_head = push_atom(ast, Leaf::Name("fn".into()));
     let params = push_list(ast, vec![]);
     push_list(ast, vec![fn_head, params, body])
 }
@@ -1937,17 +1937,17 @@ fn string_concat_type(ast: &mut Arenas) -> StructId {
 /// SCALAR offset, not byte).
 fn string_slice_type(ast: &mut Arenas) -> StructId {
     let option_string = {
-        let option = push_atom(ast, Leaf::Name("Option".to_string()));
+        let option = push_atom(ast, Leaf::Name("Option".into()));
         let string = intrinsic_node(ast, "String");
         push_list(ast, vec![option, string])
     };
-    let end_i = push_atom(ast, Leaf::Name("Int64".to_string()));
+    let end_i = push_atom(ast, Leaf::Name("Int64".into()));
     let end_arrow = arrow_type(ast, end_i, option_string); // (-> Int64 (Option String))
-    let start_i = push_atom(ast, Leaf::Name("Int64".to_string()));
+    let start_i = push_atom(ast, Leaf::Name("Int64".into()));
     let start_arrow = arrow_type(ast, start_i, end_arrow); // (-> Int64 (-> Int64 (Option String)))
     let string = intrinsic_node(ast, "String");
     let body = arrow_type(ast, string, start_arrow); // (-> String (-> Int64 (-> Int64 (Option String))))
-    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let fn_head = push_atom(ast, Leaf::Name("fn".into()));
     let params = push_list(ast, vec![]);
     push_list(ast, vec![fn_head, params, body])
 }
@@ -1956,7 +1956,7 @@ fn string_slice_type(ast: &mut Arenas) -> StructId {
 /// (intrinsic PRIM)))` — the same shape as `operator_record`, but the type-lambda is supplied (a list
 /// operation's signature varies per op, unlike the shared arithmetic/comparison shapes).
 fn list_op_record(ast: &mut Arenas, prim: &str, type_lambda: StructId) -> StructId {
-    let head = push_atom(ast, Leaf::Str("record".to_string()));
+    let head = push_atom(ast, Leaf::Str("record".into()));
     let t_field = meta_field(ast, "t", type_lambda);
     let apply = intrinsic_node(ast, prim);
     let apply_field = meta_field(ast, "apply", apply);
@@ -1968,7 +1968,7 @@ fn list_op_record(ast: &mut Arenas, prim: &str, type_lambda: StructId) -> Struct
 /// scheme `∀a. (List a) → Int64` through the one evaluator (`(List a)` reduces via `Prim::ListCtor`).
 fn list_len_type_lambda(ast: &mut Arenas) -> StructId {
     let list_a = list_a_type(ast);
-    let int64 = push_atom(ast, Leaf::Name("Int64".to_string()));
+    let int64 = push_atom(ast, Leaf::Name("Int64".into()));
     let body = arrow_type(ast, list_a, int64);
     list_type_lambda(ast, body)
 }
@@ -1977,7 +1977,7 @@ fn list_len_type_lambda(ast: &mut Arenas) -> StructId {
 /// (List a)`: take a list and an element of its type, return the new list.
 fn list_push_type_lambda(ast: &mut Arenas) -> StructId {
     let list_r = list_a_type(ast);
-    let elem = push_atom(ast, Leaf::Name("a".to_string()));
+    let elem = push_atom(ast, Leaf::Name("a".into()));
     let inner = arrow_type(ast, elem, list_r); // (-> a (List a))
     let list_l = list_a_type(ast);
     let body = arrow_type(ast, list_l, inner); // (-> (List a) (-> a (List a)))
@@ -2007,9 +2007,9 @@ fn list_concat_type_lambda(ast: &mut Arenas) -> StructId {
 /// return the new list. The functional-construction companion of `List.push`.
 fn list_update_type_lambda(ast: &mut Arenas) -> StructId {
     let list_r = list_a_type(ast);
-    let elem = push_atom(ast, Leaf::Name("a".to_string()));
+    let elem = push_atom(ast, Leaf::Name("a".into()));
     let elem_arrow = arrow_type(ast, elem, list_r); // (-> a (List a))
-    let int64 = push_atom(ast, Leaf::Name("Int64".to_string()));
+    let int64 = push_atom(ast, Leaf::Name("Int64".into()));
     let index_arrow = arrow_type(ast, int64, elem_arrow); // (-> Int64 (-> a (List a)))
     let list_l = list_a_type(ast);
     let body = arrow_type(ast, list_l, index_arrow); // (-> (List a) (-> Int64 (-> a (List a))))
@@ -2023,11 +2023,11 @@ fn list_update_type_lambda(ast: &mut Arenas) -> StructId {
 /// result type is expressed in the ordinary generic-application evaluator, no privileged `Option` path.
 fn list_at_type_lambda(ast: &mut Arenas) -> StructId {
     let option_a = {
-        let option = push_atom(ast, Leaf::Name("Option".to_string()));
-        let a = push_atom(ast, Leaf::Name("a".to_string()));
+        let option = push_atom(ast, Leaf::Name("Option".into()));
+        let a = push_atom(ast, Leaf::Name("a".into()));
         push_list(ast, vec![option, a])
     };
-    let int64 = push_atom(ast, Leaf::Name("Int64".to_string()));
+    let int64 = push_atom(ast, Leaf::Name("Int64".into()));
     let index_arrow = arrow_type(ast, int64, option_a); // (-> Int64 (Option a))
     let list_l = list_a_type(ast);
     let body = arrow_type(ast, list_l, index_arrow); // (-> (List a) (-> Int64 (Option a)))
@@ -2042,8 +2042,8 @@ fn list_at_type_lambda(ast: &mut Arenas) -> StructId {
 /// dedicated `Ty::Never`. Reuses `list_type_lambda` (a one-parameter `(fn (a) …)`), the same wrapper the
 /// element-generic list ops use.
 fn trap_type_lambda(ast: &mut Arenas) -> StructId {
-    let string_ty = push_atom(ast, Leaf::Name("String".to_string()));
-    let a = push_atom(ast, Leaf::Name("a".to_string()));
+    let string_ty = push_atom(ast, Leaf::Name("String".into()));
+    let a = push_atom(ast, Leaf::Name("a".into()));
     let body = arrow_type(ast, string_ty, a); // (-> String a)
     list_type_lambda(ast, body)
 }
@@ -2054,10 +2054,10 @@ fn trap_type_lambda(ast: &mut Arenas) -> StructId {
 /// `(Schema T)` reduces to `Ty::Sum{Schema,[T]}` via the generic `Schema` prelude sum, carrying the
 /// target type `T` that `decode` recovers to build its `(Result T DecodeError)` result.
 fn schema_witness_type(ast: &mut Arenas, target: &str) -> StructId {
-    let schema = push_atom(ast, Leaf::Name("Schema".to_string()));
-    let t = push_atom(ast, Leaf::Name(target.to_string()));
+    let schema = push_atom(ast, Leaf::Name("Schema".into()));
+    let t = push_atom(ast, Leaf::Name(target.into()));
     let body = push_list(ast, vec![schema, t]); // (Schema T)
-    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let fn_head = push_atom(ast, Leaf::Name("fn".into()));
     let params = push_list(ast, vec![]); // monomorphic — a bare value, not applied
     push_list(ast, vec![fn_head, params, body])
 }
@@ -2068,8 +2068,8 @@ fn schema_witness_type(ast: &mut Arenas, target: &str) -> StructId {
 /// value is opaque (its only sanctioned consumer is `decode`), so no more precise typing is needed for
 /// the const-fold path (OQ-3).
 fn payload_of_type_lambda(ast: &mut Arenas) -> StructId {
-    let a_in = push_atom(ast, Leaf::Name("a".to_string()));
-    let a_out = push_atom(ast, Leaf::Name("a".to_string()));
+    let a_in = push_atom(ast, Leaf::Name("a".into()));
+    let a_out = push_atom(ast, Leaf::Name("a".into()));
     let body = arrow_type(ast, a_in, a_out); // (-> a a)
     list_type_lambda(ast, body)
 }
@@ -2081,23 +2081,23 @@ fn payload_of_type_lambda(ast: &mut Arenas) -> StructId {
 /// FOLD (`lower_schema_decode`) picks the `Ok`/`Err` arm by comparing the payload's constant type to `t`.
 fn schema_decode_type_lambda(ast: &mut Arenas) -> StructId {
     let result_t_err = {
-        let result = push_atom(ast, Leaf::Name("Result".to_string()));
-        let t = push_atom(ast, Leaf::Name("t".to_string()));
-        let derr = push_atom(ast, Leaf::Name("DecodeError".to_string()));
+        let result = push_atom(ast, Leaf::Name("Result".into()));
+        let t = push_atom(ast, Leaf::Name("t".into()));
+        let derr = push_atom(ast, Leaf::Name("DecodeError".into()));
         push_list(ast, vec![result, t, derr]) // (Result t DecodeError)
     };
-    let p = push_atom(ast, Leaf::Name("p".to_string()));
+    let p = push_atom(ast, Leaf::Name("p".into()));
     let inner = arrow_type(ast, p, result_t_err); // (-> p (Result t DecodeError))
     let schema_t = {
-        let schema = push_atom(ast, Leaf::Name("Schema".to_string()));
-        let t = push_atom(ast, Leaf::Name("t".to_string()));
+        let schema = push_atom(ast, Leaf::Name("Schema".into()));
+        let t = push_atom(ast, Leaf::Name("t".into()));
         push_list(ast, vec![schema, t]) // (Schema t)
     };
     let body = arrow_type(ast, schema_t, inner); // (-> (Schema t) (-> p (Result t DecodeError)))
     // `(fn (t p) …)` — two quantified parameters.
-    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
-    let t_param = push_atom(ast, Leaf::Name("t".to_string()));
-    let p_param = push_atom(ast, Leaf::Name("p".to_string()));
+    let fn_head = push_atom(ast, Leaf::Name("fn".into()));
+    let t_param = push_atom(ast, Leaf::Name("t".into()));
+    let p_param = push_atom(ast, Leaf::Name("p".into()));
     let params = push_list(ast, vec![t_param, p_param]);
     push_list(ast, vec![fn_head, params, body])
 }
@@ -2108,10 +2108,10 @@ fn schema_decode_type_lambda(ast: &mut Arenas) -> StructId {
 /// `Ty::Type` (the same reason the fixed-width `checked_field`/float `of-int` schemes wrap a `(fn () …)`).
 /// Used for `print : Ast → String` and `read : String → Ast`.
 fn mono_op_type_lambda(ast: &mut Arenas, from: &str, to: &str) -> StructId {
-    let from_ty = push_atom(ast, Leaf::Name(from.to_string()));
-    let to_ty = push_atom(ast, Leaf::Name(to.to_string()));
+    let from_ty = push_atom(ast, Leaf::Name(from.into()));
+    let to_ty = push_atom(ast, Leaf::Name(to.into()));
     let body = arrow_type(ast, from_ty, to_ty); // (-> FROM TO)
-    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let fn_head = push_atom(ast, Leaf::Name("fn".into()));
     let params = push_list(ast, vec![]); // zero parameters — monomorphic
     push_list(ast, vec![fn_head, params, body])
 }
@@ -2119,22 +2119,22 @@ fn mono_op_type_lambda(ast: &mut Arenas, from: &str, to: &str) -> StructId {
 /// Build `(List a)` — the list type applied to the element parameter `a`, a shared shape in the `List`
 /// operation type-lambdas (each occurrence is a fresh `(List a)` referencing the same parameter name).
 fn list_a_type(ast: &mut Arenas) -> StructId {
-    let list = push_atom(ast, Leaf::Name("List".to_string()));
-    let a = push_atom(ast, Leaf::Name("a".to_string()));
+    let list = push_atom(ast, Leaf::Name("List".into()));
+    let a = push_atom(ast, Leaf::Name("a".into()));
     push_list(ast, vec![list, a])
 }
 
 /// Build `(-> l r)` — a function type from `l` to `r`.
 fn arrow_type(ast: &mut Arenas, l: StructId, r: StructId) -> StructId {
-    let arrow = push_atom(ast, Leaf::Name("->".to_string()));
+    let arrow = push_atom(ast, Leaf::Name("->".into()));
     push_list(ast, vec![arrow, l, r])
 }
 
 /// Wrap `body` in `(fn (a) body)` — the one-parameter type-lambda over the element type `a`, shared by
 /// the `List` operation schemes.
 fn list_type_lambda(ast: &mut Arenas, body: StructId) -> StructId {
-    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
-    let a_param = push_atom(ast, Leaf::Name("a".to_string()));
+    let fn_head = push_atom(ast, Leaf::Name("fn".into()));
+    let a_param = push_atom(ast, Leaf::Name("a".into()));
     let params = push_list(ast, vec![a_param]);
     push_list(ast, vec![fn_head, params, body])
 }
@@ -2169,7 +2169,7 @@ enum OpShape {
 //= spec/capabilities/core-semantics.md#a-built-in-module-is-a-record-of-its-operations
 //# A built-in operation value used other than by application — bound to a name, stored in a data structure, compared, or partially applied — has no outcome fixed by this document beyond that it MUST NOT produce a wrong result: a compiler that does not realize such a use MUST decline to compile the program rather than emit code that computes an incorrect value. This preserves *reject-don't-miscompile* while leaving the first-class treatment of a built-in operation value (storage, partial application) to be specified as it is realized.
 fn operator_record(ast: &mut Arenas, op: &str, shape: OpShape) -> StructId {
-    let head = push_atom(ast, Leaf::Str("record".to_string()));
+    let head = push_atom(ast, Leaf::Str("record".into()));
     let lambda = match shape {
         OpShape::IntBinary => binop_type_lambda(ast),
         OpShape::Comparison => comparison_type_lambda(ast),
@@ -2189,13 +2189,13 @@ fn operator_record(ast: &mut Arenas, op: &str, shape: OpShape) -> StructId {
 fn binop_type_lambda(ast: &mut Arenas) -> StructId {
     // `(Int a)` — reused shape; each occurrence references the same parameter name `a`.
     let int_a = |ast: &mut Arenas| -> StructId {
-        let int = push_atom(ast, Leaf::Name("Int".to_string()));
-        let a = push_atom(ast, Leaf::Name("a".to_string()));
+        let int = push_atom(ast, Leaf::Name("Int".into()));
+        let a = push_atom(ast, Leaf::Name("a".into()));
         push_list(ast, vec![int, a])
     };
     // `(-> (Int a) (-> (Int a) (Int a)))` — curried binary.
     let arrow = |ast: &mut Arenas, l: StructId, r: StructId| -> StructId {
-        let arr = push_atom(ast, Leaf::Name("->".to_string()));
+        let arr = push_atom(ast, Leaf::Name("->".into()));
         push_list(ast, vec![arr, l, r])
     };
     let ia1 = int_a(ast);
@@ -2204,8 +2204,8 @@ fn binop_type_lambda(ast: &mut Arenas) -> StructId {
     let inner = arrow(ast, ia2, ia3);
     let body = arrow(ast, ia1, inner);
     // `(fn (a) BODY)`.
-    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
-    let a_param = push_atom(ast, Leaf::Name("a".to_string()));
+    let fn_head = push_atom(ast, Leaf::Name("fn".into()));
+    let a_param = push_atom(ast, Leaf::Name("a".into()));
     let params = push_list(ast, vec![a_param]);
     push_list(ast, vec![fn_head, params, body])
 }
@@ -2218,18 +2218,18 @@ fn binop_type_lambda(ast: &mut Arenas) -> StructId {
 /// only in that the operand is the bare variable rather than `(Int a)`.
 fn comparison_type_lambda(ast: &mut Arenas) -> StructId {
     // A bare reference to the parameter `a`.
-    let a_ref = |ast: &mut Arenas| -> StructId { push_atom(ast, Leaf::Name("a".to_string())) };
+    let a_ref = |ast: &mut Arenas| -> StructId { push_atom(ast, Leaf::Name("a".into())) };
     let arrow = |ast: &mut Arenas, l: StructId, r: StructId| -> StructId {
-        let arr = push_atom(ast, Leaf::Name("->".to_string()));
+        let arr = push_atom(ast, Leaf::Name("->".into()));
         push_list(ast, vec![arr, l, r])
     };
     let a1 = a_ref(ast);
     let a2 = a_ref(ast);
-    let bool_res = push_atom(ast, Leaf::Name("Bool".to_string()));
+    let bool_res = push_atom(ast, Leaf::Name("Bool".into()));
     let inner = arrow(ast, a2, bool_res); // (-> a Bool)
     let body = arrow(ast, a1, inner); // (-> a (-> a Bool))
-    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
-    let a_param = push_atom(ast, Leaf::Name("a".to_string()));
+    let fn_head = push_atom(ast, Leaf::Name("fn".into()));
+    let a_param = push_atom(ast, Leaf::Name("a".into()));
     let params = push_list(ast, vec![a_param]);
     push_list(ast, vec![fn_head, params, body])
 }
@@ -2238,18 +2238,18 @@ fn comparison_type_lambda(ast: &mut Arenas) -> StructId {
 /// but yielding the `Ordering` sum instead of `Bool`. The result `Ordering` is a bare NAME resolving to
 /// the built-in prelude sum's type-value (like `Bool`), so the scheme reduces to `∀a. a → a → Ordering`.
 fn compare_type_lambda(ast: &mut Arenas) -> StructId {
-    let a_ref = |ast: &mut Arenas| -> StructId { push_atom(ast, Leaf::Name("a".to_string())) };
+    let a_ref = |ast: &mut Arenas| -> StructId { push_atom(ast, Leaf::Name("a".into())) };
     let arrow = |ast: &mut Arenas, l: StructId, r: StructId| -> StructId {
-        let arr = push_atom(ast, Leaf::Name("->".to_string()));
+        let arr = push_atom(ast, Leaf::Name("->".into()));
         push_list(ast, vec![arr, l, r])
     };
     let a1 = a_ref(ast);
     let a2 = a_ref(ast);
-    let ordering_res = push_atom(ast, Leaf::Name("Ordering".to_string()));
+    let ordering_res = push_atom(ast, Leaf::Name("Ordering".into()));
     let inner = arrow(ast, a2, ordering_res); // (-> a Ordering)
     let body = arrow(ast, a1, inner); // (-> a (-> a Ordering))
-    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
-    let a_param = push_atom(ast, Leaf::Name("a".to_string()));
+    let fn_head = push_atom(ast, Leaf::Name("fn".into()));
+    let a_param = push_atom(ast, Leaf::Name("a".into()));
     let params = push_list(ast, vec![a_param]);
     push_list(ast, vec![fn_head, params, body])
 }
@@ -2270,10 +2270,10 @@ fn compare_type_lambda(ast: &mut Arenas) -> StructId {
 /// `of-int` (integer→float, the float analogue of `T.of`) and the width conversions are `unrealized`
 /// fields until F5 — declining cleanly when projected, the closed-module rule every prelude module follows.
 fn float_module_record(ast: &mut Arenas, width: u32) -> StructId {
-    let head = push_atom(ast, Leaf::Str("record".to_string()));
+    let head = push_atom(ast, Leaf::Str("record".into()));
     // `(meta t)` = `(Float width)`, reduced to the concrete float type-value by `typeval_of`.
     let ty_expr = {
-        let ctor = push_atom(ast, Leaf::Name("Float".to_string()));
+        let ctor = push_atom(ast, Leaf::Name("Float".into()));
         let w = push_atom(
             ast,
             Leaf::Int {
@@ -2305,7 +2305,7 @@ fn float_module_record(ast: &mut Arenas, width: u32) -> StructId {
     // comparison `(= Float32.nan Float64.nan)` slipped past the CDZ0301 the identical FINITE comparison
     // gets. Annotated, `Float64.nan` is `Ty::Float(Fixed(64))` and does not unify with a `Float32`.
     let nan_ty_expr = {
-        let ctor = push_atom(ast, Leaf::Name("Float".to_string()));
+        let ctor = push_atom(ast, Leaf::Name("Float".into()));
         let w = push_atom(
             ast,
             Leaf::Int {
@@ -2317,21 +2317,21 @@ fn float_module_record(ast: &mut Arenas, width: u32) -> StructId {
     };
     let nan_val = {
         let intrinsic = intrinsic_node(ast, "float-nan");
-        let colon = push_atom(ast, Leaf::Name(":".to_string()));
+        let colon = push_atom(ast, Leaf::Name(":".into()));
         push_list(ast, vec![colon, intrinsic, nan_ty_expr])
     };
     let fields = vec![
         meta_field(ast, "t", ty_expr),
         {
-            let k = push_atom(ast, Leaf::Name("of-int".to_string()));
+            let k = push_atom(ast, Leaf::Name("of-int".into()));
             push_list(ast, vec![k, of_int])
         },
         {
-            let k = push_atom(ast, Leaf::Name("of".to_string()));
+            let k = push_atom(ast, Leaf::Name("of".into()));
             push_list(ast, vec![k, of_op])
         },
         {
-            let k = push_atom(ast, Leaf::Name("nan".to_string()));
+            let k = push_atom(ast, Leaf::Name("nan".into()));
             push_list(ast, vec![k, nan_val])
         },
     ];
@@ -2350,12 +2350,12 @@ fn float_module_record(ast: &mut Arenas, width: u32) -> StructId {
 /// source, the result is always this module's concrete width.
 fn float_of_type(ast: &mut Arenas, width: u32) -> StructId {
     let float_a = {
-        let ctor = push_atom(ast, Leaf::Name("Float".to_string()));
-        let a = push_atom(ast, Leaf::Name("a".to_string()));
+        let ctor = push_atom(ast, Leaf::Name("Float".into()));
+        let a = push_atom(ast, Leaf::Name("a".into()));
         push_list(ast, vec![ctor, a])
     };
     let float_target = {
-        let ctor = push_atom(ast, Leaf::Name("Float".to_string()));
+        let ctor = push_atom(ast, Leaf::Name("Float".into()));
         let w = push_atom(
             ast,
             Leaf::Int {
@@ -2366,8 +2366,8 @@ fn float_of_type(ast: &mut Arenas, width: u32) -> StructId {
         push_list(ast, vec![ctor, w])
     };
     let body = arrow_type(ast, float_a, float_target);
-    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
-    let a_param = push_atom(ast, Leaf::Name("a".to_string()));
+    let fn_head = push_atom(ast, Leaf::Name("fn".into()));
+    let a_param = push_atom(ast, Leaf::Name("a".into()));
     let params = push_list(ast, vec![a_param]);
     push_list(ast, vec![fn_head, params, body])
 }
@@ -2378,9 +2378,9 @@ fn float_of_type(ast: &mut Arenas, width: u32) -> StructId {
 /// bare type-VALUE — see [`string_to_int64_type`]. The result `(Float width)` reduces via the `Float`
 /// constructor to this module's own concrete float type.
 fn float_of_int_type(ast: &mut Arenas, width: u32) -> StructId {
-    let int64 = push_atom(ast, Leaf::Name("Int64".to_string()));
+    let int64 = push_atom(ast, Leaf::Name("Int64".into()));
     let float_target = {
-        let ctor = push_atom(ast, Leaf::Name("Float".to_string()));
+        let ctor = push_atom(ast, Leaf::Name("Float".into()));
         let w = push_atom(
             ast,
             Leaf::Int {
@@ -2391,20 +2391,17 @@ fn float_of_int_type(ast: &mut Arenas, width: u32) -> StructId {
         push_list(ast, vec![ctor, w])
     };
     let body = arrow_type(ast, int64, float_target);
-    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let fn_head = push_atom(ast, Leaf::Name("fn".into()));
     let params = push_list(ast, vec![]);
     push_list(ast, vec![fn_head, params, body])
 }
 
 fn int_module_record(ast: &mut Arenas, signed: bool, width: u32) -> StructId {
-    let head = push_atom(ast, Leaf::Str("record".to_string()));
+    let head = push_atom(ast, Leaf::Str("record".into()));
     // `(meta t)` = the type expression `(Int width)` / `(UInt width)`, reduced to the concrete
     // type-value by `typeval_of`. This is what makes the name usable as a TYPE.
     let ty_expr = {
-        let ctor = push_atom(
-            ast,
-            Leaf::Name(if signed { "Int" } else { "UInt" }.to_string()),
-        );
+        let ctor = push_atom(ast, Leaf::Name(if signed { "Int" } else { "UInt" }.into()));
         let w = push_atom(
             ast,
             Leaf::Int {
@@ -2522,15 +2519,12 @@ fn int_module_record(ast: &mut Arenas, signed: bool, width: u32) -> StructId {
 fn wrap_field(ast: &mut Arenas, signed: bool, width: u32) -> StructId {
     // `(fn (a) (-> (Int a) TARGET))`.
     let int_a = {
-        let int = push_atom(ast, Leaf::Name("Int".to_string()));
-        let a = push_atom(ast, Leaf::Name("a".to_string()));
+        let int = push_atom(ast, Leaf::Name("Int".into()));
+        let a = push_atom(ast, Leaf::Name("a".into()));
         push_list(ast, vec![int, a])
     };
     let target = {
-        let ctor = push_atom(
-            ast,
-            Leaf::Name(if signed { "Int" } else { "UInt" }.to_string()),
-        );
+        let ctor = push_atom(ast, Leaf::Name(if signed { "Int" } else { "UInt" }.into()));
         let w = push_atom(
             ast,
             Leaf::Int {
@@ -2540,20 +2534,20 @@ fn wrap_field(ast: &mut Arenas, signed: bool, width: u32) -> StructId {
         );
         push_list(ast, vec![ctor, w])
     };
-    let arr = push_atom(ast, Leaf::Name("->".to_string()));
+    let arr = push_atom(ast, Leaf::Name("->".into()));
     let body = push_list(ast, vec![arr, int_a, target]);
-    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
-    let a_param = push_atom(ast, Leaf::Name("a".to_string()));
+    let fn_head = push_atom(ast, Leaf::Name("fn".into()));
+    let a_param = push_atom(ast, Leaf::Name("a".into()));
     let params = push_list(ast, vec![a_param]);
     let lambda = push_list(ast, vec![fn_head, params, body]);
     // `(record ((meta t) lambda) ((meta apply) (intrinsic wrap)))`.
-    let rec_head = push_atom(ast, Leaf::Str("record".to_string()));
+    let rec_head = push_atom(ast, Leaf::Str("record".into()));
     let t_field = meta_field(ast, "t", lambda);
     let prim = intrinsic_node(ast, "wrap");
     let apply_field = meta_field(ast, "apply", prim);
     let record = push_list(ast, vec![rec_head, t_field, apply_field]);
     // `(wrap record)`.
-    let k = push_atom(ast, Leaf::Name("wrap".to_string()));
+    let k = push_atom(ast, Leaf::Name("wrap".into()));
     push_list(ast, vec![k, record])
 }
 
@@ -2566,15 +2560,12 @@ fn wrap_field(ast: &mut Arenas, signed: bool, width: u32) -> StructId {
 fn of_field(ast: &mut Arenas, signed: bool, width: u32) -> StructId {
     // `(fn (a) (-> (Int a) TARGET))`.
     let int_a = {
-        let int = push_atom(ast, Leaf::Name("Int".to_string()));
-        let a = push_atom(ast, Leaf::Name("a".to_string()));
+        let int = push_atom(ast, Leaf::Name("Int".into()));
+        let a = push_atom(ast, Leaf::Name("a".into()));
         push_list(ast, vec![int, a])
     };
     let target = {
-        let ctor = push_atom(
-            ast,
-            Leaf::Name(if signed { "Int" } else { "UInt" }.to_string()),
-        );
+        let ctor = push_atom(ast, Leaf::Name(if signed { "Int" } else { "UInt" }.into()));
         let w = push_atom(
             ast,
             Leaf::Int {
@@ -2584,20 +2575,20 @@ fn of_field(ast: &mut Arenas, signed: bool, width: u32) -> StructId {
         );
         push_list(ast, vec![ctor, w])
     };
-    let arr = push_atom(ast, Leaf::Name("->".to_string()));
+    let arr = push_atom(ast, Leaf::Name("->".into()));
     let body = push_list(ast, vec![arr, int_a, target]);
-    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
-    let a_param = push_atom(ast, Leaf::Name("a".to_string()));
+    let fn_head = push_atom(ast, Leaf::Name("fn".into()));
+    let a_param = push_atom(ast, Leaf::Name("a".into()));
     let params = push_list(ast, vec![a_param]);
     let lambda = push_list(ast, vec![fn_head, params, body]);
     // `(record ((meta t) lambda) ((meta apply) (intrinsic checked-of)))`.
-    let rec_head = push_atom(ast, Leaf::Str("record".to_string()));
+    let rec_head = push_atom(ast, Leaf::Str("record".into()));
     let t_field = meta_field(ast, "t", lambda);
     let prim = intrinsic_node(ast, "checked-of");
     let apply_field = meta_field(ast, "apply", prim);
     let record = push_list(ast, vec![rec_head, t_field, apply_field]);
     // `(of record)`.
-    let k = push_atom(ast, Leaf::Name("of".to_string()));
+    let k = push_atom(ast, Leaf::Name("of".into()));
     push_list(ast, vec![k, record])
 }
 
@@ -2610,10 +2601,7 @@ fn of_field(ast: &mut Arenas, signed: bool, width: u32) -> StructId {
 /// intrinsic (`checked-add`/`checked-mul`), whose target width is read off the solved type at lowering.
 fn checked_field(ast: &mut Arenas, name: &str, prim: &str, signed: bool, width: u32) -> StructId {
     let target = |ast: &mut Arenas| {
-        let ctor = push_atom(
-            ast,
-            Leaf::Name(if signed { "Int" } else { "UInt" }.to_string()),
-        );
+        let ctor = push_atom(ast, Leaf::Name(if signed { "Int" } else { "UInt" }.into()));
         let w = push_atom(
             ast,
             Leaf::Int {
@@ -2625,7 +2613,7 @@ fn checked_field(ast: &mut Arenas, name: &str, prim: &str, signed: bool, width: 
     };
     // `(Option TARGET)`.
     let option_target = {
-        let option = push_atom(ast, Leaf::Name("Option".to_string()));
+        let option = push_atom(ast, Leaf::Name("Option".into()));
         let t = target(ast);
         push_list(ast, vec![option, t])
     };
@@ -2636,16 +2624,16 @@ fn checked_field(ast: &mut Arenas, name: &str, prim: &str, signed: bool, width: 
     let lhs = target(ast);
     let body = arrow_type(ast, lhs, inner);
     // `(fn () body)`.
-    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let fn_head = push_atom(ast, Leaf::Name("fn".into()));
     let params = push_list(ast, vec![]);
     let lambda = push_list(ast, vec![fn_head, params, body]);
     // `(record ((meta t) lambda) ((meta apply) (intrinsic prim)))`.
-    let rec_head = push_atom(ast, Leaf::Str("record".to_string()));
+    let rec_head = push_atom(ast, Leaf::Str("record".into()));
     let t_field = meta_field(ast, "t", lambda);
     let prim_node = intrinsic_node(ast, prim);
     let apply_field = meta_field(ast, "apply", prim_node);
     let record = push_list(ast, vec![rec_head, t_field, apply_field]);
-    let k = push_atom(ast, Leaf::Name(name.to_string()));
+    let k = push_atom(ast, Leaf::Name(name.into()));
     push_list(ast, vec![k, record])
 }
 
@@ -2657,10 +2645,7 @@ fn checked_field(ast: &mut Arenas, name: &str, prim: &str, signed: bool, width: 
 /// the `PRIM` intrinsic (`wrapping-add`/`wrapping-mul`), whose target width is read off the solved type.
 fn wrapping_field(ast: &mut Arenas, name: &str, prim: &str, signed: bool, width: u32) -> StructId {
     let target = |ast: &mut Arenas| {
-        let ctor = push_atom(
-            ast,
-            Leaf::Name(if signed { "Int" } else { "UInt" }.to_string()),
-        );
+        let ctor = push_atom(ast, Leaf::Name(if signed { "Int" } else { "UInt" }.into()));
         let w = push_atom(
             ast,
             Leaf::Int {
@@ -2678,16 +2663,16 @@ fn wrapping_field(ast: &mut Arenas, name: &str, prim: &str, signed: bool, width:
     let lhs = target(ast);
     let body = arrow_type(ast, lhs, inner);
     // `(fn () body)`.
-    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let fn_head = push_atom(ast, Leaf::Name("fn".into()));
     let params = push_list(ast, vec![]);
     let lambda = push_list(ast, vec![fn_head, params, body]);
     // `(record ((meta t) lambda) ((meta apply) (intrinsic prim)))`.
-    let rec_head = push_atom(ast, Leaf::Str("record".to_string()));
+    let rec_head = push_atom(ast, Leaf::Str("record".into()));
     let t_field = meta_field(ast, "t", lambda);
     let prim_node = intrinsic_node(ast, prim);
     let apply_field = meta_field(ast, "apply", prim_node);
     let record = push_list(ast, vec![rec_head, t_field, apply_field]);
-    let k = push_atom(ast, Leaf::Name(name.to_string()));
+    let k = push_atom(ast, Leaf::Name(name.into()));
     push_list(ast, vec![k, record])
 }
 
@@ -2696,7 +2681,7 @@ fn wrapping_field(ast: &mut Arenas, name: &str, prim: &str, signed: bool, width:
 /// (mirrors `eval::named_int_field`; the two builders must annotate identically so a named width and
 /// `(Int N)` project the same typed bound).
 fn int_field(ast: &mut Arenas, name: &str, value: IntValue, signed: bool, width: u32) -> StructId {
-    let k = push_atom(ast, Leaf::Name(name.to_string()));
+    let k = push_atom(ast, Leaf::Name(name.into()));
     let lit = push_atom(
         ast,
         Leaf::Int {
@@ -2704,10 +2689,7 @@ fn int_field(ast: &mut Arenas, name: &str, value: IntValue, signed: bool, width:
             radix: Radix::Dec,
         },
     );
-    let ctor = push_atom(
-        ast,
-        Leaf::Name(if signed { "Int" } else { "UInt" }.to_string()),
-    );
+    let ctor = push_atom(ast, Leaf::Name(if signed { "Int" } else { "UInt" }.into()));
     let w = push_atom(
         ast,
         Leaf::Int {
@@ -2716,7 +2698,7 @@ fn int_field(ast: &mut Arenas, name: &str, value: IntValue, signed: bool, width:
         },
     );
     let ty_expr = push_list(ast, vec![ctor, w]);
-    let colon = push_atom(ast, Leaf::Name(":".to_string()));
+    let colon = push_atom(ast, Leaf::Name(":".into()));
     let annot = push_list(ast, vec![colon, lit, ty_expr]);
     push_list(ast, vec![k, annot])
 }
@@ -2725,9 +2707,9 @@ fn int_field(ast: &mut Arenas, name: &str, value: IntValue, signed: bool, width:
 /// form that `resolve` turns into a decline — so projecting it declines by the ordinary path, no
 /// open-module special case. The op name rides along so the decline can say which operation it is.
 fn unrealized_field(ast: &mut Arenas, name: &str) -> StructId {
-    let k = push_atom(ast, Leaf::Name(name.to_string()));
-    let head = push_atom(ast, Leaf::Name("unrealized".to_string()));
-    let who = push_atom(ast, Leaf::Name(name.to_string()));
+    let k = push_atom(ast, Leaf::Name(name.into()));
+    let head = push_atom(ast, Leaf::Name("unrealized".into()));
+    let who = push_atom(ast, Leaf::Name(name.into()));
     let v = push_list(ast, vec![head, who]);
     push_list(ast, vec![k, v])
 }

@@ -90,7 +90,7 @@ pub fn desugar_eval(ast: &mut Arenas) {
     if !ast
         .leaves
         .iter()
-        .any(|l| matches!(l, Leaf::Name(n) if n == "eval"))
+        .any(|l| matches!(l, Leaf::Name(n) if n.as_ref() == "eval"))
     {
         return;
     }
@@ -225,7 +225,7 @@ fn rename_captured_binders(ast: &mut Arenas, root: StructId, original_len: u32) 
                     // Overwrite the leaf this atom points at with the fresh name.
                     if let Struct::Atom(lid) = ast.get(StructId(m)) {
                         let lid = *lid;
-                        ast.leaves[lid.0 as usize] = Leaf::Name(fresh.clone());
+                        ast.leaves[lid.0 as usize] = Leaf::Name(fresh.clone().into());
                     }
                 }
             }
@@ -400,7 +400,7 @@ fn reconstruct(ast: &mut Arenas, node: StructId) -> Option<StructId> {
     // as a String (the reifier turned a `Leaf::Name` into a `Leaf::Str`); reconstruction turns it back.
     if let Some(payload) = ast_ctor_arg(ast, node, "Name") {
         let name = ast.as_str(payload)?.to_string();
-        return Some(push_atom(ast, Leaf::Name(name)));
+        return Some(push_atom(ast, Leaf::Name(name.into())));
     }
     // `(Ast.List (list e…))` -> the compound form `(<recon e>…)`. An empty list is malformed (no operator).
     if let Some(payload) = ast_ctor_arg(ast, node, "List") {
@@ -498,7 +498,7 @@ fn list_elems(ast: &Arenas, payload: StructId) -> Option<Vec<StructId>> {
 /// Build `(trap "MSG")` — the diverging halt an eval of a malformed AST reconstructs to. `trap` is the
 /// prelude diverging primitive `∀a. String → a`, so it validates in the `(eval …)` result position.
 fn trap_form(ast: &mut Arenas, msg: &str) -> StructId {
-    let trap = push_atom(ast, Leaf::Name("trap".to_string()));
-    let message = push_atom(ast, Leaf::Str(msg.to_string()));
+    let trap = push_atom(ast, Leaf::Name("trap".into()));
+    let message = push_atom(ast, Leaf::Str(msg.into()));
     push_list(ast, vec![trap, message])
 }

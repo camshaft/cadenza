@@ -14224,7 +14224,7 @@ fn runtime_leaf_form(db: &mut Db, is_string: bool) -> Option<RuntimeBytesForm> {
     let colon = b.name(":");
     let (empty, ty_name, kind) = if is_string {
         (
-            b.atom_leaf(crate::ast::Leaf::Str(String::new())),
+            b.atom_leaf(crate::ast::Leaf::Str(String::new().into())),
             b.name("String"),
             KIND_STR,
         )
@@ -15312,7 +15312,7 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
         && let Core::ConstStr(s) = core_of(db, id)
     {
         let symbol_of = member_access(b, "Symbol", "of");
-        let text = b.atom_leaf(Leaf::Str(s.to_string()));
+        let text = b.atom_leaf(Leaf::Str(s));
         return Some(b.list(vec![symbol_of, text]));
     }
     // A TYPE-VALUE renders its concrete type's NAME surface — `(: Int64 Type)`, whose VALUE node is the
@@ -15339,7 +15339,7 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
         // name atom), matching the corpus `(: 1/2 Rational)` value surface.
         Core::ConstRational(n, d) => {
             let text = format!("{}/{}", n.to_decimal_string(), d.to_decimal_string());
-            Some(b.atom_leaf(Leaf::Name(text)))
+            Some(b.atom_leaf(Leaf::Name(text.into())))
         }
         // A constant float bakes as its exact decimal leaf — the codec encodes it (KIND_FLOAT), and the
         // host reader renders it back. A quantity over a Float64 magnitude reaches here through
@@ -15354,7 +15354,7 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
         Core::ConstBool(x) => Some(b.atom_leaf(Leaf::Bool(x))),
         // A constant string bakes as its `"…"` leaf — the codec encodes it (KIND_STR: len + UTF-8
         // bytes), and the host reader lifts it back to a string value.
-        Core::ConstStr(s) => Some(b.atom_leaf(Leaf::Str(s.to_string()))),
+        Core::ConstStr(s) => Some(b.atom_leaf(Leaf::Str(s))),
         // A constant char bakes as its `#\c` leaf — the codec encodes it (KIND_CHAR), and the host reader
         // renders it `#\c`. This lets a constant `(Some #\a)` (a `Char.from-int` fold) cross the boundary.
         Core::ConstChar(c) => Some(b.atom_leaf(Leaf::Char(c))),
@@ -15588,7 +15588,7 @@ fn const_value_ast_scaled(
             match normalized_rational(sn, sd) {
                 Core::ConstRational(rn, rd) => {
                     let text = format!("{}/{}", rn.to_decimal_string(), rd.to_decimal_string());
-                    Some(b.atom_leaf(Leaf::Name(text)))
+                    Some(b.atom_leaf(Leaf::Name(text.into())))
                 }
                 _ => None,
             }
@@ -15623,7 +15623,7 @@ fn const_value_ast_at(
         // `(Qty.of num/den <unit>)` — the exact-rational quantity surface the units corpus records.
         Core::ConstRational(n, d) => {
             let text = format!("{}/{}", n.to_decimal_string(), d.to_decimal_string());
-            Some(b.atom_leaf(Leaf::Name(text)))
+            Some(b.atom_leaf(Leaf::Name(text.into())))
         }
         // A non-scalar inner value is not a Layer-1 quantity magnitude — decline the escape.
         _ => None,
@@ -15650,7 +15650,7 @@ fn unit_value_ast(b: &mut crate::ast::Builder, unit: &crate::ty::Unit) -> Struct
     // One base factor at a (positive) exponent: `((. Unit base) #"name")` or `(Unit.^ … k)`.
     fn factor(b: &mut crate::ast::Builder, name: &str, exp: i64) -> StructId {
         let base_head = member_access(b, "Unit", "base");
-        let sym = b.atom_leaf(Leaf::Sym(name.to_string()));
+        let sym = b.atom_leaf(Leaf::Sym(name.into()));
         let base = b.list(vec![base_head, sym]);
         if exp == 1 {
             base
@@ -23431,7 +23431,7 @@ fn lower_str_at(db: &mut Db, id: StructId, string: StructId, index: StructId) ->
                     // is `Core::ConstStr`, used as the `Some` payload (the same shape `List.at` uses,
                     // but the element is synthesized here since a string has no element sub-nodes).
                     trace!(target: "rcdzc::fold", node = id.0, "String.at folds to Some (in-bounds constant scalar index)");
-                    let payload = db.push_atom(crate::ast::Leaf::Str(c.to_string()));
+                    let payload = db.push_atom(crate::ast::Leaf::Str(c.to_string().into()));
                     Core::SumNew {
                         disc: disc_some,
                         payloads: vec![payload],
@@ -23560,7 +23560,7 @@ fn lower_str_slice(
                 (Some(a), Some(b)) if a >= 0 && a <= b && b <= len => {
                     let sub: String = scalars[a as usize..b as usize].iter().collect();
                     trace!(target: "rcdzc::fold", node = id.0, "String.slice folds to Some (in-range constant bounds)");
-                    let payload = db.push_atom(crate::ast::Leaf::Str(sub));
+                    let payload = db.push_atom(crate::ast::Leaf::Str(sub.into()));
                     Core::SumNew {
                         disc: disc_some,
                         payloads: vec![payload],
@@ -23678,7 +23678,7 @@ fn lower_str_from_bytes(db: &mut Db, id: StructId, bytes: StructId) -> Core {
     match std::str::from_utf8(&raw) {
         Ok(s) => {
             trace!(target: "rcdzc::fold", node = id.0, "String.from-bytes folds well-formed UTF-8 to Some");
-            let payload = db.push_atom(crate::ast::Leaf::Str(s.to_string()));
+            let payload = db.push_atom(crate::ast::Leaf::Str(s.into()));
             Core::SumNew {
                 disc: disc_some,
                 payloads: vec![payload],

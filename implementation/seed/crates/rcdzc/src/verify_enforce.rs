@@ -79,7 +79,7 @@ pub(crate) const RESULT_BINDER: &str = "ret";
 
 /// Append a bare-`Name` atom occurrence (the `Arenas`-level shorthand, twin of `proptest_gen::name`).
 fn name(ast: &mut Arenas, n: &str) -> StructId {
-    push_atom(ast, Leaf::Name(n.to_string()))
+    push_atom(ast, Leaf::Name(n.into()))
 }
 
 /// True if `param` is (or is a typed `(: ret Ty)` whose name is) literally the [`RESULT_BINDER`] — the
@@ -192,8 +192,7 @@ pub(crate) fn enforce(ast: &mut Arenas) {
                 let ret_use = name(ast, RESULT_BINDER);
                 let trap_call = {
                     let trap_head = name(ast, "trap");
-                    let msg =
-                        push_atom(ast, Leaf::Str("@ensures postcondition failed".to_string()));
+                    let msg = push_atom(ast, Leaf::Str("@ensures postcondition failed".into()));
                     push_list(ast, vec![trap_head, msg])
                 };
                 push_list(ast, vec![if_head, pred, ret_use, trap_call])
@@ -204,7 +203,7 @@ pub(crate) fn enforce(ast: &mut Arenas) {
             let if_head = name(ast, "if");
             let trap_call = {
                 let trap_head = name(ast, "trap");
-                let msg = push_atom(ast, Leaf::Str("@requires precondition failed".to_string()));
+                let msg = push_atom(ast, Leaf::Str("@requires precondition failed".into()));
                 push_list(ast, vec![trap_head, msg])
             };
             push_list(ast, vec![if_head, pred, body, trap_call])
