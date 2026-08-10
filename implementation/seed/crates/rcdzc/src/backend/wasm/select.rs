@@ -2460,6 +2460,19 @@ fn emit_none_option(disc_none: u32, out: &mut Emit) {
     out.push(Lir::CallImport(OP_SUM_NEW)); // [None-handle]
 }
 
+/// Emit `probed-disc == disc` given the probed discriminant already on the stack. `disc == 0` is a single
+/// `i32.eqz` (the FIRST declared variant `Some`/`Ok`/… — the common first-arm test), not the two-instruction
+/// `const 0 ; i32.eq`; a nonzero disc is `const disc ; i32.eq`. The sum-discriminant twin of the scalar/probe
+/// eqz special case (cycle 43). Leaves a 0/1 i32 on the stack for the following `if`/`select`.
+fn push_disc_eq(disc: u32, out: &mut Emit) {
+    if disc == 0 {
+        out.push(Lir::I32Eqz);
+    } else {
+        out.push(Lir::ConstI32(disc as i32));
+        out.push(Lir::I32Eq);
+    }
+}
+
 /// Emit the heap-STORE tail AFTER a value node has been emitted (its machine slot is on the stack, or —
 /// for a `Unit` — NOTHING was pushed). Leaves exactly ONE handle for the following `arr-set`/`sum-new`/
 /// insert: a SCALAR boxes (extending a narrow int i32→i64 first, as `box-int` takes an i64 cell); a
@@ -14023,12 +14036,7 @@ fn emit_sum_match_arms(
                 push_discriminant(
                     db, scrutinee, path, slots, base, high, scratch_ty, layout, out,
                 )?;
-                if disc == 0 {
-                    out.push(Lir::I32Eqz);
-                } else {
-                    out.push(Lir::ConstI32(disc as i32));
-                    out.push(Lir::I32Eq);
-                }
+                push_disc_eq(disc, out);
                 out.push(Lir::Select);
                 return Ok(());
             }
@@ -14037,15 +14045,7 @@ fn emit_sum_match_arms(
             push_discriminant(
                 db, scrutinee, path, slots, base, high, scratch_ty, layout, out,
             )?;
-            // `disc == 0` is `i32.eqz` (one instruction), not `const 0 ; i32.eq` (two) — the sum-disc
-            // twin of the scalar/probe eqz special case (cycle 43). A `0` discriminant is the FIRST
-            // declared variant (`Some`, `Ok`, …), so this fires on the common first-arm test.
-            if disc == 0 {
-                out.push(Lir::I32Eqz);
-            } else {
-                out.push(Lir::ConstI32(disc as i32));
-                out.push(Lir::I32Eq);
-            }
+            push_disc_eq(disc, out);
             out.push(Lir::If(block_ty));
             // The matched arm's continuation and the fall-through switch both sit one `if` deeper — bump
             // the tail depth so a self-loop `br` inside either targets the loop top (mirrors the scalar
