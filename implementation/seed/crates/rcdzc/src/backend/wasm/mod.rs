@@ -645,22 +645,55 @@ pub fn emit(
                      event/effect-list descriptors for the byte-ABI reshape",
                 )
             })?;
-        // Select the guest apply body under the reducer import layout: peer ops occupy core funcs `0..e`,
-        // heap runtime ops `e..e+k`, so the guest's `CallExternImport(i)`=`call i` + its heap `CallImport`
-        // resolves at `e + heap-pos`. The extern_order gives each bound op its `CallExternImport` position.
+        // The kv SHIMS sit at core funcs `e+k..e+k+e` (after the WIT imports 0..e + heap ops e..e+k). The
+        // guest defs follow at `e+k+e..`, so the reducer layout's import_base = e+k+e (so a guest sibling
+        // `Core::Call` resolves via `layout.abs` = import_base+pos to the right def slot). The guest's
+        // `CallExternImport(i)` (=call i, the RAW WIT import) is rewritten below → `Call(e+k+i)` = the shim.
+        let e_cnt = red_externs.len();
+        let k_cnt = red_imports.len();
+        let shim_base = (e_cnt + k_cnt) as u32;
         let extern_order: Vec<(String, String)> = red_externs
             .iter()
             .map(|x| (x.interface.clone(), x.op.clone()))
             .collect();
+        // Per-extern KvShimOp: `put` → Put; anything else (get) → Get with the result Option's discs. The
+        // discs come from the built-in `Option` decl (Some/None variant indices). b3/genesis use get+put.
+        let (opt_some, opt_none) = {
+            let mut some_d = 0u32;
+            let mut none_d = 1u32;
+            if let Some(decl_occ) = db.type_decl_by_name("Option")
+                && let Some(decl) = db.type_decl_by_occ(decl_occ)
+            {
+                for (vi, v) in decl.variants.iter().enumerate() {
+                    match v.name.as_str() {
+                        "Some" => some_d = vi as u32,
+                        "None" => none_d = vi as u32,
+                        _ => {}
+                    }
+                }
+            }
+            (some_d, none_d)
+        };
+        let kv_shims: Vec<serialize::KvShimOp> = red_externs
+            .iter()
+            .map(|x| {
+                if x.op == "put" {
+                    serialize::KvShimOp::Put
+                } else {
+                    serialize::KvShimOp::Get {
+                        disc_some: opt_some,
+                        disc_none: opt_none,
+                    }
+                }
+            })
+            .collect();
         let red_layout = layout
-            .with_import_base((red_externs.len() + red_imports.len()) as u32)
+            .with_import_base((e_cnt + k_cnt + e_cnt) as u32)
             .with_extern_order(extern_order);
         let red_layout = &red_layout;
         // Select ALL reachable reducer defs (the apply AND its callees — e.g. genesis's `setup-key`, which
         // is NOT inlined, so `apply` emits a real `call` to it). Emitting only the apply would leave that
-        // call resolving to a missing/wrong func index (an invalid module). `layout.order` is the reachable
-        // set; each def's core func index is `import_base + its emission position` = e+k + pos, which
-        // `reducer_core_module` places the defined funcs at. Find the apply's position for the wrapper.
+        // call resolving to a missing/wrong func index (an invalid module). Find the apply's position.
         let mut guest_funcs: Vec<select::SelectedFunc> = Vec::new();
         let mut apply_pos = 0usize;
         for (pos, &def) in red_layout.order.iter().enumerate() {
@@ -672,7 +705,15 @@ pub fn emit(
             if def == e.def {
                 apply_pos = pos;
             }
-            guest_funcs.push(select_function_of(db, body, &params, red_layout, Some(def))?);
+            let mut f = select_function_of(db, body, &params, red_layout, Some(def))?;
+            // Rewrite each `CallExternImport(i)` → `Call(shim_base + i)`: the guest calls the SHIM (which
+            // marshals handle↔list<u8> + calls the raw WIT import), not the raw import directly.
+            for lir in f.code.iter_mut() {
+                if let crate::backend::wasm::lir::Lir::CallExternImport(i) = lir {
+                    *lir = crate::backend::wasm::lir::Lir::Call(shim_base + *i as u32);
+                }
+            }
+            guest_funcs.push(f);
         }
         let core = serialize::reducer_core_module(
             &guest_funcs,
@@ -681,6 +722,7 @@ pub fn emit(
             &effect_list_desc,
             &red_imports,
             &red_externs,
+            &kv_shims,
         )
         .map_err(Reject::decline)?;
         let apply_export = crate::backend::wasm::envelope::BoundaryExport {

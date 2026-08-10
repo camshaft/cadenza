@@ -7049,24 +7049,62 @@ pub fn reducer_core_module(
     effect_list_desc: &[u8],
     imports: &[&RtOp],
     extern_fns: &[crate::backend::wasm::host::ExternImport],
+    kv_shims: &[KvShimOp],
 ) -> Result<Vec<u8>, String> {
     let e = extern_fns.len();
     let k = imports.len();
     let n = guest_funcs.len();
+    debug_assert_eq!(kv_shims.len(), e);
+    // The kv PEER imports are WIT-typed: their CORE lowering takes list<u8> = (ptr,len) params (+ a retptr
+    // for a compound result). The guest calls a SHIM (not the raw import); each shim marshals the guest's
+    // Bytes handles ↔ (ptr,len) and calls the raw import. Core-func layout: WIT imports 0..e, heap ops
+    // e..e+k, SHIMS e+k..e+k+e, guest defs e+k+e..e+k+e+n, wrapper, cabi_realloc. The guest body's
+    // `CallExternImport(i)` was rewritten (in the hook) to `Call(e+k+i)` = the shim.
+    let shim_base = e + k;
+    let def_base = e + k + e;
+    // A WIT kv op's CORE functype: put(list,list)→() = (i32×4)->(); get(list)→option<list> = (i32×3)->()
+    // (list param=(ptr,len), the option result via a retptr out-param). Derived from the KvShimOp.
+    let wit_core_functype = |op: &KvShimOp| -> Vec<u8> {
+        let params: &[u8] = match op {
+            KvShimOp::Put => &[wasm_abi::CORE_I32; 4],
+            KvShimOp::Get { .. } => &[wasm_abi::CORE_I32; 3],
+        };
+        let mut t = vec![wasm_abi::CORE_FUNCTYPE_FORM];
+        t.extend_from_slice(&wasm_vec(params.len(), params));
+        t.extend_from_slice(&wasm_vec(0, &[])); // no core result (put: none; get: via retptr)
+        t
+    };
+    // A shim's CORE functype: the guest-visible handle signature. put(keyh,valh)->() = (i32,i32)->();
+    // get(keyh)->Option-handle = (i32)->i32.
+    let shim_core_functype = |op: &KvShimOp| -> Vec<u8> {
+        let mut t = vec![wasm_abi::CORE_FUNCTYPE_FORM];
+        match op {
+            KvShimOp::Put => {
+                t.extend_from_slice(&wasm_vec(2, &[wasm_abi::CORE_I32; 2]));
+                t.extend_from_slice(&wasm_vec(0, &[]));
+            }
+            KvShimOp::Get { .. } => {
+                t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
+                t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
+            }
+        }
+        t
+    };
 
-    // ── Type section ── EXTERN peer functypes 0..e FIRST (match the import order → CallExternImport(i)=call
-    // i), then runtime-op functypes e..e+k; then ONE functype per defined reducer func (e+k .. e+k+n — the
-    // apply + its callees like `setup-key`, so a non-inlined `call` resolves), then the wrapper
-    // (i32,i32)->i32 (e+k+n) + cabi_realloc (i32×4)->i32 (e+k+n+1).
+    // ── Type section ── WIT kv-import functypes 0..e; runtime-op functypes e..e+k; SHIM functypes
+    // e+k..e+k+e; one functype per defined reducer func e+k+e..e+k+e+n; wrapper (i32,i32)->i32; realloc.
     let mut type_items = Vec::new();
-    for f in extern_fns {
-        type_items.extend_from_slice(&extern_import_functype(f));
+    for op in kv_shims {
+        type_items.extend_from_slice(&wit_core_functype(op)); // WIT import types 0..e
     }
     for o in imports {
-        type_items.extend_from_slice(&import_functype(o));
+        type_items.extend_from_slice(&import_functype(o)); // heap types e..e+k
+    }
+    for op in kv_shims {
+        type_items.extend_from_slice(&shim_core_functype(op)); // shim types e+k..e+k+e
     }
     for f in guest_funcs {
-        type_items.extend_from_slice(&functype(f)?); // types e+k .. e+k+n
+        type_items.extend_from_slice(&functype(f)?); // def types e+k+e .. e+k+e+n
     }
     let i32i32_to_i32 = {
         let mut t = vec![wasm_abi::CORE_FUNCTYPE_FORM];
@@ -7074,19 +7112,18 @@ pub fn reducer_core_module(
         t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
         t
     };
-    type_items.extend_from_slice(&i32i32_to_i32); // wrapper type e+k+n
+    type_items.extend_from_slice(&i32i32_to_i32); // wrapper type
     let realloc_type = {
         let mut t = vec![wasm_abi::CORE_FUNCTYPE_FORM];
         t.extend_from_slice(&wasm_vec(4, &[wasm_abi::CORE_I32; 4]));
         t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
         t
     };
-    type_items.extend_from_slice(&realloc_type); // realloc type e+k+n+1
-    let type_sec = section(wasm_abi::CORE_SEC_TYPE, &wasm_vec(e + k + n + 2, &type_items));
+    type_items.extend_from_slice(&realloc_type); // realloc type
+    let type_sec = section(wasm_abi::CORE_SEC_TYPE, &wasm_vec(e + k + e + n + 2, &type_items));
 
-    // ── Import section ── e PEER ops (from "peer", indices 0..e, so CallExternImport(i)=call i), then k
-    // runtime ops (from "heap", e..e+k). The wrapper's import_index maps each HEAP op name → its core func
-    // index (e + its heap position), the same the wrapper body calls by name.
+    // ── Import section ── e WIT kv PEER ops (from "peer", core funcs 0..e), then k runtime ops (from
+    // "heap", e..e+k). The wrapper + shims' import_index maps each HEAP op name → e + its heap position.
     let mut import_index: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
     let mut import_items = Vec::new();
     for (i, f) in extern_fns.iter().enumerate() {
@@ -7099,21 +7136,23 @@ pub fn reducer_core_module(
     }
     let import_sec = section(2, &wasm_vec(e + k, &import_items));
 
-    // Core func indices: defined funcs e+k .. e+k+n (apply = e+k+apply_pos); wrapper = e+k+n; realloc =
-    // e+k+n+1. The guest body's `Core::Call` to a sibling def resolves via `layout.abs` (import_base +
-    // emission pos) = e+k + pos — matching the def-func placement here.
-    let guest_apply_func = (e + k + apply_pos) as u32;
-    let wrapper_func = (e + k + n) as u32;
-    let realloc_func = (e + k + n + 1) as u32;
+    // Core func indices: shims e+k..e+k+e; defined funcs e+k+e .. (apply = def_base+apply_pos); wrapper;
+    // realloc. The guest body's sibling `Core::Call` resolves via layout.abs = import_base(=def_base) + pos.
+    let guest_apply_func = (def_base + apply_pos) as u32;
+    let wrapper_func = (def_base + n) as u32;
+    let realloc_func = (def_base + n + 1) as u32;
 
-    // ── Function section ── n defined funcs (types e+k .. e+k+n), wrapper (e+k+n), cabi_realloc (e+k+n+1).
+    // ── Function section ── e shims (types e+k..e+k+e), n defined funcs (types e+k+e..), wrapper, realloc.
     let mut func_items = Vec::new();
-    for i in 0..n {
-        uleb128((e + k + i) as u64, &mut func_items);
+    for i in 0..e {
+        uleb128((shim_base + i) as u64, &mut func_items); // shim i uses shim type (e+k+i)
     }
-    uleb128((e + k + n) as u64, &mut func_items);
-    uleb128((e + k + n + 1) as u64, &mut func_items);
-    let func_sec = section(wasm_abi::CORE_SEC_FUNCTION, &wasm_vec(n + 2, &func_items));
+    for i in 0..n {
+        uleb128((def_base + i) as u64, &mut func_items);
+    }
+    uleb128((def_base + n) as u64, &mut func_items);
+    uleb128((def_base + n + 1) as u64, &mut func_items);
+    let func_sec = section(wasm_abi::CORE_SEC_FUNCTION, &wasm_vec(e + n + 2, &func_items));
 
     // ── Memory section ── one memory, min 1 page (the canon-lift Memory option binds mem 0).
     let mem_sec = section(wasm_abi::CORE_SEC_MEMORY, &wasm_vec(1, &[0x00, 0x01]));
@@ -7139,8 +7178,12 @@ pub fn reducer_core_module(
         section(wasm_abi::CORE_SEC_EXPORT, &wasm_vec(3, &items))
     };
 
-    // ── Code section ── the n defined bodies (in emission order), the wrapper body, cabi_realloc stub.
+    // ── Code section ── e shim bodies (each marshals + calls its WIT import at core func `i`), then the n
+    // defined bodies, the wrapper body, the cabi_realloc stub.
     let mut code_items = Vec::new();
+    for (i, op) in kv_shims.iter().enumerate() {
+        code_items.extend_from_slice(&reducer_kv_shim_body(*op, i as u32, &import_index));
+    }
     for f in guest_funcs {
         code_items.extend_from_slice(&code_entry(f, &import_index));
     }
@@ -7159,7 +7202,7 @@ pub fn reducer_core_module(
         e.extend_from_slice(&inner);
         code_items.extend_from_slice(&e);
     }
-    let code_sec = section(wasm_abi::CORE_SEC_CODE, &wasm_vec(n + 2, &code_items));
+    let code_sec = section(wasm_abi::CORE_SEC_CODE, &wasm_vec(e + n + 2, &code_items));
 
     let mut core = Vec::new();
     core.extend_from_slice(CORE_MAGIC);

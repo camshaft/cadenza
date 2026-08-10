@@ -22348,10 +22348,18 @@ fn establish_divert(
 /// `None` if the type is not a two-variant `Some`/`None` sum — a fallible-access result is always the
 /// built-in `Option`, so a non-Option here is a compiler bug and the caller declines.
 fn option_discs(db: &mut Db, id: StructId) -> Option<(u32, u32)> {
-    let crate::ty::Ty::Sum { decl, .. } = crate::infer::type_of(db, id) else {
+    let ty = crate::infer::type_of(db, id);
+    option_discs_of_ty(db, &ty)
+}
+
+/// The `(some_disc, none_disc)` of an `Option`-typed `Ty` directly (the `Ty`-based twin of [`option_discs`],
+/// which resolves the node's type first). `None` if `ty` is not a two-variant `Some`/`None` sum. Used by the
+/// B3 reducer kv-`get` shim to stamp the returned `Option(Bytes)` handle with the right discriminants.
+pub fn option_discs_of_ty(db: &mut Db, ty: &crate::ty::Ty) -> Option<(u32, u32)> {
+    let crate::ty::Ty::Sum { decl, .. } = ty else {
         return None;
     };
-    let decl_ref = db.type_decl_by_occ(decl)?;
+    let decl_ref = db.type_decl_by_occ(*decl)?;
     let mut some_disc = None;
     let mut none_disc = None;
     for (i, v) in decl_ref.variants.iter().enumerate() {
