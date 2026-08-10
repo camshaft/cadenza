@@ -184,21 +184,34 @@ async fn main() -> Result<()> {
         let (reducer, reducer_hash) = load_reducer(path, &store)?;
         let owner = id_of[alias];
         let nonce = owner.hash(); // the nonce IS Hash::of(salt++alias); the id is its genesis hash
-                                  // A permissive family-grant authorizer: the suite's callers PERFORM userspace effects, and authz
-                                  // runs BEFORE the executor, so each served family must be granted or the effect AuthzDenies before
-                                  // the userspace forward. Grant every served family + effect/reply (Any target) — the suite is a
-                                  // conformance harness, not a policy test (authz semantics are a later increment's concern).
-        let mut grants: Vec<FamilyGrant> = vec![Capability::for_family(
+                                  // A permissive authorizer: the suite's callers PERFORM the served effect, and authz runs BEFORE
+                                  // the executor, so a performed family must be granted or the effect AuthzDenies before it reaches
+                                  // the userspace forward. Two grant shapes, because a family is authorized differently by shape:
+                                  //  - a BUILT-IN kind (now/http/model/shell/timer/emit) needs a Capability{kind} (SEC-F1 keys on the
+                                  //    EffectKind). Until binary-AST B2 lets a Cadenza guest emit a register-by-string family, a served
+                                  //    effect a Cadenza CALLER can actually emit IS a built-in kind (the fold boundary only carries the
+                                  //    6-variant enum), so a forward-only I2 case uses a built-in family (e.g. `now`) as the served verb.
+                                  //  - a REGISTER-BY-STRING family (effect/reply, and post-B2 arbitrary handler families) needs a
+                                  //    FamilyGrant. effect/reply is always granted so a handler can settle once B2 lands.
+                                  // The suite is a conformance harness, not a policy test (authz semantics are a later increment).
+        let mut kind_caps: Vec<Capability> = Vec::new();
+        let mut family_grants: Vec<FamilyGrant> = vec![Capability::for_family(
             effect_ct::EFFECT_REPLY,
             ResourcePredicate::Any,
         )];
         for family in family_handler.keys() {
-            grants.push(Capability::for_family(
-                family.clone(),
-                ResourcePredicate::Any,
-            ));
+            match cdz_kernel::effect::EffectKind::from_family(family) {
+                Some(kind) => kind_caps.push(Capability {
+                    kind,
+                    predicate: ResourcePredicate::Any,
+                }),
+                None => family_grants.push(Capability::for_family(
+                    family.clone(),
+                    ResourcePredicate::Any,
+                )),
+            }
         }
-        let authz = Authorizer::new(Vec::new()).with_family_grants(grants);
+        let authz = Authorizer::new(kind_caps).with_family_grants(family_grants);
         let executor = cdz_kernel::executor::CompositeExecutor::new()
             .with_effect(
                 effect_ct::EFFECT_REPLY,

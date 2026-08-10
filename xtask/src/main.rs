@@ -4480,6 +4480,18 @@ fn grade_platform_case(
     if rec.sessions.is_empty() {
         return Grade::Fail("a platform case must declare at least one session".into());
     }
+    // I2 TODO-WITNESS GATE (blocked on binary-AST B2): a case with a `(serves <family>)` handler binding
+    // exercises the effect-handler-session round-trip. That needs a Cadenza reducer to emit a
+    // REGISTER-BY-STRING effect family (an unhandled userspace family routes to the handler fallback; a
+    // handler settles via `effect/reply`) — but the current fold boundary only carries the closed 6-variant
+    // EffectKind enum, so a Cadenza guest can emit NO handler-routable family (UserspaceEffectExecutor
+    // refuses every built-in). Until binary-AST B2 lands the register-by-string escape, such a case cannot
+    // run — grade it TODO (coverage-not-yet, not a Fail), so the suite ENCODES the intended I2 shape now and
+    // auto-flips to a real graded run the moment B2 lands (delete this gate then). Reported to
+    // v-agent-harness (B2 owner, WIP 81d58e572) + concierge; concierge ruling: Todo-witness meanwhile.
+    if rec.sessions.iter().any(|s| !s.serves.is_empty()) {
+        return Grade::Todo;
+    }
     // Compile EVERY session's reducer SEXPR to a fold-world component (write each to a temp `.sexp` — cdz
     // compile reads a source path, dispatching on extension — and emit the component beside it). One temp
     // dir per case, per-alias file names so a multi-session case doesn't clobber.
