@@ -1823,6 +1823,21 @@
             (export main)))
   (output (: 6 Int64)))
 
+(case "@requires on the EXPORTED ENTRY POINT is enforced — the contract holds when the harness calls main directly"
+  (doc    "Every enforcement case so far guards an INNER def that `main` calls; this pins the contract on the
+           EXPORTED entry itself, invoked directly by the harness (not by user code). `verify_enforce`'s rewrite
+           is applied to the def regardless of its role, so `@requires(>= k 0)` on `(main k)` becomes `(if (>= k
+           0) (+ k 1) (trap …))` at the entry's body. main(5): `5 >= 0` holds → 6. main(-1): `-1 >= 0` is FALSE →
+           the precondition traps at the entry's body-entry, before any user code runs. Pins that enforcement is
+           not scoped to internally-called defs — a contract on `main` (the natural place to guard a program's
+           inputs) verifies exactly as one on a helper, so the entry point is not an enforcement blind spot.
+           Runtime arg via the harness call so nothing folds.")
+  (input  (do
+            (@ (requires (>= k 0)) (def (main (: k Int64)) (+ k 1)))
+            (export main)))
+  (call main (: 5 Int64))   (output (: 6 Int64))
+  (call main (: -1 Int64))  (trap "unreachable"))
+
 (case "a PLAIN @requires relating TWO parameters (< a b) is enforced — BOTH params stay in scope in the predicate"
   (doc    "Every runtime @requires case so far constrains a SINGLE parameter (`>= x 0`, `<= x 100`). This pins a
            precondition relating TWO distinct parameters — the ordering contract `(< a b)` on a two-arg def —
