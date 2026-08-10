@@ -22366,3 +22366,150 @@
   (call   main (: 1 Int64)) (output (: 94 Int64))
   (call   main (: -3 Int64)) (output (: 30 Int64))
   (call   main (: -4 Int64)) (output (: -37 Int64)))
+
+
+; ── Option lifecycles and HEAP-NUMERIC handler states (breaker oc4-6 / bg3-4 / rq1-3) ─────────
+; Option lifecycles: oc4 runs the full None→Some→None→Some RESET cycle (put promotes or
+; accumulates, reset reports and clears); oc5 holds TWO Option slots in one tuple with a SWAP
+; exchanging them; oc6 nests a (total,count) TUPLE inside the Some, updated element-wise through
+; a two-level match. Heap-numeric states: bg3 threads a BIGINT — tripling crosses the i64
+; boundary mid-thread and the exact multi-limb value survives (render note: gate rows are bare
+; digits, no N suffix); bg4 routes tri-band verdicts by BIGINT comparison in the arm, one row
+; comparing a genuine multi-limb value. rq1 threads a RATIONAL — three exact fractional adds
+; (1/2+1/3+1/6) land on a whole value (canonical n/1 render); rq2 reads floor/ceil/numerator/
+; denominator (which return BIGINT — wrapped via Int64.of), pinning canonicalization (8/4→2/1)
+; and negative rounding; rq3 drains by 1/3 per tick under a sign guard until the rational
+; crosses zero. All rows hand-computed; all pass on wasm, rust, and rust-async.
+
+(case "oc4 an Option state with a RESET cycle — put promotes None to Some or accumulates inside Some; reset reports and returns to None; a fresh put re-promotes"
+  (input  (do
+            (effect E (op put (-> Int64 Int64)) (op reset (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (None)
+                ((put (v) st (match st
+                               ((Some cur) (resume (+ cur v) (Some (+ cur v))))
+                               ((None) (resume 0 (Some v)))))
+                 (reset () st (match st
+                                ((Some cur) (resume cur (None)))
+                                ((None) (resume -1 st)))))
+                (+ (E.put n)
+                   (+ (* 10 (E.put 7))
+                      (+ (* 100 (E.reset))
+                         (* 1000 (E.put 3)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 1320 Int64))
+  (call   main (: 0 Int64)) (output (: 770 Int64))
+  (call   main (: -2 Int64)) (output (: 550 Int64)))
+
+(case "oc5 TWO Option slots in one tuple state — independent put lifecycles, a SWAP op exchanges them, reads confirm the exchange"
+  (input  (do
+            (effect E (op puta (-> Int64 Int64)) (op putb (-> Int64 Int64))
+                      (op swap (-> Int64)) (op reada (-> Int64)) (op readb (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (tuple (None) (None))
+                ((puta (v) st (match st ((tuple a b) (resume 0 (tuple (Some v) b)))))
+                 (putb (v) st (match st ((tuple a b) (resume 0 (tuple a (Some v))))))
+                 (swap () st (match st ((tuple a b) (resume 1 (tuple b a)))))
+                 (reada () st (match st ((tuple a b) (resume (match a ((Some x) x) ((None) -1)) st))))
+                 (readb () st (match st ((tuple a b) (resume (match b ((Some x) x) ((None) -1)) st)))))
+                (do (E.puta n) (E.putb 7) (E.swap)
+                    (+ (* 10 (E.reada)) (E.readb)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 75 Int64))
+  (call   main (: 0 Int64)) (output (: 70 Int64))
+  (call   main (: -3 Int64)) (output (: 67 Int64)))
+
+(case "oc6 an Option-of-TUPLE state — the Some payload is a (total,count) pair updated element-wise per dispatch, a final read reports both"
+  (input  (do
+            (effect E (op mark (-> Int64 Int64)) (op report (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (None)
+                ((mark (v) st (match st
+                                ((Some p) (match p
+                                            ((tuple a c) (resume (+ a v) (Some (tuple (+ a v) (+ c 1)))))))
+                                ((None) (resume 0 (Some (tuple v 1))))))
+                 (report () st (match st
+                                 ((Some p) (match p ((tuple a c) (resume (+ (* 1000 c) a) st))))
+                                 ((None) (resume -1 st)))))
+                (+ (E.mark n)
+                   (+ (* 10 (E.mark 4))
+                      (+ (* 100 (E.mark -2))
+                         (E.report))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 3797 Int64))
+  (call   main (: 0 Int64)) (output (: 3242 Int64))
+  (call   main (: -7 Int64)) (output (: 2465 Int64)))
+
+(case "bg3 a BIGINT handler state — tripling per dispatch crosses the i64 boundary mid-thread, the exact multi-limb value survives"
+  (input  (do
+            (effect E (op triple (-> Int64)) (op report (-> BigInt)))
+            (def (main (: n Int64))
+              (handle E (+ (BigInt.of 1000000000000000000) (BigInt.of n))
+                ((triple () s (resume 1 (* s (BigInt.of 3))))
+                 (report () s (resume s s)))
+                (do (E.triple) (E.triple) (E.triple) (E.report))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 27000000000000000027 BigInt))
+  (call   main (: 0 Int64)) (output (: 27000000000000000000 BigInt)))
+
+(case "bg4 BIGINT comparison in the arm routes tri-band verdicts — doubling walks past both thresholds, one row compares a genuine multi-limb value"
+  (input  (do
+            (effect E (op judge (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (* (BigInt.of n) (BigInt.of 1000000000000000000))
+                ((judge () s
+                  (resume (if (> s (BigInt.of 5000000000000000000)) 2
+                              (if (< s (- (BigInt.of 0) (BigInt.of 5000000000000000000))) 0 1))
+                          (* s (BigInt.of 2)))))
+                (+ (* 100 (E.judge)) (+ (* 10 (E.judge)) (E.judge)))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 112 Int64))
+  (call   main (: -2 Int64)) (output (: 110 Int64))
+  (call   main (: 4 Int64)) (output (: 122 Int64)))
+
+(case "rq1 a RATIONAL handler state — three exact fractional adds (1/2 + 1/3 + 1/6) land on a WHOLE value — the canonical n/1 render pinned"
+  (input  (do
+            (effect E (op add (-> Int64 Int64)) (op report (-> Rational)))
+            (def (main (: n Int64))
+              (handle E (Rational.of n 1)
+                ((add (d) s (resume 1 (+ s (Rational.of 1 d))))
+                 (report () s (resume s s)))
+                (do (E.add 2) (E.add 3) (E.add 6) (E.report))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 1/1 Rational))
+  (call   main (: 1 Int64)) (output (: 2/1 Rational))
+  (call   main (: -1 Int64)) (output (: 0/1 Rational)))
+
+(case "rq2 floor/ceil/numerator/denominator READ a rational state — canonicalization (8/4 to 2/1) and negative rounding both pinned"
+  (input  (do
+            (effect E (op fl (-> Int64)) (op ce (-> Int64)) (op nu (-> Int64)) (op de (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (Rational.of n 4)
+                ((fl () s (resume (Int64.of (Rational.floor s)) s))
+                 (ce () s (resume (Int64.of (Rational.ceil s)) s))
+                 (nu () s (resume (Int64.of (Rational.numerator s)) s))
+                 (de () s (resume (Int64.of (Rational.denominator s)) s)))
+                (+ (* 1000 (E.fl))
+                   (+ (* 100 (E.ce))
+                      (+ (* 10 (E.nu)) (E.de))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 1254 Int64))
+  (call   main (: 8 Int64)) (output (: 2221 Int64))
+  (call   main (: -3 Int64)) (output (: -1026 Int64)))
+
+(case "rq3 a FRACTIONAL drain with a sign guard — subtracting 1/3 per tick until the rational state crosses zero, the recursion counts full ticks"
+  (input  (do
+            (effect E (op drain (-> Int64)))
+            (def (spin (: ticks Int64))
+              (let ((sig (E.drain)))
+                (if (< sig 0) (+ (* 100 ticks) sig) (spin (+ ticks 1)))))
+            (def (main (: n Int64))
+              (handle E (Rational.of n 3)
+                ((drain () s
+                  (let ((s2 (- s (Rational.of 1 3))))
+                    (resume (if (< s2 (Rational.of 0 1)) (Int64.of (Rational.numerator s2)) 0) s2))))
+                (spin 0)))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 199 Int64))
+  (call   main (: 1 Int64)) (output (: 99 Int64))
+  (call   main (: 0 Int64)) (output (: -1 Int64)))
