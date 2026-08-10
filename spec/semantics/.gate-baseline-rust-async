@@ -5693,6 +5693,8 @@ pass	pushing an element onto a list appends it
 pass	pushing onto a SHARED perform-built list — the original stays len 2 beside the grown copy
 pass	pushing through ONE alias of a doubly-held list leaves the sibling field intact
 pass	pw1 a TRIPLING state crosses fixed thresholds — three compares catch the crossing at input-dependent depth
+pass	q5 a FIVE-argument op — the arm folds all five positions with distinct weights, two calls permute the arguments
+pass	q6 all FIVE arguments are draws — left-to-right evaluation order pinned at width five by distinct weights
 pass	qs1 two perform-drawn quantities of one dimension ADD — same-unit combine over two crossings
 pass	quasiquote constructs AST with selective evaluation
 pass	quasiquote makes AST construction readable
