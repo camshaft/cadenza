@@ -745,6 +745,78 @@ async fn main() -> std::process::ExitCode {
         // only), so a loop error left join! blocked on the socket forever, swallowing the error (#1977
         // review). Now the loop's return drives socket teardown, and the loop's Err reaches the exit code.
         let socket_task = tokio::spawn(socket.serve(admin_channel, sock_sd_rx));
+        // THE OUTPOST federation transports (live-ws): bind an inbound peer WsListener from
+        // [federation].listen and/or boot-dial each [federation].hubs URL, addressing every transport's
+        // inbound ws/connect+frame+disconnect events to the configured outpost_session (the reducer that makes
+        // all federation policy — host=plumbing). BIND-IF-CONFIGURED per the concierge ruling: transports come
+        // up ONLY when federation is enabled AND an outpost_session is set (config validation already enforces
+        // that pairing), so a config-less daemon binds nothing and a later admin-driven install can bind on the
+        // same path. Each transport runs on its OWN `Send` task (it moves a stream + cloned channel handles,
+        // never the loop's `!Send` registry — same split as the admin socket), routing Register/frames through
+        // the loop's ws-control channel + inbox. They're torn down (via `fed_sd_tx`) when the loop returns.
+        #[cfg(feature = "live-ws")]
+        let fed_sd_txs: Vec<tokio::sync::oneshot::Sender<()>> = {
+            use cdz_agent_host::{dial_hub, mint_conn_id, SessionId, WsListener};
+            use cdz_kernel::hash::Hash;
+            let mut fed_sd_txs = Vec::new();
+            // Bind only when enabled AND an outpost_session is configured. `outpost_session` was validated as
+            // canonical genesis-hash hex, so `from_hex` is Some; defend anyway (skip + warn rather than panic).
+            let outpost = if config.federation.enabled {
+                config
+                    .federation
+                    .outpost_session
+                    .as_deref()
+                    .and_then(|hex| Hash::from_hex(hex).map(SessionId::new))
+            } else {
+                None
+            };
+            if let Some(outpost) = outpost {
+                // The inbound peer LISTENER (federation.listen), if configured.
+                if let Some(bind) = config.federation.listen.clone() {
+                    match WsListener::bind(&bind).await {
+                        Ok(listener) => {
+                            eprintln!("cdz-agent-daemon: federation ws listener on {bind}");
+                            let (sd_tx, sd_rx) = tokio::sync::oneshot::channel::<()>();
+                            fed_sd_txs.push(sd_tx);
+                            tokio::spawn(listener.serve(
+                                outpost,
+                                host.inbox(),
+                                host.ws_control_channel(),
+                                sd_rx,
+                            ));
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "cdz-agent-daemon: could not bind federation ws listener {bind}: {e} \
+                                 — continuing without the inbound peer transport"
+                            );
+                        }
+                    }
+                }
+                // The outbound HUB dials (federation.hubs): one boot-dial per URL. A dial that can't connect
+                // surfaces a ws/disconnect to the reducer (dial_hub's own contract) rather than aborting boot.
+                for hub in &config.federation.hubs {
+                    eprintln!("cdz-agent-daemon: federation boot-dialing hub {hub}");
+                    let (sd_tx, sd_rx) = tokio::sync::oneshot::channel::<()>();
+                    fed_sd_txs.push(sd_tx);
+                    let hub_url = hub.clone();
+                    let inbox = host.inbox();
+                    let control_tx = host.ws_control_channel();
+                    tokio::spawn(async move {
+                        if let Err(e) =
+                            dial_hub(&hub_url, mint_conn_id(), outpost, inbox, control_tx, sd_rx)
+                                .await
+                        {
+                            // A failed initial dial ends only THIS hub connection (unreachable/non-ws/bad URL);
+                            // the daemon + other transports run on. NEVER log peer frame bytes — the io error
+                            // is ours (the never-log-guest-strings seam).
+                            eprintln!("cdz-agent-daemon: federation hub dial {hub_url} ended: {e}");
+                        }
+                    });
+                }
+            }
+            fed_sd_txs
+        };
         // Spawn one async OTLP forwarder per OTLP target. Each drains its bounded channel + POSTs off the
         // report path (the sink's send only enqueues). A forwarder self-terminates when its channel closes —
         // which happens when the reporter (owning the sinks) is dropped as run_export_loop returns at
@@ -826,6 +898,14 @@ async fn main() -> std::process::ExitCode {
         // Shut down the prometheus scrape servers (best-effort; they're detached, we just fire their signals).
         #[cfg(feature = "metrics-export-prometheus")]
         for tx in prometheus_shutdowns {
+            let _ = tx.send(());
+        }
+        // Shut down the federation ws transports (best-effort): fire each listener/dial's shutdown so it ends
+        // its accept/pump loop. They're Send tasks holding only cloned channel handles, so — like the metrics
+        // forwarders — we fire the signals and don't join (a lingering pump ends when its shutdown fires or the
+        // loop's inbox/control channels close as the returned host drops).
+        #[cfg(feature = "live-ws")]
+        for tx in fed_sd_txs {
             let _ = tx.send(());
         }
         // The loop is done — tear down the socket server and await its task so the socket file's Drop
