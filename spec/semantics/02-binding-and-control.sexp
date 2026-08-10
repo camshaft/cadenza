@@ -3374,6 +3374,21 @@
   (output (: 1 Int64))
   (warns  CDZ0213 (message "this match arm is unreachable")))
 
+(case "a refining arm shadowed by an earlier full-variant cover is unreachable and earns a CDZ0213 warning"
+  (doc    "The variant-refinement-subsumption face — a third DISTINCT detector (after duplicate-literal and
+           finite-saturation): a BROADER earlier arm shadows a NARROWER later arm of the SAME variant.
+           `(match o ((Some _) 0) ((Some (Some x)) x) ((None) -1))` on `(Option (Option Int64))`: the first
+           `(Some _)` matches EVERY `Some` value, so the later `(Some (Some x))` — a refinement of the same
+           `Some` variant — can never be reached. This is broader than an exact-duplicate arm: an earlier
+           full-variant cover subsumes any later same-variant refinement. The program compiles and runs
+           (`(f (None))` = -1, the `None` arm) but the build surfaces the CDZ0213 `unreachable` warning on
+           the dead refining arm. Wasm-graded (the run paths skip the (warns ..) check, not fail it).
+           Companion of the rcdzc a_refining_arm_shadowed_by_an_earlier_full_variant_cover_is_redundant test.")
+  (input  (do (def (f (: o (Option (Option Int64)))) (match o ((Some _) 0) ((Some (Some x)) x) ((None) -1))) (def (main) (f (None))) (export main)))
+  (call   main)
+  (output (: -1 Int64))
+  (warns  CDZ0213 (message "this match arm is unreachable")))
+
 (case "a match on a computed runtime value dispatches on the result"
   (doc    "The scrutinee is the expression `(% n 2)`, computed at run time. Its value (0 for an
            even n) selects the literal arm 0. Exercises a match whose scrutinee is neither a

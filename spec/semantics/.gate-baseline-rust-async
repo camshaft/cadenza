@@ -3037,6 +3037,7 @@ pass	a redundant full-width mask on an unsigned runtime value is elided
 pass	a redundant relational check inside its own truthy branch is known-true and its dead branch is eliminated
 pass	a reference to an unbound name is rejected before running
 pass	a referenced let binding whose init overflows IS observed, so its trap occurs (the anchor)
+pass	a refining arm shadowed by an earlier full-variant cover is unreachable and earns a CDZ0213 warning
 pass	a reflected quantity type rejects a value of a different dimension
 pass	a reframed packet with a TRANSFORMED header compares byte-equal to its independent twin
 pass	a refutable constructor pattern in a let binder is rejected
