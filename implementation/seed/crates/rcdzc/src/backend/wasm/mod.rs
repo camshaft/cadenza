@@ -572,6 +572,78 @@ pub fn emit(
         })
         .collect::<Result<_, _>>()?;
 
+    // ── B3 REDUCER byte-ABI path ──────────────────────────────────────────────────────────────────────
+    // A build whose component name is the fold interface, with a single `apply` export, is a REDUCER: its
+    // `apply` crosses as the byte ABI `apply(event: list<u8>) -> list<u8>` (value-decode the event doc →
+    // the guest's 3 structured args → guest apply → value-encode the effect list), NOT the default handle
+    // ABI. Intercept BEFORE the generic boundary emit: the wrapper needs runtime ops (value-decode/encode +
+    // bytes-*/arr-get/drop) the guest core never references, so `collect_module_used_ops` above does not
+    // include them — force them into the import set here (deterministic sorted union), select the guest
+    // apply body, bake the two protocol descriptors, and route to the dedicated reducer core module +
+    // assembler. Single export, single reducer def.
+    if let [e] = &layout.exports[..]
+        && is_reducer_fold_apply(db.component_name.as_deref(), &e.name)
+    {
+        // The wrapper's ops ∪ the guest's ops, as a deterministic sorted set → the import slice both the
+        // core module's import_index and the wrapper body's op-index agree on.
+        let mut red_used = used.clone();
+        for op in [
+            "value-decode",
+            "value-encode",
+            "bytes-alloc",
+            "bytes-set",
+            "bytes-get",
+            "bytes-len",
+            "arr-get",
+            "drop",
+        ] {
+            red_used.insert(op);
+        }
+        let red_imports: Vec<&runtime_abi::RtOp> = red_used
+            .iter()
+            .map(|name| {
+                runtime_abi::RUNTIME_OPS
+                    .iter()
+                    .find(|o| o.name == *name)
+                    .ok_or_else(|| Reject::decline(format!("runtime op `{name}` not in the ABI table")))
+            })
+            .collect::<Result<_, _>>()?;
+        // The two protocol shape descriptors (event = assembled Record from the 3 params; effect-list =
+        // e.result directly, the flat protocol List<Record> under ruling (Q)).
+        let (event_desc, effect_list_desc) = reducer_descriptors(db, &e.params, &e.result)
+            .ok_or_else(|| {
+                Reject::decline(
+                    "the reducer apply is not the expected shape (3 structured params) — cannot bake the \
+                     event/effect-list descriptors for the byte-ABI reshape",
+                )
+            })?;
+        // Select the guest apply body (the single reducer def) under the import base the reducer core
+        // module uses (imports occupy core funcs 0..k; the guest apply is the first defined func).
+        let red_layout = layout.with_import_base(red_imports.len() as u32);
+        let apply_body = def_body(db, e.def)?;
+        let guest_apply = select_function_of(db, apply_body, &e.params, &red_layout, Some(e.def))?;
+        let core = serialize::reducer_core_module(
+            &guest_apply,
+            &event_desc,
+            &effect_list_desc,
+            &red_imports,
+        )
+        .map_err(Reject::decline)?;
+        let apply_export = crate::backend::wasm::envelope::BoundaryExport {
+            name: e.name.clone(),
+            params: vec![crate::backend::wasm::envelope::BoundaryParam::ListU8],
+            result: crate::backend::wasm::envelope::BoundaryResult::Bytes,
+        };
+        let import_name = runtime_import_name();
+        return Ok(envelope::assemble_reducer_apply(
+            &core,
+            &apply_export,
+            &red_imports,
+            &import_name,
+            REDUCER_FOLD_IFACE,
+        ));
+    }
+
     // The per-program HOST-import set (E2h-2) — every host-delegated operation a reachable body performs
     // (a `Core::HostCall`), in first-encountered order. Like the runtime set, it must be fixed BEFORE
     // selection (it fixes the host-op call index a `Core::HostCall` resolves to) and it shifts the
