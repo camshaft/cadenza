@@ -16955,21 +16955,23 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 2 Int64)))
 
-(case "a record sub-pattern nested inside a tuple match names the feature, not an unbound binder (CDZ0201)"
-  (doc    "A record match binds its fields to bare names at the TOP level, but a record sub-pattern NESTED
-           inside a tuple/list/constructor match — `(tuple (record (x a)) c)` — is not yet wired: a record
-           field projects by NAME and there is no name-keyed access step to compose the projection under a
-           tuple/list/variant descent. A body reference to the nested field binder `a` MUST name that
-           unimplemented feature (a coded CDZ0201), NOT leak the misleading 'unbound name `a`' it did before
-           (the tuple-descent walker skips the `record` head, so the binder never wired and `a` resolved
-           unbound). The PATTERN itself lowers fine — a body that ignores the nested binder (returns `c`)
-           compiles — so the fault is reference-specific; the coded decline surfaces it in `cdz check` on a
-           parameterized body, not only the emit walk. The nested-in-compound twin of the top-level
-           record-match + the record-BINDING nested-compound declines.")
+(case "a record sub-pattern nested inside a tuple match binds its field (nested-record match binder)"
+  (doc    "A record match binds its fields to bare names at the TOP level, and a BARE-binder record
+           sub-pattern NESTED inside a tuple/list/constructor match — `(tuple (record (= x a)) c)` — now
+           WIRES too: the binder `a` resolves to field `x` of the record at tuple-slot 0, a
+           `Resolved::RecordField` read (the record analogue of a nested-payload `SumPayload` / nested-map
+           `MapField`). The access path (`Elem` steps) reaches the nested record; the field itself is
+           name-keyed, its sorted slot resolved at fold like a top-level record `Member`. `f (tuple (record
+           (= x 5)) 10)` binds `a = 5`, `c = 10` → `a + c = 15`. Before, the tuple-descent walker skipped the
+           `record` head so the binder never wired and `a` leaked a misleading 'unbound name'; now it is a
+           first-class nested extraction. A record field value that is ITSELF a compound (deeper nesting) is
+           the remaining not-yet-wired case (a separate coded decline). The nested-in-compound twin of the
+           top-level record-match.")
   (input  (do (def (f (: t (Tuple (Record (: x Int64)) Int64)))
                 (match t ((tuple (record (= x a)) c) (+ a c))))
-              (export f)))
-  (error  CDZ0201))
+              (def (main) (f (tuple (record (= x 5)) 10)))
+              (export main)))
+  (call   main) (output (: 15 Int64)))
 
 (case "a map match pattern with a malformed rest names the shape, not an unbound binder (CDZ0201)"
   (doc    "A MAP match pattern whose `..` rest is malformed — a `..` NOT followed by exactly one binder,

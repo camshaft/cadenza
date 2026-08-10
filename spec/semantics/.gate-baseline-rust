@@ -2919,7 +2919,7 @@ pass	a record pattern over a Map-STORED record reads live heap fields after retr
 pass	a record reached VIA Record.with keys a Map like the directly-built record
 pass	a record reached via a with-CHAIN keys like the final direct build, generations intact
 pass	a record scrutinee is bound whole by a match binder
-pass	a record sub-pattern nested inside a tuple match names the feature, not an unbound binder (CDZ0201)
+pass	a record sub-pattern nested inside a tuple match binds its field (nested-record match binder)
 pass	a record threaded through self-recursion with per-step Record.with leaves the SEED intact
 pass	a record whose field is a List projects the list handle and indexes it, alongside a scalar field
 pass	a record whose field is a runtime tuple nests across the boundary

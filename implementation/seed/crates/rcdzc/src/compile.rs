@@ -5328,6 +5328,7 @@ fn walk_for_dead_traps(
         | Resolved::SumPayload { .. }
         | Resolved::BinField { .. }
         | Resolved::MapField { .. }
+        | Resolved::RecordField { .. }
         | Resolved::Poison(_) => {}
     }
 }

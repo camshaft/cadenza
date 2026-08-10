@@ -320,6 +320,49 @@ fn compute(db: &mut Db, id: StructId) -> Core {
             &value_steps,
             &value_heads,
         ),
+        // A RECORD sub-pattern binder NESTED inside a tuple/list/variant match pattern (`(match t ((tuple
+        // (record (x a)) c) …))` binds `a` to field `x` of the record at tuple-slot 0). Reach the nested
+        // RECORD by walking `path` from the scrutinee, then read field `key`. A record is laid out at run
+        // time as a flat array in SORTED field order, read by `arr-get` at the field's sorted SLOT — exactly
+        // what a `Core::SumPayload` `Elem(slot)` step emits — so the runtime read is a `SumPayload` whose
+        // path is `path` extended by `Elem(<field slot>)` (the sum-payload analogue of the top-level record
+        // arm's `Member`→`Proj` fold). Over a CONSTANT compound scrutinee `fold_sum_path` reaches the nested
+        // `Core::Record`, and the field folds to its value directly by NAME (no slot, order-independent). The
+        // field slot / record type is read at the path end via the scrutinee's solved type.
+        Resolved::RecordField {
+            scrutinee,
+            path,
+            key,
+        } => {
+            // CONSTANT FOLD: reach the nested record Core (a constant tuple/list scrutinee folds its `Elem`
+            // steps to the inner `Core::Record`); the field folds to its value by name.
+            if let Some(Core::Record { fields }) = fold_sum_path(db, scrutinee, &path)
+                && let Some(&fv) = fields.get(&key)
+            {
+                return core_of(db, fv);
+            }
+            // RUNTIME: the field's SORTED slot in the record type at the path end (the same slot
+            // `runtime_member_index` computes for a top-level member read). Read it as an `arr-get` `Elem`
+            // step off the `SumPayload` walk to the record.
+            let rec_ty = crate::infer::record_field_at_path(db, scrutinee, &path);
+            let crate::ty::Ty::Record(rec_fields) = rec_ty else {
+                return Core::Poison(Reject::decline(
+                    "a nested record match binder over a scrutinee whose nested value is not a record \
+                     (or is a variant-nested record) is not yet matched",
+                ));
+            };
+            let Some(slot) = rec_fields.keys().position(|k| *k == key) else {
+                return Core::Poison(Reject::decline(
+                    "a nested record match binder's field is absent from the record type (arm mis-selected)",
+                ));
+            };
+            let mut walk = path.to_vec();
+            walk.push(crate::core::PathStep::Elem(slot));
+            Core::SumPayload {
+                scrutinee,
+                path: walk.into(),
+            }
+        }
         // A FLOAT literal folds to its exact `Core::ConstFloat` — a `Ty::Float` value. This lets float
         // EQUALITY fold (two constants compared by canonical value). It still cannot cross the boundary
         // as a value or be an arithmetic operand (no f64 machine path yet) — those sites decline where
@@ -5638,6 +5681,7 @@ fn clone_subtree_db_for_fused(
                     let copy_payload = matches!(
                         crate::resolve::resolved_of(db, id),
                         crate::resolved::Resolved::SumPayload { scrutinee, .. }
+                            | crate::resolved::Resolved::RecordField { scrutinee, .. }
                             if fused_scrut == Some(scrutinee)
                     );
                     if !copy_payload {
@@ -11650,7 +11694,7 @@ fn head_is_runtime_fn_value(db: &mut Db, id: StructId) -> bool {
         }
         // A payload/element binder — runtime iff the fold can't reduce it to a lambda (a constant compound
         // folds through the projection; a runtime one does not, so its stored closure applies indirect).
-        Resolved::SumPayload { .. } | Resolved::Proj { .. } => {
+        Resolved::SumPayload { .. } | Resolved::Proj { .. } | Resolved::RecordField { .. } => {
             crate::eval::lambda_body(db, id).is_none()
         }
         // A record-field projection `(. rec f)` whose field TYPE is a function — the record-field analogue
@@ -13615,7 +13659,8 @@ fn collect_binding_uses(db: &mut Db, node: StructId, proj_operand: bool, out: &m
         // NOT a whole-value escape — exactly as `uses_in` counts it and `ref_escapes_whole` rejects it.
         Resolved::SumPayload { scrutinee, .. }
         | Resolved::BinField { scrutinee, .. }
-        | Resolved::MapField { scrutinee, .. } => {
+        | Resolved::MapField { scrutinee, .. }
+        | Resolved::RecordField { scrutinee, .. } => {
             *out.count.entry(scrutinee).or_insert(0) += 1;
         }
         Resolved::Handle {

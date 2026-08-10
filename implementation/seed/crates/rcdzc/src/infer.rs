@@ -317,6 +317,20 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
                 _ => Ty::Any,
             }
         }
+        // A RECORD sub-pattern binder NESTED inside a tuple/list/variant match pattern — walk the scrutinee
+        // type down `path` to the nested `Ty::Record`, then read the FIELD `key`'s type. The record analogue
+        // of the `MapField` value-binder arm: `record_field_at_path` reaches the `Ty::Record` (the same
+        // `Elem`/`Payload` descent `SumPayload` walks), and looking `key` up in its field map gives the
+        // binder's type. `Ty::Any` (poison-safe) if the path-walk lands on a non-record or the field is
+        // absent — the fault surfaces at the match, never a miscompile here.
+        Resolved::RecordField {
+            scrutinee,
+            path,
+            key,
+        } => match record_field_at_path(db, scrutinee, &path) {
+            Ty::Record(fields) => fields.get(&key).cloned().unwrap_or(Ty::Any),
+            _ => Ty::Any,
+        },
         // A float literal's width is DEFERRED — it grounds to `Float64` unless an annotation or a float
         // operator's signature fixes it (`(: 3.5 Float32)`), mirroring a bare integer literal's width.
         // A bare decimal literal: a `(pragma default-fraction Rational)` module grounds it to the EXACT
@@ -4541,6 +4555,31 @@ fn map_field_map_ty(db: &mut Db, scrutinee: StructId, path: &[crate::core::PathS
         };
     }
     cur
+}
+
+/// The `Ty::Record` a `RecordField`'s access `path` reaches from its `scrutinee` — the scrutinee's type
+/// walked down `Elem` steps (a tuple element, a list element) to the NESTED record, then a field looked up
+/// in its map by the caller. The record twin of [`map_field_map_ty`]; like it, only `Elem` steps are
+/// modelled (a `Payload` step — a variant-nested record — returns `Ty::Any`, a graceful decline: the binder
+/// then types `Ty::Any` and never a miscompile). A nominal newtype over a record is stripped so a field
+/// read sees through the tag. The common nesting (a record in a tuple/list) uses only `Elem`.
+pub(crate) fn record_field_at_path(
+    db: &mut Db,
+    scrutinee: StructId,
+    path: &[crate::core::PathStep],
+) -> Ty {
+    let mut cur = type_of(db, scrutinee);
+    for step in path {
+        cur = match (step, &cur) {
+            (crate::core::PathStep::Elem(i), Ty::Tuple(elems)) => match elems.get(*i) {
+                Some(t) => t.clone(),
+                None => return Ty::Any,
+            },
+            (crate::core::PathStep::Elem(_), Ty::List(elem)) => (**elem).clone(),
+            _ => return Ty::Any,
+        };
+    }
+    cur.strip_nominal().clone()
 }
 
 /// The type of a nested-payload binder (a variant pattern's payload, possibly through tuple/list `Elem`
@@ -15002,6 +15041,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         | Resolved::SumPayload { .. }
         | Resolved::BinField { .. }
         | Resolved::MapField { .. }
+        | Resolved::RecordField { .. }
         | Resolved::Param { .. }
         | Resolved::Bool(_)
         | Resolved::Str(_)

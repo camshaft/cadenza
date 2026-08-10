@@ -1623,6 +1623,7 @@ fn collect_callees(db: &mut Db, node: StructId, out: &mut Vec<StructId>) {
         | Resolved::SumPayload { .. }
         | Resolved::BinField { .. }
         | Resolved::MapField { .. }
+        | Resolved::RecordField { .. }
         | Resolved::Int(_)
         | Resolved::Bool(_)
         | Resolved::Str(_)
@@ -3079,10 +3080,7 @@ fn type_valued_param_binder(db: &mut Db, id: StructId) -> Option<StructId> {
 }
 
 fn is_type_reflection_module(db: &mut Db, id: StructId) -> bool {
-    let of = Symbol {
-        name: "of".into(),
-        namespace: None,
-    };
+    let of = Symbol::plain("of");
     match member_value(db, id, &of) {
         Member::Field(v) => meta_apply_of(db, v) == Some(Prim::TypeOf),
         _ => false,

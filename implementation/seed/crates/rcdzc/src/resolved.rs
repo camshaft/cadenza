@@ -1256,6 +1256,21 @@ pub enum Resolved {
         /// `SumPayload.heads`. Empty when `value_steps` has no `Payload` step.
         value_heads: std::rc::Rc<[StructId]>,
     },
+    /// The FIELD a RECORD sub-pattern's binder binds, when the record is NESTED inside a tuple/list/variant
+    /// match pattern — `(match t ((tuple (record (x a)) c) …))` binds `a` to field `x` of the record at
+    /// tuple-slot 0. `scrutinee` is the match scrutinee; `path` is the `Elem`/`Payload` steps from the
+    /// scrutinee down to the nested RECORD value (walked to reach the `Ty::Record`/`Core::Record` before the
+    /// field read, exactly as `SumPayload.steps` reaches a nested payload); `key` is the field's `Symbol`,
+    /// whose sorted SLOT resolves at FOLD time (`eval::runtime_member_index`), exactly like a top-level
+    /// record arm's `Resolved::Member` folds to a `Core::Proj` at the field's sorted slot. Simpler than
+    /// `MapField` (a record field read is a `Member` + a path prefix — no rest binder, no named-set, no
+    /// key-directed lookup). A TOP-LEVEL record arm is `Resolved::Member`'s job (Case 6rec, empty path); this
+    /// is the NESTED-in-compound twin. Scoped to its arm (resolve Case 6rec-nested).
+    RecordField {
+        scrutinee: StructId,
+        path: std::rc::Rc<[crate::core::PathStep]>,
+        key: Symbol,
+    },
     /// A tuple PROJECTION `(. operand N)` — member access whose key is an INTEGER literal selects the
     /// element at position `index` (0-based). The integer key is what distinguishes a positional tuple
     /// access from a named record field access (`Member`); a name key on a tuple, or an integer key on a

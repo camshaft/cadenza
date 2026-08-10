@@ -54699,36 +54699,72 @@ mod diagnostics {
         crate::diagnostics(&mut db)
     }
 
-    /// A RECORD sub-pattern NESTED inside a tuple/list/constructor match pattern — `(tuple (record (x a))
-    /// c)`, `(list (record (x a)))`, `(W.Wrap (record (x a)))` — is not yet wired (a record field projects
-    /// by NAME and there is no name-keyed `PathStep` to compose the projection under a tuple/list/variant
-    /// descent). It must NAME that unimplemented feature, NOT leak a misleading CDZ0101 "unbound name `a`"
-    /// for the nested field binder (the nested-in-compound twin of the top-level record-match Case 6rec /
-    /// the record-BINDING lockstep). `cdz check` on a PARAMETERIZED body (via match_pattern_fault, not only
-    /// the emit walk) must surface the feature decline and NO CDZ0101 cascade. Found by v-patterns probing
-    /// (Inc-76); wired Inc-83.
+    /// A RECORD sub-pattern NESTED inside a tuple/list/constructor match pattern whose field value is itself
+    /// a further COMPOUND — `(tuple (record (x (tuple a b))) c)` — is not yet wired (a record field projects
+    /// by NAME and there is no name-keyed `PathStep` to compose a FURTHER descent below the field). It must
+    /// NAME that unimplemented feature, NOT leak a misleading CDZ0101 "unbound name `a`" for the deeper
+    /// binder (the deeper-nesting twin of the now-wired bare-binder case, Case 6rec-nested-decline). `cdz
+    /// check` on a PARAMETERIZED body (via match_pattern_fault, not only the emit walk) must surface the
+    /// feature decline and NO CDZ0101 cascade. Found by v-patterns probing (Inc-76). The BARE-binder cases
+    /// (`(tuple (record (x a)) c)`, `(list (record (x a)))`) now WIRE (a `Resolved::RecordField` read) — see
+    /// `a_nested_record_match_binder_resolves_to_the_field`; only the deeper compound-field-value declines.
     #[test]
     fn a_nested_record_match_pattern_is_named_not_leaked_as_an_unbound_field_binder() {
-        // Body references the nested field binder `a`. `f` is parameterized (non-nullary), so this
-        // exercises the check≡compile path — the diagnostic must NAME the feature, no CDZ0101.
-        for src in [
-            "(module m (def (f (: t (Tuple (Record (x Int64)) Int64))) \
-               (match t ((tuple (record (x a)) c) (+ a c)))) (export f))",
-            "(module m (def (f (: xs (List (Record (x Int64))))) \
-               (match xs ((list (record (x a))) a) (_ 0))) (export f))",
-        ] {
-            let all = diags_of(src);
-            assert!(
-                all.iter().all(|d| d.code.as_deref() != Some("CDZ0101")),
-                "no misleading 'unbound name' for a nested-record field binder: {all:?}"
-            );
-            assert!(
-                all.iter().any(|d| d.message.contains(
-                    "record sub-pattern nested inside a tuple/list/constructor match pattern"
-                )),
-                "check names the unimplemented nested-record feature: {all:?}"
-            );
-        }
+        // Body references the deeper binder `a` below a nested-record field's own compound value. `f` is
+        // parameterized (non-nullary), so this exercises the check≡compile path — the diagnostic must NAME
+        // the feature, no CDZ0101.
+        let src = "(module m (def (f (: t (Tuple (Record (x (Tuple Int64 Int64))) Int64))) \
+               (match t ((tuple (record (x (tuple a b))) c) (+ (+ a b) c)))) (export f))";
+        let all = diags_of(src);
+        assert!(
+            all.iter().all(|d| d.code.as_deref() != Some("CDZ0101")),
+            "no misleading 'unbound name' for a deeper nested-record binder: {all:?}"
+        );
+        assert!(
+            all.iter().any(|d| d.message.contains(
+                "record sub-pattern nested inside a tuple/list/constructor match pattern"
+            )),
+            "check names the unimplemented deeper-nesting feature: {all:?}"
+        );
+    }
+
+    /// A BARE-binder RECORD sub-pattern NESTED inside a tuple match pattern — `(tuple (record (x a)) c)` —
+    /// now WIRES: the binder `a` resolves to a `Resolved::RecordField` reading field `x` off the record at
+    /// tuple-slot 0 (the nested-in-compound twin of the top-level record-match `Resolved::Member`, the
+    /// record analogue of a nested-map `MapField`). Compiles + runs: `(f (tuple (record (x 5)) 10))` binds
+    /// `a = 5`, `c = 10` → `a + c = 15`. Companion of the deeper-nesting DECLINE test above.
+    #[test]
+    fn a_nested_record_match_binder_resolves_to_the_field() {
+        use crate::compile::compile_component;
+        let src = "(module m \
+           (def (f (: t (Tuple (Record (x Int64)) Int64))) \
+             (match t ((tuple (record (x a)) c) (+ a c)))) \
+           (def (main) (f (tuple (record (x 5)) 10))) \
+           (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        assert_eq!(super::run_returns::<i64>(&bytes, "main"), 15);
+
+        // WITNESS (v-rust-backend flag): a NARROW-WIDTH field under the nested record proves the type-walk
+        // GROUNDS the field's real type — a plain `Int64` field passes even if `record_field_at_path`
+        // returned `Ty::Any` (defaults i64), so only a narrow width actually exercises the `Ty::Record`
+        // descent. `(record (x Int8))`: `a : Int8`, so `a + 1` is Int8 arithmetic; `100 + 1 = 101` fits.
+        let narrow = "(module m \
+           (def (f (: t (Tuple (Record (x Int8)) Int64))) \
+             (match t ((tuple (record (x a)) c) c))) \
+           (def (main) (f (tuple (record (x 100)) 7))) \
+           (export main))";
+        let nb = compile_component(&crate::codec::encode(&parse(narrow))).expect("compile narrow");
+        assert_eq!(super::run_returns::<i64>(&nb, "main"), 7);
+
+        // A record nested in a LIST element (the other `Elem` descent) binds its field too. A wildcard arm
+        // covers the other lengths (a single-element list arm alone is non-exhaustive, CDZ0210).
+        let listed = "(module m \
+           (def (f (: xs (List (Record (x Int64))))) \
+             (match xs ((list (record (x a))) a) (_ 0))) \
+           (def (main) (f (list (record (x 42))))) \
+           (export main))";
+        let lb = compile_component(&crate::codec::encode(&parse(listed))).expect("compile listed");
+        assert_eq!(super::run_returns::<i64>(&lb, "main"), 42);
     }
 
     #[test]
