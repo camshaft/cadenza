@@ -148,6 +148,7 @@ pub(crate) fn reducer_event_record_ty(
 ///     with no `Mk`/`EffectKind` wrapper, so the result type IS the wire shape — no synthesis or value
 ///     transform (a transform would be the adapter the no-adapter directive forbids); it drives
 ///     `value-encode(result, effect_list_desc)` → the effect-list document bytes.
+///
 /// Returns `None` if the apply isn't the reducer shape (not 3 params) or either type has no descriptor
 /// (a shape `sum_shape_descriptor` cannot render) — the caller then declines the byte-ABI reshape.
 pub(crate) fn reducer_descriptors(

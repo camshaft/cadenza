@@ -7031,9 +7031,11 @@ fn to_bytes_body(import_index: &std::collections::HashMap<&str, u32>) -> Vec<u8>
 ///      document `Bytes`;
 ///   6. copies that document into linear memory at `OUT=8` and stores the `(ptr=OUT, len=n)` retarea at
 ///      `[0..8]`, returning `0` (the retptr) — exactly the encode walker's return shape.
+///
 /// Releases the temporaries it built (`buf`/`ev_desc`/`ev`/`result`/`el_desc`/`doc`). `import_index` maps
 /// each runtime op name → its core func index; `guest_apply_func` is the guest apply's absolute core func
 /// index. The descriptor bytes are COMPILE-TIME CONSTANTS (`i32.const` per byte, no data-section blob).
+///
 /// The core module for a REDUCER (B3): the guest `apply` body as an INTERNAL core func, plus the
 /// synthesized byte-ABI `apply-bytes` wrapper (exported as `apply`) that value-decodes the event, calls
 /// the guest apply, and value-encodes the result. Also defines + exports a `memory` and a stub

@@ -523,6 +523,7 @@ fn assemble_with_imports(
 ///     reads the incoming event list from + writes the effect-list result to that memory;
 ///   * lifts the apply core func with `canon_lift_list_item` (Memory + Realloc canon options), NOT the
 ///     plain lift, so its `list<u8>` param + `list<u8>` result cross.
+///
 /// SINGLE export (`apply`), so `m = 1` throughout. `iface` is the fold interface name.
 pub fn assemble_reducer_apply(
     core: &[u8],
@@ -536,7 +537,7 @@ pub fn assemble_reducer_apply(
     let e = extern_fns.len();
     let k = imports.len();
     debug_assert_eq!(apply.result, BoundaryResult::Bytes);
-    debug_assert!(apply.params.iter().any(|p| *p == BoundaryParam::ListU8));
+    debug_assert!(apply.params.contains(&BoundaryParam::ListU8));
     debug_assert_eq!(extern_fns.len(), op_ifaces.len());
     // The distinct peer interfaces the bound effects belong to (first-appearance order) → comp
     // instances/types `0..g`; the runtime is comp instance/type `g`. Empty for a heap-only reducer (b1/b2).
@@ -563,7 +564,7 @@ pub fn assemble_reducer_apply(
     let type_sec = {
         let mut items = Vec::new();
         for iface in &ifaces {
-            let ops = peer_group_ops(extern_fns, &op_ifaces, iface);
+            let ops = peer_group_ops(extern_fns, op_ifaces, iface);
             // The kv (and any bound-effect Bytes) peer ops are WIT-TYPED: a `Bytes` param/result crosses as
             // `list<u8>`, an `Option(Bytes)` result as `option<list<u8>>`. An instance-type is a SELF-CONTAINED
             // type space, so declare its OWN defined types FIRST — `list u8` at instance-local type index 0,
@@ -9478,6 +9479,7 @@ fn list_u8_defined_type() -> Vec<u8> {
 ///   * `get(key)`          → `(list<u8>) -> option<list<u8>>`
 ///   * `delete(key)`       → `(list<u8>) -> bool`
 ///   * else (1 list arg)   → `(list<u8>) -> ()` (a conservative default; only put/get/delete exist today)
+///
 /// A `list<u8>` param/the result reference the defined type as a SIGNED-LEB component-valtype index (like a
 /// nested-tuple field); the `bool` result is an inline primitive; `()` is the no-result form `0x01 0x00`.
 fn kv_wit_comp_functype(f: &HostFn, list_idx: u32, opt_idx: u32) -> Vec<u8> {
