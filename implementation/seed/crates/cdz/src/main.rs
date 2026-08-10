@@ -264,11 +264,11 @@ enum Cmd {
     Uses(UsesArgs),
     /// Report every well-formedness fault in FILE (type mismatch, unbound name, …) as
     /// `file:line:col: severity [CODE]: message` — "diagnostics as you type". No export/run needed;
-    /// exits non-zero if any error-severity fault is present. FRONT-END ONLY: this runs the
-    /// type-check/resolve pass, NOT the emit/lowering pass, so a fault the compiler only detects while
-    /// LOWERING (e.g. Float64 compound ordering `(< (tuple …) …)`) is NOT reported here — `cdz compile`
-    /// (and the corpus gate, which compiles) still catches it. `check` is the fast editor pass, not a
-    /// full build; run `cdz compile` for emit-path parity.
+    /// exits non-zero if any error-severity fault is present. Surfaces error-severity faults from the
+    /// WHOLE pipeline — including emit/lowering rejects (e.g. CDZ0304 constant divide-by-zero, and the
+    /// float/set/map compound-ordering carve-out), which `compile::diagnostics` reports as coded faults
+    /// so `check` ≡ `compile` on what it rejects. It does NOT run/export the program, so a fault only a
+    /// RUN would hit is out of scope.
     Check(CheckArgs),
     /// Apply every VERIFIED fix in FILE — each proposed fix that, applied + re-checked, actually clears
     /// its diagnostic — and write the repaired program back (or preview with `--diff`/`--dry-run`).
@@ -7766,16 +7766,18 @@ fn resolve_check_targets(target: Option<&str>) -> Result<Vec<String>, String> {
 /// did). On a load failure the closure is empty (the caller still covers `file` itself).
 /// `json`/`verify_fixes` are the `cdz check` flags.
 ///
-/// FRONT-END-ONLY BY DESIGN: the diagnostics come from `Query::Diagnostics` (`compile::diagnostics` →
-/// `collect_faults`), which reads the type-check/resolve fault set WITHOUT running `layout`/emit. So a
-/// fault the compiler only detects while LOWERING (`lower.rs` has ~326 reject sites, e.g. Float64
-/// compound ordering `(< (tuple …) …)` / compound-compare) is INVISIBLE to `check` — it exits clean on a
-/// program `cdz compile` rejects (v-diagnostics finding, 2026-08-09). This is deliberate, not a bug:
-/// `Query::Diagnostics` is the "diagnostics as you type" primitive — fast, and it works on a mid-edit
-/// buffer that declares no export (emit needs a target + export). Driving the emit pass here for parity
-/// would make `check` as slow as a full build and change its contract, for faults the corpus gate (which
-/// compiles) + `cdz compile` already catch. If you extend this to surface lowering rejects, do it behind
-/// an opt-in flag (`--emit`/`--full`), never by making the default `check` emit.
+/// CHECK ≡ COMPILE ON REJECTS: the diagnostics come from `Query::Diagnostics` (`compile::diagnostics` →
+/// `collect_faults`), which is NOT front-end-only — it surfaces error-severity faults from the whole
+/// pipeline, INCLUDING emit/lowering rejects. Verified on trunk: a coded lowering reject (CDZ0304
+/// constant `(/ 5 0)`) AND the float/set/map compound-ordering carve-out (`(1.0,2.0) < (3.0,4.0)` →
+/// "a compound value with a float/set/map leaf has no total order") BOTH make `cdz check` exit non-zero,
+/// identical to `cdz compile`. `compile.rs` (see the `layout` decline path) deliberately runs
+/// `collect_faults` on an emit/layout decline and reports the coded fault set precisely so `check` ≡
+/// `compile` — the comments there call out avoiding a "check≡compile discrepancy". `check` does NOT
+/// run/export the program (no target, no wasmtime), so only a fault a RUN would hit is out of scope.
+/// (Historical note: a 2026-08-09 finding claimed check missed these; it did not reproduce on fresh
+/// trunk — a transient "not yet built" decline had been reclassified to the permanent coded rejection
+/// that check surfaces. The earlier "front-end only" doc was inaccurate and was reverted.)
 fn check_one(file: &str, json: bool, verify_fixes: bool) -> (bool, Vec<String>) {
     // Follow the entry file's IMPORT CLOSURE so a cross-file reference (an imported type or definition)
     // resolves and checks — `cdz check FILE` then sees the SAME linked program the package compile does.
