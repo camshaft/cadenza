@@ -7,6 +7,20 @@ autonomous. But it has the mandate."). It grounds in the already-decided archite
 hands a build plan to `v-compiler-ml`/`v-rust-backend` (the rcdzc emit owner) with `v-agent-harness`
 (reducer.wit / kernel owner) confirming the platform side. File anchors are landmarks at trunk `862b6a2f0`.
 
+> **Both open technical decisions are now RESOLVED by the owning verticals (2026-08-10, confirming — the
+> boundary was unchanged, only the increment mechanics sharpened):**
+> - **D3 (v-compiler-ml, emit owner):** the generic handle→canonical-ABI marshal ALREADY EXISTS on the
+>   non-reducer path (`select.rs:11463-11522`, keyed on the param's declared TYPE, not op-name) —
+>   `reducer_kv_shim_body` is a DUPLICATE of it. So M1 = **un-fork-reuse**, plus ONE generic generalization:
+>   lift the existing single-compound-arg cap (`select.rs:11492`) to N args (reducer `put(key,value)` has
+>   two `list<u8>` args; this also fixes the non-reducer two-arg decline). Still compiler-side + generic.
+> - **D1 (v-agent-harness, kernel owner):** confirm **P(a)** — keep `kv` a named WIT import. §4b (a reducer
+>   reading its OWN KV is a direct query, NOT a world-touching effect) is a REAL semantic distinction, not an
+>   implementation accident; P(b) would erase it. P(a) fully satisfies the compiler mandate; P(b) stays a
+>   userspace-effects follow-up. Nuance: the kv import NAME is already data-driven in the emit
+>   (`bindings.get(effect)`, not a baked `"kv"` literal) — so P(a) needs zero compiler change for genericity
+>   beyond M1's generic marshal.
+
 > **The operator's mandate (2026-08-10), verbatim + refinement.** First, the principle: *"The compiler
 > should not know anything about the platform. The platform should not know anything about the compiler.
 > These things should be strictly separated."* Then the sharpening that fixes the exact target: *"The
@@ -169,14 +183,29 @@ compiler-side mandate AND §23:
   scratch offsets — the same canonical mechanism for `get`, `put`, `delete`, `prefix-scan`, or any op of any
   interface the program declares.
 
-**The one open technical question (mechanics, not boundary):** does the existing non-reducer canonical
-lowering (`assemble_host_runtime`) ALREADY lower a value-heap Bytes *handle* to a canonical WIT `list<u8>`
-param — in which case the reducer path just REUSES it (M1 = un-fork-and-reuse) — or does the non-reducer
-path only work because its `string`/`list<u8>` values are already in linmem (not heap handles), in which
-case a generic per-signature *handle→canonical-ABI* marshal must be BUILT (M1 = build-generic-marshal,
-still compiler-side, still generic, just new code)? Sent to `v-compiler-ml` (the emit owner) 2026-08-10;
-either answer keeps the boundary from §3/§4 unchanged — it only picks M1's shape. **This does NOT block the
-design; it refines the first increment.**
+**The M1 mechanics — RESOLVED by v-compiler-ml (emit owner, 2026-08-10): the generic marshal ALREADY
+EXISTS.** The non-reducer `Core::HostCall` path already lowers a value-heap Bytes/String *handle* to a
+canonical WIT `(ptr,len)` GENERICALLY (`select.rs:11463-11522`): for a runtime `String`/`Bytes` arg (a heap
+handle — rope OR slice-view), it does NOT assume linmem residency — it MARSHALS by copying the handle's
+logical bytes into a linmem scratch region via the rep-agnostic `bytes-len`/`bytes-get` walk (transparent
+through rope/slice), then pushes `(scratch_base, len)` for the canonical `list<u8>`/`string` lower to read
+(comment at `:11467`). It is keyed on the param's declared TYPE (`String`/`Bytes` → marshal; scalar →
+passthrough), NOT on an op name. **`reducer_kv_shim_body` is a DUPLICATE of this exact `bytes-len`/`bytes-get`
+copy loop.** So:
+
+- **M1 = un-fork-REUSE, not build.** Route the reducer's bound-effect args through the SAME `String`/`Bytes`
+  marshal the non-reducer `HostCall` uses, instead of the parallel `KvShimOp`/`op == "put"` hand-roll.
+- **The ONE genuine addition (a generic generalization that benefits BOTH paths):** the existing non-reducer
+  marshal caps at ONE runtime compound arg per call — "a host call with TWO runtime string/Bytes arguments
+  is not yet emitted" (`select.rs:11492`; a single fixed scratch buffer, `runtime_string_arg_seen` declines
+  the second). But reducer `put(key: list<u8>, value: list<u8>)` has TWO `Bytes` args. So M1 lifts the
+  one-compound-arg cap to N args (a per-arg scratch/bump — which the fixed-scratch→`cabi_realloc` move also
+  wants). This generalization is COMPILER-side + generic (a per-signature N-compound-arg marshal), fixes the
+  non-reducer two-arg decline too, and lets the reducer path drop `KvShimOp` entirely.
+
+Net: **mostly un-fork-reuse, plus one generic multi-compound-arg-marshal increment.** Either way the boundary
+from §3/§4 is unchanged — this only fixes M1/S0's shape (a generalization of an existing generic marshal, not
+a new bespoke one).
 
 ## 5. The platform side — kv stays a declared WIT import (the compiler never names it)
 
@@ -193,33 +222,44 @@ For the compiler to be generic, `kv`-knowledge must live OUTSIDE it. Where? Two 
   stateful/kernel-side looks like any other effect handler"). Fuller minimize-kernel realization, but
   re-touches the §4b "own-KV-is-not-an-effect" distinction.
 
-**CHOSEN DEFAULT: P(a) for this design's scope.** It fully satisfies the compiler-side mandate (the compiler
-is generic-over-WIT either way) and is the smaller, contract-stable change; it preserves §4b. P(b) is a
-strictly platform-side evolution the **userspace-effects arc already owns** (`DESIGN-userspace-effects.md`)
-— noted as a follow-up there, NOT folded in here. This design's boundary is identical under either: the
-compiler emits a generic component importing a declared WIT interface; whether the platform later re-models
-that interface as a schema-identity effect is a platform-internal choice the compiler never sees. **Escalate
-to an `ask` only if `v-agent-harness` says the platform wants P(b) folded in now** (§7 D1).
+**P(a) — CONFIRMED by v-agent-harness (kernel owner, 2026-08-10), and for a SEMANTIC reason, not just size.**
+§4/§4b is a REAL distinction (`reducer.wit:10-11`, `:47-48` pin it): a reducer reading its OWN KV is a
+synchronous, deterministic, replay-stable INLINE query of its own session state — no host round-trip, no
+authz, no world-visibility. An EFFECT is a REQUEST to touch the WORLD (async, authorized, executor-routed,
+world-visible). P(b) would ERASE that distinction — make an own-state read look like a world-effect — which
+is semantically wrong AND bolts authz/routing/async machinery onto a pure inline query. P(a) keeps `kv` a
+first-class §4b direct-query AND fully satisfies the compiler mandate: the compiler marshals `get`/`put`/
+`delete` against the DECLARED SIGNATURE (the S0/§4 generic marshal) without knowing the name `kv` or its op
+shapes. **Nuance (v-agent-harness):** the kv import interface NAME is ALREADY data-driven in the emit
+(`bindings.get(effect)`, not a baked `"kv"` literal) — so P(a) needs ZERO compiler change for name-genericity
+beyond M1's generic marshal. P(b) stays a **userspace-effects follow-up** (`DESIGN-userspace-effects.md`) —
+it re-opens the §4b own-KV question, which is exactly that capstone's call; NOT coupled to this design (which
+P(a) already completes). This design's boundary is identical under either.
 
 ## 6. Increments (each its own commit + gate; top-to-bottom, the way a vertical lands them)
 
-**S0 — the generic handle↔canonical-ABI marshal (the foundation).** Establish (or confirm) a generic,
-per-WIT-signature marshal that lowers a value-heap-handle-backed value to any declared WIT param and lifts a
-WIT result back to a handle, reusing the non-reducer canonical-ABI path (`assemble_host_runtime`). Shape
-depends on the §4 open question: if the non-reducer path already does this, S0 is "expose/confirm it as the
-one marshal both paths call"; if not, S0 BUILDS it (still generic, still compiler-side). Gate: a unit test
-marshalling a handle-backed `list<u8>` and an `option<list<u8>>` through the canonical ABI against a declared
-signature, with NO op-name matching and NO fixed scratch offsets — the marshal is driven purely by the WIT
-signature. **This is the probe increment** — prove the generic marshal is correct before the reducer path
-consumes it.
+**S0 — generalize the existing generic marshal to N compound args (the foundation).** The generic
+per-signature handle→canonical-ABI marshal ALREADY EXISTS (`select.rs:11463-11522`, §4) but caps at ONE
+runtime compound arg (`select.rs:11492`). S0 lifts that cap to N args — a per-arg scratch/bump layout (the
+fixed-scratch→`cabi_realloc` move wants this anyway) — so a host call with multiple runtime `String`/`Bytes`
+args (like reducer `put(key, value)`) marshals each canonically. This is a generalization of an existing
+generic mechanism, NOT a new bespoke marshal, and it fixes the non-reducer two-arg decline too. Gate: a unit
+test emitting a host call with TWO runtime `Bytes` args, each marshalled to canonical `(ptr,len)` against the
+declared signature — no op-name matching, no single-fixed-scratch cap. **This is the probe increment** —
+prove the N-arg generic marshal before the reducer path consumes it. (v-compiler-ml, the emit owner, will
+prototype it.)
 
 **S1 — un-fork the reducer imports onto the generic marshal; DELETE the kv-shim (`v-compiler-ml`).** The
-reducer emit path's import calls go through the S0 generic marshal keyed on the declared import signature.
-DELETE `KvShimOp` (`serialize.rs:7430`), the `op == "put"` match (`mod.rs:683`), and `reducer_kv_shim_body`
-+ the fixed scratch offsets (`serialize.rs:7447-7620`) — full collapse, no compat path (operator's
-no-adapter-layers directive). Gate: the existing reducer E2E (the 4 reducers, `component_reducer_e2e`)
-passes with `kv` calls going through the generic canonical marshal; `KvShimOp`/`reducer_kv_shim_body`
-grep-absent; `cargo xtask gate` additive-only. This is the increment that removes the headline violation.
+reducer emit path's bound-effect import calls route through the S0 N-arg marshal — the SAME `String`/`Bytes`
+marshal the non-reducer `HostCall` uses (`select.rs:11463`), keyed on the declared import signature. DELETE
+`KvShimOp` (`serialize.rs:7430`), the `op == "put"` match (`mod.rs:683`), and `reducer_kv_shim_body` + the
+fixed scratch offsets `4096`/`8192`/`12288` (`serialize.rs:7447-7620`) — full collapse, no compat path
+(operator's no-adapter-layers directive; `reducer_kv_shim_body` is a proven duplicate of the marshal S0
+generalizes, so nothing is lost). Note the kv import interface NAME is already data-driven
+(`bindings.get(effect)`, not a baked `"kv"` literal) — so S1 needs no name-de-hardcoding, only the marshal
+un-fork. Gate: the existing reducer E2E (the 4 reducers, `component_reducer_e2e`) passes with `kv` calls
+going through the generic canonical marshal; `KvShimOp`/`reducer_kv_shim_body`/`op == "put"` grep-absent;
+`cargo xtask gate` additive-only. This is the increment that removes the headline violation.
 
 **S2 — hoist the fold-protocol shape out of compiler constants into program-level WIT declaration
 (`v-compiler-ml`, coordinate `v-agent-harness`).** Remove `REDUCER_FOLD_IFACE` (`mod.rs:110`), the
@@ -245,18 +285,18 @@ reducer path; S1 flips the marshal with E2E re-validated in-commit.)
 
 ## 7. Open decisions (each with a chosen default; escalate only a genuine fork)
 
-- **D1 — platform kv model: P(a) named WIT import vs P(b) schema-identity effect (§5).** Default: **P(a)**
-  for this design's scope (satisfies the mandate, contract-stable, preserves §4b); P(b) is a follow-up the
-  userspace-effects arc owns. Escalate to an `ask` ONLY if `v-agent-harness` wants P(b) folded in now. This
-  is the one decision that could need the platform owner; it does NOT block S0–S3 (the compiler boundary is
-  identical either way).
+- **D1 — platform kv model: P(a) named WIT import vs P(b) schema-identity effect (§5).** RESOLVED:
+  **P(a)** — CONFIRMED by v-agent-harness (kernel owner, 2026-08-10) for a semantic reason (§4b own-KV =
+  direct query, NOT a world-effect; P(b) would erase it). P(b) is a userspace-effects follow-up, NOT folded
+  in here. No operator escalation needed — the platform owner ruled.
 - **D2 — handle↔ABI bridge: compiler-side generic (A) vs platform-side (B) (§4).** RESOLVED: **A** — B
   violates §23 (would recouple the platform to the heap representation). No escalation; recorded as the
   load-bearing architectural call.
 - **D3 — S0 shape: reuse the existing canonical lowering vs build a generic handle→ABI marshal (§4, §6).**
-  Default: reuse if the non-reducer path already lowers handle-backed values; build (still generic) if not.
-  Sent to `v-compiler-ml`; either keeps the boundary unchanged. No operator escalation — a mechanics
-  question the emit owner answers.
+  RESOLVED: **reuse** — v-compiler-ml (emit owner, 2026-08-10) confirmed the generic type-driven marshal
+  already exists (`select.rs:11463`); `reducer_kv_shim_body` duplicates it. M1 = un-fork-reuse + one generic
+  N-compound-arg generalization (lift the `select.rs:11492` single-arg cap). No operator escalation — the
+  emit owner ruled.
 - **D4 — does the fold export interface get WIT-declared in source, or does the toolchain supply the reducer
   WIT?** Default: the reducer program declares the interfaces it imports/exports (import `kv`, export the
   fold interface) as WIT alongside its source — "Cadenza programs create and interface with any WIT" taken
