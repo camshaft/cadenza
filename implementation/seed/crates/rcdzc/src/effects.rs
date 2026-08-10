@@ -4293,11 +4293,58 @@ fn hoist_resumptive_once(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> Optio
             return Some(db.push_list(vec![let_head, bindings, rebuilt]));
         }
     }
+    // A NESTED `handle-internal`'s ARM LIST is opaque to THIS outer hoist WHEN no arm reaches an operation
+    // the OUTER handler discharges — those arms are the INNER handler's concern, folded under ITS ctx by the
+    // inside-out `reduce_handle(inner)`. Recursing into such an arm treated its shape `((. B op) (p) s (match
+    // …))` as an ordinary strict application `(op a0 a1 <match>)` and let Site 2 distribute the arm-op HEAD
+    // into the `match` branches — inverting the arm so the `match` sat in the op-slot, `effect_op_of` → None,
+    // the inner op-map went EMPTY, and the nested fold declined (nv1f). BUT an inner arm that itself performs
+    // the OUTER effect — the arg-arm `(cut (b) t (do … (set-ty …) …))` where `set-ty` is the OUTER DbState
+    // handler's own op demanded across `compute-type` — MUST stay in this recursion, because the outer hoist
+    // legitimately needs to lift its branch-performing conditional (skipping it re-broke the arg-arm:
+    // wasm-unreachable, the ec113e84e over-scope). So skip the arms child ONLY when EVERY arm body is free of
+    // an outer-ctx perform (`subtree_performs(.., ctx)` — ctx here is the OUTER handler, and that predicate is
+    // exactly "reaches an op THIS ctx discharges"). nv1f's inner B arm performs only B (inner) → skipped; the
+    // arg-arm's set-ty reaches the outer op → recursed. (Mirrors `thread_bounded`, which treats a nested
+    // handle as opaque; this is the finer-grained rule the hoist needs since an inner arm can re-perform the
+    // outer effect.)
+    let arms_to_skip = if db.ast.head_name(node) == Some(HANDLE_INTERNAL) {
+        db.ast
+            .as_form(node, HANDLE_INTERNAL)
+            .and_then(|t| t.get(1).copied())
+            .filter(|&arms| {
+                // arms = `((op (params) state body)…)`; each arm's BODY is its last child. Skip the arms
+                // list only if NONE of the arm bodies reaches an outer-ctx perform.
+                let arm_bodies: Vec<StructId> = match db.ast.get(arms) {
+                    Struct::List(arm_nodes) => arm_nodes
+                        .iter()
+                        .filter_map(|&a| match db.ast.get(a) {
+                            Struct::List(parts) => parts.last().copied(),
+                            Struct::Atom(_) => None,
+                        })
+                        .collect(),
+                    Struct::Atom(_) => Vec::new(),
+                };
+                // Use `subtree_reaches_discharged_op` (a perform of an op the OUTER ctx discharges), NOT
+                // `subtree_performs`: the latter treats a bare `resume` as effectful, so an inner arm's own
+                // `(resume …)` would spuriously read as "performs the outer effect" and defeat the skip. We
+                // want ONLY "reaches a perform of the OUTER handler's op" — the arg-arm's `set-ty`, not B's
+                // inner resume.
+                !arm_bodies
+                    .iter()
+                    .any(|&b| subtree_reaches_discharged_op(db, b, ctx))
+            })
+    } else {
+        None
+    };
     // Not a site here — recurse into children, rebuilding with the FIRST rewritten child (so a
     // conditional nested inside a `let` init / branch / arm is lifted within that sub-position, then the
     // enclosing pass lifts it further if needed).
     if let Struct::List(children) = db.ast.get(node).clone() {
         for (k, &c) in children.iter().enumerate() {
+            if Some(c) == arms_to_skip {
+                continue; // an inner handler's outer-effect-free arms fold under their own reduce_handle
+            }
             if let Some(new_c) = hoist_resumptive_once(db, c, ctx) {
                 let mut new_children = children.clone();
                 new_children[k] = new_c;
