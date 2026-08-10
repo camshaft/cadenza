@@ -402,7 +402,10 @@ fn narrow_primitive_envelope_matches_wasm_encoder_oracle() {
         &core,
         &[BoundaryExport {
             name: "f".to_string(),
-            params: vec![BoundaryParam::Primitive(0x7D), BoundaryParam::Primitive(0x7C)], // u8, s16
+            params: vec![
+                BoundaryParam::Primitive(0x7D),
+                BoundaryParam::Primitive(0x7C),
+            ], // u8, s16
             result: BoundaryResult::Primitive(0x7E), // s8
         }],
         &[],

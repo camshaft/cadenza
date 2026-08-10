@@ -611,7 +611,9 @@ pub fn emit(
                 runtime_abi::RUNTIME_OPS
                     .iter()
                     .find(|o| o.name == *name)
-                    .ok_or_else(|| Reject::decline(format!("runtime op `{name}` not in the ABI table")))
+                    .ok_or_else(|| {
+                        Reject::decline(format!("runtime op `{name}` not in the ABI table"))
+                    })
             })
             .collect::<Result<_, _>>()?;
         // BOUND-EFFECT PEER imports (kv): a reducer that performs a bound effect (e.g. `bind(Kv,
@@ -8346,14 +8348,17 @@ mod runtime_abi_tests {
     /// handle ABI — so the reshape can never fire on a component it was not meant for.
     #[test]
     fn reducer_fold_apply_trigger() {
-        use super::{is_reducer_fold_apply, REDUCER_FOLD_IFACE};
+        use super::{REDUCER_FOLD_IFACE, is_reducer_fold_apply};
         assert_eq!(REDUCER_FOLD_IFACE, "cadenza:agent-kernel/fold");
         // The one true trigger: fold interface + `apply`.
         assert!(is_reducer_fold_apply(Some(REDUCER_FOLD_IFACE), "apply"));
         // A different export of the SAME reducer build is untouched.
         assert!(!is_reducer_fold_apply(Some(REDUCER_FOLD_IFACE), "init"));
         // A DIFFERENT component interface, even with an `apply` export, is an ordinary provider.
-        assert!(!is_reducer_fold_apply(Some("cadenza:agent-kernel/other"), "apply"));
+        assert!(!is_reducer_fold_apply(
+            Some("cadenza:agent-kernel/other"),
+            "apply"
+        ));
         // A NON-component (plain) build — no component name — never triggers.
         assert!(!is_reducer_fold_apply(None, "apply"));
     }

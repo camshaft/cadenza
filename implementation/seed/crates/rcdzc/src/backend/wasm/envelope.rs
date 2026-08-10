@@ -615,7 +615,9 @@ pub fn assemble_reducer_apply(
     let import_sec = {
         let mut items = Vec::new();
         for (g_idx, iface) in ifaces.iter().enumerate() {
-            let mut pe = extern_name(&crate::backend::common::export_name::kebab_extern_name(iface));
+            let mut pe = extern_name(&crate::backend::common::export_name::kebab_extern_name(
+                iface,
+            ));
             pe.push(0x05); // ComponentTypeRef::Instance
             uleb128(g_idx as u64, &mut pe);
             items.extend_from_slice(&pe);
@@ -672,12 +674,17 @@ pub fn assemble_reducer_apply(
     // (1), the HEAP core instance (2), the program instance (3, binding "peer"+"heap"+"mem"). Without kv:
     // no mem module → peer absent, heap = instance 0, program = instance 1. The program CORE MODULE is
     // module 1 when e>0 (after the mem module), else module 0.
-    let (mem_core_inst_idx, peer_core_inst_idx, heap_core_inst_idx, prog_core_inst_idx, n_core_inst) =
-        if e > 0 {
-            (Some(0u32), Some(1u32), 2u32, 3u32, 3)
-        } else {
-            (None, None, 0u32, 1u32, 2)
-        };
+    let (
+        mem_core_inst_idx,
+        peer_core_inst_idx,
+        heap_core_inst_idx,
+        prog_core_inst_idx,
+        n_core_inst,
+    ) = if e > 0 {
+        (Some(0u32), Some(1u32), 2u32, 3u32, 3)
+    } else {
+        (None, None, 0u32, 1u32, 2)
+    };
     let prog_module_idx: u32 = if e > 0 { 1 } else { 0 };
     let core_instance_sec = {
         let mut items = Vec::new();
@@ -2145,11 +2152,14 @@ fn shared_mem_realloc_module() -> Vec<u8> {
         t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
         section(wasm_abi::CORE_SEC_TYPE, &wasm_vec(1, &t))
     };
-    let func_sec = section(wasm_abi::CORE_SEC_FUNCTION, &wasm_vec(1, &{
-        let mut f = Vec::new();
-        uleb128(0, &mut f); // func 0 uses type 0
-        f
-    }));
+    let func_sec = section(
+        wasm_abi::CORE_SEC_FUNCTION,
+        &wasm_vec(1, &{
+            let mut f = Vec::new();
+            uleb128(0, &mut f); // func 0 uses type 0
+            f
+        }),
+    );
     let export_sec = {
         let mut items = Vec::new();
         // mem = memory 0.

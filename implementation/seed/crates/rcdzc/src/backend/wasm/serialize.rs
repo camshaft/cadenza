@@ -7120,7 +7120,10 @@ pub fn reducer_core_module(
         t
     };
     type_items.extend_from_slice(&realloc_type); // realloc type
-    let type_sec = section(wasm_abi::CORE_SEC_TYPE, &wasm_vec(e + k + e + n + 2, &type_items));
+    let type_sec = section(
+        wasm_abi::CORE_SEC_TYPE,
+        &wasm_vec(e + k + e + n + 2, &type_items),
+    );
 
     // ── Import section ── e WIT kv PEER ops (from "peer", core funcs 0..e), then k runtime ops (from
     // "heap", e..e+k). The wrapper + shims' import_index maps each HEAP op name → e + its heap position.
@@ -7170,7 +7173,10 @@ pub fn reducer_core_module(
     }
     uleb128((def_base + n) as u64, &mut func_items);
     uleb128((def_base + n + 1) as u64, &mut func_items);
-    let func_sec = section(wasm_abi::CORE_SEC_FUNCTION, &wasm_vec(e + n + 2, &func_items));
+    let func_sec = section(
+        wasm_abi::CORE_SEC_FUNCTION,
+        &wasm_vec(e + n + 2, &func_items),
+    );
 
     // ── Memory section ── DEFINE a local memory ONLY when there are no kv ops (e==0); with kv (e>0) the
     // memory is IMPORTED as `mem`.`mem` (above) so the shim/kv/wrapper share it. Either way memory INDEX 0
@@ -7261,8 +7267,9 @@ fn reducer_apply_bytes_body(
     uleb128(11, &mut body);
     body.push(wasm_abi::CORE_I32);
     let (ptr, len) = (0u32, 1u32);
-    let (buf, ev_desc, ev, f0, f1, f2, result, el_desc, doc, n, i) =
-        (2u32, 3u32, 4u32, 5u32, 6u32, 7u32, 8u32, 9u32, 10u32, 11u32, 12u32);
+    let (buf, ev_desc, ev, f0, f1, f2, result, el_desc, doc, n, i) = (
+        2u32, 3u32, 4u32, 5u32, 6u32, 7u32, 8u32, 9u32, 10u32, 11u32, 12u32,
+    );
     let get = |l: u32, out: &mut Vec<u8>| {
         out.push(op::LOCAL_GET);
         uleb128(l as u64, out);
@@ -7539,7 +7546,10 @@ fn reducer_kv_shim_body(
             uleb128(wit_import_func as u64, &mut body);
             // put has no result; the shim's guest-visible result is also none (Unit perform).
         }
-        KvShimOp::Get { disc_some, disc_none } => {
+        KvShimOp::Get {
+            disc_some,
+            disc_none,
+        } => {
             // Marshal the key → ARG0; call WIT get(ptr,len,RETPTR); retptr struct = (disc@0, ptr@4, len@8).
             marshal_arg(0, ARG0, &mut body);
             const_i32(ARG0, &mut body);
@@ -7608,7 +7618,10 @@ fn reducer_kv_shim_body(
             {
                 // NONE = sum-new(disc_none, IMM_UNIT).
                 const_i32(disc_none as i64, &mut body);
-                const_i32(crate::backend::wasm::runtime_abi::IMM_UNIT as i64, &mut body);
+                const_i32(
+                    crate::backend::wasm::runtime_abi::IMM_UNIT as i64,
+                    &mut body,
+                );
                 call_op("sum-new", &mut body);
             }
             body.push(op::END); // if
@@ -8095,7 +8108,10 @@ mod reducer_wrapper_tests {
         let call_enc = body
             .windows(2)
             .position(|w| w[0] == op::CALL && w[1] == enc as u8);
-        assert!(call_dec.is_some() && call_enc.is_some(), "both calls present");
+        assert!(
+            call_dec.is_some() && call_enc.is_some(),
+            "both calls present"
+        );
         assert!(call_dec < call_enc, "decode precedes encode");
         // Calls the guest apply at its func index.
         assert!(
@@ -8111,9 +8127,15 @@ mod reducer_wrapper_tests {
     #[test]
     fn reducer_kv_shim_body_is_well_formed() {
         let mut idx = std::collections::HashMap::new();
-        for (i, name) in ["bytes-alloc", "bytes-get", "bytes-len", "bytes-set", "sum-new"]
-            .iter()
-            .enumerate()
+        for (i, name) in [
+            "bytes-alloc",
+            "bytes-get",
+            "bytes-len",
+            "bytes-set",
+            "sum-new",
+        ]
+        .iter()
+        .enumerate()
         {
             idx.insert(*name, i as u32);
         }
@@ -8123,7 +8145,8 @@ mod reducer_wrapper_tests {
         assert!(put.len() > 10);
         assert!(put.contains(&op::I32_STORE8), "put marshals args to memory");
         assert!(
-            put.windows(2).any(|w| w[0] == op::CALL && w[1] == wit as u8),
+            put.windows(2)
+                .any(|w| w[0] == op::CALL && w[1] == wit as u8),
             "put calls the WIT import"
         );
         // (No negative opcode-scan on put — a raw byte-contains can't tell an opcode from an operand byte,
