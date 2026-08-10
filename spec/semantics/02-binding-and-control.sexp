@@ -3343,6 +3343,23 @@
   (call   main (: 7 Int64))
   (output (: 107 Int64)))
 
+(case "a match arm an earlier arm already fully covers compiles but earns a CDZ0213 unreachable-arm warning"
+  (doc    "The dead-arm warning of the source-order rule above: `(match n (0 1) (0 2) (_ 3))` repeats the
+           literal `0`, so the second `(0 2)` arm can never be reached — the first `(0 0)` arm wins every
+           value it would match (first-match-wins, core-semantics.md #Matching Is Exhaustive Or Rejected).
+           The program still COMPILES and runs (`(f 0)` = 1, the first arm), but the build surfaces a CDZ0213
+           `unreachable` WARNING rather than silently keeping the dead arm — the same code-quality/dead-code
+           band as the unused binding (CDZ0306) and dead trap (CDZ0305). The (warns ..) pins the stable
+           message lead (`this match arm is unreachable`); the arm the warning names is the second `(0 2)`.
+           Wasm-graded (warnings ride the shared compile stage = target-independent; the rust/rust-async run
+           paths cannot observe compile stderr, so the (warns ..) check is skipped there, not failed). Portable
+           companion of the rcdzc a_duplicate_or_shadowed_match_arm_warns test; that test additionally pins
+           exactly-one-warning across four shapes (variant/literal/after-catch-all/Option) and the delete
+           fix, so it is KEPT — the (warns ..) substring clause expresses neither the count nor the fix.")
+  (input  (do (def (f (: n Int64)) (match n (0 1) (0 2) (_ 3))) (def (main) (f 0)) (export main)))
+  (output (: 1 Int64))
+  (warns  CDZ0213 (message "this match arm is unreachable")))
+
 (case "a match on a computed runtime value dispatches on the result"
   (doc    "The scrutinee is the expression `(% n 2)`, computed at run time. Its value (0 for an
            even n) selects the literal arm 0. Exercises a match whose scrutinee is neither a
