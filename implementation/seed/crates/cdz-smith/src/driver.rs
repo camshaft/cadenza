@@ -175,6 +175,31 @@ fn classify(verdict: &Verdict, seed: u64, cfg: &Config, store: &FindingStore, st
     }
 }
 
+/// File `finding` and tally the outcome: a New bucket bumps `new_buckets` and logs `NEW <label>
+/// bucket → …`, a Duplicate bumps `dup_hits`, an error is logged. Shared by the crash/invalid-wasm
+/// filers and the differential sweep (which count into `Stats` vs `DiffStats` fields respectively),
+/// so the counters cross as `&mut u64` rather than a concrete stats type.
+fn file_and_tally(
+    store: &FindingStore,
+    finding: &Finding,
+    new_buckets: &mut u64,
+    dup_hits: &mut u64,
+    seed: u64,
+    label: &str,
+) {
+    match store.file(finding) {
+        Ok(crate::finding::Filed::New(path)) => {
+            *new_buckets += 1;
+            eprintln!(
+                "[cdz-smith] NEW {label} bucket → {} (seed {seed})",
+                path.display()
+            );
+        }
+        Ok(crate::finding::Filed::Duplicate(_)) => *dup_hits += 1,
+        Err(e) => eprintln!("[cdz-smith] failed to file finding: {e}"),
+    }
+}
+
 fn file_crash(seed: u64, info: &CrashInfo, cfg: &Config, store: &FindingStore, stats: &mut Stats) {
     let raw = program_for_seed(seed);
     // Shrink while preserving the same crash site, so the filed reproducer is minimal.
@@ -187,17 +212,14 @@ fn file_crash(seed: u64, info: &CrashInfo, cfg: &Config, store: &FindingStore, s
         detail: None,
         commit: cfg.commit.clone(),
     };
-    match store.file(&finding) {
-        Ok(crate::finding::Filed::New(path)) => {
-            stats.new_buckets += 1;
-            eprintln!(
-                "[cdz-smith] NEW crash bucket → {} (seed {seed})",
-                path.display()
-            );
-        }
-        Ok(crate::finding::Filed::Duplicate(_)) => stats.duplicate_hits += 1,
-        Err(e) => eprintln!("[cdz-smith] failed to file finding: {e}"),
-    }
+    file_and_tally(
+        store,
+        &finding,
+        &mut stats.new_buckets,
+        &mut stats.duplicate_hits,
+        seed,
+        "crash",
+    );
 }
 
 fn file_invalid_wasm(
@@ -217,17 +239,14 @@ fn file_invalid_wasm(
         detail: Some(detail.to_string()),
         commit: cfg.commit.clone(),
     };
-    match store.file(&finding) {
-        Ok(crate::finding::Filed::New(path)) => {
-            stats.new_buckets += 1;
-            eprintln!(
-                "[cdz-smith] NEW invalid-wasm bucket → {} (seed {seed})",
-                path.display()
-            );
-        }
-        Ok(crate::finding::Filed::Duplicate(_)) => stats.duplicate_hits += 1,
-        Err(e) => eprintln!("[cdz-smith] failed to file finding: {e}"),
-    }
+    file_and_tally(
+        store,
+        &finding,
+        &mut stats.new_buckets,
+        &mut stats.duplicate_hits,
+        seed,
+        "invalid-wasm",
+    );
 }
 
 // ── the differential sweep (a SEPARATE, lower-cadence pass) ─────────────────────────────────────
@@ -296,18 +315,15 @@ pub fn differential_sweep(
                     detail: Some(detail),
                     commit: cfg.commit.clone(),
                 };
-                match fstore.file(&finding) {
-                    Ok(crate::finding::Filed::New(path)) => {
-                        stats.new_buckets += 1;
-                        eprintln!(
-                            "[cdz-smith] NEW differential bucket → {} (seed {seed}, {} mismatch)",
-                            path.display(),
-                            kind.tag()
-                        );
-                    }
-                    Ok(crate::finding::Filed::Duplicate(_)) => stats.duplicate_hits += 1,
-                    Err(e) => eprintln!("[cdz-smith] failed to file differential finding: {e}"),
-                }
+                let label = format!("differential ({} mismatch)", kind.tag());
+                file_and_tally(
+                    &fstore,
+                    &finding,
+                    &mut stats.new_buckets,
+                    &mut stats.duplicate_hits,
+                    seed,
+                    &label,
+                );
             }
         }
         if cfg.progress_every != 0 && (i + 1).is_multiple_of(cfg.progress_every) {
@@ -411,8 +427,9 @@ impl SplitMix64 {
     }
 }
 
-/// A run seed from the wall clock (only used when the caller doesn't pin one).
-fn wallclock_seed() -> u64 {
+/// A run seed from the wall clock (only used when the caller doesn't pin one). Public so the CLI's
+/// `--seed`-less default reuses it rather than keeping a byte-identical twin.
+pub fn wallclock_seed() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

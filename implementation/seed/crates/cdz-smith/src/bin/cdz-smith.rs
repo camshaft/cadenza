@@ -119,22 +119,14 @@ fn cmd_differential(args: &[String]) -> ExitCode {
             .unwrap_or_else(|| PathBuf::from("target/cadenza-store"))
     });
 
-    let findings_dir = match findings {
-        Some(d) => d,
-        None => match cdz_smith::finding::FindingStore::discover(
-            &std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-        ) {
-            Ok(s) => s.dir().to_path_buf(),
-            Err(e) => {
-                eprintln!("cdz-smith: could not locate spec/semantics/failures: {e}");
-                return ExitCode::FAILURE;
-            }
-        },
+    let findings_dir = match resolve_findings_dir(findings) {
+        Ok(d) => d,
+        Err(code) => return code,
     };
 
     let cfg = Config {
         iterations: Some(count),
-        run_seed: seed.unwrap_or_else(default_run_seed),
+        run_seed: seed.unwrap_or_else(driver::wallclock_seed),
         timeout: Duration::from_secs(10),
         findings_dir: findings_dir.clone(),
         commit: driver::detect_commit(),
@@ -205,17 +197,9 @@ fn cmd_triage_artifacts(args: &[String]) -> ExitCode {
         return ExitCode::from(2);
     };
 
-    let findings_dir = match findings {
-        Some(d) => d,
-        None => match cdz_smith::finding::FindingStore::discover(
-            &std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-        ) {
-            Ok(store) => store.dir().to_path_buf(),
-            Err(e) => {
-                eprintln!("cdz-smith: could not locate spec/semantics/failures: {e}");
-                return ExitCode::FAILURE;
-            }
-        },
+    let findings_dir = match resolve_findings_dir(findings) {
+        Ok(d) => d,
+        Err(code) => return code,
     };
 
     let store = match cdz_smith::finding::FindingStore::open(&findings_dir) {
@@ -274,22 +258,14 @@ fn cmd_fuzz(args: &[String]) -> ExitCode {
     }
 
     // Resolve the findings dir: explicit flag, else discover spec/semantics/failures from cwd.
-    let findings_dir = match findings {
-        Some(d) => d,
-        None => match cdz_smith::finding::FindingStore::discover(
-            &std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-        ) {
-            Ok(store) => store.dir().to_path_buf(),
-            Err(e) => {
-                eprintln!("cdz-smith: could not locate spec/semantics/failures: {e}");
-                return ExitCode::FAILURE;
-            }
-        },
+    let findings_dir = match resolve_findings_dir(findings) {
+        Ok(d) => d,
+        Err(code) => return code,
     };
 
     let cfg = Config {
         iterations,
-        run_seed: seed.unwrap_or_else(default_run_seed),
+        run_seed: seed.unwrap_or_else(driver::wallclock_seed),
         timeout: Duration::from_secs(timeout_secs),
         findings_dir: findings_dir.clone(),
         commit: driver::detect_commit(),
@@ -439,10 +415,20 @@ fn parse_seed(s: &str) -> Option<u64> {
     }
 }
 
-fn default_run_seed() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0xC0FFEE)
+/// Resolve the findings directory: an explicit `--findings DIR` wins; otherwise discover the
+/// `spec/semantics/failures` store from the cwd. On discovery failure, print the error and hand back
+/// `ExitCode::FAILURE` so the caller can `return` it. Shared by `fuzz`/`differential`/`triage-artifacts`.
+fn resolve_findings_dir(explicit: Option<PathBuf>) -> Result<PathBuf, ExitCode> {
+    match explicit {
+        Some(d) => Ok(d),
+        None => match cdz_smith::finding::FindingStore::discover(
+            &std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+        ) {
+            Ok(store) => Ok(store.dir().to_path_buf()),
+            Err(e) => {
+                eprintln!("cdz-smith: could not locate spec/semantics/failures: {e}");
+                Err(ExitCode::FAILURE)
+            }
+        },
+    }
 }
