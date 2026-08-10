@@ -138,9 +138,33 @@ oblivious to federation, so none add host policy:
    from `hello`?) is a reducer protocol decision (default: re-handshake — a fresh conn-id is a fresh link;
    the hub folds a new `hello` and re-establishes routing; §2). No transport resume state.
 
-Net for the dialer: build `{hub_url, outpost_session_id}` → connect → mint conn-id → register sink →
-surface `ws/connect`+`ws/frame`+`ws/disconnect` to the session → drain `ws/send`. No reconnect, no stable
-identity, no resume — all three live in the reducer's fold. This is the exact base dialer they described.
+4. **Is the ws connection registry SHARED per-node or PER-SESSION?** (the F0→F1 runtime-wiring bridge —
+   `v-agent-harness-host` found the `AsyncAgentHost` loop doesn't yet drain `WsControlOp` / hold a
+   `LiveWsConnRegistry`, and is wiring it next.) — **ONE registry SHARED per node.** A node has one set of
+   hub/peer connections; conn-ids are node-global unique `Hash`es (OS-entropy minted, `mint_conn_id`), so
+   the registry is naturally node-scoped, drained on the single `AsyncAgentHost` loop (mirroring how it
+   drains `lifecycle_rx` / reply-settles per turn). Why shared is correct AND safe:
+   - **The federation (outpost) session is the sole ws actor in v0** — it is the `session` the listener/
+     boot-dialer address `ws/connect`/`ws/frame`/`ws/disconnect` inbounds to, so it is the only session
+     that ever LEARNS a conn-id. A per-session registry would buy nothing in v0 (only one session has
+     conns) while blocking the natural multi-actor case (ARC 2: an MCP handler session that later holds
+     its own connections needs to `ws/send` to a node-scoped conn-id).
+   - **A conn-id is a capability token.** It is an unguessable 256-bit `Hash`; possessing one is the
+     capability to `ws/send` to it, and Cedar gates the `ws/send` target on top. So a shared registry is
+     not a leak: a session can only address a conn-id it was handed (via a `ws/connect` inbound or a
+     `ws/dial` result), and the authorizer gates the send. Registry partitioning is not the security
+     boundary — capability possession + Cedar are. This matches how `SessionId`/conn-id are already one
+     unguessable-`Hash` namespace (the operator capstone).
+   - So: wire ONE `LiveWsConnRegistry` per node into the loop; `WsSendExecutor`/`WsDialExecutor` resolve
+     against it; the outpost session owns the hub link in v0, and the shared scope keeps multi-session
+     federation (ARC 2) possible with zero rework. This is the "a v0 node dials its hub once at boot then
+     the reducer routes" model `v-agent-harness-host` read correctly.
+
+Net for the dialer + loop wiring: build `{hub_url, outpost_session_id}` → connect → mint conn-id →
+register sink (into the ONE node-shared registry the loop drains) → surface `ws/connect`+`ws/frame`+
+`ws/disconnect` to the session → drain `ws/send`/`ws/dial` against that registry. No reconnect, no stable
+identity, no resume, no per-session registry — all of that lives in the reducer's fold. This is the exact
+base dialer + loop wiring they described.
 
 ### Layer 1 — the wire codec: every frame is a binary AST (`cadenza-ast` value-form)
 
