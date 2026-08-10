@@ -9291,6 +9291,18 @@ fn list_u8_defined_type() -> Vec<u8> {
     vec![0x70, wasm_abi::COMP_U8]
 }
 
+/// The sec-7 defined-type item for `option<list<u8>>`: `6b <inner>` — the component-model `option`
+/// defined-type tag `0x6b` followed by the inner valtype, a reference to the `list u8` defined type by
+/// index (a signed-LEB component-valtype type index, as any defined-type reference in a valtype
+/// position). B3's kv import uses it for `get`'s `option<list<u8>>` result. Byte shape extracted from the
+/// `wasm-tools`/`wit-component` oracle (a `k` = `0x6b` option tag then the inner type index); pinned by
+/// the `option_list_u8_defined_type_bytes` test. `inner_list_type_idx` is the `list u8` type's index.
+fn option_list_u8_defined_type(inner_list_type_idx: u32) -> Vec<u8> {
+    let mut item = vec![0x6b]; // component-model `option` defined-type tag
+    crate::backend::wasm::encode::sleb128(inner_list_type_idx as i64, &mut item);
+    item
+}
+
 /// Build the HOST-effect import instance-type (`0x42 <decls>`) from `host_fns`. Each op is a `ty` decl
 /// (`01 <comp_functype>`) + an `export` decl (`04 <name> 01 <func-type-index>`). When ANY op has a
 /// `list<u8>` (Bytes) parameter (`has_list_param`), PREPEND a `(list u8)` defined type as instance-type
@@ -9881,6 +9893,18 @@ mod closure_resource_tests {
             got, want,
             "scalar value-resource method functype byte shape"
         );
+    }
+
+    /// B3 (byte-neutral): the `option<list<u8>>` defined type is `6b <inner-list-type-idx>` — the
+    /// component-model `option` tag `0x6b` + the `list u8` type index as a signed-LEB valtype reference.
+    /// Extracted from the wit-component oracle (`k` = 0x6b option, then the inner index); B3's kv `get`
+    /// result uses it. Pins the byte shape before it's wired into the kv peer instance-type.
+    #[test]
+    fn option_list_u8_defined_type_bytes() {
+        // list u8 is type 0, so option<list u8> references index 0.
+        assert_eq!(option_list_u8_defined_type(0), vec![0x6b, 0x00]);
+        // A larger inner index stays a well-formed signed-LEB (5 → 0x05, positive < 0x40).
+        assert_eq!(option_list_u8_defined_type(5), vec![0x6b, 0x05]);
     }
 
     /// B3 (byte-neutral): the reducer fold `apply` functype `func(event: list<u8>) -> list<u8>` encodes
