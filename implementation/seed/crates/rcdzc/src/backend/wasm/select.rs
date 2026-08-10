@@ -6904,6 +6904,12 @@ fn ty_at_path_recorded(
                     Some(e) => e.clone(),
                     None => return Ty::Any,
                 },
+                // A record erases to a tuple in sorted-field order — field-slot `i` is
+                // `fields.values().nth(i)` (same index space as `Core::Record`/`Core::Proj`).
+                Ty::Record(fields) => match fields.values().nth(*i) {
+                    Some(e) => e.clone(),
+                    None => return Ty::Any,
+                },
                 Ty::List(elem) => (**elem).clone(),
                 _ => return Ty::Any,
             },
@@ -6994,6 +7000,10 @@ fn push_discriminant(
                     out.push(Lir::CallImport(OP_ARR_GET));
                     cur = match cur.strip_nominal() {
                         Ty::Tuple(elems) => elems.get(*i).cloned().unwrap_or(Ty::Any),
+                        // A record erases to a tuple in sorted-field order, so field-slot `i` is
+                        // `fields.values().nth(i)` — same index space as `Core::Record`/`Core::Proj`. Tracking
+                        // it (not falling to `Ty::Any`) grounds a narrow int/float record field's width.
+                        Ty::Record(fields) => fields.values().nth(*i).cloned().unwrap_or(Ty::Any),
                         _ => Ty::Any,
                     };
                 }
@@ -14085,6 +14095,10 @@ fn emit_littest_probe(
                     out.push(Lir::CallImport(OP_ARR_GET));
                     cur = match cur.strip_nominal() {
                         Ty::Tuple(elems) => elems.get(*i).cloned().unwrap_or(Ty::Any),
+                        // A record erases to a tuple in sorted-field order, so field-slot `i` is
+                        // `fields.values().nth(i)` — same index space as `Core::Record`/`Core::Proj`. Tracking
+                        // it (not falling to `Ty::Any`) grounds a narrow int/float record field's width.
+                        Ty::Record(fields) => fields.values().nth(*i).cloned().unwrap_or(Ty::Any),
                         _ => Ty::Any,
                     };
                 }
