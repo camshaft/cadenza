@@ -850,6 +850,16 @@ pub enum FleetCmd {
         /// member count; this bounds only how many features share that one gate.)
         #[arg(long, default_value_t = BATCH_PR_CAP)]
         batch_cap: usize,
+        /// CONCURRENT-LANES mode (scope-split parallel batching, model a — operator+concierge greenlit
+        /// 2026-08-10): when the queue has >=2 file-DISJOINT PARALLEL lanes (partition_batch_by_lane +
+        /// plan_concurrent_gate), gate each lane's batch in its OWN worktree CONCURRENTLY (via
+        /// gate_lanes_concurrently), then serial-FF-push the GREEN lanes (single-writer trunk preserved) —
+        /// so a cheap agent-harness/corpus lane isn't head-of-line-blocked behind an expensive compiler
+        /// lane's gate. DEFAULT OFF: without it, integration takes the proven single-combined-batch path
+        /// unchanged. Only meaningful with `--local-gate --publish-origin --batch`. A pass with <2 parallel
+        /// lanes falls through to the single-batch path even when set (nothing to gate concurrently).
+        #[arg(long)]
+        concurrent_lanes: bool,
     },
     /// Report where a merge-request stands in the CI-gated pipeline — in-flight as a candidate PR (with
     /// lane + how to poll its CI), queued at a position in its lane, or resolved (merged/rejected). A
@@ -1104,9 +1114,18 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
             publish_origin,
             batch,
             batch_cap,
+            concurrent_lanes,
         } => {
             if local_gate {
-                schedule_pass_local_gate(&fleet, execute, json, publish_origin, batch, batch_cap)
+                schedule_pass_local_gate(
+                    &fleet,
+                    execute,
+                    json,
+                    publish_origin,
+                    batch,
+                    batch_cap,
+                    concurrent_lanes,
+                )
             } else if execute {
                 schedule_pass_execute(&fleet, cap, batch, batch_cap)
             } else {
@@ -11147,6 +11166,7 @@ fn schedule_pass_local_gate(
     publish_origin: bool,
     batch: bool,
     batch_member_cap: usize,
+    concurrent_lanes: bool,
 ) {
     // SAFETY GUARD (2026-08-09, pr-sync stranding finding): under the GHA-off model, `--local-gate
     // --execute` WITHOUT `--publish-origin` takes the local-only branch — it advances LOCAL trunk + acks
@@ -11302,7 +11322,127 @@ fn schedule_pass_local_gate(
     // old per-MR fallback that cost ~N gate cycles over ~N bounded ticks (operator throughput priority
     // 2026-08-09). On NoChecks / non-FF push we land NOTHING + let the per-MR loop retry (no false-green).
     let mut landed_by_batch: std::collections::HashSet<String> = std::collections::HashSet::new();
-    if batch && publish_origin && queued.len() >= 2 {
+
+    // ── CONCURRENT-LANES PRELUDE (scope-split parallel batching, model a — opt-in `--concurrent-lanes`) ──
+    // When >=2 file-DISJOINT PARALLEL lanes are queued, gate each lane's batch in its OWN worktree
+    // CONCURRENTLY (gate_lanes_concurrently), so a cheap corpus/leaf lane isn't head-of-line-blocked behind
+    // an expensive compiler lane's gate. Then the GREEN lanes' members (disjoint across lanes by
+    // construction) combine into ONE tree that FF-pushes to origin/main via the SAME push+ack path the
+    // single-batch prelude uses (single-writer trunk preserved — the push is serial, only the GATE is
+    // concurrent). RED/NoChecks lanes are left queued for the per-MR fallback. DEFAULT OFF: when the flag
+    // is unset OR <2 parallel lanes exist, this is a no-op and the proven single-batch path below runs
+    // unchanged. Members landed here go into `landed_by_batch` so the per-MR loop skips them.
+    if concurrent_lanes && batch && publish_origin && queued.len() >= 2 {
+        let all_batches = partition_batch_by_lane(&queued, changed_files_of);
+        let plan = plan_concurrent_gate(&all_batches);
+        if plan.len() >= 2 {
+            println!(
+                "  ⇉ concurrent-lanes: gating {} disjoint parallel lanes in separate worktrees at once…",
+                plan.len()
+            );
+            let outcomes = gate_lanes_concurrently(
+                fleet,
+                &plan,
+                "origin/main",
+                std::time::Duration::from_secs(BATCH_PREFILTER_TIMEOUT_SECS),
+                |dir| {
+                    Command::new(nix_binary())
+                        .args(nix_gate_argv(".#checks.aarch64-linux.local-gate"))
+                        .current_dir(dir)
+                        .stdout(std::process::Stdio::piped())
+                        .stderr(std::process::Stdio::piped())
+                        .spawn()
+                },
+            );
+            let spans: Vec<(u128, u128)> = outcomes.iter().map(|o| o.span_ms).collect();
+            let overlapped = crate::spans_overlap(&spans);
+            let green_lanes: Vec<&str> = outcomes
+                .iter()
+                .filter(|o| matches!(o.verdict, CiVerdict::Green))
+                .map(|o| o.lane.as_str())
+                .collect();
+            println!(
+                "  ⇉ concurrent-lanes: {} lane(s) GREEN, spans {} — {}",
+                green_lanes.len(),
+                if overlapped {
+                    "OVERLAP (real concurrency)"
+                } else {
+                    "NO overlap (serialized — investigate)"
+                },
+                if overlapped {
+                    ""
+                } else {
+                    "the parallelism was a no-op this pass"
+                },
+            );
+            // The GREEN lanes' MRs = every queued MR whose lane landed green. Disjoint across lanes, so
+            // they combine into one clean tree the existing FF-push lands (single-writer, serial push).
+            let green_set: std::collections::HashSet<&str> = green_lanes.iter().copied().collect();
+            let green_members: Vec<BatchMr> = all_batches
+                .iter()
+                .filter(|b| green_set.contains(b.lane.as_str()))
+                .flat_map(|b| b.members.iter().cloned())
+                .collect();
+            if !green_members.is_empty() {
+                let _ = git_wt(&["fetch", "origin", "main", "--quiet"]);
+                let _ = git_wt(&["reset", "--hard", "origin/main"]);
+                let cl_base = head_sha();
+                let mut applied: Vec<BatchMr> = Vec::new();
+                for m in &green_members {
+                    let _ = git_wt(&["fetch", "origin", &m.r#ref, "--quiet"]);
+                    let pre = head_sha();
+                    if cherry_pick_ref_onto_base(&git_wt, "origin/main", &m.r#ref, &pre) {
+                        applied.push(m.clone());
+                    }
+                }
+                if !applied.is_empty() {
+                    let cl_sha = head_sha();
+                    let pushed = git_wt(&["push", "origin", "HEAD:main"])
+                        .map(|o| o.status.success())
+                        .unwrap_or(false);
+                    if pushed {
+                        let _ = git_wt(&["reset", "--hard", "HEAD"]);
+                        for m in &applied {
+                            ack(
+                                fleet,
+                                &m.file,
+                                "merged",
+                                &cl_sha,
+                                &format!(
+                                    "landed via CONCURRENT-LANES (its parallel lane gated GREEN alongside {} lane(s)) + PUBLISHED to origin/main @ {cl_sha}",
+                                    plan.len()
+                                ),
+                            );
+                            landed_by_batch.insert(m.file.clone());
+                            merged += 1;
+                            if json {
+                                records.push(serde_json::json!({
+                                    "file": m.file, "from": m.from, "ref": m.r#ref, "verdict": "merged", "sha": cl_sha, "concurrent_lanes": green_lanes.len()
+                                }));
+                            }
+                        }
+                        println!(
+                            "  ⇉ concurrent-lanes MERGED {} MR(s) from {} green lane(s) @ {cl_sha}",
+                            applied.len(),
+                            green_lanes.len()
+                        );
+                    } else {
+                        // Non-FF (origin advanced mid-gate) → land nothing here; per-MR loop retries.
+                        let _ = git_wt(&["reset", "--hard", &cl_base]);
+                        println!(
+                            "  ⇉ concurrent-lanes: green but push non-FF (origin advanced) — per-MR fallback this pass."
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // The single-combined-batch prelude runs ONLY if the concurrent-lanes prelude above didn't already land
+    // this pass (else it would re-gate a tree whose members are now on origin/main). `landed_by_batch`
+    // empty ⇒ concurrent-lanes was off / found <2 lanes / non-FF — so the proven single-batch path handles
+    // the remainder exactly as before.
+    if landed_by_batch.is_empty() && batch && publish_origin && queued.len() >= 2 {
         let members = select_batch_members(&queued, batch_member_cap);
         if members.len() >= 2 {
             // Re-form the combined tree = origin/main + each member's RANGE, cherry-picked in order.
