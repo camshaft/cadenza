@@ -264,46 +264,20 @@ pub fn compile(text: &str, from: &str) -> Result<CompileResult, JsError> {
     };
 
     // Binary AST -> WebAssembly component. Use the full `compile` entry so warnings ride alongside a
-    // successful component too.
-    //
-    // EMBED DWARF DEBUG INFO whenever we have a span table (a text surface — the guide's case): pass
-    // the `spans` artifact and request `WasmDebug`, so the emitted component carries `.debug_line` /
-    // `.debug_info` sections. Chrome's "C/C++ DevTools Support (DWARF)" extension then steps through the
-    // ACTUAL Cadenza source and prints scalar arguments — the whole point of running the guide's
-    // programs in the browser debugger. The sections are inert (they change no executed byte) and
-    // strippable, so this costs nothing at runtime; a binary/output-only surface has no spans and falls
-    // back to a plain component (`DESIGN-debug-info-rcdzc.md`, Mode E).
+    // successful component too; `push_spans_target` embeds DWARF when we have a span table (a text
+    // surface — the guide's case), and `finish_compile` maps diagnostics + extracts the component.
     let mut inputs = vec![rcdzc::Artifact::new(
         rcdzc::Artifact::KIND_AST,
         "main",
         ast_bytes,
     )];
-    let target = match &spans {
-        Some(span_table) => {
-            inputs.push(rcdzc::Artifact::new(
-                rcdzc::spans::KIND_SPANS,
-                "main",
-                rcdzc::spans::encode(&span_data_of(text, span_table)),
-            ));
-            rcdzc::Target::WasmDebug
-        }
-        None => rcdzc::Target::Wasm,
-    };
-    let out = rcdzc::compile(&inputs, &[target]);
-    let diagnostics = out
-        .diagnostics
-        .iter()
-        .map(|d| to_js_diag(d, spans.as_ref(), from == Format::Ml))
-        .collect();
-    // Both `Wasm` and `WasmDebug` produce a `component`-kinded artifact (a debug component is a
-    // decorated component, not a new kind), so the artifact lookup is the same either way.
-    let component = out
-        .artifact(rcdzc::Target::Wasm.artifact_kind())
-        .map(|b| b.to_vec());
-    Ok(CompileResult {
-        component,
-        diagnostics,
-    })
+    let target = push_spans_target(&mut inputs, text, &spans);
+    Ok(finish_compile(
+        &inputs,
+        target,
+        spans.as_ref(),
+        from == Format::Ml,
+    ))
 }
 
 /// A codeless error [`CompileResult`] carrying one diagnostic anchored at `[from_b, to_b)` — the uniform
@@ -311,21 +285,7 @@ pub fn compile(text: &str, from: &str) -> Result<CompileResult, JsError> {
 fn compile_error(message: String, from_b: u32, to_b: u32) -> CompileResult {
     CompileResult {
         component: None,
-        diagnostics: vec![Diagnostic {
-            error: true,
-            code: String::new(),
-            message,
-            node: u32::MAX,
-            from: from_b,
-            to: to_b,
-            fix_replacement: String::new(),
-            fix_prefix: String::new(),
-            fix_suffix: String::new(),
-            fix_from: 0,
-            fix_to: 0,
-            fix_verified: false,
-            fix_kind: String::new(),
-        }],
+        diagnostics: vec![codeless_error(message, from_b, to_b)],
     }
 }
 
@@ -391,17 +351,7 @@ pub fn compile_with_preloaded(
     )];
     // Embed DWARF for the USER model (the buffer the browser debugger steps through); preloaded library
     // modules carry no spans (they aren't the source under edit), so the debug info stays about the model.
-    let target = match &spans {
-        Some(span_table) => {
-            inputs.push(rcdzc::Artifact::new(
-                rcdzc::spans::KIND_SPANS,
-                "main",
-                rcdzc::spans::encode(&span_data_of(text, span_table)),
-            ));
-            rcdzc::Target::WasmDebug
-        }
-        None => rcdzc::Target::Wasm,
-    };
+    let target = push_spans_target(&mut inputs, text, &spans);
 
     // Each preloaded module → an `ast` artifact NAMED by its module name (the link target of an
     // `import from "<name>"`). A parse failure names the module so the user knows which library broke.
@@ -433,19 +383,12 @@ pub fn compile_with_preloaded(
         b"main".to_vec(),
     ));
 
-    let out = rcdzc::compile(&inputs, &[target]);
-    let diagnostics = out
-        .diagnostics
-        .iter()
-        .map(|d| to_js_diag(d, spans.as_ref(), from == Format::Ml))
-        .collect();
-    let component = out
-        .artifact(rcdzc::Target::Wasm.artifact_kind())
-        .map(|b| b.to_vec());
-    Ok(CompileResult {
-        component,
-        diagnostics,
-    })
+    Ok(finish_compile(
+        &inputs,
+        target,
+        spans.as_ref(),
+        from == Format::Ml,
+    ))
 }
 
 /// The result of a TEST compile: the component (its boundary laid out from the program's `@test` defs, not
@@ -488,21 +431,7 @@ pub fn compile_tests(text: &str, from: &str) -> Result<TestCompileResult, JsErro
             let (from_b, to_b) = ml_parse_error_span(text, from).unwrap_or((0, 0));
             return Ok(TestCompileResult {
                 component: None,
-                diagnostics: vec![Diagnostic {
-                    error: true,
-                    code: String::new(),
-                    message: msg,
-                    node: u32::MAX,
-                    from: from_b,
-                    to: to_b,
-                    fix_replacement: String::new(),
-                    fix_prefix: String::new(),
-                    fix_suffix: String::new(),
-                    fix_from: 0,
-                    fix_to: 0,
-                    fix_verified: false,
-                    fix_kind: String::new(),
-                }],
+                diagnostics: vec![codeless_error(msg, from_b, to_b)],
                 nullary_test_names: Vec::new(),
                 param_test_names: Vec::new(),
             });
@@ -898,24 +827,7 @@ pub fn repl_eval(
     let from = parse_format(from)?;
 
     // A parse failure in either piece → one codeless error diagnostic (uniform with `compile`).
-    let repl_parse_err = |msg: String| CompileResult {
-        component: None,
-        diagnostics: vec![Diagnostic {
-            error: true,
-            code: String::new(),
-            message: msg,
-            node: u32::MAX,
-            from: 0,
-            to: 0,
-            fix_replacement: String::new(),
-            fix_prefix: String::new(),
-            fix_suffix: String::new(),
-            fix_from: 0,
-            fix_to: 0,
-            fix_verified: false,
-            fix_kind: String::new(),
-        }],
-    };
+    let repl_parse_err = |msg: String| compile_error(msg, 0, 0);
 
     // Parse both pieces into their own arenas (surface-aware, spanless — the REPL module is freshly
     // synthesized, so its spans aren't the buffer's and aren't needed for the run).
@@ -1008,21 +920,7 @@ pub fn diagnostics(text: &str, from: &str) -> Result<Vec<Diagnostic>, JsError> {
     let (ast_bytes, spans) = match parse_spanned(text, from) {
         Ok(pair) => pair,
         Err(msg) => {
-            return Ok(vec![Diagnostic {
-                error: true,
-                code: String::new(),
-                message: msg,
-                node: u32::MAX,
-                from: 0,
-                to: 0,
-                fix_replacement: String::new(),
-                fix_prefix: String::new(),
-                fix_suffix: String::new(),
-                fix_from: 0,
-                fix_to: 0,
-                fix_verified: false,
-                fix_kind: String::new(),
-            }]);
+            return Ok(vec![codeless_error(msg, 0, 0)]);
         }
     };
     // Ride the first-class `Diagnostics` sidecar query (the same one `cdz check` runs) — a total fault
@@ -1265,6 +1163,56 @@ fn user_span_resolver(
             .as_ref()
             .and_then(|s| s.get(cadenza_syntax::ast::StructId(local)))
             .map(|s| (s.start as u32, s.end as u32))
+    }
+}
+
+/// EMBED DWARF DEBUG INFO whenever we have a span table (a text surface): push the `spans` artifact into
+/// `inputs` and select `Target::WasmDebug`, so the emitted component carries `.debug_line`/`.debug_info`
+/// sections (Chrome's DWARF extension steps through the actual Cadenza source). A binary/output-only
+/// surface has no spans and gets a plain `Target::Wasm`. The sections are inert + strippable, so this
+/// costs nothing at runtime (`DESIGN-debug-info-rcdzc.md`, Mode E). Shared by `compile` /
+/// `compile_with_preloaded`, which both DWARF the user `main` model.
+fn push_spans_target(
+    inputs: &mut Vec<rcdzc::Artifact>,
+    text: &str,
+    spans: &Option<cadenza_syntax::spans::SpanTable>,
+) -> rcdzc::Target {
+    match spans {
+        Some(span_table) => {
+            inputs.push(rcdzc::Artifact::new(
+                rcdzc::spans::KIND_SPANS,
+                "main",
+                rcdzc::spans::encode(&span_data_of(text, span_table)),
+            ));
+            rcdzc::Target::WasmDebug
+        }
+        None => rcdzc::Target::Wasm,
+    }
+}
+
+/// Run the compile and project its output into a [`CompileResult`]: map every diagnostic to its JS form
+/// (source-ranged via `spans`) and extract the emitted component. Both `Wasm` and `WasmDebug` produce a
+/// `component`-kinded artifact (a debug component is a decorated component, not a new kind), so the
+/// artifact lookup is the same either way. The shared compile-epilogue behind `compile` /
+/// `compile_with_preloaded`.
+fn finish_compile(
+    inputs: &[rcdzc::Artifact],
+    target: rcdzc::Target,
+    spans: Option<&cadenza_syntax::spans::SpanTable>,
+    is_ml: bool,
+) -> CompileResult {
+    let out = rcdzc::compile(inputs, &[target]);
+    let diagnostics = out
+        .diagnostics
+        .iter()
+        .map(|d| to_js_diag(d, spans, is_ml))
+        .collect();
+    let component = out
+        .artifact(rcdzc::Target::Wasm.artifact_kind())
+        .map(|b| b.to_vec());
+    CompileResult {
+        component,
+        diagnostics,
     }
 }
 
