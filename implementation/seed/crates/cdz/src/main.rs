@@ -54,6 +54,24 @@ mod doc_module;
 /// The unified tool. The name reported in tool-level diagnostics is `cdz`.
 const PROG: &str = "cdz";
 
+/// Load a program with its span table via [`load_program_spanned`], or PRINT the error to stderr and
+/// `return ExitCode::FAILURE` from the enclosing command handler. Expands to the load result tuple
+/// `(source, arenas, span_table)` on success — the shared load-or-bail preamble every span-mapped query
+/// handler (`type`, `uses`, `def`, `scope`, `exports`, `symbols`, …) opens with. Only usable in a fn that
+/// returns `ExitCode` (the early return is `ExitCode::FAILURE`); a handler returning something else keeps
+/// its own `match`.
+macro_rules! load_spanned_or_bail {
+    ($file:expr) => {
+        match load_program_spanned($file) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("{PROG}: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+    };
+}
+
 /// An RAII guard that best-effort removes a temp path when dropped — used by the driver-scaffolding
 /// paths (`run_ml`, `chor`, the sandboxed-build queries) that write pid-stamped temp files/dirs and must
 /// clean them on EVERY exit path (success, error, or panic-unwind). `RemoveOnDrop::file` removes a file,
@@ -1942,13 +1960,7 @@ fn run_compile(args: compiler_cli::CompileArgs) -> ExitCode {
         if is_source_file(spec) {
             // Parse the source in-process, keeping the span table (the whole-program form, as the gate
             // and the semantic queries use).
-            let (source, arenas, spantable) = match load_program_spanned(spec) {
-                Ok(t) => t,
-                Err(e) => {
-                    eprintln!("{PROG}: {e}");
-                    return ExitCode::FAILURE;
-                }
-            };
+            let (source, arenas, spantable) = load_spanned_or_bail!(spec);
             let name = program_name(spec);
             inputs.push(rcdzc::Artifact::new(
                 rcdzc::Artifact::KIND_AST,
@@ -2007,13 +2019,7 @@ fn compile_source_specs(
 ) -> ExitCode {
     let mut inputs: Vec<rcdzc::Artifact> = Vec::new();
     for spec in specs {
-        let (source, arenas, spantable) = match load_program_spanned(spec) {
-            Ok(t) => t,
-            Err(e) => {
-                eprintln!("{PROG}: {e}");
-                return ExitCode::FAILURE;
-            }
-        };
+        let (source, arenas, spantable) = load_spanned_or_bail!(spec);
         let name = program_name(spec);
         inputs.push(rcdzc::Artifact::new(
             rcdzc::Artifact::KIND_AST,
@@ -7199,13 +7205,7 @@ fn run_type(args: &TypeArgs) -> ExitCode {
 /// rendered type with the node's source `line:col-line:col` range. The offset→node split keeps the
 /// compiler span-free while the type is a node-identity query (`DESIGN-sidecar-api.md`).
 fn run_type_at(args: &TypeAtArgs) -> ExitCode {
-    let (source, arenas, spans) = match load_program_spanned(&args.file) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("{PROG}: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let (source, arenas, spans) = load_spanned_or_bail!(&args.file);
     let Some(node) = spans.node_at_offset(args.offset) else {
         eprintln!(
             "{PROG}: no node at byte offset {} in {}",
@@ -7375,13 +7375,7 @@ fn run_doc_module(args: &DocModuleArgs) -> ExitCode {
 /// the compiler span-free, exactly as `type-at`/`def` do. An empty result (a node that documents nothing)
 /// prints a "no documentation" line.
 fn run_doc_at(args: &DocAtOffsetArgs) -> ExitCode {
-    let (source, arenas, spans) = match load_program_spanned(&args.file) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("{PROG}: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let (source, arenas, spans) = load_spanned_or_bail!(&args.file);
     let _ = source; // doc output carries no span
     let Some(node) = spans.node_at_offset(args.offset) else {
         eprintln!(
@@ -7412,13 +7406,7 @@ fn run_doc_at(args: &DocAtOffsetArgs) -> ExitCode {
 /// `file:line:col` via the SpanTable this process kept. This is the payoff of holding both libraries in
 /// one process: the cross-process CLI could only print node ids.
 fn run_uses(args: &UsesArgs) -> ExitCode {
-    let (source, arenas, spans) = match load_program_spanned(&args.file) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("{PROG}: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let (source, arenas, spans) = load_spanned_or_bail!(&args.file);
     let out = run_sidecar(
         &arenas,
         rcdzc::Request::Query(rcdzc::sidecar::Query::UsesOf {
@@ -8172,13 +8160,7 @@ fn check_one(file: &str, json: bool, verify_fixes: bool) -> (bool, Vec<String>) 
 /// fixes until none remain or nothing changes. The result is written back, or previewed with `--dry-run`
 /// (full text) / `--diff` (a unified diff). Exit 0 on success.
 fn run_fix(args: &FixArgs) -> ExitCode {
-    let (source, arenas, _) = match load_program_spanned(&args.file) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("{PROG}: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let (source, arenas, _) = load_spanned_or_bail!(&args.file);
     let is_ml = is_ml_source(&args.file);
     let surface = surface_of(&args.file);
     // The ORIGINAL program's diagnostic set — the baseline every `--all` candidate is judged against
@@ -8342,13 +8324,7 @@ fn run_fix(args: &FixArgs) -> ExitCode {
 /// occurrence's node id, and maps THAT to a source `file:line:col`. The offset→node and id→location
 /// mapping stay at the boundary (span-owning); the compiler answers by node identity.
 fn run_def(args: &DefArgs) -> ExitCode {
-    let (source, arenas, spans) = match load_program_spanned(&args.file) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("{PROG}: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let (source, arenas, spans) = load_spanned_or_bail!(&args.file);
     let Some(node) = spans.node_at_offset(args.offset) else {
         eprintln!(
             "{PROG}: no node at byte offset {} in {}",
@@ -8401,13 +8377,7 @@ fn run_def(args: &DefArgs) -> ExitCode {
 /// each as `file:line:col: name : type` (innermost first — nearest enclosing binder). What an editor's
 /// autocomplete / scope panel rides on.
 fn run_scope(args: &ScopeArgs) -> ExitCode {
-    let (source, arenas, spans) = match load_program_spanned(&args.file) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("{PROG}: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let (source, arenas, spans) = load_spanned_or_bail!(&args.file);
     let Some(node) = spans.node_at_offset(args.offset) else {
         eprintln!(
             "{PROG}: no node at byte offset {} in {}",
@@ -8485,13 +8455,7 @@ fn run_scope(args: &ScopeArgs) -> ExitCode {
 /// its type + the def's name node), and prints `file:line:col: name : type` per export. The
 /// module-interface-at-a-glance view.
 fn run_exports(args: &ExportsArgs) -> ExitCode {
-    let (source, arenas, spans) = match load_program_spanned(&args.file) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("{PROG}: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let (source, arenas, spans) = load_spanned_or_bail!(&args.file);
     let out = run_sidecar(
         &arenas,
         rcdzc::Request::Query(rcdzc::sidecar::Query::Exports),
@@ -8560,13 +8524,7 @@ fn run_exports(args: &ExportsArgs) -> ExitCode {
 /// to a source location through the span table. The superset companion of `cdz exports` — it lists EVERY
 /// declaration (private ones too), not just the exported subset, so an editor can render a symbol tree.
 fn run_symbols(args: &SymbolsArgs) -> ExitCode {
-    let (source, arenas, spans) = match load_program_spanned(&args.file) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("{PROG}: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let (source, arenas, spans) = load_spanned_or_bail!(&args.file);
     let out = run_sidecar(
         &arenas,
         rcdzc::Request::Query(rcdzc::sidecar::Query::Symbols),
@@ -8645,13 +8603,7 @@ fn run_symbols(args: &SymbolsArgs) -> ExitCode {
 /// form: `file:line:col: name : type [widget=… range=[lo,hi] options=… default=…]` per site (the bracketed
 /// config only for present fields); `--json` emits one object per param with null-not-omitted config.
 fn run_param_manifest(args: &ParamManifestArgs) -> ExitCode {
-    let (source, arenas, spans) = match load_program_spanned(&args.file) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("{PROG}: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let (source, arenas, spans) = load_spanned_or_bail!(&args.file);
     let out = run_sidecar(
         &arenas,
         rcdzc::Request::Query(rcdzc::sidecar::Query::ParamManifest),
@@ -8799,13 +8751,7 @@ fn run_param_manifest(args: &ParamManifestArgs) -> ExitCode {
 /// runtime param `name: TYPE`, an erased compile-time param `const name = VALUE` — e.g. the concrete
 /// dictionary an ad-hoc-polymorphic call baked in). An unknown name reports "no such definition".
 fn run_instantiations(args: &InstantiationsArgs) -> ExitCode {
-    let (source, arenas, spans) = match load_program_spanned(&args.file) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("{PROG}: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let (source, arenas, spans) = load_spanned_or_bail!(&args.file);
     let out = run_sidecar(
         &arenas,
         rcdzc::Request::Query(rcdzc::sidecar::Query::Instantiations {
@@ -9005,13 +8951,7 @@ fn run_func_layout(args: &FuncLayoutArgs) -> ExitCode {
 /// maps each node id to a source location through the span table. A token whose node has no span is
 /// skipped (should not happen for a user leaf).
 fn run_highlight(args: &HighlightArgs) -> ExitCode {
-    let (source, arenas, spans) = match load_program_spanned(&args.file) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("{PROG}: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let (source, arenas, spans) = load_spanned_or_bail!(&args.file);
     let out = run_sidecar(
         &arenas,
         rcdzc::Request::Query(rcdzc::sidecar::Query::Highlight),
@@ -9881,13 +9821,7 @@ fn run_query_where(args: &syntax_cli::QueryArgs) -> ExitCode {
         }
     };
 
-    let (source, arenas, spans) = match load_program_spanned(&file) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("{PROG}: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let (source, arenas, spans) = load_spanned_or_bail!(&file);
 
     // Compile the structural pattern + any relational context (--inside/--has/…), then search.
     let pattern = match Pattern::compile(&args.pattern) {
