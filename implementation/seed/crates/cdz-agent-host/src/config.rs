@@ -64,6 +64,16 @@ pub struct DaemonConfig {
     /// this section always parses ahead of that (config first, subscriber follows — like `[observability]`).
     #[serde(default)]
     pub tracing: TracingConfig,
+    /// THE OUTPOST federation — the websocket transports that connect this node to peers/hubs (operator
+    /// directive: "the harness should be able to specify a hub and connect to it and start federating";
+    /// protocol = websockets). Defaults to disabled (a non-federating daemon binds no ws listener + dials no
+    /// hub). When enabled, `listen` opens an inbound peer listener and/or `hubs` boot-dials outbound hub
+    /// connections — the two transports [`WsListener`](crate::ws_listen) + `dial_hub`. Like `[observability]`
+    /// / `[tracing]`, this section always PARSES (feature-independent); the actual ws wiring the daemon does
+    /// from it is behind the `live-ws` feature — a build without it reports the config as unwireable at boot
+    /// rather than silently no-op'ing.
+    #[serde(default)]
+    pub federation: FederationConfig,
 }
 
 /// The durable-log backend — config-SELECTABLE (the operator's "selectable backends"): `memory` for dev,
@@ -522,6 +532,50 @@ pub enum TracingOutput {
     File { path: String },
 }
 
+/// THE OUTPOST federation config — the websocket transports that connect this node to the wider hivemind
+/// (operator directive: "the harness should be able to specify a hub and connect to it and start
+/// federating"; protocol = websockets). Two INDEPENDENT transports, either or both:
+/// - `listen` — bind an INBOUND peer listener ([`WsListener`](crate::ws_listen)) so peers/agents dial IN
+///   (the outpost's server surface). A no-auth transport, so — like the prometheus scrape port — a
+///   non-loopback bind must be a deliberate `allow_non_loopback` opt-in (the reducer's fold is what
+///   authorizes a connected peer; the bind posture is a defense-in-depth second acknowledgment).
+/// - `hubs` — a LIST of hub URLs this node boot-DIALS OUT to (`dial_hub`), federating outbound to each. A
+///   list (not one) so an outpost can federate to several hubs (the operator's "specify a hub" generalizes
+///   to N). Empty = dials nothing.
+///
+/// Disabled by default: a daemon with no `[federation]` section (or `enabled=false`) binds no listener and
+/// dials no hub (today's non-federating behavior). This section always PARSES (feature-independent, like
+/// `[observability]`/`[tracing]`); the ws wiring the daemon does from it is behind the `live-ws` feature — a
+/// build without it reports the config as unwireable at boot rather than silently ignoring a federation
+/// request. HOST = PLUMBING: this only selects which transports bind; ALL routing/federation/authz policy is
+/// the outpost reducer's fold (operator's emphasized constraint).
+#[derive(Debug, Clone, Deserialize, PartialEq, Default)]
+#[serde(deny_unknown_fields)]
+pub struct FederationConfig {
+    /// Enable federation transports. Default off — no listener bound, no hub dialed. When true, at least one
+    /// of `listen` / `hubs` must be configured (an enabled-but-empty federation section is a config error:
+    /// it selects no transport, so it can only be a mistake).
+    #[serde(default)]
+    pub enabled: bool,
+    /// The INBOUND peer-listener bind address (`host:port`, e.g. `"127.0.0.1:9800"`), if this node serves a
+    /// ws listener. `None` = no inbound listener (a dial-only outpost). A non-loopback bind for this
+    /// unauthenticated transport requires `allow_non_loopback` (validated below), mirroring the prometheus
+    /// scrape-port posture.
+    #[serde(default)]
+    pub listen: Option<String>,
+    /// Opt-in to a NON-loopback `listen` bind for the unauthenticated inbound peer transport. Default
+    /// `false`: a non-loopback bind without this is a validation error (an inbound peer port reachable from
+    /// off-box must be chosen by INTENT, not by omission — the reducer authorizes peers, but the bind surface
+    /// is a deliberate choice). Loopback binds ignore this flag.
+    #[serde(default)]
+    pub allow_non_loopback: bool,
+    /// The hub URLs this node boot-DIALS OUT to (`ws://host:port/…`), federating outbound to each. TOML: a
+    /// `hubs = ["ws://…", …]` array. Empty (the default) = dials no hub. Each entry is validated non-blank
+    /// when `enabled`.
+    #[serde(default)]
+    pub hubs: Vec<String>,
+}
+
 /// A config error — a bad path, unparseable TOML, or a semantic-validation failure. Stringly-typed (the
 /// daemon surfaces it to stderr + exits non-zero; there's no recovery from a bad config).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -718,6 +772,51 @@ impl DaemonConfig {
                 }
             }
         }
+        if self.federation.enabled {
+            // An enabled federation section must select at least ONE transport (a listener OR a hub) — an
+            // enabled-but-empty section binds nothing, so it can only be a mistake.
+            let has_listen = self
+                .federation
+                .listen
+                .as_ref()
+                .is_some_and(|s| !s.trim().is_empty());
+            if !has_listen && self.federation.hubs.is_empty() {
+                return Err(ConfigError(
+                    "[federation] enabled=true needs at least one transport — a `listen` bind address \
+                     and/or one or more `hubs` URLs".into(),
+                ));
+            }
+            // A present-but-blank listen bind is a mistake (it reads as "serve a listener" but names no
+            // address). Reject it distinctly from the unset (dial-only) case above.
+            if let Some(bind) = &self.federation.listen {
+                if bind.trim().is_empty() {
+                    return Err(ConfigError(
+                        "[federation] listen is set but blank — give a bind address (e.g. \
+                         \"127.0.0.1:9800\") or omit it for a dial-only outpost"
+                            .into(),
+                    ));
+                }
+                // A non-loopback bind for this UNAUTHENTICATED inbound peer transport needs the explicit
+                // opt-in (same posture as the prometheus scrape port — off-box reachability by INTENT, not
+                // omission). An unresolvable bind is treated as non-loopback (fail-closed).
+                if !self.federation.allow_non_loopback && !bind_is_loopback(bind) {
+                    return Err(ConfigError(format!(
+                        "[federation] listen binds a non-loopback address {bind:?} for an UNAUTHENTICATED \
+                         inbound peer transport — set allow_non_loopback = true to opt in deliberately, or \
+                         bind a loopback address (e.g. 127.0.0.1:9800)"
+                    )));
+                }
+            }
+            // Each hub URL must be non-blank (a blank entry names no dial target).
+            for (i, hub) in self.federation.hubs.iter().enumerate() {
+                if hub.trim().is_empty() {
+                    return Err(ConfigError(format!(
+                        "[federation] hubs[{i}] is blank — each hub entry needs a ws URL (e.g. \
+                         \"ws://hub.local:9800/\")"
+                    )));
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -746,6 +845,141 @@ mod tests {
         assert_eq!(cfg.tracing.filter, "info");
         assert_eq!(cfg.tracing.format, TracingFormat::Compact);
         assert_eq!(cfg.tracing.output, TracingOutput::Stderr);
+        // [federation] default = disabled: no listener, no hubs (non-federating daemon).
+        assert!(!cfg.federation.enabled);
+        assert_eq!(cfg.federation.listen, None);
+        assert!(cfg.federation.hubs.is_empty());
+    }
+
+    #[test]
+    fn federation_selects_a_listener_and_hubs() {
+        let cfg = DaemonConfig::from_toml_str(
+            r#"
+            [federation]
+            enabled = true
+            listen = "127.0.0.1:9800"
+            hubs = ["ws://hub-a.local:9800/", "ws://hub-b.local:9800/"]
+            "#,
+        )
+        .expect("a federation config with a loopback listener + hubs parses");
+        assert!(cfg.federation.enabled);
+        assert_eq!(cfg.federation.listen.as_deref(), Some("127.0.0.1:9800"));
+        assert_eq!(
+            cfg.federation.hubs,
+            vec![
+                "ws://hub-a.local:9800/".to_string(),
+                "ws://hub-b.local:9800/".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn federation_dial_only_needs_no_listener() {
+        // A pure outbound outpost: dials hubs, binds no inbound listener. Valid (one transport is selected).
+        let cfg = DaemonConfig::from_toml_str(
+            r#"
+            [federation]
+            enabled = true
+            hubs = ["ws://hub.local:9800/"]
+            "#,
+        )
+        .expect("a dial-only federation config parses");
+        assert!(cfg.federation.enabled);
+        assert_eq!(cfg.federation.listen, None);
+        assert_eq!(cfg.federation.hubs.len(), 1);
+    }
+
+    #[test]
+    fn federation_listen_only_needs_no_hubs() {
+        // A pure inbound outpost: serves a listener, dials nothing. Valid (one transport is selected).
+        let cfg = DaemonConfig::from_toml_str(
+            r#"
+            [federation]
+            enabled = true
+            listen = "127.0.0.1:9800"
+            "#,
+        )
+        .expect("a listen-only federation config parses");
+        assert!(cfg.federation.enabled);
+        assert_eq!(cfg.federation.listen.as_deref(), Some("127.0.0.1:9800"));
+        assert!(cfg.federation.hubs.is_empty());
+    }
+
+    #[test]
+    fn federation_enabled_but_no_transport_is_rejected() {
+        // enabled=true with neither a listener nor hubs selects no transport → a loud config error.
+        let err = DaemonConfig::from_toml_str(
+            r#"
+            [federation]
+            enabled = true
+            "#,
+        )
+        .expect_err("an enabled federation section with no transport must be rejected");
+        assert!(
+            err.0.contains("[federation]") && err.0.contains("at least one transport"),
+            "error names the section + the missing-transport reason: {err:?}"
+        );
+    }
+
+    #[test]
+    fn federation_non_loopback_listen_needs_opt_in() {
+        // A non-loopback inbound peer bind for this UNAUTHENTICATED transport is rejected without the
+        // explicit allow_non_loopback opt-in (same posture as the prometheus scrape port).
+        let err = DaemonConfig::from_toml_str(
+            r#"
+            [federation]
+            enabled = true
+            listen = "0.0.0.0:9800"
+            "#,
+        )
+        .expect_err("a non-loopback listen without the opt-in must be rejected");
+        assert!(
+            err.0.contains("non-loopback") && err.0.contains("allow_non_loopback"),
+            "error explains the non-loopback opt-in requirement: {err:?}"
+        );
+        // WITH the opt-in it parses (a deliberate off-box inbound peer transport).
+        let cfg = DaemonConfig::from_toml_str(
+            r#"
+            [federation]
+            enabled = true
+            listen = "0.0.0.0:9800"
+            allow_non_loopback = true
+            "#,
+        )
+        .expect("a non-loopback listen WITH the opt-in parses");
+        assert!(cfg.federation.allow_non_loopback);
+    }
+
+    #[test]
+    fn federation_blank_hub_entry_is_rejected() {
+        let err = DaemonConfig::from_toml_str(
+            r#"
+            [federation]
+            enabled = true
+            hubs = ["ws://hub.local:9800/", ""]
+            "#,
+        )
+        .expect_err("a blank hub entry must be rejected");
+        assert!(
+            err.0.contains("hubs[1]") && err.0.contains("blank"),
+            "error names the offending hub index: {err:?}"
+        );
+    }
+
+    #[test]
+    fn federation_disabled_ignores_transports() {
+        // A disabled section with transports present still parses (they're inert) — enabling is the switch,
+        // so an operator can pre-write the transports and flip `enabled` without re-shaping the section.
+        let cfg = DaemonConfig::from_toml_str(
+            r#"
+            [federation]
+            enabled = false
+            listen = "0.0.0.0:9800"
+            hubs = [""]
+            "#,
+        )
+        .expect("a disabled federation section is not validated (transports inert)");
+        assert!(!cfg.federation.enabled);
     }
 
     #[test]
