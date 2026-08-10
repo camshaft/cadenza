@@ -6029,9 +6029,7 @@ fn emit_tail(
                 // must already cover the binding slot or a compound/`if` initializer reuses the binding's
                 // own slot at the wrong width (the let-bound-if-tuple invalid-wasm miscompile).
                 scratch_ty.insert(slot, vt);
-                if slot + 1 > *high {
-                    *high = slot + 1;
-                }
+                *high = (*high).max(slot + 1);
                 emit(
                     db,
                     *value,
@@ -7375,9 +7373,7 @@ fn emit(
             );
             if reclaim {
                 let list_slot = base;
-                if list_slot + 1 > *high {
-                    *high = list_slot + 1;
-                }
+                *high = (*high).max(list_slot + 1);
                 scratch_ty.insert(list_slot, ValType::I32);
                 emit(db, operand, slots, base + 1, high, scratch_ty, layout, out)?; // [list]
                 out.push(Lir::LocalTee(list_slot)); // [list], list_slot = the owned list
@@ -7446,9 +7442,7 @@ fn emit(
             // extracted by shift/mask). The byte buffer handle is THREADED ON THE STACK: `bytes-set`
             // returns the buffer, so each write leaves `[buf]` for the next — exactly like `BytesOf`.
             let val_slot = base;
-            if base + 1 > *high {
-                *high = base + 1;
-            }
+            *high = (*high).max(base + 1);
             scratch_ty.insert(val_slot, ValType::I64);
             out.push(Lir::ConstI32(total as i32)); // [total]
             out.push(Lir::CallImport(OP_BYTES_ALLOC)); // → [buf]
@@ -7533,9 +7527,7 @@ fn emit(
             let total_bytes = total_bits / 8; // byte-aligned (CDZ0220) — exact
             let val_slot = base;
             let acc_slot = base + 1;
-            if base + 2 > *high {
-                *high = base + 2;
-            }
+            *high = (*high).max(base + 2);
             scratch_ty.insert(val_slot, ValType::I64);
             scratch_ty.insert(acc_slot, ValType::I64);
             out.push(Lir::ConstI32(total_bytes as i32)); // [total]
@@ -7688,9 +7680,7 @@ fn emit(
             // dup(handle) pops the handle and rc++'s it, returning nothing — so `tee` it into a scratch
             // slot, dup that copy, then get it back as the slice source. The slot is typed i32 (a handle).
             let handle_slot = base;
-            if handle_slot + 1 > *high {
-                *high = handle_slot + 1;
-            }
+            *high = (*high).max(handle_slot + 1);
             scratch_ty.insert(handle_slot, ValType::I32);
             // §4a DYNAMIC OFFSET: `start = byte_offset + off_plus`, so the tail is `bytes-len - start`.
             // Materialize `off_plus` (an i64 count) into an i32 scratch slot once, reused for start + length.
@@ -7698,9 +7688,7 @@ fn emit(
                 None => (base + 1, None),
                 Some(op) => {
                     let off_slot = base + 1;
-                    if off_slot + 1 > *high {
-                        *high = off_slot + 1;
-                    }
+                    *high = (*high).max(off_slot + 1);
                     scratch_ty.insert(off_slot, ValType::I32);
                     emit(db, op, slots, base + 2, high, scratch_ty, layout, out)?; // [off:i64]
                     out.push(Lir::I32WrapI64); // [off:i32]
@@ -7742,9 +7730,7 @@ fn emit(
             len,
         } => {
             let handle_slot = base;
-            if handle_slot + 1 > *high {
-                *high = handle_slot + 1;
-            }
+            *high = (*high).max(handle_slot + 1);
             scratch_ty.insert(handle_slot, ValType::I32);
             // §4a DYNAMIC OFFSET: `start = byte_offset + off_plus`. Materialize `off_plus` (an i64 count)
             // into an i32 scratch slot once (used at the single `start` push). `None` = the static case.
@@ -7752,9 +7738,7 @@ fn emit(
                 None => (base + 1, None),
                 Some(op) => {
                     let off_slot = base + 1;
-                    if off_slot + 1 > *high {
-                        *high = off_slot + 1;
-                    }
+                    *high = (*high).max(off_slot + 1);
                     scratch_ty.insert(off_slot, ValType::I32);
                     emit(db, op, slots, base + 2, high, scratch_ty, layout, out)?; // [off:i64]
                     out.push(Lir::I32WrapI64); // [off:i32]
@@ -7788,9 +7772,7 @@ fn emit(
             );
             if reclaim {
                 let bytes_slot = base;
-                if bytes_slot + 1 > *high {
-                    *high = bytes_slot + 1;
-                }
+                *high = (*high).max(bytes_slot + 1);
                 scratch_ty.insert(bytes_slot, ValType::I32);
                 emit(db, operand, slots, base + 1, high, scratch_ty, layout, out)?; // [bytes]
                 out.push(Lir::LocalTee(bytes_slot)); // [bytes], bytes_slot = the owned bytes
@@ -7823,9 +7805,7 @@ fn emit(
             let pos_slot = base + 1;
             let bytelen_slot = base + 2;
             let count_slot = base + 3;
-            if count_slot + 1 > *high {
-                *high = count_slot + 1;
-            }
+            *high = (*high).max(count_slot + 1);
             scratch_ty.insert(str_slot, ValType::I32);
             for s in [pos_slot, bytelen_slot, count_slot] {
                 scratch_ty.insert(s, ValType::I64);
@@ -7925,9 +7905,7 @@ fn emit(
             // claimed at `idx_base` (above `list`'s scratch) so it can't alias a scratch slot `list`'s emit
             // typed differently.
             let idx_slot = idx_base;
-            if idx_slot + 1 > *high {
-                *high = idx_slot + 1;
-            }
+            *high = (*high).max(idx_slot + 1);
             scratch_ty.insert(idx_slot, ValType::I64);
             out.push(Lir::LocalTee(idx_slot)); // [list, index] — keep a copy in the slot
             out.push(Lir::ConstI64(0x1_0000_0000)); // 2^32
@@ -8081,9 +8059,7 @@ fn emit(
                 Some(s) => (s, base, base + 1, base + 2),
                 None => (base, base + 1, base + 2, base + 3),
             };
-            if elem_slot + 1 > *high {
-                *high = elem_slot + 1;
-            }
+            *high = (*high).max(elem_slot + 1);
             if reuse_list.is_none() {
                 scratch_ty.insert(list_slot, ValType::I32);
             }
@@ -8237,9 +8213,7 @@ fn emit(
         // handle (i32), teed before the op and dropped after when owned.
         Core::MapRemove { map, key, key_ty } => {
             let key_slot = base;
-            if key_slot + 1 > *high {
-                *high = key_slot + 1;
-            }
+            *high = (*high).max(key_slot + 1);
             scratch_ty.insert(key_slot, ValType::I32);
             // `key` floats its scratch ABOVE `map`'s high-water (disjoint-slot discipline, as
             // `Core::MapInsert`/`Core::Tuple`): `map` may be a recursive-call handle stashed in an i32
@@ -8282,9 +8256,7 @@ fn emit(
             let reclaim = matches!(heap_operand_ownership(db, map), Ok(HandleOwnership::Owned));
             if reclaim {
                 let map_slot = base;
-                if map_slot + 1 > *high {
-                    *high = map_slot + 1;
-                }
+                *high = (*high).max(map_slot + 1);
                 scratch_ty.insert(map_slot, ValType::I32);
                 emit(db, map, slots, base + 1, high, scratch_ty, layout, out)?; // [map]
                 out.push(Lir::LocalTee(map_slot)); // [map], map_slot = the owned map
@@ -8356,9 +8328,7 @@ fn emit(
         // after the borrow, exactly like `SetContains`. Scratch: the element handle (i32).
         Core::SetRemove { set, elem, elem_ty } => {
             let elem_slot = base;
-            if elem_slot + 1 > *high {
-                *high = elem_slot + 1;
-            }
+            *high = (*high).max(elem_slot + 1);
             scratch_ty.insert(elem_slot, ValType::I32);
             // `elem` floats its scratch ABOVE `set`'s high-water (disjoint-slot discipline, as
             // `Core::SetInsert`/`Core::Tuple`): `set` may be a recursive-call handle in an i32 `dup`
@@ -8399,9 +8369,7 @@ fn emit(
             let reclaim = matches!(heap_operand_ownership(db, set), Ok(HandleOwnership::Owned));
             if reclaim {
                 let set_slot = base;
-                if set_slot + 1 > *high {
-                    *high = set_slot + 1;
-                }
+                *high = (*high).max(set_slot + 1);
                 scratch_ty.insert(set_slot, ValType::I32);
                 emit(db, set, slots, base + 1, high, scratch_ty, layout, out)?; // [set]
                 out.push(Lir::LocalTee(set_slot)); // [set], set_slot = the owned set
@@ -8441,9 +8409,7 @@ fn emit(
             let set_owned = matches!(heap_operand_ownership(db, set), Ok(HandleOwnership::Owned));
             let desc_slot = base;
             let set_slot = base + 1;
-            if set_slot + 1 > *high {
-                *high = set_slot + 1;
-            }
+            *high = (*high).max(set_slot + 1);
             scratch_ty.insert(desc_slot, ValType::I32);
             if set_owned {
                 scratch_ty.insert(set_slot, ValType::I32);
@@ -8492,9 +8458,7 @@ fn emit(
             let map_owned = matches!(heap_operand_ownership(db, map), Ok(HandleOwnership::Owned));
             let desc_slot = base;
             let map_slot = base + 1;
-            if map_slot + 1 > *high {
-                *high = map_slot + 1;
-            }
+            *high = (*high).max(map_slot + 1);
             scratch_ty.insert(desc_slot, ValType::I32);
             if map_owned {
                 scratch_ty.insert(map_slot, ValType::I32);
@@ -8527,9 +8491,7 @@ fn emit(
         Core::SetContains { set, elem, elem_ty } => {
             let set_slot = base;
             let elem_slot = base + 1;
-            if elem_slot + 1 > *high {
-                *high = elem_slot + 1;
-            }
+            *high = (*high).max(elem_slot + 1);
             scratch_ty.insert(set_slot, ValType::I32);
             scratch_ty.insert(elem_slot, ValType::I32);
             // `set-contains` BORROWS BOTH the set and the element and returns a bool (nothing borrows out of
@@ -8601,9 +8563,7 @@ fn emit(
             let key_slot = base;
             let val_slot = base + 1;
             let map_slot = base + 2;
-            if map_slot + 1 > *high {
-                *high = map_slot + 1;
-            }
+            *high = (*high).max(map_slot + 1);
             scratch_ty.insert(key_slot, ValType::I32);
             scratch_ty.insert(val_slot, ValType::I32);
             scratch_ty.insert(map_slot, ValType::I32);
@@ -8704,9 +8664,7 @@ fn emit(
                 Some(s) => (s, base, base + 1),
                 None => (base, base + 1, base + 2),
             };
-            if index_slot + 1 > *high {
-                *high = index_slot + 1;
-            }
+            *high = (*high).max(index_slot + 1);
             if reuse_bytes.is_none() {
                 scratch_ty.insert(bytes_slot, ValType::I32);
             }
@@ -8775,9 +8733,7 @@ fn emit(
             let scalar_slot = base + 3;
             let bytelen_slot = base + 4;
             let spanstart_slot = base + 5;
-            if spanstart_slot + 1 > *high {
-                *high = spanstart_slot + 1;
-            }
+            *high = (*high).max(spanstart_slot + 1);
             scratch_ty.insert(str_slot, ValType::I32);
             for s in [
                 index_slot,
@@ -8956,9 +8912,7 @@ fn emit(
             let scalar_slot = base + 4;
             let bytelen_slot = base + 5;
             let spanstart_slot = base + 6;
-            if spanstart_slot + 1 > *high {
-                *high = spanstart_slot + 1;
-            }
+            *high = (*high).max(spanstart_slot + 1);
             scratch_ty.insert(str_slot, ValType::I32);
             for s in [
                 start_slot,
@@ -9390,9 +9344,7 @@ fn emit(
             disc_none,
         } => {
             let result_slot = base;
-            if result_slot + 1 > *high {
-                *high = result_slot + 1;
-            }
+            *high = (*high).max(result_slot + 1);
             scratch_ty.insert(result_slot, ValType::I32);
             emit(db, bytes, slots, base + 1, high, scratch_ty, layout, out)?; // [buf]
             out.push(Lir::CallImport(OP_STR_FROM_BYTES)); // [handle-or-NULL] (consumes buf)
@@ -9441,9 +9393,7 @@ fn emit(
             let start_slot = base + 1;
             let len_slot = base + 2;
             let bytelen_slot = base + 3;
-            if bytelen_slot + 1 > *high {
-                *high = bytelen_slot + 1;
-            }
+            *high = (*high).max(bytelen_slot + 1);
             scratch_ty.insert(bytes_slot, ValType::I32);
             scratch_ty.insert(start_slot, ValType::I64);
             scratch_ty.insert(len_slot, ValType::I64);
@@ -9552,9 +9502,7 @@ fn emit(
                 );
             if reclaim {
                 let agg_slot = base;
-                if agg_slot + 1 > *high {
-                    *high = agg_slot + 1;
-                }
+                *high = (*high).max(agg_slot + 1);
                 scratch_ty.insert(agg_slot, ValType::I32);
                 emit(db, operand, slots, base + 1, high, scratch_ty, layout, out)?; // [handle]
                 out.push(Lir::LocalTee(agg_slot)); // [handle], agg_slot = the owned aggregate
@@ -9590,9 +9538,7 @@ fn emit(
                         // component invalid (the shape compiles fine standalone — nothing binds that slot).
                         // `*high` reflects the operand's scratch, so it hands a fresh, never-typed slot.
                         let child_slot = *high;
-                        if child_slot + 1 > *high {
-                            *high = child_slot + 1;
-                        }
+                        *high = (*high).max(child_slot + 1);
                         scratch_ty.insert(child_slot, ValType::I32);
                         out.push(Lir::LocalTee(child_slot)); // [child], child_slot = child
                         out.push(Lir::LocalGet(child_slot)); // [child, child]
@@ -9634,9 +9580,7 @@ fn emit(
                 // binding of a different width), and a wasm local has ONE type function-wide, so reusing
                 // `base` here re-types that slot → invalid module at module scale (see the reclaim arm).
                 let child_slot = *high;
-                if child_slot + 1 > *high {
-                    *high = child_slot + 1;
-                }
+                *high = (*high).max(child_slot + 1);
                 scratch_ty.insert(child_slot, ValType::I32);
                 out.push(Lir::LocalTee(child_slot)); // [child], child_slot = child
                 out.push(Lir::LocalGet(child_slot)); // [child, child]
@@ -9783,9 +9727,7 @@ fn emit(
                 // out, Note(p, ..))` reuses the destructured boxed payload `p` (this dup'd child) in a large
                 // body where slot `base` already held an i64 binding → `expected i32, found i64`.
                 let child_slot = *high;
-                if child_slot + 1 > *high {
-                    *high = child_slot + 1;
-                }
+                *high = (*high).max(child_slot + 1);
                 scratch_ty.insert(child_slot, ValType::I32);
                 out.push(Lir::LocalTee(child_slot)); // [child], child_slot = child
                 out.push(Lir::LocalGet(child_slot)); // [child, child]
@@ -10459,9 +10401,7 @@ fn emit(
                 // below stores into it. A `match`-producer initializer already worked because `MatchSum`
                 // pre-advances `*high` for its own handle slot — this brings the general `let` in line.)
                 scratch_ty.insert(slot, vt);
-                if slot + 1 > *high {
-                    *high = slot + 1;
-                }
+                *high = (*high).max(slot + 1);
                 // Emit the value into scratch ABOVE this persistent slot (its own scratch floats), then
                 // store it once. The value sees the earlier bindings via `extended`.
                 emit(
@@ -11997,9 +11937,7 @@ fn emit_match_arms_tailable(
                 }
                 _ => base,
             };
-            if slot + 1 > *high {
-                *high = slot + 1;
-            }
+            *high = (*high).max(slot + 1);
             scratch_ty.insert(slot, scrut_vt);
             emit(
                 db,
@@ -13336,9 +13274,7 @@ fn try_emit_scalar_br_table(
         // i64 scrutinee: guard against the wrap-aliasing (idx as u64 >= span → default), then narrow.
         let idx_slot = base;
         arm_base = base + 1;
-        if arm_base > *high {
-            *high = arm_base;
-        }
+        *high = (*high).max(arm_base);
         scratch_ty.insert(idx_slot, ValType::I64);
         out.push(Lir::LocalTee(idx_slot)); // keep idx, leave a copy on the stack
         out.push(Lir::ConstI64(span as i64));
@@ -15558,9 +15494,7 @@ fn emit_checked_arith_to(
     let mut claim = |high: &mut u32| {
         let s = next_scratch;
         next_scratch += 1;
-        if s + 1 > *high {
-            *high = s + 1;
-        }
+        *high = (*high).max(s + 1);
         s
     };
     // A reusable source is settled now; a non-reusable operand claims a scratch slot to be stored into.
@@ -16371,9 +16305,7 @@ fn emit_mul_pow2_as_shift(
     let mut claim = |high: &mut u32| {
         let s = next_scratch;
         next_scratch += 1;
-        if s + 1 > *high {
-            *high = s + 1;
-        }
+        *high = (*high).max(s + 1);
         s
     };
     // The value operand `$a` is read three times (the shift, the round-trip check's compare); a reusable
@@ -16493,9 +16425,7 @@ fn emit_shift(
     let mut claim = |high: &mut u32| {
         let s = next_scratch;
         next_scratch += 1;
-        if s + 1 > *high {
-            *high = s + 1;
-        }
+        *high = (*high).max(s + 1);
         s
     };
     let sa_src = operand_src(db, lhs, ot, slots)?;
