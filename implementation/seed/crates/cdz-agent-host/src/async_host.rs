@@ -462,6 +462,22 @@ impl AsyncAgentHost {
         self
     }
 
+    /// Inject the session factory AFTER construction — the seam that resolves the executor-set construction
+    /// chicken-egg (THE OUTPOST federation + userspace-effects daemon wiring). A [`LiveExecutorSet`] wired
+    /// with the loop's own collaborators — the [`inbox`](Self::inbox), the ws
+    /// [`ws_control_channel`](Self::ws_control_channel) + [`ws_conn_registry`](Self::ws_conn_registry) (for
+    /// `ws/send`/`ws/dial`), the [`lifecycle_channel`](Self::lifecycle_channel), the
+    /// [`reply_settle_sink`](Self::reply_settle_sink) — cannot be built until those handles exist, but they're
+    /// minted INSIDE this host. So the daemon now builds the host FIRST (with no factory), grabs its handles,
+    /// builds the executor set + factory over them, then injects the factory here — instead of pre-minting
+    /// every channel before the host (which `with_factory_and_lifecycle` did for lifecycle alone, and which
+    /// doesn't scale to the ws registry + inbox the executor set also needs). The `factory` field is read
+    /// ONLY inside [`run`](Self::run) (never during construction), so a post-construction inject is sound.
+    /// Replaces any factory set earlier; a host that only lists/stops/inspects needs none.
+    pub fn set_factory(&mut self, factory: Box<dyn SessionFactory>) {
+        self.factory = Some(factory);
+    }
+
     fn build(
         host: AgentHost,
         factory: Option<Box<dyn SessionFactory>>,
@@ -2535,6 +2551,50 @@ mod tests {
 
         let (loop_result, ()) = tokio::join!(async_host.run(sd_rx, || 0), client);
         loop_result.expect("clean shutdown");
+    }
+
+    #[tokio::test]
+    async fn set_factory_injects_the_factory_after_construction() {
+        // The construction-ordering seam (THE OUTPOST federation + userspace-effects daemon wiring): a host
+        // is built with NO factory, its loop handles (inbox / ws-control / lifecycle) are grabbed to build an
+        // executor set + factory over them, then the factory is INJECTED with set_factory. Prove the injected
+        // factory is the one `run` uses: an install-session that would ERROR before the inject SUCCEEDS after
+        // it. This is exactly the daemon's new build order (host first → grab handles → build factory →
+        // inject), which lets the executor set be wired with collaborators minted inside the host.
+        let mut async_host = AsyncAgentHost::new(AgentHost::new()).with_admin_authz(test_authz());
+        // The handles the daemon would thread into a LiveExecutorSet before building the factory — grab them
+        // in a SCOPED block (then drop) to prove they're all available post-construction (the seam's premise)
+        // WITHOUT keeping a live sender that would hold the loop's channels open past shutdown. ws handles are
+        // live-ws; the daemon clones these into the executor set, it doesn't retain its own.
+        {
+            let _inbox = async_host.inbox();
+            let _lifecycle = async_host.lifecycle_channel();
+            #[cfg(feature = "live-ws")]
+            {
+                let _ws_control = async_host.ws_control_channel();
+                let _ws_conns = async_host.ws_conn_registry();
+            }
+        }
+        // Inject the factory built over those handles (StubFactory stands in for the wired LiveExecutorSet).
+        async_host.set_factory(Box::new(StubFactory));
+        let admin = async_host.admin_channel();
+        let (_sd_tx, sd_rx) = tokio::sync::oneshot::channel();
+
+        let client = async move {
+            // With the injected factory, install now SUCCEEDS (before set_factory it was a clean error — see
+            // admin_install_without_a_factory_errors_but_the_loop_keeps_serving).
+            assert_eq!(
+                admin_call(&admin, install("injected")).await,
+                AdminResponse::Installed {
+                    id: SessionId::new(Hash::of(b"injected"))
+                },
+                "the post-construction-injected factory is the one the loop builds through"
+            );
+            drop(admin);
+        };
+
+        let (loop_result, ()) = tokio::join!(async_host.run(sd_rx, || 0), client);
+        loop_result.expect("clean shutdown, no kernel error");
     }
 
     #[tokio::test]
