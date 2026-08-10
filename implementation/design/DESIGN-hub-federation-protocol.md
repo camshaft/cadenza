@@ -311,35 +311,29 @@ optimization/scale story. Escalation D1 records the default.
 
 ## 5. Increments (each its own commit + gate; top-to-bottom, vertical-landable)
 
-**F0 — ws-client dial-out primitive (`v-agent-harness-host`).** Dial a URL, ws client handshake, mint
-conn-id, register in `LiveWsConnRegistry`, pump frames both ways, surface `ws/connect`/`ws/frame`/
-`ws/disconnect` to the outpost session. This splits into TWO steps by WHO decides to dial — the split
-`v-agent-harness-host` flagged (their landed `dial_hub` fn `7de3040d2`):
+**F0 — ws-client dial-out primitive (`v-agent-harness-host`) — BOTH HALVES LANDED (2026-08-10).** Dial a
+URL, ws client handshake, mint conn-id, register in `LiveWsConnRegistry`, pump frames both ways, surface
+`ws/connect`/`ws/frame`/`ws/disconnect` to the outpost session. The whole host transport lane is delivered
+on origin; F1–F4 (guest lane) build on the complete foundation below:
 
-- **F0a — boot-dial (LANDED, `v-agent-harness-host`).** `ws_dial::dial_hub` — the daemon dials a
+- **F0a — boot-dial (LANDED, `v-agent-harness-host`, `dial_hub` `7de3040d2`).** The daemon dials a
   *configured* hub at BOOT (a Rust fn the daemon calls from its config, symmetric to `WsListener::bind`).
-  This is the transport primitive; it is DONE and it is **sufficient for the entire v0 handshake +
-  routing + directory** (F2–F4): a node dials its configured hub once at startup, then all federation is
-  frames over that established link. No kernel dependency — the dial is host config, not a reducer
-  decision. **F2–F4 build on F0a alone.**
-- **F0b — the reducer-emittable `ws/dial` EFFECT (needs a kernel constant first; sequences LATER).**
-  For a reducer to *decide* to dial dynamically (reconnect, failover, mesh dial-out), `ws/dial` must be a
-  reducer-emittable effect that returns the conn-id as its dispatched result. This is a 2-step the split
-  makes explicit: **(1) `v-agent-harness` (kernel territory) adds a `WS_DIAL` family constant to
-  `cdz-kernel/src/effect.rs`** alongside `WS_SEND`/`WS_CONNECT`/`WS_DISCONNECT`, in the grantable `ALL`
-  set, authz-gated on the URL target like `WS_SEND`; **(2) `v-agent-harness-host` adds a `WsDialExecutor`**
-  (mirrors `WsSendExecutor`) serving `ws/dial` → calls `dial_hub` → returns the conn-id as the
-  dispatched-with-result `EffectResult`. Cedar-gates on the URL target (`HostIn`, D4). Gate: a HERMETIC
-  loopback E2E — a `ws/dial` effect dials an in-process `WsListener` in the SAME test (no external
-  network → gates under nix `--features live-ws`, the OUTPOST-doc rule).
-- **Which does the protocol need first? F0a (already landed).** The v0 star protocol dials ONE configured
-  hub at boot, so F2–F4 need only F0a. **F0b is required specifically by reducer-driven RECONNECT** (§Layer
-  0 Q3 — the reducer re-dials on `ws/disconnect`, which is an emitted effect) **and by dynamic/mesh
-  dial-out (F5).** So F0b sequences with the first increment that needs a reducer to *decide* to dial —
-  reconnect (a hardening pass after F2–F4 prove the happy path) or mesh (F5). This resolves the split:
-  boot-dial unblocks the whole v0 protocol now; the `ws/dial` effect + its `WS_DIAL` kernel constant land
-  when reducer-decided dialing is first exercised, coordinated `v-agent-harness` (constant) →
-  `v-agent-harness-host` (executor).
+  Sufficient for the entire v0 handshake + routing + directory (F2–F4): a node dials its configured hub
+  once at startup, then all federation is frames over that link. No kernel dependency — the dial is host
+  config, not a reducer decision.
+- **F0b — the reducer-emittable `ws/dial` EFFECT (LANDED, `WsDialExecutor` `3731a3fb0`).** A reducer
+  emits `ws/dial(hub_url)` → the executor mints + returns the conn-id hex synchronously (dispatched-with-
+  result, D4) then spawns the dial; a connect failure surfaces as a `ws/disconnect` (so reducer-driven
+  reconnect works). `WS_DIAL` family const added to `cdz-kernel/src/effect.rs` (v-agent-harness kernel
+  territory) alongside `WS_SEND`/`WS_CONNECT`/`WS_DISCONNECT`, Cedar-gated on the URL target (`HostIn`).
+  Built EAGERLY (ahead of the reconnect increment that first needs it), so **reducer-driven reconnect and
+  dynamic/mesh dial are unblocked from the start of the guest lane** — the F1–F4 vertical does NOT have to
+  defer reconnect to a later kernel-const coordination; the effect is already there.
+- **The full transport surface a federation reducer folds against (all LANDED, byte-opaque, host=plumbing,
+  Cedar-gated egress):** INBOUND events `ws/connect(conn-id)` / `ws/frame(conn-id, bytes)` /
+  `ws/disconnect(conn-id)`; OUTBOUND effects `ws/dial(hub_url) → conn-id` / `ws/send(conn-id, frame)`. The
+  wire payload is binary (the reducer owns the `cadenza-ast` codec). This is the complete foundation for
+  F1–F4; the host lane is at-rest until F5 (state/log federation).
 
 **F1 — the federation frame schema in `cadenza-ast` terms (guest lane + `v-syntax`).** Define the
 value-form AST union for the frame types (`hello` / `welcome` / `reject` / `route` / `publish` /
@@ -375,12 +369,11 @@ multi-hub topology with a CRDT-merged directory (§4). Explicitly out of v0 scop
 reserves additive room for a `state`/`log-append` frame variant and hub-peering frames so adding them
 later is additive-by-symbol, no break.
 
-(F0a is LANDED (`dial_hub`, `7de3040d2`) and lands first. F1 is independent (pure schema). F2 depends on
-F0a+F1. F3 depends on F1+F2. F4 depends on F3 — the whole v0 star protocol needs only F0a (boot-dial),
-NO kernel `WS_DIAL` constant. F0b (the reducer-emittable `ws/dial` effect + its `WS_DIAL` kernel
-constant) sequences with the first reducer-decided dial — reconnect (a hardening pass after F2–F4) or
-mesh (F5). Each increment is independently green — F1 touches no transport; the live-ws E2Es in F2/F3 are
-hermetic per the nix rule.)
+(F0a + F0b are BOTH LANDED (`dial_hub` `7de3040d2`, `WsDialExecutor` `3731a3fb0`) — the whole host
+transport lane is done. F1 is independent (pure schema). F2 depends on F1 (+ the landed F0). F3 depends
+on F1+F2. F4 depends on F3. Because F0b landed eagerly, reducer-driven reconnect is available to the guest
+lane from the start (no deferred kernel-const coordination). Each increment is independently green — F1
+touches no transport; the live-ws E2Es in F2/F3 are hermetic per the nix rule.)
 
 ## 6. Open decisions (each with a chosen default; escalate only a genuine fork)
 
